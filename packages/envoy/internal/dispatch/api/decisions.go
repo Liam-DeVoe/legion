@@ -133,7 +133,9 @@ func artifactMissing(err error) bool {
 }
 
 // specOpenQuestions are the issue's open asks whose block is in its spec, oldest first, in the
-// shape every ask read has (askReadColumns, with the newest reply beside the row). reader is the
+// shape every ask read has (askReadColumns, with the newest reply beside the row). An ask is open
+// as its node holds it (askNodeAnswer.applyTo), which every read of an answer reads (R3), so the
+// statement reads each of the spec's asks and the scan keeps the open ones. reader is the
 // answer's own, and each row registers its texts with it once the slice has stopped growing: a
 // shaping registers a pointer into the row, and an append that moved the backing array would
 // leave the reader filling trees into memory the answer no longer holds.
@@ -142,7 +144,7 @@ func (s *server) specOpenQuestions(
 ) ([]issueAskRow, error) {
 	rows, err := s.deps.Store.Pool.Query(ctx, `
 		select `+askReadColumns+` `+askReadFrom+`
-		where a.issue_key = $1 and a.state = 'open' and a.block_artifact_id = $2::uuid
+		where a.issue_key = $1 and a.block_artifact_id = $2::uuid
 		order by a.created_at, a.id
 	`, key, specID)
 	if err != nil {
@@ -154,6 +156,9 @@ func (s *server) specOpenQuestions(
 		if err != nil {
 			rows.Close()
 			return nil, err
+		}
+		if ask.State != "open" {
+			continue
 		}
 		questions = append(questions, issueAskRow{Ask: ask, LastReply: reply})
 	}
@@ -616,49 +621,24 @@ func (entry decisionEntry) at() time.Time {
 }
 
 // readFacts sets the values and relations of entry's node the entries read holds (entryFactKinds),
-// from the JSON list the statement aggregated, or answers which of them does not parse. A
-// declined ask carries its note and no answer, and an ask carries no Keep.
+// from the JSON list the statement aggregated, or answers which of them does not parse: the
+// answer state, as every ask read reads it (askNodeAnswer), and the decision's own. A declined ask
+// carries its note and no answer, and an ask carries no Keep.
 func (entry *decisionEntry) readFacts(encoded []byte) error {
-	var facts []struct {
-		Kind   string `json:"kind"`
-		ToKind string `json:"to_kind"`
-		ToID   string `json:"to_id"`
-	}
+	var facts []nodeFact
 	if err := json.Unmarshal(encoded, &facts); err != nil {
 		return fmt.Errorf("the node's values: %w", err)
 	}
+	var answer askNodeAnswer
 	for _, fact := range facts {
 		value := fact.ToID
-		switch fact.Kind {
-		case graphstore.TupleAnswerState:
-			switch value {
-			case "open", "answered", "resolved":
-				entry.AnswerState = &value
-			default:
-				return fmt.Errorf("answer_state holds %q, which is none of open, answered and resolved", value)
-			}
-		case graphstore.TupleAnswer:
-			entry.Answer = &value
-		case graphstore.TupleSelected:
-			selected := []string{}
-			if err := json.Unmarshal([]byte(value), &selected); err != nil {
-				return fmt.Errorf("selected holds %q, which is no list of labels: %w", value, err)
-			}
-			entry.Selected = selected
-		case graphstore.TupleAnsweredAt:
-			at, err := time.Parse(time.RFC3339Nano, value)
+		if held, err := answer.read(fact.Kind, value); held {
 			if err != nil {
-				return fmt.Errorf("answered_at holds %q, which is no time: %w", value, err)
+				return err
 			}
-			entry.AnsweredAt = &at
-		case graphstore.TupleResolution:
-			var resolution model.AskResolution
-			if err := json.Unmarshal([]byte(value), &resolution); err != nil {
-				return fmt.Errorf("resolution holds %q, which is no resolution: %w", value, err)
-			}
-			entry.Resolution = &resolution
-		case graphstore.TupleAnsweredBy:
-			entry.AnsweredBy = &value
+			continue
+		}
+		switch fact.Kind {
 		case graphstore.TupleDecidedBy:
 			entry.DecidedBy = &decisionDecider{Kind: fact.ToKind, ID: value}
 		case refs.ValueUncertainty:
@@ -672,6 +652,8 @@ func (entry *decisionEntry) readFacts(encoded []byte) error {
 			entry.UncertaintyReason = &value
 		}
 	}
+	entry.AnswerState, entry.Answer, entry.Selected = answer.State, answer.Answer, answer.Selected
+	entry.AnsweredAt, entry.AnsweredBy, entry.Resolution = answer.AnsweredAt, answer.AnsweredBy, answer.Resolution
 	if entry.Resolution != nil && entry.Resolution.Kind == model.AskResolutionDeclined {
 		// D9: a declined ask is an entry of its own, with the person's note, and never an answer.
 		entry.Declined, entry.Kind = true, "declined"

@@ -612,7 +612,7 @@ type meInboxOnceColumns struct {
 	asks, opened, backlinks, parts, reach            []pgtype.UndecodedBytes
 	replies, replyNamed, replyAttempts               []pgtype.UndecodedBytes
 	askBlocks, commentBlocks, edits, followers       []pgtype.UndecodedBytes
-	threads                                          []pgtype.UndecodedBytes
+	threads, threadAnswers                           []pgtype.UndecodedBytes
 	roots, messages, attempts, messageBlocks, titles []pgtype.UndecodedBytes
 	trees                                            []pgtype.UndecodedBytes
 }
@@ -621,7 +621,7 @@ func (once *meInboxOnceColumns) targets() []any {
 	return []any{
 		&once.asks, &once.opened, &once.backlinks, &once.parts, &once.reach,
 		&once.replies, &once.replyNamed, &once.replyAttempts, &once.askBlocks, &once.commentBlocks, &once.edits, &once.followers,
-		&once.threads,
+		&once.threads, &once.threadAnswers,
 		&once.roots, &once.messages, &once.attempts, &once.messageBlocks, &once.titles,
 		&once.trees,
 	}
@@ -773,9 +773,10 @@ func (read *meInboxRead) assemble(row *meInboxRow) error {
 // readPage reads what the statement read once for the page (meInboxPageReads) into read: the Ask
 // rows as listInbox reads them (scanAskRead) with the details loadAskDetails reads, each thread's
 // replies with the targets each names, its attempts and its named block (hydrateCommentSideTables),
-// the rewordings and followers; the Reply rows (scanMyReplyRow); each Agent row's root and the
-// replies under it, each message's attempts and the block it names, and the sessions' names; and
-// every stored tree their texts read.
+// the rewordings and followers; the Reply rows (scanMyReplyRow), each whose newest write by
+// somebody else is its ask's answer with that answer as the ask's node holds it (answerReply); each
+// Agent row's root and the replies under it, each message's attempts and the block it names, and
+// the sessions' names; and every stored tree their texts read.
 func (read *meInboxRead) readPage(types *pgtype.Map, columns *meInboxOnceColumns) error {
 	page := meInboxPage{
 		asks: map[string]openAskRow{}, reaches: map[string]askReach{}, replies: map[string][]model.Comment{},
@@ -786,10 +787,21 @@ func (read *meInboxRead) readPage(types *pgtype.Map, columns *meInboxOnceColumns
 	if err := read.readAsks(types, columns, &page); err != nil {
 		return err
 	}
-	for _, record := range records(types, columns.threads) {
-		thread, err := scanMyReplyRow(record, read.serverURL)
+	answers := map[string]model.Ask{}
+	for _, record := range records(types, columns.threadAnswers) {
+		ask, err := scanMyReplyAnswer(record)
 		if err != nil {
 			return fmt.Errorf("read the inbox's Reply rows: %w", err)
+		}
+		answers[ask.ID] = ask
+	}
+	for _, record := range records(types, columns.threads) {
+		thread, answerWrite, err := scanMyReplyRow(record, read.serverURL)
+		if err != nil {
+			return fmt.Errorf("read the inbox's Reply rows: %w", err)
+		}
+		if answerWrite {
+			answerReply(&thread.Reply, answers[thread.ThreadID], read.serverURL)
 		}
 		page.threads[thread.ThreadID] = thread
 	}
@@ -1364,14 +1376,17 @@ func meInboxKindSkip(name, end string) string {
 // arms is cut to the page before the walk meets it (meInboxDismissedCut), so a page of that state
 // reads the rows it answers however many threads the person has dismissed.
 //
-// The Ask rows are the open asks first, read by their state alone, and then the ones of those that
-// wait on the person, each with its newest reply; and an owner's test is written only into a shape
-// that names an owner. The plan Postgres keeps from the sixth execution knows nothing of the
-// arguments: it takes a test of an argument against a column to keep almost no row, and with the
-// owner's tests on every shape it took the open asks to be one and read each one's issue, document
-// and project by a scan of that whole table, and its newest reply, before it knew whether the ask
-// waits on the person at all (13.6 ms of that plan's 21.6 for the person whose history is empty,
-// against 0.4 ms in the plan of their own arguments).
+// The Ask rows are the open asks first, read by their row's state alone, then the ones of those
+// that wait on the person, and last the ones of those that are open as every read of open asks
+// across owners picks them, by their row's state and their node's (askOpenOf, R3), each with its
+// newest reply; and an owner's test is written only into a shape that names an owner. The plan
+// Postgres keeps from the sixth execution knows nothing of the arguments: it takes a test of an
+// argument against a column to keep almost no row, and with the owner's tests on every shape it
+// took the open asks to be one and read each one's issue, document and project by a scan of that
+// whole table, and its newest reply, before it knew whether the ask waits on the person at all
+// (13.6 ms of that plan's 21.6 for the person whose history is empty, against 0.4 ms in the plan
+// of their own arguments). The node's test probes the ask's node, so it reads only the asks that
+// wait on the person, which are materialized before it as the open asks are before them.
 func meInboxPageRows(shape meInboxShape, issue, artifact string) string {
 	state := shape.state
 	if state == "" {
@@ -1407,12 +1422,16 @@ func meInboxPageRows(shape meInboxShape, issue, artifact string) string {
 		select '`+graphstore.KindAsk+`', a.id::text, '`+meInboxPageAsk+`', coalesce(lr.created_at, a.created_at), null::text, null::record
 		from (
 			with open_asks as materialized (
-				select id, created_at, issue_key, artifact_id, asked_of from asks where state = 'open'
+				select id, created_at, issue_key, artifact_id, asked_of, state, node_kind from asks where state = 'open'
+			), waiting as materialized (
+				select a.id, a.created_at, a.state, a.node_kind
+				from open_asks a`+askedOfPersonJoins+`
+				where (i.key is null or i.closed_at is null)
+				  and `+askedOfPersonExpression+` = $1`+owner+`
 			)
 			select a.id, a.created_at
-			from open_asks a`+askedOfPersonJoins+`
-			where (i.key is null or i.closed_at is null)
-			  and `+askedOfPersonExpression+` = $1`+owner+`
+			from waiting a
+			where `+askOpenOf("a")+`
 		) a`+lastReplyJoin)
 	}
 	if !shape.owned {
@@ -1516,7 +1535,8 @@ type meInboxReads struct {
 //     threads as loadAskThreads reads them (inboxAskReplyChainsQuery, then the targets each reply
 //     names, its attempts and its block, the rewordings, the followers and askReachesQuery);
 //   - the Reply rows as listMyReplies selects them over the rows its cut kept (myRepliesPageRest),
-//     each read by its user_threads key;
+//     each read by its user_threads key, and the answers of their asks as answerReplyRows reads
+//     them off each ask's node (myReplyAnswersStatement);
 //   - the Agent rows' conversations as hydrateMessageThreads reads them - each root message, every
 //     reply under it (messageReplyChainsQuery), each message's attempts (messageDeliveriesQuery) and
 //     the block it names (refs.ReplyBlocksStatement) - and the names of their sessions
@@ -1653,6 +1673,7 @@ func meInboxPageReads(args *meInboxArgs, slots meInboxSlots) (meInboxReads, erro
 				where kept.login = $1 and kept.thread_id = any(` + threadIDs + `::uuid[])
 			),` + myRepliesPageRest + `
 		) listed)`,
+		`array(select row(answered.*) from (` + bindFragment(myReplyAnswersStatement, threadIDs) + `) answered)`,
 		`array(select row(r.*) from agent_roots r)`,
 		`array(select row(c.*) from agent_chain c)`,
 		`array(select row(attempt.*) from (` + bindFragment(messageDeliveriesQuery, messageIDs) + `) attempt)`,

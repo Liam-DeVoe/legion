@@ -57,29 +57,34 @@ import (
 // The ask is excluded by a test keyed on the thread's own id rather than by two left joins over
 // the row's kind and issue, so every column this filter reads of user_threads is one the state's
 // own index holds and the read above it can answer from that index alone (myRepliesPage). An ask's
-// thread id is the ask's own id, which is what makes the id enough to key the test on.
-const myRepliesOwner = `
+// thread id is the ask's own id, which is what makes the id enough to key the test on. The ask is
+// open as the Inbox picks it (askOpenOf: its row's state and its node's), so the two lists leave
+// out and list the same asks.
+//
+// It and the statements built on it are vars, not consts, because askOpenOf builds its read of
+// the ask's node from graphstore.CurrentTupleRead.
+var myRepliesOwner = `
 	from user_threads u
 	where u.login = $1
 	  and ($2::text = '' or u.issue_key = $2::text)
 	  and ($3::uuid is null or u.artifact_id = $3::uuid)
 	  and not exists (
 		select 1 from asks a` + askedOfPersonJoins + `
-		where a.id = u.thread_id and a.state = 'open' and i.closed_at is null
+		where a.id = u.thread_id and ` + askOpenOf("a") + ` and i.closed_at is null
 		  and ` + askedOfPersonExpression + ` = $1
 	  )`
 
 // myRepliesUnread, myRepliesInbox and myRepliesDismissed are the three states of that filter,
-// spelled as three constants over the one base above rather than as one bound parameter. A
+// spelled as three statements over the one base above rather than as one bound parameter. A
 // parameter defeats every partial index: `case when $n then u.dismissed_at is null else u.unread
 // end` leaves the planner nothing to imply any index's predicate from, and on PostgreSQL 18
 // `explain (generic_plan)` of that form reads user_threads_pkey with the state as a filter, while
-// each constant below reads its own index. A prepared statement reaches a generic plan after five
+// each statement below reads its own index. A prepared statement reaches a generic plan after five
 // executions, so the parameter would cost every Inbox read a scan of every row of the caller's.
 //
 // "Dismissed" is exactly `dismissed_at is not null`: user_threads_record clears the mark when
 // somebody else writes again (migration 20261105093501), so no read compares the two marks.
-const (
+var (
 	myRepliesUnread    = myRepliesOwner + ` and u.unread`
 	myRepliesInbox     = myRepliesOwner + ` and u.replied_at is not null and u.dismissed_at is null`
 	myRepliesDismissed = myRepliesOwner + ` and u.dismissed_at is not null`
@@ -103,7 +108,7 @@ const myRepliesCountRest = `
 	)
 	select count(*) from matched`
 
-const (
+var (
 	myRepliesCountQuery      = myRepliesCount + myRepliesUnread + myRepliesCountRest
 	myRepliesInboxCountQuery = myRepliesCount + myRepliesInbox + myRepliesCountRest
 )
@@ -111,13 +116,13 @@ const (
 // myRepliesPage reads the caller's Reply rows in one state, newest reply first, and what a row
 // shows: who wrote the newest write someone else made and its text (last_reply_id: a comment for
 // an ask or a comment thread, a message for a message thread, or the ask itself when that write is
-// its answer, read as the answerer and the answer's options and text), what the thread is about
-// (the ask's question, or its root's text), where it lives (the row's own owner columns, its
-// issue's priority and its project), how far the caller has read it, whether it is still unread,
-// how many writes in it they have not read, the document mark its root is anchored to, and the
-// version a dismissal of the row is held to (user_threads.version, migration 20261105093500).
-// Its ref always names the thread's root, never the reply: a reply carries no anchor, so a link
-// to it would skip the document redirect an anchored root takes.
+// its answer, which the statement only marks and answerReplyRows reads off the ask's node), what
+// the thread is about (the ask's question, or its root's text), where it lives (the row's own
+// owner columns, its issue's priority and its project), how far the caller has read it, whether it
+// is still unread, how many writes in it they have not read, the document mark its root is
+// anchored to, and the version a dismissal of the row is held to (user_threads.version, migration
+// 20261105093500). Its ref always names the thread's root, never the reply: a reply carries no
+// anchor, so a link to it would skip the document redirect an anchored root takes.
 //
 // $4 is the number of rows to read, null for every row; a Dismissed page resumes from $5 and $6
 // (myRepliesDismissedCursor).
@@ -179,8 +184,10 @@ const myRepliesDismissedCut = `
 		order by u.dismissed_at desc, u.thread_id desc
 		limit $4`
 
-// myRepliesPageRest is what every state selects over the rows the cut kept.
-const myRepliesPageRest = `
+// myRepliesPageRest is what every state selects over the rows the cut kept. The unread count
+// reads an ask's answer as a write in its thread as the ask's node holds it (askNodeAnswererOf,
+// askNodeAnsweredAtOf), as every read of an answer reads it (R3).
+var myRepliesPageRest = `
 	message_replies as (
 		select p.thread_id as root_id, m.id, m.created_at, m.author
 		from page p join messages m on m.in_reply_to = p.thread_id
@@ -200,10 +207,9 @@ const myRepliesPageRest = `
 	       end,
 	       i.key, i.title, ar.project_key, ar.slug, ar.name,
 	       coalesce(a.question, root.body, mroot.body, ''),
-	       p.last_reply_id::text, answered.id is not null,
-	       coalesce(rc.author, rm.author,
-	         case when answered.id is not null then jsonb_build_object('kind', 'user', 'id', answered.answer->>'user') end),
-	       coalesce(rc.body, rm.body, answered.text, ''),
+	       p.last_reply_id::text, coalesce(p.last_reply_id = a.id, false),
+	       coalesce(rc.author, rm.author),
+	       coalesce(rc.body, rm.body, ''),
 	       coalesce(rc.created_at, rm.created_at, p.replied_at),
 	       i.priority, p.project_key, p.read_through, p.unread,
 	       coalesce(counted.unread_count, 0), coalesce(root.anchor, a.anchor), p.dismissed_at,
@@ -215,7 +221,7 @@ const myRepliesPageRest = `
 	-- comments and two of 20,120 messages, 100 ms of the Inbox read's 154, to answer 1,540 rows
 	-- whose ids it already holds.
 	left join lateral (
-		select a.id, a.question, a.anchor, a.answer
+		select a.id, a.question, a.anchor
 		from asks a where p.kind = 'ask' and a.id = p.thread_id
 		offset 0
 	) a on true
@@ -240,24 +246,15 @@ const myRepliesPageRest = `
 		offset 0
 	) rm on true
 	left join lateral (
-		select a.id, a.answer,
-		       concat_ws(' - ',
-		         nullif(array_to_string(array(select jsonb_array_elements_text(
-		           case when jsonb_typeof(a.answer->'selected') = 'array' then a.answer->'selected' else '[]'::jsonb end
-		         )), ', '), ''),
-		         nullif(a.answer->>'text', '')) as text
-		where p.last_reply_id = a.id and a.answer->>'user' is not null
-	) answered on true
-	left join lateral (
 		select count(*)::int as unread_count
 		from (
 			select c.created_at, c.author from comments c
 			where p.kind = 'ask' and c.ask_id = p.thread_id
 			union all
-			select (ac.answer->>'at')::timestamptz,
-			       jsonb_build_object('kind', 'user', 'id', ac.answer->>'user')
+			select ` + askNodeAnsweredAtOf("ac") + `,
+			       jsonb_build_object('kind', 'user', 'id', ` + askNodeAnswererOf("ac") + `)
 			from asks ac
-			where p.kind = 'ask' and ac.id = p.thread_id and ac.answer->>'user' is not null
+			where p.kind = 'ask' and ac.id = p.thread_id and ` + askNodeAnswererOf("ac") + ` is not null
 			union all
 			select c.created_at, c.author from comments c
 			where p.kind = 'comment' and (c.id = p.thread_id or c.reply_to = p.thread_id)
@@ -273,7 +270,7 @@ const myRepliesPageRest = `
 	left join issues i on i.key = p.issue_key
 	left join artifacts ar on ar.id = p.artifact_id`
 
-const (
+var (
 	myRepliesPageQuery      = myRepliesPage + myRepliesUnread + myRepliesPageCut + myRepliesPageRows + myRepliesPageRest
 	myRepliesInboxPageQuery = myRepliesPage + myRepliesInbox + myRepliesPageCut + myRepliesPageRows + myRepliesPageRest
 	// The Dismissed view's first page and the page that follows a cursor, two constants for the
@@ -672,7 +669,9 @@ func myRepliesOrderOf(state string, row model.MyReplyRow) time.Time {
 	return row.Reply.CreatedAt
 }
 
-// readMyReplyRows reads one state's Reply rows under the parameters myRepliesPageArgs built.
+// readMyReplyRows reads one state's Reply rows under the parameters myRepliesPageArgs built, then
+// the answer of each row whose newest write by somebody else is its ask's answer
+// (answerReplyRows).
 func (s *server) readMyReplyRows(
 	ctx context.Context, tx pgx.Tx, query string, args []any,
 ) ([]model.MyReplyRow, error) {
@@ -682,28 +681,38 @@ func (s *server) readMyReplyRows(
 	}
 	defer rows.Close()
 	read := []model.MyReplyRow{}
+	var answered []int
 	for rows.Next() {
-		row, err := scanMyReplyRow(rows, s.deps.ServerURL)
+		row, answerWrite, err := scanMyReplyRow(rows, s.deps.ServerURL)
 		if err != nil {
 			return nil, err
+		}
+		if answerWrite {
+			answered = append(answered, len(read))
 		}
 		read = append(read, row)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("list my replies: %w", err)
 	}
+	rows.Close()
+	if err := answerReplyRows(ctx, tx, read, answered, s.deps.ServerURL); err != nil {
+		return nil, err
+	}
 	return read, nil
 }
 
 // scanMyReplyRow decodes one Reply row myRepliesPageRest selects: the row listMyReplies answers,
 // and the thread row of an entry GET /api/v1/me/inbox answers. Its subject and its reply's first
-// line are cut against serverURL, this server's deployment (refs.FirstLine).
-func scanMyReplyRow(scanned pgx.Row, serverURL string) (model.MyReplyRow, error) {
+// line are cut against serverURL, this server's deployment (refs.FirstLine). answerWrite says the
+// row's newest write by somebody else is its ask's answer, which the statement only marks: its
+// caller sets that reply from the answer as the ask's node holds it (answerReply).
+func scanMyReplyRow(scanned pgx.Row, serverURL string) (model.MyReplyRow, bool, error) {
 	var row model.MyReplyRow
 	var issueKey, issueTitle, project, slug, name, replyID *string
 	var subject, body string
 	var author, anchor []byte
-	var isAnswer bool
+	var answerWrite bool
 	var readThrough time.Time
 	var projectKey string
 	// The version is a Reply row's alone, so this scan is the one place that sets it: an
@@ -712,16 +721,13 @@ func scanMyReplyRow(scanned pgx.Row, serverURL string) (model.MyReplyRow, error)
 	if err := scanned.Scan(
 		&row.ThreadID, &row.Kind, &row.Ref,
 		&issueKey, &issueTitle, &project, &slug, &name,
-		&subject, &replyID, &isAnswer, &author, &body, &row.Reply.CreatedAt,
+		&subject, &replyID, &answerWrite, &author, &body, &row.Reply.CreatedAt,
 		&row.Priority, &projectKey, &readThrough, &row.Unread, &row.UnreadCount, &anchor,
 		&row.DismissedAt, &version,
 	); err != nil {
-		return model.MyReplyRow{}, fmt.Errorf("scan my reply: %w", err)
+		return model.MyReplyRow{}, false, fmt.Errorf("scan my reply: %w", err)
 	}
 	row.Reply.Kind = "reply"
-	if isAnswer {
-		row.Reply.Kind = "answer"
-	}
 	if issueKey != nil {
 		row.Issue = &model.OpenAskIssue{Key: *issueKey, Title: *issueTitle}
 	} else if project != nil {
@@ -736,18 +742,93 @@ func scanMyReplyRow(scanned pgx.Row, serverURL string) (model.MyReplyRow, error)
 	}
 	if author != nil {
 		if err := json.Unmarshal(author, &row.Reply.Author); err != nil {
-			return model.MyReplyRow{}, fmt.Errorf("decode my reply author: %w", err)
+			return model.MyReplyRow{}, false, fmt.Errorf("decode my reply author: %w", err)
 		}
 	}
 	if len(anchor) > 0 {
 		var value model.Anchor
 		if err := model.DecodeAnchor(anchor, &value); err != nil {
-			return model.MyReplyRow{}, fmt.Errorf("decode my reply anchor: %w", err)
+			return model.MyReplyRow{}, false, fmt.Errorf("decode my reply anchor: %w", err)
 		}
 		row.Anchor = &value
 	}
 	row.Reply.FirstLine = refs.FirstLine(body, serverURL)
-	return row, nil
+	return row, answerWrite, nil
+}
+
+// myReplyAnswersStatement reads the asks in $1 as answerReply sets a Reply row's reply from one:
+// each ask's row state and answer and its node's answer (askNodeAnswerColumn), which
+// scanMyReplyAnswer lays over the row (askAnswerRead). It is a var, not a const, because
+// askNodeAnswerColumn builds its read of the node from graphstore.CurrentTupleRead.
+var myReplyAnswersStatement = `select a.id::text, a.state, a.answer, ` + askNodeAnswerColumn + ` from asks a where a.id = any($1::uuid[])`
+
+// answerReplyRows sets the reply of each row of read that answered names, a row whose newest write
+// by somebody else is its ask's answer, from that answer as the ask's node holds it
+// (answerReply). It is a statement of its own, over the asks of those rows alone, rather than a
+// lateral of the page's: the node's facts are read through one text (askNodeFacts), whose
+// relations and values no one index orders, and the page's plan is held to sorting nothing
+// (TestMyRepliesQueriesReadTheirStatesIndex). It runs in the page's transaction, so it reads the
+// snapshot the page read. GET /api/v1/me/inbox reads the same statement inside its own one
+// statement, over its page's Reply rows (meInboxPageReads).
+func answerReplyRows(ctx context.Context, tx pgx.Tx, read []model.MyReplyRow, answered []int, serverURL string) error {
+	if len(answered) == 0 {
+		return nil
+	}
+	ids := make([]string, len(answered))
+	rowOf := make(map[string]int, len(answered))
+	for index, row := range answered {
+		ids[index] = read[row].ThreadID
+		rowOf[read[row].ThreadID] = row
+	}
+	rows, err := tx.Query(ctx, myReplyAnswersStatement, ids)
+	if err != nil {
+		return fmt.Errorf("read the answers of my replies: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		ask, err := scanMyReplyAnswer(rows)
+		if err != nil {
+			return err
+		}
+		answerReply(&read[rowOf[ask.ID]].Reply, ask, serverURL)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("read the answers of my replies: %w", err)
+	}
+	return nil
+}
+
+// scanMyReplyAnswer decodes one myReplyAnswersStatement row: the ask's state and answer as every
+// ask read shows them (askAnswerRead).
+func scanMyReplyAnswer(row pgx.Row) (model.Ask, error) {
+	var id, state string
+	var answer, nodeAnswer []byte
+	if err := row.Scan(&id, &state, &answer, &nodeAnswer); err != nil {
+		return model.Ask{}, fmt.Errorf("scan the answer of my reply: %w", err)
+	}
+	return askAnswerRead(id, state, answer, nodeAnswer)
+}
+
+// answerReply sets reply, the newest write by somebody else on a Reply row whose newest such write
+// is its ask's answer, from ask's answer as the ask's node holds it (scanMyReplyAnswer), as every
+// read of an answer reads it (R3): kind answer, the answerer as its author, and the answer's
+// options and then its text, joined by " - ", as its first line, cut against serverURL as every
+// line of the row is (scanMyReplyRow). Where the ask holds no answer as its node holds it, reply
+// keeps what the page's statement read for it, a reply with no author and no line.
+func answerReply(reply *model.MyReplyReply, ask model.Ask, serverURL string) {
+	if ask.Answer == nil {
+		return
+	}
+	reply.Kind = "answer"
+	reply.Author = model.Actor{Kind: "user", ID: ask.Answer.User}
+	var line []string
+	if selected := strings.Join(ask.Answer.Selected, ", "); selected != "" {
+		line = append(line, selected)
+	}
+	if ask.Answer.Text != nil && *ask.Answer.Text != "" {
+		line = append(line, *ask.Answer.Text)
+	}
+	reply.FirstLine = refs.FirstLine(strings.Join(line, " - "), serverURL)
 }
 
 // threadReadInput is the body of PUT /api/v1/me/threads/{id}/read.

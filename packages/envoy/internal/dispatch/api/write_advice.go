@@ -179,11 +179,13 @@ func (s *server) computeWriteAdvice(
 	if err := s.runAdviceQueryHook(ctx, tx, "your_open_asks"); err != nil {
 		return nil, &adviceQueryError{query: "your_open_asks", err: err}
 	}
+	// An ask is open as its node holds it (askNodeStateOf), as every read of an answer reads it
+	// (R3): the read takes one issue's asks, so it picks by the node alone.
 	rows, err := tx.Query(ctx, `
-		select id::text, question from asks
+		select id::text, question from asks a
 		where issue_key = $1
 		  and author->>'kind' = 'session' and author->>'id' = $2
-		  and ((state = 'open' and id::text <> all(coalesce($3::text[], '{}')))
+		  and ((`+askNodeStateOf("a")+` = 'open' and id::text <> all(coalesce($3::text[], '{}')))
 		    or id::text = any(coalesce($5::text[], '{}')))
 		order by created_at, id
 		limit $4

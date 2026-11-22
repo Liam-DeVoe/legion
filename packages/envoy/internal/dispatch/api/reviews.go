@@ -91,12 +91,15 @@ const latestReviewsStatement = `
 // openApprovalAsksStatement reads the open approval requests naming any document in $1, with the
 // turn waitingOnExpression gives each; scanOpenApprovalRequests reads its rows. One row per
 // document of each open request naming one of these documents, so a request that covers a spec
-// and its Verification document is found by either and reported on both.
-const openApprovalAsksStatement = `
+// and its Verification document is found by either and reported on both. A request is open as the
+// Inbox picks an ask (askOpenOf): the row's state keeps the read on the indexes of open asks, and
+// the node's decides. It is a var, not a const, because askOpenOf builds its read of the ask's
+// node from graphstore.CurrentTupleRead.
+var openApprovalAsksStatement = `
 		select a.id::text, a.author, document ->> 'artifact_id', a.approval -> 'documents', ` + waitingOnExpression + `
 		from asks a` + lastReplyJoin + `
 		cross join lateral jsonb_array_elements(a.approval -> 'documents') document
-		where a.kind = 'approval' and a.state = 'open'
+		where a.kind = 'approval' and ` + askOpenOf("a") + `
 		  and ` + docs.ApprovalDocumentsJSONPath + ` ?| $1::text[]
 		  and document ->> 'artifact_id' = any($1::text[])
 	`
