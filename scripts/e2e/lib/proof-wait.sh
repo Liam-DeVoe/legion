@@ -1,6 +1,7 @@
 # shellcheck shell=bash disable=SC2154 # the variables below are the caller's (see the header)
-# The one guard and the one wait of a proof or a shell test that sets a guard:
-# packages/envoy/loadtest/cluster/cluster.test.sh sources it.
+# The one guard and the one wait of a shell test. At this head its one caller is
+# packages/envoy/loadtest/cluster/cluster.test.sh; #4437's other shell tests and proofs, and the
+# fixed guard and time-left reading they use, come with those files.
 #
 # Sourced, never run: it defines functions and starts no process. The caller sets
 #   work           the run's scratch directory, where each wait keeps its last poll's output
@@ -9,17 +10,15 @@
 # and defines note, which prints a line of the run's progress, and fail, which prints its message
 # and exits.
 #
-# A script a workflow runs sets its guard once, at its head: with proof_guard SECONDS, the reading
-# of it beside the number, or with proof_guard_from_env, where the CI step that runs it exports the
-# deadline from its own timeout-minutes. It waits through wait_for or wait_held alone, never
-# through a helper that takes a bound of its own. (wait_held is not wait_until: several proofs
-# only a person runs give that name to a bounded wait of their own, which a definition here would
-# collide with.)
+# A script a workflow runs sets its guard once, at its head, with proof_guard_from_env: the CI step
+# that runs it exports the deadline from its own timeout-minutes. It waits through wait_for or
+# wait_held alone, never through a helper that takes a bound of its own. (wait_held is not
+# wait_until: several proofs only a person runs give that name to a bounded wait of their own,
+# which a definition here would collide with.)
 #
-# proof_margin_seconds is how long before the guard's deadline every wait of the proof gives up,
-# so the wait's own failure, and the cleanup after it, print before anything stops the run: the
-# margin the Go tests' testwait keeps before the test binary's deadline, so a Go driver that takes
-# the time left as its -test.timeout (proof_seconds_left) gives up at the same moment.
+# proof_margin_seconds is how long before the step's limit every wait gives up (the step exports
+# its deadline that much early), so the wait's own failure, and the cleanup after it, print before
+# GitHub stops the step.
 proof_margin_seconds=30
 proof_guard_seconds=''
 proof_deadline_ms=''
@@ -27,7 +26,7 @@ proof_deadline_ms=''
 # ends on its fact alone, and whoever runs the script owns its hang guard.
 proof_unguarded=''
 # wait_impossible is what a wait's COMMAND sets when it finds that the fact can no longer happen,
-# such as the process that would answer having exited (lib/rig.sh's serving).
+# such as the process that would answer having exited.
 wait_impossible=''
 # wait_gave_up is the line the last wait_held that did not hold ended on, and empty after one
 # that held; wait_ended_by is how it ended: `impossible`, or `deadline`.
@@ -41,25 +40,6 @@ wait_depth=0
 proof_now_ms() {
   local now=${EPOCHREALTIME/[.,]/}
   printf '%s\n' "$((10#$now / 1000))"
-}
-
-# proof_guard SECONDS sets this proof's one guard: the run may take SECONDS from here. It records
-# the deadline and exports LEGION_PROOF_DEADLINE_MS, the moment in epoch milliseconds that every
-# wait of the proof gives up by, proof_margin_seconds before the deadline; the proof's Bun drivers
-# read it (@legion/test-fixtures/wait). It arms nothing: what stops a run that hangs outside a
-# wait is the limit of the CI job that runs the proof, which is at least the guard plus the job's
-# setup. SECONDS is at least twice the longest green run on record, and the call carries that
-# reading in a comment beside it.
-proof_guard() {
-  local seconds=${1:-}
-  [ -n "${EPOCHREALTIME:-}" ] || fail "proof_guard: bash 5 or later is required (EPOCHREALTIME)"
-  if ! [[ "$seconds" =~ ^[1-9][0-9]*$ ]] || ((seconds <= proof_margin_seconds)); then
-    fail "proof_guard: '$seconds' is not a whole number of seconds above the ${proof_margin_seconds}s margin"
-  fi
-  [ -z "$proof_deadline_ms" ] || fail "proof_guard: this proof set its guard already"
-  proof_guard_seconds=$seconds
-  proof_deadline_ms=$(($(proof_now_ms) + seconds * 1000))
-  export LEGION_PROOF_DEADLINE_MS=$((proof_deadline_ms - proof_margin_seconds * 1000))
 }
 
 # proof_guard_from_env sets this proof's guard from the CI step that runs it: the step exports
@@ -83,18 +63,9 @@ proof_guard_from_env() {
   export LEGION_PROOF_DEADLINE_MS=$deadline
 }
 
-# proof_seconds_left prints the whole seconds left before the guard's deadline, and at least 1: a
-# Go driver's -test.timeout, under which testwait gives up proof_margin_seconds before it, where
-# wait_for does.
-proof_seconds_left() {
-  [ -n "$proof_deadline_ms" ] || fail "proof_seconds_left: this proof has no guard, so no time is left of one"
-  local left=$(((proof_deadline_ms - $(proof_now_ms)) / 1000))
-  printf '%s\n' "$((left > 0 ? left : 1))"
-}
-
-# wait_held WHAT COMMAND... is the wait of a proof that set its guard, for a run that goes on
-# past a wait that did not hold and reports it itself (smoke-role-takeover.sh's rows); wait_for
-# below is the same wait failing the run. It runs COMMAND in this shell every half second until
+# wait_held WHAT COMMAND... is the wait of a script that set its guard, for a run that goes on past
+# a wait that did not hold and reports it itself; wait_for below is the same wait failing the run.
+# It runs COMMAND in this shell every half second until
 # it succeeds, and returns 0. It returns 1 at once where COMMAND found the fact can no longer
 # happen and set wait_impossible to why, and otherwise, where the proof has a deadline, once
 # proof_margin_seconds before the guard's deadline has come, with the line it ended on in
@@ -114,7 +85,7 @@ wait_held() {
   local what=$1 output polls=0 started=$SECONDS beat=$SECONDS impossible
   shift
   [ -n "$proof_deadline_ms" ] || [ -n "$proof_unguarded" ] ||
-    fail "wait_held: this proof set no guard (proof_guard or proof_guard_from_env), so the wait for $what has no deadline to end by"
+    fail "wait_held: this script set no guard (proof_guard_from_env), so the wait for $what has no rule to end by"
   if [ -z "${work:-}" ] || [ ! -d "$work" ]; then
     fail "wait_held: the run has no work directory to keep the output of its wait for $what in"
   fi
