@@ -17,7 +17,8 @@
  *    refuses its link in an alert naming the whole link, its fragment, the token, included, what a
  *    page that echoes its URL would show; or one whose "Create a passkey" makes a passkey on the
  *    browser's authenticator, signs the person in (`POST /__sign-in`, which sets this stand-in's
- *    cookie) and says "Signed in as …", or that misses one part of that.
+ *    cookie) and says "Signed in as …", or that misses one part of that. With `blocks`, a page
+ *    that signed the person in then holds its main thread (`Blocks`).
  *  - `GET /api/v1/projects` lists OWN, or answers `projects`'s status.
  *  - `POST /v1/oauth/device_authorization` and the device grant of `POST /v1/oauth/token` are a
  *    broker's device login on this origin (`broker`), approved once the machine-login page
@@ -81,6 +82,15 @@ export type MachinePage =
  *  refused; `elsewhere`, a page on another origin; `denies`, the poll answered `access_denied`. */
 export type DeviceBroker = "answers" | "refuses" | "elsewhere" | "denies";
 
+/** How a `signs-in` enrollment page holds its main thread once it has signed the person in, so
+ *  that no script of the page's, nor one the driver runs in it, runs again: `read`, its `fetch`
+ *  loops forever, so the driver's first read through the page (`GET /auth/whoami`) holds it;
+ *  `after-reads`, it loops once its second read (`GET /api/v1/projects`) has handed back its
+ *  answer, so the driver's save of the browser's state, which reads the page's storage through a
+ *  script in it, finds it held. The second hands its answer back as the driver's read takes it
+ *  (`status` and `text()`, its body already read), so the read ends before the loop starts. */
+export type Blocks = "read" | "after-reads";
+
 /** What one stand-in answers. */
 export interface OriginBehaviour {
   /** The answer of `POST /auth/passkey/login/finish`; absent, the page never posts it. With
@@ -99,8 +109,9 @@ export interface OriginBehaviour {
   /** The enrollment page; `refuses` where unset. */
   readonly enroll?: Enrollment;
   /** What `GET /auth/whoami` answers a cookie this stand-in set: its status, 200 with the person
-   *  where unset, or `silent`, no answer at all. */
-  readonly whoami?: number | "silent";
+   *  where unset; `silent`, no answer at all; or `stalled`, a 200 whose body starts and never
+   *  ends (`stalledJson`). */
+  readonly whoami?: number | "silent" | "stalled";
   /** The status `GET /api/v1/projects` answers; 200, listing OWN, where unset. */
   readonly projects?: number;
   /** The device login's broker; `answers` where unset. */
@@ -113,6 +124,8 @@ export interface OriginBehaviour {
   /** The token exchange: `silent`, never answered; a number, answered after that many
    *  milliseconds; answered at once where unset. */
   readonly exchange?: "silent" | number;
+  /** How a `signs-in` enrollment page holds its main thread once it signed the person in. */
+  readonly blocks?: Blocks;
 }
 
 export interface OriginStandIn {
@@ -151,6 +164,16 @@ const sayScript = `function say(text, role) {
  *  session's token. */
 const TOKEN_EXCHANGE = "urn:ietf:params:oauth:grant-type:token-exchange";
 
+/** An answer of `status` whose status and the start of its JSON body go out, so the browser has
+ *  its headers, and whose body never ends. */
+function stalledJson(status: number): Response {
+  const start = new TextEncoder().encode('{"error":');
+  return new Response(new ReadableStream({ start: (controller) => controller.enqueue(start) }), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
 function signInPage(finish: OriginBehaviour["finish"]): string {
   const click =
     finish === undefined
@@ -172,8 +195,9 @@ document.getElementById("sign-in").onclick = async () => {
 </script></main></body></html>`;
 }
 
-/** The enrollment page of `kind`; `elsewhere` is the origin an `elsewhere` sign-in lands on. */
-function enrollPage(kind: Enrollment, elsewhere: string): string {
+/** The enrollment page of `kind`; `elsewhere` is the origin an `elsewhere` sign-in lands on, and
+ *  `blocks` how a page that signed the person in then holds its main thread. */
+function enrollPage(kind: Enrollment, elsewhere: string, blocks: Blocks | undefined): string {
   if (kind === "refuses") {
     return `<!doctype html><html><body><main>
 <script>
@@ -209,6 +233,7 @@ say("This link is not one Dispatch made: " + location.href, "alert");
       return;
     }
     say("Signed in as " + ${JSON.stringify(standInPerson)});
+    ${blockScript(blocks)}
   } catch (error) {
     say("The passkey was not made: " + error, "alert");
   }`;
@@ -220,6 +245,23 @@ document.getElementById("create").onclick = async () => {
   ${click}
 };
 </script></main></body></html>`;
+}
+
+/** The script that holds a signed-in page's main thread as `blocks` says (`Blocks`). */
+function blockScript(blocks: Blocks | undefined): string {
+  if (blocks === "read") return "window.fetch = () => { for (;;) {} };";
+  if (blocks === "after-reads") {
+    return `const pageFetch = window.fetch;
+    let reads = 0;
+    window.fetch = async (...args) => {
+      const answer = await pageFetch(...args);
+      const text = await answer.text();
+      reads += 1;
+      if (reads === 2) setTimeout(() => { for (;;) {} }, 0);
+      return { status: answer.status, text: async () => text };
+    };`;
+  }
+  return "";
 }
 
 /** The machine-login page of `kind`. */
@@ -322,6 +364,7 @@ export function startOriginStandIn(behaviour: OriginBehaviour = {}): OriginStand
           return Response.json({ error: "no session" }, { status: 401 });
         }
         if (behaviour.whoami === "silent") return never();
+        if (behaviour.whoami === "stalled") return stalledJson(200);
         const status = behaviour.whoami ?? 200;
         return status === 200
           ? Response.json({ login: standInPerson })
@@ -331,9 +374,10 @@ export function startOriginStandIn(behaviour: OriginBehaviour = {}): OriginStand
         return new Response(signInPage(behaviour.finish), { headers: htmlHeaders });
       }
       if (request.method === "GET" && pathname === "/enroll") {
-        return new Response(enrollPage(behaviour.enroll ?? "refuses", elsewhere), {
-          headers: htmlHeaders,
-        });
+        return new Response(
+          enrollPage(behaviour.enroll ?? "refuses", elsewhere, behaviour.blocks),
+          { headers: htmlHeaders }
+        );
       }
       if (pathname === "/never") return never();
       if (request.method === "POST" && pathname === "/__sign-in") {
@@ -355,15 +399,7 @@ export function startOriginStandIn(behaviour: OriginBehaviour = {}): OriginStand
         const finish = behaviour.finish;
         if (finish === undefined) return new Response("not here", { status: 404 });
         if (finish.code === undefined) return new Response("refused", { status: finish.status });
-        if (finish.stallBody === true) {
-          // The status and the body's first bytes go out, so the browser has the answer's
-          // headers; the rest of the body never comes.
-          const start = new TextEncoder().encode('{"error":');
-          return new Response(
-            new ReadableStream({ start: (controller) => controller.enqueue(start) }),
-            { status: finish.status, headers: { "Content-Type": "application/json" } }
-          );
-        }
+        if (finish.stallBody === true) return stalledJson(finish.status);
         return Response.json(
           { error: `the stand-in answers ${finish.code}`, code: finish.code },
           { status: finish.status }

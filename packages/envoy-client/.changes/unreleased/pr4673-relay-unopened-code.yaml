@@ -10,10 +10,10 @@ body: |-
   broker answered with a status (a refused upgrade, a refused trade); a far end that sent bytes the
   runtime refused carries the runtime's code for them (`HPE_INVALID_CONSTANT`, `ECONNRESET`), so a
   caller reads `code` through an allowlist of its own. A call of `createEnvoyClient` that got no
-  whole answer carries its failure's `code` the same way, and one whose status came without its
-  body says so, naming that status. Neither keeps a cause, since the runtime's error repeats the
-  URL, so before this a caller could not tell a listener that answered nothing from one that
-  refused.
+  answer carries its failure's `code` the same way; one whose status came without its body says
+  so, naming that status, and carries no `code`, since the listener answered it. Neither keeps a
+  cause, since the runtime's error repeats the URL, so before this a caller could not tell a
+  listener that answered nothing from one that refused.
 time: 2026-11-22T06:30:20.014428172Z
 custom:
     Issue: pr4673

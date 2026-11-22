@@ -1771,8 +1771,9 @@ describe("EnvoyClient", () => {
   // A call that got no answer keeps no cause, since the runtime's error repeats the host it
   // dialed, so it carries the failure's code as its own: what tells a listener that answered
   // nothing from one that answered. The refused connection is the runtime's own, on the loopback,
-  // where no name is looked up; the deadline is the client's own `AbortSignal.timeout`.
-  test("a call that got no whole answer carries its failure's code, naming a status that came without its body, and one the listener answered none", async () => {
+  // where no name is looked up; the deadline is the client's own `AbortSignal.timeout`. A call
+  // whose status came and whose body did not was answered, with that status, so it carries none.
+  test("a call that got no answer carries its failure's code, and one whose status came without its body names that status and carries none", async () => {
     const codeOf = (error: unknown) =>
       error instanceof Error && "code" in error ? error.code : "no code at all";
     const refused = await createEnvoyClient({
@@ -1807,34 +1808,37 @@ describe("EnvoyClient", () => {
       "GET http://listener/v1/interests/ses_sender got no answer: TimeoutError (message withheld)"
     );
     expect(codeOf(timedOut)).toBe("ETIMEDOUT");
-    // A 200 whose status came and whose body stalled until the deadline: no whole answer, named
-    // with the status that came, and the deadline's code.
-    const stalled = (async (_input: RequestInfo | URL, init?: RequestInit) => {
-      const signal = init?.signal;
-      return new Response(
-        new ReadableStream<Uint8Array>({
-          start(controller) {
-            controller.enqueue(new TextEncoder().encode("{"));
-            signal?.addEventListener("abort", () => controller.error(signal.reason), {
-              once: true,
-            });
-          },
-        }),
-        { status: 200 }
+    // A status that came, 200 and 503, and a body that stalled until the deadline: no whole
+    // answer, named with the status that came, and no code, since the listener answered.
+    const stalled = (status: number) =>
+      (async (_input: RequestInfo | URL, init?: RequestInit) => {
+        const signal = init?.signal;
+        return new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode("{"));
+              signal?.addEventListener("abort", () => controller.error(signal.reason), {
+                once: true,
+              });
+            },
+          }),
+          { status }
+        );
+      }) as unknown as typeof fetch;
+    for (const status of [200, 503]) {
+      const unfinished = await createEnvoyClient({
+        baseUrl: "http://listener",
+        timeoutMs: 50,
+        retry: false,
+        fetch: stalled(status),
+      })
+        .getInterest("ses_sender")
+        .catch((error: unknown) => error);
+      expect((unfinished as Error).message).toBe(
+        `GET http://listener/v1/interests/ses_sender answered ${status}, and its body did not arrive: TimeoutError (message withheld)`
       );
-    }) as unknown as typeof fetch;
-    const unfinished = await createEnvoyClient({
-      baseUrl: "http://listener",
-      timeoutMs: 50,
-      retry: false,
-      fetch: stalled,
-    })
-      .getInterest("ses_sender")
-      .catch((error: unknown) => error);
-    expect((unfinished as Error).message).toBe(
-      "GET http://listener/v1/interests/ses_sender answered 200, and its body did not arrive: TimeoutError (message withheld)"
-    );
-    expect(codeOf(unfinished)).toBe("ETIMEDOUT");
+      expect(codeOf(unfinished), String(status)).toBe("no code at all");
+    }
     // A send that may have arrived keeps the last attempt's error as its cause, code and all.
     const unconfirmed = await createEnvoyClient({
       baseUrl: "http://listener",

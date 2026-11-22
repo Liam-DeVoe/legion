@@ -41,8 +41,9 @@
  *                 client keep of the failure), is UNKNOWN, and so is a session the listener took
  *                 that the driver could not keep in OUTSIDE_EDGE_STATE, an error of its own; an
  *                 answer short of the pong, a refused upgrade, trade or registration among them,
- *                 is FAIL, and so is a socket the listener opened and then dropped before its
- *                 flush was answered, since the listener did answer it. The peer's
+ *                 is FAIL, and so is a call whose status came and whose body did not (the
+ *                 listener answered it) and a socket the listener opened and then dropped
+ *                 before its flush was answered, since the listener did answer it. The peer's
  *                 `outside-e2e hello <nonce> …` that follows is
  *                 answered `outside-e2e reply <nonce> at <Unix ms>`, so the peer does not wait.
  *                 The session's unregister at the end is printed with its answer
@@ -56,7 +57,12 @@
  *  A step whose step before it failed is UNKNOWN, never run on nothing. Step 1 passes only where
  *  the passkey signed the person in at the link's origin, made one passkey, set a cookie there and
  *  named the person (`GET /auth/whoami`); a page or a read that gets no answer within 30 s is
- *  UNKNOWN, any other answer short of that FAIL.
+ *  UNKNOWN, and so is a page that holds its main thread past the driver's own bound on a read
+ *  through it (35 s) or on the save of the browser's state (30 s), naming what it held, since
+ *  Playwright waits on neither with a deadline of its own; any other answer short of that is
+ *  FAIL, a read whose status came and whose body did not among them, since the far end answered.
+ *  A page or a browser that closes while any step waits on it is UNKNOWN, the driver's own
+ *  failure, never a page that showed nothing.
  *
  *  Inputs, each refused by name, UNKNOWN and exit 2, when missing or malformed:
  *    OUTSIDE_INVITE_URL     the owner's enrollment link, https://<outside origin>/enroll#<token>.
@@ -90,9 +96,9 @@
  *  page, in the browser state `run` kept in OUTSIDE_EDGE_STATE, and records its credential, named
  *  on stderr first as `run` names it; it prints `APPROVED <code>` and exits 0, or
  *  `FAIL: <code> ...` (1) where the page answered short of an approval, or `UNKNOWN: <code> ...`
- *  (2) where the page did not load or could not be driven, each on one line, a line break of the
- *  page's text made a space. Another check that starts a device login of its own calls it with
- *  the code it was given.
+ *  (2) where the page did not load, could not be driven or closed while a step waited on it, each
+ *  on one line, a line break of the page's text made a space. Another check that starts a device
+ *  login of its own calls it with the code it was given.
  *
  *  `revoke` lists the person's machine logins (`GET /api/v1/machine-logins`) with the kept cookie
  *  and revokes each credential `approved.tsv` holds (`POST /api/v1/machine-logins/{id}/revoke`),
@@ -164,7 +170,9 @@
  *  or its file where the error names one, never exit 1, a FAIL. It prints no token, cookie or
  *  link, and no name of the machine it runs on: its output can be posted where anyone reads it.
  *  The link's token is withheld from every row even where a browser's error or a page's text
- *  names it, as an error of a page that did not load names the URL it was loading.
+ *  names it, as an error of a page that did not load names the URL it was loading. A browser that
+ *  does not close within 10 s, as one whose page holds its main thread, holds no verdict back:
+ *  the command goes on, naming it on stderr, and its processes are killed as the driver exits.
  */
 
 // First, before any module that takes `fetch` or `WebSocket`: importing it wraps both, and the
@@ -232,6 +240,16 @@ import {
 const DEVICE_HOST = deviceLoginHost("outside-edge-e2e");
 /** How long one page step waits for what it waits on. */
 const PAGE_MS = 30_000;
+/** How long the driver waits on a read the page's own script makes (`pageRead`): the read's own
+ *  deadline, PAGE_MS, which the script runs, and 5 s more for its answer to come back from the
+ *  page, so where the page's main thread is free the read's own deadline answers first. */
+const PAGE_SCRIPT_MS = PAGE_MS + 5_000;
+/** How long the driver waits for its browser to close. Chromium closes in a second or two, but
+ *  its close waits on a page whose main thread loops (the driver's own test measured such closes
+ *  of 75 s and more after the run's last row), and Playwright's close has no deadline: past this,
+ *  the driver goes on to its verdict without it, and Playwright's exit handler kills the
+ *  browser's processes (SIGKILL to their group) as the driver exits. */
+const CLOSE_MS = 10_000;
 /** How long the relay socket's first open may take at most, and a held socket's open again. */
 const OPEN_MS = 30_000;
 /** How long the device login's poll may wait for an approval at most, where
@@ -305,8 +323,8 @@ class Rows {
  *  client's request and trade (`BrokerTradeFailedError`, `TradeRetryingError`,
  *  `TradeUnansweredError`, ETIMEDOUT for one its deadline ended), the relay client's socket that
  *  did not open (`RelayNotOpenedError`, ETIMEDOUT for an upgrade, a trade or an open still
- *  unanswered at its bound) and the Envoy client's call that got no answer, or whose answer's
- *  body did not arrive. */
+ *  unanswered at its bound) and the Envoy client's call that got no answer. An Envoy call whose
+ *  status came and whose body did not keeps no code: the listener answered it. */
 const UNREACHED: Readonly<Record<string, true>> = {
   TimeoutError: true,
   ECONNREFUSED: true,
@@ -485,38 +503,80 @@ function countBrowser(context: BrowserContext): void {
   for (const page of context.pages()) sockets(page);
 }
 
-/** What a page's own JSON read got: its answer, or why none came. */
+/** What `within` answers for work whose time ran out first. */
+const TIME_UP = Symbol("time up");
+
+/** `work`'s value, or TIME_UP once `ms` passed first. Work that ends after that is let go: its
+ *  failure is caught here, and nothing reads its value. Each wait of the driver's that has no
+ *  deadline of its own (Playwright's `evaluate`, `storageState`, a browser's close and a
+ *  response's body have none) is bounded through it, so an edge that holds one never holds the
+ *  run with no verdict. */
+async function within<T>(work: Promise<T>, ms: number): Promise<T | typeof TIME_UP> {
+  work.catch(() => undefined);
+  const ended = Promise.withResolvers<typeof TIME_UP>();
+  const timer = setTimeout(() => ended.resolve(TIME_UP), Math.max(0, ms));
+  try {
+    return await Promise.race([work, ended.promise]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Closes `browser` within CLOSE_MS at most, naming on stderr one that did not close by then. */
+async function closeBrowser(browser: Browser | undefined): Promise<void> {
+  if (browser === undefined) return;
+  if ((await within(browser.close(), CLOSE_MS)) === TIME_UP) {
+    log(
+      `the browser did not close within ${CLOSE_MS / 1000} s; its processes are killed as the driver exits`
+    );
+  }
+}
+
+/** What a page's own JSON read got: its answer, its status alone where its body did not come
+ *  (`cut`, why), or why no answer came. */
 type PageAnswer =
-  | { readonly status: number; readonly body: unknown }
+  | { readonly status: number; readonly body: unknown; readonly cut?: string }
   | { readonly unanswered: string };
 
 /** A JSON read the page's own script makes, from its origin with its cookie, so the browser
  *  counts it as it counts the page's other requests. It waits PAGE_MS at most: a read that got no
- *  answer by then, or none at all, is `unanswered`, with why. */
+ *  answer by then, or none at all, is `unanswered`, with why; one whose status came and whose
+ *  body did not is that status, the far end's answer, with `cut` saying why the body did not
+ *  come. The page's script runs the read and that deadline, so a page that holds its main thread
+ *  (a script that loops, or a `fetch` it replaced that never returns) runs neither, and
+ *  Playwright's `evaluate` has no deadline of its own: the driver waits PAGE_SCRIPT_MS for the
+ *  script at most, and a read the script held past that is `unanswered` too, naming the script. */
 async function pageRead(page: Page, path: string): Promise<PageAnswer> {
-  return page.evaluate(
-    async ({ at, ms }) => {
-      try {
-        const response = await fetch(at, {
-          headers: { Accept: "application/json" },
-          signal: AbortSignal.timeout(ms),
-        });
-        const text = await response.text();
-        let body: unknown = text;
+  const read = await within(
+    page.evaluate(
+      async ({ at, ms }) => {
+        let status: number | undefined;
         try {
-          body = JSON.parse(text);
-        } catch {
-          // Not JSON: the text itself is what a refusal says.
+          const response = await fetch(at, {
+            headers: { Accept: "application/json" },
+            signal: AbortSignal.timeout(ms),
+          });
+          status = response.status;
+          const text = await response.text();
+          let body: unknown = text;
+          try {
+            body = JSON.parse(text);
+          } catch {
+            // Not JSON: the text itself is what a refusal says.
+          }
+          return { status, body };
+        } catch (error) {
+          const why = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+          return status === undefined ? { unanswered: why } : { status, body: undefined, cut: why };
         }
-        return { status: response.status, body };
-      } catch (error) {
-        return {
-          unanswered: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
-        };
-      }
-    },
-    { at: path, ms: PAGE_MS }
+      },
+      { at: path, ms: PAGE_MS }
+    ),
+    PAGE_SCRIPT_MS
   );
+  return read === TIME_UP
+    ? { unanswered: `the page's script held the read past ${PAGE_SCRIPT_MS / 1000} s` }
+    : read;
 }
 
 /** What the machine-login page answered one code. */
@@ -528,8 +588,8 @@ type Approval =
  * Approves `code` on `origin`'s machine-login page as the browser's signed-in person: it types the
  * code, looks it up, presses Approve, and reads the credential the page then names. A page that
  * did not load is unread, and so is one the driver could not drive (a box that takes no typing, a
- * button that cannot be pressed); one that loaded and did not approve is a refusal, with what it
- * said.
+ * button that cannot be pressed) and one that closed, or whose browser ended, while a step waited
+ * on it (`PageGone`); one that loaded and did not approve is a refusal, with what it said.
  */
 async function approveOnPage(page: Page, origin: string, code: string): Promise<Approval> {
   try {
@@ -548,40 +608,56 @@ async function approveOnPage(page: Page, origin: string, code: string): Promise<
  *  catch, `approveOnPage`'s, `t5`'s). */
 class PageGone extends Error {}
 
+/** `step`, a wait of the driver's on `page`, where a page or a browser that closes first throws
+ *  `PageGone` at once, and so does a step that failed once either had closed: a closed page's
+ *  locators fail as those of a page that showed nothing, and a step that read that as the page's
+ *  answer would judge the edge on the driver's own instrument gone. Any other failure of `step`
+ *  is thrown as it came. `what` names what the step read, for `PageGone`'s text. */
+async function whilePageOpen<T>(page: Page, what: string, step: () => Promise<T>): Promise<T> {
+  const browser = page.context().browser();
+  const pageClosed = () => new PageGone(`the page closed while the driver read ${what}`);
+  const browserEnded = () => new PageGone(`the browser ended while the driver read ${what}`);
+  const gone = Promise.withResolvers<never>();
+  const onClose = () => gone.reject(pageClosed());
+  const onDisconnect = () => gone.reject(browserEnded());
+  page.once("close", onClose);
+  browser?.once("disconnected", onDisconnect);
+  const stepped = step();
+  // A step a closed page ended goes on until its own time, and nothing reads its end.
+  stepped.catch(() => undefined);
+  try {
+    return await Promise.race([stepped, gone.promise]);
+  } catch (error) {
+    if (error instanceof PageGone) throw error;
+    // The step has ended: a browser gone by now is the driver's failure, not the page's.
+    if (browser?.isConnected() === false) throw browserEnded();
+    // Likewise a page closed by now: no later read of it would show anything.
+    if (page.isClosed()) throw pageClosed();
+    throw error;
+  } finally {
+    page.off("close", onClose);
+    browser?.off("disconnected", onDisconnect);
+  }
+}
+
 /** Which of `states` the page settled on within `ms` (`settledState` of `e2e/settled.ts`, which
  *  reads them again until one shows, the first that does winning), or undefined where none showed
  *  by then: a page step branches on what the page settled on, never on one instant's answer. A
- *  page or a browser that closed first throws `PageGone` at once: the poll would read its closed
- *  locators as failed reads until its time ran out, and so as a page that showed none of them. */
+ *  page or a browser that closed first throws `PageGone` at once (`whilePageOpen`): the poll would
+ *  read its closed locators as failed reads until its time ran out, and so as a page that showed
+ *  none of them. */
 async function settledWithin<Name extends string>(
   what: string,
   states: readonly (readonly [Name, Locator])[],
   ms: number
 ): Promise<Name | undefined> {
   const page = states[0]?.[1].page();
-  const browser = page?.context().browser();
-  const pageClosed = () => new PageGone(`the page closed while the driver read ${what}`);
-  const browserEnded = () => new PageGone(`the browser ended while the driver read ${what}`);
-  const gone = Promise.withResolvers<never>();
-  const onClose = () => gone.reject(pageClosed());
-  const onDisconnect = () => gone.reject(browserEnded());
-  page?.once("close", onClose);
-  browser?.once("disconnected", onDisconnect);
-  const settled = settledState(what, states, ms);
-  // The poll a closed page ended goes on until its time, and nothing reads its end.
-  settled.catch(() => undefined);
+  if (page === undefined) return undefined;
   try {
-    return await Promise.race([settled, gone.promise]);
+    return await whilePageOpen(page, what, () => settledState(what, states, ms));
   } catch (error) {
     if (error instanceof PageGone) throw error;
-    // The poll has ended: a browser gone by now is the driver's failure, not the page's.
-    if (browser?.isConnected() === false) throw browserEnded();
-    // Likewise a page closed by now: no later read of it would show a state.
-    if (page?.isClosed() === true) throw pageClosed();
     return undefined;
-  } finally {
-    page?.off("close", onClose);
-    browser?.off("disconnected", onDisconnect);
   }
 }
 
@@ -593,8 +669,11 @@ async function approveSteps(page: Page, origin: string, code: string): Promise<A
   }
   const box = page.getByLabel("Code shown on the machine");
   try {
-    await box.waitFor({ timeout: PAGE_MS });
-  } catch {
+    await whilePageOpen(page, "the machine-login page's code box", () =>
+      box.waitFor({ timeout: PAGE_MS })
+    );
+  } catch (error) {
+    if (error instanceof PageGone) throw error;
     return { refused: "the machine-login page shows no code box", unread: false };
   }
   await box.fill(code, { timeout: PAGE_MS });
@@ -636,11 +715,23 @@ async function approveSteps(page: Page, origin: string, code: string): Promise<A
       unread: false,
     };
   }
-  const named = await page
-    .getByText(/^Credential \S+$/)
-    .first()
-    .innerText()
-    .catch(() => "");
+  // A page still open that names no credential within PAGE_MS approved and named none, a FAIL; one
+  // that closed meanwhile is `PageGone`, the driver's own failure, whose text says the page had
+  // said Approved, so a person knows the credential may be live.
+  let named = "";
+  try {
+    named = await whilePageOpen(
+      page,
+      "the credential the machine-login page named once it said Approved",
+      () =>
+        page
+          .getByText(/^Credential \S+$/)
+          .first()
+          .innerText({ timeout: PAGE_MS })
+    );
+  } catch (error) {
+    if (error instanceof PageGone) throw error;
+  }
   const credential = /^Credential (\S+)$/.exec(named.trim())?.[1];
   if (credential === undefined) {
     return { refused: "the page approved the code and named no credential", unread: false };
@@ -771,7 +862,10 @@ async function signIn(page: Page, context: BrowserContext, inputs: RunInputs, ro
     rows.add({
       row: "sign-in",
       want,
-      got: `GET /auth/whoami answered ${whoami.status} with no login`,
+      got:
+        whoami.cut === undefined
+          ? `GET /auth/whoami answered ${whoami.status} with no login`
+          : `GET /auth/whoami answered ${whoami.status}, and its body did not come (${whoami.cut}), so it named no login`,
       verdict: "FAIL",
     });
     return undefined;
@@ -816,7 +910,10 @@ async function signIn(page: Page, context: BrowserContext, inputs: RunInputs, ro
     rows.add({
       row: "projects",
       want: wantProjects,
-      got: `answered ${projects.status}, no list`,
+      got:
+        projects.cut === undefined
+          ? `answered ${projects.status}, no list`
+          : `answered ${projects.status}, and its body did not come (${projects.cut}), so no list`,
       verdict: "FAIL",
     });
   } else {
@@ -834,9 +931,18 @@ async function signIn(page: Page, context: BrowserContext, inputs: RunInputs, ro
     });
   }
 
-  // What `approve`, `revoke` and a later step read, each this run's own and mode 0600.
-  await context.storageState({ path: join(inputs.state, "browser.json") });
-  chmodSync(join(inputs.state, "browser.json"), 0o600);
+  // What `approve`, `revoke` and a later step read, each this run's own and mode 0600. Playwright
+  // saves the browser's state with no deadline of its own, reading the page's storage through a
+  // script in the page, which a page that holds its main thread never runs: the save is waited on
+  // for PAGE_MS at most, and one still waiting then stops the run, naming it. The state is written
+  // here, not by Playwright, so a save that ends after the run gave up on it writes nothing.
+  const saved = await within(context.storageState(), PAGE_MS);
+  if (saved === TIME_UP) {
+    throw new Error(
+      `the save of the browser's signed-in state did not end within ${PAGE_MS / 1000} s, so the run kept none`
+    );
+  }
+  keep(inputs.state, "browser.json", JSON.stringify(saved));
   keep(inputs.state, "cookie", cookie);
   keep(inputs.state, "person", login);
   keep(inputs.state, "origin", inputs.origin);
@@ -1452,7 +1558,7 @@ async function run(env: NodeJS.ProcessEnv): Promise<number> {
       verdict: "UNKNOWN",
     });
   } finally {
-    await browser?.close();
+    await closeBrowser(browser);
   }
   const judged = judgeLimits(inputs.limits, counted, cut);
   for (const { host, perMinute } of judged.hostPeaks) {
@@ -1489,7 +1595,7 @@ async function approve(env: NodeJS.ProcessEnv, code: string | undefined): Promis
   } catch (error) {
     approval = { refused: `the browser could not be driven: ${messageOf(error)}`, unread: true };
   } finally {
-    await browser?.close();
+    await closeBrowser(browser);
   }
   if ("credential" in approval) {
     recordApproval(state, code, approval.credential);
@@ -1709,10 +1815,10 @@ const PASSKEY_REFUSED: Readonly<Record<string, number>> = {
  * credential. Two rows go to OUTSIDE_T5_TSV and to stdout, each `got` naming `at=<Unix seconds>`:
  * `T5-cookie`, PASS on the 401 and UNKNOWN when the deadline came first; and `T5-passkey`, PASS
  * only when `POST /auth/passkey/login/finish` answered one of PASSKEY_REFUSED, FAIL when the
- * page signed the person in again or that request answered 2xx, and UNKNOWN otherwise: not tried,
- * an alert with no answer to that request, an answer whose body did not come in before the
- * window's end (every wait of the sign-in, that read among them, ends 2 s before the deadline),
- * or any other answer.
+ * page signed the person in again or that request answered 2xx, whether or not its body came,
+ * and UNKNOWN otherwise: not tried, an alert with no answer to that request, any other answer
+ * whose body did not come in before the window's end (every wait of the sign-in, that read among
+ * them, ends 2 s before the deadline), or any other answer.
  */
 async function t5(env: NodeJS.ProcessEnv): Promise<number> {
   const tsv = (env.OUTSIDE_T5_TSV ?? "").trim();
@@ -1837,20 +1943,14 @@ async function t5(env: NodeJS.ProcessEnv): Promise<number> {
     // holds the body back would hold the run past the deadline with no row written.
     const last = finishes.at(-1);
     const rest = Math.max(0, left());
-    const timeUp = Symbol("the window's end");
-    const ended = Promise.withResolvers<typeof timeUp>();
-    const timer = setTimeout(() => ended.resolve(timeUp), rest);
     const code =
-      last === undefined || shown === "signed-in"
-        ? undefined
-        : await Promise.race([last.code, ended.promise]);
-    clearTimeout(timer);
-    const answer =
-      last === undefined || code === timeUp ? undefined : { status: last.status, code };
+      last === undefined || shown === "signed-in" ? undefined : await within(last.code, rest);
+    const late = code === TIME_UP;
     const answered =
-      answer === undefined
+      last === undefined
         ? ""
-        : `POST ${PASSKEY_FINISH} answered ${answer.status} ${typeof answer.code === "string" ? answer.code : "with no code"}`;
+        : `POST ${PASSKEY_FINISH} answered ${last.status}${late ? "" : ` ${typeof code === "string" ? code : "with no code"}`}`;
+    const bodyLate = `its body did not come in the ${Math.round(rest / 1000)} s left before the deadline`;
     if (shown === "signed-in") {
       rows.add({
         row: "T5-passkey",
@@ -1858,11 +1958,24 @@ async function t5(env: NodeJS.ProcessEnv): Promise<number> {
         got: `the passkey signed the person in again at=${at}, after the cookie's 401`,
         verdict: "FAIL",
       });
-    } else if (last !== undefined && code === timeUp) {
+    } else if (last !== undefined && last.status >= 200 && last.status < 300) {
+      // A 2xx is a sign-in whatever its body or the page says next: its status is the answer,
+      // and it came, so a body held back proves nothing more.
+      const said =
+        shown === "refused"
+          ? `; the page said: ${(await alert.innerText({ timeout: bound() })).trim()}`
+          : "";
       rows.add({
         row: "T5-passkey",
         want: wantPasskey,
-        got: `POST ${PASSKEY_FINISH} answered ${last.status} at=${at}, and its body did not come in the ${Math.round(rest / 1000)} s left before the deadline, so no refusal of the passkey was read`,
+        got: `${answered} at=${at}, a sign-in after the cookie's 401${late ? `, though ${bodyLate}` : ""}${said}`,
+        verdict: "FAIL",
+      });
+    } else if (late) {
+      rows.add({
+        row: "T5-passkey",
+        want: wantPasskey,
+        got: `${answered} at=${at}, and ${bodyLate}, so no refusal of the passkey was read`,
         verdict: "UNKNOWN",
       });
     } else if (shown === undefined) {
@@ -1874,24 +1987,17 @@ async function t5(env: NodeJS.ProcessEnv): Promise<number> {
       });
     } else {
       const said = (await alert.innerText({ timeout: bound() })).trim();
-      if (answer === undefined) {
+      if (last === undefined) {
         rows.add({
           row: "T5-passkey",
           want: wantPasskey,
           got: `no answer to POST ${PASSKEY_FINISH} at=${at}, so no refusal of the passkey was read; the page said: ${said}`,
           verdict: "UNKNOWN",
         });
-      } else if (answer.status >= 200 && answer.status < 300) {
-        rows.add({
-          row: "T5-passkey",
-          want: wantPasskey,
-          got: `${answered} at=${at}, a sign-in after the cookie's 401; the page said: ${said}`,
-          verdict: "FAIL",
-        });
       } else if (
-        typeof answer.code === "string" &&
-        Object.hasOwn(PASSKEY_REFUSED, answer.code) &&
-        PASSKEY_REFUSED[answer.code] === answer.status
+        typeof code === "string" &&
+        Object.hasOwn(PASSKEY_REFUSED, code) &&
+        PASSKEY_REFUSED[code] === last.status
       ) {
         rows.add({
           row: "T5-passkey",
@@ -1916,7 +2022,7 @@ async function t5(env: NodeJS.ProcessEnv): Promise<number> {
       verdict: "UNKNOWN",
     });
   } finally {
-    await browser?.close();
+    await closeBrowser(browser);
   }
   return rows.finish();
 }

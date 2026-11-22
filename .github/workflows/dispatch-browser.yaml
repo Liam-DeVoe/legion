@@ -282,9 +282,9 @@ jobs:
     if: inputs.lane == 'full'
     runs-on: ubuntu-24.04
     # why: .github/ci-notes/dispatch-browser.md#the-two-process-jobs-measured-steps-and-its-budgets
-    # 4 + 4 + 2 + 2 + 2 + 18 min plus 135 s and 120 s = 36 min 15 s -> 37 min: the outside
-    # sign-in step's 2 min and the outside driver's step's 18.
-    timeout-minutes: 37
+    # 4 + 4 + 2 + 2 + 2 + 20 min plus 135 s and 120 s = 38 min 15 s -> 39 min: the outside
+    # sign-in step's 2 min and the outside driver's step's 20.
+    timeout-minutes: 39
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -360,10 +360,10 @@ jobs:
         working-directory: packages/dispatch
       - name: Drive the outside driver through a stand-in edge
         # why: .github/ci-notes/dispatch-browser.md#what-the-outside-drivers-step-runs-and-its-budget
-        # The stack row's own limit, 780 s, and the file's other rows, about 214 s (149.2 s in the
-        # full lane's run 45008694182 and about 65 s of rows added since) -> 17 min, and one more,
+        # The stack row's own limit, 780 s, and the file's other rows, about 330 s (149.2 s in the
+        # full lane's run 45008694182 and about 181 s of rows added since) -> 19 min, and one more,
         # so a stuck stack fails by its name.
-        timeout-minutes: 18
+        timeout-minutes: 20
         run: |
           export DISPATCH_E2E_PG_IMAGE=ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
           export DISPATCH_E2E_PG_CONNECTIONS=${{ steps.connections.outputs.connections }}

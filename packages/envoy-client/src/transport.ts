@@ -986,11 +986,12 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
 
   /** A call that got no whole answer, as our own error: the runtime's own error repeats the host
    *  it dialed, which an unclean base names (`https://user:p@ssword` dials `ssword`), so it is
-   *  named by its class and kept as no cause. Where the answer's status came and its body did not
-   *  (`status`), the error says so: the far end began an answer it did not finish. Its `code` is
-   *  the failure's (`failureCode`: ECONNREFUSED, ENOTFOUND, ECONNRESET, ETIMEDOUT for the
-   *  attempt's deadline, …), where it has one, so a caller tells a listener that gave no whole
-   *  answer from one that answered. */
+   *  named by its class and kept as no cause. Where no answer came at all, its `code` is the
+   *  failure's (`failureCode`: ECONNREFUSED, ENOTFOUND, ECONNRESET, ETIMEDOUT for the attempt's
+   *  deadline, …), where it has one, so a caller tells a listener that gave no answer from one
+   *  that answered. Where the answer's status came and its body did not (`status`), the error says
+   *  so and keeps no code: the far end answered, with that status, and began an answer it did not
+   *  finish, which is no listener that answered nothing. */
   const noAnswer = (
     method: string | undefined,
     url: string,
@@ -1002,7 +1003,7 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
         ? `${method ?? "GET"} ${shown(url)} got no answer: ${errorClass(error)}`
         : `${method ?? "GET"} ${shown(url)} answered ${status}, and its body did not arrive: ${errorClass(error)}`
     );
-    const code = failureCode(error);
+    const code = status === undefined ? failureCode(error) : undefined;
     return code === undefined ? failed : Object.assign(failed, { code });
   };
 

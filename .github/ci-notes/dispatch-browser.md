@@ -769,12 +769,12 @@ counts its pull of the same digest at (the time a browser step spent before its 
 first output on the run that found the need; the pull took 13 s in run 44480885813), and the
 connections read, which takes the two-minute floor until runs of it are measured. 4 + 4 +
 2 + 2 min plus 135 s and 120 s = 16 min 15 s -> 17 min, and the outside driver's step adds its
-18 min (its own section below): 34 min 15 s -> 35 min. The dashboard step now also starts
+20 min (its own section below): 36 min 15 s -> 37 min. The dashboard step now also starts
 the stack's container and builds the stall library, and its four runs since took 118 s,
 114 s, 96 s and 106 s (runs 44480885813, 44501665975, 44528268121 and 44549420195), inside
 the 202 s its 4 min derives from. The Google sign-in step adds its own two minutes
 (.github/ci-notes/dispatch-browser.md#what-the-google-sign-in-step-runs gives its measurement):
-34 min 15 s + 2 min = 36 min 15 s -> 37 min. With budgets on the steps, the
+36 min 15 s + 2 min = 38 min 15 s -> 39 min. With budgets on the steps, the
 `if: failure()` upload of `dispatch-browser-multiprocess-test-results-${{ github.run_attempt }}` still runs, which a cancelled job skips.
 
 The move into this workflow changed none of that: the job runs the same steps on the same
@@ -920,10 +920,14 @@ after another beside that row. The full lane at e775e0d892 measured them: run 45
 answer holds its body back, the device login's deadline row, a refused registration naming a
 no-answer code, an approved code the driver cannot record, a browser that ends mid-wait, a second
 `approve` case) took about 65 s more, measured alone on a developer box at a load average of
-about 1100 on 2026-11-22 (72.92 s for those rows and the two they sit beside): about 214 s in
-all. The longest control row's own limit is 200 s (a short wait, four page waits at once and
-30 s), less than the stack's 780 s. 780 s and 214 s -> 17 min, and one more for the step's own
-start: 18 min.
+about 1100 on 2026-11-22 (72.92 s for those rows and the two they sit beside). The rows added
+after them took about 116 s more on the same box at a load average of about 1500: a `t5` 2xx
+whose body never comes 26.9 s, a registration's status whose body never comes 17.0 s, a browser
+that ends at the code box or the credential 10.6 s, and a page that holds its main thread
+61.2 s (a stalled read beside the sign-in's waits runs at once with them, and adds none): about
+330 s in all. The longest control row's own limit is 260 s (a short wait, two page waits at
+once, a short wait and 30 s), less than the stack's 780 s. 780 s and 330 s -> 19 min, and one
+more for the step's own start: 20 min.
 It costs nothing on a green run, which ends in the minutes its readings take.
 
 ## Why the two-process job's upload runs on failure alone

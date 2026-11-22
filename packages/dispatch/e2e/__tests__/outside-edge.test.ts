@@ -11,27 +11,31 @@
  *  - `t5`'s passkey row is PASS only on the sign-in's own refusal of the passkey, 401
  *    PASSKEY_UNKNOWN or 403 NOT_LISTED from `POST /auth/passkey/login/finish`; an alert with no
  *    answer ("Dispatch could not be reached"), a 404, a 429, any other code (a 403 among them) is
- *    UNKNOWN, and a 2xx is FAIL; an answer that sends its status and holds its body back is
- *    UNKNOWN, written before the deadline;
+ *    UNKNOWN, and a 2xx is FAIL, also one that holds its body back; any other answer that sends
+ *    its status and holds its body back is UNKNOWN, written before the deadline;
  *  - `revoke` passes a credential only when the list, read again, no longer holds it, and a list
  *    that gives no answer, before the revoke or after it, is UNKNOWN;
  *  - step 1 after its page loaded is FAIL or UNKNOWN, never PASS, for each way a sign-in falls
  *    short: no Create button, no sign-in, a refusal, no passkey, a landing on another origin, no
- *    cookie, no person, a page or a read with no answer; and a project list that is no answer
- *    fails `projects`; a browser that ends while a page step waits is UNKNOWN, the driver's own
- *    failure;
+ *    cookie, no person, a page or a read with no answer; and a read whose status came and whose
+ *    body never does is FAIL, and a project list that is no answer fails `projects`; a browser
+ *    that ends while a page step waits is UNKNOWN, the driver's own failure; and a page that
+ *    holds its main thread while the driver reads through it or saves the browser's state is
+ *    UNKNOWN at the driver's own bound, naming what it held;
  *  - step 2 is FAIL or UNKNOWN for each way a device login falls short: no broker, a broker that
  *    takes the connection and never answers, a broker name that does not resolve, a broker that
  *    answers no poll by the deadline, or answers and then falls silent (each UNKNOWN), a refusal,
  *    a page on another origin, no code box, a box that takes no typing, no answer to the look-up,
  *    a refused code or approval, no approval shown, no credential named, a denied poll, a poll
- *    answered pending to the deadline; and `approve` reads a page it cannot drive UNKNOWN, exit 2,
- *    and prints a refusal whose text holds a line break on one line;
+ *    answered pending to the deadline; a browser that ends while the code box or the credential
+ *    is awaited is UNKNOWN; and `approve` reads a page it cannot drive UNKNOWN, exit 2, and prints
+ *    a refusal whose text holds a line break on one line;
  *  - step 3, after a device login that passed, is UNKNOWN, never FAIL, for each far end that gave
  *    no answer: a listener that refused the socket's connection, a trade for the session's token
  *    the broker never answered, and a listener that never answered an upgrade still waiting at the
  *    driver's 30 s; and a listener's refusal of the registration is FAIL even where its body
- *    names a code of a request that got no answer;
+ *    names a code of a request that got no answer, and so is a registration answered with a
+ *    status whose body never comes, 503 or 200;
  *  - an error of the driver's own in a step, a device login or a session the listener took that
  *    it cannot keep in OUTSIDE_EDGE_STATE, is UNKNOWN, exit 2, never FAIL, and leaves no copy of
  *    the login in the state; an approved code it cannot record is named on stderr first, and
@@ -40,8 +44,8 @@
  *  - the link's token reaches no row, stdout, stderr, TSV or state file, also where the page did
  *    not load or names the link itself;
  *  - the request counter sees the relay socket the driver's relay client opens.
- *  The rows that wait out one of the driver's own bounds of real time skip under
- *  DISPATCH_UNIT_REPEAT (`realTimeRow`, `realTimeBrowserRow`), as the hold's do.
+ *  The rows that wait out one of the driver's own bounds of real time, or a fixed wait inside
+ *  one, skip under DISPATCH_UNIT_REPEAT (`realTimeRow`, `realTimeBrowserRow`), as the hold's do.
  *  A row reads the fake broker's revoke of a machine login (`e2e/fake-broker.ts`), which the
  *  stack's Dispatch relays the driver's revoke to: 403 NOT_APPROVER for another person's, 404 for
  *  no login, 200 for the person's own, as the broker answers.
@@ -210,6 +214,41 @@ function descendantsOf(root: number): ProcessLine[] {
   return descendants;
 }
 
+/** The Chromium processes of the driver run whose OUTSIDE_EDGE_STATE is `state`. */
+function browserOf(state: string): ProcessLine[] {
+  const driverProcess = holdersOf(`OUTSIDE_EDGE_STATE=${state}`).find((one) =>
+    one.command.includes("outside-edge.ts")
+  );
+  if (driverProcess === undefined) throw new Error("no driver process holds the row's state");
+  return descendantsOf(driverProcess.pid).filter((one) =>
+    /chrom|headless_shell/i.test(one.command)
+  );
+}
+
+/** Ends, by SIGKILL, every Chromium process of the driver run whose OUTSIDE_EDGE_STATE is
+ *  `state`, as a browser that crashed ends; answers how many it found running. */
+function endBrowserOf(state: string): number {
+  const browser = browserOf(state);
+  for (const one of browser) {
+    try {
+      process.kill(one.pid, "SIGKILL");
+    } catch {
+      // It ended since the read, with the browser's other processes.
+    }
+  }
+  return browser.length;
+}
+
+/** Whether process `pid` runs: listed in /proc, and no zombie. */
+function running(pid: number): boolean {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    return stat.slice(stat.lastIndexOf(")") + 2).split(" ")[0] !== "Z";
+  } catch {
+    return false;
+  }
+}
+
 describe("the inputs", () => {
   const scratch = mkdtempSync(join(tmpdir(), "outside-edge-inputs-"));
   afterAll(() => rmSync(scratch, { force: true, recursive: true }));
@@ -368,10 +407,11 @@ if (!chromiumHere) {
   );
 }
 /** Under DISPATCH_UNIT_REPEAT, which `bun run test:repeat` sets (`e2e/tools/unit-repeat.ts`), the
- *  rows that wait out one of the driver's own bounds of real time skip, as the hold's real-time
- *  rows do (`outside-edge-hold.test.ts`'s head): the repeat lane runs this directory twenty times
- *  over, and those waits would spend minutes of it each run, finding no fault a single run does
- *  not. Each runs once a run wherever the rest of this file runs. */
+ *  rows that wait out one of the driver's own bounds of real time, or a fixed wait inside one,
+ *  skip, as the hold's real-time rows do (`outside-edge-hold.test.ts`'s head): the repeat lane
+ *  runs this directory twenty times over, and those waits would spend minutes of it each run,
+ *  finding no fault a single run does not. Each runs once a run wherever the rest of this file
+ *  runs. */
 const repeated = process.env.DISPATCH_UNIT_REPEAT === "1";
 const realTimeRow = repeated ? test.skip : test;
 const realTimeBrowserRow = repeated || !chromiumHere ? test.skip : test;
@@ -800,6 +840,50 @@ describe("the controls, against an outside origin stand-in", () => {
     rowLimit("outsideEdgePageWait")
   );
 
+  realTimeBrowserRow(
+    "t5 reads FAIL before its deadline where the sign-in's last answer is a 2xx that holds its body back",
+    async () => {
+      // A 2xx is a sign-in whatever its body would name: its status comes, and its body never
+      // does, nor the stand-in page's alert, which waits on it. The deadline is 25 s off, so the
+      // run ends by then with the row written, and the verdict is the status's.
+      const origin = startOriginStandIn({
+        finish: { status: 200, code: "SIGNED_IN", stallBody: true },
+      });
+      try {
+        const tsv = join(scratch, "t5-stalled-2xx.tsv");
+        const deadline = Math.floor(Date.now() / 1000) + 25;
+        const run = await drive(
+          ["t5"],
+          {
+            DISPATCH_E2E_CASE: "t5-stalled-2xx",
+            OUTSIDE_EDGE_STATE: stateWith({
+              origin: origin.url,
+              cookie: "dsession=stand-in",
+              "passkey.json": passkeyRecord(),
+            }),
+            OUTSIDE_T5_DEADLINE: String(deadline),
+            OUTSIDE_T5_TSV: tsv,
+          },
+          "outsideEdgePageWait"
+        );
+        const endedAt = Date.now() / 1000;
+        const passkey = rowsOf({ ...run, stdout: readFileSync(tsv, "utf8") }).get("T5-passkey");
+        const got =
+          /^POST \/auth\/passkey\/login\/finish answered 200 at=([0-9]{10}), a sign-in after the cookie's 401, though its body did not come in the [0-9]+ s left before the deadline$/.exec(
+            passkey?.got ?? ""
+          );
+        expect(got, run.stdout).not.toBeNull();
+        expect(passkey?.verdict).toBe("FAIL");
+        expect(Number(got?.[1])).toBeLessThanOrEqual(deadline);
+        expect(endedAt).toBeLessThan(deadline + 10);
+        expect(run.code).toBe(1);
+      } finally {
+        origin.stop();
+      }
+    },
+    rowLimit("outsideEdgePageWait")
+  );
+
   browserRow(
     "the link's token reaches no row, output or state file, where the page did not load or names the link",
     async () => {
@@ -973,13 +1057,15 @@ describe("the controls, against an outside origin stand-in", () => {
   );
 
   realTimeBrowserRow(
-    "the sign-in step that waits out its bound: no Create button or no sign-in is FAIL, a page or read with no end is UNKNOWN; Chromium holds none of the driver's inputs",
+    "the sign-in step that waits out its bound: no Create button or no sign-in is FAIL, a page or read with no end is UNKNOWN, a read whose status came and whose body never does is FAIL; Chromium holds none of the driver's inputs",
     async () => {
       const cases = [
         ["sign-in-no-button", { enroll: "no-button" }],
         ["sign-in-never-loads", { enroll: "never-loads" }],
         ["sign-in-no-sign-in", { enroll: "no-sign-in" }],
         ["sign-in-whoami-silent", { enroll: "signs-in", whoami: "silent" }],
+        // The status came, so the far end answered, and its body never does.
+        ["sign-in-whoami-stalled", { enroll: "signs-in", whoami: "stalled" }],
       ] as const;
       const started = cases.map(([name, behaviour]) => ({
         name,
@@ -1019,6 +1105,10 @@ describe("the controls, against an outside origin stand-in", () => {
           ],
           "sign-in-no-sign-in": [/^the passkey enrolled no sign-in within 30 s$/, "FAIL"],
           "sign-in-whoami-silent": [/^GET \/auth\/whoami got no answer: TimeoutError/, "UNKNOWN"],
+          "sign-in-whoami-stalled": [
+            /^GET \/auth\/whoami answered 200, and its body did not come \(TimeoutError: [^)]*\), so it named no login$/,
+            "FAIL",
+          ],
         };
         for (const one of ran) {
           const [got, verdict] = wants[one.name] ?? [/^$/, ""];
@@ -1034,6 +1124,7 @@ describe("the controls, against an outside origin stand-in", () => {
     },
     rowLimit("short", {
       atOnce: [
+        "outsideEdgePageWait",
         "outsideEdgePageWait",
         "outsideEdgePageWait",
         "outsideEdgePageWait",
@@ -1539,7 +1630,61 @@ describe("the controls, against an outside origin stand-in", () => {
     rowLimit("outsideEdgeBrowser")
   );
 
-  browserRow(
+  realTimeBrowserRow(
+    "the relay step reads a registration answered with a status whose body never comes as FAIL, a 503 or a 200: the listener answered",
+    async () => {
+      // The listener sends the registration's status and the start of its body, and never the
+      // rest. The Envoy client waits out its deadline for the body on each attempt and names the
+      // status that came, with no code of a request that got no answer: the status is the
+      // listener's answer. So the step proved something, a FAIL: for a refusal (503), and for a
+      // 200 whose registration the session never got to read, an answer short of the pong.
+      const stalled = (status: number) =>
+        new Response(
+          new ReadableStream({
+            start: (controller) => controller.enqueue(new TextEncoder().encode('{"error":')),
+          }),
+          { status, headers: { "Content-Type": "application/json" } }
+        );
+      const started = [503, 200].map((status) => {
+        let page = "";
+        const { edge } = startSessionEdge(
+          () => page,
+          async () => stalled(status)
+        );
+        const run = startRun(
+          `relay-stalled-${status}`,
+          { enroll: "signs-in" },
+          "outsideEdgeBrowser",
+          edge.url,
+          edge.url
+        );
+        page = run.origin.page;
+        return { status, edge, run };
+      });
+      try {
+        for (const { status, run } of started) {
+          const ran = await run.ran;
+          const relayRow = rowsOf(ran).get("relay");
+          expect(relayRow?.got, `${status}: ${ran.stdout}`).toMatch(
+            new RegExp(
+              `^the session could not register or send: POST http://127\\.0\\.0\\.1:[0-9]+/v1/interests/subscribe answered ${status}, and its body did not arrive: TimeoutError \\(message withheld\\)$`
+            )
+          );
+          expect(relayRow?.verdict, `${status}: ${ran.stdout}`).toBe("FAIL");
+          expect(verdictLine(ran), String(status)).toStartWith("FAIL: relay");
+          expect(ran.code, String(status)).toBe(1);
+        }
+      } finally {
+        for (const { edge, run } of started) {
+          run.origin.stop();
+          edge.stop();
+        }
+      }
+    },
+    rowLimit({ atOnce: ["outsideEdgeBrowser", "outsideEdgeBrowser"] })
+  );
+
+  realTimeBrowserRow(
     "a browser that ends while a page step waits is UNKNOWN, the driver's own failure, never a page that showed nothing",
     async () => {
       // The enrollment's Create a passkey tells the stand-in it was pressed and does nothing more,
@@ -1553,21 +1698,7 @@ describe("the controls, against an outside origin stand-in", () => {
         // A fixed wait, inside the driver's own 30 s one: the press reaches the stand-in just
         // before the driver's click returns and its wait begins, which nothing here can see.
         await Bun.sleep(3_000);
-        const driverProcess = holdersOf(`OUTSIDE_EDGE_STATE=${started.state}`).find((one) =>
-          one.command.includes("outside-edge.ts")
-        );
-        if (driverProcess === undefined) throw new Error("no driver process holds the row's state");
-        const browser = descendantsOf(driverProcess.pid).filter((one) =>
-          /chrom|headless_shell/i.test(one.command)
-        );
-        expect(browser.length, "Chromium of the run, running").toBeGreaterThan(0);
-        for (const one of browser) {
-          try {
-            process.kill(one.pid, "SIGKILL");
-          } catch {
-            // It ended since the read, with the browser's other processes.
-          }
-        }
+        expect(endBrowserOf(started.state), "Chromium of the run, running").toBeGreaterThan(0);
         const run = await started.ran;
         expect(rowsOf(run).get("sign-in"), run.stdout).toBeUndefined();
         expect(rowsOf(run).get("stopped")?.got).toMatch(
@@ -1580,6 +1711,124 @@ describe("the controls, against an outside origin stand-in", () => {
       }
     },
     rowLimit("short", "outsideEdgeBrowser")
+  );
+
+  realTimeBrowserRow(
+    "a browser that ends while the machine-login page's code box or credential is awaited is UNKNOWN, the driver's own failure, never a page that showed nothing",
+    async () => {
+      // The machine-login page shows no code box, or says Approved and names no credential, so
+      // the driver waits up to 30 s for the box, or for the credential's line; its Chromium is
+      // ended inside that wait. The wait begins inside the driver, where nothing here can see it,
+      // just after the page is asked the path that precedes it (its load, or the approval's
+      // request), so the row ends the browser a fixed 3 s after that path, well inside the 30 s.
+      const cases = [
+        ["gone-no-box", "no-box", "/credentials/machine", "the machine-login page's code box"],
+        [
+          "gone-no-credential",
+          "no-credential",
+          "/__approve",
+          "the credential the machine-login page named once it said Approved",
+        ],
+      ] as const;
+      const started = cases.map(([name, machine, asked, read]) => ({
+        name,
+        asked,
+        read,
+        ...startRun(name, { enroll: "signs-in", machine }, "outsideEdgeBrowser"),
+      }));
+      try {
+        await Promise.all(
+          started.map(async (one) => {
+            await eventually(`${one.name}: the page's ${one.asked}`, () =>
+              one.origin.asked.includes(one.asked)
+            );
+            await Bun.sleep(3_000);
+            expect(endBrowserOf(one.state), `${one.name}: Chromium, running`).toBeGreaterThan(0);
+          })
+        );
+        for (const one of started) {
+          const run = await one.ran;
+          const login = rowsOf(run).get("device-login");
+          expect(login?.got, `${one.name}: ${run.stdout}`).toMatch(
+            new RegExp(
+              `^the machine-login page could not be driven: the (page closed|browser ended) while the driver read ${one.read}$`
+            )
+          );
+          expect(login?.verdict, one.name).toBe("UNKNOWN");
+          expect(verdictLine(run), one.name).toStartWith("UNKNOWN: device-login");
+          expect(run.code, one.name).toBe(2);
+        }
+      } finally {
+        for (const one of started) one.origin.stop();
+      }
+    },
+    rowLimit("short", { atOnce: ["outsideEdgeBrowser", "outsideEdgeBrowser"] })
+  );
+
+  realTimeBrowserRow(
+    "a page that holds its main thread while the driver reads through it, or saves the browser's state, is UNKNOWN at the driver's own bound, naming what it held",
+    async () => {
+      // The signed-in page holds its main thread: its `fetch` loops forever, so the driver's read
+      // of `GET /auth/whoami` through the page never returns (`read`); or it loops once its
+      // second read, the project list, has handed back its answer, so the driver's save of the
+      // browser's state, which reads the page's storage through a script in the page, never
+      // returns (`after-reads`). Playwright has no deadline for either, nor for the browser's
+      // close, which waits on such a page, and the page runs no deadline of its own, so only the
+      // driver's own bounds give the run a verdict. Each run's Chromium, read once its page signed
+      // the person in, is gone once the run ended: killed as the driver exits where its close
+      // outlasted the driver's bound.
+      const cases = [
+        ["held-read", { enroll: "signs-in", blocks: "read" }],
+        ["held-save", { enroll: "signs-in", blocks: "after-reads" }],
+      ] as const;
+      const started = cases.map(([name, behaviour]) => ({
+        name,
+        ...startRun(name, behaviour, "outsideEdgePageWait"),
+      }));
+      try {
+        const browsers = await Promise.all(
+          started.map(async (one) => {
+            await eventually(`${one.name}: the sign-in`, () =>
+              one.origin.asked.includes("/__sign-in")
+            );
+            return browserOf(one.state);
+          })
+        );
+        const [read, save] = await Promise.all(
+          started.map(async (one) => {
+            const run = await one.ran;
+            return { name: one.name, run, rows: rowsOf(run) };
+          })
+        );
+        if (read === undefined || save === undefined) throw new Error("a case did not run");
+        expect(rowOf(read, "sign-in"), read.run.stdout).toMatchObject({
+          got: "GET /auth/whoami got no answer: the page's script held the read past 35 s",
+          verdict: "UNKNOWN",
+        });
+        expect(verdictLine(read.run)).toStartWith("UNKNOWN: sign-in");
+        expect(read.run.code).toBe(2);
+        for (const row of ["sign-in", "projects"]) {
+          expect(rowOf(save, row).verdict, `${row}: ${save.run.stdout}`).toBe("PASS");
+        }
+        expect(rowOf(save, "stopped")).toEqual({
+          want: "every step judged",
+          got: "the run stopped: the save of the browser's signed-in state did not end within 30 s, so the run kept none",
+          verdict: "UNKNOWN",
+        });
+        expect(existsSync(join(scratch, "held-save", "browser.json"))).toBe(false);
+        expect(save.run.code).toBe(2);
+        for (const [at, browser] of browsers.entries()) {
+          const name = started[at]?.name;
+          expect(browser.length, `${name}: Chromium, running`).toBeGreaterThan(0);
+          await eventually(`${name}: its Chromium gone`, () =>
+            browser.every((one) => !running(one.pid))
+          );
+        }
+      } finally {
+        for (const { origin } of started) origin.stop();
+      }
+    },
+    rowLimit("short", { atOnce: ["outsideEdgePageWait", "outsideEdgePageWait"] }, "short")
   );
 
   browserRow(

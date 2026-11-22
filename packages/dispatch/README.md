@@ -993,7 +993,10 @@ step before it failed is `UNKNOWN`, never run on nothing:
    (`e2e/virtual-passkey.ts`), which signs the person in at the link's origin, and
    `GET /api/v1/projects` must list exactly `OUTSIDE_PROJECT`; a project beside it is named. The
    step passes only where the sign-in landed at the link's origin, made one passkey, set a cookie
-   there and named the person; a page or read with no answer within 30 s is `UNKNOWN`.
+   there and named the person; a page or read with no answer within 30 s is `UNKNOWN`, and so is
+   a page that holds its main thread past the driver's own bound on a read through it (35 s) or
+   on the save of the browser's state (30 s), which Playwright waits on with no deadline of its
+   own; a read whose status came and whose body did not is that answer, `FAIL`.
 2. The broker client (`@legion/cipher-client/device-login`) asks the broker for a device login of
    this machine, and the browser approves its code on the outside origin's machine-login page,
    with `OUTSIDE_TAILNET_USER_CODE` beside it when set (`APPROVED <code>`). A broker nothing
@@ -1020,9 +1023,9 @@ step before it failed is `UNKNOWN`, never run on nothing:
    client keep of the failure, read through the driver's own allowlist), is `UNKNOWN`, and so is a
    session the listener took that the driver could not keep, an error of its own; an answer short
    of the pong, a refused upgrade, trade or registration among them (whatever code the listener's
-   refusal names), is `FAIL`, and so is a socket the listener opened and then dropped
-   before the session's flush was answered: the listener answered that socket, so the step proved
-   something.
+   refusal names), is `FAIL`, and so is a call whose status came and whose body did not, which
+   the listener answered, and a socket the listener opened and then dropped before the session's
+   flush was answered: the listener answered that socket, so the step proved something.
 4. Every request of the run, the browser's and the process's, is judged against the rate rules
    of `OUTSIDE_EDGE_LIMITS`, `priority host match path count seconds` lines
    (`e2e/acceptance/outside-edge-limits.ts` says how a request finds its rule): a row per
@@ -1042,10 +1045,12 @@ when the list gave no answer, before the revoke or after it.
 `/auth/whoami` with the kept cookie, and once that is answered 401 it tries the kept passkey in a
 fresh browser, writing the rows `T5-cookie` and `T5-passkey` to `OUTSIDE_T5_TSV`. `T5-passkey`
 passes only on the sign-in's own refusal of the passkey, `POST /auth/passkey/login/finish`
-answered 401 `PASSKEY_UNKNOWN` or 403 `NOT_LISTED`; any other answer, an answer whose body did not
-come before the window's end (each wait of the sign-in ends 2 s before the deadline), or an alert
-with none, is `UNKNOWN`, and a sign-in is `FAIL`. A page or browser that closes while a step waits
-on it is `UNKNOWN`, the driver's own failure. An error of a command's own, not an answer of the edge's (an
+answered 401 `PASSKEY_UNKNOWN` or 403 `NOT_LISTED`; any other answer, another answer whose body
+did not come before the window's end (each wait of the sign-in ends 2 s before the deadline), or
+an alert with none, is `UNKNOWN`, and a sign-in or a 2xx, whether or not its body came, is
+`FAIL`. A page or browser that closes while a step waits on it is `UNKNOWN`, the driver's own
+failure, and a browser that does not close within 10 s holds no verdict back: it is named on
+stderr and killed as the driver exits. An error of a command's own, not an answer of the edge's (an
 `OUTSIDE_EDGE_STATE` it cannot use, say), judged nothing, so every command ends it
 `UNKNOWN: <command> failed on an error of its own: <its class>`, exit 2 and never 1, naming
 `OUTSIDE_EDGE_STATE` or its file where the error names one. The driver prints no token, cookie or
@@ -1095,22 +1100,26 @@ that gives `run`, `revoke` and `release` a state they cannot use (`UNKNOWN`, exi
 that refuses `OUTSIDE_EDGE_LOGIN_SECONDS` outside the driver's own test. The control rows
 run the driver against an outside origin stand-in (`e2e/__tests__/outside-edge-origin-stand-in.ts`):
 `t5` against each answer of the passkey sign-in that is not its refusal (no answer, 404, 429,
-another code, a refusal whose body never comes), `revoke` against a revoke that ends nothing and a
-list that gives no answer before or after the revoke, the run against a link whose page does not
-load or names the link, step 1 against each way a sign-in falls short after its page loaded (no
-Create button, no sign-in, a refusal, no passkey, another origin, no cookie, no person, no answer)
-and a browser that ends while it waits (`UNKNOWN`), step 2 against each way a device login falls
-short (no broker, a broker that takes the connection and never answers, a broker name that does
-not resolve, a broker that answers no poll by the deadline or answers and falls silent, a
-refusal, another origin's page, no code box, a box that takes no typing, no answer, a refused code
-or approval, no credential, a denied poll, a poll answered pending to the deadline), `approve`
-against a page it cannot drive and a refusal on two lines, step 3 after a device login that passed
-against a listener nothing answers, a trade the broker never answers and an upgrade still
-unanswered at the 30 s (`UNKNOWN`), and a listener's refusal naming a no-answer code (`FAIL`),
-steps 2 and 3 against a login and a session the driver cannot keep (`UNKNOWN`, exit 2, no copy of
-the login left), an approved code it cannot record (named on stderr, `UNKNOWN`, exit 2),
-Chromium's environment, which holds none of the driver's
-inputs, and the request counter against the relay client's socket. Those that start Chromium
+another code, a refusal whose body never comes) and a 2xx whose body never comes (`FAIL`),
+`revoke` against a revoke that ends nothing and a list that gives no answer before or after the
+revoke, the run against a link whose page does not load or names the link, step 1 against each
+way a sign-in falls short after its page loaded (no Create button, no sign-in, a refusal, no
+passkey, another origin, no cookie, no person, no answer, a read whose body never comes after its
+status), a browser that ends while it waits and a page that holds its main thread while the
+driver reads through it or saves its state (each `UNKNOWN`), step 2 against each way a device
+login falls short (no broker, a broker that takes the connection and never answers, a broker name
+that does not resolve, a broker that answers no
+poll by the deadline or answers and falls silent, a refusal, another origin's page, no code box,
+a box that takes no typing, no answer, a refused code or approval, no credential, a denied poll,
+a poll answered pending to the deadline) and a browser that ends while the code box or the
+credential is awaited (`UNKNOWN`), `approve` against a page it cannot drive and a refusal on two
+lines, step 3 after a device login that passed against a listener nothing answers, a trade the
+broker never answers and an upgrade still unanswered at the 30 s (`UNKNOWN`), and a listener's
+refusal naming a no-answer code and a registration's status whose body never comes, 503 or 200
+(`FAIL`), steps 2 and 3 against a login and a session the driver cannot keep (`UNKNOWN`, exit 2,
+no copy of the login left), an approved code it cannot record (named on stderr, `UNKNOWN`, exit
+2), Chromium's environment, which holds none of the driver's inputs, and the request counter
+against the relay client's socket. Those that start Chromium
 skip where Playwright's Chromium is not installed. A row reads the fake broker's revoke of a
 machine login. The rows of `outside-edge-hold.test.ts` run `hold` and `release` against
 envoy-client's relay socket stand-in, whose listener routes take only the session's own token and

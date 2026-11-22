@@ -368,9 +368,9 @@ and one was still waiting for its token or its upgrade's answer when the bound e
 with a status (a refused upgrade, a refused trade); a far end that sent bytes the runtime refused
 carries the runtime's code for them (`HPE_INVALID_CONSTANT`, `ECONNRESET`), so a caller that tells
 a far end that answered nothing from one that answered reads `code` through an allowlist of its
-own. A call of the HTTP transport (below) that got no whole answer does the same: its error keeps
-no cause and carries the failure's `code`, `ETIMEDOUT` for the call's deadline, and one whose
-status came without its body names that status.
+own. A call of the HTTP transport (below) that got no answer does the same: its error keeps no
+cause and carries the failure's `code`, `ETIMEDOUT` for the call's deadline. One whose status came
+without its body names that status and carries no `code`: the listener answered it.
 
 ## HTTP transport
 
