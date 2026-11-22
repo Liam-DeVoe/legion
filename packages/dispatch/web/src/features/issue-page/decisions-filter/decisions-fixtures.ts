@@ -5,7 +5,11 @@ import type {
   DecisionLink,
   IssueDetails,
 } from "../../../api/types";
-import { type DecisionNode, decisionNodes } from "../decision-nodes/decision-nodes";
+import {
+  type DecisionNode,
+  decisionNodes,
+  tieTargetReference,
+} from "../decision-nodes/decision-nodes";
 import type { TreeNode } from "../issue-tree";
 import type { NodeType } from "../page-words";
 import {
@@ -278,8 +282,8 @@ export function changeComment(
 /** A person's decision as the tree read answers it: the answered ask `id` itself, an ask of the
  *  conversation, carrying the person's decision the route answers on it (`decision`, of the kind
  *  `person`, naming the ask by its own address), whose words are its question; it never waits for
- *  review. Its links are the statements it shaped, which `shapedTuples` answers as its `shaped`
- *  tuples. */
+ *  review. Its links are the statements it shaped, which the route answers as its `shaped` tuples
+ *  only beside an answer that holds those statements (`shapedTuples`). */
 export function personDecision(id: string, extra: TreeNodeExtra = {}): TreeAnswerNode {
   const { decision: members, ...rest } = extra;
   return treeNode(id, "ask", KEY, {
@@ -291,13 +295,23 @@ export function personDecision(id: string, extra: TreeNodeExtra = {}): TreeAnswe
 }
 
 /** The `shaped` tuples the route answers beside `nodes`: one from each node that carries the
- *  model's decision to each node its links name, since a decision's links are its current
- *  `shaped` tuples (`decisionread`'s `Links`). */
+ *  model's decision to each node of `nodes` its links name by the address a tie names its far end
+ *  by (`tieTargetReference`), since a decision's links are its current `shaped` tuples
+ *  (`decisionread`'s `Links`). The route sends a tuple only where the answer holds its far end
+ *  (`issue_tree_read.go`'s `answer`), so a link to a node `nodes` does not hold is no tuple: the
+ *  tree read, which holds the statements, sends a decision's ties to them, and the decisions view,
+ *  which holds no statement, sends none. */
 export function shapedTuples(nodes: readonly TreeAnswerNode[]): TreeTuple[] {
+  const held = new Map<string, TreeAnswerNode>();
+  for (const one of nodes) {
+    const ref = tieTargetReference(one, KEY, undefined, SPEC_SLUG);
+    if (ref !== undefined && !held.has(ref)) held.set(ref, one);
+  }
   return nodes.flatMap((one) =>
-    (one.decision?.links ?? []).flatMap((link) =>
-      link.to.ref === undefined ? [] : [treeTuple("shaped", one.block_id ?? one.id, link.to.ref)]
-    )
+    (one.decision?.links ?? []).flatMap((link) => {
+      const to = link.to.ref === undefined ? undefined : held.get(link.to.ref);
+      return to === undefined ? [] : [treeTuple("shaped", one.block_id ?? one.id, to.id)];
+    })
   );
 }
 
@@ -315,7 +329,9 @@ export function treeAnswer(
 }
 
 /** The decisions of `made` as every reader of a decision reads them (`decisionNodes`), from an
- *  answer that holds them with the `shaped` tuples their links are (`shapedTuples`). */
+ *  answer that holds `made` alone - the decisions view's, where `made` holds no statement - with
+ *  the `shaped` tuples the route sends beside it (`shapedTuples`): none to a node it does not
+ *  hold. */
 export function decisionsOf(made: readonly TreeAnswerNode[]): DecisionNode[] {
   return decisionNodes(treeAnswer(made, shapedTuples(made)), {
     asks: undefined,

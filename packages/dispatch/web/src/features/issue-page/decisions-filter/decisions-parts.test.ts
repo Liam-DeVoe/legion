@@ -2,17 +2,20 @@ import { expect, test } from "bun:test";
 
 import type { DecisionLink, DisplayTree } from "../../../api/types";
 import { wordsOf } from "../../refs/tree-fragment";
+import { decisionNodes } from "../decision-nodes/decision-nodes";
 import { inReviewList } from "../decision-review";
 import type { TreeNode } from "../issue-tree";
 import { NODE_TYPE_NAMES } from "../page-words";
 import { presetView } from "../presets";
 import { treeContext } from "../tree-drafts";
+import { treeNode } from "../tree-read/tree-fixtures";
 import type { TreeAnswerNode } from "../tree-read/tree-read";
 import { changesOf } from "./decisions-entries";
 import {
   AGENT,
   answeredAsk,
   ask,
+  askRef,
   changeComment,
   closing,
   decision,
@@ -30,6 +33,7 @@ import {
   SPEC_DOCUMENT,
   SPEC_SLUG,
   shaped,
+  shapedTuples,
   specRef,
   statement,
   treeAnswer,
@@ -313,6 +317,50 @@ test("a person's decision is the answered ask's entry with its ties, and a readi
     expect(parts.open_questions[0]?.shapes).toEqual([]);
     // No decision node stands for the person's decision: the ask is the only entry of it.
     expect([...idsOf(parts).agents, ...idsOf(parts).review, ...idsOf(parts).others]).toEqual([]);
+  }
+});
+
+// R2: the Decisions view holds asks, decisions and readings and no statement, and the route sends
+// a tuple only where the answer holds its far end (`issue_tree_read.go`'s `answer`), so the view's
+// answer holds no `shaped` tuple from an answered ask. The person's decision the read answers on
+// the ask (`decision`) is a decision all the same, whose links are its ties: once the view
+// answers, the question's row keeps the statements it drew from the tree read before.
+test("a person's decision keeps its statements once the Decisions view answers", () => {
+  const children = [
+    statement("s1"),
+    answeredAsk("a1", { at: "2026-11-12T09:00:00Z", text: "Keep the rail." }),
+  ];
+  const decided = personDecision("a1", { decision: { links: [shaped(specRef("s1"))] } });
+  // The statement as the tree read answers it: a block of the spec.
+  const held = treeNode("s1", "requirement", KEY, {
+    document: { artifact_id: SPEC_DOCUMENT.id, position: 0, slug: SPEC_SLUG },
+  });
+  const tree = treeAnswer([held, decided], shapedTuples([held, decided]));
+  const view = { ...treeAnswer([decided], shapedTuples([decided])), view: "decisions" };
+  expect(view.tuples, "the view holds a tuple the route never sends").toEqual([]);
+
+  for (const [read, answer] of [
+    ["the tree read", tree],
+    ["the Decisions view", view],
+  ] as const) {
+    const decisions = decisionNodes(answer, { asks: undefined, issue: { key: KEY } });
+    expect(
+      decisions.map((one) => one.ref),
+      `${read} answers no person's decision`
+    ).toEqual([askRef("a1")]);
+    const parts = decisionsParts({
+      asks: [],
+      decisions,
+      issueKey: KEY,
+      nodeIdOf,
+      reader: READER,
+      root: issueTree(children),
+    });
+    expect(idsOf(parts).yours).toEqual(["a1"]);
+    expect(
+      parts.yours[0]?.shapes.map((shape) => shape.id),
+      `the question lost its statements in ${read}`
+    ).toEqual([statement("s1").id]);
   }
 });
 
