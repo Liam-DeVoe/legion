@@ -430,6 +430,85 @@ func TestARoleResendWhoseFirstForwardEndsInProcessIsAnsweredByItsNextForward(t *
 	}
 }
 
+// A role forward whose caller's context ends while the stream still refuses the forward as in
+// process under an earlier forward is still sent again until the stream answers it, inside the
+// forward's own window: a forward's bound is its timeout, not its caller's context, which a
+// handover's walk ends (forwardAndWait) and a role send's client ends by going away
+// (bus.Client.StartRequestStoredTo), so the wait's resends take the caller's mark of a lock it
+// holds and not its end (startRoleForward). The rig's forward seam ends the context it hands the
+// resend's forward once that forward is sent, before its wait reads the first refusal, and holds
+// the routes frozen past the pause that refusal starts (inProcessPause). The forward's wait then
+// answers the stream's duplicate once the routes thaw, and the resend makes no other forward.
+//
+// The control is startRoleForward's wait bound to the caller's context (context.WithDeadline(ctx,
+// deadline)): the pause after the first refusal ends with that context, and the forward fails as
+// one whose earlier forward was still in process (earlierAttemptInProcess), so the resend makes a
+// third forward.
+func TestARoleForwardWhoseCallerEndsWhileItIsInProcessIsAnsweredWithinItsOwnWindow(t *testing.T) {
+	rig := newInProcessRig(t)
+	const holder = "ses_in_process_caller_holder"
+	role := "in-process-caller-" + id.New()[:8]
+	claimRoleFor(t, rig.harness.registry, rig.harness.sessions, holder, role, nil)
+	path := roleInProcessPath(role, holder)
+	callerEnded := make(chan struct{})
+	waited := make(chan error, 1)
+	var forwards atomic.Int32
+	forward := rig.d.delivery.forwardRole
+	rig.d.delivery.forwardRole = func(ctx context.Context, subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() error, error) {
+		if forwards.Add(1) != 2 {
+			return forward(ctx, subject, item, msgID, timeout)
+		}
+		caller, end := context.WithCancel(ctx)
+		wait, err := forward(caller, subject, item, msgID, timeout)
+		end()
+		close(callerEnded)
+		if err != nil {
+			waited <- err
+			return nil, err
+		}
+		return func() error {
+			err := wait()
+			waited <- err
+			return err
+		}, nil
+	}
+	rig.requireLeader(t)
+	heard, before := rig.hear(t, path.subject), rig.copies(t, path.subject)
+	sender, key := "ses_in_process_caller_"+id.New()[:8], id.New()
+	body := messageJSON(t, path.body(sender, key), nil)
+	thaw := rig.cluster.FreezeRoutes(t)
+	t.Cleanup(thaw)
+	earlier := rig.attempt(context.Background(), path.route, body)
+	awaitHanded(t, heard, 1)
+	resend := rig.attempt(context.Background(), path.route, body)
+	select {
+	case <-callerEnded:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the resend made no forward of its own")
+	}
+	// Past the first refusal and the pause it starts, inside the members' election timeout.
+	time.Sleep(4 * inProcessPause)
+	thaw()
+	var err error
+	select {
+	case err = <-waited:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the resend's forward did not end")
+	}
+	for name, answer := range map[string]<-chan *httptest.ResponseRecorder{"the earlier send": earlier, "the resend": resend} {
+		if answer := <-answer; answer.Code != http.StatusOK {
+			t.Errorf("%s was answered %d %s; want 200", name, answer.Code, strings.TrimSpace(answer.Body.String()))
+		}
+	}
+	if err != nil {
+		t.Errorf("the resend's forward, whose caller's context ended while it was in process, ended with %v; want the stream's answer once the routes thawed, inside its own window", err)
+	}
+	if n := forwards.Load(); n != 2 {
+		t.Errorf("the two sends made %d forwards, want 2: the earlier send's and the resend's, answered within its window", n)
+	}
+	rig.requireOneCopy(t, path.subject, before)
+}
+
 // inProcessBudget is the request deadline a request whose budget ends in process is sent under.
 // The route's budget is the earlier of its own (sendRequestBudget, publishDeliveryWindow for a role
 // send) and the request's, so this ends it early, inside the members' election timeout: a freeze

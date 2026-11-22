@@ -213,7 +213,10 @@ func (f *roleForwarder) wait(ctx context.Context) bool {
 // earlier forward under msgID through publishPastInProcess, inside the forward's own timeout: it
 // sends the forward again until the stream acknowledges it as that earlier forward's duplicate,
 // so every caller - a role send, a role-lane delivery and a kept-lane walk - takes that refusal
-// one way, as one forward, and none counts it a forward that failed.
+// one way, as one forward, and none counts it a forward that failed. Its resends are bound by that
+// timeout and not by ctx, as the forward itself is (bus.Client.StartRequestStoredTo): a handover's
+// walk ends its context while forwards it started still wait, and a role send's client may go
+// away; only ctx's mark of a lock its caller holds (bus.WithLockHeld) carries over.
 func startRoleForward(client *bus.Client) func(ctx context.Context, subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() error, error) {
 	return func(ctx context.Context, subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() error, error) {
 		deadline := time.Now().Add(timeout)
@@ -222,7 +225,7 @@ func startRoleForward(client *bus.Client) func(ctx context.Context, subject stri
 			return nil, err
 		}
 		return func() error {
-			waitCtx, cancel := context.WithDeadline(ctx, deadline)
+			waitCtx, cancel := context.WithDeadline(context.WithoutCancel(ctx), deadline)
 			defer cancel()
 			_, err := publishPastInProcess(waitCtx, func() (bus.StoredAck, error) {
 				if forward == nil {
