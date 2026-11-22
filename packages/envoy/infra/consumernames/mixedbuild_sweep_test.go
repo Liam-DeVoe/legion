@@ -4,6 +4,7 @@ package consumernames
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -15,6 +16,7 @@ import (
 
 	selection "github.com/sjawhar/envoy/consumernames"
 	"github.com/sjawhar/envoy/infra/writerhold/holdtest"
+	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/holdrecord"
 )
@@ -170,19 +172,12 @@ func (h *stack) mixedBuildFixedSessions(n int) []*mixedBuildSession {
 		started, err := sc.Ensure(ctx, s.id, []string{s.subject}, 0)
 		require.NoError(h.t, err, "the fixed consumer of %s", s.id)
 		require.Equal(h.t, sessionFixedPrefix+s.id, started.Name)
-		// The first pull right after the create can meet no responder on the three-server hub
-		// while the consumer's group elects its leader, which the pull reads as no consumer (a
-		// step 2 run met it once in 300 sessions): the pull waits for the consumer's leader.
-		require.Eventually(h.t, func() bool {
-			info, err := consumerInfo(ctx, nc, notifications, started.Name)
-			return err == nil && info != nil && info.Cluster != nil && info.Cluster.Leader != ""
-		}, 30*time.Second, 50*time.Millisecond, "the fixed consumer %s never named its leader", started.Name)
 		for m := range 2 {
 			ack, err := js.Publish(ctx, s.subject, fmt.Appendf(nil, "%s before the window, %d", s.id, m))
 			require.NoError(h.t, err)
 			s.seqs = append(s.seqs, ack.Sequence)
 		}
-		require.Equal(h.t, s.seqs[:1], mixedBuildPullSeqs(h.t, sc, s.id, started.Name, 1, true), "the first message of %s", s.id)
+		require.Equal(h.t, s.seqs[0], mixedBuildFirstPull(h.t, sc, s.id, started.Name), "the first message of %s", s.id)
 		s.floor = s.seqs[0]
 		sessions = append(sessions, s)
 	}
@@ -195,6 +190,41 @@ func (h *stack) mixedBuildFixedSessions(n int) []*mixedBuildSession {
 	sc.Close()
 	nc.Close()
 	return sessions
+}
+
+// mixedBuildFirstPull is the setup's first pull of a fixed consumer it has just created, with this
+// tree's pull (bus.SessionConsumers.Pull), acking the one message it takes, and answers its stream
+// sequence. A pull that meets bus.ErrSessionConsumerNotFound is sent again until 30 seconds pass:
+// the bus answers a pull that met no responder so, and on the three-server hub a consumer whose
+// leader is named is not yet a responder on every server (two step 2 runs met it, once in 300
+// sessions each, the second after a wait for the consumer's leader). Any other answer fails the
+// setup.
+func mixedBuildFirstPull(t *testing.T, sc *bus.SessionConsumers, sessionID, name string) uint64 {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		seq, err := func() (uint64, error) {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			pull, err := sc.Pull(ctx, sessionID, name)
+			if err != nil {
+				return 0, err
+			}
+			defer pull.Stop()
+			msg, err := pull.Next(ctx)
+			if err != nil {
+				return 0, err
+			}
+			return msg.StreamSeq, msg.Ack()
+		}()
+		if err == nil {
+			return seq
+		}
+		if !errors.Is(err, bus.ErrSessionConsumerNotFound) || time.Now().After(deadline) {
+			require.NoError(t, err, "the first pull of %s", name)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 }
 
 // mixedBuildCutoverWithTheCommands runs the cutover window through the operator's commands (§3):
