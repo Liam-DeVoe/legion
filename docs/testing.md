@@ -321,10 +321,12 @@ The clock of a unit test:
   `node:timers/promises` (or `timers` and `timers/promises`), imported by name, under another name,
   or reached through a namespace or default import;
   `Bun.sleep` and `Bun.sleepSync`;
-  and `sleep` and `sleepSync` imported from `"bun"` under any name.
-  A call passes in two ways alone.
+  `sleep` and `sleepSync` imported from `"bun"` under any name;
+  and any name, destructure or `bind` that one of these is given, or a reference to one that the
+  file hands on: an argument, a value it stores, returns or exports.
+  A call, or a reference handed on, passes in two ways alone.
   One is `afterOnFakeClock` from `web/src/__tests__/fake-clock.ts`, which refuses the real clock.
-  The other is a comment within 12 lines above the call that holds the words "stays on the real
+  The other is a comment within 12 lines above it that holds the words "stays on the real
   clock" and, after them on that line or on the comment lines that continue it, a reason of at
   least three words of letters, which an issue key or a number is not.
   A comment that only mentions the real clock passes nothing.

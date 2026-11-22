@@ -22,17 +22,40 @@ import { afterOnFakeClock, onFakeClock } from "./fake-clock";
  * `timers/promises`), named, aliased or reached through a namespace or default import
  * (`t.scheduler.wait`); a `Bun.sleep` or a `Bun.sleepSync`; and every local name an import gives
  * one of those (`import { setTimeout as delay }`, `import { setImmediate as nextTurn }`,
- * `import { sleep as pause } from "bun"`). It follows no callback and no resolver: a
- * trace of a resolver through the data flow always misses a form, such as a resolver handed to a
- * helper that calls `setTimeout`, so the call is found where it starts, and so is the timer of a
- * row that stands in for a product's. A call passes in two ways alone. One is `afterOnFakeClock`
- * (`fake-clock.ts`), which refuses the real clock itself: a row that stands in for an answer that
- * takes time to come sets its timer there, and the `setTimeout` inside that helper's own body is
- * passed by its file and its function's name. The other is a comment within `REASON_WINDOW` lines
- * above the call that holds the words "stays on the real clock" and after them a reason of at
- * least `REASON_WORDS` words of letters, on that line or on the comment lines that continue it; a
- * comment that only mentions the real clock passes nothing. The file is read by the TypeScript
- * parser, so a call is found however it is spelled or wrapped (inside `act(...)`, across lines),
+ * `import { sleep as pause } from "bun"`). The architect ruled that this list is not narrowed by
+ * how a wait is spelled (dispatch://INFRA-983), so a wait is found under every name, destructure
+ * or `bind` it is given, and where it is handed on: a declaration or an assignment whose value is
+ * one of those, a member of one, another such name, or a choice of one (`const later =
+ * setTimeout`, `options.wait ?? setTimeout`), a parameter's default, and a destructure, renamed,
+ * nested or with a default, from `Bun`, from "bun" or a timers module bound whole, by an import,
+ * an `import(…)` or a `require(…)` (`const { sleep } = Bun`, `const { setTimeout: delay } = await
+ * import("node:timers/promises")`), and of a `setTimeout` from any object; such a module bound
+ * whole by `import(…)` or `require(…)`, whose members count as a namespace import's do; the
+ * `call` and the `apply` of a wait, and its `bind`, whose answer is such a name; and every
+ * reference to a wait that the file hands on out of its view, which whatever it reaches may start:
+ * passed to another call or a `new` (`[50].map(Bun.sleep)`, `act(setTimeout)`), stored in an
+ * object, an array, a member, a class's field or a JSX prop, returned, thrown, yielded, or
+ * exported (`export const pause = Bun.sleep`, `export { setTimeout as later }`), each found at
+ * the reference as a call is (`placeOf`). `Bun`, a timers module and a scheduler hold waits that
+ * a file importing one calls under names the scan does not know, so each is found where the file
+ * exports it. The names are read in a fixed-point pass over the whole file, so an alias of an
+ * alias is one, and so is one bound below its call; a name is an alias in the whole file once any
+ * binding makes it one. A wait the scan sees all of starts none: one called (found as the call),
+ * a member of it read (`setTimeout.length`), one read or compared (`typeof setTimeout`,
+ * `globalThis.setTimeout === window.setTimeout`, a condition, the object `spyOn` takes, a wait
+ * handed to one of `readers` such as `Object.hasOwn(setTimeout, "clock")`), one written to, one
+ * named in a type, and one bound to a name the scan follows. It follows no callback and no
+ * resolver: a trace of a resolver through the data flow always misses a form, such as a resolver
+ * handed to a helper that calls `setTimeout`, so the call is found where it starts, and so is the
+ * timer of a row that stands in for a product's. A call, and a reference handed on, passes in two
+ * ways alone. One is `afterOnFakeClock` (`fake-clock.ts`), which refuses the real clock itself: a
+ * row that stands in for an answer that takes time to come sets its timer there, and the
+ * `setTimeout` inside that helper's own body is passed by its file and its function's name. The
+ * other is a comment within `REASON_WINDOW` lines above the call that holds the words "stays on
+ * the real clock" and after them a reason of at least `REASON_WORDS` words of letters, on that
+ * line or on the comment lines that continue it; a comment that only mentions the real clock
+ * passes nothing. The file is read by the TypeScript parser, so a call is found however it is
+ * spelled or wrapped (inside `act(...)`, across lines),
  * and a comment or a string that spells one is none. A zero-delay timer is a wait of real time
  * too: what has run by its turn - a timer of the product's, a render, a promise of the library's -
  * depends on how loaded the machine is, so a row waits for the condition its step stands for, or
@@ -80,6 +103,15 @@ const waitCalls: ReadonlySet<string> = new Set([
  *  time. */
 const timerModules = ["node:timers", "node:timers/promises", "timers", "timers/promises"];
 
+/** The calls that only read what they are handed and never call it, by the object they are of: a
+ *  wait passed to one is read, as `typeof` reads it (`Object.hasOwn(setTimeout, "clock")`), where
+ *  `Reflect.apply` and any other call may start it. `spyOn`, of any object or none, is one too: it
+ *  takes the object whose member it replaces, and a call of that member is found as any is. */
+const readers: Record<string, readonly string[]> = {
+  Object: ["getOwnPropertyDescriptor", "getOwnPropertyNames", "hasOwn", "is", "keys"],
+  Reflect: ["getOwnPropertyDescriptor", "has", "ownKeys"],
+};
+
 /** The one timer passed by its place: the `setTimeout` in the body of `afterOnFakeClock`, which
  *  refuses the real clock before it sets it. */
 const fakeClockFile = "__tests__/fake-clock.ts";
@@ -109,57 +141,35 @@ interface RealWait {
   readonly reasoned: boolean;
 }
 
-/** The names a file's calls start a wait of real time through, by what its imports bind. */
-interface WaitNames {
-  /** Names whose call starts one: each of `waitCalls`, and every local name an import gives one of
-   *  them, or `sleep` or `sleepSync` of "bun" (`delay`, `nextTurn`, `pause`). */
-  readonly calls: Set<string>;
-  /** Names of a timers module whole (`t` of `import * as t from "node:timers/promises"`), whose
-   *  `scheduler.wait` starts one; its `setTimeout` and `setImmediate` are members of `waitCalls`,
-   *  found as any is. */
-  readonly timers: Set<string>;
-  /** Names of a timers module's `scheduler`, whose `wait` starts one. */
-  readonly schedulers: Set<string>;
-  /** Names of "bun" whole, `Bun` among them, whose `sleep` and `sleepSync` start one. */
-  readonly buns: Set<string>;
-}
+/** What a name or an expression stands for, as far as a wait goes: a function whose call starts
+ *  one (`wait`); "bun" whole, `Bun` among it, whose `sleep` and `sleepSync` are waits (`bun`); a
+ *  timers module whole, whose `scheduler` is one (`timers`); and a timers module's `scheduler`,
+ *  whose `wait` is a wait (`scheduler`). */
+type Kind = "wait" | "bun" | "timers" | "scheduler";
 
-/** The names `source`'s imports give the calls that start a wait of real time. */
-function waitNames(source: ts.SourceFile): WaitNames {
-  const names: WaitNames = {
-    buns: new Set(["Bun"]),
-    calls: new Set(waitCalls),
-    schedulers: new Set(),
-    timers: new Set(),
-  };
-  for (const statement of source.statements) {
-    if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) {
-      continue;
-    }
-    const from = statement.moduleSpecifier.text;
-    const timers = timerModules.includes(from);
-    const whole = from === "bun" ? names.buns : timers ? names.timers : undefined;
-    const clause = statement.importClause;
-    if (clause?.name !== undefined) whole?.add(clause.name.text);
-    const bindings = clause?.namedBindings;
-    if (bindings === undefined) continue;
-    if (ts.isNamespaceImport(bindings)) {
-      whole?.add(bindings.name.text);
-      continue;
-    }
-    for (const element of bindings.elements) {
-      const imported = (element.propertyName ?? element.name).text;
-      if (waitCalls.has(imported)) {
-        names.calls.add(element.name.text);
-      } else if (from === "bun" && (imported === "sleep" || imported === "sleepSync")) {
-        names.calls.add(element.name.text);
-      } else if (timers && imported === "scheduler") {
-        names.schedulers.add(element.name.text);
-      }
-    }
-  }
-  return names;
-}
+const kinds: readonly Kind[] = ["wait", "bun", "timers", "scheduler"];
+
+/** Whether something stands for a kind. */
+type Is = (kind: Kind) => boolean;
+
+/** The names that stand for each kind in a file: the global ones (`setTimeout`, `Bun`), and every
+ *  name a binding anywhere in the file gives one of those (`waitNames`). */
+type WaitNames = Record<Kind, Set<string>>;
+
+/** The operators whose value is one of their operands: `??`, `||` and `&&`. */
+const choices: ReadonlySet<ts.SyntaxKind> = new Set([
+  ts.SyntaxKind.QuestionQuestionToken,
+  ts.SyntaxKind.BarBarToken,
+  ts.SyntaxKind.AmpersandAmpersandToken,
+]);
+
+/** The operators that bind their left side to their right: `=`, `??=`, `||=` and `&&=`. */
+const assignments: ReadonlySet<ts.SyntaxKind> = new Set([
+  ts.SyntaxKind.EqualsToken,
+  ts.SyntaxKind.QuestionQuestionEqualsToken,
+  ts.SyntaxKind.BarBarEqualsToken,
+  ts.SyntaxKind.AmpersandAmpersandEqualsToken,
+]);
 
 /** The object and the name of a member (`window.setTimeout`, `window["setTimeout"]`). */
 function member(expression: ts.Expression): { object: ts.Expression; name: string } | undefined {
@@ -172,32 +182,384 @@ function member(expression: ts.Expression): { object: ts.Expression; name: strin
     : undefined;
 }
 
-function isOneOf(expression: ts.Expression, names: ReadonlySet<string>): boolean {
-  return ts.isIdentifier(expression) && names.has(expression.text);
+/** What the module `from` is whole: a timers module, "bun", or neither. */
+function moduleIs(from: string): Is {
+  return (kind) =>
+    kind === "timers" ? timerModules.includes(from) : kind === "bun" && from === "bun";
 }
 
-/** Whether a call of `callee` starts a wait of real time, by the names `names` holds. */
-function startsWait(callee: ts.Expression, names: WaitNames): boolean {
-  if (ts.isIdentifier(callee)) return names.calls.has(callee.text);
-  const reached = member(callee);
-  if (reached === undefined) return false;
-  const { name, object } = reached;
-  if (waitCalls.has(name)) return true;
-  if (name === "sleep" || name === "sleepSync") {
-    return isOneOf(object, names.buns) || member(object)?.name === "Bun";
+/** What the member `name` of something `object` says stands for: a member of `waitCalls` of any
+ *  object is a wait, and so is `sleep` or `sleepSync` of "bun" and `wait` of a scheduler; `Bun`
+ *  of any object is "bun", and `scheduler` of a timers module is a scheduler. */
+function memberIs(object: Is, name: string): Is {
+  return (kind) => {
+    if (kind === "bun") return name === "Bun";
+    if (kind === "scheduler") return name === "scheduler" && object("timers");
+    if (kind === "timers") return false;
+    return (
+      waitCalls.has(name) ||
+      ((name === "sleep" || name === "sleepSync") && object("bun")) ||
+      (name === "wait" && object("scheduler"))
+    );
+  };
+}
+
+/** The module `call` loads, where it is `import("…")` or `require("…")`. */
+function loaded(call: ts.CallExpression): string | undefined {
+  const [first] = call.arguments;
+  const loads =
+    call.expression.kind === ts.SyntaxKind.ImportKeyword ||
+    (ts.isIdentifier(call.expression) && call.expression.text === "require");
+  return loads && first !== undefined && ts.isStringLiteralLike(first) ? first.text : undefined;
+}
+
+/** `expression` without what hands its value on unchanged: parentheses, `await`, and a type
+ *  assertion or a non-null one. */
+function unwrapped(expression: ts.Expression): ts.Expression {
+  let bare = expression;
+  while (
+    ts.isParenthesizedExpression(bare) ||
+    ts.isAwaitExpression(bare) ||
+    ts.isAsExpression(bare) ||
+    ts.isSatisfiesExpression(bare) ||
+    ts.isTypeAssertionExpression(bare) ||
+    ts.isNonNullExpression(bare)
+  ) {
+    bare = bare.expression;
   }
-  if (name !== "wait") return false;
-  const owner = member(object);
+  return bare;
+}
+
+/** Whether `expression` stands for `kind`, by the names `names` holds: a name, a member, the
+ *  module an `import(…)` or a `require(…)` loads, a `bind` of a wait, or a choice of such (`??`,
+ *  `||`, `&&`, `?:`, and the last of a comma, as in `(0, setTimeout)`). */
+function is(expression: ts.Expression, kind: Kind, names: WaitNames): boolean {
+  const bare = unwrapped(expression);
+  if (ts.isIdentifier(bare)) return names[kind].has(bare.text);
+  if (ts.isConditionalExpression(bare)) {
+    return is(bare.whenTrue, kind, names) || is(bare.whenFalse, kind, names);
+  }
+  if (ts.isBinaryExpression(bare)) {
+    if (bare.operatorToken.kind === ts.SyntaxKind.CommaToken) return is(bare.right, kind, names);
+    return (
+      choices.has(bare.operatorToken.kind) &&
+      (is(bare.left, kind, names) || is(bare.right, kind, names))
+    );
+  }
+  if (ts.isCallExpression(bare)) {
+    const from = loaded(bare);
+    if (from !== undefined) return moduleIs(from)(kind);
+    const bound = member(unwrapped(bare.expression));
+    return kind === "wait" && bound?.name === "bind" && is(bound.object, "wait", names);
+  }
+  const reached = member(bare);
   return (
-    isOneOf(object, names.schedulers) ||
-    (owner?.name === "scheduler" && isOneOf(owner.object, names.timers))
+    reached !== undefined && memberIs((each) => is(reached.object, each, names), reached.name)(kind)
   );
 }
 
-/** Whether `call` is the `setTimeout` in the body of `fake-clock.ts`'s `afterOnFakeClock`, and in
- *  no function nested in it. */
-function isFakeClockTimer(file: string, call: ts.CallExpression): boolean {
-  const enclosing = ts.findAncestor(call.parent, ts.isFunctionLike);
+/** A place a file binds a name, or the names of a destructure, to what `source` says. */
+interface Binding {
+  readonly target: ts.BindingName | ts.Expression;
+  readonly source: Is;
+}
+
+/** The text of a property's name where it is written out (`setTimeout`, `"setTimeout"`,
+ *  `["setTimeout"]`). */
+function propertyText(name: ts.PropertyName): string | undefined {
+  if (!ts.isComputedPropertyName(name)) return name.text;
+  return ts.isStringLiteralLike(name.expression) ? name.expression.text : undefined;
+}
+
+/** What a destructure `target` binds of `source`: each of its names, or nested patterns, with the
+ *  member of `source` it takes or the default it falls back to, and a rest with `source`'s module
+ *  or `Bun` whole. */
+function parts(target: ts.BindingName | ts.Expression, source: Is, names: WaitNames): Binding[] {
+  const taken = (property: string | undefined, fallback: ts.Expression | undefined): Is => {
+    const value: Is = property === undefined ? () => false : memberIs(source, property);
+    return (kind) => value(kind) || (fallback !== undefined && is(fallback, kind, names));
+  };
+  const rest: Is = (kind) => kind !== "wait" && source(kind);
+  if (ts.isObjectBindingPattern(target)) {
+    return target.elements.map((element) => {
+      if (element.dotDotDotToken !== undefined) return { source: rest, target: element.name };
+      const property =
+        element.propertyName !== undefined
+          ? propertyText(element.propertyName)
+          : ts.isIdentifier(element.name)
+            ? element.name.text
+            : undefined;
+      return { source: taken(property, element.initializer), target: element.name };
+    });
+  }
+  if (!ts.isObjectLiteralExpression(target)) return [];
+  return target.properties.flatMap((property): Binding[] => {
+    if (ts.isSpreadAssignment(property)) return [{ source: rest, target: property.expression }];
+    if (ts.isShorthandPropertyAssignment(property)) {
+      const fallback = property.objectAssignmentInitializer;
+      return [{ source: taken(property.name.text, fallback), target: property.name }];
+    }
+    if (!ts.isPropertyAssignment(property)) return [];
+    const value = property.initializer;
+    const defaulted =
+      ts.isBinaryExpression(value) && value.operatorToken.kind === ts.SyntaxKind.EqualsToken;
+    return [
+      {
+        source: taken(propertyText(property.name), defaulted ? value.right : undefined),
+        target: defaulted ? value.left : value,
+      },
+    ];
+  });
+}
+
+/** Binds each name `target` holds to what it takes of `source`; answers whether a name now stands
+ *  for a kind it did not before. */
+function bindTo(target: ts.BindingName | ts.Expression, source: Is, names: WaitNames): boolean {
+  if (!ts.isIdentifier(target)) {
+    return parts(target, source, names)
+      .map((part) => bindTo(part.target, part.source, names))
+      .includes(true);
+  }
+  let grew = false;
+  for (const kind of kinds) {
+    if (names[kind].has(target.text) || !source(kind)) continue;
+    names[kind].add(target.text);
+    grew = true;
+  }
+  return grew;
+}
+
+/** Every place `file` binds a name: an import, `import … = require(…)`, a declaration, a
+ *  parameter's default and an assignment, each with what its value stands for, read from `names`
+ *  as they stand when it is asked. */
+function bindings(file: ts.SourceFile, names: WaitNames): Binding[] {
+  const found: Binding[] = [];
+  const standsFor =
+    (expression: ts.Expression): Is =>
+    (kind) =>
+      is(expression, kind, names);
+  const visit = (node: ts.Node): void => {
+    if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier)) {
+      const whole = moduleIs(node.moduleSpecifier.text);
+      const clause = node.importClause;
+      const named = clause?.namedBindings;
+      if (clause?.name !== undefined) found.push({ source: whole, target: clause.name });
+      if (named !== undefined && ts.isNamespaceImport(named)) {
+        found.push({ source: whole, target: named.name });
+      } else if (named !== undefined) {
+        for (const element of named.elements) {
+          const imported = (element.propertyName ?? element.name).text;
+          found.push({ source: memberIs(whole, imported), target: element.name });
+        }
+      }
+    } else if (
+      ts.isImportEqualsDeclaration(node) &&
+      ts.isExternalModuleReference(node.moduleReference) &&
+      ts.isStringLiteral(node.moduleReference.expression)
+    ) {
+      found.push({ source: moduleIs(node.moduleReference.expression.text), target: node.name });
+    } else if (
+      (ts.isVariableDeclaration(node) || ts.isParameter(node)) &&
+      node.initializer !== undefined
+    ) {
+      found.push({ source: standsFor(node.initializer), target: node.name });
+    } else if (ts.isBinaryExpression(node) && assignments.has(node.operatorToken.kind)) {
+      found.push({ source: standsFor(node.right), target: node.left });
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  return found;
+}
+
+/** The names that stand for each kind in `file`: the global ones, and every name a binding gives
+ *  one of those. The bindings are read again, over the whole file, until none adds a name, so an
+ *  alias of an alias is found, and so is one bound above the binding it names; a name is an alias
+ *  in the whole file once any binding makes it one, and no function's data flow is followed. */
+function waitNames(file: ts.SourceFile): WaitNames {
+  const names: WaitNames = {
+    bun: new Set(["Bun"]),
+    scheduler: new Set(),
+    timers: new Set(),
+    wait: new Set(waitCalls),
+  };
+  const found = bindings(file, names);
+  let grew = true;
+  while (grew) {
+    grew = false;
+    for (const { source, target } of found) if (bindTo(target, source, names)) grew = true;
+  }
+  return names;
+}
+
+/** Whether a call of `callee` starts a wait of real time: a wait, or the `call` or `apply` of one
+ *  (`window.setTimeout.call(window, run, 50)`). */
+function startsWait(callee: ts.Expression, names: WaitNames): boolean {
+  if (is(callee, "wait", names)) return true;
+  const reached = member(unwrapped(callee));
+  return (
+    reached !== undefined &&
+    (reached.name === "call" || reached.name === "apply") &&
+    is(reached.object, "wait", names)
+  );
+}
+
+/** Whether `call` only reads its arguments: a call of one of `readers`, or of `spyOn`. */
+function readsArguments(call: ts.CallExpression): boolean {
+  const callee = unwrapped(call.expression);
+  const reached = member(callee);
+  if ((ts.isIdentifier(callee) ? callee.text : reached?.name) === "spyOn") return true;
+  return (
+    reached !== undefined &&
+    ts.isIdentifier(reached.object) &&
+    readers[reached.object.text]?.includes(reached.name) === true
+  );
+}
+
+/** Whether `node` is written to: the left side of an assignment, or a name or a nested pattern
+ *  inside a destructure that is one (`nap` of `({ sleep: nap } = Bun)`). */
+function isWritten(node: ts.Node): boolean {
+  const parent = node.parent;
+  if (ts.isBinaryExpression(parent)) {
+    return assignments.has(parent.operatorToken.kind) && parent.left === node;
+  }
+  if (ts.isForOfStatement(parent) || ts.isForInStatement(parent)) {
+    return parent.initializer === node;
+  }
+  if (ts.isArrayLiteralExpression(parent)) return isWritten(parent);
+  const inPattern =
+    (ts.isPropertyAssignment(parent) && parent.initializer === node) ||
+    ts.isShorthandPropertyAssignment(parent) ||
+    ts.isSpreadAssignment(parent) ||
+    ts.isSpreadElement(parent);
+  return inPattern && isWritten(parent.parent);
+}
+
+/** The kinds the value `node` reads stands for, where it is a name, a member, or a call that
+ *  answers one (`bind`, `import(…)`, `require(…)`); none where `node` reads no value: a name that
+ *  a declaration, a property or a member gives, a part of a type (the `setTimeout` of `typeof
+ *  window.setTimeout` there), or a place an assignment writes. A name in `{ setTimeout }` is a
+ *  value the object stores. */
+function kindsRead(node: ts.Node, names: WaitNames): Kind[] {
+  const candidate =
+    ts.isIdentifier(node) ||
+    ts.isPropertyAccessExpression(node) ||
+    ts.isElementAccessExpression(node) ||
+    ts.isCallExpression(node);
+  if (!candidate) return [];
+  const stands = kinds.filter((kind) => is(node, kind, names));
+  if (stands.length === 0 || ts.findAncestor(node, ts.isTypeNode) !== undefined) return [];
+  const parent = node.parent;
+  const named =
+    ts.isIdentifier(node) &&
+    !ts.isShorthandPropertyAssignment(parent) &&
+    (("name" in parent && parent.name === node) ||
+      ("propertyName" in parent && parent.propertyName === node));
+  return named || isWritten(node) ? [] : stands;
+}
+
+/** Where a value goes. `kept`: where the scan sees all that is done with it. `exported`: out of
+ *  the file. `handed`: anywhere else out of the scan's view. */
+type Place = "kept" | "handed" | "exported";
+
+/** The places that only read or compare the value they hold, or drop it: `typeof`, `void`,
+ *  `delete`, `!` and the other unary operators, the condition of `?:`, a statement of its own, and
+ *  the condition of an `if`, a `while`, a `do` and a `switch`, and a `case`. */
+const reads: ReadonlySet<ts.SyntaxKind> = new Set([
+  ts.SyntaxKind.TypeOfExpression,
+  ts.SyntaxKind.VoidExpression,
+  ts.SyntaxKind.DeleteExpression,
+  ts.SyntaxKind.PrefixUnaryExpression,
+  ts.SyntaxKind.PostfixUnaryExpression,
+  ts.SyntaxKind.ConditionalExpression,
+  ts.SyntaxKind.ExpressionStatement,
+  ts.SyntaxKind.IfStatement,
+  ts.SyntaxKind.WhileStatement,
+  ts.SyntaxKind.DoStatement,
+  ts.SyntaxKind.SwitchStatement,
+  ts.SyntaxKind.CaseClause,
+]);
+
+/** Whether `parent` hands on the value of its operand `at` as its own: parentheses, `await`, a
+ *  type assertion or a non-null one, a branch of `?:`, either side of `??`, `||` and `&&`, and the
+ *  last of a comma. */
+function passesOn(parent: ts.Node, at: ts.Node): boolean {
+  if (ts.isConditionalExpression(parent)) return parent.condition !== at;
+  if (ts.isBinaryExpression(parent)) {
+    const operator = parent.operatorToken.kind;
+    return choices.has(operator) || (operator === ts.SyntaxKind.CommaToken && parent.right === at);
+  }
+  return ts.isExpression(parent) && ts.isExpression(at) && unwrapped(parent) !== parent;
+}
+
+/** Where the value `reference` reads goes, past what hands it on unchanged (`passesOn`). It is
+ *  kept where it is called, a member of it is read, it is read or compared (`reads`, a comparison,
+ *  one of `readers`), an assignment writes to it, or a declaration, a parameter's default or a
+ *  destructure binds it to a name the scan follows (`waitNames`) - unless that declaration is
+ *  exported. It is handed on anywhere else: passed to a call or a `new`, stored in an object, an
+ *  array, a member, a class's field or a JSX prop, returned, thrown or yielded. */
+function placeOf(reference: ts.Node): Place {
+  let at = reference;
+  while (passesOn(at.parent, at)) at = at.parent;
+  const parent = at.parent;
+  const followed = (name: ts.BindingName): boolean =>
+    ts.isIdentifier(name) || ts.isObjectBindingPattern(name);
+  if (ts.isCallExpression(parent)) {
+    return parent.expression === at || readsArguments(parent) ? "kept" : "handed";
+  }
+  if (
+    (ts.isPropertyAccessExpression(parent) || ts.isElementAccessExpression(parent)) &&
+    parent.expression === at
+  ) {
+    return "kept";
+  }
+  if (ts.isBinaryExpression(parent)) {
+    if (!assignments.has(parent.operatorToken.kind) || parent.left === at) return "kept";
+    return ts.isIdentifier(parent.left) || ts.isObjectLiteralExpression(parent.left)
+      ? "kept"
+      : "handed";
+  }
+  if (ts.isVariableDeclaration(parent)) {
+    if (!followed(parent.name)) return "handed";
+    return (ts.getCombinedModifierFlags(parent) & ts.ModifierFlags.Export) !== 0
+      ? "exported"
+      : "kept";
+  }
+  if (ts.isParameter(parent)) return followed(parent.name) ? "kept" : "handed";
+  if (ts.isBindingElement(parent)) {
+    return ts.isObjectBindingPattern(parent.parent) && followed(parent.name) ? "kept" : "handed";
+  }
+  if (ts.isShorthandPropertyAssignment(parent)) {
+    return parent.objectAssignmentInitializer === at ? "kept" : "handed";
+  }
+  if (ts.isExportAssignment(parent)) return "exported";
+  return reads.has(parent.kind) ? "kept" : "handed";
+}
+
+/** What `declaration` exports that stands for a wait or for what holds one: each name it exports
+ *  that does, of the file's own or of the module it names, or the whole of a timers module or
+ *  "bun" (`export * from "node:timers/promises"`). */
+function exportedWaits(declaration: ts.ExportDeclaration, names: WaitNames): ts.Node[] {
+  if (declaration.isTypeOnly) return [];
+  const specifier = declaration.moduleSpecifier;
+  const from =
+    specifier !== undefined && ts.isStringLiteral(specifier) ? specifier.text : undefined;
+  const clause = declaration.exportClause;
+  if (clause === undefined || ts.isNamespaceExport(clause)) {
+    return from !== undefined && kinds.some(moduleIs(from)) ? [declaration] : [];
+  }
+  return clause.elements.filter((element) => {
+    const local = (element.propertyName ?? element.name).text;
+    const source: Is =
+      from === undefined ? (kind) => names[kind].has(local) : memberIs(moduleIs(from), local);
+    return !element.isTypeOnly && kinds.some(source);
+  });
+}
+
+/** Whether `wait` stands in the body of `fake-clock.ts`'s `afterOnFakeClock`, and in no function
+ *  nested in it: the `setTimeout` there. */
+function isFakeClockTimer(file: string, wait: ts.Node): boolean {
+  const enclosing = ts.findAncestor(wait.parent, ts.isFunctionLike);
   return (
     file === fakeClockFile &&
     enclosing !== undefined &&
@@ -225,8 +587,11 @@ function saysWhy(lines: readonly string[], index: number): boolean {
   return false;
 }
 
-/** The calls in `text` that start a wait of real time, each with whether a comment above it says
- *  why it stays on the real clock. */
+/** The waits of real time `text` starts, each with whether a comment above it says why it stays
+ *  on the real clock: every call of a wait, and every reference to a wait that the file hands on
+ *  out of the scan's view (`placeOf`), which whatever it reaches may start. A reference to what
+ *  holds waits - `Bun`, a timers module, a scheduler - is found where the file exports it, since
+ *  the file that imports it calls its waits under a name the scan does not know. */
 export function realWaits(file: string, text: string): RealWait[] {
   const source = ts.createSourceFile(
     file,
@@ -239,12 +604,18 @@ export function realWaits(file: string, text: string): RealWait[] {
   const lines = text.split("\n");
   const found: RealWait[] = [];
   const visit = (node: ts.Node): void => {
-    if (
-      ts.isCallExpression(node) &&
-      startsWait(node.expression, names) &&
-      !isFakeClockTimer(file, node)
-    ) {
-      const index = source.getLineAndCharacterOfPosition(node.getStart(source)).line;
+    const waits: ts.Node[] = [];
+    if (ts.isCallExpression(node) && startsWait(node.expression, names)) waits.push(node);
+    if (ts.isExportDeclaration(node)) {
+      waits.push(...exportedWaits(node, names));
+    } else {
+      const stands = kindsRead(node, names);
+      const place = stands.length === 0 ? "kept" : placeOf(node);
+      if (stands.includes("wait") ? place !== "kept" : place === "exported") waits.push(node);
+    }
+    for (const wait of waits) {
+      if (isFakeClockTimer(file, wait)) continue;
+      const index = source.getLineAndCharacterOfPosition(wait.getStart(source)).line;
       found.push({
         reasoned: saysWhy(lines, index),
         site: `${file}:${index + 1}: ${(lines[index] ?? "").trim()}`,
@@ -447,6 +818,208 @@ test("a frame and a turn are found, global or a member, and the setImmediate of 
     "cancelAnimationFrame(frame);",
     "clearImmediate(turn);",
     'import { setImmediate as nextTurn } from "node:timers/promises";',
+  ];
+  expect(none.map((text) => realWaits("none.test.tsx", text).length)).toEqual(none.map(() => 0));
+});
+
+/** Expects each of `texts` to start one wait, refused without a reason, and to pass under
+ *  `MARKED`. */
+function refusedAndKept(texts: readonly string[]): void {
+  expect(
+    texts.map((text) => realWaits("alias.test.tsx", text).map((wait) => wait.reasoned))
+  ).toEqual(texts.map(() => [false]));
+  expect(
+    texts.map((text) =>
+      realWaits("alias.test.tsx", `${MARKED}\n${text}`).map((wait) => wait.reasoned)
+    )
+  ).toEqual(texts.map(() => [true]));
+}
+
+// docs/testing.md, "The clock of a unit test", says this scan fails every call that starts a wait
+// of real time, whatever wraps it, and the architect ruled that the sentence is not narrowed. A
+// reader found five spellings, each waiting 50 ms, that the scan did not find: Bun's sleep
+// destructured from `Bun`, a `setTimeout` under a name of the row's own, the promise `setTimeout`
+// destructured from a dynamic `import` and from a `require` of node:timers/promises, and a
+// `setTimeout` called through its `call`. Each is found once, at the line of its call, and passes
+// under the marker.
+test("the five spellings a reader found are each found at the line of their call", () => {
+  const spellings = [
+    "const { sleep } = Bun;\nawait sleep(50);",
+    "const later = setTimeout;\nlater(run, 50);",
+    'const { setTimeout: delay } = await import("node:timers/promises");\nawait delay(50);',
+    'const { setTimeout: wait } = require("node:timers/promises");\nawait wait(50);',
+    "window.setTimeout.call(window, run, 50);",
+  ];
+  expect(spellings.map((text) => realWaits("spelled.test.ts", text))).toEqual(
+    spellings.map((text) => {
+      const lines = text.split("\n");
+      return [{ reasoned: false, site: `spelled.test.ts:${lines.length}: ${lines.at(-1)}` }];
+    })
+  );
+  refusedAndKept(spellings);
+});
+
+// A name bound to a wait is a wait wherever the file calls it: a declaration or an assignment
+// whose value is a wait, a member such as `Bun.sleep`, another alias, or a choice of one (`??`,
+// `?:`, the last of a comma); a parameter's default; and a destructure, renamed or not, nested or
+// with a default, from `Bun`, from "bun" imported whole, `import`ed or `require`d, from a timers
+// module the same ways, and of a `setTimeout` from any object. A name is an alias in the whole
+// file once any binding makes it one, above or below its call and through any number of others.
+// The id a timer answers is no alias: the timer is the one wait.
+test("a name or a destructure that one of the waits is given is found where it is called", () => {
+  refusedAndKept([
+    "let later;\nlater = window.setTimeout;\nlater(run, 50);",
+    "var nap = Bun.sleep;\nawait nap(50);",
+    "const a = setImmediate;\nconst b = a;\nb(run);",
+    "function go() {\n  pause(50);\n}\nconst pause = nap;\nconst nap = Bun.sleepSync;",
+    "const wait = options.wait ?? setTimeout;\nwait(run, 50);",
+    "const frame = ready ? requestAnimationFrame : run;\nframe(run);",
+    "(0, setTimeout)(run, 50);",
+    "function after(ms: number, wait = setTimeout) {\n  wait(run, ms);\n}",
+    "const { sleep: nap } = Bun;\nawait nap(50);",
+    "const { sleepSync } = globalThis.Bun;\nsleepSync(50);",
+    'import * as bun from "bun";\nconst { sleep } = bun;\nawait sleep(50);',
+    'const { sleep } = await import("bun");\nawait sleep(50);',
+    'const { sleepSync: block } = require("bun");\nblock(50);',
+    'const {\n  scheduler: { wait },\n} = await import("node:timers/promises");\nawait wait(50);',
+    'const { setImmediate: turn } = await import("node:timers");\nturn(run);',
+    "const { setTimeout: later } = window;\nlater(run, 50);",
+    "const { later = setTimeout } = options;\nlater(run, 50);",
+    "let nap;\n({ sleep: nap } = Bun);\nawait nap(50);",
+    "const timer = setTimeout(run, 50);\nclearTimeout(timer);",
+  ]);
+});
+
+// A timers module or "bun" bound whole by a dynamic `import`, a `require` or an `import … =
+// require` is what a namespace import binds, and its members start the waits that one's do; so do
+// the members of one loaded in place.
+test("a timers module or bun bound by import() or require() starts a wait through its members", () => {
+  refusedAndKept([
+    'const t = await import("node:timers/promises");\nawait t.scheduler.wait(50);',
+    'const t = require("timers/promises");\nconst { scheduler } = t;\nawait scheduler.wait(50);',
+    'const b = require("bun");\nawait b.sleep(50);',
+    'const b = await import("bun");\nb.sleepSync(50);',
+    'import b = require("bun");\nawait b.sleep(50);',
+    'const timers = require("node:timers");\ntimers.setInterval(run, 50);',
+    '(await import("bun")).sleep(50);',
+    '(await import("node:timers/promises")).scheduler.wait(50);',
+  ]);
+});
+
+// The `call` and the `apply` of a wait start it, by a member's key too, and so does a call of its
+// `bind`, at once or under a name: what `bind` answers is an alias, and its own `call` is a call.
+test("the call, the apply and the bind of a wait are found where the wait is started", () => {
+  refusedAndKept([
+    "setTimeout.call(window, run, 50);",
+    "requestAnimationFrame.apply(window, [run]);",
+    "await Bun.sleep.call(Bun, 50);",
+    'window["setImmediate"]["call"](window, run);',
+    "const later = setTimeout;\nlater.apply(null, [run, 50]);",
+    "const later = window.setTimeout.bind(window);\nlater(run, 50);",
+    "setImmediate.bind(null, run)();",
+    "const bound = setTimeout.bind(window, run);\nbound.call(null, 50);",
+    'import { scheduler } from "node:timers/promises";\nconst wait = scheduler.wait.bind(scheduler);\nawait wait(50);',
+  ]);
+});
+
+// A wait passed to another call or a `new` as an argument is handed to code the scan does not
+// read, which may start it, as `Reflect.apply` does: it is found as a call, at the argument, and
+// passes as one does, under the marker or in `afterOnFakeClock`'s own body. A reference that is
+// only read or compared - the name `spyOn` takes, `typeof`, a comparison passed to `expect`, a
+// wait handed to `Object.hasOwn` or `Reflect.has`, which read it and call nothing - starts none,
+// and neither does an alias or a `bind` nobody calls or passes on, nor a `sleep` of the row's own
+// that is not Bun's.
+test("a wait passed to another call is found, and one only read or compared is not", () => {
+  refusedAndKept([
+    "await Promise.all([50].map(Bun.sleep));",
+    "await act(setTimeout);",
+    "await new Promise(setImmediate);",
+    "await promise.then(requestAnimationFrame);",
+    "Reflect.apply(setTimeout, window, [run, 50]);",
+    "const later = setTimeout;\nschedule(later);",
+    "act(setTimeout.bind(window, run, 50));",
+    'import { setTimeout as delay } from "node:timers/promises";\nawait retry(delay);',
+  ]);
+  const helper =
+    "export function afterOnFakeClock(ms: number, fn: () => void) {\n  return Reflect.apply(setTimeout, globalThis, [fn, ms]);\n}";
+  expect(realWaits("__tests__/fake-clock.ts", helper)).toEqual([]);
+  expect(realWaits("__tests__/other-clock.ts", helper)).toHaveLength(1);
+  const none = [
+    'spyOn(window, "setTimeout").mockImplementation(run);',
+    'expect(typeof setTimeout).toBe("function");',
+    "expect(globalThis.setTimeout === window.setTimeout).toBe(true);",
+    'if (typeof requestAnimationFrame === "function") run();',
+    "const later = setTimeout;",
+    "const later = setTimeout.bind(window);",
+    "const { sleep } = helpers;\nawait sleep(50);",
+    'expect(Object.hasOwn(setTimeout, "clock")).toBe(true);',
+    'Reflect.has(window.requestAnimationFrame, "clock");',
+  ];
+  expect(none.map((text) => realWaits("none.test.ts", text).length)).toEqual(none.map(() => 0));
+});
+
+// Every reference to a wait that leaves the scan's view is a wait, found at the reference as an
+// argument is, passing under the marker or in `afterOnFakeClock`'s own body: one stored in an
+// object, under a key or under its own name, in an array, a member, a class's field or a JSX prop;
+// one returned, by an arrow too, thrown or yielded; and one exported, by a declaration, by a name
+// of the file's own or of a module, or as the default. `Bun`, a timers module and a scheduler hold
+// waits that a file importing one calls under names the scan does not know, so each is found where
+// it is exported, and so is `export *` of such a module.
+test("a wait stored, given as a JSX prop, returned, thrown, yielded or exported is found at the reference", () => {
+  refusedAndKept([
+    "const timers = { wait: setTimeout };",
+    "const fakes = { setTimeout, clearTimeout };",
+    "const steps = [run, Bun.sleep];",
+    "options.wait = setTimeout;",
+    "const original = window.requestAnimationFrame;\nwindow.requestAnimationFrame = original;",
+    "class Clock {\n  wait = setImmediate;\n}",
+    "render(<Clock schedule={requestAnimationFrame} />);",
+    "function nextTurn() {\n  return setImmediate;\n}",
+    "const pick = () => window.setTimeout;",
+    "throw Bun.sleep;",
+    "function* waits() {\n  yield setTimeout;\n}",
+    "export const pause = Bun.sleep;",
+    "export { setTimeout as later };",
+    "const later = setTimeout;\nexport { later };",
+    "export default requestAnimationFrame;",
+    'export { setTimeout as delay } from "node:timers/promises";',
+    'export { sleep } from "bun";',
+    'export * from "node:timers/promises";',
+    'export * as clock from "bun";',
+    "export const bun = Bun;",
+    'export const timers = await import("node:timers/promises");',
+    'import * as timers from "node:timers/promises";\nexport { timers };',
+    "export default Bun;",
+  ]);
+  const helper =
+    "export function afterOnFakeClock(ms: number, fn: () => void) {\n  const timers = { wait: setTimeout };\n  return timers.wait(fn, ms);\n}";
+  expect(realWaits("__tests__/fake-clock.ts", helper)).toEqual([]);
+  expect(realWaits("__tests__/other-clock.ts", helper)).toHaveLength(1);
+});
+
+// What the scan sees all of hands nothing on: a member of a wait read (`setTimeout.length`), an
+// assignment that writes to one, a declaration or a destructure the scan follows, a condition, a
+// `void`, a `!`, a comparison and a `case`, a type (`typeof setTimeout` there), and a value of the
+// row's own stored, returned or exported. `Bun` handed to anything but an export is no wait: its
+// waits are found where they are reached.
+test("a wait read, compared, written to, bound or named in a type hands nothing on", () => {
+  const none = [
+    "const arity = setTimeout.length;",
+    "window.setTimeout = run;",
+    "const restore = window.requestAnimationFrame;",
+    "const { sleep } = Bun;",
+    "if (window.requestAnimationFrame) run();",
+    "void setTimeout;",
+    "const missing = !setImmediate;",
+    "const same = schedule === setTimeout;",
+    "switch (schedule) {\n  case setTimeout:\n    run();\n}",
+    "type Timer = ReturnType<typeof setTimeout>;",
+    "const held = spy as unknown as typeof window.setTimeout;",
+    "const timers = { wait: run };",
+    "render(<Clock schedule={run} />);",
+    "function version() {\n  return Bun.version;\n}",
+    'const spawned = spyOn(Bun, "spawn");',
+    "export const later = run;",
   ];
   expect(none.map((text) => realWaits("none.test.tsx", text).length)).toEqual(none.map(() => 0));
 });
