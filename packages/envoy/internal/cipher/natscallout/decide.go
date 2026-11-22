@@ -178,13 +178,19 @@ func credentialKind(req Request) string {
 // daemon's also takes its account's own reply prefix (natsgrant.InboxPrefix) beside _INBOX.>,
 // because a Legion daemon presenting its token always takes that prefix (the daemon's
 // natsauth.ConnectService), whatever its entry's scope; a held daemon's is written in place of
-// _INBOX.> by natsgrant.WithinProjects.
+// _INBOX.> by natsgrant.WithinProjects. An edge listener's projects were read by
+// config.ParseNATSServices, by the rule natsgrant.Edge holds them to, so Edge refuses none of
+// them; a list it did refuse answers its zero Permissions, no grant, which the guard refuses as
+// every empty grant is (guard, natsgrant.OpenDirection).
 func serviceGrant(entry config.NATSService) natsgrant.Permissions {
 	switch entry.Kind {
 	case config.NATSDispatch:
 		return natsgrant.Dispatch(entry.MachineID)
 	case config.NATSListener:
 		return natsgrant.Listener(entry.MachineID)
+	case config.NATSEdgeListener:
+		grant, _ := natsgrant.Edge(entry.MachineID, entry.Projects)
+		return grant
 	case config.NATSDaemon:
 		grant := natsgrant.Daemon()
 		if entry.AllProjects {

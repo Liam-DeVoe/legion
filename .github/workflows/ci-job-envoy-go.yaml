@@ -46,10 +46,11 @@ jobs:
     # of 15 is 56; after that step's 15 at most, the database skip count's own timeout-minutes of
     # 30 is 86 (its -timeout bounds each package, not the step, so the step has a limit of its
     # own, and its comment below says why 30); after that step's 30 at most, natslive's default
-    # 10, the bus matrix's own 5, the auth service's own 5 and natsgrant's own 5 (measured at
-    # under a minute on a dev box) are 111, the integration step's 5 is less, and the callout
-    # check's own 6, after the seconds those two steps measure, is less too.
-    timeout-minutes: 115
+    # 10, the bus matrix's own 5, the auth service's own 5, natsgrant's own 5 (a daemon's grant
+    # held to its projects, and the edge grant) and the edge listener's own 5 are 116, the
+    # integration step's 5 is less, and the callout check's own 6, after the seconds those two
+    # steps measure, is less too.
+    timeout-minutes: 120
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -63,6 +64,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     env:
+      JOB_TIMEOUT_MINUTES: 120 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
       BROKER_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
       # The runner VM is discarded after the job, so testcontainers' Ryuk reaper has nothing to
@@ -80,6 +82,8 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/envoy/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
           cache: false
       # go-envoy-test: this job builds and runs the test binary of every package of the envoy
       # module, a set no other job builds, so it keeps a family of its own.
@@ -250,8 +254,11 @@ jobs:
       # fail-open its guard refuses, so the guard is shown able to fail on the server production
       # runs. natsgrant has one of its own: a Legion daemon's grant held to its projects
       # (natsgrant.WithinProjects), handed out by a stand-in auth callout on the hub's image,
-      # receives no other project's message while today's grant, the control, does. Each package
-      # runs only the tests its tag adds:
+      # receives no other project's message while today's grant, the control, does. natsgrant and
+      # cmd/listener have the edge listener's: the server refuses the edge's user a Dispatch event,
+      # and the edge listener starts, relays a send and is reached by a role message through a
+      # shared listener under its rendered grant, with no violation, and ends its start, naming its
+      # inbox prefix, under a grant without it. Each package runs only the tests its tag adds:
       # `-tags natslive ./pkg` would re-run the package's untagged tests, which already run
       # elsewhere - internal/testnats and natsgrant in the unit step above, and internal/bus and
       # internal/cipher/natscallout in envoy-go-race, which the unit step's grep -Ev leaves out -
@@ -265,10 +272,12 @@ jobs:
           go test -count=1 -tags natslive -run "$rig" ./internal/testnats/
           cap=$(../../.github/scripts/go-tagged-tests.sh natslive ./internal/bus)
           go test -count=1 -timeout 5m -tags natslive -run "$cap" -v ./internal/bus/
-          grant=$(../../.github/scripts/go-tagged-tests.sh natslive ./natsgrant)
-          go test -count=1 -timeout 5m -tags natslive -run "$grant" -v ./natsgrant/
           callout=$(../../.github/scripts/go-tagged-tests.sh natslive ./internal/cipher/natscallout)
           go test -count=1 -timeout 5m -tags natslive -run "$callout" -v ./internal/cipher/natscallout/
+          grant=$(../../.github/scripts/go-tagged-tests.sh natslive ./natsgrant)
+          go test -count=1 -timeout 5m -tags natslive -run "$grant" -v ./natsgrant/
+          edge=$(../../.github/scripts/go-tagged-tests.sh natslive ./cmd/listener)
+          go test -count=1 -timeout 5m -tags natslive -run "$edge" -v ./cmd/listener/
         working-directory: packages/envoy
 
       - name: Integration test envoy (a real NATS server, in the test process)
