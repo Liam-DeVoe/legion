@@ -402,6 +402,13 @@ var storeWriteCallSites = map[string]string{
 	// stands under no issue. Its order is the order TestEveryStoreWriteTakesOneLockOrder proves of
 	// Write; `envoy-dispatch lens-kind-add` is its one caller.
 	"graphstore/lens_catalogue.go#AddLensKind": "graphstore#TestEveryStoreWriteTakesOneLockOrder",
+	// The test corpus loader's roles (dispatch://INFRA-1098's T8): the nodes of two roles and their
+	// pages, the pages' part_of, each role's held_by and its holder's part_of, through one Write
+	// in a transaction of its own that holds no row before it, at the sentinel and under no owner
+	// row, since a role stands under no issue. Its order is the order
+	// TestEveryStoreWriteTakesOneLockOrder proves of Write; cmd/dispatch-corpus and the corpus's
+	// Go tests are its callers, over a database no server writes a role of while it runs.
+	"seedcorpus/agents.go#writeRoles": "graphstore#TestEveryStoreWriteTakesOneLockOrder",
 	// The one writer of an ask's answer state: asks.Settled.Queue states the answer on the ask's
 	// node, appended under the event it is given or held for the caller's, and then writes the
 	// row; the catch-up of a follow another build recorded states it on the node. Each site that

@@ -2,12 +2,14 @@
 // the browser file and the shell drivers through cmd/dispatch-corpus, and the Go tests by calling
 // Seed and Check directly. It is test support. No deployment builds it, it declares no HTTP route
 // and it mounts nothing on any server: it writes through the API's own handlers, which api.Register
-// places on a mux of this process that no listener serves (apiServer), through the outbox's own
-// record of what a batch delivered (publish), and, for the one shape no writer of the tree
-// makes, by one statement of its own (nestReplies). Decision 5 of dispatch://INFRA-1098's plan is
-// why: a reply nested under another reply, as the walks over comments.reply_to read one, cannot be
-// written through the API, whose comment write climbs to the thread head before it stores
-// (api's threadHeadOf).
+// places on a mux of this process that no listener serves (apiServer), through the store's own
+// writer of a role's facts (writeRoles), and, for the one shape no writer of the tree makes, by
+// one statement of its own (nestReplies). Decision 5 of dispatch://INFRA-1098's plan is why: a
+// reply nested under another reply, as the walks over comments.reply_to read one, cannot be
+// written through the API, whose comment write climbs to the thread head before it stores (api's
+// threadHeadOf). It publishes no event and marks none published, its own or any other writer's,
+// and it refuses a database holding events it did not write unless its caller says the database
+// is a test copy (Options.TestCopy, `seed --test-copy`).
 //
 // # The record
 //
@@ -52,8 +54,9 @@
 //     from the default seed: a part written here would write rows that hold none of the relation.
 //  16. An agent with one session, one role it holds, its page, a message under that page and a
 //     reply under that message: the session's node (its comment's authored_by), the role's node,
-//     its page and the page's part_of, the role's held_by and the session's part_of the role, all
-//     written by the outbox's record of the model issue's events routed to the role. This head. The
+//     its page and the page's part_of, the role's held_by and the session's part_of the role, the
+//     facts the outbox's record of a batch routed to the role states, written through the same
+//     store writer by writeRoles, with the model issue routed to the role. This head. The
 //     message under the page and the reply under that message are dispatch://INFRA-1152's (a
 //     message on no issue hangs from its agent's page, d37dd05857): seedINFRA1152, absent.
 //  17. A second issue this issue waits on, and a plan_task of this issue waiting on one of that
@@ -81,8 +84,8 @@
 //     row beside the two c-routes-deleted names. This head.
 //  24. Two identities that must stay apart, one login in two letter cases and a role whose holder
 //     changed: dana writes as "Dana" and as "dana", one person node; the role corpus-handover, to
-//     which an issue of its own is routed, is held by one session and then by another, as two
-//     passes of the outbox resolve it. This head.
+//     which an issue of its own is routed, is held by one session and then by another, two claims
+//     of writeRoles, the second retracting the first. This head.
 //
 // The rows two checks name:
 //
@@ -146,12 +149,19 @@ const (
 	recorderSession = "ses_corpus_recorder"
 )
 
-// Options are one run of the seed: the project it writes into and the directory holding the three
-// captures (FindFixtures).
+// Options are one run of the seed: the project it writes into, the directory holding the three
+// captures (FindFixtures), and whether the database is a test copy, which the caller says of a
+// database that holds events already (ErrForeignEvents).
 type Options struct {
 	Project  string
 	Fixtures string
+	TestCopy bool
 }
+
+// ErrForeignEvents refuses a database that holds events the loader did not write, which a caller
+// has not said is a test copy (Options.TestCopy): such a database may be somebody's own, and the
+// corpus would write its issues, comments and roles among that somebody's work.
+var ErrForeignEvents = errors.New("the database holds events the loader did not write, so it is neither empty nor one its caller says is a test copy")
 
 // Corpus is what a seed wrote that a driver reads by name: each issue's key, each item's id and
 // each node's address, in the order written.
@@ -182,8 +192,10 @@ func (c Corpus) Print(out io.Writer) {
 }
 
 // Seed writes the corpus into the project options names of database, which is migrated and holds
-// the block schema the store does. It refuses a project that holds the corpus already, since a
-// second copy would make every count the self-check reads twice what it wrote.
+// the block schema the store does. It refuses a database that holds any event before it writes,
+// naming how many, unless options say it is a test copy (ErrForeignEvents), and a project that
+// holds the corpus already, since a second copy would make every count the self-check reads twice
+// what it wrote. It publishes no event and marks none published.
 func Seed(ctx context.Context, database *store.Store, options Options) (Corpus, error) {
 	if options.Project == "" {
 		options.Project = DefaultProject
@@ -191,6 +203,13 @@ func Seed(ctx context.Context, database *store.Store, options Options) (Corpus, 
 	captures, err := readCaptures(options.Fixtures)
 	if err != nil {
 		return Corpus{}, err
+	}
+	var foreign int
+	if err := database.Pool.QueryRow(ctx, `select count(*) from events`).Scan(&foreign); err != nil {
+		return Corpus{}, fmt.Errorf("count the events the database holds: %w", err)
+	}
+	if foreign > 0 && !options.TestCopy {
+		return Corpus{}, fmt.Errorf("%w: it holds %d events; seed an empty database, or say this one is a test copy (--test-copy)", ErrForeignEvents, foreign)
 	}
 	if held, err := corpusHeld(ctx, database.Pool, options.Project); err != nil {
 		return Corpus{}, err

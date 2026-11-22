@@ -744,6 +744,9 @@ var indexPasses = map[string]string{
 	// as the loader's own list names them, a column no tuple projects at this head, reading neither
 	// side of a projection to mend the other.
 	"seedcorpus/nest.go#nestReplies": "the test corpus loader's own list of the replies it nests and the comments each goes under",
+	// The test corpus loader's roles: each role's node, its page and holder, from the loader's own
+	// list of the roles it holds, through graphstore.Write, reading no projection.
+	"seedcorpus/agents.go#writeRoles": "the test corpus loader's own list of its roles and the sessions holding them",
 	// The seed's issues, asks and messages: each one's node, in its project, drawn from the plan
 	// before the batch writes its rows.
 	"cmd/dispatch-seed/write_core.go#writeIssues":     "the seed's own plan",

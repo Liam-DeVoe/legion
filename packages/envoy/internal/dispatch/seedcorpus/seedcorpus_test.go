@@ -57,8 +57,12 @@ func TestTheCorpusIsSeededAndReadBack(t *testing.T) {
 		t.Errorf("the self-check passed %d clauses, want 28 (22 bullets, the three rows and the three replays)", passed)
 	}
 
-	if _, err := Seed(ctx, database, Options{Fixtures: fixtures}); err == nil || !strings.Contains(err.Error(), "holds the corpus already") {
-		t.Errorf("a second seed of the same project answered %v, want a refusal naming the corpus it holds", err)
+	// A second seed finds the first one's events, and as a test copy finds its corpus.
+	if _, err := Seed(ctx, database, Options{Fixtures: fixtures}); !errors.Is(err, ErrForeignEvents) {
+		t.Errorf("a second seed of the database answered %v, want ErrForeignEvents", err)
+	}
+	if _, err := Seed(ctx, database, Options{Fixtures: fixtures, TestCopy: true}); err == nil || !strings.Contains(err.Error(), "holds the corpus already") {
+		t.Errorf("a second seed of the same project as a test copy answered %v, want a refusal naming the corpus it holds", err)
 	}
 
 	if _, err := database.Pool.Exec(ctx, `update asks set state = 'open', answer = null where issue_key = $1 and block_id = 'q-answered'`, key); err != nil {
