@@ -70,8 +70,10 @@
 # and the deployment repository as "the deployment repository". It prints a registry's refusal as
 # its status and its error codes alone, because a registry's message quotes the image's full path,
 # and it removes the deployment repository's owner and name from every error that `gh` prints.
-# Issue keys, commits and the person that the `Approval:` line names are printed as read, because
-# the check asks for each.
+# Issue keys and commits are printed as read, because the check asks for each. No line carries an
+# email address: the person that the `Approval:` line names is printed by login alone, the part
+# before `@`, and every line that carries what Dispatch, GitHub, a registry or the check script
+# answered passes through `logins`, which reduces any address in it the same way.
 #
 # Inputs. Each of these six is required, and the driver exits 2 where one is unset or malformed, so
 # that no file of this repository holds, as a literal this script needs, the deployment's
@@ -253,20 +255,33 @@ token=""
 
 assertions=0
 failures=0
-# pass SECTION WHAT [OBSERVED] and fail SECTION WHAT OBSERVED: one assertion each. Both print on
-# standard output, so the record keeps its order wherever the caller sends it.
+# An email address's domain, from its `@` on. `logins` takes it out of every line the record prints
+# that carries what Dispatch, GitHub, a registry or the check script answered, so the line names a
+# person by login alone, the part before `@`, on a pull request anyone may read. An image digest's
+# `@sha256:` holds no dot before its `:`, so the rule leaves it whole.
+readonly address_domain='@[A-Za-z0-9.-]+\.[A-Za-z][A-Za-z0-9-]*'
+# logins: standard input, with each email address in it reduced to its login.
+logins() { sed -E "s/$address_domain//g"; }
+# say FORMAT ARGS...: printf, through logins, for a line that carries something a read answered.
+say() {
+  # shellcheck disable=SC2059 # the format is the caller's, as printf's own is
+  printf "$@" | logins
+}
+
+# pass SECTION WHAT [OBSERVED] and fail SECTION WHAT OBSERVED: one assertion each, through logins.
+# Both print on standard output, so the record keeps its order wherever the caller sends it.
 pass() {
   assertions=$((assertions + 1))
   if (($# > 2)); then
-    printf 'PASS: %s %s: %s\n' "$1" "$2" "$3"
+    say 'PASS: %s %s: %s\n' "$1" "$2" "$3"
   else
-    printf 'PASS: %s %s\n' "$1" "$2"
+    say 'PASS: %s %s\n' "$1" "$2"
   fi
 }
 fail() {
   assertions=$((assertions + 1))
   failures=$((failures + 1))
-  printf 'FAIL: %s %s: %s\n' "$1" "$2" "$3"
+  say 'FAIL: %s %s: %s\n' "$1" "$2" "$3"
 }
 
 # head_of FILE: the first 300 bytes of FILE on one line, for a failure.
@@ -714,7 +729,7 @@ fi
 
 if ((listed_children)); then
   for key in "${live[@]}"; do
-    printf 'live: %s (%s)\n' "$key" "${live_reason[$key]}"
+    say 'live: %s (%s)\n' "$key" "${live_reason[$key]}"
   done
   unnamed=0
   for key in "${live[@]}"; do
@@ -728,7 +743,7 @@ if ((listed_children)); then
   for key in "${named_children[@]}"; do
     [[ -n "${live_reason[$key]:-}" ]] && continue
     if [[ -n "${child_status[$key]:-}" ]]; then
-      printf 'not live, so no read judges it: %s, which CHILDREN names (it is %s with no pull request of legion/%s)\n' \
+      say 'not live, so no read judges it: %s, which CHILDREN names (it is %s with no pull request of legion/%s)\n' \
         "$key" "${child_status[$key]}" "$key"
     else
       printf 'not live, so no read judges it: %s, which CHILDREN names (it is no child of %s)\n' \
@@ -775,13 +790,13 @@ for key in "${live[@]}"; do
     fi
   fi
   if [[ "$key" == "$override_key" ]]; then
-    printf 'MERGE_COMMIT_OVERRIDE: %s in place of %s for %s\n' \
+    say 'MERGE_COMMIT_OVERRIDE: %s in place of %s for %s\n' \
       "$override_commit" "${commit_of[$key]:-no merge commit}" "$key"
     commit_of[$key]="$override_commit"
   fi
 done
 for key in "${live[@]}"; do
-  printf 'commit of %s: %s\n' "$key" "${commit_of[$key]:-none}"
+  say 'commit of %s: %s\n' "$key" "${commit_of[$key]:-none}"
 done
 
 printf '\n-- Dispatch\n'
@@ -815,10 +830,10 @@ for key in "${live[@]}"; do
     --route "/api/v1/issues/$issue/decisions" --route /api/v1/inbox >"$work/check.out" 2>&1 ||
     answer=$?
   printf 'the production check of Dispatch with %s, the commit of %s, exited %d:\n' "$commit" "$key" "$answer"
-  sed 's/^/    /' "$work/check.out"
+  sed 's/^/    /' "$work/check.out" | logins
   release="$(grep -m 1 '^PASS the running build answers /healthz' "$work/check.out" | grep -oE 'names commit [0-9a-fA-F]{7,40}')"
   release="${release#names commit }"
-  printf 'dispatch release: %s\n' "${release:-unknown: the check named no commit /healthz answered}"
+  say 'dispatch release: %s\n' "${release:-unknown: the check named no commit /healthz answered}"
   last_line="$(tail -n 1 "$work/check.out")"
   if ((answer == 0)) && [[ "$last_line" =~ ^all\ [0-9]+\ assertions\ passed$ ]]; then
     pass dispatch "$what ($commit)" "the check ended \"$last_line\""
@@ -845,7 +860,7 @@ else
     if [[ "$name" =~ ^[0-9]+-[A-Z][A-Z0-9]*\.yaml$ ]]; then
       project_files+=("$name")
     else
-      printf 'not a project file, so not read: %s\n' "$name"
+      say 'not a project file, so not read: %s\n' "$name"
     fi
   done
   if ((${#project_files[@]} == 0)); then
@@ -861,7 +876,7 @@ for ref in "${images[@]}"; do
   name="$(image_name "$ref")"
   resolve_release "$ref"
   if [[ -n "${release_of[$ref]:-}" ]]; then
-    printf 'release of %s (%s): %s, %s\n' "$name" "${image_roles[$ref]}" "${release_of[$ref]}" "${release_how[$ref]}"
+    say 'release of %s (%s): %s, %s\n' "$name" "${image_roles[$ref]}" "${release_of[$ref]}" "${release_how[$ref]}"
     pass image "$name (${image_roles[$ref]}) has a release" "${release_of[$ref]}"
     carries_all image "the release of $name (${image_roles[$ref]}), ${release_of[$ref]}, carries the merge commit of every live child" \
       "${release_of[$ref]}"
@@ -875,14 +890,14 @@ printf '\n== 2. the decisions step finished\n'
 status="$(curl -sS -m 30 -o "$work/healthz" -w '%{http_code}' "$base/healthz" 2>"$work/curl.err")" ||
   status="curl failed: $(head_of "$work/curl.err")"
 if [[ "$status" != 200 ]] || ! jq -e 'type == "object"' "$work/healthz" >/dev/null 2>&1; then
-  printf '/healthz: %s\n' "$(answer_of "$work/healthz")"
+  say '/healthz: %s\n' "$(answer_of "$work/healthz")"
   fail healthz "/healthz answers decisions_step_owed at 0" "it answered $(answer_of "$work/healthz")"
   fail healthz "/healthz names a commit that carries the merge commit of every live child" \
     "it answered $(answer_of "$work/healthz")"
 else
   owed="$(jq -r 'if has("decisions_step_owed") then (.decisions_step_owed | tojson) else "absent" end' "$work/healthz")"
   healthz_commit="$(jq -r '.commit // empty | strings' "$work/healthz")"
-  printf '/healthz: commit %s, decisions_step_owed %s\n' "${healthz_commit:-absent}" "$owed"
+  say '/healthz: commit %s, decisions_step_owed %s\n' "${healthz_commit:-absent}" "$owed"
   if [[ "$owed" == 0 ]]; then
     pass healthz "/healthz answers decisions_step_owed at 0" "it reads 0"
   elif [[ "$owed" == absent ]]; then
@@ -908,12 +923,12 @@ tree_converted() {
   local key="$1" want="$2" got what="GET /api/v1/issues/$1/tree answers converted: $2"
   get "/api/v1/issues/$(q "$key")/tree" "$work/tree"
   if [[ "$status" != 200 ]]; then
-    printf 'tree of %s: %s\n' "$key" "$(answer_of "$work/tree")"
+    say 'tree of %s: %s\n' "$key" "$(answer_of "$work/tree")"
     fail tree "$what" "it answered $(answer_of "$work/tree")"
     return
   fi
   got="$(jq -r 'if has("converted") then (.converted | tostring) else "absent" end' "$work/tree" 2>/dev/null)"
-  printf 'tree of %s: converted %s\n' "$key" "${got:-unreadable}"
+  say 'tree of %s: converted %s\n' "$key" "${got:-unreadable}"
   if [[ "$got" == "$want" ]]; then
     pass tree "$what"
   else
@@ -930,12 +945,12 @@ lens=""
 what="$address answers a lens at dispatch://lens/<uuid>"
 get "/api/v1/references?to=$(q "$address")" "$work/references"
 if [[ "$status" != 200 ]]; then
-  printf 'references of %s: %s\n' "$address" "$(answer_of "$work/references")"
+  say 'references of %s: %s\n' "$address" "$(answer_of "$work/references")"
   fail premortem "$what" "the references read answered $(answer_of "$work/references")"
 else
   node_kind="$(jq -r '.node.kind // "none"' "$work/references" 2>/dev/null)"
   node_ref="$(jq -r '.node.ref // .node.id // "none"' "$work/references" 2>/dev/null)"
-  printf 'references of %s: a node of kind %s at %s\n' "$address" "${node_kind:-none}" "${node_ref:-none}"
+  say 'references of %s: a node of kind %s at %s\n' "$address" "${node_kind:-none}" "${node_ref:-none}"
   if [[ "$node_kind" == lens && "$node_ref" =~ ^dispatch://lens/[0-9a-f-]{36}$ ]]; then
     lens="$node_ref"
     pass premortem "$what" "$lens"
@@ -954,7 +969,7 @@ else
   else
     lens_kind="$(jq -r '.lens.kind.id // "none"' "$work/lens" 2>/dev/null)"
     risks="$(jq -r '.lens.risks // [] | length' "$work/lens" 2>/dev/null)"
-    printf 'lens %s: kind %s, %s risks\n' "$lens" "${lens_kind:-none}" "${risks:-no}"
+    say 'lens %s: kind %s, %s risks\n' "$lens" "${lens_kind:-none}" "${risks:-no}"
     if [[ "$lens_kind" == pre-mortem && "$risks" == 11 ]]; then
       pass premortem "$what" "$lens"
     else
@@ -974,10 +989,12 @@ if ((answer != 0)); then
   fail spec "$what" "dispatch read exited $answer: $(head_of "$work/summary.err")"
 else
   approval="$(grep -m 1 '^Approval:' "$work/summary")"
-  printf 'spec approval as read: %s\n' "${approval:-no Approval line}"
+  say 'spec approval as read: %s\n' "${approval:-no Approval line}"
   if [[ "$approval" =~ ^Approval:\ approved\ v([0-9]+)\ by\ ([^,]+) ]]; then
     approved="${BASH_REMATCH[1]}"
-    approver="${BASH_REMATCH[2]}"
+    # The person by login alone: the part before `@` where the line names an address, and the
+    # value as it reads otherwise, so no address reaches the pull request the record goes on.
+    approver="${BASH_REMATCH[2]%%@*}"
     pass spec "$what" "v$approved, approved by $approver"
   else
     fail spec "$what" "its summary reads \"${approval:-no Approval line}\""
@@ -990,7 +1007,7 @@ if [[ -n "$spec_override" ]]; then
   replaced="no approved version, since the spec has none"
   [[ -n "$approved" ]] && replaced="v$approved, approved by $approver"
   read_as="read by SPEC_VERSION_OVERRIDE in place of $replaced"
-  printf 'SPEC_VERSION_OVERRIDE: v%s in place of %s\n' "$version" "$replaced"
+  say 'SPEC_VERSION_OVERRIDE: v%s in place of %s\n' "$version" "$replaced"
 fi
 printf 'spec version read: %s\n' "${version:-none}"
 what="spec v${version:-?} of $issue holds the line $block_line"
