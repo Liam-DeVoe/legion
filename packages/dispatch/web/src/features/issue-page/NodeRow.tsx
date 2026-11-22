@@ -1031,11 +1031,10 @@ export function RowActs({
  * to mark it in, and what they wrote, whole (R9, ruling 1). The reader's own answer carries the
  * ink rule their own words carry (R34).
  *
- * What they wrote is drawn as the row draws its node's words (`RowText`): from the server's
- * reading of it, by the renderer, and where the read sent none as stored, character for
- * character, keeping the line breaks they typed. What they chose is drawn by the renderer from
- * the reading of each option's name the answer carries, as the Answers page draws it (the
- * reading list's `answers-chosen-options`).
+ * What they wrote is drawn as the row draws its node's words (`RowText`): by the renderer, from
+ * the server's reading of it, and where the read sent none from the page's own parse of it. What
+ * they chose is drawn by the renderer from the reading of each option's name the answer carries,
+ * as the Answers page draws it (the reading list's `answers-chosen-options`).
  */
 export function AskAnswer({
   answerer,

@@ -1,5 +1,4 @@
 import {
-  Fragment,
   type MouseEvent,
   type ReactNode,
   type RefObject,
@@ -13,6 +12,7 @@ import { useLocation, useNavigate } from "react-router-dom";
 import type { DisplayTree } from "../../api/types";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { TextAskCard } from "../refs/markdown-cards";
+import { useLoadedEngine } from "../refs/parsed-references";
 import { isPlainClick } from "../refs/picture-lightbox";
 import { useReferenceNames } from "../refs/plain-text";
 import { useKnownReferences } from "../refs/reference-names";
@@ -24,11 +24,10 @@ import { CONTROL_LABELS } from "./page-words";
 import {
   knownIssueKeys,
   linkRowReferences,
-  ROW_LINK,
-  type RowReference,
   rowReferences,
   rowReferenceWords,
 } from "./row-references";
+import { titleReading } from "./tree-drafts";
 
 /**
  * A node's own text, as its row in the outline draws it (R16, R20, R34), and the words of the
@@ -39,8 +38,10 @@ import {
  * the renderer every other surface draws a stored text with (`MarkdownBody`): a heading, bold
  * words, a list and a code span are drawn as what they are, never as the `#`, `**`, `-` and
  * backticks the author typed, and the browser parses nothing to draw them. A text whose read
- * sent none is drawn as stored, because the only other way to format it would be to parse it
- * here, which R20 refuses.
+ * sent none - a server of the build before, during a rolling deploy - is parsed on the page by
+ * the shared engine and drawn the same way from that parse (`ParsedText`), as the renderer's
+ * other callers draw a text a Dispatch from before trees sent bare, so a row reads the same
+ * whether or not its read sent a reading.
  *
  * Either way a reference in the words - a `dispatch://` reference, a dashboard address, the key
  * of an issue that exists - is a link to its target, and a person words with no link (R5), named
@@ -57,14 +58,14 @@ import {
  * The row asks the server nothing for a reference the page reads (R21), so the body's own link
  * pass, which reads one target for each reference, is given nothing to link.
  *
- * The words are a reading of the text, as it was when it was drawn as stored: an `ask` block in a
- * document is a node of the tree of its own, where a reader answers it, so the text draws its
- * question and options rather than a second card to answer it in (`TextAskCard`). Whatever the
- * reading draws that takes the focus - a link, a reference, a picture's control - is out of the
- * tab order, as every other control inside a row is: the tree is one tab stop, and a key
- * reaches a row's links instead (R9, `useTreeKeymap.ts`'s `rowStops`). A view that no tree's
- * keys reach - part V's Verification view and part J's Spec view - passes `tabStops`, which
- * keeps them in the tab order, the links a later pass makes included.
+ * The words are a reading of the text: an `ask` block in a document is a node of the tree of its
+ * own, where a reader answers it, so the text draws its question and options rather than a
+ * second card to answer it in (`TextAskCard`). Whatever the reading draws that takes the focus -
+ * a link, a reference, a picture's control - is out of the tab order, as every other control
+ * inside a row is: the tree is one tab stop, and a key reaches a row's links instead (R9,
+ * `useTreeKeymap.ts`'s `rowStops`). A view that no tree's keys reach - part V's Verification
+ * view and part J's Spec view - passes `tabStops`, which keeps them in the tab order, the links
+ * a later pass makes included.
  */
 export function RowText({
   focused = false,
@@ -78,7 +79,7 @@ export function RowText({
    *  their tab stop, named, so the keyboard can scroll them (decision 317, `useOutOfTabOrder`'s
    *  `keepScrollers`). */
   focused?: boolean;
-  /** The text as stored: drawn as it is where `tree` is absent. */
+  /** The text as stored: parsed on the page where `tree` is absent. */
   markdown: string;
   /** Called once the words the text draws change after they were first drawn - a reference
    *  takes the name that came to it - so the row measures its cut again, as it does for words of
@@ -92,10 +93,54 @@ export function RowText({
   /** The server's reading of `markdown`, where its read sent one. */
   tree?: DisplayTree;
 }): ReactNode {
-  // A text drawn as stored is one paragraph of words and links, which holds no scroller.
   return tree === undefined ? (
-    <StoredText markdown={markdown} onRedrawn={onRedrawn} source={source} tabStops={tabStops} />
+    <ParsedText
+      focused={focused}
+      markdown={markdown}
+      onRedrawn={onRedrawn}
+      source={source}
+      tabStops={tabStops}
+    />
   ) : (
+    <DrawnText
+      focused={focused}
+      markdown={markdown}
+      onRedrawn={onRedrawn}
+      source={source}
+      tabStops={tabStops}
+      tree={tree}
+    />
+  );
+}
+
+/** A text whose read sent no reading of it, parsed on the page by the shared engine
+ *  (`MarkdownEngine.parse`) into the document the server's reading of it would be, and drawn
+ *  from that parse as a text with a reading is (`DrawnText`). It is parsed in the render that
+ *  draws it, however long it is, so it is drawn in the commit that mounts it, as a reading is.
+ *  Nothing is drawn while the engine loads, so no mark the author typed shows raw meanwhile
+ *  (`useLoadedEngine`). A text the parser refuses is drawn as one run of its characters
+ *  (`titleReading`), and so is every text once the engine's load has failed, which the renderer
+ *  then draws as it draws any reading with no engine: as the text's own characters
+ *  (`MarkdownBody`). So no row's words are lost from the page. */
+function ParsedText({
+  focused,
+  markdown,
+  onRedrawn,
+  source,
+  tabStops,
+}: {
+  focused: boolean;
+  markdown: string;
+  onRedrawn: (() => void) | undefined;
+  source: TextSource | undefined;
+  tabStops: boolean;
+}): ReactNode {
+  const { engine, failed } = useLoadedEngine();
+  const tree = useMemo(() => {
+    if (engine === undefined) return failed ? titleReading(markdown) : undefined;
+    return (engine.parse(markdown)?.toJSON() as DisplayTree | undefined) ?? titleReading(markdown);
+  }, [engine, failed, markdown]);
+  return tree === undefined ? null : (
     <DrawnText
       focused={focused}
       markdown={markdown}
@@ -113,8 +158,6 @@ interface RowNames {
   /** The words each reference is drawn in, as one key, which changes only where one of them
    *  does. */
   readonly drawn: string;
-  /** The references of the words a row draws by name (`rowReferences`). */
-  readonly found: readonly RowReference[];
   /** The keys the page's batched read named an issue for: a row links one where it stands bare. */
   readonly issues: readonly string[];
   /** The name each reference is drawn by, an issue's title apart from its key, and a block's
@@ -158,7 +201,7 @@ function useRowNames(words: string, issue: string | undefined): RowNames {
         .join("\n"),
     [found, names]
   );
-  return { ambiguous, drawn, found, issues, names, reads };
+  return { ambiguous, drawn, issues, names, reads };
 }
 
 /** Calls `onRedrawn` after each commit, past the first, in which `drawn`, the words a row's
@@ -220,66 +263,6 @@ function dropDirectiveLines(root: HTMLElement): void {
     if (block instanceof HTMLElement && (block.textContent ?? "").trim() === "")
       block.hidden = true;
   }
-}
-
-/** A text drawn as stored, each reference in it the link its name is drawn in (a person words
- *  with no link), but for one the read answered as ambiguous, which stays as written, and no
- *  typed block's source line in it. */
-function StoredText({
-  markdown: stored,
-  onRedrawn,
-  source,
-  tabStops,
-}: {
-  markdown: string;
-  onRedrawn: (() => void) | undefined;
-  source: TextSource | undefined;
-  tabStops: boolean;
-}): ReactNode {
-  const markdown = useMemo(() => withoutDirectiveLines(stored), [stored]);
-  const { drawn, found, names, reads } = useRowNames(markdown, source?.issue);
-  useRedrawn(drawn, onRedrawn);
-  const follow = useFollowInPlace();
-  let at = 0;
-  return (
-    // biome-ignore lint/a11y/useKeyWithClickEvents: a link's Enter is a click, which this follows.
-    <p className="whitespace-pre-wrap break-words" onClick={follow} {...authorText}>
-      {reads}
-      {found.map((one) => {
-        const before = markdown.slice(at, one.start);
-        at = one.end;
-        const { key, words } = rowReferenceWords(one, names);
-        const content =
-          key === undefined ? (
-            words
-          ) : (
-            <>
-              <span className="font-semibold whitespace-nowrap">{key}</span>
-              {words === "" ? "" : ` ${words}`}
-            </>
-          );
-        return (
-          <Fragment key={`${one.start}:${one.reference}`}>
-            {before}
-            {one.path === undefined ? (
-              <span data-row-reference={one.reference}>{content}</span>
-            ) : (
-              <a
-                className={ROW_LINK}
-                data-row-chip={one.route.kind === "issue" ? undefined : ""}
-                data-row-reference={one.reference}
-                href={one.path}
-                tabIndex={tabStops ? undefined : -1}
-              >
-                {content}
-              </a>
-            )}
-          </Fragment>
-        );
-      })}
-      {markdown.slice(at)}
-    </p>
-  );
 }
 
 /**

@@ -257,8 +257,8 @@ const ROW_REFERENCE = "data-row-reference";
  *  puts back where the reference is read as ambiguous since (`linkRowReferences`). */
 const ROW_WRITTEN = "data-row-written";
 
-/** A link in a node's words that are drawn as stored: the words' own ink over the bullets'
- *  grey, as `styles.css` draws one in a drawn text. */
+/** A link the page draws in its words' own ink: underlined in the bullets' grey, as `styles.css`
+ *  draws a link in a node's drawn words. */
 export const ROW_LINK = "underline decoration-page-bullet underline-offset-[3px]";
 
 /** Writes `element`'s words: an issue's key set apart from its title, as a link to an issue
