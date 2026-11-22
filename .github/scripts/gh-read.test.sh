@@ -293,10 +293,10 @@ github() {
 # drive [--no-worker] [NAME=value...] -- <shell code>: runs the code in a bash that has sourced
 # gh-read.sh, as a step's shell under the stand-in Runner.Worker (none with --no-worker), with gh
 # pointed at the stand-in GitHub and the NAME=value pairs set; JOB_TIMEOUT_MINUTES and
-# STEP_TIMEOUT_MINUTES are unset unless a pair sets them. Sets out (stdout), err (stderr),
-# status and seconds (its wall time, whole seconds).
+# STEP_TIMEOUT_MINUTES are unset unless a pair sets them. Sets out (stdout), err (stderr) and
+# status.
 drive() {
-  local worker=yes started
+  local worker=yes
   local -a assignments=()
   if [ "$1" = --no-worker ]; then
     worker=''
@@ -311,7 +311,6 @@ drive() {
   # `; exit` keeps the stand-in worker a process of its own: a `-c` holding one command alone
   # would exec it, and the worker would be gone from the tree the helper reads.
   [ -z "$worker" ] || command=("$work/bin/Runner.Worker" -c '"$@"; exit $?' worker "${command[@]}")
-  started=$(date +%s)
   set +e
   out=$(cd "$work" && env -u JOB_TIMEOUT_MINUTES -u STEP_TIMEOUT_MINUTES -u GITHUB_TOKEN \
     GH_READ="$script_dir/gh-read.sh" GH_HOST=github.localhost GH_TOKEN=t \
@@ -320,7 +319,6 @@ drive() {
     GH_RETRY_SECONDS=0 "${assignments[@]}" "${command[@]}" 2> "$work/err")
   status=$?
   set -e
-  seconds=$(($(date +%s) - started))
   err=$(<"$work/err")
 }
 
@@ -370,7 +368,8 @@ check "gh's own words for the refusal stay in the log, once: the answered call p
 # The rows above read the wait's line only when one was logged, since a slow host may have no wait
 # left to sleep. These two hold a wait the helper sleeps to its line: the wait is an hour off under a
 # two-hour limit, so the helper sleeps on any host, and a stand-in sleep first on PATH records the
-# seconds and returns at once.
+# seconds and returns at once. The seconds are the hour less the time the helper took to decide, so
+# the rows hold them to the hour less ten minutes, which no host takes.
 # sleep_stand_in: a sleep for the next drive that records its arguments in $work/sleepbin/slept.
 sleep_stand_in() {
   rm -rf "$work/sleepbin"
@@ -379,13 +378,24 @@ sleep_stand_in() {
   chmod +x "$work/sleepbin/sleep"
 }
 slept() { cat "$work/sleepbin/slept" 2>/dev/null; }
+# drive_recording_sleep <as for drive>: drive with that stand-in sleep first on PATH, so a case that
+# must not sleep reads whether the helper slept from the record, not from the time it took.
+drive_recording_sleep() {
+  sleep_stand_in
+  if [ "$1" = --no-worker ]; then
+    shift
+    drive --no-worker PATH="$work/sleepbin:$PATH" "$@"
+  else
+    drive PATH="$work/sleepbin:$PATH" "$@"
+  fi
+}
 
 echo "case: a wait the helper sleeps is logged, naming the reset and the seconds it sleeps"
 github 3600
 sleep_stand_in
 drive JOB_TIMEOUT_MINUTES=120 PATH="$work/sleepbin:$PATH" -- 'gh_wait_reset gh api repos/o/r/pulls/1'
 check "the helper slept once, for the hour to the reset" \
-  "$([[ $(slept) =~ ^[0-9]+$ ]] && [ "$(slept)" -ge 3590 ] && echo true || echo false)"
+  "$([[ $(slept) =~ ^[0-9]+$ ]] && [ "$(slept)" -ge 3000 ] && echo true || echo false)"
 check "and logged that wait, once, naming the reset, the seconds and the job's limit" \
   "$(is "$(grep -c "^::warning::the API budget is spent until $(utc "$(spent_until)"); waiting $(slept) s for it, within this job's limit at " <<<"$err")|$(warnings)" '1|1')"
 check "then failed by name, the budget still spent after the wait" \
@@ -397,19 +407,19 @@ echo "403 3600" > "$work/state/secondary"
 sleep_stand_in
 drive JOB_TIMEOUT_MINUTES=120 PATH="$work/sleepbin:$PATH" -- 'gh_wait_reset gh api repos/o/r/pulls/1'
 check "the helper slept once, for the hour GitHub asked for" \
-  "$([[ $(slept) =~ ^[0-9]+$ ]] && [ "$(slept)" -ge 3600 ] && echo true || echo false)"
+  "$([[ $(slept) =~ ^[0-9]+$ ]] && [ "$(slept)" -ge 3000 ] && echo true || echo false)"
 check "and logged that wait, once, naming the retry-after, the seconds and the job's limit" \
   "$(is "$(grep -c "^::warning::GitHub's secondary rate limit asks this call to wait 3600 s (its retry-after), until .*; waiting $(slept) s for it, within this job's limit at " <<<"$err")|$(warnings)" '1|1')"
 check "then answered the call after it" "$(is "$status|$out" '0|{"title":"t"}')"
 rm -rf "$work/sleepbin"
 
 # A case that must not wait spends the budget for a minute or more, so a wait would take that
-# long, and holds the case to under 30 s, which leaves gh room to start on a loaded machine.
+# long, and reads from a stand-in sleep's record that the helper never slept.
 echo "case: a spent budget whose reset falls past the job's limit fails by name at once"
 github 3600
-drive JOB_TIMEOUT_MINUTES=1 -- 'gh_wait_reset gh api repos/o/r/pulls/1'
+drive_recording_sleep JOB_TIMEOUT_MINUTES=1 -- 'gh_wait_reset gh api repos/o/r/pulls/1'
 check "fails" "$(is "$status" 75)"
-check "with no sleep" "$(below "$seconds" 30)"
+check "with no sleep" "$(is "$(slept)" '')"
 check "calls the route once" "$(is "$(calls /repos/o/r/pulls/1)" 1)"
 check "prints exactly one error" "$(is "$(errors)" 1)"
 check "naming the reset and the limit" \
@@ -421,23 +431,23 @@ echo "case: a reset before the limit but inside the margin is not waited for"
 # away under a one-minute limit leaves less than the 30 s margin. With no margin this case sleeps
 # 40 s.
 github 40
-drive JOB_TIMEOUT_MINUTES=1 -- 'gh_wait_reset gh api repos/o/r/pulls/1'
+drive_recording_sleep JOB_TIMEOUT_MINUTES=1 -- 'gh_wait_reset gh api repos/o/r/pulls/1'
 check "fails" "$(is "$status" 75)"
-check "with no sleep" "$(below "$seconds" 30)"
+check "with no sleep" "$(is "$(slept)" '')"
 check "naming the limit it would outlive" "$(contains "$err" "past this job's limit at ")"
 
 echo "case: a limit that has already passed is not waited for"
 github 60
-drive JOB_TIMEOUT_MINUTES=0 -- 'gh_wait_reset gh api repos/o/r/pulls/1'
+drive_recording_sleep JOB_TIMEOUT_MINUTES=0 -- 'gh_wait_reset gh api repos/o/r/pulls/1'
 check "fails" "$(is "$status" 75)"
-check "with no sleep" "$(below "$seconds" 30)"
+check "with no sleep" "$(is "$(slept)" '')"
 check "naming the limit" "$(contains "$err" "past this job's limit at ")"
 
 echo "case: a step limit tighter than the job's binds"
 github 60
-drive JOB_TIMEOUT_MINUTES=10 STEP_TIMEOUT_MINUTES=0 -- 'gh_wait_reset gh api repos/o/r/pulls/1'
+drive_recording_sleep JOB_TIMEOUT_MINUTES=10 STEP_TIMEOUT_MINUTES=0 -- 'gh_wait_reset gh api repos/o/r/pulls/1'
 check "fails" "$(is "$status" 75)"
-check "with no sleep" "$(below "$seconds" 30)"
+check "with no sleep" "$(is "$(slept)" '')"
 check "naming the step's limit" "$(contains "$err" "past this step's limit at ")"
 
 echo "case: a step limit alone is a limit"
@@ -470,17 +480,17 @@ check "reads no rate limit" "$(is "$(calls /rate_limit)" 0)"
 
 echo "case: a step that names no limit does not wait"
 github 60
-drive -- 'gh_wait_reset gh api repos/o/r/pulls/1'
+drive_recording_sleep -- 'gh_wait_reset gh api repos/o/r/pulls/1'
 check "fails" "$(is "$status" 75)"
-check "with no sleep" "$(below "$seconds" 30)"
+check "with no sleep" "$(is "$(slept)" '')"
 check "naming the reset and the variable it lacks" \
   "$(contains "$err" "^::error::the API budget is spent until $(utc "$(spent_until)"), and this step names no time limit to wait within (JOB_TIMEOUT_MINUTES is not set)")"
 
 echo "case: a limit that is no whole number of minutes does not wait"
 github 60
-drive JOB_TIMEOUT_MINUTES=ten -- 'gh_wait_reset gh api repos/o/r/pulls/1'
+drive_recording_sleep JOB_TIMEOUT_MINUTES=ten -- 'gh_wait_reset gh api repos/o/r/pulls/1'
 check "fails" "$(is "$status" 75)"
-check "with no sleep" "$(below "$seconds" 30)"
+check "with no sleep" "$(is "$(slept)" '')"
 check "naming the value" "$(contains "$err" "JOB_TIMEOUT_MINUTES is 'ten', not a whole number of minutes")"
 
 echo "case: no Runner.Worker among the step's parents, so no start to measure from"
@@ -489,9 +499,9 @@ if [ "${GITHUB_ACTIONS:-}" = true ]; then
   echo "  SKIP: on a GitHub runner every process of this harness runs under its job's Runner.Worker"
 else
   github 60
-  drive --no-worker JOB_TIMEOUT_MINUTES=5 -- 'gh_wait_reset gh api repos/o/r/pulls/1'
+  drive_recording_sleep --no-worker JOB_TIMEOUT_MINUTES=5 -- 'gh_wait_reset gh api repos/o/r/pulls/1'
   check "fails" "$(is "$status" 75)"
-  check "with no sleep" "$(below "$seconds" 30)"
+  check "with no sleep" "$(is "$(slept)" '')"
   check "naming why" "$(contains "$err" 'no Runner.Worker process is among its parents')"
 fi
 
@@ -585,18 +595,18 @@ echo "case: a secondary rate limit with no retry-after takes GitHub's one-minute
 # waiting the minute; the error is where the 60 s shows.
 github never
 secondary 403 none
-drive JOB_TIMEOUT_MINUTES=1 -- 'gh_wait_reset gh api repos/o/r/pulls/1'
+drive_recording_sleep JOB_TIMEOUT_MINUTES=1 -- 'gh_wait_reset gh api repos/o/r/pulls/1'
 check "fails" "$(is "$status" 75)"
-check "with no sleep" "$(below "$seconds" 30)"
+check "with no sleep" "$(is "$(slept)" '')"
 check "naming the 60 s minimum and the limit" \
   "$(contains "$err" "^::error::GitHub's secondary rate limit asks this call to wait 60 s (GitHub's documented minimum, as the answer named no retry-after), until .*, past this job's limit at ")"
 
 echo "case: a secondary rate limit whose retry-after falls past the limit fails by name at once"
 github never
 secondary 403 3600
-drive JOB_TIMEOUT_MINUTES=1 -- 'gh_wait_reset gh api repos/o/r/pulls/1'
+drive_recording_sleep JOB_TIMEOUT_MINUTES=1 -- 'gh_wait_reset gh api repos/o/r/pulls/1'
 check "fails" "$(is "$status" 75)"
-check "with no sleep" "$(below "$seconds" 30)"
+check "with no sleep" "$(is "$(slept)" '')"
 check "calls once" "$(is "$(calls /repos/o/r/pulls/1)" 1)"
 check "naming the retry-after and the limit" \
   "$(contains "$err" "^::error::GitHub's secondary rate limit asks this call to wait 3600 s (its retry-after), until .*, past this job's limit at ")"
