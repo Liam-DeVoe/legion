@@ -20,6 +20,7 @@ import { addPriorityControlName } from "../web/src/features/priorities/IssuePrio
 import { buildDispatchReference, buildIssuePath } from "../web/src/features/refs/routes";
 import { setLiveSessions } from "./agents";
 import { createPriority, getIssue, patchIssue, putRepoProject } from "./api";
+import { listOf, listTrigger } from "./filters";
 import { nextFrames } from "./frames";
 import {
   closeDetails,
@@ -1338,9 +1339,9 @@ test("each control in Details saves and reads back", async ({ browser }) => {
     await marginSlot(page)
       .getByRole("button", { name: addPriorityControlName(three) })
       .click();
-    await marginSlot(page)
-      .getByRole("combobox", { name: CONTROL_LABELS.priority_to_advance })
-      .selectOption(seeded.priorityId);
+    const advance = listTrigger(marginSlot(page), CONTROL_LABELS.priority_to_advance);
+    await advance.click();
+    await listOf(advance).getByRole("option", { name: PRIORITY_TITLE }).click();
     await marginSlot(page)
       .getByRole("button", { exact: true, name: CONTROL_LABELS.add })
       .last()
@@ -1565,7 +1566,7 @@ async function expectFocusKept(
 async function expectPressRefused(page: Page, pressed: Locator, moment: string): Promise<void> {
   await nextFrames(page);
   await expect(
-    priorityLine(page).getByRole("combobox", { name: CONTROL_LABELS.priority_to_advance }),
+    listTrigger(priorityLine(page), CONTROL_LABELS.priority_to_advance),
     `${moment}: the press opened the add control's form`
   ).toHaveCount(0);
   await expect(pressed, `${moment}: the control pressed takes a press`).toHaveAttribute(
@@ -1634,7 +1635,7 @@ test.describe("the shared controls of Details keep the focus while their write l
     test.setTimeout(120_000);
     await phase(browser, seedDetailsIssue, async (page, seeded) => {
       const { one } = seeded.keys;
-      const second = await createPriority({ owner: "alice", title: SECOND_PRIORITY_TITLE });
+      await createPriority({ owner: "alice", title: SECOND_PRIORITY_TITLE });
       await gotoIssue(page, `/issues/${one}`);
       await openDetails(page);
       const advances = detailsRow(page, PROPERTY_LABELS.advances);
@@ -1642,12 +1643,19 @@ test.describe("the shared controls of Details keep the focus while their write l
       await addPriority.focus();
       await expect(addPriority).toBeFocused();
       await page.keyboard.press("Enter");
-      const picker = advances.getByRole("combobox", { name: CONTROL_LABELS.priority_to_advance });
+      const picker = listTrigger(advances, CONTROL_LABELS.priority_to_advance);
       await expect(picker).toBeFocused();
-      await expect(picker.locator("option", { hasText: SECOND_PRIORITY_TITLE })).toHaveCount(1);
-      // The one priority ONE does not advance yet, the first after the picker's empty choice.
+      // ArrowDown on the closed trigger opens the list, with the focus in its text box and its
+      // first option active: the one priority ONE does not advance yet. Enter takes it, and the
+      // list closes with the focus on its trigger.
       await page.keyboard.press("ArrowDown");
-      await expect(picker).toHaveValue(second.id);
+      await expect(listOf(picker).getByRole("combobox")).toBeFocused();
+      const option = listOf(picker).getByRole("option", { name: SECOND_PRIORITY_TITLE });
+      await expect(option).toHaveCount(1);
+      await page.keyboard.press("Enter");
+      await expect(picker).toHaveAttribute("aria-expanded", "false");
+      await expect(picker).toBeFocused();
+      await expect(picker).toContainText(SECOND_PRIORITY_TITLE);
       const issue = await holdIssue(page, one, true);
       await page.keyboard.press("Tab");
       const add = picker
@@ -1797,14 +1805,18 @@ test("Details' Add a priority on an issue that advances none keeps the focus in 
     await addPriority.focus();
     await expect(addPriority).toBeFocused();
     await page.keyboard.press("Enter");
-    const picker = priorityLine(page).getByRole("combobox", {
-      name: CONTROL_LABELS.priority_to_advance,
-    });
+    const picker = listTrigger(priorityLine(page), CONTROL_LABELS.priority_to_advance);
     await expect(picker).toBeFocused();
-    await expect(picker.locator("option", { hasText: PRIORITY_TITLE })).toHaveCount(1);
-    // The first priority after the picker's empty choice, by its arrow key.
+    // ArrowDown on the closed trigger opens the list, with the focus in its text box and its
+    // first option active: the seed's priority. Enter takes it, and the list closes with the
+    // focus on its trigger.
     await page.keyboard.press("ArrowDown");
-    await expect(picker).toHaveValue(seeded.priorityId);
+    await expect(listOf(picker).getByRole("combobox")).toBeFocused();
+    await expect(listOf(picker).getByRole("option", { name: PRIORITY_TITLE })).toHaveCount(1);
+    await page.keyboard.press("Enter");
+    await expect(picker).toHaveAttribute("aria-expanded", "false");
+    await expect(picker).toBeFocused();
+    await expect(picker).toContainText(PRIORITY_TITLE);
     const issue = await holdIssue(page, three, false);
     await page.keyboard.press("Tab");
     const add = picker
