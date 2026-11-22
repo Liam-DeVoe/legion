@@ -84,6 +84,41 @@ function browserLocks(): LockManager {
   } as unknown as LockManager;
 }
 
+/** `locks` with the page's `localStorage` as tabs in two processes share it: a write reaches the
+ *  store, where every tab reads it, only once a lock is let go. That is the latest a browser
+ *  delivers a write, since the tab a lock goes to next reads every write the tab that let it go
+ *  made before. The real `setItem` is put back when the test ends. */
+function laggingStore(locks: LockManager): LockManager {
+  const pending = new Map<string, string>();
+  const write = localStorage.setItem;
+  const flush = () => {
+    for (const [key, value] of pending) write(key, value);
+    pending.clear();
+  };
+  // happy-dom's `localStorage` is a Proxy, and a method defined on it is the one every read finds.
+  const descriptor = { configurable: true, writable: true };
+  Object.defineProperty(localStorage, "setItem", {
+    ...descriptor,
+    value: (key: string, value: string) => pending.set(key, value),
+  });
+  undraws.push(() => {
+    pending.clear();
+    Object.defineProperty(localStorage, "setItem", { ...descriptor, value: write });
+  });
+  const request = (name: string, first: unknown, second?: unknown) => {
+    const options = (typeof first === "function" ? {} : first) as LockOptions;
+    const granted = (typeof first === "function" ? first : second) as LockGrantedCallback<unknown>;
+    return locks.request(name, options, async (lock) => {
+      try {
+        return await granted(lock);
+      } finally {
+        flush();
+      }
+    });
+  };
+  return { query: () => locks.query(), request } as unknown as LockManager;
+}
+
 const OTHER_TAB_ACTION =
   "Another tab has not finished moving these issues. Finish or Dismiss that move first.";
 const OWN_ACTION = "Finish or Dismiss the interrupted action before starting another one.";
@@ -116,6 +151,77 @@ test("a second tab's bulk action is refused while the first tab's record is live
   expect(first.current.current.current).toEqual(record);
   // The second tab takes the first tab's record into its table, which its refusal names.
   expect(second.current.action).toEqual(record);
+});
+
+// R14, with the architect's decision: a tab reads the store and keeps its record under one lock
+// for the listing. Two tabs run in two processes, so without that lock both can read the store
+// before either write reaches it, and both begin. Here a write reaches the store only once a
+// lock is let go, and two tabs begin at once: the second waits for the listing's lock, reads the
+// first tab's record, and is refused.
+test("of two tabs that begin at once on one listing, the second is refused and the first's record stays", async () => {
+  const client = new QueryClient();
+  undraws.push(() => client.clear());
+  const locks = laggingStore(browserLocks());
+  const first = tableIn("tab-one", client, locks);
+  const second = tableIn("tab-two", client, locks);
+  const { promise: moving, resolve: stop } = Promise.withResolvers<void>();
+  undraws.push(stop);
+  const moved: (string | undefined)[] = [];
+  let refused: Promise<Begun<void>> | undefined;
+  act(() => {
+    void first.current.begin({ kind: "startNext", keys: ["CORE-1", "CORE-2"] }, (record) => {
+      moved.push(record.tab);
+      return moving;
+    });
+    refused = second.current.begin({ kind: "startNext", keys: ["CORE-3"] }, async (record) => {
+      moved.push(record.tab);
+    });
+  });
+  let answer: Begun<void> | undefined;
+  await act(async () => {
+    answer = await refused;
+  });
+  expect(answer).toEqual({ kind: "refused", text: MOVING_ACTION });
+  expect(moved).toEqual(["tab-one"]);
+  const record = readTableAction("CORE");
+  expect(record?.tab).toBe("tab-one");
+  expect(record?.keys).toEqual(["CORE-1", "CORE-2"]);
+});
+
+// R14: a tab's end takes out the record of its own move and no other. In a browser with no lock
+// manager another tab can dismiss a move that still runs (`isLeftBehind`) and begin its own. Its
+// record is in the store before the `storage` event that tells this tab of it, so this tab's
+// move can end in between. That record stays, and this tab takes it in.
+test("a tab's end leaves the record another tab kept in place of its own", async () => {
+  const client = new QueryClient();
+  undraws.push(() => client.clear());
+  const table = tableIn("tab-one", client);
+  const { promise: moving, resolve: moved } = Promise.withResolvers<void>();
+  undraws.push(moved);
+  let begun: Promise<Begun<void>> | undefined;
+  act(() => {
+    begun = table.current.begin({ kind: "startNext", keys: ["CORE-1"] }, async (record) => {
+      await moving;
+      table.current.end(record.id);
+    });
+  });
+  expect(readTableAction("CORE")?.tab).toBe("tab-one");
+  const other: TableAction = {
+    id: "other-tab",
+    kind: "startNext",
+    project: "CORE",
+    keys: ["CORE-3"],
+    tab: "tab-two",
+    startedAt: Date.now(),
+    writes: {},
+  };
+  localStorage.setItem(tableStorageKey("CORE"), JSON.stringify({ ...LAYOUT, action: other }));
+  await act(async () => {
+    moved();
+    await begun;
+  });
+  expect(readTableAction("CORE")).toEqual(other);
+  expect(table.current.action).toEqual(other);
 });
 
 // k18 (R14), the architect's decision: a second tab offers nothing that ends a move the first

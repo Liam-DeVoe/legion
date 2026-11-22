@@ -28,14 +28,6 @@ interface Confirmation {
   run: () => void;
 }
 
-/** What an interrupted action of each kind says it left behind, and how it is finished. The
- *  record's kind union is the only list of kinds: a new one fails to compile until both are
- *  written for it. */
-interface ResumableAction {
-  describe: (record: TableAction) => string;
-  resume: (record: TableAction, current: readonly IssueSummary[]) => Promise<void>;
-}
-
 /** What a bulk action is pressed over, read at the press: the issues the table lists, their
  *  rows, and the way to clear the table's selection once the action has moved what it named. A
  *  table drawn again since the press (another view of the Issues tab) has a selection of its
@@ -241,7 +233,7 @@ export function useIssueTableActions(listing: IssueListing): IssueTableActions {
               `Did not move up: ${remaining.join(", ")}. ${error instanceof Error ? error.message : String(error)}`
           );
           // Ended while this tab still holds the record's lock, so no tab finds it left behind.
-          if (ran) recovery.end();
+          if (ran) recovery.end(record.id);
           return ran;
         });
         if (begun.kind === "refused") throw new Error(begun.text);
@@ -285,19 +277,7 @@ export function useIssueTableActions(listing: IssueListing): IssueTableActions {
     runQueued(queued, rows);
   };
 
-  const kinds: Record<TableAction["kind"], ResumableAction> = {
-    startNext: {
-      describe: (record) =>
-        `Start next: ${record.keys.join(", ")} may still need to move up, in that order.`,
-      resume: async (record, current) => {
-        await runStartNext(
-          record,
-          buildItems(current, () => "")
-        );
-      },
-    },
-  };
-  /** Finishes the record left behind, while this tab holds its lock (`recovery.resume`): no
+  /** Finishes the Start next left behind, while this tab holds its lock (`recovery.resume`): no
    *  other tab runs that move meanwhile, and none offers to end it. Once it has, the selection
    *  of the table it was pressed on is cleared (`clearSelection`). */
   const finish = (clearSelection: () => void) => {
@@ -313,9 +293,12 @@ export function useIssueTableActions(listing: IssueListing): IssueTableActions {
           if (!record) return undefined;
           const current = await listOpen();
           if (!recovery.active(record.id)) return undefined;
-          await kinds[record.kind].resume(record, current);
+          await runStartNext(
+            record,
+            buildItems(current, () => "")
+          );
           if (!recovery.active(record.id)) return undefined;
-          recovery.end();
+          recovery.end(record.id);
           return record.keys;
         }),
       clearSelection
@@ -328,7 +311,9 @@ export function useIssueTableActions(listing: IssueListing): IssueTableActions {
     notice,
     moved,
     interrupted,
-    interruptedDescription: interrupted && kinds[interrupted.kind].describe(interrupted),
+    interruptedDescription:
+      interrupted &&
+      `Start next: ${interrupted.keys.join(", ")} may still need to move up, in that order.`,
     confirming,
     cancelConfirming: () => setConfirming(undefined),
     confirmed: () => {
