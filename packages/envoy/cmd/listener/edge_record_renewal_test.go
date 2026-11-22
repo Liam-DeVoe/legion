@@ -11,6 +11,7 @@ package main
 // of the token the claim was made with.
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -200,12 +201,19 @@ func TestARoleClaimRefreshClearsAForgedRecordsFields(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("store the forged record for %s: %v", claimant, err)
 	}
+	if err := rig.deps.sessions.SetRepositoryGap(context.Background(), claimant, "forged-mark"); err != nil {
+		t.Fatalf("store the forged gap mark for %s: %v", claimant, err)
+	}
+	testwait.Eventually(t, "the cache to hold the forged gap mark", func() bool {
+		entry, _ := rig.deps.sessions.Lookup(claimant)
+		return entry.RepositoryGap == "forged-mark"
+	})
 	_, byToken := rig.sharedRoleClaims(t)
 	restore := rig.deps.sessions.SetStoredByWriterSeamForTest(claimant, session.SessionEntry{}, false, nil)
 	defer restore()
 	renewed := rig.claimThrough(t, byToken, rig.personToken(claimant, "PRIV"), claimant, "renewal-h1-reviewer")
-	if renewed.Title != "" || renewed.Dir != "" || renewed.Delivery != "" || renewed.ClientInstanceID != "" || renewed.Capabilities != nil {
-		t.Errorf("the refresh wrote a forged record's non-project fields back: title=%q dir=%q delivery=%q instance=%q capabilities=%v; want them cleared",
-			renewed.Title, renewed.Dir, renewed.Delivery, renewed.ClientInstanceID, renewed.Capabilities)
+	if renewed.Title != "" || renewed.Dir != "" || renewed.Delivery != "" || renewed.ClientInstanceID != "" || renewed.Capabilities != nil || renewed.RepositoryGap != "" {
+		t.Errorf("the refresh wrote a forged record's non-project fields back: title=%q dir=%q delivery=%q instance=%q capabilities=%v gap=%q; want them cleared",
+			renewed.Title, renewed.Dir, renewed.Delivery, renewed.ClientInstanceID, renewed.Capabilities, renewed.RepositoryGap)
 	}
 }

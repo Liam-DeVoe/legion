@@ -2169,7 +2169,11 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 		// listener's cache with no bucket call, as a registration reads it (registerPass): a
 		// claimant the refresh makes live again is handed its roles' kept lanes, by the rule above.
 		_, before := d.sessions.Lookup(body.SessionID)
-		if err := d.sessions.PutWithin(ctx, body.SessionID, entry); err != nil {
+		put := d.sessions.PutWithin
+		if clearForged {
+			put = d.sessions.PutClearingGap
+		}
+		if err := put(ctx, body.SessionID, entry); err != nil {
 			writeStoreError(ctx, w, fmt.Errorf("refresh role claimant registration: %w", err), http.StatusServiceUnavailable)
 			return
 		}

@@ -882,6 +882,20 @@ func (r *SessionRegistry) Put(sessionID string, entry SessionEntry) error {
 // is refused with ErrEntryUnbound and nothing is written: every reader would read it as no record,
 // while this registry's own copy held it until its watcher delivered it.
 func (r *SessionRegistry) PutWithin(ctx context.Context, sessionID string, entry SessionEntry) error {
+	return r.putWithin(ctx, sessionID, entry, true)
+}
+
+// PutClearingGap is PutWithin that writes entry's own RepositoryGap rather than carrying the gap
+// mark from the record it replaces: a role claim's refresh over a record the stream leader holds no
+// writer's record for uses it (cmd/listener's roleSetHandler) to write back no gap mark of a
+// RePublish's, as it carries back none of its other forgeable fields. Every other write carries the
+// mark, since only SetRepositoryGap and ClearRepositoryGap raise or clear one, and a registration or
+// a renewal must not drop a relay's mark.
+func (r *SessionRegistry) PutClearingGap(ctx context.Context, sessionID string, entry SessionEntry) error {
+	return r.putWithin(ctx, sessionID, entry, false)
+}
+
+func (r *SessionRegistry) putWithin(ctx context.Context, sessionID string, entry SessionEntry, carryGap bool) error {
 	if entry.MachineID == "" {
 		return fmt.Errorf("write session %s to the bucket: %w: the entry names no machine", sessionID, ErrEntryUnbound)
 	}
@@ -902,7 +916,7 @@ func (r *SessionRegistry) PutWithin(ctx context.Context, sessionID string, entry
 	replaced, cached := r.cache.Get(sessionID)
 	revision := r.cache.FenceFor(epoch, sessionID)
 	known := cached && revision > 0
-	if known {
+	if known && carryGap {
 		entry.RepositoryGap = replaced.entry.RepositoryGap
 	}
 	r.mu.RUnlock()
@@ -915,11 +929,17 @@ func (r *SessionRegistry) PutWithin(ctx context.Context, sessionID string, entry
 				// On a retry the leader's read reports a message the server wrote, or a marker, at
 				// the sequence it is stored at, so the write replaces it there rather than fencing
 				// for good on the sequence a direct get read from another stream's header.
-				revision, entry.RepositoryGap = at, ""
+				revision = at
+				if carryGap {
+					entry.RepositoryGap = ""
+				}
 			case err != nil:
 				return fmt.Errorf("read session %s from the bucket before writing it: %w", sessionID, err)
 			default:
-				revision, entry.RepositoryGap = at, stored.RepositoryGap
+				revision = at
+				if carryGap {
+					entry.RepositoryGap = stored.RepositoryGap
+				}
 			}
 		}
 		lost, err := r.writeEntryAt(ctx, kv, epoch, sessionID, entry, revision)
