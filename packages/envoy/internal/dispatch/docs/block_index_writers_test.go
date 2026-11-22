@@ -932,6 +932,11 @@ var indexPasses = map[string]string{
 	// with its placement and its part_of to state what moved, never to mend a row.
 	"refs/block_nodes.go#queueBlockParents": "the version's render, and of each authored node the placement, part_of and parent value the store holds of it",
 	"refs/block_nodes.go#queueBlockRefs":    "the version's render, and each decision's stored decided_by",
+	// The rows of the blocks a pass writes (document_blocks, document_block_texts), from its own
+	// plan: the block index queues them inside its revision fence (BlockIndexing.Queue), and the
+	// typed-node pass of a deferred version queues the rows of the typed blocks it writes and
+	// removes (refs.DecisionIndexing.Queue). It reads no row to mend another.
+	"refs/blocks.go#queueRows": "the version's render, as the pass's plan holds it",
 	// The typed-node pass: the decision and reading nodes of the version, their values and their
 	// authors, from the version's render and the credential the version's write proved, and above
 	// the deferral bound their part_of and the rows of their own ties, and the shaped ties of the
