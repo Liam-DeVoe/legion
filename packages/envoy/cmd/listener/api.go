@@ -2167,10 +2167,10 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 			// delivery that pauses its relay until the next registration, a display field or a gap
 			// mark. The refresh carries back none of them, building the entry from the fields it
 			// keeps, as the gap and renewal writes carry back nothing of a server-written record (the
-			// F3 rule). PutClearingGap clears the gap mark over a record no writer's stands for; where
-			// the session's own registration landed in the race between this confirmation and the
-			// write, it keeps that record's gap mark and delivery mode rather than clearing a live
-			// session's own.
+			// F3 rule). PutClearingGap clears a record no writer's stands for; where the session's own
+			// registration landed in the race between this confirmation and the write, it writes that
+			// record back with only the machine, self-subscription and projects changed, keeping its
+			// delivery set and the rest, rather than clearing a live session's own.
 			entry = session.SessionEntry{
 				MachineID: entry.MachineID, SelfSubscribed: entry.SelfSubscribed, Projects: entry.Projects,
 			}

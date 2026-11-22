@@ -449,22 +449,22 @@ func TestPutClearingGapKeepsAWritersGapMarkThatLandsOnALostRace(t *testing.T) {
 	}
 }
 
-// N1b: PutClearingGap keeps a writer's gap mark and delivery mode when the session's own
-// registration has already caught up in this registry's cache before the clearing write - the
-// ordering the lost-race row above does not reach, because the write then lands on its first try
-// against the cache's fence. The claim refresh decides clearForged on a leader read that finds a
-// RePublished record (StoredByWriter false); the session's own writer's record, a relay's mark and a
-// consumer delivery on it then land and the cache applies them; PutClearingGap must not clear them.
-// Control (b785a2a6db..5bc0ed7f6f's head): the fast cache path writes the caller's empty mark and
-// delivery, so the entry ends gap="" delivery="".
-func TestPutClearingGapKeepsAWritersGapMarkAndDeliveryWhenTheCacheHasCaughtUp(t *testing.T) {
+// N1b/N9/N9b: when the session's own writer's record has caught up in this registry's cache before
+// the clearing write (the ordering the lost-race row above does not reach, since the write lands on
+// its first try), PutClearingGap writes that record back with only the claim's machine,
+// self-subscription and projects changed, keeping its gap mark, its whole delivery set (Delivery,
+// Epoch, ConsumerStart), its client instance and its capabilities. Keeping Delivery without
+// ConsumerStart would read as a consumer holding every stored message; clearing the instance or
+// capabilities would unprotect a live session's role and mode. Control (ba7e0cc7aa): the fast cache
+// path, or a keep of only the gap mark and Delivery, drops the rest.
+func TestPutClearingGapKeepsTheStandingWritersRecordWhenTheCacheHasCaughtUp(t *testing.T) {
 	client := setupNATS(t)
 	r := openBindingRegistry(t, client)
 	other := openBindingRegistry(t, client)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	const sessionID, mark = "ses_clear_gap_cached", "relay-mark"
-	if err := r.PutWithin(ctx, sessionID, SessionEntry{MachineID: "edge-a", Projects: []string{"PRIV"}, Delivery: DeliveryConsumer, Epoch: "e1"}); err != nil {
+	if err := r.PutWithin(ctx, sessionID, SessionEntry{MachineID: "edge-a", Projects: []string{"PRIV"}, Delivery: DeliveryConsumer, Epoch: "e1", ConsumerStart: 3}); err != nil {
 		t.Fatalf("register %s: %v", sessionID, err)
 	}
 	body, err := json.Marshal(map[string]any{"session_id": sessionID, "machine_id": "edge-a", "updated_at": time.Now().UnixMilli(),
@@ -477,9 +477,12 @@ func TestPutClearingGapKeepsAWritersGapMarkAndDeliveryWhenTheCacheHasCaughtUp(t 
 	if _, own, err := r.StoredByWriter(ctx, sessionID); err != nil || own {
 		t.Fatalf("precondition: StoredByWriter over the RePublish = %t, %v; want false (the refresh's clearForged)", own, err)
 	}
-	// The session's own writer's record lands, then a relay marks it, and this registry's cache
-	// applies both before PutClearingGap reads its fence.
-	if err := other.PutWithin(ctx, sessionID, SessionEntry{MachineID: "edge-a", Projects: []string{"PRIV"}, Delivery: DeliveryConsumer, Epoch: "e2"}); err != nil {
+	// The session's own writer's record lands, with a consumer delivery set, a client instance and
+	// capabilities, then a relay marks it; this registry's cache applies both before PutClearingGap
+	// reads its fence.
+	live := SessionEntry{MachineID: "edge-a", Projects: []string{"PRIV"}, Delivery: DeliveryConsumer, Epoch: "e2",
+		ConsumerStart: 7, ClientInstanceID: "instance-live", Capabilities: []string{"aside"}, Title: "live"}
+	if err := other.PutWithin(ctx, sessionID, live); err != nil {
 		t.Fatalf("the writer's registration: %v", err)
 	}
 	if err := other.SetRepositoryGap(ctx, sessionID, mark); err != nil {
@@ -487,8 +490,9 @@ func TestPutClearingGapKeepsAWritersGapMarkAndDeliveryWhenTheCacheHasCaughtUp(t 
 	}
 	waitFor(t, 5*time.Second, func() bool {
 		cached, err := r.Get(sessionID)
-		return err == nil && cached.RepositoryGap == mark && cached.Delivery == DeliveryConsumer
+		return err == nil && cached.RepositoryGap == mark && cached.Epoch == "e2"
 	})
+	before, _, _ := r.StoredByWriter(ctx, sessionID)
 	// The refresh's write, as roleSetHandler makes it under clearForged.
 	if err := r.PutClearingGap(ctx, sessionID, SessionEntry{MachineID: "edge-a", SelfSubscribed: true, Projects: []string{"PRIV"}}); err != nil {
 		t.Fatalf("PutClearingGap(%s): %v", sessionID, err)
@@ -498,10 +502,87 @@ func TestPutClearingGapKeepsAWritersGapMarkAndDeliveryWhenTheCacheHasCaughtUp(t 
 		t.Fatalf("read %s after the refresh: own=%t err=%v", sessionID, own, err)
 	}
 	if after.RepositoryGap != mark {
-		t.Errorf("PutClearingGap dropped the writer's gap mark the cache had already applied: gap=%q, want %q", after.RepositoryGap, mark)
+		t.Errorf("PutClearingGap dropped the writer's gap mark: gap=%q, want %q", after.RepositoryGap, mark)
 	}
-	if after.Delivery != DeliveryConsumer {
-		t.Errorf("PutClearingGap cleared the writer's delivery mode: delivery=%q, want %q", after.Delivery, DeliveryConsumer)
+	if after.Delivery != DeliveryConsumer || after.Epoch != "e2" || after.ConsumerStart != 7 {
+		t.Errorf("PutClearingGap dropped the writer's delivery set: delivery=%q epoch=%q start=%d, want consumer/e2/7", after.Delivery, after.Epoch, after.ConsumerStart)
+	}
+	if after.ConsumerHoldsStored(6) != before.ConsumerHoldsStored(6) {
+		t.Errorf("PutClearingGap changed which stored messages the consumer holds: holds(6) %t -> %t (start %d -> %d)", before.ConsumerHoldsStored(6), after.ConsumerHoldsStored(6), before.ConsumerStart, after.ConsumerStart)
+	}
+	if after.ClientInstanceID != "instance-live" || !slices.Contains(after.Capabilities, "aside") {
+		t.Errorf("PutClearingGap cleared the live session's instance or capabilities: instance=%q caps=%v", after.ClientInstanceID, after.Capabilities)
+	}
+}
+
+// V2: over a writer's record that names ANOTHER session - one readForClear's seam returns as a
+// writer's record whose session_id is not this key - PutClearingGap keeps none of its gap mark or
+// delivery set: the keep is only for the session's own record. Control: the key test loosened from
+// `found && stored.SessionID == sessionID` to `found` keeps the foreign record's fields.
+func TestPutClearingGapKeepsNothingFromAWritersRecordNamingAnotherSession(t *testing.T) {
+	client := setupNATS(t)
+	r := openBindingRegistry(t, client)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	const sessionID = "ses_clear_foreign"
+	if err := r.PutWithin(ctx, sessionID, SessionEntry{MachineID: "edge-a", Projects: []string{"PRIV"}}); err != nil {
+		t.Fatalf("register %s: %v", sessionID, err)
+	}
+	foreign := SessionEntry{SessionID: "ses_someone_else", MachineID: "edge-a", Projects: []string{"PRIV"},
+		Delivery: DeliveryConsumer, Epoch: "e9", ConsumerStart: 99, ClientInstanceID: "foreign", Capabilities: []string{"forged"}, RepositoryGap: "foreign-mark"}
+	restore := r.SetStoredByWriterSeamForTest(sessionID, foreign, true, nil)
+	err := r.PutClearingGap(ctx, sessionID, SessionEntry{MachineID: "edge-a", SelfSubscribed: true, Projects: []string{"PRIV"}})
+	restore()
+	if err != nil {
+		t.Fatalf("PutClearingGap(%s): %v", sessionID, err)
+	}
+	after, own, err := r.StoredByWriter(ctx, sessionID)
+	if err != nil || !own {
+		t.Fatalf("read %s after the refresh: own=%t err=%v", sessionID, own, err)
+	}
+	if after.RepositoryGap != "" || after.Delivery != "" || after.Epoch != "" || after.ConsumerStart != 0 || after.ClientInstanceID != "" || len(after.Capabilities) != 0 {
+		t.Errorf("PutClearingGap kept a foreign record's fields: %+v", after)
+	}
+}
+
+// Q19: PutClearingGap decides from the record each pass read. The first pass reads the session's own
+// writer's record (consumer delivery) and its write loses a compare-and-swap to a RePublish that
+// lands in between; the second pass reads that RePublished record and clears. The written entry
+// carries no delivery from the first pass's record. Control (ba7e0cc7aa): the clearing arm mutates an
+// entry that lives across passes, so the second pass writes the first pass's delivery.
+func TestPutClearingGapDecidesFromEachPassRecord(t *testing.T) {
+	client := setupNATS(t)
+	r := openBindingRegistry(t, client)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	const sessionID = "ses_clear_perpass"
+	if err := r.PutWithin(ctx, sessionID, SessionEntry{MachineID: "edge-a", Projects: []string{"PRIV"}, Delivery: DeliveryConsumer, Epoch: "e1", ConsumerStart: 5}); err != nil {
+		t.Fatalf("register %s: %v", sessionID, err)
+	}
+	var raced bool
+	seam := &raceOnFirstUpdate{KeyValue: r.watcher.KV().Legacy(), before: func() {
+		body, err := json.Marshal(map[string]any{"session_id": sessionID, "machine_id": "edge-a", "updated_at": time.Now().UnixMilli(),
+			"projects": []string{"PRIV"}, "title": "forged"})
+		if err != nil {
+			t.Errorf("marshal the RePublish body: %v", err)
+			return
+		}
+		testnats.RepublishesKey(t, client.Conn, bus.SessionBucket, sessionID, body)
+		raced = true
+	}}
+	useKV(t, r, seam)
+	if err := r.PutClearingGap(ctx, sessionID, SessionEntry{MachineID: "edge-a", SelfSubscribed: true, Projects: []string{"PRIV"}}); err != nil {
+		t.Fatalf("PutClearingGap(%s): %v", sessionID, err)
+	}
+	if !raced {
+		t.Fatal("the racing RePublish never landed, so no lost compare-and-swap drove a second pass")
+	}
+	after, own, err := r.StoredByWriter(ctx, sessionID)
+	if err != nil || !own {
+		t.Fatalf("read %s after the refresh: own=%t err=%v", sessionID, own, err)
+	}
+	if after.Delivery != "" || after.ConsumerStart != 0 {
+		t.Errorf("PutClearingGap carried the first pass's record's delivery set over the second pass's forged record: delivery=%q start=%d, want cleared", after.Delivery, after.ConsumerStart)
 	}
 }
 
