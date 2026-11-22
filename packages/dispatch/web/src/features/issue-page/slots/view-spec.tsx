@@ -27,8 +27,10 @@ export function ViewSpecSlot({ issue, route }: SlotProps): ReactNode {
   const specSlug = primarySpec(issue)?.slug;
   const address = issueAddress(route, search, hash, specSlug);
   // The body watches the reads it draws from itself, under the keys the tree fills, so it waits
-  // on those alone (`SpecFilterBody`).
-  const { root } = useIssueTree(issue);
+  // on those alone (`SpecFilterBody`). The names reads are the tree's, and the view draws from
+  // them too - the three sentences, and the name of every reference a plain line cites - so
+  // their line's state while they stand failed (`namesFailure`) is passed on for the body to draw.
+  const { namesFailure, root } = useIssueTree(issue);
   // Who is reading, so a decision of theirs reads as their own words (R5).
   const viewer = useQuery(whoAmIQuery()).data?.login;
   // The address's own node, resolved against the whole tree and kept by the view
@@ -53,6 +55,7 @@ export function ViewSpecSlot({ issue, route }: SlotProps): ReactNode {
           holdsEscape={address.filter !== ""}
           issue={issue}
           reader={viewer}
+          {...(namesFailure === undefined ? {} : { namesFailure })}
           {...(request === undefined ? {} : { request })}
           {...(revealed === undefined ? {} : { reveal: revealed })}
           root={root}

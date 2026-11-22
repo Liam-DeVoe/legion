@@ -3,10 +3,17 @@ import { type ReactNode, useMemo } from "react";
 import type { DisplayTree } from "../../api/types";
 import { pageInkBg, pageInkText, pageLineBorder, pageMutedText } from "../../theme/classes";
 import { wordsOf } from "../refs/tree-fragment";
-import { drawnLine, firstLineOf, type TreeNode } from "./issue-tree";
-import { CAP, LEADING_LABEL, referenceStandIns } from "./one-line";
+import {
+  drawnLine,
+  firstLineOf,
+  firstSentenceLength,
+  LEADING_LABEL,
+  type TreeNode,
+} from "./issue-tree";
+import { referenceStandIns } from "./one-line";
 import { authorText, pageChrome } from "./page-structure";
 import { CONTROL_LABELS, EMPTY_STATE_LINES } from "./page-words";
+import { CAP } from "./verification-filter/VerificationFilterBody";
 
 /** Each sentence's label, in the order the summary holds them (R8). */
 const LABELS = [
@@ -47,27 +54,24 @@ const LABELS = [
  * all says nothing of a summary.
  */
 export function IssueThreeThings({
-  hasSpec,
   look,
   nameOf,
-  reading,
+  specHeld,
   summary,
 }: {
-  /** Whether the issue has a primary spec, which is what can hold a summary: an issue with none
-   *  has no summary to say is missing. */
-  hasSpec: boolean;
   /** Where it is drawn: the Contents slot, which the pane and the Outline sheet draw alike, or
    *  the Spec view's first group. */
   look: "contents" | "spec";
   /** The page's name for a reference the sentences cite (`useReferenceNames`). */
   nameOf: (reference: string) => string | undefined;
-  /** Whether the spec's blocks, which hold its summary, are not held yet, which is what says
-   *  whether the spec holds a summary node at all. */
-  reading: boolean;
+  /** Whether the issue has a primary spec and its blocks, which hold its summary, are held:
+   *  what says whether the spec holds a summary node at all. An issue with no spec has no
+   *  summary to say is missing. */
+  specHeld: boolean;
   /** The spec's summary node, or undefined for a spec that carries none. */
   summary: TreeNode | undefined;
 }): ReactNode {
-  const tree = reading ? undefined : summary?.tree;
+  const tree = specHeld ? summary?.tree : undefined;
   const sentences = useMemo(
     () => (tree === undefined ? [] : summarySentences(tree, nameOf)),
     [nameOf, tree]
@@ -110,7 +114,7 @@ export function IssueThreeThings({
             </li>
           ))}
         </ul>
-      ) : hasSpec && !reading && summary === undefined ? (
+      ) : specHeld && summary === undefined ? (
         // A summary node whose reading has not come, or holds no words, is a summary all the
         // same, so only a spec with no summary node says it has none.
         <p className={`mt-1.5 mb-1 text-sm leading-5 ${pageMutedText}`} {...pageChrome}>
@@ -124,26 +128,15 @@ export function IssueThreeThings({
 /** How many bullets the head draws at most: the three the requirement names (R5). */
 const BULLETS = 3;
 
-/** A sentence end: its mark, with whatever closing quote or bracket the writer put after it,
- *  where the words stop, or where a space and a word that does not start in lower case follow:
- *  a mark before a word in lower case ends an abbreviation (`e.g. tester`), not a sentence. */
-const SENTENCE_END = /[.!?][)\]"'\u201d\u2019]*(?=$|\s+[^\s\p{Ll}])/u;
-
-/** How many characters of `words` its leading label takes: a first word that opens its
- *  sentence and ends none (`LEADING_LABEL`). */
-function labelLength(words: string): number {
-  return LEADING_LABEL.exec(words)?.[0].length ?? 0;
-}
-
 /** `words` split into its sentences, each to its sentence end with the leading label it opens
- *  with, and the last to where the words stop whether or not it has an end. */
+ *  with (`firstSentenceLength`), and the last to where the words stop whether or not it has an
+ *  end. Each sentence's end is read from where that sentence starts, so the labels of a numbered
+ *  list follow on from one sentence to the next. */
 function sentencesOf(words: string): string[] {
   const sentences: string[] = [];
   let rest = words;
   while (rest !== "") {
-    const label = labelLength(rest);
-    const end = SENTENCE_END.exec(rest.slice(label));
-    const length = end === null ? rest.length : label + end.index + end[0].length;
+    const length = firstSentenceLength(rest) ?? rest.length;
     sentences.push(rest.slice(0, length));
     rest = rest.slice(length).trimStart();
   }
@@ -156,13 +149,12 @@ function sentencesOf(words: string): string[] {
  *
  * The words are read in the runs they were written in: each paragraph and each heading one, and
  * each item of a bulleted or numbered list one, its own list inside it included. A paragraph's
- * or a heading's run is split at its sentence ends (`sentencesOf`), of which a leading label and
- * a mark before a word in lower case are none. A list item is a sentence of its own whether or
- * not its author ended it with a mark, because the item ends where the next one starts, so a
- * list's last item is drawn too. A run's words are the reading's own (`wordsOf`), with each
- * reference in them named in plain words once the sentences are split (`referenceStandIns`), so
- * a name that opens with a label ("R1.") ends no sentence; nothing else is added, reordered or
- * reflowed.
+ * or a heading's run is split where `firstSentenceLength` ends each of its sentences
+ * (`sentencesOf`). A list item is a sentence of its own whether or not its author ended it with a
+ * mark, because the item ends where the next one starts, so a list's last item is drawn too. A
+ * run's words are the reading's own (`wordsOf`), with each reference in them named in plain words
+ * once the sentences are split (`referenceStandIns`), so a name that opens with a label ("R1.")
+ * ends no sentence; nothing else is added, reordered or reflowed.
  *
  * A summary whose runs hold no sentence end and no list item has no sentence to split out, so
  * its first line, by the one-line rule every place that draws one line for a node keeps
@@ -186,9 +178,9 @@ function summarySentences(
     for (const child of children) walk(child, list);
   };
   walk(tree, false);
-  if (!runs.some(({ item, words }) => item || SENTENCE_END.test(words.slice(labelLength(words))))) {
+  if (!runs.some(({ item, words }) => item || firstSentenceLength(words) !== undefined)) {
     const whole = runs.map(({ words }) => words).join(" ");
-    const label = whole.slice(0, labelLength(whole));
+    const label = LEADING_LABEL.exec(whole)?.[0] ?? "";
     const first = firstLineOf(whole.slice(label.length));
     // The label goes before the line and leaves its end where `first` read it, so the line ends
     // at its sentence's end exactly where `first` says it does (`sentence`).
