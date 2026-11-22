@@ -103,10 +103,12 @@ type SignInRule interface {
 	End(ctx context.Context, people auth.PeopleStore, email string, read auth.PersonMembership, reason string, mode auth.EndMode) (ended bool, err error)
 	// SignedOutReason is the reason a 401 tells the person whose session for email has ended
 	// (SignedOut.Reason), read from people and whatever else the rule reads, or "" for none. A
-	// rule tells one only while no sign-in of the address stands (endedRestricted: its refresh
-	// token is gone, or a sign-out kept it with the row signed out) and only for a person it no
-	// longer admits, so a full member, and a person whose sign-in another account took or who
-	// signed in again, is told none; GroupRule tells none at all.
+	// rule tells one only while no sign-in of the address stands (endedRestricted: a restricted
+	// member's row is a passkey's and holds no refresh token, so that is a row with no
+	// confirmation, which the hourly confirmation's end, a sign-out that keeps nothing and an
+	// owner's removal or Reset forget) and only for a person it no longer admits, so a full member,
+	// and a person whose sign-in another account took or who signed in again, is told none;
+	// GroupRule tells none at all.
 	SignedOutReason(ctx context.Context, people auth.PeopleStore, email string) (string, error)
 	// WriteSignIn records person's sign-in under this rule (auth.PeopleStore.SignIn or
 	// .SignInSubject), with the member kind Person named, given the subject this rule's own

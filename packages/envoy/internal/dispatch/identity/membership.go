@@ -33,7 +33,9 @@ const standingWait = 2 * time.Second
 const graceWithoutGoogle = 24 * time.Hour
 
 // unavailablePause is how long Standing starts no new refresh, and answers by the 24-hour rule,
-// after a refresh of a person in this process ended with Google not reached.
+// after a refresh of a person in this process ended with Google not reached. Under IAP identity
+// directoryStanding takes the same pause after a Failed Directory check of the person in this
+// process, and answers by the deadline (byDeadline).
 const unavailablePause = 60 * time.Second
 
 // errOtherAccount is a refreshed ID token that names another Google account or another address
