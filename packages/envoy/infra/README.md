@@ -4184,6 +4184,11 @@ What the lists do not hold back:
   takeover subjects wherever a client subscribes them: the cycle refusal above holds only for the
   notification stream's own consumers. No row creates such a consumer: this one is read from the
   server's rule above.
+- Its selection bucket calls (`$JS.API.STREAM.MSG.GET.KV_envoy_session_consumers` and
+  `$KV.envoy_session_consumers.>`, as `ListenerPermissions` holds them) write every session's
+  selection record, which names the consumer a session's messages come from in the fresh naming
+  mode. That is no reach past the consumer calls above, which already create, update and delete
+  any session's consumer.
 
 Its read is the whole bus until subjects and keys name their project, and its writes through the
 consumer calls are as wide until something other than the edge creates its consumers. The auth

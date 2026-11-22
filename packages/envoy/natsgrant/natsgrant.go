@@ -248,8 +248,10 @@ func EdgeRelayReplyPrefix(machineID string) string {
 // ensureSpentProofBucket), so a full listener starts before an edge listener. The rest of
 // Listener's publish list stays as it is: the stream's info and stored-message get, its durable's
 // calls, JetStream's account info, the KV calls of every bucket of bus.ListenerBuckets but its
-// stream's create, its update and its direct get, the interest bucket's purge and the session
-// consumers' calls.
+// stream's create, its update and its direct get, the interest bucket's purge, the session
+// consumers' calls, and the session consumers' selection bucket's leader read and key writes
+// (KVRecordStore of consumernames.SessionBucket), which the fixed naming mode's read of the cutover
+// marker and the fresh mode's selection records take, and which hold no direct get.
 //
 // Subscribe: its own machine's inbox prefix (EdgeInboxPrefix) in place of every reply inbox, so
 // the server delivers it no other client's replies; every session's relay subject
@@ -311,7 +313,10 @@ func EdgeRelayReplyPrefix(machineID string) string {
 //   - Today's agent, relay and resume subjects name no project, so it can publish on any
 //     session's, and a consumer on any filter reads any stored message.
 //   - Its KV calls write every record of the seven buckets of bus.ListenerBuckets: interests,
-//     roles, sessions, known sessions, Legion agents, CI state and DPoP proofs.
+//     roles, sessions, known sessions, Legion agents, CI state and DPoP proofs. Its selection
+//     bucket calls (KVRecordStore) write every session's selection record, which names the
+//     consumer a session's messages come from in the fresh naming mode: no reach past the
+//     consumer calls above, which already create, update and delete any session's consumer.
 func Edge(machineID string, projects []string) (Permissions, error) {
 	if !SessionToken(machineID) {
 		return Permissions{}, fmt.Errorf("natsgrant: the edge's machine id %q is not one subject token", machineID)
