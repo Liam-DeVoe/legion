@@ -3539,6 +3539,11 @@ type AbandonedSession struct {
 	SessionFile string    `json:"sessionFile,omitempty"`
 	Why         string    `json:"why"`
 	At          time.Time `json:"at"`
+	// AnotherAgent is whether the session was left behind because it was another agent's than
+	// the agent of the step the claim was started for (Machine.leaveAnotherAgentsSession): the
+	// agent that replaces it is new on that step, and is told so (abandonedTask), not that a
+	// session of its own was lost.
+	AnotherAgent bool `json:"anotherAgent,omitempty"`
 	// Told is whether the agent that replaced the session has been told of it, so it is told in
 	// the first task it actually takes and in no later one, and ToldBy is the delivery whose
 	// confirmation told it, as confirm states. A sentence told twice is the harmless way round,

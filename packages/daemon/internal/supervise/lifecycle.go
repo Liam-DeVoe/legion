@@ -123,8 +123,14 @@ func (m *Machine) leaveAnotherAgentsSession(ctx context.Context, start StartWork
 	}
 	m.log.Info("supervise: the step this start is for is another agent's than the one whose session the claim holds, so it starts in a new session",
 		"request", request, "agent", start.Agent, "sessionAgent", m.claim.SessionAgent, "session", m.claim.Session)
+	had := m.claim.Session != ""
 	m.forgetSession(fmt.Sprintf("the step it was started for is another agent's (%s) than the one whose session it held (%s)",
 		start.Agent, m.claim.SessionAgent))
+	// The agent that replaces the session is new on the step, and its first task says so rather
+	// than that a session of its own was lost (AbandonedSession.AnotherAgent, abandonedTask).
+	if had {
+		m.claim.Abandoned.AnotherAgent = true
+	}
 	return true, nil
 }
 

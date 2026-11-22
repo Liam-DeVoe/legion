@@ -1494,6 +1494,11 @@ func interruptedTask(cause string) string {
 // (workflow's namedConclusions): the quotes bound it, and a newline or a quote inside it is
 // escaped rather than ending the sentence that carries it, so no refusal text can read as an
 // instruction of the daemon's own. The abandoned session's id is quoted the same way, with %q.
+//
+// A session left behind because it was another agent's (AbandonedSession.AnotherAgent) gets a
+// sentence of its own: the agent it is told to is new on its step, so it is told that the session
+// was another agent's, of an earlier step, and that the branch and the earlier steps' handoff
+// records say what was done, not that work of its own was lost and must not be repeated.
 func abandonedTask(c Claim, last bool) string {
 	read := "read the issue"
 	if c.Role != claim.RoleController {
@@ -1501,12 +1506,23 @@ func abandonedTask(c Claim, last bool) string {
 			"the issue, which `dispatch handoff-read --issue %s --phase <word>` reads (%s)",
 			claim.IssueBranch(c.Issue), c.Issue, handoffWords())
 	}
-	sentence := fmt.Sprintf("The session this claim ran before this one, %q, was abandoned where it stood: %q. "+
-		"This session is a new one: the turns, tool calls, subagents and background jobs of that session are "+
-		"gone, and only what it pushed and committed survives. Before you repeat any of that work, %s, and "+
-		"tell the architect your Legion addressing line names what you found, unless that is you or it names none.",
-		c.Abandoned.Session, c.Abandoned.Why, read)
-	if last {
+	var sentence string
+	if c.Abandoned.AnotherAgent {
+		sentence = fmt.Sprintf("You are a new agent on this step. The session this claim ran before this one, %q, was another "+
+			"agent's, of an earlier step, and was left behind so you start in a session of your own: %q. Nothing of that "+
+			"session is yours, and what the earlier steps did is in what they pushed and committed and in what they reported. "+
+			"Before you begin, %s.", c.Abandoned.Session, c.Abandoned.Why, read)
+	} else {
+		sentence = fmt.Sprintf("The session this claim ran before this one, %q, was abandoned where it stood: %q. "+
+			"This session is a new one: the turns, tool calls, subagents and background jobs of that session are "+
+			"gone, and only what it pushed and committed survives. Before you repeat any of that work, %s, and "+
+			"tell the architect your Legion addressing line names what you found, unless that is you or it names none.",
+			c.Abandoned.Session, c.Abandoned.Why, read)
+	}
+	switch {
+	case last && c.Abandoned.AnotherAgent:
+		sentence += " Then do the task."
+	case last:
 		sentence += " Then continue the task."
 	}
 	return sentence + "\n\n"

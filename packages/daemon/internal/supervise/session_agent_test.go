@@ -1,6 +1,8 @@
 package supervise
 
 import (
+	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -104,5 +106,62 @@ func TestAStartForAnotherAgentLeavesTheClaimsSessionBehind(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// The agent a start for another step's agent starts is new on that step, not the agent of the
+// session left behind, so its first task says so in a sentence of its own: the session the claim
+// ran before was another agent's, and it reads the branch and the earlier steps' records to learn
+// what was done. It is not told to check before it repeats work it never did, the sentence an
+// agent whose own session was lost is told. The control, a session the operator's fresh session
+// left behind, is told that sentence still. The fault: the new agent read another agent's session
+// as its own lost work.
+func TestTheFirstTaskOfANewAgentOnAHeldNameSaysItIsNewOnTheStep(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		leave   func(h *harness)
+		another bool
+	}{
+		{name: "another agent's session", another: true, leave: func(h *harness) {
+			h.must(RequestSuspend{Claim: h.token, By: SuspendedByDaemon, Reason: "its task was stopped"})
+			h.must(RequestRuleResume{Claim: testToken, Reason: "start row 9", Start: StartWork{Agent: keyAgentB}})
+		}},
+		{name: "control: the operator's fresh session", leave: func(h *harness) {
+			h.must(RequestStop{Claim: h.token})
+			h.must(RequestRetry{Claim: testToken, FreshSession: true})
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := queuedClaim()
+			c.SessionAgent = stepAgentA
+			h := newHarnessOf(t, c)
+			h.reach(StateIdle)
+			tc.leave(h)
+			if got := h.claim().Abandoned; got.Session != session || got.AnotherAgent != tc.another {
+				t.Fatalf("the claim records the abandoned session %+v, want %q left behind as another agent's = %v", got, session, tc.another)
+			}
+			h.registerFresh()
+			base := len(h.prompts())
+
+			h.must(RequestDeliver{Claim: h.token, Task: "Continue Workflow. Issue: LEGION-209. Phase: implementing."})
+
+			first := h.wantPrompts(base + 1)[base].Message
+			if !strings.HasSuffix(first, "Continue Workflow. Issue: LEGION-209. Phase: implementing.") {
+				t.Errorf("the first task is %q, want it to end with the task itself", first)
+			}
+			newOnTheStep := strings.Contains(first, "You are a new agent on this step")
+			repeats := strings.Contains(first, "Before you repeat any of that work")
+			if tc.another {
+				for _, want := range []string{strconv.Quote(session), "legion/LEGION-209", "dispatch handoff-read --issue LEGION-209 --phase", handoffWordsClause()} {
+					if !strings.Contains(first, want) {
+						t.Errorf("the first task of the new agent does not name %q:\n%s", want, first)
+					}
+				}
+			}
+			if newOnTheStep != tc.another || repeats == tc.another {
+				t.Errorf("the first task says it is new on the step = %v and asks before repeating work = %v, want %v and %v:\n%s",
+					newOnTheStep, repeats, tc.another, !tc.another, first)
+			}
+		})
 	}
 }
