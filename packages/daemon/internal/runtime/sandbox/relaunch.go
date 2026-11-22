@@ -212,16 +212,20 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	if err != nil {
 		return runtime.Locator{}, err
 	}
+	if err := r.issueSlots(ctx, &l); err != nil {
+		return runtime.Locator{}, fmt.Errorf("launch %s: read the agents of its issue's plan: %w", spec.Claim, err)
+	}
 	r.forget(spec.Claim)
 	release, err := r.lockPod(ctx, l.name)
 	if err != nil {
 		return runtime.Locator{}, fmt.Errorf("launch %s: take its pod's launch turn: %w", spec.Claim, err)
 	}
 	defer release()
-	bounded, cancel := context.WithTimeout(ctx, r.launchBound)
+	tryBound := r.tryBound(l)
+	bounded, cancel := context.WithTimeout(ctx, tryBound)
 	defer cancel()
 	fail := func(step string, err error) (runtime.Locator, error) {
-		return runtime.Locator{}, fmt.Errorf("launch %s: %s: %w", spec.Claim, step, boundRanOut(ctx, bounded, r.launchBound, err))
+		return runtime.Locator{}, fmt.Errorf("launch %s: %s: %w", spec.Claim, step, boundRanOut(ctx, bounded, tryBound, err))
 	}
 	s, err := r.ensureSandbox(bounded, l)
 	if err != nil {
@@ -357,7 +361,7 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 			}
 		}
 		if err := l.kind.provision(bounded, r, &l, s); err != nil {
-			return runtime.Locator{}, fmt.Errorf("launch %s: %w", spec.Claim, boundRanOut(ctx, bounded, r.launchBound, err))
+			return runtime.Locator{}, fmt.Errorf("launch %s: %w", spec.Claim, boundRanOut(ctx, bounded, tryBound, err))
 		}
 		if err := r.writeLauncherSecrets(bounded, s, &l); err != nil {
 			return fail("write its launcher secrets", err)
@@ -569,8 +573,9 @@ func boundRanOut(parent, bounded context.Context, bound time.Duration, err error
 // creates carries no record. And only a try whose Sandbox ensureSandbox found standing sends it,
 // for the same reason, so that try never spends the 3 calls of the wait for a Sandbox being
 // deleted. It thus spends 14 calls at the most, the cache's ensure apart, under the 17.
-// Per launcher role of the pod (relaunchRoleCalls, times roles, the most roles any pod of the
-// runtime has: its issue roles, Legion's six and each role the deployment defines): launcherBound's
+// Per launcher slot of the pod (relaunchRoleCalls, times roles, the most roles any pod of the
+// runtime has: its issue roles, Legion's six and each role the deployment defines; a pod with a
+// slot for an agent name of its plan beside them counts that slot too, tryBound): launcherBound's
 // Secret Get (1); writeLauncherSecrets' credential mint and its upsert's Get, Delete and Create
 // (4); bindLauncherSecrets' Get and Update, and both again on a conflict (4).
 func relaunchCalls(roles int) int { return relaunchPodCalls + relaunchRoleCalls*roles }
@@ -596,6 +601,18 @@ const (
 func launchBound(bootTimeout, startBound, provisionBound, terminationGrace time.Duration, roles int) time.Duration {
 	waits := 3*bootTimeout + cacheWaits(bootTimeout) + launcherBackstop(startBound, bootTimeout, provisionBound) + terminationGrace
 	return waits + time.Duration(relaunchCalls(roles))*apiTimeout
+}
+
+// tryBound is the bound of one launch try of l once it holds its pod's launch turn (relaunch): the
+// runtime's launchBound, which counts the calls of every role of its issue pods, and the calls of
+// one more slot (relaunchRoleCalls) at apiTimeout for each slot l's pod has beyond them, an agent
+// name of the issue's plan (issueSlots).
+func (r *Runtime) tryBound(l launch) time.Duration {
+	extra := len(l.roles) - len(r.issueRoles)
+	if extra <= 0 {
+		return r.launchBound
+	}
+	return r.launchBound + time.Duration(relaunchRoleCalls*extra)*apiTimeout
 }
 
 // cacheWaits is the most a launch try's provision waits on its repository's cache: the cache's
@@ -1300,7 +1317,8 @@ func (r *Runtime) gitHubBundles(ctx context.Context, l *launch) (map[claim.Role]
 	// spec names its own, and each other slot's comes from the stored claims. A build that cannot
 	// read them mints each other slot for its own name: no other claim runs in a pod being built,
 	// and each one's next launch writes its slot's credential for its role, as the refresher does
-	// within a minute.
+	// within a minute. A slot of an agent of the plan that no stored claim runs in holds the App of
+	// that agent's first step (l.agentRoles), since its name is no role's.
 	holders, err := r.slotHolders(ctx)
 	if err != nil {
 		r.log.Warn("sandbox runtime: a pod's build cannot read the stored claims; its other slots hold their own names' Apps until their launches",
@@ -1316,8 +1334,11 @@ func (r *Runtime) gitHubBundles(ctx context.Context, l *launch) (map[claim.Role]
 		if slot == claim.RoleController {
 			bundle, err = r.controllerCredential(minting, "")
 		} else {
-			var role claim.Role
-			if role, err = r.slotAppRole(minting, holders, l.name, slot, ""); err == nil {
+			role, first := l.agentRoles[slot]
+			if _, runs := holders[slotKey{sandbox: l.name, slot: slot}]; runs || !first {
+				role, err = r.slotAppRole(minting, holders, l.name, slot, "")
+			}
+			if err == nil {
 				bundle, err = memo.Bundle(minting, role, l.spec.Repository)
 			}
 		}

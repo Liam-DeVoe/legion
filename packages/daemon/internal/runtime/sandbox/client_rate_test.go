@@ -504,7 +504,7 @@ func TestASuccessorHoldsOffAndHoldsItsOwnReadsWhateverALateReadOfItsPredecessorL
 	const name = "legion-legion-legion-208-tester-boot"
 	var c launcherCredentials
 	c.bind(name, "uid-old", launcherCredential{podUID: "uid-pod-old"})
-	c.forget(name)
+	c.forgetSandbox("legion-legion-legion-208")
 	c.store(name, "uid-old", launcherCredential{podUID: "uid-pod-old"})
 	c.fail(name, "uid-old", rigNow)
 	c.fail(name, "uid-new", rigNow)

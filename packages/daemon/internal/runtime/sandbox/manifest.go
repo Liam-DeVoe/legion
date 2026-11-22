@@ -359,9 +359,14 @@ type launch struct {
 	// identity token, and the shape the template records, launch.shapeKey); a role started in a
 	// pod the launch keeps reads none of them.
 	microVM *MicroVM
-	// roles are the pod's launcher roles, all of them served by the pod's one container: the roles
-	// of the kind its labels name (podKindOf).
+	// roles are the pod's launcher slots, all of them served by the pod's one container: the roles
+	// of the kind its labels name (podKindOf), and for an issue pod each agent name of its plan
+	// beside them (Runtime.issueSlots).
 	roles []claim.Role
+	// agentRoles are the role of the first step of each agent of the issue's plan whose name is no
+	// role of the kind (Runtime.issueSlots), by its slot: the App its slot holds where no claim of
+	// it has run yet (gitHubBundles).
+	agentRoles map[claim.Role]claim.Role
 	// workspace is the launchers' working directory (podKind.prepare): an issue pod's workspace,
 	// which workspace-init provisions on the issue's volume (workspace.Location under TreeRoot), or
 	// the root of the controller's own volume, TreeRoot.

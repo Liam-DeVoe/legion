@@ -1,0 +1,102 @@
+package store
+
+import (
+	"context"
+	"maps"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/plan"
+	"github.com/sjawhar/legion/daemon/internal/record"
+)
+
+// The agents of an issue's plan the sandbox runtime builds its pod's slots from are the names the
+// issue's own record gives the steps of its plan in force (record.PlanStep.AgentName): store and
+// record import neither each other, so the store names them a second time (PlanAgents), and this
+// holds the two to one answer. The plan in force is the issue's generation's, so a step of an
+// earlier generation names no agent; a step of the key owner names none; a step written before the
+// column held the name reads as its role; and each agent carries the role of its first step. An
+// issue of another project's record, and one with no plan rows, have none.
+func TestThePlanAgentsAreTheNamesTheRecordGives(t *testing.T) {
+	st := migratedStore(t)
+	ctx := context.Background()
+	records := record.NewStore()
+	givenAt := time.Date(2026, 11, 22, 0, 0, 0, 0, time.UTC)
+	issue := func(key, project string, generation uint64) record.Issue {
+		return record.Issue{Key: key, Tree: key, Project: project, Title: key, Phase: phase.Implementing, Generation: generation,
+			Status: "in_progress", Rank: "A", LastDispatchSeq: 1,
+			Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"}
+	}
+	put := func(tx pgx.Tx, key string, generation uint64, steps []record.PlanStep) error {
+		owner, err := claim.NewToken("legion", key, claim.RoleArchitect)
+		if err != nil {
+			return err
+		}
+		v := record.PlanVersion{Issue: key, Generation: generation, Version: 1, ArtifactID: "plan-artifact",
+			Source: record.PlanSourceOwner, GivenBy: owner, GivenAt: givenAt}
+		task := record.PlanTask{Issue: key, Generation: generation, Task: "t", PlanVersion: 1, BlockText: "Build the widget.", State: record.TaskWaiting}
+		for i := range steps {
+			steps[i].Issue, steps[i].Generation, steps[i].Task, steps[i].Position = key, generation, "t", i+1
+		}
+		return records.PutPlan(ctx, tx, v, []record.PlanTask{task}, steps)
+	}
+	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+		for _, seeded := range []record.Issue{issue("LEGION-208", "LEGION", 2), issue("LEGION-209", "LEGION", 1), issue("OTHER-7", "OTHER", 1)} {
+			if err := records.PutIssue(ctx, tx, seeded); err != nil {
+				return err
+			}
+		}
+		if err := put(tx, "LEGION-208", 1, []record.PlanStep{
+			{Role: "implementer", Type: plan.TypeImplementation, Agent: "implementer"},
+			{Role: "tester", Type: plan.TypeTesting, Agent: "tester-3"},
+		}); err != nil {
+			return err
+		}
+		if err := put(tx, "LEGION-208", 2, []record.PlanStep{
+			{Role: "implementer", Type: plan.TypeImplementation, Agent: "implementer"},
+			{Role: "reviewer", Type: plan.TypeReview},
+			{Role: "tester", Type: plan.TypeTesting, AgentKey: "a", Agent: "implementer"},
+			{Role: "implementer", Type: plan.TypeImplementation, Agent: "implementer-2"},
+			{Role: "acceptance", Type: plan.TypeReview, AgentKey: "owner"},
+		}); err != nil {
+			return err
+		}
+		return put(tx, "OTHER-7", 1, []record.PlanStep{{Role: "implementer", Type: plan.TypeImplementation, Agent: "implementer-9"}})
+	}); err != nil {
+		t.Fatalf("seed the issues and their plans: %v", err)
+	}
+
+	want := map[claim.Agent]claim.Role{"implementer": claim.RoleImplementer, "reviewer": claim.RoleReviewer, "implementer-2": claim.RoleImplementer}
+	got, err := st.PlanAgents(ctx, "legion", "LEGION-208")
+	if err != nil || !maps.Equal(got, want) {
+		t.Fatalf("PlanAgents(LEGION-208) = %v, %v; want %v", got, err, want)
+	}
+	var stored *record.StoredPlan
+	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+		var err error
+		stored, err = records.Plan(ctx, tx, "LEGION-208", 2)
+		return err
+	}); err != nil || stored == nil {
+		t.Fatalf("read the plan of LEGION-208 at generation 2: %v", err)
+	}
+	named := map[claim.Agent]claim.Role{}
+	for _, step := range stored.Steps["t"] {
+		if name := step.AgentName(); name != "" {
+			if _, seen := named[name]; !seen {
+				named[name] = claim.Role(step.Role)
+			}
+		}
+	}
+	if !maps.Equal(got, named) {
+		t.Errorf("PlanAgents(LEGION-208) = %v, and the record names the agents %v; want one answer", got, named)
+	}
+	for _, key := range []string{"LEGION-209", "OTHER-7"} {
+		if got, err := st.PlanAgents(ctx, "legion", key); err != nil || len(got) != 0 {
+			t.Errorf("PlanAgents(%s) = %v, %v; want none", key, got, err)
+		}
+	}
+}

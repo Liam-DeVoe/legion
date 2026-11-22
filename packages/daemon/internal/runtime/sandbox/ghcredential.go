@@ -138,10 +138,17 @@ func (r *Runtime) refreshGitHubCredentials(ctx context.Context) {
 		// provisioning token: it is the pod's, not the role's, and a bundle is rendered for it
 		// (refreshGitHubCredential). The roles are the ones the pod was built with (builtRoles),
 		// not the runtime's now: a pod built before a role of the deployment has no Secret of it,
-		// and asking for one would fail at every tick for a role no process of the pod runs.
+		// and asking for one would fail at every tick for a role no process of the pod runs. A
+		// slot of an agent of the plan whose name is no role of the runtime, and in which no stored
+		// claim runs yet, names no App to render it for and runs nothing that reads it: its
+		// claim's first launch writes it for that claim's role before its child starts
+		// (writeLaunchCredential).
 		repo, named := fetchRepository(pod)
 		for _, slot := range builtRoles(pod.Spec) {
 			if heldErr != nil && slot != claim.RoleController {
+				continue
+			}
+			if _, runs := held[slotKey{sandbox: pod.Name, slot: slot}]; !runs && slot != claim.RoleController && !slices.Contains(r.issueRoles, slot) {
 				continue
 			}
 			r.refreshGitHubCredential(ctx, pod, owner.UID, slot, held, repo, bundles)

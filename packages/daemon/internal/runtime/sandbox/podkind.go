@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 
 	corev1 "k8s.io/api/core/v1"
@@ -28,13 +29,14 @@ import (
 // supervision — relaunch's check of the running pod, the launchers, Probe, Suspend and the
 // address records — asks a kind only its roles.
 type podKind interface {
-	// roles are the pod's launcher roles under r, each with a launcher token and role Secret of
+	// roles are the roles of the pod's kind under r, each with a launcher token and role Secret of
 	// its own: the runtime's issue roles for an issue pod (Runtime.issueRoles), the controller for
-	// the controller's pod.
+	// the controller's pod. An issue pod's slots are these and its plan's agent names beside them
+	// (issueSlots).
 	roles(r *Runtime) []claim.Role
-	// claimToken is the claim of a launcher of role, one of roles, on a pod of this kind of project,
-	// issue being the issue key its Secrets carry (secretAnnotations).
-	claimToken(project, issue string, role claim.Role) (claim.Token, error)
+	// claimToken is the claim of the launcher of slot, one of the pod's slots, on a pod of this kind
+	// of project, issue being the issue key its Secrets carry (secretAnnotations).
+	claimToken(project, issue string, slot claim.Role) (claim.Token, error)
 	// prepare resolves what the kind decides of a launch, its working directory above all,
 	// refusing a spec it cannot honour.
 	prepare(l *launch) error
@@ -142,13 +144,14 @@ func storedOwnsKeptVolume(u *unstructured.Unstructured) bool {
 	return false
 }
 
-// issuePod is an issue's pod: every role of the runtime's issue roles (Legion's six, then each role
-// the deployment defines, Runtime.issueRoles), working in the issue's workspace on the issue's
-// disk (disk), in one container whose PID 1 is one `legion launcher` holding a connection of each
-// role's own (launcherContainer). The disk is the pod's own generic ephemeral volume, created with
-// the pod and deleted with it, or, where the pod keeps its volume (keptVolume), a claim that the
-// issue's Sandbox owns, which outlives the pod. Two init containers provision that workspace from
-// the issue's repository.
+// issuePod is an issue's pod: a slot for every role of the runtime's issue roles (Legion's six,
+// then each role the deployment defines, Runtime.issueRoles) and for each agent name of the issue's
+// plan that none of them has (issueSlots), each slot running the one agent named for it, working in
+// the issue's workspace on the issue's disk (disk), in one container whose PID 1 is one `legion
+// launcher` holding a connection of each slot's own (launcherContainer). The disk is the pod's own
+// generic ephemeral volume, created with the pod and deleted with it, or, where the pod keeps its
+// volume (keptVolume), a claim that the issue's Sandbox owns, which outlives the pod. Two init
+// containers provision that workspace from the issue's repository.
 type issuePod struct{}
 
 func (issuePod) roles(r *Runtime) []claim.Role { return r.issueRoles }
@@ -158,8 +161,52 @@ func (issuePod) container() string { return runtime.IssuePodContainer }
 // resources is the one issue-pod reservation.
 func (issuePod) resources(r *Runtime) corev1.ResourceRequirements { return r.resources.Issue }
 
-func (issuePod) claimToken(project, issue string, role claim.Role) (claim.Token, error) {
-	return claim.NewToken(project, issue, role)
+// claimToken is the claim of the agent slot is named for: an issue pod's slot runs the one agent
+// whose name it carries, a role's or a plan's (issueSlots).
+func (issuePod) claimToken(project, issue string, slot claim.Role) (claim.Token, error) {
+	return claim.AgentToken(project, issue, claim.Agent(slot))
+}
+
+// issueSlots sets the slots of the pod l launches into (l.roles) where that pod is an issue's: the
+// slots of its plan in force (planSlots over Store.PlanAgents), then the slot of l's own claim
+// where they lack it (a claim whose agent the plan in force no longer names, started again), so no
+// launch waits for a launcher its own pod lacks. A slot is never shared: each agent runs in the
+// slot of its own name, so no start ends another agent's process. l.agentRoles holds the role of
+// each plan agent's first step, the App its slot holds until a claim of it runs there
+// (gitHubBundles). The controller's pod keeps its one slot, and reads no plan.
+func (r *Runtime) issueSlots(ctx context.Context, l *launch) error {
+	if _, issue := l.kind.(issuePod); !issue {
+		return nil
+	}
+	agents, err := r.store.PlanAgents(ctx, r.project, l.spec.Issue)
+	if err != nil {
+		return err
+	}
+	roles := l.kind.roles(r)
+	slots := planSlots(roles, agents)
+	l.agentRoles = map[claim.Role]claim.Role{}
+	for _, slot := range slots[len(roles):] {
+		l.agentRoles[slot] = agents[claim.Agent(slot)]
+	}
+	if own := slotOf(l.spec.Claim); own != "" && !slices.Contains(slots, own) {
+		slots = append(slots, own)
+	}
+	l.roles = slots
+	return nil
+}
+
+// planSlots are the slots of an issue pod whose runtime's roles are roles and whose plan in force
+// names agents (Store.PlanAgents): roles, then each agent's name that none of them has, in the order
+// of names. A plan whose agents are all roles has the slots of roles alone, so its pod is the pod of
+// an issue with no plan.
+func planSlots(roles []claim.Role, agents map[claim.Agent]claim.Role) []claim.Role {
+	slots := slices.Clone(roles)
+	for _, agent := range slices.Sorted(maps.Keys(agents)) {
+		if slot := claim.Role(agent); !slices.Contains(slots, slot) {
+			slots = append(slots, slot)
+		}
+	}
+	return slots
 }
 
 // prepare refuses a spec with no repository, which the workspace is provisioned from, and resolves
