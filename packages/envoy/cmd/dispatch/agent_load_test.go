@@ -1032,7 +1032,8 @@ const cpuAgentShare = 4
 // runs, the server's threads waiting 136 to 250 ms to run beside the agent at SCHED_IDLE against
 // 9 to 10 ms beside it idle; on a GKE node of the 6.12 line production runs it was 1.00 and 1.06
 // times (INFRA-1588, 2026-11-21). So check c29 runs it as a builds Job on a build-nosandbox node
-// (cmd/dispatch/README.md, "c29").
+// of its own, since other pods on a shared node delay every process of the test's pod, the agent
+// included (cmd/dispatch/README.md, "c29").
 func TestTheAgentLeavesTheServerItsCPU(t *testing.T) {
 	if preemptLazy() {
 		t.Skipf("this kernel preempts lazily (%s), where a woken thread waits for the next tick for the CPU a running one holds, whatever its policy; c29 runs on the GKE kernel line production runs", kernelFacts())
