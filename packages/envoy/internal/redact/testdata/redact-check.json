@@ -407,6 +407,10 @@
       {
         "holder": "github.com/sjawhar/envoy/internal/dispatch/githubapp.RateLimitError",
         "test": "print-githubapp.RateLimitError"
+      },
+      {
+        "holder": "github.com/sjawhar/envoy/internal/dispatch/githubapp.failedAnswer",
+        "test": "print-githubapp.failedAnswer"
       }
     ],
     "reflection": [
@@ -493,6 +497,12 @@
         "operands": [],
         "exported_fields_only": true,
         "why": "Strings' copy of a value the daemon stores with the store's text rule applied to its strings: it copies strings into the store and prints none, and reads exported fields alone, so no box's storage; an external error type's exported fields stay reachable to what the store keeps"
+      },
+      {
+        "file": "packages/envoy/internal/testnats/connlock.go",
+        "function": "github.com/sjawhar/envoy/internal/testnats.connLock",
+        "operands": ["*github.com/nats-io/nats.go.Conn", "uintptr"],
+        "why": "a NATS test helper's read of nats.go's connection lock (Conn.mu), a sync.RWMutex a test takes by address to hold a publish: it prints nothing and reaches no answer"
       }
     ],
     "external_errors": ["golang.org/x/oauth2.RetrieveError"],
@@ -5154,6 +5164,13 @@
       "package": "./internal/dispatch/githubapp",
       "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/githubapp.RateLimitError",
       "production": "github.com/sjawhar/envoy/internal/dispatch/githubapp.RateLimitError: every printer at every placement"
+    },
+    {
+      "id": "print-githubapp.failedAnswer",
+      "requirement": "r2-held",
+      "package": "./internal/dispatch/githubapp",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/githubapp.failedAnswer",
+      "production": "github.com/sjawhar/envoy/internal/dispatch/githubapp.failedAnswer: every printer at every placement"
     },
     {
       "id": "print-delivery.searchPullRequestsResponse",
