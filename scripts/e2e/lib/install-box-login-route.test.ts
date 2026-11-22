@@ -290,8 +290,15 @@ describe("the box-login lock", () => {
         "the lock's holder to run sleep 60",
         () => readFileSync(`/proc/${holder.pid}/cmdline`, "utf8") === "sleep\u000060\u0000"
       );
+      // The second taker reads the holder from /proc alone: `ps`, which reads every process on
+      // the machine (docs/testing.md, "A test that looks for a process it started"), is a
+      // stand-in first on its PATH that answers nothing and fails, so a lock that asked ps again
+      // would call the holder exited, and the whole-line check below fails.
+      const noPs = join(dir, "ps-answers-nothing");
+      mkdirSync(noPs, { recursive: true });
+      writeFileSync(join(noPs, "ps"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
       const second = Bun.spawnSync(["bash", "-c", helpers(file, "take_box_login_lock")], {
-        env: { PATH: process.env.PATH ?? "", XDG_RUNTIME_DIR: join(dir, "xdg-b") },
+        env: { PATH: `${noPs}:${process.env.PATH ?? ""}`, XDG_RUNTIME_DIR: join(dir, "xdg-b") },
       });
       expect(second.exitCode).toBe(1);
       expect(second.stderr.toString()).toBe(
