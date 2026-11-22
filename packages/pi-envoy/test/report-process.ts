@@ -10,7 +10,8 @@ import { join } from "node:path";
  * `Bun.spawn` that names no `env` hands it; with one, that environment, with Bun's runtime
  * transpiler cache off: a row's `env` names a HOME the row's temporary-directory hook removes, and
  * the cache would put about 360 files, 6 MB, under it, whose removal on a loaded box can outlast
- * Bun's 5 s bound on a hook (measured: a row's HOME held 359 files with the cache, the cache's
+ * bun's 5 s default bound on a hook when a file runs alone with `bun test` (`bun run test` gives
+ * 250 s, package.json; measured: a row's HOME held 359 files with the cache, the cache's
  * `@t@` directory all but 3 of them). It is killed at `timeoutMs`, and its stdin is held open,
  * written nothing, for as long as this process runs, so a script that exits at that pipe's end
  * (`session-pod-process.ts`) leaves no process behind when a test runner abandons the row that
