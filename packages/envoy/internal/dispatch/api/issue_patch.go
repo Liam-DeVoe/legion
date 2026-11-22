@@ -52,6 +52,10 @@ type updateIssueInput struct {
 	Components       json.RawMessage `json:"components"`
 	Repo             json.RawMessage `json:"repo"`
 	Actor            *model.Actor    `json:"actor"`
+	// RefuseOpenForeignChildren asks, beside a status of retro or done, that the write be refused
+	// while a child of another project is open (refuseOpenForeignChildren). The Legion daemon's
+	// sign_off and close_root send it; a person's status write does not, and is taken as before.
+	RefuseOpenForeignChildren bool `json:"refuse_open_foreign_children"`
 }
 
 func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
@@ -104,6 +108,10 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 			writeError(w, "INVALID_STATUS", http.StatusBadRequest, "status is not in the Legion lifecycle")
 			return
 		}
+	}
+	if input.RefuseOpenForeignChildren && status != "retro" && status != "done" {
+		writeError(w, "INVALID_ISSUE", http.StatusBadRequest, "refuse_open_foreign_children goes only with status retro or done")
+		return
 	}
 	if input.Route != nil && *input.Route != "" {
 		if _, err := model.ParseRoute(*input.Route); err != nil {
@@ -194,10 +202,14 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	callerProject, _ := s.callerProject(r)
 	// openPatch locks the rows the PATCH names, reads the issue under them, and refuses what only
 	// those rows can decide: a stale expected_sequence, an invalid parent, a closed issue, an
+	// acceptance write over an open child of another project (refuseOpenForeignChildren), an
 	// advances write the revision rule refuses, and documents other than the ones gated. The
 	// caller rolls tx back on every refusal.
 	openPatch := func(ctx context.Context, tx pgx.Tx, gated []string) (issuePatchWrite, error) {
-		dependencyWrite := input.BlockedBy != nil || parentProvided
+		// A write that asks for the open-child check of an acceptance is a dependency write too: the
+		// check and the status it guards run under the deployment dependency lock that every create
+		// with a parent and every reparent takes, so no child is filed between the two.
+		dependencyWrite := input.BlockedBy != nil || parentProvided || input.RefuseOpenForeignChildren
 		if dependencyWrite || input.Rank != nil {
 			var project string
 			if err := tx.QueryRow(ctx, `select project_key from issues where key = $1`, key).Scan(&project); err != nil {
@@ -272,6 +284,11 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 				return issuePatchWrite{}, errorf(http.StatusConflict, "ISSUE_CLOSED", "issue is closed")
 			}
 		}
+		if input.RefuseOpenForeignChildren {
+			if err := refuseOpenForeignChildren(ctx, tx, key, before.Project); err != nil {
+				return issuePatchWrite{}, err
+			}
+		}
 		// The `advances` revision rule is decided here, beside the other refusals of this handler
 		// and before the first row is written: a refused write leaves the issue exactly as it was.
 		// The held set and the revision are the issue as this write read it under its owner lock,
@@ -325,6 +342,13 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 			return write, nil
 		})
 	if err != nil {
+		// An acceptance write refused over an open child of another project answers the body that
+		// names each child (foreignChildOpenError), not writeError's plain one.
+		var open openForeignChildrenError
+		if errors.As(err, &open) {
+			WriteJSON(w, http.StatusConflict, open.body())
+			return
+		}
 		s.writeHandlerError(w, r, err)
 		return
 	}
