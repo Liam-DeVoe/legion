@@ -159,7 +159,7 @@ func TestARoleKeysProofsAreNotInterchangeable(t *testing.T) {
 		sign func(t *testing.T, check proofCheck) (string, error)
 	}{
 		{requestObjectKind, func(*testing.T, proofCheck) (string, error) {
-			return session.SignRequestObject(cipheraddr.New(rig.URL), []string{"TEST_SECRET"}, "a role asks for its secret", nil)
+			return session.SignRequestObject(cipheraddr.New(rig.URL), []string{"TEST_SECRET"}, "a role asks for its secret", nil, nil)
 		}},
 		{perRequestKind, func(_ *testing.T, check proofCheck) (string, error) {
 			return session.Sign(check.method, check.target)
