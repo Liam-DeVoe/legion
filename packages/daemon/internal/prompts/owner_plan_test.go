@@ -9,13 +9,15 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 )
 
-// The owner of an issue picks which of Legion's step roles its one task runs. Its prompt therefore
-// lists each role with the type of its step, the owner's own acceptance step, the two operations
-// that give and stop a plan, a stop's answers by their codes and that a stop before an issue's
-// first step settles the plan that step would walk, the notices that a stopped task, a parent
-// held before its retro and a plan of an earlier owner send it, the two stops a task-stopped
-// notice tells of (a failed step's, and another architect's stop_task, whose notice names that
-// architect) and the stop it is not sent for (its own), when a plan must be given and how a plan
+// The owner of an issue picks which roles the steps of its one task name. Its launch's addressing
+// lists the roles of the deployment, each with the type of its step (the daemon's
+// DeploymentRolesFragment), so its composed prompt names no list of roles. The prompt names the
+// owner's own acceptance step, the two operations that give and stop a plan, a stop's answers by
+// their codes and that a stop before an issue's first step settles the plan that step would walk,
+// the notices that a stopped task, a parent held before its retro and a plan of an earlier owner
+// send it, the two stops a task-stopped notice tells of (a failed step's, and another architect's
+// stop_task, whose notice names that architect) and the stop it is not sent for (its own), when a
+// plan must be given and how a plan
 // replaces the default steps once the work started, and the answers a later version gets from the
 // workflow (workflow.planGiven): the running task's block, its text included, is refused and the
 // unchanged block taken, each refusal names its cause and changes nothing so the same version can
@@ -40,10 +42,6 @@ func TestTheOwnersPromptListsTheRolesAndTheNewNotices(t *testing.T) {
 			composed := composedText(t, composer, claim.RoleArchitect, tc.isRoot)
 			text := foldWhitespace(composed)
 			for _, term := range []string{
-				"planner (planning)",
-				"implementer (implementation)",
-				"tester (testing)",
-				"reviewer (review)",
 				"acceptance:owner",
 				"register_plan",
 				"stop_task",

@@ -82,6 +82,25 @@ func TestADeploymentRoleIsToldHowToReport(t *testing.T) {
 	}
 }
 
+// The owner is told the roles a step of its plan may name by the list its launch gives after its
+// addressing, never by a list in its prompt, since the deployment's settings name roles no prompt
+// part can know. Its prompt says where a step of such a role runs and that it reports pass or
+// fail, and what goes on after a task stops because the deployment no longer defines the role of
+// one of its steps. Both architect compositions share that part, so both are read. This shows the
+// text is loaded, never that an owner follows it.
+func TestTheOwnerIsToldTheRolesOfItsDeployment(t *testing.T) {
+	composer, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, isRoot := range []bool{true, false} {
+		holdsAndRetires(t, fmt.Sprintf("the composed architect prompt (root %t)", isRoot), composedText(t, composer, claim.RoleArchitect, isRoot), []string{
+			"A role of this deployment runs where its step stands in your plan, and reports pass or fail.",
+			`A task that stops with the reason "step <i> names the role <role>, which the deployment no longer defines" goes on in one of two ways: you give a later version of your plan, or the operator defines the role again and a person's todo restarts the task.`,
+		}, []string{"Legion's step roles, each with the type of its step, are"})
+	}
+}
+
 // A broken role sequence drops the shared core, uses a root prompt for a child, or makes the Go
 // daemon's instructions win before the shared role instructions. The prompt paths are what every
 // launch concatenates into the one prompt file its agent reads, so their order is the contract. The
