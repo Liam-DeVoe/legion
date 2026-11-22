@@ -45,10 +45,18 @@
 #     commit's author must be the implementer's identity, which the step sets. On the control's
 #     image, which has no step, it must be the identity that made the commit.
 #
-# The negative control is the base branch's published image, driven by the same Job with the same
-# probe: it carries no wrappers, so every one of the five cases lands. Pass it as `--control`.
-# A run with no `--control` proves only the head: it shows that the head's image refuses, and
-# nothing about whether the cases would have been let through without the change.
+#   - A `jj gerrit upload` of the message case run with `--config git.executable-path=/usr/bin/git`,
+#     which jj would upload through that git, with no wrapper and so no pre-push hook: the image's
+#     jj wrapper refuses it before the upload starts, with exit 2 and its `LEAK CHECK SETUP ERROR`
+#     line saying `git.executable-path is /usr/bin/git`, and the remote is unchanged.
+#
+# The negative control runs in the same Job: a `jj git push` of the message case with
+# /opt/legion/bin taken off PATH, so jj is the real /usr/local/bin/jj and the git it runs the real
+# /usr/bin/git, with no wrapper and no hook. The probe expects it to land on the scratch remote,
+# which shows it tells a push the guard checked from one the guard never saw. The base branch's
+# image carries the wrappers too, so it is no control: run the head's image with no `--control`.
+# `--control` drives an image published before the wrappers, on which every push lands, should a
+# second control be wanted.
 #
 # Inputs, all of them required unless marked:
 #
@@ -56,8 +64,8 @@
 #                                    the `Record digest` step of the `Worker Image` run of the
 #                                    commit under test (docs/kubernetes.md, "Pin by digest, never
 #                                    by tag"). Also the first positional argument.
-#   --control <ref>@sha256:<64 hex>  optional: the base branch's image, driven as the negative
-#                                    control. Also the second positional argument.
+#   --control <ref>@sha256:<64 hex>  optional: an image published before the wrappers, driven as
+#                                    a second control. Also the second positional argument.
 #   --node-selector <key=value>[,…]  the deployment's compute class, which docs/kubernetes.md
 #                                    requires a workload to select by `nodeSelector`. Its value is
 #                                    in the deployment's own declaration, which this public
@@ -79,14 +87,17 @@
 # Exit statuses:
 #
 #   0  every check of every arm held. On the head's image the four refusable cases were refused
-#      and named their class, the clean case landed, both shared-check failures refused under
-#      both commands, and the remote commit of `jj-push-author-from-trailer` had the
-#      implementer's identity as its author. On the control's image, if one was given, all five
-#      cases landed, and that commit had as its author the identity that made it.
+#      and named their class, the clean case landed, both shared-check failures refused under both
+#      commands, the gerrit upload was refused, the push outside the guard landed, and the remote
+#      commit of `jj-push-author-from-trailer` had the implementer's identity as its author. On
+#      the control's image, if one was given, every push landed, and that commit had as its author
+#      the identity that made it.
 #   1  the Job ran and a check did not hold. Its log, printed above the verdict, says which.
 #   2  the harness could not run: a usage error, a missing input, no Kubernetes credential or a
 #      namespace that refuses a Job, a Job that started no pod, a log that could not be read, or a
-#      log with no `JOB-RESULT` line in it. Nothing is proved either way.
+#      log with no `JOB-RESULT` line in it. Nothing is proved either way. A run whose Job's delete
+#      failed exits 2 as well, whatever its checks found: it left a Job behind, and the verdict
+#      printed above the exit line says what its checks found.
 #   3  the Job did not reach a verdict inside its deadline. Nothing is proved either way.
 #
 # This script is synchronous and its clean-up is a trap, so a role that runs it from its own bash
@@ -95,7 +106,7 @@
 #
 #   log=$(mktemp "${TMPDIR:-/tmp}/leak-guard.XXXXXX")
 #   flock "$log" setsid -f bash scripts/e2e/leak-guard-image-job.sh \
-#     --image <head digest> --control <base digest> --node-selector <key=value> \
+#     --image <head digest> --node-selector <key=value> \
 #     > "$log" 2>&1 < /dev/null
 #   flock "$log" cat "$log"     # waits for the run to end, then prints everything it printed
 #
@@ -140,11 +151,12 @@ usage: scripts/e2e/leak-guard-image-job.sh --image <ref>@sha256:<64 hex>
                                            [--dry-run]
 
   --image         the worker image to prove, by digest; the first positional argument too.
-  --control       the base branch's image, driven as the negative control. It lets all five
-                  cases through, and in jj-push-author-from-trailer the remote commit's author is
-                  the identity that made the commit, not the implementer's. It is the second
-                  positional argument too. A run without it proves only the head: it says nothing
-                  about whether the cases would have been let through without the change.
+  --control       optional: an image published before the wrappers, driven as a second control.
+                  Every push lands on it, and in jj-push-author-from-trailer the remote commit's
+                  author is the identity that made the commit, not the implementer's. It is the
+                  second positional argument too. The base branch's image carries the wrappers, so
+                  it is no control. Every run carries its own negative control: a jj git push with
+                  /opt/legion/bin off PATH, which must land.
   --node-selector the deployment's compute class, which the namespace's admission requires. Read
                   it from the deployment's own declaration; this public repository carries no
                   value of it. LEAK_GUARD_NODE_SELECTOR sets it too.
@@ -153,7 +165,8 @@ usage: scripts/e2e/leak-guard-image-job.sh --image <ref>@sha256:<64 hex>
   --dry-run       render the manifest, validate it with kubectl, create nothing, and exit.
 
 exit statuses: 0 every check held; 1 the Job ran and a check did not hold; 2 the harness could not
-run and nothing is proved; 3 the Job reached no verdict inside its deadline.
+run and nothing is proved, or a Job's delete failed; 3 the Job reached no verdict inside its
+deadline.
 USAGE
 }
 
@@ -198,7 +211,7 @@ digest_shape='^[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[0-9a-f]{64}$'
 [[ $image =~ $digest_shape ]] || refuse "the image $image is not a digest reference <ref>@sha256:<64 hex>"
 if [ -n "$control" ]; then
   [[ $control =~ $digest_shape ]] || refuse "the control $control is not a digest reference <ref>@sha256:<64 hex>"
-  [ "$control" != "$image" ] || refuse "the control is the image under test; the control is the base branch's image"
+  [ "$control" != "$image" ] || refuse "the control is the image under test; the control is an image published before the wrappers"
 fi
 [ -n "$node_selector" ] || refuse "no --node-selector: the namespace's admission requires the deployment's compute class, which is in the deployment's own declaration"
 case "$prefix" in
@@ -248,6 +261,7 @@ workload=""
 run_label=""
 cleanup_status=0
 
+# shellcheck disable=SC2317 # the EXIT trap below is what runs it
 cleanup() {
   status=$?
   trap - EXIT INT TERM HUP
@@ -258,12 +272,12 @@ cleanup() {
   if [ -n "$workload" ]; then
     echo "== cleanup: deleting Job $workload"
     setsid -w kubectl -n "$namespace" delete job "$workload" --cascade=foreground --ignore-not-found ||
-      { echo "cleanup: the Job's delete failed"; [ "$status" -ne 0 ] || status=1; }
+      { echo "cleanup: the Job's delete failed"; [ "$status" -ne 0 ] || status=2; }
     setsid -w kubectl -n "$namespace" get job "$workload" --ignore-not-found
   elif [ -n "$run_label" ]; then
     echo "== cleanup: no Job name was read; deleting by label leak-guard-run=$run_label"
     setsid -w kubectl -n "$namespace" delete job -l "leak-guard-run=$run_label" --cascade=foreground --ignore-not-found ||
-      { echo "cleanup: the Job's delete failed"; [ "$status" -ne 0 ] || status=1; }
+      { echo "cleanup: the Job's delete failed"; [ "$status" -ne 0 ] || status=2; }
     # An empty listing is no proof that none is left: a create the API server stored after this
     # listing leaves a Job this never saw. List it again once this script has ended, and delete it
     # with `kubectl -n <namespace> delete job -l leak-guard-run=<the printed value>
@@ -284,8 +298,8 @@ trap 'exit 129' HUP
 # The probe. It runs inside the image, as the Job's one container, and decides its own verdict:
 # every check prints `CHECK <name>: got [x] want [y]`, and the last line is `JOB-RESULT pass` or
 # `JOB-RESULT fail`. Its one argument is the arm — `head` for an image whose wrappers must refuse,
-# `control` for the base branch's image, which has none and must let everything through — so one
-# probe serves both and the expectations are stated once.
+# `control` for an image published before the wrappers, on which every push lands — so one probe
+# serves both and the expectations are stated once.
 #
 # Read the probe's own verdict and never the Job's phase: a Job reports `Succeeded` when its
 # container exited 0 and nothing more (skills/legion-worker/references/tools.md).
@@ -371,7 +385,7 @@ run_id() { od -An -N4 -tx1 /dev/urandom | tr -d ' \n'; }
 echo "== leak-guard-image-job"
 echo "namespace: $namespace"
 echo "image:     $image"
-echo "control:   ${control:-none — this run proves only the head}"
+echo "control:   ${control:-none — the head arm runs the negative control, the push outside the guard}"
 echo "selector:"
 printf '%s' "$selector_yaml"
 
@@ -568,7 +582,7 @@ echo "head ($image): $head_verdict"
 if [ -n "$control" ]; then
   echo "control ($control): $control_verdict"
 else
-  echo "control: none was given, so this run proves only that the head's image refuses"
+  echo "control: none was given; the head's Job carries its own negative control, the push outside the guard"
 fi
 
 verdict_status() { # verdict_status <word>
