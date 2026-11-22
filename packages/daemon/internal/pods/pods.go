@@ -154,7 +154,9 @@ type IdleView struct {
 	Root        IdleRoot
 	Claims      []IdleClaim
 	// Waiting is whether a task, notice, message or start of the issue waits for delivery to a
-	// role of its pod. The rule reads only whether there is one, so the store reads only that.
+	// role of its pod. A start queued for news of the approved design alone is not counted: it
+	// wakes the claim a release suspends (store's idleWaitingRow). The rule reads only whether
+	// there is one, so the store reads only that.
 	Waiting bool
 	// RoleStopQueued is whether a supervise row that stops a role of the issue still waits in
 	// the outbox: a close's suspend, issue_close or tree_close, or an idle release's role stop.

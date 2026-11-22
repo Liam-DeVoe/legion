@@ -542,6 +542,9 @@ func testerRolesDir(t *testing.T) string {
 // process may have taken by then. The reaper takes every exited child of the test process, so a
 // test that runs it is not parallel, and runs its own commands through guard or while the reaper
 // is stopped.
+//
+// stop does not wait on the reaper past 30 s before the test binary's deadline (reaperBound): a
+// pass that never ends fails t by name there rather than hold the test until Go's alarm.
 func relentlessReaper(t *testing.T, managers []*manager, guard *pidGuard) (stop func()) {
 	t.Helper()
 	orphan := exec.Command("/bin/sh", "-c", "exit 0")
@@ -561,14 +564,30 @@ func relentlessReaper(t *testing.T, managers []*manager, guard *pidGuard) (stop 
 			}
 		}
 	})
-	return func() {
+	stop = func() {
 		t.Helper()
 		cancel()
-		reaping.Wait()
+		ended := make(chan struct{})
+		go func() { reaping.Wait(); close(ended) }()
+		select {
+		case <-ended:
+		case <-time.After(reaperBound(t)):
+			t.Errorf("the reaper's pass never ended after its stop, to 30 s before the test binary's deadline")
+			return
+		}
 		if err := orphan.Wait(); !reapedByAnother(err) {
 			t.Errorf("the orphan %d's own wait answered %v, want ECHILD or ESRCH: the reaper left it unreaped, so it never ran while the test's commands did", orphan.Process.Pid, err)
 		}
 	}
+	return stop
+}
+
+// reaperBound is how long a wait on PID 1's reaper that begins now may last: until 30 s before
+// the test binary's deadline, three years at most under -timeout 0, so every such wait in a row
+// gives up at the same moment however many there are, and the failure and the row's cleanups
+// still run before Go's alarm.
+func reaperBound(t *testing.T) time.Duration {
+	return testwait.Bounded(t, 3*365*24*time.Hour, 30*time.Second)
 }
 
 // While the install's verification runs — the served check's `--help`, a child of the launcher,
