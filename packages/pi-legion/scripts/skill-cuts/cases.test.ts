@@ -3,7 +3,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { SessionEntry, type SessionMessage, stripSkillHeader } from "../skill-scenarios/transcript";
-import { type Case, loadCases, pathHash, skillReadFile } from "./cases";
+import { type Case, loadCases, pathHash, pathReadFile, skillReadFile } from "./cases";
 
 // The loader of the case file, on F1 (testdata/F1): an Oh My Pi 18.18.6 session of a scratch
 // profile with the made-up skills alpha and beta, captured with
@@ -324,4 +324,102 @@ test("skillReadFile reads skill:// URLs of the skill only", () => {
   expect(skillReadFile("alpha", "skill://alpha/../beta/SKILL.md")).toBeUndefined();
   expect(skillReadFile("alpha", "skill://alpha/SKILL.md:1-5")).toBeUndefined();
   expect(skillReadFile("alpha", "/profiles/p/agent/skills/alpha/SKILL.md")).toBeUndefined();
+});
+
+/** The made-up copy of alpha a dev box's session read by path, and another copy of it. */
+const COPY = "/home/agent/src/acme-skills/skills/alpha";
+const OTHER_COPY = "/tmp/eval/acme-skills/skills/alpha";
+
+test("pathReadFile reads whole reads by path of the case's own copy only", () => {
+  const c = { pathCopy: { dir: COPY } };
+  expect(pathReadFile(c, `${COPY}/SKILL.md`)).toBe("SKILL.md");
+  expect(pathReadFile(c, `${COPY}/references/x.md`)).toBe("references/x.md");
+  // A read selector: a `:` after the last `/`.
+  expect(pathReadFile(c, `${COPY}/SKILL.md:1-180`)).toBeUndefined();
+  expect(pathReadFile(c, `${COPY}/SKILL.md:raw`)).toBeUndefined();
+  expect(pathReadFile(c, `${COPY}/references/x.md:raw:1-5`)).toBeUndefined();
+  // A `:` before the last `/` is the path's own.
+  expect(pathReadFile({ pathCopy: { dir: "/srv/a:b/alpha" } }, "/srv/a:b/alpha/SKILL.md")).toBe(
+    "SKILL.md"
+  );
+  // Another copy, a raw URL of the repository at another commit, the directory itself, a
+  // directory under it, a name that only starts like it, and a path that leaves it.
+  expect(pathReadFile(c, `${OTHER_COPY}/SKILL.md`)).toBeUndefined();
+  expect(
+    pathReadFile(
+      c,
+      "https://raw.githubusercontent.com/acme/skills/0123456789abcdef/skills/alpha/SKILL.md"
+    )
+  ).toBeUndefined();
+  expect(pathReadFile(c, COPY)).toBeUndefined();
+  expect(pathReadFile(c, `${COPY}/`)).toBeUndefined();
+  expect(pathReadFile(c, `${COPY}/references/`)).toBeUndefined();
+  expect(pathReadFile(c, `${COPY}bet/SKILL.md`)).toBeUndefined();
+  expect(pathReadFile(c, `${COPY}/../beta/SKILL.md`)).toBeUndefined();
+  expect(pathReadFile(c, "skill://alpha")).toBeUndefined();
+  // A case that names no copy has no read by path of it.
+  expect(pathReadFile({}, `${COPY}/SKILL.md`)).toBeUndefined();
+});
+
+/** F1's case whose session also read alpha's SKILL.md by path in COPY (8), its first five lines
+ *  there (10), and OTHER_COPY's SKILL.md (12): the results as Oh My Pi shows them, cut short. */
+function pathCase(id: string): Case {
+  const c = f1Case(id);
+  const read = (callId: string, target: string, text: string): SessionMessage[] => [
+    {
+      role: "assistant",
+      content: [{ type: "toolCall", id: callId, name: "read", arguments: { path: target } }],
+    },
+    {
+      role: "toolResult",
+      toolCallId: callId,
+      toolName: "read",
+      content: [{ type: "text", text }],
+      isError: false,
+    },
+  ];
+  return {
+    ...c,
+    messages: [
+      ...c.messages,
+      ...read("path_skill", `${COPY}/SKILL.md`, "[~/src/acme-skills/skills/alpha/SKILL.md#BF93]"),
+      ...read(
+        "path_range",
+        `${COPY}/SKILL.md:1-5`,
+        "[~/src/acme-skills/skills/alpha/SKILL.md#BF93]"
+      ),
+      ...read("path_other", `${OTHER_COPY}/SKILL.md`, `[${OTHER_COPY}/SKILL.md#BF93]`),
+    ],
+    skillReads: [2, 4, 8],
+    pathCopy: { dir: COPY },
+  };
+}
+
+test("a case whose session read its own copy by path loads with that read in skillReads; a read with a selector or of another copy needs none", () => {
+  const base = alphaDir("base-path");
+  const cases = loadCases(caseFile("path", [pathCase("c-path")]), base);
+  expect(cases).toEqual([pathCase("c-path")]);
+  expect(cases[0]?.pathCopy).toEqual({ dir: COPY });
+});
+
+test("refuses a whole read by path of the copy that skillReads leaves out, a path read in skillReads it does not answer, and a copy that is no absolute directory", () => {
+  const base = alphaDir("base-path-refused");
+  const left = { ...pathCase("c-left"), skillReads: [2, 4] };
+  const range = { ...pathCase("c-range"), skillReads: [2, 4, 8, 10] };
+  const { pathCopy: _, ...noCopy } = pathCase("c-no-copy");
+  const file = caseFile("path-refused", [left, range, noCopy]);
+  expect(() => loadCases(file, base)).toThrow(
+    [
+      "refused cases:",
+      `case c-left (${file}:1): the read result at index 8 (${COPY}/SKILL.md) is not in skillReads`,
+      `case c-range (${file}:2): skillReads index 10 answers a read of ${COPY}/SKILL.md:1-5, not a read of a skill://alpha file or a whole read of a file of ${COPY}`,
+      `case c-no-copy (${file}:3): skillReads index 8 answers a read of ${COPY}/SKILL.md, not a read of a skill://alpha file`,
+    ].join("\n")
+  );
+  for (const dir of ["skills/alpha", `${COPY}/`, "/", "/home/agent/../alpha"]) {
+    const bad = caseFile("path-dir", [{ ...pathCase("c-dir"), pathCopy: { dir } }]);
+    expect(() => loadCases(bad, base)).toThrow(
+      `case c-dir (${bad}:1) is not a case: pathCopy.dir: is not an absolute directory with no / at its end`
+    );
+  }
 });

@@ -11,8 +11,8 @@
  * arm's directory, which `none` leaves out; a copy of another source that shares the name stays
  * as the profile has it in every arm.
  *
- * In each arm but `none`, each read result of a file of the skill (the case's `skillReads`) is
- * answered from the arm's file the way the pinned Oh My Pi 18.18.6 answers a `skill://` read: one
+ * In each arm but `none`, each read result of a `skill://` read of the skill (in the case's
+ * `skillReads`) is answered from the arm's file the way the pinned Oh My Pi 18.18.6 answers one: one
  * line `[Skill file: <absolute path>]`, then the file's text less its final newline (F1). The path
  * is never the arm's own directory: it is the one the real result shows, the skill's installed
  * path, so no arm's directory name reaches the model and the lines are the same in every arm. A
@@ -24,9 +24,34 @@
  * `none`, each read call of the skill and its result are removed, and an assistant message left
  * with no text and no tool call goes too.
  *
- * `skillFile(arm, file)` answers one new read the same way, at the arm's `installedDir`, and is
- * what replay.ts answers a reply's read with; cases.ts's `skillReadFile(arm.skill, target)` says
- * which file a read reads.
+ * A whole read of a file of the cut's own copy of the skill by its path on disk (cases.ts's
+ * `pathReadFile` of the case's `pathCopy`; in `skillReads` too) is answered in each arm but `none`
+ * from the arm's file the way the pinned Oh My Pi answers a read of a text file by path
+ * (packages/coding-agent/src/tools/read.ts lines 2320-3187 at the tag
+ * v18.18.6-sami.20261119-162325 of cybermonklabs/oh-my-pi), at its default settings. It has no
+ * `[Skill file: …]` line, which only a `skill://` read gets (lines 2040-2046).
+ * In a session that shows hashline rows it is one line `[<path>#<tag>]`, then `<n>:<line>` for
+ * each line of the file; in one that shows line numbers, `<n>|<line>`; else the lines alone
+ * (`PathRows`, `resolveFileDisplayMode`). `<path>` is the one the real result's own line shows,
+ * else the one a read of another file of the copy shows (`PathCopy.shownDir`), else the absolute
+ * path, never the arm's own directory; `<tag>` is Oh My Pi's snapshot tag of the arm's text
+ * (`snapshotTag`). A line longer than 768 characters (`tools.outputMaxColumns`) shows its first
+ * 768 and `…`, and the text ends with Oh My Pi's notice naming the cut lines. A file the arm
+ * lacks, and in `none` (which keeps the read call, unlike a `skill://` read's) every file, gets
+ * Oh My Pi's not-found result: `Path '<the path as read>' not found`, empty `details`, `isError`
+ * (line 2258). These forms, `details` and tags included, are those of recorded reads by path of
+ * the pinned Oh My Pi. Oh My Pi shows some files in a form the arms do not rebuild, and buildArm
+ * throws naming the case on a read of one: a file that is no Markdown or plain text (a read may
+ * summarize it, or show a notebook or an image), one that is not UTF-8 text, one of more than 300
+ * lines (`read.defaultLimit`: it shows 300, then the end of each block past them), one whose lines
+ * pass the 50 KB a read shows, and one with a line that opens a git conflict block (a warning
+ * follows it). `pathFormFault` says which, so the case builder can leave such a case out before
+ * it writes it.
+ *
+ * `skillFile(arm, file)` answers one new `skill://` read the same way, at the arm's
+ * `installedDir`, and `pathFile(arm, target)` one new read by path, at the path read; replay.ts
+ * answers a reply's reads with them. cases.ts's `skillReadFile(arm.skill, target)` and
+ * `pathReadFile(arm, target)` say which file a read reads.
  *
  * A skill can reach a session other than by its listing line and its reads, and each arm puts its
  * own text there too (`Injection`, `arm.injections`):
@@ -65,6 +90,7 @@
  * invoked with `/skill:`, or a message that opens with the plugin's marker away from where the
  * plugin puts its block) is refused: buildArm throws InjectionRefused naming it.
  */
+import { isUtf8 } from "node:buffer";
 import {
   cpSync,
   existsSync,
@@ -72,6 +98,7 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  type Stats,
   statSync,
   writeFileSync,
 } from "node:fs";
@@ -91,6 +118,7 @@ import {
   type Case,
   listedName,
   type ProfileSkill,
+  pathReadFile,
   skillReadFile,
   testedCopy,
   textLines,
@@ -150,6 +178,23 @@ export interface DispatchAnswer {
   readonly why: string;
 }
 
+/** How a session shows the rows of a file it read by path (`resolveFileDisplayMode`,
+ *  packages/coding-agent/src/utils/file-display-mode.ts at the pin): `hashline`, a
+ *  `[<path>#<tag>]` line, then `<n>:` before each line (the edit tool on, in Oh My Pi's default
+ *  edit mode); `numbered`, `<n>|` before each line (the `readLineNumbers` setting); `plain`, the
+ *  lines alone. */
+export type PathRows = "hashline" | "numbered" | "plain";
+
+/** The cut's own copy of a case's skill as the session read it by path (see the file's header):
+ *  `dir`, its absolute directory (cases.ts's `pathCopy`); `shownDir`, the directory a hashline
+ *  line shows its files under (`""` when it shows them relative to the copy itself); `rows`, how
+ *  a new read of it shows its rows. */
+export interface PathCopy {
+  readonly dir: string;
+  readonly shownDir: string;
+  readonly rows: PathRows;
+}
+
 /** One arm of a case. */
 export interface Arm {
   readonly name: ArmName;
@@ -173,6 +218,9 @@ export interface Arm {
   /** Whether the case's session had Dispatch, and why (`dispatchOf`): what the plugin's block of
    *  `injections` rests on. Absent for an arm built from no case (a load test's). */
   readonly dispatch?: DispatchAnswer;
+  /** The cut's own copy of the skill the case's session read by path, the same in every arm.
+   *  Absent when the case names none. */
+  readonly pathCopy?: PathCopy;
 }
 
 /** The directories the arms are built from: each is the skill's own directory, SKILL.md at its
@@ -192,16 +240,22 @@ function answer(arm: Arm, file: string, shown: string): { text: string; isError:
     const available = names.length > 0 ? names.join(", ") : "none";
     return { text: `Unknown skill: ${arm.skill}\nAvailable: ${available}`, isError: true };
   }
-  const full = path.resolve(arm.skillDir, file);
-  const inside = path.relative(arm.skillDir, full);
-  if (inside === ".." || inside.startsWith(`..${path.sep}`) || path.isAbsolute(inside)) {
-    throw new Error(`${file} is not a path inside the skill directory ${arm.skillDir}`);
-  }
-  const stats = statSync(full, { throwIfNoEntry: false });
+  const { full, stats } = armFile(arm.skillDir, file);
   if (stats === undefined) return { text: `File not found: ${shown}`, isError: true };
   if (!stats.isFile()) throw new Error(`${full} is not a file: an arm answers reads of files only`);
   const text = readFileSync(full, "utf8").replace(/\n$/, "");
   return { text: `${skillFileHeader(shown)}\n${text}`, isError: false };
+}
+
+/** The file `file` (a path inside the skill's directory) of the arm's directory `dir`, absolute,
+ *  and what is there (undefined: nothing). Throws when `file` leaves the directory. */
+function armFile(dir: string, file: string): { full: string; stats: Stats | undefined } {
+  const full = path.resolve(dir, file);
+  const inside = path.relative(dir, full);
+  if (inside === ".." || inside.startsWith(`..${path.sep}`) || path.isAbsolute(inside)) {
+    throw new Error(`${file} is not a path inside the skill directory ${dir}`);
+  }
+  return { full, stats: statSync(full, { throwIfNoEntry: false }) };
 }
 
 /** The answer to a new read of `file` (a path inside the skill's directory) from the arm's files,
@@ -233,6 +287,295 @@ function answered(
       ...(read.file.endsWith(".md") ? { contentType: "text/markdown" } : {}),
     },
     isError,
+  };
+}
+
+/** Oh My Pi's defaults that shape a read by path (packages/coding-agent/src/tools/settings.ts at
+ *  the pin): the lines one read shows (`read.defaultLimit`, lines 161-178), the characters it
+ *  shows of each line (`tools.outputMaxColumns`, lines 85-105), and the bytes of a result past
+ *  which it is saved as an artifact (`tools.artifactSpillThreshold`, lines 13-37), which also
+ *  bounds the lines a read shows; a page of a file may pass it by INLINE_SLACK
+ *  (packages/coding-agent/src/tools/output-meta.ts line 537). */
+const READ_LINES = 300;
+const READ_COLUMNS = 768;
+const SPILL_BYTES = 50 * 1024;
+const INLINE_SLACK = 2 * 1024;
+
+/** The names of the files Oh My Pi reads as prose, which a read never summarizes at its default
+ *  settings (read-summary.ts's `isProseSummaryPath` at the pin: Markdown, as
+ *  packages/tui/src/lang-from-path.ts lines 104-109 names it, and `.txt`). */
+const PROSE_FILE = /\.(md|markdown|mdx|mdc|mkd|mdown|txt)$/i;
+
+/** A line that opens a git conflict block, as Oh My Pi's scanConflictLines finds one
+ *  (packages/coding-agent/src/tools/conflict-detect.ts at the pin). */
+const CONFLICT_OPENER = /^<<<<<<<(?: |\r?$)/;
+
+/** The bytes of a file's lines a whole read of it shows, each cut line counted as shown, with a
+ *  newline between two (read.ts lines 2663-2672 at the pin): 50 KB, less four bytes for each of
+ *  the 300 lines when the rows show their numbers. */
+function pageBytes(rows: PathRows): number {
+  const numbers = rows === "plain" ? 0 : String(READ_LINES).length + 1;
+  return Math.min(Math.max(SPILL_BYTES, READ_LINES * 512), SPILL_BYTES - READ_LINES * numbers);
+}
+
+/** Oh My Pi's snapshot tag of a file's text, the `<tag>` of a hashline line (`file_hash`,
+ *  crates/pi-edit/src/store.rs lines 70-91 at the pin): xxHash32, seed 0, of the text with the
+ *  spaces, tabs and carriage returns at the end of each line left out, its low 16 bits as four
+ *  uppercase hex digits. Oh My Pi hashes the text with a leading byte order mark left out and
+ *  each CRLF or CR as LF. */
+export function snapshotTag(text: string): string {
+  const kept = text
+    .split("\n")
+    .map((line) => line.replace(/[ \t\r]+$/, ""))
+    .join("\n");
+  return (Bun.hash.xxHash32(kept, 0) & 0xffff).toString(16).toUpperCase().padStart(4, "0");
+}
+
+/** A read by path, answered: its text, whether it failed, and the tool's record. */
+interface PathAnswer {
+  readonly text: string;
+  readonly isError: boolean;
+  readonly details: Record<string, unknown>;
+}
+
+/** A file's text as a whole read by path shows it: the decoded text, its lines (a final newline
+ *  ends the last one), each line as shown (at most READ_COLUMNS characters, then `…`), and the
+ *  first and last line cut so, or undefined when none is. */
+interface PathPage {
+  readonly raw: string;
+  readonly lines: readonly string[];
+  readonly shownLines: readonly string[];
+  readonly cut: { readonly first: number; readonly last: number } | undefined;
+}
+
+/** The page of `file` (a path inside the skill's directory) whose bytes are `bytes`, as a whole
+ *  read by path shows it in a session that shows its rows as `rows`, or why Oh My Pi shows it in
+ *  a form the arms do not rebuild (`pathFormFault`). */
+function pathPage(file: string, bytes: Uint8Array, rows: PathRows): PathPage | string {
+  if (!PROSE_FILE.test(file)) {
+    return `${file} is no Markdown or plain-text file, the only kinds whose read by path the arms rebuild`;
+  }
+  if (bytes.includes(0) || !isUtf8(bytes)) return `${file} is not UTF-8 text`;
+  // The lines as Oh My Pi shows them: the bytes decoded as they are, a final newline ending the
+  // last line (read.ts lines 266-291 at the pin).
+  const raw = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("utf8");
+  const lines = raw.split("\n");
+  if (lines.length > 1 && lines.at(-1) === "") lines.pop();
+  if (lines.length > READ_LINES) {
+    return `${file} has ${lines.length} lines, and a read by path shows ${READ_LINES}, then the end of each block past them`;
+  }
+  const opener = lines.findIndex((line) => CONFLICT_OPENER.test(line));
+  if (opener !== -1) {
+    return `line ${opener + 1} of ${file} opens a git conflict block, which a read by path follows with a warning`;
+  }
+  // Each line as shown; the cut lines, the first one's bytes, and the bytes the page counts: each
+  // line as shown, and a newline between two.
+  const shownLines: string[] = [];
+  let cut: { first: number; last: number; firstBytes: number } | undefined;
+  let spent = -1;
+  for (const [index, line] of lines.entries()) {
+    const shown = line.length <= READ_COLUMNS ? line : `${line.slice(0, READ_COLUMNS)}…`;
+    if (shown !== line) {
+      cut = cut ?? { first: index + 1, last: index + 1, firstBytes: Buffer.byteLength(line) };
+      cut.last = index + 1;
+    }
+    spent += Buffer.byteLength(shown) + 1;
+    shownLines.push(shown);
+  }
+  if (spent > pageBytes(rows)) {
+    return `the lines of ${file} a read by path shows come to ${spent} bytes, past the ${pageBytes(rows)} it shows`;
+  }
+  if (cut !== undefined && cut.firstBytes > SPILL_BYTES) {
+    return `line ${cut.first} of ${file} is ${cut.firstBytes} bytes, and a read by path names a byte cap for it`;
+  }
+  return {
+    raw,
+    lines,
+    shownLines,
+    cut: cut === undefined ? undefined : { first: cut.first, last: cut.last },
+  };
+}
+
+/** Why Oh My Pi shows a whole read by path of `file` (a path inside the skill's directory) whose
+ *  bytes are `bytes` in a form the arms do not rebuild, or undefined when they rebuild it (see the
+ *  file's header): a file that is no Markdown or plain text, one that is not UTF-8 text or holds a
+ *  NUL byte, one of more than 300 lines, one whose lines pass the bytes a read shows, one whose
+ *  first cut line passes 50 KB, and one with a line that opens a git conflict block. `rows` is how
+ *  the session shows its rows; left out, the bytes a read shows are those of rows that show their
+ *  numbers, the fewer, so a caller that cannot tell (the case builder, before it writes a case)
+ *  refuses every file buildArm refuses. buildArm throws, naming the case, on each fault, and on a
+ *  page whose hashline path alone is some 2 KB long, which Oh My Pi saves as an artifact. */
+export function pathFormFault(
+  file: string,
+  bytes: Uint8Array,
+  rows: PathRows = "hashline"
+): string | undefined {
+  const page = pathPage(file, bytes, rows);
+  return typeof page === "string" ? page : undefined;
+}
+
+/** Oh My Pi's result for a whole read by the path `target` of `file` (a path inside the skill's
+ *  directory) of the arm's directory `skillDir` (undefined for `none`), its hashline line naming
+ *  `shown` and its rows shown as `rows` (see the file's header; read.ts lines 2320-3187 at the
+ *  pin). Returns why the arms do not rebuild it instead when Oh My Pi shows the file in another
+ *  form (`pathFormFault`, or a page it saves as an artifact). */
+function pathAnswer(
+  skillDir: string | undefined,
+  read: { file: string; target: string; shown: string; rows: PathRows }
+): PathAnswer | string {
+  const notFound = { text: `Path '${read.target}' not found`, isError: true, details: {} };
+  if (skillDir === undefined) return notFound;
+  const { full, stats } = armFile(skillDir, read.file);
+  if (stats === undefined) return notFound;
+  if (!stats.isFile()) throw new Error(`${full} is not a file: an arm answers reads of files only`);
+  const bytes = readFileSync(full);
+  const page = pathPage(read.file, bytes, read.rows);
+  if (typeof page === "string") return page;
+  const { raw, lines, shownLines, cut } = page;
+  const numbered = shownLines.map((line, index) =>
+    read.rows === "hashline"
+      ? `${index + 1}:${line}`
+      : read.rows === "numbered"
+        ? `${index + 1}|${line}`
+        : line
+  );
+  const hashed = (raw.startsWith("\uFEFF") ? raw.slice(1) : raw).replace(/\r\n?/g, "\n");
+  const shown =
+    read.rows === "hashline"
+      ? `[${read.shown}#${snapshotTag(hashed)}]\n${numbered.join("\n")}`
+      : numbered.join("\n");
+  if (Buffer.byteLength(shown) > SPILL_BYTES + INLINE_SLACK) {
+    return `a read by path of ${read.file} is saved as an artifact`;
+  }
+  const notice =
+    cut === undefined
+      ? ""
+      : `\n\n[Some lines truncated to ${READ_COLUMNS} chars. Use :raw:${cut.first}-${cut.first} to read line ${cut.first} whole${cut.last > cut.first ? `; cut lines run to line ${cut.last}, each read the same way` : ""}]`;
+  return {
+    text: `${shown}${notice}`,
+    isError: false,
+    details: {
+      totalLines: lines.length,
+      rowPrefixes: read.rows !== "plain",
+      displayContent: {
+        text: shownLines.join("\n"),
+        startLine: 1,
+        lineNumbers: shownLines.map((_, index) => index + 1),
+      },
+      fileSize: bytes.length,
+      meta: {
+        source: { type: "path", value: path.resolve(read.target) },
+        pagedSource: true,
+        ...(cut === undefined
+          ? {}
+          : {
+              limits: {
+                columnTruncated: {
+                  maxColumn: READ_COLUMNS,
+                  unit: "chars",
+                  lines: { first: cut.first, last: cut.last },
+                  selectorBase: "",
+                },
+              },
+            }),
+      },
+    },
+  };
+}
+
+/** The answer to a new read of `target` from the arm's files, when it is a whole read of a file
+ *  of the cut's own copy of the skill by path (cases.ts's `pathReadFile` of `arm.pathCopy`): Oh My
+ *  Pi's result at the path read, its rows as the case's reads by path show them, or its not-found
+ *  result. Undefined for any other read, a read of a directory of the copy, and a read of a file
+ *  Oh My Pi shows in a form the arms do not rebuild (`pathFormFault`). */
+export function pathFile(arm: Arm, target: string): { text: string; isError: boolean } | undefined {
+  const copy = arm.pathCopy;
+  const file = pathReadFile(arm, target);
+  if (copy === undefined || file === undefined) return undefined;
+  if (arm.skillDir !== undefined && armFile(arm.skillDir, file).stats?.isDirectory()) {
+    return undefined;
+  }
+  const read = { file, target, shown: path.join(copy.shownDir, file), rows: copy.rows };
+  const answer = pathAnswer(arm.skillDir, read);
+  return typeof answer === "string" ? undefined : { text: answer.text, isError: answer.isError };
+}
+
+/** A hashline line: `[<path>#<tag>]`, the path as Oh My Pi shows it. */
+const HASHLINE_HEADER = /^\[(.+)#[0-9A-F]{4}\]$/;
+
+/** How a read result of a path shows its rows, and the path its hashline line shows; undefined
+ *  for one that shows neither: a failed read, a raw one (`:raw` shows no row numbers in any
+ *  session), or one whose text no longer shows the rows its `details` name. */
+function shownRows(message: SessionMessage): { rows: PathRows; shown?: string } | undefined {
+  const details = message.details;
+  if (message.isError === true || typeof details !== "object" || details === null) return undefined;
+  const prefixes = Reflect.get(details, "rowPrefixes");
+  if (Reflect.get(details, "raw") === true || typeof prefixes !== "boolean") return undefined;
+  if (!prefixes) return { rows: "plain" };
+  const first = (message.content?.[0]?.text ?? "").split("\n", 1)[0] ?? "";
+  const header = HASHLINE_HEADER.exec(first);
+  if (header?.[1] !== undefined) return { rows: "hashline", shown: header[1] };
+  return /^\d+\|/.test(first) ? { rows: "numbered" } : undefined;
+}
+
+/** A path or URL with a scheme (`skill://`, `https://`), which no read by path is. */
+const URL_TARGET = /^[a-z][a-z0-9+.-]*:\/\//i;
+
+/** The cut's own copy of `c`'s skill as its session read it by path (PathCopy), or undefined when
+ *  `c` names none: `shownDir` from the first hashline line of a read of a file of the copy that
+ *  shows that file's path, else the copy's directory; `rows` as the last read by path of `c`'s
+ *  messages shows them (`shownRows`), else hashline, or plain when the case's recorded tools leave
+ *  out the edit tool. */
+function pathCopyOf(c: Case, targets: ReadonlyMap<string, string>): PathCopy | undefined {
+  if (c.pathCopy === undefined) return undefined;
+  let shownDir: string | undefined;
+  let rows: PathRows | undefined;
+  for (const message of c.messages) {
+    if (message.role !== "toolResult" || message.toolName !== "read") continue;
+    const target = targets.get(message.toolCallId ?? "");
+    const shown = target === undefined || URL_TARGET.test(target) ? undefined : shownRows(message);
+    if (target === undefined || shown === undefined) continue;
+    rows = shown.rows;
+    const file = pathReadFile(c, target);
+    if (shownDir !== undefined || file === undefined || shown.shown === undefined) continue;
+    if (shown.shown === file) shownDir = "";
+    else if (shown.shown.endsWith(`/${file}`)) shownDir = shown.shown.slice(0, -(file.length + 1));
+  }
+  const edit = c.profile.tools === undefined || c.profile.tools.includes("edit");
+  return {
+    dir: c.pathCopy.dir,
+    shownDir: shownDir ?? c.pathCopy.dir,
+    rows: rows ?? (edit ? "hashline" : "plain"),
+  };
+}
+
+/** A read result of the case's messages that read `file` of the copy `copy` by the path `target`,
+ *  answered from the arm's directory `skillDir` in the form the result shows (`shownRows`; else
+ *  the copy's), at its own hashline line's path (else the copy's). Throws naming the case when Oh
+ *  My Pi shows the arm's file in a form the arms do not rebuild. */
+function pathAnswered(
+  c: Case,
+  message: SessionMessage,
+  arm: { name: ArmName; skillDir: string | undefined },
+  read: { file: string; target: string; copy: PathCopy }
+): SessionMessage {
+  const own = shownRows(message);
+  const answer = pathAnswer(arm.skillDir, {
+    file: read.file,
+    target: read.target,
+    shown: own?.shown ?? path.join(read.copy.shownDir, read.file),
+    rows: own?.rows ?? read.copy.rows,
+  });
+  if (typeof answer === "string") {
+    throw new Error(
+      `case ${c.id}: the ${arm.name} arm cannot answer the read of ${read.target}: ${answer}, a form the arms do not rebuild`
+    );
+  }
+  return {
+    ...message,
+    content: [{ type: "text", text: answer.text }],
+    details: answer.details,
+    isError: answer.isError,
   };
 }
 
@@ -668,27 +1011,36 @@ function withInjections(
 
 /** The arm `name` of case `c`, from the skill directories `dirs`, with whether its session had
  * Dispatch (`dispatchOf`). `minus` writes its copy of the old directory to `<scratch>/minus`,
- * replacing one there. Throws naming the case when a skillReads index is not a read of a
- * `skill://<skill>` file, and InjectionRefused when the case holds a block of its skill the arms
- * cannot each give their text (`injectionFault`). */
+ * replacing one there. Throws naming the case when a skillReads index is not a read of a file of
+ * the skill (cases.ts's `skillReadFile` or `pathReadFile`), when Oh My Pi shows an arm's file read
+ * by path in a form the arms do not rebuild (`pathFormFault`), and InjectionRefused when the case
+ * holds a block of its skill the arms cannot each give their text (`injectionFault`). */
 export function buildArm(c: Case, name: ArmName, dirs: ArmDirs, scratch: string): Arm {
   const fault = injectionFault(c);
   if (fault !== undefined) throw new InjectionRefused(`case ${c.id}: ${fault}`);
   const targets = readTargets(c.messages);
-  const reads = new Map(
-    c.skillReads
-      .toSorted((a, b) => a - b)
-      .map((index) => {
-        const message = c.messages[index];
-        const target = targets.get(message?.toolCallId ?? "") ?? "";
-        const file = message?.role === "toolResult" ? skillReadFile(c.skill, target) : undefined;
-        if (file === undefined) {
-          throw new Error(`case ${c.id}: skillReads index ${index} is not a read of a skill file`);
-        }
-        const header = skillHeaderPath(message?.content?.[0]?.text ?? "");
-        return [index, { file, target, header, id: message?.toolCallId ?? "" }];
-      })
-  );
+  const pathCopy = pathCopyOf(c, targets);
+  // The case's `skill://` reads, and its reads of the cut's own copy by path, by index.
+  const reads = new Map<
+    number,
+    { file: string; target: string; header: string | undefined; id: string }
+  >();
+  const pathReads = new Map<number, { file: string; target: string; copy: PathCopy }>();
+  for (const index of c.skillReads.toSorted((a, b) => a - b)) {
+    const message = c.messages[index];
+    const target = targets.get(message?.toolCallId ?? "") ?? "";
+    const result = message?.role === "toolResult";
+    const file = result ? skillReadFile(c.skill, target) : undefined;
+    const byPath = result && file === undefined ? pathReadFile(c, target) : undefined;
+    if (file !== undefined) {
+      const header = skillHeaderPath(message?.content?.[0]?.text ?? "");
+      reads.set(index, { file, target, header, id: message?.toolCallId ?? "" });
+    } else if (byPath !== undefined && pathCopy !== undefined) {
+      pathReads.set(index, { file: byPath, target, copy: pathCopy });
+    } else {
+      throw new Error(`case ${c.id}: skillReads index ${index} is not a read of a skill file`);
+    }
+  }
   // The installed directory: the first header's path less the file it read.
   let installedDir = path.join("/skills", c.skill);
   for (const { file, header } of reads.values()) {
@@ -702,6 +1054,10 @@ export function buildArm(c: Case, name: ArmName, dirs: ArmDirs, scratch: string)
     const ids = new Set([...reads.values()].map((read) => read.id));
     const messages = c.messages.flatMap((message, index): SessionMessage[] => {
       if (reads.has(index)) return [];
+      const byPath = pathReads.get(index);
+      if (byPath !== undefined) {
+        return [structuredClone(pathAnswered(c, message, { name, skillDir: undefined }, byPath))];
+      }
       const content = message.content;
       if (message.role !== "assistant" || content === undefined) return [structuredClone(message)];
       const kept = content.filter((part) => !(part.type === "toolCall" && ids.has(part.id ?? "")));
@@ -718,6 +1074,7 @@ export function buildArm(c: Case, name: ArmName, dirs: ArmDirs, scratch: string)
       ...withInjections(c, messages, undefined),
       profileSkills: structuredClone(c.profile.skills.filter((skill) => !tested(skill))),
       dispatch: dispatchOf(c),
+      ...(pathCopy === undefined ? {} : { pathCopy }),
     };
   }
 
@@ -732,8 +1089,11 @@ export function buildArm(c: Case, name: ArmName, dirs: ArmDirs, scratch: string)
     installedDir,
     messages: [],
     profileSkills: structuredClone(c.profile.skills),
+    ...(pathCopy === undefined ? {} : { pathCopy }),
   };
   const messages = c.messages.map((message, index) => {
+    const byPath = pathReads.get(index);
+    if (byPath !== undefined) return structuredClone(pathAnswered(c, message, arm, byPath));
     const read = reads.get(index);
     if (read === undefined) return structuredClone(message);
     // The real result's own header path, else the installed directory's: never the arm's.
