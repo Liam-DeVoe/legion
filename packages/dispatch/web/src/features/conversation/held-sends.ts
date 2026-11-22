@@ -557,6 +557,37 @@ function carriedTo(
   };
 }
 
+/** Whether the refused send `held` holds already what a keep of `draft`, with the box's mentions
+ *  `seeds`, would write over it (`HeldSends.keep`): the same text and replacement, the same ask,
+ *  and the same mentions in its request, where none and an empty list are alike. Compared by
+ *  value, since a composer builds each keep afresh from its fields. */
+function holdsAlready(
+  held: HeldSend,
+  { ask, draft }: Omit<HeldDraft, "seeds">,
+  seeds: SentRequest["seeds"]
+): boolean {
+  const options = held.draft.ask.options;
+  const heldSeeds = held.request.seeds ?? [];
+  const keptSeeds = seeds ?? [];
+  return (
+    draft.body === held.draft.draft.body &&
+    draft.replacement === held.draft.draft.replacement &&
+    ask.multiple === held.draft.ask.multiple &&
+    ask.urgency === held.draft.ask.urgency &&
+    ask.options.length === options.length &&
+    ask.options.every(
+      (option, at) =>
+        option.id === options[at]?.id &&
+        option.label === options[at]?.label &&
+        option.description === options[at]?.description
+    ) &&
+    keptSeeds.length === heldSeeds.length &&
+    keptSeeds.every(
+      (seed, at) => seed.target === heldSeeds[at]?.target && seed.text === heldSeeds[at]?.text
+    )
+  );
+}
+
 /**
  * The app's held sends, as its composers read and make them, over the one write store
  * (`writesOf`): one send per composer's name, which a composer that mounts under that name shows,
@@ -647,10 +678,15 @@ export class HeldSends {
    *  issue page's box holds then (`HeldDraft.seeds`): they replace the request's
    *  (`SentRequest.seeds`), so a box that mounts again over the send takes out those and no link
    *  the reader wrote. A keep that carries none leaves the request none. The box alone writes
-   *  them, so every other composer's request holds none before the keep and after it. */
+   *  them, so every other composer's request holds none before the keep and after it. A keep of
+   *  what the send holds already writes nothing (`holdsAlready`). A composer keeps its draft a
+   *  short wait after it mounts as well as after each change, so one that mounts over a refusal
+   *  keeps the very draft the send holds; writing that again would only rewrite the entry and
+   *  draw everything that reads the store again, for no change. */
   keep(mutationKey: MutationKey, { seeds, ...draft }: HeldDraft): void {
     const held = this.get(mutationKey);
     if (held?.status !== "refused") return;
+    if (holdsAlready(held, draft, seeds)) return;
     this.#writes.amend(held.id, composerSend, (detail) => {
       const { seeds: _held, ...request } = detail.request;
       const kept = seeds === undefined || seeds.length === 0 ? request : { ...request, seeds };

@@ -516,6 +516,60 @@ test("a keep over a refused reply writes the mentions its box holds into the req
   }
 });
 
+// A keep of what a refused send holds already - the same text and ask, and the same mentions of
+// the box's, where none and an empty list are alike - writes nothing. It tells no listener of the
+// store and leaves the entry as it was. A composer keeps its draft a short wait after it mounts,
+// so one that mounts over a refusal keeps that very draft, and everything that reads the store
+// would draw again for no change. A keep of a changed draft still writes it and tells them.
+test("a keep of the draft a refused send holds already writes nothing, and a changed one writes it", async () => {
+  const tab = keptTab();
+  const createComment = spyOn(api, "createComment").mockRejectedValue(verdict);
+  const link = "[@Planner](dispatch://agent/planner-session)";
+  const seeds = [{ target: "session:planner-session", text: link }];
+  const reply: SentRequest = {
+    ...request,
+    draft: { body: `${link} hello`, replacement: "" },
+    replyTo: {
+      actor: { id: "planner-session", kind: "session" },
+      excerpt: "The relay is fixed",
+      id: "comment-3",
+      mentions: [{ target: "session:planner-session", title: "Planner" }],
+      parentKind: "comment",
+    },
+  };
+  const keyOf = (sendKey: string): MutationKey => ["issue-composer", sendKey];
+  const held = { ask: reply.ask, draft: reply.draft };
+  const changed = { ask: reply.ask, draft: { body: `${link} hello again`, replacement: "" } };
+  const told = jest.fn();
+  const store = heldOf(tab).held;
+  const stop = store.subscribe(told);
+  try {
+    store.send(keyOf("send-seeded"), { ...reply, seeds, sendKey: "send-seeded" });
+    store.send(keyOf("send-unseeded"), { ...reply, sendKey: "send-unseeded" });
+    await waitFor(() => expect(store.get(keyOf("send-seeded"))?.status).toBe("refused"));
+    await waitFor(() => expect(store.get(keyOf("send-unseeded"))?.status).toBe("refused"));
+    const seeded = store.get(keyOf("send-seeded"));
+    const unseeded = store.get(keyOf("send-unseeded"));
+    told.mockClear();
+    store.keep(keyOf("send-seeded"), { ...held, seeds });
+    store.keep(keyOf("send-unseeded"), { ...held, seeds: [] });
+    expect(told).not.toHaveBeenCalled();
+    expect(store.get(keyOf("send-seeded"))).toBe(seeded);
+    expect(store.get(keyOf("send-unseeded"))).toBe(unseeded);
+
+    store.keep(keyOf("send-seeded"), { ...changed, seeds });
+    expect(told).toHaveBeenCalledTimes(1);
+    expect(store.get(keyOf("send-seeded"))).toMatchObject({ draft: changed, status: "refused" });
+    expect(store.get(keyOf("send-seeded"))?.request.seeds).toEqual(seeds);
+    const kept = tab.kept("send-seeded") as { detail: { draft: object } };
+    expect(kept.detail.draft).toEqual(changed);
+  } finally {
+    stop();
+    createComment.mockRestore();
+    tab.close();
+  }
+});
+
 // The reader's own move off a refused reply - the box's own end of it - carries the send to the
 // issue with none of the mentions the box wrote for that reply (`carriedTo`), as it carries a
 // send off a statement on none. A box that mounts again over the send, after a reload too, then
