@@ -603,7 +603,7 @@ check "no tag, npm 504 whose body writes a CR and a workflow command: split at C
   "$(is "$(tr '\r' '\n' <<<"$err" | { grep -c '^::warning::' || true; })" 0)"
 check "no tag, npm 504 whose body writes a CR and a workflow command: split at CR and LF, the :: lines beside retry_fetch's blocks are the two ::error:: lines alone" \
   "$(is "$(tr '\r' '\n' <<<"$err" | { grep '^::' || true; } |
-    { grep -v -e '^::stop-commands::ci-retry\.[A-Za-z0-9]\{6\}$' -e '^::ci-retry\.[A-Za-z0-9]\{6\}::$' || true; })" "$(printf '%s\n' \
+    { grep -v -e '^::stop-commands::[0-9a-f]\{32\}$' -e '^::[0-9a-f]\{32\}::$' || true; })" "$(printf '%s\n' \
     "::error::npm's published version of @example/pkg failed to download after 5 attempts (last exit 1)" \
     "::error::release-push.sh version: npm did not give the published version of @example/pkg, so no release version is computed from it; npm's own error is above")")"
 check "no tag, npm 504 whose body writes a CR and a workflow command: npm's line reaches the log, its CR a space" \

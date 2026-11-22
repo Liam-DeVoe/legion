@@ -1630,9 +1630,11 @@ def ansi_c_escape(text: str, i: int) -> tuple[str, int]:
 # Transparent in command position: the command after them is the one that runs. Each is read by
 # its name, whatever directory the word writes it in (program_name), so `/usr/bin/env bash -O …`
 # is `env bash -O …` and `/usr/bin/env -S …` is refused as `env -S …` is
-# (dispatch://INFRA-1545, round 42).
+# (dispatch://INFRA-1545, round 42). `ci_log_guard` and `ci_log_guard_stderr` run the command after
+# them, inside a stop-commands block (.github/scripts/ci-log-guard.sh; dispatch://INFRA-1545,
+# round 54).
 PASSTHROUGH = {"sudo", "exec", "command", "builtin", "nice", "ionice", "nohup", "time", "env",
-               "stdbuf", "setsid", "doas", "xvfb-run"}
+               "stdbuf", "setsid", "doas", "xvfb-run", "ci_log_guard", "ci_log_guard_stderr"}
 # The options of a PASSTHROUGH wrapper this check reads, each with the number of words after it
 # that it takes, or RUNS_NOTHING where the wrapper then runs no command: `command -v curl` prints
 # where curl is found. These are the forms the tree writes behind a wrapper, `command -v` in its

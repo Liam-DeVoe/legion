@@ -80,6 +80,20 @@ BROWSER_NIGHTLY = ".github/workflows/dispatch-browser-nightly.yaml"
 # .github/scripts/mirror-ci-images.sh. A job that fetches anything reads it, so its gate declares
 # it and the changes job's filter for that gate names it.
 CI_RETRY = ".github/scripts/ci-retry.sh"
+# The stop-commands library ci-retry.sh sources, or that a caller under sh sources just before it:
+# retry_fetch runs each attempt inside its block (dispatch://INFRA-1545, round 54). Whatever reads
+# the helper reads the library too, so a gate declares the two together through ci_retry below,
+# and each filter that names the helper names the library beside it.
+CI_LOG_GUARD = ".github/scripts/ci-log-guard.sh"
+
+
+def ci_retry(why):
+    """The reads of a site that reads CI_RETRY, for `why`: the helper, and CI_LOG_GUARD with it."""
+    return ((CI_RETRY, why),
+            (CI_LOG_GUARD, f"{CI_RETRY}:57 sources it, or a caller under sh just before it: retry_fetch "
+                           "runs each attempt inside its stop-commands block"))
+
+
 # The step every ci.yaml job that runs a go command carries, after its Go module cache restore
 # and before its first Go step: `go mod download` of the module directories it builds in, through
 # the helper above, so the retried unit is the download and never the build or the test.
@@ -352,7 +366,7 @@ def bun_job(job, workflow=""):
     install runs at the repository root, and Bun reads bunfig.toml from the working directory."""
     install = at(job, "bun install --frozen-lockfile", workflow)
     return setup_bun(job, workflow) + reads(
-        (CI_RETRY, f"{install} sources it: the install retries through retry_fetch"),
+        *ci_retry(f"{install} sources it: the install retries through retry_fetch"),
         ("package.json", f"{install} reads the root manifest (workspaces package.json:19-31, patchedDependencies :52-60)"),
         ("bun.lock", f"{install} reads the lockfile to install the versions it records"),
         ("patches/**", f"{install} applies package.json:52-60 patchedDependencies"),
@@ -366,7 +380,7 @@ def bun_job(job, workflow=""):
 def go_modules(job, workflow=""):
     """The retry helper, read by the step that downloads a job's Go modules before its first Go
     step. A job whose bun_job already declares it needs no second entry."""
-    return reads((CI_RETRY, f"{at(job, GO_DOWNLOAD_STEP, workflow)} sources it"))
+    return reads(*ci_retry(f"{at(job, GO_DOWNLOAD_STEP, workflow)} sources it"))
 
 
 def biome(where):
@@ -386,8 +400,8 @@ def install_jj(job):
         (".github/scripts/ci-tools.sh", ".github/actions/install-jj/action.yml:44,63 source it: ci_tools_fetch installs "
                                         "mise, ci_tools_fetch_fallback reads the jj row's second source and "
                                         "ci_tools_verify checks the binary"),
-        (CI_RETRY, ".github/actions/install-jj/action.yml:65 sources it: :103 retries `mise install` in front of that "
-                   "second source, since a release asset that fails one fetch is a flap and not the outage a copy answers"),
+        *ci_retry(".github/actions/install-jj/action.yml:65 sources it: :103 retries `mise install` in front of that "
+                  "second source, since a release asset that fails one fetch is a flap and not the outage a copy answers"),
     )
 
 
@@ -2415,7 +2429,7 @@ SCRIPT_TEST_GATES = [
         (f"{SCRIPTS}/release-push.sh", "the script under test"),
         (f"{SCRIPTS}/release-bump.sh", "release-push.sh:953 runs it for `version`, and the version cases read its refusals"),
         (f"{SCRIPTS}/npm-published-version.sh", "release-push.sh:941 runs it for `version --first-npm`, and the version cases drive it against a stub npm"),
-        (CI_RETRY, "release-push.sh:939 sources it for `version --first-npm`, and the version cases read its retries"),
+        *ci_retry("release-push.sh:939 sources it for `version --first-npm`, and the version cases read its retries"),
         (".github/workflows/release.yaml", "release-push.test.sh's worker_image_release case reads that job's step out of it and runs it"),
         ("packages/pi-legion/.changie.yaml", "release-push.test.sh's fold-notes case for the shipped configuration copies it into its fixture"),
     ]),
@@ -2559,13 +2573,13 @@ SCRIPT_TEST_GATES = [
         (f"{SCRIPTS}/runner-shutdown.sh",
          "ci-ok.sh:99 sources it, and the harness drives it with a stand-in gh: it is what reads "
          "a failure the platform caused off this run's check runs"),
-        (CI_RETRY, "runner-shutdown.sh:109 sources it for the retry its gh reads go through"),
+        *ci_retry("runner-shutdown.sh:109 sources it for the retry its gh reads go through"),
     ]),
     harness("ci_ok_report_test", "Test ci-ok's report and the check-run post (a stand-in gh)",
             f"{SCRIPTS}/ci-ok-report.test.sh", [
         (f"{SCRIPTS}/ci-ok-report.sh", "the script under test"),
         (f"{SCRIPTS}/post-check-run.sh", "ci-ok-report.sh:254 posts with it, and ci-ok-report.test.sh:292,308 runs it on its own"),
-        (CI_RETRY, "ci-ok-report.sh:96 sources it for the retry its gh reads go through"),
+        *ci_retry("ci-ok-report.sh:96 sources it for the retry its gh reads go through"),
         (f"{SCRIPTS}/runner-shutdown.sh",
          "ci-ok-report.sh:98 sources it, and no early ci-ok is posted for a failure it reads as "
          "a runner shutdown"),
@@ -2575,7 +2589,7 @@ SCRIPT_TEST_GATES = [
     harness("ci_ok_reconcile_test", "Test the reconciliation of this head's other ci-ok check runs (a stand-in gh)",
             f"{SCRIPTS}/ci-ok-reconcile.test.sh", [
         (f"{SCRIPTS}/ci-ok-reconcile.sh", "the script under test"),
-        (CI_RETRY, "ci-ok-reconcile.sh:79 sources it for the retry its gh reads go through"),
+        *ci_retry("ci-ok-reconcile.sh:79 sources it for the retry its gh reads go through"),
     ]),
     harness("find_pr_payload_test", "Test the pull request payload both pr-title checks read (a stand-in gh)",
             f"{SCRIPTS}/find-pr-payload.test.sh", [
@@ -2601,9 +2615,9 @@ SCRIPT_TEST_GATES = [
     harness("dispatch_browser_run_reads_test", "Test the browser lane's run reads",
             f"{SCRIPTS}/dispatch-browser-run-reads.test.sh", [
         (f"{SCRIPTS}/dispatch-browser-run-reads.sh", "the script under test"),
-        (CI_RETRY,
-         "dispatch-browser-run-reads.sh:83 sources it, and the harness drives its retry with a "
-         "stand-in gh that refuses a case's first calls"),
+        *ci_retry(
+            "dispatch-browser-run-reads.sh:83 sources it, and the harness drives its retry with a "
+            "stand-in gh that refuses a case's first calls"),
     ]),
     harness("dispatch_browser_samples_test", "Test the browser lane's memory and CPU sampler",
             f"{SCRIPTS}/dispatch-browser-samples.test.sh", [
@@ -2686,8 +2700,8 @@ PUSH_WORKFLOWS = {"docs": ".github/workflows/docs-pages.yaml"}
 # and download-retry-images builds the four Dockerfiles under the same fault.
 RETRY_FILE = job_file(RETRY_JOB)
 RETRY_SITE_READS = reads(
-    (CI_RETRY, f"{at(RETRY_JOB, RETRY_GO_STEP)} and every other faulted site written as a run: step "
-               f"source it and call retry_fetch"),
+    *ci_retry(f"{at(RETRY_JOB, RETRY_GO_STEP)} and every other faulted site written as a run: step "
+              f"source it and call retry_fetch"),
     (FAULT_PROXY, f"{at(RETRY_JOB, RETRY_FIRST_PROXY)} and every other proxy step of the job run it"),
     (RETRY_RIG, f"{at(RETRY_JOB, RETRY_FIRST_PROXY)} starts the proxy with it and "
                 f"{at(RETRY_JOB, RETRY_FIRST_REPORT)} reads its log with it"),
@@ -3300,9 +3314,9 @@ GATES = [
          f"{at_browser(BROWSER_VERDICT_STEP, BROWSER_MERGE)} runs it to fail the job on an "
          "upstream result that is neither success nor skipped and on a failed row in the "
          "merged report"),
-        (CI_RETRY,
-         "dispatch-browser-run-reads.sh:83 sources it, so the merge job's read of its own attempt's "
-         "jobs retries, and the blobs-refused mode makes no request"),
+        *ci_retry(
+            "dispatch-browser-run-reads.sh:83 sources it, so the merge job's read of its own attempt's "
+            "jobs retries, and the blobs-refused mode makes no request"),
         # The container the shard and alone jobs run in, and what decides which bytes it is.
         # No step reads these three: the `container:` key does, before the first step runs, so
         # the citation is the two jobs that carry that key rather than a step of either.
@@ -3738,8 +3752,8 @@ GATES = [
                                         "reads that row's two sources"),
         (f"{AIRLOCK_LEAN}/**", f"{at(AIRLOCK_JOB, AIRLOCK_BUILD_STEP)}: lake build reads the model's whole project, and "
                                f"{at(AIRLOCK_JOB, AIRLOCK_AXIOMS_STEP)} runs Axioms.lean over the library it builds"),
-        (CI_RETRY, f"{at(AIRLOCK_JOB, AIRLOCK_TOOLCHAIN_STEP)} sources it: the Lean toolchain installs "
-                   "through retry_fetch before lake build reads it"),
+        *ci_retry(f"{at(AIRLOCK_JOB, AIRLOCK_TOOLCHAIN_STEP)} sources it: the Lean toolchain installs "
+                  "through retry_fetch before lake build reads it"),
         (f"{AIRLOCK_LEAN}/lean-toolchain", f"{at(AIRLOCK_JOB, 'elan-cache')}: the elan cache's key is hashFiles of it"),
         (AIRLOCK_AXIOMS_SCRIPT, f"{at(AIRLOCK_JOB, AIRLOCK_AXIOMS_STEP)} is one line running it, and check k15 of "
                                 f"{ENVOY}/scripts/airlock-check.sh runs the same script, so the two cannot drift"),
@@ -3816,7 +3830,7 @@ GATES = [
                  "packages/envoy/infra/host/heldportwrapper/Dockerfile:30 COPY packages/envoy /src/packages/envoy")
           for path in files_but_tests(ENVOY, suffix="", tree=True, skip=(".changes",))
           if not path.startswith(tuple(f"{ENVOY}/{d}/" for d in ("internal/integration", "internal/smoke", "deploy")))],
-        (CI_RETRY, f"{at('envoy-smoke', GO_DOWNLOAD_STEP)} sources it: the step downloads both of this job's modules through it"),
+        *ci_retry(f"{at('envoy-smoke', GO_DOWNLOAD_STEP)} sources it: the step downloads both of this job's modules through it"),
     ) + setup_go("envoy-smoke", f"{ENVOY}/go.mod")),
 
     gate("envoy_e2e_local", "envoy-e2e-local", runs=[
@@ -3867,7 +3881,7 @@ GATES = [
         (GO_TARGETS, f"{NOTICES_LOOPS}: jq reads it"),
         (CLIENT_TARGETS, f"{NOTICES_LOOPS}: jq reads it"),
         (INFRA_TARGETS, f"{NOTICES_LOOPS}: jq reads it"),
-        (CI_RETRY, f"{at('lint', GO_DOWNLOAD_STEP)} sources it: it downloads what the notices step builds, on the notices step's own condition"),
+        *ci_retry(f"{at('lint', GO_DOWNLOAD_STEP)} sources it: it downloads what the notices step builds, on the notices step's own condition"),
     )),
 
     # This check itself: it lists every module's packages (vet mode: each package directory, its
@@ -3969,7 +3983,7 @@ GATES = [
                                         "helper does, and the copy it fills is what the "
                                         "helper then reads"),
         (".github/actions/install-crane/**", at("ci-images", "./.github/actions/install-crane")),
-        (CI_RETRY, f"{at('ci-images', COPY_STEP)}: mirror-ci-images.sh sources it for every registry read that has to succeed"),
+        *ci_retry(f"{at('ci-images', COPY_STEP)}: mirror-ci-images.sh sources it for every registry read that has to succeed"),
     )),
 
     # The two jobs that prove the retry rather than the build (dispatch://INFRA-1545, T7):
@@ -4005,8 +4019,8 @@ GATES = [
                                               "own"),
         (".github/scripts/ci-fault-proxy.py", f"{at('tool-fallback', TOOL_FAULT_STEP)}: the rig starts it in front "
                                               "of GitHub's release assets"),
-        (CI_RETRY, ".github/actions/install-jj/action.yml:65 sources it, and :103 retries `mise install` through "
-                   "it, in each of this job's install-jj steps"),
+        *ci_retry(".github/actions/install-jj/action.yml:65 sources it, and :103 retries `mise install` through "
+                  "it, in each of this job's install-jj steps"),
         (".github/scripts/mirror-ci-tools.sh", f"{at('tool-fallback', TOOL_BLOB_STEP)} and "
                                                f"{at('tool-fallback', TOOL_BLOB_ARM_STEP)} refuse a row that script has "
                                                "not filled, and state the rule that is the opposite of its own"),

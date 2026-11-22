@@ -35,6 +35,7 @@ on:
       - '.github/workflows/docs-site.yaml'
       # ci-filters.yaml's *ci_retry:
       - '.github/scripts/ci-retry.sh'
+      - '.github/scripts/ci-log-guard.sh'
       # ci-filters.yaml's *bun_install:
       - 'package.json'
       - 'bun.lock'

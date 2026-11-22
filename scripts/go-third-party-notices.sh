@@ -56,6 +56,11 @@ if [ ! -x "$tool" ]; then
   retry_helper=$(dirname -- "$0")/../.github/scripts/ci-retry.sh
   go_licenses_module="github.com/google/go-licenses/v2@$GO_LICENSES_VERSION"
   if [ -r "$retry_helper" ]; then
+    # The stop-commands library ci-retry.sh writes each attempt's block with, sourced first and
+    # from the directory this script already holds: sh sets no BASH_SOURCE, so ci-retry.sh
+    # cannot find the file beside it on its own (its header says so).
+    # shellcheck source=.github/scripts/ci-log-guard.sh
+    . "${retry_helper%/*}/ci-log-guard.sh"
     # shellcheck source=.github/scripts/ci-retry.sh
     . "$retry_helper"
     (cd / && retry_fetch "go-licenses $GO_LICENSES_VERSION" 180 -- \

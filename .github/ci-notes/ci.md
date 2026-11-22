@@ -194,10 +194,12 @@ worker_image name it too and the image check, .github/scripts/check-image-trigge
 
 A job that installs dependencies, downloads a browser or downloads its Go modules sources
 .github/scripts/ci-retry.sh and calls the retry_fetch it defines (the Retries note of
-.github/ci-budgets.md), so a change to it must re-run those jobs (dispatch://INFRA-1545). Every
-filter of such a job names the group. The two filters that gate an image build, envoy_smoke and
-ci_images, and tool_fallback, which install-jj's `mise install` retry reaches, name the file
-itself rather than the anchor, so their lists stay flat for
+.github/ci-budgets.md), so a change to it must re-run those jobs (dispatch://INFRA-1545). The
+group also names .github/scripts/ci-log-guard.sh, which ci-retry.sh sources and whose
+stop-commands block retry_fetch runs each attempt inside (round 54), so a change to it re-runs
+the same jobs. Every filter of such a job names the group. The two filters that gate an image
+build, envoy_smoke and ci_images, and tool_fallback, which install-jj's `mise install` retry
+reaches, name the two files themselves rather than the anchor, so their lists stay flat for
 .github/scripts/check-image-trigger-paths.sh.
 
 ## daemon_envoy_deps: The airlock's rules, its decision and its header swap

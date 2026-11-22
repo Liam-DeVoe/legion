@@ -1450,9 +1450,13 @@ The workspace install retries like every install of this repository's CI (the Re
 .github/ci-budgets.md), at the 180 s bound every Bun install carries: 20.70 s cold on a pod,
 against at most 11 s over 180 observations in CI, 5 x 180 + 150 = 1050 s -> 18 min. In the shard
 and alone jobs .github/scripts/ci-retry.sh is sourced by the `sh -e {0}` those jobs' heads name
-rather than by bash, and it is written for that: it defines one function out of POSIX
-constructs, sets no option, and the shell the container runs takes `local` and the arithmetic
-shift the sleep uses.
+rather than by bash, and it and the file it writes each attempt's stop-commands block with,
+.github/scripts/ci-log-guard.sh, are written for that: they define their functions out of POSIX
+constructs and set no option, and the shell the container runs takes `local` and the arithmetic
+shift the sleep uses. That shell sets no BASH_SOURCE, by which ci-retry.sh finds ci-log-guard.sh
+beside it under bash, so the step sources ci-log-guard.sh itself first, and ci-retry.sh, finding
+its functions defined, reads nothing more (ci-retry.sh's header; dispatch://INFRA-1545, round
+54).
 
 ## Why the visual job builds its stack's four commands before its browser step
 

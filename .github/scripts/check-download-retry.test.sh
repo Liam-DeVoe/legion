@@ -14785,6 +14785,63 @@ check "passes psql behind sudo -u postgres, which fetches nothing" \
   "$(is "$(contains "$out" "Run psql as postgres under sudo -u")" false)"
 check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 10)"
 
+# W54. ci-log-guard.sh's two guards, `ci_log_guard` and `ci_log_guard_stderr`, run the command
+# after them inside a stop-commands block, so the gate reads through them as through the other
+# PASSTHROUGH wrappers (dispatch://INFRA-1545, round 54). Behind each, a curl at the floor is a
+# site: --list lists it, and --jobs charges its 8 x 30 + 127 = 367 s to the job's priced key; and
+# a bare curl is refused at the floor. With the word out of PASSTHROUGH the guard was read as the
+# command, so neither curl was read: the first was listed and charged nowhere, and the second
+# passed.
+for guard in ci_log_guard ci_log_guard_stderr; do
+  echo "case: r54 W54 a curl behind $guard is read through it: at the floor it is listed and charged, bare it is refused"
+  root=$(fixture "r54-w54-$guard-floor")
+  ln -s "$script_dir/ci-log-guard.sh" "$root/.github/scripts/ci-log-guard.sh"
+  cat > "$root/.github/workflows/case.yaml" <<YAML
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    # 60 s for the rest of the job, and the step's 367 s: 60 + 367 = 427 s -> 8 min.
+    timeout-minutes: 8
+    steps:
+      - name: Retry a curl behind $guard
+        # 8 x 30 + 127 = 367 s.
+        timeout-minutes: 7
+        run: |
+          . .github/scripts/ci-log-guard.sh
+          $guard curl -fsSL --retry 7 --retry-all-errors --max-time 30 -o a https://example.com/a
+YAML
+  run_check "$root"
+  check "$guard: the curl at the floor passes" "$(is "$status" 0)"
+  list_check "$root"
+  check "$guard: --list lists it as a curl site of its step" \
+    "$(contains "$out" "^.github/workflows/case.yaml	14	curl	Retry a curl behind $guard\$")"
+  set +e
+  run_gate null "$root" --jobs
+  set -e
+  check "$guard: --jobs charges its 367 s to the job's key" \
+    "$(contains "$out" "^.github/workflows/case.yaml	build	7	8	367	.*	Retry a curl behind $guard\$")"
+  root=$(fixture "r54-w54-$guard-bare")
+  ln -s "$script_dir/ci-log-guard.sh" "$root/.github/scripts/ci-log-guard.sh"
+  cat > "$root/.github/workflows/case.yaml" <<YAML
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Run a bare curl behind $guard
+        run: |
+          . .github/scripts/ci-log-guard.sh
+          $guard curl -fsSL https://example.com/a -o a
+YAML
+  run_check "$root"
+  check "$guard: the bare curl is refused at the floor" \
+    "$(contains "$out" "::error file=.github/workflows/case.yaml,line=10::.curl. in step .Run a bare curl behind $guard. fetches without the floor")"
+  check "$guard: and nothing else" "$(is "$status|$(printf '%s\n' "$out" | grep -c '^::error')" "1|1")"
+done
+
 # W15. Four routes the Spec draft's review drove past the gate at a856bb35, each exit 0 under a
 # one-minute key (dispatch://INFRA-1545, round 38). A literal path names a file of the tree from
 # the repository's root, and a `cd`, a `pushd` or a working directory moves the shell away from

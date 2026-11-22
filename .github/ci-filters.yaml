@@ -32,6 +32,7 @@ biome: &biome
 # why: .github/ci-notes/ci.md#ci_retry-the-one-retry-every-download-of-this-workflow-goes-through
 ci_retry: &ci_retry
   - '.github/scripts/ci-retry.sh'
+  - '.github/scripts/ci-log-guard.sh'
 go_workspace: &go_workspace
   - 'go.work'
   - 'go.work.sum'
@@ -630,6 +631,7 @@ release_push_test: &release_push_test
   - '.github/scripts/release-bump.sh'
   - '.github/scripts/npm-published-version.sh'
   - '.github/scripts/ci-retry.sh'
+  - '.github/scripts/ci-log-guard.sh'
   - '.github/workflows/release.yaml'
   - 'packages/pi-legion/.changie.yaml'
 release_bump_test: &release_bump_test
@@ -859,6 +861,7 @@ ci_ok_test: &ci_ok_test
   - '.github/scripts/ci-ok.jq'
   - '.github/scripts/runner-shutdown.sh'
   - '.github/scripts/ci-retry.sh'
+  - '.github/scripts/ci-log-guard.sh'
 ci_ok_report_test: &ci_ok_report_test
   - *ci_router
   - *ci_filters_data
@@ -868,6 +871,7 @@ ci_ok_report_test: &ci_ok_report_test
   - '.github/scripts/ci-ok-report.sh'
   - '.github/scripts/post-check-run.sh'
   - '.github/scripts/ci-retry.sh'
+  - '.github/scripts/ci-log-guard.sh'
   - '.github/scripts/runner-shutdown.sh'
   - '.github/scripts/ci-ok.sh'
   - '.github/scripts/ci-ok.jq'
@@ -879,6 +883,7 @@ ci_ok_reconcile_test: &ci_ok_reconcile_test
   - '.github/scripts/ci-ok-reconcile.test.sh'
   - '.github/scripts/ci-ok-reconcile.sh'
   - '.github/scripts/ci-retry.sh'
+  - '.github/scripts/ci-log-guard.sh'
 find_pr_payload_test: &find_pr_payload_test
   - *ci_router
   - *ci_filters_data
@@ -923,6 +928,7 @@ dispatch_browser_run_reads_test: &dispatch_browser_run_reads_test
   - '.github/scripts/dispatch-browser-run-reads.test.sh'
   - '.github/scripts/dispatch-browser-run-reads.sh'
   - '.github/scripts/ci-retry.sh'
+  - '.github/scripts/ci-log-guard.sh'
 dispatch_browser_samples_test: &dispatch_browser_samples_test
   - *ci_router
   - *ci_filters_data
@@ -1572,6 +1578,7 @@ dispatch_browser:
   - '.github/scripts/dispatch-browser-reading-row-durations.sh'
   - '.github/scripts/dispatch-browser-verdict.sh'
   - '.github/scripts/ci-retry.sh'
+  - '.github/scripts/ci-log-guard.sh'
   # why: .github/ci-notes/ci.md#dispatch_browser-the-container-image-the-shard-and-alone-jobs-run-in-and
   - '.github/ci-images.yaml'
   - '.github/docker/browser.Dockerfile'
@@ -2273,6 +2280,7 @@ envoy_smoke:
   # why: .github/ci-notes/ci.md#envoy_smoke-the-jobs-steps-which-build-the-image-and-smoke-it
   - '.github/workflows/ci-job-envoy-smoke.yaml'
   - '.github/scripts/ci-retry.sh'
+  - '.github/scripts/ci-log-guard.sh'
   - '.dockerignore'
   - '.bun-version'
   - 'package.json'
@@ -2533,6 +2541,7 @@ tool_fallback:
   - '.github/ci-tools.yaml'
   - '.github/scripts/ci-tools.sh'
   - '.github/scripts/ci-retry.sh'
+  - '.github/scripts/ci-log-guard.sh'
   - '.github/scripts/mirror-ci-tools.sh'
   - '.github/scripts/check-ci-tools.sh'
   - '.github/scripts/ci-tools-proof.sh'
@@ -2562,6 +2571,7 @@ ci_images:
   - '.github/ci-images.yaml'
   - '.github/scripts/mirror-ci-images.sh'
   - '.github/scripts/ci-retry.sh'
+  - '.github/scripts/ci-log-guard.sh'
   - '.github/scripts/check-ci-images.sh'
   - '.github/scripts/ci_images.py'
   - '.github/docker/**'

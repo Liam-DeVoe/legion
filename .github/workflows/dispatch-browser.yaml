@@ -139,6 +139,7 @@ jobs:
         # 5 x 180 + 150 = 1050 s -> 18 min.
         timeout-minutes: 18
         run: |
+          . .github/scripts/ci-log-guard.sh
           . .github/scripts/ci-retry.sh
           retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile >&2
       # why: .github/ci-notes/dispatch-browser.md#why-every-job-that-runs-the-suite-builds-contracts-first
@@ -257,6 +258,7 @@ jobs:
         # 5 x 180 + 150 = 1050 s -> 18 min.
         timeout-minutes: 18
         run: |
+          . .github/scripts/ci-log-guard.sh
           . .github/scripts/ci-retry.sh
           retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile >&2
       # why: .github/ci-notes/dispatch-browser.md#why-the-alone-job-builds-contracts

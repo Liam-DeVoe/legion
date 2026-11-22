@@ -66,7 +66,7 @@ kill_status=$?
 set -e
 echo "measured: this machine's \`timeout\` exits $kill_status when it kills"
 
-echo "case: sourcing the helper sets no shell option and adds one name"
+echo "case: sourcing the helper sets no shell option and adds retry_fetch and ci-log-guard.sh's names alone"
 check "errexit is still on in this harness" "$(contains "$(set +o)" '^set -o errexit$')"
 check "pipefail is still on in this harness" "$(contains "$(set +o)" '^set -o pipefail$')"
 cat > "$work/probe" <<'PROBE'
@@ -86,7 +86,13 @@ chmod +x "$work/probe"
 probe_out=$(bash "$work/probe" "$helper")
 indent "$probe_out"
 check "an option-less shell has the same options after sourcing" "$(contains "$probe_out" '^options: unchanged$')"
-check "and exactly one new function, retry_fetch" "$(contains "$probe_out" '^added: retry_fetch$')"
+# ci-retry.sh sources ci-log-guard.sh, the file beside it, so it adds that file's functions and its
+# own one. The library's names are read off the library by the same probe, so this pins none of
+# them; ci_log_block_open, which retry_fetch calls, must be among them.
+library_added=$(bash "$work/probe" "$script_dir/ci-log-guard.sh" | sed -n 's/^added: //p')
+check "the library adds ci_log_block_open among its functions" "$(contains "$library_added" '\(^\|,\)ci_log_block_open\(,\|$\)')"
+check "and the helper adds exactly the library's functions and one of its own, retry_fetch" \
+  "$(contains "$probe_out" "^added: $( { tr ',' '\n' <<<"$library_added"; echo retry_fetch; } | sort | paste -sd,)\$")"
 
 echo "case: a command that succeeds on the first attempt returns 0 and sleeps nothing"
 run_retry "a tool already on disk" 5 -- true
@@ -221,16 +227,19 @@ check "and it prints that many bytes of them and no more" \
 check "standard output still carries nothing of them" \
   "$(is "$(contains "$refusing_out" 'LEAKED-MARKER')" false)"
 # Those bytes are a host's, and the runner reads its workflow commands on standard error as it
-# reads them on standard output, so the copy is wrapped in a stop token the body cannot have
-# guessed: a body writing `::add-mask::` or `::error::` of its own is text between these lines.
-refusing_stop=$(sed -n 's/^::stop-commands::\(.*\)$/\1/p' <<<"$refusing_err")
-check "the copy is wrapped in a stop-commands token" "$(is "$(grep -c . <<<"$refusing_stop")" 1)"
-# Not a pattern: a hard-coded token would match any shape this names. The token is the buffer's
-# own `mktemp` name, so what makes it unguessable is that it differs per call, and the case below
-# drives a second call to read a second one.
-check "the token carries the random part mktemp chose" \
-  "$(is "$(grep -cE '^ci-retry\.[A-Za-z0-9]{6}$' <<<"$refusing_stop" || true)" 1)"
-check "and the block is closed again with that same token" \
+# reads them on standard output, so the copy goes inside the last attempt's stop-commands block,
+# before its close: a body writing `::add-mask::` or `::error::` of its own is text there. Each of
+# the five attempts runs inside a block of its own, so five blocks open, each with its own token.
+refusing_tokens=$(sed -n 's/^::stop-commands::\(.*\)$/\1/p' <<<"$refusing_err")
+check "each of the five attempts opens a stop-commands block" "$(is "$(grep -c . <<<"$refusing_tokens")" 5)"
+# Not a pattern a hard-coded token would match: each token is 32 hex characters ci_log_token read
+# from /dev/urandom, so what makes it unguessable is that it differs per attempt and per call, and
+# the case below drives a second call to read a second one.
+check "each token is 32 lower-case hex characters" \
+  "$(is "$(grep -c '^[0-9a-f]\{32\}$' <<<"$refusing_tokens" || true)" 5)"
+check "and no two of the five are the same" "$(is "$(sort -u <<<"$refusing_tokens" | grep -c .)" 5)"
+refusing_stop=$(tail -n 1 <<<"$refusing_tokens")
+check "the last block is closed again with that same token" \
   "$(contains "$refusing_err" "^::$refusing_stop::\$")"
 check "the body sits inside that block" \
   "$(is "$(awk -v s="::stop-commands::$refusing_stop" -v e="::$refusing_stop::" '$0==s{i=1;next} $0==e{i=0} i&&/LEAKED-MARKER/{n++} END{print n+0}' "$work/refusing.err")" 1)"
@@ -255,9 +264,10 @@ echo "case: a hostile body stays inside the stop block, under each caller's own 
 # Round 22 of dispatch://INFRA-1545 caught a branch that passed when driven bare and KILLED THE
 # CALLER when driven under the flags a caller really sets, so this case drives the helper under
 # both: `bash --noprofile --norc -eo pipefail`, which is GitHub's `shell: bash` for every
-# composite action, and `dash -eu`, which scripts/go-third-party-notices.sh uses. `sleep` is
-# stubbed on PATH, so five attempts cost no seconds and this case adds nothing to the suite's
-# 362 s.
+# composite action, and `dash -eu`, which scripts/go-third-party-notices.sh uses. dash sets no
+# BASH_SOURCE, so its caller sources ci-log-guard.sh before the helper, as that script does.
+# `sleep` is stubbed on PATH, so five attempts cost no seconds and this case adds nothing to the
+# suite's 362 s.
 mkdir -p "$work/stub"
 cat > "$work/stub/sleep" <<'STUB'
 #!/usr/bin/env bash
@@ -277,23 +287,30 @@ for caller_shell in "bash --noprofile --norc -eo pipefail" "dash -eu"; do
     echo "  $caller_name is not on PATH, so that half is not driven"
     continue
   fi
+  # dash sets no BASH_SOURCE, by which the helper finds ci-log-guard.sh, so a dash caller sources
+  # the library first.
+  if [ "$caller_name" = dash ]; then library='. "$1/ci-log-guard.sh"'; else library=:; fi
   # `set +e` as the cases above do: this call is meant to fail, and a bare failing command would
   # end this harness before it could read what the call printed.
   set +e
-  PATH="$work/stub:$PATH" $caller_shell -c '
+  PATH="$work/stub:$PATH" $caller_shell -c "$library"'
     . "$1/ci-retry.sh"
     retry_fetch "the hostile tool" 5 -- "$2"
   ' _ "$script_dir" "$work/hostile" > "$work/hostile.out" 2> "$work/hostile.err"
   hostile_status=$?
   set -e
   hostile_err=$(cat "$work/hostile.err")
-  hostile_stop=$(sed -n 's/^::stop-commands::\(ci-retry\..*\)$/\1/p' <<<"$hostile_err")
+  # The helper's blocks, one per attempt, each opened with a token of 32 lower-case hex
+  # characters; the body's own `::stop-commands::deadbeef` is not one. The last, the fifth
+  # attempt's, holds the copy of its standard output.
+  hostile_tokens=$(sed -n 's/^::stop-commands::\([0-9a-f]\{32\}\)$/\1/p' <<<"$hostile_err")
+  hostile_stop=$(tail -n 1 <<<"$hostile_tokens")
   check "$caller_name: it returns the command's own status rather than a helper's" \
     "$(is "$hostile_status" 1)"
   check "$caller_name: the exhaustion annotation is still printed" \
     "$(is "$(tail -n 1 <<<"$hostile_err")" '::error::the hostile tool failed to download after 5 attempts (last exit 1)')"
-  check "$caller_name: the token is the buffer's own name" \
-    "$(is "$(grep -cE '^ci-retry\.[A-Za-z0-9]{6}$' <<<"$hostile_stop" || true)" 1)"
+  check "$caller_name: five blocks open, each with a 32-character hex token of its own" \
+    "$(is "$(sort -u <<<"$hostile_tokens" | grep -c .)" 5)"
   check "$caller_name: and it is not the token the case above read" \
     "$(is "$([ "$hostile_stop" = "$refusing_stop" ] && echo same || echo different)" different)"
   # Every line the runner would act on sits between the two markers, the body's own
@@ -309,6 +326,130 @@ for caller_shell in "bash --noprofile --norc -eo pipefail" "dash -eu"; do
     "$(is "$(cat "$work/hostile.out")" '')"
 done
 
+# A stand-in client that writes, on standard output and on standard error, the three forms of a
+# server's text the runner acts on (dispatch://INFRA-5224/artifact/server-text-audit-md): a
+# command after a lone carriage return, one after a tab, which the runner removes with leading
+# spaces, and the older `##[<command>]` form in the middle of a line. No final newline on either
+# stream, so a close that did not start a line of its own would be seen. Its one argument is its
+# exit status. `sleep` is the stub above, so its five failed attempts cost no seconds.
+printf -v planted 'x\r::warning::planted-cr\n\t::warning::planted-tab\nsaid ##[warning]planted-legacy'
+cat > "$work/planter" <<'PLANTER'
+#!/usr/bin/env bash
+form='x\r::warning::planted-cr\n\t::warning::planted-tab\nsaid ##[warning]planted-legacy'
+printf "$form"
+printf "$form" >&2
+exit "$1"
+PLANTER
+chmod +x "$work/planter"
+# commands_outside_blocks <log>: each line of <log> the runner would act on that no block covers,
+# by the runner's rule (actions/runner v2.338.2, ci-log-guard.sh's header): the log split at CR
+# and LF, as StreamReader.ReadLine splits it, a line is a command when, its leading spaces and
+# tabs removed, it starts with `::`, or when it holds `##[`, a word and `]` anywhere. Such a line
+# passes when it is a block's open (`::stop-commands::` and 32 hex characters), the close of the
+# block open (`::<its token>::`), any line inside an open block, or the helper's own exhaustion
+# `::error::` outside one. A block still open at the end is named too: every line after it would
+# be text the runner skips, the step's own commands included.
+commands_outside_blocks() {
+  tr '\r' '\n' < "$1" | awk '
+    { line = $0; sub(/^[ \t]+/, "", line) }
+    open != "" { if (line == "::" open "::") open = ""; next }
+    line ~ /^::stop-commands::[0-9a-f]+$/ && length(line) == 49 { open = substr(line, 18); next }
+    line ~ /^::error::.* failed to download after 5 attempts \(last exit [0-9]+\)$/ { next }
+    line ~ /^::/ || line ~ /##\[[A-Za-z][^]]*\]/ { print }
+    END { if (open != "") print "a block left open: " open }
+  '
+}
+# planted_lines <log>: how many lines of <log>, split at CR and LF, are one of the three forms. The
+# legacy form is matched anywhere in its line, as the runner reads it: where a successful copy goes
+# to standard error, the command's standard output follows its standard error's last line, which
+# has no newline, on the same line.
+planted_lines() {
+  tr '\r' '\n' < "$1" |
+    { grep -c -e '^::warning::planted-cr$' -e $'^\t::warning::planted-tab$' -e '##\[warning\]planted-legacy' || true; }
+}
+
+echo "case: a server's text on either stream of an attempt that fails every time reaches the log as no command"
+# The log is standard error: what the caller captures here never reaches it. It holds each
+# attempt's standard error and the last attempt's standard output, 5 x 3 + 3 lines of the forms.
+set +e
+PATH="$work/stub:$PATH" retry_fetch "the planting tool" 5 -- "$work/planter" 1 > "$work/planted-fail.out" 2> "$work/planted-fail.err"
+planted_status=$?
+set -e
+check "failing: it returns the command's status" "$(is "$planted_status" 1)"
+check "failing: the log holds the three forms of five attempts' standard error and the last one's standard output" \
+  "$(is "$(planted_lines "$work/planted-fail.err")" 18)"
+check "failing: split as the runner splits it, no line of the log is a command outside a block" \
+  "$(is "$(commands_outside_blocks "$work/planted-fail.err")" '')"
+check "failing: and nothing reached standard output" "$(is "$(cat "$work/planted-fail.out")" '')"
+
+echo "case: a server's text on either stream of a first attempt that succeeds, its value captured, reaches the log as no command"
+planted_value=$(PATH="$work/stub:$PATH" retry_fetch "the planting tool" 5 -- "$work/planter" 0 2> "$work/planted-captured.err")
+check "captured: the value is the command's standard output byte for byte" "$(is "$planted_value" "$planted")"
+check "captured: and holds no marker" \
+  "$(is "$(grep -c -e 'stop-commands' -e '^::[0-9a-f]\{32\}::$' <<<"$planted_value" || true)" 0)"
+check "captured: the log holds the three forms of the attempt's standard error" \
+  "$(is "$(planted_lines "$work/planted-captured.err")" 3)"
+check "captured: split as the runner splits it, no line of the log is a command outside a block" \
+  "$(is "$(commands_outside_blocks "$work/planted-captured.err")" '')"
+
+echo "case: a server's text on either stream of a first attempt that succeeds, sent with >&2, reaches the log as no command"
+# `>&2` after `2>` points standard output at the same file, as a caller's `retry_fetch … >&2`
+# points it at the step's standard error, so the log is both streams.
+PATH="$work/stub:$PATH" retry_fetch "the planting tool" 5 -- "$work/planter" 0 2> "$work/planted-log.err" >&2
+check "sent to standard error: the log holds the three forms of both streams" \
+  "$(is "$(planted_lines "$work/planted-log.err")" 6)"
+check "sent to standard error: split as the runner splits it, no line of the log is a command outside a block" \
+  "$(is "$(commands_outside_blocks "$work/planted-log.err")" '')"
+
+echo "case: under dash, with ci-log-guard.sh sourced first, a failed and a successful attempt are guarded as under bash"
+# scripts/go-third-party-notices.sh (#!/bin/sh) and dispatch-browser.yaml's shard and alone jobs
+# (`sh -e {0}`) source the helper under dash, which sets no BASH_SOURCE, so each sources
+# ci-log-guard.sh first. `-eu` as the notices script runs; `||` keeps the failed call from ending
+# the shell before the successful one.
+if command -v dash > /dev/null; then
+  set +e
+  PATH="$work/stub:$PATH" dash -eu -c '
+    . "$1/ci-log-guard.sh"
+    . "$1/ci-retry.sh"
+    retry_fetch "the planting tool" 5 -- "$2" 1 || echo "failed: $?" > "$3/dash.status"
+    value=$(retry_fetch "the planting tool" 5 -- "$2" 0)
+    echo "succeeded: $?" >> "$3/dash.status"
+    printf "%s" "$value" > "$3/dash.value"
+  ' _ "$script_dir" "$work/planter" "$work" > "$work/dash.out" 2> "$work/dash.err"
+  dash_status=$?
+  set -e
+  check "dash: the shell ran to its end" "$(is "$dash_status" 0)"
+  check "dash: the failed call returned the command's status, the successful one 0" \
+    "$(is "$(cat "$work/dash.status" 2> /dev/null)" "$(printf 'failed: 1\nsucceeded: 0')")"
+  check "dash: the captured value is the command's standard output byte for byte" \
+    "$(cmp -s "$work/dash.value" <(printf '%s' "$planted") && echo true || echo false)"
+  check "dash: six blocks open, five failed attempts' and the success's, each token its own" \
+    "$(is "$(sed -n 's/^::stop-commands::\([0-9a-f]\{32\}\)$/\1/p' "$work/dash.err" | sort -u | grep -c .)" 6)"
+  check "dash: the log holds the three forms of six attempts' standard error and the last failed one's standard output" \
+    "$(is "$(planted_lines "$work/dash.err")" 21)"
+  check "dash: split as the runner splits it, no line of the log is a command outside a block" \
+    "$(is "$(commands_outside_blocks "$work/dash.err")" '')"
+  check "dash: and nothing reached standard output" "$(is "$(cat "$work/dash.out")" '')"
+else
+  echo "  dash is not on PATH, so this case is not driven"
+fi
+
+echo "case: under dash, a helper sourced with no ci-log-guard.sh before it refuses by name and stops a sh -e caller"
+# dash sets no BASH_SOURCE, so the helper cannot find the library beside it. It says so in one
+# `::error::` and the source returns 2, where dash's own refusal would be a bare "can't open".
+if command -v dash > /dev/null; then
+  set +e
+  dash -e -c '. "$1/ci-retry.sh"; echo "the line after the source ran"' _ "$script_dir" > "$work/refused.out" 2> "$work/refused.err"
+  refused_status=$?
+  set -e
+  check "dash: the source returns 2 and the sh -e caller ends there" \
+    "$(is "$refused_status|$(cat "$work/refused.out")" "2|")"
+  check "dash: its one line is an ::error:: that names the rule" \
+    "$(is "$(cat "$work/refused.err")" "::error::ci-retry.sh: ci_log_block_open is not defined and no ci-log-guard.sh can be read beside this file; a caller whose shell has no BASH_SOURCE (dash, sh) must source .github/scripts/ci-log-guard.sh before ci-retry.sh")"
+else
+  echo "  dash is not on PATH, so this case is not driven"
+fi
+
 echo "case: a first attempt that succeeds has its output copied byte for byte"
 # The buffer must add nothing and drop nothing, a trailing newline the command did not write
 # least of all: a caller writing the value into a file compares it with a checksum.
@@ -322,7 +463,11 @@ retry_fetch "the exact tool" 5 -- "$work/exact" > "$work/exact.got" 2> "$work/ex
 echo "  measured: $(wc -c < "$work/exact.want" | tr -d ' ') bytes written, $(wc -c < "$work/exact.got" | tr -d ' ') bytes captured"
 check "the capture is byte for byte what the command wrote, with no newline added" \
   "$(cmp -s "$work/exact.want" "$work/exact.got" && echo true || echo false)"
-check "and the helper printed nothing beside it" "$(is "$(cat "$work/exact.err")" '')"
+# Nothing but the attempt's block, which a success opens and closes as a failure does: its open,
+# the newline before its close, and its close. The copy went to a file, not to standard error, so
+# it is after the close and outside the block.
+check "and the helper printed nothing beside its block" \
+  "$(is "$(sed 's/[0-9a-f]\{32\}/<token>/g' "$work/exact.err")" "$(printf '::stop-commands::<token>\n\n::<token>::')")"
 
 echo "case: a copy the caller's standard output refuses is the call's status, not a silent 0"
 # The successful attempt's buffer is copied with `cat`, and that copy can fail where the fetch
