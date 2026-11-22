@@ -1,17 +1,23 @@
 package natsgrant_test
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
+	"time"
 
+	natsgo "github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/require"
 
 	"github.com/sjawhar/envoy/consumernames"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/natsgrant"
 )
 
@@ -125,12 +131,107 @@ func TestTheListenerWritesTheSelectionBucketAndCannotCreateIt(t *testing.T) {
 }
 
 // Measure is the measurement job's grant as the deployment repository deploys it today
-// (envoy-cluster/hub.go, hubMeasurePublish and hubMeasureSubscribe at fe26eb31). The copy there
-// goes when the job moves to the auth service, and this test with it.
+// (envoy-cluster/hub.go, hubMeasurePublish and hubMeasureSubscribe at fe26eb31), plus the leader
+// read of a session's selection record ($JS.API.STREAM.MSG.GET.KV_envoy_session_consumers), which
+// the job needs once sessions run on fresh names and which the auth service grants it after the
+// callout cutover. The copy there goes when the job moves to the auth service, and this test with it.
 func TestMeasureMatchesTheDeployedList(t *testing.T) {
 	var deployed set
 	readJSON(t, "testdata/deployment-measure-grant.json", &deployed)
 	requireSet(t, deployed, natsgrant.Measure(), "Measure()")
+}
+
+// The measurement job's grant reads a session's selection record from the stream's leader, as
+// consumernames.KVStore reads it, and nothing else of the bucket's API: the server refuses its
+// direct get, a write of a key, and its stream's create, update, purge and delete. The control is
+// the same grant without the leader read, which the server refuses the read.
+func TestTheMeasurementGrantReadsASessionsRecordAndNothingElseOfTheBucket(t *testing.T) {
+	stream := "KV_" + consumernames.SessionBucket
+	leaderRead := "$JS.API.STREAM.MSG.GET." + stream
+	measure := natsgrant.Measure()
+	without := measure
+	without.Publish = slices.DeleteFunc(slices.Clone(measure.Publish), func(entry string) bool { return entry == leaderRead })
+
+	for _, tc := range []struct {
+		name  string
+		grant natsgrant.Permissions
+		reads bool
+	}{
+		{name: "control: the grant without the leader read", grant: without, reads: false},
+		{name: "Measure()", grant: measure, reads: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			seed, public := testnats.User(t)
+			_, admin := testnats.User(t)
+			quote := func(subjects []string) string {
+				out := make([]string, len(subjects))
+				for i, subject := range subjects {
+					out[i] = strconv.Quote(subject)
+				}
+				return strings.Join(out, ", ")
+			}
+			config := fmt.Sprintf("jetstream {}\nauthorization {\n  users = [ { nkey: %q, permissions: { publish: { allow: [%s] }, subscribe: { allow: [%s] } } }, { nkey: %q } ]\n}\nno_auth_user: %q\n",
+				public, quote(tc.grant.Publish), quote(tc.grant.Subscribe), admin, admin)
+			_, uri := testnats.StartConfig(t, config, []string{"-js"}, true)
+			adminConn := testnats.Connect(t, uri)
+			t.Cleanup(adminConn.Close)
+			adminStore, err := consumernames.CreateSessionBucket(ctx, adminConn, 1, consumernames.StoreState{Cutover: consumernames.CutoverDone})
+			require.NoError(t, err)
+			_, err = adminStore.Write(ctx, "ses-measured", consumernames.Record{Current: "session~N", Start: 7}, 0)
+			require.NoError(t, err)
+
+			violations := make(chan error, 16)
+			conn, err := testnats.ConnectSeed(t, uri, seed, natsgo.CustomInboxPrefix("_INBOX_envoy_measure"),
+				natsgo.ErrorHandler(func(_ *natsgo.Conn, _ *natsgo.Subscription, err error) { violations <- err }))
+			require.NoError(t, err)
+			t.Cleanup(conn.Close)
+			refused := func(subject string) {
+				t.Helper()
+				deadline := time.After(10 * time.Second)
+				for {
+					select {
+					case err := <-violations:
+						if strings.Contains(err.Error(), "Permissions Violation for Publish to") && strings.Contains(err.Error(), strconv.Quote(subject)) {
+							return
+						}
+					case <-deadline:
+						t.Fatalf("the server named no publish violation for %q", subject)
+					}
+				}
+			}
+
+			readCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+			defer cancel()
+			record, _, err := consumernames.NewKVStore(consumernames.ConnRequester{Conn: conn}).Read(readCtx, "ses-measured")
+			if !tc.reads {
+				require.Error(t, err, "the grant without the leader read read the record")
+				refused(leaderRead)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, "session~N", record.Current)
+
+			for _, subject := range []string{
+				"$JS.API.DIRECT.GET." + stream,
+				"$KV." + consumernames.SessionBucket + ".ses-measured",
+				"$JS.API.STREAM.CREATE." + stream,
+				"$JS.API.STREAM.UPDATE." + stream,
+				"$JS.API.STREAM.PURGE." + stream,
+				"$JS.API.STREAM.DELETE." + stream,
+			} {
+				require.NoError(t, conn.Publish(subject, []byte("{}")))
+				require.NoError(t, conn.Flush())
+				refused(subject)
+			}
+		})
+	}
+	require.Len(t, without.Publish, len(measure.Publish)-1, "Measure() holds the leader read once")
+	for _, entry := range measure.Publish {
+		if entry != leaderRead && (strings.Contains(entry, stream) || strings.Contains(entry, "$KV."+consumernames.SessionBucket)) {
+			t.Fatalf("Measure() names the selection bucket in %q besides its leader read", entry)
+		}
+	}
 }
 
 // A session's grant names its own subjects and no other session's, and an id that is not one

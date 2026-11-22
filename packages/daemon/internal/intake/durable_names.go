@@ -82,8 +82,11 @@ var errStoreConverted = errors.New("intake_consumers says this database's durabl
 // made again, from a quarter second doubling to five, until it answers or ctx ends, and then its
 // error is returned: the boot ends on it, and the watch beside Run reads again at its next look
 // (Consumers.watchMarker). The fixed names never open on a marker the daemon did not read.
-func refuseConvertedStore(ctx context.Context, pool Pool) error {
-	store := consumernames.NewPGStore(pool)
+func refuseConvertedStore(ctx context.Context, pool Pool, project string) error {
+	store, err := daemonStore(pool, project)
+	if err != nil {
+		return err
+	}
 	wait := markerReadWait
 	for {
 		state, err := store.State(ctx)
@@ -100,6 +103,17 @@ func refuseConvertedStore(ctx context.Context, pool Pool) error {
 		}
 		wait = min(2*wait, markerReadWaitMost)
 	}
+}
+
+// daemonStore is project's selection store on pool: the rows of the family daemon/<project>
+// (consumernames.DaemonFamily), which no other project's daemon reads. A project no store keeps is
+// refused, naming it.
+func daemonStore(pool Pool, project string) (*consumernames.PGStore, error) {
+	family, err := consumernames.DaemonFamily(project)
+	if err != nil {
+		return nil, fmt.Errorf("intake: the selection store of project %q: %w", project, err)
+	}
+	return consumernames.NewPGStore(family, pool)
 }
 
 // The waits between reads of the cutover marker that did not answer (refuseConvertedStore).
@@ -149,13 +163,26 @@ func GenerationConnection(physical string) string {
 	return logical + "/" + strings.TrimPrefix(physical, logical+"~")
 }
 
-func newDurableNames(pool Pool, spec ConsumerSpec) *durableNames {
-	store := consumernames.NewPGStore(pool)
+// daemonNaming is the daemon family's naming in the families' table, the one
+// consumernames.FamilyNaming gives each of a daemon's logical names (consumernames.LogicalNaming):
+// fresh names <logical>~<nuid>, the fixed name the logical name, and the metadata every consumer of
+// a logical name carries. The creator's Config and each create's metadata take it from there, never
+// by hand, so the creator and an operator's reader (consumernames.CheckFamily,
+// consumernames.OwnsFamily) judge a record and a consumer alike.
+var daemonNaming = consumernames.LogicalNaming()
+
+func newDurableNames(pool Pool, spec ConsumerSpec) (*durableNames, error) {
+	store, err := daemonStore(pool, spec.Project)
+	if err != nil {
+		return nil, err
+	}
 	d := &durableNames{store: store, pool: pool, logger: spec.Logger, connect: spec.Connect, generations: map[string]jetstream.JetStream{}}
 	d.names = consumernames.New(consumernames.Config{
 		Store:             store,
 		Server:            durableServer{d},
-		Prefix:            func(logical string) string { return logical },
+		Prefix:            daemonNaming.Prefix,
+		Fixed:             daemonNaming.Fixed,
+		Metadata:          daemonNaming.Metadata,
 		Floor:             func(info *jetstream.ConsumerInfo) uint64 { return info.AckFloor.Stream },
 		StreamID:          d.streamID,
 		MissingRecord:     d.missingRecord,
@@ -170,7 +197,7 @@ func newDurableNames(pool Pool, spec ConsumerSpec) *durableNames {
 			return err
 		},
 	})
-	return d
+	return d, nil
 }
 
 // on is JetStream on physical's connection, opened now if it is not open. The dial runs outside
@@ -439,7 +466,8 @@ func (d *durableNames) create(config jetstream.ConsumerConfig) consumernames.Cre
 }
 
 // physicalConfig is config, whose Durable is a logical name, for the physical consumer name: its
-// Durable the physical name and its metadata naming the logical one.
+// Durable the physical name, and its metadata carrying every pair the daemon family's consumers of
+// that logical name carry (daemonNaming.Metadata), the ones the owner check requires.
 func physicalConfig(config jetstream.ConsumerConfig, name string) jetstream.ConsumerConfig {
 	logical := config.Durable
 	config.Durable = name
@@ -447,7 +475,7 @@ func physicalConfig(config jetstream.ConsumerConfig, name string) jetstream.Cons
 	if config.Metadata == nil {
 		config.Metadata = map[string]string{}
 	}
-	config.Metadata[consumernames.LogicalMetadataKey] = logical
+	maps.Copy(config.Metadata, daemonNaming.Metadata(logical))
 	return config
 }
 

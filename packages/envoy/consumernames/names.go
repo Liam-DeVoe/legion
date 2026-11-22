@@ -57,8 +57,30 @@ type Config struct {
 	Store  Store
 	Server Server
 	// Prefix is the part of a physical name before its '~' (FreshName): "session" for a session
-	// consumer, the logical name itself for a durable.
+	// consumer, the logical name itself for a durable. A record of logical names only consumers of
+	// that form, Prefix(logical)~<nuid>, and Fixed(logical) as an operation's old name alone
+	// (check).
 	Prefix func(logical string) string
+	// Fixed is the name the family gave logical before this package, which the cutover's convert
+	// replaces: s-<session id> for a session, the logical name for a durable. A record may name it
+	// only as an open operation's old name, the consumer convert replaces or deletes. Required, as
+	// Prefix is: a creator takes both from its family's Naming (FamilyNaming).
+	Fixed func(logical string) string
+	// Metadata is the metadata every consumer of logical carries, which the family's CreateFunc
+	// writes: a consumer a record of logical names is logical's only when its own metadata holds
+	// each of these (Owns); any other is never read for a floor, bound, updated, adopted or deleted
+	// for logical. {LogicalMetadataKey: logical} when nil. The fixed name carries none and is
+	// logical's by its name.
+	Metadata func(logical string) map[string]string
+	// Adopt, when set, checks a candidate the server holds that this call did not see created
+	// (Step 0, or a create whose outcome was unknown) before it is published, beside the start
+	// the operation reserved (adoptable): every setting the family's create gives that no
+	// correction in place reaches, the settings nats-server refuses to update among them. An error
+	// wrapping ErrUnexpectedConsumer, naming the candidate, refuses it; any other error is a read
+	// that failed, which the call returns as it is. Either leaves the operation open. The settings
+	// an update can change, the filters among them, are the caller's to correct in place before it
+	// delivers from the consumer.
+	Adopt func(ctx context.Context, logical string, info *jetstream.ConsumerInfo) error
 	// Floor is the family's ack floor of a consumer's info.
 	Floor func(*jetstream.ConsumerInfo) uint64
 	// StreamID reads the stream's identity, which a last floor must carry to count.
@@ -145,8 +167,12 @@ type Names struct {
 	cfg Config
 }
 
-// New is Names over cfg.
+// New is Names over cfg. A cfg with no Prefix or no Fixed is a program's error, so New panics on it
+// before any call reads a name.
 func New(cfg Config) *Names {
+	if cfg.Prefix == nil || cfg.Fixed == nil {
+		panic("consumernames: New needs Config.Prefix and Config.Fixed, its family's Naming")
+	}
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
@@ -193,8 +219,10 @@ type CreateRequest struct {
 	Lower uint64
 }
 
-// maxConflicts bounds how often one call reads the record again after a refused write.
-const maxConflicts = 16
+// MaxConflicts bounds how often one call reads the record again after a refused write. A caller
+// that runs its own loop over Names' steps, as the session family's restart does over Select and
+// Replace, takes the same bound.
+const MaxConflicts = 16
 
 // errSettleLater says Step 0 met an open operation too young to settle, and the call reads again.
 var errSettleLater = errors.New("consumer names: an operation in flight is younger than the settle age")
@@ -220,7 +248,7 @@ func (n *Names) observeErr(op Operation, err error) {
 		n.observe(op, OutcomeConflict)
 	case errors.Is(err, ErrConsumerLimit):
 		n.observe(op, OutcomeLimit)
-	case errors.Is(err, ErrCutoverNotRun), IsSelectionStateLost(err), errors.Is(err, ErrNoSafeStart):
+	case errors.Is(err, ErrCutoverNotRun), IsSelectionStateLost(err), errors.Is(err, ErrNoSafeStart), errors.Is(err, ErrUnexpectedConsumer):
 		n.observe(op, OutcomeRefused)
 	default:
 		n.observe(op, OutcomeError)
@@ -269,7 +297,7 @@ func (n *Names) selectRecord(ctx context.Context, logical string, create CreateF
 				}
 				continue
 			case errors.Is(err, ErrConflict):
-				if conflicts++; conflicts > maxConflicts {
+				if conflicts++; conflicts > MaxConflicts {
 					return sel, err
 				}
 				continue
@@ -281,12 +309,13 @@ func (n *Names) selectRecord(ctx context.Context, logical string, create CreateF
 		if sel.Record.Current == "" || !readCurrent || sel.Info != nil {
 			return sel, nil
 		}
-		info, err := n.cfg.Server.Info(ctx, sel.Record.Current)
+		info, err := n.info(ctx, logical, sel.Record.Current)
 		if err == nil {
 			sel.Info = info
 			return sel, nil
 		}
 		if !errors.Is(err, ErrNotFound) {
+			n.observeErr(OperationSelect, err)
 			return sel, err
 		}
 		if create == nil {
@@ -300,7 +329,7 @@ func (n *Names) selectRecord(ctx context.Context, logical string, create CreateF
 		}
 		created, err := n.reserve(ctx, sel, Start{Seq: start}, create, OperationMissingCurrent)
 		if errors.Is(err, ErrConflict) {
-			if conflicts++; conflicts > maxConflicts {
+			if conflicts++; conflicts > MaxConflicts {
 				return created, err
 			}
 			continue
@@ -309,7 +338,8 @@ func (n *Names) selectRecord(ctx context.Context, logical string, create CreateF
 	}
 }
 
-// read admits a call and reads logical's record.
+// read admits a call and reads logical's record, refusing one that names a consumer outside
+// logical's family (check).
 func (n *Names) read(ctx context.Context, logical string) (Selection, error) {
 	sel := Selection{Logical: logical}
 	state, err := n.cfg.Store.State(ctx)
@@ -322,6 +352,9 @@ func (n *Names) read(ctx context.Context, logical string) (Selection, error) {
 	}
 	sel.State = state
 	record, revision, err := n.cfg.Store.Read(ctx, logical)
+	if err == nil {
+		err = n.check(logical, record)
+	}
 	switch {
 	case err == nil:
 		return sel.with(record, revision), nil
@@ -346,152 +379,6 @@ func (n *Names) write(ctx context.Context, sel Selection, record Record) (Select
 		return sel, err
 	}
 	return sel.with(record, revision), nil
-}
-
-// settleOp is Step 0: it settles sel's open operation. waited reports, for a candidate the server
-// does not hold, whether this call has waited the settle age for it itself. A replace reserved with
-// no start has destroyed nothing, so its candidate is retired, a fresh one reserved, and the start
-// read from the predecessor then.
-func (n *Names) settleOp(ctx context.Context, sel Selection, create CreateFunc, waited func(string) bool) (Selection, error) {
-	op := sel.Record.Op
-	if op.Kind == OpDelete {
-		return n.settleDelete(ctx, sel)
-	}
-	if op.Kind == OpReplace && sel.Record.Start == 0 {
-		if create == nil {
-			return n.abandon(ctx, sel)
-		}
-		next, err := n.rereserve(ctx, sel, "")
-		if err != nil {
-			return next, err
-		}
-		if next, err = n.saveReplaceStart(ctx, next); err != nil {
-			return next, err
-		}
-		return n.launch(ctx, next, create, OperationRecover)
-	}
-	info, err := n.cfg.Server.Info(ctx, op.Candidate)
-	if err == nil {
-		return n.publish(ctx, sel, info, OperationRecover, OutcomeAdopted)
-	}
-	if !errors.Is(err, ErrNotFound) {
-		return sel, stepError(sel.Logical, OperationRecover, op.Candidate, err)
-	}
-	if n.cfg.Now().Sub(op.ReservedAt) < n.cfg.SettleAge && !waited(op.Candidate) {
-		return sel, errSettleLater
-	}
-	if create == nil {
-		return n.abandon(ctx, sel)
-	}
-	next, err := n.rereserve(ctx, sel, retryNative(sel))
-	if err != nil {
-		return next, err
-	}
-	n.observe(OperationRecover, OutcomeRetired)
-	return n.launch(ctx, next, create, OperationRecover)
-}
-
-// abandon settles sel's open create or replace for a call that creates nothing (a delete, a
-// cleanup, a read): its candidate is retired and the operation cleared, so the current stays what
-// it was and the saved start stands for the next create.
-func (n *Names) abandon(ctx context.Context, sel Selection) (Selection, error) {
-	record := sel.Record.clone().retire(sel.Record.Op.Candidate)
-	record.Op = nil
-	next, err := n.write(ctx, sel, record)
-	if err != nil {
-		return next, err
-	}
-	n.observe(OperationRecover, OutcomeRetired)
-	return next, nil
-}
-
-// saveReplaceStart writes the start of a replace reserved with no start: the sequence after the
-// predecessor's floor. A predecessor the server does not hold leaves the operation open with an
-// error.
-func (n *Names) saveReplaceStart(ctx context.Context, sel Selection) (Selection, error) {
-	op := sel.Record.Op
-	info, err := n.cfg.Server.Info(ctx, op.Old)
-	if errors.Is(err, ErrNotFound) {
-		return sel, stepError(sel.Logical, OperationReplace, op.Old, fmt.Errorf("the replace reserved no start and its predecessor is absent: %w", err))
-	}
-	if err != nil {
-		return sel, stepError(sel.Logical, OperationReplace, op.Old, err)
-	}
-	record := sel.Record.clone()
-	record.Start = n.cfg.Floor(info) + 1
-	return n.write(ctx, sel, record)
-}
-
-// settleDelete finishes an open delete: it records the predecessor's floor unless the delete
-// recorded it, deletes the predecessor and clears the current.
-func (n *Names) settleDelete(ctx context.Context, sel Selection) (Selection, error) {
-	op := sel.Record.Op
-	if !op.FloorRecorded {
-		next, err := n.recordDeleteFloor(ctx, sel, nil)
-		if err != nil {
-			return next, err
-		}
-		sel = next
-	}
-	if err := n.cfg.Server.Delete(ctx, op.Old); err != nil {
-		return sel, stepError(sel.Logical, OperationDelete, op.Old, err)
-	}
-	next, err := n.clearDeleted(ctx, sel)
-	n.observeErr(OperationRecover, err)
-	return next, err
-}
-
-// recordDeleteFloor reads the floor of the open delete's predecessor (from info when the caller
-// holds it), records it (Config.RecordFloor) and writes the start after it with FloorRecorded, in
-// one conditional write. A predecessor the server does not hold has no floor to read: the start
-// is then the sequence after the record's last floor of it on this stream, else the saved start,
-// and never a floor of 0. Any other failed read stops the call.
-func (n *Names) recordDeleteFloor(ctx context.Context, sel Selection, info *jetstream.ConsumerInfo) (Selection, error) {
-	op := sel.Record.Op
-	record := sel.Record.clone()
-	if info == nil {
-		read, err := n.cfg.Server.Info(ctx, op.Old)
-		switch {
-		case err == nil:
-			info = read
-		case errors.Is(err, ErrNotFound):
-		default:
-			return sel, stepError(sel.Logical, OperationDelete, op.Old, err)
-		}
-	}
-	if info != nil {
-		floor, err := n.recordFloor(ctx, sel.Logical, n.cfg.Floor(info))
-		if err != nil {
-			return sel, stepError(sel.Logical, OperationDelete, op.Old, err)
-		}
-		record.Start = floor + 1
-	} else if start, ok, err := n.lastFloorStart(ctx, record, op.Old); err != nil {
-		return sel, err
-	} else if ok {
-		record.Start = start
-	}
-	record.Op.FloorRecorded = true
-	return n.write(ctx, sel, record)
-}
-
-func (n *Names) recordFloor(ctx context.Context, logical string, floor uint64) (uint64, error) {
-	if n.cfg.RecordFloor == nil {
-		return floor, nil
-	}
-	return n.cfg.RecordFloor(ctx, logical, floor)
-}
-
-// clearDeleted clears the current and the operation of a delete whose predecessor is gone; the
-// record and its start stay, so the next create makes a fresh name at that start.
-func (n *Names) clearDeleted(ctx context.Context, sel Selection) (Selection, error) {
-	record := sel.Record.clone()
-	if record.Current == record.Op.Old {
-		record.Current = ""
-	}
-	record.Op, record.LastFloor = nil, nil
-	next, err := n.write(ctx, sel, record)
-	next.Info = nil
-	return next, err
 }
 
 // lastFloorStart is the sequence after record's last floor, when that floor was read from name on
@@ -541,7 +428,7 @@ func (n *Names) Ensure(ctx context.Context, logical string, req CreateRequest) (
 		}
 		created, err := n.reserve(ctx, sel, start, req.Create, OperationCreate)
 		if errors.Is(err, ErrConflict) {
-			if conflicts++; conflicts > maxConflicts {
+			if conflicts++; conflicts > MaxConflicts {
 				return created, false, err
 			}
 			continue
@@ -650,7 +537,7 @@ func (n *Names) launch(ctx context.Context, sel Selection, create CreateFunc, op
 			case attempt == 0:
 				n.deleteRetiredHeld(ctx, sel)
 			case op.Kind == OpReplace && op.Old != "" && !predecessorDeleted:
-				if err := n.cfg.Server.Delete(ctx, op.Old); err != nil {
+				if err := n.deleteOwned(ctx, sel.Logical, op.Old); err != nil {
 					n.observe(operation, OutcomeError)
 					return sel, stepError(sel.Logical, operation, op.Old, err)
 				}
@@ -670,9 +557,13 @@ func (n *Names) launch(ctx context.Context, sel Selection, create CreateFunc, op
 			n.observe(operation, OutcomeError)
 			return sel, stepError(sel.Logical, operation, op.Candidate, err)
 		}
-		found, infoErr := n.cfg.Server.Info(ctx, op.Candidate)
+		found, infoErr := n.info(ctx, sel.Logical, op.Candidate)
 		if infoErr == nil {
-			return n.publish(ctx, sel, found, operation, OutcomeAdopted)
+			return n.adopt(ctx, sel, found, operation)
+		}
+		if errors.Is(infoErr, ErrMalformedRecord) {
+			n.observe(operation, OutcomeRefused)
+			return sel, stepError(sel.Logical, operation, op.Candidate, infoErr)
 		}
 		if !errors.Is(infoErr, ErrNotFound) || retried {
 			n.observe(operation, OutcomeError)
@@ -725,7 +616,11 @@ func answered(err error) bool {
 // replace's predecessor. Delivery from the candidate begins only after this returns. A predecessor
 // whose delete the server confirmed is dropped from the retired names again, so a session replaced
 // many times keeps a record of one size; one whose delete failed stays retired, for the cleanup. A
-// refused drop leaves it retired too, and the cleanup finds it gone.
+// refused drop leaves it retired too, and the cleanup finds it gone. A predecessor that is the
+// fixed name (a convert's replace, settled here) is deleted and never retired, since a record's
+// retired names are fresh ones alone (check): the replace stays open, its candidate now the
+// current, until the server confirms that delete (finishFixedDelete), so a failed delete leaves the
+// fixed name named by an open operation, which the next call's Step 0 deletes before anything else.
 func (n *Names) publish(ctx context.Context, sel Selection, info *jetstream.ConsumerInfo, operation Operation, outcome Outcome) (Selection, error) {
 	op := sel.Record.Op
 	record := sel.Record.clone()
@@ -739,12 +634,18 @@ func (n *Names) publish(ctx context.Context, sel Selection, info *jetstream.Cons
 		record.Start = info.Delivered.Stream + 1
 	}
 	record.LastFloor = nil
-	old := ""
+	old, fixedOld := "", false
 	if op.Kind == OpReplace {
 		old = op.Old
-		record = record.retire(old)
+		if fixedOld = old == n.fixed(sel.Logical); !fixedOld {
+			record = record.retire(old)
+		}
 	}
-	record.Op = nil
+	// A convert's replace stays open, as record's own copy of it, until finishFixedDelete confirms
+	// its fixed name's delete.
+	if !fixedOld {
+		record.Op = nil
+	}
 	next, err := n.write(ctx, sel, record)
 	if err != nil {
 		n.observeErr(operation, err)
@@ -755,8 +656,19 @@ func (n *Names) publish(ctx context.Context, sel Selection, info *jetstream.Cons
 	if old == "" {
 		return next, nil
 	}
-	if err := n.cfg.Server.Delete(ctx, old); err != nil {
+	if fixedOld {
+		// A delete that fails leaves the replace open for Step 0; this call serves the current.
+		if done, err := n.finishFixedDelete(ctx, next); err == nil {
+			done.Info, done.Created = next.Info, next.Created
+			next = done
+		}
+		return next, nil
+	}
+	if err := n.deleteOwned(ctx, sel.Logical, old); err != nil {
 		n.observe(OperationCleanup, OutcomeError)
+		return next, nil
+	}
+	if !slices.Contains(next.Record.Retired, old) {
 		return next, nil
 	}
 	kept := next.Record.clone()
@@ -774,7 +686,7 @@ func (n *Names) publish(ctx context.Context, sel Selection, info *jetstream.Cons
 // deleteRetiredHeld deletes the retired names of sel that the server holds, to free their slots.
 func (n *Names) deleteRetiredHeld(ctx context.Context, sel Selection) {
 	for _, name := range sel.Record.Retired {
-		if _, err := n.cfg.Server.Info(ctx, name); err == nil {
+		if _, err := n.info(ctx, sel.Logical, name); err == nil {
 			n.observeErr(OperationCleanup, n.cfg.Server.Delete(ctx, name))
 		}
 	}
@@ -789,7 +701,7 @@ func (n *Names) Delete(ctx context.Context, logical string, listed *jetstream.Co
 	for conflicts := 0; ; {
 		floor, err := n.deleteOnce(ctx, logical, listed)
 		if errors.Is(err, ErrConflict) {
-			if conflicts++; conflicts <= maxConflicts {
+			if conflicts++; conflicts <= MaxConflicts {
 				continue
 			}
 		}
@@ -806,6 +718,15 @@ func (n *Names) deleteOnce(ctx context.Context, logical string, listed *jetstrea
 	current := sel.Record.Current
 	if current == "" {
 		return 0, nil
+	}
+	// The current must be logical's own before anything is reserved for it: a listed info is
+	// checked as it is, and with none the server's info is read.
+	if listed != nil && listed.Name == current {
+		if err := n.Owns(logical, listed); err != nil {
+			return 0, err
+		}
+	} else if _, err := n.info(ctx, logical, current); err != nil && !errors.Is(err, ErrNotFound) {
+		return 0, err
 	}
 	record := sel.Record.clone()
 	record.Op = &Op{Kind: OpDelete, Owner: n.cfg.Owner, Old: current, ReservedAt: n.cfg.Now()}
@@ -852,7 +773,7 @@ func (n *Names) RecordLastFloor(ctx context.Context, logical, name string, floor
 		record.LastFloor = &Floor{Floor: floor, Name: name, StreamID: streamID}
 		_, err = n.write(ctx, sel, record)
 		if errors.Is(err, ErrConflict) {
-			if conflicts++; conflicts <= maxConflicts {
+			if conflicts++; conflicts <= MaxConflicts {
 				continue
 			}
 		}
@@ -863,8 +784,9 @@ func (n *Names) RecordLastFloor(ctx context.Context, logical, name string, floor
 
 // Cleanup deletes logical's retired names that the server holds, and drops from the record each
 // retired name the server no longer holds. It answers how many it deleted. Only retired names are
-// deleted, never the current, never by name pattern. A refused write of the record leaves the
-// names for the next cleanup, which finds them gone.
+// deleted, never the current, never by name pattern, and never a consumer of another key (Owns),
+// which refuses the call as a malformed record. A refused write of the record leaves the names for
+// the next cleanup, which finds them gone.
 func (n *Names) Cleanup(ctx context.Context, logical string) (int, error) {
 	sel, err := n.selectRecord(ctx, logical, nil, false)
 	if err != nil || len(sel.Record.Retired) == 0 {
@@ -876,7 +798,7 @@ func (n *Names) Cleanup(ctx context.Context, logical string) (int, error) {
 		if name == sel.Record.Current {
 			continue
 		}
-		_, err := n.cfg.Server.Info(ctx, name)
+		_, err := n.info(ctx, logical, name)
 		switch {
 		case err == nil:
 			if err := n.cfg.Server.Delete(ctx, name); err != nil {
@@ -885,6 +807,9 @@ func (n *Names) Cleanup(ctx context.Context, logical string) (int, error) {
 			}
 			deleted++
 			n.observe(OperationCleanup, OutcomeOK)
+		case errors.Is(err, ErrMalformedRecord):
+			n.observe(OperationCleanup, OutcomeRefused)
+			return deleted, err
 		case !errors.Is(err, ErrNotFound):
 			continue
 		}

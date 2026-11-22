@@ -39,16 +39,13 @@ func freshSpec(t testing.TB, logs *lockedBuffer, js jetstream.JetStream) Consume
 	return spec
 }
 
-// cutover writes the daemon database's sentinel with marker, as the operator's convert writes
-// "done" and its restore "rolled_back": with the stream identity the operator recorded
-// (sentinelStreamID), which the daemon tags each last floor with, and a boundary, which the
-// daemon's native first creates must not take.
+// cutover writes the sentinel of the rig project's family (rigFamily) with marker, as the
+// operator's convert writes "done" and its restore "rolled_back": with the stream identity the
+// operator recorded (sentinelStreamID), which the daemon tags each last floor with, and a boundary,
+// which the daemon's native first creates must not take.
 func cutover(t testing.TB, pool *pgxpool.Pool, marker string) {
 	t.Helper()
-	state := consumernames.StoreState{Cutover: marker, StreamID: sentinelStreamID, Boundary: 1}
-	if _, err := consumernames.NewPGStore(pool).WriteSentinel(context.Background(), state, 0); err != nil {
-		t.Fatalf("write the sentinel %q: %v", marker, err)
-	}
+	cutoverOf(t, pool, rigFamily(), marker)
 }
 
 // sentinelStreamID is the stream identity the operator's convert records in the rig's sentinel.

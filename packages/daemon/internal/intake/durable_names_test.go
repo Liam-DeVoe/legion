@@ -345,7 +345,7 @@ func TestFreshNamesRefuseUntilTheCutoverIsDone(t *testing.T) {
 // one, and opens.
 func TestFreshNamesRefuseASentinelWithNoStreamIdentity(t *testing.T) {
 	pool := migratedPool(t)
-	if _, err := consumernames.NewPGStore(pool).WriteSentinel(context.Background(), consumernames.StoreState{Cutover: consumernames.CutoverDone}, 0); err != nil {
+	if _, err := storeOf(t, rigFamily(), pool).WriteSentinel(context.Background(), consumernames.StoreState{Family: rigFamily(), Cutover: consumernames.CutoverDone}, 0); err != nil {
 		t.Fatalf("write a sentinel with no stream identity: %v", err)
 	}
 	js, stream, _ := freshJetStream(t)
@@ -367,6 +367,98 @@ func TestFreshNamesRefuseASentinelWithNoStreamIdentity(t *testing.T) {
 	control := migratedPool(t)
 	cutover(t, control, consumernames.CutoverDone)
 	openIntake(t, js, control, freshSpec(t, &lockedBuffer{}, js))
+}
+
+// Two projects' daemons share one database, as legion deploys them, and each reads only its own
+// family's sentinel (daemon/<project>): P's cutover marks P's sentinel done, P's fresh daemon opens
+// its fresh names, and Q's fixed daemon, whose own sentinel is not there, opens Q's fixed names and
+// is not stopped. The control is one sentinel row for both, as the table held before: P's done in
+// the row Q reads stops Q's fixed daemon.
+func TestTwoProjectsOnOneDatabaseReadOnlyTheirOwnSentinel(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		shared bool
+	}{
+		{name: "each project's own sentinel"},
+		{name: "control: one sentinel row for both", shared: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			js, stream, _ := freshJetStream(t)
+			p := freshSpec(t, &lockedBuffer{}, js)
+			q := consumerSpec(&lockedBuffer{})
+			q.Project = "OTHER"
+			q.Names = consumernames.ModeFixed
+			cutover(t, pool, consumernames.CutoverDone)
+			if tc.shared {
+				cutoverOf(t, pool, familyOf(t, q.Project), consumernames.CutoverDone)
+			}
+
+			openIntake(t, js, pool, p)
+			_, err := OpenConsumers(context.Background(), js, pool, q)
+			if tc.shared {
+				if !errors.Is(err, errStoreConverted) {
+					t.Fatalf("Q's fixed daemon over P's done in the row it reads = %v, want the converted store's refusal", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Q's fixed daemon beside P's cutover = %v, want its fixed names opened", err)
+			}
+			for _, name := range fixedNames(q.Project) {
+				if heldInfo(t, stream, name) == nil {
+					t.Fatalf("Q's fixed name %s is not on the stream", name)
+				}
+			}
+			for _, logical := range fixedNames(p.Project) {
+				if !isFresh(logical, currentName(t, pool, logical)) {
+					t.Fatalf("P's %s selects no fresh name", logical)
+				}
+			}
+			if _, err := storeOf(t, familyOf(t, q.Project), pool).State(context.Background()); !errors.Is(err, consumernames.ErrNoSentinel) {
+				t.Fatalf("Q's store reads a sentinel (%v), want none: P's cutover wrote only P's", err)
+			}
+		})
+	}
+}
+
+// A daemon's store reads only a sentinel that names its own family: a sentinel row under the
+// daemon's key that names another family (written raw, since the store's own write refuses it) is a
+// malformed sentinel (ErrMalformedSentinel), never a missing one, and the fresh boot refuses with
+// the ERROR line before any consumer call. The control is the same raw row naming the daemon's own
+// family, on which the boot opens.
+func TestADaemonStoreRefusesASentinelOfAnotherFamily(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		family  string
+		refused bool
+	}{
+		{name: "another project's family", family: familyOf(t, "OTHER"), refused: true},
+		{name: "Dispatch's family", family: consumernames.DispatchFamily, refused: true},
+		{name: "control: its own family", family: rigFamily()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			plantSentinel(t, pool, consumernames.StoreState{Family: tc.family, Cutover: consumernames.CutoverDone, StreamID: sentinelStreamID})
+			js, stream, _ := freshJetStream(t)
+			logs := &lockedBuffer{}
+			spec := freshSpec(t, logs, js)
+			_, err := OpenConsumers(context.Background(), js, pool, spec)
+			if !tc.refused {
+				if err != nil {
+					t.Fatalf("OpenConsumers over its own family's sentinel = %v, want it opened", err)
+				}
+				return
+			}
+			if !errors.Is(err, consumernames.ErrMalformedSentinel) {
+				t.Fatalf("OpenConsumers over a sentinel naming %s = %v, want the malformed sentinel's refusal", tc.family, err)
+			}
+			if names := consumerNames(t, stream); len(names) != 0 {
+				t.Fatalf("the stream holds %v after the refused boot, want no consumer", names)
+			}
+			oneErrorLine(t, logs, dispatchConsumerName(spec.Project), consumernames.OperationSelect)
+		})
+	}
 }
 
 // A fresh daemon creates each durable under a fresh name of its logical one, carrying the logical
@@ -840,8 +932,9 @@ func TestABootSettlesTheCreateAnotherDaemonLeftOpen(t *testing.T) {
 
 // A daemon name is retired only after a create nobody answered, and the daemon itself never deletes
 // it (its grant has no consumer delete): the operator's status lists it from the daemon's records
-// (consumernames.PGStore.List on the daemon's database), and its cleanup deletes it, once it has
-// landed, and touches nothing the record selects.
+// (consumernames.PGStore.List on the daemon's database) and judges each record by the family's
+// naming (consumernames.CheckFamily), and its cleanup deletes it, once it has landed and the owner
+// check by the same naming passes (consumernames.OwnsFamily), and touches nothing the record selects.
 func TestARetiredDaemonNameIsListedByStatusAndDeletedByCleanup(t *testing.T) {
 	pool := migratedPool(t)
 	cutover(t, pool, consumernames.CutoverDone)
@@ -855,28 +948,30 @@ func TestARetiredDaemonNameIsListedByStatusAndDeletedByCleanup(t *testing.T) {
 	calls := watchConsumerCalls(t, js.Conn())
 	openIntake(t, js, pool, spec)
 	current := currentName(t, pool, wake)
-	// The unanswered create lands after the boot retired it.
-	if _, err := stream.CreateConsumer(context.Background(), jetstream.ConsumerConfig{Durable: unanswered, FilterSubject: legionWakeSubject, AckPolicy: jetstream.AckExplicitPolicy}); err != nil {
+	// The unanswered create lands after the boot retired it, as the daemon sent it: with the
+	// logical name in its metadata, which the operator's cleanup checks before it deletes.
+	if _, err := stream.CreateConsumer(context.Background(), jetstream.ConsumerConfig{Durable: unanswered, FilterSubject: legionWakeSubject, AckPolicy: jetstream.AckExplicitPolicy,
+		Metadata: map[string]string{consumernames.LogicalMetadataKey: wake}}); err != nil {
 		t.Fatalf("land the unanswered create: %v", err)
 	}
 	if deleted := calls.deleted(t); len(deleted) != 0 {
 		t.Fatalf("the daemon sent deletes of %v, want none", deleted)
 	}
 
-	listed, err := consumernames.NewPGStore(pool).List(context.Background())
+	listed, err := storeOf(t, rigFamily(), pool).List(context.Background())
 	if err != nil {
 		t.Fatalf("status: list the daemon's records: %v", err)
 	}
 	if rec, ok := listed[wake]; !ok || rec.Current != current || !slices.Equal(rec.Retired, []string{unanswered}) {
 		t.Fatalf("status lists %s as %+v, want %s current and %s retired", wake, listed[wake], current, unanswered)
 	}
-	cleanup := consumernames.New(consumernames.Config{
-		Store: consumernames.NewPGStore(pool), Server: operatorServer{stream},
-		Prefix: func(logical string) string { return logical }, Owner: "the operator's cleanup",
-		Floor:    func(info *jetstream.ConsumerInfo) uint64 { return info.AckFloor.Stream },
-		StreamID: func(context.Context) (string, error) { return "", nil },
-	})
-	deleted, err := cleanup.Cleanup(context.Background(), wake)
+	if err := consumernames.CheckFamily(rigFamily(), wake, listed[wake]); err != nil {
+		t.Fatalf("status judges the record of %s by its family's naming: %v, want it served", wake, err)
+	}
+	if err := consumernames.OwnsFamily(rigFamily(), wake, heldInfo(t, stream, unanswered)); err != nil {
+		t.Fatalf("the owner check of the landed %s by its family's naming: %v, want it %s's", unanswered, err, wake)
+	}
+	deleted, err := operatorCleanup(t, pool, stream, wake)
 	if err != nil || deleted != 1 {
 		t.Fatalf("cleanup = %d, %v; want the one retired name deleted", deleted, err)
 	}

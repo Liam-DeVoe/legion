@@ -366,8 +366,10 @@ func Host(machineID string) Permissions {
 
 // Measure is the grant of Envoy's measurement job, which the deployment repository deploys as a
 // static user of both hubs (envoy-cluster/hub.go, hubMeasurePublish and hubMeasureSubscribe). It
-// reads the account's JetStream state, the listener's lease keys in KV_envoy_listener, and owns one
-// test stream, ENVOY_MEASURE, on subjects of its own. It subscribes only its own inbox prefix,
+// reads the account's JetStream state, the listener's lease keys in KV_envoy_listener, and a
+// session's selection record in KV_envoy_session_consumers, from the stream's leader only, as
+// consumernames.KVStore reads it (no direct get, no write); and owns one test stream,
+// ENVOY_MEASURE, on subjects of its own. It subscribes only its own inbox prefix,
 // _INBOX_envoy_measure., never _INBOX.>, where the listener's and Dispatch's push consumer
 // deliveries and request replies arrive, so it reads no message of another client.
 func Measure() Permissions {
@@ -381,6 +383,7 @@ func Measure() Permissions {
 			jsAPI + "CONSUMER.LIST.*",
 			jsAPI + "CONSUMER.INFO.*.*",
 			jsAPI + "DIRECT.GET." + kvStream + "envoy_listener." + kvSubjects + "envoy_listener.lease.>",
+			jsAPI + "STREAM.MSG.GET." + kvStream + consumernames.SessionBucket,
 			jsAPI + "STREAM.CREATE.ENVOY_MEASURE",
 			jsAPI + "STREAM.UPDATE.ENVOY_MEASURE",
 			jsAPI + "STREAM.DELETE.ENVOY_MEASURE",

@@ -309,7 +309,7 @@ func OpenConsumers(ctx context.Context, js jetstream.JetStream, pool Pool, spec 
 		return nil, err
 	}
 	if spec.Names == consumernames.ModeFixed {
-		if err := refuseConvertedStore(ctx, pool); err != nil {
+		if err := refuseConvertedStore(ctx, pool, spec.Project); err != nil {
 			return nil, err
 		}
 	}
@@ -320,7 +320,11 @@ func OpenConsumers(ctx context.Context, js jetstream.JetStream, pool Pool, spec 
 	consumers := &Consumers{spec: spec, pool: pool, js: js, stream: stream, repos: slices.Clone(spec.Repositories)}
 	consumers.marker.reconnects = js.Conn().Stats().Reconnects
 	if spec.Names == consumernames.ModeFresh {
-		consumers.names = newDurableNames(pool, spec)
+		names, err := newDurableNames(pool, spec)
+		if err != nil {
+			return nil, err
+		}
+		consumers.names = names
 		if err := consumers.names.requireStreamID(ctx, dispatchConsumerName(spec.Project)); err != nil {
 			return nil, err
 		}
@@ -407,7 +411,7 @@ func (c *Consumers) rereadMarker(ctx context.Context) error {
 	if reconnects == seen {
 		return nil
 	}
-	err := refuseConvertedStore(ctx, c.pool)
+	err := refuseConvertedStore(ctx, c.pool, c.spec.Project)
 	c.marker.Lock()
 	defer c.marker.Unlock()
 	switch {

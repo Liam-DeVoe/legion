@@ -552,20 +552,17 @@ func TestForcedOrderACreateNobodyAnsweredIsRetiredAndNeverSelected(t *testing.T)
 	}
 	calls.noNameCreatedTwice(t, spec.Project)
 
-	listed, err := consumernames.NewPGStore(pool).List(context.Background())
+	listed, err := storeOf(t, rigFamily(), pool).List(context.Background())
 	if err != nil {
 		t.Fatalf("status: list the daemon's records: %v", err)
 	}
 	if !slices.Contains(listed[wake].Retired, candidate) {
 		t.Fatalf("status lists %s as %+v, want %s retired", wake, listed[wake], candidate)
 	}
-	cleanup := consumernames.New(consumernames.Config{
-		Store: consumernames.NewPGStore(pool), Server: operatorServer{stream},
-		Prefix: func(logical string) string { return logical }, Owner: "the operator's cleanup",
-		Floor:    func(info *jetstream.ConsumerInfo) uint64 { return info.AckFloor.Stream },
-		StreamID: func(context.Context) (string, error) { return "", nil },
-	})
-	if deleted, err := cleanup.Cleanup(context.Background(), wake); err != nil || deleted != 1 {
+	if err := consumernames.CheckFamily(rigFamily(), wake, listed[wake]); err != nil {
+		t.Fatalf("status judges the record of %s by its family's naming: %v, want it served", wake, err)
+	}
+	if deleted, err := operatorCleanup(t, pool, stream, wake); err != nil || deleted != 1 {
 		t.Fatalf("cleanup = %d, %v; want the late candidate deleted", deleted, err)
 	}
 	if _, err := stream.Consumer(context.Background(), candidate); !errors.Is(err, jetstream.ErrConsumerNotFound) {

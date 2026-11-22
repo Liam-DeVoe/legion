@@ -63,7 +63,7 @@ func TestFixedNamesNeverStartOnACutoverMarkerTheyDidNotRead(t *testing.T) {
 			reads := &failingReads{Pool: pool, err: tc.err, fails: tc.fails}
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
-			err := refuseConvertedStore(ctx, reads)
+			err := refuseConvertedStore(ctx, reads, consumerSpec(&lockedBuffer{}).Project)
 			switch {
 			case tc.want == "" && err != nil:
 				t.Fatalf("refuseConvertedStore = %v, want the fixed names opened", err)
@@ -75,6 +75,40 @@ func TestFixedNamesNeverStartOnACutoverMarkerTheyDidNotRead(t *testing.T) {
 			}
 			if tc.want == "read the cutover marker" && !errors.Is(err, context.DeadlineExceeded) {
 				t.Fatalf("refuseConvertedStore = %v, want the last read's error in it", err)
+			}
+		})
+	}
+}
+
+// A sentinel row that is present but is not the daemon's own sentinel (ErrMalformedSentinel: here
+// one naming another family, written raw, since the store's own write refuses it) is a failed read,
+// never "no marker": the fixed boot reads it again until its deadline and ends on it, and never
+// opens the fixed names over a marker it cannot read. The control is the row absent
+// (ErrNoSentinel), on which the fixed names open.
+func TestFixedNamesNeverOpenOverAMalformedSentinel(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		malformed bool
+	}{
+		{name: "a sentinel naming another family", malformed: true},
+		{name: "control: no sentinel row"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			if tc.malformed {
+				plantSentinel(t, pool, consumernames.StoreState{Family: familyOf(t, "OTHER"), Cutover: consumernames.CutoverRolledBack})
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			err := refuseConvertedStore(ctx, pool, consumerSpec(&lockedBuffer{}).Project)
+			if !tc.malformed {
+				if err != nil {
+					t.Fatalf("refuseConvertedStore with no sentinel = %v, want the fixed names opened", err)
+				}
+				return
+			}
+			if !errors.Is(err, consumernames.ErrMalformedSentinel) || !strings.Contains(err.Error(), "read the cutover marker") {
+				t.Fatalf("refuseConvertedStore over a malformed sentinel = %v, want the failed read's error once its deadline passed", err)
 			}
 		})
 	}

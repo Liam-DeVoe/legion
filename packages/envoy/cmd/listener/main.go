@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
 	"os"
@@ -550,7 +551,12 @@ func sessionHealthFields(sessions *session.SessionRegistry) map[string]interface
 // nowhere here: the bus runs the hooks again within seconds of a failure (internal/bus/recovery.go,
 // recoverUntilHealthy), so a rebuild under the bound is being repaired, and a listener would
 // otherwise read as degraded over every reconnect. The stall is one bus.Client's, naming no
-// cache, so a listener that keeps no CI cache needs no branch of its own.
+// cache, so a listener that keeps no CI cache needs no branch of its own. In the fixed naming mode
+// the client's last hook reads the cutover marker on the new connection (bus.Client.GateOnMarker,
+// registered after the cache rewatch), so a stall whose last failure is that read
+// (bus.ErrMarkerRead) has rebuilt the watches: it is reported as the dependency "cutover marker
+// read", with the selection bucket and the sentinel's key beside the error, so neither the answer
+// nor the paging alarm sends an operator to watchers that are fine.
 //
 // The checks that go to the bus share one healthzBudget taken from the request's own context: the
 // flush, each cache's KV ping and the durable consumer's info read. A ping or that read that has
@@ -594,67 +600,77 @@ func sessionHealthFields(sessions *session.SessionRegistry) map[string]interface
 // /v1/sessions keeps answering the copy, which it refuses only when the view cannot be served. The
 // answers writeDependencyHealth gives carry only status and error, as before: they report a fault
 // below the copy, not its freshness.
-func healthzHandler(deps *atomic.Pointer[listenerDeps]) http.HandlerFunc {
+//
+// Every answer, starting, healthy, degraded and unhealthy alike, also carries what issuers answers
+// (issuerHealthFields: the identity token issuers' "oidc" and "google"); nil adds nothing. Those
+// fields never decide the status (writeHealth).
+func healthzHandler(deps *atomic.Pointer[listenerDeps], starting *atomic.Pointer[bus.Client], issuers func() map[string]any) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		d := deps.Load()
 		if d == nil {
-			w.WriteHeader(http.StatusOK)
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{"status": "starting"})
+			// A fresh start whose sentinel refuses every call never binds its durable: say so
+			// rather than "starting" for as long as the bind retries.
+			if starting != nil {
+				ctx, cancel := context.WithTimeout(r.Context(), healthzBudget)
+				defer cancel()
+				if body := startingSelectionHealth(ctx, starting.Load()); body != nil {
+					writeHealth(w, http.StatusServiceUnavailable, body, issuers)
+					return
+				}
+			}
+			writeHealth(w, http.StatusOK, map[string]any{"status": "starting"}, issuers)
 			return
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), healthzBudget)
 		defer cancel()
 		if err := d.client.Conn.FlushWithContext(ctx); err != nil {
-			w.WriteHeader(http.StatusServiceUnavailable)
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{"status": "unhealthy", "error": "nats unavailable"})
+			writeHealth(w, http.StatusServiceUnavailable, map[string]any{"status": "unhealthy", "error": "nats unavailable"}, issuers)
 			return
 		}
 		if !d.client.SubOK() {
-			w.WriteHeader(http.StatusServiceUnavailable)
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{"status": "unhealthy", "error": "subscription inactive"})
+			writeHealth(w, http.StatusServiceUnavailable, map[string]any{"status": "unhealthy", "error": "subscription inactive"}, issuers)
 			return
 		}
 		if d.roleLane != nil && (!d.roleLane.Connected() || !d.roleLane.CoreSubOK()) {
-			w.WriteHeader(http.StatusServiceUnavailable)
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{"status": "unhealthy", "error": "role lane subscription inactive"})
+			writeHealth(w, http.StatusServiceUnavailable, map[string]any{"status": "unhealthy", "error": "role lane subscription inactive"}, issuers)
 			return
 		}
 		for _, c := range d.caches {
 			if err := c.cache.WatchErr(); err != nil {
-				writeDependencyHealth(w, c.name+" KV watcher", err, true)
+				writeDependencyHealth(w, c.name+" KV watcher", err, true, issuers)
 				return
 			}
 		}
 		for _, c := range d.caches {
 			if answered, err := healthzPing(ctx, c.cache); err != nil {
-				writeDependencyHealth(w, c.name+" KV", err, !answered || c.cache.WatchErr() != nil || errors.Is(err, nats.ErrConnectionClosed))
+				writeDependencyHealth(w, c.name+" KV", err, !answered || c.cache.WatchErr() != nil || errors.Is(err, nats.ErrConnectionClosed), issuers)
 				return
 			}
 		}
 		consumerInfo, err := durableInfo(ctx, d.client, d.consumer)
 		if err != nil {
 			// A read ctx ended did not answer, the info read's own form of healthzPing's unanswered.
-			writeDependencyHealth(w, "durable consumer", err, ctx.Err() != nil || errors.Is(err, nats.ErrConsumerNotFound))
+			// Whether the durable the server holds is named as this process names it is unknown
+			// then, so consumer_names says so, and why, beside the configured mode.
+			writeDependencyHealthWith(w, "durable consumer", err, ctx.Err() != nil || errors.Is(err, nats.ErrConsumerNotFound), map[string]interface{}{
+				"consumer_names": "UNKNOWN",
+				"consumer_names_unknown": fmt.Sprintf("the durable consumer's read failed, so the %s naming mode this process runs is unconfirmed on the server: %v",
+					d.client.ConsumerNames(), err),
+			}, issuers)
 			return
 		}
 		// One read and no confirming second one, unlike durableProbe's: the endpoint reports the
 		// fault the moment a request finds it, and a request landing in a rebuild's own gap simply
 		// answers 503 until the next one.
 		if durableUnbound(consumerInfo, d.client) {
-			writeDependencyHealth(w, "durable consumer", errDurableUnbound, true)
+			writeDependencyHealth(w, "durable consumer", errDurableUnbound, true, issuers)
 			return
 		}
 		// Last, below every 503 check: "degraded" is the answer only when nothing worse holds.
 		if stall, hookErr := d.client.HookStall(); stall >= bus.RepairGrace {
-			rebuild := fmt.Errorf("no rebuild has succeeded for %s", stall.Round(time.Second))
-			if hookErr != nil {
-				// The last failure says what is broken; the stall, for how long. A run still in
-				// flight past the grace has no error of its own, and writeDependencyHealth needs
-				// one, so then the stall is the whole report.
-				rebuild = fmt.Errorf("%w (%w)", hookErr, rebuild)
-			}
-			writeDependencyHealth(w, "KV watch rebuild", rebuild, false)
+			dependency, stalled, extra := hookStallHealth(stall, hookErr)
+			writeDependencyHealthWith(w, dependency, stalled, false, extra, issuers)
 			return
 		}
 		response := map[string]interface{}{"status": "healthy"}
@@ -686,8 +702,7 @@ func healthzHandler(deps *atomic.Pointer[listenerDeps]) http.HandlerFunc {
 			response["status"] = "degraded"
 			response["error"] = dependencyUnavailable("session consumer selection bucket "+consumernames.SessionBucket, err)
 		}
-		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(response)
+		writeHealth(w, http.StatusOK, response, issuers)
 	}
 }
 
@@ -751,18 +766,37 @@ func healthzPing(ctx context.Context, cache kvCache) (answered bool, err error) 
 	return answered, err
 }
 
-func writeDependencyHealth(w http.ResponseWriter, dependency string, err error, terminal bool) {
+func writeDependencyHealth(w http.ResponseWriter, dependency string, err error, terminal bool, issuers func() map[string]any) {
+	writeDependencyHealthWith(w, dependency, err, terminal, nil, issuers)
+}
+
+// writeDependencyHealthWith is writeDependencyHealth with extra fields beside status and error.
+func writeDependencyHealthWith(w http.ResponseWriter, dependency string, err error, terminal bool, extra map[string]any, issuers func() map[string]any) {
 	statusCode := http.StatusOK
 	status := "degraded"
 	if terminal {
 		statusCode = http.StatusServiceUnavailable
 		status = "unhealthy"
 	}
-	w.WriteHeader(statusCode)
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+	body := map[string]any{
 		"status": status,
 		"error":  dependencyUnavailable(dependency, err),
-	})
+	}
+	maps.Copy(body, extra)
+	writeHealth(w, statusCode, body, issuers)
+}
+
+// writeHealth writes one /healthz answer: statusCode, and body with what issuers answers added
+// (nil adds nothing). The fields issuers adds are reports beside the answer and never decide its
+// status, which the caller has chosen before they are read: a listener whose issuer cannot be read
+// serves everything else, so a probe that failed on it would take that service away for an outage
+// the listener serves through, as Dispatch's service_tokens field does not.
+func writeHealth(w http.ResponseWriter, statusCode int, body map[string]any, issuers func() map[string]any) {
+	if issuers != nil {
+		maps.Copy(body, issuers())
+	}
+	w.WriteHeader(statusCode)
+	_ = json.NewEncoder(w).Encode(body)
 }
 
 // dependencyUnavailable is the `error` field a /healthz answer gives for a dependency, so the
@@ -1029,8 +1063,14 @@ func main() {
 	// meets them.
 	warnIgnoredEnv(logger, "ENVOY_HOST_BRIDGE", "the listener no longer pushes a message to a session's serve port, so it opens no connection this would address")
 	warnIgnoredEnv(logger, "ENVOY_SUBSCRIBE_ALL_TOPICS", "the listener no longer holds a live topics subscription, so there is no such subscription to turn on")
-	// Before any NATS connect, so a listener the writer hold refuses still names its mode.
-	logger.Info("session consumer naming mode", slog.String("consumer_names", string(cfg.ConsumerNames)))
+	// Before any NATS connect, so a listener the writer hold refuses still names its mode. The line
+	// also carries ENVOY_STREAMS_OPERATOR_MADE as it was set, null when unset, which the cutover's
+	// mode check reads beside the naming mode.
+	streamsOperatorMade := slog.Any("streams_operator_made", nil)
+	if value, set := os.LookupEnv("ENVOY_STREAMS_OPERATOR_MADE"); set {
+		streamsOperatorMade = slog.String("streams_operator_made", value)
+	}
+	logger.Info("session consumer naming mode", slog.String("consumer_names", string(cfg.ConsumerNames)), streamsOperatorMade)
 	apiToken := os.Getenv("ENVOY_API_TOKEN")
 	oidcIssuer, oidcAudience, err := resolveListenerOIDCConfig(os.Getenv)
 	if err != nil {
@@ -1045,22 +1085,34 @@ func main() {
 		log.Fatal(err)
 	}
 	// Dispatch's own principal is read beside the bearers it is proved by, so a value no
-	// credential this listener takes could prove refuses the start before any issuer is asked.
+	// credential this listener takes could prove refuses the start.
 	dispatchPrincipal, err := resolveListenerDispatchPrincipal(os.Getenv, oidcIssuer, oidcAccounts, googleAccounts)
 	if err != nil {
 		log.Fatal(err)
 	}
-	apiVerifier, err := oidc.Discover(context.Background(), oidcIssuer, oidcAudience, oidc.DiscoveryTimeout)
-	if err != nil {
-		log.Fatal(err)
+	// Neither issuer is read here. Each verifier reads its issuer's discovery document in the
+	// background from now on (oidc.LazyVerifier.Run: at once, then again 5 to 30 s after each
+	// failure, logging a failure at most once a minute) and when a token needs it, the request
+	// waiting for it and then for the key set within identityBudget. So a listener started while
+	// the cluster's issuer or Google's cannot be read serves everything that does not need that
+	// issuer, the shared token,
+	// an open /v1, /healthz, /metrics and the webhooks, and answers a token of that issuer 503
+	// until it is read (refuseIdentityToken); /healthz's oidc and google fields and the
+	// envoy_listener_oidc_issuer_discovered gauge report which issuers it has read
+	// (issuer_health.go). A start that read them first exited when either read failed, and a
+	// listener of one replica restarted during either outage then served nobody. Each Run ends
+	// once its issuer is read; while it is not, it runs until the process ends, holding nothing
+	// a shutdown has to stop.
+	var apiVerifier *oidc.LazyVerifier
+	if oidcIssuer != "" {
+		apiVerifier = oidc.NewLazyVerifier(oidcIssuer, oidcAudience)
+		go apiVerifier.Run(context.Background())
 	}
 	// A Google identity token's issuer is Google itself, so only its audience is a setting.
 	var googleCallers *googleIdentities
 	if googleAudience != "" {
-		googleVerifier, err := oidc.Discover(context.Background(), oidc.GoogleIssuer, googleAudience, oidc.DiscoveryTimeout)
-		if err != nil {
-			log.Fatal(err)
-		}
+		googleVerifier := oidc.NewLazyVerifier(oidc.GoogleIssuer, googleAudience)
+		go googleVerifier.Run(context.Background())
 		googleCallers = &googleIdentities{audience: googleAudience, verifier: googleVerifier, accounts: googleAccounts}
 	}
 	// The broker-token settings are read here, beside the bearers' own, so a
@@ -1165,8 +1217,12 @@ func main() {
 	// /metrics is always reachable — NOT gated by readiness.
 	mux.Handle("/metrics", met.Handler())
 
-	// /healthz is always reachable, before NATS setup as well as after it.
-	mux.HandleFunc("/healthz", healthzHandler(&deps))
+	// /healthz is always reachable, before NATS setup as well as after it. Before the durable binds
+	// it reads the selection bucket's sentinel through startingClient, once that client connects.
+	// Every answer carries the identity token issuers' fields (issuerHealthFields), which never
+	// decide its status.
+	var startingClient atomic.Pointer[bus.Client]
+	mux.HandleFunc("/healthz", healthzHandler(&deps, &startingClient, func() map[string]any { return issuerHealthFields(apiAuthConfig) }))
 
 	// /livez answers 204 and touches nothing: no flush to NATS, no cache ping and no read of the
 	// durable consumer. It says only that the process answers, for the startup and liveness
@@ -1190,6 +1246,7 @@ func main() {
 	}
 	// Serve /v1/* on the listener port for local plugin registration.
 	apiAuthConfig.requests = newListenerRequests(met)
+	registerIssuerGauge(met, apiAuthConfig)
 	apiAuthConfig.route = v1Gate.route
 	v1Handler := apiAuth(apiAuthConfig, v1Gate)
 	mux.Handle("/v1", v1Handler)
@@ -1220,6 +1277,7 @@ func main() {
 		// of a log that holds only "context deadline exceeded" cannot tell which step timed out.
 		log.Fatalf("connect to NATS and reconcile the %s stream: %v", bus.Stream, err)
 	}
+	startingClient.Store(client)
 	// starting is the context the bucket opens below run under, and it is context.Background() on
 	// purpose: do not replace it with a context a signal ends. The opens wait on the cluster until
 	// it answers them (a bucket's create, a raise's copies, a member applying a create, a stream's
@@ -1595,31 +1653,15 @@ func main() {
 		client.Conn.Close()
 		os.Exit(1)
 	}
-	if !delivery.consumers.Fresh() {
-		if err := awaitFixedNaming(context.Background(), delivery.consumers, logger, fixedNamingRetry); err != nil {
-			logger.Error("session consumer naming refuses the start: "+err.Error(), slog.String("error", err.Error()))
-			delivery.close()
-			client.Conn.Close()
-			os.Exit(1)
-		}
-		delivery.consumers.WatchConversion(func(err error) {
-			logger.Error("session consumer naming stops the listener: "+err.Error(), slog.String("error", err.Error()))
-			os.Exit(1)
-		})
+	converted := func(err error) {
+		logger.Error("session consumer naming stops the listener: "+err.Error(), slog.String("error", err.Error()))
+		os.Exit(1)
 	}
-	if delivery.consumers.Fresh() {
-		names := met.NewCounter("envoy_session_consumer_names_total", "Session consumer selection steps in the fresh naming mode, by op (select, create, replace, delete, recover, missing_current, last_floor, cleanup) and outcome (ok, adopted, retired, refused, conflict, limit, error)")
-		delivery.consumers.ObserveNames(func(op consumernames.Operation, outcome consumernames.Outcome) {
-			names.Inc([2]string{"op", string(op)}, [2]string{"outcome", string(outcome)})
-		})
-		checkCtx, cancel := context.WithTimeout(context.Background(), sessionConsumerCallTimeout)
-		if err := delivery.consumers.CheckSelection(checkCtx); err != nil {
-			// Not the start's end: every session-consumer call refuses until the bucket, its
-			// sentinel and the cutover are there, and /healthz names what is missing meanwhile.
-			logger.Error("session consumer selection refuses every registration: "+err.Error(),
-				slog.String("bucket", consumernames.SessionBucket), slog.String("error", err.Error()))
-		}
-		cancel()
+	if err := startConsumerNaming(cfg.HostListener, delivery.consumers, client, met, logger, converted); err != nil {
+		logger.Error("session consumer naming refuses the start: "+err.Error(), slog.String("error", err.Error()))
+		delivery.close()
+		client.Conn.Close()
+		os.Exit(1)
 	}
 	// The relay hears registrations from the moment /v1 opens, and relays once this task holds its
 	// machine's durable binding (below).

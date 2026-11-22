@@ -68,10 +68,64 @@ func freshJetStream(t *testing.T) (jetstream.JetStream, jetstream.Stream, string
 	return js, stream, id
 }
 
+// cutoverOf writes family's sentinel with marker, as cutover writes the rig project's.
+func cutoverOf(t testing.TB, pool *pgxpool.Pool, family, marker string) {
+	t.Helper()
+	state := consumernames.StoreState{Family: family, Cutover: marker, StreamID: sentinelStreamID, Boundary: 1}
+	if _, err := storeOf(t, family, pool).WriteSentinel(context.Background(), state, 0); err != nil {
+		t.Fatalf("write %s's sentinel %q: %v", family, marker, err)
+	}
+}
+
+// rigFamily is the selection store family of the rig's project (consumerSpec's): daemon/<project>.
+func rigFamily() string {
+	family, err := consumernames.DaemonFamily(consumerSpec(&lockedBuffer{}).Project)
+	if err != nil {
+		panic(err)
+	}
+	return family
+}
+
+// familyOf is project's selection store family, failing t when no store keeps it.
+func familyOf(t testing.TB, project string) string {
+	t.Helper()
+	family, err := consumernames.DaemonFamily(project)
+	if err != nil {
+		t.Fatalf("the family of project %q: %v", project, err)
+	}
+	return family
+}
+
+// storeOf is family's selection store on pool, failing t when no store keeps family.
+func storeOf(t testing.TB, family string, pool *pgxpool.Pool) *consumernames.PGStore {
+	t.Helper()
+	store, err := consumernames.NewPGStore(family, pool)
+	if err != nil {
+		t.Fatalf("the selection store of %s: %v", family, err)
+	}
+	return store
+}
+
+// plantSentinel writes state raw as the rig project's sentinel row, under that row's own key
+// (consumernames.PGSentinelKey), as any login that may write intake_consumers can: the store's
+// WriteSentinel refuses a state that names another family, so a sentinel of another family under
+// the daemon's key comes only from a write such as this one.
+func plantSentinel(t testing.TB, pool *pgxpool.Pool, state consumernames.StoreState) {
+	t.Helper()
+	state.Key = consumernames.PGSentinelKey(rigFamily())
+	data, err := json.Marshal(state)
+	if err != nil {
+		t.Fatalf("encode the sentinel %+v: %v", state, err)
+	}
+	if _, err := pool.Exec(context.Background(), `insert into intake_consumers (logical, record, revision) values ($1, $2, 1)`, state.Key, string(data)); err != nil {
+		t.Fatalf("write the sentinel row %s naming %s: %v", state.Key, state.Family, err)
+	}
+}
+
 // selectionOf is logical's selection record, failing t when there is none.
 func selectionOf(t testing.TB, pool *pgxpool.Pool, logical string) consumernames.Record {
 	t.Helper()
-	rec, _, err := consumernames.NewPGStore(pool).Read(context.Background(), logical)
+	rec, _, err := storeOf(t, rigFamily(), pool).Read(context.Background(), logical)
 	if err != nil {
 		t.Fatalf("read the selection record of %s: %v", logical, err)
 	}
@@ -82,7 +136,7 @@ func selectionOf(t testing.TB, pool *pgxpool.Pool, logical string) consumernames
 // leaves it.
 func putRecord(t testing.TB, pool *pgxpool.Pool, logical string, rec consumernames.Record) {
 	t.Helper()
-	store := consumernames.NewPGStore(pool)
+	store := storeOf(t, rigFamily(), pool)
 	_, revision, err := store.Read(context.Background(), logical)
 	if err != nil && !errors.Is(err, consumernames.ErrNoRecord) {
 		t.Fatalf("read the selection record of %s: %v", logical, err)
@@ -376,4 +430,23 @@ func (s operatorServer) Delete(ctx context.Context, name string) error {
 		return err
 	}
 	return nil
+}
+
+// operatorCleanup is the operator's `envoy-infra consumer-names cleanup` of logical in the rig
+// project's store: the protocol on the operator's credential (operatorServer), judging the record
+// and each consumer it deletes by the family's own naming from the families' table
+// (consumernames.FamilyNaming), never a Config built by hand, as consumernames.CheckFamily and
+// consumernames.OwnsFamily do. It answers how many retired names it deleted.
+func operatorCleanup(t testing.TB, pool *pgxpool.Pool, stream jetstream.Stream, logical string) (int, error) {
+	t.Helper()
+	naming, err := consumernames.FamilyNaming(rigFamily(), logical)
+	if err != nil {
+		t.Fatalf("the naming of %s in %s: %v", logical, rigFamily(), err)
+	}
+	return consumernames.New(consumernames.Config{
+		Store: storeOf(t, rigFamily(), pool), Server: operatorServer{stream},
+		Prefix: naming.Prefix, Fixed: naming.Fixed, Metadata: naming.Metadata, Owner: "the operator's cleanup",
+		Floor:    func(info *jetstream.ConsumerInfo) uint64 { return info.AckFloor.Stream },
+		StreamID: func(context.Context) (string, error) { return "", nil },
+	}).Cleanup(context.Background(), logical)
 }

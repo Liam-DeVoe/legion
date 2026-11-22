@@ -210,22 +210,34 @@ func TestListenerOnPortZeroLogsThePortTheKernelChose(t *testing.T) {
 
 // The listener logs its consumer naming mode before its first NATS connect, so a reader of its log
 // learns the mode of a listener whose every connect is refused, as a writer hold refuses it: here
-// nothing listens at NATS_URLS. Each mode is logged as it was set.
+// nothing listens at NATS_URLS. Each mode is logged as it was set, and the same line carries
+// ENVOY_STREAMS_OPERATOR_MADE as it was set, null when unset, which the cutover's mode check reads.
 func TestTheListenerLogsItsNamingModeBeforeItsFirstNATSConnect(t *testing.T) {
 	binary := cmdtest.Build(t, "envoy-listener")
-	for _, mode := range []string{"fixed", "fresh"} {
-		t.Run(mode, func(t *testing.T) {
+	for _, row := range []struct {
+		mode, streams string
+		set           bool
+		want          string
+	}{
+		{mode: "fixed", streams: "1", set: true, want: `"streams_operator_made":"1"`},
+		{mode: "fresh", want: `"streams_operator_made":null`},
+		{mode: "fixed", streams: "no", set: true, want: `"streams_operator_made":"no"`},
+	} {
+		t.Run(row.mode+" "+row.want, func(t *testing.T) {
 			cmd := exec.Command(binary)
 			cmd.Env = []string{
 				"PORT=0",
 				"ENVOY_LISTEN_HOST=127.0.0.1",
-				"ENVOY_MACHINE_ID=naming-mode-" + mode,
+				"ENVOY_MACHINE_ID=naming-mode-" + row.mode,
 				"NATS_URLS=nats://127.0.0.1:1",
 				"ENVOY_API_TOKEN=" + listenerTestToken,
-				"ENVOY_CONSUMER_NAMES=" + mode,
+				"ENVOY_CONSUMER_NAMES=" + row.mode,
+			}
+			if row.set {
+				cmd.Env = append(cmd.Env, "ENVOY_STREAMS_OPERATOR_MADE="+row.streams)
 			}
 			process := cmdtest.Start(t, "the listener", cmd)
-			process.WaitForOutput(t, `"msg":"session consumer naming mode"`, `"consumer_names":"`+mode+`"`)
+			process.WaitForOutput(t, `"msg":"session consumer naming mode"`, `"consumer_names":"`+row.mode+`"`, row.want)
 		})
 	}
 }

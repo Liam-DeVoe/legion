@@ -161,7 +161,7 @@ func streamIDOf(t *testing.T, consumers *SessionConsumers) string {
 // run in, stopped when the test ends.
 func pullSession(t *testing.T, consumers *SessionConsumers, sessionID string) *SessionPull {
 	t.Helper()
-	pull, err := consumers.Pull(context.Background(), fixedName(t, sessionID))
+	pull, err := consumers.Pull(context.Background(), sessionID, fixedName(t, sessionID))
 	if err != nil {
 		t.Fatalf("pull %s: %v", sessionID, err)
 	}
@@ -1092,7 +1092,7 @@ func TestAHandOverOnAClosedConnectionReportsTheDrainAndTheNaksThatFailed(t *test
 		t.Fatalf("connect a session consumers connection of this row's own: %v", err)
 	}
 	t.Cleanup(mine.Close)
-	pull, err := mine.Pull(ctx, fixedName(t, session))
+	pull, err := mine.Pull(ctx, session, fixedName(t, session))
 	if err != nil {
 		t.Fatalf("pull %s: %v", session, err)
 	}
@@ -1196,6 +1196,51 @@ func TestEnsureWithoutTheCreateGrantIsErrConsumerNotGranted(t *testing.T) {
 	}
 	if elapsed := time.Since(started); elapsed > 3*time.Second {
 		t.Fatalf("ListSessionConsumers took %s to report the refusal", elapsed)
+	}
+}
+
+// The adoption check's read of a candidate (ConsumerAdoptable) is a consumer API request like every
+// other: one the NATS user may not make is ErrConsumerNotGranted, the refusal the listener answers
+// as a grant's (503 no_grant for a session), not a bare publish refusal. The control is the same
+// read under a grant that allows it, which the server answers itself: no such candidate.
+func TestAnAdoptionReadWithoutTheInfoGrantIsErrConsumerNotGranted(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		granted bool
+	}{
+		{name: "without the info grant"},
+		{name: "control: with the info grant", granted: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			seed, public := testnats.User(t)
+			grants := []string{"$JS.API.INFO", "$JS.API.STREAM.>", "_INBOX.>"}
+			if tc.granted {
+				grants = append(grants, "$JS.API.CONSUMER.INFO.>")
+			}
+			uri := testnats.StartNkeyGranted(t, public, grants...).URL
+			t.Setenv("NATS_NKEY_SEED", seed)
+			owner, err := ConnectOwningStream([]string{uri})
+			if err != nil {
+				t.Fatalf("connect the stream's owner: %v", err)
+			}
+			t.Cleanup(owner.Close)
+			consumers, err := ConnectSessionConsumers([]string{uri}, 0, nil)
+			if err != nil {
+				t.Fatalf("connect session consumers: %v", err)
+			}
+			t.Cleanup(consumers.Close)
+			const candidate = SessionConsumerNamePrefix + "~NOTGRANTED"
+			err = consumers.client.ConsumerAdoptable(context.Background(), candidate, consumers.freshConfig(candidate, "ses_notgranted", 1, nil))
+			if tc.granted {
+				if err == nil || errors.Is(err, ErrPublishDenied) || !strings.Contains(err.Error(), candidate) {
+					t.Fatalf("control: the granted read of a candidate the server does not hold = %v; want the server's own answer naming it", err)
+				}
+				return
+			}
+			if !errors.Is(err, ErrConsumerNotGranted) || !errors.Is(err, ErrPublishDenied) {
+				t.Fatalf("the adoption read without the info grant = %v; want ErrConsumerNotGranted wrapping the server's refusal", err)
+			}
+		})
 	}
 }
 

@@ -2728,6 +2728,24 @@ sets=$(cd "$root" && GOFLAGS=-no-such-flag python3 .github/scripts/go_build_tags
 check "and fails when go list fails" "$(is "$status" 1)"
 check "naming the go command" "$(contains "$sets" 'go_build_tags.py: in mod, go tool dist list ... failed')"
 
+# odatrace is the one name go_build_tags.py leaves out of every vet that the toolchain does not
+# set or that marks a file no build compiles: only forced-order.sh's build passes it, against a
+# nats-server it patches, so its files compile nowhere else. A name added beside it, or a
+# forced-order.sh that stops passing it, fails here, so the exclusion cannot come to hide a tag a
+# plain build compiles.
+echo "case: go_build_tags.py leaves out only the toolchain's names and forced-order.sh's odatrace"
+patched=$(PYTHONDONTWRITEBYTECODE=1 python3 - "$script_dir" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+from go_build_tags import NOT_TAGS
+toolchain = {"unix", "cgo", "gc", "gccgo", "race", "msan", "asan", "ignore", "boringcrypto"}
+print(",".join(sorted(NOT_TAGS - toolchain)))
+PY
+)
+check "the one name beyond the toolchain's is odatrace" "$(is "$patched" odatrace)"
+check "and forced-order.sh passes -tags odatrace to go" \
+  "$(contains "$(<"$script_dir/../../packages/envoy/scripts/forced-order.sh")" '^flags=(.* -tags odatrace .*)$')"
+
 # The typecheck step's own run text, taken from its workflow, over a module with one tag and a
 # file under its negation that does not compile: the script's last set is the one with no tag,
 # and a shell's command substitution drops a trailing empty line, so a transport of bare sets

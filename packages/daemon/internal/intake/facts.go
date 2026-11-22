@@ -1,4 +1,3 @@
-// Package intake turns durable Envoy notifications and Go API observations into one transactional fact path.
 package intake
 
 import (
