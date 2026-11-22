@@ -64,7 +64,6 @@ import {
   closeDetails,
   gotoIssue,
   issueRead,
-  marginResizeHandle,
   marginShell,
   openDetails,
   phase,
@@ -1420,24 +1419,21 @@ test("Load older by keyboard keeps the focus in view when the older page extends
   }
 });
 
-// The Details focus keeper (`details-focus-keeper.ts`): when the control that holds the focus
-// turns disabled or goes away and no site hands the focus on, the keeper gives it to the control
-// nearest to where the lost one stood, so the reader's next Tab goes on from that place. The
-// drawer's resize handle is fixed to the screen and as tall as it, so it stands at no distance from
-// any place in Details. When the keeper took the nearest control in the whole box, the handle came
-// before the body in the box's order and the keeper picked it every time; from the handle the next
-// Tab went to Close and the one after to the first control of Details, which scrolled Details back
-// to its top. Found by the tester on a running build of f589637b with a copy of a large real
-// issue, at 1440 px and 768 px: the Retry of what the issue blocks, pressed by keyboard with
-// Details scrolled 500 px down, turned busy and then went once its read answered; the focus was
-// on the resize handle, and two Tabs took Details to 0. The keeper now looks first in the
-// scrolling body of Details the lost control stood in, and skips a fixed or sticky control.
-// A press never leaves the focus to the keeper: each control of Details a press takes away hands
-// the focus on itself (each Retry, Load older), and the Retry of what the issue blocks, which this
-// row first drove, now does so too (`IssueMargin.tsx`). A control that goes with no press is the
-// keeper's own case: when a person writes in a thread only agents wrote, the thread leaves the
-// history for the outline (R2), and the control of it that held the reader's focus goes with it.
-test("a control of Details that goes away under the focus hands it to a control of Details' body, never the drawer's resize handle", async ({
+// Details keeps the focus rule of every page of Dispatch. A control of Details that the reader's
+// own press or key takes away hands the focus on inside Details: each Retry, Load older and
+// Unsubscribe hands it on itself, and the Details focus keeper (`details-focus-keeper.ts`) under
+// them hands on what no site did. A control that goes with no press of the reader's - a live
+// update, another session's change that takes a row away - leaves the focus on the page's body,
+// where the page's keys work, and nothing scrolls: the reader asked for no move, so the page puts
+// them nowhere, and Details stays on what they were reading. Only an open modal dialog takes the
+// focus then. Here another session's write takes the focused control away: when a person writes
+// in a thread only agents wrote, the thread leaves the history for the outline, and the control
+// of it that held the reader's focus goes with it. The keeper once handed that focus on to the
+// nearest control of Details, a move the reader had not asked for. The thread stands near the
+// foot of Details, which the focus scrolled to its end, so the thread's going shortens what
+// Details can scroll: the browser brings Details back by as much as it lost there, and the page
+// moves it no further.
+test("a control of Details that another session takes away under the focus leaves the focus on the page's body, and Details does not scroll", async ({
   browser,
 }) => {
   test.setTimeout(120_000);
@@ -1457,12 +1453,24 @@ test("a control of Details that goes away under the focus hands it to a control 
   const context = await reader(browser, "alice");
   try {
     const page = await context.newPage();
+    // Details' scrolling body, the nearest box around the history that scrolls its content: where
+    // the reader is in it, and the furthest it can be scrolled.
+    const detailsScroll = () =>
+      page.evaluate(() => {
+        let box = document.querySelector('[data-testid="issue-history"]')?.parentElement ?? null;
+        while (box !== null && !/(auto|scroll)/.test(getComputedStyle(box).overflowY)) {
+          box = box.parentElement;
+        }
+        if (box === null) throw new Error("no box of Details scrolls the history");
+        return { end: box.scrollHeight - box.clientHeight, top: box.scrollTop };
+      });
     await gotoIssue(page, `/issues/${issue.key}`);
     await openDetails(page);
     const thread = await seededHistoryEntry(page, historyItem(page, root.id), root.created_at);
     // The turn's time link holds the focus as a keyboard reader leaves it there, with no press.
     await thread.locator("[data-history-time]").focus();
     await nextFrames(page);
+    const before = await detailsScroll();
     await createComment(
       issue.key,
       { body: "A person joins the agents' thread.", reply_to: root.id },
@@ -1476,16 +1484,19 @@ test("a control of Details that goes away under the focus hands it to a control 
     const focus = await page.evaluate(() => {
       const active = document.activeElement;
       return {
-        inDetails:
-          document.querySelector('[data-testid="desktop-margin-shell"]')?.contains(active) ?? false,
         name: `${active?.tagName} "${(active?.getAttribute("aria-label") ?? active?.textContent ?? "").trim().slice(0, 40)}"`,
+        onBody: active === document.body,
       };
     });
-    expect(focus.inDetails, `the focus left Details for ${focus.name}`).toBe(true);
     expect(
-      await marginResizeHandle(page).evaluate((handle) => handle === document.activeElement),
-      `the keeper handed the focus to the drawer's resize handle (${focus.name}), from which the next Tabs go to Close and the top of Details`
-    ).toBe(false);
+      focus.onBody,
+      `another session's write took the focused control away, and the focus went to ${focus.name} rather than staying on the page's body`
+    ).toBe(true);
+    const after = await detailsScroll();
+    expect(
+      after.top,
+      `Details scrolled from ${before.top} px to ${after.top} px as another session's write took the focused control away, though the write took its end only to ${after.end} px`
+    ).toBe(Math.min(before.top, after.end));
   } finally {
     await context.close();
   }

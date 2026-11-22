@@ -1944,6 +1944,39 @@ test("a handoff's Retry pressed by keyboard hands the focus on as its line goes,
   }
 });
 
+// A handoff's Retry hands the focus on only after the reader's press of it. A read that answers on
+// its own - a window focus, an invalidation of every read after a write - takes the line away with
+// no press of the reader's, so the focus its Retry held stays on the page's body, as on every page
+// of Dispatch.
+test("a handoff's Retry taken away by a read the reader did not press for leaves the focus on the page's body", async () => {
+  const getHandoff = spyOn(api, "getHandoff")
+    .mockRejectedValueOnce(new Error("the handoff is down"))
+    .mockResolvedValue(handoffRecord("Second pass"));
+  let unmount: (() => void) | undefined;
+
+  try {
+    const drawn = drawHandoff();
+    unmount = drawn.unmount;
+    await userEvent.click(screen.getByRole("button", { name: CONTROL_LABELS.show_fields }));
+    const retry = await screen.findByRole("button", { name: CONTROL_LABELS.retry });
+    act(() => retry.focus());
+
+    await act(async () => {
+      await drawn.queryClient.invalidateQueries();
+    });
+    await screen.findByText("Second pass");
+    expect(getHandoff).toHaveBeenCalledTimes(2);
+    expect(retry.isConnected, "the handoff's Retry stayed once the read answered").toBe(false);
+    expect(
+      document.activeElement,
+      "a read the reader did not press for took the handoff's Retry away, and the focus left the page's body"
+    ).toBe(document.body);
+  } finally {
+    unmount?.();
+    getHandoff.mockRestore();
+  }
+});
+
 // With no body held, the line that says a read of it failed stays, its Retry busy, while the read
 // that Retry sent is out. A press of the busy Retry joins that read and sends no other. A press
 // moves no focus: a reader who presses the busy Retry, or comes back to it and presses it again,

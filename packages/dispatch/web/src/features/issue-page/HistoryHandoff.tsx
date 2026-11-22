@@ -12,7 +12,7 @@ import {
 } from "../../theme/classes";
 import { type HandoffField, handoffFields } from "../conversation/conversation-model";
 import { standsFailed } from "../refs/reference-target";
-import { DetailsErrorLine, retryRead } from "./details-error";
+import { DetailsErrorLine, retryRead, useRetryHandOff } from "./details-error";
 import { authorText, pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS, sentenceCase } from "./page-words";
 
@@ -67,15 +67,22 @@ function HandoffFields({ handoffId, id }: { handoffId: string; id: string }): Re
     staleTime: Number.POSITIVE_INFINITY,
   });
   const failure = useRef<HTMLSpanElement>(null);
-  // A focus on a line that goes - the Retry of the failure line once the read it sent lands, or
-  // the loading line - goes on to what the reader's press asked for, where no Enter undoes it:
-  // the Retry of a failure line drawn in its place, else what stands in the fields' place, the
-  // fields once the read has landed, or the loading line while a read is out. The toggle above
-  // them would not do: a second press of the Retry's key - a key that repeated, or a reader who
-  // saw nothing happen and pressed again - would land on it and shut the fields.
-  const handOff = useFocusHandOff(
-    () => failure.current?.querySelector<HTMLElement>("button") ?? document.getElementById(id)
-  );
+  // A focus on a line that goes - the Retry of the failure line once the read the reader's press
+  // of it sent lands, or the loading line - goes on to what the reader's press asked for, where no
+  // Enter undoes it: the Retry of a failure line drawn in its place, else what stands in the
+  // fields' place, the fields once the read has landed, or the loading line while a read is out.
+  // The toggle above them would not do: a second press of the Retry's key - a key that repeated,
+  // or a reader who saw nothing happen and pressed again - would land on it and shut the fields.
+  // The Retry hands it on only after the reader's press of it (`useRetryHandOff`): a line a read
+  // that answers on its own takes away - a window focus, an invalidation after a write - leaves
+  // the focus on the page's body, as on every page of Dispatch. The loading line, which no Tab
+  // reaches, holds the focus only where the reader put it there - their press on it, or their
+  // Retry's hand-on - and goes only as the read it stands for answers, so it hands the focus on
+  // with no further press.
+  const handOffTo = () =>
+    failure.current?.querySelector<HTMLElement>("button") ?? document.getElementById(id);
+  const retry = useRetryHandOff(handOffTo);
+  const loadingLeft = useFocusHandOff(handOffTo);
   const fields = useMemo(
     () => (handoff.data === undefined ? undefined : fieldRows(handoff.data.body)),
     [handoff.data]
@@ -91,11 +98,11 @@ function HandoffFields({ handoffId, id }: { handoffId: string; id: string }): Re
           failure={handoff.errorUpdateCount}
           message={ANSWER_LINES.handoff_unreadable}
           // The Retry goes with its line once the read it sends lands. The press moves no focus,
-          // and the line's going hands it on (`handOff`). A press while that read is out joins it
+          // and the line's going hands it on (`retry`). A press while that read is out joins it
           // (`retryRead`), so a second press made before React draws the first one's read sends
           // nothing more.
           onRetry={retryRead(handoff)}
-          retryRef={handOff}
+          {...retry}
           retrying={handoff.isFetching}
         />
       </span>
@@ -106,7 +113,7 @@ function HandoffFields({ handoffId, id }: { handoffId: string; id: string }): Re
       <span
         className={`mt-1 block text-xs outline-none ${pageQuietText}`}
         id={id}
-        ref={handOff}
+        ref={loadingLeft}
         role="status"
         tabIndex={-1}
         {...pageChrome}

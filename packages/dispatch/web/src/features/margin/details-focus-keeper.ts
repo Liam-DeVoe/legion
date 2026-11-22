@@ -35,6 +35,12 @@ const WATCHED: MutationObserverInit = {
   subtree: true,
 };
 
+/** The events by which the keeper hears the reader press the control that holds the focus, or a
+ *  key on it. A mouse press focuses a control as its button goes down, after the pointer went
+ *  down, and a tap only once the pointer is up, so a press that gave the control the focus is
+ *  heard by its click. */
+const PRESSES = ["click", "keydown", "pointerdown"] as const;
+
 /** The attribute each entry of the new issue page's history carries, its own id there, by which
  *  the keeper tells a redrawn control of one entry from a control of another
  *  (`ControlIdentity`). */
@@ -68,19 +74,29 @@ interface Frame {
 type Loss = "disabled" | "hidden" | "removed";
 
 /**
- * Keeps a keyboard reader's focus inside Details while `active` holds: when the control that has
- * the focus is removed, turns disabled or is no longer drawn, and the focus has fallen to the
- * page, the keeper gives it to another place in `box`. Chromium drops the focus of a button that
- * turns disabled, or is removed, to the body. Without the keeper, a reader whose Retry goes with
- * its line once its read answers, or whose Load older goes away with the log's last page, starts
- * again from the top of the page.
+ * Keeps a keyboard reader's focus inside Details while `active` holds, where the reader took the
+ * control that held it away themselves: when that control is removed, turns disabled or is no
+ * longer drawn after a press or a key of the reader's on it, and the focus has fallen to the page,
+ * the keeper gives it to another place in `box`. Chromium drops the focus of a button that turns
+ * disabled, or is removed, to the body. Without the keeper, a reader whose Retry goes with its
+ * line once the read it sent answers, or whose Load older goes away with the log's last page,
+ * starts again from the top of the page.
  *
- * The focus goes, in this order: to the control that replaced the lost one, a control drawn in the
- * same change with the same identity (`ControlIdentity`), as when React draws an entry anew under
- * a new key; else to the control nearest to where the lost one stood, among those that stay
- * enabled, drawn and in sight and are not pinned (`PINNED`), looked for first inside the box that
- * scrolls the lost one, Details' body, and only where that holds none in the rest of the box; else
- * to the box's heading, its first `h2`.
+ * A press is the reader's pointer going down, a click or a key, on the control or inside it while
+ * the control holds the focus (`PRESSES`), and the keeper forgets it once the focus moves to
+ * another control. A loss after that press - at once, or once the write or the read it sent lands
+ * - is the reader's. A loss with no such press - a live update, another session's change that
+ * takes a row away, a control or a popover gone - leaves the focus on the page's body, where the
+ * page's keys work, and the keeper moves nothing and scrolls nothing. A control drawn in the same
+ * change with the lost one's identity (`ControlIdentity`), as when React draws an entry anew under
+ * a new key, is the same control and no loss: it is given the focus back whether or not the
+ * reader pressed it, and it keeps their press.
+ *
+ * After a press, the focus goes, in this order: to that control drawn anew; else to the control
+ * nearest to where the lost one stood, among those that stay enabled, drawn and in sight and are
+ * not pinned (`PINNED`), looked for first inside the box that scrolls the lost one, Details' body,
+ * and only where that holds none in the rest of the box; else to the box's heading, its first
+ * `h2`.
  *
  * It is a backstop under each site's own hand-on, not a replacement for it. It hears a change
  * through one MutationObserver on the box, and through a `focusout` that names no next element,
@@ -108,6 +124,9 @@ export function useDetailsFocusKeeper(box: RefObject<HTMLElement | null>, active
 function keepFocusIn(root: HTMLElement): () => void {
   // The control inside the box that holds the focus, with its identity as it was when it took it.
   let held: { readonly control: HTMLElement; readonly identity: ControlIdentity } | null = null;
+  // Whether the reader has pressed the held control, or a key on it, since it took the focus: its
+  // loss after that is theirs, and the keeper hands the focus on.
+  let pressed = false;
   // The move the keeper makes a task after the held control was lost: every record heard since,
   // and the timer that makes it.
   let pending: { readonly records: MutationRecord[]; readonly timer: number } | null = null;
@@ -121,13 +140,29 @@ function keepFocusIn(root: HTMLElement): () => void {
       return;
     }
     cancel();
+    // The focus come back to the control that held it, as the window is focused again, has not
+    // moved to another control, so the reader's press on it still stands.
+    if (held?.control !== target) pressed = false;
     held = { control: target, identity: identityOf(target) };
     observer.observe(root, WATCHED);
+  }
+
+  function notePress(event: Event): void {
+    const { target } = event;
+    if (
+      held !== null &&
+      document.activeElement === held.control &&
+      target instanceof Node &&
+      held.control.contains(target)
+    ) {
+      pressed = true;
+    }
   }
 
   function forget(): void {
     cancel();
     held = null;
+    pressed = false;
     observer.disconnect();
   }
 
@@ -193,11 +228,27 @@ function keepFocusIn(root: HTMLElement): () => void {
     if (!drawn(root)) return;
     const removal = removalOf(control, records);
     const stood = placeOf(control, root, removal);
+    const replacement = replacementOf(identity, root, records, stood);
+    const caused = pressed;
     const target =
-      replacementOf(identity, root, records, stood) ??
-      nearestTo(stood, root, scrollerOf(removal?.target ?? control.parentElement, root)) ??
-      headingOf(root);
-    target?.focus({ preventScroll: true });
+      replacement ??
+      (caused
+        ? (nearestTo(stood, root, scrollerOf(removal?.target ?? control.parentElement, root)) ??
+          headingOf(root))
+        : null);
+    if (target === null) {
+      // No press of the reader's took the control away: the focus stays where the browser put
+      // it, on the page's body, and the keeper lets the control go.
+      forget();
+      return;
+    }
+    target.focus({ preventScroll: true });
+    // The control drawn anew is the lost one, so a press the reader made on that still stands.
+    if (target === replacement && held?.control === target) pressed = caused;
+  }
+
+  for (const type of PRESSES) {
+    root.addEventListener(type, notePress, { capture: true, signal: listening.signal });
   }
 
   root.addEventListener("focusin", (event) => note(event.target), { signal: listening.signal });

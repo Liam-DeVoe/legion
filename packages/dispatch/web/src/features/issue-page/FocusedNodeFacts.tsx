@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { type ReactNode, useLayoutEffect, useRef } from "react";
+import { type ReactNode, type SyntheticEvent, useLayoutEffect, useRef } from "react";
 
 import { api, type WriteBounds } from "../../api/client";
 import { whoAmIQuery } from "../../api/queries";
@@ -212,27 +212,51 @@ function ItemControls({
   ];
   const pinControl = useRef<HTMLButtonElement>(null);
   const threadControl = useRef<HTMLButtonElement>(null);
-  // The control of these the focus was last on (`onFocus` below). Accept and Reject go once the
-  // suggestion is decided, a delivery's Retry once a Retry could deliver it twice, and a
-  // failure's Retry once what it sent again is out, each under the reader's own press, and the
-  // focus would fall to the page with them: it goes to the thread's Resolve or Reopen instead,
-  // else to Pin, as Unpin in Pinned hands it on (`IssuePins.tsx`). Pin, Resolve and Reopen, and
-  // the hand-on, stay drawn when pressed, and none of them is disabled.
-  const held = useRef<Element | null>(null);
+  // The control of these the focus is on (`onFocus` below), and whether the reader has pressed it,
+  // or a key on it, since it took the focus (`notePress`). Accept and Reject go once the
+  // suggestion is decided, a delivery's Retry once a Retry could deliver it twice, and a failure's
+  // Retry once what it sent again is out. Where the reader's own press of one takes it away, the
+  // focus would fall to the page with it: it goes to the thread's Resolve or Reopen instead, else
+  // to Pin, as Unpin in Pinned hands it on (`IssuePins.tsx`). Pin, Resolve and Reopen, and the
+  // hand-on, stay drawn when pressed, and none of them is disabled. A control that goes with no
+  // press of the reader's on it - the suggestion decided in another session, a delivery's Retry
+  // whose time ran out, the question answered elsewhere - leaves the focus on the page's body, as
+  // on every page of Dispatch, and nothing here takes it.
+  const held = useRef<{ readonly control: Element; pressed: boolean } | null>(null);
+  const notePress = (event: SyntheticEvent) => {
+    const focused = held.current;
+    if (
+      focused !== null &&
+      event.target instanceof Node &&
+      focused.control.contains(event.target)
+    ) {
+      focused.pressed = true;
+    }
+  };
   useLayoutEffect(() => {
-    if (held.current === null || held.current.isConnected) return;
+    const lost = held.current;
+    if (lost === null || lost.control.isConnected) return;
     held.current = null;
-    if (document.activeElement === null || document.activeElement === document.body) {
+    if (
+      lost.pressed &&
+      (document.activeElement === null || document.activeElement === document.body)
+    ) {
       (threadControl.current ?? pinControl.current)?.focus();
     }
   });
   return (
-    // biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the handler only notes which of these controls the focus is on, so they need no role of their own.
+    // biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the handlers only note which of these controls the focus is on and whether the reader pressed it, so they need no role of their own.
     <div
       className="mt-2 flex min-w-0 flex-col gap-1"
+      onClick={notePress}
       onFocus={(event) => {
-        held.current = event.target;
+        // The focus come back to the control it was on, as the window is focused again, keeps the
+        // reader's press of it.
+        if (held.current?.control !== event.target) {
+          held.current = { control: event.target, pressed: false };
+        }
       }}
+      onKeyDown={notePress}
     >
       <p className="flex flex-wrap items-center gap-2" data-focused-controls="">
         <button

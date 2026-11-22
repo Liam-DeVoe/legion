@@ -616,6 +616,88 @@ test("a first read of the subscribers that failed keeps its line and its Retry, 
   }
 });
 
+// An agent's Unsubscribe goes with its row once the agents are read again. Where the reader
+// pressed it and confirmed, the focus goes on to the next agent's Unsubscribe; where another
+// session unsubscribed the agent, no press of the reader's took the Unsubscribe away, and the focus
+// it held stays on the page's body, as on every page of Dispatch.
+test("an Unsubscribe that goes with its agent hands the focus on only where the reader pressed it", async () => {
+  const tester: Subscriber = { ...SUBSCRIBER, session_id: "tester", title: "Tester" };
+  const reviewer: Subscriber = { ...SUBSCRIBER, session_id: "reviewer", title: "Reviewer" };
+  let subscribed = [SUBSCRIBER, tester, reviewer];
+  const getIssueSubscribers = spyOn(api, "getIssueSubscribers").mockImplementation(
+    async () => subscribed
+  );
+  const unsubscribeIssueSession = spyOn(api, "unsubscribeIssueSession").mockImplementation(
+    async (_key, session) => {
+      subscribed = subscribed.filter((one) => one.session_id !== session);
+    }
+  );
+  const view = renderPeople();
+  try {
+    const subscribers = await screen.findByRole("button", { name: SUBSCRIBERS });
+    await waitFor(() => expect(subscribers.textContent).toBe(`${PROPERTY_LABELS.subscribers}:3`));
+    await userEvent.click(subscribers);
+    const [plannerOff] = await screen.findAllByRole("button", { name: "Unsubscribe" });
+    act(() => plannerOff?.focus());
+
+    // Another session unsubscribes the planner.
+    subscribed = [tester, reviewer];
+    await act(() => view.client.invalidateQueries({ queryKey: ["subscribers", KEY] }));
+    await waitFor(() => expect(subscribers.textContent).toBe(`${PROPERTY_LABELS.subscribers}:2`));
+    expect(plannerOff?.isConnected, "the planner's Unsubscribe stayed").toBe(false);
+    expect(
+      document.activeElement,
+      "another session unsubscribed the agent whose Unsubscribe held the focus, and the focus left the page's body"
+    ).toBe(document.body);
+
+    const [testerOff, reviewerOff] = screen.getAllByRole("button", { name: "Unsubscribe" });
+    if (testerOff === undefined) throw new Error("the tester's Unsubscribe is not drawn");
+    await userEvent.click(testerOff);
+    await userEvent.click(
+      within(screen.getByRole("dialog")).getByRole("button", { name: "Confirm" })
+    );
+    await waitFor(() => expect(subscribers.textContent).toBe(`${PROPERTY_LABELS.subscribers}:1`));
+    expect(unsubscribeIssueSession).toHaveBeenLastCalledWith(KEY, "tester", keyedAttempt);
+    expect(
+      document.activeElement,
+      "the reader's own Unsubscribe went with its agent, and the focus did not go to the next agent's"
+    ).toBe(reviewerOff);
+  } finally {
+    view.unmount();
+    getIssueSubscribers.mockRestore();
+    unsubscribeIssueSession.mockRestore();
+  }
+});
+
+// The subscribers' Retry goes with its line once a read of them answers. Where the reader pressed
+// it, the focus goes to the Subscribers control; where a read that answers on its own - a window
+// focus, an invalidation after a write - takes the line away, no press of the reader's took it,
+// and the focus Retry held stays on the page's body.
+test("the subscribers' Retry taken away by a read the reader did not press for leaves the focus on the page's body", async () => {
+  const getIssueSubscribers = spyOn(api, "getIssueSubscribers")
+    .mockRejectedValueOnce(
+      new ApiError(503, { code: "ENVOY_UNAVAILABLE", error: "envoy listener unreachable" })
+    )
+    .mockResolvedValue([SUBSCRIBER]);
+  const view = renderPeople();
+  try {
+    expect((await screen.findByRole("alert")).textContent).toBe(STATE_LINES.subscribers_unreadable);
+    const retry = screen.getByRole("button", { name: CONTROL_LABELS.retry });
+    act(() => retry.focus());
+
+    await act(() => view.client.invalidateQueries({ queryKey: ["subscribers", KEY] }));
+    await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+    expect(retry.isConnected, "the subscribers' Retry stayed once the read answered").toBe(false);
+    expect(
+      document.activeElement,
+      "a read the reader did not press for took the subscribers' Retry away, and the focus left the page's body"
+    ).toBe(document.body);
+  } finally {
+    view.unmount();
+    getIssueSubscribers.mockRestore();
+  }
+});
+
 // `/issues/<key>/collaborators` opens Details once per arrival at it (`DetailsHistory`), and
 // the collaborators' list with it: a reader who closed the list there and arrives at the same
 // address again - `t o`, or a link to the address they are on - finds it open.
@@ -918,6 +1000,52 @@ test("a keyboard Resolve keeps the focus on its control while its write is out a
     view.unmount();
     listComments.mockRestore();
     resolveComment.mockRestore();
+  }
+});
+
+// Accept and Reject go once the suggestion is decided. The reader's own Accept hands the focus on
+// to the thread's control; a decision made in another session is no press of the reader's, so the
+// focus Accept held stays on the page's body, as on every page of Dispatch.
+test("a suggestion decided in another session leaves the focus Accept held on the page's body", async () => {
+  const suggested = bobsComment("comment-6", {
+    suggestion: { accepted: null, replace_with: "the drafts store" },
+  });
+  const client = readsHeld();
+  client.setQueryData(["comments", KEY], [suggested]);
+  const view = render(
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        <FocusedNodeProvider>
+          <Focus node={commentNode(suggested)} />
+          <DetailsFocusedNode issue={issue} state={undefined} />
+        </FocusedNodeProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  try {
+    const accept = await screen.findByRole("button", { name: CONTROL_LABELS.accept });
+    act(() => accept.focus());
+
+    act(() =>
+      client.setQueryData(
+        ["comments", KEY],
+        [
+          {
+            ...suggested,
+            resolved: true,
+            suggestion: { accepted: true, replace_with: "the drafts store" },
+          },
+        ]
+      )
+    );
+    expect(accept.isConnected, "Accept stayed once the suggestion was decided").toBe(false);
+    expect(screen.getByRole("button", { name: CONTROL_LABELS.reopen_thread })).toBeDefined();
+    expect(
+      document.activeElement,
+      "another session decided the suggestion while the focus was on Accept, and the focus left the page's body"
+    ).toBe(document.body);
+  } finally {
+    view.unmount();
   }
 });
 

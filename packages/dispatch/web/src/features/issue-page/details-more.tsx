@@ -20,7 +20,7 @@ import { useKeymap } from "../shell/keymap";
 import { claimBox, overlaps, ownScrollMark, rewatch, watchedIn } from "../shell/ViewportAnchor";
 import { outlineItemRoute, useAddressFallback, useAddressTarget } from "./address-target";
 import { DetailsSteps } from "./DetailsSteps";
-import { DetailsErrorLine, useSaidFailure } from "./details-error";
+import { DetailsErrorLine, useRetryHandOff, useSaidFailure } from "./details-error";
 import { DETAILS_ROW_ATTRIBUTE, type DetailsRow, useOpenDetailsAt } from "./details-rows";
 import { FocusedNodeFacts } from "./FocusedNodeFacts";
 import { type FocusedNode, useFocusedNode } from "./focused-node";
@@ -86,34 +86,64 @@ export function DetailsPeople({ issue }: DetailsMoreProps): ReactNode {
   const subscribersRow = useRef<HTMLDivElement>(null);
   const subscribersControl = useRef<HTMLButtonElement>(null);
   const collaboratorsControl = useRef<HTMLButtonElement>(null);
-  // The control of the Subscribers row the focus was last on (`onFocus` below), and each agent's
-  // Unsubscribe as the last drawing left them, in the list's order. An Unsubscribe goes with its
-  // agent's row once its write lands, and a Retry with its line once what it sent again has
-  // landed or been read, and the focus would fall to the page with them, so it goes on instead,
-  // as Unpin in Pinned hands it on (`IssuePins.tsx`): from an Unsubscribe to the next agent's,
-  // and from a Retry to the Unsubscribe whose write is out; else to the Subscribers control. The
-  // Confirm dialog gives the focus back to the Unsubscribe it opened from itself (`useDialog`).
+  // Each agent's Unsubscribe as the page draws it now, in the list's order: `SubscribedAgents`
+  // draws one row per agent, in `rows`' order, its Unsubscribe its button.
+  const drawnUnsubscribes = () => [
+    ...(subscribersRow.current?.querySelectorAll<HTMLButtonElement>("li > button") ?? []),
+  ];
+  // A control of the Subscribers row that the reader's own press takes away hands the focus on in
+  // the row rather than let it fall to the page, as Unpin in Pinned hands it on (`IssuePins.tsx`):
+  // an Unsubscribe the reader pressed and confirmed, which goes with its agent's row once its
+  // write lands and the agents are read again, to the next agent's Unsubscribe; a Retry the reader
+  // pressed, which goes with its line once what it sent again has landed or been read, to the
+  // Unsubscribe whose write is out (`useRetryHandOff`); each else to the Subscribers control. A
+  // control that goes with no press of the reader's - an agent another session unsubscribes, a
+  // line a read that answers on its own takes away - leaves the focus on the page's body, as on
+  // every page of Dispatch, and nothing in the row takes it. The Confirm dialog gives the focus
+  // back to the Unsubscribe it opened from itself (`useDialog`).
+  const afterRetry = () => {
+    const writing = subscribers.unsubscribe.isPending ? refused : undefined;
+    return (
+      drawnUnsubscribes().find(
+        (_, index) => writing !== undefined && subscribers.rows[index]?.session_id === writing
+      ) ?? subscribersControl.current
+    );
+  };
+  const readRetry = useRetryHandOff(afterRetry);
+  const writeRetry = useRetryHandOff(afterRetry);
+  // The control of the row the focus was last on (`onFocus` below); each agent's Unsubscribe as
+  // the last drawing left it, with the session it is of; and the session whose Unsubscribe the
+  // reader pressed and confirmed, until that Unsubscribe leaves the page or its write fails, which
+  // took nothing away.
   const held = useRef<Element | null>(null);
-  const unsubscribes = useRef<readonly HTMLButtonElement[]>([]);
+  const unsubscribes = useRef<
+    readonly { readonly control: HTMLButtonElement; readonly session: string | undefined }[]
+  >([]);
+  const unsubscribing = useRef<string | null>(null);
   useLayoutEffect(() => {
     const before = unsubscribes.current;
-    // `SubscribedAgents` draws one row per agent, in `rows`' order, its Unsubscribe its button.
-    const drawn = [
-      ...(subscribersRow.current?.querySelectorAll<HTMLButtonElement>("li > button") ?? []),
-    ];
-    unsubscribes.current = drawn;
-    const gone = held.current;
-    if (gone === null || gone.isConnected) return;
+    unsubscribes.current = drawnUnsubscribes().map((control, index) => ({
+      control,
+      session: subscribers.rows[index]?.session_id,
+    }));
+    const pressed = unsubscribing.current;
+    if (pressed === null) return;
+    if (subscribers.unsubscribe.isError) {
+      unsubscribing.current = null;
+      return;
+    }
+    const at = before.findIndex(({ session }) => session === pressed);
+    const gone = before[at]?.control;
+    if (gone === undefined || gone.isConnected) return;
+    // A press belongs to the Unsubscribe it was made on: once that leaves, with the focus or not,
+    // the press answers no later loss.
+    unsubscribing.current = null;
+    if (held.current !== gone) return;
     held.current = null;
     if (document.activeElement !== null && document.activeElement !== document.body) return;
-    const at = before.indexOf(gone as HTMLButtonElement);
-    const writing = subscribers.unsubscribe.isPending ? refused : undefined;
-    const next =
-      at === -1
-        ? drawn.find(
-            (_, index) => writing !== undefined && subscribers.rows[index]?.session_id === writing
-          )
-        : before.slice(at + 1).find((control) => control.isConnected && !control.disabled);
+    const next = before
+      .slice(at + 1)
+      .find(({ control }) => control.isConnected && !control.disabled)?.control;
     (next ?? subscribersControl.current)?.focus();
   });
   return (
@@ -139,7 +169,10 @@ export function DetailsPeople({ issue }: DetailsMoreProps): ReactNode {
         </button>
         {subscribersOpen ? (
           <SubscribedAgents
-            onUnsubscribe={(sessionId) => subscribers.unsubscribe.mutate(sessionId)}
+            onUnsubscribe={(sessionId) => {
+              unsubscribing.current = sessionId;
+              subscribers.unsubscribe.mutate(sessionId);
+            }}
             ownerLabel={issue.key}
             subscribers={subscribers.rows}
           />
@@ -155,6 +188,7 @@ export function DetailsPeople({ issue }: DetailsMoreProps): ReactNode {
             failure={subscribers.errorUpdateCount}
             message={STATE_LINES.subscribers_unreadable}
             onRetry={subscribers.refetch}
+            {...readRetry}
             retrying={subscribers.fetching}
           />
         ) : null}
@@ -170,6 +204,7 @@ export function DetailsPeople({ issue }: DetailsMoreProps): ReactNode {
                   }
             }
             refused={subscribers.unsubscribe.isPending}
+            {...writeRetry}
           />
         )}
       </WideRow>
