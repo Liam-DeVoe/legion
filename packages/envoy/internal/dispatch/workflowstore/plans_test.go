@@ -755,15 +755,15 @@ func TestProjectPlansTakesThePlanMadeLastThenTheGreatestID(t *testing.T) {
 // the rest default plans, so a rule that took an owner's plan over a default one, before the
 // generation or as a tie of it, finds an owner's plan newer than a plan after it.
 func TestAPlanIsNewerByGenerationThenMadeThenID(t *testing.T) {
-	plans := []madePlan{
-		{plan: Plan{ID: "9c000000-0000-4000-8000-000000000000", Generation: 1, Source: PlanSourceOwner}, made: minute(50)},
-		{plan: Plan{ID: "5c000000-0000-4000-8000-000000000000", Generation: 2, Source: PlanSourceDefault}, made: minute(10)},
-		{plan: Plan{ID: "1c000000-0000-4000-8000-000000000000", Generation: 2, Source: PlanSourceOwner}, made: minute(30)},
-		{plan: Plan{ID: "3c000000-0000-4000-8000-000000000000", Generation: 2, Source: PlanSourceDefault}, made: minute(30)},
-		{plan: Plan{ID: "2c000000-0000-4000-8000-000000000000", Generation: 3, Source: PlanSourceDefault}, made: minute(0)},
+	plans := []MadePlan{
+		{Plan: Plan{ID: "9c000000-0000-4000-8000-000000000000", Generation: 1, Source: PlanSourceOwner}, Made: minute(50)},
+		{Plan: Plan{ID: "5c000000-0000-4000-8000-000000000000", Generation: 2, Source: PlanSourceDefault}, Made: minute(10)},
+		{Plan: Plan{ID: "1c000000-0000-4000-8000-000000000000", Generation: 2, Source: PlanSourceOwner}, Made: minute(30)},
+		{Plan: Plan{ID: "3c000000-0000-4000-8000-000000000000", Generation: 2, Source: PlanSourceDefault}, Made: minute(30)},
+		{Plan: Plan{ID: "2c000000-0000-4000-8000-000000000000", Generation: 3, Source: PlanSourceDefault}, Made: minute(0)},
 	}
-	text := func(plan madePlan) string {
-		return fmt.Sprintf("generation %d made %s id %s source %s", plan.plan.Generation, plan.made.Format(time.RFC3339), plan.plan.ID, plan.plan.Source)
+	text := func(plan MadePlan) string {
+		return fmt.Sprintf("generation %d made %s id %s source %s", plan.Plan.Generation, plan.Made.Format(time.RFC3339), plan.Plan.ID, plan.Plan.Source)
 	}
 	for older := range plans {
 		if !plans[older].newerThan(nil) {
@@ -774,6 +774,27 @@ func TestAPlanIsNewerByGenerationThenMadeThenID(t *testing.T) {
 				t.Errorf("the plan of %s newer than the plan of %s: %t, want %t", text(plans[newer]), text(plans[older]), got, want)
 			}
 		}
+	}
+}
+
+// The read of some issues' plans answers each issue's plans with the moment each node was made,
+// oldest first, and nothing for an issue Legion never ran or one it was not asked about.
+func TestIssuesPlansAnswersEachIssuesPlansOldestFirst(t *testing.T) {
+	pool := storetest.Open(t).Pool
+	second := putPlan(t, pool, defaultPlan(uuid.NewString(), "LEG-1", 2), minute(10))
+	first := putPlan(t, pool, defaultPlan(uuid.NewString(), "LEG-1", 1), minute(20))
+	putPlan(t, pool, defaultPlan(uuid.NewString(), "LEG-2", 1), minute(5))
+	got, err := IssuesPlans(context.Background(), pool, []string{"LEG-1", "LEG-3"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || len(got["LEG-1"]) != 2 {
+		t.Fatalf("the read answered %v, want two plans of LEG-1 and nothing else", got)
+	}
+	if older, newer := got["LEG-1"][0], got["LEG-1"][1]; older.Plan.ID != first.ID || newer.Plan.ID != second.ID ||
+		!older.Made.Equal(minute(20)) || !newer.Made.Equal(minute(10)) {
+		t.Fatalf("the plans of LEG-1 are %s made %s, then %s made %s, want generation 1's, then generation 2's",
+			planText(older.Plan), older.Made, planText(newer.Plan), newer.Made)
 	}
 }
 

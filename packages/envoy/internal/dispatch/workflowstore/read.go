@@ -114,7 +114,7 @@ func ProjectPlans(ctx context.Context, q Queryer, project string, window Window)
 	type gathering struct {
 		issue IssuePlan
 		runs  []Step
-		plan  *madePlan
+		plan  *MadePlan
 	}
 	var issues []gathering
 	for rows.Next() {
@@ -143,7 +143,7 @@ func ProjectPlans(ctx context.Context, q Queryer, project string, window Window)
 			if err != nil {
 				return nil, err
 			}
-			if candidate := (madePlan{plan: plan, made: *made}); candidate.newerThan(last.plan) {
+			if candidate := (MadePlan{Plan: plan, Made: *made}); candidate.newerThan(last.plan) {
 				last.plan = &candidate
 			}
 		}
@@ -156,7 +156,7 @@ func ProjectPlans(ctx context.Context, q Queryer, project string, window Window)
 	for _, gathered := range issues {
 		issue := gathered.issue
 		if gathered.plan != nil {
-			issue.Plan = &gathered.plan.plan
+			issue.Plan = &gathered.plan.Plan
 		}
 		slices.SortFunc(gathered.runs, compareRuns)
 		for _, step := range gathered.runs {
@@ -178,25 +178,72 @@ func ProjectPlans(ctx context.Context, q Queryer, project string, window Window)
 	return finished, nil
 }
 
-// madePlan is a plan with the moment its node was made, which picks between two plans of one
-// generation.
-type madePlan struct {
-	plan Plan
-	made time.Time
+// MadePlan is a plan with the moment its node was made, which is when the run's work started and
+// which picks between two plans of one generation.
+type MadePlan struct {
+	Plan Plan
+	Made time.Time
 }
 
 // newerThan answers whether candidate is newer than held (nil for none): of a higher generation,
 // or of the same generation and made later, or made at the same moment with the greater id, so the
 // read picks one plan whatever order the rows came in.
-func (candidate madePlan) newerThan(held *madePlan) bool {
+func (candidate MadePlan) newerThan(held *MadePlan) bool {
 	if held == nil {
 		return true
 	}
-	if order := cmp.Compare(candidate.plan.Generation, held.plan.Generation); order != 0 {
+	if order := cmp.Compare(candidate.Plan.Generation, held.Plan.Generation); order != 0 {
 		return order > 0
 	}
-	if order := candidate.made.Compare(held.made); order != 0 {
+	if order := candidate.Made.Compare(held.Made); order != 0 {
 		return order > 0
 	}
-	return candidate.plan.ID > held.plan.ID
+	return candidate.Plan.ID > held.Plan.ID
+}
+
+// IssuesPlans answers, by issue, the plan of each run of each issue of keys with the moment its
+// node was made, oldest first in newerThan's order. An issue Legion never ran answers none. It
+// reads the `part_of` tuples into those issues (workflow_tuples_inbound, whose predicate the
+// literal to_kind implies) and joins each to its node row, so it costs their plans alone. The
+// metrics' fallback timeline reads the order of a task's steps from it.
+func IssuesPlans(ctx context.Context, q Queryer, keys []string) (map[string][]MadePlan, error) {
+	rows, err := q.Query(ctx, `
+		select t.to_id, n.id, n.attributes, n.made_at
+		from workflow_tuples t join workflow_nodes n on n.kind = t.from_kind and n.id = t.from_id
+		where t.to_kind = '`+KindIssue+`' and t.to_id = any($1) and t.kind = '`+RelationPartOf+`'
+			and t.from_kind = '`+KindPlan+`' and t.asserted
+	`, keys)
+	if err != nil {
+		return nil, fmt.Errorf("read the plans of %d issues: %w", len(keys), err)
+	}
+	defer rows.Close()
+	plans := map[string][]MadePlan{}
+	for rows.Next() {
+		var issue, id string
+		var attributes []byte
+		var made time.Time
+		if err := rows.Scan(&issue, &id, &attributes, &made); err != nil {
+			return nil, fmt.Errorf("read the plans of %d issues: %w", len(keys), err)
+		}
+		plan, err := planFrom(id, attributes)
+		if err != nil {
+			return nil, err
+		}
+		plans[issue] = append(plans[issue], MadePlan{Plan: plan, Made: made.UTC()})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the plans of %d issues: %w", len(keys), err)
+	}
+	for _, held := range plans {
+		slices.SortFunc(held, func(a, b MadePlan) int {
+			switch {
+			case b.newerThan(&a):
+				return -1
+			case a.newerThan(&b):
+				return 1
+			}
+			return 0
+		})
+	}
+	return plans, nil
 }
