@@ -112,11 +112,12 @@ ARG GH_TOOL=gh@2.98.0
 # digest fails the tools stage's sha256sum check in that pull request's own worker-image build.
 # Each was read on 2026-11-21 as the `digest` GitHub's API gives the release asset
 # (`gh api repos/<owner>/<repo>/releases/tags/<tag> --jq '.assets[]'`), and each equals the sha256
-# of the archive downloaded from the address the tools stage reads. gh's is also its line in the
+# of the archive downloaded from the address the tools stage reads (the Oh My Pi digest again on
+# 2026-11-22, for the pin 18.18.6-sami.20261120-192530). gh's is also its line in the
 # release's gh_<version>_checksums.txt, and `gh attestation verify <archive> --repo cli/cli`
 # verified that archive against cli/cli's deployment.yml workflow; the Oh My Pi and jj releases
 # carry no attestation (the same command answers 404 for both). A bump repeats those reads.
-ARG OMP_SHA256=9fd84e4ff44cddef87f323100e5cb30ca235284033c8a05192f90c69481fea68
+ARG OMP_SHA256=be73ef0497702a4c057828809ce822355cf3e3c5b51a2531f80f55e0b5d39638
 ARG JJ_SHA256=19f6ffdecb4b3eb9e15bdeb3248f891c9e2f26fffe816c2771171243f96e01db
 ARG GH_SHA256=3b8ac6b30336802fc1a858d7c084e11cdf24ac1a761ca90b68022d7d729208de
 # The pin of the shared public leak check: the tag of the repository a deployment names in its
