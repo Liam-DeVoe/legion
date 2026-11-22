@@ -1237,8 +1237,8 @@ const (
 //     of the two reads that confirm a conflict (R2).
 //   - The fact is a push to the base, and the issue stands in testing, reviewing, accepting, retro
 //     or merging. GitHub sends no event of the pull request while it computes whether the head
-//     still merges into the moved base. Past the review the merge is next
-//     (record.ConflictMergeNext), so a conflict there is acted on at once (R0). In testing and
+//     still merges into the moved base. In accepting, retro and merging
+//     (record.ConflictMergeNext) a conflict is acted on at once (R0). In testing and
 //     reviewing the record otherwise keeps the state the read before the push left: a record read
 //     `blocked` while GitHub answered DIRTY, because no read followed the base push (INFRA-4315,
 //     dispatch://INFRA-4374/spec#b-r4). A base push reads nothing for an issue in implementing or
@@ -1266,9 +1266,9 @@ func MergeStateReadOwed(issue record.Issue, fact MergeStateFact) bool {
 // and the conflict is recorded and nothing else is done. The reasons are read in this order, and
 // the first that holds is the answer:
 //
-//   - record.ConflictMergeNext: the issue stands past its review, in accepting, retro or merging,
-//     or is held from one of them (record.PastReview). Its next step is the merge, and GitHub
-//     merges no head that conflicts with its base.
+//   - record.ConflictMergeNext: the issue stands in accepting, retro or merging,
+//     or is held from one of them (record.PastReview). In the default steps the merge comes next
+//     there, and GitHub merges no head that conflicts with its base.
 //   - record.ConflictRulesUnread: the daemon could not read the base's rules (rules nil, or
 //     rules.Unread set). It cannot tell whether every check the base requires passed, so it acts
 //     at once, which is never later than a daemon that acted on every conflicting read. GitHub's
@@ -1286,7 +1286,7 @@ func MergeStateReadOwed(issue record.Issue, fact MergeStateFact) bool {
 //
 // Otherwise every check the base requires is green on the head and no rule requires the head to
 // be current: the tester and the reviewer go on at that head, and the merge forward waits for the
-// step that needs it, the issue's move past its review, where record.ConflictMergeNext holds.
+// step that needs it, the issue's move into accepting, retro or merging, where record.ConflictMergeNext holds.
 //
 // It is pure, so the engine, which acts on the answer (workflow's mergeability and mergeForward),
 // and any reader of the record decide alike. green is the caller's, so the engine, which logs the

@@ -18,7 +18,7 @@ import (
 const hooksKey = "hooks"
 
 // HookEventWorkBack is the one event that ships: the work of an issue went back a phase, which
-// the daemon counts by its `<from>-<to>` pair (phase.BackwardPairs).
+// the daemon counts by its `<from>-<to>` pair (phase.MovePairs).
 const HookEventWorkBack = "work_back"
 
 // HookEvents are the events a hook's `on` may name: the daemon's own set of events, which the

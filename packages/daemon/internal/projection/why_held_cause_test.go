@@ -193,7 +193,7 @@ func TestEveryEntryOfTheHeldSentenceTableIsServedThroughTheWholePass(t *testing.
 			"The daemon has accepted the head of LEGION-101 that the last step of its task passed, and LEGION-101 stands above it, so nothing of its own work starts before that issue closes."},
 		{record.HeldChildrenBeforeRetro, api.WhyUnlisted}: {childrenBeforeRetro,
 			api.HeldIssue{Issue: "LEGION-100", Reason: record.HeldChildrenBeforeRetro, HeldBy: []string{"LEGION-101"}},
-			"It passed the last step of its task, and its plan has no acceptance step, so the daemon holds it before its retro while these issues beneath it are still in the workflow: LEGION-101. Its retro does not start while one of them is."},
+			"It passed the last step of its task, which is not the owner's acceptance, so the daemon holds it before its retro while these issues beneath it are still in the workflow: LEGION-101. Its retro does not start while one of them is."},
 		{record.HeldTaskStopped, api.WhyUnlisted}: {taskStopped,
 			api.HeldIssue{Issue: "LEGION-100", Reason: record.HeldTaskStopped},
 			"Its task was stopped, by its owner or by a failed step that had no step to return to, so no step of the task runs until a later version of its plan changes the task (register_plan) or, on a root, a person sets it todo; a retry of its hold starts none."},

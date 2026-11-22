@@ -587,12 +587,12 @@ type Admission struct {
 	Cap int `json:"cap"`
 	// Active is every issue holding an admission slot, a child as much as a root: the cap counts
 	// the issues the daemon has started rather than the trees (dispatch://INFRA-980), and an
-	// issue holds one of the cap's slots from the moment the daemon starts it until its work is
-	// past its review — accepting, retro and merging hold none — or until it is done or
-	// Dispatch takes it out of the workflow, except while it waits on another issue before that
-	// point (record.KeepsSlot, blockers.waitsOf). So one tree with three started children holds
+	// issue holds one of the cap's slots while it stands in a phase that keeps one, from the moment
+	// the daemon starts it until it is done or Dispatch takes it out of the workflow — accepting,
+	// retro and merging hold none, and a step after accepting whose phase keeps one waits for one
+	// again — except while it waits on another issue (record.KeepsSlot, blockers.waitsOf). So one tree with three started children holds
 	// three of these, and an issue at work, one held and one waiting on a person are each here,
-	// while one past its review — a merger at work in merging, one in merging whose start a
+	// while one in accepting, retro or merging — a merger at work in merging, one in merging whose start a
 	// closed design gate holds (the outbox's mergerWaitsForTheDesignGate) and a merged root
 	// standing in merging while the rest of its tree runs — and one whose phase has left the
 	// workflow, done or a status Dispatch took it out of the workflow with, are in neither list.
@@ -629,7 +629,7 @@ type Admission struct {
 	// `waiting` and this one has every issue of the workflow and what each is doing — so the
 	// list names no issue `active` or `waiting` names. `heldBy` is absent where no issue holds
 	// the one that waits: a root whose Legion label is off, a task that was stopped
-	// (`task_stopped`), an issue none of the other words is true of, or an issue past its review
+	// (`task_stopped`), an issue none of the other words is true of, or an issue in accepting, retro or merging
 	// under `at_work`, which no other issue holds (record.HeldAtWork says which issues read it).
 	// Never null; empty when every issue of the workflow runs or waits in the line.
 	Held []HeldIssue `json:"held,omitzero"`
@@ -857,7 +857,7 @@ type Issue struct {
 	// TreeMovedAt is when the daemon last saw anything of this issue's tree move and QuietHours
 	// is how long that tree has been still at this read, in hours (contract 111). The two are one
 	// measure read at one instant (record.TreeQuiet, through projection's quietTrees), so every
-	// issue of one tree carries the same pair: an issue past its review, which holds no slot, and
+	// issue of one tree carries the same pair: an issue in accepting, retro or merging, which holds no slot, and
 	// a done child recorded under a live tree each answer their tree's quiet time, because what
 	// has stopped is the tree and not the issue a reader happens to hold. Both are absent
 	// together for an issue whose tree is not live — one whose tree has left the workflow, and
@@ -1234,7 +1234,7 @@ type PhaseView struct {
 	Pass          int                `json:"pass"`
 	Rounds        int                `json:"rounds"`
 	// BackwardMoves is how many times the issue's work has gone back by each kind of move, keyed
-	// "<from>-<to>" as phase.BackwardPairs() writes the pairs: "testing-implementing",
+	// "<from>-<to>" as phase.MovePairs() writes the pairs: "testing-implementing",
 	// "reviewing-implementing", "merging-implementing" and the rest. It is absent, and never
 	// `{}`, for an issue that has had no move back, so a reader tells an issue that carries no
 	// counts at all from one whose counts the daemon holds. Rounds beside it keeps its meaning
