@@ -370,6 +370,42 @@ func TestAStepsEntryRisesAboveEveryRowOfItsRole(t *testing.T) {
 	}
 }
 
+// A completion counts only for the step its turn was given. In `implementer:a reviewer
+// implementer:a`, the reviewer's approval enters step 3 by a forward move at the head step 1 left,
+// and key a's turn of step 1, still open on step 1's entry, completes at the pull request's head
+// with a record of its own. Its entry is behind step 3's and is step 1's, another step of the role,
+// so it is refused HANDOFF_STALE_ENTRY, step 3's row records nothing and the task stays at step 3.
+// Before, a completion behind its row at the head the record holds was taken unless a move back
+// raised the row's entry, so the turn of step 1 was recorded as step 3's and moved the task on to
+// its retro before step 3's task reached the agent.
+func TestATurnOfARolesEarlierStepDoesNotCompleteItsLaterStep(t *testing.T) {
+	pool := migratedPool(t)
+	engine := textEngine()
+	tickingClock(engine)
+	root := stepRoot(t, pool, phase.Admitted)
+	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: root.Key, Repo: "sjawhar/legion", Number: 42, Branch: "legion/" + root.Key,
+		HeadSHA: "head", Failing: []string{}})
+	seedStepsPlan(t, pool, root.Key, root.Generation, "implementer:a", "reviewer", "implementer:a")
+	implementer := agentToken(t, "implementer")
+	move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
+	served := rolesRows(t, pool, engine, root.Key, claim.RoleImplementer)[1].Entry
+	completesAs(t, pool, engine, claim.RoleImplementer, implementer, "implement", 1)
+	completesAs(t, pool, engine, claim.RoleReviewer, agentToken(t, "reviewer"), "review", 1)
+	move(t, pool, engine, root.Key, TriggerReviewApproved, record.TaskPlace{}, record.PhaseRow{})
+	assertWalksAt(t, pool, engine, root.Key, phase.Implementing, stepPlace(3))
+	result := applyFacts(t, pool, engine)("implementer-step-1-turn", intake.HandoffComplete{Generation: 1, Issue: root.Key, Role: claim.RoleImplementer,
+		Claim: implementer, Entry: served, Summary: "done", Commit: "head", HandoffRecord: "implement-9", HandoffVersion: 9})
+	third := rolesRows(t, pool, engine, root.Key, claim.RoleImplementer)[3]
+	if result.Refusal == nil || result.Refusal.Code != intake.StaleEntryCode {
+		t.Fatalf("the turn of step 1 completing at entry %d and the head after step 3 was entered = %+v, want %s; step 3's row names the record %q",
+			served, result.Refusal, intake.StaleEntryCode, third.HandoffRecord)
+	}
+	if third.HandoffRecord != "" || third.Completed() {
+		t.Fatalf("step 3's row after the refusal = %+v, want no report", third)
+	}
+	assertWalksAt(t, pool, engine, root.Key, phase.Implementing, stepPlace(3))
+}
+
 // completesAs is completes under the claim token, the agent's own, as the route names the claim
 // whose grant reported, which the completion writes on the role's row.
 func completesAs(t *testing.T, pool *pgxpool.Pool, engine *Engine, role claim.Role, token claim.Token, word string, n int) {

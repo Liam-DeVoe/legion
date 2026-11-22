@@ -1080,6 +1080,10 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 	if err != nil {
 		return intake.Result{}, err
 	}
+	rows, err := e.store.Phases(ctx, tx, fact.Issue)
+	if err != nil {
+		return intake.Result{}, err
+	}
 	pr, err := e.store.PullRequest(ctx, tx, fact.Issue)
 	if err != nil {
 		return intake.Result{}, err
@@ -1095,7 +1099,8 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 	// this transaction read, before anything is written, and its refusal is left unspent, as the
 	// route's writes nothing, so the same report applies once it is the work of the entry that
 	// stands.
-	if refusal := intake.EntryFence(*issue, fact.Role, fact.Entry, row.Entry, row.EntryMovedBack, fact.Commit, pr, nil); refusal != nil {
+	if refusal := intake.EntryFence(*issue, fact.Role, fact.Entry, row.Entry, row.EntryMovedBack, record.OtherStepsEntry(rows, row), fact.Commit, pr,
+		nil); refusal != nil {
 		return intake.Result{Refusal: refusal, Unspent: true}, nil
 	}
 	// A completion of the phase the issue stands in that is at the head a merge forward replaced

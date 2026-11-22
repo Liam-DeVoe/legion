@@ -2769,6 +2769,23 @@ func RaisedLater(at time.Time, entry int64, thanAt time.Time, than int64) bool {
 	return entry > than
 }
 
+// OtherStepsEntry is the highest entry a row of row's role holds other than row, the row of
+// another step of that role, and 0 where the role has no other row: a role at one step, and every
+// role of an issue with no plan rows. A step's start raises its entry above every row of its role
+// (workflow's enter), so an entry at or below this one is of another step's run, or of an earlier
+// run of row's own step that the task has since left for another step of the role. The entry fence
+// of a completion reads it (intake.EntryFence), so the same head is never taken as the same work
+// across two steps that ask for different work.
+func OtherStepsEntry(rows []PhaseRow, row PhaseRow) int64 {
+	var entry int64
+	for _, other := range rows {
+		if other.Role == row.Role && (other.StepTask != row.StepTask || other.StepPlace != row.StepPlace) && other.Entry > entry {
+			entry = other.Entry
+		}
+	}
+	return entry
+}
+
 // PhaseRowAt is role's row among rows where the task of an issue with plan rows stands: task, at
 // at, whose steps are steps. A role can stand at two steps of a task, one agent doing both, and
 // each run of a step keeps a row of its own (StepTask, StepPlace), so the row read is the row of
