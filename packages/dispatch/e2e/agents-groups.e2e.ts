@@ -582,11 +582,11 @@ test("an agent row stands at the height recorded for its width @phone", async ({
 });
 
 // The broadcast composer and Pending changes, two layers of the foot of the screen
-// (`web/src/hooks/useFootInset.ts`), "so none lies over another". Scrolled to its end, the page
-// leaves the composer resting above the section of ended sessions, in the upper half of a short
-// window, with room under it. At each of four such windows the panel's box and the composer's
-// must not meet: the panel's corner then lay over the composer's message box, its mode and Send,
-// or its recipients.
+// (`web/src/hooks/useFootInset.ts`), "so no float lies over a foot element". Scrolled to its
+// end, the page leaves the composer resting above the section of ended sessions, in the upper
+// half of a short window, with room under it. At each of four such windows the panel's box and
+// the composer's must not meet: the panel's corner then lay over the composer's message box, its
+// mode and Send, or its recipients.
 test("scrolled to its end in a short window, the Agents page's broadcast composer and Pending changes do not meet", async ({
   browser,
 }) => {
@@ -634,8 +634,13 @@ test("scrolled to its end in a short window, the Agents page's broadcast compose
       { width: 360, height: 640 },
     ]) {
       await page.setViewportSize(size);
-      await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
-      await expect(ended).toBeInViewport();
+      // The list sets its height from the rows it measures, a frame or more after a resize, and
+      // the page's end can grow once a float's band counts: a scroll made before that stops
+      // short. So the scroll is made again until the ended sessions show.
+      await expect(async () => {
+        await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+        await expect(ended).toBeInViewport({ timeout: 1_000 });
+      }).toPass({ timeout: 15_000 });
       await expect
         .poll(
           async () => {
