@@ -940,11 +940,13 @@ func (t *implementTokens) Token(ctx context.Context, repo ghrepo.Repository) (st
 // repository under githubAPI, GitHub's REST root ("" is https://api.github.com), which the Sandbox
 // runtime pushes to each pod's launcher before any role of the pod starts
 // (sandbox.Options.LeakCheck). Where apps drops an owner's leases (appauth.Forgetter), a read
-// GitHub answers 401 drops the lease leakCheckToken mints, so the next read mints a new one. A
-// deployment that names no check, and a daemon with no GitHub Apps, have no reader: the answer is
-// then the nil interface, never a nil *leakguard.Source inside one. The runtime reads the first as
-// a deployment that runs no check (sandbox.Options.LeakCheckSetting) and pushes nothing, and the
-// second, under a configured setting, as the daemon holding no credential to read it with.
+// GitHub answers 401 drops the lease leakCheckToken mints, the owner's read lease alone
+// (ForgetRead), so the next read mints a new one and every role's write lease of the owner is
+// kept. A deployment that names no check, and a daemon with no GitHub Apps, have no reader: the
+// answer is then the nil interface, never a nil *leakguard.Source inside one. The runtime reads
+// the first as a deployment that runs no check (sandbox.Options.LeakCheckSetting) and pushes
+// nothing, and the second, under a configured setting, as the daemon holding no credential to
+// read it with.
 func leakCheckSource(apps appauth.Tokens, githubAPI string, setting leakguard.Setting) sandbox.LeakCheckReader {
 	if apps == nil || !setting.Configured() {
 		return nil
@@ -952,7 +954,7 @@ func leakCheckSource(apps appauth.Tokens, githubAPI string, setting leakguard.Se
 	repository := setting.Repository
 	source := &leakguard.Source{Repository: repository, Token: leakCheckToken(apps, repository), API: githubAPI}
 	if forgetter, ok := apps.(appauth.Forgetter); ok {
-		source.Forget = func() { forgetter.Forget(appauth.SetImplementer, repository.Owner()) }
+		source.Forget = func() { forgetter.ForgetRead(repository.Owner()) }
 	}
 	return source
 }

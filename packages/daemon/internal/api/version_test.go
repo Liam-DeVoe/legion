@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -160,4 +161,67 @@ func TestSupportedContractsAreTheNumberedEntriesFromTheFloorUp(t *testing.T) {
 			t.Errorf("SupportedContracts names %d and version.go has no entry for it", contract)
 		}
 	}
+}
+
+// ReviewerVerdictContract is the contract whose entry in version.go added the reviewer's verdict,
+// POST /legion/v1/review-verdict among it: a reviewer's plugin at it or above is held to approve
+// and changes, and one below it has its pass read as approve and its fail as changes
+// (reviewerVerdictOf). So the constant moves with that entry at every renumber. One left below the
+// entry would read a plugin between the two numbers, which knows the tester's words alone, as one
+// that knows the reviewer's, and refuse its pass. The number is read from the entry rather than
+// pinned, as OwnerPlanContract's is, because a renumber moves an entry and its pin together. And
+// the daemon's own contract has an entry, so a renumber that moves DaemonAPIVersion alone, and
+// leaves the entry and the constant behind, fails here too.
+func TestTheReviewerVerdictContractMovesWithItsEntry(t *testing.T) {
+	added := entryNaming(t, "POST /legion/v1/review-verdict")
+	if ReviewerVerdictContract != added {
+		t.Fatalf("ReviewerVerdictContract = %d, want %d, the contract whose entry in version.go added POST /legion/v1/review-verdict",
+			ReviewerVerdictContract, added)
+	}
+	if !numberedEntries(t)[DaemonAPIVersion] {
+		t.Fatalf("DaemonAPIVersion = %d, and version.go has no entry for it: a renumber moved the daemon's contract and left its entry, and ReviewerVerdictContract %d, behind",
+			DaemonAPIVersion, ReviewerVerdictContract)
+	}
+	if ReviewerVerdictContract > DaemonAPIVersion {
+		t.Fatalf("ReviewerVerdictContract = %d, above DaemonAPIVersion %d: no reviewer could send its verdict",
+			ReviewerVerdictContract, DaemonAPIVersion)
+	}
+}
+
+// entryNaming is the lowest number of an entry of version.go whose text holds text: the entry
+// that added it, since an entry that names it again is a later one. An entry's text runs from its
+// header (entryHeader) to the next one, and the last entry's to the declaration of
+// DaemonAPIVersion.
+func entryNaming(t *testing.T, text string) int {
+	t.Helper()
+	raw, err := os.ReadFile("version.go")
+	if err != nil {
+		t.Fatalf("read version.go: %v", err)
+	}
+	source, _, declared := strings.Cut(string(raw), "\nconst DaemonAPIVersion")
+	if !declared {
+		t.Fatal("version.go declares no DaemonAPIVersion: the text this test cuts the last entry at no longer matches")
+	}
+	headers := entryHeader.FindAllStringSubmatchIndex(source, -1)
+	lowest := 0
+	for i, header := range headers {
+		end := len(source)
+		if i+1 < len(headers) {
+			end = headers[i+1][0]
+		}
+		if !strings.Contains(source[header[0]:end], text) {
+			continue
+		}
+		number, err := strconv.Atoi(source[header[2]:header[3]])
+		if err != nil {
+			t.Fatalf("entry header %q: %v", source[header[0]:header[1]], err)
+		}
+		if lowest == 0 || number < lowest {
+			lowest = number
+		}
+	}
+	if lowest == 0 {
+		t.Fatalf("no entry of version.go names %q: the entry this test reads was reworded or removed", text)
+	}
+	return lowest
 }

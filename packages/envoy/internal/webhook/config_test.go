@@ -58,11 +58,6 @@ func TestLoadWebhookConfig(t *testing.T) {
 			wantErr: `ENVOY_VERDICT_APP_ID="app123"`,
 		},
 		{
-			name:    "a former app ID that is no number → error naming the former name",
-			env:     map[string]string{"ENVOY_WEBHOOKS": "github", "ENVOY_GITHUB_WEBHOOK_SECRET": "s", "ENVOY_REVIEWER_APP_ID": "0"},
-			wantErr: `ENVOY_REVIEWER_APP_ID="0"`,
-		},
-		{
 			name: "github verdict app ID is trimmed",
 			env: map[string]string{
 				"ENVOY_WEBHOOKS":              "github",
@@ -71,23 +66,6 @@ func TestLoadWebhookConfig(t *testing.T) {
 			},
 			wantGitHub:       true,
 			wantVerdictAppID: "12345",
-		},
-		{
-			name:             "the former ENVOY_REVIEWER_APP_ID is read while ENVOY_VERDICT_APP_ID is unset",
-			env:              map[string]string{"ENVOY_WEBHOOKS": "github", "ENVOY_GITHUB_WEBHOOK_SECRET": "s", "ENVOY_REVIEWER_APP_ID": " 5341243 "},
-			wantGitHub:       true,
-			wantVerdictAppID: "5341243",
-		},
-		{
-			name: "ENVOY_VERDICT_APP_ID wins over the former name",
-			env: map[string]string{
-				"ENVOY_WEBHOOKS":              "github",
-				"ENVOY_GITHUB_WEBHOOK_SECRET": "s",
-				"ENVOY_VERDICT_APP_ID":        "5341240",
-				"ENVOY_REVIEWER_APP_ID":       "5341243",
-			},
-			wantGitHub:       true,
-			wantVerdictAppID: "5341240",
 		},
 		{
 			name:    "github enabled without secret → error",
@@ -186,6 +164,61 @@ func TestLoadWebhookConfig(t *testing.T) {
 				t.Errorf("GhostWispr enabled = %v, want %v", cfg.GhostWispr != nil, tc.wantGhostW)
 			}
 			if cfg.GitHub != nil && cfg.GitHub.VerdictAppID != tc.wantVerdictAppID {
+				t.Errorf("GitHub.VerdictAppID = %q, want %q", cfg.GitHub.VerdictAppID, tc.wantVerdictAppID)
+			}
+		})
+	}
+}
+
+// The listener reads the verdict App's id from ENVOY_VERDICT_APP_ID, and from the setting a
+// deployment configured before it, ENVOY_REVIEWER_APP_ID, while the new one is unset: so a release
+// that reads the new name can be pinned under the configuration of the release before it. When
+// both are set the new name wins, and a refusal names the setting the value came from. Each case
+// loads the listener's configuration through its own loader, LoadWebhookConfig.
+func TestOldVerdictAppSettingIsRead(t *testing.T) {
+	for _, tc := range []struct {
+		name             string
+		env              map[string]string
+		wantVerdictAppID string
+		wantErr          string // "" for no error, else text the error holds
+	}{
+		{
+			name:             "the former ENVOY_REVIEWER_APP_ID is read while ENVOY_VERDICT_APP_ID is unset",
+			env:              map[string]string{"ENVOY_REVIEWER_APP_ID": " 5341243 "},
+			wantVerdictAppID: "5341243",
+		},
+		{
+			name:             "ENVOY_VERDICT_APP_ID wins over the former name",
+			env:              map[string]string{"ENVOY_VERDICT_APP_ID": "5341240", "ENVOY_REVIEWER_APP_ID": "5341243"},
+			wantVerdictAppID: "5341240",
+		},
+		{
+			name:    "a former app ID that is no number → error naming the former name",
+			env:     map[string]string{"ENVOY_REVIEWER_APP_ID": "0"},
+			wantErr: `ENVOY_REVIEWER_APP_ID="0"`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			clearEnvoyEnvironment(t)
+			t.Setenv("ENVOY_WEBHOOKS", "github")
+			t.Setenv("ENVOY_GITHUB_WEBHOOK_SECRET", "s")
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+			cfg, err := LoadWebhookConfig()
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("err = %v, want an error holding %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if cfg.GitHub == nil {
+				t.Fatalf("GitHub is not enabled, want it enabled with the verdict App %q", tc.wantVerdictAppID)
+			}
+			if cfg.GitHub.VerdictAppID != tc.wantVerdictAppID {
 				t.Errorf("GitHub.VerdictAppID = %q, want %q", cfg.GitHub.VerdictAppID, tc.wantVerdictAppID)
 			}
 		})
