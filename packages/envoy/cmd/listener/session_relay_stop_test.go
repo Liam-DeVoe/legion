@@ -22,7 +22,7 @@ import (
 func stopRig(t *testing.T, prefix string, setup func(*sessionRelays)) (*relayRig, *testnats.Server, string, *flushEnds) {
 	t.Helper()
 	srv, url := testnats.Start(t)
-	rig := newRelayRigUnownedOn(t, url, relayPauseFirst, relayPauseMax)
+	rig := newRelayRigUnownedOn(t, url, relayPauseFirst, relayPauseMax, nil)
 	// The receipt wait is longer than any row, so the relay cannot pause, and so forget the frame
 	// it holds, before the stop.
 	rig.relays.receiptWait = 10 * relayReceiptWait
