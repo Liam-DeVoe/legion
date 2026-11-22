@@ -443,17 +443,12 @@ func (s *server) answerHeldReplyAgain(w http.ResponseWriter, r *http.Request, ro
 	write := replay.reviewed(reviewer.Kind(row.kind))
 	var dry *heldDryRun
 	if row.dependsOn == "" {
-		ran, err := s.dryRunHeld(write, row.actor, row.id)
-		if err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
-		if own := ran.answered; own != nil {
-			own.writeTo(w)
+		ran, done := s.heldDryRunOrAnswer(w, write, row.actor, row.id)
+		if done {
 			return
 		}
 		ran.askWaitingOn = ""
-		dry = &ran
+		dry = ran
 	}
 	answer := heldAnswerOf(write, row.id, row.actor, row.writtenAt,
 		heldState{State: row.state, Deadline: row.deadline, WaitsOn: row.dependsOn}, dry, wantsDisplayTrees(r), nil)

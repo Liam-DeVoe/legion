@@ -435,6 +435,51 @@ func TestAHeldOutRunRefusedOnItsOwnFilesClaimsNothing(t *testing.T) {
 	}
 }
 
+// Only a held-out run reads the gateway's key before it scores, so that its claim follows the
+// read. A development run reads the key on each model call alone: one whose answers and grades
+// all come from --grades-from calls no model, and scores with a key file it cannot read. A
+// held-out run of the same kind is refused on that file before its claim and writes no line to
+// the exposure log; with the key it scores, with no call, and claims.
+func TestOnlyAHeldOutRunReadsTheGatewayKeyBeforeItScores(t *testing.T) {
+	build, sessions := writeFixture(t)
+	stand := modeltest.New(t, graderRules(t)...)
+	key, noKey := keyFile(t), filepath.Join(t.TempDir(), "no-key")
+	score := func(out string, extra ...string) (int, string) {
+		t.Helper()
+		args := append([]string{"score", "--cases", build, "--sessions", sessions, "--out", out, "--gateway", stand.URL, "--draws", "50"}, extra...)
+		code, _, stderr := runHarness(args...)
+		return code, stderr
+	}
+	development, heldOut := t.TempDir(), t.TempDir()
+	if code, stderr := score(development, "--gateway-key-file", key, "--exposure-log", filepath.Join(t.TempDir(), "exposure.log")); code != 0 {
+		t.Fatalf("the development run = %d:\n%s", code, stderr)
+	}
+	held := []string{"--part", PartHeldOut, "--commit", "c0ffee"}
+	if code, stderr := score(heldOut, append(held, "--gateway-key-file", key, "--exposure-log", filepath.Join(t.TempDir(), "exposure.log"))...); code != 0 {
+		t.Fatalf("the held-out run = %d:\n%s", code, stderr)
+	}
+	calls := len(stand.Requests())
+
+	if code, stderr := score(t.TempDir(), "--grades-from", development, "--gateway-key-file", noKey, "--exposure-log", filepath.Join(t.TempDir(), "exposure.log")); code != 0 || len(stand.Requests()) != calls {
+		t.Errorf("a development run of the development run's grades, with a key file it cannot read = %d after %d calls, want 0 after none:\n%s", code, len(stand.Requests())-calls, stderr)
+	}
+	exposure := filepath.Join(t.TempDir(), "exposure.log")
+	regrade := append(held, "--grades-from", heldOut, "--exposure-log", exposure)
+	code, stderr := score(t.TempDir(), append(regrade, "--gateway-key-file", noKey)...)
+	if code != 1 || !strings.Contains(stderr, "the gateway key file") || len(stand.Requests()) != calls {
+		t.Errorf("a held-out run of the held-out run's grades, with a key file it cannot read = %d after %d calls, want 1 and the key file's refusal:\n%s", code, len(stand.Requests())-calls, stderr)
+	}
+	if logged, err := ReadExposures(exposure); err != nil || len(logged) != 0 {
+		t.Errorf("the held-out run refused on its key file wrote the exposure log: %+v (%v)", logged, err)
+	}
+	if code, stderr := score(t.TempDir(), append(regrade, "--gateway-key-file", key)...); code != 0 || len(stand.Requests()) != calls {
+		t.Errorf("the held-out run of the held-out run's grades, with the key = %d after %d calls, want 0 after none:\n%s", code, len(stand.Requests())-calls, stderr)
+	}
+	if logged, err := ReadExposures(exposure); err != nil || len(logged) != 1 {
+		t.Errorf("the held-out run with the key claimed %+v (%v), want one line", logged, err)
+	}
+}
+
 // The log holds one run of each cell at a commit: a second run of a cell needs a reason, a cell
 // of its own at the same commit does not, and a run in the directory of the run of its very cells
 // continues that run while it has a case left.

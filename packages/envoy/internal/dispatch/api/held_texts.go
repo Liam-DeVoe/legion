@@ -316,16 +316,11 @@ func (s *server) holdWrite(w http.ResponseWriter, r *http.Request, actor model.A
 	id := uuid.NewString()
 	var dry *heldDryRun
 	if of.parent == nil {
-		ran, err := s.dryRunHeld(write, actor, id)
-		if err != nil {
-			s.writeHandlerError(w, err)
+		ran, done := s.heldDryRunOrAnswer(w, write, actor, id)
+		if done {
 			return
 		}
-		if own := ran.answered; own != nil {
-			own.writeTo(w)
-			return
-		}
-		dry = &ran
+		dry = ran
 	}
 	advice := s.heldAdvice(r, write, actor, dry, of.parent)
 	answered := write
@@ -611,6 +606,22 @@ type heldDryRun struct {
 // off (the reply routes' finishRepeat), so nothing is held for it.
 func (s *server) dryRunHeld(write reviewedWrite, actor model.Actor, id string) (heldDryRun, error) {
 	return write.request.dryRun(s, s.postContext(), actor, id, &heldPost{id: id, dryRun: true})
+}
+
+// heldDryRunOrAnswer runs write's dry run as actor's under id (dryRunHeld) and answers w where the
+// dry run ends the write: its error, or the answer its route gave in place of a pass (answered).
+// done says it answered w, and the caller writes nothing more; otherwise it answers the dry run.
+func (s *server) heldDryRunOrAnswer(w http.ResponseWriter, write reviewedWrite, actor model.Actor, id string) (dry *heldDryRun, done bool) {
+	ran, err := s.dryRunHeld(write, actor, id)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return nil, true
+	}
+	if own := ran.answered; own != nil {
+		own.writeTo(w)
+		return nil, true
+	}
+	return &ran, false
 }
 
 // errHeldNotPosting is a post that found its held text no longer to be posted: another process

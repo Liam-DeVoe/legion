@@ -375,5 +375,8 @@ func requestRunes(request ChatRequest) int {
 // (cmd/dispatch refuseQuotaNoCallFits).
 func LeastCallRunes() int {
 	tool := (&answerRun{}).searchTool()
-	return utf8.RuneCountInString(answerRules) + utf8.RuneCountInString(tool.Name) + utf8.RuneCountInString(tool.Description)
+	return requestRunes(ChatRequest{
+		Messages: []Message{{Role: "system", Content: answerRules}},
+		Tools:    []Tool{{Name: tool.Name, Description: tool.Description}},
+	})
 }

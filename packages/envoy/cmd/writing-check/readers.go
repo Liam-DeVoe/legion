@@ -906,73 +906,58 @@ func (st *readerStats) print(w io.Writer) {
 // writeReaders writes every case of in to out with its reader and reader rule, and counts them.
 // Every case of one write has one reader. A case outside the replayed window is refused: the
 // replay holds no record it wrote. The cases go to a file of its own beside out
-// (harness.CreateBeside), renamed over it once every case is written, so a refused run leaves out
+// (harness.WriteBeside), renamed over it once every case is written, so a refused run leaves out
 // as it was, and removes that file alone.
 func writeReaders(in, out string, s *replayState, logAfter, logThrough int64) (*readerStats, error) {
 	r := &resolver{s: s, missing: map[string]int{}}
 	through := min(logThrough, s.Through)
 	index := map[writeKey]*readerWrite{}
 	var writes []*readerWrite
-	f, err := harness.CreateBeside(out, 0o644)
-	if err != nil {
-		return nil, err
-	}
-	renamed := false
-	defer func() {
-		if !renamed {
-			f.Close()
-			os.Remove(f.Name())
-		}
-	}()
-	w := bufio.NewWriter(f)
-	err = eachLine(in, func(line []byte, _ int) error {
-		var c Case
-		if err := json.Unmarshal(line, &c); err != nil {
-			return err
-		}
-		if c.EventID <= logAfter || c.EventID > through {
-			return fmt.Errorf("event %d is outside the replayed window (%d, %d]", c.EventID, logAfter, through)
-		}
-		if _, ok := surfaceFamilies[c.Surface]; !ok {
-			return fmt.Errorf("unknown surface %q", c.Surface)
-		}
-		reader, rule, err := r.readerOf(c)
+	err := harness.WriteBeside(out, 0o644, func(f io.Writer) error {
+		w := bufio.NewWriter(f)
+		err := eachLine(in, func(line []byte, _ int) error {
+			var c Case
+			if err := json.Unmarshal(line, &c); err != nil {
+				return err
+			}
+			if c.EventID <= logAfter || c.EventID > through {
+				return fmt.Errorf("event %d is outside the replayed window (%d, %d]", c.EventID, logAfter, through)
+			}
+			if _, ok := surfaceFamilies[c.Surface]; !ok {
+				return fmt.Errorf("unknown surface %q", c.Surface)
+			}
+			reader, rule, err := r.readerOf(c)
+			if err != nil {
+				return err
+			}
+			k := writeKey{c.EventID, c.SourceID, c.Copy}
+			wr := index[k]
+			if wr == nil {
+				wr = &readerWrite{project: c.Project, reader: reader, rule: rule}
+				index[k] = wr
+				writes = append(writes, wr)
+			} else if wr.reader != reader {
+				return fmt.Errorf("write %s has two readers, %q and %q", k, wr.reader, reader)
+			}
+			wr.cases++
+			if !slices.Contains(wr.surfaces, c.Surface) {
+				wr.surfaces = append(wr.surfaces, c.Surface)
+			}
+			c.Reader, c.ReaderRule = &reader, rule
+			encoded, err := json.Marshal(c)
+			if err != nil {
+				return err
+			}
+			w.Write(encoded)
+			return w.WriteByte('\n')
+		})
 		if err != nil {
 			return err
 		}
-		k := writeKey{c.EventID, c.SourceID, c.Copy}
-		wr := index[k]
-		if wr == nil {
-			wr = &readerWrite{project: c.Project, reader: reader, rule: rule}
-			index[k] = wr
-			writes = append(writes, wr)
-		} else if wr.reader != reader {
-			return fmt.Errorf("write %s has two readers, %q and %q", k, wr.reader, reader)
-		}
-		wr.cases++
-		if !slices.Contains(wr.surfaces, c.Surface) {
-			wr.surfaces = append(wr.surfaces, c.Surface)
-		}
-		c.Reader, c.ReaderRule = &reader, rule
-		encoded, err := json.Marshal(c)
-		if err != nil {
-			return err
-		}
-		w.Write(encoded)
-		return w.WriteByte('\n')
+		return w.Flush()
 	})
 	if err != nil {
 		return nil, err
 	}
-	if err := w.Flush(); err != nil {
-		return nil, err
-	}
-	if err := f.Close(); err != nil {
-		return nil, err
-	}
-	if err := os.Rename(f.Name(), out); err != nil {
-		return nil, err
-	}
-	renamed = true
 	return newReaderStats(writes, r.missing), nil
 }

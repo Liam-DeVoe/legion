@@ -36,8 +36,8 @@ func TestResumeLeavesTheLabelsFileUntilTheKeptRecordsAreWritten(t *testing.T) {
 	if data, _ := os.ReadFile(path); string(data) != old {
 		t.Errorf("the stopped resume left the labels file as\n%s\nwant it as it was\n%s", data, old)
 	}
-	if _, err := os.Stat(path + ".tmp"); !os.IsNotExist(err) {
-		t.Errorf("the stopped resume left its file beside the labels file (%v)", err)
+	if left, _ := filepath.Glob(path + ".*.tmp"); len(left) != 0 {
+		t.Errorf("the stopped resume left %v beside the labels file", left)
 	}
 	f, err := startLabels(path, kept)
 	if err != nil {

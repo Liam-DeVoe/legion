@@ -52,23 +52,26 @@ func readTextsFrom(dir string) (sources []textsSource, lockstep bool, err error)
 	if err != nil {
 		return nil, false, fmt.Errorf("--texts-from: %w", err)
 	}
-	switch _, err := os.Stat(filepath.Join(dir, "run.json")); {
-	case err == nil:
-		for _, e := range entries {
-			if _, err := os.Stat(filepath.Join(dir, e.Name(), "run.json")); e.IsDir() && err == nil {
-				return nil, false, fmt.Errorf("--texts-from %s holds a run's run.json and the run of a lockstep in %s, two runs: name one", dir, e.Name())
-			}
+	// runs are the directories of dir that hold a run.json, by name (os.ReadDir sorts them).
+	var runs []string
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
 		}
+		if _, err := os.Stat(filepath.Join(dir, e.Name(), "run.json")); err == nil {
+			runs = append(runs, e.Name())
+		}
+	}
+	switch _, err := os.Stat(filepath.Join(dir, "run.json")); {
+	case err == nil && len(runs) > 0:
+		return nil, false, fmt.Errorf("--texts-from %s holds a run's run.json and the run of a lockstep in %s, two runs: name one", dir, runs[0])
+	case err == nil:
 		return sources, false, read(dir)
 	case !errors.Is(err, os.ErrNotExist):
 		return nil, false, fmt.Errorf("--texts-from: %w", err)
 	}
-	for _, e := range entries {
-		sub := filepath.Join(dir, e.Name())
-		if _, err := os.Stat(filepath.Join(sub, "run.json")); !e.IsDir() || err != nil {
-			continue
-		}
-		if err := read(sub); err != nil {
+	for _, name := range runs {
+		if err := read(filepath.Join(dir, name)); err != nil {
 			return nil, false, err
 		}
 	}

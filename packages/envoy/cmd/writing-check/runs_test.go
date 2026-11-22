@@ -104,6 +104,42 @@ func TestAFinalTestWhoseKeyCannotBeReadSpendsNoSet(t *testing.T) {
 	}
 }
 
+// Only a final test reads the reader's key before it scores, so that its claim follows the read.
+// Any other run reads the key on each reader call alone: one over writes that hold no candidate
+// calls no reader, and scores with a key file it cannot read. A final test of the same writes is
+// refused on that file before its claim, and the exposure log holds no run.
+func TestOnlyAFinalTestReadsTheReadersKeyBeforeItScores(t *testing.T) {
+	dir := t.TempDir()
+	labels := filepath.Join(dir, "labels.jsonl")
+	fact := func(event int64, source, text string) labelRecord {
+		r := labelRecord{EventID: event, SourceID: source, Family: "comment",
+			Sentences: []sentenceLabel{{ID: "s1", Field: "body", Kind: "paragraph", Text: text, Verdict: verdictNotVacuous, Shape: "none"}}}
+		r.WriteLabel = writeLabelOf(r.Sentences)
+		return r
+	}
+	if _, err := writeJSONL(labels, []labelRecord{fact(101, "w1", sentB), fact(102, "w2", sentM)}); err != nil {
+		t.Fatal(err)
+	}
+	stub := newStubModel(t, containsAny("names the"), nil)
+	noKey := filepath.Join(dir, "no-key")
+	args := append(append([]string{"score", "--labels", labels, "--stratum", stratumReal, "--root", "../.."}, stub.args(t, dir)...), "--key-file", noKey)
+	out := filepath.Join(dir, "out")
+	if code, _, stderr := runCmd(t, append(args, "--out", out)...); code != 0 || stub.calls.Load() != 0 {
+		t.Errorf("a score of writes with no candidate, with a key file it cannot read = %d after %d calls, want 0 after none:\n%s", code, stub.calls.Load(), stderr)
+	}
+	if _, err := os.Stat(filepath.Join(out, "figures.json")); err != nil {
+		t.Errorf("the score of writes with no candidate wrote no figures (%v)", err)
+	}
+	log := filepath.Join(dir, "exposure.jsonl")
+	code, _, stderr := runCmd(t, append(args, "--out", filepath.Join(dir, "final"), "--final-test", "--set-digest", strings.Repeat("ab", 32), "--seed", "42", "--exposure-log", log)...)
+	if code != 1 || !strings.Contains(stderr, "--key-file: open "+noKey) {
+		t.Errorf("a final test of the same writes, with a key file it cannot read = %d, want 1 and the key file's refusal:\n%s", code, stderr)
+	}
+	if _, err := os.Stat(log); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the final test refused on its key file wrote the exposure log (%v)", err)
+	}
+}
+
 // label --resume keeps a label only where the run's definition, model, effort and chunk, and the
 // write's text, are those it was made with: a resume after the definition or the text changed is
 // refused before any call, and a resume under the same ones keeps the label and calls nothing.

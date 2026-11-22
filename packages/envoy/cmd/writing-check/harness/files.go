@@ -3,6 +3,7 @@ package harness
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -53,15 +54,16 @@ func Files(flag, path string, names ...string) []File {
 // and writes, such as the output a run continues, is that flag's own. A command calls it before
 // it writes anything, and refuses with exit 2.
 func NoOutputIsAnInput(writes, reads []File) error {
-	for _, w := range writes {
-		for _, r := range reads {
+	written, read := statFiles(writes), statFiles(reads)
+	for i, w := range writes {
+		for j, r := range reads {
 			switch {
 			case w.Flag == r.Flag:
-			case w.Tree && underDir(r.Path, w.Path):
+			case w.Tree && underDir(r.Path, written[i]):
 				return fmt.Errorf("%s, which this command replaces whole, holds %s: give another %s", w, r, w.Flag)
-			case r.Tree && underDir(w.Path, r.Path):
+			case r.Tree && underDir(w.Path, read[j]):
 				return fmt.Errorf("%s lies in %s, which this command reads whole: give another %s", w, r, w.Flag)
-			case !SameFile(w.Path, r.Path):
+			case !sameFile(written[i], read[j]):
 			case w.Name == "":
 				return fmt.Errorf("%s names %s: give another %s", w.Flag, r, w.Flag)
 			default:
@@ -72,21 +74,35 @@ func NoOutputIsAnInput(writes, reads []File) error {
 	return nil
 }
 
-// SameFile is whether a and b name one file or directory that exists, by one path or two.
-func SameFile(a, b string) bool {
-	infoA, errA := os.Stat(a)
-	infoB, errB := os.Stat(b)
-	return errA == nil && errB == nil && os.SameFile(infoA, infoB)
+// statFiles looks up each of files once: its os.Stat, nil for one that does not exist or cannot
+// be looked up.
+func statFiles(files []File) []os.FileInfo {
+	infos := make([]os.FileInfo, len(files))
+	for i, f := range files {
+		if info, err := os.Stat(f.Path); err == nil {
+			infos[i] = info
+		}
+	}
+	return infos
 }
 
-// underDir is whether path is the directory dir or lies under it.
-func underDir(path, dir string) bool {
+// sameFile is whether a and b, each an os.Stat or nil, are one file or directory that exists.
+func sameFile(a, b os.FileInfo) bool {
+	return a != nil && b != nil && os.SameFile(a, b)
+}
+
+// underDir is whether path is the directory dir, of the os.Stat given (nil where it does not
+// exist), or lies under it.
+func underDir(path string, dir os.FileInfo) bool {
+	if dir == nil {
+		return false
+	}
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return false
 	}
 	for d := abs; ; d = filepath.Dir(d) {
-		if SameFile(d, dir) {
+		if info, err := os.Stat(d); err == nil && os.SameFile(info, dir) {
 			return true
 		}
 		if filepath.Dir(d) == d {
@@ -112,14 +128,23 @@ func CreateBeside(path string, perm os.FileMode) (*os.File, error) {
 	return f, nil
 }
 
-// ReplaceFile writes data to path whole, of mode perm: to a file CreateBeside makes, renamed over
-// path. A failed write removes that file and leaves path as it was.
+// ReplaceFile writes data to path whole, of mode perm (WriteBeside).
 func ReplaceFile(path string, data []byte, perm os.FileMode) error {
+	return WriteBeside(path, perm, func(w io.Writer) error {
+		_, err := w.Write(data)
+		return err
+	})
+}
+
+// WriteBeside writes path whole, of mode perm, by write: to a file CreateBeside makes, closed and
+// renamed over path once write has written it. A failed write, close or rename removes that file
+// and leaves path as it was.
+func WriteBeside(path string, perm os.FileMode, write func(io.Writer) error) error {
 	f, err := CreateBeside(path, perm)
 	if err != nil {
 		return err
 	}
-	_, err = f.Write(data)
+	err = write(f)
 	if cerr := f.Close(); err == nil {
 		err = cerr
 	}

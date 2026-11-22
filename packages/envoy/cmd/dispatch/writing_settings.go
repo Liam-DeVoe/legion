@@ -428,6 +428,21 @@ func refuseQuotaNoCallFits(cfg writingSettings, answerer answererConfig) error {
 	if err != nil {
 		return err
 	}
+	// weigh refuses asked, a share whose calls are charged least at the fewest (charged says so),
+	// where its ceiling, the setting ceiling, or the quota DISPATCH_MODEL_DEPLOYMENT_QUOTAS names
+	// for its deployment, the one the setting deployment names, is not more than least. A share of
+	// no tokens sets no ceiling, as the pacer reads it. named says the quotas name its deployment.
+	weigh := func(asked modelpace.Share, least int, charged, ceiling, deployment string) (named bool, err error) {
+		if 0 < asked.TokensPerMinute && asked.TokensPerMinute <= least {
+			return false, fmt.Errorf("%s=%d is not more than %s: %s", ceiling, asked.TokensPerMinute, charged, why)
+		}
+		quota, named := cfg.DeploymentQuotas[asked.Deployment.Name]
+		if named && quota <= least {
+			return true, fmt.Errorf("%s names %s=%d, not more than %s, which go to that deployment (%s): %s",
+				deploymentQuotasSetting, asked.Deployment.Name, quota, charged, deployment, why)
+		}
+		return named, nil
+	}
 	// refuse weighs a set group's ceiling, then the quota that paces its deployment, against the
 	// least its calls are charged. ceiling and deployment are the settings that name the group's
 	// two.
@@ -444,15 +459,8 @@ func refuseQuotaNoCallFits(cfg writingSettings, answerer answererConfig) error {
 			return err
 		}
 		charged := fmt.Sprintf("%d, the least %s %s are charged (a reply bound of %d tokens and the shortest system prompt of those calls)", least, spec.whose, spec.calls, spec.replyBound)
-		if asked.TokensPerMinute <= least {
-			return fmt.Errorf("%s=%d is not more than %s: %s", ceiling, asked.TokensPerMinute, charged, why)
-		}
-		if quota, named := cfg.DeploymentQuotas[asked.Deployment.Name]; named {
-			if quota <= least {
-				return fmt.Errorf("%s names %s=%d, not more than %s, which go to that deployment (%s): %s",
-					deploymentQuotasSetting, asked.Deployment.Name, quota, charged, deployment, why)
-			}
-			return nil
+		if named, err := weigh(asked, least, charged, ceiling, deployment); named || err != nil {
+			return err
 		}
 		if stated.StatesQuota && stated.Deployment == asked.Deployment && 0 < stated.TokensPerMinute && stated.TokensPerMinute <= least {
 			return fmt.Errorf("%s=%d is not more than %s, which go to the answerer's deployment (%s) and are paced at its quota, since %s names none for it: %s",
@@ -478,14 +486,8 @@ func refuseQuotaNoCallFits(cfg writingSettings, answerer answererConfig) error {
 	// The answerer's own calls, on its share, whose ceiling its form states, and on its
 	// deployment's limiter, paced at the quota DISPATCH_MODEL_DEPLOYMENT_QUOTAS names for it.
 	charged := fmt.Sprintf("%d, the least the answerer's calls are charged (its system prompt and its search tool, and no reply bound)", answererLeastCharge)
-	if 0 < stated.TokensPerMinute && stated.TokensPerMinute <= answererLeastCharge {
-		return fmt.Errorf("%s=%d is not more than %s: %s", answererQuotaSetting, stated.TokensPerMinute, charged, why)
-	}
-	if quota, named := cfg.DeploymentQuotas[stated.Deployment.Name]; named && quota <= answererLeastCharge {
-		return fmt.Errorf("%s names %s=%d, not more than %s, which go to that deployment (%s): %s",
-			deploymentQuotasSetting, stated.Deployment.Name, quota, charged, answerer.deploymentSetting(), why)
-	}
-	return nil
+	_, err = weigh(stated, answererLeastCharge, charged, answererQuotaSetting, answerer.deploymentSetting())
+	return err
 }
 
 // answererQuotaSetting states the quota of the answerer's deployment under DISPATCH_ANSWERER=azure.

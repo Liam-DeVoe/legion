@@ -53,9 +53,10 @@ func runFetch(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		return 2
 	}
 	// The cases file, its partial file and their fetchParams are written beside each other.
+	partial := *out + ".partial"
 	writes := harness.Files("--out", *out)
-	for _, suffix := range []string{".partial", ".params.json", ".partial.params.json"} {
-		writes = append(writes, harness.File{Flag: "--out", Path: *out + suffix, Name: filepath.Base(*out) + suffix})
+	for _, path := range []string{partial, fetchParamsPath(*out), fetchParamsPath(partial)} {
+		writes = append(writes, harness.File{Flag: "--out", Path: path, Name: filepath.Base(path)})
 	}
 	if err := harness.NoOutputIsAnInput(writes, harness.Files("DISPATCH_TOKEN_FILE", tokenFile)); err != nil {
 		fmt.Fprintf(stderr, "writing-check fetch: %v\n", err)
@@ -85,7 +86,6 @@ func runFetch(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	// file (or, when there is none, --out itself, which it moves there first). Beside each cases
 	// file, <file>.params.json names the Dispatch and the --after its cases were read from, and
 	// moves with it, so --resume continues only cases of the same Dispatch from the same event.
-	partial := *out + ".partial"
 	params := fetchParams{DispatchURL: c.base, After: *after}
 	start := *after
 	var file *os.File

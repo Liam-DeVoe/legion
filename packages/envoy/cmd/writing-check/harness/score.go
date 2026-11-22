@@ -1247,22 +1247,23 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 				l.change = runs[i]
 			}
 		}
-		// Each lane's cases.jsonl is opened, and the gateway's key read, before the held-out claim:
-		// a run refused on either has read no case, so the exposure log holds no line of it.
-		files, err := openLanes(lanes)
-		if err != nil {
+		// Each lane's cases.jsonl is opened, and a held-out run reads the gateway's key, before the
+		// held-out claim: a run refused on either has read no case, so the exposure log holds no
+		// line of it. A development run reads the key on each model call alone, so one that calls
+		// none, its grades all taken from --grades-from, scores with no key.
+		if err := openLanes(lanes); err != nil {
 			return fail(err)
 		}
-		if !foreign {
-			if _, err := os.ReadFile(mf.keyFile); err != nil {
-				closeLines(files)
-				return fail(fmt.Errorf("the gateway key file: %w", err))
-			}
-		}
 		if heldOut != nil {
+			if !foreign {
+				if _, err := os.ReadFile(mf.keyFile); err != nil {
+					closeLanes(lanes)
+					return fail(fmt.Errorf("the gateway key file: %w", err))
+				}
+			}
 			e, err := ClaimHeldOut(*exposureLog, *heldOut, finished)
 			if err != nil {
-				closeLines(files)
+				closeLanes(lanes)
 				return fail(err)
 			}
 			if e.Continues != "" {
@@ -1273,7 +1274,7 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		}
 		s := &scorer{ds: ds, reader: reader, grader: grader, sessions: sessions, places: places, readersFrom: priorReaders,
 			gradesFrom: priorGrades, vocabulary: ownWords, readerVocabulary: readerWords, only: only, skipped: skipped, noExport: *sessionsDir == ""}
-		if err := scoreAll(ctx, s, lanes, files, todo, mf.concurrency, stderr, started); err != nil {
+		if err := scoreAll(ctx, s, lanes, todo, mf.concurrency, stderr, started); err != nil {
 			return fail(err)
 		}
 		uncached = runner.Pacer.Use()
@@ -1325,16 +1326,18 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 }
 
 // lane is one candidate's run in a score process: the change with that candidate, its output
-// directory with the parameters its run.json records, the results its cases.jsonl holds, the
-// cases this process scores of it (todo), and how many it scored and how many of those ended with
-// an error. A run of --model, or of a change with no candidate, has one lane, whose directory is
-// --out; a lockstep run (--models) has one for each model, in the flag's order, in <out>/<model>.
+// directory with the parameters its run.json records, the results its cases.jsonl holds, that
+// file open to append the results this process scores (openLanes), the cases this process scores
+// of it (todo), and how many it scored and how many of those ended with an error. A run of
+// --model, or of a change with no candidate, has one lane, whose directory is --out; a lockstep
+// run (--models) has one for each model, in the flag's order, in <out>/<model>.
 type lane struct {
 	change         Change
 	model          string
 	out            string
 	params         RunParams
 	done           map[string]CaseResult
+	results        *lineFile
 	todo           map[string]bool
 	scored, failed int
 }
@@ -1375,26 +1378,26 @@ func printDryRun(w io.Writer, groups []string, selected []*Case, lanes []*lane) 
 	}
 }
 
-// openLanes opens each lane's cases.jsonl to append its results to, in the lanes' order.
-func openLanes(lanes []*lane) ([]*lineFile, error) {
-	files := make([]*lineFile, 0, len(lanes))
-	for _, l := range lanes {
+// openLanes opens each lane's cases.jsonl to append its results to (lane.results). Where one does
+// not open, it closes those it opened.
+func openLanes(lanes []*lane) error {
+	for i, l := range lanes {
 		f, err := appendLines(filepath.Join(l.out, "cases.jsonl"))
 		if err != nil {
-			closeLines(files)
-			return nil, err
+			closeLanes(lanes[:i])
+			return err
 		}
-		files = append(files, f)
+		l.results = f
 	}
-	return files, nil
+	return nil
 }
 
-// closeLines closes each of files, and answers the first line one did not write, or the first
-// failure to close.
-func closeLines(files []*lineFile) error {
+// closeLanes closes each lane's results file (openLanes), and answers the first line one did not
+// write, or the first failure to close.
+func closeLanes(lanes []*lane) error {
 	var first error
-	for _, f := range files {
-		if err := f.close(); err != nil && first == nil {
+	for _, l := range lanes {
+		if err := l.results.close(); err != nil && first == nil {
 			first = err
 		}
 	}
@@ -1402,11 +1405,11 @@ func closeLines(files []*lineFile) error {
 }
 
 // scoreAll scores each of cases for the lanes whose todo holds it, workers cases at once
-// (scorer.scoreCase), and appends each lane's result to the lane's file of files (openLanes) as
+// (scorer.scoreCase), and appends each lane's result to the lane's results file (openLanes) as
 // the case ends, then closes them. A result its line does not hold is scored again by the next
 // run, so the run stops at the first line that is not written, and answers it; else it answers a
 // file's failure to close.
-func scoreAll(ctx context.Context, s *scorer, lanes []*lane, files []*lineFile, cases []*Case, workers int, progress io.Writer, started time.Time) error {
+func scoreAll(ctx context.Context, s *scorer, lanes []*lane, cases []*Case, workers int, progress io.Writer, started time.Time) error {
 	scoreCtx, stop := context.WithCancel(ctx)
 	defer stop()
 	var mu sync.Mutex
@@ -1432,7 +1435,7 @@ func scoreAll(ctx context.Context, s *scorer, lanes []*lane, files []*lineFile, 
 				mu.Lock()
 				for k, res := range results {
 					l := lanes[in[k]]
-					if err := files[in[k]].add(res); err != nil {
+					if err := l.results.add(res); err != nil {
 						stop()
 					}
 					l.scored++
@@ -1464,7 +1467,7 @@ feeding:
 	}
 	close(feed)
 	wg.Wait()
-	if err := closeLines(files); err != nil {
+	if err := closeLanes(lanes); err != nil {
 		return fmt.Errorf("%w: the cases scored after it have no result, so run it again to score them", err)
 	}
 	return nil

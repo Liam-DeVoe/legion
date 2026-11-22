@@ -380,12 +380,16 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 			return fail(err)
 		}
 	}
-	// The reader's key and token files are read, and --out made, before the final test is claimed,
-	// so a key the calls could not send or an --out that cannot be made spends no set; the claim is
-	// the last step before the first write is read.
-	for _, f := range rf.files() {
-		if _, err := os.ReadFile(f.Path); err != nil {
-			return fail(fmt.Errorf("%s: %w", f.Flag, err))
+	// --out is made, and a final test reads the reader's key and token files, before the final test
+	// is claimed, so a key the calls could not send or an --out that cannot be made spends no set;
+	// the claim is the last step before the first write is read. Any other run reads the key on
+	// each reader call alone, so one that calls none, its writes holding no candidate, scores with
+	// no key.
+	if *finalTest {
+		for _, f := range rf.files() {
+			if _, err := os.ReadFile(f.Path); err != nil {
+				return fail(fmt.Errorf("%s: %w", f.Flag, err))
+			}
 		}
 	}
 	if err := os.MkdirAll(*out, 0o755); err != nil {
@@ -427,15 +431,14 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		return fail(err)
 	}
 	fmt.Fprint(stdout, md)
-	// A write whose reader call failed has no verdict of the reader: the figures count it as a
-	// missed failure, as the method does, and the run is not complete. A stopped run ended above.
+	// A write whose reader call failed has the verdict error (scanVerdict): the figures count it as
+	// a missed failure, as the method does, and the run is not complete. A stopped run ended above.
 	asked, failed := 0, 0
 	for _, o := range outputs {
-		if o.Outcome == outcomeNotCalled {
-			continue
+		if o.Outcome != outcomeNotCalled {
+			asked++
 		}
-		asked++
-		if o.Outcome != outcomeRead && o.Outcome != reader.OutcomeCandidateCap {
+		if o.Verdict == scanError {
 			failed++
 		}
 	}

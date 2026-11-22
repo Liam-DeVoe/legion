@@ -529,11 +529,10 @@ func TestACaseLineHoldsItsTextAndWhatTheReviewReturned(t *testing.T) {
 	for _, c := range cases {
 		l.todo[c.ID] = true
 	}
-	files, err := openLanes([]*lane{l})
-	if err != nil {
+	if err := openLanes([]*lane{l}); err != nil {
 		t.Fatal(err)
 	}
-	if err := scoreAll(t.Context(), s, []*lane{l}, files, cases, 1, io.Discard, time.Now()); err != nil || l.failed != 0 {
+	if err := scoreAll(t.Context(), s, []*lane{l}, cases, 1, io.Discard, time.Now()); err != nil || l.failed != 0 {
 		t.Fatalf("score: %d failed, %v", l.failed, err)
 	}
 	data, err := os.ReadFile(filepath.Join(l.out, "cases.jsonl"))

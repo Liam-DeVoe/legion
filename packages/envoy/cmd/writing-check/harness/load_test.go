@@ -294,11 +294,10 @@ func TestScoreStopsAtTheFirstCaseLineItDoesNotWrite(t *testing.T) {
 	}
 	// Change 1 leaves each text as the agent wrote it, so lost and added are given with no call.
 	s := &scorer{ds: ds, only: []Judgement{JLost, JAdded}, noExport: true}
-	files, err := openLanes([]*lane{l})
-	if err != nil {
+	if err := openLanes([]*lane{l}); err != nil {
 		t.Fatal(err)
 	}
-	err = scoreAll(t.Context(), s, []*lane{l}, files, ds.Cases, 1, io.Discard, time.Now())
+	err = scoreAll(t.Context(), s, []*lane{l}, ds.Cases, 1, io.Discard, time.Now())
 	if err == nil || !strings.Contains(err.Error(), path) || l.scored != 1 || len(ds.Cases) < 2 {
 		t.Errorf("a score whose first line is not written scored %d of %d cases and answered %v; want 1 case, and the line's failure", l.scored, len(ds.Cases), err)
 	}

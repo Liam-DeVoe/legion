@@ -1965,7 +1965,7 @@ func dsSortedLines(path string, sortKey func(snapLine) string) ([]dsLineAt, erro
 // assembleSnapshot writes the snapshot: the header, the events in id order, the bodies by kind
 // and id, the versions by artifact and number, and the labels by event and source. It answers
 // the snapshot's SHA-256. The snapshot goes to a file of its own beside out
-// (harness.CreateBeside), renamed over out once whole; a failed write removes that file alone.
+// (harness.WriteBeside), renamed over out once whole; a failed write removes that file alone.
 func assembleSnapshot(out, work string, header snapLine, labels []snapLine) (string, error) {
 	bodyLines, err := dsSortedLines(filepath.Join(work, "bodies.jsonl"), bodyLineKey)
 	if err != nil {
@@ -1978,68 +1978,53 @@ func assembleSnapshot(out, work string, header snapLine, labels []snapLine) (str
 		return "", err
 	}
 	header.Bodies, header.Versions = len(bodyLines), len(versionLines)
-	f, err := harness.CreateBeside(out, 0o644)
-	if err != nil {
-		return "", err
-	}
-	renamed := false
-	defer func() {
-		if !renamed {
-			f.Close()
-			os.Remove(f.Name())
-		}
-	}()
 	h := sha256.New()
-	buffered := bufio.NewWriterSize(io.MultiWriter(f, h), 1<<20)
-	gz := dsGzip(buffered)
-	if err := dsJSONLine(gz, header); err != nil {
-		return "", err
-	}
-	err = eachPageEvent(work, func(raw []byte) error {
-		return dsJSONLine(gz, snapLine{Kind: "event", Event: json.RawMessage(raw)})
+	err = harness.WriteBeside(out, 0o644, func(f io.Writer) error {
+		buffered := bufio.NewWriterSize(io.MultiWriter(f, h), 1<<20)
+		gz := dsGzip(buffered)
+		if err := dsJSONLine(gz, header); err != nil {
+			return err
+		}
+		err := eachPageEvent(work, func(raw []byte) error {
+			return dsJSONLine(gz, snapLine{Kind: "event", Event: json.RawMessage(raw)})
+		})
+		if err != nil {
+			return err
+		}
+		for _, part := range []struct {
+			path  string
+			lines []dsLineAt
+		}{{filepath.Join(work, "bodies.jsonl"), bodyLines}, {filepath.Join(work, "versions.jsonl"), versionLines}} {
+			src, err := os.Open(part.path)
+			if err != nil {
+				return err
+			}
+			for _, l := range part.lines {
+				buf := make([]byte, l.end-l.start)
+				if _, err := src.ReadAt(buf, l.start); err != nil {
+					src.Close()
+					return err
+				}
+				if _, err := gz.Write(buf); err != nil {
+					src.Close()
+					return err
+				}
+			}
+			src.Close()
+		}
+		for _, l := range labels {
+			if err := dsJSONLine(gz, l); err != nil {
+				return err
+			}
+		}
+		if err := gz.Close(); err != nil {
+			return err
+		}
+		return buffered.Flush()
 	})
 	if err != nil {
 		return "", err
 	}
-	for _, part := range []struct {
-		path  string
-		lines []dsLineAt
-	}{{filepath.Join(work, "bodies.jsonl"), bodyLines}, {filepath.Join(work, "versions.jsonl"), versionLines}} {
-		src, err := os.Open(part.path)
-		if err != nil {
-			return "", err
-		}
-		for _, l := range part.lines {
-			buf := make([]byte, l.end-l.start)
-			if _, err := src.ReadAt(buf, l.start); err != nil {
-				src.Close()
-				return "", err
-			}
-			if _, err := gz.Write(buf); err != nil {
-				src.Close()
-				return "", err
-			}
-		}
-		src.Close()
-	}
-	for _, l := range labels {
-		if err := dsJSONLine(gz, l); err != nil {
-			return "", err
-		}
-	}
-	if err := gz.Close(); err != nil {
-		return "", err
-	}
-	if err := buffered.Flush(); err != nil {
-		return "", err
-	}
-	if err := f.Close(); err != nil {
-		return "", err
-	}
-	if err := os.Rename(f.Name(), out); err != nil {
-		return "", err
-	}
-	renamed = true
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
@@ -3821,7 +3806,7 @@ func runDatasetPack(args []string, stdout, stderr io.Writer) int {
 	writes := append(harness.Files("--out", *out), harness.File{Flag: "--out", Path: *out + ".manifest.json", Name: base + ".manifest.json"})
 	entries, _ := os.ReadDir(dir)
 	for _, e := range entries {
-		if strings.HasPrefix(e.Name(), base+".part-") {
+		if isBundlePart(base, e.Name()) {
 			writes = append(writes, harness.File{Flag: "--out", Path: filepath.Join(dir, e.Name()), Name: e.Name()})
 		}
 	}
@@ -3847,7 +3832,7 @@ func runDatasetPack(args []string, stdout, stderr io.Writer) int {
 // inputs write the same bytes. A bundle larger than partSize is also written as parts with a
 // manifest. It first removes the manifest and the parts an earlier pack to out left, which build
 // --from a directory would read before the bundle. The bundle goes to a file of its own beside
-// out (harness.CreateBeside), renamed over out once whole; a failed write removes that file
+// out (harness.WriteBeside), renamed over out once whole; a failed write removes that file
 // alone. It answers the bundle's SHA-256 and the paths of the parts and the manifest.
 func packBundle(in dsInputs, out string, partSize int64) (string, []string, error) {
 	s := dsSeeds{Seed: &in.Seed}
@@ -3863,61 +3848,46 @@ func packBundle(in dsInputs, out string, partSize int64) (string, []string, erro
 	if err := removeParts(out); err != nil {
 		return "", nil, err
 	}
-	f, err := harness.CreateBeside(out, 0o644)
+	h := sha256.New()
+	err = harness.WriteBeside(out, 0o644, func(f io.Writer) error {
+		buffered := bufio.NewWriterSize(io.MultiWriter(f, h), 1<<20)
+		gz := dsGzip(buffered)
+		tw := tar.NewWriter(gz)
+		put := func(name string, size int64, r io.Reader) error {
+			if err := tw.WriteHeader(&tar.Header{Name: name, Mode: 0o644, Size: size, ModTime: time.Unix(0, 0), Typeflag: tar.TypeReg, Format: tar.FormatUSTAR}); err != nil {
+				return err
+			}
+			_, err := io.Copy(tw, r)
+			return err
+		}
+		if err := put(dsBundleSeeds, int64(len(seeds)), bytes.NewReader(seeds)); err != nil {
+			return err
+		}
+		for _, file := range files {
+			src, err := os.Open(file.path)
+			if err != nil {
+				return err
+			}
+			info, err := src.Stat()
+			if err == nil {
+				err = put(file.name, info.Size(), src)
+			}
+			src.Close()
+			if err != nil {
+				return err
+			}
+		}
+		if err := tw.Close(); err != nil {
+			return err
+		}
+		if err := gz.Close(); err != nil {
+			return err
+		}
+		return buffered.Flush()
+	})
 	if err != nil {
 		return "", nil, err
 	}
-	renamed := false
-	defer func() {
-		if !renamed {
-			f.Close()
-			os.Remove(f.Name())
-		}
-	}()
-	h := sha256.New()
-	buffered := bufio.NewWriterSize(io.MultiWriter(f, h), 1<<20)
-	gz := dsGzip(buffered)
-	tw := tar.NewWriter(gz)
-	put := func(name string, size int64, r io.Reader) error {
-		if err := tw.WriteHeader(&tar.Header{Name: name, Mode: 0o644, Size: size, ModTime: time.Unix(0, 0), Typeflag: tar.TypeReg, Format: tar.FormatUSTAR}); err != nil {
-			return err
-		}
-		_, err := io.Copy(tw, r)
-		return err
-	}
-	if err := put(dsBundleSeeds, int64(len(seeds)), bytes.NewReader(seeds)); err != nil {
-		return "", nil, err
-	}
-	for _, file := range files {
-		src, err := os.Open(file.path)
-		if err != nil {
-			return "", nil, err
-		}
-		info, err := src.Stat()
-		if err == nil {
-			err = put(file.name, info.Size(), src)
-		}
-		src.Close()
-		if err != nil {
-			return "", nil, err
-		}
-	}
-	if err := tw.Close(); err != nil {
-		return "", nil, err
-	}
-	if err := gz.Close(); err != nil {
-		return "", nil, err
-	}
-	if err := buffered.Flush(); err != nil {
-		return "", nil, err
-	}
-	if err := f.Close(); err != nil {
-		return "", nil, err
-	}
-	if err := os.Rename(f.Name(), out); err != nil {
-		return "", nil, err
-	}
-	renamed = true
 	sum := hex.EncodeToString(h.Sum(nil))
 	info, err := os.Stat(out)
 	if err != nil || info.Size() <= partSize {
@@ -3925,6 +3895,12 @@ func packBundle(in dsInputs, out string, partSize int64) (string, []string, erro
 	}
 	parts, err := splitBundle(out, sum, info.Size(), partSize)
 	return sum, parts, err
+}
+
+// isBundlePart is whether name is the name of a part of the bundle base, <base>.part-NNN
+// (splitBundle).
+func isBundlePart(base, name string) bool {
+	return strings.HasPrefix(name, base+".part-")
 }
 
 // removeParts removes <bundle>.manifest.json and each <bundle>.part-NNN beside bundle.
@@ -3938,7 +3914,7 @@ func removeParts(bundle string) error {
 		return err
 	}
 	for _, f := range files {
-		if name := f.Name(); name == base+".manifest.json" || strings.HasPrefix(name, base+".part-") {
+		if name := f.Name(); name == base+".manifest.json" || isBundlePart(base, name) {
 			if err := os.Remove(filepath.Join(dir, name)); err != nil {
 				return err
 			}
@@ -3995,10 +3971,14 @@ func openBundle(from, dir string) (dsInputs, error) {
 	if err != nil {
 		return in, err
 	}
+	// packDir is the directory from names, where it names one that holds a manifest; bundles and
+	// parts are its tarballs and its parts, which must be that manifest's bundle's (onePack).
+	var packDir string
+	var bundles, parts []string
 	if info.IsDir() {
 		manifests, _ := filepath.Glob(filepath.Join(from, "*.manifest.json"))
-		bundles, _ := filepath.Glob(filepath.Join(from, "*.tar.gz"))
-		parts, _ := filepath.Glob(filepath.Join(from, "*.part-*"))
+		bundles, _ = filepath.Glob(filepath.Join(from, "*.tar.gz"))
+		parts, _ = filepath.Glob(filepath.Join(from, "*.part-*"))
 		// Each file is one of a bundle's, by the bundle's name: <bundle>.manifest.json,
 		// <bundle>.part-NNN (splitBundle) or the bundle itself.
 		names := map[string]bool{}
@@ -4018,10 +3998,7 @@ func openBundle(from, dir string) (dsInputs, error) {
 		case len(names) > 1:
 			return in, fmt.Errorf("%s holds %s, %d bundles: name one", from, strings.Join(sortedKeys(names), " and "), len(names))
 		case len(manifests) == 1:
-			if err := onePack(from, manifests[0], bundles, parts); err != nil {
-				return in, err
-			}
-			from = manifests[0]
+			packDir, from = from, manifests[0]
 		case len(parts) > 0:
 			return in, fmt.Errorf("%s holds parts of %s and no manifest of them: name the bundle", from, sortedKeys(names)[0])
 		default:
@@ -4030,7 +4007,16 @@ func openBundle(from, dir string) (dsInputs, error) {
 	}
 	bundle := from
 	if strings.HasSuffix(from, ".manifest.json") {
-		if bundle, err = joinParts(from, dir); err != nil {
+		m, err := readManifest(from)
+		if err != nil {
+			return in, err
+		}
+		if packDir != "" {
+			if err := onePack(packDir, from, m, bundles, parts); err != nil {
+				return in, err
+			}
+		}
+		if bundle, err = joinParts(from, m, dir); err != nil {
 			return in, err
 		}
 	}
@@ -4078,14 +4064,11 @@ func openBundle(from, dir string) (dsInputs, error) {
 	return in, nil
 }
 
-// onePack refuses the manifest, the parts and the bundle of one name in the directory dir where
-// they are not one bundle: a part the manifest does not name, or a bundle whose SHA-256 is not
-// the one the manifest gives. joinParts then checks each part the manifest names.
-func onePack(dir, manifestPath string, bundles, parts []string) error {
-	m, err := readManifest(manifestPath)
-	if err != nil {
-		return err
-	}
+// onePack refuses the manifest m, read from manifestPath, and the parts and the bundle of its
+// name in the directory dir where they are not one bundle: a part the manifest does not name, or
+// a bundle whose SHA-256 is not the one the manifest gives. joinParts then checks each part the
+// manifest names.
+func onePack(dir, manifestPath string, m dsManifest, bundles, parts []string) error {
 	named := map[string]bool{}
 	for _, p := range m.Parts {
 		named[p.Name] = true
@@ -4120,12 +4103,9 @@ func readManifest(path string) (dsManifest, error) {
 	return m, nil
 }
 
-// joinParts joins the parts a manifest names, read beside it, into one bundle in dir.
-func joinParts(manifestPath, dir string) (string, error) {
-	m, err := readManifest(manifestPath)
-	if err != nil {
-		return "", err
-	}
+// joinParts joins the parts the manifest m, read from manifestPath, names, read beside it, into
+// one bundle in dir.
+func joinParts(manifestPath string, m dsManifest, dir string) (string, error) {
 	bundle := filepath.Join(dir, "bundle.tar.gz")
 	f, err := os.Create(bundle)
 	if err != nil {
