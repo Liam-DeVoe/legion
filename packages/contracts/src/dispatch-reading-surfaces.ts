@@ -1062,7 +1062,7 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
       test: "a references row reads a reference in its name as its target's name",
     },
     reach: "/issues/<ISSUE>/artifacts, a References or Referenced by row",
-    reason: `A row of the issue's references read is a link to the node at its far end, worded with the name the read gives that node, as the server cut it. Where that name is the head of a comment's, an ask's or a message's text, whose \`#id\` is read against that record, or a block's excerpt, it is drawn through this projection; a document's name, an issue's title and a component's are drawn as the characters they are. ${PLAIN_WORDS_REASON}`,
+    reason: `A row of the issue's references read is a link to the node at its far end, worded with the name the read gives that node, as the server cut it. Where that name is the head of a comment's, an ask's or a message's text, whose \`#id\` is read against that record, it is drawn through this projection; a document's name, an issue's title and a component's are drawn as the characters they are. ${PLAIN_WORDS_REASON}`,
     record: true,
     rendered: false,
     surface: "artifacts-reference-name",
