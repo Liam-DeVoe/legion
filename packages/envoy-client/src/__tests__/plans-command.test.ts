@@ -24,10 +24,12 @@ import { executeDispatchTool } from "../dispatch-execute";
 // `dispatch plans --project <KEY>`: each finished issue of a project, as Dispatch's
 // `GET /api/v1/projects/{key}/plans` answers them, one header line and one line per issue: its
 // plan, each rating its retros gave the plan with the reason, its time and its count of failed
-// steps. The Legion whole-daemon driver parses the line, so each case asserts it whole. The format
-// cases drive `executeDispatchTool` over the shared fake Dispatch (`test/fake-dispatch.ts`) as a
-// fetch, so each reads the text and the details a host is handed; the command-line cases drive
-// the real CLI against that fake on a loopback port, and read its exit code and output.
+// steps, and, where the records of the issue's newest run name an experiment,
+// `variant <experiment>/<variant>` at its end. The Legion whole-daemon driver parses the line, so
+// each case asserts it whole. The format cases drive `executeDispatchTool` over the shared fake
+// Dispatch (`test/fake-dispatch.ts`) as a fetch, so each reads the text and the details a host is
+// handed; the command-line cases drive the real CLI against that fake on a loopback port, and read
+// its exit code and output.
 
 /** The Dispatch bearer each command-line case is handed. */
 const TOKEN = fixtureSecret("dsp");

@@ -16,10 +16,12 @@ import { executeDispatchTool } from "../dispatch-execute";
 import { DispatchNoRouteError } from "../dispatch-http";
 
 // `dispatch steps --issue <KEY>`: the steps that ran on an issue, as Dispatch's
-// `GET /api/v1/issues/{key}/steps` answers them, one header line and one line per run. The
-// format cases drive `executeDispatchTool` over the shared fake Dispatch (`test/fake-dispatch.ts`)
-// as a fetch, so each reads the text and the details a host is handed; the command-line cases
-// drive the real CLI against that fake on a loopback port, and read its exit code and output.
+// `GET /api/v1/issues/{key}/steps` answers them, one header line and one line per run, and
+// between them, where the records of the issue's newest run name an experiment, the line
+// `Experiment <experiment>: variant <variant>.`. The format cases drive `executeDispatchTool` over
+// the shared fake Dispatch (`test/fake-dispatch.ts`) as a fetch, so each reads the text and the
+// details a host is handed; the command-line cases drive the real CLI against that fake on a
+// loopback port, and read its exit code and output.
 
 /** The implementer's run of LEG-1's step 2: ended, with its model and its report. */
 const implementer: StepRecord = {
