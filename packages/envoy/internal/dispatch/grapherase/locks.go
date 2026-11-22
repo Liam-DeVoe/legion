@@ -26,12 +26,11 @@ const eraseOwnerAttempts = 3
 // order (api/inbox_read.go's markInboxReadThreads), whose first invariant is that a store write
 // takes the owner's lock first. The lock of every owner the erase writes under comes first
 // (ownerRows says which they are), then the node's row `for update`, then the node's own
-// projection rows (lockProjectionRows), then, after the keyword fill's cursor row (below), its
-// read-state rows (lockReadStateRows), and nothing the erase does after them takes an owner lock it
-// does not already hold: docs.ReadErasedLiveText takes a document's owner lock again and finds this
-// transaction holding it. A node no row projects - a person, a session, a role, a page - stands
-// under no owner, and the erase then starts at its node's row, which the order allows: a writer
-// may leave a step out.
+// projection rows (lockProjectionRows), and nothing the erase does after them takes an owner lock
+// it does not already hold: docs.ReadErasedLiveText takes a document's owner lock again and finds
+// this transaction holding it. A node no row projects - a person, a session, a role, a page -
+// stands under no owner, and the erase then starts at its node's row, which the order allows: a
+// writer may leave a step out.
 //
 // Those owners are the node's own and its own document's, never another node's: a row that
 // holds the erased bytes and derives from another node is listed and left as it is, so the run
@@ -72,7 +71,7 @@ const eraseOwnerAttempts = 3
 // (searchLeftAfterCommit). Once a try holds its locks, the run holds the writers of those owners
 // for the rest of its work: the read of the rest of the listing under them, the erase and the
 // commit.
-func lockInStoreOrder(ctx context.Context, conn *pgx.Conn, serverURL, kind, id string) (pgx.Tx, *Erasure, erasedRead, error) {
+func lockInStoreOrder(ctx context.Context, conn *pgx.Conn, kind, id string) (pgx.Tx, *Erasure, erasedRead, error) {
 	var untaken []string
 	for range eraseOwnerAttempts {
 		left, err := searchLeft(ctx, conn, kind, id)
@@ -83,7 +82,7 @@ func lockInStoreOrder(ctx context.Context, conn *pgx.Conn, serverURL, kind, id s
 		if err != nil {
 			return nil, nil, erasedRead{}, fmt.Errorf("begin: %w", err)
 		}
-		erasure := &Erasure{Kind: kind, ID: id, RanAt: time.Now().UTC(), serverURL: serverURL}
+		erasure := &Erasure{Kind: kind, ID: id, RanAt: time.Now().UTC()}
 		var read erasedRead
 		read, untaken, err = erasure.lockOwnersThenNode(ctx, tx, left)
 		if err == nil && len(untaken) == 0 {
@@ -153,9 +152,9 @@ func (e *Erasure) searchLeftAfterCommit(ctx context.Context, conn *pgx.Conn, rea
 // lockOwnersThenNode is one try of lockInStoreOrder: it reads which owner rows the erase writes
 // under (ownerRows, which reads no node, tuple or event), takes them (events.LockOwnerRows), the
 // node's row and the node's projection rows (lockProjectionRows), holds the keyword fill back
-// (textversions.HoldFillBack), takes the node's read-state rows (lockReadStateRows), reads the rest
-// of the listing under those locks (readDerived), lists beside it the rows left that the try's
-// search found (searchLeft), and answers it with every owner it names that the try did not take.
+// (textversions.HoldFillBack), reads the rest of the listing under those locks (readDerived),
+// lists beside it the rows left that the try's search found (searchLeft), and answers it with
+// every owner it names that the try did not take.
 func (e *Erasure) lockOwnersThenNode(ctx context.Context, tx pgx.Tx, left []string) (erasedRead, []string, error) {
 	before, err := e.ownerRows(ctx, tx)
 	if err != nil {
@@ -176,13 +175,6 @@ func (e *Erasure) lockOwnersThenNode(ctx context.Context, tx pgx.Tx, left []stri
 		return erasedRead{}, nil, err
 	}
 	if err := textversions.HoldFillBack(ctx, tx); err != nil {
-		return erasedRead{}, nil, err
-	}
-	scope, err := e.readStateScope(ctx, tx)
-	if err != nil {
-		return erasedRead{}, nil, err
-	}
-	if err := lockReadStateRows(ctx, tx, scope); err != nil {
 		return erasedRead{}, nil, err
 	}
 	locked, err := e.readDerived(ctx, tx)

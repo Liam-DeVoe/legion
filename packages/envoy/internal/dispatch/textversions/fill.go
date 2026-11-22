@@ -552,8 +552,8 @@ const restateIssueVectorsQuery = `
 // numbers of artifact, its primary document, by the expression the fill makes an issue's vector
 // with (issueVectorSQL), and answers how many rows it wrote. The erase calls it once it has deleted
 // those versions, so each vector reads no markdown for its version and keeps the key and the title
-// its row holds. A row is otherwise written again only by the erase's delete of an erased node's
-// rows and by the first-body repair (repairFirstBodyQuery): a new version is a new row.
+// its row holds. A row is otherwise written again only by the first-body repair
+// (repairFirstBodyQuery): a new version is a new row.
 func RestateIssueVectors(ctx context.Context, tx pgx.Tx, issue, artifact string, numbers []int32) (int64, error) {
 	tag, err := tx.Exec(ctx, restateIssueVectorsQuery, issue, artifact, numbers)
 	if err != nil {

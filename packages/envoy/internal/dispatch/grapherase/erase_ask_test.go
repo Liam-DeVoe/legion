@@ -115,7 +115,7 @@ func TestTheEraseRefusesAMarkedAskWhileItsRowStandsAndRemovesItsNodeOnceTheRowIs
 
 	held := readTypeNode(t, database, graphstore.KindAsk, ask)
 	for _, confirm := range []string{"", "any digest"} {
-		erasure, err := Erase(ctx, database.Pool.Config().ConnString(), eraseServerURL, graphstore.KindAsk, ask, confirm, 0)
+		erasure, err := Erase(ctx, database.Pool.Config().ConnString(), graphstore.KindAsk, ask, confirm, 0)
 		if err == nil || !strings.Contains(err.Error(), "refuses ask:"+ask+": its row stands") {
 			t.Fatalf("erase --node ask:%s (confirm %q) with its row standing answered %v (applied %t), want the refusal while its row stands",
 				ask, confirm, err, erasure != nil && erasure.Applied)

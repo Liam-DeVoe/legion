@@ -2,7 +2,6 @@ package grapherase
 
 import (
 	"context"
-	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -15,35 +14,19 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest/lockstep"
 )
 
-// An issue, a document and an ask each hold their text in their own row: the issue's title, the
-// document's name and versions, the ask's question. The erase reads text only from the comments,
-// the messages and the document blocks that derive from a node, so a run over one of these nodes
-// would delete the node and its tuples, record an erasure and answer applied, and leave the row
-// and its text where they were; the project census would then read the row as missing a node, and
-// the backfill would write the node again. The erase refuses each of the three kinds while its
-// row stands: run as an operator runs it, without --confirm and then with a digest, each run
-// answers the refusal, and the node, its tuples and its row with its text are all still there,
-// with no erasure recorded.
+// An issue, a document, an ask and a message each hold their text in their own row: the issue's
+// title, the document's name and versions, the ask's question, the message's body. The erase
+// reads text only from the comments and the document blocks that derive from a node, so a run
+// over one of these nodes would delete the node and its tuples, record an erasure and answer
+// applied, and leave the row and its text where they were; the project census would then read the
+// row as missing a node, and the backfill would write the node again. The erase refuses each of
+// the four kinds while its row stands: run as an operator runs it, without --confirm and then
+// with a digest, each run answers the refusal, and the node, its tuples and its row with its text
+// are all still there, with no erasure recorded.
 //
-// A message is erased with its row: that row names the message's node, so it is one of its
-// projection rows, and the erase deletes it and marks the message's body in every event that
-// carried it - its own message.created, and the quote each reply's event carries of it
-// (reply_body, and reply_block's text for a reply that names one of its blocks, with or without
-// in_reply_to). A standing reply refuses the run (it points at the message through in_reply_to,
-// or states replies_to into its block), so the replies here are their events alone, as each
-// reply's own erase leaves them. A message has no edit, so no event of one. The listing names the
-// message's row among the rows the run deletes and none of it as left; after the erase no row of
-// the message, its node or its tuples stands, every one of those events holds the marker and no
-// byte of the quoted body, each reply's own words stand, and so does another message's event that
-// says the same words, which is that message's text and the listing lists as left. A message row
-// a build before this one wrote names no node until the backfill marks it, so the erase finds it
-// by no address and refuses that message, leaving it whole.
-//
-// Its controls are the refusal taken out of Erasure.read, under which the three kinds' dry run
-// lists the node, the confirmed run over that listing answers applied, and the row's text is still
-// in place; and the erase reading no reply's event (readEvents), under which a reply's quote of
-// the erased message stands.
-func TestTheEraseRefusesAnIssueADocumentAndAnAskWhileTheirRowStandsAndTakesAMessagesTextEverywhere(t *testing.T) {
+// Its control is the refusal taken out of Erasure.read: the dry run then lists the node, the
+// confirmed run over that listing answers applied, and the row's text is still in place.
+func TestTheEraseRefusesAnIssueADocumentAnAskAndAMessageWhileTheirRowStands(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
 	seeded := seedObjectNodes(t, database)
@@ -54,163 +37,37 @@ func TestTheEraseRefusesAnIssueADocumentAndAnAskWhileTheirRowStandsAndTakesAMess
 		{graphstore.KindIssue, seeded.issue, "issues", "title", "key"},
 		{graphstore.KindArtifact, seeded.documentRef, "artifacts", "name", "ref_key"},
 		{graphstore.KindAsk, seeded.ask, "asks", "question", "id::text"},
+		{graphstore.KindMessage, seeded.message, "messages", "body", "id::text"},
 	} {
 		t.Run(node.kind, func(t *testing.T) {
-			requireRefusedWhileTheRowStands(t, database, node.kind, node.id, node.table, node.column, node.key, refusal)
+			before := readTypeNode(t, database, node.kind, node.id)
+			if !before.row || before.out == 0 {
+				t.Fatalf("the seed holds %s:%s as %+v, want a node with tuples, so this test would prove nothing", node.kind, node.id, before)
+			}
+			text := rowText(t, database, node.table, node.column, node.key, node.id)
+			listing, err := Erase(ctx, url, node.kind, node.id, "", 0)
+			if err == nil && listing != nil {
+				// The refusal is not there: run the confirmed erase an operator runs next, so the
+				// failure says what that erase does to the row.
+				confirmed, confirmErr := Erase(ctx, url, node.kind, node.id, listing.Digest, 0)
+				t.Fatalf("erase --node %s:%s listed it and its confirmed run answered applied %t (err %v); the %s row still reads %q",
+					node.kind, node.id, confirmed != nil && confirmed.Applied, confirmErr, node.table,
+					rowText(t, database, node.table, node.column, node.key, node.id))
+			}
+			for _, confirm := range []string{"", "any digest"} {
+				erasure, err := Erase(ctx, url, node.kind, node.id, confirm, 0)
+				if err == nil || !strings.Contains(err.Error(), "refuses "+node.kind+":"+node.id+": ") || !strings.Contains(err.Error(), refusal) {
+					t.Errorf("erase --node %s:%s (confirm %q) answered %v (applied %t), want the refusal %q",
+						node.kind, node.id, confirm, err, erasure != nil && erasure.Applied, refusal)
+				}
+			}
+			if after := readTypeNode(t, database, node.kind, node.id); after != before {
+				t.Errorf("erase --node %s:%s left the store holding %+v of it, want %+v as before the runs", node.kind, node.id, after, before)
+			}
+			if after := rowText(t, database, node.table, node.column, node.key, node.id); after != text {
+				t.Errorf("erase --node %s:%s left its %s row reading %q, want %q as before the runs", node.kind, node.id, node.table, after, text)
+			}
 		})
-	}
-
-	t.Run(graphstore.KindMessage, func(t *testing.T) {
-		const body = "A message somebody wrote"
-		head := body[:len(body)-6]
-		block := "message/" + seeded.message + "#b1"
-		own := appendEvent(t, database, seeded.issue, "message.created",
-			`{"id":"`+seeded.message+`","issue_key":"ERASE-1","body":"`+body+`","in_reply_to":null,"reply_block":null}`)
-		quoting := []int64{
-			appendEvent(t, database, seeded.issue, "message.created",
-				`{"id":"22222222-2222-4222-8222-000000000011","issue_key":"ERASE-1","body":"Seen it.",`+
-					`"in_reply_to":"`+seeded.message+`","reply_block":null,"reply_body":"`+head+`"}`),
-			appendEvent(t, database, seeded.issue, "message.created",
-				`{"id":"22222222-2222-4222-8222-000000000012","issue_key":"ERASE-1","body":"On that line.",`+
-					`"in_reply_to":"`+seeded.message+`","reply_block":{"node":"`+block+`","block_id":"b1","text":"`+body+`","removed":false},`+
-					`"reply_body":"`+body+`"}`),
-			appendEvent(t, database, seeded.issue, "message.answered",
-				`{"id":"22222222-2222-4222-8222-000000000013","issue_key":"ERASE-1","body":"Looking now.",`+
-					`"in_reply_to":null,"reply_block":{"node":"`+block+`","block_id":"b1","text":"`+head+`","removed":false},`+
-					`"reply_body":"`+head+`"}`),
-		}
-		other := appendEvent(t, database, seeded.issue, "message.created",
-			`{"id":"22222222-2222-4222-8222-000000000014","issue_key":"ERASE-1","body":"`+body+`","in_reply_to":null}`)
-		before := readTypeNode(t, database, graphstore.KindMessage, seeded.message)
-		if !before.row || before.out == 0 {
-			t.Fatalf("the seed holds message:%s as %+v, want a node with tuples, so this test would prove nothing", seeded.message, before)
-		}
-
-		listing, err := Erase(ctx, url, eraseServerURL, graphstore.KindMessage, seeded.message, "", 0)
-		if err != nil {
-			t.Fatalf("erase --node message:%s answered %v, want its listing", seeded.message, err)
-		}
-		// The listing names the message's row among the rows the run deletes, the four events among
-		// the ones it redacts, and no messages row as one it leaves; another message's event, which
-		// stands, is listed as left.
-		if !listed(listing, "delete messages (id)=", seeded.message) {
-			t.Errorf("the listing of message:%s reads\n\t%s\nwith no delete of its messages row", seeded.message, joinedListing(listing))
-		}
-		if listed(listing, "leave public.messages") {
-			t.Errorf("the listing of message:%s reads\n\t%s\nleaving a messages row the run deletes", seeded.message, joinedListing(listing))
-		}
-		for _, event := range append([]int64{own}, quoting...) {
-			if !listed(listing, fmt.Sprintf("events %d ", event)) {
-				t.Errorf("the listing of message:%s reads\n\t%s\nwith no redaction of event %d", seeded.message, joinedListing(listing), event)
-			}
-		}
-		if !listed(listing, "leave public.events", fmt.Sprintf("(id)=(%d)", other)) {
-			t.Errorf("the listing of message:%s reads\n\t%s\nwith no line leaving another message's event %d", seeded.message, joinedListing(listing), other)
-		}
-		erased, err := Erase(ctx, url, eraseServerURL, graphstore.KindMessage, seeded.message, listing.Digest, 0)
-		if err != nil || !erased.Applied {
-			t.Fatalf("the confirmed erase of message:%s answered %+v, %v; want applied", seeded.message, erased, err)
-		}
-		if held := readTypeNode(t, database, graphstore.KindMessage, seeded.message); held.row || held.out != 0 || held.in != 0 || held.erased != 1 {
-			t.Errorf("after the erase the store holds %+v of the message's node, want no row, no tuple and one erasure", held)
-		}
-		var rows int64
-		if err := database.Pool.QueryRow(ctx, `select count(*) from messages where id = $1::uuid or body = $2`,
-			seeded.message, body).Scan(&rows); err != nil {
-			t.Fatalf("count the message's rows: %v", err)
-		}
-		if rows != 0 {
-			t.Errorf("after the erase %d messages row(s) are the message's or hold its body, want none", rows)
-		}
-		marker := fmt.Sprintf(eraseMarker, graphstore.KindMessage, seeded.message)
-		for _, event := range append([]int64{own}, quoting...) {
-			payload, raw := eventPayload(t, database, event)
-			if strings.Contains(raw, head) || !strings.Contains(raw, marker) {
-				t.Errorf("after the erase event %d reads %s, want every byte of the message's body replaced by the marker", event, raw)
-			}
-			if event == own {
-				continue
-			}
-			if payload["reply_body"] != marker {
-				t.Errorf("after the erase event %d's reply_body reads %v, want the marker whole", event, payload["reply_body"])
-			}
-			if quoted, ok := payload["reply_block"].(map[string]any); ok && quoted["text"] != marker {
-				t.Errorf("after the erase event %d's reply_block text reads %v, want the marker whole", event, quoted["text"])
-			}
-		}
-		for index, words := range []string{"Seen it.", "On that line.", "Looking now."} {
-			if payload, _ := eventPayload(t, database, quoting[index]); payload["body"] != words {
-				t.Errorf("after the erase reply event %d's own body reads %v, want %q as its writer wrote it", quoting[index], payload["body"], words)
-			}
-		}
-		if _, raw := eventPayload(t, database, other); !strings.Contains(raw, body) {
-			t.Errorf("after the erase another message's event reads %s, want its own words left standing", raw)
-		}
-
-		// A message row an older build wrote, beside the node this build wrote for it, names no node.
-		const older = "22222222-2222-4222-8222-000000000015"
-		writeOlderMessage(t, database, older, "A message an older build kept")
-		requireRefusedWhileTheRowStands(t, database, graphstore.KindMessage, older, "messages", "body", "id::text",
-			"its row stands and names no node yet")
-	})
-}
-
-// requireRefusedWhileTheRowStands runs the erase of kind:id as an operator does, without --confirm
-// and then with a digest, and holds each run to the refusal, with the node, its tuples and the row
-// that holds its text as they were and no erasure recorded. A dry run that lists the node instead
-// is followed by the confirmed run an operator runs next, so the failure says what that erase does
-// to the row.
-func requireRefusedWhileTheRowStands(t *testing.T, database *store.Store, kind, id, table, column, key, refusal string) {
-	t.Helper()
-	ctx := context.Background()
-	url := database.Pool.Config().ConnString()
-	before := readTypeNode(t, database, kind, id)
-	if !before.row || before.out == 0 {
-		t.Fatalf("the seed holds %s:%s as %+v, want a node with tuples, so this test would prove nothing", kind, id, before)
-	}
-	text := rowText(t, database, table, column, key, id)
-	listing, err := Erase(ctx, url, eraseServerURL, kind, id, "", 0)
-	if err == nil && listing != nil {
-		confirmed, confirmErr := Erase(ctx, url, eraseServerURL, kind, id, listing.Digest, 0)
-		t.Fatalf("erase --node %s:%s listed it and its confirmed run answered applied %t (err %v); the %s row still reads %q",
-			kind, id, confirmed != nil && confirmed.Applied, confirmErr, table, rowText(t, database, table, column, key, id))
-	}
-	for _, confirm := range []string{"", "any digest"} {
-		erasure, err := Erase(ctx, url, eraseServerURL, kind, id, confirm, 0)
-		if err == nil || !strings.Contains(err.Error(), "refuses "+kind+":"+id+": ") || !strings.Contains(err.Error(), refusal) {
-			t.Errorf("erase --node %s:%s (confirm %q) answered %v (applied %t), want the refusal %q",
-				kind, id, confirm, err, erasure != nil && erasure.Applied, refusal)
-		}
-	}
-	if after := readTypeNode(t, database, kind, id); after != before {
-		t.Errorf("erase --node %s:%s left the store holding %+v of it, want %+v as before the runs", kind, id, after, before)
-	}
-	if after := rowText(t, database, table, column, key, id); after != text {
-		t.Errorf("erase --node %s:%s left its %s row reading %q, want %q as before the runs", kind, id, table, after, text)
-	}
-}
-
-// writeOlderMessage writes message id on ERASE-1 as a build before this one writes it during a
-// roll: the row names no node, beside the node this build's create wrote for the address.
-func writeOlderMessage(t *testing.T, database *store.Store, id, body string) {
-	t.Helper()
-	ctx := context.Background()
-	tx, err := database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin the older message: %v", err)
-	}
-	defer tx.Rollback(ctx)
-	if err := graphstore.Write(ctx, tx, []graphstore.Node{
-		graphstore.MessageNode(id, "ERASE", nil, model.Actor{Kind: "user", ID: "alice"}, time.Now().UTC()),
-	}, nil); err != nil {
-		t.Fatalf("write the older message's node: %v", err)
-	}
-	if _, err := tx.Exec(ctx, `insert into messages (id, issue_key, author, body)
-		values ($1::uuid, 'ERASE-1', '{"kind":"user","id":"alice"}', $2)`, id, body); err != nil {
-		t.Fatalf("write the older message's row: %v", err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		t.Fatalf("commit the older message: %v", err)
 	}
 }
 
@@ -233,14 +90,14 @@ func TestTheEraseRemovesAnOrphanedDocumentsNode(t *testing.T) {
 	}
 	requireOrphaned(t, database, 1)
 
-	listing, err := Erase(ctx, url, eraseServerURL, graphstore.KindArtifact, seeded.documentRef, "", 0)
+	listing, err := Erase(ctx, url, graphstore.KindArtifact, seeded.documentRef, "", 0)
 	if err != nil {
 		t.Fatalf("erase --node artifact:%s with no row behind it answered %v, want its listing", seeded.documentRef, err)
 	}
 	if want := "delete graph_nodes artifact:" + seeded.documentRef; !strings.Contains(strings.Join(listing.Listing, "\n"), want) {
 		t.Errorf("the listing reads %q, want it to name %q", listing.Listing, want)
 	}
-	erased, err := Erase(ctx, url, eraseServerURL, graphstore.KindArtifact, seeded.documentRef, listing.Digest, 0)
+	erased, err := Erase(ctx, url, graphstore.KindArtifact, seeded.documentRef, listing.Digest, 0)
 	if err != nil || !erased.Applied {
 		t.Fatalf("the confirmed erase answered %+v, %v; want applied", erased, err)
 	}
@@ -352,8 +209,7 @@ type objectNodes struct {
 
 // seedObjectNodes writes project ERASE, issue ERASE-1 with a document, an ask and a message, each
 // row with its node as its create writes it (graphstore.IssueNode and its siblings) and the base
-// attributes that node write states; the message's row names its node, as this build's create
-// writes it.
+// attributes that node write states.
 func seedObjectNodes(t *testing.T, database *store.Store) objectNodes {
 	t.Helper()
 	ctx := context.Background()
@@ -384,8 +240,8 @@ func seedObjectNodes(t *testing.T, database *store.Store) objectNodes {
 		 values ('ERASE-1', 'ERASE', 'notes-md', 'Notes somebody named', 'doc', '{"kind":"user","id":"alice"}')`,
 		`insert into asks (id, issue_key, author, question, options, multiple, urgency, kind)
 		 values ('` + seeded.ask + `', 'ERASE-1', '{"kind":"user","id":"alice"}', 'A question somebody asked', '[]', false, 'med', 'question')`,
-		`insert into messages (id, issue_key, author, body, node_kind, node_address)
-		 values ('` + seeded.message + `', 'ERASE-1', '{"kind":"user","id":"alice"}', 'A message somebody wrote', 'message', '` + seeded.message + `')`,
+		`insert into messages (id, issue_key, author, body)
+		 values ('` + seeded.message + `', 'ERASE-1', '{"kind":"user","id":"alice"}', 'A message somebody wrote')`,
 	} {
 		if _, err := tx.Exec(ctx, statement); err != nil {
 			t.Fatalf("seed the rows: %v\n%s", err, statement)

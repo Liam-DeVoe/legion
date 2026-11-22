@@ -133,8 +133,7 @@ func threadAndMembers(ctx context.Context, tx pgx.Tx, w Write) (thread, []member
 }
 
 // ThreadRoot is the root of the thread the node kind/id is written in, as (kind, id), read as
-// Record reads a write's (threadOf): the erase reads it of a reply it removes, whose thread's rows
-// that reply reached (grapherase's readRepliedRows).
+// Record reads a write's (threadOf).
 func ThreadRoot(ctx context.Context, tx pgx.Tx, kind, id string) (string, string, error) {
 	root, err := threadOf(ctx, tx, Write{NodeKind: kind, NodeID: id})
 	return root.kind, root.id, err

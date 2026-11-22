@@ -110,7 +110,7 @@ func TestTheBlockEraseLeavesASiblingThatRepeatsItsWords(t *testing.T) {
 	ctx := context.Background()
 	database := storetest.Open(t)
 	databaseURL := database.Pool.Config().ConnString()
-	server := startEraseServer(t, databaseURL, 0)
+	server := startDispatchProcess(t, databaseURL)
 	server.waitHealthy(t)
 	server.call(t, http.MethodPost, "/api/v1/projects", `{"key":"ERB","name":"Erase"}`, http.StatusCreated)
 
@@ -234,7 +234,7 @@ func TestTheCommentEraseTakesItsBodyOutOfTheMarginOfItsDocument(t *testing.T) {
 	ctx := context.Background()
 	database := storetest.Open(t)
 	databaseURL := database.Pool.Config().ConnString()
-	server := startEraseServer(t, databaseURL, 0)
+	server := startDispatchProcess(t, databaseURL)
 	server.waitHealthy(t)
 	server.call(t, http.MethodPost, "/api/v1/projects", `{"key":"ERM","name":"Erase"}`, http.StatusCreated)
 
@@ -315,7 +315,7 @@ func TestTheBlockEraseTakesAVersionThatCarriedTheBlockUnchanged(t *testing.T) {
 	ctx := context.Background()
 	database := storetest.Open(t)
 	databaseURL := database.Pool.Config().ConnString()
-	server := startEraseServer(t, databaseURL, 0)
+	server := startDispatchProcess(t, databaseURL)
 	server.waitHealthy(t)
 	server.call(t, http.MethodPost, "/api/v1/projects", `{"key":"ERC","name":"Erase"}`, http.StatusCreated)
 
@@ -372,7 +372,7 @@ func TestTheCommentEraseKeepsTheOtherCommentsOfItsDocument(t *testing.T) {
 	ctx := context.Background()
 	database := storetest.Open(t)
 	databaseURL := database.Pool.Config().ConnString()
-	server := startEraseServer(t, databaseURL, 0)
+	server := startDispatchProcess(t, databaseURL)
 	server.waitHealthy(t)
 	server.call(t, http.MethodPost, "/api/v1/projects", `{"key":"ERK","name":"Erase"}`, http.StatusCreated)
 
@@ -440,7 +440,7 @@ func TestTheCommentEraseTakesAnEditedReplyOutOfItsRootsMargin(t *testing.T) {
 	ctx := context.Background()
 	database := storetest.Open(t)
 	databaseURL := database.Pool.Config().ConnString()
-	server := startEraseServer(t, databaseURL, 0)
+	server := startDispatchProcess(t, databaseURL)
 	server.waitHealthy(t)
 	server.call(t, http.MethodPost, "/api/v1/projects", `{"key":"ERD","name":"Erase"}`, http.StatusCreated)
 
@@ -498,7 +498,7 @@ func TestTheBlockEraseListsAMarginRecordThatQuotesItAsLeft(t *testing.T) {
 	ctx := context.Background()
 	database := storetest.Open(t)
 	databaseURL := database.Pool.Config().ConnString()
-	server := startEraseServer(t, databaseURL, 0)
+	server := startDispatchProcess(t, databaseURL)
 	server.waitHealthy(t)
 	server.call(t, http.MethodPost, "/api/v1/projects", `{"key":"ERL","name":"Erase"}`, http.StatusCreated)
 
@@ -515,7 +515,7 @@ func TestTheBlockEraseListsAMarginRecordThatQuotesItAsLeft(t *testing.T) {
 	// read against the settled document, which nothing writes to again.
 	waitForSettlementOwed(t, database, document, false)
 
-	listing, err := grapherase.Erase(ctx, databaseURL, eraseServerURL, "block", block, "", 0)
+	listing, err := grapherase.Erase(ctx, databaseURL, "block", block, "", 0)
 	if err != nil {
 		t.Fatalf("erase --node block:%s without --confirm: %v", block, err)
 	}
@@ -523,7 +523,7 @@ func TestTheBlockEraseListsAMarginRecordThatQuotesItAsLeft(t *testing.T) {
 		t.Errorf("the listing does not name the margin record of comment %s, which quotes the erased text and stays:\n%s",
 			quoting, strings.Join(listing.Listing, "\n"))
 	}
-	erasure, err := grapherase.Erase(ctx, databaseURL, eraseServerURL, "block", block, listing.Digest, time.Millisecond)
+	erasure, err := grapherase.Erase(ctx, databaseURL, "block", block, listing.Digest, time.Millisecond)
 	if err != nil || !erasure.Applied {
 		t.Fatalf("erase %s: applied %t, %v", block, erasure != nil && erasure.Applied, err)
 	}

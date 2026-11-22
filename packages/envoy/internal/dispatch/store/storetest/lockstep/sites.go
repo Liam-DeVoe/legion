@@ -264,10 +264,6 @@ var storeWriteCallSites = map[string]string{
 	"docs/approval_ask.go#rewriteApprovalAsk":          "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	"docs/decided_wording.go#restoreWordings":          "docs#TestARestorationRefusesAnAskAnsweredSinceItsPlan",
 	"cmd/dispatch-seed/write_items.go#stateAtSentinel": "cmd/dispatch-seed#TestTheSeedsCommentWriteTakesTheStoreLockOrder",
-	// The erase of a comment's or a message's parts with the item (grapherase's eraseItemParts):
-	// its block nodes and its delivery attempts, after the item's own node, each through EraseNode
-	// over the tuples its listing named.
-	"grapherase/erase.go#eraseItemParts": "grapherase#TestTheEraseTakesTheStoreLockOrder",
 	// The one writer of the threads a person takes part in (inboxwrite.Recording.Queue), which every
 	// comment, message, ask and answer write queues after its event: what an answer's ask still owes
 	// the store, its writer's participates_in, every user_threads row of the thread in one pass,

@@ -55,7 +55,7 @@ func TestTheEraseTakesItsNodesOwnerRowFirst(t *testing.T) {
 	listing := dryRun(t, database, commentNodeKind, seeded.comment)
 	answered := make(chan answer, 1)
 	go func() {
-		erasure, err := Erase(context.Background(), database.Pool.Config().ConnString(), eraseServerURL, commentNodeKind, seeded.comment, listing.Digest, time.Millisecond)
+		erasure, err := Erase(context.Background(), database.Pool.Config().ConnString(), commentNodeKind, seeded.comment, listing.Digest, time.Millisecond)
 		answered <- answer{erasure, err}
 	}()
 

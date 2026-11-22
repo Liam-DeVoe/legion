@@ -67,12 +67,7 @@ var subcommands = []subcommand{
 		return backfillFiles(ctx, args, env.get("DATABASE_URL"), strings.TrimSpace(env.get("DISPATCH_FILE_STORE_BUCKET")), stdout)
 	}},
 	{"erase", func(ctx context.Context, args []string, env settingValues, stdout, stderr io.Writer) int {
-		serverURL, err := resolveServerURL(env)
-		if err != nil {
-			fmt.Fprintf(stderr, "erase: load envoy config: %v\n", err)
-			return 2
-		}
-		return erase(ctx, args, env.get("DATABASE_URL"), serverURL, stdout, stderr)
+		return erase(ctx, args, env.get("DATABASE_URL"), stdout, stderr)
 	}},
 	{"stored-order", func(ctx context.Context, args []string, env settingValues, stdout, _ io.Writer) int {
 		return storedOrder(ctx, args, env.get("DATABASE_URL"), stdout)
@@ -593,27 +588,17 @@ func bucketlessProcesses(ctx context.Context, database *store.Store) ([]string, 
 }
 
 // loadServerURL resolves the dashboard origin exactly as the server does, for a subcommand
-// that parses reference text, and exits 1 where the envoy config cannot be loaded.
+// that parses reference text.
 func loadServerURL(env settingValues) string {
-	serverURL, err := resolveServerURL(env)
+	envoyConfig, err := loadEnvoyConfig(env, config.LoadOptions{})
 	if err != nil {
 		slog.Error("dispatch: load envoy config", "error", err)
 		os.Exit(1)
 	}
-	return serverURL
-}
-
-// resolveServerURL is the dashboard origin as the server resolves it, or the error of an envoy
-// config that cannot be loaded.
-func resolveServerURL(env settingValues) (string, error) {
-	envoyConfig, err := loadEnvoyConfig(env, config.LoadOptions{})
-	if err != nil {
-		return "", err
-	}
 	if envoyConfig.Dispatch == nil {
-		return "", nil
+		return ""
 	}
-	return envoyConfig.Dispatch.ServerURL, nil
+	return envoyConfig.Dispatch.ServerURL
 }
 
 // rebuildRefs reparses every reference source and reconciles the refs index with it. It

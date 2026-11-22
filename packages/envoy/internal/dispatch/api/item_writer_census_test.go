@@ -185,11 +185,6 @@ var itemRowWriters = map[string]map[string]string{
 			"before the node's row (lockInStoreOrder, events.LockOwnerRows); it writes a table this " +
 			"scan cannot read, which may be a comments row the erase deletes",
 	},
-	"internal/dispatch/grapherase/read_state.go": {
-		"deleteReadState": "the owner lock of every owner the erase writes under, which the erase's " +
-			"transaction takes before the node's row and its read-state rows (lockOwnersThenNode, " +
-			"events.LockOwnerRows); it deletes read-state rows, tables this scan cannot read",
-	},
 	"internal/dispatch/refs/comment_nodes.go": {
 		"Queue": "the owner lock of every comment it names, which each of its callers takes before it " +
 			"reads the rows (LockCommentOwners): the backfill's comment batch (graphcensus's " +
@@ -446,12 +441,7 @@ var itemRowLockNoRow = map[string]map[string]string{
 		"writeAsksOwed": inboxPassLockSteps,
 		"writeMarks":    itemRowNoOwnerLock,
 	},
-	"internal/dispatch/grapherase/erase.go": {"apply": itemRowCallersTransaction},
-	"internal/dispatch/grapherase/read_state.go": {
-		"deleteReadState": "runs in the erase's transaction, an operator's command no request makes, " +
-			"after it took every owner lock; its lock-step test holds the erase behind the owner lock " +
-			"before the node's row (grapherase's TestTheEraseTakesTheStoreLockOrder)",
-	},
+	"internal/dispatch/grapherase/erase.go":   {"apply": itemRowCallersTransaction},
 	"internal/dispatch/refs/comment_nodes.go": {"Queue": itemRowCallersTransaction},
 	"internal/dispatch/refs/item_blocks.go": {
 		"clearItemWindowsOwed": itemRowCallersTransaction,

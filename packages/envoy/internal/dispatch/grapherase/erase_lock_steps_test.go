@@ -12,7 +12,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -214,7 +213,7 @@ func TestTheEraseWaitsForAKeywordBatchInFlightAndListsWhatItWrote(t *testing.T) 
 
 	answered := make(chan eraseAnswer, 1)
 	go func() {
-		erasure, err := Erase(context.Background(), database.Pool.Config().ConnString(), eraseServerURL, commentNodeKind, seeded.comment,
+		erasure, err := Erase(context.Background(), database.Pool.Config().ConnString(), commentNodeKind, seeded.comment,
 			listing.Digest, time.Millisecond)
 		answered <- eraseAnswer{erasure, err}
 	}()
@@ -285,13 +284,8 @@ func windowTheComment(t *testing.T, database *store.Store, comment string) {
 	if err := tx.QueryRow(ctx, `select body from comments where id = $1::uuid for no key update`, comment).Scan(&body); err != nil {
 		t.Fatalf("read the body of comment %s: %v", comment, err)
 	}
-	_, indexed, err := refs.IndexItem(ctx, tx, refs.ItemComment, comment, body, eraseServerURL, time.Now(), nil, nil)
-	if err != nil {
+	if _, _, err := refs.IndexItem(ctx, tx, refs.ItemComment, comment, body, "", time.Now(), nil, nil); err != nil {
 		t.Fatalf("index the blocks of comment %s: %v", comment, err)
-	}
-	// The tick's owed index states its blocks at the sentinel, as refs.IndexItemIfOwed does.
-	if err := graphstore.Caused(ctx, tx, indexed, graphstore.NoEvent); err != nil {
-		t.Fatalf("state the blocks of comment %s: %v", comment, err)
 	}
 	if windowed, err := refs.WriteItemWindows(ctx, tx, refs.ItemComment, comment); err != nil || !windowed {
 		t.Fatalf("window comment %s = %v, %v; want its windows written", comment, windowed, err)
@@ -944,7 +938,7 @@ func startConfirmedErase(t *testing.T, database *store.Store, kind, id string, l
 	t.Helper()
 	answered := make(chan eraseAnswer, 1)
 	go func() {
-		erasure, err := Erase(context.Background(), database.Pool.Config().ConnString(), eraseServerURL, kind, id, listing.Digest, time.Millisecond)
+		erasure, err := Erase(context.Background(), database.Pool.Config().ConnString(), kind, id, listing.Digest, time.Millisecond)
 		if erasure != nil {
 			for _, document := range erasure.Documents {
 				t.Errorf("document %s has a stored history, which this test never writes", document.Document)

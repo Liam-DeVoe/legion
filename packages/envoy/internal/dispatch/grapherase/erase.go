@@ -40,17 +40,6 @@ const eraseApplicationName = "envoy-dispatch erase"
 // holds none of what was erased.
 const eraseMarker = "[erased by envoy-dispatch erase %s:%s, recorded in graph_erasures]"
 
-// itemPartTables are the tables whose rows name a node that is a part of an item rather than the
-// item itself (migration 20261116140000): the block rows of a comment, a message and an ask and
-// the link rows of their blocks, each naming the block's node. The erase deletes none of them by
-// a node's address - a block's and a link's row goes with its item's row, on delete cascade - so
-// they are no graphstore.ProjectedTables, but each is a projection a live node states its tuples
-// from, which readBlockers reads.
-var itemPartTables = []string{
-	"comment_blocks", "message_blocks", "ask_blocks",
-	"comment_block_refs", "message_block_refs", "ask_block_refs",
-}
-
 // ParseNode reads the `<kind>:<id>` the --node flag takes. The kind is the node's kind as
 // graph_nodes keys it and holds no colon; everything after the first one is the id, so a page's
 // `page:role/<topic>` and a comment's uuid are both read whole.
@@ -72,19 +61,14 @@ func ParseNode(value string) (kind, id string, err error) {
 // document - the versions at which its own block held the text and the approvals over them, the
 // document's editing state, its search rows, the keyword versions of its issue that name one of
 // those versions where it is the issue's spec, and its windows - and the excerpts cut from its
-// text, for a comment the editing state of every document whose margin record holds its body, and
-// its rows of the six read-state tables, which mirror tuples from a person to what the mark is
-// about: a person's every row, and an item's the rows that name it (readStateTables). The run
-// deletes those, or rewrites them with the marker where it may take no row away. A comment or a
-// message that is a reply in another thread is counted and named by that thread's user_threads
-// rows it reached, which are their people's and stay: the run rewrites each one's version,
-// last_reply_id and replied_at to what the store says once the reply's deliveries are gone
-// (readRepliedRows). Every other row that holds the same bytes derives from another node and is
-// that node's text - a sibling block of the same document among them: the run lists it with its
-// address and changes nothing in it. An operator erases a comment's, a message's or a block's text
-// by a run over that node; an issue's, a document's or an ask's text is in its own row and the
-// events about it, which no run reaches, and is changed through that object's own route (an
-// issue's title, a document's name and versions).
+// text, and for a comment the editing state of every document whose margin record holds its body.
+// The run deletes those, or rewrites them with the marker where it may take no row away. Every
+// other row that holds the same bytes derives from another node and is that node's text - a
+// sibling block of the same document among them: the run lists it with its address and changes
+// nothing in it. An operator erases a comment's or a block's text by a run over that node; an
+// issue's, a document's, an ask's or a message's text is in its own row and the events about it,
+// which no run reaches, and is changed through that object's own route (an issue's title, a
+// document's name and versions).
 //
 // confirm is the digest of a listing. With none the run reads everything it would delete,
 // rewrite, redact or leave in a read-only transaction, which takes no write lock and waits on no
@@ -112,22 +96,17 @@ func ParseNode(value string) (kind, id string, err error) {
 // keeps addressing it, so deleting it leaves the census a difference no erase can close
 // (graphcensus's addressedRoles reads the roles every event ever named).
 //
-// It refuses an issue, a document and an ask while their row stands (graphcensus.ObjectRowStands,
-// read in Erasure.read, under the node's lock on a confirmed run). A node of one of those kinds
-// holds its text in its own row - an issue's title, a document's name and versions, an ask's
-// question - and the erase reads text only from the comments, the messages and the document
-// blocks that derive from a node. A run over one would delete the node and its tuples, record an
-// erasure and answer applied with every byte of that text still in place, the project census
-// would read the row as missing its node, and the backfill would write the node again
-// (graphcensus.ProjectComplete). A message's row that names its node is one of its projection
-// rows (graphstore.ProjectedTables): the run deletes it with the node and marks its body in every
-// event that carried it (readTexts, readEvents), so a message is erased with its row. A message
-// row a build before this one wrote names no node until the backfill marks it, and the run refuses
-// that message until it does, since it would find the row by no address. A node of one of those
-// kinds, at any state but gone, that no row stands behind - a document a build before this one
-// removed, during a roll or after a rollback, without stating its node gone - holds no text and
-// is the project census's orphaned class; the erase removes it with its tuples, which is that
-// class's one remedy.
+// It refuses an issue, a document, an ask and a message while their row stands
+// (graphcensus.ObjectRowStands, read in Erasure.read, under the node's lock on a confirmed run).
+// A node of one of those kinds holds its text in its own row - an issue's title, a document's
+// name and versions, an ask's question, a message's body - and the erase reads text only from the
+// comments and the document blocks that derive from a node. A run over one would delete the node
+// and its tuples, record an erasure and answer applied with every byte of that text still in
+// place, the project census would read the row as missing its node, and the backfill would write
+// the node again (graphcensus.ProjectComplete). A node of one of those kinds, at any state but
+// gone, that no row stands behind - a document a build before this one removed, during a roll or after a rollback,
+// without stating its node gone - holds no text and is the project census's orphaned class; the
+// erase removes it with its tuples, which is that class's one remedy.
 //
 // What it did goes into `graph_erasures`: what was removed, who ran it and when, and no erased
 // text. Nobody addresses that row and no read of the graph answers it.
@@ -145,22 +124,13 @@ func ParseNode(value string) (kind, id string, err error) {
 // could not do is the error's to say. A count that fails is no failure of the erase and comes back
 // as no error: the Erasure names it (NotRecounted), with the refresh pass that counts the project
 // again.
-//
-// serverURL is the dashboard origin the server's writers cut a block's excerpt around
-// (refs.BlockExcerpt): a redacted excerpt the run stores in a block's place is cut with it, so it
-// is the excerpt the writer would store. cmd/dispatch reads it as the server does. An empty one is
-// refused, as rebuild-refs refuses one: the run would store an excerpt no writer of the deployment
-// cut.
-func Erase(ctx context.Context, databaseURL, serverURL, kind, id, confirm string, treeStoreBound time.Duration) (*Erasure, error) {
+func Erase(ctx context.Context, databaseURL, kind, id, confirm string, treeStoreBound time.Duration) (*Erasure, error) {
 	if kind == schemanodes.KindSupertag || kind == schemanodes.KindAttribute {
 		return nil, fmt.Errorf("the erase refuses %s:%s: a type node is data the block schema seeds, and no command deletes it", kind, id)
 	}
 	if kind == graphstore.KindRole || kind == graphstore.KindPage || kind == graphstore.KindSession {
 		return nil, fmt.Errorf("the erase refuses %s:%s: a %s node holds no text anybody wrote, so no erasure is owed for it, "+
 			"and the event log keeps addressing it, so deleting it leaves the census a difference no erase can close", kind, id, kind)
-	}
-	if strings.TrimSpace(serverURL) == "" {
-		return nil, errors.New("DISPATCH_SERVER_URL (or dispatch.serverUrl in envoy.json) is required to cut a redacted excerpt as the server's writers cut it; refusing to store an excerpt no writer stored")
 	}
 	confirm = strings.TrimPrefix(strings.TrimSpace(confirm), "sha256:")
 	conn, err := store.Connect(ctx, databaseURL, eraseApplicationName)
@@ -181,12 +151,12 @@ func Erase(ctx context.Context, databaseURL, serverURL, kind, id, confirm string
 			return nil, fmt.Errorf("begin: %w", err)
 		}
 		defer tx.Rollback(context.Background())
-		erasure = &Erasure{Kind: kind, ID: id, RanAt: time.Now().UTC(), serverURL: serverURL}
+		erasure = &Erasure{Kind: kind, ID: id, RanAt: time.Now().UTC()}
 		if read, err = erasure.read(ctx, tx); err != nil {
 			return nil, err
 		}
 	} else {
-		if tx, erasure, read, err = lockInStoreOrder(ctx, conn, serverURL, kind, id); err != nil {
+		if tx, erasure, read, err = lockInStoreOrder(ctx, conn, kind, id); err != nil {
 			return nil, err
 		}
 		defer tx.Rollback(context.Background())
@@ -227,20 +197,18 @@ func Erase(ctx context.Context, databaseURL, serverURL, kind, id, confirm string
 // order the foreign keys allow. Before anything goes it reads the keys of the display trees of
 // the texts it removes or rewrites (treeSums) and deletes the node's embedding rows
 // (forgetEmbeddings). Then go the whole text of the node's block and its Keep, the rows that
-// cannot exist without a projection row, the projection rows, the node's read-state rows
-// (deleteReadState) - with the user_threads rows a removed reply reached rewritten beside them
-// (rewriteRepliedRows) - and the approvals and the versions they stood on. Then it rewrites what it
-// may not remove - the blocks holding the node's block and the mentions whose excerpt was cut from
-// it, the events about it, the search vectors that stood on a version that went and the keyword
-// vectors of its spec issue that did, once the node's own keyword versions have gone
-// (restateKeywordVersions), the embedding rows of what it leaves (restateEmbeddings), and the live
-// state of every document whose history it replaces - takes out of the term statistics of every
-// project whose items moved the lexemes the run removed (api.ForgetErasedTermsTx, which reads no
-// item but the ones the run changed: counting those projects again is recountTermStats's, after
-// the commit), and deletes the display trees of the texts that went. Last go the tuples the
-// listing named and the node (graphstore.EraseNode), which refuses the run where a tuple landed
-// since, and the record of what the run did goes in. Every row it writes is one the read under its
-// locks listed (erasedRead).
+// cannot exist without a projection row, the projection rows, and the approvals and the versions
+// they stood on. Then it rewrites what it may not remove - the blocks holding the node's block
+// and the mentions whose excerpt was cut from it, the events about it, the search vectors that
+// stood on a version that went and the keyword vectors of its spec issue that did, once the
+// node's own keyword versions have gone (restateKeywordVersions), the embedding rows of what it
+// leaves (restateEmbeddings), and the live state of every document whose history it replaces -
+// takes out of the term statistics of every project whose items moved the lexemes the run removed
+// (api.ForgetErasedTermsTx, which reads no item but the ones the run changed: counting those
+// projects again is recountTermStats's, after the commit), and deletes the display trees of the
+// texts that went. Last go the tuples the listing named and the node (graphstore.EraseNode),
+// which refuses the run where a tuple landed since, and the record of what the run did goes in.
+// Every row it writes is one the read under its locks listed (erasedRead).
 func (e *Erasure) apply(ctx context.Context, tx pgx.Tx, read erasedRead) error {
 	sums, err := e.treeSums(ctx, tx, read)
 	if err != nil {
@@ -275,12 +243,6 @@ func (e *Erasure) apply(ctx context.Context, tx pgx.Tx, read erasedRead) error {
 			return fmt.Errorf("delete the %s rows of %s:%s: %w", held.Table, e.Kind, e.ID, err)
 		}
 		e.removed(held.Table, tag.RowsAffected())
-	}
-	if err := e.deleteReadState(ctx, tx, read); err != nil {
-		return err
-	}
-	if err := e.rewriteRepliedRows(ctx, tx, read); err != nil {
-		return err
 	}
 	if len(read.artifacts) > 0 {
 		tag, err := tx.Exec(ctx, `delete from artifact_reviews where exists (
@@ -331,9 +293,6 @@ func (e *Erasure) apply(ctx context.Context, tx pgx.Tx, read erasedRead) error {
 		return err
 	}
 	if err := graphstore.EraseNode(ctx, tx, e.Kind, e.ID, read.tupleSeqs); err != nil {
-		return err
-	}
-	if err := e.eraseItemParts(ctx, tx, read); err != nil {
 		return err
 	}
 	removed, err := json.Marshal(e)
@@ -405,21 +364,3 @@ func (e *Erasure) eraseBlockTexts(ctx context.Context, tx pgx.Tx, read erasedRea
 // marker is eraseMarker naming the node this run addressed, which is what stands in every row
 // the run rewrites.
 func (e *Erasure) marker() string { return fmt.Sprintf(eraseMarker, e.Kind, e.ID) }
-
-// eraseItemParts deletes the nodes that are parts of an erased comment or message - its block
-// nodes and its delivery attempts - and every tuple on both sides of each (readItemParts), once the
-// item's own node and tuples are gone, so no part_of is left into it: a block node of the item is
-// its text, and what the blocks' links state is read off that text, and an attempt is one of its
-// sends. The rows that name those nodes went with the item's row: the block and link rows on
-// delete cascade (migrations 0142 and 20261101143211), and the comment_deliveries and
-// message_deliveries rows as the rows that cannot exist without it (apply), so nothing names a node
-// this deletes.
-func (e *Erasure) eraseItemParts(ctx context.Context, tx pgx.Tx, read erasedRead) error {
-	for _, part := range read.parts {
-		if err := graphstore.EraseNode(ctx, tx, part.kind, part.id, part.seqs); err != nil {
-			return err
-		}
-		e.removed("graph_nodes", 1)
-	}
-	return nil
-}

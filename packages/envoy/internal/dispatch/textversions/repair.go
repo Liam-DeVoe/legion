@@ -11,10 +11,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// The first-body repair is the keyword table's second update path, beside the erase's
-// (grapherase's restateKeywordVersions: its delete of an erased node's rows and
-// RestateIssueVectors). Every other write of the table is the fill's own: its insert of each new
-// version, and its delete of every row of an event log that was reset.
+// The first-body repair is an update path of the keyword table beside the fill's own writes: its
+// insert of each new version, and its delete of every row of an event log that was reset.
 //
 // A fill of the release before this one decides a comment.created version whose event cut its
 // body by that release's reader, which takes revision 1 of the comment's blocks as the comment's
@@ -155,15 +153,14 @@ func (f *filler) repairCutFirstBodies(ctx context.Context) (int, error) {
 
 // repairBatch is one batch of the repair, in one READ COMMITTED transaction under the fill's own
 // locks, taken as a batch of the fill takes them (lockBatch): its bounds, the cursor row `for update`
-// (creating it at no event where none is), so it writes between two batches and never beside one
-// or beside the erase, which holds that row `for share` (HoldFillBack); under a hold, the check
-// that the hold is still this holder's (duty.ErrHoldLost otherwise); and the event log against the
-// cursor, a log reset under it ending the walk with nothing written, since the next batch empties
-// the table. It reads the window of cut comment versions after after (repairWindowQuery) and, of
-// each comment.created version in it, rebuilds the first body where revision 1 proves the
-// comment's own transaction (firstRevisionBody, repairFirstBodyQuery). Once it has rebuilt
-// bodies of f.maxBytes or more, the batch ends at the version it rebuilt last, and the next batch
-// reads after that one.
+// (creating it at no event where none is), so it writes between two batches and never beside one;
+// under a hold, the check that the hold is still this holder's (duty.ErrHoldLost otherwise); and
+// the event log against the cursor, a log reset under it ending the walk with nothing written,
+// since the next batch empties the table. It reads the window of cut comment versions after after
+// (repairWindowQuery) and, of each comment.created version in it, rebuilds the first body where
+// revision 1 proves the comment's own transaction (firstRevisionBody, repairFirstBodyQuery). Once
+// it has rebuilt bodies of f.maxBytes or more, the batch ends at the version it rebuilt last, and
+// the next batch reads after that one.
 func (f *filler) repairBatch(ctx context.Context, after repairKey) (repairResult, error) {
 	started := time.Now()
 	ctx = store.WithTransactionTracking(ctx)

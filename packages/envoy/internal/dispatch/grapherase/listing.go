@@ -216,42 +216,40 @@ type derivedRows struct {
 
 // derivedTables is every table holding rows that derive from a node, by name, each with the rows
 // of it that do. It is the same derivation apply writes by, row set for row set: the node's own
-// rows, its tuples, its projections (graphstore.ProjectedTables, each row naming the node by its
-// node_kind and node_address), its own document's rows, its embedding rows, its keyword versions
-// and the search vector of each keyword version of its spec issue that names a version the run
-// deletes, the events about it and its project's term statistics, which the run counts again. The
-// rows that cannot exist without a projection row are added by leftDerived, from the foreign keys
-// into the projections.
-var derivedTables = func() map[string][]derivedRows {
-	tables := map[string][]derivedRows{
-		"graph_nodes":          {{where: `held.kind = bound.kind and held.id = bound.id`}},
-		"graph_tuples":         {{where: `(held.from_kind = bound.kind and held.from_id = bound.id) or (held.to_kind = bound.kind and held.to_id = bound.id)`}},
-		"document_blocks":      {{where: `held.artifact_id = nullif(bound.document, '')::uuid and held.block_id = any(bound.excerpt_blocks)`}},
-		"document_block_texts": {{where: `held.artifact_id = nullif(bound.document, '')::uuid and (held.block_id = bound.block or exists (select 1 from unnest(bound.text_blocks, bound.text_versions) as rewritten (block_id, version) where rewritten.block_id = held.block_id and rewritten.version = held.version))`}},
-		"decision_keeps":       {{where: `held.artifact_id = nullif(bound.document, '')::uuid and held.block_id = bound.block`}},
-		"artifact_versions":    {{where: `held.artifact_id = nullif(bound.document, '')::uuid and held.number = any(bound.numbers)`}},
-		"document_search":      {{where: `held.artifact_id = nullif(bound.document, '')::uuid and cardinality(bound.numbers) > 0`}},
-		"issues":               {{columns: []string{"search"}, where: `bound.spec_issue <> '' and held.key = bound.spec_issue and cardinality(bound.numbers) > 0`}},
-		"search_text_versions": {
-			{where: `held.kind = bound.kind and held.id = bound.id`},
-			{columns: []string{"search"}, where: `bound.spec_issue <> '' and held.kind = 'issue' and held.id = bound.spec_issue and held.spec_artifact_id = nullif(bound.document, '')::uuid and held.spec_version = any(bound.numbers)`},
-		},
-		"embeddings": {{where: `(held.kind = bound.kind and held.id = bound.id)
+// rows, its tuples, its projections, its own document's rows, its embedding rows, its keyword
+// versions and the search vector of each keyword version of its spec issue that names a version
+// the run deletes, the events about it and its project's term statistics, which the run counts
+// again. The rows that cannot exist without a projection row are added by leftDerived, from the
+// foreign keys into the projections.
+var derivedTables = map[string][]derivedRows{
+	"graph_nodes":  {{where: `held.kind = bound.kind and held.id = bound.id`}},
+	"graph_tuples": {{where: `(held.from_kind = bound.kind and held.from_id = bound.id) or (held.to_kind = bound.kind and held.to_id = bound.id)`}},
+	"comments":     {{where: `held.node_kind = bound.kind and held.node_address = bound.id`}},
+	"document_blocks": {
+		{where: `held.node_kind = bound.kind and held.node_address = bound.id`},
+		{where: `held.artifact_id = nullif(bound.document, '')::uuid and held.block_id = any(bound.excerpt_blocks)`},
+	},
+	"block_refs":           {{where: `held.node_kind = bound.kind and held.node_address = bound.id`}},
+	"document_block_texts": {{where: `held.artifact_id = nullif(bound.document, '')::uuid and (held.block_id = bound.block or exists (select 1 from unnest(bound.text_blocks, bound.text_versions) as rewritten (block_id, version) where rewritten.block_id = held.block_id and rewritten.version = held.version))`}},
+	"decision_keeps":       {{where: `held.artifact_id = nullif(bound.document, '')::uuid and held.block_id = bound.block`}},
+	"artifact_versions":    {{where: `held.artifact_id = nullif(bound.document, '')::uuid and held.number = any(bound.numbers)`}},
+	"document_search":      {{where: `held.artifact_id = nullif(bound.document, '')::uuid and cardinality(bound.numbers) > 0`}},
+	"issues":               {{columns: []string{"search"}, where: `bound.spec_issue <> '' and held.key = bound.spec_issue and cardinality(bound.numbers) > 0`}},
+	"search_text_versions": {
+		{where: `held.kind = bound.kind and held.id = bound.id`},
+		{columns: []string{"search"}, where: `bound.spec_issue <> '' and held.kind = 'issue' and held.id = bound.spec_issue and held.spec_artifact_id = nullif(bound.document, '')::uuid and held.spec_version = any(bound.numbers)`},
+	},
+	"embeddings": {{where: `(held.kind = bound.kind and held.id = bound.id)
 		or (bound.window_kind <> '' and held.kind = bound.window_kind and split_part(held.id, '#', 1) = bound.owner_key)
 		or (bound.document <> '' and held.kind in ('document', '` + refs.DocumentWindowKind + `') and split_part(held.id, '#', 1) = bound.document)
 		or (bound.spec_issue <> '' and held.kind = 'issue' and held.id = bound.spec_issue)`}},
-		"doc_updates":       {{where: `held.artifact_id::text = any(bound.histories)`}},
-		"doc_checkpoints":   {{where: `held.artifact_id::text = any(bound.histories)`}},
-		"doc_snapshots":     {{where: `held.artifact_id::text = any(bound.histories)`}},
-		"refs":              {{where: `bound.document <> '' and held.from_kind = 'artifact' and held.from_id = bound.document and (held.excerpt_block_id = bound.block or held.excerpt_block_id = any(bound.ancestors))`}},
-		"events":            {{where: `held.id = any(bound.events)`}},
-		"search_term_stats": {{where: `bound.project <> '' and held.project_key = bound.project`}},
-	}
-	for _, held := range graphstore.ProjectedTables {
-		tables[held.Table] = append([]derivedRows{{where: `held.node_kind = bound.kind and held.node_address = bound.id`}}, tables[held.Table]...)
-	}
-	return tables
-}()
+	"doc_updates":       {{where: `held.artifact_id::text = any(bound.histories)`}},
+	"doc_checkpoints":   {{where: `held.artifact_id::text = any(bound.histories)`}},
+	"doc_snapshots":     {{where: `held.artifact_id::text = any(bound.histories)`}},
+	"refs":              {{where: `bound.document <> '' and held.from_kind = 'artifact' and held.from_id = bound.document and (held.excerpt_block_id = bound.block or held.excerpt_block_id = any(bound.ancestors))`}},
+	"events":            {{where: `held.id = any(bound.events)`}},
+	"search_term_stats": {{where: `bound.project <> '' and held.project_key = bound.project`}},
+}
 
 // leftBound is the one row of values every statement of readLeft reads its derivation from, so
 // each binds the same sixteen parameters whichever of them its table's predicate names.
@@ -443,14 +441,12 @@ func (e *Erasure) readKeptMargins(ctx context.Context, tx pgx.Tx, read *erasedRe
 }
 
 // rowNames names a row of the tables a reader knows the rows of by an address, beside the key the
-// listing gives every row: a version by its document and its number, a comment, a message and a
-// block by their node, a block's text and a document's history by the document, an event by its
-// type.
+// listing gives every row: a version by its document and its number, a comment and a block by
+// their node, a block's text and a document's history by the document, an event by its type.
 var rowNames = map[string]string{
 	"artifact_versions": `select a.ref_key || ' version ' || held.number || coalesce(' of ' || a.issue_key, '')
 		from artifacts a where a.id = held.artifact_id`,
 	"comments":             `'comment:' || held.id::text`,
-	"messages":             `'message:' || held.id::text`,
 	"document_blocks":      `'block:' || held.node_id`,
 	"document_block_texts": `select a.ref_key || '#' || held.block_id || ' version ' || held.version from artifacts a where a.id = held.artifact_id`,
 	"doc_updates":          `select a.ref_key from artifacts a where a.id = held.artifact_id`,
