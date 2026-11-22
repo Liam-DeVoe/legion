@@ -1009,7 +1009,8 @@ step before it failed is `UNKNOWN`, never run on nothing:
    that did not open within 30 s or a call that got no answer (refused, unresolved or unanswered
    in time, by the code the relay client's `RelayNotOpenedError` and the Envoy client keep of the
    failure), is `UNKNOWN`; an answer short of the pong, a refused upgrade or registration among
-   them, is `FAIL`.
+   them, is `FAIL`, and so is a socket the listener opened and then dropped before the session's
+   flush was answered: the listener answered that socket, so the step proved something.
 4. Every request of the run, the browser's and the process's, is judged against the rate rules
    of `OUTSIDE_EDGE_LIMITS`, `priority host match path count seconds` lines
    (`e2e/acceptance/outside-edge-limits.ts` says how a request finds its rule): a row per
@@ -1030,9 +1031,12 @@ when the list gave no answer, before the revoke or after it.
 fresh browser, writing the rows `T5-cookie` and `T5-passkey` to `OUTSIDE_T5_TSV`. `T5-passkey`
 passes only on the sign-in's own refusal of the passkey, `POST /auth/passkey/login/finish`
 answered 401 `PASSKEY_UNKNOWN` or 403 `NOT_LISTED`; any other answer, or an alert with none, is
-`UNKNOWN`, and a sign-in is `FAIL`. The driver prints no token, cookie or link, and no name of the
-machine it runs on: the link's token is withheld from every row even where a browser's error or
-a page names it.
+`UNKNOWN`, and a sign-in is `FAIL`. An error of a command's own, not an answer of the edge's (an
+`OUTSIDE_EDGE_STATE` it cannot use, say), judged nothing, so every command ends it
+`UNKNOWN: <command> failed on an error of its own: <its class>`, exit 2 and never 1, naming
+`OUTSIDE_EDGE_STATE` or its file where the error names one. The driver prints no token, cookie or
+link, and no name of the machine it runs on: the link's token is withheld from every row even where
+a browser's error or a page names it.
 
 `hold` registers the session the run kept at the listener again and holds it live, for a check
 that acts as the person's session: it reads `OUTSIDE_EDGE_STATE`, `OUTSIDE_PROJECT`,
@@ -1064,7 +1068,8 @@ exit 2 and never 1, naming the error's class and the state's file, with a sessio
 took by then unregistered.
 
 `bun run test:harness e2e/__tests__/outside-edge.test.ts e2e/__tests__/outside-edge-limits.test.ts
-e2e/__tests__/outside-edge-hold.test.ts` drives it. The input rows run anywhere. The control rows
+e2e/__tests__/outside-edge-hold.test.ts` drives it. The input rows run anywhere, and so does the row
+that gives `run`, `revoke` and `release` a state they cannot use (`UNKNOWN`, exit 2). The control rows
 run the driver against an outside origin stand-in (`e2e/__tests__/outside-edge-origin-stand-in.ts`):
 `t5` against each answer of the passkey sign-in that is not its refusal (no answer, 404, 429,
 another code), `revoke` against a revoke that ends nothing and a list that gives no answer before

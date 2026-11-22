@@ -2,7 +2,9 @@
  *  through the edge that serves them. Its step 4's rule is `outside-edge-limits.test.ts`'s.
  *
  *  The rows that start nothing hold that a run with an input missing says UNKNOWN, naming the
- *  input, and never PASS. The control rows run the driver against an outside origin stand-in
+ *  input, and never PASS, and that an error of a command's own (`run`, `revoke`, `release` given
+ *  a state they cannot use) is UNKNOWN, exit 2, never 1. The control rows run the driver against
+ *  an outside origin stand-in
  *  (`outside-edge-origin-stand-in.ts`) that answers what a real refusal, sign-in, device login or
  *  revocation would not:
  *  - `t5`'s passkey row is PASS only on the sign-in's own refusal of the passkey, 401
@@ -241,6 +243,64 @@ describe("the inputs", () => {
       expect(unread.code).toBe(2);
     },
     rowLimit("short", "short")
+  );
+
+  // An error of a command's own judged nothing of the edge, so each command ends it UNKNOWN, exit
+  // 2, never 1, which is a FAIL. Each case makes it as root too, which a directory's mode does
+  // not stop: a file of OUTSIDE_EDGE_STATE that is a directory, or a state that is a file. Each
+  // fails before the command asks anything, so none needs a stand-in. The state or its file is
+  // named where the runtime's error names its path; Bun 1.4.4's read of a directory names none.
+  test(
+    "an error of a command's own is UNKNOWN, exit 2, naming the state or its file: run, revoke and release",
+    async () => {
+      const own = (name: string) => {
+        const state = join(scratch, name);
+        mkdirSync(state, { mode: 0o700 });
+        return state;
+      };
+      const runState = own("own-run");
+      mkdirSync(join(runState, "outside-edge.tsv"));
+      const stateFile = join(scratch, "own-state-file");
+      writeFileSync(stateFile, "no directory", { mode: 0o600 });
+      const revokeState = own("own-revoke");
+      for (const [file, text] of [
+        ["origin", "https://dispatch.edge.example"],
+        ["cookie", "dsession=a-cookie"],
+        ["person", standInPerson],
+        ["approved.tsv", "ABCD-EFGH\tcred-a\n"],
+      ] as const) {
+        writeFileSync(join(revokeState, file), text, { mode: 0o600 });
+      }
+      mkdirSync(join(revokeState, "outside-edge-revocations.tsv"));
+      const releaseState = own("own-release");
+      mkdirSync(join(releaseState, "holder"));
+      const [run, runOnFile, revoke, release] = await Promise.all([
+        drive([], { ...all, OUTSIDE_EDGE_STATE: runState }, "short"),
+        drive([], { ...all, OUTSIDE_EDGE_STATE: stateFile }, "short"),
+        drive(["revoke"], { OUTSIDE_EDGE_STATE: revokeState }, "short"),
+        drive(["release"], { OUTSIDE_EDGE_STATE: releaseState }, "short"),
+      ]);
+      const wants: readonly (readonly [DriverRun, RegExp])[] = [
+        [
+          run,
+          /^UNKNOWN: run failed on an error of its own: open EISDIR on OUTSIDE_EDGE_STATE's outside-edge\.tsv\n$/,
+        ],
+        [
+          runOnFile,
+          /^UNKNOWN: run failed on an error of its own: mkdir EEXIST on OUTSIDE_EDGE_STATE\n$/,
+        ],
+        [
+          revoke,
+          /^UNKNOWN: revoke failed on an error of its own: open EISDIR on OUTSIDE_EDGE_STATE's outside-edge-revocations\.tsv\n$/,
+        ],
+        [release, /^UNKNOWN: release failed on an error of its own: read EISDIR\n$/],
+      ];
+      for (const [ran, want] of wants) {
+        expect(ran.stdout, ran.stderr).toMatch(want);
+        expect(ran.code, ran.stdout).toBe(2);
+      }
+    },
+    rowLimit({ atOnce: ["short", "short", "short", "short"] })
   );
 });
 

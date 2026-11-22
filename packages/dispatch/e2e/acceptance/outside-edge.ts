@@ -29,7 +29,9 @@
  *                 30 s or a call that got no answer, refused, unresolved or unanswered in time
  *                 (the code the relay client and the Envoy client keep of the failure), is
  *                 UNKNOWN; an answer short of the pong, a refused upgrade or registration among
- *                 them, is FAIL. The peer's `outside-e2e hello <nonce> …` that follows is
+ *                 them, is FAIL, and so is a socket the listener opened and then dropped before
+ *                 its flush was answered, since the listener did answer it. The peer's
+ *                 `outside-e2e hello <nonce> …` that follows is
  *                 answered `outside-e2e reply <nonce> at <Unix ms>`, so the peer does not wait.
  *                 The session's unregister at the end is printed with its answer
  *                 (`outside-edge: session <session>: unregistered`, or why not).
@@ -129,10 +131,13 @@
  *
  *  Output: each row as `row<TAB>want<TAB>got<TAB>PASS|FAIL|UNKNOWN` on stdout and in the TSV
  *  file, then the verdict: `PASS` (exit 0) when every row passed, `FAIL: <rows>` (exit 1) when
- *  any failed, else `UNKNOWN: <rows>` (exit 2). It prints no token, cookie or link, and no name
- *  of the machine it runs on: its output can be posted where anyone reads it. The link's token
- *  is withheld from every row even where a browser's error or a page's text names it, as an
- *  error of a page that did not load names the URL it was loading.
+ *  any failed, else `UNKNOWN: <rows>` (exit 2). An error of a command's own, not an answer of the
+ *  edge's (an OUTSIDE_EDGE_STATE it cannot write, say), judged nothing, so every command ends it
+ *  `UNKNOWN: <command> failed on an error of its own: <its class>` (2), naming OUTSIDE_EDGE_STATE
+ *  or its file where the error names one, never exit 1, a FAIL. It prints no token, cookie or
+ *  link, and no name of the machine it runs on: its output can be posted where anyone reads it.
+ *  The link's token is withheld from every row even where a browser's error or a page's text
+ *  names it, as an error of a page that did not load names the URL it was loading.
  */
 
 // First, before any module that takes `fetch` or `WebSocket`: importing it wraps both, and the
@@ -148,7 +153,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { basename, join } from "node:path";
+import { basename, dirname, join, resolve as resolvePath } from "node:path";
 import {
   type DeviceAuthorization,
   deviceLoginHost,
@@ -2042,13 +2047,18 @@ async function hold(env: NodeJS.ProcessEnv): Promise<number> {
   }
 }
 
-/** What an error the hold met of its own says, as its output may print it: its class
- *  (`errorClass`: the syscall and the code of a file's), and the file of OUTSIDE_EDGE_STATE
- *  (`state`) it names, never its message, which repeats the whole path. */
+/** What an error a command met of its own says, as its output may print it: its class
+ *  (`errorClass`: the syscall and the code of a file's), and OUTSIDE_EDGE_STATE (`state`), or the
+ *  file of it, where the error names that path; never its message, which repeats the whole path. */
 function ownError(error: unknown, state: string): string {
   const path = error instanceof Error && "path" in error ? error.path : undefined;
-  const inState = typeof path === "string" && state !== "" && join(state, basename(path)) === path;
-  return `${errorClass(error)}${inState ? ` on OUTSIDE_EDGE_STATE's ${basename(path)}` : ""}`;
+  if (typeof path !== "string" || state === "") return errorClass(error);
+  const at = resolvePath(path);
+  if (at === resolvePath(state)) return `${errorClass(error)} on OUTSIDE_EDGE_STATE`;
+  if (dirname(at) === resolvePath(state)) {
+    return `${errorClass(error)} on OUTSIDE_EDGE_STATE's ${basename(at)}`;
+  }
+  return errorClass(error);
 }
 
 /** What `/proc/<pid>/stat` says of process `pid`: its state (field 3) and its start, in clock
@@ -2159,30 +2169,41 @@ if (import.meta.main) {
   // Every registration names this as its machine (DEVICE_HOST's doc), never this machine's own.
   env.ENVOY_MACHINE_ID = DEVICE_HOST;
   let code: number;
-  switch (command) {
-    case "run":
-      code = await run(env);
-      break;
-    case "approve":
-      code = await approve(env, argument);
-      break;
-    case "revoke":
-      code = await revoke(env);
-      break;
-    case "t5":
-      code = await t5(env);
-      break;
-    case "hold":
-      code = await hold(env);
-      break;
-    case "release":
-      code = await release(env);
-      break;
-    default:
-      console.log(
-        `UNKNOWN: usage: bun outside-edge.ts [run | approve <code> | revoke | t5 | hold | release], not ${command}`
-      );
-      code = 2;
+  try {
+    switch (command) {
+      case "run":
+        code = await run(env);
+        break;
+      case "approve":
+        code = await approve(env, argument);
+        break;
+      case "revoke":
+        code = await revoke(env);
+        break;
+      case "t5":
+        code = await t5(env);
+        break;
+      case "hold":
+        code = await hold(env);
+        break;
+      case "release":
+        code = await release(env);
+        break;
+      default:
+        console.log(
+          `UNKNOWN: usage: bun outside-edge.ts [run | approve <code> | revoke | t5 | hold | release], not ${command}`
+        );
+        code = 2;
+    }
+  } catch (error) {
+    // An error of the command's own, not an answer of the edge's (an OUTSIDE_EDGE_STATE it cannot
+    // write, say): the command judged nothing of the edge, so it is UNKNOWN, exit 2, never 1,
+    // which is a FAIL. Each command's own verdicts are its own; `hold` ends its errors itself,
+    // unregistering a session it registered first.
+    console.log(
+      `UNKNOWN: ${command} failed on an error of its own: ${ownError(error, (env.OUTSIDE_EDGE_STATE ?? "").trim())}`
+    );
+    code = 2;
   }
   process.exit(code);
 }
