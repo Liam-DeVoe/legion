@@ -297,7 +297,7 @@ jobs:
         uses: ./.github/actions/setup-bun
 
       - name: Install dependencies
-        run: bun install --frozen-lockfile
+        run: bun install --frozen-lockfile --ignore-scripts
 
       # The very command release.yaml's claude_envoy_build runs, so a pull request whose source
       # that job would refuse fails this job, and with it the required ci-ok, instead of merging

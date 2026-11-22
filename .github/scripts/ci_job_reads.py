@@ -323,10 +323,15 @@ def setup_bun(job, workflow=""):
 
 
 def bun_job(job, workflow=""):
-    """setup_bun and a frozen `bun install`. No .npmrc anywhere, and one Bun configuration file,
-    packages/dispatch/bunfig.toml, which holds `[test]` alone and so changes no install: an
-    install runs at the repository root, and Bun reads bunfig.toml from the working directory."""
-    install = at(job, "bun install --frozen-lockfile", workflow)
+    """setup_bun and a frozen `bun install` with --ignore-scripts. No .npmrc anywhere, and one Bun
+    configuration file, packages/dispatch/bunfig.toml, which holds `[test]` alone and so changes
+    no install: an install runs at the repository root, and Bun reads bunfig.toml from the
+    working directory. --ignore-scripts because no job loads the one package whose script
+    fetches anything: better-sqlite3's install fetches its prebuilt binary from a GitHub release,
+    else node-gyp@latest and Node's headers, none of them pinned, and only proof-sdk's own tests
+    import it. The citation is the whole run: text, so a bun job whose install drops the flag
+    fails this table's step check by name."""
+    install = at(job, "bun install --frozen-lockfile --ignore-scripts", workflow)
     return setup_bun(job, workflow) + reads(
         ("package.json", f"{install} reads the root manifest (workspaces package.json:19-31, patchedDependencies :52-60)"),
         ("bun.lock", f"{install} reads the lockfile to install the versions it records"),

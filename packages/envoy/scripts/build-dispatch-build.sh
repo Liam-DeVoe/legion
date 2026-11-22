@@ -138,7 +138,11 @@ readonly src=$out/src
 # The JavaScript parts: the install, the Go contracts the server compiles (regenerated, never the
 # copy in the tree) and the contracts bundle, then the web app and the command. The install, the
 # codegen and the web app are in the order the commit's image build makes them.
-(cd -- "$src" && bun install --frozen-lockfile) || fail "bun install --frozen-lockfile failed in the archive of $sha."
+# --ignore-scripts: nothing built here loads better-sqlite3, the one package whose install script
+# fetches anything (its prebuilt binary from a GitHub release, else node-gyp and Node's headers),
+# and CI's own installs of the tree skip the scripts the same way.
+(cd -- "$src" && bun install --frozen-lockfile --ignore-scripts) ||
+  fail "bun install --frozen-lockfile --ignore-scripts failed in the archive of $sha."
 (cd -- "$src/packages/contracts" && bun run gen:go && bun run build) ||
   fail "the contracts build (gen:go, build) of $sha failed."
 (cd -- "$src/packages/dispatch" && bun run build:web) || fail "the web build (bun run build:web) of $sha failed."
