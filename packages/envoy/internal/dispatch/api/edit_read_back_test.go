@@ -41,9 +41,9 @@ func listedBlocks(t *testing.T, handler http.Handler, artifactID string) []model
 }
 
 // A replace with an empty `with` deletes the text it matched and leaves the block standing with
-// nothing in it. The read-back names that block, which is the visibility dispatch://INFRA-1946
-// lacked: the answer read the same as one that wrote a paragraph. (A replace with no `with` at all
-// is refused now, TestAReplaceWithoutItsWithIsRefused.)
+// nothing in it. The read-back names that block, the visibility a caller whose replace emptied a
+// block lacked: the answer read the same as one that wrote a paragraph. (A replace with no `with`
+// at all is refused, TestAReplaceWithoutItsWithIsRefused.)
 func TestDocumentEditReadBackNamesAnEmptiedBlock(t *testing.T) {
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Emptied block", "Intro.\n\nPlanning notes.\n\nOutro.\n")

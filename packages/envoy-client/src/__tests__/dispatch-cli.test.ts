@@ -1582,8 +1582,8 @@ describe("the dispatch CLI", () => {
   });
 
   // A replace with no with was sent and read as an empty one, which deleted the text its find
-  // matched; one whose new text stood under markdown did the same (dispatch://INFRA-1946). Both
-  // exit 2 before anything is sent, naming the operation and the field.
+  // matched; one whose new text stood under markdown did the same. Both exit 2 before anything is
+  // sent, naming the operation and the field.
   describe("doc-edit replace", () => {
     test("refuses a replace with no with before it sends anything", async () => {
       const { code, stdout } = await run(

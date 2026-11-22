@@ -14,12 +14,6 @@ body: |-
   is replaced in an operation of its own; and a span is kept only by a `with` of one paragraph,
   since a `with` that parses to blocks keeps none of the spans the match lies inside.
   `packages/envoy/internal/contracts/dispatch_tools_generated.go` carries the same text.
-
-  `dispatch_doc_edit`'s validation refuses a `replace` that names no `with`, or carries any key
-  besides `op`, `find`, `with` and `occurrence` whatever it holds (`markdown`, `text`,
-  `replacement`), naming `ops[<index>]` and the key, so every host refuses it before it is sent;
-  `with: ""` still passes. The `with` description says a replace takes those four keys alone, and
-  names the server's `400 REPLACE_FIELDS` for the same two shapes.
 time: 2026-11-16T20:55:00Z
 custom:
     Issue: pr2697

@@ -1388,13 +1388,13 @@ func replaceTakes(member string) bool {
 // bytes, names no with or carries a member a replace does not take (replaceTakes), whatever that
 // member holds: 400 REPLACE_FIELDS naming the operation and each such member; and nil where every
 // replace names with and replace's members alone. Read as an empty with, a replace naming none
-// deleted its match (dispatch://INFRA-1946), and one carrying another member was applied as if it
-// held none. Only the body says either: a decoded op's With is "" both for no with and for with
-// "", which deletes the match on purpose, a JSON null with is none, and a member model.EditOp does
-// not declare decodes to nothing. So a batch holding a replace reads body a second time, for each
-// op's member names alone (jsonMember). The decoder stops after body's one value, as the first
-// read did (readJSONBody, which accepts a value followed by a closing bracket or brace), so a body
-// the route accepted reads here too.
+// deleted its match, and one carrying another member was applied as if it held none. Only the
+// body says either: a decoded op's With is "" both for no with and for with "", which deletes the
+// match on purpose, a JSON null with is none, and a member model.EditOp does not declare decodes
+// to nothing. So a batch holding a replace reads body a second time, for each op's member names
+// alone (jsonMember). The decoder stops after body's one value, as the first read did
+// (readJSONBody, which accepts a value followed by a closing bracket or brace), so a body the
+// route accepted reads here too.
 func replaceFieldsRefusal(ops []model.EditOp, body []byte) error {
 	if !slices.ContainsFunc(ops, func(op model.EditOp) bool { return op.Op == "replace" }) {
 		return nil

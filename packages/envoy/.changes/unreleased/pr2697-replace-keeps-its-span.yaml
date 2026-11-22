@@ -29,13 +29,6 @@ body: |-
   span's edge is narrowed to its inside, and the text outside it replaced in an operation of its
   own. A span is kept only by a `with` of one paragraph: a `with` that parses to blocks keeps the
   ask and comment anchors the match lies inside, and none of its spans.
-
-  A `replace` takes `op`, `find`, `with` and `occurrence` alone. One that names no `with`, or
-  carries any other member whatever it holds (`markdown`, `markdown: ""`, `text`, `replacement`),
-  is refused with `400 REPLACE_FIELDS` naming the operation and the member, and nothing in the
-  batch is written. It was read as an empty `with` and deleted the text its `find` matched, as a
-  `replace` that sent its new text as `markdown` did, or applied beside a member it never read.
-  `with: ""` still deletes the match on purpose.
 time: 2026-11-16T20:55:00Z
 custom:
     Issue: pr2697
