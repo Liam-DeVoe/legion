@@ -1615,8 +1615,11 @@ func (e *openAPIEmitter) responses(route apiRoute, shape routeShape) (*openapi31
 	// answer below covers only the statuses the document does not name, and a route's handler
 	// writes plain refusals at the same status as its rich one (an issue PATCH's 409
 	// ISSUE_CHANGED beside its 409 FOREIGN_CHILD_OPEN, a create's 409 PARENT_INPUT beside its 409
-	// POSSIBLE_DUPLICATE). So each such status holds errorBody beside its rich bodies.
-	plain, err := e.schema(errorBody{})
+	// POSSIBLE_DUPLICATE). So each such status holds errorBody beside its rich bodies. The zero
+	// value names the type alone: only writeVersionedError builds an errorBody
+	// (TestNoSourceMakesACodeOrAnErrorBodyOutsideItsWriters).
+	var plainBody errorBody
+	plain, err := e.schema(plainBody)
 	if err != nil {
 		return nil, err
 	}
