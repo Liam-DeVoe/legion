@@ -179,6 +179,7 @@ var readClasses = map[string]readEntry{
 	"GET /api/v1/artifacts/{id}/blocks/{block_id}": reads("where one block stands in one document", readProbe{"id": probeDocument, "block_id": probeBlock}, readclass.Project),
 	"GET /api/v1/artifacts/{id}/text":              reads("one document's markdown", byDocument, readclass.Project),
 	"GET /api/v1/artifacts/{id}/versions/{number}": reads("a version of one document", readProbe{"id": probeDocument, "number": probeDocumentVersion}, readclass.Project),
+	"GET /api/v1/artifacts/{id}/changes":           reads("what changed between two versions of one document", byDocument, readclass.Project),
 	"GET /api/v1/artifacts/{id}/references":        reads("the cross-references to and from one document, through refs", byDocument, readclass.Graph),
 	"GET /api/v1/artifacts/{id}/subscribers":       reads("the sessions subscribed to one document's topics", byDocument, readclass.Project, readclass.Agents),
 

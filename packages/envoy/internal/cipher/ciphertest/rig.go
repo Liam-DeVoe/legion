@@ -179,6 +179,7 @@ type rigConfig struct {
 	// holdRequiresDeadline is WithHoldRequiresDeadline: the gate's RequireDeadline.
 	holdRequiresDeadline bool
 	personSignIns        *personSignInConfig
+	profiles             string
 	edge                 bool
 	// edgeDeviceLimit is the edge's bucket every caller of a device authorization shares
 	// (api.Edge.DeviceLimit); nil is api.DefaultEdgeDeviceLimit.
@@ -306,6 +307,17 @@ func WithPersonSignIns(google *oidctest.Issuer, machineAccount string) Option {
 	}
 }
 
+// WithProfiles serves file as the deployment's profiles file, the JSON BROKER_PROFILES_FILE
+// names (policytest.ProfilesFile builds one), so a test asks for a profile by its name as a session
+// of a deployment that lists it does. Every github-app secret the policy serves is a profile's
+// (policy.ReasonGitHubAppNoProfile), so a test that releases one names its profile here. With no
+// such option, or with "", the rig has no profiles file, as a deployment that leaves the setting
+// unset has none. The rig wires no proxy rules (requests.Machine.Airlock), so a proxy block the
+// file holds keeps no value back here.
+func WithProfiles(file string) Option {
+	return func(c *rigConfig) { c.profiles = file }
+}
+
 // personPod is one WithPersonPod: an account that BROKER_POD_OPERATORS maps to person, and the
 // service the account logs in as.
 type personPod struct {
@@ -358,6 +370,7 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 	// which NewCurrent takes, and the gauge of unservable secrets once NewCurrent has answered.
 	// The loader serves a secret tagged with a project only where the broker can ask Dispatch
 	// whether that project is private, as main's does (policy.Loader.ProjectChecks).
+	// Its profiles are WithProfiles's file, or none.
 	registry := metrics.New()
 	// The Dispatch client keeps each person answer in this rig's store and counts on its registry,
 	// as main's does, before anything is built on it.
@@ -366,6 +379,9 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 	}
 	loader := policytest.Loader(local)
 	loader.ProjectChecks = config.projectAccess != nil
+	if config.profiles != "" {
+		loader.Profiles = policytest.Profiles(t, config.profiles)
+	}
 	cur := policytest.Metered(t, loader, registry)
 
 	mux := http.NewServeMux()

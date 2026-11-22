@@ -118,6 +118,11 @@ func TestEachRefusalOfThePageNamesItsCodeAndPrintsItsAnswerID(t *testing.T) {
 			defer r.release(ada)
 			return b.FromPage(t, "/approve", decision(formA, "approve"))
 		}, http.StatusForbidden, "MEMBERSHIP_HELD"},
+		{"an approval of a profile the page printed otherwise", func(t *testing.T) ciphertest.Response {
+			form := decision(formA, "approve")
+			form.Add("profile_digest", a.recordID+" TEST_SECRET "+strings.Repeat("0", 64))
+			return b.FromPage(t, "/approve", form)
+		}, http.StatusForbidden, "PROFILE_CHANGED"},
 		{"a decision from another origin", func(t *testing.T) ciphertest.Response {
 			return b.Post(t, "/approve", decision(formA, "approve"), elsewhere)
 		}, http.StatusForbidden, "ORIGIN_REFUSED"},
@@ -177,8 +182,7 @@ func TestEachRefusalOfThePageNamesItsCodeAndPrintsItsAnswerID(t *testing.T) {
 			}
 			var codes []any
 			for _, record := range capture.Records() {
-				fields := map[string]any{}
-				record.Attrs(func(a slog.Attr) bool { fields[a.Key] = a.Value.Any(); return true })
+				fields := logFields(record)
 				if record.Message == answer.RefusalMessage && fields["answer_id"] == id {
 					if record.Level != slog.LevelWarn {
 						t.Errorf("the refusal's record is at %v, want WARN", record.Level)
@@ -191,8 +195,8 @@ func TestEachRefusalOfThePageNamesItsCodeAndPrintsItsAnswerID(t *testing.T) {
 			}
 		})
 	}
-	if driven != 20 {
-		t.Fatalf("the table drove %d of the page's 20 refusals", driven)
+	if driven != 21 {
+		t.Fatalf("the table drove %d of the page's 21 refusals", driven)
 	}
 
 	// The page that answers a sign-out refuses nothing, and prints no answer id.
