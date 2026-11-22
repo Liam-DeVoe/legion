@@ -517,7 +517,7 @@ const rows: [string, () => unknown, unknown][] = [
     [["c9", "confirm", false]],
   ],
 
-  // Pooled confirms (INFRA-323's decision "The behaviour test's pass rule", 2026-11-22).
+  // Pooled confirms (the architect's decision "The behaviour test's pass rule", 2026-11-22).
   [
     "30 fewer passes of 120 pooled runs are a loss",
     () => isPooledLoss({ old: 120, new: 90 }),

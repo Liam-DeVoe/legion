@@ -100,7 +100,7 @@ import { messageFor } from "@legion/envoy-client/errors";
 import { mapLimit } from "../skill-scenarios/production-dispatch";
 import { type Arm, legionStore } from "./arms";
 import { type Case, listedName, testedCopy } from "./cases";
-import { firstLine, GhRetries } from "./common";
+import { firstLine, GhRetries, ghLimiter } from "./common";
 import {
   BlobBatch,
   blobBatches,
@@ -627,8 +627,10 @@ export function ghSource(
       if (running === 0) busyMs += performance.now() - busyFrom;
     }
   };
+  // Every gh call waits for a place in the runner's one bound on gh processes (common.ts's
+  // `ghLimiter`) before it starts, so the wait is not counted as a call running.
   const ghRun = (argv: readonly string[]) =>
-    counted(() => run(argv, { timeoutMs: GH_READ_TIMEOUT_MS }));
+    ghLimiter().run(() => counted(() => run(argv, { timeoutMs: GH_READ_TIMEOUT_MS })));
   // When the rate limit of `resource` (`core`, REST's, or `graphql`) resets, in seconds since the
   // epoch, or undefined when it cannot be read.
   const rateReset = async (resource: "core" | "graphql"): Promise<number | undefined> => {
@@ -677,25 +679,27 @@ export function ghSource(
       await retried(
         argv.join(" "),
         () =>
-          counted(async () => {
-            const child = Bun.spawn(argv, {
-              stdin: "ignore",
-              stdout: Bun.file(archive),
-              stderr: "pipe",
-            });
-            const limit = timeLimit(child, GH_TARBALL_TIMEOUT_MS);
-            const [stderr, code] = await Promise.all([
-              new Response(child.stderr).text(),
-              child.exited,
-            ]);
-            limit.clear();
-            return {
-              code,
-              stderr: limit.timedOut()
-                ? `${stderr}\ntimed out after ${GH_TARBALL_TIMEOUT_MS} ms`
-                : stderr,
-            };
-          }),
+          ghLimiter().run(() =>
+            counted(async () => {
+              const child = Bun.spawn(argv, {
+                stdin: "ignore",
+                stdout: Bun.file(archive),
+                stderr: "pipe",
+              });
+              const limit = timeLimit(child, GH_TARBALL_TIMEOUT_MS);
+              const [stderr, code] = await Promise.all([
+                new Response(child.stderr).text(),
+                child.exited,
+              ]);
+              limit.clear();
+              return {
+                code,
+                stderr: limit.timedOut()
+                  ? `${stderr}\ntimed out after ${GH_TARBALL_TIMEOUT_MS} ms`
+                  : stderr,
+              };
+            })
+          ),
         "core"
       );
       await mustRun(["tar", "-xzf", archive, "-C", dest, "--strip-components=1"]);

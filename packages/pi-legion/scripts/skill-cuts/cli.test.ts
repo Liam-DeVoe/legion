@@ -2609,7 +2609,7 @@ describe("behaviour: dropped cases, the listing rule and pooled confirms", () =>
     expect(lines).toContain(
       `verdict: none: flagged case c07 could not be confirmed (${UNREADABLE})${unmeasured(7, 7)}`
     );
-  });
+  }, 60_000);
 
   test("a flagged case dropped at confirm leaves another case's confirmed loss standing as the skill's loss, and is listed", async () => {
     const s = scenario("dropped-confirm-loss", LOSS_SKILL(), ids(8));
@@ -2634,7 +2634,7 @@ describe("behaviour: dropped cases, the listing rule and pooled confirms", () =>
     expect(lines).toContain(
       `verdict: loss: in c08 the cut's text passes at least 10 fewer of 40 fresh runs than the old text, and the planted-loss control (case c01) is a loss and its false-loss control is no loss${unmeasured(8, 8)}`
     );
-  });
+  }, 60_000);
 
   test("a dropped control case gives its place to the next informative case by the control rule, and report and control name both", async () => {
     const s = scenario("dropped-control", LOSS_SKILL(), ids(6));
@@ -2667,7 +2667,7 @@ describe("behaviour: dropped cases, the listing rule and pooled confirms", () =>
     );
     expect(control.stdout).toContain("case c02: control runs made before, skipped");
     expect(requestsSince(from)).toHaveLength(0);
-  });
+  }, 60_000);
 
   test("a planted record of a case dropped at confirm that its screen did not flag is refused, naming the case (exit 1)", async () => {
     const s = scenario("dropped-unflagged", LOSS_SKILL(), ids(6));
@@ -2691,7 +2691,7 @@ describe("behaviour: dropped cases, the listing rule and pooled confirms", () =>
     expect(confirm.code).toBe(1);
     expect(confirm.stderr).toContain(refusal);
     expect(requestsSince(from)).toHaveLength(0);
-  });
+  }, 60_000);
 
   test("a case whose rebuilt listing misses more than 10% of its session's recorded names is dropped: report lists and counts it, screen drops it before any call, and the verdict line counts the listings not measured", async () => {
     const s = scenario("listing", LOSS_SKILL(), ids(7));
@@ -2734,7 +2734,7 @@ describe("behaviour: dropped cases, the listing rule and pooled confirms", () =>
       "screen",
       {},
     ]);
-  });
+  }, 60_000);
 
   test("the listing rule reads the listing measure build.ts writes, under the name it writes it", () => {
     expect(LISTING_MEASURE_ITEM).toBe(LISTING_MEASURE);
@@ -2774,7 +2774,7 @@ describe("behaviour: dropped cases, the listing rule and pooled confirms", () =>
       "--again c07: case c07 has 3 confirms at these texts on this runner, which the rule pools, and no fourth confirm runs"
     );
     expect(requestsSince(from)).toHaveLength(0);
-  });
+  }, 60_000);
 
   test("confirm runs a third confirm of a case whose two confirms on one runner disagree, and report pools the three", async () => {
     const s = scenario("third", LOSS_SKILL(), ids(7));
@@ -2811,7 +2811,7 @@ describe("behaviour: dropped cases, the listing rule and pooled confirms", () =>
     expect(after.stdout).toContain(
       "c07 (confirms of old 40, 40, 40 and new 30, 31, 0 of 40 each; pooled old 120/120, new 61/120, 59 fewer: a loss)"
     );
-  });
+  }, 60_000);
 });
 
 describe("refusals before any model call", () => {
@@ -2912,7 +2912,7 @@ describe("behaviour: the cases resting on the assumption that their session had 
     expect(lines).toContain(
       "dispatch: 4 cases carry the Envoy plugin's block of the skill: 2 rest on the assumption that their session had Dispatch, 1 take it from a Legion role, 1 from their transcript (arms.ts's dispatchOf)"
     );
-  });
+  }, 60_000);
 
   test("a capture that carries the Envoy plugin's block records where the answer that its session had Dispatch comes from, and report counts it", async () => {
     const s = scenario("dispatch-capture", LOSS_SKILL(), [{ id: "c04" }]);
@@ -2948,7 +2948,7 @@ describe("behaviour: the cases resting on the assumption that their session had 
     expect(reported.stdout.split("\n")).toContain(
       "dispatch: 1 cases carry the Envoy plugin's block of the skill: 1 rest on the assumption that their session had Dispatch, 0 take it from a Legion role, 0 from their transcript (arms.ts's dispatchOf)"
     );
-  });
+  }, 60_000);
 });
 
 // The architect's rule (2026-11-22T07:48:46Z): a case whose block of its skill the arms cannot
@@ -3020,7 +3020,7 @@ describe("behaviour: a case whose block of its skill the arms cannot each rebuil
     // The other stages read the file too, and refuse it no more.
     const confirm = await cli(behaviour("confirm", s));
     expect({ code: confirm.code, stderr: confirm.stderr }).toEqual({ code: 0, stderr: "" });
-  });
+  }, 60_000);
 
   test("a case whose capture finds its subagent's agent autoloads the skill and its messages hold no block of it is dropped as autoload-no-block, and the rest of the file runs", async () => {
     const s = scenario("autoload-block", LOSS_SKILL(), [{ id: "c-autoload" }, { id: "c-plain" }]);
@@ -3109,7 +3109,7 @@ describe("behaviour: a case whose block of its skill the arms cannot each rebuil
     expect(reported.stdout).toContain(
       "; 1 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, 0 listing-misses, 1 injection-unrebuildable (user-invoked 0, other-shape 0, plugin-block-misplaced 0, autoload-no-block 1)), "
     );
-  });
+  }, 60_000);
 });
 
 /** The run records of `informative` cases screened as informative (old and new pass each run,

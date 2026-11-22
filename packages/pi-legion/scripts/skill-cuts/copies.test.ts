@@ -13,7 +13,7 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { GithubReads } from "./build";
-import { GhRetries } from "./common";
+import { GH_CONCURRENCY, GhRetries, ghLimiter, Limiter } from "./common";
 import { parseConfig } from "./config";
 import {
   CopyIndex,
@@ -52,6 +52,7 @@ import {
   type SkillCopy,
   searchTerms,
   skillFields,
+  spawnGh,
   type TreeEntry,
   tarballSkills,
   tsv,
@@ -4274,4 +4275,74 @@ test("a plugin list's exact npm versions are its npm pins; a package's release t
   // With no skills key, Oh My Pi falls back to skills/.
   files.set("package.json", JSON.stringify({ name: "@acme/kit", pi: {} }));
   expect(tarballSkills(files)).toEqual(["c"]);
+});
+
+// Catches: the profile build and the copies listing starting a gh process for every read at once
+// (a pod's gh is about 145 MiB a call), so the runner's processes pass the pod's memory.
+describe("the runner's one bound on gh processes", () => {
+  test("a Limiter of 3 runs every task, never more than 3 at once, the waiting ones in the order they came", async () => {
+    const limiter = new Limiter(3);
+    let running = 0;
+    let most = 0;
+    const started: number[] = [];
+    const gates = Array.from({ length: 8 }, () => Promise.withResolvers<void>());
+    const done = gates.map((gate, n) =>
+      limiter.run(async () => {
+        started.push(n);
+        running += 1;
+        most = Math.max(most, running);
+        await gate.promise;
+        running -= 1;
+        return n;
+      })
+    );
+    await Bun.sleep(0);
+    expect(started).toEqual([0, 1, 2]);
+    for (const gate of gates) {
+      gate.resolve();
+      await Bun.sleep(0);
+    }
+    expect(await Promise.all(done)).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
+    expect(started).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
+    expect(most).toBe(3);
+    expect(() => new Limiter(0)).toThrow("is not a whole number of 1 or more");
+  });
+
+  test("spawnGh, the gh of copies and of build's GitHub reads, runs at most GH_CONCURRENCY (4) gh processes at once, however many calls come at once", async () => {
+    const dir = mkdtempSync(path.join(process.env.TMPDIR ?? tmpdir(), "skill-cuts-gh-"));
+    const log = path.join(dir, "log");
+    // A stand-in gh that logs its start and end and answers its first argument.
+    writeFileSync(
+      path.join(dir, "gh"),
+      `#!/bin/sh\necho "start $(date +%s%N)" >> '${log}'\nsleep 0.3\necho "end $(date +%s%N)" >> '${log}'\necho "$1"\n`,
+      { mode: 0o755 }
+    );
+    const PATH = process.env.PATH;
+    process.env.PATH = `${dir}:${PATH ?? ""}`;
+    try {
+      expect(ghLimiter().limit).toBe(GH_CONCURRENCY);
+      const calls = Array.from({ length: 9 }, (_, n) => `call-${n}`);
+      const results = await Promise.all(calls.map((call) => spawnGh([call])));
+      expect(results.map((each) => each.stdout.trim())).toEqual(calls);
+      const events = readFileSync(log, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => {
+          const [kind = "", at = "0"] = line.split(" ");
+          return { start: kind === "start", at: BigInt(at) };
+        })
+        .sort((a, b) => (a.at === b.at ? Number(a.start) - Number(b.start) : a.at < b.at ? -1 : 1));
+      let running = 0;
+      let most = 0;
+      for (const event of events) {
+        running += event.start ? 1 : -1;
+        most = Math.max(most, running);
+      }
+      expect(events).toHaveLength(18);
+      expect(most).toBe(GH_CONCURRENCY);
+    } finally {
+      process.env.PATH = PATH;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

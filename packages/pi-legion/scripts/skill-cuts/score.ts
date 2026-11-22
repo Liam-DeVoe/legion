@@ -55,10 +55,10 @@ export const FLAG_GAP = 2;
 /** A confirmed case is a loss, and a control case a control loss, when the other arm passes at
  *  least this many fewer of its fresh runs than the old text. */
 export const LOSS_GAP = 10;
-/** The confirms of one case the pooled rule takes (INFRA-323's decision "The behaviour test's pass
- *  rule", 2026-11-22): where two confirms at the same texts on one runner disagree, one a loss and
- *  one not, a third runs and the three are pooled, a loss at LOSS_GAP fewer passes of each
- *  FRESH_RUNS (30 of 120). No confirm runs after the third. */
+/** The confirms of one case the pooled rule takes (the architect's decision "The behaviour test's
+ *  pass rule", 2026-11-22): where two confirms at the same texts on one runner disagree, one a
+ *  loss and one not, a third runs and the three are pooled, a loss at LOSS_GAP fewer passes of
+ *  each FRESH_RUNS (30 of 120). No confirm runs after the third. */
 export const POOLED_CONFIRMS = 3;
 /** The informative cases a skill needs for a verdict; screening stops when it has them. */
 export const MIN_INFORMATIVE_CASES = 6;
