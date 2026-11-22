@@ -1,6 +1,6 @@
 import { expect, type Locator, type Page, type Route, test } from "@playwright/test";
 
-import type { IssueDecisions, IssueTreeRead } from "../web/src/api/types";
+import type { IssueDecisions, IssueTreeNode, IssueTreeRead } from "../web/src/api/types";
 import type { Filter } from "../web/src/features/issue-page/presets";
 import {
   mergeTreePages,
@@ -560,5 +560,27 @@ export function drawnNodes(page: Page): Promise<DrawnNode[]> {
         type: element.dataset.nodeType ?? "",
       })
     )
+  );
+}
+
+/** The id the row of a decision node carries: `<slug>#b-<block id>` for a block of a
+ *  document, which every decision node is, by its block id (`block_id`). */
+export function decisionRowId(node: IssueTreeNode): string {
+  return node.document === undefined
+    ? node.id
+    : blockNode(node.document.slug, node.block_id ?? node.id);
+}
+
+/** Whether the link `href` goes to a node `names` holds: a block by its fragment (`#b-<id>`), a
+ *  block by its row id, the link's last path segment followed by its fragment (`<slug>#b-<id>`,
+ *  as `/issues/<KEY>/artifacts/<slug>#b-<id>` ends), an ask by its address (`/asks/<id>`). */
+export function linksTo(href: string, names: readonly string[]): boolean {
+  const url = new URL(href, "http://links.invalid");
+  // A row id always ends in a block's fragment, so a link with none is no block's row id.
+  const rowId = url.hash.startsWith("#b-")
+    ? `${url.pathname.slice(url.pathname.lastIndexOf("/") + 1)}${url.hash}`
+    : null;
+  return names.some(
+    (name) => url.hash === `#b-${name}` || rowId === name || url.pathname.endsWith(`/asks/${name}`)
   );
 }
