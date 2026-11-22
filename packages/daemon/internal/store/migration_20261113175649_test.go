@@ -253,7 +253,7 @@ func TestMigrationTaskNumbersFillsEachClaimsFirstTask(t *testing.T) {
 	t.Logf("before the migration the task number write is refused: %v", err)
 
 	// The fixture stands just below this migration, so the run applies it and every embedded
-	// migration above it — at this release the nineteen recorded after it,
+	// migration above it — at this release the twenty-one recorded after it,
 	// 20261113181500_architect_stalled_notices, 20261113182000_architect_entry_upgrade,
 	// 20261114020537_claim_entry_handshake, 20261114031356_merge_queue_removal,
 	// 20261114061900_phase_entry_verbatim, 20261115194357_project_pause,
@@ -263,9 +263,13 @@ func TestMigrationTaskNumbersFillsEachClaimsFirstTask(t *testing.T) {
 	// 20261117004117_step_starts, 20261117023932_outbox_kinds_with_the_plan_record,
 	// 20261117064152_step_starts_roll_forward, 20261117112334_pull_request_statuses,
 	// 20261117200337_update_ask_marks_at_delivery,
-	// 20261119003157_conflict_reads_and_merge_forward, 20261120012547_set_back_observed_seq,
-	// 20261120042902_claim_agent_resume_generation and
-	// 20261120055717_dispatch_issue_value_sequences, which run after its fill and touch no column
+	// 20261119003157_conflict_reads_and_merge_forward, 20261119203047_design_news (whose four
+	// columns of pending_task_deliveries stand beside this one's five, and whose functions read
+	// confirmed_at, which this one keeps), 20261120012547_set_back_observed_seq,
+	// 20261120042902_claim_agent_resume_generation,
+	// 20261120055717_dispatch_issue_value_sequences and
+	// 20261122160000_design_news_credit_at_turn_start (which writes design_news_told_in again to
+	// read turn_started, a column this migration adds), which run after its fill and touch no column
 	// the fill writes or this test reads — and nothing else. So the fill runs here before the
 	// handshake's columns stand, as it does on a store migrated in version order, and confirms no
 	// handshake (TestMigrationTaskNumbersConfirmsTheHandshakeOfATakeItFills reads the upgrade from
@@ -421,9 +425,10 @@ func TestMigrationTaskNumbersFillsEachClaimsFirstTask(t *testing.T) {
 // fill makes of an acknowledged prompt does the same, at the take's own moment: the state then
 // serves entryConfirmedAt beside entryQueuedAt, and a give-back of the take unconfirms the
 // handshake again, since the two times are one (EntryHandshake.unconfirmed compares them). The
-// store is the one the release before this one leaves, every migration recorded but this one, so
-// the handshake's columns, which 20261114020537_claim_entry_handshake adds under a later version,
-// stand when the fill runs, as at every upgrade from that release. Four claims each hold a prompt
+// store is the one the release before this one leaves, every migration recorded but this release's
+// two (branchOnlyMigrations), so the handshake's columns, which
+// 20261114020537_claim_entry_handshake adds under a later version, stand when the fill runs, as at
+// every upgrade from that release. Four claims each hold a prompt
 // of run 1 their process, ready since minute 2, acknowledged at minute 5 and started no turn for,
 // beside a handshake of entry 2 of run 1 queued at minute 1: an idle claim whose prompt is of that
 // entry, whose take confirms the handshake at minute 5; a suspended claim whose prompt is of that
@@ -440,9 +445,9 @@ func TestMigrationTaskNumbersConfirmsTheHandshakeOfATakeItFills(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read the embedded migrations: %v", err)
 	}
-	before := slices.DeleteFunc(slices.Clone(all), func(m migrations.Migration) bool { return m.Version == taskNumbersVersion })
+	before := slices.DeleteFunc(slices.Clone(all), func(m migrations.Migration) bool { return slices.Contains(branchOnlyMigrations, m.Version) })
 	if _, err := store.migrate(ctx, before); err != nil {
-		t.Fatalf("migrate every embedded migration but %d, as the release before this one leaves the store: %v", taskNumbersVersion, err)
+		t.Fatalf("migrate every embedded migration but %v, as the release before this one leaves the store: %v", branchOnlyMigrations, err)
 	}
 	const queuedAt, readyAt, earlierTurnAt, acknowledgedAt = 1, 2, 3, 5
 	for _, seed := range []struct {
@@ -479,8 +484,8 @@ func TestMigrationTaskNumbersConfirmsTheHandshakeOfATakeItFills(t *testing.T) {
 	if err != nil {
 		t.Fatalf("migrate the store the release before this one leaves: %v", err)
 	}
-	if applied != 1 {
-		t.Fatalf("the migration applied %d migrations, want this one alone: the release before this one recorded every other", applied)
+	if applied != len(branchOnlyMigrations) {
+		t.Fatalf("the migration applied %d migrations, want this release's %d, %v: the release before this one recorded every other", applied, len(branchOnlyMigrations), branchOnlyMigrations)
 	}
 	for _, want := range []struct {
 		token     string
@@ -753,12 +758,14 @@ func TestMigrationTaskNumbersWayBackIsOneTextInTheHeaderAndTheGuide(t *testing.T
 // other key. The failure cause this release adds, never_reconnected, which that release's plugins
 // read through a strict enum that names no such word, stands as never_registered in both of a
 // claim's cause columns — the pending cause of a relaunch under way and the failure cause of a
-// claim whose relaunches ran out — and a cause that release names stays as it was. None of the
-// fourteen columns stands, nor this migration's version row, while every other row stays
-// recorded. The roll-forward then runs the migration again, and its second fill numbers what it
-// finds as the first fill numbered what an earlier release left: the task the claim held under
-// number 7 is task 1 again, its turn started since a take confirmed it, and the claim that had
-// finished task 4 has finished task 1, in the session it holds.
+// claim whose relaunches ran out — and a cause that release names stays as it was. The block of
+// 20261122160000_design_news_credit_at_turn_start runs first, as docs/kubernetes.md says, since
+// its function reads turn_started, which this block drops. None of the fourteen columns stands,
+// nor either migration's version row, while every other row stays recorded. The roll-forward then
+// runs the two migrations again, and the task numbers' second fill numbers what it finds as the
+// first fill numbered what an earlier release left: the task the claim held under number 7 is
+// task 1 again, its turn started since a take confirmed it, and the claim that had finished task
+// 4 has finished task 1, in the session it holds.
 func TestMigrationTaskNumbersWayBackLetsTheReleaseBeforeReadAndReArmsTheFill(t *testing.T) {
 	ctx := context.Background()
 	store := migratedStore(t)
@@ -811,6 +818,10 @@ func TestMigrationTaskNumbersWayBackLetsTheReleaseBeforeReadAndReArmsTheFill(t *
 		t.Fatalf("enqueue the merge-forward ask this release writes, naming the read it rests on: %v", err)
 	}
 
+	if _, err := store.pool.Exec(ctx, wayBackOf(t, creditAtTurnStartVersion, "20261122160000_design_news_credit_at_turn_start"),
+		pgx.QueryExecModeSimpleProtocol); err != nil {
+		t.Fatalf("run the way back of 20261122160000_design_news_credit_at_turn_start, which goes before this block: %v", err)
+	}
 	recovery := taskNumbersWayBack(t, taskNumbersWayBackOfTheHeader(t))
 	for run := range 2 {
 		if _, err := store.pool.Exec(ctx, recovery, pgx.QueryExecModeSimpleProtocol); err != nil {
@@ -883,13 +894,13 @@ func TestMigrationTaskNumbersWayBackLetsTheReleaseBeforeReadAndReArmsTheFill(t *
 		taskNumbersVersion).Scan(&armed, &recorded); err != nil {
 		t.Fatalf("read the recorded versions after the way back: %v", err)
 	}
-	if armed != 0 || recorded != len(all)-1 {
-		t.Fatalf("schema_version holds %d rows of %d and %d rows in all after the way back, want none of it and the %d every other migration recorded: store.apply decides each migration on its own row",
-			armed, taskNumbersVersion, recorded, len(all)-1)
+	if armed != 0 || recorded != len(all)-len(branchOnlyMigrations) {
+		t.Fatalf("schema_version holds %d rows of %d and %d rows in all after the way back, want none of it and the %d every migration but %v recorded: store.apply decides each migration on its own row",
+			armed, taskNumbersVersion, recorded, len(all)-len(branchOnlyMigrations), branchOnlyMigrations)
 	}
 	highest := 0
 	for _, migration := range all {
-		if migration.Version != taskNumbersVersion {
+		if !slices.Contains(branchOnlyMigrations, migration.Version) {
 			highest = max(highest, migration.Version)
 		}
 	}
@@ -901,8 +912,8 @@ func TestMigrationTaskNumbersWayBackLetsTheReleaseBeforeReadAndReArmsTheFill(t *
 	if err != nil {
 		t.Fatalf("roll forward after the way back: %v", err)
 	}
-	if applied != 1 {
-		t.Fatalf("the roll-forward applied %d migrations, want this one run a second time", applied)
+	if applied != len(branchOnlyMigrations) {
+		t.Fatalf("the roll-forward applied %d migrations, want the %d of %v, this one run a second time among them", applied, len(branchOnlyMigrations), branchOnlyMigrations)
 	}
 	for _, mark := range taskNumbersReadMarks {
 		if columnStands(t, store, "pending_task_deliveries", mark) {

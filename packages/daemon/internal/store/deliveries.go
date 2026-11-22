@@ -20,6 +20,9 @@ import (
 // one. A token no claim carries is refused. It is one transaction, because the write carries what
 // the task names of the decisions a person made while nobody in its root's tree could hear them:
 // queued or taken back, the delivery holds those rows; confirmed, it tells them (kept_decisions.go).
+// The news of the approved design the task carries is held the other way round: taken, the row is
+// itself the credit of what the accepted take's text carried; final, the write folds that credit
+// into the told rows (design_news_told.go).
 func (s *Store) PutDelivery(ctx context.Context, token claim.Token, d supervise.Delivery) error {
 	return s.Tx(ctx, func(tx pgx.Tx) error { return putDelivery(ctx, tx, token, d) })
 }
@@ -31,6 +34,9 @@ func (s *Store) PutDelivery(ctx context.Context, token claim.Token, d supervise.
 // rows the task names go with it: a delivery still unconfirmed holds them, under this claim and
 // this delivery id, taking each from the start row that claimed it and from whatever id the
 // claim's previous delivery held it under; the write that records the confirmation tells them.
+// The news the accepted take's text carried (Delivery.Carried) is the delivery's credit while the
+// row holds that take, which the readers of what an audience took read from the row; the write of
+// a final credit (Delivery.Ran) folds it into the told rows (settleDesignNews).
 // All of it is in the caller's transaction, so no row is ever held by a delivery the store does
 // not hold, and no confirmation commits without telling what it confirmed.
 func putDelivery(ctx context.Context, tx pgx.Tx, token claim.Token, d supervise.Delivery) error {
@@ -40,20 +46,23 @@ func putDelivery(ctx context.Context, tx pgx.Tx, token claim.Token, d supervise.
 	if d.Number > math.MaxInt64 {
 		return fmt.Errorf("put delivery %s on %s: task number %d does not fit a bigint", d.ID, token, d.Number)
 	}
-	kept := keptDecisions(d.Kept)
+	kept, news, carried := keptDecisions(d.Kept), designNews(d.News), designNews(d.Carried)
 	unconfirmed := d.ConfirmedAt.IsZero()
 	if unconfirmed {
 		if err := putBackARetakenConfirmation(ctx, tx, token, d.ID, kept); err != nil {
 			return err
 		}
 	}
+	if err := settleDesignNews(ctx, tx, token, d, carried); err != nil {
+		return err
+	}
 	_, err := tx.Exec(ctx, `insert into pending_task_deliveries (claim_token, delivery_id, task,
 		phase, generation, entry, number, origin, taken_text, turn_started, take_told, check_look, check_opened_at,
 		queued_at, confirmed_at, interrupted, out_of_memory,
 		send_failures, last_send_failure_at, last_send_error, kept_decisions,
-		provider_error_retries, provider_error_note, round_named)
+		provider_error_retries, provider_error_note, design_news, carried_news, carried_ran, news_only, round_named)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
-		coalesce($21::jsonb, '{}'::jsonb), $22, $23, $24)
+		coalesce($21::jsonb, '{}'::jsonb), $22, $23, $24::jsonb, $25::jsonb, $26, $27, $28)
 		on conflict (claim_token) do update set delivery_id = excluded.delivery_id,
 		task = excluded.task, phase = excluded.phase, generation = excluded.generation,
 		entry = excluded.entry, number = excluded.number, origin = excluded.origin,
@@ -65,13 +74,15 @@ func putDelivery(ctx context.Context, tx pgx.Tx, token claim.Token, d supervise.
 		last_send_failure_at = excluded.last_send_failure_at, last_send_error = excluded.last_send_error,
 		kept_decisions = excluded.kept_decisions,
 		provider_error_retries = excluded.provider_error_retries,
-		provider_error_note = excluded.provider_error_note, round_named = excluded.round_named`,
+		provider_error_note = excluded.provider_error_note, design_news = excluded.design_news,
+		carried_news = excluded.carried_news, carried_ran = excluded.carried_ran, news_only = excluded.news_only,
+		round_named = excluded.round_named`,
 		string(token), d.ID, d.Task, string(d.Phase), int64(d.Generation), d.Entry,
 		int64(d.Number), d.Origin, d.TakenText, d.TurnStarted, takeToldColumn(d.TakeTold),
 		d.CheckLook.Look, instant(d.CheckLook.OpenedAt), d.QueuedAt,
 		instant(d.ConfirmedAt), d.Interrupted, d.OutOfMemory,
 		d.SendFailures, instant(d.LastSendFailureAt), d.LastSendError, kept,
-		d.ProviderErrorRetries, d.ProviderErrorNote, d.RoundNamed,
+		d.ProviderErrorRetries, d.ProviderErrorNote, news, carried, d.Ran, d.NewsOnly, d.RoundNamed,
 	)
 	if err != nil {
 		return fmt.Errorf("put delivery %s on %s: %w", d.ID, token, err)
@@ -117,7 +128,13 @@ func (s *Store) PutClaimAndDeliveryTx(ctx context.Context, tx pgx.Tx, c supervis
 // ran: a delete that committed without it would leave a daemon crashed in between with a claim
 // that has forgotten the run its worker is still working. What the delivery held is left KEPT in
 // that same transaction: a retired task tells nothing, so each row waits for the next start or
-// catch-up of its own issue's tree to name it.
+// catch-up of its own issue's tree to name it. A taken delivery whose take's turn was never
+// finished ends its credit with its row (pending_task_deliveries.carried_news,
+// design_news_told.go), and writes nothing else: a newer task took its place before that turn's
+// report came, or a let-go or a take-back ended the take, and no finish said the turn ran. The news
+// is owed again, and a later task carries it: told twice, never not at all. A final credit was
+// folded into the told rows by the write that made it final, the finish's (supervise's
+// finishTask), and stays there.
 //
 // A delete that removes no row is refused two ways, because pending_task_deliveries is keyed on
 // the claim: the row holds no delivery at all, or it holds one under another id. The first is

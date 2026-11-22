@@ -64,25 +64,33 @@ func TakesNoTask(contract int) bool { return contract < TaskTakeContract }
 // silence repair's (workflow's repairSilence), whichever task it writes — the work of an owed
 // entry or the phase's resume task — so its writes are counted apart from a resume's: the repair
 // is the backstop of a worker whose own report does not explain its quiet, not a relaunch's
-// resume (dispatch://INFRA-2811).
+// resume (dispatch://INFRA-2811). OriginNews is a task queued for news of the approved design
+// alone (RequestDeliver.NewsOnly, the daemon's news-only start), whose writes are counted apart
+// too: it hands the worker no work of its phase, only what changed in the design it stands on, so
+// its writes are neither a phase start's nor a notice's.
 const (
 	OriginPhaseStart      = "phase-start"
 	OriginResume          = "resume"
 	OriginSilence         = "silence"
 	OriginWake            = "wake"
 	OriginNotice          = "notice"
+	OriginNews            = "news"
 	OriginOperator        = "operator"
 	OriginCheckLook       = "check-look"
 	OriginControllerStart = "controller-start"
 )
 
 // originOf is the origin a queued task is recorded under: the request's own, or, for a request
-// that names none, a phase start where it names a phase and the operator's otherwise — the
-// reading of a row written before the origin was recorded (dispatch://INFRA-2811).
+// that names none, the news origin where it is queued for news alone (RequestDeliver.NewsOnly, a
+// start row of main's #3995, which named no origin), a phase start where it names a phase and the
+// operator's otherwise — the reading of a row written before the origin was recorded
+// (dispatch://INFRA-2811).
 func originOf(request RequestDeliver) string {
 	switch {
 	case request.Origin != "":
 		return request.Origin
+	case request.NewsOnly:
+		return OriginNews
 	case request.Phase != "":
 		return OriginPhaseStart
 	default:
@@ -677,6 +685,16 @@ func (m *Machine) refusedAdoption(ctx context.Context, request RequestTake, err 
 // the delivery when its task is finished, and the handshake is what keeps when the worker took
 // that entry's work. The same write carries it, since the claim is half of it.
 //
+// News of the approved design is told the same way, by the copy this write makes the delivery's
+// credit (Delivery.Carried): the news the text answered here carries, which is the delivery's News
+// as the decision of this take rendered it from the record (currentNews, takeable), since the text
+// is composed from the task that render left beside it. The store reads a taken row's copy as what
+// its audiences took (design_news_told_in), and the finish of the take's turn makes it final
+// (Delivery.Ran, finishTask); a take-back ends it with the take (interrupted, clearTake). Only an
+// accepted take confirms a task, so no turn of the worker's own credits news its text never
+// carried, and a take sent again is answered the text the record kept and credits nothing anew
+// (answeredFromRecord).
+//
 // The prompt budgets are not cleared here: a take resets no count (R5), and they go to zero at
 // the start of this take's turn, as at any turn's start or end (turnStarted).
 //
@@ -710,6 +728,7 @@ func (m *Machine) accept(ctx context.Context, request RequestTake) error {
 	taken := *p
 	taken.ConfirmedAt, taken.TakenText, taken.TurnStarted = m.deps.Clock.Now(), text, false
 	taken.SendFailures, taken.LastSendFailureAt, taken.LastSendError = 0, time.Time{}, ""
+	taken.credit(taken.News)
 	c := m.stored()
 	c.Handshake = c.Handshake.confirmed(taken)
 	toldAbandoned := told.Abandoned && c.Abandoned.Tells()
@@ -758,9 +777,12 @@ func (m *Machine) accept(ctx context.Context, request RequestTake) error {
 // delete its value (dropUnowed): an ask of an update round that an older daemon queued as a task,
 // whichever round it names; the daemon's own delivery of a relaunch's record (Delivery.Relaunch,
 // queueRelaunch) whose record no longer tells, since its text is that record's sentence and
-// nothing else; and a task whose issue has left the phase it was queued for. Then the claim's
-// hold of the session it records (holdRecorded): a claim that does not hold it, or whose store
-// does not answer, has its task wait. Then a root architect's task of a run, held while its root
+// nothing else; and a task whose issue has left the phase it was queued for. Then, for a task that
+// carries news of the approved design, that news rendered again from the record, with a task
+// queued for its news alone dropped where nothing of it stands now (currentNews), whose drop
+// deletes its value too. Then the claim's hold of the session it records (holdRecorded): a claim
+// that does not hold it, or whose store does not answer, has its task wait. Then a root
+// architect's task of a run, held while its root
 // has no architect to hear it and narrowed to what it still names once the root hears
 // (currentRootTask), and retired when that leaves it naming nothing. Last, for a task that adopts
 // the working copy the issue's roles share, another role of the issue in a turn, or holding an
@@ -798,6 +820,17 @@ func (m *Machine) takeable(ctx context.Context, owed bool) (hold string, dropped
 		}
 	}
 	if dropped {
+		return "", true, m.queueRelaunch(ctx)
+	}
+	// A task that carries news of the approved design is rendered again from the record here,
+	// where the take is decided, and one queued for its news alone that has nothing left to say is
+	// dropped (currentNews): what the accepted take's text carries is what the record owes now, and
+	// that is what the accept credits.
+	says, err := m.currentNews(ctx)
+	if err != nil {
+		return "", false, err
+	}
+	if !says {
 		return "", true, m.queueRelaunch(ctx)
 	}
 	p := m.claim.Pending

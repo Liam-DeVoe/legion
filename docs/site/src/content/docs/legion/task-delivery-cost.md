@@ -153,7 +153,8 @@ So each figure that names a task names its claim too.
 
 - `numbers written by origin` is the number of tasks that the daemon wrote as values, by the origin of each task.
 
-  - Each task has one origin: `phase-start`, `resume`, `silence`, `wake`, `notice`, `operator`, `check-look` or `controller-start`.
+  - Each task has one origin: `phase-start`, `resume`, `silence`, `wake`, `notice`, `news`, `operator`, `check-look` or `controller-start`.
+    `news` is a task queued for news of the approved design alone: it tells the worker what changed in the design its work stands on and gives it no work of its phase, so the command counts it apart from the phase's work.
 
   - The daemon can write the value of one task more than one time.
     The command counts each task one time.
@@ -360,6 +361,7 @@ turns each number took:
 numbers written by origin: notice 1, operator 1, phase-start 2, silence 1, wake 1 (6 in all)
 numbers written to a claim whose phase waited, by origin: notice 1, silence 1, wake 1 (3 in all)
 silence repair (origin silence), counted apart from resume: numbers written 1, to a claim whose phase waited 1
+news of the approved design (origin news), counted apart from the phase's work: numbers written 0, to a claim whose phase waited 0
 numbers taken: 6
 numbers owed that no take reached within the first bound: 2
   legion-infra-infra-2811-implementer task 2: the clock started 2026-11-14T09:30:00.000Z, the bound passed 2026-11-14T09:35:00.000Z, taken 2026-11-14T09:35:20.000Z
@@ -431,6 +433,7 @@ turns each number took:
 numbers written by origin: notice 1, phase-start 1, silence 1 (3 in all)
 numbers written to a claim whose phase waited, by origin: notice 1, silence 1 (2 in all)
 silence repair (origin silence), counted apart from resume: numbers written 1, to a claim whose phase waited 1
+news of the approved design (origin news), counted apart from the phase's work: numbers written 0, to a claim whose phase waited 0
 numbers taken: 2
 numbers owed that no take reached within the first bound: 1
   legion-infra-infra-2811-implementer task 2: the clock started 2026-11-14T09:30:00.000Z, the bound passed 2026-11-14T09:35:00.000Z, taken 2026-11-14T09:35:20.000Z

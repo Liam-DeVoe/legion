@@ -588,8 +588,11 @@ type RequestDeliver struct {
 	// alone.
 	ResendEntry bool
 	// RoundNamed marks a task that ends with the daemon's two sentences of a reviewer's review
-	// round, from the start row that queued it (record.SuperviseRequest.RoundNamed). An operator's
-	// task and the controller's carry none (Delivery.RoundNamed).
+	// round: from the start row that queued it (record.SuperviseRequest.RoundNamed), or, for a
+	// reviewer's start queued for news alone, which the queue named no round on, from the round
+	// the start executor names when it composes that task (the daemon's newsForStart,
+	// startNews.roundNamed). An operator's task and the controller's carry none
+	// (Delivery.RoundNamed).
 	RoundNamed bool
 	// CheckLook is the look of a closed issue's production check this task is of, from the start
 	// row that queued it (record.SuperviseRequest.CheckLook and CheckOpenedAt). A phase task, an
@@ -605,6 +608,21 @@ type RequestDeliver struct {
 	// is what holds those rows until the delivery tells them (Delivery.Kept). Empty for a task
 	// that names none.
 	Kept []byte
+	// News is what the task carries of news of the approved design, as the start that queued it
+	// read it from the record (record.DeliveryNews, encoded JSON), carried onto the delivery and
+	// persisted with it, since the delivery's accepted take is what credits it as taken
+	// (Delivery.News, Delivery.Carried). Empty for a task that carries none.
+	News []byte
+	// NewsOnly marks a task queued for news of the approved design alone (the daemon's news-only
+	// start, record.SuperviseRequest.News). Such a task holds no work of the claim's: it asks the
+	// worker to read what changed and to answer it. So it takes the place of no task that holds
+	// work (HoldsTask), where any other newer task takes the place of a taken task whose turn has
+	// run or of one a provider error took back (queue): it is refused (ErrDeliveryPending), and its
+	// start waits on its row's backoff until the claim holds no such task. It still takes the place
+	// of the daemon's own delivery of a relaunch's record, which holds no work either. Once held,
+	// it gives way to a task of an entry while no take of it is accepted (Machine.supersedes), since
+	// the start of an entry carries the same news itself.
+	NewsOnly bool
 }
 
 // RequestExit is the agent reporting its own end.

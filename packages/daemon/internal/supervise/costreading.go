@@ -51,7 +51,8 @@ import (
 //     (valueWrittenLine); and of those, the numbers written to a claim that had finished the last
 //     task written to it in the session it ran (finished), which is a task written to a claim
 //     whose phase waited (R7 and R9's waited figure). The silence repair's writes (OriginSilence)
-//     are an origin of their own, read apart from a resume's;
+//     are an origin of their own, read apart from a resume's, and so are the writes of a task of
+//     news of the approved design alone (OriginNews), read apart from the phase's work;
 //   - the numbers taken, from the accepted answers to a take (takeAnsweredLine), less an answer
 //     that repeats one from the record (repeat), which applied nothing;
 //   - the numbers no take reached within the first bound of R5's first wait (TaskCostArgs.Take),

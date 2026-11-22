@@ -108,6 +108,8 @@ func (c TaskCost) Text() string {
 	fmt.Fprintf(&b, "numbers written to a claim whose phase waited, by origin: %s\n", byKey(c.WaitedByOrigin))
 	fmt.Fprintf(&b, "silence repair (origin %s), counted apart from resume: numbers written %d, to a claim whose phase waited %d\n",
 		OriginSilence, c.WrittenByOrigin[OriginSilence], c.WaitedByOrigin[OriginSilence])
+	fmt.Fprintf(&b, "news of the approved design (origin %s), counted apart from the phase's work: numbers written %d, to a claim whose phase waited %d\n",
+		OriginNews, c.WrittenByOrigin[OriginNews], c.WaitedByOrigin[OriginNews])
 	fmt.Fprintf(&b, "numbers taken: %d\n", c.Taken)
 	fmt.Fprintf(&b, "numbers owed that no take reached within the first bound: %d\n", len(c.Unreached))
 	for _, owed := range c.Unreached {

@@ -39,6 +39,11 @@ body: |-
   also after a daemon restart under a live worker: the worker's report of that run names the take
   as `held`. That holds for a take accepted before the restart too, except one whose given run the
   daemon before the restart saw end, whose own turn may have run there as well.
+  News of an approved design reaches the worker on the task it takes: the accepted take's text
+  carries the news, and its copy counts as the holder having taken that news once the take's turn
+  starts (store migration `20261122160000_design_news_credit_at_turn_start`, whose way back runs
+  before the task numbers' at a rollback). A task queued for news alone is written under the origin
+  `news`, which `legion task-cost` counts apart from the phase's work.
   Roll out in this order: the envoy-infra release with the bucket grants first, then the listener
   image, then each project's daemon and worker image together in one apply, then restart any
   controller an operator started and every worker of a daemon that knows no plugin pair to relaunch

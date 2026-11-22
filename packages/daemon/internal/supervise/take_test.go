@@ -182,7 +182,7 @@ func TestTakeDropsATaskTheRecordNoLongerOwesAndDeletesItsValue(t *testing.T) {
 		{name: "a root architect's task that names nothing now", arrange: func(t *testing.T) *harness {
 			h := newHarnessOf(t, rootClaim(), func(d *Deps) {
 				d.RootHears = func(context.Context, Claim, Delivery) (bool, error) { return true, nil }
-				d.RootTask = func(context.Context, Claim, Delivery) (string, []byte, error) { return "", nil, nil }
+				d.RootTask = func(context.Context, Claim, Delivery) (string, []byte, []byte, error) { return "", nil, nil, nil }
 			})
 			h.manualTakes()
 			h.reach(StateReady)
@@ -379,8 +379,8 @@ func TestTakeDropTestReadsTheRecordOnceWhenANewerTaskWaitsBehindAnOwedOne(t *tes
 func TestTakeOfARootTaskIsNarrowedToWhatItStillNames(t *testing.T) {
 	h := newHarnessOf(t, rootClaim(), func(d *Deps) {
 		d.RootHears = func(context.Context, Claim, Delivery) (bool, error) { return true, nil }
-		d.RootTask = func(context.Context, Claim, Delivery) (string, []byte, error) {
-			return "a person decided on this tree only", []byte(`{"decisions":[]}`), nil
+		d.RootTask = func(context.Context, Claim, Delivery) (string, []byte, []byte, error) {
+			return "a person decided on this tree only", []byte(`{"decisions":[]}`), nil, nil
 		}
 	})
 	h.manualTakes()

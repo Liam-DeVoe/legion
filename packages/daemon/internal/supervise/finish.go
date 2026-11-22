@@ -38,13 +38,26 @@ func (m *Machine) startTakesTurn(ctx context.Context) error {
 // whatever the claim's plugin, and each refusal of the bound's own write arms it again, until one
 // lands (decision 8 of dispatch://INFRA-2811). A plugin that names its task's number is given no
 // other bound than this one (TakesNoTask). With no task pending it finishes nothing.
+//
+// A finish says the take's turn ran with no provider error (a report of one goes to the ladder,
+// providerErrored, never here), so it makes final what the take credited of news of the approved
+// design: the delivery is marked so (Delivery.Ran) and written before it retires, and that write
+// folds the copy into the told rows (the claim store's settleDesignNews), so the retirement, which
+// ends the row's credit with the row, ends nothing of it. A write of the mark that fails is a
+// finish that failed, owed and made again as a refused retirement is; the mark stands in memory,
+// so the delivery is unsaved and the next write of it folds the copy then, and the finish made
+// again writes no second mark. A task that carries no copy writes nothing more than it did.
 func (m *Machine) finishTask(ctx context.Context, by string) error {
 	p := m.claim.Pending
 	if p == nil {
 		return nil
 	}
 	number, id := p.Number, p.ID
-	if err := m.retireTask(ctx, true); err != nil {
+	err := m.creditRan(ctx)
+	if err == nil {
+		err = m.retireTask(ctx, true)
+	}
+	if err != nil {
 		if by == finishedByReport {
 			m.finishOwed = true
 		}
@@ -56,6 +69,18 @@ func (m *Machine) finishTask(ctx context.Context, by string) error {
 	m.log.Info(taskFinishedLine, "task", number, "by", by)
 	m.deleteValue(ctx, number, valueDeletedFinished)
 	return nil
+}
+
+// creditRan marks the pending task's credit of news of the approved design final (Delivery.Ran)
+// and writes the delivery, which folds that credit into the told rows (finishTask says why): only
+// for a taken task whose accepted take carried a copy (Delivery.Carried) not yet marked so.
+func (m *Machine) creditRan(ctx context.Context) error {
+	p := m.claim.Pending
+	if !p.taken() || len(p.Carried) == 0 || p.Ran {
+		return nil
+	}
+	p.Ran = true
+	return m.putPending(ctx)
 }
 
 // makeOwedFinish makes the finish a report decided and the store refused (takePhase, waitFinish),

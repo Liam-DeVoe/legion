@@ -1254,6 +1254,14 @@ type acceptedTake struct {
 // time it answers.
 func takeOffered(ctx context.Context, t *testing.T, machine *supervise.Machine) (acceptedTake, bool) {
 	t.Helper()
+	return takeOfferedUnless(ctx, t, machine, nil)
+}
+
+// takeOfferedUnless is takeOffered, save that a take that fails with refused (errors.Is) answers
+// false rather than failing the test: a failure the case itself injects, which the daemon answers
+// as a take refused at its revision.
+func takeOfferedUnless(ctx context.Context, t *testing.T, machine *supervise.Machine, refused error) (acceptedTake, bool) {
+	t.Helper()
 	machine.Wait()
 	c := machine.Claim()
 	p := c.Pending
@@ -1261,6 +1269,10 @@ func takeOffered(ctx context.Context, t *testing.T, machine *supervise.Machine) 
 		return acceptedTake{}, false
 	}
 	answer, err := machine.Take(ctx, supervise.RequestTake{Claim: c.Token, Generation: c.Generation, Session: c.Session, Number: p.Number})
+	if refused != nil && errors.Is(err, refused) {
+		machine.Wait()
+		return acceptedTake{}, false
+	}
 	if err != nil {
 		t.Fatalf("the take of task %d on %s: %v", p.Number, c.Token, err)
 	}
