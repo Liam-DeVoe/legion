@@ -63,6 +63,18 @@ const FRAME_MS = 16;
 const FRAME_STEP = { intervals: [FRAME_MS] };
 
 /**
+ * The most of the page's clock the wait for the project's issues table may spend (`drawn()`'s
+ * `within`): 544 ms, the bound the wait had while it polled on `PROBE`. That ladder polls at 0,
+ * 50, 100 and 200 ms, then every 500 ms from 400 ms, and inside the 15 s expect timeout
+ * (`expect-timeout.ts`) its last poll starts at 14.9 s: 34 polls at most, each spending one
+ * `FRAME_MS` of the page's clock, so 34 x 16 ms = 544 ms. `FRAME_STEP` fits about 900 polls into
+ * the same 15 s, so with no bound of its own the wait would pass a table the page took 14 s of
+ * its own clock to draw. The waits on the Conversation pass none: the read of the mark right
+ * after each is what bounds them (see `drawn()`).
+ */
+const TABLE_DRAWN_WITHIN_MS = 544;
+
+/**
  * Spends a paused clock a frame at a time until `locator` matches `count` elements.
  *
  * A page whose clock is paused draws no answer of its own accord: TanStack batches every
@@ -79,12 +91,23 @@ const FRAME_STEP = { intervals: [FRAME_MS] };
  * A frame a poll does, and still leaves the dwell: the loop stops at the first poll that
  * matches, so the board above costs about twenty frames, a third of the dwell's second. Nor can
  * a step that overspent it pass quietly - each row below reads the mark right after this and
- * expects it unwritten, so a dwell spent here fails the row rather than hiding in it.
+ * expects it unwritten, so a dwell spent here fails the row rather than hiding in it. A wait
+ * that reads no mark after it passes `within`, the most of the page's clock it may spend, and
+ * fails as soon as it has spent that and the page has not drawn.
  */
-async function drawn(locator: Locator, count: number): Promise<void> {
+async function drawn(locator: Locator, count: number, within?: number): Promise<void> {
+  let spent = 0;
   await expect
     .poll(async () => {
+      // A throw here ends the poll at once - `expect.poll` retries its matcher, not this
+      // function - so the row fails on the bound and not on the 15 s expect timeout after it.
+      if (within !== undefined && spent >= within) {
+        throw new Error(
+          `${locator} did not match ${count} in ${spent} ms of the page's clock, the most this wait may spend`
+        );
+      }
       await locator.page().clock.runFor(FRAME_MS);
+      spent += FRAME_MS;
       return locator.count();
     }, FRAME_STEP)
     .toBe(count);
@@ -1173,7 +1196,7 @@ test("on a phone, a comment link to the newest conversation marks the issue read
     const issueLink = page
       .getByRole("table", { name: "Project issues table" })
       .getByRole("link", { name: issue.key, exact: true });
-    await drawn(issueLink, 1);
+    await drawn(issueLink, 1, TABLE_DRAWN_WITHIN_MS);
     await expect(issueLink).toBeVisible();
 
     await page.goto(`/issues/${issue.key}/comments/${newest.id}`);

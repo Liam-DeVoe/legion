@@ -185,10 +185,10 @@ async function openInApp(page: Page, key: string): Promise<void> {
 // `packages/dispatch/AGENTS.md` tags `@phone` for: the header's height limit there, the 24 px
 // targets, the page no wider than the window, the navigation's control first on row one and the
 // dialog it opens, and the 44 px buttons and 16 px type of the dialog a header control opens.
-// SLOW(>=2s): 33.7 s on chromium and 17.4 s on iphone (one worker on the two CPUs of the
-// INFRA-1109 pod, at 16b96e0b): six loads of the issue, four resizes and two moves within the
-// app on chromium, three loads and the two moves on iphone, and at each of its widths every part
-// of the header read whole and Details opened and closed three times.
+// SLOW(>=2s): 27.6 s on chromium and 11.4 s on iphone (one worker on the two CPUs of the
+// INFRA-1109 pod, at 19112b9c with this change): ten loads of the issue and two resizes on
+// chromium, five loads on iphone, and at each of its widths every part of the header read whole
+// and Details opened and closed three times.
 test("the header holds its list and its limits at every width @phone", async ({ browser }) => {
   test.setTimeout(300_000);
   await phase(browser, seedHeader, async (page, seeded) => {
@@ -196,10 +196,10 @@ test("the header holds its list and its limits at every width @phone", async ({ 
     const desktopProject = test.info().project.name !== "iphone";
 
     // No approval request waits on the reader: the approval control reads Not requested and
-    // carries no Approve, and the header holds its limit for that case. Each pass loads the page
-    // at its first width and reaches the next by a resize (`resizeTo`), which waits out the
-    // renders a width asks for. This pass loads at 390 px, so the phone's width is read on a
-    // fresh load in every project, and the next pass loads at 1440 px.
+    // carries no Approve, and the header holds its limit for that case. This pass loads at
+    // 390 px, so the phone's width is read on a fresh load in every project, and reaches 1440 px
+    // by a resize (`resizeTo`), which waits out the renders a width asks for; row (3) reads
+    // 1440 px with no request waiting on a load of its own. The next pass loads at 1440 px.
     const firstPass = desktopProject ? [IPHONE_13.width, DESKTOP.width] : [IPHONE_13.width];
     for (const [index, width] of firstPass.entries()) {
       await openAt(page, seeded.key, width, index === 0);
@@ -246,11 +246,13 @@ test("the header holds its list and its limits at every width @phone", async ({ 
     ];
 
     let drawnAtDesktop: number | undefined;
-    // Loaded at 1440 px, the first page the request shows on, and resized to each narrower width:
-    // each width ends with Details and the menus closed, scrolls the page to its top below, and
-    // takes the line's narrowing off before the labels are read again.
-    for (const [index, width] of (desktopProject ? [1440, 1280, 1024, 390] : [390]).entries()) {
-      await openAt(page, seeded.key, width, index === 0);
+    // Loaded at 1440 px, the first page the request shows on, and at each narrower width but
+    // 1280 px, which is on the same side of every breakpoint of the header and the frame as
+    // 1440 px (`openAt`) and so is reached by a resize: each width ends with Details and the
+    // menus closed, scrolls the page to its top below, and takes the line's narrowing off before
+    // the labels are read again.
+    for (const width of desktopProject ? [1440, 1280, 1024, 390] : [390]) {
+      await openAt(page, seeded.key, width, width !== 1280);
       await expectHeaderDrawn(page);
       await expect(issueHeader(page)).toContainText(MEASURED_TITLE);
       await page.evaluate(() => window.scrollTo(0, 0));
@@ -593,10 +595,9 @@ test("the header holds its list and its limits at every width @phone", async ({ 
     await expect(issueHeader(page).getByTestId("issue-route-unreachable")).toHaveCount(0);
 
     // A child of the issue, which has no children of its own, draws no children's progress. It
-    // and the parent below are opened within the app, as a link opens them. The page each move
-    // leaves fails the count read after it: the issue draws its children's progress, and the
-    // child draws no route marker.
-    await openInApp(page, seeded.childKeys[0]);
+    // and the parent below are each loaded at their own address, so each header is drawn from
+    // the read the page lands with, as a reader who opens either address reads it.
+    await gotoIssue(page, `/issues/${seeded.childKeys[0]}`);
     await expectHeaderDrawn(page);
     await expect(
       issueHeader(page).getByTestId("issue-progress-children"),
@@ -606,7 +607,7 @@ test("the header holds its list and its limits at every width @phone", async ({ 
     // The parent, whose route reaches nobody, draws the header's one marker, after its approval
     // control and before its one label.
     await patchIssue(seeded.parentKey, { labels: ["dispatch"] });
-    await openInApp(page, seeded.parentKey);
+    await gotoIssue(page, `/issues/${seeded.parentKey}`);
     await expectHeaderDrawn(page);
     await expect(issueHeader(page).getByTestId("issue-route-unreachable")).toHaveCount(1);
     await expect(issueHeader(page).getByRole("button", { name: "Approve" })).toHaveCount(0);
@@ -820,10 +821,10 @@ test("the approval entries stay in the header and read the document each step ap
 // in the fallback, as row (1) reads it in the face, a layout claim "Phone acceptance" in
 // `packages/dispatch/AGENTS.md` tags `@phone` for: the header's height limit and the 24 px
 // targets at 390 px, and the page no wider than the window at 390 and 320 px.
-// SLOW(>=2s): 21.4 s on chromium and 19.0 s on iphone (one worker on the two CPUs of the
-// INFRA-1109 pod, at 16b96e0b): four loads of the issue in two signed-in contexts, each waiting
-// for the typeface to load or fail, eight resizes, and the header's limits measured at twelve
-// widths.
+// SLOW(>=2s): 18.9 s on chromium and 19.8 s on iphone (one worker on the two CPUs of the
+// INFRA-1109 pod, at 19112b9c with this change): ten loads of the issue in two signed-in
+// contexts, each waiting for the typeface to load or fail, two resizes, and the header's limits
+// measured at twelve widths.
 test("the header holds its limits when the typeface does not load @phone", async ({ browser }) => {
   test.setTimeout(240_000);
   await phase(browser, seedHeader, async (page, seeded) => {
@@ -859,16 +860,12 @@ test("the header holds its limits when the typeface does not load @phone", async
         if (requestWaiting) {
           await requestApproval(seeded.specArtifactId, { summary: "Read it back." });
         }
-        // Each pass loads the page once and reaches its other width by a resize (`resizeTo`),
-        // which waits out the renders a width asks for. The first pass reads 1440 px on the load
-        // above, at the same address and size with no write since; the second loads at 390 px
-        // with the request waiting. So each width is read once on a fresh load, and the face,
-        // loaded for the document, is the one each resize draws in.
-        const widths = requestWaiting
-          ? [IPHONE_13.width, DESKTOP.width]
-          : [DESKTOP.width, IPHONE_13.width];
-        for (const [index, width] of widths.entries()) {
-          if (index > 0 || requestWaiting) await openAt(page, seeded.key, width, index === 0);
+        // Each width is read on a load of its own, since 1440 and 390 px are on either side of
+        // every breakpoint of the header and the frame (`openAt`), but for 1440 px with no
+        // request waiting, which reads the load above: the same address and size, with no write
+        // since.
+        for (const [index, width] of [DESKTOP.width, IPHONE_13.width].entries()) {
+          if (index > 0 || requestWaiting) await openAt(page, seeded.key, width, true);
           await expectHeaderDrawn(page);
           await expect(issueHeader(page)).toContainText(MEASURED_TITLE);
           await expect
@@ -879,10 +876,12 @@ test("the header holds its limits when the typeface does not load @phone", async
           await expectHeaderWithinItsLimit(page, width, requestWaiting, TYPEFACE);
         }
         // In the fallback each pass loads at 390 px, the phone's width the `@phone` tag is for,
-        // and resizes to the other three: a face whose request failed stays failed for the
-        // document, and a resize asks for no file.
-        for (const [index, width] of [IPHONE_13.width, 320, 1024, DESKTOP.width].entries()) {
-          await openAt(without, seeded.key, width, index === 0);
+        // resizes to 320 px, on the same side of every breakpoint as 390 px, and loads at 1024
+        // and 1440 px, each across one from the width before it (`openAt`). A face whose request
+        // failed stays failed for the document and a resize asks for no file; each load asks for
+        // it again, and the route refuses it again.
+        for (const width of [IPHONE_13.width, 320, 1024, DESKTOP.width]) {
+          await openAt(without, seeded.key, width, width !== 320);
           await expectHeaderDrawn(without);
           await expect(issueHeader(without)).toContainText(MEASURED_TITLE);
           await expect

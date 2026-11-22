@@ -61,7 +61,7 @@ export function viewportAt(width: number): { readonly height: number; readonly w
 }
 
 /** Sets the viewport to `width` and waits out what the resize starts (`resizeSettled`,
- *  `frames.ts`), so a row that reaches a width by a resize reads what a load at that width draws.
+ *  `frames.ts`), so a row that reaches a width by a resize reads what the width queries draw there.
  *  That wait ends on R+4, the fourth frame after the first that draws the new width, which is the
  *  latest frame the labels' walk (`issue-page-p.e2e.ts`, the labels' count row) reads a width at:
  *  so a resize reads the line no sooner than the walk does. */
@@ -70,9 +70,29 @@ export async function resizeTo(page: Page, width: number): Promise<void> {
   await resizeSettled(page, width);
 }
 
-/** Brings issue `key`'s page to `width`: a load at that width where `load` says so, else a resize
- *  of the page already open (`resizeTo`). A row that reads several widths loads at the first and
- *  resizes to the rest. */
+/**
+ * Brings issue `key`'s page to `width`: a load at that width where `load` says so, else a resize
+ * of the page already open (`resizeTo`). A row loads at each width across a breakpoint of the
+ * header or the frame from the width before it, and resizes only between widths on the same side
+ * of every one: a chunk the page loads decides part of the layout, and what a load at a width
+ * draws is not always what a resize to that width draws. While the margin's chunk was on its way
+ * after a load, the shell held a column for it that narrowed the page (381b29ad), which a resize,
+ * with the chunk long in, never showed.
+ *
+ * The breakpoints, each the first width of its new side:
+ *
+ * - 761 px: the header stops scrolling away, its `min-[761px]:` classes and the view row's
+ *   `max-[761px]:` ones switch, and Details stops shading the page (`HEADER_SCROLLS_QUERY`,
+ *   `identity-block.ts`; `IssueHeader.tsx`, `IssuePropertiesRow.tsx`, `IssueTitleRow.tsx`);
+ * - 768 px: the rail and the page's room for it (`MD_VIEWPORT_QUERY`, `shell/useDialog.ts`, read
+ *   as `railFits` in `frame-shell.tsx`, and its `md:pl-14`);
+ * - 1024 px: the Contents pane and, below it, the Outline control (`CONTENTS_PANE_QUERY`,
+ *   `contents-frame.tsx`);
+ * - 1241 px: the pane's 260 px width (`min-[1241px]:w-[260px]`, `contents-frame.tsx`);
+ * - 1280 px: the view row's five controls, the actions menu's desktop rows and Details as a
+ *   drawer (`ONE_CONTROL_QUERY`, `IssuePresets.tsx`; `IssueActionsMenu.tsx`;
+ *   `COMPACT_VIEWPORT_QUERY`, `shell/useDialog.ts`).
+ */
 export async function openAt(page: Page, key: string, width: number, load: boolean): Promise<void> {
   if (load) {
     await page.setViewportSize(viewportAt(width));

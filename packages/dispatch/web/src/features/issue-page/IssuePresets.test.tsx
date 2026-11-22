@@ -224,7 +224,10 @@ test("below 1280 px, Escape with a dialog open over the menu closes the dialog a
     const dialog = () => screen.queryByRole("dialog", { name: "Over the row" });
 
     // The dialog takes the focus in the commit that opens it, with no frame run. The focus is
-    // then put back on the menu's item, outside the dialog, so the Escape lands there.
+    // then put back on the menu's item, outside the dialog, so the Escape lands there. The row
+    // reads that it is there before the Escape: a dialog that kept the focus inside itself would
+    // take the Escape in the dialog, which closes it as well, and the row would pass without the
+    // case it names, the focus outside the dialog.
     const frames = spyOn(window, "requestAnimationFrame").mockImplementation(() => 0);
     try {
       await user.keyboard("?");
@@ -233,6 +236,9 @@ test("below 1280 px, Escape with a dialog open over the menu closes the dialog a
         screen.getByRole("button", { name: "in the dialog" })
       );
       act(() => menuItem("spec").focus());
+      expect(document.activeElement, "the focus is not on the menu's item before the Escape").toBe(
+        menuItem("spec")
+      );
       await user.keyboard("{Escape}");
     } finally {
       frames.mockRestore();

@@ -98,8 +98,14 @@ const WIDTHS = [320, 390, 768, 1024, 1280, 1440] as const;
 const PHONE_FIRST = [390, ...WIDTHS.filter((width) => width !== 390)] as const;
 
 /** Sets the viewport to `width` and waits out what the resize starts (`resizeSettled`,
- *  `frames.ts`), so a row that reaches a width by a resize reads what a load at that width draws:
- *  the rail, the Contents pane and the view row's controls. */
+ *  `frames.ts`), so a row that reaches a width by a resize reads what a width query draws there:
+ *  the rail, the Contents pane and the view row's controls. A row resizes only between widths on
+ *  the same side of every breakpoint the frame switches on, and loads the page at each width
+ *  across one from the width before it: a chunk the page loads decides part of the layout, and
+ *  what a load at a width draws is not always what a resize to that width draws. While the
+ *  margin's chunk was on its way after a load, the shell held a column for it that narrowed the
+ *  page (381b29ad), which a resize, with the chunk long in, never showed. `openAt` of
+ *  `issue-page-p.ts` lists the breakpoints. */
 async function resizeTo(page: Page, width: number): Promise<void> {
   await page.setViewportSize(viewportAt(width));
   await resizeSettled(page, width);
@@ -323,11 +329,11 @@ test("the frame draws an icon rail, Details over the page and the Contents pane 
         message: "the pane is not 240 px wide at 1240 px",
       })
       .toBe(240);
-    // Back at 1440 px by a resize, Spec's toggle turns the view on, as a reader turns it on: the
-    // pane drawn above goes in the render that draws the view.
-    await resizeTo(page, 1440);
-    await presetToggle(page, "spec").click();
-    await expect(page).toHaveURL(addressOf(key, "spec"));
+    // At 1440 px Spec's own address loads with no pane, and the stage has the column's 1328 px.
+    // A load and not a resize from 1240 px, which is across the pane's 260 px width at 1241 px
+    // and the view row's five controls at 1280 px (`resizeTo`).
+    await page.setViewportSize(viewportAt(1440));
+    await gotoIssue(page, presetPath(key, "spec"));
     await expect(contentsPane(page), "a view draws the pane").toHaveCount(0);
     expect(await stageWidth(page), "the stage under a view is not 1328 px").toBe(1328);
 
@@ -428,13 +434,21 @@ test("the frame draws an icon rail, Details over the page and the Contents pane 
 
     // At each of R10's widths, Details closed and open, nothing is wider than the window, the
     // rail and the view row are whole, and no scrolling box of the frame scrolls sideways. The
-    // page stands at 390 px from the load above, with its sheet closed, and reaches each other
-    // width by a resize (`resizeTo`), which waits out the renders the width queries ask for.
+    // page stands at 390 px from the load above, with its sheet closed. It is loaded at 768,
+    // 1024 and 1280 px, each across a breakpoint of the frame from the width before it, and
+    // resized (`resizeTo`) to 320 px, on the same side of every breakpoint as 390 px, and to
+    // 1440 px, on the same side of every breakpoint as 1280 px.
     for (const width of PHONE_FIRST) {
-      if (width !== 390) await resizeTo(page, width);
-      // The load above landed its opening before the focus left its row for the page, and a
-      // resize starts no opening, so the page places no focus of its own at any width here.
-      // Leaving the control the presses since left the focus on, for the page itself, lets
+      if (width === 768 || width === 1024 || width === 1280) {
+        await page.setViewportSize(viewportAt(width));
+        await gotoIssue(page, `/issues/${key}`);
+        await expectOpeningLanded(page);
+      } else if (width !== 390) {
+        await resizeTo(page, width);
+      }
+      // Each load here and above has landed its opening before the focus leaves its row for the
+      // page, and a resize starts no opening, so the page places no focus of its own at any width
+      // here. Leaving the control the presses since left the focus on, for the page itself, lets
       // `openDetails`' Shift+M reach the page's own binding.
       await focusThePage(page);
       for (const open of [false, true]) {
@@ -697,19 +711,28 @@ test("the five controls are toggles with an address each, one line at every widt
     await expect(openMenu(page), "Escape in the sheet closed the menu under it").toHaveCount(1);
     await page.keyboard.press("Escape");
     await expect(openMenu(page)).toHaveCount(0);
-    // Each width by a resize (`resizeTo`): the Outline control is drawn at 390 px too, so the
-    // count at 1023 px reads after the wait for the render that width's queries ask for.
+    // Each width by a load, since each is across a breakpoint of the frame from the width before
+    // it (`resizeTo`): 390 px and 1023 px lie either side of the header's 761 px and the rail's
+    // 768 px.
     for (const width of [1023, 390]) {
-      await resizeTo(page, width);
+      await page.setViewportSize(viewportAt(width));
+      await gotoIssue(page, `/issues/${key}`);
       await expect(outlineControl(page), `no Outline control at ${width} px`).toHaveCount(1);
     }
 
     // At each of R10's widths, 390 px first, the row is one line, at most 35 px tall from
     // 1280 px and 51 px below, no control in it under 24 px, and each control's words inside
-    // its name.
+    // its name. The page stands at 390 px from the load above. It is loaded at 768, 1024 and
+    // 1280 px, each across a breakpoint of the frame from the width before it, and resized
+    // (`resizeTo`) to 320 px, on the same side of every breakpoint as 390 px, and to 1440 px, on
+    // the same side of every breakpoint as 1280 px.
     for (const width of PHONE_FIRST) {
-      // The page stands at 390 px from the resize above, and reaches each other width by one.
-      if (width !== 390) await resizeTo(page, width);
+      if (width === 768 || width === 1024 || width === 1280) {
+        await page.setViewportSize(viewportAt(width));
+        await gotoIssue(page, `/issues/${key}`);
+      } else if (width !== 390) {
+        await resizeTo(page, width);
+      }
       await assertPageFits(page);
       const limit = width >= 1280 ? 35 : 51;
       await expect
@@ -740,8 +763,9 @@ test("the five controls are toggles with an address each, one line at every widt
       // A control's words are the text it shows less what it hides from assistive technology,
       // such as a glyph that names nothing (WCAG 2.5.3 reads words).
       const named = filterRow(page).locator("button:visible");
-      // The resize waited out the row's render at this width and the poll above measured it
-      // since, with no press between, so one count lists the buttons it shows.
+      // The poll above waited for the row to draw at this width, after the load or the resize,
+      // and its controls were measured since, with no press between, so one count lists the
+      // buttons it shows.
       for (let at = 0; at < (await named.count()); at += 1) {
         // The count above found this control drawn, and its words are the ones its render wrote,
         // so one read says whether it shows any words.
@@ -760,12 +784,14 @@ test("the five controls are toggles with an address each, one line at every widt
       }
     }
 
-    // At 390 px a scrolled page keeps the row at the top; at 1440 px it scrolls away.
+    // At 390 px a scrolled page keeps the row at the top; at 1440 px it scrolls away. Each width
+    // by a load, since each is across every breakpoint of the frame from the width before it.
     for (const [width, stays] of [
       [390, true],
       [1440, false],
     ] as const) {
-      await resizeTo(page, width);
+      await page.setViewportSize(viewportAt(width));
+      await gotoIssue(page, `/issues/${key}`);
       await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
       const row = await boxOf(filterRow(page), "the view row");
       if (stays) expect(Math.round(row.y), "the row left the top at 390 px").toBe(0);
