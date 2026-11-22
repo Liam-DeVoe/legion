@@ -85,6 +85,12 @@ func (r Reach) EndEpisode() Reach {
 // unrelated end later gets a relaunch of its own. It is a choice, not a measurement.
 const RelaunchAgainAfter = 6 * time.Hour
 
+// relaunchStoppedCause is what the claim records of a process its own relaunch stopped, which the
+// cut-turn note reads, where the daemon that finds that process gone has no record of the
+// relaunch's own cause (died). It is the cause the daemon's reach keeper gives the relaunch.
+var relaunchStoppedCause = "Envoy could not reach its session for " + timewords.Words(UnreachableAfter) +
+	", so the daemon relaunched it on the same session"
+
 // relaunchWaitTool is the one call a relaunch may cut open: a `wait`, which a turn sits in on a
 // background job, a subagent, a named service or a message. The activity report says whether a
 // job or a subagent it waits on still runs, and a report made in the turn says whether the
@@ -245,12 +251,15 @@ type RequestRelaunch struct {
 // Every other error of the launch after the stop — a refusal of the tree's, or a claim failed at
 // its launch budget — is answered as it is.
 //
-// Once the stop has ended the process the claim records the relaunch (Claim.LastRelaunch), which
-// its next write carries: the take-back's, the launch's own, which moves the generation, or that
-// of the refusal the launch met, at the latest. So the record the next relaunch within 6 hours is
-// refused by is durable with the launch it refuses a repeat of, and a daemon that ends after that
-// write loses none of it, whatever the keeper had written by then. A relaunch refused before the
-// stop records nothing, and uses no part of the 6 hours.
+// The relaunch is recorded on the claim before its stop, in a write of its own
+// (Claim.LastRelaunch, its launch generation 0 while that launch has not started): so a daemon
+// that ends after the stop, or whose store refuses the take-back's write and then ends, leaves the
+// next daemon a claim that says a relaunch stopped its process. That daemon charges the stopped
+// process's end nothing and makes the relaunch's launch (Machine.relaunchStopRecorded, died), and
+// the record the next relaunch within 6 hours is refused by is durable from before the stop. A
+// store that refuses that first write is a refusal, before anything is stopped; a stop that fails
+// puts the record back as it was. A relaunch refused before the stop records nothing, and uses no
+// part of the 6 hours.
 //
 // It charges nothing: no death, and no launch failure for the stop, since the process did nothing
 // wrong; a start the runtime refuses inside the launch is charged as any is (launchNow). The
@@ -312,6 +321,18 @@ func (m *Machine) relaunchUnreachable(ctx context.Context, ev RequestRelaunch) e
 	m.log.Warn("supervise: relaunching a claim Envoy cannot reach on its same session; the stop charges nothing",
 		"incarnation", loc.Incarnation, "cause", ev.Cause, "mayReplacePod", ev.MayReplacePod,
 		"lastStep", ev.Step.LastStep(), "tool", ev.Step.Tool, "callId", ev.Step.CallID)
+	at := ev.At
+	if at.IsZero() {
+		at = m.deps.Clock.Now()
+	}
+	// A timestamp column holds microseconds, so the moment is recorded as the store reads it back.
+	// Its launch is still to be made, so no generation is recorded beside it yet.
+	lastAt, lastGeneration := m.claim.LastRelaunch, m.claim.LastRelaunchGeneration
+	m.claim.LastRelaunch, m.claim.LastRelaunchGeneration = at.UTC().Truncate(time.Microsecond), 0
+	if err := m.putClaim(ctx); err != nil {
+		m.claim.LastRelaunch, m.claim.LastRelaunchGeneration = lastAt, lastGeneration
+		return refuse(fmt.Errorf("the daemon could not record the relaunch before its stop, so nothing was stopped: %w", err))
+	}
 	stop := func() error { return m.deps.Runtime.Suspend(ctx, loc) }
 	if inPlace != nil {
 		stop = func() error { return inPlace.StopForRelaunch(ctx, loc, ev.MayReplacePod) }
@@ -326,15 +347,15 @@ func (m *Machine) relaunchUnreachable(ctx context.Context, ev RequestRelaunch) e
 		}
 		m.log.Error("supervise: the relaunch's stop did not end the claim's process; nothing more is done",
 			"incarnation", loc.Incarnation, "error", err)
+		// The process still runs, so the relaunch recorded before the stop is put back: its end
+		// is charged as any other, and the 6 hours are not spent.
+		m.claim.LastRelaunch, m.claim.LastRelaunchGeneration = lastAt, lastGeneration
+		if werr := m.persist(ctx); werr != nil {
+			m.log.Warn("supervise: the relaunch the failed stop put back was not written; it is written at the claim's next decision",
+				"error", werr)
+		}
 		return refuse(err)
 	}
-	at := ev.At
-	if at.IsZero() {
-		at = m.deps.Clock.Now()
-	}
-	// A timestamp column holds microseconds, so the moment is recorded as the store reads it back.
-	// Its launch is still to be made, so no generation is recorded beside it yet.
-	m.claim.LastRelaunch, m.claim.LastRelaunchGeneration = at.UTC().Truncate(time.Microsecond), 0
 	back, taking := m.decideTakeBack("the claim was relaunched because "+ev.Cause, false)
 	if taking {
 		// In memory only: the write comes once the process is let go, and settle writes it with

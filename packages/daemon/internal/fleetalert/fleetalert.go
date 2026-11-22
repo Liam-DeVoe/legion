@@ -45,10 +45,11 @@ type Case struct {
 var (
 	// ControllerUnreachable is the controller still out of reach after the daemon's one relaunch
 	// of it, a relaunched controller that has not reached ready with its Envoy role 20 minutes
-	// after that relaunch included.
+	// after that relaunch included, or out of reach a second time within 6 hours of that relaunch.
+	// The line's reason says which.
 	ControllerUnreachable = Case{
 		Word:     "controller_unreachable",
-		Sentence: "the project's controller is out of reach of Envoy and the daemon's relaunch of it did not bring it back; nobody else holds that role, so a person must start it",
+		Sentence: "the project's controller is out of reach of Envoy and the daemon's one relaunch of it in 6 hours is spent; nobody else holds that role, so a person must start it",
 	}
 	// ControllerRelaunchRefused is the controller out of reach with the daemon's relaunch of it
 	// refused by the guard or anything else, or ended by a process that outlived its stop; a
@@ -58,10 +59,11 @@ var (
 		Sentence: "the project's controller is out of reach of Envoy and the daemon cannot relaunch it; a person must look at its process",
 	}
 	// ClaimUnreachable is a workflow role's claim still out of reach 20 minutes after a relaunch,
-	// or out of reach a second time within 6 hours of its last relaunch (R5).
+	// or out of reach a second time within 6 hours of its last relaunch (R5). The line's reason
+	// says which.
 	ClaimUnreachable = Case{
 		Word:     "claim_unreachable",
-		Sentence: "a workflow role's claim is out of reach of Envoy and its relaunch did not bring it back; a person must look at its pod or its connection",
+		Sentence: "a workflow role's claim is out of reach of Envoy and the daemon's one relaunch of it in 6 hours is spent; a person must look at its pod or its connection",
 	}
 	// ClaimRelaunchRefused is a workflow role's claim out of reach whose relaunch the daemon cannot
 	// make: its launcher is not connected, the launch would replace its pod, its process outlived
@@ -99,9 +101,11 @@ type Writer struct {
 
 	mu   sync.Mutex
 	open map[Line]struct{}
-	// lines keeps open outlive the daemon (Load), nil while nothing has been loaded; undeleted is
-	// each line closed here whose delete the store refused, deleted again at its next close.
+	// lines keeps open outlive the daemon (Load), nil while nothing has been loaded; unkept is each
+	// line open here whose record the store refused, kept again at its case's next Open; undeleted
+	// is each line closed here whose delete the store refused, deleted again at its next close.
 	lines     Lines
+	unkept    map[Line]struct{}
 	undeleted map[Line]struct{}
 	// pending is each record of the store not written yet, in the order its lines opened and
 	// closed. One goroutine at a time writes them, outside mu (drain), so a store that does not
@@ -144,7 +148,7 @@ const lineBudget = 30 * time.Second
 // New is a Writer that logs through log for project, and keeps its open lines in its own memory
 // until Load gives it a store.
 func New(log *slog.Logger, project string) *Writer {
-	w := &Writer{log: log, project: project, open: map[Line]struct{}{}, undeleted: map[Line]struct{}{}}
+	w := &Writer{log: log, project: project, open: map[Line]struct{}{}, unkept: map[Line]struct{}{}, undeleted: map[Line]struct{}{}}
 	w.settled = sync.NewCond(&w.mu)
 	return w
 }
@@ -169,13 +173,18 @@ func (w *Writer) Load(ctx context.Context, lines Lines) error {
 // Open writes c's line, naming claim where there is one and whatever else the caller gives as
 // slog key-value pairs, and returns whether it wrote: a case already open, in this daemon or in
 // the one before it, writes nothing until Close ends it. The line is written before its record
-// is kept, and the record is kept outside the writer's lock, so a store that refuses the record
-// costs at most a second line from the next daemon, and one that does not answer delays no line.
+// is kept, and the record is kept outside the writer's lock, so a store that does not answer
+// delays no line. A record the store refused is asked for again at the case's next Open, which
+// writes no second line: every caller opens its case again while it holds.
 func (w *Writer) Open(c Case, claim string, attrs ...any) bool {
 	key := Line{Word: c.Word, Claim: claim}
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if _, already := w.open[key]; already {
+		if _, unkept := w.unkept[key]; unkept {
+			delete(w.unkept, key)
+			w.record(lineRecord{line: key, keep: true})
+		}
 		return false
 	}
 	w.open[key] = struct{}{}
@@ -202,18 +211,22 @@ func (w *Writer) Close(c Case, claim string) {
 		return
 	}
 	delete(w.open, key)
+	delete(w.unkept, key)
 	w.record(lineRecord{line: key})
 }
 
 // CloseEnded ends each line of c whose claim holds says the case no longer holds for: a case
 // whose end only the caller can read, such as a lock-out the last daemon's worker stream held,
-// which no connection of this daemon's holds. holds is read outside the writer's lock.
+// which no connection of this daemon's holds. A line of c closed here whose delete the store
+// refused is deleted again. holds is read outside the writer's lock.
 func (w *Writer) CloseEnded(c Case, holds func(claim string) bool) {
 	w.mu.Lock()
 	var open []string
-	for l := range w.open {
-		if l.Word == c.Word {
-			open = append(open, l.Claim)
+	for _, set := range []map[Line]struct{}{w.open, w.undeleted} {
+		for l := range set {
+			if l.Word == c.Word {
+				open = append(open, l.Claim)
+			}
 		}
 	}
 	w.mu.Unlock()
@@ -261,7 +274,10 @@ func (w *Writer) drain() {
 		w.mu.Lock()
 		switch {
 		case err != nil && rec.keep:
-			w.log.Warn("fleet alert: the line is written, but the store did not keep it open; a daemon that boots before its case ends writes it again",
+			if _, open := w.open[rec.line]; open {
+				w.unkept[rec.line] = struct{}{}
+			}
+			w.log.Warn("fleet alert: the line is written, but the store did not keep it open; it is kept again at its case's next open",
 				"case", rec.line.Word, "claim", rec.line.Claim, "error", err)
 		case err != nil:
 			if _, reopened := w.open[rec.line]; !reopened {

@@ -25,12 +25,14 @@ import (
 // before.
 
 // storingPublisher answers each publish to a topic it stores for with the listener's 504
-// receipt_timeout naming that session, and delivers every other publish.
+// receipt_timeout naming that session, and delivers every other publish. during, where it is set,
+// runs once inside the next publish, before its answer: what happens while the publish waits.
 type storingPublisher struct {
 	mu        sync.Mutex
 	storesFor map[string]string
 	attempts  map[string]int
 	delivered []outboxPublish
+	during    func()
 }
 
 func newStoringPublisher() *storingPublisher {
@@ -41,6 +43,10 @@ func (p *storingPublisher) Publish(_ context.Context, topic, message string, pay
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.attempts[key]++
+	if during := p.during; during != nil {
+		p.during = nil
+		during()
+	}
 	if holder, ok := p.storesFor[topic]; ok {
 		return fmt.Errorf("publish notice to %s: listener returned 504 Gateway Timeout: %w", topic,
 			notify.ErrNotDelivered{Reason: notify.ReasonReceiptTimeout, Holder: holder, EventID: "evt-" + key})
@@ -81,9 +87,16 @@ func (p *storingPublisher) deliveredKeys() []string {
 	return keys
 }
 
-// relaunchedOnto points runner at a supervisor whose implementer claim on LEGION-208 is a newer
-// process of generation 2, in state, on session: the daemon's view once the relaunch is back.
+// relaunchedOnto points runner at relaunchedSupervisor's supervisor: the daemon's view once the
+// relaunch is back.
 func relaunchedOnto(t *testing.T, runner *outbox, session string, state supervise.ClaimState) {
+	t.Helper()
+	runner.supervisor = relaunchedSupervisor(t, session, state)
+}
+
+// relaunchedSupervisor is a supervisor whose implementer claim on LEGION-208 is a newer process of
+// generation 2, in state, on session.
+func relaunchedSupervisor(t *testing.T, session string, state supervise.ClaimState) *supervisor {
 	t.Helper()
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
 	token := mustClaimToken(t, "LEGION-208", claim.RoleImplementer)
@@ -93,7 +106,7 @@ func relaunchedOnto(t *testing.T, runner *outbox, session string, state supervis
 		Locator: pluginTestLocator(token)}}); err != nil {
 		t.Fatalf("restore the relaunched implementer: %v", err)
 	}
-	runner.supervisor = sup
+	return sup
 }
 
 // storedRows are the two kinds the rule covers, each as its row's payload for the implementer.
@@ -136,6 +149,39 @@ func TestAMessageTheListenerStoredForTheSessionThatHoldsTheRoleAgainFinishesWith
 			}
 			if left := outboxRows(t, pool); left != 0 {
 				t.Fatalf("outbox rows left = %d, want the row finished: the listener stored it for the session that holds the role again", left)
+			}
+		})
+	}
+}
+
+// A relaunch that brings the session back while the publish that stored the copy still waits for
+// the listener's answer is a newer process than the one the copy was stored for: the copy is
+// recorded under the generation that published it, read before the publish, so the relaunched
+// process finishes the row with no new publish. Read after the answer, the copy would carry the
+// relaunch's own generation, and no later process of that generation would finish it.
+func TestACopyStoredWhileARelaunchLandsIsRecordedUnderThePublishingGeneration(t *testing.T) {
+	for name, payload := range storedRows(t) {
+		t.Run(name, func(t *testing.T) {
+			publisher := newStoringPublisher()
+			runner, sup, pool := hookRunner(t, publisher)
+			implementer := sessionKeptClaim(t, sup, claim.RoleImplementer, supervise.StateWorking)
+			publisher.storeFor(notify.RoleTopicPrefix+string(implementer.Claim().Token), implementer.Claim().Session)
+			relaunched := relaunchedSupervisor(t, implementer.Claim().Session, supervise.StateIdle)
+			publisher.during = func() { runner.supervisor = relaunched }
+			enqueueOutbox(t, pool, runner.records, mustOutboxRow(t, "LEGION-208", payload, time.Now().Add(-time.Minute)))
+			key := record.OutboxKey(outboxRowIDs(t, pool)[0])
+
+			drain(t, runner)
+			if got := publisher.attemptsOf(key); got != 1 {
+				t.Fatalf("publishes of %s = %d, want the first", key, got)
+			}
+			dueNow(t, pool)
+			drain(t, runner)
+			if got := publisher.attemptsOf(key); got != 1 {
+				t.Fatalf("publishes of %s = %d after the relaunched session holds its role, want no new one: the copy was stored for generation 1", key, got)
+			}
+			if left := outboxRows(t, pool); left != 0 {
+				t.Fatalf("outbox rows left = %d, want the row finished by the relaunched process", left)
 			}
 		})
 	}

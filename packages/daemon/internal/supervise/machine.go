@@ -3500,9 +3500,29 @@ func (m *Machine) stopPrevious(ctx context.Context) error {
 // still stops its session. A held suspension the death ends is told the stop went (endHeld,
 // stopSent), so the one death is one stop. The other places a stop is sent are listed on
 // sessionGone.
+//
+// A process the claim's own relaunch stopped (relaunchStopRecorded) is no death: the relaunch
+// recorded itself before its stop, so whichever daemon finds the process gone — the one whose
+// store refused the take-back's write and then ended, or the next — takes the cut turn's task back
+// under the relaunch's cause and makes the relaunch's launch, charging nothing and waiting no
+// backoff, as the relaunch would have.
 func (m *Machine) died(ctx context.Context, observation runtime.Observation) error {
 	m.log.Warn("supervise: process died", "incarnation", m.claim.Locator.Incarnation, "observed", string(observation.Kind),
 		"detail", observation.Detail, "podEnd", observation.PodEnd, "chargedBefore", m.claim.DeathCharged)
+	stoppedByRelaunch := m.relaunchStopRecorded()
+	if stoppedByRelaunch {
+		m.recordGoneEnd(ctx, relaunchStoppedCause)
+		m.sessionGone(ctx)
+		if err := m.interrupted(ctx, "the claim was relaunched because "+relaunchStoppedCause, false); err != nil {
+			return err
+		}
+		if m.held != nil {
+			return m.endHeld(ctx, false, stopSent)
+		}
+		m.log.Warn("supervise: the process the claim's recorded relaunch stopped is gone; the relaunch's launch is made, and nothing is charged",
+			"relaunchedAt", m.claim.LastRelaunch)
+		return m.launchAfter(ctx, false, true, relaunchStoppedCause)
+	}
 	m.claim.LastDeathCause = deathCause(observation)
 	// The pod's own reason for this end is kept on the claim, so the failure the workflow is told
 	// of when this death fails it — here, or where the relaunch it raises finds the launch budget
@@ -3547,6 +3567,14 @@ func (m *Machine) died(ctx context.Context, observation runtime.Observation) err
 	// outage than a charge written late — and a launch that does run clears the charge with
 	// the process it replaces anyway (letGo).
 	return errors.Join(m.persist(ctx), relaunch(ctx))
+}
+
+// relaunchStopRecorded is whether the claim records a relaunch whose launch has not started
+// (Claim.LastRelaunch set, LastRelaunchGeneration 0): the relaunch writes it before its stop and
+// puts it back when the stop fails (relaunchUnreachable), and the relaunch's launch writes its
+// generation (launchNow). So while it stands the claim's process is the one that relaunch stopped.
+func (m *Machine) relaunchStopRecorded() bool {
+	return !m.claim.LastRelaunch.IsZero() && m.claim.LastRelaunchGeneration == 0
 }
 
 // endUncharged is whether the end of the claim's process is charged nothing, and it logs why
@@ -3842,6 +3870,11 @@ func (m *Machine) release(ctx context.Context) error {
 // fails leaves the claim holding its process, and records nothing. A claim whose process is
 // retired and relaunched in one decision (chargePrompt, the registration deadline) calls it
 // directly; one that does not run again afterwards calls endProcess.
+//
+// It stops the process before the write that records the stop, so a store that refuses that
+// write, followed by a restart before the claim's next write, has the next daemon restore the
+// claim as running on the stopped process and charge its end as a death. No case of it has been
+// seen; the fix would be a stop intent, naming its outcome, written before the stop.
 func (m *Machine) suspendProcess(ctx context.Context, cause string) error {
 	if err := m.deps.Runtime.Suspend(ctx, *m.claim.Locator); err != nil {
 		return err

@@ -148,10 +148,12 @@ func TestEveryCaseHasItsOwnWordAndASentence(t *testing.T) {
 }
 
 // heldLines is a store of open lines that outlives the writers it is loaded into, as the
-// daemon's database outlives a daemon.
+// daemon's database outlives a daemon. refuseNext refuses its next delete, and refusePut its next
+// put.
 type heldLines struct {
 	open       map[Line]bool
 	refuseNext error
+	refusePut  error
 }
 
 func (h *heldLines) OpenLines(context.Context) ([]Line, error) {
@@ -163,6 +165,10 @@ func (h *heldLines) OpenLines(context.Context) ([]Line, error) {
 }
 
 func (h *heldLines) PutLine(_ context.Context, l Line) error {
+	if err := h.refusePut; err != nil {
+		h.refusePut = nil
+		return err
+	}
 	h.open[l] = true
 	return nil
 }
@@ -258,6 +264,56 @@ func TestCloseEndedEndsTheLinesWhoseCaseNoLongerHolds(t *testing.T) {
 	want := map[Line]bool{{Word: NewerProcessRefused.Word, Claim: "claim-2"}: true, {Word: ControllerUnreachable.Word, Claim: "claim-1"}: true}
 	if !maps.Equal(held.open, want) {
 		t.Fatalf("the open lines are %v, want %v", held.open, want)
+	}
+}
+
+// An open whose record the store refused is kept again at the case's next open, which writes no
+// second line, so the daemon that boots next reads the case as open and writes nothing for it.
+func TestAnOpenTheStoreRefusedIsKeptAtTheCasesNextOpen(t *testing.T) {
+	held := &heldLines{open: map[Line]bool{}, refusePut: errors.New("the database is restarting")}
+	w, buf := boot(t, held)
+	w.Open(ClaimRelaunchRefused, "claim-1")
+	w.Wait()
+	line := Line{Word: ClaimRelaunchRefused.Word, Claim: "claim-1"}
+	if held.open[line] {
+		t.Fatal("the refused put kept the line in the store")
+	}
+	if wrote := w.Open(ClaimRelaunchRefused, "claim-1"); wrote {
+		t.Fatal("the case's next open wrote a second line")
+	}
+	w.Wait()
+	if !held.open[line] {
+		t.Fatal("the case's next open did not keep the line in the store")
+	}
+	if got := len(lines(t, buf)); got != 1 {
+		t.Fatalf("the daemon wrote %d lines, want the one", got)
+	}
+	next, nextLog := boot(t, held)
+	if wrote := next.Open(ClaimRelaunchRefused, "claim-1"); wrote || len(lines(t, nextLog)) != 0 {
+		t.Fatal("the daemon that booted next wrote the line of a case still open")
+	}
+}
+
+// A line CloseEnded closed whose delete the store refused is deleted again by the next
+// CloseEnded of its case, as the next Close of it would, so a reading that ends cases only through
+// CloseEnded leaves no ended case open in the store.
+func TestCloseEndedDeletesAgainALineWhoseDeleteTheStoreRefused(t *testing.T) {
+	held := &heldLines{open: map[Line]bool{}}
+	w, _ := boot(t, held)
+	w.Open(NewerProcessRefused, "claim-1")
+	w.Wait()
+	held.refuseNext = errors.New("the database is restarting")
+	ended := func(string) bool { return false }
+	w.CloseEnded(NewerProcessRefused, ended)
+	w.Wait()
+	line := Line{Word: NewerProcessRefused.Word, Claim: "claim-1"}
+	if !held.open[line] {
+		t.Fatal("the refused delete took the line out of the store")
+	}
+	w.CloseEnded(NewerProcessRefused, ended)
+	w.Wait()
+	if held.open[line] {
+		t.Fatal("the next CloseEnded of the case did not delete the line from the store")
 	}
 }
 

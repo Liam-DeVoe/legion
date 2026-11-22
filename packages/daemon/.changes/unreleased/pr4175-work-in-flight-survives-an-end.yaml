@@ -9,7 +9,9 @@ body: |-
     claim routes, and the claim keeps its state.
     The daemon relaunches each claim it marked on its same session, at most once in 6 hours: it
     stops the claim's process through its launcher, starts it again on the same session, and
-    charges the claim nothing. A guard holds the relaunch while the claim's worker stream has shown
+    charges the claim nothing. It records the relaunch on the claim before the stop, so a daemon
+    that ends mid-relaunch leaves the next one a claim whose stopped process it charges nothing and
+    whose relaunch it finishes. A guard holds the relaunch while the claim's worker stream has shown
     a step in the last 20 minutes, while its session has sent an activity report in its open turn
     in the last 20 minutes, while its open call is not a `wait`, and while its last activity report
     since its launch is missing or shows background work. The daemon makes no relaunch of a role

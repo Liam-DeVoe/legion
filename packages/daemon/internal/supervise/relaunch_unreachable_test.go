@@ -766,6 +766,54 @@ func TestARelaunchWhoseProcessOutlivesItsStopDoesNothingMore(t *testing.T) {
 		t.Fatal("the claim moved off the process that outlived its stop")
 	}
 	h.wantBudgets(Budgets{})
+	// The relaunch recorded itself before the stop; the stop failed, so the record is put back,
+	// in memory and in the store: the 6 hours are not spent, and the process's end is a death.
+	if c, stored := h.claim(), h.store.load(h.token); !c.LastRelaunch.IsZero() || !stored.LastRelaunch.IsZero() {
+		t.Fatalf("after a stop the process outlived the claim records the relaunch at %v and the store at %v, want neither", c.LastRelaunch, stored.LastRelaunch)
+	}
+}
+
+// The store refuses the take-back's write after the relaunch's stop, and the daemon ends before
+// the retry at the probe interval lands. The next daemon restores the claim as the store holds it,
+// still recording the stopped process; but the relaunch recorded itself before its stop, so when
+// the stopped process is found gone the next daemon charges nothing, takes the cut turn's task back
+// under the relaunch's cause and makes the relaunch's launch, which records its generation.
+// Without that record the restored claim records no relaunch, and the stopped process's end is
+// charged a death and a launch failure.
+func TestARestartBeforeARelaunchsRefusedTakeBackIsWrittenChargesNothing(t *testing.T) {
+	h := newHarness(t)
+	sent := h.waitingSilently()
+	generation := h.generation()
+	stopped := h.locator()
+	at := h.clock.Now().UTC().Truncate(time.Microsecond)
+	h.store.fail("PutDelivery", errors.New("the store is down"))
+	if err := h.handle(h.relaunchOf(false)); err != nil {
+		t.Fatalf("relaunch whose take-back the store refused = %v, want it made", err)
+	}
+	h.wantCalls("Suspend", 1)
+	h.wantCalls("Resume", 0)
+	if stored := h.store.load(h.token); !stored.LastRelaunch.Equal(at) || stored.LastRelaunchGeneration != 0 || stored.Locator == nil {
+		t.Errorf("the store holds the relaunch at %v of generation %d over %+v, want %v, its launch not started, over the stopped process",
+			stored.LastRelaunch, stored.LastRelaunchGeneration, stored.Locator, at)
+	}
+
+	h.store.fail("PutDelivery", nil)
+	h.restart()
+	_ = h.handle(RuntimeObservation{Observation: runtime.Observation{Locator: stopped, Kind: runtime.Gone, At: h.clock.Now()}})
+
+	h.wantBudgets(Budgets{})
+	resumed := h.wantCalls("Resume", 1)[0]
+	if c := h.claim(); c.Generation != generation+1 || c.LastRelaunchGeneration != generation+1 || resumed.Spec.ResumeSessionFile != sessionFile {
+		t.Fatalf("after the restart the claim is at generation %d with its relaunch's launch at %d, resuming %q; want the same session launching at %d",
+			c.Generation, c.LastRelaunchGeneration, resumed.Spec.ResumeSessionFile, generation+1)
+	}
+	if stored, ok := h.store.delivery(h.token); !ok || stored.ID == sent || !stored.Interrupted {
+		t.Fatalf("the store holds the delivery %+v, want the task taken back from the cut turn", stored)
+	}
+	h.relaunched()
+	if resent := h.wantPrompts(2)[1]; !strings.Contains(resent.Message, relaunchStoppedCause) {
+		t.Fatalf("the task came back as %q, want the cut-turn note naming the relaunch", resent.Message)
+	}
 }
 
 // The daemon's relaunch of its controller may replace the controller's pod, and only that one

@@ -2268,7 +2268,8 @@ func (r *outbox) hookPrompt(ctx context.Context, row record.OutboxRow, payload r
 // own (routineWaiting: a role message a project's pause still owes its role) is returned as it
 // is, never held or finished. Every other failure publish answers keeps the row's retry, a
 // publish the listener stored for a holder as that stored copy (storedAnswer), so the retry
-// records it.
+// records it under the claim's generation as it stood before the publish: a relaunch that ends
+// while the publish waits for its answer is a newer process than the one the copy was stored for.
 func (r *outbox) heldDelivery(ctx context.Context, row record.OutboxRow, token claim.Token, what string, owed bool, moved func(record.Issue) bool, publish func() error, undelivered func(error)) error {
 	if !owed {
 		if ended, err := r.holdEnded(ctx, row, token, what, moved); err != nil || ended {
@@ -2278,6 +2279,7 @@ func (r *outbox) heldDelivery(ctx context.Context, row record.OutboxRow, token c
 	if r.storedForItsSession(row, token, what) {
 		return nil
 	}
+	generation := r.claimGeneration(token)
 	err := publish()
 	var routine routineWaiting
 	if errors.As(err, &routine) {
@@ -2294,7 +2296,7 @@ func (r *outbox) heldDelivery(ctx context.Context, row record.OutboxRow, token c
 		return nil
 	}
 	if err != nil {
-		return r.storedAnswer(token, err)
+		return storedAnswer(generation, err)
 	}
 	return nil
 }
@@ -2358,19 +2360,24 @@ type storedCopy struct {
 func (e storedCopy) Error() string { return e.err.Error() }
 func (e storedCopy) Unwrap() error { return e.err }
 
-// storedAnswer is err as a storedCopy where it is the listener's 504 receipt_timeout naming a
-// holder, and err as it is otherwise: a forward the stream did not store (delivery_failed), a
-// listener that did not answer, and every other failure name no stored copy.
-func (r *outbox) storedAnswer(token claim.Token, err error) error {
+// storedAnswer is err as a storedCopy of generation where it is the listener's 504
+// receipt_timeout naming a holder, and err as it is otherwise: a forward the stream did not store
+// (delivery_failed), a listener that did not answer, and every other failure name no stored copy.
+func storedAnswer(generation uint64, err error) error {
 	var notDelivered notify.ErrNotDelivered
 	if !errors.As(err, &notDelivered) || notDelivered.Reason != notify.ReasonReceiptTimeout || notDelivered.Holder == "" {
 		return err
 	}
-	var generation uint64
-	if r.supervisor != nil {
-		generation = r.supervisedClaim(token).Generation
-	}
 	return storedCopy{holder: notDelivered.Holder, generation: generation, err: err}
+}
+
+// claimGeneration is the generation of token's claim as its machine last published it, and 0
+// where the outbox reads no supervisor.
+func (r *outbox) claimGeneration(token claim.Token) uint64 {
+	if r.supervisor == nil {
+		return 0
+	}
+	return r.supervisedClaim(token).Generation
 }
 
 // storedForItsSession is whether a role message or hook prompt row that the listener stored for a

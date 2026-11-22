@@ -439,10 +439,15 @@ func (k *reachKeeper) judge(ctx context.Context, c supervise.Claim, rec supervis
 // c's last relaunch (relaunchTakenIn), begins a record anew for a session c records afresh, counts
 // from the session's first ready, and makes the mark, which it logs; it acts on nothing, and it
 // ends no episode, which is judge's to decide. The one session change that keeps the record is the
-// daemon's own controller's relaunch launching it on a fresh session (carriesItsEpisode).
-// The caller holds mu.
+// daemon's own controller's relaunch launching it on a fresh session (carriesItsEpisode). While
+// this daemon's own relaunch of c is in flight, the relaunch c records is the one that relaunch
+// wrote before its stop, which a stop that fails puts back, so it is taken in only from that
+// relaunch's answer (relaunchClaim). The caller holds mu.
 func (k *reachKeeper) reading(c supervise.Claim, now time.Time) (supervise.Reach, reachVerdict) {
-	rec := relaunchTakenIn(c, k.recordOf(c))
+	rec := k.recordOf(c)
+	if !k.relaunching[c.Token] {
+		rec = relaunchTakenIn(c, rec)
+	}
 	if k.carriesItsEpisode(c, rec) {
 		if c.Session == "" {
 			// The relaunch's own launch has recorded no session yet: the episode goes on.
@@ -538,7 +543,8 @@ func (k *reachKeeper) episodeGoesOn(c supervise.Claim, rec supervise.Reach, verd
 //
 // An operator's suspension held over c is read first: it is a person's own act on the claim, so c
 // gets no line on any path while it holds (suspensionHolds). A workflow claim of a paused project
-// is not relaunched until the resume. Neither time counts as refusal time.
+// is read next: it is neither relaunched nor named in any line until the resume, since a paused
+// project starts no turn of its roles. Neither time counts as refusal time.
 //
 // A refused relaunch uses no part of the 6 hours, and the daemon asks again at each sweep, so a
 // claim the guard lets through later, or whose launcher is connected again, is relaunched then.
@@ -548,6 +554,10 @@ func (k *reachKeeper) episodeGoesOn(c supervise.Claim, rec supervise.Reach, verd
 func (k *reachKeeper) relaunchMarked(ctx context.Context, c supervise.Claim, rec supervise.Reach, siblings []supervise.Claim, reaches func(supervise.Claim) bool, now time.Time) supervise.Reach {
 	if k.operatorHolds != nil && k.operatorHolds(c.Token) {
 		return k.suspensionHolds(c, rec, now)
+	}
+	if c.Role != claim.RoleController && k.paused != nil && k.paused() {
+		rec.RefusedAt = time.Time{}
+		return rec
 	}
 	lines, token := linesOf(c), string(c.Token)
 	if rec.Relaunched {
@@ -564,8 +574,6 @@ func (k *reachKeeper) relaunchMarked(ctx context.Context, c supervise.Claim, rec
 	case err != nil:
 		k.alerts.Open(lines[1], token, "reason", err.Error())
 	case k.relaunching[c.Token] || k.relaunch == nil:
-	case c.Role != claim.RoleController && k.paused != nil && k.paused():
-		rec.RefusedAt = time.Time{}
 	default:
 		if why := supervise.RelaunchGuard(c, time.Time{}, now); why != "" {
 			return k.refused(c, rec, "the relaunch guard refuses it: "+why, now)

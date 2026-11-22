@@ -883,3 +883,46 @@ func TestARefusalOfAClaimLetGoWhileItsRelaunchWaitedWritesNoLine(t *testing.T) {
 		})
 	}
 }
+
+// A paused project starts no turn of its roles, so while it is paused no workflow claim of it is
+// named in any of R6's lines: not a pod whose every claim is out of reach, and not a claim its
+// relaunch has not brought back. The same pod unpaused writes each claim's line, as
+// TestAPodWhoseEveryClaimIsOutOfReachIsACaseForAPerson shows.
+func TestAPausedProjectNamesNoWorkflowClaimInAnyLine(t *testing.T) {
+	pod := func(c supervise.Claim) supervise.Claim {
+		c.ActivityAt = reachBoot
+		c.Locator = &runtime.Locator{Runtime: runtime.RuntimeSandbox, Claim: c.Token, Incarnation: "pod-a:3",
+			Sandbox: &runtime.SandboxLocator{Namespace: "legion", Name: "legion-legion-208", PodUID: "pod-a", Container: "roles", Generation: 3}}
+		return c
+	}
+	t.Run("a pod whose every claim is out of reach", func(t *testing.T) {
+		r := newReachRig(t, false)
+		r.k.paused = func() bool { return true }
+		worker := pod(reachClaim(t, "LEGION-208", "LEGION-209", claim.RoleImplementer, "ses_implementer"))
+		tester := pod(reachClaim(t, "LEGION-208", "LEGION-209", claim.RoleTester, "ses_tester"))
+		r.sweepMinutes(21, 40, func() []supervise.Claim { return []supervise.Claim{r.with(worker), r.with(tester)} })
+		if lines := r.lines(fleetalert.ClaimRelaunchRefused.Word); lines != 0 || len(r.relaunched) != 0 {
+			t.Fatalf("while paused: %d refused lines and relaunches %+v, want neither", lines, r.relaunched)
+		}
+	})
+	t.Run("a claim its relaunch has not brought back", func(t *testing.T) {
+		r := newReachRig(t, false)
+		paused := false
+		r.k.paused = func() bool { return paused }
+		worker := settledWorker(t)
+		r.sweepMinutes(21, 21, func() []supervise.Claim { return []supervise.Claim{r.with(worker)} })
+		if len(r.relaunched) != 1 {
+			t.Fatalf("relaunches before the pause = %+v, want the worker's", r.relaunched)
+		}
+		paused = true
+		r.sweepMinutes(22, 60, func() []supervise.Claim { return []supervise.Claim{r.with(worker)} })
+		if lines := r.lines(fleetalert.ClaimUnreachable.Word); lines != 0 {
+			t.Fatalf("R6 wrote %d not-back lines while the project was paused, want none", lines)
+		}
+		paused = false
+		r.sweepMinutes(61, 61, func() []supervise.Claim { return []supervise.Claim{r.with(worker)} })
+		if lines := r.lines(fleetalert.ClaimUnreachable.Word); lines != 1 {
+			t.Fatalf("R6 wrote %d not-back lines at the first sweep after the resume, want one", lines)
+		}
+	})
+}
