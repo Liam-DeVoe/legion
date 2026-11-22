@@ -36,7 +36,7 @@ import {
   rowGaps,
   treeText,
 } from "./issue-page-i";
-import { planChart, planChartRows } from "./issue-page-k";
+import { planChart, planChartRows, planView } from "./issue-page-k";
 import { withIssuePage } from "./issue-page-option";
 import { decisionsPartRows, decisionsRows } from "./issue-page-q";
 import {
@@ -375,12 +375,13 @@ async function expectProposedInDetails(page: Page, { seeded }: ProposedPage): Pr
  * statement 8's words draws statement 8 under its open line. Plan task 2 is no row either.
  */
 async function expectOvertakenFold(page: Page, read: ProposedPage): Promise<void> {
-  const { answer, key, plain, seeded, treeId, wide } = read;
+  const { answer, key, plain, seeded, traffic, treeId, wide } = read;
   const { ids } = seeded;
-  await gotoIssue(page, plain);
-  // The load draws the outline once its tree read answers, after the page itself: read the rows
-  // only once statement 7's is drawn, which opens every branch on the way (`drawnRowId`). Read
-  // at once, the rows were none.
+  // The load draws the outline once its tree read answers, after the page itself: wait for the
+  // load to settle, as each other step does, and read the rows only once statement 7's is drawn,
+  // which opens every branch on the way (`drawnRowId`). Read at once, the rows were none; opened
+  // before the load settled, a row took back the focus the opener left for the page.
+  await gotoSettled(page, traffic, plain);
   await drawnRowId(page, ids.statement7, "statement 7");
   let items = await treeItemsDrawn(page);
   expect(
@@ -560,13 +561,14 @@ async function expectOvertakenAddresses(page: Page, read: ProposedPage): Promise
 }
 
 /**
- * Steps (1) and (2) in each view: check 2 carries "Proposed" under Verification, and so does the
- * line that names it on its result's row; no failing flag and no summary count counts a check or
- * a statement that is proposed or overtaken; the first decision carries "Proposed" under
+ * Steps (1) and (2) in each view: check 2 carries "Proposed" under Verification, with no query
+ * and with its result's words; no failing flag and no summary count counts a check or a
+ * statement that is proposed or overtaken; the first decision carries "Proposed" under
  * Decisions, where the overtaken decision is in no part and the to-review flag counts the review
  * part alone; plan task 1 carries "Proposed" under Plan, which draws plan task 2 as its line
- * after every step; and the Spec control counts every statement. No view draws a raw value of
- * the tree read.
+ * after every step, and the steps draw the line naming statement 7 on plan task 7's row in its
+ * compact form; and the Spec control counts every statement. No view draws a raw value of the
+ * tree read.
  */
 async function expectProposedViews(page: Page, read: ProposedPage): Promise<void> {
   const { answer, key, seeded, treeId } = read;
@@ -599,20 +601,20 @@ async function expectProposedViews(page: Page, read: ProposedPage): Promise<void
     (node) => node.supertag === "result" && node.parent?.id === ids.check2
   );
   expect(result?.text ?? "", "the tree read holds no words of check 2's result").not.toBe("");
+  // With a query, the view draws a result it keeps in its check's own row, not under a line
+  // naming the check (decision 391), so check 2's row carries Proposed there too.
   await gotoIssue(
     page,
     `${presetPath(key, "verification")}?q=${encodeURIComponent(result?.text ?? "")}`
   );
-  const parentLine = issuePage(page)
-    .locator(`[data-node-parent-line][data-parent-id="${treeId(ids.check2)}"]`)
-    .first();
+  const queried = verificationCheck(page, treeId(ids.check2));
   await expect(
-    parentLine,
-    "under Verification, the row of check 2's result draws no line naming check 2"
-  ).toBeVisible();
+    queried,
+    "the Verification view with check 2's result words draws no check 2"
+  ).toHaveCount(1);
   expect(
-    await compactMarks(parentLine),
-    "the line naming check 2 does not carry Proposed in its compact form"
+    await ownMarks(queried),
+    "check 2 does not carry Proposed under Verification with its result's words"
   ).toEqual([PROPOSED]);
 
   await gotoIssue(page, presetPath(key, "decisions"));
@@ -663,6 +665,24 @@ async function expectProposedViews(page: Page, read: ProposedPage): Promise<void
     ),
     "the Plan view's overtaken line does not stand after every step"
   ).toBe(true);
+  // The steps draw plan task 7's row with the line naming statement 7, which it serves and
+  // which is proposed (decision 391).
+  await planView(page, "steps").click();
+  await expect(
+    planView(page, "steps"),
+    "the Plan view does not switch to its steps"
+  ).toHaveAttribute("aria-pressed", "true");
+  const statement7Line = issuePage(page)
+    .locator(`[data-node-parent-line][data-parent-id="${treeId(ids.statement7)}"]`)
+    .first();
+  await expect(
+    statement7Line,
+    "under Plan's steps, plan task 7 draws no line naming statement 7"
+  ).toBeVisible();
+  expect(
+    await compactMarks(statement7Line),
+    "the line naming statement 7 does not carry Proposed in its compact form"
+  ).toEqual([PROPOSED]);
   await expectNoRawValue(page, "under Plan");
 
   await gotoIssue(page, presetPath(key, "spec"));
@@ -722,8 +742,10 @@ async function expectSettled(page: Page, read: ProposedPage): Promise<void> {
   await page.unroute(SETTLE_ROUTE, hold);
   const settles = settlesSent(traffic.requests);
   expect(settles.length, "Enter on Settle does not send one settle").toBe(1);
+  const statement7Block = blockOf(seeded.addresses.statement7);
+  if (statement7Block === undefined) throw new Error("statement 7's address names no block");
   expect(blockOf(settles[0] ?? ""), "the settle does not name statement 7's address").toBe(
-    ids.statement7
+    statement7Block
   );
   await expect(
     row.locator('[data-gap][data-gap-kind="no_check"]'),
