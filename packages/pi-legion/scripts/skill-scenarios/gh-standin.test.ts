@@ -2152,6 +2152,81 @@ test("health declares the world's 404 to a read the label's wrapper runs on the 
   );
 }, 120_000);
 
+// Catches (the architect's rulings of 2026-11-22T16:36:59Z and 17:57Z, after INFRA-764's round 33
+// at 25ce8a43): a world that answers the reads of the pinned actions round 33's agents made with
+// its own 404 (`unrouted`, or the `git/ref/` route answering another owner's ref from the world's
+// remote), where production's gh answers each with the action's real ref. Production's answers:
+// the tester's capture, dispatch://INFRA-764/artifact/infra-764-pinned-actions-capture-txt v2, read
+// with legion gh in the tester's pane, 2026-11-22T17:55:33Z to 17:55:39Z, each exit 0. And a world
+// that answers `gh api -i` of another owner, which legion gh refuses itself with exit 2 and its own
+// line before any request (measured at 17:55Z), otherwise than a refusal with that status.
+test("the world answers round 33's six reads of the pinned actions as production's gh answered them, and refuses `-i` of them as legion gh does", () => {
+  const { dir } = runDir({ fixture: true });
+  const read = (endpoint: string, filter: string) =>
+    asked(dir, "reviewer", ["api", endpoint, "--jq", filter], PANE_GH);
+  expect([
+    read("repos/actions/checkout", ".full_name"),
+    read("repos/oven-sh/setup-bun", ".full_name"),
+    read("repos/actions/checkout/git/ref/tags/v7.0.1", '.object.sha + " " + .object.type'),
+    read("repos/actions/checkout/git/refs/tags/v7.0.1", '.object.sha + " " + .object.type'),
+    read("repos/oven-sh/setup-bun/git/ref/tags/v2.2.0", '.object.sha + " " + .object.type'),
+    read("repos/oven-sh/setup-bun/git/refs/tags/v2.2.0", '.object.sha + " " + .object.type'),
+  ]).toEqual([
+    [0, "actions/checkout\n", ""],
+    [0, "oven-sh/setup-bun\n", ""],
+    [0, "3d3c42e5aac5ba805825da76410c181273ba90b1 commit\n", ""],
+    [0, "3d3c42e5aac5ba805825da76410c181273ba90b1 commit\n", ""],
+    [0, "0c5077e51419868618aeaa5fe8019c62421857d6 commit\n", ""],
+    [0, "0c5077e51419868618aeaa5fe8019c62421857d6 commit\n", ""],
+  ]);
+  const [status, , line] = asked(
+    dir,
+    "reviewer",
+    ["api", "-i", "repos/actions/checkout/git/ref/tags/v7.0.1"],
+    PANE_GH
+  );
+  // Production's line names its own owners directory (`legion gh: the role's GitHub App is not
+  // installed on "actions": /var/run/legion/gh holds no gh directory for it`), and the world's
+  // wrapper is the label's (gh-standin.ts's `ownerRefusal`), so the line is held to the owner it
+  // names and the status to legion gh's 2.
+  expect([
+    status,
+    String(line).startsWith("legion gh: "),
+    String(line).includes('"actions"'),
+  ]).toEqual([2, true, true]);
+}, 120_000);
+
+// Catches (the architect's ruling of 2026-11-22T16:36:59Z, ruling (a)): a health that declares the
+// world's 404 to a read legion gh runs on the issue's token, so a run whose world told its agent
+// that the action's real, pinned tag does not exist reads healthy (INFRA-764 round 33's counted
+// runs 58d6a8c7c043 and d883d38cea8a); production's gh answers that read, exit 0 (the tester's
+// capture). And one that, to catch it, calls production's own answers unhealthy: the read answered
+// exit 0, and `gh api -i` of the owner refused exit 2 by legion gh.
+test("health calls a run unhealthy whose world answered a read of another owner otherwise than production's gh, and healthy where it answered as production does", () => {
+  const { dir } = runDir({ fixture: true });
+  // A read of the world's own pull request opens the record, as an agent's first call does.
+  expect(
+    asked(dir, "reviewer", ["api", "repos/example/widgets/pulls/1001", "--jq", ".number"])[0]
+  ).toBe(0);
+  const calls = path.join(dir, "calls.jsonl");
+  const opened = readFileSync(calls, "utf8");
+  const recorded = (argv: readonly string[], exit: number) =>
+    `${JSON.stringify({ at: "t", as: "gh", by: "reviewer", argv, files: {}, route: null, handler: "unrouted", exit })}\n`;
+  writeFileSync(
+    calls,
+    opened +
+      recorded(TAG_READ, 0) +
+      recorded([...TAG_READ, "--jq", ".object.sha"], 0) +
+      recorded(["api", "-i", "repos/actions/checkout/git/ref/tags/v7.0.1"], 2)
+  );
+  for (const scenario of ["tester-proof", "reviewer-text-findings", "threads-closed"])
+    expect(ghUndeclared({ dir, scenario })).toBeUndefined();
+  writeFileSync(calls, opened + recorded(TAG_READ, 1));
+  expect(ghUndeclared({ dir, scenario: "reviewer-text-findings" })).toStartWith(
+    `gh refusal: calls.jsonl:3, \`gh ${TAG_READ.join(" ")}\` of the reviewer, exited 1`
+  );
+}, 120_000);
+
 // GitHub refuses every role App's read of `user` 403 (measured on 2026-11-17 from a Legion pod:
 // `gh api user`, exit 1, `Resource not accessible by integration`), and the world refuses it so
 // (rig.sh's fixture_write). Catches: a health that calls a run unhealthy for a role that asked

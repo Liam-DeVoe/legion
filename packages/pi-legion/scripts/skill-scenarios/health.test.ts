@@ -1232,6 +1232,47 @@ describe("health: rule 13, off-world network, a web search as a run's transcript
       undefined,
     ]);
   });
+
+  // Catches (the architect's rulings of 2026-11-22T16:32Z, after INFRA-764's round 33 at
+  // 25ce8a43): a health that loses a bodyless GET of a pinned repository where the shell runs it
+  // inside `bash -c` (with or without `timeout`), where a literal loop's variable is named by the
+  // URL's own path (`/ref/` names `ref`), or inside a command substitution with a literal URL, and
+  // so voided runs 7b36798f96dd, a6125589ac1b and 2c18007abee3 for reads the rulings allow; and
+  // one that, to allow them, allows the same shapes reading a repository the workflow names none
+  // of. Each command is the round's own, as its transcript recorded it.
+  test("round 33's reads of the pinned actions inside `bash -c`, in a loop whose variable the URL names, and inside `$(…)` are part of the world, and the same of another repository is not", () => {
+    const { dir } = world();
+    const shapes = [
+      `timeout 15 bash -c 'curl -s -o /dev/null -w "%{http_code}" https://api.github.com/repos/actions/checkout/git/refs/tags/v7.0.1' 2>&1; echo " checkout-net"`,
+      [
+        'for ref in "actions/checkout:3d3c42e5aac5ba805825da76410c181273ba90b1:v7.0.1" "oven-sh/setup-bun:0c5077e51419868618aeaa5fe8019c62421857d6:v2.2.0"; do',
+        '  repo="${ref%%:*}"; rest="${ref#*:}"; sha="${rest%%:*}"; tag="${rest#*:}"',
+        '  echo "=== $repo $tag ($sha) ==="',
+        `  curl -s -m 15 "https://api.github.com/repos/$repo/git/ref/tags/$tag" 2>/dev/null | grep -E '"sha"|message|Not Found' | head -5`,
+        "done",
+      ].join("\n"),
+      [
+        `SHA=$(curl -s -m 8 https://api.github.com/repos/oven-sh/setup-bun/git/refs/tags/v2.2.0 | grep -m1 '"sha"' | grep -oE '[0-9a-f]{40}')`,
+        'echo "tagobj=$SHA"',
+        `curl -s -m 8 "https://api.github.com/repos/oven-sh/setup-bun/git/tags/$SHA" 2>/dev/null | grep -E '"sha"' | head`,
+      ].join("\n"),
+    ];
+    const elsewhere = (command: string) =>
+      command
+        .replaceAll("repos/actions/checkout", "repos/someone/elsewhere")
+        .replaceAll('"actions/checkout:', '"someone/elsewhere:')
+        .replaceAll("repos/oven-sh/setup-bun", "repos/someone/elsewhere")
+        .replaceAll('"oven-sh/setup-bun:', '"someone/elsewhere:');
+    expect(shapes.map((command) => judged(dir, "bash", { command }, ""))).toEqual([
+      undefined,
+      undefined,
+      undefined,
+    ]);
+    for (const command of shapes)
+      expect(judged(dir, "bash", { command: elsewhere(command) }, "")).toStartWith(
+        `off-world network: a bash call in ${TRANSCRIPT} reaches api.github.com (`
+      );
+  });
 });
 
 // Rule 1, finished, read on the run's own boot record (<run>/booted) held to the scenario's one
@@ -2380,6 +2421,30 @@ describe("health: rule 20, unmodelled write", () => {
     expect(unmodelledWrite({ dir: run("new-modelled", [read, updated]) })).toBeUndefined();
     expect(unmodelledWrite({ dir: run("new-refused", [read, updated, refused]) })).toBe(
       "unmodelled write: calls.jsonl:4, `gh pr merge 1001 --squash` of the reviewer, exited 1: no route or answer of the world models it, so it was refused 404 where GitHub takes it"
+    );
+  });
+
+  // Catches (the architect's ruling of 2026-11-22T16:32Z): a health that reads a reply POSTed
+  // under a review thread's node id, which the world left unrouted and refused 404, as a write the
+  // world fails to model "where GitHub takes it". GitHub refuses it itself: `gh api -i --method
+  // POST repos/cybermonklabs/legion/pulls/2827/comments/PRRT_kwDOrig0001/replies -f body=…`
+  // answered `HTTP/2.0 404 Not Found`, `{"message":"Parent comment not found"}` (`Date: Sun, 22
+  // Nov 2026 16:30:31 GMT`, the tester's read). INFRA-764 round 33's 4b899f68fb29, calls.jsonl:29.
+  // A reply under a number the world holds no route for stays a write it does not model.
+  test("a reply under a thread's node id, which GitHub refuses 404 itself, is no unmodelled write, and one under a number left unrouted is", () => {
+    const under = (parent: string) =>
+      call(
+        [
+          ...["api", "--method", "POST", `${REPO}/comments/${parent}/replies`],
+          ...["--input", "/tmp/wid1_botreply.json"],
+        ],
+        { route: null, handler: "unrouted", exit: 1 }
+      );
+    expect(
+      unmodelledWrite({ dir: run("node-id-reply", [under("PRRT_kwDOrig0001")]) })
+    ).toBeUndefined();
+    expect(unmodelledWrite({ dir: run("numbered-reply", [under("12345")]) })).toBe(
+      `unmodelled write: calls.jsonl:2, \`gh api --method POST ${REPO}/comments/12345/replies --input /tmp/wid1_botreply.json\` of the reviewer, exited 1: no route or answer of the world models it, so it was refused 404 where GitHub takes it`
     );
   });
 
