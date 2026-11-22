@@ -62,12 +62,12 @@ func promptRetryDelay(attempt int) time.Duration {
 // one cause and the words are the same in the claim's failure, in the prompt the task goes
 // behind and in the controller's notice.
 //
-// A failure decided while a stop is held and the copy its turn's end started is still being taken
-// (stopHeldOverTurnCopy) would stop the process that copy still asks (fail, endProcess). The run
-// and the task taken back are written, and the stop is left to the copy's end or the wait's bound,
-// which runs it (endTurnCopyWait); a pause's stop held for this result begins that wait at once
-// after this, at the end of the result's row (stopAfterAnswer). The held stop's suspension, not
-// this failure, is what the claim ends in.
+// A failure decided while a stop is held for the copy its turn's end started (turnCopyHolds,
+// which says when that hold ends and what runs the stop then) would stop the process that copy
+// still asks (fail, endProcess). The run and the task taken back are written, and the stop is left
+// to what runs it: a pause's stop held for this result begins its wait for the copy right after
+// this, at the end of the result's row (stopAfterAnswer). The held stop's suspension, not this
+// failure, is what the claim ends in.
 func (m *Machine) providerErrored(ctx context.Context, r StreamPromptResult) error {
 	cause := providerErrorCause(r.HTTPStatus)
 	m.claim.ProviderErrorRun++
@@ -81,7 +81,7 @@ func (m *Machine) providerErrored(ctx context.Context, r StreamPromptResult) err
 		return err
 	}
 	if holdsTheIssue(r.HTTPStatus) {
-		if m.stopHeldOverTurnCopy() {
+		if m.turnCopyHolds(m.deps.Clock.Now()) {
 			m.log.Warn("supervise: a provider error that fails the claim came while the held stop waits for the copy of its turn's end; the stop runs once that wait is over",
 				"delivery", r.DeliveryID, "httpStatus", r.HTTPStatus, "copy", m.turnCopy.seq, "by", m.held.By)
 			return m.persist(ctx)

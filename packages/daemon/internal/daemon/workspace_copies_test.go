@@ -98,7 +98,9 @@ func newCopyRig(t *testing.T) *copyRig {
 	bundle.At = time.Now().UTC()
 	bundler := &copyBundler{bundle: bundle}
 	rig.w.log = slog.New(slog.NewJSONHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	rig.w.copyBundler, rig.w.copyStore = bundler, rig.st
+	// The cadence reads the issues' records to forget a retry of an issue that has left the
+	// workflow (closedRetries), as attach wires it.
+	rig.w.copyBundler, rig.w.copyStore, rig.w.records = bundler, rig.st, rig.issues
 	// A copy owed behind a release's save is started by the cadence's own start once the save gives
 	// the place back, as attach wires it.
 	rig.w.copies.startsOwedWith(rig.w.startOwedCopy)

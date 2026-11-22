@@ -7,7 +7,10 @@ import (
 	"slices"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -208,11 +211,14 @@ func (w *workflowRuntime) tickWorkspaceCopies(ctx context.Context) {
 // so the pass takes no copy of it and it keeps its retry, which runs at the first due tick after a
 // resumed or relaunched pod's role is live again. The skip is logged under runningCopyNoRole at
 // Info once a period for the issue, and at no other due tick (noLiveRole). The pass also forgets
-// every issue no claim of the project names but a retired one (forgetUnclaimed): an issue that
-// never ran in this project, and a finished one, whose claims are all retired and stay in the
-// store for ever. No copy of either can be stored to pay a retry, so the cadence's memory would
-// grow with every issue that ever failed a copy, and the log would name each finished one under
-// runningCopyNoRole once a period for as long as the daemon runs.
+// the retry of every issue that has left the workflow (forgetClosed, closedRetries): one the
+// project does not record, as the issue of a branch pushed from outside, and one closed — done, or
+// parked out of the workflow — with its tree or on its own. No copy of such an issue can be stored
+// to pay its retry, so the cadence's memory would grow with every issue that ever failed a copy,
+// and the log would name each closed one under runningCopyNoRole once a period for as long as the
+// daemon runs. A live issue keeps its retry between phases, while its claims are retired: a phase
+// worker's exit and an operator's stop retire a claim, and the next phase's start brings it back
+// on the same workspace.
 //
 // Which issues are in a turn is read from the claims the daemon's own store holds rather than
 // from anything this process remembers, so a daemon that has just restarted reads it exactly as
@@ -233,13 +239,9 @@ func (w *workflowRuntime) copyWorkingWorkspaces(ctx context.Context) {
 		w.log.Warn("running copy: could not read the project's claims, so no issue was copied at this tick", "error", err)
 		return
 	}
-	claimed := make(map[string]bool)
-	for _, c := range claims {
-		if c.Project == w.projectID && c.Issue != "" && c.State != supervise.StateRetired {
-			claimed[c.Issue] = true
-		}
+	if err := w.forgetClosedRetries(ctx); err != nil {
+		w.log.Warn("running copy: could not read the records of the issues owing a retry, so no retry was forgotten at this tick", "error", err)
 	}
-	w.copies.forgetUnclaimed(claimed)
 	now, tick := w.copies.clock(), w.copyTick()
 	issues := issuesInTurn(claims, w.projectID)
 	for _, issue := range w.copies.retries() {
@@ -260,6 +262,65 @@ func (w *workflowRuntime) copyWorkingWorkspaces(ctx context.Context) {
 		}
 		w.startRunningCopy(issue, claims)
 	}
+}
+
+// forgetClosedRetries forgets the retry of every issue owing one that has left the workflow, by
+// the daemon's own records of it (closedRetries). A pass that owes no retry reads nothing.
+func (w *workflowRuntime) forgetClosedRetries(ctx context.Context) error {
+	owed := w.copies.retries()
+	if len(owed) == 0 {
+		return nil
+	}
+	var closed map[string]bool
+	if err := pgx.BeginTxFunc(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+		var err error
+		closed, err = w.closedRetries(ctx, tx, owed)
+		return err
+	}); err != nil {
+		return err
+	}
+	w.copies.forgetClosed(closed)
+	return nil
+}
+
+// closedRetries is which of owed have left the workflow, read from the daemon's records of the
+// project's issues: an issue the project does not record, and one closed with its tree or on its
+// own, its record or its tree root's out of the workflow (record.InWorkflow) — done, or parked at
+// backlog, icebox or triage — as an issue close and a tree close leave them. Claims say nothing
+// here: a phase worker's exit and an operator's stop retire a claim of an issue still in the
+// workflow, and the next phase's start brings it back.
+func (w *workflowRuntime) closedRetries(ctx context.Context, tx pgx.Tx, owed []string) (map[string]bool, error) {
+	issues, err := w.records.IssuesOf(ctx, tx, w.dispatchProject, owed)
+	if err != nil {
+		return nil, err
+	}
+	recorded := make(map[string]record.Issue, len(issues))
+	var roots []string
+	for _, issue := range issues {
+		recorded[issue.Key] = issue
+		if !slices.Contains(owed, issue.Tree) && !slices.Contains(roots, issue.Tree) {
+			roots = append(roots, issue.Tree)
+		}
+	}
+	above, err := w.records.IssuesOf(ctx, tx, w.dispatchProject, roots)
+	if err != nil {
+		return nil, err
+	}
+	for _, root := range above {
+		recorded[root.Key] = root
+	}
+	closed := make(map[string]bool, len(owed))
+	for _, key := range owed {
+		issue, ok := recorded[key]
+		if !ok || !record.InWorkflow(issue) {
+			closed[key] = true
+			continue
+		}
+		if root, ok := recorded[issue.Tree]; ok && !record.InWorkflow(root) {
+			closed[key] = true
+		}
+	}
+	return closed, nil
 }
 
 // copyWorkspaceAtTurnEnd takes the copy that ends a turn (supervise.Deps.CopyTurnEnd): the

@@ -122,11 +122,11 @@ func suspend(m *Machine, ctx context.Context, ev Event) error {
 //     anyway is cut off at the next try.
 //   - A process that dies first, or is found at a stale address (repoint), leaves the claim
 //     suspended, charged nothing (endHeld). A prompt retirement meanwhile is the held stop itself
-//     (suspendHeld), charged nothing. While the copy of the issue's workspace that the claim's
-//     last turn's end started is still being taken (stopHeldOverTurnCopy), neither runs the stop:
-//     a stale address is left alone until an observation after the copy, and a prompt failure at
-//     the limit is charged and runs no stop (chargePrompt), so the stop runs when the copy and
-//     what it is held for are over.
+//     (suspendHeld), charged nothing. While that stop is held for the copy of the issue's
+//     workspace that the claim's last turn's end started (turnCopyHolds), neither runs the stop:
+//     a stale address is left alone until an observation after that hold, and a prompt failure at
+//     the limit is charged and runs no stop (chargePrompt); turnCopyHolds says when that hold ends
+//     and what runs the stop then.
 //   - A start run against the claim drops a daemon's hold (StartedBy); one the operator's
 //     suspension holds waits instead, and a project pause's hold whose pause is still the open
 //     one stays (decision 5 of dispatch://INFRA-3759's plan). Every other end of the process

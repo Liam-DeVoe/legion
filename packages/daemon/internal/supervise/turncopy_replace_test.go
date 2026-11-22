@@ -10,16 +10,18 @@ package supervise
 //
 // Each runs in both windows a stop is held over the copy in (copyWindow): a daemon's stop that
 // waits for the copy, and a project pause's stop that still waits for the prompt's result and has
-// not begun its wait for the copy. Each guard asks whether a stop is held over the copy
-// (stopHeldOverTurnCopy); narrowed to whether the stop's wait for the copy has begun
-// (turnCopy.stopWaits), it lets the event through in the pause's window, and that window's row
-// fails where the row's own control does.
+// not begun its wait for the copy. Each guard asks whether the stop is held for the copy
+// (turnCopyHolds); narrowed to whether the stop's wait for the copy has begun (turnCopy.stopWaits),
+// it lets the event through in the pause's window, and that window's row fails where the row's own
+// control does. The parked wake and the stall backstop run past the copy's due as well, where the
+// hold has ended with no end of the copy reported and each does what it does where no copy is
+// taken; with the due taken out of the guard, the pause's window's row fails there.
 
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
-	"strings"
 	"testing"
 	"time"
 
@@ -39,15 +41,12 @@ func copyWaiting(t *testing.T) (*harness, *turnEndCopies, runtime.Locator) {
 	return h, copies, h.locator()
 }
 
-// copyWindow is one window in which a stop is held over a claim idle on its process while the copy
-// its last turn's end started is still being taken (stopHeldOverTurnCopy).
+// copyWindow is one window in which a stop is held over a claim idle on its process for the copy
+// its last turn's end started (turnCopyHolds).
 type copyWindow struct {
 	name string
 	// by is the source of the held stop, which the claim is suspended by once the stop runs.
 	by SuspendSource
-	// waitBegun is whether the stop has begun its wait for the copy in the window, which arms the
-	// wait's bound (waitForTurnCopy, TimerTurnCopy).
-	waitBegun bool
 	// open brings a claim whose daemon starts a copy at each turn's end into the window, the turn's
 	// end having started one copy. begin is what begins the stop's wait for that copy where the
 	// window has not begun it, so that the copy's end runs the stop.
@@ -60,7 +59,7 @@ type copyWindow struct {
 // (pauseHeldForTheResult), which its begin hands the machine.
 func copyWindows() []copyWindow {
 	return []copyWindow{
-		{name: "ADaemonsStopWaitingForTheCopy", by: SuspendedByDaemon, waitBegun: true, open: func(t *testing.T) (*harness, *turnEndCopies, func()) {
+		{name: "ADaemonsStopWaitingForTheCopy", by: SuspendedByDaemon, open: func(t *testing.T) (*harness, *turnEndCopies, func()) {
 			h, copies, _ := copyWaiting(t)
 			return h, copies, func() {}
 		}},
@@ -73,6 +72,25 @@ func copyWindows() []copyWindow {
 			}
 		}},
 	}
+}
+
+// copyEnds are the two ways the hold of a stop held for a turn's copy ends (turnCopyHolds): the
+// copy's reported end, and its due passing with no end reported, named for a subtest.
+var copyEnds = []struct {
+	name    string
+	pastDue bool
+}{{name: "AtTheCopysEnd"}, {name: "PastTheCopysDue", pastDue: true}}
+
+// turnCopyDue is the due of the copy of its turn's end the claim's machine is still waiting to hear
+// end (turnCopy.due), read under the machine's lock. It fails where the machine waits for none.
+func turnCopyDue(t *testing.T, h *harness) time.Time {
+	t.Helper()
+	h.m.mu.Lock()
+	defer h.m.mu.Unlock()
+	if h.m.turnCopy == nil {
+		t.Fatal("the machine waits for no copy of its turn's end, want one still being taken")
+	}
+	return h.m.turnCopy.due
 }
 
 // speaksAnOlderContract has h's claim speak the contract of the daemon before this one, which can
@@ -90,20 +108,6 @@ func waitsOnItsProcess(t *testing.T, h *harness, loc runtime.Locator) {
 	h.wantCalls("Suspend", 0)
 	if c := h.claim(); !c.SuspensionHeld || c.Locator == nil || *c.Locator != loc {
 		t.Fatalf("the claim is %+v, want it idle on its process %+v, holding the stop that waits for the copy", c, loc)
-	}
-}
-
-// stopsAfterTheCopy hands back the end of the index-th copy the turn's ends started, and fails
-// unless the held stop then stops loc, once, and leaves the claim suspended by by, its source.
-func stopsAfterTheCopy(t *testing.T, h *harness, copies *turnEndCopies, index int, loc runtime.Locator, by SuspendSource) {
-	t.Helper()
-	h.must(copies.copied(t, index))
-	h.wantState(StateSuspended)
-	if suspend := h.wantCalls("Suspend", 1)[0]; suspend.Locator != loc {
-		t.Fatalf("suspended %+v, want the process whose turn ended, %+v", suspend.Locator, loc)
-	}
-	if got := h.claim().SuspendedBy; got != by {
-		t.Fatalf("the claim is suspended by %q, want the held stop's source %q", got, by)
 	}
 }
 
@@ -162,7 +166,7 @@ func TestAnEventThatWouldLetTheProcessGoWaitsForTheTurnsCopyItsHeldStopWaitsFor(
 					waitsOnItsProcess(t, h, loc)
 					begin()
 					waitsOnItsProcess(t, h, loc)
-					stopsAfterTheCopy(t, h, copies, 0, loc, window.by)
+					stopsOnceAfterTheCopy(t, h, copies, 0, window.by)
 				})
 			}
 		})
@@ -181,11 +185,18 @@ func parkStaleRelaunch(t *testing.T, h *harness) {
 // A wake the pacing parked over a live process — a stale-plugin relaunch raised while the claim
 // was idle or ready — can come due after the agent's turn has ended into a stop held over that
 // turn's copy. Its turn ends the hold (endHeld), which would let the process go while the copy
-// still asks its shim, so the wake waits for that copy too and stays on the machine; the copy's
-// end runs the stop, whose let-go takes the wake with the process and launches nothing.
+// still asks its shim, so the wake waits for that copy too and stays on the machine, parked again
+// for the copy's due. Where the copy's end comes first, it runs the stop, whose let-go takes the
+// wake with the process and launches nothing. Where the due passes with no end reported, the hold
+// is over (turnCopyHolds), and the wake's turn at the due ends the hold as a parked wake does where
+// no copy is taken: the claim is suspended by the held stop's source, and nothing launches. In a
+// pause's window that is before the prompt's answer has come.
 //
-// The control is the wake's turn ending the hold as it comes: the claim is then suspended at the
-// wake's turn, while the copy is still being taken, and the test fails there.
+// The control of the rows at the copy's end is the wake's turn ending the hold as it comes: the
+// claim is then suspended at the wake's turn, while the copy is still being taken, and those rows
+// fail there. The control of the pause's window's row past the due is wakeNow's guard without the
+// due: the wake is parked again at the due for no time at all, its turn comes again at once, and
+// the row never gets past the clock's move to the due.
 func TestAParkedWakeWaitsForTheTurnsCopyItsHeldStopWaitsFor(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -222,26 +233,35 @@ func TestAParkedWakeWaitsForTheTurnsCopyItsHeldStopWaitsFor(t *testing.T) {
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			copies := &turnEndCopies{}
-			h, index, begin := tc.park(t, copies)
-			waiting := h.wantWaitingWake(WakePluginRefresh)
-			loc := h.locator()
-			starts := len(h.calls("Resume")) + len(h.calls("Spawn"))
+			for _, end := range copyEnds {
+				t.Run(end.name, func(t *testing.T) {
+					copies := &turnEndCopies{}
+					h, index, begin := tc.park(t, copies)
+					waiting := h.wantWaitingWake(WakePluginRefresh)
+					loc := h.locator()
+					starts := len(h.calls("Resume")) + len(h.calls("Spawn"))
 
-			h.advance(waiting.At.Sub(h.clock.Now()))
+					h.advance(waiting.At.Sub(h.clock.Now()))
 
-			waitsOnItsProcess(t, h, loc)
-			if h.m.View().WakeWaiting == nil {
-				t.Fatal("the wake is off the machine, want it waiting for the copy with the stop")
-			}
-			begin()
-			waitsOnItsProcess(t, h, loc)
-			stopsAfterTheCopy(t, h, copies, index, loc, tc.by)
-			if got := len(h.calls("Resume")) + len(h.calls("Spawn")); got != starts {
-				t.Fatalf("the runtime was asked %d launches after the turn's end, want none: the stop takes the wake with the process", got-starts)
-			}
-			if h.m.View().WakeWaiting != nil {
-				t.Fatalf("the claim still holds the wake %+v, want it taken by the stop's let-go", h.m.View().WakeWaiting)
+					waitsOnItsProcess(t, h, loc)
+					if h.m.View().WakeWaiting == nil {
+						t.Fatal("the wake is off the machine, want it waiting for the copy with the stop")
+					}
+					if end.pastDue {
+						due := turnCopyDue(t, h)
+						stopsOnceAt(t, h, tc.by, "the copy's due passed", func() { h.advance(due.Sub(h.clock.Now())) })
+					} else {
+						begin()
+						waitsOnItsProcess(t, h, loc)
+						stopsOnceAfterTheCopy(t, h, copies, index, tc.by)
+					}
+					if got := len(h.calls("Resume")) + len(h.calls("Spawn")); got != starts {
+						t.Fatalf("the runtime was asked %d launches after the turn's end, want none: the stop takes the wake with the process", got-starts)
+					}
+					if h.m.View().WakeWaiting != nil {
+						t.Fatalf("the claim still holds the wake %+v, want it taken by the stop's let-go", h.m.View().WakeWaiting)
+					}
+				})
 			}
 		})
 	}
@@ -250,46 +270,54 @@ func TestAParkedWakeWaitsForTheTurnsCopyItsHeldStopWaitsFor(t *testing.T) {
 // The agent can start a turn of its own while a stop is held over the copy of the turn before it,
 // and the copy's end then leaves the stop to this turn's end (endTurnCopyWait). The stall backstop
 // over this turn replaces the process, which ends the hold (endHeld) while the copy still asks the
-// process's shim. So the backstop leaves the turn alone while the copy is taken, and the sweep's
-// next post, once the copy has ended, ends the stalled turn as before. The bound the backstop
-// carries is the daemon's to choose; a short one here reaches the wait. The line the deferral
-// writes names the wait's bound as until only where that bound is armed: in a pause's window no
-// bound is armed, and only the copy's reported end ends the deferral.
+// process's shim. So the backstop leaves the turn alone while the stop is held for the copy
+// (turnCopyHolds), and writes one line naming the copy's due as until, in either window. The
+// sweep's next post once the copy's end is reported, or once its due has passed with no end
+// reported, ends the stalled turn as a backstop does where no copy is taken: the claim is
+// suspended by the held stop's source. The bound the backstop carries is the daemon's to choose; a
+// short one here reaches the wait.
 //
-// The control is the backstop acting whatever the stop waits for: the claim is then suspended at
-// the first post, while the copy is still being taken, and the test fails there.
+// The control of the rows at the copy's end is the backstop acting whatever the stop waits for:
+// the claim is then suspended at the first post, while the copy is still being taken, and those
+// rows fail there. The control of the pause's window's row past the due is the backstop's guard
+// without the due: the post after the due leaves the turn alone again, and the row fails there.
 func TestTheStallBackstopWaitsForTheTurnsCopyItsHeldStopWaitsFor(t *testing.T) {
 	for _, window := range copyWindows() {
 		t.Run(window.name, func(t *testing.T) {
-			h, copies, _ := window.open(t)
-			loc := h.locator()
-			h.must(StreamTurnStart{Claim: h.token})
-			h.stepped("bash", "toolu_own_turn_0", toolArgs, false)
-			last := h.clock.Now()
-			h.advance(2 * time.Minute)
-			backstop := StallBackstop{Claim: h.token, Bound: time.Minute, Deadline: last.Add(time.Minute), Step: h.store.step(h.token)}
+			for _, end := range copyEnds {
+				t.Run(end.name, func(t *testing.T) {
+					h, copies, _ := window.open(t)
+					loc := h.locator()
+					due := turnCopyDue(t, h)
+					h.must(StreamTurnStart{Claim: h.token})
+					h.stepped("bash", "toolu_own_turn_0", toolArgs, false)
+					last := h.clock.Now()
+					h.advance(2 * time.Minute)
+					backstop := StallBackstop{Claim: h.token, Bound: time.Minute, Deadline: last.Add(time.Minute), Step: h.store.step(h.token)}
 
-			h.must(backstop)
+					h.must(backstop)
 
-			h.wantState(StateWorking)
-			h.wantCalls("Suspend", 0)
-			if c := h.claim(); !c.SuspensionHeld || c.Locator == nil || *c.Locator != loc {
-				t.Fatalf("the claim is %+v, want it working on its process %+v, holding the stop held over the copy", c, loc)
-			}
-			deferred := h.logs.lines("supervise: the stall backstop found", "the turn is left to the next sweep")
-			if len(deferred) != 1 || strings.Contains(deferred[0], " until=") != window.waitBegun {
-				t.Fatalf("the backstop's deferral logged %q, want one line naming until only where the wait's bound is armed (%t)", deferred, window.waitBegun)
-			}
-			h.must(copies.copied(t, 0))
-			h.wantState(StateWorking)
-			h.wantCalls("Suspend", 0)
+					h.wantState(StateWorking)
+					h.wantCalls("Suspend", 0)
+					if c := h.claim(); !c.SuspensionHeld || c.Locator == nil || *c.Locator != loc {
+						t.Fatalf("the claim is %+v, want it working on its process %+v, holding the stop held over the copy", c, loc)
+					}
+					deferred := h.records.of(backstopLeftToTheTurnCopy)
+					if len(deferred) != 1 {
+						t.Fatalf("the backstop wrote %d lines leaving the turn to the copy, want one", len(deferred))
+					}
+					if until, ok := deferred[0].attr("until"); !ok || until.Kind() != slog.KindTime || !until.Time().Equal(due) {
+						t.Fatalf("the backstop's line names until %v (written %t), want the copy's due %s", until, ok, due)
+					}
+					if end.pastDue {
+						h.advance(due.Sub(h.clock.Now()))
+					} else {
+						h.must(copies.copied(t, 0))
+					}
+					h.wantState(StateWorking)
 
-			h.must(backstop)
-
-			h.wantState(StateSuspended)
-			h.wantCalls("Suspend", 1)
-			if got := h.claim().SuspendedBy; got != window.by {
-				t.Fatalf("the claim is suspended by %q, want the held stop's source %q", got, window.by)
+					stopsOnceAt(t, h, window.by, "the backstop posted again", func() { h.must(backstop) })
+				})
 			}
 		})
 	}
@@ -297,8 +325,8 @@ func TestTheStallBackstopWaitsForTheTurnsCopyItsHeldStopWaitsFor(t *testing.T) {
 
 // A registration on another plugin contract over a claim whose relaunch for this contract was
 // already made charges a launch failure and relaunches (staleRegistration, relaunchAfterFailure),
-// and the relaunch would drop a held stop with the process. While a stop is held and the copy of
-// the last turn's end is still being taken, the registration is refused as stale and nothing is
+// and the relaunch would drop a held stop with the process. While a stop is held for the copy of
+// the last turn's end (turnCopyHolds), the registration is refused as stale and nothing is
 // relaunched or charged. That keeps no process for the copy: the plugin stops its agent on the
 // refusal, so the process's death follows, and it meets the held stop, which suspends the claim
 // charged nothing, as the stop's own end would. The refusal is the 409 of any stale registration,

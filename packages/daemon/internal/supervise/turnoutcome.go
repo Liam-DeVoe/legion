@@ -112,10 +112,9 @@ func (m *Machine) freshRun() { m.claim.TurnOutcomes = nil }
 // provider has refused every turn since the last one it took, so nothing of the issue's work is
 // being done and every later turn of that session would be refused the same way
 // (dispatch://INFRA-714). A run short of the limit is the report written and nothing else. So is
-// a run at the limit while a stop is held and the copy its turn's end started is still being taken
-// (stopHeldOverTurnCopy): failed then, the claim's process would stop while the copy still asks it
-// (fail, endProcess), so the stop is left to the copy's end or the wait's bound, which runs it
-// (endTurnCopyWait), or to the prompt's answer that a pause's stop waits for (stopAfterAnswer).
+// a run at the limit while a stop is held for the copy its turn's end started (turnCopyHolds,
+// which says when that hold ends and what runs the stop then): failed then, the claim's process
+// would stop while the copy still asks it (fail, endProcess), so the stop is left to what runs it.
 func turnOutcome(m *Machine, ctx context.Context, ev Event) error {
 	r := ev.(RequestTurnOutcome)
 	m.recordTurnOutcome(TurnOutcome{Generation: r.Generation, Sequence: r.Sequence, Refused: r.Refused, Message: r.Message})
@@ -125,7 +124,7 @@ func turnOutcome(m *Machine, ctx context.Context, ev Event) error {
 	if run < m.deps.Limits.LaunchFailures {
 		return m.persist(ctx)
 	}
-	if m.stopHeldOverTurnCopy() {
+	if m.turnCopyHolds(m.deps.Clock.Now()) {
 		m.log.Warn("supervise: a run of refused turns at the launch failure limit came while the held stop waits for the copy of its turn's end; the stop runs once that wait is over",
 			"refusedRun", run, "limit", m.deps.Limits.LaunchFailures, "copy", m.turnCopy.seq, "by", m.held.By)
 		return m.persist(ctx)

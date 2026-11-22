@@ -93,42 +93,52 @@ func (m *Machine) waitForTurnCopy() bool {
 	return true
 }
 
-// stopHeldOverTurnCopy is whether a stop is held over the claim while the copy of the issue's
-// workspace that its last turn's end started is still being taken (Machine.turnCopy), whether or
-// not the stop has begun to wait for it (turnCopy.stopWaits). It is the one predicate a guard
-// asks. A pause's stop held for the prompt's answer begins that wait only at the answer
-// (stopAfterAnswer), after the answer's own decisions have run, so a guard that asked whether the
-// wait had begun would let those decisions cut the copy. Where code needs the narrower question
-// it reads the mark itself: a new suspension, which starts the wait where it has not (suspend),
-// the held stop's deadline and the stall backstop, whose lines say which bound holds
-// (suspendAtTimeout, backstopStalledTurn), and the copy's own start and end, which carry the
-// mark to a later copy and run the waiting stop (copyTurnEnd, endTurnCopyWait).
+// turnCopyHolds is whether a stop held over the claim is held, at now, for the copy of the
+// issue's workspace that its last turn's end started (Machine.turnCopy): a stop is held, that copy
+// is still being taken, and now is before the copy's due, its budget counted from the turn's end.
+// It is the one rule for when a held stop's wait for a turn's end copy ends: at the copy's
+// reported end (TurnEndCopied) or at its due, whichever comes first. The rule holds whether or not
+// the stop has begun to wait for the copy (turnCopy.stopWaits). A pause's stop held for the
+// prompt's answer begins that wait only after the answer's own decisions have run
+// (stopAfterAnswer), so a guard that asked whether the wait had begun would let those decisions
+// cut the copy. And a wait that has not begun arms no bound, so a guard that waited for the
+// copy's report alone would wait past the budget for as long as the daemon took to report the
+// copy; a wait that has begun is ended at the due by its own bound (TimerTurnCopy,
+// endTurnCopyWait).
 //
 // It is the precondition of every path that stops or replaces the claim's process while it holds
-// a stop (endHeld, suspendHeld, fail, replaceNow): such a path asks it first, and where it is true
+// a stop (endHeld, suspendHeld, fail, replaceNow): such a path asks it first, and while it holds
 // leaves the stop to what runs it, because the stop would take the process whose shim the copy is
-// asking and leave the turn's end in no copy once the role is stopped. A stop already waiting is
-// run at the copy's end or the wait's bound (endTurnCopyWait). One whose wait has not begun is run
-// the same way once what it is held for begins that wait: the end of the turn the stop was held
-// for (turnEnded), which is where a busy answer leaves it, or, for a pause's stop that waits for
-// the prompt's answer, each answer that ends that wait at the end of its row (stopAfterAnswer,
-// stopAtResult) — the prompt's result and the agent's refusal of the acknowledged prompt, whatever
-// either decided: a turn that ran, a provider error, no turn run, a waited-out prompt's answer, a
-// confirmation a replayed refusal takes back. The sites that ask it are a prompt failure at the
-// limit (chargePrompt), a provider error that holds the issue (providerErrored), a run of refused
-// turns at the limit (turnOutcome), the stall backstop (backstopStalledTurn), a stale-plugin
-// relaunch (refreshPlugin), a registration on another plugin contract (staleRegistration), a stale
-// address (judge), the agent's ready said again (reready), and the turn of a wake parked over the
-// process (wakeNow). The registration alone keeps no process: its plugin exits on the refusal, the
-// copy fails and owes a retry, and what the guard keeps is that the exit meets the held stop (died,
-// endHeld) rather than a relaunch charged a launch failure. A new suspension asks the copy itself
-// (suspend), and the turn's and the compaction's ends and the answers above start the wait
-// (waitForTurnCopy). The turn-copy tests of this package (turncopy_*_test.go,
-// pause_noturn_result_test.go), each site's in a daemon's stop that waits for the copy and in a
-// pause's stop whose wait has not begun, and k9's wait control (dispatch://INFRA-1117) are what
-// hold it.
-func (m *Machine) stopHeldOverTurnCopy() bool {
-	return m.held != nil && m.turnCopy != nil
+// asking and leave the turn's end in no copy once the role is stopped. Once it no longer holds,
+// each path does exactly what it does where no copy is being taken. The sites that ask it are a
+// prompt failure at the limit (chargePrompt), a provider error that holds the issue
+// (providerErrored), a run of refused turns at the limit (turnOutcome), the stall backstop
+// (backstopStalledTurn), a stale-plugin relaunch (refreshPlugin), a registration on another plugin
+// contract (staleRegistration), a stale address (judge), the agent's ready said again (reready),
+// and the turn of a wake parked over the process (wakeNow). The registration alone keeps no
+// process: its plugin exits on the refusal, the copy fails and owes a retry, and what the guard
+// keeps is that the exit meets the held stop (died, endHeld) rather than a relaunch charged a
+// launch failure. Past the due, wakeNow lets its parked wake run and ends the hold (endHeld), which
+// can end a pause's stop before the prompt's answer has come: that is what a parked wake does to a
+// held stop where no copy is taken, and this rule leaves it so.
+//
+// What runs the held stop is apart from these guards. A stop whose wait has begun runs at the
+// copy's end or at the due (endTurnCopyWait). One whose wait has not begun begins it once what it
+// is held for is over — the end of the turn it was held for (turnEnded), which is where a busy
+// answer leaves it, or, for a pause's stop, the prompt's answer (stopAfterAnswer, which states
+// that rule) — and runs then the same way, at once where the due has passed. A new suspension
+// asks the copy itself (suspend), and the turn's and the compaction's ends begin the wait
+// (waitForTurnCopy). Where code needs whether the wait has begun, it reads the mark itself: a new
+// suspension, which begins the wait where it has not (suspend), the held stop's deadline, whose
+// line says which bound ran out (suspendAtTimeout), and the copy's own start and end, which carry
+// the mark to a later copy and run the waiting stop (copyTurnEnd, endTurnCopyWait).
+//
+// The turn-copy tests of this package (turncopy_*_test.go, pause_noturn_result_test.go) hold each
+// site in a daemon's stop that waits for the copy and in a pause's stop whose wait has not begun,
+// the stall backstop and the parked wake past the due as well, and k9's wait control
+// (dispatch://INFRA-1117) holds the wait.
+func (m *Machine) turnCopyHolds(now time.Time) bool {
+	return m.held != nil && m.turnCopy != nil && now.Before(m.turnCopy.due)
 }
 
 // heldStopWaitsAtEnd is the wait of a stop held for the end of a turn or of a compaction for the

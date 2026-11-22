@@ -41,5 +41,5 @@ func TestAPromptRetirementAtTheLimitWaitsForTheTurnsCopyItsHeldStopWaitsFor(t *t
 	h.advance(testRPC)
 
 	waitsOnItsProcess(t, h, loc)
-	stopsAfterTheCopy(t, h, copies, 0, loc, SuspendedByDaemon)
+	stopsOnceAfterTheCopy(t, h, copies, 0, SuspendedByDaemon)
 }

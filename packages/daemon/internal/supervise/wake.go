@@ -334,13 +334,13 @@ func (m *Machine) waitOnMachine(ctx context.Context, waiting *wake) error {
 // to protect and the wake's turn is tens of minutes away over a wave (holdSuspendUntilReady) — and
 // that suspension takes the wake with it, so no turn of such a claim is reached at all.
 //
-// A stop held while the copy its turn's end started is still being taken (stopHeldOverTurnCopy)
-// is not ended here: ending it now would stop the process the copy asks and cut that copy off. The
-// wake is parked again for the copy's bound (parkWake). Where the held stop runs before that bound
-// — its wait for the copy begun and the copy ended (stopHeldOverTurnCopy says what begins it) — its
-// let-go takes the wake as the launch it met (letGo, launchMet), which is what ending it here would
-// have done. Where it has not run by then, the wake's turn at the bound ends the hold (endHeld), as
-// it would have here; a hold dropped meanwhile leaves the wake to run its launch at that turn.
+// A stop held for the copy its turn's end started (turnCopyHolds, which states when that hold
+// ends) is not ended here: ending it now would stop the process the copy asks and cut that copy
+// off. The wake is parked again for the copy's due (parkWake). Where the held stop runs before
+// then — its wait for the copy begun and the copy ended — its let-go takes the wake as the launch
+// it met (letGo, launchMet), which is what ending it here would have done. Where it has not run by
+// then, the wake's turn at the due ends the hold (endHeld), as it would have here; a hold dropped
+// meanwhile leaves the wake to run its launch at that turn.
 //
 // The two ways out of a held suspension that take the wake off the machine leave nothing of this
 // refresh waiting in the pacing, so the end of this decision gives the credit of the refresh gate
@@ -397,13 +397,13 @@ func wakeNow(m *Machine, ctx context.Context, _ Event) error {
 			// decision (endRefreshLane).
 			return nil
 		}
-		// A held stop over a turn's copy still being taken: the wake waits for that copy too (the
-		// doc above).
-		if c := m.turnCopy; m.stopHeldOverTurnCopy() && c.due.After(m.deps.Clock.Now()) {
+		// A stop held for a turn's copy: the wake waits for that copy too (the doc above).
+		if now := m.deps.Clock.Now(); m.turnCopyHolds(now) {
+			c := m.turnCopy
 			m.log.Info("supervise: this claim's wake came due while its held stop waits for the copy of its turn's end; the wake waits for that copy too",
 				"kind", waiting.kind, "copy", c.seq, "until", c.due, "reason", m.held.Reason, "by", m.held.By)
 			waiting.at = c.due
-			return m.parkWake(ctx, waiting, c.due.Sub(m.deps.Clock.Now()))
+			return m.parkWake(ctx, waiting, c.due.Sub(now))
 		}
 		return m.endHeld(ctx, true, stopOwed)
 	}

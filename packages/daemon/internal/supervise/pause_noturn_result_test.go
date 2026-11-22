@@ -82,7 +82,7 @@ func TestANoTurnAnswerRunsThePausesHeldStopOnceTheTurnsCopyIsOver(t *testing.T) 
 				t.Logf("the answer was answered %v", err)
 			}
 
-			suspendedOnceAfterTheCopy(t, h, copies, SuspendedByReleased)
+			stopsOnceAfterTheCopy(t, h, copies, 0, SuspendedByReleased)
 		})
 	}
 }
@@ -123,7 +123,7 @@ func TestAWaitedOutPromptsNoTurnAnswerRunsThePausesHeldStopOnceTheTurnsCopyIsOve
 		t.Logf("the waited-out prompt's answer answered %v", err)
 	}
 
-	suspendedOnceAfterTheCopy(t, h, copies, SuspendedByReleased)
+	stopsOnceAfterTheCopy(t, h, copies, 0, SuspendedByReleased)
 }
 
 // A turn start naming the prompt whose wait for its turn ran out, an id the task has moved off, is
@@ -217,7 +217,7 @@ func TestAWaitedOutPromptsAnswerAfterABusyAnswerRunsThePausesHeldStopOnceTheTurn
 			if unread := h.pending().DeliveredAt.IsZero(); unread != tc.unread {
 				t.Fatalf("the read mark is gone = %t after the waited-out prompt's answer, want %t", unread, tc.unread)
 			}
-			suspendedOnceAfterTheCopy(t, h, copies, SuspendedByReleased)
+			stopsOnceAfterTheCopy(t, h, copies, 0, SuspendedByReleased)
 		})
 	}
 }
@@ -257,7 +257,7 @@ func TestAReplayedRefusalTakingBackAForeignTurnsConfirmationRunsThePausesHeldSto
 				t.Fatalf("pending after the replayed refusal = %+v, want the foreign turn's confirmation taken back unread", p)
 			}
 			if tc.copies != nil {
-				suspendedOnceAfterTheCopy(t, h, tc.copies, SuspendedByReleased)
+				stopsOnceAfterTheCopy(t, h, tc.copies, 0, SuspendedByReleased)
 			} else if n := processStops(h); n != 1 {
 				t.Fatalf("the process was stopped %d times after the replayed refusal (state %s), want the pause's stop once", n, h.claim().State)
 			}
@@ -266,5 +266,56 @@ func TestAReplayedRefusalTakingBackAForeignTurnsConfirmationRunsThePausesHeldSto
 					c.State, c.SuspendedBy, c.Budgets.PromptFailures-charged)
 			}
 		})
+	}
+}
+
+// The turn a pause's stop is held for can also carry a stale-plugin relaunch held for its end
+// (holdStaleRelaunch): the daemon's sweep found the process on another plugin contract while the
+// turn ran. The turn's end leaves both to the prompt's answer (turnEnded, resultPending). Where
+// that answer is a waited-out prompt's that takes the confirmation back, waitedOutAnswer leaves the
+// idle claim to the pause's stop, which its row runs (stopAfterAnswer), and not to the turn's
+// aftermath (afterTurn), which would run that relaunch first: the relaunch ends a held stop as a
+// replacement does (replaceNow, endHeld), and a replacement suspends the claim even where the
+// runtime refused to stop its process (letProcessGoFor), where the pause's own stop keeps its hold
+// and tries again at the probe interval (suspendHeld). No copy is taken at the turn's end here, so
+// nothing else holds the relaunch back, and the runtime refuses the first stop: no relaunch runs,
+// the claim stays idle holding the pause's stop, and the stop's next try suspends it by the pause.
+//
+// The control is waitedOutAnswer without its return under the pause's hold: the relaunch then runs
+// at the answer, and the test fails there.
+func TestAWaitedOutPromptsAnswerLeavesARelaunchHeldForTheTurnToThePausesStop(t *testing.T) {
+	h, flag, _ := pauseHarness(t, queuedClaim())
+	var first string
+	turnEndedUnderAHold(t, h, nil, func() {
+		pausesStop(t, h, flag)()
+		speaksAnOlderContract(h)
+		h.must(StalePlugin{Claim: h.token, Trigger: "sweep"})
+	}, func(h *harness) StreamTurnStart {
+		waitedOut(t, h, &first)
+		return StreamTurnStart{Claim: h.token}
+	})
+	h.m.mu.Lock()
+	held := h.m.staleRelaunch != nil
+	h.m.mu.Unlock()
+	if !held {
+		t.Fatal("the stale-plugin post during the turn held no relaunch for the turn's end, want one held")
+	}
+	h.wantState(StateIdle)
+	h.rt.FailSuspend(errBoom)
+
+	if err := h.handle(noTurnResult(h, first)); err != nil {
+		t.Logf("the waited-out prompt's answer answered %v", err)
+	}
+
+	if relaunched := h.logs.lines("relaunching it onto the current plugin"); len(relaunched) != 0 {
+		t.Fatalf("the waited-out prompt's answer ran the relaunch held for the turn: %q, want the claim left to the pause's stop", relaunched)
+	}
+	if c := h.claim(); c.State != StateIdle || !c.SuspensionHeld {
+		t.Fatalf("the claim is %s holding a stop = %t once the runtime refused the pause's stop, want it idle, holding the stop to try again", c.State, c.SuspensionHeld)
+	}
+	h.rt.FailSuspend(nil)
+	h.advance(testProbe)
+	if c := h.claim(); c.State != StateSuspended || c.SuspendedBy != SuspendedByReleased {
+		t.Fatalf("the claim is %s by %q once the pause's stop was tried again, want it suspended by the pause", c.State, c.SuspendedBy)
 	}
 }

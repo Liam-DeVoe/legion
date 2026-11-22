@@ -4067,11 +4067,11 @@ func (m *Machine) judge(ctx context.Context, observation runtime.Observation, al
 		// The replacement would let the live process go through the held stop (replaceNow,
 		// endHeld) while the copy of its turn's end still asks its shim, cutting that copy off.
 		// The runtime's sweep observes the process again at every tick, so this one is left
-		// alone while the stop is held over the copy. The held stop, once it runs
-		// (stopHeldOverTurnCopy says what runs it), stops the process and suspends the claim, and
-		// nothing replaces it. An observation after the copy is over finds no copy to wait for and
+		// alone while the stop is held for the copy (turnCopyHolds, which says when that hold
+		// ends and what runs the stop then). The held stop, once it runs, stops the process and
+		// suspends the claim, and nothing replaces it. An observation once that hold has ended
 		// repoints the process as any does, which runs a stop still held (replaceNow, endHeld).
-		if m.stopHeldOverTurnCopy() {
+		if m.turnCopyHolds(m.deps.Clock.Now()) {
 			m.log.Info("supervise: the process is alive at a stale address while a stop is held over the copy of its turn's end; it is left to that stop, and an observation after the copy repoints it if it still runs",
 				"incarnation", observation.Locator.Incarnation, "copy", m.turnCopy.seq, "detail", observation.Detail)
 			return nil

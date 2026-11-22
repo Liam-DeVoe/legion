@@ -13,21 +13,34 @@ func processStops(h *harness) int {
 	return len(h.rt.CallsOf("Suspend")) + len(h.rt.CallsOf("Release"))
 }
 
-// stopsOnceAfterTheCopy hands back the end of the copy the turn's end started, and fails unless
-// the process was stopped by nothing before that end, is stopped once after it, and the claim is
-// then failed or suspended.
-func stopsOnceAfterTheCopy(t *testing.T, h *harness, copies *turnEndCopies) {
+// stopsOnceAfterTheCopy hands back the end of the index-th copy the claim's turn ends started, and
+// fails unless the held stop stopped the claim's process once at that end, as stopsOnceAt holds.
+func stopsOnceAfterTheCopy(t *testing.T, h *harness, copies *turnEndCopies, index int, by SuspendSource) {
+	t.Helper()
+	stopsOnceAt(t, h, by, "the copy ended", func() { h.must(copies.copied(t, index)) })
+}
+
+// stopsOnceAt runs over, what ends the hold of a stop held over the claim for its turn's copy (the
+// copy's end, or its due passing), and fails unless nothing stopped the claim's process before it,
+// the held stop stopped that process once at it, and the claim is then suspended by by, the source
+// of the stop held over it: the pause's (SuspendedByReleased) for a project pause's stop, the
+// daemon's for holdStop's. what names the moment in a failure.
+func stopsOnceAt(t *testing.T, h *harness, by SuspendSource, what string, over func()) {
 	t.Helper()
 	if n := processStops(h); n != 0 {
-		t.Fatalf("the process was stopped %d times while the held stop waited for the copy of its turn's end (state %s), want none before the copy ends",
-			n, h.claim().State)
+		t.Fatalf("the process was stopped %d times while the held stop waited for the copy of its turn's end (state %s), want none before %s",
+			n, h.claim().State, what)
 	}
-	h.must(copies.copied(t, 0))
+	loc := h.locator()
+	over()
 	if n := processStops(h); n != 1 {
-		t.Fatalf("the process was stopped %d times once the copy ended, want once", n)
+		t.Fatalf("the process was stopped %d times once %s, want once", n, what)
 	}
-	if state := h.claim().State; state != StateFailed && state != StateSuspended {
-		t.Fatalf("state = %s once the copy ended, want the claim failed or suspended", state)
+	if suspend := h.wantCalls("Suspend", 1)[0]; suspend.Locator != loc {
+		t.Fatalf("suspended %+v once %s, want the process the claim recorded, %+v", suspend.Locator, what, loc)
+	}
+	if c := h.claim(); c.State != StateSuspended || c.SuspendedBy != by {
+		t.Fatalf("the claim is %s by %q once %s, want it suspended by the held stop's source %q", c.State, c.SuspendedBy, what, by)
 	}
 }
 
@@ -36,13 +49,13 @@ func stopsOnceAfterTheCopy(t *testing.T, h *harness, copies *turnEndCopies) {
 // and the helper then fails unless the turn's end started one copy. beforeTurn, where one is
 // given, runs between the task's delivery and the turn and answers the turn's start, which is
 // otherwise one naming no delivery. It answers the delivery the prompt's result names.
-func turnEndedUnderAHold(t *testing.T, h *harness, copies *turnEndCopies, hold func(), beforeTurn ...func() StreamTurnStart) string {
+func turnEndedUnderAHold(t *testing.T, h *harness, copies *turnEndCopies, hold func(), beforeTurn ...func(*harness) StreamTurnStart) string {
 	t.Helper()
 	h.reach(StateReady)
 	h.must(RequestDeliver{Claim: h.token, Task: providerErrorTaskText})
 	start := StreamTurnStart{Claim: h.token}
 	for _, step := range beforeTurn {
-		start = step()
+		start = step(h)
 	}
 	h.must(start)
 	task := h.pending().ID
@@ -74,7 +87,7 @@ func TestAProviderErrorThatFailsTheClaimWaitsForTheTurnsCopyItsHeldStopWaitsFor(
 		t.Logf("the prompt's result answered %v", err)
 	}
 
-	stopsOnceAfterTheCopy(t, h, copies)
+	stopsOnceAfterTheCopy(t, h, copies, 0, SuspendedByDaemon)
 }
 
 // A run of refused turns at the launch-failure limit fails the claim (turnOutcome). The plugin
@@ -94,5 +107,5 @@ func TestARefusedTurnRunThatFailsTheClaimWaitsForTheTurnsCopyItsHeldStopWaitsFor
 		}
 	}
 
-	stopsOnceAfterTheCopy(t, h, copies)
+	stopsOnceAfterTheCopy(t, h, copies, 0, SuspendedByDaemon)
 }

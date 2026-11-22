@@ -1674,10 +1674,8 @@ func refused(m *Machine, ctx context.Context, ev Event) error {
 // (takesBackConfirmed): the task goes back unread, charged nothing, so that turn's end sends it
 // again rather than retiring it as served — unless another prompt of the task is still
 // outstanding, whose turn that one is (takeBackPending). Where that turn has already ended into a
-// project pause's stop held for the prompt's answer, this refusal is that answer, and the row runs
-// the stop once it is over (stopAfterAnswer), as it does after every other answer it decides. A
-// refusal that lands while the claim cannot be prompted (refusedUnprompted) finds it neither ready
-// nor idle, so no such stop waits on that refusal.
+// project pause's stop held for the prompt's answer, this refusal is that answer, and what it owes
+// that stop is stopAfterAnswer's to say.
 func refusedElsewhere(m *Machine, ctx context.Context, r StreamLateRefusal) (bool, error) {
 	p := m.claim.Pending
 	switch {
@@ -1756,9 +1754,8 @@ func refusedUnprompted(m *Machine, ctx context.Context, ev Event) error {
 // that becomes no turn, and the retry waits for the sweep that follows, so a refusal that never
 // stops walks the budget to its end — a relaunch, and then the retirement — instead of looping
 // on the spot for ever against an agent that cannot start a turn at all. The refusal is that
-// prompt's answer, so a project pause's stop held for its result runs once it is charged, as it
-// runs after every answer of the prompt this row decides (stopAfterAnswer), unless another prompt
-// of the task is still outstanding, whose own answer is then the one the stop waits for.
+// prompt's answer, and what it owes a project pause's stop held for that answer is
+// stopAfterAnswer's to say.
 func lateRefused(m *Machine, ctx context.Context, ev Event) error {
 	r := ev.(StreamLateRefusal)
 	if done, err := refusedElsewhere(m, ctx, r); done {
@@ -2314,17 +2311,13 @@ func issueTurnEnded(m *Machine, ctx context.Context, _ Event) error { return m.s
 // turn runs when the end found the result still outstanding (afterTurn): settle first, so the
 // round's end and the stale-plugin relaunch read a worker whose hands are empty. A result that
 // beat its turn's end leaves both to that end. A project pause's hold that waited for this result
-// (stopWaitsForResult) stops the claim instead, once this decision has decided the task: the row
-// runs it after every answer it decides (stopAfterAnswer, stopAtResult), and it waits for the copy
-// the turn's end started until that copy has ended or its wait has run out (waitForTurnCopy). A
-// refused task taken back is one the stop owes the role a launch for, and a finished one is
-// retired by the settle that follows every decision (Handle), so neither the settle nor what was
-// held for the turn runs here for an idle claim under that hold. A result whose agent ran no turn
-// is that hold's result too: once the prompt is charged (promptFailed), the hold stops the claim
-// the same way, unless another prompt of the task is still outstanding, whose own result is then
-// the one the hold waits for. A busy answer records the claim working instead (recordBusyTurn), so
-// the end of the turn the agent is in runs the hold (turnEnded), or the result of the earlier
-// prompt that turn belongs to does.
+// (stopWaitsForResult) stops the claim instead, once this decision has decided the task, as
+// stopAfterAnswer says. A refused task taken back is one the stop owes the role a launch for, and a
+// finished one is retired by the settle that follows every decision (Handle), so neither the
+// settle nor what was held for the turn runs here for an idle claim under that hold. A result whose
+// agent ran no turn is that hold's answer too, once the prompt is charged (promptFailed). A busy
+// answer records the claim working instead (recordBusyTurn), so the end of the turn the agent is
+// in runs the hold (turnEnded), or the answer of the earlier prompt that turn belongs to does.
 func promptResulted(m *Machine, ctx context.Context, ev Event) error {
 	r := ev.(StreamPromptResult)
 	if !r.AgentInvoked {
@@ -2397,19 +2390,20 @@ func promptResulted(m *Machine, ctx context.Context, ev Event) error {
 // when the end has already come and left what it held to this result (turnEnded, resultPending),
 // it goes from here (afterTurn), as it does from a result of a turn that ran (promptResulted).
 // Where that end held a project pause's stop for this answer, nothing goes from here: the stop
-// takes the claim instead, run by the row once this decision is over (stopAfterAnswer). While
-// another prompt is outstanding, the turn and the read mark are that prompt's, and nothing moves.
-// Otherwise only the mark goes, where the answer says the prompt was never read, as a refusal of
-// the prompt that set it always took it (markUnread). read says whether the agent may have read
-// it, as promptFailed's does: a busy answer or a refusal was never read. That answer can be the
-// one a project pause's stop held for a turn's end waits for (stopWaitsForResult) — a busy answer
-// to a later send of the task took the task back unconfirmed while this prompt was still
-// outstanding, and the claim was recorded working for the turn the agent named — and the stop
-// then runs after it as it does after every answer (stopAfterAnswer). The task can also stand
-// confirmed here with a send of it in flight: while the turn that confirmed it runs, that send's
-// own answer decides it; where that turn has ended, the settle that follows this answer retires
-// the confirmed task, which fences that send's answer out (fenceOutcome), and a pause's stop held
-// over the idle claim runs after this answer, or begins its wait for the turn's copy.
+// takes the claim instead (stopAfterAnswer), and the turn's aftermath would run a stale-plugin
+// relaunch held for the turn first (afterTurn, refreshPlugin), which ends the held stop as a
+// replacement does (endHeld) rather than as the pause's stop. While another prompt is
+// outstanding, the turn and the read mark are that prompt's, and nothing moves. Otherwise only the
+// mark goes, where the answer says the prompt was never read, as a refusal of the prompt that set
+// it always took it (markUnread). read says whether the agent may have read it, as promptFailed's
+// does: a busy answer or a refusal was never read. That answer can be the one a project pause's
+// stop held for a turn's end waits for (stopWaitsForResult) — a busy answer to a later send of the
+// task took the task back unconfirmed while this prompt was still outstanding, and the claim was
+// recorded working for the turn the agent named — and what it owes that stop is stopAfterAnswer's
+// to say. The task can also stand confirmed here with a send of it in flight: while the turn that
+// confirmed it runs, that send's own answer decides it; where that turn has ended, the settle that
+// follows this answer retires the confirmed task, which fences that send's answer out
+// (fenceOutcome), and a pause's stop held over the idle claim is stopAfterAnswer's.
 //
 // busy is whether the answer is Oh My Pi's busy answer (agentBusy): the agent is in a prompt now,
 // so this is one more of the places the daemon learns that its session is busy, and a ready or
@@ -2440,6 +2434,8 @@ func (m *Machine) waitedOutAnswer(ctx context.Context, id string, read, busy boo
 			return err
 		}
 		if m.claim.State == StateIdle {
+			// The pause's stop runs after this answer (stopAfterAnswer). The turn's aftermath would
+			// run a relaunch held for the turn first, ending that stop through the relaunch.
 			if m.pauseHoldAtResult() {
 				return nil
 			}
@@ -2462,23 +2458,25 @@ func (m *Machine) waitedOutAnswer(ctx context.Context, id string, read, busy boo
 }
 
 // stopAfterAnswer is act, the row of an answer of a prompt of the task — its result
-// (promptResulted) or the agent's refusal of it once acknowledged (lateRefused) — followed by
-// what each such answer owes a project pause's stop held for the end of a turn. That stop waits
-// for the prompt's answer (stopWaitsForResult), and an answer ends that wait whatever act decided
-// of it: a turn's result, a provider error, a no-turn result or a refusal charged as a failed
-// prompt, a confirmation taken back by a replayed refusal or by a waited-out prompt's answer, a
-// mark cleared. So where act returned no error and no other prompt of the task is still
-// outstanding, whose own answer the stop then waits for (awaitsResult), the stop runs here
-// (stopAtResult), after everything act decided. That does nothing unless such a stop stands over
-// an idle claim — an act that leaves the claim in a turn (recordBusyTurn, a result before its
-// turn's end) or without its process (fail) leaves it nothing to run — and the stop it runs waits
-// for the copy of the turn's end where one is still being taken (waitForTurnCopy). An act whose
-// claim is idle under such a stop leaves the claim to it: the result of a turn that ran and the
+// (promptResulted) or the agent's refusal of it once acknowledged (lateRefused) — followed by the
+// one rule of what such an answer owes a project pause's stop held for the end of a turn, which
+// waits for the prompt's answer (stopWaitsForResult), and which every other statement of it cites:
+// the answer ends that wait whatever act decided of it, so the held stop runs after act
+// (stopAtResult), unless act returned an error or another prompt of the task is still outstanding
+// (awaitsResult), whose own answer the stop then waits for. The refusal of a claim that cannot be
+// prompted (refusedUnprompted) runs without it, since it finds no claim idle.
+//
+// What act decided can be a turn's result, a provider error, a no-turn result or a refusal charged
+// as a failed prompt, a confirmation taken back by a replayed refusal or by a waited-out prompt's
+// answer, or a mark cleared. stopAtResult does nothing unless such a stop stands over an idle
+// claim — an act that leaves the claim in a turn (recordBusyTurn, a result before its turn's end)
+// or without its process (fail) leaves it nothing to run — and the stop it runs waits for the copy
+// of the turn's end while that copy holds it (waitForTurnCopy, turnCopyHolds). An act whose claim
+// is idle under such a stop leaves the claim to it: the result of a turn that ran and the
 // waited-out answer that takes a confirmation back each return there without the turn's aftermath
 // (afterTurn). Wired here, once for both rows, no act that returns without an error strands the
 // stop until the pause's stop row asks again; one that fails a write returns first, and that row's
-// next ask runs the stop. The refusal of a claim that cannot be prompted
-// (refusedUnprompted) finds no claim idle, and runs without it.
+// next ask runs the stop.
 func stopAfterAnswer(act func(*Machine, context.Context, Event) error) func(*Machine, context.Context, Event) error {
 	return func(m *Machine, ctx context.Context, ev Event) error {
 		if err := act(m, ctx, ev); err != nil || m.awaitsResult() {
@@ -2725,12 +2723,12 @@ func finishReady(m *Machine, ctx context.Context) error {
 // reready persists the in-memory ready state before answering an agent retry: a prior ready's
 // claim write may have failed after the machine made the transition. A retained launch-time
 // suspension still wins: the retry completes that suspension instead of publishing ready and
-// releasing notices to a claim the operator or workflow is stopping. A held stop over a copy its
-// turn's end started that is still being taken (stopHeldOverTurnCopy) is left to that copy: run
-// here it would stop the process the copy still asks, and the claim, idle or ready holding the
-// stop, has nothing of a ready to publish meanwhile.
+// releasing notices to a claim the operator or workflow is stopping. A stop held for the copy its
+// turn's end started (turnCopyHolds, which says when that hold ends and what runs the stop then) is
+// left to what runs it: run here it would stop the process the copy still asks, and the claim, idle
+// or ready holding the stop, has nothing of a ready to publish meanwhile.
 func reready(m *Machine, ctx context.Context, _ Event) error {
-	if m.stopHeldOverTurnCopy() {
+	if m.turnCopyHolds(m.deps.Clock.Now()) {
 		m.log.Info("supervise: the agent said ready again while its held stop waits for the copy of its turn's end; the stop runs once that wait is over",
 			"copy", m.turnCopy.seq, "by", m.held.By)
 		return nil

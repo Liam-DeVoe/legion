@@ -6,8 +6,8 @@ package supervise
 // row (stopAfterAnswer, stopAtResult), so the decisions the result and the turn's report make
 // before it — a provider error that holds the issue, a run of refused turns at the launch-failure
 // limit — meet a stop that is held but not yet waiting. Each would fail the claim and stop the
-// process the copy still asks; each leaves the stop to the copy's end instead
-// (stopHeldOverTurnCopy), as turncopy_fail_test.go pins for a daemon's stop.
+// process the copy still asks; each leaves the stop to the copy's end instead (turnCopyHolds), as
+// turncopy_fail_test.go pins for a daemon's stop.
 
 import (
 	"errors"
@@ -21,8 +21,8 @@ import (
 // stop still waiting for the prompt's result (stopWaitsForResult) and no process stopped. copies is
 // the claim's CopyTurnEnd, and the turn's end started one copy, still being taken; nil gives the
 // claim one that starts no copy. tune, where it is not nil, changes the rest of the Deps before the
-// machine is built, and beforeTurn is turnEndedUnderAHold's, handed the harness. It answers the
-// delivery the result names.
+// machine is built, and beforeTurn is turnEndedUnderAHold's. It answers the delivery the result
+// names.
 func pauseHeldForTheResult(t *testing.T, copies *turnEndCopies, tune func(*Deps), beforeTurn ...func(*harness) StreamTurnStart) (*harness, string) {
 	t.Helper()
 	copyTurnEnd := func(Claim, TurnEndCopied) (time.Duration, bool) { return 0, false }
@@ -35,11 +35,7 @@ func pauseHeldForTheResult(t *testing.T, copies *turnEndCopies, tune func(*Deps)
 			tune(d)
 		}
 	})
-	steps := make([]func() StreamTurnStart, 0, len(beforeTurn))
-	for _, step := range beforeTurn {
-		steps = append(steps, func() StreamTurnStart { return step(h) })
-	}
-	task := turnEndedUnderAHold(t, h, copies, pausesStop(t, h, flag), steps...)
+	task := turnEndedUnderAHold(t, h, copies, pausesStop(t, h, flag), beforeTurn...)
 	if n := processStops(h); n != 0 {
 		t.Fatalf("the process was stopped %d times at the turn's end, want none while the pause's stop waits for the prompt's result", n)
 	}
@@ -55,18 +51,6 @@ func pausesStop(t *testing.T, h *harness, flag *pauseFlag) func() {
 		if err := h.handle(pauseStop(h.token, 7)); !errors.Is(err, ErrSuspendHeld) {
 			t.Fatalf("the pause's stop of a claim in a turn = %v, want it held", err)
 		}
-	}
-}
-
-// suspendedOnceAfterTheCopy is stopsOnceAfterTheCopy held to the stop that waited: once the copy
-// ended, the claim is suspended by by, the source of the stop held over it — the pause's
-// (SuspendedByReleased) for a project pause's stop, the daemon's for holdStop's. A claim failed at
-// the copy's end, which stopsOnceAfterTheCopy lets through, fails here.
-func suspendedOnceAfterTheCopy(t *testing.T, h *harness, copies *turnEndCopies, by SuspendSource) {
-	t.Helper()
-	stopsOnceAfterTheCopy(t, h, copies)
-	if c := h.claim(); c.State != StateSuspended || c.SuspendedBy != by {
-		t.Fatalf("the claim is %s by %q once the copy ended, want it suspended by the held stop's source %q", c.State, c.SuspendedBy, by)
 	}
 }
 
@@ -86,7 +70,7 @@ func TestAProviderErrorThatFailsTheClaimWaitsForTheTurnsCopyAPausesHeldStopIsOve
 		t.Logf("the prompt's result answered %v", err)
 	}
 
-	suspendedOnceAfterTheCopy(t, h, copies, SuspendedByReleased)
+	stopsOnceAfterTheCopy(t, h, copies, 0, SuspendedByReleased)
 }
 
 // The turn's reports reach the launch-failure limit of refused turns before the prompt's result
@@ -111,5 +95,5 @@ func TestARefusedTurnRunThatFailsTheClaimWaitsForTheTurnsCopyAPausesHeldStopIsOv
 		t.Logf("the prompt's result answered %v", err)
 	}
 
-	suspendedOnceAfterTheCopy(t, h, copies, SuspendedByReleased)
+	stopsOnceAfterTheCopy(t, h, copies, 0, SuspendedByReleased)
 }

@@ -33,8 +33,8 @@ import (
 // that row's two times alone (store.PutRunningWorkspaceCopy). A retry owed goes with the process
 // as well: an issue between turns whose last copy came to nothing before a restart is copied
 // again at its next turn's end or its next push. An entry is a few words per issue the daemon has
-// copied since it started, and the cadence drops the entry of an issue no claim names but a
-// retired one (forgetUnclaimed).
+// copied since it started, and the cadence drops the entry of an issue owing a retry once that
+// issue has left the workflow (forgetClosed).
 //
 // The run's context is held here rather than handed down because the paths that start a copy are
 // callbacks — a machine's turn's end (copyWorkspaceAtTurnEnd, supervise.Deps.CopyTurnEnd) and a
@@ -190,7 +190,7 @@ type runningCopy struct {
 	// it. A copy that stored the issue's copy, dropped it as empty, or was refused for no fault — a
 	// newer copy stands, the release bundle is the pod's last copy, or a push overtook it — clears
 	// it, and so do a copy refused for its size, which is no fault to retry (runningCopyTooLarge),
-	// and the cadence's forgetting of an issue no claim names but a retired one (forgetUnclaimed).
+	// and the cadence's forgetting of an issue that has left the workflow (forgetClosed).
 	retry bool
 	// saidNoRole is when a copy of the issue that found no live role to ask was last logged at
 	// Info (sayNoRole), zero for none the cadence remembers. The line names the issue once a period
@@ -289,11 +289,11 @@ func (c *runningCopies) take(issue string) (runningCopy, bool) {
 // has ever copied for ever. It is pruned where the map is written, as the runtime's two records
 // of a pod's end are (sandbox's prunePodEnds), so nothing has to sweep it. An entry that owes a
 // retry says what a missing one does not, and stays until a copy of its issue clears it or the
-// cadence finds no claim of its issue but a retired one (forgetUnclaimed), so what the map holds
-// beyond the issues being copied is one entry per issue with a claim that is not retired whose
-// last copy came to nothing. The entry this call writes stays unless the run it ends held the place
-// a whole period, which no copy can (runningCopyBudget) and only a slow release's save can; such an
-// entry is due at once, as a missing one is.
+// cadence finds its issue has left the workflow (forgetClosed), so what the map holds beyond the
+// issues being copied is one entry per issue in the workflow whose last copy came to nothing. The
+// entry this call writes stays unless the run it ends held the place a whole period, which no copy
+// can (runningCopyBudget) and only a slow release's save can; such an entry is due at once, as a
+// missing one is.
 func (c *runningCopies) giveBack(issue string, retry bool) runningCopy {
 	held := c.issues[issue]
 	if held.inFlight() {
@@ -457,7 +457,7 @@ func (c *runningCopies) untaken(issue string, retry bool) {
 // (runningCopyPeriod) by the cadence's clock (runningCopy.saidNoRole). The cadence's tick and a
 // push's copy share the mark, so the issue is named at Info once a period whichever finds it. The
 // mark lives in the issue's entry and goes with it: where the cadence forgets the issue
-// (forgetUnclaimed), or where an entry that owes no retry is dropped once its period has passed
+// (forgetClosed), or where an entry that owes no retry is dropped once its period has passed
 // (giveBack).
 func (c *runningCopies) sayNoRole(issue string) bool {
 	c.mu.Lock()
@@ -489,20 +489,22 @@ func (c *runningCopies) retries() []string {
 	return owed
 }
 
-// forgetUnclaimed drops the entry of every issue that claimed does not name — the issues the
-// cadence's read of the project's claims holds a claim of that is not retired — retry and all,
-// unless a copy or a release's save of it holds its place. Such an issue has no pod whose work a
-// copy could hold: it never ran in this project, as the issue of a branch pushed from outside, or
-// it is finished, its claims all retired, which the store keeps for ever. An entry kept for it
-// would never be cleared, since no copy of it can be stored, and its retry would have the cadence
-// log it under runningCopyNoRole once a period for as long as the daemon runs (noLiveRole). An
-// issue with a claim in any other state is kept, a released one above all, whose retry runs once
-// a woken pod's role is live.
-func (c *runningCopies) forgetUnclaimed(claimed map[string]bool) {
+// forgetClosed drops the entry of every issue closed names, retry and all, unless a copy or a
+// release's save of it holds its place: the issues owing a retry that the cadence's read of the
+// daemon's records found out of the workflow (workflowRuntime.closedRetries). Such an issue has no
+// pod whose work a copy could hold: the project does not record it, as the issue of a branch
+// pushed from outside, or it is closed — done, or parked out of the workflow — with its tree or on
+// its own. An entry kept for it would never be cleared, since no copy of it can be stored, and its
+// retry would have the cadence log it under runningCopyNoRole once a period for as long as the
+// daemon runs (noLiveRole). An issue still in the workflow keeps its retry whatever its claims
+// are doing: released, or retired between phases by a phase worker's exit or an operator's stop,
+// its retry runs once a role of it is live again. Only closed's issues are dropped, so an entry a
+// copy writes after the read that made closed is left to the next pass.
+func (c *runningCopies) forgetClosed(closed map[string]bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	maps.DeleteFunc(c.issues, func(issue string, held runningCopy) bool {
-		return !held.inFlight() && !claimed[issue]
+		return closed[issue] && !held.inFlight()
 	})
 }
 
