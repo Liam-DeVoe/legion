@@ -20,11 +20,13 @@ import (
 // meet it again at their own cadence: the phase reminder at its next delivered reminder, and a
 // session's registration, which its own route refuses the same way, at its next heartbeat. Each
 // class is wrapped as the bus returns it. A stream's refusal of a resend after a send nothing
-// answered (bus.ErrUnacknowledged, which bus.sendStored keeps) is no refusal for good: the first
-// send may have stored the message, so the keep holds it and the route answers the maybe-stored
-// 503. A role token no claim can name is the keep's own rule: it ends a keep and is no refusal of
-// NATS's. The rows that need a read of the deployed stream (no responders, no acknowledgement) are
-// the forward's alone and are in its own table
+// answered (bus.ErrUnacknowledged, which bus.sendStored keeps), or of a later send after the stream
+// said an earlier publish under the same id was still in process (errEarlierAttemptInProcess,
+// which publishPastInProcess wraps), is no refusal for good: the earlier publish may have stored
+// the message, so the keep holds it and the route answers the maybe-stored 503. A role token no
+// claim can name and an edge listener's keep are the keep's own rules: each ends a keep and is no
+// refusal of NATS's. The rows that need a read of the deployed stream (no responders, no
+// acknowledgement) are the forward's alone and are in its own table
 // (TestListenerDeliveryHandler_RoleForwardFailureEndsOnlyUnderARule).
 func TestTheRoleLanesRefusalRulesAgree(t *testing.T) {
 	answered := func(status, code int, description string, names ...error) error {
@@ -50,6 +52,8 @@ func TestTheRoleLanesRefusalRulesAgree(t *testing.T) {
 		{"a sealed stream", answered(400, 10109, "invalid operation on sealed stream"), true},
 		{"an unanswered send, then a sealed stream's refusal of the resend", fmt.Errorf("%w: %w", bus.ErrUnacknowledged,
 			&natsgo.APIError{Code: 400, ErrorCode: 10109, Description: "invalid operation on sealed stream"}), false},
+		{"an earlier attempt in process, then a sealed stream's refusal of a later send", fmt.Errorf("%w: %w", errEarlierAttemptInProcess,
+			answered(400, 10109, "invalid operation on sealed stream")), false},
 		{"a full stream", answered(503, 10077, "maximum bytes exceeded", bus.ErrStreamFull), false},
 		{"an id still in process", answered(409, 10158, "duplicate message id is in process", bus.ErrDuplicateInProcess), false},
 		{"a closed store", answered(503, 10077, "store is closed"), false},
@@ -77,13 +81,20 @@ func TestTheRoleLanesRefusalRulesAgree(t *testing.T) {
 			}
 		})
 	}
-	t.Run("a role token no claim can name", func(t *testing.T) {
-		err := fmt.Errorf("keep: %w", errRoleNotKeepable)
-		if keepFailureHolds(err) {
-			t.Error("keepFailureHolds holds a keep under a role token no claim can name, which no attempt can keep")
-		}
-		if busRefusesForGood(err) {
-			t.Error("busRefusesForGood counts the keep's own rule as a refusal of NATS's")
-		}
-	})
+	for _, rule := range []struct {
+		name string
+		err  error
+	}{
+		{"a role token no claim can name", fmt.Errorf("keep: %w", errRoleNotKeepable)},
+		{"an edge listener's keep", fmt.Errorf("keep: %w", errEdgeKeepsNothing)},
+	} {
+		t.Run(rule.name, func(t *testing.T) {
+			if keepFailureHolds(rule.err) {
+				t.Error("keepFailureHolds holds a keep the keep's own rule refuses, which no attempt can keep")
+			}
+			if busRefusesForGood(rule.err) {
+				t.Error("busRefusesForGood counts the keep's own rule as a refusal of NATS's")
+			}
+		})
+	}
 }

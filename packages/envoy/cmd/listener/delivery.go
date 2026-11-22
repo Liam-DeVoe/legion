@@ -47,8 +47,15 @@ type listenerDeliveryHandlerConfig struct {
 	client *bus.Client
 	// wakes publishes the wake reports an unplaceable agent delivery raises, off the delivery
 	// path and under the listener's own lifetime (wakeReporter); nil in a test that builds the
-	// handlers without it, which reports no wake.
+	// handlers without it, which reports no wake, and in edge mode.
 	wakes *wakeReporter
+	// edge is the edge listener's own grant (edgeGrant, edge_nats.go), nil on every other
+	// listener. The grant publishes no kept role lane (natsgrant.Edge), so an edge listener keeps
+	// no role message for a role's next holder and hands no kept lane over (keepForNextHolder,
+	// drainKeptRole, startKeptRoleSweep): the shared listeners' sweeps hand every lane over, a
+	// role held at the edge among them. And it publishes a delivery exception only on a lane the
+	// grant holds (edgeGrant.publishesException).
+	edge *edgeGrant
 	// forwardRole publishes a role-lane envelope to the holder's agent subject under msgID, its
 	// Nats-Msg-Id when not empty, and returns the wait for its outcome; main.go wires
 	// startRoleForward(client). The forward counts as delivered once the stream acknowledges
@@ -97,9 +104,10 @@ type listenerDeliveryHandlerConfig struct {
 	// of this configuration - its routes, relays and sweep - and nil in main.go, which forces no
 	// fault.
 	takeoverFaults *takeoverFaultHooks
-	// keepPublish is the stored publish a keep makes (keepRoleMessage): main.go sets it to
+	// keepPublish is the stored publish a keep (keepRoleMessage) and a takeover's copy
+	// (keepTakenRoleFrame) make onto a role's kept lane: main.go sets it to
 	// client.PublishStoredAck, and so does every test that builds a config, while a test that
-	// answers a keep's publish itself replaces it on its copy.
+	// answers that publish itself replaces it on its copy.
 	keepPublish keptRolePublish
 	// publishDeadLetter stores a dead letter, item, on subject - the agent subject of the session
 	// whose kept copy a walk dropped - under the Nats-Msg-Id msgID, and returns the stream's
@@ -382,7 +390,9 @@ type deliveryOutcome struct {
 
 	// exceptionReason, when non-empty, publishes a delivery exception via
 	// publishDeliveryException for control topics. fanoutRefusal publishes one for this terminal
-	// fanout outcome on any topic, each on the transport its own lane takes.
+	// fanout outcome on any topic, each on the transport its own lane takes. An edge listener
+	// withholds one whose lane its grant does not publish (edgeGrant.publishesException), and the
+	// outcome is otherwise applied as it would be had the exception gone out.
 	exceptionReason string
 	fanoutRefusal   bool
 	// origin identifies the durable message an exception is about (exceptionOrigin), "" for none.
@@ -422,7 +432,9 @@ func applyDeliveryOutcome(cfg listenerDeliveryHandlerConfig, item contracts.Enve
 		outcome.log(cfg.logger)
 	}
 	if outcome.exceptionReason != "" && !isExceptionsTopic(item.Topic) && (isControlTopic(item.Topic) || outcome.fanoutRefusal) {
-		if err := publishDeliveryException(cfg.client, item, outcome.exceptionReason, outcome.sessionID, outcome.origin); err != nil {
+		if !cfg.edge.publishesException(item) {
+			cfg.edge.withhold(cfg.logger, item, outcome.exceptionReason)
+		} else if err := publishDeliveryException(cfg.client, item, outcome.exceptionReason, outcome.sessionID, outcome.origin); err != nil {
 			cfg.logger.Error(exceptionPublishFailedLine, slog.String("error", err.Error()), slog.String("topic", item.Topic))
 			if outcome.exceptionFailureClearsAttempt {
 				cfg.attemptCache.Clear(item.DedupeKey, outcome.sessionID)
@@ -517,11 +529,13 @@ const (
 
 // keepFailureHolds reports whether a keep that kept nothing (keepRoleLaneMessage) leaves the
 // message held for another attempt: a keep that failed on NATS does, and one that a rule refuses
-// however often it runs does not - a role token no claim can name (errRoleNotKeepable), the keep's
-// own rule, and every rule NATS refuses a publish under (busRefusesForGood), the one list a
-// forward ends on too (roleForwardEnded).
+// however often it runs does not - a role token no claim can name (errRoleNotKeepable) and an edge
+// listener, which keeps nothing (errEdgeKeepsNothing), the keep's own rules, and every rule NATS
+// refuses a publish under (busRefusesForGood), the one list a forward ends on too
+// (roleForwardEnded). So the publish route answers an edge's keep its no-holder 404, as it answers
+// every keep a rule refuses (roleSend.noHolder), and not the 503 that has its sender send again.
 func keepFailureHolds(err error) bool {
-	return !errors.Is(err, errRoleNotKeepable) && !busRefusesForGood(err)
+	return !errors.Is(err, errRoleNotKeepable) && !errors.Is(err, errEdgeKeepsNothing) && !busRefusesForGood(err)
 }
 
 // resolveCoreRoleHolder resolves the current live holder for a role-lane delivery
@@ -640,9 +654,18 @@ func resolveCoreRoleHolder(cfg listenerDeliveryHandlerConfig, item contracts.Env
 // durable transit to retry against, so the lane holds a message it could not finish itself
 // (roleForwarder.hold), and reports one a rule refused via a delivery exception instead of a NAK.
 func roleTopicDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMessage, item contracts.Envelope) {
-	if !strings.HasPrefix(item.DedupeKey, roleForwardDedupePrefix) {
-		deliverRoleMessage(cfg, item, roleHeld{since: cfg.now()})
+	if strings.HasPrefix(item.DedupeKey, roleForwardDedupePrefix) {
+		message.finalize(false)
+		return
 	}
+	// A message the lane takes is a send its publisher made on NATS: one whose topic names a valid
+	// role in the old form is counted here, once, as the lane takes it (store.Registry.ReadRole),
+	// and not again where a held message's next delivery, the session relay or a takeover pass reads
+	// the same topic (roleOfLaneTopic). No caller waits on the lane for an answer to warn.
+	if lane, ok := strings.CutPrefix(item.Topic, contracts.RoleTopicPrefix); ok {
+		cfg.registry.ReadRole(lane, roles.Valid)
+	}
+	deliverRoleMessage(cfg, item, roleHeld{since: cfg.now()})
 	message.finalize(false)
 }
 
