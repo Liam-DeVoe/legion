@@ -5,6 +5,8 @@
 package pods
 
 import (
+	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -137,14 +139,83 @@ type IdleRoot struct {
 // view, the release's boundary and the served state read.
 const StartWaitsForPodPrefix = "the start waits for its issue's pod: "
 
+// RunningRow is one task of an issue's plan rows as the read of its steps gives it (RunningColumn,
+// StoppedColumn): the task, whether it is held (record.TaskHeld), the place it stands at
+// (record.TaskPlace's Kind and Position), and the plan step whose agent works that place: the step
+// at the place for a step, and for a retro the task's last step of the type implementation, which
+// runs it. Role, Key, Agent and At are that step's role, agent key, agent name and place
+// (record.PlanStep's Role, AgentKey, Agent and Position), each empty or zero where no step works
+// the place: a merge, and the retro of a task with no step of the type implementation. It holds
+// the rows as the store keeps them and decides nothing: record.RunningOf reads the steps from
+// them.
+type RunningRow struct {
+	Task     string `json:"task"`
+	Held     bool   `json:"held"`
+	Kind     string `json:"kind"`
+	Position int    `json:"position"`
+	Role     string `json:"role"`
+	Key      string `json:"key"`
+	Agent    string `json:"agent"`
+	At       int    `json:"at"`
+}
+
+// RunningColumn is the one read of an issue's running steps from its plan rows: an SQL expression
+// over key and generation, the SQL of the issue's key and run generation. record's issueColumns
+// reads it with every issue, and the idle view reads it with the issue's pod
+// (store.readIdleView): the store and record import neither each other, and both import this
+// package. It is NULL where the run has no plan rows (issue_plans holds none at its generation),
+// and otherwise a JSON array of one RunningRow for each task of the run in the state running or
+// held whose step's start was delivered (plan_tasks.step_wait is ”), standing at a step its plan
+// rows hold, at its retro or at its merge, in task id order. A step that waits for its join or
+// its agent is in no row, and neither is a task at no act, waiting, stopped, done or left.
+// DecodeRunning reads it.
+func RunningColumn(key, generation string) string {
+	return stepsColumn(key, generation, `t.state in ('running', 'held') and t.step_wait = ''`)
+}
+
+// StoppedColumn is RunningColumn's read of the tasks of the run in the state stopped instead:
+// the step each stands at, which its stop ended (record.StoppedStep).
+func StoppedColumn(key, generation string) string {
+	return stepsColumn(key, generation, `t.state = 'stopped'`)
+}
+
+// stepsColumn is the read RunningColumn and StoppedColumn make, of the tasks the SQL condition
+// which names, over their alias t.
+func stepsColumn(key, generation, which string) string {
+	return `case when exists (select 1 from issue_plans p where p.issue = ` + key + ` and p.generation = ` + generation + `) then ` +
+		`coalesce((select json_agg(json_build_object('task', t.task, 'held', t.state = 'held', 'kind', t.running_kind, ` +
+		`'position', t.position, 'role', coalesce(a.role, ''), 'key', coalesce(a.agent_key, ''), 'agent', coalesce(a.agent, ''), ` +
+		`'at', coalesce(a.position, 0)) order by t.task) ` +
+		`from plan_tasks t left join lateral (select s.role, s.agent_key, s.agent, s.position from plan_steps s ` +
+		`where s.issue = t.issue and s.generation = t.generation and s.task = t.task ` +
+		`and (t.running_kind = 'step' and s.position = t.position or t.running_kind = 'retro' and s.type = 'implementation') ` +
+		`order by s.position desc limit 1) a on true ` +
+		`where t.issue = ` + key + ` and t.generation = ` + generation + ` and ` + which + ` ` +
+		`and (t.running_kind in ('retro', 'merge') or t.running_kind = 'step' and a.role is not null)), '[]') end`
+}
+
+// DecodeRunning reads what RunningColumn answers: planned is false for NULL, a run with no plan
+// rows, and rows is the array otherwise, in its order.
+func DecodeRunning(raw []byte) (rows []RunningRow, planned bool, err error) {
+	if raw == nil {
+		return nil, false, nil
+	}
+	if err := json.Unmarshal(raw, &rows); err != nil {
+		return nil, false, fmt.Errorf("read the running steps %s: %w", raw, err)
+	}
+	return rows, true, nil
+}
+
 // IdleView is one issue's pod as the idle rule reads it, in one read per issue: every claim of
 // the pod, whether any queued outbox row is addressed to one of its roles, the issue's own place
 // in the workflow and its tree root's. Found is false for an issue the record does not hold under
 // the daemon's own project, which is no pod of the workflow's to release: a record another
 // project's daemon keeps of the issue on a shared database is not this daemon's
-// (store.readIdleView). StepRole is the role of the step the issue's task stands at, read from
-// its plan rows as the issue's own record reads it (record.Issue.StepRole), and "" where they
-// hold none: at step, the worker of the issue's open phase, which no phase names.
+// (store.readIdleView). HeldFrom is the phase the issue's hold is from, "" where it is not held.
+// Planned and Running are the read of the issue's running steps (RunningColumn), as the issue's own
+// record reads them with the issue: Planned says the issue's run has plan rows, and Running holds
+// one row for each task of them whose step runs. record.RunningOf reads the steps from them, the
+// issue's open phase among them, which at step no phase names.
 //
 // It is a record type rather than a store type because the rule that reads it is the workflow's
 // (workflow.IdleRelease) and the store is what fills it, so neither of the two imports the other
@@ -154,7 +225,9 @@ type IdleView struct {
 	Tree        string
 	Found       bool
 	Phase       phase.Phase
-	StepRole    claim.Role
+	HeldFrom    phase.Phase
+	Planned     bool
+	Running     []RunningRow
 	Status      string
 	Generation  uint64
 	LingerUntil *time.Time

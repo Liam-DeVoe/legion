@@ -186,11 +186,12 @@ func TestABackstopThatCameDueWhileTheDaemonWasDownFiresAfterItStarts(t *testing.
 	}
 }
 
-// The release of an issue's pod arms the backstop of the worker of the issue's open phase, and at
-// step that worker is the role of the running step, read with the issue (workflow.OpenRoleOf):
-// the released checker of an issue at step 2 of `implementer checker` gets the backstop, and the
-// released implementer of the step before it gets none. The checker's claim must serve the
-// issue's current run, as a phase worker's must: one serving an earlier run gets none. The issue
+// The release of an issue's pod arms the backstop of the worker of each of the issue's open
+// steps, and at step that worker is the role of the running step, read with the issue
+// (workflow.OpenStepsOf): the released checker of an issue at step 2 of `implementer checker` gets
+// the backstop, and the released implementer of the step before it gets none. The checker's claim
+// must serve the issue's current run, as a phase worker's must: one serving an earlier run gets
+// none. The issue
 // is read as the release's teardown reads it before it arms (outbox.issue, releaseIssue), so its
 // running role comes from its plan rows.
 func TestTheReleaseOfAPodAtStepArmsTheDeploymentRolesBackstop(t *testing.T) {

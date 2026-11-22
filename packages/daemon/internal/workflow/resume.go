@@ -138,8 +138,9 @@ type phaseOwners struct {
 // the boot reads its phase workers by a read of its own (admit's phaseWorkers) and sends only the
 // work of an entry a claim stands behind (owedEntryRoles). It writes nothing.
 //
-// The phase's owner is the worker of the issue's open phase (OpenRoleOf: the role that works its
-// phase, at step the role of its running step) on an issue in the workflow whose tree is
+// The phase's owners are the workers of the issue's steps that take work (OpenStepsOf: each
+// running step that is not held and is no architect's, at step the role the plan gives it) on an
+// issue in the workflow whose tree is
 // running — this generation of it, by the one rule every reader of that
 // question asks (record.RunningRoots, record.TreeRuns): its lifecycle stands open under the
 // workflow, its root does not linger, and its root is not itself waiting in the line for the
@@ -178,8 +179,8 @@ func (e *Engine) suspendedPhaseOwners(ctx context.Context, tx pgx.Tx) (phaseOwne
 	}
 	owners := phaseOwners{issues: issues, running: record.RunningRoots(issues, facts)}
 	for _, issue := range issues {
-		role := OpenRoleOf(issue)
-		if role == "" || record.OutOfWorkflow(issue.Status) {
+		steps := OpenStepsOf(issue)
+		if len(steps) == 0 || record.OutOfWorkflow(issue.Status) {
 			continue
 		}
 		root, ok := byKey[issue.Tree]
@@ -201,18 +202,27 @@ func (e *Engine) suspendedPhaseOwners(ctx context.Context, tx pgx.Tx) (phaseOwne
 		if finished {
 			continue
 		}
-		token, err := e.workerClaim(ctx, tx, issue, role)
-		if err != nil {
-			return phaseOwners{}, err
+		// Each running step's worker is an owner of its own, read at the phase its step runs as
+		// (IssueAtStep), and one claim that works two of them is answered once.
+		seen := map[claim.Token]bool{}
+		for _, step := range steps {
+			token, err := e.workerClaim(ctx, tx, issue, step.Role)
+			if err != nil {
+				return phaseOwners{}, err
+			}
+			if seen[token] {
+				continue
+			}
+			seen[token] = true
+			run, err := e.store.RoleRun(ctx, tx, token, issue.Key, step.Role, issue.Generation)
+			if err != nil {
+				return phaseOwners{}, err
+			}
+			if held := run.Claim; held == nil || held.State != supervise.StateSuspended {
+				continue
+			}
+			owners.suspended = append(owners.suspended, suspendedOwner{issue: IssueAtStep(issue, step), root: root, role: step.Role, token: token, run: run})
 		}
-		run, err := e.store.RoleRun(ctx, tx, token, issue.Key, role, issue.Generation)
-		if err != nil {
-			return phaseOwners{}, err
-		}
-		if held := run.Claim; held == nil || held.State != supervise.StateSuspended {
-			continue
-		}
-		owners.suspended = append(owners.suspended, suspendedOwner{issue: issue, root: root, role: role, token: token, run: run})
 	}
 	return owners, nil
 }

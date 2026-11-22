@@ -228,44 +228,29 @@ func (e *Engine) listenerWake(ctx context.Context, tx pgx.Tx, fact intake.Listen
 // R4; dispatch://INFRA-945 R3 item 2 wakes on a settlement the daemon records for the head of the
 // issue's pull request).
 //
-// Only the worker of the pod's open phase is woken: the settlement is that worker's business and
-// no one else's, and an architect reads it from its own notices. That worker is the claim of the
-// agent that works the phase's step (Engine.workerClaim), and it is woken only where it stands
-// released: another released claim of the same role, an earlier version's agent, does not work
-// the step. A head that settles again as each of its checks finishes wakes the pod no second time,
-// because the role's resume is still open.
-func (e *Engine) wakeOnSettlement(ctx context.Context, tx pgx.Tx, fact intake.PullRequestChecks) (claim.Role, error) {
+// Only the workers of the pod's open steps are woken (OpenStepsOf): the settlement is their
+// business and no one else's, and an architect reads it from its own notices. Each such worker is
+// the claim of the agent that works its step (Engine.workerClaim), and it is woken only where it
+// stands released: another released claim of the same role, an earlier version's agent, does not
+// work the step. A head that settles again as each of its checks finishes wakes the pod no second
+// time, because the role's resume is still open. It answers each role it woke, in the steps'
+// order.
+func (e *Engine) wakeOnSettlement(ctx context.Context, tx pgx.Tx, fact intake.PullRequestChecks) ([]claim.Role, error) {
 	if e.cfg.Pods == nil || fact.HeadSHA == "" {
-		return "", nil
+		return nil, nil
 	}
 	pr, err := e.pullRequest(ctx, tx, fact.Repo, fact.Number)
 	if err != nil || pr == nil {
-		return "", err
+		return nil, err
 	}
 	if settled, applied := classify.ApplyCheckSettlement(*pr, settlementCandidate(fact)); !applied ||
 		settled.CheckedHead != fact.HeadSHA || settled.HeadSHA != fact.HeadSHA {
-		return "", nil
+		return nil, nil
 	}
 	issue, err := e.store.Issue(ctx, tx, pr.Issue)
 	if err != nil || issue == nil {
-		return "", err
+		return nil, err
 	}
-	role := OpenRoleOf(*issue)
-	if role == "" {
-		return "", nil
-	}
-	worker, err := e.workerClaim(ctx, tx, *issue, role)
-	if err != nil {
-		return "", err
-	}
-	released, found, err := e.cfg.Pods.ReleasedClaimByToken(ctx, tx, string(worker))
-	if err != nil || !found || released.ServingGeneration != issue.Generation {
-		return "", err
-	}
-	// The role is the settlement's to tell only when this call is what woke it: a wake another
-	// pass took is already bringing the pod back with a task of its own, and a claim this
-	// settlement did not wake is told as any live role is (tellChecks).
-	//
 	// A list of commit statuses the decoder could not read names none, and the pull request keeps
 	// the statuses it holds for the head when the settlement is applied, since a context a
 	// settlement leaves out stays as it is kept (classify.ApplySettlement), so the task names the
@@ -273,11 +258,31 @@ func (e *Engine) wakeOnSettlement(ctx context.Context, tx pgx.Tx, fact intake.Pu
 	if fact.StatusesUnread {
 		fact.Statuses = keptStatuses(*pr, fact.HeadSHA)
 	}
-	woken, err := e.wakeReleased(ctx, tx, released, pods.WakeChecks, settlementDetail(fact), e.now())
-	if err != nil || !woken {
-		return "", err
+	var woke []claim.Role
+	for _, step := range OpenStepsOf(*issue) {
+		worker, err := e.workerClaim(ctx, tx, *issue, step.Role)
+		if err != nil {
+			return nil, err
+		}
+		released, found, err := e.cfg.Pods.ReleasedClaimByToken(ctx, tx, string(worker))
+		if err != nil {
+			return nil, err
+		}
+		if !found || released.ServingGeneration != issue.Generation {
+			continue
+		}
+		// The role is the settlement's to tell only when this call is what woke it: a wake another
+		// pass took is already bringing the pod back with a task of its own, and a claim this
+		// settlement did not wake is told as any live role is (tellChecks).
+		woken, err := e.wakeReleased(ctx, tx, released, pods.WakeChecks, settlementDetail(fact), e.now())
+		if err != nil {
+			return nil, err
+		}
+		if woken {
+			woke = append(woke, step.Role)
+		}
 	}
-	return role, nil
+	return woke, nil
 }
 
 // settlementDetail names the head and what its settlement came to, which is what the woken role's
@@ -471,27 +476,43 @@ func (e *Engine) wakeReleased(ctx context.Context, tx pgx.Tx, released supervise
 // OpenPhaseRole is the phase worker of an open phase, and "" where there is none: a phase no role
 // works, and the architect, whose phases (admitted and accepting) are the architect's own turn
 // rather than a worker's. It reads the phase alone, so it answers none for step, whose role the
-// issue's plan names: it is OpenRoleOf of an issue that names no running role, and a reader that
-// holds the issue reads OpenRoleOf. It answers which role a release arms a backstop for — an
-// architect gets none, because nothing of its own is due and a sub-architect woken for nothing
-// would hold a pod open for the backstop period — and which live claim of a pod has a phase
-// reminder armed in it.
+// issue's plan names: a reader that holds the issue reads its running steps (OpenStepsOf). It
+// answers which role a release arms a backstop for — an architect gets none, because nothing of
+// its own is due and a sub-architect woken for nothing would hold a pod open for the backstop
+// period — and which live claim of a pod has a phase reminder armed in it.
 func OpenPhaseRole(p phase.Phase) claim.Role {
-	return OpenRoleOf(record.Issue{Phase: p})
-}
-
-// OpenRoleOf is the worker of issue's open phase, and "" where there is none: the role that works
-// the issue at its phase (record.Issue.RoleAt), which for step is the role of its running step,
-// read with the issue, and none for the architect's phases, as OpenPhaseRole. It is the one
-// statement of "the worker of the open phase" each path that brings a worker back to its work
-// reads: which ready claim is sent its phase's task (readyWorkerTask), which suspended claim the
-// boot resumes (suspendedPhaseOwners), which claim the silence repair prompts
-// (phaseWorkerRecord) and which role a CI settlement wakes (wakeOnSettlement). A held issue
-// stands in held, which no role works, so none of those paths gives its worker anything until a
-// release of the hold gives the phase back.
-func OpenRoleOf(issue record.Issue) claim.Role {
-	if role := issue.RoleAt(issue.Phase); role != claim.RoleArchitect {
+	if role := RoleFor(p); role != claim.RoleArchitect {
 		return role
 	}
 	return ""
+}
+
+// OpenStepsOf is each running step of issue that takes work (record.Issue.Running), in task id
+// order: each that is not held, whose role is not the architect, whose steps (admitted and the
+// owner's acceptance) are the architect's own turn rather than a worker's. A step that waits for
+// its join or its agent is no running step, and a held or stopped task's step takes none, so none
+// of those is among them, and neither is any step of a held issue, until a release of the hold
+// gives its steps back. It is the one statement of "the steps that take work" each path that
+// brings a worker back to its work reads, and each loops over every step it answers: which ready
+// claim is sent its step's task (readyWorkerTask), which suspended claims the boot resumes
+// (suspendedPhaseOwners), which claim the silence repair prompts (phaseWorkerRecord), which roles
+// a CI settlement wakes (wakeOnSettlement), and which claims an idle release keeps
+// (idlePhaseOpen).
+func OpenStepsOf(issue record.Issue) []record.RunningStep {
+	var open []record.RunningStep
+	for _, step := range issue.Running {
+		if !step.Held && step.Role != claim.RoleArchitect {
+			open = append(open, step)
+		}
+	}
+	return open
+}
+
+// IssueAtStep is issue as a reader that gives step its work reads it: the issue standing at the
+// phase step runs as, so what the reader queues for the step names that phase, and two steps of
+// one issue at two phases are two starts rather than one start of the issue's phase. For an
+// issue whose one task runs, that is the issue's own phase.
+func IssueAtStep(issue record.Issue, step record.RunningStep) record.Issue {
+	issue.Phase = step.Phase
+	return issue
 }

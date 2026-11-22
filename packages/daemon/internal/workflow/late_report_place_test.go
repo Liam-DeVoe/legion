@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
@@ -40,8 +41,10 @@ func TestALateReportOfAStoppedTaskIsTheStoppedStepsAlone(t *testing.T) {
 		t.Fatalf("the owner's stop was refused: %+v", result.Refusal)
 	}
 	stopped := record.Hold{From: phase.Step, Reason: record.HoldTaskStopped}
-	if held := issueOf(t, pool, engine, root.Key); held.Phase != phase.Held || held.Hold == nil || *held.Hold != stopped || held.StepRole != "checker" {
-		t.Fatalf("premise: %s after the stop stands in %s with hold %+v at the %q step, want held %+v at the checker's", root.Key, held.Phase, held.Hold, held.StepRole, stopped)
+	if held := issueOf(t, pool, engine, root.Key); held.Phase != phase.Held || held.Hold == nil || *held.Hold != stopped ||
+		len(held.Running) != 0 || stoppedStepOf(t, pool, held).Role != "checker" {
+		t.Fatalf("premise: %s after the stop stands in %s with hold %+v, the running steps %+v and the stopped step %+v, want held %+v at the checker's, no step running",
+			root.Key, held.Phase, held.Hold, held.Running, stoppedStepOf(t, pool, held), stopped)
 	}
 	if task := taskOf(t, pool, engine, root.Key); task.State != record.TaskStopped || task.Place != stepPlace(3) {
 		t.Fatalf("premise: task a = %s at %+v, want stopped at step 3", task.State, task.Place)
@@ -62,9 +65,10 @@ func TestALateReportOfAStoppedTaskIsTheStoppedStepsAlone(t *testing.T) {
 		if row := roleRowOf(t, pool, engine, root.Key, "linter"); row.HandoffRecord != "lint-1" || !row.Completed() {
 			t.Fatalf("the linter's row = %+v, want its report recorded on it", row)
 		}
-		if after := issueOf(t, pool, engine, root.Key); after.Phase != issue.Phase || !reflect.DeepEqual(after.Hold, issue.Hold) || after.StepRole != issue.StepRole {
-			t.Fatalf("the linter's report moved %s to %s with hold %+v at the %q step, want it as it stood: %s with hold %+v at the %q step",
-				root.Key, after.Phase, after.Hold, after.StepRole, issue.Phase, issue.Hold, issue.StepRole)
+		if after := issueOf(t, pool, engine, root.Key); after.Phase != issue.Phase || !reflect.DeepEqual(after.Hold, issue.Hold) ||
+			!reflect.DeepEqual(after.Running, issue.Running) || stoppedStepOf(t, pool, after) != stoppedStepOf(t, pool, issue) {
+			t.Fatalf("the linter's report moved %s to %s with hold %+v at the step %+v, want it as it stood: %s with hold %+v at the step %+v",
+				root.Key, after.Phase, after.Hold, stoppedStepOf(t, pool, after), issue.Phase, issue.Hold, stoppedStepOf(t, pool, issue))
 		}
 		if after := taskOf(t, pool, engine, root.Key); !reflect.DeepEqual(after, task) {
 			t.Fatalf("task a after the linter's report = %+v, want %+v as it stood", after, task)
@@ -102,4 +106,19 @@ func TestALateReportOfAStoppedTaskIsTheStoppedStepsAlone(t *testing.T) {
 			t.Fatalf("lateReport of the linter's report = %+v, want nil: the linter's step 2 is not step 3, where the task stopped", late)
 		}
 	})
+}
+
+// stoppedStepOf is the step the stop of issue's task ended, as the store reads it
+// (record.StoppedStep), the zero step where there is none.
+func stoppedStepOf(t *testing.T, pool *pgxpool.Pool, issue record.Issue) record.RunningStep {
+	t.Helper()
+	var step record.RunningStep
+	if err := pgx.BeginFunc(t.Context(), pool, func(tx pgx.Tx) error {
+		var err error
+		step, _, err = record.NewStore().StoppedStep(t.Context(), tx, issue)
+		return err
+	}); err != nil {
+		t.Fatalf("read the stopped step of %s: %v", issue.Key, err)
+	}
+	return step
 }

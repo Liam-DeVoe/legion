@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"reflect"
 	"slices"
 	"testing"
 
@@ -100,9 +101,11 @@ func TestAWalkOfDeploymentStepsRunsThemAsStep(t *testing.T) {
 	}
 }
 
-// A move of the task sets the role of the step it moves to on the issue the caller holds, so a
-// reader of that issue after the move, in the same transaction, reads the role a fresh read of the
-// store gives: implementer at the first step, reviewer at the second, and none at the retro.
+// A move of the task puts its running step at the place it moves to on the issue the caller holds,
+// so a reader of that issue after the move, in the same transaction, reads the running steps a
+// fresh read of the store gives: the implementer's at the first step, the reviewer's at the
+// second, the implementer's at the retro, which it works, and none at no act, where a task that
+// has not started stands.
 func TestAMoveOfTheTaskSetsTheRoleOfItsStep(t *testing.T) {
 	pool := migratedPool(t)
 	engine := stepEngine(nil)
@@ -124,7 +127,8 @@ func TestAMoveOfTheTaskSetsTheRoleOfItsStep(t *testing.T) {
 		}{
 			{phase.Implementing, record.TaskPlace{Kind: record.PlaceStep, Position: 1}, "implementer"},
 			{phase.Reviewing, record.TaskPlace{Kind: record.PlaceStep, Position: 2}, "reviewer"},
-			{phase.Retro, record.TaskPlace{Kind: record.PlaceRetro}, ""},
+			{phase.Retro, record.TaskPlace{Kind: record.PlaceRetro}, "implementer"},
+			{phase.Admitted, record.TaskPlace{}, ""},
 		} {
 			if err := engine.moveTask(ctx, tx, issue, &w, move.to, move.place, record.TaskRunning); err != nil {
 				return err
@@ -133,8 +137,12 @@ func TestAMoveOfTheTaskSetsTheRoleOfItsStep(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			if issue.StepRole != move.role || read.StepRole != move.role {
-				t.Errorf("after the move to %s, the moved issue's StepRole = %q and a fresh read's = %q, want %q", move.to, issue.StepRole, read.StepRole, move.role)
+			var want []record.RunningStep
+			if move.role != "" {
+				want = []record.RunningStep{{Task: w.Task, Place: move.place, Role: move.role, Phase: move.to, Agent: claim.Agent(move.role)}}
+			}
+			if !reflect.DeepEqual(issue.Running, want) || !reflect.DeepEqual(read.Running, issue.Running) {
+				t.Errorf("after the move to %s, the moved issue's running steps = %+v and a fresh read's = %+v, want %+v", move.to, issue.Running, read.Running, want)
 			}
 		}
 		return nil

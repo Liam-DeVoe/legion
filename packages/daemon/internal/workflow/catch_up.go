@@ -185,12 +185,13 @@ func queuedRowCovers(run record.RoleRun, root record.Issue, current phase.Phase)
 // (dispatch://INFRA-714 R7).
 //
 // The conditions are the ones a resume by rule already uses (resume.go's booted), read for this
-// one claim: the issue is recorded and in the workflow, the worker of its open phase (OpenRoleOf,
-// the role of its running step at step) is this claim's, its tree does not linger, and its phase's
-// own terminating fact has not arrived (PhaseFinished) — a merged root stands in merging for as
-// long as the rest of its tree runs, and its merger must not be handed merging again at every
-// launch. A claim of another project's issue finds no record here, as a claim of an issue nobody
-// records finds none: the daemon's store reads no record of another project (internal/daemon's
+// one claim: the issue is recorded and in the workflow, the worker of one of its steps that take
+// work (OpenStepsOf, at step the role of its running step) is this claim's, its tree does not
+// linger, and its phase's own terminating fact has not arrived (PhaseFinished) — a merged root
+// stands in merging for as long as the rest of its tree runs, and its merger must not be handed
+// merging again at every launch. A claim of another project's issue finds no record here, as a
+// claim of an issue nobody records finds none: the daemon's store reads no record of another
+// project (internal/daemon's
 // projectRecords). A claim that holds a task is left alone: it has work, and a second task would
 // be a second prompt for work under way. So is a role a queued row already covers
 // (queuedRowCovers).
@@ -234,10 +235,17 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.Cla
 	if err != nil || issue == nil || record.OutOfWorkflow(issue.Status) {
 		return err
 	}
-	role := OpenRoleOf(*issue)
-	if role == "" || role != fact.Role {
+	// The ready claim's role works one of the issue's steps that take work (OpenStepsOf): each
+	// running step is given its task, at the phase it runs as (IssueAtStep), whichever phase the
+	// issue stands in.
+	role := fact.Role
+	open := OpenStepsOf(*issue)
+	at := slices.IndexFunc(open, func(step record.RunningStep) bool { return step.Role == role })
+	if at < 0 {
 		return nil
 	}
+	standing := IssueAtStep(*issue, open[at])
+	issue = &standing
 	root, err := e.store.Issue(ctx, tx, issue.Tree)
 	if err != nil || root == nil || root.Lingers() {
 		return err
@@ -346,8 +354,10 @@ func treeCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []rec
 			continue
 		}
 		listed := record.CatchUpIssue{Key: member.Key, Title: member.Title, Phase: member.Phase, Status: member.Status}
-		if member.Phase == phase.Step {
-			listed.StepRole = member.StepRole
+		// The role of the running step at step, the first in task id order where several tasks
+		// run one there (record.CatchUpIssue.StepRole says why one).
+		if at := member.RunningAt(phase.Step); member.Phase == phase.Step && len(at) > 0 {
+			listed.StepRole = at[0].Role
 		}
 		if member.Parent != nil {
 			listed.Parent = *member.Parent

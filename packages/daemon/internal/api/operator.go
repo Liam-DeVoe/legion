@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -796,8 +797,9 @@ func (s *server) retryStart(w http.ResponseWriter, r *http.Request, m *supervise
 // claim whose issue works another role's phase or has left the workflow, and any claim on a daemon
 // that records no issues — and its caller starts such a claim another way.
 //
-//   - an issue held for that worker's own role (record.Issue.RoleAt of the phase it is held from,
-//     which at step is the role of its running step, a role the deployment defines) is
+//   - an issue held for that worker's own role (a running step of the role held at the phase the
+//     issue is held from, record.Issue.RunningAt, at step a role the deployment defines, or the
+//     step a stop of its task ended there, workflow.StoppedStepRole) is
 //     retried as its architect's retry_or_escalate retries it (intake.RetryOrEscalate): the phase
 //     it was held from comes back, and its role is started on it;
 //   - an issue standing in that worker's own phase has that phase started again
@@ -824,7 +826,12 @@ func (s *server) restartWorkedPhase(r *http.Request, token claim.Token, c superv
 		s.logRequestFailure(r, err, "api: read the issue of a phase worker to retry", "claim", token)
 		return http.StatusInternalServerError, fmt.Sprintf("could not read %s's record: %v", c.Issue, err), true
 	}
-	if recorded == nil || recorded.RoleAt(recorded.WorkingPhase()) != c.Role {
+	works, err := s.worksPhase(r.Context(), recorded, c.Role)
+	if err != nil {
+		s.logRequestFailure(r, err, "api: read the steps of a phase worker to retry", "claim", token)
+		return http.StatusInternalServerError, fmt.Sprintf("could not read %s's steps: %v", c.Issue, err), true
+	}
+	if !works {
 		return 0, "", false
 	}
 	working := recorded.WorkingPhase()
@@ -853,6 +860,34 @@ func (s *server) restartWorkedPhase(r *http.Request, token claim.Token, c superv
 	}
 	s.log.Info("api: a retry restarted a phase", "claim", token, "issue", c.Issue, "phase", working)
 	return http.StatusAccepted, "", true
+}
+
+// worksPhase says whether role works a step of recorded at the phase it works
+// (record.Issue.WorkingPhase): a running step of the role stands there, held or not
+// (record.Issue.RunningAt), or the issue is held there for its stopped task and the step the stop
+// ended is the role's (record.StoppedStep). A stopped task's step is no running step, and a retry
+// of its role is the workflow's to refuse with the stop's own answer. A record the daemon does not
+// hold works no step.
+func (s *server) worksPhase(ctx context.Context, recorded *record.Issue, role claim.Role) (bool, error) {
+	if recorded == nil {
+		return false, nil
+	}
+	if slices.ContainsFunc(recorded.RunningAt(recorded.WorkingPhase()), func(step record.RunningStep) bool { return step.Role == role }) {
+		return true, nil
+	}
+	if !record.HeldFor(*recorded, record.HoldTaskStopped) {
+		return false, nil
+	}
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	stopped, ok, err := s.records.StoppedStep(ctx, tx, *recorded)
+	if err != nil {
+		return false, err
+	}
+	return ok && stopped.Role == role, tx.Commit(ctx)
 }
 
 // machineRetry is the retry an architect or a phase worker that runs nothing gets from its own

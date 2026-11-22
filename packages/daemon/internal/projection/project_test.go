@@ -51,10 +51,18 @@ type projectionStore struct {
 	// planTasks is the task of each issue that has plan rows at its generation, as
 	// record.Store.PlanTasksOf answers them.
 	planTasks []record.PlanTask
+	// stopped is the step the stop of each issue's task ended, by key, as record.Store.StoppedStep
+	// answers it for an issue its stopped task holds.
+	stopped map[string]record.RunningStep
 }
 
 func (s projectionStore) PlanTasksOf(context.Context, pgx.Tx, string) ([]record.PlanTask, error) {
 	return s.planTasks, nil
+}
+
+func (s projectionStore) StoppedStep(_ context.Context, _ pgx.Tx, issue record.Issue) (record.RunningStep, bool, error) {
+	step, ok := s.stopped[issue.Key]
+	return step, ok && record.HeldFor(issue, record.HoldTaskStopped), nil
 }
 
 func (s projectionStore) Assignments(context.Context, pgx.Tx, string) (map[string][]record.Assignment, error) {
@@ -1211,25 +1219,34 @@ func TestProjectShowsWhatAReviewRoundWaitsOnFromGitHub(t *testing.T) {
 }
 
 // An issue at step is worked by the role of its running step, which no phase names
-// (phase.RoleFor answers none for step), so the served issue names that role (`stepRole`,
-// record.Issue.StepRole) and carries that role's entry and the entry its claim was given, as an
-// issue at testing carries its tester's; a child at step carries that role's handshake too, as a
-// child at testing carries its tester's. An issue held from step names the role too, as it names
-// `heldFrom`, and carries neither number, as every held issue does. An issue at a phase of
-// Legion's names no `stepRole`, whatever its plan rows say runs there: its phase names the role.
+// (phase.RoleFor answers none for step), so the served issue names that role (`stepRole`, the
+// role of record.Issue.RunningAt(step)) and carries that role's entry and the entry its claim was
+// given, as an issue at testing carries its tester's; a child at step carries that role's
+// handshake too, as a child at testing carries its tester's. An issue held from step names the
+// role too, as it names `heldFrom`, and carries neither number, as every held issue does; so does
+// one its stopped task holds there, whose step is no running step and is read from the plan rows
+// (record.Store.StoppedStep). An issue at a phase of Legion's names no `stepRole`: its phase names
+// the role.
 func TestTheServedStateNamesTheRunningDeploymentRole(t *testing.T) {
 	const project, checker = "LEGION", claim.Role("checker")
-	issue := func(key string, p phase.Phase, running claim.Role) record.Issue {
+	checkerStep := record.RunningStep{Task: "a", Place: record.TaskPlace{Kind: record.PlaceStep, Position: 2}, Role: checker,
+		Phase: phase.Step, Agent: claim.Agent(checker)}
+	issue := func(key string, p phase.Phase) record.Issue {
 		return record.Issue{Key: key, Project: project, Tree: key, Phase: p, Status: "in_progress",
-			Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Rank: key, StepRole: running}
+			Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Rank: key, Running: []record.RunningStep{checkerStep}}
 	}
-	held := issue("LEGION-71", phase.Held, checker)
+	held := issue("LEGION-71", phase.Held)
 	held.Hold = &record.Hold{From: phase.Step, Reason: record.HoldEscalated}
-	child := issue("LEGION-73", phase.Step, checker)
+	held.Running[0].Held = true
+	child := issue("LEGION-73", phase.Step)
 	child.Tree, child.Generation = "LEGION-70", 1
+	atTesting := issue("LEGION-72", phase.Testing)
+	atTesting.Running = record.RunningOf(atTesting, false, nil)
+	stopped := issue("LEGION-74", phase.Held)
+	stopped.Hold, stopped.Running = &record.Hold{From: phase.Step, Reason: record.HoldTaskStopped}, nil
 	queuedAt, confirmedAt := projectedAt.Add(-20*time.Minute), projectedAt.Add(-15*time.Minute)
 	store := projectionStore{
-		issues: []record.Issue{issue("LEGION-70", phase.Step, checker), held, issue("LEGION-72", phase.Testing, claim.RoleTester), child},
+		issues: []record.Issue{issue("LEGION-70", phase.Step), held, atTesting, child, stopped},
 		phases: map[string][]record.PhaseRow{
 			"LEGION-70": {
 				{Issue: "LEGION-70", Role: claim.RoleImplementer, Claim: "legion-70-implementer", Entry: 2},
@@ -1239,6 +1256,7 @@ func TestTheServedStateNamesTheRunningDeploymentRole(t *testing.T) {
 			"LEGION-72": {{Issue: "LEGION-72", Role: claim.RoleTester, Claim: "legion-72-tester", Entry: 2}},
 			"LEGION-73": {{Issue: "LEGION-73", Role: checker, Claim: "legion-73-checker", Entry: 2}},
 		},
+		stopped: map[string]record.RunningStep{"LEGION-74": checkerStep},
 	}
 	claims := []supervise.Claim{
 		{Token: "legion-70-implementer", Issue: "LEGION-70", Role: claim.RoleImplementer, State: supervise.StateIdle,
@@ -1268,6 +1286,7 @@ func TestTheServedStateNamesTheRunningDeploymentRole(t *testing.T) {
 		{key: "LEGION-71", stepRole: "checker", heldFrom: "step"},
 		{key: "LEGION-72", phaseEntry: 2, givenEntry: 2},
 		{key: "LEGION-73", stepRole: "checker", phaseEntry: 2, givenEntry: 2},
+		{key: "LEGION-74", stepRole: "checker", heldFrom: "step"},
 	} {
 		view, known := got.Issues[want.key]
 		if !known {

@@ -56,8 +56,10 @@ func (e *Engine) mergeForward(ctx context.Context, tx pgx.Tx, issue record.Issue
 		return err
 	}
 	recipients := []roleRecipient{{issue: issue.Key, role: claim.RoleImplementer, row: issue.Key}}
-	if worker := issue.RoleAt(at); at != phase.Implementing && record.MergeForwardReaches(record.MergeForwardHold, worker) {
-		recipients = append(recipients, roleRecipient{issue: issue.Key, role: worker, row: issue.Key})
+	for _, step := range issue.RunningAt(at) {
+		if at != phase.Implementing && record.MergeForwardReaches(record.MergeForwardHold, step.Role) {
+			recipients = append(recipients, roleRecipient{issue: issue.Key, role: step.Role, row: issue.Key})
+		}
 	}
 	addressed, err := e.addressRoles(ctx, tx, issue.Project, recipients, nil)
 	if err != nil {
@@ -188,8 +190,10 @@ func (e *Engine) mergeForwardLanded(ctx context.Context, tx pgx.Tx, issue record
 	}
 	review := record.PastReview(issue) && slices.Contains(w.Line, phase.Reviewing)
 	var recipients []roleRecipient
-	if worker := issue.RoleAt(at); record.MergeForwardReaches(record.MergeForwardLanded, worker) {
-		recipients = append(recipients, roleRecipient{issue: issue.Key, role: worker, row: issue.Key})
+	for _, step := range issue.RunningAt(at) {
+		if record.MergeForwardReaches(record.MergeForwardLanded, step.Role) {
+			recipients = append(recipients, roleRecipient{issue: issue.Key, role: step.Role, row: issue.Key})
+		}
 	}
 	if review {
 		recipients = append(recipients, roleRecipient{issue: issue.Key, role: claim.RoleReviewer, row: issue.Key})

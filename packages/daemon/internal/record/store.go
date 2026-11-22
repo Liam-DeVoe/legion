@@ -69,12 +69,11 @@ func (s *Postgres) Processed(ctx context.Context, tx pgx.Tx, source, eventID str
 // it was written. The four issues.memory_* columns are no part of it: what a unit was drawn is an
 // assignment row of its own (AssignmentsOf, AssignmentsFor), and nothing this release's daemon
 // runs reads the columns but the back-fill of 20261111045636_experiment_assignments. Its last
-// column is no column of issues: it is the role of the step the issue's task stands at, read from
-// the plan rows of the issue's generation (Issue.StepRole), "" where they hold none or the task
-// stands at no step. A run holds one task in this release, so the read finds one row at most.
-const issueColumns = `key, tree, project, title, parent, phase, generation, status, rank, handed_over, taken_back, linger_until, held_from, last_dispatch_seq, coalesce(hold_reason, ''), dispatch_status, repo, default_branch, github_repo, awaiting_ask, awaiting_gate_version, coalesce(awaiting_artifact, ''), awaiting_answered_at, coalesce(awaiting_answered_by, ''), coalesce(awaiting_answered_detail, ''), awaiting_since_seq, awaiting_since, handout_seq, coalesce(declared_seq, 0), declared_at, nullif(ancestry, '{}'), handed_over_from, coalesce(told_parent, ''), moved_at, tree_stalled_told_at, released_for_wait_at, ` +
-	`coalesce((select s.role from plan_tasks t join plan_steps s on s.issue = t.issue and s.generation = t.generation and s.task = t.task and s.position = t.position ` +
-	`where t.issue = issues.key and t.generation = issues.generation and t.running_kind = 'step'), '')`
+// column is no column of issues: it is the read of the issue's running steps from the plan rows of
+// its generation (pods.RunningColumn), one row for each task whose step runs, which scanIssue
+// reads as Issue.Running.
+var issueColumns = `key, tree, project, title, parent, phase, generation, status, rank, handed_over, taken_back, linger_until, held_from, last_dispatch_seq, coalesce(hold_reason, ''), dispatch_status, repo, default_branch, github_repo, awaiting_ask, awaiting_gate_version, coalesce(awaiting_artifact, ''), awaiting_answered_at, coalesce(awaiting_answered_by, ''), coalesce(awaiting_answered_detail, ''), awaiting_since_seq, awaiting_since, handout_seq, coalesce(declared_seq, 0), declared_at, nullif(ancestry, '{}'), handed_over_from, coalesce(told_parent, ''), moved_at, tree_stalled_told_at, released_for_wait_at, ` +
+	pods.RunningColumn("issues.key", "issues.generation")
 
 func (s *Postgres) Issue(ctx context.Context, tx pgx.Tx, key string) (*Issue, error) {
 	issue, err := scanIssue(tx.QueryRow(ctx, "select "+issueColumns+" from issues where key = $1", key))
@@ -500,11 +499,12 @@ func scanIssue(row scanner) (*Issue, error) {
 	var answeredBy, answeredDetail string
 	var sinceSeq *int64
 	var since, declaredAt, treeStalledToldAt, releasedForWaitAt *time.Time
+	var running []byte
 	if err := row.Scan(&issue.Key, &issue.Tree, &issue.Project, &issue.Title, &issue.Parent, &phaseValue, &generation, &issue.Status,
 		&issue.Rank, &issue.HandedOver, &issue.TakenBack, &issue.LingerUntil, &heldFrom, &issue.LastDispatchSeq, &holdReason, &issue.DispatchStatus,
 		&issue.Repo, &issue.DefaultBranch, &issue.GitHubRepo, &awaitingAsk, &awaitingGate, &awaitingArtifact, &answeredAt, &answeredBy, &answeredDetail,
 		&sinceSeq, &since, &issue.HandoutSeq, &issue.DeclaredSeq, &declaredAt, &issue.Ancestry, &issue.HandedOverFrom,
-		&issue.ToldParent, &issue.MovedAt, &treeStalledToldAt, &releasedForWaitAt, &issue.StepRole); err != nil {
+		&issue.ToldParent, &issue.MovedAt, &treeStalledToldAt, &releasedForWaitAt, &running); err != nil {
 		return nil, err
 	}
 	if declaredAt != nil {
@@ -543,7 +543,55 @@ func scanIssue(row scanner) (*Issue, error) {
 		}
 	}
 	issue.Generation = uint64(generation)
+	rows, planned, err := pods.DecodeRunning(running)
+	if err != nil {
+		return nil, fmt.Errorf("issue %s: %w", issue.Key, err)
+	}
+	issue.Running = RunningOf(issue, planned, rows)
 	return &issue, nil
+}
+
+// RunningSteps is the running steps of issue as a fresh read of it would answer them
+// (Issue.Running), read in tx at issue.Key and issue.Generation from the plan rows alone and with
+// issue's own phase and hold (RunningOf): the read of an issue whose task the caller has just
+// moved (workflow's moveTask), before its write of the issue.
+func (s *Postgres) RunningSteps(ctx context.Context, tx pgx.Tx, issue Issue) ([]RunningStep, error) {
+	var running []byte
+	if err := tx.QueryRow(ctx, "select "+pods.RunningColumn("$1::text", "$2::bigint"), issue.Key, int64(issue.Generation)).Scan(&running); err != nil {
+		return nil, fmt.Errorf("read the running steps of %s at generation %d: %w", issue.Key, issue.Generation, err)
+	}
+	rows, planned, err := pods.DecodeRunning(running)
+	if err != nil {
+		return nil, fmt.Errorf("read the running steps of %s at generation %d: %w", issue.Key, issue.Generation, err)
+	}
+	return RunningOf(issue, planned, rows), nil
+}
+
+// StoppedStep is the step that the stop of issue's task ended while a task-stopped hold holds the
+// issue (HoldTaskStopped), read in tx from the plan rows of its generation as a running step is
+// read (pods.StoppedColumn, RunningOf): the step of its first stopped task, in task id order, whose
+// phase is the one the hold is from. A stopped task's step is no running step (Issue.Running), and
+// its role still answers for the step the stop ended: the role a stop stopped and that starts
+// again only with its task, and the role a late report, a failed claim and an operator's retry of
+// that step each meet the stop with. ok is false for any other issue, and for a stop at no act.
+func (s *Postgres) StoppedStep(ctx context.Context, tx pgx.Tx, issue Issue) (step RunningStep, ok bool, err error) {
+	if !HeldFor(issue, HoldTaskStopped) {
+		return RunningStep{}, false, nil
+	}
+	var stopped []byte
+	if err := tx.QueryRow(ctx, "select "+pods.StoppedColumn("$1::text", "$2::bigint"), issue.Key, int64(issue.Generation)).Scan(&stopped); err != nil {
+		return RunningStep{}, false, fmt.Errorf("read the stopped step of %s at generation %d: %w", issue.Key, issue.Generation, err)
+	}
+	rows, planned, err := pods.DecodeRunning(stopped)
+	if err != nil || !planned {
+		return RunningStep{}, false, err
+	}
+	for _, step := range RunningOf(Issue{}, true, rows) {
+		if step.Phase == issue.Hold.From {
+			return step, true, nil
+		}
+	}
+	return RunningStep{}, false, nil
 }
 
 func (s *Postgres) Phases(ctx context.Context, tx pgx.Tx, issue string) ([]PhaseRow, error) {

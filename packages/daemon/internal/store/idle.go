@@ -662,23 +662,22 @@ func deleteIssueRelease(ctx context.Context, db execer, project, issue string) e
 // takes its root's project when the workflow writes it, so the root of a record of this project
 // is this project's too.
 //
-// The view's StepRole is the subquery record.issueColumns ends with, written here a second time
-// over the alias i, since store and record import neither each other: the role of the step the
-// task of the issue's generation stands at, "" where its plan rows hold none or the task stands
-// at no step.
+// The view's running steps are the read record.issueColumns makes of them (pods.RunningColumn),
+// over the alias i, beside the phase the issue's hold is from: the rows of the tasks whose step
+// runs, which the workflow reads as the issue's own record reads them (record.RunningOf).
 func readIdleView(ctx context.Context, tx pgx.Tx, project, issue string) (pods.IdleView, error) {
 	view := pods.IdleView{Issue: issue}
 	var issueGeneration, rootGeneration int64
-	var issuePhase, rootPhase, stepRole string
-	err := tx.QueryRow(ctx, `select i.tree, i.phase, i.status, i.generation, i.linger_until,
+	var issuePhase, rootPhase, heldFrom string
+	var running []byte
+	err := tx.QueryRow(ctx, `select i.tree, i.phase, coalesce(i.held_from, ''), i.status, i.generation, i.linger_until,
 		root.phase, root.status, root.generation, root.linger_until,
 		root.phase = 'awaiting_person', root.awaiting_answered_at is not null,
-		coalesce((select s.role from plan_tasks t join plan_steps s on s.issue = t.issue and s.generation = t.generation and s.task = t.task and s.position = t.position
-			where t.issue = i.key and t.generation = i.generation and t.running_kind = 'step'), '')
+		`+pods.RunningColumn("i.key", "i.generation")+`
 		from issues i join issues root on root.key = i.tree where i.key = $1 and lower(i.project) = $2`, issue, project).Scan(
-		&view.Tree, &issuePhase, &view.Status, &issueGeneration, &view.LingerUntil,
+		&view.Tree, &issuePhase, &heldFrom, &view.Status, &issueGeneration, &view.LingerUntil,
 		&rootPhase, &view.Root.Status, &rootGeneration, &view.Root.LingerUntil,
-		&view.Root.AwaitingPerson, &view.Root.Answered, &stepRole)
+		&view.Root.AwaitingPerson, &view.Root.Answered, &running)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		return view, nil
@@ -686,8 +685,10 @@ func readIdleView(ctx context.Context, tx pgx.Tx, project, issue string) (pods.I
 		return pods.IdleView{}, fmt.Errorf("read %s for its idle view: %w", issue, err)
 	}
 	view.Found = true
-	view.Phase, view.Root.Phase = phase.Phase(issuePhase), phase.Phase(rootPhase)
-	view.StepRole = claim.Role(stepRole)
+	view.Phase, view.Root.Phase, view.HeldFrom = phase.Phase(issuePhase), phase.Phase(rootPhase), phase.Phase(heldFrom)
+	if view.Running, view.Planned, err = pods.DecodeRunning(running); err != nil {
+		return pods.IdleView{}, fmt.Errorf("read %s for its idle view: %w", issue, err)
+	}
 	view.Generation, view.Root.Generation = uint64(issueGeneration), uint64(rootGeneration)
 
 	claims, err := tx.Query(ctx, `select c.token, c.role, c.state, c.plugin_contract, c.serving_generation,

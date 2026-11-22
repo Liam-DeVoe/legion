@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/appauth"
@@ -335,9 +336,10 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 		s.writeFailure(w, r, refusal.Status, refusal.Code, refusal.Message)
 		return
 	}
-	// The phase this completion is of is the issue's where the role works it (record.Issue.RoleAt:
-	// at step, the role of the running step, so a role the deployment defines is current only at
-	// its own step), the phase the role left otherwise (phase.LeftBy), and the issue's for the
+	// The phase this completion is of is the issue's where the role works it, a running step of the
+	// role standing there (record.Issue.RunningAt: at step, the roles of the running steps, so a role
+	// the deployment defines is current only at its own step), the phase the role left otherwise
+	// (phase.LeftBy), and the issue's for the
 	// architect, which leaves none. The record a phase with a handoff ends with is read back and
 	// held to the completion before anything is recorded: always when the role works the issue's
 	// phase, and for a phase it left only when the completion names one. A completion of a left
@@ -346,7 +348,7 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	// works the issue's phase. A phase that writes none takes no record, and a completion of such a
 	// phase that names one is refused.
 	of := phase.LeftBy(grant.Role, issue.Phase)
-	if issue.RoleAt(issue.Phase) == grant.Role {
+	if slices.ContainsFunc(issue.RunningAt(issue.Phase), func(step record.RunningStep) bool { return step.Role == grant.Role }) {
 		of = issue.Phase
 	}
 	if of == "" {

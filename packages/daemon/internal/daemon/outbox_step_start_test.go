@@ -92,8 +92,12 @@ func TestAStartOfAnotherStepsRoleFinishesWithoutActing(t *testing.T) {
 			if err != nil {
 				t.Fatalf("read %s as the outbox does: %v", stepStartKey, err)
 			}
-			if read.Phase != phase.Step || read.StepRole != tc.role {
-				t.Fatalf("%s reads at %s with the step role %q, want step and %q", stepStartKey, read.Phase, read.StepRole, tc.role)
+			var running claim.Role
+			if at := read.RunningAt(phase.Step); len(at) > 0 {
+				running = at[0].Role
+			}
+			if read.Phase != phase.Step || running != tc.role {
+				t.Fatalf("%s reads at %s with the running role %q at step, want step and %q", stepStartKey, read.Phase, running, tc.role)
 			}
 			start := mustOutboxRow(t, stepStartKey, record.SuperviseRequest{Op: "start", Tree: stepStartKey, Role: stepStartLinter, Generation: 2, Phase: phase.Step,
 				Task: lintTask, Entry: 1}, time.Now())
@@ -109,7 +113,7 @@ func TestAStartOfAnotherStepsRoleFinishesWithoutActing(t *testing.T) {
 			}
 			if found != tc.starts || execErr != nil {
 				t.Fatalf("the linter's start of step 3 with the task at step %d (%s running): execute = %v, linter claim created %t (pending task %q), want no error and created %t",
-					tc.at, read.StepRole, execErr, found, pending, tc.starts)
+					tc.at, running, execErr, found, pending, tc.starts)
 			}
 		})
 	}

@@ -22,12 +22,13 @@ func checkerPlan(issue string, generation uint64, state TaskState, place TaskPla
 	return v, tasks, steps
 }
 
-// An issue reads the role of the step its task stands at, from its plan rows, with the issue: the
-// plan `implementer checker` at its second step reads checker through Issue, Issues, LiveIssues,
-// SlottedIssues and TreeIssues alike, and RoleAt(step) answers it. An issue held from that step
-// reads it too, so RoleAt of the phase its hold left answers checker while RoleAt(held) answers
-// none. An issue with no plan rows of its run reads none, and so does one whose rows are of another
-// generation. An issue at step keeps its slot and is at work.
+// An issue reads the running step its task stands at, from its plan rows, with the issue: the
+// plan `implementer checker` at its second step reads checker at step through Issue, Issues,
+// LiveIssues, SlottedIssues and TreeIssues alike, and RunningAt(step) answers it. An issue held from
+// that step, its task running under the issue's hold, reads it too, held, so RunningAt of the phase
+// its hold left answers checker while RunningAt(held) answers none. An issue with no plan rows of
+// its run reads none at step, and so does one whose rows are of another generation. An issue at
+// step keeps its slot and is at work.
 func TestAnIssueReadsTheRoleOfItsRunningStep(t *testing.T) {
 	st := migratedStore(t)
 	ctx := context.Background()
@@ -46,7 +47,7 @@ func TestAnIssueReadsTheRoleOfItsRunningStep(t *testing.T) {
 		atStep := TaskPlace{Kind: PlaceStep, Position: 2}
 		v, tasks, steps := checkerPlan(running.Key, running.Generation, TaskRunning, atStep)
 		putPlan(t, tx, v, tasks, steps)
-		v, tasks, steps = checkerPlan(held.Key, held.Generation, TaskStopped, atStep)
+		v, tasks, steps = checkerPlan(held.Key, held.Generation, TaskRunning, atStep)
 		putPlan(t, tx, v, tasks, steps)
 		v, tasks, steps = checkerPlan(earlier.Key, earlier.Generation-1, TaskRunning, atStep)
 		putPlan(t, tx, v, tasks, steps)
@@ -88,8 +89,8 @@ func TestAnIssueReadsTheRoleOfItsRunningStep(t *testing.T) {
 			for _, issue := range issues {
 				if wanted, ok := want[issue.Key]; ok {
 					seen[issue.Key] = true
-					if issue.StepRole != wanted {
-						t.Errorf("%s reads %s with StepRole %q, want %q", name, issue.Key, issue.StepRole, wanted)
+					if got := roleAtStep(issue); got != wanted {
+						t.Errorf("%s reads %s with the role %q at step, want %q", name, issue.Key, got, wanted)
 					}
 				}
 			}
@@ -100,25 +101,33 @@ func TestAnIssueReadsTheRoleOfItsRunningStep(t *testing.T) {
 
 		read, err := records.Issue(ctx, tx, running.Key)
 		must(t, err)
-		if got := read.RoleAt(phase.Step); got != "checker" {
-			t.Errorf("RoleAt(step) of %s = %q, want checker", running.Key, got)
+		if got := roleAtStep(*read); got != "checker" {
+			t.Errorf("RunningAt(step) of %s names %q, want checker", running.Key, got)
 		}
-		if got := read.RoleAt(phase.Implementing); got != claim.RoleImplementer {
-			t.Errorf("RoleAt(implementing) of %s = %q, want the implementer", running.Key, got)
+		if got := read.RunningAt(phase.Implementing); len(got) != 0 {
+			t.Errorf("RunningAt(implementing) of %s = %+v, want none: its task stands at step 2", running.Key, got)
 		}
 		if !KeepsSlot(*read) || !AtWork(*read, TreeGate{}) {
 			t.Errorf("an issue at step keeps its slot %t and is at work %t, want both", KeepsSlot(*read), AtWork(*read, TreeGate{}))
 		}
 		heldRead, err := records.Issue(ctx, tx, held.Key)
 		must(t, err)
-		if got := heldRead.RoleAt(phase.Held); got != "" {
-			t.Errorf("RoleAt(held) of %s = %q, want none: no role works a hold", held.Key, got)
+		if got := heldRead.RunningAt(phase.Held); len(got) != 0 {
+			t.Errorf("RunningAt(held) of %s = %+v, want none: no step runs at a hold", held.Key, got)
 		}
-		if got := heldRead.RoleAt(heldRead.Hold.From); got != "checker" {
-			t.Errorf("RoleAt(%s) of %s, held from it, = %q, want checker", heldRead.Hold.From, held.Key, got)
+		if got := heldRead.RunningAt(heldRead.Hold.From); len(got) != 1 || got[0].Role != "checker" || !got[0].Held {
+			t.Errorf("RunningAt(%s) of %s, held from it, = %+v, want the checker's step, held", heldRead.Hold.From, held.Key, got)
 		}
 		if !KeepsSlot(*heldRead) {
 			t.Errorf("an issue held from step keeps no slot, want it to keep the slot of step")
 		}
 	})
+}
+
+// roleAtStep is the role of issue's first running step at step, "" where none runs there.
+func roleAtStep(issue Issue) claim.Role {
+	if at := issue.RunningAt(phase.Step); len(at) > 0 {
+		return at[0].Role
+	}
+	return ""
 }

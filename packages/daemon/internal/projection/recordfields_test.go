@@ -212,7 +212,9 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 			Ask: "9a8fd348-55d5-4d72-a793-3cd037f75f13", Since: record.EventMark{Seq: 12, At: projectedAt.Add(-time.Hour)},
 			AnsweredAt: &answeredAt, AnsweredBy: record.AnsweredByAsk,
 		},
-		HandoutSeq: 88, DeclaredSeq: 89, DeclaredAt: declaredAt, StepRole: "checker",
+		HandoutSeq: 88, DeclaredSeq: 89, DeclaredAt: declaredAt,
+		Running: []record.RunningStep{{Task: "a", Place: record.TaskPlace{Kind: record.PlaceStep, Position: 2}, Role: "checker",
+			Phase: phase.Step, Agent: "checker", Held: true}},
 	}
 	// The root the child reads its tree's facts from. It does not linger, a linger of the tree
 	// being what suppresses the hold's reason.
@@ -376,15 +378,16 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 		// `workers` is written on every issue, empty rather than null, and is built from the
 		// phases and the claims rather than from the issue record. `assignments` and the three
 		// memory fields are built from the assignment record, which has a table of its own
-		// (api.AssignmentRecordFields, the subtest below).
+		// (api.AssignmentRecordFields, the subtest below). `stepRole` is a reading of the running
+		// steps, the role of the first at step, which the table withholds whole (Running).
 		servedKeys(t, "record.Issue", document, api.IssueRecordFields,
-			[]string{"workers", "assignments", "memoryGroup", "memoryDrawMode", "memoryDrawnAt"})
+			[]string{"workers", "assignments", "memoryGroup", "memoryDrawMode", "memoryDrawnAt", "stepRole"})
 
 		want := wire(t, map[string]any{
 			"key": issue.Key, "tree": issue.Tree, "phase": issue.Phase,
 			"generation": issue.Generation, "status": issue.Status,
 			"lingerUntil": issue.LingerUntil,
-			"holdReason":  issue.Hold.Reason, "heldFrom": issue.Hold.From, "stepRole": issue.StepRole,
+			"holdReason":  issue.Hold.Reason, "heldFrom": issue.Hold.From, "stepRole": issue.Running[0].Role,
 			"repo": issue.Repo, "defaultBranch": issue.DefaultBranch,
 			"ancestry": issue.Ancestry,
 			"waitingOn": map[string]any{

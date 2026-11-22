@@ -83,11 +83,13 @@ func issueFixture(key string) Issue {
 	}
 }
 
-// written is got with the movement taken off, after holding it to what PutIssue promises of that
-// column: moved_at is not null and no write of the record names it (PutIssue's own carve-out,
-// which keeps a stale copy from writing a movement away), so a row read back always carries the
-// moment it was written, which no fixture can name. Every comparison below is of the fields
-// PutIssue writes, so the movement is checked here, once, and left out of them.
+// written is got with the movement and the running steps taken off, after holding it to what
+// PutIssue promises of that column: moved_at is not null and no write of the record names it
+// (PutIssue's own carve-out, which keeps a stale copy from writing a movement away), so a row read
+// back always carries the moment it was written, which no fixture can name. The running steps are
+// read from the plan rows and PutIssue writes nothing of them (Issue.Running; each read of them
+// is held by TestAnIssueReadsEachOfItsRunningSteps). Every comparison below is of the fields
+// PutIssue writes, so the movement is checked here, once, and both are left out of them.
 func written(t *testing.T, got *Issue) *Issue {
 	t.Helper()
 	if got == nil {
@@ -98,6 +100,7 @@ func written(t *testing.T, got *Issue) *Issue {
 	}
 	bare := *got
 	bare.MovedAt = time.Time{}
+	bare.Running = nil
 	return &bare
 }
 

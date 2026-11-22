@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
@@ -286,11 +287,10 @@ type Issue struct {
 	// that queues the notice, and PutIssue keeps the stored value as it does for moved_at: every
 	// pass that records an issue holds a copy read before its own telling.
 	TreeStalledToldAt *time.Time
-	// StepRole is the role of the step at the place of the issue's task, running or stopped: read
-	// with the issue from its run's plan rows (plan_tasks and plan_steps at the issue's
-	// generation), "" where the run has no plan rows or its task stands at no step. It is read
-	// only: PutIssue writes nothing of it, and workflow's moveTask sets it on the issue it moves.
-	StepRole claim.Role
+	// Running is the issue's running steps (RunningStep), read with the issue from its run's plan
+	// rows (pods.RunningColumn, read as RunningOf reads it), in task id order. It is read only:
+	// PutIssue writes nothing of it, and workflow's moveTask reads it again on the issue it moves.
+	Running []RunningStep
 }
 
 // Repository is the repository the record names (Repo) in the spelling the record keeps: what
@@ -498,14 +498,120 @@ func (i Issue) WorkingPhase() phase.Phase {
 	return i.Phase
 }
 
-// RoleAt is the role that works the issue at p: the role of the step its task stands at
-// (StepRole) for phase.Step, whose role the plan names, and phase.RoleFor(p) for every other
-// phase.
-func (i Issue) RoleAt(p phase.Phase) claim.Role {
-	if p == phase.Step {
-		return i.StepRole
+// RunningStep is one running step of an issue (Issue.Running): the step at the place of one task
+// of its run in the state running or held whose start was delivered, its entry raised, so that its
+// step waits for nothing (PlanTask.StepWait). A step whose start waits for the end of its task's
+// join or for its agent is no running step: the task is running and stands at that step, nothing
+// of the step has started, and no reader that gives work reaches it.
+//
+// Task and Place are the task and where it stands. Phase is the phase of that place: at a step the
+// phase its role runs as (plan.RunsAs, as the walk's line reads it, plan.Line), retro at the
+// retro and merging at the merge. Role is the role that works the place: at a step the worker of
+// the phase its role runs as (phase.RoleFor of that phase: the architect at the owner's
+// acceptance), or the role itself where it runs as step, a role the deployment defines; the
+// implementer at a retro and the merger at a merge. Agent is the name of the agent that does the
+// work: at a step the step's agent as PlanStep.AgentName reads it, none for a step of the key
+// owner, whose claim is the tree's architect's and names no agent of the issue; at a retro the
+// agent of the task's last step of the type implementation; and the role's own name where no
+// step's agent works the place (a merge, a retro with no such step, an issue with no plan rows),
+// as the role's own claim token names it (claim.Agent). Held says the step is held: its task is
+// held (TaskHeld), or its issue is, which holds each step the issue runs.
+type RunningStep struct {
+	Task  string
+	Place TaskPlace
+	Role  claim.Role
+	Phase phase.Phase
+	Agent claim.Agent
+	Held  bool
+}
+
+// RunningOf is the running steps of issue (Issue.Running) from the read of its run's plan rows
+// (pods.RunningColumn, pods.DecodeRunning): where planned, one for each of rows, in their order,
+// which is the tasks' id order; and where the run has no plan rows, the one step of the task
+// default it walks on today's line (plan.DefaultTask, phase.Order), at the phase it works
+// (WorkingPhase, the phase its hold is from while it is held) and that phase's place on the line,
+// with the role of that phase. Such a run has none where that phase is no place of the line: at
+// admitted its task stands at no act, as a task of plan rows that has not started does, and the
+// architect works the issue rather than a step; and awaiting_person and done, which no role works.
+// It is the one reading of a running step: the issue's own read (scanIssue), the read of the
+// running steps alone (Postgres.RunningSteps) and the idle view's (pods.IdleView) each read
+// through it.
+func RunningOf(issue Issue, planned bool, rows []pods.RunningRow) []RunningStep {
+	held := issue.Hold != nil
+	if !planned {
+		at := issue.WorkingPhase()
+		place, role := todaysPlace(at), phase.RoleFor(at)
+		if !place.Started() || role == "" {
+			return nil
+		}
+		return []RunningStep{{Task: plan.DefaultTask, Place: place, Role: role, Phase: at, Agent: claim.Agent(role), Held: held}}
 	}
-	return phase.RoleFor(p)
+	var steps []RunningStep
+	for _, row := range rows {
+		step := RunningStep{Task: row.Task, Place: TaskPlace{Kind: row.Kind, Position: row.Position}, Held: row.Held || held}
+		switch row.Kind {
+		case PlaceRetro:
+			step.Phase = phase.Retro
+		case PlaceMerge:
+			step.Phase = phase.Merging
+		default:
+			step.Phase = plan.RunsAs(row.Role)
+		}
+		if step.Role = claim.Role(row.Role); step.Phase != phase.Step {
+			step.Role = phase.RoleFor(step.Phase)
+		}
+		step.Agent = claim.Agent(step.Role)
+		if row.Role != "" {
+			step.Agent = PlanStep{Task: row.Task, Position: row.At, Role: row.Role, AgentKey: row.Key, Agent: claim.Agent(row.Agent)}.AgentName()
+		}
+		steps = append(steps, step)
+	}
+	return steps
+}
+
+// todaysPlace is the place of p on today's line, phase.Order, as the walk of a run with no plan
+// rows reads it: each phase before the retro a step at its place from 1, the retro and the merge
+// their own, and no act for a phase off the line (admitted).
+func todaysPlace(p phase.Phase) TaskPlace {
+	switch p {
+	case phase.Retro:
+		return TaskPlace{Kind: PlaceRetro}
+	case phase.Merging:
+		return TaskPlace{Kind: PlaceMerge}
+	}
+	if at := slices.Index(phase.Order, p); at >= 0 {
+		return TaskPlace{Kind: PlaceStep, Position: at + 1}
+	}
+	return TaskPlace{}
+}
+
+// RunningAt is each running step of the issue at p (RunningStep.Phase), in task id order: none
+// where no step runs at p. A held step is among them, at the phase its place derives, which is
+// the phase the issue's hold is from.
+func (i Issue) RunningAt(p phase.Phase) []RunningStep {
+	var at []RunningStep
+	for _, step := range i.Running {
+		if step.Phase == p {
+			at = append(at, step)
+		}
+	}
+	return at
+}
+
+// StepOfAgent is the running step of agent, false where it runs none. A step's start is delivered
+// only where its agent runs no other delivered step, and a step that waits is no running step, so
+// an agent runs at most one. No agent is named "", so none is its step: a step of the key owner
+// names no agent of the issue.
+func (i Issue) StepOfAgent(agent claim.Agent) (RunningStep, bool) {
+	if agent == "" {
+		return RunningStep{}, false
+	}
+	for _, step := range i.Running {
+		if step.Agent == agent {
+			return step, true
+		}
+	}
+	return RunningStep{}, false
 }
 
 // EventMark places a Dispatch event in its issue's event log: its sequence on the issue (Seq) and
@@ -2157,6 +2263,12 @@ type Store interface {
 	DeletePlan(ctx context.Context, tx pgx.Tx, issue string, generation uint64) error
 	// DeleteTasks deletes each of tasks, waiting or stopped, with its steps.
 	DeleteTasks(ctx context.Context, tx pgx.Tx, issue string, generation uint64, tasks []string) error
+	// RunningSteps is issue's running steps as a fresh read would answer them (Issue.Running),
+	// read from its plan rows with issue's own phase and hold.
+	RunningSteps(ctx context.Context, tx pgx.Tx, issue Issue) ([]RunningStep, error)
+	// StoppedStep is the step the stop of issue's task ended while its stop holds the issue, read
+	// from its plan rows as a running step is read; ok is false for any other issue.
+	StoppedStep(ctx context.Context, tx pgx.Tx, issue Issue) (step RunningStep, ok bool, err error)
 	// MoveTask writes where task stands and its state, which is not stopped (StopTask) or held
 	// (HoldTask), clears a stop's reason, and ends the task's hold reason and its step's wait.
 	MoveTask(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string, place TaskPlace, state TaskState) error
@@ -2848,20 +2960,22 @@ func (i Issue) CarriesRun() bool { return i.Phase != phase.Admitted && i.Phase !
 
 // HoldsQueued says whether work of role queued for phase queuedFor — a start, an owed start, or the
 // task a start delivers — is the work of the place the issue stands at now: the issue stands in
-// queuedFor and, at the phase step, at a step of role (StepRole). Every role a deployment defines
-// runs as step, so a start or a task queued for the step of one role names a phase that still
-// reads the same while the task stands at the step of another; the role is what tells the two
-// apart. At step the role names the step: a role runs at most one step of a task, since a plan, an
-// owner's or a project's default steps, that names a role at two steps is refused (plan.Supported),
-// as the phases row of a role assumes too (PhaseRow.StepPlace). Away from step the phase alone is
-// compared: one role works several phases (the implementer implementing and retro), and a phase
-// names its one role. It is the one definition of that question, which the four judges of queued
-// work ask, each on its own read: the outbox before it runs a start (daemon's supervise), the
-// admission pass before it lets an owed start take a slot (admit's finishFencedStarts), the
-// supervisor before it sends a queued task (PhaseHolds), and the supervisor again before it
-// brings a claim back for a start (supervise.StartWork, through PhaseHolds).
+// queuedFor and, at the phase step, a running step of role stands there (RunningAt). Every role a
+// deployment defines runs as step, so a start or a task queued for the step of one role names a
+// phase that still reads the same while the task stands at the step of another; the role is what
+// tells the two apart. At step the role names the step: a role runs at most one step of a task,
+// since a plan, an owner's or a project's default steps, that names a role at two steps is refused
+// (plan.Supported), as the phases row of a role assumes too (PhaseRow.StepPlace). Away from step
+// the phase alone is compared: one role works several phases (the implementer implementing and
+// retro), and a phase names its one role. It is the one definition of that question, which the
+// four judges of queued work ask, each on its own read: the outbox before it runs a start
+// (daemon's supervise), the admission pass before it lets an owed start take a slot (admit's
+// finishFencedStarts), the supervisor before it sends a queued task (PhaseHolds), and the
+// supervisor again before it brings a claim back for a start (supervise.StartWork, through
+// PhaseHolds).
 func (i Issue) HoldsQueued(role claim.Role, queuedFor phase.Phase) bool {
-	return i.Phase == queuedFor && (queuedFor != phase.Step || i.StepRole == role)
+	return i.Phase == queuedFor && (queuedFor != phase.Step ||
+		slices.ContainsFunc(i.RunningAt(phase.Step), func(step RunningStep) bool { return step.Role == role }))
 }
 
 // PhaseHolds says whether a task queued for role at phase queuedFor on run generation is still

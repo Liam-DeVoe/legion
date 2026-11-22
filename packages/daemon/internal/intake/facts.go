@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -2052,8 +2053,9 @@ func NotCurrentPhase(role claim.Role, p phase.Phase, issue string) *Refusal {
 // ended (workflow's lateReport).
 //
 // Where the two differ, the rule first asks whether the role works the phase the issue stands in,
-// because the entry it compares is the role's own row's, which stays where the role's last phase
-// left it. A claim can still serve an earlier entry after the issue has left the role's phase: a
+// a running step of the role standing there (record.Issue.RunningAt), because the entry it
+// compares is the role's own row's, which stays where the role's last phase left it. A claim can
+// still serve an earlier entry after the issue has left the role's phase: a
 // taken completion always moves the phase on, so a behind completion taken here leaves its claim
 // serving the entry it was behind on, and an issue can leave the phase again before a turn that
 // outlived an earlier entry reports. A completion from such a claim — the taken one sent again
@@ -2083,7 +2085,7 @@ func EntryFence(issue record.Issue, role claim.Role, entry, current int64, moved
 		return nil
 	}
 	p := issue.Phase
-	if p == phase.Admitted || issue.RoleAt(p) != role {
+	if p == phase.Admitted || !slices.ContainsFunc(issue.RunningAt(p), func(step record.RunningStep) bool { return step.Role == role }) {
 		return NotCurrentPhase(role, p, issue.Key)
 	}
 	if entry > current {

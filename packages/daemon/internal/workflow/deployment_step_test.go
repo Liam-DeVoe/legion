@@ -55,10 +55,14 @@ func stepReports(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, r
 	}
 }
 
-// stepRoleOf is key's running role as the store reads it.
+// stepRoleOf is the role of key's running step at step as the store reads it, "" where none runs
+// there.
 func stepRoleOf(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string) claim.Role {
 	t.Helper()
-	return issueOf(t, pool, engine, key).StepRole
+	if at := issueOf(t, pool, engine, key).RunningAt(phase.Step); len(at) > 0 {
+		return at[0].Role
+	}
+	return ""
 }
 
 // A step of a role the deployment defines runs as step whatever its type (C2): checker of the
@@ -239,9 +243,31 @@ func TestAHeldStepOfTheDeploymentNamesItsRole(t *testing.T) {
 	})
 
 	t.Run("HeldNotice", func(t *testing.T) {
-		issue := record.Issue{Key: "LEGION-208", Phase: phase.Held, Hold: &record.Hold{From: phase.Step}, StepRole: "checker"}
-		if got := HeldNotice(issue); got.Role != "checker" || got.Phase != phase.Step {
-			t.Fatalf("HeldNotice of an issue held from step = %+v, want the checker's, of step", got)
+		checker := record.RunningStep{Task: "a", Place: record.TaskPlace{Kind: record.PlaceStep, Position: 2}, Role: "checker", Phase: phase.Step,
+			Agent: "checker", Held: true}
+		issue := record.Issue{Key: "LEGION-208", Phase: phase.Held, Hold: &record.Hold{From: phase.Step}, Running: []record.RunningStep{checker}}
+		if got, err := HeldNotice(t.Context(), record.NewStore(), nil, issue); err != nil || got.Role != "checker" || got.Phase != phase.Step {
+			t.Fatalf("HeldNotice of an issue held from step = %+v (%v), want the checker's, of step", got, err)
+		}
+	})
+
+	// A stopped task's step is no running step, and the held notice names the step the stop
+	// ended all the same, read from the plan rows (record.StoppedStep).
+	t.Run("HeldNotice of a stopped task's step", func(t *testing.T) {
+		pool := migratedPool(t)
+		root := stepRoot(t, pool, phase.Step)
+		seedStepsAt(t, pool, root.Key, root.Generation, 2, map[string]string{"checker": "testing"}, "implementer", "checker")
+		seedRecord(t, pool, func(tx pgx.Tx) error {
+			return record.NewStore().StopTask(t.Context(), tx, root.Key, root.Generation, "a", "its owner stopped it")
+		})
+		root.Phase, root.Hold = phase.Held, &record.Hold{From: phase.Step, Reason: record.HoldTaskStopped}
+		var got record.Notice
+		if err := pgx.BeginFunc(t.Context(), pool, func(tx pgx.Tx) error {
+			var err error
+			got, err = HeldNotice(t.Context(), record.NewStore(), tx, root)
+			return err
+		}); err != nil || got.Role != "checker" || got.Phase != phase.Step {
+			t.Fatalf("HeldNotice of %s, held for its stopped task at the checker's step = %+v (%v), want the checker's, of step", root.Key, got, err)
 		}
 	})
 

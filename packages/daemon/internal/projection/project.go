@@ -239,10 +239,21 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 			}
 		}
 		// The role of the running step, which no phase names, where the issue stands at step or its
-		// hold took it out of step, beside the phase that hold left (api.Issue.StepRole). At every
-		// other phase the phase names the role, so the view names none.
+		// hold took it out of step, beside the phase that hold left (api.Issue.StepRole), read from
+		// the issue's running steps at step (record.Issue.RunningAt). Where several tasks run a step
+		// there, it is the first in task id order: the served state names each task only once a
+		// later release serves the tasks. A stopped task's step is no running step, so where the
+		// stop of the issue's task took it out of step the role is that of the step the stop ended,
+		// read from the plan rows (record.StoppedStep). At every other phase the phase names the
+		// role, so the view names none.
 		if issue.Phase == phase.Step || issue.Hold != nil && issue.Hold.From == phase.Step {
-			view.StepRole = string(issue.StepRole)
+			if at := issue.RunningAt(phase.Step); len(at) > 0 {
+				view.StepRole = string(at[0].Role)
+			} else if stopped, ok, err := in.Store.StoppedStep(ctx, in.Tx, issue); err != nil {
+				return api.State{}, err
+			} else if ok {
+				view.StepRole = string(stopped.Role)
+			}
 		}
 		if slot, ok := slotViews[issue.Key]; ok {
 			view.Slot = &slot
@@ -297,16 +308,22 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 		}
 		// The entry the role of this issue's current phase stands on and the entry that role was
 		// given: what a reader tells a role holding the work its row names from one the daemon has
-		// still to send that work to (api.Issue.PhaseEntry and GivenEntry). A root carries them as
-		// a child does, since Issue.RoleAt answers the architect for admitted and accepting, a
-		// phase role for each phase of Legion's after, and at step the role of the running step; a
-		// phase no role works carries neither, where no row would be read and a difference written
-		// for one would never close. No row of a role the issue has moved past is read either,
-		// since that role keeps its entry and is sent nothing.
+		// still to send that work to (api.Issue.PhaseEntry and GivenEntry). The role is that of
+		// the issue's running step at its phase (record.Issue.RunningAt), the first in task id
+		// order where several tasks run one there, as the role named at step is, and the role of
+		// the phase where no step runs at it (phase.RoleFor): the architect at admitted, where no
+		// task has started. A root carries them as a child does, since that answers the architect
+		// for admitted and accepting, a phase role for each phase of Legion's after, and at step
+		// the role of the running step; a phase no role works carries neither, where no row would
+		// be read and a difference written for one would never close. No row of a role the issue
+		// has moved past is read either, since that role keeps its entry and is sent nothing.
 		// The entry is 0 where the rows hold none of that role (record.PhaseRowOf), a role no
 		// transition has ever handed work on, which is the number admit's owedEntryRoles weighs
 		// the same role's claim against, so the state shows what the admission pass weighs.
-		role := issue.RoleAt(issue.Phase)
+		role := phase.RoleFor(issue.Phase)
+		if at := issue.RunningAt(issue.Phase); len(at) > 0 {
+			role = at[0].Role
+		}
 		if role != "" {
 			view.PhaseEntry, view.GivenEntry = record.PhaseRowOf(phases, role).Entry, entries[issueRole{issue: issue.Key, role: role}].given
 		}

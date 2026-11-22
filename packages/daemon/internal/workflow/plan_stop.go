@@ -66,9 +66,9 @@ func (e *Engine) stopTask(ctx context.Context, tx pgx.Tx, issue record.Issue, w 
 		return nil, err
 	}
 	e.logOnCommit(ctx, "workflow: a task is stopped", "issue", issue.Key, "tree", issue.Tree, "task", w.Task, "from", from, "reason", why)
-	role := StoppedStepRole(issue)
-	if role == "" {
-		return nil, nil
+	role, err := StoppedStepRole(ctx, e.store, tx, issue)
+	if err != nil || role == "" {
+		return nil, err
 	}
 	agent, err := e.workerClaim(ctx, tx, issue, role)
 	if err != nil {
@@ -79,22 +79,48 @@ func (e *Engine) stopTask(ctx context.Context, tx pgx.Tx, issue record.Issue, w 
 }
 
 // StoppedStepRole is the role whose process the stop of issue's task stopped (stopTask's
-// step_stop): the role that works the step a task-stopped hold is from (record.Issue.RoleAt, at
-// step the role of the deployment that runs it), and no role for an issue held for any other
-// reason or not held, for a stop at a phase no role works, and for a stop at accepting, whose
-// architect is the owner itself and runs no process of Legion's for the step. That role starts
-// again only when its task does: a later version of the plan that starts the task again, or a
-// person's todo on a stopped root, clears the hold in the same write that queues the role's start
-// (restartTask), and every other start of that role while the hold stands finishes without acting
-// where every start of a role is run (the daemon outbox's start).
-func StoppedStepRole(issue record.Issue) claim.Role {
-	if !record.HeldFor(issue, record.HoldTaskStopped) {
-		return ""
+// step_stop): the role that works the step the task stands at while a task-stopped hold holds the
+// issue (record.Store.StoppedStep, read in tx on s, since a stopped task's step is no running
+// step), at step the role of the deployment that runs it, and no role for an issue held for any
+// other reason or not held, for a stop at no act, and for a stop at accepting, whose architect is
+// the owner itself and runs no process of Legion's for the step. That role starts again only when
+// its task does: a later version of the plan that starts the task again, or a person's todo on a
+// stopped root, clears the hold in the same write that queues the role's start (restartTask), and
+// every other start of that role while the hold stands finishes without acting where every start
+// of a role is run (the daemon outbox's start).
+func StoppedStepRole(ctx context.Context, s record.Store, tx pgx.Tx, issue record.Issue) (claim.Role, error) {
+	stopped, ok, err := s.StoppedStep(ctx, tx, issue)
+	if err != nil || !ok || stopped.Role == claim.RoleArchitect {
+		return "", err
 	}
-	if role := issue.RoleAt(issue.Hold.From); role != claim.RoleArchitect {
-		return role
+	return stopped.Role, nil
+}
+
+// rolesAt is the role of each step that works issue at p: each running step there, held or not
+// (record.Issue.RunningAt), and, where issue is held at p for its stopped task, the step the stop
+// ended (record.Store.StoppedStep, the architect at accepting among them). A stopped task's step
+// is no running step, and its role still answers for the step the stop ended: a late report of
+// it, its claim's failure and an operator's retry of it each meet that stop rather than a phase
+// another role works.
+func rolesAt(ctx context.Context, s record.Store, tx pgx.Tx, issue record.Issue, p phase.Phase) ([]claim.Role, error) {
+	var roles []claim.Role
+	for _, step := range issue.RunningAt(p) {
+		roles = append(roles, step.Role)
 	}
-	return ""
+	if record.StandsAt(issue) != p {
+		return roles, nil
+	}
+	stopped, ok, err := s.StoppedStep(ctx, tx, issue)
+	if err != nil || !ok {
+		return roles, err
+	}
+	return append(roles, stopped.Role), nil
+}
+
+// worksAt says whether role works a step of issue at p (rolesAt).
+func worksAt(ctx context.Context, s record.Store, tx pgx.Tx, issue record.Issue, p phase.Phase, role claim.Role) (bool, error) {
+	roles, err := rolesAt(ctx, s, tx, issue, p)
+	return slices.Contains(roles, role), err
 }
 
 // stopRefusal is the refusal of a stop of task of issue where issue stands, and nil where the
@@ -211,8 +237,14 @@ func (e *Engine) taskStopped(ctx context.Context, tx pgx.Tx, fact intake.TaskSto
 	if err != nil || refusal != nil {
 		return intake.Result{Refusal: refusal}, err
 	}
-	return intake.Result{}, e.notice(ctx, tx, issue.Key, record.Notice{Kind: "task-stopped", Role: issue.RoleAt(from), Phase: from,
-		StoppedBy: fact.By, Reason: why + ", the architect " + string(fact.By)})
+	// The role of the step the stop ended, read on the issue as it stood before the stop: its running
+	// step where the issue stood (record.Issue.RunningAt), and where no step of it runs there, the
+	// role of that phase (RoleFor): the architect at admitted, before the task's first step.
+	notice := record.Notice{Kind: "task-stopped", Role: RoleFor(from), Phase: from, StoppedBy: fact.By, Reason: why + ", the architect " + string(fact.By)}
+	if ended := issue.RunningAt(from); len(ended) > 0 {
+		notice.Role = ended[0].Role
+	}
+	return intake.Result{}, e.notice(ctx, tx, issue.Key, notice)
 }
 
 // restartTask starts w's task of issue again at its first step, in the

@@ -203,15 +203,21 @@ func issuePhaseOf(w Walk, place record.TaskPlace, state record.TaskState) phase.
 // (record.Store.MoveTask), the place of the row that moves it: a move to done passes the place the
 // task keeps, and a move to admitted, where a task waits for its first step (waitForFirstStep), no
 // place, the task at no act. It sets issue.Phase to the phase that place derives (issuePhaseOf),
-// which must be to, and issue.StepRole to the role of the step at that place ("" at the retro, the
-// merge or no act), in the caller's transaction and before the caller's write of issue
-// (WriteIssue), so a caller that reads the issue after the move reads the role a fresh read gives.
-// w then stands where the task does, for whatever the caller reads of it after the move. A run
-// with no plan rows has no task to move, and issue.Phase is to, as it always was. A move to where
-// the task already stands writes nothing. The caller clears or keeps issue.Hold itself.
+// which must be to, and issue.Running to the running steps a fresh read gives
+// (record.Store.RunningSteps), in the caller's transaction and before the caller's write of issue
+// (WriteIssue), so a caller that reads the issue after the move reads the steps a fresh read
+// gives: the moved task's step at its new place, with the role and the phase of that place, and
+// none for a task moved to no act, done or left. No move of this release writes a wait of the
+// step it moves to (record.PlanTask.StepWait): the store's move ends any wait the task had, so
+// the moved task's step is a running step at once. w then stands where the task does, for
+// whatever the caller reads of it after the move. A run with no plan rows has no task to move:
+// issue.Phase is to, as it always was, and its one running step stands at to
+// (record.RunningOf). A move to where the task already stands writes nothing. The caller clears
+// or keeps issue.Hold itself.
 func (e *Engine) moveTask(ctx context.Context, tx pgx.Tx, issue *record.Issue, w *Walk, to phase.Phase, place record.TaskPlace, state record.TaskState) error {
 	if !w.Stored {
 		issue.Phase = to
+		issue.Running = record.RunningOf(*issue, false, nil)
 		return nil
 	}
 	if derived := issuePhaseOf(*w, place, state); derived != to {
@@ -224,10 +230,11 @@ func (e *Engine) moveTask(ctx context.Context, tx pgx.Tx, issue *record.Issue, w
 		w.Place, w.State = place, state
 	}
 	issue.Phase = to
-	issue.StepRole = ""
-	if step, ok := w.planStepAt(place); ok {
-		issue.StepRole = claim.Role(step.Role)
+	running, err := e.store.RunningSteps(ctx, tx, *issue)
+	if err != nil {
+		return err
 	}
+	issue.Running = running
 	return nil
 }
 

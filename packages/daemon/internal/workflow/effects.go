@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -49,10 +50,11 @@ func PhaseFinished(ctx context.Context, store record.Store, tx pgx.Tx, issue rec
 // It goes once no checkout a comparison run can name predates dispatch://INFRA-2800: then
 // daemon-pane.go calls phase.RoleFor against every checkout it is built inside, and this module
 // holds one exported name for the rule again rather than two a new caller could pick between.
-// Until then this name has callers of its own: in this package one test (checks_red_test.go),
-// since every reader of the engine reads the role with the issue (record.Issue.RoleAt) or with
-// the walk (Walk.RoleAt); and outside it test code. Each reads the same table as a caller of
-// phase.RoleFor, since that is the one definition and this forwards to it.
+// Until then this name has callers of its own: in this package one test (checks_red_test.go) and
+// the phase worker of an open phase (OpenPhaseRole), since every other reader of the engine reads
+// the role with the issue's running steps (record.Issue.RunningAt) or with the walk (Walk.RoleAt);
+// and outside it test code. Each reads the same table as a caller of phase.RoleFor, since that is
+// the one definition and this forwards to it.
 func RoleFor(p phase.Phase) claim.Role {
 	return phase.RoleFor(p)
 }
@@ -107,21 +109,21 @@ func SilentPhaseWorker(issue, root record.Issue, gate record.TreeGate, role clai
 }
 
 // unpromptedPhaseWorker is the half of SilentPhaseWorker that is not about a moment: a live claim
-// of the worker of issue's open phase (OpenRoleOf), on an issue at work in a tree that does
-// not linger, up and between turns, in no update round, holding no task it still works, with no
-// acting stop and no queued start and recorded in root's tree. Ready and idle are both a process
-// waiting to be prompted; the role, not the state, tells a fault from health. The last three
-// terms are StartFor's, read the other way, so no claim a start of the daemon's is already on
-// its way to is named. Admission's repair of a role behind its entry (admit's owedEntryRoles)
-// can name the same claim when it is behind the entry its phases row names, and both then send
-// that entry's work (repairSilence, SendOwedEntry); whichever writes first leaves a queued start
-// the other's rule reads and passes over. BackgroundStalledWorker stands on it too, so the two
-// rules agree on which claim they are about.
+// of the worker of one of issue's steps that take work (OpenStepsOf), on an issue at work in a
+// tree that does not linger, up and between turns, in no update round, holding no task it still
+// works, with no acting stop and no queued start and recorded in root's tree. Ready and idle are
+// both a process waiting to be prompted; the role, not the state, tells a fault from health. The
+// last three terms are StartFor's, read the other way, so no claim a start of the daemon's is
+// already on its way to is named. Admission's repair of a role behind its entry (admit's
+// owedEntryRoles) can name the same claim when it is behind the entry its phases row names, and
+// both then send that entry's work (repairSilence, SendOwedEntry); whichever writes first leaves a
+// queued start the other's rule reads and passes over. BackgroundStalledWorker stands on it too,
+// so the two rules agree on which claim they are about.
 func unpromptedPhaseWorker(issue, root record.Issue, gate record.TreeGate, role claim.Role, run record.RoleRun) bool {
 	if run.Claim == nil {
 		return false
 	}
-	if working := OpenRoleOf(issue); working == "" || working != role {
+	if !slices.ContainsFunc(OpenStepsOf(issue), func(step record.RunningStep) bool { return step.Role == role }) {
 		return false
 	}
 	if !record.AtWork(issue, gate) || root.Lingers() {
@@ -1211,12 +1213,25 @@ func (e *Engine) resumeTaskOn(ctx context.Context, tx pgx.Tx, issue record.Issue
 }
 
 // HeldNotice is the notice of issue's hold as its architect answers one, with a retry or an
-// escalation: the phase the hold came from, the role that works it, and why it is held. Admission
-// tells a carried root's own architect with it, since the hold's first notice was routed in the
-// tree the root was handed over from, where it reached an architect above the root unless the
-// root's own architect held its role then.
-func HeldNotice(issue record.Issue) record.Notice {
-	return record.Notice{Kind: "held", Role: issue.RoleAt(issue.Hold.From), Phase: issue.Hold.From, Reason: string(issue.Hold.Reason)}
+// escalation: the phase the hold came from, the role that works it, and why it is held. The role is
+// that of the issue's running step held at that phase (record.Issue.RunningAt), the first in task
+// id order; where its hold is its stopped task's, that of the step the stop ended, read in tx on s
+// from the plan rows (record.Store.StoppedStep), since a stopped task's step is no running step;
+// and where no step stands there, the role of that phase (RoleFor). Admission tells a carried
+// root's own architect with it, since the hold's first notice was routed in the tree the root was
+// handed over from, where it reached an architect above the root unless the root's own architect
+// held its role then.
+func HeldNotice(ctx context.Context, s record.Store, tx pgx.Tx, issue record.Issue) (record.Notice, error) {
+	notice := record.Notice{Kind: "held", Role: RoleFor(issue.Hold.From), Phase: issue.Hold.From, Reason: string(issue.Hold.Reason)}
+	if held := issue.RunningAt(issue.Hold.From); len(held) > 0 {
+		notice.Role = held[0].Role
+		return notice, nil
+	}
+	stopped, ok, err := s.StoppedStep(ctx, tx, issue)
+	if ok {
+		notice.Role = stopped.Role
+	}
+	return notice, err
 }
 
 // ChildReenteredNotice is the notice the architect above a re-entered child is told, whichever path

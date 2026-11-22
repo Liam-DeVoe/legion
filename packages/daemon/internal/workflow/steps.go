@@ -326,7 +326,11 @@ func recordsSteps(issue record.Issue) bool { return claim.IsIssueKey(issue.Key) 
 // raised, or one raised before the retro's completion that brought the issue there, the one move
 // into merging (the table's retro row), which is an earlier visit's.
 func (e *Engine) upgradedStart(ctx context.Context, tx pgx.Tx, issue record.Issue, at phase.Phase) (claim.Token, time.Time, error) {
-	worker := issue.RoleAt(at)
+	// The worker of the step the issue stands in at at: its running step there (record.Issue.RunningAt).
+	var worker claim.Role
+	if running := issue.RunningAt(at); len(running) > 0 {
+		worker = running[0].Role
+	}
 	if worker == claim.RoleArchitect {
 		agent, err := e.startAgent(ctx, tx, issue, at)
 		return agent, time.Time{}, err
@@ -364,7 +368,12 @@ func (e *Engine) startAgent(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 			return "", err
 		}
 	}
-	return e.placeToken(ctx, tx, issue, at, issue.RoleAt(at))
+	// The worker of the step the issue stands in at at: its running step there (record.Issue.RunningAt).
+	var worker claim.Role
+	if running := issue.RunningAt(at); len(running) > 0 {
+		worker = running[0].Role
+	}
+	return e.placeToken(ctx, tx, issue, at, worker)
 }
 
 // placeToken is the claim token of the agent of the work issue stands in at, read on the walk of

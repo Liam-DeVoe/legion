@@ -215,8 +215,8 @@ var IssueRecordFields = []RecordFieldDecision{
 		Reason: "when this one issue last moved reaches no surface of its own: what a reader is served is its whole tree's measure, `treeMovedAt` and `quietHours`, which the projection builds from every member's movement and from their claims' steps (record.QuietTrees) and which no field of one record carries"},
 	{Field: "TreeStalledToldAt", Column: ColumnWithheld,
 		Reason: "the mark that holds one stall to one notice, written on a tree's root as the stalled-tree notice is queued: it is the daemon's own record of what it has already told a controller, and a reader of the state is told the tree's quiet time instead"},
-	{Field: "StepRole", Column: ColumnAgents, Keys: []string{"stepRole"},
-		Reason: "the role that works an issue at step, or held from it, which the phase alone does not name"},
+	{Field: "Running", Column: ColumnWithheld,
+		Reason: "the running steps of each task of the issue, which no surface serves whole yet: a reader is served the role of the first running step at step (`stepRole`), which the phase alone does not name"},
 }
 
 // AssignmentRecordFields is every field of `record.Assignment`, in the order the record declares

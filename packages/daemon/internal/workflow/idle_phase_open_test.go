@@ -8,15 +8,16 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/pods"
 )
 
-// A phase reminder is armed in the claim of the worker of the issue's open phase that serves the
-// issue's current generation (idlePhaseOpen), and at step that worker is the role of the running
-// step, which the idle view reads with the issue (pods.IdleView.StepRole) and no phase names. The
-// generation is held for both: a checker serving an earlier run is not the worker of this one. At
-// a phase of Legion's the phase names the worker, as before.
+// A phase reminder is armed in the claim of the worker of one of the issue's open steps that serves
+// the issue's current generation (idlePhaseOpen), and at step that worker is the role of the
+// running step, which the idle view reads with the issue (pods.IdleView.Running) and no phase
+// names. The generation is held for both: a checker serving an earlier run is not the worker of
+// this one. On an issue with no plan rows the phase names the worker, as before.
 func TestAPhaseReminderIsArmedForTheDeploymentRoleThatRuns(t *testing.T) {
 	const checker claim.Role = "checker"
-	atStep := pods.IdleView{Phase: phase.Step, StepRole: checker, Generation: 3}
-	atTesting := pods.IdleView{Phase: phase.Testing, StepRole: claim.RoleTester, Generation: 3}
+	atStep := pods.IdleView{Phase: phase.Step, Planned: true, Generation: 3,
+		Running: []pods.RunningRow{{Task: "a", Kind: "step", Position: 2, Role: string(checker), At: 2}}}
+	atTesting := pods.IdleView{Phase: phase.Testing, Generation: 3}
 	for _, c := range []struct {
 		name  string
 		view  pods.IdleView

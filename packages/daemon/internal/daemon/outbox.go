@@ -2427,7 +2427,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// (record.Issue.HoldsQueued, the rule the admission pass and the supervisor ask too).
 		if payload.Phase != "" && !issue.HoldsQueued(payload.Role, payload.Phase) {
 			r.log.Info("outbox start serves a phase or a step the issue has left; finished without acting", "row", row.ID, "issue", issue.Key,
-				"phase", payload.Phase, "current", issue.Phase, "role", payload.Role, "stepRole", issue.StepRole)
+				"phase", payload.Phase, "current", issue.Phase, "role", payload.Role, "running", issue.Running)
 			return nil
 		}
 		// A start carries the phase entry its task is of (record.SuperviseRequest.Entry), and the
@@ -2520,11 +2520,22 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 			// that role while the hold stands — a promotion's start of a held member's roles after a
 			// hand-over or a re-admission, a wake — finishes here, the one place every start row of
 			// a role runs, above StartedBy, so it records no start and the claim stays where the
-			// stop left it.
-			if workflow.StoppedStepRole(issue) == payload.Role {
-				r.log.Info("outbox start of the role of a stopped task's step; finished without acting", "row", row.ID,
-					"issue", issue.Key, "role", payload.Role, "from", issue.Hold.From)
-				return nil
+			// stop left it. A stopped task's step is no running step, so its role is read from the
+			// plan rows, and only for an issue its stopped task holds.
+			if record.HeldFor(issue, record.HoldTaskStopped) {
+				var stopped claim.Role
+				if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+					var err error
+					stopped, err = workflow.StoppedStepRole(ctx, r.records, tx, issue)
+					return err
+				}); err != nil {
+					return fmt.Errorf("read the stopped step of %s for outbox row %d: %w", issue.Key, row.ID, err)
+				}
+				if stopped == payload.Role {
+					r.log.Info("outbox start of the role of a stopped task's step; finished without acting", "row", row.ID,
+						"issue", issue.Key, "role", payload.Role, "from", issue.Hold.From)
+					return nil
+				}
 			}
 			// A tree that lingers has left the workflow, and linger holds each member where it
 			// stood: a start that reaches its claim after the close (queued before it and backing

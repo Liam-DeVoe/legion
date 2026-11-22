@@ -938,7 +938,7 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 	return nil
 }
 
-// tellGateMoved tells every worker holding a phase in the tree of key, and the tree's root
+// tellGateMoved tells every worker holding a step in the tree of key, and the tree's root
 // architect, that the design gate closed or opened at version: one message per role topic
 // (record.RoleMessage), the way the daemon reaches a role holder with something to read rather
 // than work to do (tellChecks). A new version of an approved spec closes the gate under workers
@@ -948,11 +948,12 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 //
 // No phase is moved and no turn is interrupted: the gate holds the merger's start while it is
 // closed (the daemon's supervise row) and releases it at the opening, and every other worker
-// decides for itself what the version means for the work in hand. A phase no worker holds names
-// nobody. The gate is the root's, so the root's architect is told, once. A member in accepting is
-// passed over, since that phase is an architect's own: the root's is the root's architect, told
-// once as such, and a child's own architect is not told of the root's gate, whose merge hold
-// reaches the child's merger once it holds merging.
+// decides for itself what the version means for the work in hand. The workers told are the
+// workers of each member's steps that take work (OpenStepsOf), so a held step, a held or stopped
+// task's and a step that waits name nobody. The gate is the root's, so the root's architect is
+// told, once. A member in accepting is passed over, since that step is an architect's own: the
+// root's is the root's architect, told once as such, and a child's own architect is not told of
+// the root's gate, whose merge hold reaches the child's merger once it holds merging.
 //
 // Linger holds a member of a closed tree where it stood (record.TreeLingers): every role of it is
 // suspended there, so a gate that moves then tells nobody, as a CI settlement tells nobody.
@@ -975,14 +976,14 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step 
 	if err != nil {
 		return err
 	}
-	// The members first, then the root's architect, since the gate is the root's. A member in
-	// accepting is passed over, since that phase is an architect's own: the root's is the root's
-	// architect, told once below, and a child's own architect is not told of the root's gate, whose
-	// merge hold reaches the child's merger once it holds merging.
+	// The members first, then the root's architect, since the gate is the root's. A member's step
+	// of the architect is passed over (OpenStepsOf), since accepting is an architect's own: the
+	// root's is the root's architect, told once below, and a child's own architect is not told of
+	// the root's gate, whose merge hold reaches the child's merger once it holds merging.
 	recipients := make([]roleRecipient, 0, len(members)+1)
 	for _, member := range members {
-		if role := member.RoleAt(member.Phase); role != claim.RoleArchitect {
-			recipients = append(recipients, roleRecipient{issue: member.Key, role: role, row: member.Key})
+		for _, step := range OpenStepsOf(member) {
+			recipients = append(recipients, roleRecipient{issue: member.Key, role: step.Role, row: member.Key})
 		}
 	}
 	recipients = append(recipients, roleRecipient{issue: root.Tree, role: claim.RoleArchitect, row: root.Tree})

@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -913,8 +914,14 @@ func (e *Engine) leftItsPhase(ctx context.Context, tx pgx.Tx, issue record.Issue
 	if record.HeldForChildren(issue) || record.HeldFor(issue, record.HoldTaskStopped) {
 		at = record.StandsAt(issue)
 	}
-	if works := issue.RoleAt(at); at == phase.Admitted || works == "" || works == role || phase.LeftBy(role, at) == "" {
+	if at == phase.Admitted || phase.LeftBy(role, at) == "" {
 		return false, nil
+	}
+	// No role works a phase no step runs at, and a role that works one there, the step its stopped
+	// task stood at among them (rolesAt), has left no phase.
+	works, err := rolesAt(ctx, e.store, tx, issue, at)
+	if err != nil || len(works) == 0 || slices.Contains(works, role) {
+		return false, err
 	}
 	return e.ranUnreported(ctx, tx, issue, role, token)
 }
@@ -1045,11 +1052,12 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 	//
 	// reported is the phase this completion is of (phase.Of): the issue's own, or, for a role the
 	// issue has moved on without, the phase that role has left, which pastCompletion answers. At
-	// step, a completion is current only from the role of the running step (Issue.StepRole): two
-	// steps of roles the deployment defines both run as step, and the other's report is of a step
-	// the task has left.
+	// step, a completion is current only from the role of a running step there
+	// (record.Issue.RunningAt): two steps of roles the deployment defines both run as step, and the
+	// other's report is of a step the task has left.
 	reported := phase.Of(fact.Role, issue.Phase)
-	current := reported == issue.Phase && (issue.Phase != phase.Step || fact.Role == issue.StepRole)
+	current := reported == issue.Phase && (issue.Phase != phase.Step ||
+		slices.ContainsFunc(issue.RunningAt(phase.Step), func(step record.RunningStep) bool { return step.Role == fact.Role }))
 	var late *intake.Refusal
 	if !current {
 		var now *intake.Refusal
@@ -1303,7 +1311,11 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 	}
 	working := issue.WorkingPhase()
 	failure := noticeFailure(fact)
-	if issue.RoleAt(working) != fact.Role {
+	works, err := worksAt(ctx, e.store, tx, *issue, working, fact.Role)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	if !works {
 		return intake.Result{}, e.notice(ctx, tx, issue.Key, record.Notice{Kind: "worker-died", Role: fact.Role, Phase: issue.Phase, Failure: failure,
 			Reason: fmt.Sprintf("the %s does not work %s's phase %s; nothing is held", fact.Role, issue.Key, working)})
 	}
@@ -2119,7 +2131,11 @@ func (e *Engine) restartPhase(ctx context.Context, tx pgx.Tx, fact intake.Restar
 		return intake.Result{}, err
 	}
 	working := issue.WorkingPhase()
-	if !InWorkflow(*issue) || issue.RoleAt(working) != fact.Role {
+	works, err := worksAt(ctx, e.store, tx, *issue, working, fact.Role)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	if !InWorkflow(*issue) || !works {
 		return refused("PHASE_NOT_RESTARTED", fmt.Sprintf("the %s does not work %s's phase %s, so nothing restarted it",
 			fact.Role, issue.Key, working)), nil
 	}
@@ -2207,7 +2223,13 @@ func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 			reason += ": " + r.reason
 		}
 	}
-	return from, e.restart(ctx, tx, issue, issue.RoleAt(from), func(at Standing) string {
+	// The role of the step the retry starts again: the step the hold kept at from
+	// (record.Issue.RunningAt), the first in task id order.
+	var role claim.Role
+	if at := issue.RunningAt(from); len(at) > 0 {
+		role = at[0].Role
+	}
+	return from, e.restart(ctx, tx, issue, role, func(at Standing) string {
 		return task(issue, at, record.PhaseRow{}, pr, reason)
 	}, freshSession)
 }
@@ -2231,9 +2253,17 @@ func backwardRefusal(issue record.Issue, w Walk, fact intake.BackwardMove, serve
 	case !served:
 		return fmt.Sprintf("a backward move reaches an earlier phase, and no backward row of %s serves %s; the %s's move of %s changed nothing",
 			issue.Phase, fact.To, fact.Requester, issue.Key)
-	case issue.RoleAt(issue.Phase) != fact.Requester:
-		return fmt.Sprintf("a backward move is the role running the issue's phase: %s of %s is the %s's, so the %s's move to %s changed nothing",
-			issue.Phase, issue.Key, issue.RoleAt(issue.Phase), fact.Requester, fact.To)
+	case !slices.ContainsFunc(issue.RunningAt(issue.Phase), func(step record.RunningStep) bool { return step.Role == fact.Requester }):
+		owners := "no role's"
+		if at := issue.RunningAt(issue.Phase); len(at) > 0 {
+			roles := make([]string, len(at))
+			for i, step := range at {
+				roles[i] = string(step.Role)
+			}
+			owners = "the " + strings.Join(roles, " and the ") + "'s"
+		}
+		return fmt.Sprintf("a backward move is the role running the issue's phase: %s of %s is %s, so the %s's move to %s changed nothing",
+			issue.Phase, issue.Key, owners, fact.Requester, fact.To)
 	}
 	return ""
 }

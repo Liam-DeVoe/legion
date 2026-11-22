@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"slices"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -477,9 +478,19 @@ func idleStateReleasable(c pods.IdleClaim) bool {
 	return false
 }
 
-// idlePhaseOpen is whether the claim is the worker of the issue's open phase (OpenRoleOf, which at
-// step is the role of the running step the view reads with the issue, pods.IdleView.StepRole),
-// serving the current generation: the one shape of claim a phase reminder is armed in.
+// idlePhaseOpen is whether the claim is the worker of one of the issue's open steps (OpenStepsOf
+// of the running steps the view reads with the issue, pods.IdleView.Running, read as the issue's
+// own record reads them, record.RunningOf), serving the current generation: the one shape of
+// claim a phase reminder is armed in. Each step that takes work keeps its worker's claim, whatever
+// phase the issue stands in.
 func idlePhaseOpen(view pods.IdleView, c pods.IdleClaim) bool {
-	return OpenRoleOf(record.Issue{Phase: view.Phase, StepRole: view.StepRole}) == c.Role && c.ServingGeneration == view.Generation
+	if c.ServingGeneration != view.Generation {
+		return false
+	}
+	issue := record.Issue{Key: view.Issue, Phase: view.Phase}
+	if view.HeldFrom != "" {
+		issue.Hold = &record.Hold{From: view.HeldFrom}
+	}
+	issue.Running = record.RunningOf(issue, view.Planned, view.Running)
+	return slices.ContainsFunc(OpenStepsOf(issue), func(step record.RunningStep) bool { return step.Role == c.Role })
 }

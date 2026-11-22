@@ -20,12 +20,12 @@ import (
 )
 
 // deploymentChecker is a role the deployment defines: no phase of Legion's is its, so a step of
-// it runs as the phase step, and the plan rows name it as the issue's running role (StepRole).
+// it runs as the phase step, and the plan rows name it as the role of the issue's running step.
 const deploymentChecker claim.Role = "checker"
 
 // standAtStep writes issue standing at the phase step, or held from it (a failed claim's hold,
 // which keeps the phase it left), with the plan `implementer checker` of task a running at step
-// 2, so the running role read with the issue is the checker. It answers the issue as the store
+// 2, so the running step read with the issue is the checker's. It answers the issue as the store
 // reads it.
 func standAtStep(t *testing.T, pool *pgxpool.Pool, issue record.Issue, held bool) record.Issue {
 	t.Helper()
@@ -35,23 +35,35 @@ func standAtStep(t *testing.T, pool *pgxpool.Pool, issue record.Issue, held bool
 	}
 	seedIssue(t, pool, issue)
 	seedStepsPlan(t, pool, issue.Key, issue.Generation, "implementer", string(deploymentChecker))
+	var read *record.Issue
 	seedRecord(t, pool, func(tx pgx.Tx) error {
-		return record.NewStore().MoveTask(t.Context(), tx, issue.Key, issue.Generation, "a",
-			record.TaskPlace{Kind: record.PlaceStep, Position: 2}, record.TaskRunning)
+		if err := record.NewStore().MoveTask(t.Context(), tx, issue.Key, issue.Generation, "a",
+			record.TaskPlace{Kind: record.PlaceStep, Position: 2}, record.TaskRunning); err != nil {
+			return err
+		}
+		var err error
+		read, err = record.NewStore().Issue(t.Context(), tx, issue.Key)
+		return err
 	})
-	issue.StepRole = deploymentChecker
+	issue.Running = read.Running
 	return issue
 }
 
+// checkerAtStep is the running step of the checker at step 2 of task a, held where held.
+func checkerAtStep(held bool) []record.RunningStep {
+	return []record.RunningStep{{Task: "a", Place: record.TaskPlace{Kind: record.PlaceStep, Position: 2}, Role: deploymentChecker,
+		Phase: phase.Step, Agent: claim.Agent(deploymentChecker), Held: held}}
+}
+
 // An issue whose running step is of a role the deployment defines stands at step, which no role
-// of Legion's works, so each path that brings a worker back to its work reads the role with the
-// issue (OpenRoleOf, Issue.RoleAt): the ready of a claim (readyWorkerTask), the boot's resume by
+// of Legion's works, so each path that brings a worker back to its work reads the steps that take
+// work with the issue (OpenStepsOf): the ready of a claim (readyWorkerTask), the boot's resume by
 // rule (booted, through suspendedPhaseOwners), the silence repair (workerSilent, through
 // phaseWorkerRecord and unpromptedPhaseWorker) and the CI settlement's wake of a released pod
-// (wakeOnSettlement) each give the checker its work. Held from step, the issue stands in held,
-// which no role works, so none of them gives the checker anything. Stranded reads the phase the
-// hold took the issue from, so it names a failed checker on a held issue as on one at step: only
-// its architect's retry starts it again.
+// (wakeOnSettlement) each give the checker its work. Held from step, the issue's step is held, so
+// none of them gives the checker anything. Stranded reads every running step, held ones among
+// them, so it names a failed checker on a held issue as on one at step: only its architect's
+// retry starts it again.
 func TestTheResumePathsGiveTheRunningDeploymentRoleItsWork(t *testing.T) {
 	for _, held := range []bool{false, true} {
 		name := "at step"
@@ -144,9 +156,9 @@ func TestTheResumePathsGiveTheRunningDeploymentRoleItsWork(t *testing.T) {
 
 	t.Run("Stranded", func(t *testing.T) {
 		atStep := strandedIssue("LEGION-30", "LEGION-30", phase.Step)
-		atStep.StepRole = deploymentChecker
+		atStep.Running = checkerAtStep(false)
 		heldFromStep := strandedIssue("LEGION-31", "LEGION-31", phase.Held)
-		heldFromStep.Hold, heldFromStep.StepRole = &record.Hold{From: phase.Step}, deploymentChecker
+		heldFromStep.Hold, heldFromStep.Running = &record.Hold{From: phase.Step}, checkerAtStep(true)
 		failedAtStep := strandedClaim(t, "LEGION-30", "LEGION-30", deploymentChecker, supervise.StateFailed)
 		failedHeld := strandedClaim(t, "LEGION-31", "LEGION-31", deploymentChecker, supervise.StateFailed)
 		claims := []supervise.Claim{failedAtStep, failedHeld}
@@ -166,16 +178,16 @@ func TestTheResumePathsGiveTheRunningDeploymentRoleItsWork(t *testing.T) {
 	})
 }
 
-// Each other reader of the workflow that names the worker of an issue's phase reads the role
-// with the issue (Issue.RoleAt, OpenRoleOf), so at step it names the role of the running step:
-// the silence rule's unprompted phase worker (unpromptedPhaseWorker), the members a design gate's
-// move tells (tellGateMoved), the roles a CI settlement tells beside the architect and the
-// implementer (tellChecks), and the closing sentence of the architect's task for a root carried
-// at step, whose worker the daemon starts itself (writeCarriedPhase).
+// Each other reader of the workflow that names the worker of an issue's step reads the running
+// steps with the issue (record.Issue.RunningAt, OpenStepsOf), so at step it names the role of the
+// running step: the silence rule's unprompted phase worker (unpromptedPhaseWorker), the members a
+// design gate's move tells (tellGateMoved), the roles a CI settlement tells beside the architect
+// and the implementer (tellChecks), and the closing sentence of the architect's task for a root
+// carried at step, whose worker the daemon starts itself (writeCarriedPhase).
 func TestTheWorkflowsOtherReadersNameTheRunningDeploymentRole(t *testing.T) {
 	t.Run("the unprompted phase worker", func(t *testing.T) {
 		s := aSilentImplementer()
-		s.issue.Phase, s.issue.StepRole, s.role = phase.Step, deploymentChecker, deploymentChecker
+		s.issue.Phase, s.issue.Running, s.role = phase.Step, checkerAtStep(false), deploymentChecker
 		if !unpromptedPhaseWorker(s.issue, s.root, s.gate, s.role, s.run) || !s.answer() {
 			t.Fatalf("the checker of an issue at step, up between turns with no task and silent past its bound, is not named its unprompted phase worker")
 		}

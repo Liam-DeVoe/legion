@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -54,9 +55,10 @@ func (e *Engine) workerSilent(ctx context.Context, tx pgx.Tx, fact intake.Worker
 
 // phaseWorkerRecord reads what both silence facts are decided from: the issue, its tree root, the
 // tree's design gate, the role's run and its phase row. It answers nil where there is nothing to
-// do: no such issue, another run of it, a role that does not work its phase, a worker owed no
-// turn (PhaseWorkerOwedTurn), or a key that yields no claim token. The two cheap refusals come
-// before the other reads because the sweep cannot make them: a supervise.Claim carries no phase.
+// do: no such issue, another run of it, a role that works none of its steps that take work
+// (OpenStepsOf), a worker owed no turn (PhaseWorkerOwedTurn), or a key that yields no claim token.
+// The two cheap refusals come before the other reads because the sweep cannot make them: a
+// supervise.Claim carries no phase.
 func (e *Engine) phaseWorkerRecord(ctx context.Context, tx pgx.Tx, key string, generation uint64, role claim.Role) (*phaseWorkerReading, error) {
 	issue, err := e.store.Issue(ctx, tx, key)
 	if err != nil || issue == nil {
@@ -65,14 +67,20 @@ func (e *Engine) phaseWorkerRecord(ctx context.Context, tx pgx.Tx, key string, g
 	if issue.Generation != generation {
 		return nil, nil
 	}
-	if working := OpenRoleOf(*issue); working == "" || working != role {
+	open := OpenStepsOf(*issue)
+	at := slices.IndexFunc(open, func(step record.RunningStep) bool { return step.Role == role })
+	if at < 0 {
 		return nil, nil
 	}
+	// The root is the issue as recorded where the issue is its own root; the worker's step is
+	// read at the phase it runs as (IssueAtStep).
+	root := issue
+	standing := IssueAtStep(*issue, open[at])
+	issue = &standing
 	row, owed, err := PhaseWorkerOwedTurn(ctx, e.store, tx, *issue, role)
 	if err != nil || !owed {
 		return nil, err
 	}
-	root := issue
 	if issue.Tree != issue.Key {
 		if root, err = e.store.Issue(ctx, tx, issue.Tree); err != nil || root == nil {
 			return nil, err

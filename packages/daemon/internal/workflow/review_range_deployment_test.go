@@ -179,9 +179,9 @@ func TestACompletionOfTheEntryBeforeAResetMovesNoStepCommit(t *testing.T) {
 				result := applyFacts(t, pool, engine)("critic-fail", intake.HandoffComplete{Generation: child.Generation, Issue: child.Key, Role: "critic",
 					Claim: "critic-claim", Summary: "reported", Commit: stepCommitX, Verdict: "fail", Entry: tc.entry})
 				got := issueOf(t, pool, engine, child.Key)
-				if refusalCode(result) != "HANDOFF_STALE_ENTRY" || got.Phase != phase.Step || got.StepRole != "critic" {
+				if refusalCode(result) != "HANDOFF_STALE_ENTRY" || got.Phase != phase.Step || stepRoleOf(t, pool, engine, child.Key) != "critic" {
 					t.Fatalf("the critic's fail of entry %d with entry %d standing: refusal %+v, %s stands in %s at the %q step; want HANDOFF_STALE_ENTRY and the critic's step",
-						tc.entry, resetEntry+1, result.Refusal, child.Key, got.Phase, got.StepRole)
+						tc.entry, resetEntry+1, result.Refusal, child.Key, got.Phase, stepRoleOf(t, pool, engine, child.Key))
 				}
 				if head := stepReviewedHead(t, pool, child.Key, "critic"); head != "" {
 					t.Fatalf("the critic's step holds the commit %q after the refused completion of entry %d, want none", head, tc.entry)

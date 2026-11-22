@@ -36,65 +36,61 @@ type roleForReader struct {
 }
 
 // roleForReaders is every non-test reader of phase.RoleFor in the daemon, read directly or through
-// one of its forwarders (internal/workflow's RoleFor, record.Issue.RoleAt and Walk.RoleAt), and the
-// tests that hold each one's behaviour. A reader is a call, or the function passed as a value to a
-// caller that calls it. Four of them have a guard of their own for admitted, the phase RoleFor
+// one of its forwarders (internal/workflow's RoleFor, record.Issue.RunningAt and Walk.RoleAt), and
+// the tests that hold each one's behaviour. A reader is a call, or the function passed as a value
+// to a caller that calls it. Four of them have a guard of their own for admitted, the phase RoleFor
 // answers the architect for: Walk.endingRole reads the role whose step a move ends, which
-// noticeFor leaves out of the notice of the move out of admitted; Engine.leftItsPhase records
-// no worker's completion while the issue stands at admitted; the completion's entry fence
-// (intake.EntryFence, which the completion route and the workflow's handoff both ask) answers a
-// completion at admitted as one of a phase its role does not work; and the stalled-tree
-// notice's reason tells an issue at admitted as standing in a phase no role works, the words it
-// wrote before RoleFor named the architect there. Every other site reaches its answer through a
-// guard that starts, resumes or reports no architect as a phase worker (OpenRoleOf, the worker of
-// an open phase, answers none for the architect's phases, so the paths that read it are no readers
-// here), or names the role an admitted root's entry numbers are of, or names the architect in the
-// notice of a task its owner stopped in the architect's phase, where the stop ends no process
-// (Engine.taskStopped, at admitted as at accepting), or answers the issue's own phase for the
-// architect's completion there, as its reader took the issue's phase while RoleFor named no role
-// (phase.Of, and the completion route's answerCompletion, which reads the phase LeftBy answers
-// where the role does not work the issue's), or reads only the places of a plan's steps, which
-// admitted never is (reportsBefore, Walk.RoleAt, and Engine.restartTask, which reads its task's
-// first step: a planner's, an implementer's or a role of the deployment's, as plan.Supported takes
-// the acceptance only after an implementer), or reads the retro's own phase (retroHeldNotice and
-// Engine.startHeldRetro, which run only for a parent held before its retro for the issues beneath
-// it), or answers RoleFor's role for every phase but step to the readers this list holds
-// (record.Issue.RoleAt), or reads the phase a held issue's retry restores only past the refusal of
-// a plan's own hold, which is the one hold an issue at admitted takes (Engine.retryOrEscalate, for
-// the retry of a named claim), or never reads admitted at all because a check before it refuses
-// that phase, which is what each named test holds it to. The owner walk reads no role: where it
-// starts is its caller's to say (record.NoticeStartsAtParent, for a notice).
+// noticeFor leaves out of the notice of the move out of admitted; Engine.leftItsPhase records no
+// worker's completion while the issue stands at admitted, before it reads the roles of the steps
+// there (rolesAt); the completion's entry fence (intake.EntryFence, which the completion route and
+// the workflow's handoff both ask) answers a completion at admitted as one of a phase its role does
+// not work; and the stalled-tree notice's reason tells an issue at admitted as standing in a phase
+// no role works, the words it wrote before RoleFor named the architect there. Every other site
+// reaches its answer through a guard that starts, resumes or reports no architect as a phase
+// worker (OpenStepsOf and OpenPhaseRole answer none for the architect's steps, so the paths that
+// read OpenStepsOf are no readers here), or names the role an admitted root's entry numbers are
+// of, or names the architect in the notice of a task its owner stopped in the architect's phase,
+// where the stop ends no process (Engine.taskStopped, at admitted as at accepting), or answers the
+// issue's own phase for the architect's completion there, as its reader took the issue's phase
+// while RoleFor named no role (phase.Of, and the completion route's answerCompletion, which reads
+// the phase LeftBy answers where the role does not work the issue's), or reads only the places of
+// a plan's steps, which admitted never is (reportsBefore, Walk.RoleAt, and Engine.restartTask,
+// which reads its task's first step: a planner's, an implementer's or a role of the deployment's,
+// as plan.Supported takes the acceptance only after an implementer), or reads the retro's own
+// phase (retroHeldNotice and Engine.startHeldRetro, which run only for a parent held before its
+// retro for the issues beneath it), or answers the running steps' roles to the readers this list
+// holds (record.RunningOf), or reads the phase a held issue's retry restores only past the refusal
+// of a plan's own hold, which is the one hold an issue at admitted takes (Engine.retryOrEscalate,
+// for the retry of a named claim), or never reads admitted at all because a check before it
+// refuses that phase, which is what each named test holds it to. The owner walk reads no role:
+// where it starts is its caller's to say (record.NoticeStartsAtParent, for a notice).
 //
 // A reader this list does not hold fails the test, so a new one is decided rather than taking
 // whatever RoleFor answers at admitted.
 var roleForReaders = map[roleForSite]roleForReader{
 	{file: "cmd/legion/main.go", fn: "entriesBehind"}: {calls: 1, tests: []string{"TestStatePlainNamesTheRolesBehindTheirEntryAndTheRootsTheStateNamesAnArmFor"}},
-	{file: "internal/admit/admit.go", fn: "Admission.startMidPhaseMembers"}: {calls: 1, tests: []string{
-		"TestReadmissionStartsTheTreesMidPhaseChildren", "TestTheAdmissionReadsTheRunningDeploymentRole"}},
 	{file: "internal/admit/stalled.go", fn: "stalledTreeReason"}: {calls: 1, tests: []string{
 		"TestAWaitByDesignIsNeverToldAsAStall", "TestTheAdmissionReadsTheRunningDeploymentRole"}},
 	{file: "internal/api/handoff.go", fn: "server.answerCompletion"}: {calls: 1, tests: []string{
 		"TestArchitectUnchangedByItsCompletionAtAdmitted", "TestADeploymentRoleReportsWithAVerdictAndACommit"}},
-	{file: "internal/api/operator.go", fn: "server.restartWorkedPhase"}: {calls: 1, tests: []string{
+	{file: "internal/api/operator.go", fn: "server.worksPhase"}: {calls: 1, tests: []string{
 		"TestAnOperatorRetryOfAStoppedArchitectRelaunchesItThroughItsMachine", "TestTheOperatorRetriesADeploymentRolesClaim"}},
 	{file: "internal/intake/facts.go", fn: "EntryFence"}: {calls: 1, tests: []string{
 		"TestArchitectUnchangedByItsCompletionAtAdmitted", "TestADeploymentRoleReportsWithAVerdictAndACommit",
 		"TestACompletionOfALeftPhaseOfAnEntryRaisedSinceIsRefused"}},
 	{file: "internal/phase/phase.go", fn: "Of"}: {calls: 1, tests: []string{"TestArchitectUnchangedByItsCompletionAtAdmitted"}},
-	{file: "internal/projection/project.go", fn: "Project"}: {calls: 1, tests: []string{
+	// The role of the issue's running step at its phase, and of the phase where no step runs at it.
+	{file: "internal/projection/project.go", fn: "Project"}: {calls: 2, tests: []string{
 		"TestProjectShowsARootsArchitectHandshake", "TestTheServedStateNamesTheRunningDeploymentRole"}},
-	{file: "internal/record/record.go", fn: "Issue.RoleAt"}: {calls: 1, tests: []string{"TestAnIssueReadsTheRoleOfItsRunningStep"}},
+	// The role of each running step's phase, and of the phase of an issue with no plan rows.
+	{file: "internal/record/record.go", fn: "RunningOf"}: {calls: 2, tests: []string{
+		"TestAnIssueReadsEachOfItsRunningSteps", "TestAnIssueReadsTheRoleOfItsRunningStep"}},
 	{file: "internal/workflow/architect_start.go", fn: "writeCarriedPhase"}: {calls: 1, tests: []string{
 		"TestTheArchitectTaskOfEachShape", "TestTheWorkflowsOtherReadersNameTheRunningDeploymentRole"}},
-	{file: "internal/workflow/effects.go", fn: "HeldNotice"}: {calls: 1, tests: []string{
+	// The role of the held step, and of the phase the hold is from where no step stands there.
+	{file: "internal/workflow/effects.go", fn: "HeldNotice"}: {calls: 2, tests: []string{
 		"TestACarriedRootResumesFromTheApprovedHeadAndTheHold", "TestAHeldStepOfTheDeploymentNamesItsRole"}},
 	{file: "internal/workflow/effects.go", fn: "RoleFor"}: {calls: 1, tests: []string{"TestRoleForAnswersEveryPhaseOfPhaseAll"}},
-	{file: "internal/workflow/engine.go", fn: "Engine.claimFailed"}: {calls: 1, tests: []string{
-		"TestAnArchitectsClaimFailedHoldsNoIssueAndWritesNoHeldNotice", "TestAHeldStepOfTheDeploymentNamesItsRole"}},
-	{file: "internal/workflow/engine.go", fn: "Engine.leftItsPhase"}: {calls: 1, tests: []string{
-		"TestArchitectUnchangedByAWorkersCompletionAtAdmitted", "TestALateCompletionBeforeADeploymentStepIsTakenAndMovesNothing"}},
-	{file: "internal/workflow/engine.go", fn: "Engine.restartPhase"}: {calls: 1, tests: []string{
-		"TestTheOperatorsRestartOfAPhaseStartsItsWorkerWithThePhasesTask", "TestARetryOfADeploymentStepRestartsItsRole"}},
 	{file: "internal/workflow/engine.go", fn: "Engine.retryPhase"}: {calls: 1, tests: []string{
 		"TestTheOperatorsRestartOfAPhaseStartsItsWorkerWithThePhasesTask", "TestARetryOfADeploymentStepRestartsItsRole"}},
 	// The role of the held phase a retry naming a claim restarts, read past the refusal of a
@@ -109,8 +105,6 @@ var roleForReaders = map[roleForSite]roleForReader{
 	// The requester's role, twice, and the roles of the two earlier places that run as step.
 	{file: "internal/workflow/engine.go", fn: "backwardRefusal"}: {calls: 4, tests: []string{
 		"TestArchitectUnchangedByABackwardMoveFromAdmitted", "TestABackwardMoveToStepNamesWhichStep", "TestADeploymentRoleMovesItsTaskBack"}},
-	{file: "internal/workflow/gate.go", fn: "Engine.tellGateMoved"}: {calls: 1, tests: []string{
-		"TestEveryPhaseHolderAndTheRootArchitectAreToldTheGateClosedAndOpened", "TestTheWorkflowsOtherReadersNameTheRunningDeploymentRole"}},
 	// The retro's role, the merge's, and the role a step's role runs as.
 	{file: "internal/workflow/line.go", fn: "Walk.RoleAt"}: {calls: 3, tests: []string{"TestADeploymentRoleOfAnyTypeStartsAndReports"}},
 	// The role whose step a move ends (Engine.transition, Engine.arrive, Engine.holdBeforeRetro and
@@ -124,27 +118,27 @@ var roleForReaders = map[roleForSite]roleForReader{
 		"TestAConflictKeepsPhaseAndAsksTheReviewerToReadTheMerge", "TestAMergeForwardAtAStepOfADeploymentRoleTellsThatRole"}},
 	{file: "internal/workflow/plan_stop.go", fn: "Engine.restartTask"}: {calls: 1, tests: []string{
 		"TestATodoOnAStoppedRootStartsItsTaskAtStepOne", "TestARetryOfADeploymentStepRestartsItsRole"}},
-	{file: "internal/workflow/plan_stop.go", fn: "Engine.taskStopped"}: {calls: 1, tests: []string{
+	// The role of the step the stop ended, and of the phase where no step of the task ran.
+	{file: "internal/workflow/plan_stop.go", fn: "Engine.taskStopped"}: {calls: 2, tests: []string{
 		"TestStopTaskHoldsTheIssueAndStopsTheStep", "TestAStopReachesTheDeploymentRoleThatRuns"}},
-	{file: "internal/workflow/plan_stop.go", fn: "StoppedStepRole"}: {calls: 1, tests: []string{
-		"TestStopTaskHoldsTheIssueAndStopsTheStep", "TestAStopReachesTheDeploymentRoleThatRuns"}},
+	// The roles of the steps at a phase, a failed claim's (Engine.claimFailed), a late report's
+	// (Engine.leftItsPhase) and an operator's restart's (Engine.restartPhase) through worksAt.
+	{file: "internal/workflow/plan_stop.go", fn: "rolesAt"}: {calls: 1, tests: []string{
+		"TestAnArchitectsClaimFailedHoldsNoIssueAndWritesNoHeldNotice", "TestAHeldStepOfTheDeploymentNamesItsRole",
+		"TestArchitectUnchangedByAWorkersCompletionAtAdmitted", "TestALateCompletionBeforeADeploymentStepIsTakenAndMovesNothing",
+		"TestTheOperatorsRestartOfAPhaseStartsItsWorkerWithThePhasesTask", "TestARetryOfADeploymentStepRestartsItsRole"}},
 	{file: "internal/workflow/retro_hold.go", fn: "Engine.startHeldRetro"}: {calls: 1, tests: []string{
 		"TestAParentWithNoAcceptanceIsHeldBeforeItsRetro", "TestAHeldRetroAfterADeploymentStepGetsItsReport"}},
 	{file: "internal/workflow/retro_hold.go", fn: "retroHeldNotice"}: {calls: 1, tests: []string{"TestAParentWithNoAcceptanceIsHeldBeforeItsRetro"}},
-	{file: "internal/workflow/review.go", fn: "Engine.tellChecks"}: {calls: 1, tests: []string{
-		"TestASettlementMovesNothingAndTellsTheThreeRoles", "TestTheWorkflowsOtherReadersNameTheRunningDeploymentRole"}},
-	{file: "internal/workflow/standing.go", fn: "reportsBefore"}: {calls: 1, tests: []string{"TestATaskNamesItsWorkingCopyItsStepAndTheReportsBeforeIt"}},
+	{file: "internal/workflow/standing.go", fn: "reportsBefore"}:     {calls: 1, tests: []string{"TestATaskNamesItsWorkingCopyItsStepAndTheReportsBeforeIt"}},
 	{file: "internal/workflow/steps.go", fn: "Engine.startAgent"}: {calls: 1, tests: []string{
 		"TestAnIssueAtAdmittedRunsNoStep", "TestTheStartOfADeploymentStepNamesItsAgent"}},
 	{file: "internal/workflow/steps.go", fn: "Engine.upgradedStart"}: {calls: 2, tests: []string{
 		"TestAnIssueAtAdmittedRunsNoStep", "TestATaskMovesToItsRowsPlaceAndCountsItsReturn"}},
-	{file: "internal/workflow/stranded.go", fn: "Stranded"}: {calls: 1, tests: []string{
-		"TestStrandedNamesTheClaimsNothingWillWake", "TestTheResumePathsGiveTheRunningDeploymentRoleItsWork"}},
-	// The worker of an open phase: a ready worker's task (readyWorkerTask), the boot's resume
-	// (suspendedPhaseOwners), a release's backstop and the silence repair read it.
-	{file: "internal/workflow/wake.go", fn: "OpenRoleOf"}: {calls: 1, tests: []string{
-		"TestAnArchitectGetsNoBackstop", "TestArchitectUnchangedByAReadyWorkerOfAnIssueAtAdmitted",
-		"TestTheBootsResumeReadsRoleForAndStartsNoArchitectAtAdmittedOrAccepting", "TestTheResumePathsGiveTheRunningDeploymentRoleItsWork"}},
+	// The worker of an open phase, read by the phase alone: a release's backstop and the phase
+	// reminder of a pod's live claim.
+	{file: "internal/workflow/wake.go", fn: "OpenPhaseRole"}: {calls: 1, tests: []string{
+		"TestAnArchitectGetsNoBackstop", "TestAPhaseReminderIsArmedForTheDeploymentRoleThatRuns"}},
 }
 
 // R2: the reader list is complete and nothing reads RoleFor that this test does not hold. The
@@ -249,17 +243,23 @@ func functionName(fn *ast.FuncDecl) string {
 
 // readsRoleFor is whether node reads phase.RoleFor or one of its forwarders: internal/workflow's
 // RoleFor, a selector naming either through its package, in a call or passed as a value, or a call
-// of the bare name inside the package that declares it; and record.Issue.RoleAt and
-// internal/workflow's Walk.RoleAt, each of which answers phase.RoleFor for every phase but step
-// (the issue's) or of every place but a step of a deployment's role (the walk's), and so the
-// architect for admitted and accepting, a selector of RoleAt on any value. A bare RoleFor that is
-// no call is a field key and not a read, and appauth.AppRoleFor is another function and is not one
-// of these.
+// of the bare name inside the package that declares it; internal/workflow's Walk.RoleAt, which
+// answers phase.RoleFor of every place but a step of a deployment's role, and so the architect at
+// the owner's acceptance, a selector of RoleAt on any value; and record.Issue.RunningAt, whose
+// steps carry the role of their phase (record.RunningOf: the architect at admitted for an issue
+// with no plan rows, and at the owner's acceptance), a call of RunningAt on any value but one of
+// phase.Step, where a step names only the role a plan gives it and never the architect. A bare
+// RoleFor that is no call is a field key and not a read, and appauth.AppRoleFor is another
+// function and is not one of these.
 func readsRoleFor(node ast.Node) bool {
 	switch read := node.(type) {
 	case *ast.CallExpr:
-		name, ok := read.Fun.(*ast.Ident)
-		return ok && name.Name == "RoleFor"
+		if name, ok := read.Fun.(*ast.Ident); ok {
+			return name.Name == "RoleFor"
+		}
+		if selector, ok := read.Fun.(*ast.SelectorExpr); ok && selector.Sel.Name == "RunningAt" {
+			return len(read.Args) != 1 || !isStep(read.Args[0])
+		}
 	case *ast.SelectorExpr:
 		if read.Sel.Name == "RoleAt" {
 			return true
@@ -268,6 +268,16 @@ func readsRoleFor(node ast.Node) bool {
 		return ok && (pkg.Name == "phase" || pkg.Name == "workflow") && read.Sel.Name == "RoleFor"
 	}
 	return false
+}
+
+// isStep is whether expr is phase.Step.
+func isStep(expr ast.Expr) bool {
+	selector, ok := expr.(*ast.SelectorExpr)
+	if !ok {
+		return false
+	}
+	pkg, ok := selector.X.(*ast.Ident)
+	return ok && pkg.Name == "phase" && selector.Sel.Name == "Step"
 }
 
 // sortedSites is every key of sites, by file and then by function, so a failure lists the sites
