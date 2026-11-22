@@ -22,7 +22,8 @@ import { CONTROL } from "../../components/control-names";
 import { issue as issueFixture, specArtifact } from "../margin/margin-fixture";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
-import { appKeymap, MOD_KEY_LABEL } from "../shell/keymap";
+import { IS_MAC } from "../shell/key-text";
+import { appKeymap } from "../shell/keymap";
 import { userPreferenceStorageKey } from "../shell/userPreference";
 import { ANSWER_PREVIEW_CHARS } from "./AskHitStatus";
 import { recordRecent } from "./recents";
@@ -684,7 +685,7 @@ test("the key hint row names the platform's command key with Enter for a new tab
   try {
     const hints = screen.getByTestId("search-keyboard-hints");
     const kbd = within(hints).getByText(/\+Enter$/);
-    expect(kbd).toHaveTextContent(`${MOD_KEY_LABEL}+Enter`);
+    expect(kbd).toHaveTextContent(IS_MAC ? "⌘+Enter" : "Ctrl+Enter");
     expect(kbd.closest("span")).toHaveTextContent("to open in a new tab");
   } finally {
     view.unmount();

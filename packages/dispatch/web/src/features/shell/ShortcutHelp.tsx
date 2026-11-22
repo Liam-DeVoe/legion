@@ -13,41 +13,13 @@ import {
   textPrimaryOnSurface,
 } from "../../theme/classes";
 import { isPlainClick } from "../refs/picture-lightbox";
-import {
-  ALT_KEY_LABEL,
-  ariaKeyshortcuts,
-  type KeyBindingDescription,
-  type KeymapScope,
-  MOD_KEY_LABEL,
-  stepsOf,
-} from "./keymap";
+import { keyTokens } from "./key-text";
+import { ariaKeyshortcuts, type KeyBindingDescription, type KeymapScope } from "./keymap";
 import { useCloseOnNavigation, useDialog } from "./useDialog";
 
 /** The id of Settings' Keyboard shortcuts section, where a person changes these keys (R14): the
  *  help links to it, and the section takes the focus when the address names it. */
 export const SHORTCUTS_SECTION_ID = "keyboard-shortcuts";
-
-/** The glyph of each part of a key that has one: `$mod` and `Alt` as the platform names them, the
- *  arrows as arrows, and Escape as `Esc`. Every other part is drawn as it is written. */
-const KEY_GLYPHS: Record<string, string> = {
-  $mod: MOD_KEY_LABEL,
-  Alt: ALT_KEY_LABEL,
-  ArrowDown: "↓",
-  ArrowLeft: "←",
-  ArrowRight: "→",
-  ArrowUp: "↑",
-  Escape: "Esc",
-};
-
-/** Each step of a chord as shown (`$mod+k` → `⌘+k`), keyed by its position so `g g` renders twice,
- *  with the glyph of each of its parts (`["⌘", "k"]`), which the rail runs together (`RailButton`):
- *  every surface that draws a key draws it with these glyphs. */
-export function keyTokens(keys: string): { key: string; parts: string[]; token: string }[] {
-  return stepsOf(keys).map((combo, position) => {
-    const parts = combo.split("+").map((part) => KEY_GLYPHS[part] ?? part);
-    return { key: `${position}:${combo}`, parts, token: parts.join("+") };
-  });
-}
 
 /** Every scope's heading in `?`; the compiler checks this record covers `KeymapScope`. */
 export const SCOPE_LABELS: Record<KeymapScope, string> = {

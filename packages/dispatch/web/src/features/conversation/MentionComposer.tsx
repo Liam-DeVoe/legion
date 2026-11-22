@@ -72,6 +72,7 @@ import { useComposerRegistry } from "../margin/margin-context";
 import { AgentName, type AgentText, useAgentText } from "../refs/AgentName";
 import { ReferencePicker } from "../refs/ReferencePicker";
 import { composerReferences } from "../refs/routes";
+import { keyText } from "../shell/key-text";
 import { modHeld } from "../shell/keymap";
 import { SendStoppedError } from "../writes/keyed-write";
 import { StopTrying } from "../writes/StopTrying";
@@ -1145,12 +1146,12 @@ export function MentionComposer({
     });
   /** The hold on the draft from Send's own task on: the fieldset's capture stops every key,
    *  click, input, change, paste and drop bound for a control in it - so no key writes into the
-   *  box, Escape raises no Discard prompt, Ctrl+K opens no picker and Ctrl+Enter sends nothing
-   *  over a draft that is out - and while React shows the hold the fieldset is `aria-disabled` and
-   *  its fields read-only. It is never `disabled`: a browser takes the focus off a control that
-   *  becomes disabled under it, which would drop a keyboard reader who sent from the box or from
-   *  Send to the page's body. Tab alone goes through, so the hold keeps the reader's place and
-   *  never traps them in it. */
+   *  box, Escape raises no Discard prompt, `$mod+K` (Cmd+K on a Mac, Ctrl+K elsewhere) opens no
+   *  picker and Ctrl+Enter sends nothing over a draft that is out - and while React shows the
+   *  hold the fieldset is `aria-disabled` and its fields read-only. It is never `disabled`: a
+   *  browser takes the focus off a control that becomes disabled under it, which would drop a
+   *  keyboard reader who sent from the box or from Send to the page's body. Tab alone goes
+   *  through, so the hold keeps the reader's place and never traps them in it. */
   const stopHeldComposerInput = (event: SyntheticEvent) => {
     if (!outgoing.sendingNow()) return;
     event.preventDefault();
@@ -1579,7 +1580,7 @@ export function MentionComposer({
         <>
           <p className={`text-xs ${textMutedOnSurfaceMuted}`}>
             Paste or drop a picture to show it inline, or any other file to attach it.
-            {owner.kind === "issue" ? " Ctrl+K inserts a reference." : ""}
+            {owner.kind === "issue" ? ` ${keyText("$mod+K")} inserts a reference.` : ""}
           </p>
           {references.length === 0 ? null : (
             <section aria-label="References" className="flex flex-wrap gap-2">
@@ -1594,8 +1595,9 @@ export function MentionComposer({
               ))}
             </section>
           )}
-          {/* A picker is a draft control. `send` closes one already open, and Ctrl+K in Send's own
-              task meets the fieldset's hold before it can open another. */}
+          {/* A picker is a draft control. `send` closes one already open, and the `$mod+K` that
+              opens one (Cmd+K on a Mac, Ctrl+K elsewhere) in Send's own task meets the
+              fieldset's hold before it can open another. */}
           {owner.kind === "issue" && referencePickerOpen ? (
             <ReferencePicker
               issueKey={owner.issueKey}
@@ -1670,7 +1672,7 @@ export function MentionComposer({
       {/* While Send refuses, the line under it says why - on screen, for a reader with no
           pointer to hover it - and once the draft can go, how to send it. */}
       <p className={`text-xs ${textMutedOnSurfaceMuted}`} id={footId}>
-        {submitReason ?? "Ctrl/Cmd+Enter to send · Enter for a new line"}
+        {submitReason ?? `${keyText("$mod+Enter")} to send · Enter for a new line`}
       </p>
     </fieldset>
   );

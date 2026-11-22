@@ -51,6 +51,7 @@ import { ProgressChips } from "../issue/ProgressChips";
 import { UnreachableRouteMarker } from "../issue/RouteReach";
 import { closeRefPreview, referenceTriggerProps } from "../refs/RefPreview";
 import { buildDispatchReference, buildIssuePath } from "../refs/routes";
+import { keyText } from "../shell/key-text";
 import { useKeymap, useKeymapScope } from "../shell/keymap";
 import { useActionKeys } from "../shell/keymap-keys";
 import { openLinkInNewTab } from "../shell/new-tab";
@@ -110,15 +111,18 @@ function columnAround(node: Element | null): HTMLElement | null {
 }
 
 /** What a screen reader hears of a draggable card: the keys that move the focused card, read
- *  `Shift with J, K, H or L` while each is Shift and a letter, as they are by default, else each
- *  as written, and the key of the shortcut help. Both are the person's keys (`useActionKeys`). */
+ *  `Shift with J, K, H or L` (`⇧ with J, K, H or L` on a Mac) while each is Shift and a letter, as
+ *  they are by default, else each as the platform draws it (`keyText`), and the key of the
+ *  shortcut help. Both are the person's keys (`useActionKeys`). */
 function dragInstructions(
   moveKeys: readonly (string | undefined)[],
   helpKey: string | undefined
 ): string {
   const keys = moveKeys.filter((key): key is string => key !== undefined);
   const shifted = keys.every((key) => /^Shift\+[A-Za-z]$/.test(key));
-  const named = shifted ? keys.map((key) => key.slice("Shift+".length).toUpperCase()) : keys;
+  const named = shifted
+    ? keys.map((key) => key.slice("Shift+".length).toUpperCase())
+    : keys.map((key) => keyText(key));
   const listed =
     named.length < 2
       ? named.join("")
@@ -126,8 +130,10 @@ function dragInstructions(
   const move =
     keys.length === 0
       ? "Focus a card"
-      : `Focus a card and press ${shifted ? "Shift with " : ""}${listed} to move it`;
-  return helpKey === undefined ? `${move}.` : `${move}; press ${helpKey} for every shortcut.`;
+      : `Focus a card and press ${shifted ? `${keyText("Shift")} with ` : ""}${listed} to move it`;
+  return helpKey === undefined
+    ? `${move}.`
+    : `${move}; press ${keyText(helpKey)} for every shortcut.`;
 }
 
 /**

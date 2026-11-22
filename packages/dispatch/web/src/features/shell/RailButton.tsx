@@ -1,33 +1,24 @@
 import type { ReactNode } from "react";
 
 import { kbdHint, railHoverBg, railHoverText, railSecondaryText } from "../../theme/classes";
-import { IS_MAC } from "./keymap";
+import { IS_MAC, keyTokens } from "./key-text";
 import type { KeymapActionId } from "./keymap-catalogue";
 import { useActionKeys } from "./keymap-keys";
-import { keyshortcutsOf, keyTokens } from "./ShortcutHelp";
+import { keyshortcutsOf } from "./ShortcutHelp";
 
-/** The modifiers a Mac's keycaps print as symbols, which `keyTokens` writes as words: on a Mac
- *  the rail runs a press's parts together, as the Mac's menus write a key (`⇧N`, `⌘K`). */
-const MAC_MODIFIER_SYMBOLS: Record<string, string> = {
-  Control: "⌃",
-  Ctrl: "⌃",
-  Meta: "⌘",
-  Shift: "⇧",
-};
-
-/** One key as the rail writes it, in the glyphs `?` and Settings draw (`keyTokens`): `⌘K` on a
- *  Mac and `Ctrl K` elsewhere for `$mod+k`, `Ctrl ↓` for `$mod+ArrowDown`, a key with no modifier
- *  as it is typed (`c`), and each press of a chord in turn (`g i`). */
-function railText(key: string): string {
-  return keyTokens(key)
+/** One key as the rail writes it: each part in the glyphs `?` and Settings draw (`keyTokens`),
+ *  and the rail's own joiner. On a Mac a press's parts run together, as the Mac's menus write a
+ *  key, `⌘K` for `$mod+k` and `⇧N` for `Shift+N`; elsewhere they are spaced, `Ctrl K`, `Ctrl ↓`
+ *  for `$mod+ArrowDown`. A one-letter key after a modifier is upper case, a key with no modifier
+ *  is drawn as it is typed (`c`), and each press of a chord in turn (`g i`). `isMac`, the
+ *  browser's own unless a test names one, picks the glyphs and the joiner. */
+export function railText(key: string, isMac: boolean = IS_MAC): string {
+  return keyTokens(key, isMac)
     .map(({ parts }) => {
       const last = parts[parts.length - 1] ?? "";
       const modifiers = parts.slice(0, -1);
       if (modifiers.length === 0) return last;
-      const shown = IS_MAC
-        ? modifiers.map((part) => MAC_MODIFIER_SYMBOLS[part] ?? part)
-        : modifiers;
-      return [...shown, last.length === 1 ? last.toUpperCase() : last].join(IS_MAC ? "" : " ");
+      return [...modifiers, last.length === 1 ? last.toUpperCase() : last].join(isMac ? "" : " ");
     })
     .join(" ");
 }

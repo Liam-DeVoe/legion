@@ -22,7 +22,7 @@
  * and a type are told apart by a word and a shape, never by colour alone.
  *
  * This module is data and pure functions. It holds no React and touches no DOM, and it imports
- * data and types, with four helpers:
+ * data and types, with five helpers:
  *
  * - from its sibling `page-structure.ts`, the property and section names and help lines
  *   `DECLARED_WORDS` is derived from as well, and `freeze`, which its tables are made with;
@@ -30,6 +30,8 @@
  *   advance, and the types of how a result's commit stands, of when a check runs and of how a
  *   delivery stands;
  * - from `../../api/types`, the type of an actor;
+ * - from `../shell/key-text`, `keyText`, which writes a key as the reader's platform draws it
+ *   (`⇧+Enter` on a Mac, `Shift+Enter` elsewhere), and imports nothing itself;
  * - from `../project/board-model`, the issue statuses and `statusLabel` and `statusText`, the
  *   board's word for a status, which `ISSUE_STATUS_WORDS` and `issueStatusWord` say;
  * - from `../refs/actor`, `ASK_RESOLUTION_WORDS`, the words a closed question is drawn in, and
@@ -51,6 +53,7 @@ import {
 import type { Actor } from "../../api/types";
 import { issueStatuses, statusLabel, statusText } from "../project/board-model";
 import { ASK_RESOLUTION_WORDS, isViewer } from "../refs/actor";
+import { keyText } from "../shell/key-text";
 import {
   freeze,
   HELP_LINES,
@@ -816,8 +819,9 @@ export const CONTROL_LABELS = freeze({
   answering: "Answering:",
   /** What it says of the options the reader picked, before them: "you chose 1024 px". */
   answer_chose: "you chose",
-  /** What the line says while it is empty and answers a question. */
-  answer_placeholder: "Answer in your own words…  (Enter sends · Shift+Enter new line)",
+  /** What the line says while it is empty and answers a question, its new-line key as the
+   *  reader's platform draws it (`keyText`). */
+  answer_placeholder: `Answer in your own words…  (Enter sends · ${keyText("Shift+Enter")} new line)`,
   /** The document a design-gate step reviews, by the step (`StepEntry.step`; `criteria` reviews
    *  the verification), as the names of that document's Approve and Request changes end with
    *  it where the gate's list carries the actions of more than one document (`ApprovalSteps`'

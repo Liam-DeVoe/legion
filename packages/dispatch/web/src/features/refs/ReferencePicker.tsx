@@ -22,9 +22,10 @@ export interface ReferencePickerProps {
 }
 
 /**
- * The Ctrl+K reference picker the composer opens. It is a real dialog (Escape, backdrop
- * click, and a Close button all dismiss it) and loads an issue's artifacts only once that
- * issue's row is expanded, instead of fanning out one request per project issue up front.
+ * The reference picker the composer opens on `$mod+K`: Cmd+K on a Mac, Ctrl+K elsewhere
+ * (`MentionComposer`). It is a real dialog (Escape, backdrop click, and a Close button all
+ * dismiss it) and loads an issue's artifacts only once that issue's row is expanded, instead of
+ * fanning out one request per project issue up front.
  */
 export function ReferencePicker({ issueKey, onClose, onSelect }: ReferencePickerProps): ReactNode {
   const [filter, setFilter] = useState("");

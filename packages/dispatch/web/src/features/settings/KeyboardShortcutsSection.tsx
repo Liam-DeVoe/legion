@@ -26,6 +26,7 @@ import {
   textPrimaryOnCanvas,
   textSecondaryOnCanvas,
 } from "../../theme/classes";
+import { keyTokens } from "../shell/key-text";
 import { CHORD_TIMEOUT_MS, comboOf, KeymapPersonContext } from "../shell/keymap";
 import {
   type CatalogueEntry,
@@ -41,7 +42,6 @@ import { refusalOf } from "../shell/keymap-refusal";
 import {
   KeyHints,
   kbdClass,
-  keyTokens,
   SCOPE_LABELS,
   SCOPE_ORDER,
   SHORTCUTS_SECTION_ID,

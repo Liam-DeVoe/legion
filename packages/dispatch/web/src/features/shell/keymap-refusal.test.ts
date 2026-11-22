@@ -116,10 +116,17 @@ test("an action that also works while the reader types takes no key a text field
 // A text field's own keys with Ctrl or Cmd - paste, copy, cut, undo, redo, select all, delete a
 // word, move the caret - are its own with Shift or Alt too: Ctrl+Shift+Z redoes.
 test("an action that also works while the reader types takes no Ctrl or Cmd key a text field takes as its own", () => {
-  for (const key of ["$mod+v", "$mod+z", "$mod+Backspace", "$mod+ArrowLeft", "$mod+Shift+Z"]) {
-    expect(refusalOf("global.search", [key], NO_PERSON_KEYS), key).toEqual({
+  // Each key as the message draws it away from a Mac (`keyText`).
+  for (const [key, drawn] of [
+    ["$mod+v", "Ctrl+v"],
+    ["$mod+z", "Ctrl+z"],
+    ["$mod+Backspace", "Ctrl+Backspace"],
+    ["$mod+ArrowLeft", "Ctrl+←"],
+    ["$mod+Shift+Z", "Ctrl+Shift+Z"],
+  ] as const) {
+    expect(refusalOf("global.search", [key], NO_PERSON_KEYS, false), key).toEqual({
       kind: "refused",
-      message: `${key} would be taken from every text field: Search and actions also works while you type, so its key needs Ctrl or Cmd with a key other than V, C, X, Z, Y, A, Backspace, Delete, an arrow, Home or End, or Alt with a key that types nothing, such as Alt+Enter.`,
+      message: `${drawn} would be taken from every text field: Search and actions also works while you type, so its key needs Ctrl or Meta with a key other than V, C, X, Z, Y, A, Backspace, Delete, an arrow, Home or End, or Alt with a key that types nothing, such as Alt+Enter.`,
       other: undefined,
     });
   }
@@ -131,10 +138,15 @@ test("an action that also works while the reader types takes no Ctrl or Cmd key 
 // T, V or Y to move the caret and edit, whatever else the press holds: Control+E moves to the end
 // of the line and Control+K deletes to it. Cmd+E is no such key.
 test("on a Mac an action that also works while the reader types takes no Control key a Mac's text field takes as its own, and takes Cmd+E", () => {
-  for (const key of ["Control+e", "Control+k", "Control+Shift+a"]) {
+  // Each key and modifier as the message draws it on a Mac (`keyText`).
+  for (const [key, drawn] of [
+    ["Control+e", "⌃+e"],
+    ["Control+k", "⌃+k"],
+    ["Control+Shift+a", "⌃+⇧+a"],
+  ] as const) {
     expect(refusalOf("global.search", [key], NO_PERSON_KEYS, true), key).toEqual({
       kind: "refused",
-      message: `${key} would be taken from every text field: Search and actions also works while you type, so its key needs Cmd or Control with a key other than V, C, X, Z, Y, A, Backspace, Delete, an arrow, Home or End, or Alt with a key that types nothing, such as Alt+Enter. With Control, a Mac text field also uses B, D, E, F, H, K, N, O, P and T to move the cursor and edit.`,
+      message: `${drawn} would be taken from every text field: Search and actions also works while you type, so its key needs ⌘ or ⌃ with a key other than V, C, X, Z, Y, A, Backspace, Delete, an arrow, Home or End, or ⌥ with a key that types nothing, such as ⌥+Enter. With ⌃, a Mac text field also uses B, D, E, F, H, K, O and P to move the cursor and edit.`,
       other: undefined,
     });
   }
@@ -143,6 +155,40 @@ test("on a Mac an action that also works while the reader types takes no Control
   for (const key of ["$mod+e", "Control+e"]) {
     expect(refusalOf("global.search", [key], NO_PERSON_KEYS, false).kind, key).toBe("accepted");
   }
+});
+
+// The message's list of a Mac text field's own Control keys is the check's own: each letter
+// whose Control press the check refuses on a Mac as a text field's (`MAC_FIELD_CONTROL_KEYS`),
+// but for those it names already with every modifier (V, C, X, Z, Y, A), and no letter whose
+// Control press it refuses first as the browser's own (`isBrowsers`: N and T among them).
+test("on a Mac the refusal names each Control key it refuses as a Mac text field's, and none the browser keeps", () => {
+  const messageOf = (key: string, isMac: boolean) => {
+    const verdict = refusalOf("global.search", [key], NO_PERSON_KEYS, isMac);
+    return verdict.kind === "refused" ? verdict.message : "";
+  };
+  const fieldRefusal = "would be taken from every text field";
+  const letters = [..."abcdefghijklmnopqrstuvwxyz"];
+  const commandLetters = letters.filter((letter) =>
+    messageOf(`$mod+${letter}`, false).includes(fieldRefusal)
+  );
+  const macControlLetters = letters.filter(
+    (letter) =>
+      messageOf(`Control+${letter}`, true).includes(fieldRefusal) &&
+      !commandLetters.includes(letter)
+  );
+  const browsers = letters.filter((letter) =>
+    messageOf(`Control+${letter}`, true).endsWith("is the browser's own key.")
+  );
+  expect(commandLetters).toEqual(["a", "c", "v", "x", "y", "z"]);
+  expect(browsers).toEqual(expect.arrayContaining(["n", "t"]));
+
+  const listed =
+    /a Mac text field also uses (.+) to move the cursor and edit\.$/.exec(
+      messageOf("Control+e", true)
+    )?.[1] ?? "";
+  const named = listed.split(/, | and /).map((letter) => letter.toLowerCase());
+  expect([...named].sort()).toEqual(macControlLetters);
+  expect(named.filter((letter) => browsers.includes(letter))).toEqual([]);
 });
 
 // One press is one key, as the platform reads `$mod`: Search and actions' `$mod+k` is Cmd+K on a

@@ -49,13 +49,8 @@ import {
   type DispatchReferenceRoute,
   nodeRouteFromHref,
 } from "../refs/routes";
-import {
-  appKeymap,
-  DIALOG_SCOPE,
-  type KeymapAction,
-  MOD_KEY_LABEL,
-  useKeymap,
-} from "../shell/keymap";
+import { keyText } from "../shell/key-text";
+import { appKeymap, DIALOG_SCOPE, type KeymapAction, useKeymap } from "../shell/keymap";
 import { useActionKeys } from "../shell/keymap-keys";
 import { openInNewTab } from "../shell/new-tab";
 import { KeyHints } from "../shell/ShortcutHelp";
@@ -1129,7 +1124,7 @@ function PaletteDialog({
             </span>
             <span className="inline-flex items-center gap-1">
               <kbd className={`rounded px-1 py-0.5 font-medium ${kbdHint}`}>
-                {MOD_KEY_LABEL}+Enter
+                {keyText("$mod+Enter")}
               </kbd>
               to open in a new tab
             </span>

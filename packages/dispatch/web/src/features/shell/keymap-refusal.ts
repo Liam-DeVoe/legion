@@ -1,4 +1,5 @@
-import { IS_MAC, isStrictPrefix, type KeyCombo, parseChord, sameCombo } from "./keymap";
+import { IS_MAC, keyText } from "./key-text";
+import { isStrictPrefix, type KeyCombo, parseChord, sameCombo } from "./keymap";
 import {
   catalogueEntry,
   KEYMAP_ACTIONS,
@@ -187,6 +188,14 @@ const MAC_FIELD_CONTROL_KEYS: Record<string, true> = {
   y: true,
 };
 
+/** The keys of `MAC_FIELD_CONTROL_KEYS` a refusal names as a Mac text field's with Control, in
+ *  upper case as the keycaps print them: each that is not one of `FIELD_COMMAND_KEYS`, which the
+ *  refusal names already for every modifier, nor one of `BROWSER_KEYS`, which the check refuses
+ *  first (`isBrowsers`). A key added to the table is named with the rest. */
+const MAC_FIELD_CONTROL_NAMED: readonly string[] = Object.keys(MAC_FIELD_CONTROL_KEYS)
+  .filter((key) => FIELD_COMMAND_KEYS[key] !== true && BROWSER_KEYS[key] !== true)
+  .map((key) => key.toUpperCase());
+
 /** Whether a text field takes `combo` as its own, so that an `inEditable` binding of it would take
  *  the press from every field: a press with Ctrl, Cmd or Meta whose key is one of
  *  `FIELD_COMMAND_KEYS`, with Shift or Alt or without; on a Mac, a press with Control whose key is
@@ -260,7 +269,8 @@ function refused(message: string, other?: KeymapActionId): KeyVerdict {
  * where the page's action does not apply (its `when` is false), `resolve` in `keymap.ts` passes
  * the key on to the global action. Two keys are one key where the platform reads them as one
  * press (`sameCombo`, `keymap.ts`): `isMac`, the browser's own unless a test names one, decides
- * whether `$mod` is Cmd or Ctrl.
+ * whether `$mod` is Cmd or Ctrl, and how each key and modifier a refusal names is drawn
+ * (`keyText`): `⌃+e` on a Mac and `Ctrl+e` elsewhere for `Control+e`.
  */
 export function refusalOf(
   action: KeymapActionId,
@@ -269,35 +279,41 @@ export function refusalOf(
   isMac: boolean = IS_MAC
 ): KeyVerdict {
   const entry = catalogueEntry(action);
+  const named = (keys: string) => keyText(keys, isMac);
   if (keys.length > 0 && keepsOwnKeys(entry)) {
     return refused(`${entry.label} keeps its own keys.`);
   }
   const taken: { chord: readonly KeyCombo[]; key: string }[] = [];
   for (const key of keys) {
     const chord = chordOf(key);
-    if (chord === null) return refused(`${key} is not a key.`);
+    if (chord === null) return refused(`${named(key)} is not a key.`);
     if (chord.some(isReserved)) {
       return refused(
-        `${key} is not free: the digits, the arrows, Enter, Escape, Tab and Space keep their own actions.`
+        `${named(key)} is not free: the digits, the arrows, Enter, Escape, Tab and Space keep their own actions.`
       );
     }
-    if (chord.some(isBrowsers)) return refused(`${key} is the browser's own key.`);
+    if (chord.some(isBrowsers)) return refused(`${named(key)} is the browser's own key.`);
     if (entry.inEditable === true && chord.some((combo) => actsInField(combo, isMac))) {
-      const command = isMac ? "Cmd or Control" : "Ctrl or Cmd";
+      const command = `${named("$mod")} or ${named(isMac ? "Control" : "Meta")}`;
+      const last = MAC_FIELD_CONTROL_NAMED.length - 1;
       const macControl = isMac
-        ? " With Control, a Mac text field also uses B, D, E, F, H, K, N, O, P and T to move the cursor and edit."
+        ? ` With ${named("Control")}, a Mac text field also uses ${MAC_FIELD_CONTROL_NAMED.slice(0, last).join(", ")} and ${MAC_FIELD_CONTROL_NAMED[last]} to move the cursor and edit.`
         : "";
       return refused(
-        `${key} would be taken from every text field: ${entry.label} also works while you type, so its key needs ${command} with a key other than V, C, X, Z, Y, A, Backspace, Delete, an arrow, Home or End, or Alt with a key that types nothing, such as Alt+Enter.${macControl}`
+        `${named(key)} would be taken from every text field: ${entry.label} also works while you type, so its key needs ${command} with a key other than V, C, X, Z, Y, A, Backspace, Delete, an arrow, Home or End, or ${named("Alt")} with a key that types nothing, such as ${named("Alt+Enter")}.${macControl}`
       );
     }
     for (const earlier of taken) {
-      if (sameChord(earlier.chord, chord, isMac)) return refused(`${key} is listed twice.`);
+      if (sameChord(earlier.chord, chord, isMac)) return refused(`${named(key)} is listed twice.`);
       if (isStrictPrefix(earlier.chord, chord, isMac)) {
-        return refused(`${earlier.key} is the first press of ${key}, both keys of ${entry.label}.`);
+        return refused(
+          `${named(earlier.key)} is the first press of ${named(key)}, both keys of ${entry.label}.`
+        );
       }
       if (isStrictPrefix(chord, earlier.chord, isMac)) {
-        return refused(`${key} is the first press of ${earlier.key}, both keys of ${entry.label}.`);
+        return refused(
+          `${named(key)} is the first press of ${named(earlier.key)}, both keys of ${entry.label}.`
+        );
       }
     }
     taken.push({ chord, key });
@@ -312,10 +328,16 @@ export function refusalOf(
       if (otherChord === null) continue;
       for (const { chord, key } of taken) {
         if (isStrictPrefix(chord, otherChord, isMac)) {
-          return refused(`${key} is the first press of ${otherKey}, ${otherEntry.label}.`, other);
+          return refused(
+            `${named(key)} is the first press of ${named(otherKey)}, ${otherEntry.label}.`,
+            other
+          );
         }
         if (isStrictPrefix(otherChord, chord, isMac)) {
-          return refused(`${otherKey}, ${otherEntry.label}, is the first press of ${key}.`, other);
+          return refused(
+            `${named(otherKey)}, ${otherEntry.label}, is the first press of ${named(key)}.`,
+            other
+          );
         }
         if (!sameChord(chord, otherChord, isMac) || exclusiveByFocus(action, other)) continue;
         if (
@@ -326,7 +348,7 @@ export function refusalOf(
               (one === otherEntry.surface && two === entry.surface)
           )
         ) {
-          return refused(`${key} is already the key of ${otherEntry.label}.`, other);
+          return refused(`${named(key)} is already the key of ${otherEntry.label}.`, other);
         }
         if (
           !drawnOnPageOf(entry.surface, otherEntry.surface) &&
@@ -338,7 +360,7 @@ export function refusalOf(
         // before the `global` scope (`resolve`, `keymap.ts`), which holds a key once.
         const shell = entry.scope === "global";
         if (shell === (otherEntry.scope === "global")) {
-          return refused(`${key} is already the key of ${otherEntry.label}.`, other);
+          return refused(`${named(key)} is already the key of ${otherEntry.label}.`, other);
         }
         if (shell) {
           notices.add(`${entry.label} does not work on ${PAGE_NAMES[otherEntry.surface]}.`);
@@ -355,7 +377,9 @@ export function refusalOf(
   // this check reads as that action's.
   for (const { chord, key } of taken) {
     if (isStrictPrefix(LINK_COPY_CHORD, chord, isMac)) {
-      return refused(`${LINK_COPY_KEY}, ${LINK_COPY_LABEL}, is the first press of ${key}.`);
+      return refused(
+        `${named(LINK_COPY_KEY)}, ${LINK_COPY_LABEL}, is the first press of ${named(key)}.`
+      );
     }
   }
   return { kind: "accepted", notices: [...notices] };

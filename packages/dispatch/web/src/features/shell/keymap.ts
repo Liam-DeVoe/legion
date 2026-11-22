@@ -2,6 +2,7 @@ import { createContext, useContext, useLayoutEffect, useRef, useSyncExternalStor
 
 import { PANEL_ATTRIBUTE, takesText } from "../../components/key-targets";
 
+import { IS_MAC, stepsOf } from "./key-text";
 import {
   type CatalogueScope,
   catalogueEntry,
@@ -100,13 +101,6 @@ export interface KeymapAction {
 }
 
 export const DIALOG_SCOPE: KeymapScope = "dialog";
-/** Whether the browser says it runs on a Mac, read once as the app loads: there `$mod` is Cmd,
- *  the registry matches an Alt combo by the key's place, and the key hints draw the Mac's glyphs. */
-export const IS_MAC = navigator.userAgent.includes("Mac");
-/** How `$mod` is shown to the reader: the Command glyph on a Mac, `Ctrl` elsewhere. */
-export const MOD_KEY_LABEL = IS_MAC ? "⌘" : "Ctrl";
-/** How `Alt` is shown to the reader: the Option glyph on a Mac, `Alt` elsewhere. */
-export const ALT_KEY_LABEL = IS_MAC ? "⌥" : "Alt";
 /** How long a chord waits for its next key (`g` then `i`). */
 export const CHORD_TIMEOUT_MS = 1000;
 
@@ -192,11 +186,6 @@ function parseCombo(text: string): KeyCombo {
     }
   }
   return combo;
-}
-
-/** The steps of one key as written: `"g i"` is `["g", "i"]`, a chord of two presses. */
-export function stepsOf(keys: string): string[] {
-  return keys.trim().split(/\s+/);
 }
 
 /** The presses of one key as the registry matches them: `"g i"` is two. Throws on text that

@@ -1,11 +1,13 @@
 import type { ReactNode } from "react";
 
 import { card, textMutedOnSurface } from "../../theme/classes";
+import { keyText } from "./key-text";
 import { usePendingChord } from "./keymap";
 import { kbdClass } from "./ShortcutHelp";
 
 /** Shows a half-typed chord (`g …`) until it completes or times out, and under it each key that
- *  can follow with what it does (`i` Go to Inbox), as Emacs's which-key does. */
+ *  can follow with what it does (`i` Go to Inbox), as Emacs's which-key does: a next key as `?`
+ *  draws it (`keyText`), `⇧+I` on a Mac and `Shift+I` elsewhere for a person's `g Shift+I`. */
 export function ChordIndicator(): ReactNode {
   const pending = usePendingChord();
   if (pending.keys === "") {
@@ -25,7 +27,7 @@ export function ChordIndicator(): ReactNode {
         <ul className="flex flex-col gap-1 pb-0.5">
           {pending.next.map(({ key, label }) => (
             <li className="flex items-center gap-2" key={key}>
-              <kbd className={kbdClass}>{key}</kbd>
+              <kbd className={kbdClass}>{keyText(key)}</kbd>
               <span>{label}</span>
             </li>
           ))}

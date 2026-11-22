@@ -8,10 +8,11 @@ sidebar:
 Dispatch can be driven from the keyboard. Press `?` on any page to see the shortcuts that page
 offers.
 
-`Ctrl` in a key below means `⌘` (Cmd) on a Mac, not the Control key (`⌃`), and `Alt` means `⌥`
-(Option). A shortcut written `g i` is a sequence: press `g`, let go, then press `i` within a
-second. While you wait, the bottom right corner shows the keys pressed so far, and under them each
-key that can come next, with what it does.
+`Ctrl` in a key below means `⌘` (Cmd) on a Mac, not the Control key (`⌃`), `Shift` means `⇧`, and
+`Alt` means `⌥` (Option). On a Mac, Dispatch draws each key with these signs. A shortcut written
+`g i` is a sequence: press `g`, let go, then press `i` within a second. While you wait, the bottom
+right corner shows the keys pressed so far, and under them each key that can come next, with what
+it does.
 
 While you type in a text field, or while the focus is in an open menu, list or panel, only
 `Ctrl+K`, `Escape`, and in a document `Ctrl+Alt+M` and `Alt+Enter`, work as shortcuts, or the keys
@@ -495,8 +496,8 @@ key, `Home` or `End`, also with `Shift` or `Alt`. A text field uses these keys t
 cut, undo, redo and select text, to delete a word, and to move the cursor.
 
 On a Mac, Dispatch also refuses these three actions the Control key (`⌃`) with `A`, `B`, `D`,
-`E`, `F`, `H`, `K`, `N`, `O`, `P`, `T`, `V` or `Y`, also with `Shift`, `Alt` or `⌘`. A Mac text
-field uses these keys to move the cursor and to edit text.
+`E`, `F`, `H`, `K`, `N`, `O`, `P`, `T`, `V` or `Y`, also with `⇧`, `⌥` or `⌘`. A Mac text field
+uses these keys to move the cursor and to edit text.
 
 A global key that you give to a page's action runs that action on its page whenever the action can
 run. Where it cannot, the key runs the global action. The list shows a note under each of the two

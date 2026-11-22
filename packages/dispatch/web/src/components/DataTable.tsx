@@ -26,6 +26,7 @@ import {
 } from "@tanstack/react-table";
 import { useVirtualizer, type Virtualizer } from "@tanstack/react-virtual";
 import { Fragment, type ReactNode, useLayoutEffect, useRef, useState } from "react";
+import { keyText } from "../features/shell/key-text";
 import { ViewportAnchor } from "../features/shell/ViewportAnchor";
 import {
   borderDefault,
@@ -592,11 +593,7 @@ function TableHeaderCell<TData>({
             onClick={column.getToggleSortingHandler()}
             onDragEnd={() => setDragColumn(undefined)}
             onDragStart={() => setDragColumn(column.id)}
-            title={
-              pinned
-                ? "Sort (shift-click to add a second sort)"
-                : "Sort (shift-click to add a second sort); drag to move the column"
-            }
+            title={`Sort (${keyText("Shift")}-click to add a second sort)${pinned ? "" : "; drag to move the column"}`}
             type="button"
           >
             {flexRender(column.columnDef.header, header.getContext())}

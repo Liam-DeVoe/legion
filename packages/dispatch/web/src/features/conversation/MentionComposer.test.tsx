@@ -23,6 +23,7 @@ import type {
 import { useSending } from "../../hooks/useSending";
 import type { AgentText } from "../refs/AgentName";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
+import { IS_MAC } from "../shell/key-text";
 import {
   KEYED_SEND_ATTEMPT_MS,
   SEND_DEADLINE_MS,
@@ -1523,6 +1524,27 @@ test("Ctrl+Enter sends while Enter, whitespace, and IME composition leave the dr
   } finally {
     view.unmount();
     createComment.mockRestore();
+  }
+});
+
+// The hints under an issue's comment box name its keys as the reader's platform draws them
+// (`keyText`): `$mod+K` opens the reference picker (`modHeld`), and `$mod+Enter` sends. Away from
+// a Mac `$mod` is Ctrl; `key-text.test.ts` reads the same two keys as a Mac draws them.
+test("away from a Mac the comment box's hints say Ctrl+K inserts a reference and Ctrl+Enter sends", async () => {
+  const user = userEvent.setup();
+  const { view } = renderComposer();
+  try {
+    expect(IS_MAC, "the unit tests' browser names a Mac").toBe(false);
+    expect(screen.getByText(/inserts a reference\.$/).textContent).toBe(
+      "Paste or drop a picture to show it inline, or any other file to attach it. Ctrl+K inserts a reference."
+    );
+    await user.click(screen.getByLabelText("Comment"));
+    await user.paste("hello");
+    expect(screen.getByText(/to send · Enter for a new line$/).textContent).toBe(
+      "Ctrl+Enter to send · Enter for a new line"
+    );
+  } finally {
+    view.unmount();
   }
 });
 

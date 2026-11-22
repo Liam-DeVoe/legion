@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 
 import { CopyButton } from "../../components/CopyButton";
+import { keyText } from "../shell/key-text";
 import { buildDispatchReference, type DispatchReferenceRoute } from "./routes";
 
 /** Matches the copy control of an Inbox item itself - on its row, its card or the reading pane's
@@ -8,15 +9,13 @@ import { buildDispatchReference, type DispatchReferenceRoute } from "./routes";
  *  presses. */
 export const ITEM_COPY_REF_SELECTOR = '[data-copy-ref="item"] button';
 
-const MODIFIER =
-  typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘" : "Ctrl";
-
 /** The one copy control for a node's `dispatch://` reference, shown wherever the node is. A click
  *  copies the reference. When the surface has a shorter identifier worth keeping one click away
  *  — the issue header's key — `primary` names it: a click copies `primary.value` and a
- *  Ctrl/Cmd-click copies the reference, and the button's name says so. `shortcutKeys` are the
- *  keys that copy it where the host draws them on the button (the Inbox's `y`, `CopyButton`).
- *  `item` marks the control of an Inbox item itself (`ITEM_COPY_REF_SELECTOR`). */
+ *  Ctrl/Cmd-click copies the reference, and the button's name says so with the platform's
+ *  `$mod` (`keyText`: `⌘` on a Mac, `Ctrl` elsewhere). `shortcutKeys` are the keys that copy it
+ *  where the host draws them on the button (the Inbox's `y`, `CopyButton`). `item` marks the
+ *  control of an Inbox item itself (`ITEM_COPY_REF_SELECTOR`). */
 export function CopyRefButton({
   className,
   item = false,
@@ -43,7 +42,7 @@ export function CopyRefButton({
       ) : (
         <CopyButton
           className={className}
-          label={`Copy ${primary.label} · ${MODIFIER}-click copies the reference`}
+          label={`Copy ${primary.label} · ${keyText("$mod")}-click copies the reference`}
           shortcutKeys={shortcutKeys}
           value={(event) => (event.metaKey || event.ctrlKey ? reference : primary.value)}
           what="reference"

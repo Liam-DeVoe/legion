@@ -1,6 +1,7 @@
 import { setTimeout as sleep } from "node:timers/promises";
 
 import type { CreateBroadcastInput, Message } from "../web/src/api/types";
+import { keyText } from "../web/src/features/shell/key-text";
 import {
   agentGroupToggle,
   agentRow,
@@ -36,6 +37,7 @@ import {
 import { recordClipboard } from "./clipboard";
 import { holdFirstRequest } from "./editor";
 import { inboxList } from "./inbox-pane";
+import { namesMac } from "./keyboard-palette";
 import { type KeyedWrite, keyedWrite } from "./keyed-writes";
 import { setCreatedAt } from "./seed";
 import { sessionIds } from "./session-ids";
@@ -287,7 +289,10 @@ test("Agents puts who needs you first, groups the rest by what each is doing, sh
     );
     const composer = plannerCard.getByRole("textbox", { name: "Comment" });
     await composer.fill(`/btw ${body}`);
-    await expect(plannerCard).toContainText("Ctrl/Cmd+Enter to send · Enter for a new line");
+    // The hint names the page's `$mod`, `⌘` under a Mac's user agent and `Ctrl` elsewhere.
+    await expect(plannerCard).toContainText(
+      `${keyText("$mod+Enter", await namesMac(page))} to send · Enter for a new line`
+    );
     await composer.press("Enter");
     await expect(composer).toHaveValue(`/btw ${sentBody}`);
     await composer.press("Control+Enter");
