@@ -148,7 +148,7 @@ func TestTheIssueFactsMigrationOpensEachLiveClaimsIssueAndTakesTheRetentionEnd(t
 	}); err != nil {
 		t.Fatalf("read LEGION-209 after the migration: %v", err)
 	}
-	if issue.RetainedUntil != nil || issue.CarriedGeneration != 0 || issue.CarriedGate || issue.PendingClose != nil || issue.SeenSeq != 0 {
+	if issue.RetainedUntil != nil || issue.CarriedGeneration != 0 || issue.CarriedGate || issue.PendingClose != nil || issue.SeenSeq != 0 || issue.HeldSessionWrites != nil {
 		t.Fatalf("LEGION-209 recorded before the migration reads back %+v, want none of its own facts set", issue)
 	}
 

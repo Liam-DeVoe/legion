@@ -56,10 +56,11 @@ import (
 //   - a session's status write on an issue is set back when the session holds a claim of an issue
 //     with the same gate root (R26's repair, which reads the gate root where it reads the stored
 //     tree today), and, from any other session, set back with its architect told only on an issue
-//     that is its own gate root and has started; anything else is a person's move. The owning
-//     architect's move out of the workflow comes first (dispatch://INFRA-3178): the backlog of the
-//     architect of an issue above it on its chain, on an issue that is no root, is a person's move
-//     whatever gate root the two stand under (workflow's owningArchitectsMove, record.MoveOwners).
+//     that is its own gate root and has started; anything else is a person's move. The move out
+//     of the workflow of the architect of an issue above comes first (dispatch://INFRA-3178): the
+//     backlog of a session that holds a published architect claim of an issue above it on its
+//     chain is a person's move whatever gate root the two stand under, and whatever of the chain
+//     is in Legion's work (workflow's architectAbovesMove, decision 24 of dispatch://INFRA-4730).
 //
 // The decisions are read through the daemon's own code over a migrated store, one database and
 // one runtime per project, and a stand-in Dispatch that answers from the fixture:
@@ -210,18 +211,22 @@ var chainRows = []chainRow{
 		calls: []chainCall{{opSignOff, "INFRA-9010", "SIGNOFF_OUTSIDE_ACCEPTING"}, {opSignOff, "INFRA-9011", "SIGNOFF_OUTSIDE_ACCEPTING"},
 			{opRegister, "INFRA-9011", "GATE_ROOT_ONLY"}}},
 	// C in work under B, its own architect failed. R18: a failed claim does not hold its role, so
-	// its notices go to the nearest architect above it in Legion's work that does, B's.
+	// its notices go to the nearest architect above it in Legion's work that does, B's. R26's
+	// repair: B's architect, released for being idle, holds no claim the daemon publishes as a role
+	// holder (suspended, record.Store.LiveRoleHolders), so its backlog on C is set back as an agent
+	// of C's gate root's (decision 24 of dispatch://INFRA-4730).
 	{key: "INFRA-9012", shape: "C in work under B, its architect failed",
 		parent: "INFRA-9011", status: "testing", phase: phase.Testing, tree: "INFRA-9010", slot: true, architect: failedClaim,
 		notice: "INFRA-9011", noticeAbove: "INFRA-9011", place: heldPlace(record.HeldAwaitingChildren, "INFRA-9013"),
-		repairs: map[string]string{"INFRA-9011": personsMove, "INFRA-9012": setBack, outsideWriter: personsMove},
+		repairs: map[string]string{"INFRA-9011": setBack, "INFRA-9012": setBack, outsideWriter: personsMove},
 		calls:   []chainCall{{opSignOff, "INFRA-9011", "SIGNOFF_OUTSIDE_ACCEPTING"}}},
 	// D at todo under C. R19: an issue under a parent in Legion's work starts on todo, whatever its
-	// label, once every gate above it is open (A's is). R18: C's architect failed, so B's.
+	// label, once every gate above it is open (A's is). R18: C's architect failed, so B's. R26's
+	// repair: B's released architect's backlog is set back, as on C.
 	{key: "INFRA-9013", shape: "D at todo under C, three deep",
 		parent: "INFRA-9012", status: "todo", phase: phase.Admitted, tree: "INFRA-9010",
 		notice: "INFRA-9011", noticeAbove: "INFRA-9011", place: placeActive, starts: true,
-		repairs: map[string]string{"INFRA-9011": personsMove, outsideWriter: personsMove},
+		repairs: map[string]string{"INFRA-9011": setBack, outsideWriter: personsMove},
 		calls:   []chainCall{{opRelease, "INFRA-9011", taken}, {opRelease, "INFRA-9012", taken}}},
 
 	// An issue at work under a parent on the backlog under an issue in work: the state R24
@@ -979,6 +984,11 @@ insert into step_starts_rollback (issue, tree, taken_at)
 		}
 		if err := d.st.PutClaim(ctx, c); err != nil {
 			t.Fatalf("seed the architect claim of %s: %v", row.key, err)
+		}
+		// The claim's session is held as its registration holds it, so a claim in a live state is
+		// one the daemon publishes as its role's holder (record.Store.LiveRoleHolders).
+		if _, err := d.st.HoldSessions(ctx, token, c.Token, supervise.RecordedHolds(c.Session, c.SessionFile)); err != nil {
+			t.Fatalf("hold the session of the architect claim of %s: %v", row.key, err)
 		}
 	}
 }

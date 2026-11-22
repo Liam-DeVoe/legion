@@ -932,6 +932,15 @@ const (
 // write of the issue's own architect, of a sibling's architect, of another role of the parent and
 // of an architect whose claim is suspended or failed, as every other write of an agent of the tree.
 //
+// A write on an issue whose chain is unknown is held (record.Issue.HeldSessionWrites), and so is
+// each later session write, until the chain is known; then the list is judged in Dispatch's order,
+// at the pass that knows the chain (here the workflow's own call, Engine.JudgeHeldStatusWrites) or
+// at once where a later session write meets a known chain with writes still held. The architect
+// above's done then the issue's own architect's backlog end at done with one write of done at the
+// backlog's sequence; its backlog then its done end at done with nothing written; two writes the
+// repair sets back end at the record's own status with one write of it. A person's later write
+// clears the list and stands, and the daemon's own echo leaves it.
+//
 // Negative controls, run when this was written, each failing this test and then reverted: with the
 // repair taking the architect's write only while the written issue is in Legion's work, "an issue
 // out of Legion's work: the architect's backlog and then done" ends at backlog; with it reading the
@@ -1021,6 +1030,225 @@ func TestTheRepairTakesTheWriteOfAnArchitectAboveOnTheChain(t *testing.T) {
 			fact := rig.write(ownerChild, "backlog", writer.session)
 			rig.assertSetBack(before, "backlog", fact)
 		})
+	}
+	t.Run("held on an unknown chain: the architect above's done, then the issue's own architect's backlog", func(t *testing.T) {
+		rig := seedOwnerTree(t, nil)
+		rig.loseChainTop()
+		done := rig.write(ownerChild, record.DoneStatus, rootArchitect)
+		backlog := rig.write(ownerChild, "backlog", childArchitect)
+		rig.assertHeld(ownerChild, record.HeldSessionWrite{Session: rootArchitect, Status: record.DoneStatus, Seq: done.Seq},
+			record.HeldSessionWrite{Session: childArchitect, Status: "backlog", Seq: backlog.Seq})
+		rig.findChainTop()
+		rig.judgeHeld(ownerChild)
+		rig.assertJudged(ownerChild, record.DoneStatus, record.ReassertStatusWrite(record.DoneStatus, "backlog", backlog.Seq))
+	})
+	t.Run("held on an unknown chain: the architect above's done, then on the known chain the issue's own architect's backlog", func(t *testing.T) {
+		rig := seedOwnerTree(t, nil)
+		rig.loseChainTop()
+		done := rig.write(ownerChild, record.DoneStatus, rootArchitect)
+		rig.assertHeld(ownerChild, record.HeldSessionWrite{Session: rootArchitect, Status: record.DoneStatus, Seq: done.Seq})
+		rig.findChainTop()
+		backlog := rig.write(ownerChild, "backlog", childArchitect)
+		rig.assertJudged(ownerChild, record.DoneStatus, record.ReassertStatusWrite(record.DoneStatus, "backlog", backlog.Seq))
+	})
+	t.Run("held on an unknown chain: the architect above's backlog, then its done", func(t *testing.T) {
+		rig := seedOwnerTree(t, nil)
+		rig.loseChainTop()
+		rig.write(ownerChild, "backlog", rootArchitect)
+		rig.write(ownerChild, record.DoneStatus, rootArchitect)
+		rig.findChainTop()
+		rig.judgeHeld(ownerChild)
+		rig.assertJudged(ownerChild, record.DoneStatus)
+	})
+	t.Run("held on an unknown chain: a worker's backlog, then the architect above's done", func(t *testing.T) {
+		rig := seedOwnerTree(t, nil)
+		rig.loseChainTop()
+		rig.write(ownerChild, "backlog", childImplementer)
+		rig.write(ownerChild, record.DoneStatus, rootArchitect)
+		rig.findChainTop()
+		rig.judgeHeld(ownerChild)
+		rig.assertJudged(ownerChild, record.DoneStatus)
+	})
+	t.Run("held on an unknown chain: a worker's done, then the issue's own architect's backlog", func(t *testing.T) {
+		rig := seedOwnerTree(t, nil)
+		before := issue(t, rig.pool, ownerChild)
+		rig.loseChainTop()
+		rig.write(ownerChild, record.DoneStatus, childImplementer)
+		backlog := rig.write(ownerChild, "backlog", childArchitect)
+		rig.findChainTop()
+		rig.judgeHeld(ownerChild)
+		rig.assertJudged(ownerChild, before.Status, record.ReassertStatusWrite(before.Status, "backlog", backlog.Seq))
+		if got := issue(t, rig.pool, ownerChild); got.Phase != before.Phase || got.Generation != before.Generation {
+			t.Fatalf("%s after two writes the repair sets back = phase %s, generation %d; want phase %s and generation %d kept", ownerChild, got.Phase, got.Generation, before.Phase, before.Generation)
+		}
+	})
+	t.Run("held on an unknown chain: a person's later write clears the list and stands", func(t *testing.T) {
+		rig := seedOwnerTree(t, nil)
+		rig.loseChainTop()
+		rig.write(ownerChild, record.DoneStatus, rootArchitect)
+		rig.write(ownerChild, "backlog", "")
+		rig.assertHeld(ownerChild)
+		rig.findChainTop()
+		rig.judgeHeld(ownerChild)
+		rig.assertJudged(ownerChild, "backlog")
+	})
+	t.Run("held on an unknown chain: the daemon's own echo leaves the list", func(t *testing.T) {
+		rig := seedOwnerTree(t, nil)
+		rig.loseChainTop()
+		done := rig.write(ownerChild, record.DoneStatus, rootArchitect)
+		before := issue(t, rig.pool, ownerChild)
+		rig.echo(ownerChild, before.Status)
+		rig.assertHeld(ownerChild, record.HeldSessionWrite{Session: rootArchitect, Status: record.DoneStatus, Seq: done.Seq})
+		rig.findChainTop()
+		rig.judgeHeld(ownerChild)
+		rig.assertJudged(ownerChild, record.DoneStatus, record.ReassertStatusWrite(record.DoneStatus, before.Status, done.Seq))
+	})
+}
+
+// The missing top of the chain the held-write cases lose and find again: ownerRoot's parent in
+// the copy of Dispatch, an issue the copy holds no row of until a reading of it arrives.
+const missingTop = "LEGION-99"
+
+// loseChainTop makes the copy of Dispatch name missingTop as ownerRoot's parent, a row it does not
+// hold, so every chain of the tree is unknown (R16 of dispatch://INFRA-3320), while the rows it
+// reads below the gap, the root's legion label among them, stand.
+func (r *ownerRig) loseChainTop() {
+	r.t.Helper()
+	r.putCopyRow(record.DispatchReading{Key: ownerRoot, Project: testProject, Parent: record.Carry(missingTop)})
+	if chain := r.chainOf(ownerChild); chain.Known() {
+		r.t.Fatalf("the chain of %s = %+v, want it unknown: these cases prove nothing", ownerChild, chain)
+	}
+}
+
+// findChainTop writes missingTop's row into the copy with no parent, as a reading of it would, and
+// with no event, so no pass runs: the chains of the tree are known again.
+func (r *ownerRig) findChainTop() {
+	r.t.Helper()
+	r.putCopyRow(record.DispatchReading{Key: missingTop, Project: testProject, Status: record.Carry("backlog"),
+		Parent: record.Carry(""), Labels: record.Carry([]string{})})
+	if chain := r.chainOf(ownerChild); !chain.Known() {
+		r.t.Fatalf("the chain of %s = %+v, want it known", ownerChild, chain)
+	}
+}
+
+// putCopyRow writes reading into the copy of Dispatch's issues at a sequence above every one the
+// copy holds for its key.
+func (r *ownerRig) putCopyRow(reading record.DispatchReading) {
+	r.t.Helper()
+	inTx(r.t, r.pool, func(tx pgx.Tx) {
+		if err := tx.QueryRow(context.Background(), `select coalesce(max(greatest(status_seq, parent_seq, labels_seq)), 0) + 1 from dispatch_issues where key = $1`,
+			reading.Key).Scan(&reading.Seq); err != nil {
+			r.t.Fatalf("read the copy's sequences of %s: %v", reading.Key, err)
+		}
+		if err := record.NewStore().PutDispatchIssue(context.Background(), tx, reading); err != nil {
+			r.t.Fatalf("write the copy's row of %s: %v", reading.Key, err)
+		}
+	})
+}
+
+// chainOf is key's Dispatch chain as the copy holds it.
+func (r *ownerRig) chainOf(key string) record.Chain {
+	r.t.Helper()
+	var chain record.Chain
+	inTx(r.t, r.pool, func(tx pgx.Tx) {
+		chains, err := record.ReadChains(context.Background(), tx, record.NewStore(), testProject, []string{key})
+		if err != nil {
+			r.t.Fatalf("read the chain of %s: %v", key, err)
+		}
+		chain = chains.Chain(key)
+	})
+	return chain
+}
+
+// judgeHeld has the workflow judge the session writes key holds, in a transaction of its own, as
+// admission's pass calls it (workflow's Engine.JudgeHeldStatusWrites), and fails unless the chain
+// was known to judge them on.
+func (r *ownerRig) judgeHeld(key string) {
+	r.t.Helper()
+	scoped, committed := intake.WithCommitHooks(context.Background())
+	scoped = r.engine.OpenFact(scoped)
+	tx, err := r.pool.Begin(scoped)
+	if err != nil {
+		r.t.Fatalf("begin: %v", err)
+	}
+	defer tx.Rollback(scoped)
+	held, err := record.NewStore().Issue(scoped, tx, key)
+	if err != nil || held == nil {
+		r.t.Fatalf("read %s: %v, %v", key, held, err)
+	}
+	known, err := r.engine.JudgeHeldStatusWrites(scoped, tx, *held)
+	if err != nil || !known {
+		r.t.Fatalf("judge the writes %s holds = known %t, %v; want them judged on its known chain", key, known, err)
+	}
+	if err := r.engine.SettleFact(scoped, tx); err != nil {
+		r.t.Fatalf("settle: %v", err)
+	}
+	if err := tx.Commit(scoped); err != nil {
+		r.t.Fatalf("commit: %v", err)
+	}
+	committed()
+}
+
+// assertHeld holds that key's record holds want, in order, and that nothing of them was taken or
+// set back yet: the record keeps the status the tree's settle left it at, and no status write of
+// the daemon's is queued for it since.
+func (r *ownerRig) assertHeld(key string, want ...record.HeldSessionWrite) {
+	r.t.Helper()
+	got := issue(r.t, r.pool, key)
+	if !reflect.DeepEqual(got.HeldSessionWrites, slices.Clip(want)) && (len(want) > 0 || len(got.HeldSessionWrites) > 0) {
+		r.t.Fatalf("session writes %s holds = %+v, want %+v", key, got.HeldSessionWrites, want)
+	}
+	if len(want) == 0 {
+		return
+	}
+	if !record.InLegionsWork(got) || got.Status != "in_progress" {
+		r.t.Fatalf("%s while it holds writes = phase %s, status %s; want it still in Legion's work at in_progress", key, got.Phase, got.Status)
+	}
+	if writes := payloadsOf[record.StatusWrite](rowsFor(r.sinceSettle(), key)); len(writes) != 0 {
+		r.t.Fatalf("status writes queued for %s while it holds writes = %+v, want none", key, writes)
+	}
+}
+
+// assertJudged holds that key's held writes were judged: its record holds none, stands at status,
+// out of Legion's work where status takes it out, and the status writes queued for it since the
+// tree's settle are want, in order: at most the one write of the record's final status.
+func (r *ownerRig) assertJudged(key, status string, want ...record.StatusWrite) {
+	r.t.Helper()
+	got := issue(r.t, r.pool, key)
+	if len(got.HeldSessionWrites) != 0 || got.Status != status || record.OutOfWorkflow(status) && record.InLegionsWork(got) {
+		r.t.Fatalf("%s once its held writes are judged = phase %s, status %s, held %+v; want status %s and none held", key, got.Phase, got.Status, got.HeldSessionWrites, status)
+	}
+	writes := payloadsOf[record.StatusWrite](rowsFor(r.sinceSettle(), key))
+	if len(writes) != 0 || len(want) != 0 {
+		if !reflect.DeepEqual(writes, want) {
+			r.t.Fatalf("status writes queued for %s once its held writes are judged = %+v, want %+v", key, writes, want)
+		}
+	}
+}
+
+// A session's write on an issue whose Dispatch chain the copy cannot read to its top is held, and
+// so is each later one (record.Issue.HeldSessionWrites), until the first admission pass whose copy
+// knows the chain judges them in Dispatch's order and clears them (decision 24 of
+// dispatch://INFRA-4730): here the pass the event of the missing link runs, which leaves the
+// writes to it. The architect above's done is taken, and the issue's own architect's later backlog
+// is set back to the done the first left, with one write of done at the backlog's sequence. The
+// daemon's own echo of the issue in between leaves the list.
+//
+// Negative control, run when this was written: with the pass dropping the held writes unjudged,
+// the issue stays in Legion's work and this test fails.
+func TestAHeldStatusWriteIsJudgedAtThePassThatKnowsItsChain(t *testing.T) {
+	rig := seedOwnerTree(t, nil)
+	rig.loseChainTop()
+	done := rig.write(ownerChild, record.DoneStatus, rootArchitect)
+	backlog := rig.write(ownerChild, "backlog", childArchitect)
+	rig.echo(ownerChild, issue(t, rig.pool, ownerChild).Status)
+	rig.assertHeld(ownerChild, record.HeldSessionWrite{Session: rootArchitect, Status: record.DoneStatus, Seq: done.Seq},
+		record.HeldSessionWrite{Session: childArchitect, Status: "backlog", Seq: backlog.Seq})
+	rig.applyEvent("the-missing-top", intake.DispatchIssue{Key: missingTop, ResolvedRepo: "acme/widgets", Seq: 1, Type: "issue.updated",
+		Status: "backlog", Title: missingTop, Rank: "Z"})
+	rig.assertJudged(ownerChild, record.DoneStatus, record.ReassertStatusWrite(record.DoneStatus, "in_progress", backlog.Seq))
+	if notices := childNotices(rowsFor(rig.sinceSettle(), ownerChild)); len(notices) != 1 || notices[0].Kind != "child-closed" {
+		t.Fatalf("notices of %s once its held writes are judged = %+v, want the child-closed of the done alone", ownerChild, notices)
 	}
 }
 

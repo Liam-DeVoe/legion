@@ -76,10 +76,27 @@
 -- at admitted and no tree where it has started (handed_over_from), its claims name that tree and
 -- are bound to an open lifecycle of it, a handed_over_roots row says what it carried, and its
 -- unfinished rows name that tree, at the issue's generation where they name a tree's generation.
--- It deletes the project's record of the conversion, which clears the state's daemon.convertedAt,
--- so the next boot on this release converts what the release before wrote in between. Last it
--- prints each issue that has a claim not retired with the tree it stores: a Sandbox whose
--- legion.dev/tree label differs from that tree is relabelled with it before the release before
+-- It sets back each session write the repair holds on an issue whose Dispatch chain was unknown
+-- (held_session_writes), since a take leaves the workflow through the engine and no statement can
+-- make one, and the release before sets back every write it does not take: it prints each such
+-- issue with its held writes and what the step does with them, queues one status write of the
+-- issue in the release before's shape (record.ReassertStatusWrite: the record's status, observed
+-- at the record's dispatch_status and the last held write's sequence, which that release writes
+-- only while no one but the daemon has changed the status since) where Dispatch shows another
+-- status and the record is one the release before sets a session's write back on: a record in the
+-- workflow (a workflow status and a phase other than done, the rule correctStatuses skips the rest
+-- by), and a root of its own tree that waits on a person with no linger (its sessionStatusWrite's
+-- waiting root), whatever its status. It empties each list. Any other issue gets no row and is left
+-- as Dispatch shows it. What that loses, the printed rows name: an architect
+-- above's write, which that architect makes again once the release before runs, to be judged by
+-- its own rule; a write on a child by a session with no claim of the issue's tree, which the
+-- release before takes as a person's move and which that session or a person makes again; and a
+-- write on an issue out of the workflow that the release before would have set back, which stays
+-- on the board. It deletes the project's record of the conversion, which clears the state's
+-- daemon.convertedAt, so the next boot on this release converts what the release before wrote in
+-- between. Last it prints each issue that has a claim not retired with the tree it stores: a
+-- Sandbox whose legion.dev/tree label differs from that tree is relabelled with it before the
+-- release before
 -- boots, since that release deletes a Sandbox by its tree label and sweeps one whose label is not
 -- its issue's stored tree. Daemons of several projects can share the database, and each runs only
 -- its own project's rows (split_part(issue, '-', 1)), so each statement names the project,
@@ -129,6 +146,20 @@
 --     and i.project = '<PROJECT>' and i.carried_generation <> 0 and i.tree <> i.key;
 -- update issues set handed_over_from = case when phase = 'admitted' then tree else '' end, tree = key
 --   where project = '<PROJECT>' and carried_generation <> 0 and tree <> key;
+-- -- Each issue of one project holding session writes the repair held on an unknown chain, each write, and what the step does with them.
+-- select i.key, w.session, w.status, w.seq,
+--     case when i.dispatch_status <> i.status and ((i.phase <> 'done' and i.status not in ('triage', 'icebox', 'backlog', 'done'))
+--         or (i.phase = 'awaiting_person' and (i.awaiting_ask is not null or i.awaiting_gate_version is not null) and i.key = i.tree and i.linger_until is null))
+--       then 'set back to ' || i.status else 'left as Dispatch shows it, ' || i.dispatch_status end as step
+--   from issues i cross join lateral jsonb_to_recordset(i.held_session_writes) as w(session text, status text, seq bigint)
+--   where i.project = '<PROJECT>' and i.held_session_writes <> '[]'::jsonb order by i.key, w.seq;
+-- insert into outbox (kind, issue, payload, attempts, next_at, last_error)
+--   select 'dispatch_status', key, jsonb_build_object('kind', 'reassert', 'status', status, 'observedStatus', dispatch_status,
+--       'observedSeq', (held_session_writes -> -1 ->> 'seq')::bigint), 0, now(), ''
+--   from issues where project = '<PROJECT>' and held_session_writes <> '[]'::jsonb and dispatch_status <> status
+--     and ((phase <> 'done' and status not in ('triage', 'icebox', 'backlog', 'done'))
+--       or (phase = 'awaiting_person' and (awaiting_ask is not null or awaiting_gate_version is not null) and key = tree and linger_until is null));
+-- update issues set held_session_writes = '[]'::jsonb where project = '<PROJECT>' and held_session_writes <> '[]'::jsonb;
 -- -- The record of the conversion of one project.
 -- delete from tree_conversions where project = '<PROJECT>';
 -- -- Each issue of one project with a claim not retired, and the tree it stores, for the relabel of its Sandbox.

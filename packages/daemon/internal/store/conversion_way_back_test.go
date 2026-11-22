@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"maps"
 	"reflect"
 	"slices"
@@ -114,7 +115,10 @@ func decodedBeforeTheConversion(kind record.OutboxKind, payload []byte) string {
 // it with, and a row of each new shape (a retention_end, a reparented notice, a status-scope
 // controller notice, a status write with an option, R18's seed, a status write that waits for
 // another and one the controller asked for); another project's status write with its fence and
-// its retention_end; and both projects' records of their conversion.
+// its retention_end; both projects' records of their conversion; and session writes the repair
+// holds on unknown chains (held_session_writes): on a record in the workflow that Dispatch shows at
+// the last of two held writes, on one Dispatch shows at its own status, on records at phase done,
+// on a record at each status of record.OutOfWorkflowStatuses, and on another project's record.
 //
 // The control comes first, on the same rows: the strict decode of the release before refuses each
 // row that carries a key this release adds or is of a kind or a notice kind it adds, and takes the
@@ -124,7 +128,10 @@ func decodedBeforeTheConversion(kind record.OutboxKind, payload []byte) string {
 // release before's decode takes it, and so does this release's, which reads it on the roll
 // forward; LEGION-2's and LEGION-3's records, claims, lifecycle, handed_over_roots row and queued
 // rows are what that release's own re-admission would have written; LEGION's record of the
-// conversion is gone; and OTHER's rows and record stand as they were.
+// conversion is gone; one reassert status write in the release before's shape sets back the held
+// writes of the record in the workflow that Dispatch shows at another status, at the last held
+// write's sequence, no row is queued for any other, and every held list of LEGION is empty; and
+// OTHER's rows, record and held writes stand as they were.
 //
 // What this cannot show is the earlier daemon running, whose binary is not here (its decode is
 // the copy above), and the relabel of a Sandbox, which the block's last statement prints the
@@ -173,6 +180,43 @@ func TestTheTreeConversionWayBackLeavesWhatTheReleaseBeforeReads(t *testing.T) {
 	}
 	for _, project := range []string{"LEGION", "OTHER"} {
 		exec("record the conversion of "+project, `insert into tree_conversions (project, step, converted_at) values ($1, 10, now())`, project)
+	}
+	// The held writes. The literal list of statuses the way back's SQL calls out of the workflow
+	// is held to record.OutOfWorkflowStatuses by one record at each of them, so the two cannot
+	// drift apart unseen. A root of its own tree that waits on a person is one the release before
+	// sets a session's write back on whatever its status (its sessionStatusWrite's waiting root),
+	// so its held write is set back at a status out of the workflow too; an issue that waits on a
+	// person under another's tree is no such root.
+	type heldIssue struct {
+		key, project, tree, phase, status, shown, ask, writes string
+		// reassert is the payload of the one status write the way back queues for the issue, as
+		// JSON, "" for none.
+		reassert string
+	}
+	held := []heldIssue{
+		{key: "LEGION-20", phase: "implementing", status: "in_progress", shown: "done",
+			writes:   `[{"session":"ses-a","status":"backlog","seq":8},{"session":"ses-b","status":"done","seq":9}]`,
+			reassert: `{"kind":"reassert","status":"in_progress","observedStatus":"done","observedSeq":9}`},
+		{key: "LEGION-21", phase: "implementing", status: "in_progress", shown: "in_progress", writes: `[{"session":"ses-a","status":"in_progress","seq":4}]`},
+		{key: "LEGION-22", phase: "done", status: "done", shown: "backlog", writes: `[{"session":"ses-a","status":"backlog","seq":5}]`},
+		{key: "LEGION-23", phase: "done", status: "in_progress", shown: "backlog", writes: `[{"session":"ses-a","status":"backlog","seq":5}]`},
+		{key: "LEGION-24", phase: "awaiting_person", status: "backlog", shown: "todo", ask: "ask-24", writes: `[{"session":"ses-a","status":"todo","seq":7}]`,
+			reassert: `{"kind":"reassert","status":"backlog","observedStatus":"todo","observedSeq":7}`},
+		{key: "LEGION-25", tree: "LEGION-24", phase: "awaiting_person", status: "backlog", shown: "todo", ask: "ask-25", writes: `[{"session":"ses-a","status":"todo","seq":7}]`},
+		{key: "OTHER-8", project: "OTHER", phase: "implementing", status: "in_progress", shown: "done", writes: `[{"session":"ses-a","status":"done","seq":3}]`},
+	}
+	for i, status := range record.OutOfWorkflowStatuses {
+		held = append(held, heldIssue{key: fmt.Sprintf("LEGION-%d", 30+i), phase: "implementing", status: status, shown: "todo",
+			writes: `[{"session":"ses-a","status":"todo","seq":6}]`})
+	}
+	for _, h := range held {
+		project := h.project
+		if project == "" {
+			project = "LEGION"
+		}
+		exec("record "+h.key+" with its held writes", `insert into issues (key, tree, project, title, phase, generation, status, dispatch_status, rank,
+			last_dispatch_seq, held_session_writes, awaiting_ask) values ($1, coalesce(nullif($7, ''), $1), $2, $1, $3, 1, $4, $5, 'C', 9, $6::jsonb, nullif($8, ''))`,
+			h.key, project, h.phase, h.status, h.shown, h.writes, h.tree, h.ask)
 	}
 
 	fence := record.Fence{Generation: 2, Entry: 4, PodUID: "pod-uid-1"}
@@ -305,7 +349,7 @@ func TestTheTreeConversionWayBackLeavesWhatTheReleaseBeforeReads(t *testing.T) {
 		}
 	}
 
-	issues := rowsAsText(t, store, `select key || ' ' || tree || ' ' || handed_over_from from issues order by key`)
+	issues := rowsAsText(t, store, `select key || ' ' || tree || ' ' || handed_over_from from issues where key in ('LEGION-1', 'LEGION-2', 'LEGION-3', 'OTHER-7') order by key`)
 	if want := []string{"LEGION-1 LEGION-1 ", "LEGION-2 LEGION-2 ", "LEGION-3 LEGION-3 LEGION-1", "OTHER-7 OTHER-7 "}; !slices.Equal(issues, want) {
 		t.Errorf("the issues, their stored trees and the trees they left read %q after the way back, want %q: each converted root stores its own key, and the one that never started names the tree it left", issues, want)
 	}
@@ -324,6 +368,33 @@ func TestTheTreeConversionWayBackLeavesWhatTheReleaseBeforeReads(t *testing.T) {
 	}
 	if conversions, want := rowsAsText(t, store, `select project from tree_conversions order by project`), []string{"OTHER"}; !slices.Equal(conversions, want) {
 		t.Errorf("the conversions recorded after the way back are %q, want %q: LEGION's goes, which clears its daemon.convertedAt", conversions, want)
+	}
+	for _, h := range held {
+		rows, err := store.Pool().Query(ctx, `select payload from outbox where kind = 'dispatch_status' and issue = $1`, h.key)
+		if err != nil {
+			t.Fatalf("read the status writes of %s: %v", h.key, err)
+		}
+		writes, err := pgx.CollectRows(rows, pgx.RowTo[[]byte])
+		if err != nil {
+			t.Fatalf("read the status writes of %s: %v", h.key, err)
+		}
+		switch {
+		case h.reassert == "" && len(writes) != 0:
+			t.Errorf("the way back queued %s for %s (phase %s, status %s, Dispatch showing %s), want nothing", writes, h.key, h.phase, h.status, h.shown)
+		case h.reassert != "" && (len(writes) != 1 || !jsonEqual(t, writes[0], []byte(h.reassert))):
+			t.Errorf("the way back queued %s for %s, want the one set-back %s", writes, h.key, h.reassert)
+		case h.reassert != "":
+			if refusal := decodedBeforeTheConversion(record.OutboxKindDispatchStatus, writes[0]); refusal != "" {
+				t.Errorf("the release before refuses the set-back of %s's held writes, for %s: %s", h.key, refusal, writes[0])
+			}
+			if _, err := record.DecodeOutboxPayload(record.OutboxRow{Kind: record.OutboxKindDispatchStatus, Issue: h.key, Payload: writes[0]}); err != nil {
+				t.Errorf("this release's decode of the set-back of %s's held writes: %v", h.key, err)
+			}
+		}
+	}
+	if stillHeld, want := rowsAsText(t, store, `select key || ' ' || held_session_writes::text from issues where held_session_writes <> '[]'::jsonb order by key`),
+		[]string{`OTHER-8 [{"seq": 3, "status": "done", "session": "ses-a"}]`}; !slices.Equal(stillHeld, want) {
+		t.Errorf("the issues holding session writes after the way back are %q, want %q: every list of LEGION emptied, OTHER's as it was", stillHeld, want)
 	}
 }
 

@@ -606,13 +606,14 @@ func TestStoreRoundTripsTheMarkThatAnIssueHoldsItsOwnGate(t *testing.T) {
 }
 
 // Each issue keeps its own facts on its record (R17 of dispatch://INFRA-3320): the retention a
-// converted linger left it, the run and gate a hand-over carried into it, a close Dispatch refused
-// and the newest Dispatch sequence the consumer saw. PutIssue stores each
+// converted linger left it, the run and gate a hand-over carried into it, a close Dispatch refused,
+// the newest Dispatch sequence the consumer saw and the session writes the repair holds while its
+// chain is unknown, in their order. PutIssue stores each
 // and every read behind issueColumns gives it back, and a record carrying none reads back with
 // none. A later write replaces each of them but two: issues.tree is the insert's alone, so a copy
 // naming another tree keeps the one the issue was first recorded under (R22), and seen_seq only
 // moves forward, so a copy read before the consumer moved it never takes it back. The write that
-// clears the refused close and the retention clears them.
+// clears the refused close, the retention and the held writes clears them.
 func TestStoreRoundTripsEachIssuesOwnFacts(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
@@ -624,6 +625,7 @@ func TestStoreRoundTripsEachIssuesOwnFacts(t *testing.T) {
 	facts.CarriedGeneration, facts.CarriedGate = 4, true
 	facts.PendingClose = &PendingClose{Generation: 3, Entry: 7, Kind: "close_root", Reason: "Closed by its architect: every child is done."}
 	facts.SeenSeq = 52
+	facts.HeldSessionWrites = []HeldSessionWrite{{Session: "ses-architect", Status: "done", Seq: 50}, {Session: "ses-worker", Status: "backlog", Seq: 52}}
 	bare := issueFixture("LEGION-220")
 
 	inTx(t, st, func(tx pgx.Tx) {
@@ -643,7 +645,7 @@ func TestStoreRoundTripsEachIssuesOwnFacts(t *testing.T) {
 
 	later := facts
 	later.Tree = "LEGION-300"
-	later.RetainedUntil, later.PendingClose = nil, nil
+	later.RetainedUntil, later.PendingClose, later.HeldSessionWrites = nil, nil, nil
 	later.CarriedGeneration, later.CarriedGate = 0, false
 	later.SeenSeq = 40
 	inTx(t, st, func(tx pgx.Tx) {
@@ -2395,7 +2397,7 @@ func TestRecordMigrationCreatesTheRequiredColumns(t *testing.T) {
 			"ancestry", "handed_over_from", "told_parent", "memory_group", "memory_draw_mode", "memory_drawn_at", "memory_carried",
 			"moved_at", "tree_stalled_told_at", "released_for_wait_at", "view_of",
 			"children_wait_start", "children_wait_task", "children_wait_reason", "children_wait_since", "children_wait_children", "children_waited_at",
-			"holds_gate", "retained_until", "carried_generation", "carried_gate", "pending_close", "seen_seq"},
+			"holds_gate", "retained_until", "carried_generation", "carried_gate", "pending_close", "seen_seq", "held_session_writes"},
 		"phases":            {"issue", "role", "claim", "handoff_commit", "pass", "rounds", "conflict_rounds", "backward_moves", "cap_told", "verdict", "summary", "last_handoff", "decision", "completed_at", "merge_note", "entry", "entry_task", "entry_verbatim", "entry_raised_at", "entry_moved_back", "entry_from", "entry_given_task", "entry_given_entry", "entry_given_generation", "handoff_record", "handoff_version", "reviewed_head"},
 		"pull_requests":     {"issue", "repo", "number", "branch", "base", "base_moved", "head_sha", "head_updated_at", "failing", "cancelled", "fix_attempts", "blocked_attempts", "check_runs", "generation", "snapshot", "statuses", "pushes", "head_moves", "head_counted", "head_run", "planned_red", "review_seen", "review_seen_at", "state", "checked_head", "required", "required_workflows", "required_workflows_head", "mergeability", "merge_state", "state_read_at", "conflicting_head", "merge_sha", "conflict_read", "merge_forward"},
 		"production_checks": {"issue", "project", "tree", "repo", "pr_number", "merge_sha", "opened_at", "bound_at", "role", "looks", "look_open", "look_wake_at", "last_wake_kind", "last_wake_detail", "last_wake_at", "wake_at", "last", "closed_at", "outcome"},

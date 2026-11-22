@@ -237,6 +237,8 @@ var IssueRecordFields = []RecordFieldDecision{
 	{Field: "PendingClose", Column: ColumnWithheld,
 		Reason: "a close Dispatch refused while a child was not done, which the decision pass writes again once every child is done: the daemon's own record of what it owes Dispatch, reaching no surface"},
 	{Field: "SeenSeq", Column: ColumnWithheld, Reason: BookkeepingReason},
+	{Field: "HeldSessionWrites", Column: ColumnWithheld,
+		Reason: "the status writes of sessions the repair holds while the issue's Dispatch chain is unknown, which the first pass that knows the chain judges and clears: the daemon's own record of what it owes a decision, reaching no surface"},
 }
 
 // AssignmentRecordFields is every field of `record.Assignment`, in the order the record declares
