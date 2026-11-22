@@ -3,7 +3,8 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { openAgents, seedAgents, shownAgentRows } from "./agents";
 import { createIssue, createProject, getIssue, patchIssue } from "./api";
 import { openIssue, searchPath } from "./keyboard-palette";
-import { expect, type Route, test } from "./test";
+import { shellLoads } from "./shell";
+import { expect, type Request, type Route, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -689,6 +690,19 @@ test("a row whose control has gone since the palette opened does nothing", async
 // and asked for nothing until a reload. The bar's prefetch is held on the wire until the page is
 // offline and then fails as a download the outage cut, and every request for the chunk fails
 // while the page is offline.
+//
+// Chromium takes a context offline, and back, in two halves that the row cannot order: the page's
+// own reading of the network (`navigator.onLine`, and its `offline` and `online` events) and the
+// network under the page. Read on this row, the page heard `offline` from 100 ms after
+// `setOffline(true)` had returned to 460 ms before it. A chunk that fails while the page still
+// reads itself online is one the recovery reloads for, as it must for a chunk that fails online
+// (`web/src/features/shell/DeploymentResilience.tsx`), and that took a run of this row down: the
+// ask the page's `online` sent again for the bar's chunk met the network still offline, and the
+// page reloaded under the second press. So no chunk but the bar's is out at either switch. Every
+// other chunk of the page is in before it goes offline; the held prefetch fails only once the page
+// reads itself offline; and once the page is back the bar's chunk is answered by the row
+// (`route.fetch`, which no browser network carries), so no ask the `online` sends can meet a
+// network still offline under a page that reads itself online.
 test("a bar whose chunk failed offline opens on the next press once the browser is back online", async ({
   browser,
 }) => {
@@ -697,22 +711,46 @@ test("a bar whose chunk failed offline opens on the next press once the browser 
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
+    const load = await shellLoads(page);
+    // The page's script downloads that have not ended, the bar's own among them while it is held.
+    const scripts = new Set<Request>();
+    page.on("request", (request) => {
+      if (request.resourceType() === "script") scripts.add(request);
+    });
+    page.on("requestfinished", (request) => scripts.delete(request));
+    page.on("requestfailed", (request) => scripts.delete(request));
+    const barChunk = /\/assets\/SearchPalette-[^/]+\.js$/u;
     let network: "held" | "offline" | "online" = "held";
     const held: Route[] = [];
-    await page.route(/\/assets\/SearchPalette-[^/]+\.js$/u, async (route) => {
+    await page.route(barChunk, async (route) => {
       if (network === "held") held.push(route);
       else if (network === "offline") await route.abort("internetdisconnected");
-      else await route.continue();
+      else await route.fulfill({ response: await route.fetch() });
     });
     await openIssue(page, issue.key, "Offline bar");
     await expect.poll(() => held.length, "the bar's prefetch went out").toBeGreaterThan(0);
+    // The page's own chunks in: the margin and the reference-preview layer, which it asks for
+    // once it has drawn, rendered, and then no script out but the bar's.
+    await load().settled();
+    await expect
+      .poll(
+        () =>
+          [...scripts]
+            .map((request) => new URL(request.url()).pathname)
+            .filter((path) => !barChunk.test(path)),
+        "every chunk of the page but the bar's is in"
+      )
+      .toEqual([]);
     await context.setOffline(true);
+    await expect
+      .poll(() => page.evaluate(() => navigator.onLine), "the page reads itself offline")
+      .toBe(false);
     network = "offline";
     for (const route of held.splice(0)) await route.abort("internetdisconnected");
 
     await page.keyboard.press("ControlOrMeta+k");
     await page.keyboard.press("Escape");
-    // Before the window hears `online`, so the request that event asks again for goes through.
+    // Before the window hears `online`, so the request that event asks again for is answered.
     network = "online";
     await context.setOffline(false);
     await page.keyboard.press("ControlOrMeta+k");
