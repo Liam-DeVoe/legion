@@ -113,49 +113,18 @@ function Identifier({ value }: { value: string }): ReactNode {
   });
 }
 
-/** How the run ended, or that it runs: a failed or stopped run that sent its task back names
- *  where it sent it (`StepEnd.returnedTo`), and a result this build has no word for shows the
- *  server's own. `step 2` stays whole, as the times do, so a narrow column never leaves the
- *  number on a line alone. A state `StepEnd` adds fails to compile until it is drawn here. */
-function Result({ row }: { row: StepRow }): ReactNode {
-  switch (row.state) {
-    case "running":
-      return (
-        <span
-          className={`rounded-sm px-1.5 py-0.5 text-xs font-medium ${badgeMed.bg} ${badgeMed.text}`}
-        >
-          running
-        </span>
-      );
-    case "passed":
-      return <span className={`font-medium ${successText}`}>passed</span>;
-    case "other":
-      return row.result;
-    case "failed":
-    case "stopped":
-      return (
-        <>
-          <span className={`font-medium ${row.state === "failed" ? dangerText : ""}`}>
-            {row.state}
-          </span>
-          {row.returnedTo === null ? null : (
-            <span className={textMutedOnSurface}>
-              , returned to <span className="whitespace-nowrap">{row.returnedTo}</span>
-            </span>
-          )}
-        </>
-      );
-  }
-  return row satisfies never;
-}
+/** A state a run's result and a planned step both show: that the step runs, how its run ended, or
+ *  a result this build has no word for, with the server's own word for it. */
+type SharedState =
+  | { state: "running" | "passed" | "failed" | "stopped" }
+  | { state: "other"; result: string };
 
-/** Where a step of the plan stands, in the words and colours a run's result uses: `not started`
- *  before any run of it, then its newest run's state. A state `PlannedStepState` adds fails to
- *  compile until it is drawn here. */
-function PlannedState({ step }: { step: PlannedStep }): ReactNode {
-  switch (step.state) {
-    case "not started":
-      return <span className={textMutedOnSurface}>not started</span>;
+/** The words and colours of a state a run's result and a planned step share: `running` as a
+ *  badge, `passed` and `failed` in their colours, `stopped` in weight alone, and a result this build
+ *  has no word for in the server's own word. A state either caller adds fails to compile where it
+ *  passes that state here, until this draws it. */
+function StateLabel({ shown }: { shown: SharedState }): ReactNode {
+  switch (shown.state) {
     case "running":
       return (
         <span
@@ -171,9 +140,45 @@ function PlannedState({ step }: { step: PlannedStep }): ReactNode {
     case "stopped":
       return <span className="font-medium">stopped</span>;
     case "other":
-      return step.result;
+      return shown.result;
   }
-  return step.state satisfies never;
+  return shown satisfies never;
+}
+
+/** How the run ended, or that it runs (StateLabel): a failed or stopped run that sent its task back
+ *  also names where it sent it (`StepEnd.returnedTo`). `step 2` stays whole, as the times do, so a
+ *  narrow column never leaves the number on a line alone. A state `StepEnd` adds fails to compile
+ *  until it is drawn here. */
+function Result({ row }: { row: StepRow }): ReactNode {
+  switch (row.state) {
+    case "running":
+    case "passed":
+    case "other":
+      return <StateLabel shown={row} />;
+    case "failed":
+    case "stopped":
+      return (
+        <>
+          <StateLabel shown={row} />
+          {row.returnedTo === null ? null : (
+            <span className={textMutedOnSurface}>
+              , returned to <span className="whitespace-nowrap">{row.returnedTo}</span>
+            </span>
+          )}
+        </>
+      );
+  }
+  return row satisfies never;
+}
+
+/** Where a step of the plan stands: `not started` before any run of it, then its newest run's
+ *  state in the words and colours a run's result uses (StateLabel). A state `PlannedStepState` adds
+ *  fails to compile where it is passed to StateLabel, until that draws it. */
+function PlannedState({ step }: { step: PlannedStep }): ReactNode {
+  if (step.state === "not started") {
+    return <span className={textMutedOnSurface}>not started</span>;
+  }
+  return <StateLabel shown={{ result: step.result, state: step.state }} />;
 }
 
 /** One task: the tasks of the plan it needs - nothing for a task that needs none or that the plan
