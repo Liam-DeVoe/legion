@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, describe, expect, it, mock, spyOn } from "bun:test";
+import { afterEach, beforeAll, describe, expect, it, jest, mock, spyOn } from "bun:test";
 import { readFileSync, symlinkSync } from "node:fs";
 import path from "node:path";
 import { createLegionDaemonClient } from "@legion/pi-shared/daemon-client";
@@ -9,6 +9,7 @@ import { hostAgentRegistryMock } from "@legion/pi-shared/test/host-registry";
 import { restoreEnvironment } from "@legion/test-fixtures/environment";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { HOST_STOP_GRACE_MS } from "./host-stop";
 
 // The module reaches the Oh My Pi host through `@legion/pi-shared/subagent-session`, which only
 // the binary resolves; the import below must come after the mock.
@@ -114,11 +115,19 @@ function settled(): Promise<void> {
   return promise;
 }
 
-/** The pane's claim, booted against a daemon that registers and readies it, with a first-turn
- * bound of 0 and every exit it makes recorded. Envoy's one bound instance refuses each claim
- * naming the session's stop (`RoleClaimStoppingError`), as pi-envoy's instance does once its
- * stop began; `reached` settles once a claim reached it. */
-function pane() {
+/** The pane's claim, booted against a daemon that registers it and answers its ready with
+ * `options.ready` (a 204 by default), with a first-turn bound of 0. Envoy's one bound instance
+ * refuses each claim naming the session's stop (`RoleClaimStoppingError`), as pi-envoy's instance
+ * does once its stop began; `reached` settles once a claim reached it. The host's stop is
+ * `options.hostStop`; by default none has begun. Every exit the claim makes is recorded, in
+ * `exits` and as `exit <code>` on `options.steps`, and `exited` settles at the first. */
+function pane(
+  options: {
+    readonly ready?: () => Response;
+    readonly hostStop?: () => Promise<void> | undefined;
+    readonly steps?: string[];
+  } = {}
+) {
   process.env.LEGION_BOOT_TOKEN = fixtureSecret("boot");
   process.env.LEGION_STATE_DIR = STATE_DIR;
   process.env.LEGION_CLAIM_FIRST_TURN_BOUND_MS = "0";
@@ -128,10 +137,14 @@ function pane() {
   );
   const daemon = createLegionDaemonClient("http://daemon.test", {
     pluginContract: 60,
-    fetch: (async (input) =>
-      new URL(input.toString()).pathname.endsWith("/claims/register")
-        ? new Response(registered, { headers: { "content-type": "application/json" } })
-        : new Response(null, { status: 204 })) as typeof fetch,
+    fetch: (async (input) => {
+      const route = new URL(input.toString()).pathname;
+      if (route.endsWith("/claims/register")) {
+        return new Response(registered, { headers: { "content-type": "application/json" } });
+      }
+      if (route.endsWith("/claims/ready") && options.ready !== undefined) return options.ready();
+      return new Response(null, { status: 204 });
+    }) as typeof fetch,
   });
   const claims: string[] = [];
   const reached = Promise.withResolvers<void>();
@@ -145,18 +158,22 @@ function pane() {
     sessionID: () => PANE_SESSION,
   });
   const exits: number[] = [];
+  const exited = Promise.withResolvers<void>();
   const claim = createClaimSession({
     daemon: () => daemon,
     persistedTranscript: async () => ({ sessionFile: SUBAGENT_TRANSCRIPT, agentId: PANE_SESSION }),
     exitProcess: (code) => {
       exits.push(code);
+      options.steps?.push(`exit ${code}`);
+      exited.resolve();
       return undefined as never;
     },
+    hostStop: options.hostStop ?? (() => undefined),
   });
   const context = {
     sessionManager: { getSessionId: () => PANE_SESSION },
   } as unknown as SessionContext;
-  return { claim, context, claims, exits, reached: reached.promise };
+  return { claim, context, claims, exits, exited: exited.promise, reached: reached.promise };
 }
 
 // The pane's stop has begun when its first-turn bound comes (R24 of dispatch://INFRA-3589): the
@@ -194,6 +211,93 @@ describe("a claim whose session's stop has begun", () => {
       expect(exits).toEqual([]);
       expect(lines).not.toHaveBeenCalled();
     } finally {
+      lines.mockRestore();
+    }
+  });
+});
+
+/** The daemon refuses the claim's ready: its registration deadline retired this claim's process
+ * and stopped it (`registrationDeadline`, `packages/daemon/internal/supervise/table.go`). A 4xx is
+ * a refusal that no retry changes. */
+const readyRefused = (): Response =>
+  Response.json({ error: "this claim's process was retired" }, { status: 409 });
+
+/** The host's stop, begun before the daemon's refusal comes: pi-envoy's role release, and then,
+ * when the row calls `end`, its DELETE, which ends the stop. Each step is recorded on `steps`. */
+function hostStopRunning(steps: string[]) {
+  steps.push("release");
+  const ended = Promise.withResolvers<void>();
+  return {
+    hostStop: () => ended.promise,
+    end: () => {
+      steps.push("delete");
+      ended.resolve();
+    },
+  };
+}
+
+// R16 of dispatch://INFRA-3589: the daemon's registration deadline retired the pane's claim and
+// stopped its process. In RPC mode the SIGTERM runs pi-envoy's stop (its role release, then its
+// DELETE) and emits no `session_shutdown`, so the claim session has not heard of the stop when the
+// daemon refuses its `claims/ready`. The exit that the refusal makes waits for the host's stop to
+// end, at most its bound, and keeps its status. With no stop begun, it exits at once, as before.
+describe("a claim the daemon refuses while the host's stop runs", () => {
+  it("exits only after the stop's DELETE, with status 1", async () => {
+    const steps: string[] = [];
+    const stop = hostStopRunning(steps);
+    const { claim, context, exited } = pane({
+      ready: readyRefused,
+      hostStop: stop.hostStop,
+      steps,
+    });
+    const lines = spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      // The boot has met the refusal once it has settled.
+      await claim.bootstrap(context);
+      stop.end();
+      await exited;
+
+      expect(steps).toEqual(["release", "delete", "exit 1"]);
+      expect(lines).toHaveBeenCalledTimes(1);
+    } finally {
+      lines.mockRestore();
+    }
+  });
+
+  it("exits at once where no stop has begun", async () => {
+    const steps: string[] = [];
+    const { claim, context } = pane({ ready: readyRefused, steps });
+    const lines = spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      await claim.bootstrap(context);
+
+      expect(steps).toEqual(["exit 1"]);
+    } finally {
+      lines.mockRestore();
+    }
+  });
+
+  it("exits at the bound where the stop does not end", async () => {
+    const steps: string[] = [];
+    const stop = hostStopRunning(steps);
+    const { claim, context, exited } = pane({
+      ready: readyRefused,
+      hostStop: stop.hostStop,
+      steps,
+    });
+    const lines = spyOn(console, "error").mockImplementation(() => undefined);
+    jest.useFakeTimers();
+    try {
+      await claim.bootstrap(context);
+      jest.advanceTimersByTime(HOST_STOP_GRACE_MS - 1);
+      await Promise.resolve();
+      expect(steps).toEqual(["release"]);
+      jest.advanceTimersByTime(1);
+      await exited;
+
+      expect(steps).toEqual(["release", "exit 1"]);
+    } finally {
+      jest.useRealTimers();
       lines.mockRestore();
     }
   });

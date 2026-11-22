@@ -70,6 +70,7 @@ import {
 import { createClaimSession } from "../src/claim-session";
 import { classifySession, type LegionSessionKind, requiredEnvironment } from "../src/classify";
 import { createControllerSession } from "../src/controller-session";
+import { ompHostStop } from "../src/host-stop";
 import { createModelFallback } from "../src/model-fallback";
 import { applySessionTitle, legionSessionTitle } from "../src/session-title";
 import { daemonLaunchedController } from "../src/slack-channels";
@@ -395,17 +396,20 @@ export default function legionExtension(pi: PiApi): void {
     log: logger,
   });
 
-  // A root architect's or phase worker's claim, and the operator-launched controller's.
+  // A root architect's or phase worker's claim, and the operator-launched controller's. Each exit
+  // a failed claim makes waits for the host's stop where that stop has begun (`ompHostStop`).
   const claimSession = createClaimSession({
     daemon: roleDaemon,
     persistedTranscript,
     exitProcess: (code) => exitProcess(code),
+    hostStop: ompHostStop,
   });
   const controllerSession = createControllerSession({
     daemon: roleDaemon,
     persistedTranscript,
     pi,
     exitProcess: (code) => exitProcess(code),
+    hostStop: ompHostStop,
   });
 
   /**

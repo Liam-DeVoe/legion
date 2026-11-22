@@ -32,6 +32,7 @@ import {
   requiredEnvironment,
   requiredSecret,
 } from "./classify";
+import { exitAfterHostStop, type HostStopExit } from "./host-stop";
 import { daemonControllerSlackChannels, daemonLaunchedController } from "./slack-channels";
 
 type PersistedTranscript = (
@@ -86,12 +87,13 @@ function operatorLaunchedController(env: NodeJS.ProcessEnv): boolean {
  * deliberately separate from the claim session (`claim-session.ts`) and the extension's
  * tool-routing policy: a controller holds no claim, and its session can change in place.
  */
-export function createControllerSession(deps: {
-  readonly daemon: () => LegionDaemonClient;
-  readonly persistedTranscript: PersistedTranscript;
-  readonly pi: PiApi;
-  readonly exitProcess: (code: number) => never;
-}): ControllerSession {
+export function createControllerSession(
+  deps: HostStopExit & {
+    readonly daemon: () => LegionDaemonClient;
+    readonly persistedTranscript: PersistedTranscript;
+    readonly pi: PiApi;
+  }
+): ControllerSession {
   const { daemon, persistedTranscript, pi } = deps;
   // The session the daemon last registered as the controller and the grant minter for its
   // registration's secret, set as soon as that registration is in: the `legion` tool answers for
@@ -218,10 +220,11 @@ export function createControllerSession(deps: {
    * message; it marks `startupTurn` as sent right before that report. Any step of its claim that
    * fails exits Oh My Pi, so the daemon relaunches it, as a pane's failed boot does, except once
    * the session's stop has begun ({@link ControllerSession.stop}): the stop ends the process
-   * itself, and an exit in its middle would cut its role release and its DELETE short. A root
-   * architect's or phase worker's pane carries a boot token too, its own claim's:
-   * `/legion-claim-controller` run there is a takeover by hand like any other, which needs the
-   * capability and stops before any daemon call without it.
+   * itself, and an exit in its middle would cut its role release and its DELETE short. A step that
+   * fails while the host's own stop runs, which this session has not heard of, exits once that
+   * stop has ended (`claimOnce`). A root architect's or phase worker's pane carries a boot token
+   * too, its own claim's: `/legion-claim-controller` run there is a takeover by hand like any
+   * other, which needs the capability and stops before any daemon call without it.
    *
    * One claim runs at a time, in the order they were asked for: each registration replaces the
    * controller secret the daemon holds, so two claims racing could leave this session holding the
@@ -260,7 +263,10 @@ export function createControllerSession(deps: {
   // claim, a 503 to its controller-topic subscription after the role landed included, exits as
   // the daemon's own claim does, so a controller never stays up without its topics. A claim the
   // session's stop overtook (`stopped`) says nothing and exits nothing: the stop ends the process
-  // itself.
+  // itself. A claim that fails while the host's stop runs, such as a ready the daemon refuses once
+  // its registration deadline retired this process, exits once that stop has ended, and at most at
+  // its bound (`exitAfterHostStop`), with the same status: in RPC mode a SIGTERM runs pi-envoy's
+  // stop and emits no `session_shutdown`.
   const claimOnce = async (
     context: CommandContext | SessionContext,
     progress: ClaimProgress,
@@ -277,7 +283,7 @@ export function createControllerSession(deps: {
       logger.error(
         `[legion] the daemon-launched controller's claim failed; exiting so the daemon launches it again: ${messageFor(error)}`
       );
-      deps.exitProcess(1);
+      await exitAfterHostStop(deps, 1);
     }
   };
 

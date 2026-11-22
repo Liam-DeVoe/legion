@@ -18,6 +18,7 @@ import { recordBootstrappedSession } from "@legion/pi-shared/subagent-session";
 import { logger } from "@oh-my-pi/pi-utils";
 import pkg from "../package.json";
 import { requiredEnvironment, requiredSecret } from "./classify";
+import { exitAfterHostStop, type HostStopExit } from "./host-stop";
 
 export interface ClaimSession {
   /** Boots the claim behind a root architect's or a phase worker's pane (`legion.ts` calls it for
@@ -89,15 +90,20 @@ export function attributionInputs(
  * attribution (`exportJjSessionAttribution`) runs once it answered, before the capability is set.
  * A 4xx registration refusal, and any failure after a registration, exit the process, except
  * once the session's stop has begun ({@link ClaimSession.stop}): the stop ends the process
- * itself, and an exit in its middle would cut its role release and its DELETE short.
+ * itself, and an exit in its middle would cut its role release and its DELETE short. The host's
+ * stop can begin before this session hears of its own: in RPC mode a SIGTERM runs pi-envoy's stop
+ * and emits no `session_shutdown`. A refusal or a failure that comes then, such as a ready the
+ * daemon refuses once its registration deadline retired this process, exits once the host's stop
+ * has ended, and at most at its bound (`exitAfterHostStop`), with the same status.
  */
-export function createClaimSession(deps: {
-  readonly daemon: () => LegionDaemonClient;
-  readonly persistedTranscript: (
-    context: SessionContext
-  ) => Promise<{ readonly sessionFile: string; readonly agentId: string }>;
-  readonly exitProcess: (code: number) => never;
-}): ClaimSession {
+export function createClaimSession(
+  deps: HostStopExit & {
+    readonly daemon: () => LegionDaemonClient;
+    readonly persistedTranscript: (
+      context: SessionContext
+    ) => Promise<{ readonly sessionFile: string; readonly agentId: string }>;
+  }
+): ClaimSession {
   let capability: ClaimCapability | undefined;
   let booting: Promise<void> | undefined;
   // The boot's first-turn signal, held from the moment the boot registers it, and whether a turn
@@ -159,9 +165,10 @@ export function createClaimSession(deps: {
       log: (line) => console.error(`[legion] ${line}`),
       signal: stopped.signal,
       stopping: "exiting so the daemon launches it again",
-      // A boot the session's stop overtook exits nothing: the stop ends the process itself.
+      // A boot the session's stop overtook exits nothing: the stop ends the process itself. A boot
+      // that fails while the host's stop runs exits once that stop has ended.
       stop: () => {
-        if (!stopped.signal.aborted) deps.exitProcess(1);
+        if (!stopped.signal.aborted) void exitAfterHostStop(deps, 1);
       },
     });
   };
