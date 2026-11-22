@@ -594,7 +594,11 @@ the rule opened. A store left unreconciled is UNKNOWN, and nothing is written. A
 address does not block the rollback: its family is left out, nothing is written there and its
 cutover row stays as it is (`cleanup --gone` removes its consumers); each command prints
 `restore: daemon/P: store gone: <why>; restore writes nothing there and leaves its cutover row as
-it is`, and its done entry names it (`gone.daemon/P`).
+it is`, and its done entry names it (`gone.daemon/P`). The first `restore --prepare` records each
+family it read gone in its saved set. Every later restore run in the hold whose reading differs,
+a family read gone then and live now or the reverse, stops before it writes anything, naming each
+family: rerun it with the files that read each store as that `restore --prepare` did, or end the
+hold with `hold abort` and start a new rollback hold.
 
 - `restore --prepare --hold ID <hold flags> <store flags>` stops when the broker's `session`
   cutover row reads anything but `done`; with no `session` row it rolls back a convert that never

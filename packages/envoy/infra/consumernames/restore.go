@@ -127,6 +127,12 @@ type restoreSet struct {
 	// follows this field to the cutover hold's cohort record. "" when no session row was done: a
 	// rollback of a convert that never finished.
 	CutoverHold string `json:"cutover_hold,omitempty"`
+	// Gone is each daemon family whose store the census's rule read gone when restore --prepare
+	// built the set, to why (daemonGoneText). Every later restore run in the hold refuses, before
+	// it writes anything, when its own reading of the daemon stores differs (sameGone): the set
+	// plans none of a gone family's names, so a family read live later would be marked rolled_back
+	// with none restored, and a planned family read gone later would be left half restored.
+	Gone map[string]string `json:"gone,omitempty"`
 }
 
 // restoreSetName is one logical name of a restoreSet.
@@ -527,9 +533,39 @@ func restoreKeyMember(key string) (member, error) {
 // reports it, which is never above what the consumer acked.
 func restoreFloor(info *jetstream.ConsumerInfo) uint64 { return info.AckFloor.Stream }
 
-// readSet reads the hold's saved set, and false when restore --prepare has written none.
+// readSet reads the hold's saved set, and false when restore --prepare has written none. A saved
+// set whose gone families differ from this run's reading refuses the run before it writes
+// anything (sameGone).
 func (rr *restoreRun) readSet(ctx context.Context) (restoreSet, bool, error) {
-	return readRestoreSet(ctx, rr.records, rr.r.o.holdID)
+	set, found, err := readRestoreSet(ctx, rr.records, rr.r.o.holdID)
+	if err != nil || !found {
+		return set, found, err
+	}
+	return set, true, rr.sameGone(set)
+}
+
+// sameGone refuses a run whose reading of the daemon stores (gone) differs from the one restore
+// --prepare saved with its set (restoreSet.Gone), naming each family and which way it differs, so
+// a store read gone through one file and live through another is never half rolled back. The way
+// out is a rerun with files that read each store as restore --prepare did, or hold abort and a new
+// rollback hold.
+func (rr *restoreRun) sameGone(set restoreSet) error {
+	var differ []string
+	for _, family := range slices.Sorted(maps.Keys(set.Gone)) {
+		if rr.gone[family] == "" {
+			differ = append(differ, fmt.Sprintf("%s: restore --prepare read its store gone (%s), and this run reads it live", family, set.Gone[family]))
+		}
+	}
+	for _, family := range slices.Sorted(maps.Keys(rr.gone)) {
+		if set.Gone[family] == "" {
+			differ = append(differ, fmt.Sprintf("%s: this run reads its store gone (%s), and restore --prepare read it live", family, rr.gone[family]))
+		}
+	}
+	if len(differ) == 0 {
+		return nil
+	}
+	return fmt.Errorf("the daemon stores read otherwise than when restore --prepare saved its set, so this run writes nothing: %s; rerun with the --daemon-database files that read each store as restore --prepare did, or end this hold with hold abort and start a new rollback hold",
+		strings.Join(differ, "; "))
 }
 
 // readRestoreSet reads hold holdID's saved set (restoreSetKind, restoreSetKey), verified as
@@ -569,7 +605,7 @@ func (rr *restoreRun) savedSet(ctx context.Context) (restoreSet, error) {
 
 // buildSet reads every family's records and gives each logical name its target, its start and its
 // target's configuration, and records the cutover hold the session family's broker cutover row
-// names (restoreCutoverHold).
+// names (restoreCutoverHold) and each daemon family this run read gone (restoreSet.Gone).
 func (rr *restoreRun) buildSet(ctx context.Context) (restoreSet, error) {
 	var set restoreSet
 	if !restoreRules.noCutoverHold {
@@ -578,6 +614,9 @@ func (rr *restoreRun) buildSet(ctx context.Context) (restoreSet, error) {
 			return restoreSet{}, err
 		}
 		set.CutoverHold = hold
+	}
+	if len(rr.gone) > 0 {
+		set.Gone = maps.Clone(rr.gone)
 	}
 	for _, family := range rr.families() {
 		entries, present, err := rr.entries(ctx, family)

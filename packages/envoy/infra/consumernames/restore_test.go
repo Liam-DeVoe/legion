@@ -655,6 +655,87 @@ func TestRestoreSkipsAGoneDaemonStore(t *testing.T) {
 	require.NoError(t, rig.release(rollback))
 }
 
+// restoreWrongServer is a --daemon-database entry for rsa whose URL reaches a server that answers
+// SQLSTATE 3D000 for rsa's database while its second line states rsa's instance: the address rule
+// reads rsa's live store gone through it (censusAnsweringServer).
+func restoreWrongServer(t *testing.T, rig *restoreRig) []string {
+	t.Helper()
+	db := rig.pools[daemonFamily("rsa")]
+	return []string{"--daemon-database", censusAnsweringServer(t, "rsa", db.Config().ConnConfig.Database, "3D000")}
+}
+
+// restore --prepare records in its saved set each daemon family it read gone, and every later
+// restore run whose reading of the daemon stores differs refuses before it writes anything,
+// naming the family. Gone at prepare and live at finish: finish is refused, rsa's record, marker
+// and cutover row are as they were and its fixed name F is not made; a finish that reads rsa gone
+// again completes, leaving rsa as it is. Control: 3780df9cc4's finish, which marks rsa rolled_back
+// with none of its names restored and its fresh current kept.
+func TestARestoreRefusesAStoreReadGoneAtPrepareAndLiveNow(t *testing.T) {
+	ctx := context.Background()
+	rig, rollback, logical := restoreDaemonRig(t)
+	before := rig.record(daemonFamily("rsa"), logical)
+	real := rig.flags
+	rig.flags = restoreWrongServer(t, rig)
+	code, stdout, stderr := rig.restore(rollback, "--prepare")
+	require.Zero(t, code, "restore --prepare reading rsa gone: %s%s", stdout, stderr)
+	set, found, err := readRestoreSet(ctx, rig.records(), rollback)
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Contains(t, set.Gone[daemonFamily("rsa")], "SQLSTATE 3D000", "the saved set records rsa gone")
+
+	rig.flags = real
+	code, stdout, stderr = rig.restore(rollback, "--finish")
+	require.Equal(t, 1, code, "restore --finish reading rsa live: %s%s", stdout, stderr)
+	require.Contains(t, stderr, daemonFamily("rsa")+": restore --prepare read its store gone")
+	require.Contains(t, stderr, "so this run writes nothing")
+	require.Equal(t, before, rig.record(daemonFamily("rsa"), logical), "the refused finish changed rsa's record")
+	require.Equal(t, selection.CutoverDone, rig.marker(daemonFamily("rsa")).Cutover, "the refused finish marked rsa's store")
+	row, ok := rig.cutoverRow(daemonFamily("rsa"))
+	require.True(t, ok)
+	require.Equal(t, selection.CutoverDone, row.State, "the refused finish wrote rsa's cutover row")
+	require.Nil(t, rig.consumer(logical), "the refused finish made F")
+	require.Equal(t, holdrecord.LeftUnchanged, rig.lastEntry(rollback, restoreCommandFinish).Outputs[stopLeftKey])
+
+	rig.flags = restoreWrongServer(t, rig)
+	code, stdout, stderr = rig.restore(rollback, "--finish")
+	require.Zero(t, code, "restore --finish reading rsa gone again: %s%s", stdout, stderr)
+	require.Equal(t, before, rig.record(daemonFamily("rsa"), logical), "a finish that reads rsa gone changed its record")
+	require.NoError(t, rig.release(rollback))
+}
+
+// The reverse: live at prepare, which planned rsa's name, and gone at finish. Finish is refused,
+// naming rsa, with rsa's record as prepare left it and its marker and cutover row done; a finish
+// that reads rsa live completes and restores F. Control: 3780df9cc4's finish, which leaves rsa
+// planned with no consumer and its marker done, and reports it "left as it is".
+func TestARestoreRefusesAStoreReadLiveAtPrepareAndGoneNow(t *testing.T) {
+	rig, rollback, logical := restoreDaemonRig(t)
+	code, stdout, stderr := rig.restore(rollback, "--prepare")
+	require.Zero(t, code, "%s%s", stdout, stderr)
+	planned := rig.record(daemonFamily("rsa"), logical)
+	require.NotNil(t, planned.Restore, "restore --prepare planned rsa's name")
+	real := rig.flags
+
+	rig.flags = restoreWrongServer(t, rig)
+	code, stdout, stderr = rig.restore(rollback, "--finish")
+	require.Equal(t, 1, code, "restore --finish reading rsa gone: %s%s", stdout, stderr)
+	require.Contains(t, stderr, daemonFamily("rsa")+": this run reads its store gone")
+	require.Contains(t, stderr, "and restore --prepare read it live")
+	require.Equal(t, planned, rig.record(daemonFamily("rsa"), logical), "the refused finish changed rsa's record")
+	require.Equal(t, selection.CutoverDone, rig.marker(daemonFamily("rsa")).Cutover)
+	row, ok := rig.cutoverRow(daemonFamily("rsa"))
+	require.True(t, ok)
+	require.Equal(t, selection.CutoverDone, row.State)
+	require.Equal(t, holdrecord.LeftUnchanged, rig.lastEntry(rollback, restoreCommandFinish).Outputs[stopLeftKey])
+
+	rig.flags = real
+	code, stdout, stderr = rig.restore(rollback, "--finish")
+	require.Zero(t, code, "restore --finish reading rsa live: %s%s", stdout, stderr)
+	require.Equal(t, logical, rig.record(daemonFamily("rsa"), logical).Current, "rsa's fixed name is restored")
+	require.NotNil(t, rig.consumer(logical), "F is on the stream")
+	require.Equal(t, selection.CutoverRolledBack, rig.marker(daemonFamily("rsa")).Cutover)
+	require.NoError(t, rig.release(rollback))
+}
+
 // The operator's readers' record fence (checkRecordFence) passes a record restore --finish left,
 // and only that shape of a fixed current: its current equal to its restore target, which is the
 // key's fixed name, at phase created, judged with its current cleared, so its other names still
