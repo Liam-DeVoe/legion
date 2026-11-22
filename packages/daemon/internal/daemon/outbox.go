@@ -4111,7 +4111,7 @@ func (r *outbox) roleWaitsForItsPod(ctx context.Context, row record.OutboxRow, i
 		}
 		if !podRecorded(claims, issue.Key, pod) {
 			notice := record.ControllerNotice{Kind: record.PodWaitHeldNotice, Role: role, Reason: podWaitWithNoReleaseWords(issue.Key, pod, role, lacking)}
-			if err := r.enqueueNotice(ctx, issue.Key, notice); err != nil {
+			if err := r.enqueueNotice(ctx, issue.Key, notice.Kind, notice); err != nil {
 				return err
 			}
 			told = true
@@ -4230,16 +4230,17 @@ func podWaitWithNoReleaseWords(issue, pod string, role claim.Role, lacking strin
 		"The disk of that pod can hold work that a role did not push.", role, issue, pod, issue, lacking, role)
 }
 
-// enqueueNotice writes one controller notice of issue in a transaction of its own on the pool, as
+// enqueueNotice writes one notice of issue, of kind, an architect's (record.Notice) or the
+// controller's (record.ControllerNotice), in a transaction of its own on the pool, as
 // designGateClosed reads its gates, waking its lane as it commits.
-func (r *outbox) enqueueNotice(ctx context.Context, issue string, notice record.ControllerNotice) error {
+func (r *outbox) enqueueNotice(ctx context.Context, issue string, kind record.NoticeKind, notice record.OutboxPayload) error {
 	row, err := record.NewOutboxRow(issue, notice, time.Now().UTC())
 	if err != nil {
-		return fmt.Errorf("queue the %s notice of %s: %w", notice.Kind, issue, err)
+		return fmt.Errorf("queue the %s notice of %s: %w", kind, issue, err)
 	}
 	scoped, committed := intake.WithCommitHooks(ctx)
 	if err := pgx.BeginFunc(scoped, r.pool, func(tx pgx.Tx) error { return r.records.Enqueue(scoped, tx, row) }); err != nil {
-		return fmt.Errorf("queue the %s notice of %s: %w", notice.Kind, issue, err)
+		return fmt.Errorf("queue the %s notice of %s: %w", kind, issue, err)
 	}
 	committed()
 	return nil
@@ -4576,6 +4577,10 @@ func (r *outbox) taskBranch(ctx context.Context, row record.OutboxRow, payload r
 	}
 	branch := task.BranchOf(issue.Key)
 	conflicts, err := r.joinBranch(ctx, issue, branch, needs)
+	var missing *needBranchMissing
+	if errors.As(err, &missing) {
+		return r.joinCannotEnd(ctx, row, issue, task, missing)
+	}
 	if err != nil {
 		return fmt.Errorf("make the branch %s of task %s of %s, which its first step waits for: %w", branch, task.Task, issue.Key, err)
 	}
@@ -4670,7 +4675,8 @@ func sameJoin(now, joined record.PlanTask) bool {
 // default branch where it needs none, unless GitHub has it, and merges each of needs into it in
 // order, with the message `<KEY>: join the work of task <id>`, as branchClient makes each write of
 // a branch, within branchRowTimeout. It answers the id of each need whose merge GitHub refused as
-// a conflict, nil for none.
+// a conflict, nil for none. GitHub's 404 for a need's branch, to the read of the first need's head
+// or to a merge of a need, is a *needBranchMissing naming that need.
 func (r *outbox) joinBranch(ctx context.Context, issue record.Issue, branch string, needs []record.PlanTask) ([]string, error) {
 	ctx, cancel := context.WithTimeout(ctx, branchRowTimeout)
 	defer cancel()
@@ -4683,12 +4689,19 @@ func (r *outbox) joinBranch(ctx context.Context, issue record.Issue, branch stri
 		base = needs[0].BranchOf(issue.Key)
 	}
 	if err := ghbranch.Create(ctx, github, repo, branch, base); err != nil {
+		if len(needs) > 0 && githubAnswered(err, http.StatusNotFound) {
+			return nil, &needBranchMissing{need: needs[0].Task, branch: base, err: err}
+		}
 		return nil, err
 	}
 	var conflicts []string
 	for _, need := range needs {
-		joined, err := ghbranch.Merge(ctx, github, repo, branch, need.BranchOf(issue.Key), fmt.Sprintf("%s: join the work of task %s", issue.Key, need.Task))
+		head := need.BranchOf(issue.Key)
+		joined, err := ghbranch.Merge(ctx, github, repo, branch, head, fmt.Sprintf("%s: join the work of task %s", issue.Key, need.Task))
 		if err != nil {
+			if githubAnswered(err, http.StatusNotFound) && !mergeBaseMissing(err) {
+				return nil, &needBranchMissing{need: need.Task, branch: head, err: err}
+			}
 			return nil, err
 		}
 		if joined == ghbranch.MergeConflict {
@@ -4696,6 +4709,53 @@ func (r *outbox) joinBranch(ctx context.Context, issue record.Issue, branch stri
 		}
 	}
 	return conflicts, nil
+}
+
+// needBranchMissing is a join that cannot end: GitHub has no branch, branch, of the need need, so
+// the row waits for that branch on its backoff (joinCannotEnd).
+type needBranchMissing struct {
+	need, branch string
+	err          error
+}
+
+func (e *needBranchMissing) Error() string {
+	return fmt.Sprintf("GitHub has no branch %s of the need %s: %v", e.branch, e.need, e.err)
+}
+
+func (e *needBranchMissing) Unwrap() error { return e.err }
+
+// githubAnswered says whether err carries GitHub's answer of status (a *githubrest.Answer).
+func githubAnswered(err error, status int) bool {
+	var answer *githubrest.Answer
+	return errors.As(err, &answer) && answer.Status == status
+}
+
+// mergeBaseMissing says whether err is GitHub's 404 to a merge whose base, not its head, it lacks
+// ("Base does not exist"): the task's own branch, which names no need.
+func mergeBaseMissing(err error) bool {
+	var answer *githubrest.Answer
+	return errors.As(err, &answer) && strings.Contains(answer.Body, "Base does not exist")
+}
+
+// taskJoinToldPrefix begins the last error of a task_branch row whose join cannot end once its
+// task's owner is told (joinCannotEnd), the one record that the notice was written, so the row's
+// next 404 tells nobody again; a try that fails for another cause between two such answers
+// replaces the last error, and the next 404 tells again.
+const taskJoinToldPrefix = "the owner is told: "
+
+// joinCannotEnd is the failure of the row of task of issue whose join waits for missing, a need's
+// branch GitHub does not have: the row tries again on its backoff, the task's first step keeps its
+// wait for the join, and at the row's first such answer the issue's architect, the task's owner, is
+// told once, in a task-join-failed notice that names the task, the need and the branch.
+func (r *outbox) joinCannotEnd(ctx context.Context, row record.OutboxRow, issue record.Issue, task record.PlanTask, missing *needBranchMissing) error {
+	words := fmt.Sprintf("task %s of %s waits for the join of its needs: GitHub has no branch %s of its need %s", task.Task, issue.Key, missing.branch, missing.need)
+	if !strings.HasPrefix(row.LastError, taskJoinToldPrefix) {
+		notice := record.Notice{Kind: "task-join-failed", Role: claim.RoleArchitect, Reason: words + ". Push that branch again, or stop the task with stop_task."}
+		if err := r.enqueueNotice(ctx, issue.Key, notice.Kind, notice); err != nil {
+			return err
+		}
+	}
+	return fmt.Errorf("%s%s: %w", taskJoinToldPrefix, words, missing.err)
 }
 
 // planTaskOf is the task of stored whose id is id, and whether it holds one: a nil plan holds none.

@@ -3212,6 +3212,13 @@ package api
 // the tasks it needs as register_plan resolved them, `[]` for none (`api.RegisteredTask`). A
 // caller below 224 is served each task without `needs` (shaping.go's withoutNeeds); the reader of
 // 219 parses a task as a zod object, which drops the key, so a plugin before it reads either body.
+// The same change adds the notice kind `task-join-failed`, to the issue's architect, for a task
+// whose join of its needs waits for a need's branch GitHub does not have (`record.validNoticeKinds`).
+// An outbox payload is decoded strictly, so no daemon of an earlier release decodes such a row, and
+// one row fails `GET /legion/v1/state` for the whole project, as the `session-forgotten` entry
+// says of its own kind; the way back of this change's migration
+// (`store/migrations/20261121165047_task_copies.up.sql`) deletes those rows before a rollback. No
+// shape of `GET /legion/v1/state` moves with it.
 // (224 is a working number, above every number this tree's entries hold and every number the
 // changes this one is built on hold. No reading of the open pull requests chose it: the pull
 // request that carries this entry reads `const DaemonAPIVersion` at each open pull request's head

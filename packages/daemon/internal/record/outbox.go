@@ -2715,6 +2715,12 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 // not `session-lost` because the kind is published as the notice's one-line message, and that
 // session was not lost: nothing of it was deleted. No earlier release decodes it, so the way back
 // of migration 20261120042902 deletes its unsent rows.
+//
+// `task-join-failed` is a task whose join of its needs cannot end, told to its owner, the issue's
+// architect, at its task_branch row's first try GitHub answers 404 for a need's branch (the
+// daemon's taskBranch, joinCannotEnd): the task's first step waits for its join, the row tries
+// again on its backoff, and the reason names the task, the need and the branch GitHub lacks. No
+// earlier release decodes it, so the way back of migration 20261121165047 deletes its unsent rows.
 var validNoticeKinds = []NoticeKind{
 	"phase-finished", "worker-died", "worker-stalled", "worker-silent", "worker-background-stalled", "held",
 	"pr-blocked", "pr-merged", "pr-closed-unmerged", "pull-request-missing", "message-refused",
@@ -2722,6 +2728,7 @@ var validNoticeKinds = []NoticeKind{
 	"child-closed", "child-status", "children-first", "child-release-stalled", "child-not-recorded",
 	"catch-up", "checks-red", "review-stuck", "status-reasserted", VolumeNearFullNotice,
 	"session-lost", "session-forgotten", "session-store-fault", "task-stopped", "plan-not-taken", "retro-held",
+	"task-join-failed",
 }
 
 // VolumeNearFullNotice is the architect's notice of a sweep of its issue pod's volume that left

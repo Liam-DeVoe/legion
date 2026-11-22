@@ -2972,10 +2972,11 @@ const outboxUnleasedDue = `outbox.next_at <= $1 and (outbox.lease_until is null 
 // while an older one for the same issue is unfinished, because each carries the status its
 // predecessor leaves, and a newer write run first would find the board short of it and finish
 // unwritten as though a human had moved it. A start of an issue's role waits while an older
-// issue_branch or task_branch row of the issue is unfinished ($4, branchKindNames), so no role
-// starts before its issue's branch, and each branch of a task of its plan queued before the start,
-// exists on GitHub (IssueBranch, TaskBranch), and a create GitHub keeps refusing holds the issue's
-// roles back while the row retries. And a start marked as waiting for the issue's admission slot
+// issue_branch row of the issue is unfinished ($4, branchKindNames), so no role starts before its
+// issue's branch exists on GitHub (IssueBranch), and a create GitHub keeps refusing holds the
+// issue's roles back while the row retries. A task_branch row holds no start: the first step of
+// its task waits for the end of its join itself (StepWaitJoin), so a join GitHub keeps refusing
+// holds the steps of its own task alone. And a start marked as waiting for the issue's admission slot
 // (SuperviseRequest.NeedsSlot) waits while the slots table names no slot of that issue: the
 // admission cap counts the issues the daemon has started, and this row is the delivery that puts one to work, so
 // it is where the cap is applied. Supervise rows need no other such rule: a stop names the run it
@@ -3049,9 +3050,11 @@ var outboxClaimable = outboxUnleasedDue + ` and ` + outboxInOrder + ` and ` + ou
 // statement embedding the predicates takes: the lane rule is the lifecycle lane's alone.
 var lifecycleKindNames = kindNames(laneKinds[LaneLifecycle])
 
-// branchKindNames is the kinds of the rows that make a branch on GitHub, the $4 every statement
-// embedding the predicates takes: a start of an issue's role waits for each older one of them.
-var branchKindNames = kindNames([]OutboxKind{OutboxKindIssueBranch, OutboxKindTaskBranch})
+// branchKindNames is the kinds of the rows that make a branch on GitHub that a start of the issue's
+// roles waits for, the $4 every statement embedding the predicates takes: the issue's own branch
+// row, issue_branch. A task's branch row (task_branch) is not among them: its task's first step
+// waits for its join on the task's own row (StepWaitJoin), and no other step waits for it.
+var branchKindNames = kindNames([]OutboxKind{OutboxKindIssueBranch})
 
 // outboxDueArgs is the parameters of a statement that embeds the predicates: now, the ordering
 // rules' kinds and the lifecycle lane's kinds first, then the statement's own.
@@ -3249,9 +3252,10 @@ func (s *Postgres) UnfinishedLanes(ctx context.Context, tx pgx.Tx, project strin
 // negated), by next_at then id, each with that row: the oldest of its issue's running lifecycle
 // rows. Issue "" is every issue of project. It is the lanes' own predicates read back, so what the
 // state shows held is exactly what the lanes hold back. A start fenced behind an older issue_branch
-// or task_branch row of its issue is held while the branch row runs — both are lifecycle kinds, so
-// the start waits on it — and listed by nothing while the branch row waits unleased for its retry,
-// since it then waits on no running row, as it did before the lanes. Board rows are never held:
+// row of its issue is held while the branch row runs — both are lifecycle kinds, so the start waits
+// on it — and listed by nothing while the branch row waits unleased for its retry, since it then
+// waits on no running row, as it did before the lanes. A start behind a running task_branch row is
+// held the same way, by the lane rule alone, and is due once that row waits for its retry. Board rows are never held:
 // their lane runs them as they come due. A row the lane rule holds fails the claim, so the claim's
 // negation adds no row to the lane rule's; it is written out because Postgres types a parameter by
 // its uses and refuses a statement with one it never uses, and the ordering rules' kinds are among
