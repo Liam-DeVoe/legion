@@ -1201,6 +1201,7 @@ go_notices:
   - 'packages/envoy/infra/go.work.sum'
   - 'packages/envoy/infra/aws/**'
   - 'packages/envoy/infra/cmd/**'
+  - 'packages/envoy/infra/consumernames/*'
   - 'packages/envoy/infra/core/*'
   - 'packages/envoy/infra/gcp/*'
   - 'packages/envoy/infra/host/*'
