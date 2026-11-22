@@ -1,6 +1,7 @@
 package record
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -9,7 +10,7 @@ import (
 // Each agent of a version gets one name, the last part of its claim token: the steps of one key
 // share it, a step with no key gets the role it is on, and the owner gets none, since its claim is
 // the tree's architect. A later version keeps the name a key already has, and an agent beside it
-// that would take the same name gets none in this release.
+// that would take the same name gets a name of its own, `implementer-2`.
 func TestNameAgentsGivesOneNameToEachAgentAndKeepsAKeysName(t *testing.T) {
 	steps := []PlanStep{
 		{Task: "t", Position: 1, Role: "implementer", AgentKey: "a"},
@@ -32,8 +33,8 @@ func TestNameAgentsGivesOneNameToEachAgentAndKeepsAKeysName(t *testing.T) {
 	if again[0].Agent != "implementer" {
 		t.Errorf("key a in a later version: name %q, want implementer, the name it had", again[0].Agent)
 	}
-	if again[1].Agent != "" {
-		t.Errorf("a fresh implementer beside key a: name %q, want none in this release", again[1].Agent)
+	if again[1].Agent != "implementer-2" {
+		t.Errorf("a fresh implementer beside key a: name %q, want implementer-2, a name of its own", again[1].Agent)
 	}
 }
 
@@ -54,25 +55,44 @@ func TestAKeyKeepsItsNameWhenALaterVersionGivesItsRoleToAFreshStep(t *testing.T)
 	if v2[1].Agent != "implementer" {
 		t.Errorf("key a in version 2: name %q, want implementer", v2[1].Agent)
 	}
-	if v2[0].Agent != "" {
-		t.Errorf("the fresh step 1 of version 2: name %q, want none in this release", v2[0].Agent)
+	if v2[0].Agent != "implementer-2" {
+		t.Errorf("the fresh step 1 of version 2: name %q, want implementer-2, a name of its own", v2[0].Agent)
 	}
 	if v2[2].Agent != "reviewer" {
 		t.Errorf("step 3 of version 2: name %q, want reviewer", v2[2].Agent)
 	}
 }
 
-// A row that a release before the column wrote has no name, and reads as its role, which named its
-// agent then. A step of the key owner has no name whatever it holds: its agent is the tree's
-// architect, whose token names the tree, not the issue.
-func TestARowWrittenBeforeTheColumnReadsAsItsRole(t *testing.T) {
-	if got := (PlanStep{Role: "reviewer"}).AgentName(); got != "reviewer" {
-		t.Errorf("AgentName = %q, want reviewer", got)
+// A second agent of one role gets a name of its own: the role and the first number from 2 that no
+// agent of the version and no earlier row of the issue holds, so two agents never share a name,
+// and so a session. The role is cut so that the name has at most 32 bytes, the agent grammar's
+// bound. The fault: step 3 of `implementer reviewer implementer` shares step 1's name, or gets
+// none.
+func TestASecondAgentOfOneRoleGetsANameOfItsOwn(t *testing.T) {
+	steps := []PlanStep{
+		{Task: "t", Position: 1, Role: "implementer"},
+		{Task: "t", Position: 2, Role: "reviewer"},
+		{Task: "t", Position: 3, Role: "implementer"},
 	}
-	if got := (PlanStep{Role: "acceptance", AgentKey: "owner"}).AgentName(); got != "" {
-		t.Errorf("AgentName = %q, want none: the owner is the tree's architect", got)
+	if got := NameAgents(nil, steps); got[0].Agent != "implementer" || got[2].Agent != "implementer-2" {
+		t.Errorf("implementer reviewer implementer: names %q and %q, want implementer and implementer-2", got[0].Agent, got[2].Agent)
 	}
-	if got := (PlanStep{Role: "tester", AgentKey: "a", Agent: "implementer"}).AgentName(); got != "implementer" {
-		t.Errorf("AgentName = %q, want the name the row holds", got)
+	earlier := []PlanStep{{Task: "old", Position: 1, Role: "tester", AgentKey: "b", Agent: "implementer-2"}}
+	if got := NameAgents(earlier, steps); got[2].Agent != "implementer-3" {
+		t.Errorf("step 3 beside an earlier row named implementer-2: name %q, want implementer-3", got[2].Agent)
+	}
+	long := strings.Repeat("r", 32)
+	twice := NameAgents(nil, []PlanStep{
+		{Task: "t", Position: 1, Role: "implementer"},
+		{Task: "t", Position: 2, Role: long},
+		{Task: "t", Position: 3, Role: long},
+	})
+	if want := claim.Agent(strings.Repeat("r", 30) + "-2"); twice[2].Agent != want || len(twice[2].Agent) != 32 {
+		t.Errorf("a second agent of a role of 32 bytes: name %q, want %q, 32 bytes", twice[2].Agent, want)
+	}
+	for _, step := range twice {
+		if _, err := claim.AgentToken("legion", "LEGION-208", step.Agent); err != nil {
+			t.Errorf("the name %q makes no claim token: %v", step.Agent, err)
+		}
 	}
 }

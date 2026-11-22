@@ -70,7 +70,7 @@ func TestDefaultStepsAreReadAndRefused(t *testing.T) {
 		t.Fatalf("DEMO, which names none, runs %+v, want today's line", got)
 	}
 	// A step's key names the agent that does it, on any role, and the steps of one key are one
-	// agent; the key owner names the owner of the task.
+	// agent; the key owner names the owner of the task. A role stands at two steps.
 	for _, tc := range []struct {
 		value string
 		want  []plan.Step
@@ -78,6 +78,7 @@ func TestDefaultStepsAreReadAndRefused(t *testing.T) {
 		{"[implementer, reviewer:r]", []plan.Step{{Role: "implementer"}, {Role: "reviewer", Key: "r"}}},
 		{"[implementer, acceptance:r]", []plan.Step{{Role: "implementer"}, {Role: "acceptance", Key: "r"}}},
 		{"[implementer:owner, reviewer]", []plan.Step{{Role: "implementer", Key: "owner"}, {Role: "reviewer"}}},
+		{"[implementer, reviewer, reviewer]", []plan.Step{{Role: "implementer"}, {Role: "reviewer"}, {Role: "reviewer"}}},
 	} {
 		keyed, err := Load(writeConfigFile(t, defaultStepsFile("{default_steps: "+tc.value+"}")), noEnv)
 		if err != nil {
@@ -105,9 +106,9 @@ func TestDefaultStepsAreReadAndRefused(t *testing.T) {
 		{name: "no step", value: "[]", refusal: "projects.ACME.default_steps names no step"},
 		{name: "a role nobody defines", value: "[implementer, checker]",
 			refusal: "projects.ACME.default_steps: step 2 of task default names the role checker, which neither the deployment nor the plan defines."},
-		{name: "a cause of each check", value: "[checker, reviewer, reviewer]",
-			refusal: "projects.ACME.default_steps: task default names the role reviewer at steps 2 and 3." + yet +
-				" step 1 of task default names the role checker, which neither the deployment nor the plan defines."},
+		{name: "two causes", value: "[checker, reviewer, prober]",
+			refusal: "projects.ACME.default_steps: step 1 of task default names the role checker, which neither the deployment nor the plan defines." +
+				" step 3 of task default names the role prober, which neither the deployment nor the plan defines."},
 		{name: "a word outside the grammar", value: "[implementer, Reviewer]",
 			refusal: `projects.ACME.default_steps: the step "Reviewer" is neither a role nor a role:key, where each matches [a-z][a-z0-9-]*`},
 		{name: "two steps in one entry", value: `["implementer reviewer"]`,

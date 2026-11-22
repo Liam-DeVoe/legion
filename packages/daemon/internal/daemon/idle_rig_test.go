@@ -581,8 +581,8 @@ func (r *idleWakeRig) newRuntime(ctx context.Context, listener *stream.Listener,
 	// (outbox.bundleIssueWorkspace), and this rig's role processes bundle an empty workspace.
 	opts.SavedWorkspaceBundle, opts.WorkspaceBundleRestored = savedWorkspaceBundle(st, opts.Project), st.DeleteRestoredWorkspaceBundle
 	opts.Tokens = idleRigTokens{}
-	opts.GitHubCredential = func(_ context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
-		app, err := appauth.AppRoleFor(role, opts.DeploymentApps)
+	opts.GitHubCredential = func(_ context.Context, _ string, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
+		app, err := appauth.AppRoleFor(role, opts.RoleApps.Deployed, appauth.Planned{})
 		if err != nil {
 			return ghconfig.Bundle{}, err
 		}
@@ -720,7 +720,7 @@ func idleRigWorking(state string) bool {
 	return false
 }
 
-// token is the claim token of the issue's role.
+// token is the claim token of the agent named for the issue's role, the role's own claim.
 func (r *idleWakeRig) token(issue idleRigIssue) claim.Token {
 	r.t.Helper()
 	token, err := claim.NewToken(r.project, issue.key, issue.role)

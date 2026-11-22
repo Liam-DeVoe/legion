@@ -139,7 +139,10 @@ func TestAParentWithNoAcceptanceIsHeldBeforeItsRetro(t *testing.T) {
 
 	t.Run("the approval holds the parent before its retro, and the child's leave starts it", func(t *testing.T) {
 		pool, engine, logged := parent(t, true)
-		implementerEntry := roleRowOf(t, pool, engine, "LEGION-208", claim.RoleImplementer).Entry
+		// The implementer's row now, read with no walk: the retro has a row of its own, which no
+		// entry stands on until the retro starts, so the row the engine reads at the retro place
+		// holds no entry whether or not one rose elsewhere.
+		implementerEntry := roleRowNow(t, pool, engine, "LEGION-208", claim.RoleImplementer).Entry
 		statuses := statusWrites(t, pool, "LEGION-208")
 
 		approveReview(t, pool, engine)
@@ -157,7 +160,7 @@ func TestAParentWithNoAcceptanceIsHeldBeforeItsRetro(t *testing.T) {
 		if got := startsIn(t, pool, "LEGION-208", claim.RoleImplementer, phase.Retro); len(got) != 0 {
 			t.Fatalf("the approval wrote the retro's starts %+v, want none", got)
 		}
-		if entry := roleRowOf(t, pool, engine, "LEGION-208", claim.RoleImplementer).Entry; entry != implementerEntry {
+		if entry := roleRowNow(t, pool, engine, "LEGION-208", claim.RoleImplementer).Entry; entry != implementerEntry {
 			t.Fatalf("the implementer's entry after the approval is %d, want %d: no retro started", entry, implementerEntry)
 		}
 		if starts, rows := retroStarts(t, pool, "LEGION-208"); rows != 0 {

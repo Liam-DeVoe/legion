@@ -244,7 +244,7 @@ func newPodUpdateRig(t *testing.T, roles ...podUpdateRole) *podUpdateRig {
 		// (staleRegistration), and a rig that left it false would accept every stale registration
 		// whatever the rest of the rule says.
 		PluginRelaunchable: true,
-		NoPluginInstall:    func(c supervise.Claim) bool { return noPluginInstall(s.cfg, c) },
+		NoPluginInstall:    func(c supervise.Claim) bool { return noPluginInstall(s.cfg, s.backends, c) },
 		RefreshGate:        supervise.NewRefreshGate(0),
 		// A firing timer and a prompt's send take a hold mark of their own, as openSupervision
 		// sets for the daemon, so the guard sees the machines as it does in production.

@@ -73,9 +73,8 @@ type givenVersion struct {
 //
 // Each step of the version is named from every row of the issue as it stands now
 // (record.NameAgents, Store.PlanStepsOf), before anything is written, since the write deletes the
-// steps of each task it gives: so a key keeps its name, and a version in which a fresh agent would
-// need the name a key holds from an earlier version is refused as a plan (intake.AgentUnnamed),
-// never by the write.
+// steps of each task it gives: so a key keeps its name, and a fresh agent that would need the name
+// a key holds gets a name of its own.
 func (e *Engine) versionRefusal(ctx context.Context, tx pgx.Tx, fact intake.PlanGiven) (givenVersion, *intake.Refusal, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil {
@@ -131,13 +130,6 @@ func (e *Engine) versionRefusal(ctx context.Context, tx pgx.Tx, fact intake.Plan
 		return givenVersion{}, nil, err
 	}
 	given.steps = record.NameAgents(earlier, given.steps)
-	if unnamed := record.UnnamedAgents(given.steps); len(unnamed) > 0 {
-		reasons := make([]plan.Refusal, len(unnamed))
-		for i, step := range unnamed {
-			reasons[i] = intake.AgentUnnamed(step.Task, step.Position, string(record.RoleName(step.Role)))
-		}
-		return givenVersion{}, intake.PlanRefused(reasons), nil
-	}
 	return given, nil, nil
 }
 
@@ -161,8 +153,9 @@ type writtenVersion struct {
 
 // writeVersion stores fact's version as the version in force, the rows versionRefusal built and
 // named (given): each task it leaves as it was keeps its steps and where it stands, each task it
-// changes takes the steps its block now names, and each task it removes is deleted. It answers what
-// it read of the version before.
+// changes takes the steps its block now names, and each task it removes is deleted. The roles the
+// version defines replace the roles of the version before (roleRows). It answers what it read of the
+// version before.
 func (e *Engine) writeVersion(ctx context.Context, tx pgx.Tx, fact intake.PlanGiven, given givenVersion) (writtenVersion, error) {
 	version, tasks, steps := given.version, given.tasks, given.steps
 	var removed []string
@@ -184,6 +177,9 @@ func (e *Engine) writeVersion(ctx context.Context, tx pgx.Tx, fact intake.PlanGi
 		}
 	}
 	if err := e.store.PutPlan(ctx, tx, version, tasks, steps); err != nil {
+		return writtenVersion{}, err
+	}
+	if err := e.store.PutPlanRoles(ctx, tx, fact.Issue, fact.Generation, fact.Plan.Version, roleRows(fact)); err != nil {
 		return writtenVersion{}, err
 	}
 	e.logOnCommit(ctx, "workflow: an owner's plan is taken", "issue", fact.Issue, "generation", fact.Generation, "version", fact.Plan.Version,
@@ -262,9 +258,10 @@ func laterVersionRefusal(issue string, held record.PlanVersion, next plan.Plan) 
 }
 
 // heldPlan is the plan in force of stored as its owner's blocks gave it, which a later version is
-// compared with (plan.ChangedTasks): each task's block, with the steps its block names. Those are
-// its stored steps, but for a block that named none (record.PlanTask.StepsByDefault), whose stored
-// steps are the default steps it runs, which a block naming them would differ from.
+// compared with (plan.ChangedTasks): each task's block, with the steps its block names, and each
+// role it defines. Those are its stored steps, but for a block that named none
+// (record.PlanTask.StepsByDefault), whose stored steps are the default steps it runs, which a block
+// naming them would differ from.
 func heldPlan(stored *record.StoredPlan) plan.Plan {
 	held := plan.Plan{ArtifactID: stored.Version.ArtifactID, Version: stored.Version.Version}
 	for _, task := range stored.Tasks {
@@ -274,6 +271,9 @@ func heldPlan(stored *record.StoredPlan) plan.Plan {
 		}
 		held.Tasks = append(held.Tasks, block)
 	}
+	for _, role := range stored.Roles {
+		held.Roles = append(held.Roles, plan.PlanRole{Name: role.Role, Type: plan.Type(role.Type), Model: role.Model, Prompt: role.Prompt})
+	}
 	return held
 }
 
@@ -282,11 +282,12 @@ func heldPlan(stored *record.StoredPlan) plan.Plan {
 // version's block, and a task new to the generation waits at no act (PutPlan keeps where a task
 // the generation holds stands). A task the version leaves as it was keeps its stored steps; any
 // other task takes the steps its block names (StepsOf), or, for a block that names none, defaults,
-// the project's default steps (Config.DefaultSteps), each with the type its role has in d, the
-// engine's deployment (planSteps).
+// the project's default steps (Config.DefaultSteps), each with the type its role has among the
+// roles of d, the engine's deployment, and of the version (plan.RolesOf, planSteps).
 func givenRows(fact intake.PlanGiven, stored *record.StoredPlan, changed []string, defaults []plan.Step, d plan.Deployment, now time.Time) (record.PlanVersion, []record.PlanTask, []record.PlanStep) {
 	version := record.PlanVersion{Issue: fact.Issue, Generation: fact.Generation, Version: fact.Plan.Version, ArtifactID: fact.Plan.ArtifactID,
 		Source: record.PlanSourceOwner, GivenBy: fact.GivenBy, GivenAt: now}
+	roles := plan.RolesOf(fact.Plan, d)
 	var tasks []record.PlanTask
 	var steps []record.PlanStep
 	for _, given := range fact.Plan.Tasks {
@@ -297,7 +298,19 @@ func givenRows(fact intake.PlanGiven, stored *record.StoredPlan, changed []strin
 			steps = append(steps, stored.Steps[given.ID]...)
 			continue
 		}
-		steps = append(steps, planSteps(d, fact.Issue, fact.Generation, given.ID, plan.StepsOf(given, defaults))...)
+		steps = append(steps, planSteps(roles, fact.Issue, fact.Generation, given.ID, plan.StepsOf(given, defaults))...)
 	}
 	return version, tasks, steps
+}
+
+// roleRows is the rows of the roles fact's version defines (plan_roles), one for each role block,
+// each of the version's issue, generation and number, which a launch of the role reads its prompt
+// and its model from.
+func roleRows(fact intake.PlanGiven) []record.PlanRole {
+	roles := make([]record.PlanRole, len(fact.Plan.Roles))
+	for i, role := range fact.Plan.Roles {
+		roles[i] = record.PlanRole{Issue: fact.Issue, Generation: fact.Generation, Role: role.Name, PlanVersion: fact.Plan.Version,
+			Type: string(role.Type), Model: role.Model, Prompt: role.Prompt}
+	}
+	return roles
 }

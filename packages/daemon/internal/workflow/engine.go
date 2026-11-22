@@ -962,8 +962,9 @@ func (e *Engine) pastCompletion(ctx context.Context, tx pgx.Tx, issue record.Iss
 // returnToOf is the place of the earlier step a failed step's report names as the one its task
 // returns to (fact.ReturnTo), the zero place where it names none, or the refusal of the step it
 // names (returnStep). It is judged against the place of the step that reports: where the task
-// stands for a current completion, and the place of the role's own step for a role that has left
-// it (Walk.placeOfRole), so of two steps that run as step, the reporting role's own. It is judged
+// stands for a current completion, and the place of the role's own step of the reported phase for
+// a role that has left it (Walk.placeRunning), so of two steps that run as step the reporting
+// role's own, and of two steps of one role the one nearest where the task stands. It is judged
 // before anything is written, so a refusal records nothing, its handoff record among it, and the
 // agent reports again.
 func (e *Engine) returnToOf(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.HandoffComplete, reported phase.Phase, current bool) (record.TaskPlace, *intake.Refusal, error) {
@@ -976,7 +977,7 @@ func (e *Engine) returnToOf(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	}
 	site := standingIn(reported)
 	if !current {
-		place, _ := w.placeOfRole(fact.Role)
+		place, _ := w.placeRunning(reported, fact.Role)
 		site = placeNamed(place, reported)
 	}
 	target, why := returnStep(issue, w, site, fact.ReturnTo, failReport)
@@ -989,8 +990,9 @@ func (e *Engine) returnToOf(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 // recordStepReview writes the commit a completion of a step of the type review that runs as step
 // read onto the role's phases row (record.PhaseRow.ReviewedHead), so the task of the step's next
 // run names it (namingTheReviewRound), as the reviewer's next round names the commit its own
-// review read. A role runs at most one step of an issue, so its row's commit is its step's, and
-// the clear of a generation empties it with the reviewer's (record.Store.ClearGeneration). It
+// review read. The row is the row of the step the completion is of (phaseRow), and the first run of
+// a later step of the role starts from it (stepRunRow), as the reviewer's next round does; the
+// clear of a generation empties it with the reviewer's (record.Store.ClearGeneration). It
 // writes only for a completion of the entry that stands, by equality of an entry number and no
 // time compared: row, the role's phases row the completion read and wrote in its own transaction
 // before the move raises any entry, holds the task of an entry (EntryTask, which the clear of a
@@ -2179,7 +2181,10 @@ func (e *Engine) retryOrEscalate(ctx context.Context, tx pgx.Tx, fact intake.Ret
 	if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers {
 		return intake.Result{}, err
 	}
-	if refusal, err := e.stepMovedRefusal(ctx, tx, *issue, phase.RoleFor(issue.Hold.From), fact.Claim); err != nil || refusal != nil {
+	// The role the hold is from is the issue's at that phase (record.Issue.RoleAt): for a hold from
+	// step, the role of the step it was held at, which the held issue keeps, since phase.RoleFor
+	// knows no role of step.
+	if refusal, err := e.stepMovedRefusal(ctx, tx, *issue, issue.RoleAt(issue.Hold.From), fact.Claim); err != nil || refusal != nil {
 		return intake.Result{Refusal: refusal}, err
 	}
 	// The architect's own words where it named any, which the restarted role's task and the log
@@ -2571,14 +2576,15 @@ func (e *Engine) accept(ctx context.Context, tx pgx.Tx, issue record.Issue) erro
 
 // acceptedRole is the role of the step the owner's acceptance of issue accepts: the step before
 // the acceptance's place on the task of its walk, by place and never by type, so the step after
-// the sign-off reads the report the owner read. An issue with no plan rows walks today's line,
-// where the review stands before accepting.
+// the sign-off reads the report the owner read. Of two acceptance steps, the place is the one the
+// task stands at (Walk.placeRunning). An issue with no plan rows walks today's line, where the
+// review stands before accepting.
 func (e *Engine) acceptedRole(ctx context.Context, tx pgx.Tx, issue record.Issue) (claim.Role, error) {
 	w, err := e.walk(ctx, tx, issue)
 	if err != nil || !w.Stored {
 		return claim.RoleReviewer, err
 	}
-	place, ok := w.PlaceOf(phase.Accepting)
+	place, ok := w.placeRunning(phase.Accepting, "")
 	if !ok || place.Kind != record.PlaceStep || place.Position < 2 {
 		return "", fmt.Errorf("sign off %s: task %s of its line %v has no step before its acceptance", issue.Key, w.Task, w.Line)
 	}
@@ -2998,11 +3004,18 @@ func (e *Engine) stopLostRole(ctx context.Context, tx pgx.Tx, issue record.Issue
 // (planHold) has nothing to stop. A task whose stop cannot stand where its issue stands now (a root
 // that waits on a person before its first step) is passed over with one log line: the move into
 // its first step stops it then (transition's lostAt).
+//
+// A restart is also where the deployment can take the name of a role the plan in force of an
+// issue defines. That issue keeps its plan's role until a version of its plan changes it
+// (appauth.AppRoleFor, the daemon's specs.rolePromptPaths), and every other issue takes the
+// deployment's. The boot logs one line for each such name, naming the issues whose plan keeps it.
 func (e *Engine) stopLostRoles(ctx context.Context, tx pgx.Tx) error {
 	issues, err := e.store.Issues(ctx, tx)
 	if err != nil {
 		return err
 	}
+	var names []string
+	shadowed := map[string][]string{}
 	for _, issue := range issues {
 		if issue.Project != e.cfg.Project || issue.Phase == phase.Done || record.OutOfWorkflow(issue.Status) {
 			continue
@@ -3010,6 +3023,15 @@ func (e *Engine) stopLostRoles(ctx context.Context, tx pgx.Tx) error {
 		w, err := e.walk(ctx, tx, issue)
 		if err != nil {
 			return err
+		}
+		for _, role := range w.Roles {
+			if _, deployed := e.cfg.Deployment.Roles[role.Role]; !deployed {
+				continue
+			}
+			if _, seen := shadowed[role.Role]; !seen {
+				names = append(names, role.Role)
+			}
+			shadowed[role.Role] = append(shadowed[role.Role], issue.Key)
 		}
 		if planHold(issue, w.Stored) {
 			continue
@@ -3026,6 +3048,10 @@ func (e *Engine) stopLostRoles(ctx context.Context, tx pgx.Tx) error {
 			e.logOnCommit(ctx, "workflow: a task whose step names a role the deployment no longer defines is not stopped where it stands",
 				"issue", issue.Key, "task", w.Task, "step", lost.Position, "reason", refusal.Message)
 		}
+	}
+	for _, name := range names {
+		e.logOnCommit(ctx, "workflow: a role of the deployment has the name of a role the plan in force of an issue defines; each such issue keeps its plan's role until a version of its plan changes it, and every other issue takes the deployment's",
+			"role", name, "issues", shadowed[name])
 	}
 	return nil
 }
@@ -3122,15 +3148,31 @@ func (e *Engine) claimTargets(ctx context.Context, tx pgx.Tx, issue record.Issue
 	return targets, nil
 }
 
-// phaseRow is role's phases row of issue (record.PhaseRowOf), and the zero row stamped with the
-// issue and the role where the record holds none: every caller that writes the row back writes
-// the row of that role, and a caller that only reads it reads the zero value of each field.
+// phaseRow is role's phases row of issue where its task stands (Walk.phaseRowOf), and the zero row
+// stamped with the issue, the role and the step it stands at where the record holds none: every
+// caller that writes the row back writes the row of that role's step, and a caller that only reads
+// it reads the zero value of each field. A role that stands at two steps of the task has a row for
+// each, so the walk decides which: the role's step where the task stands, else its latest place
+// before it, else its first place after it (record.PhaseRowAt). An issue the record does not hold
+// walks no plan, and reads the role's one row.
 func (e *Engine) phaseRow(ctx context.Context, tx pgx.Tx, issue string, role claim.Role) (record.PhaseRow, error) {
 	rows, err := e.store.Phases(ctx, tx, issue)
 	if err != nil {
 		return record.PhaseRow{}, err
 	}
-	row := record.PhaseRowOf(rows, role)
+	w := todaysWalk()
+	var standsIn phase.Phase
+	stored, err := e.store.Issue(ctx, tx, issue)
+	if err != nil {
+		return record.PhaseRow{}, err
+	}
+	if stored != nil {
+		if w, err = e.walk(ctx, tx, *stored); err != nil {
+			return record.PhaseRow{}, err
+		}
+		standsIn = record.StandsAt(*stored)
+	}
+	row := w.phaseRowOf(rows, role, standsIn)
 	row.Issue, row.Role = issue, role
 	return row, nil
 }

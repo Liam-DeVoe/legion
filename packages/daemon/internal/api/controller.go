@@ -256,7 +256,7 @@ func (s *server) controllerGitHubCredential(w http.ResponseWriter, r *http.Reque
 		s.writeFailure(w, r, http.StatusBadGateway, "GITHUB_TOKEN_FAILED", "GitHub token exchange failed")
 		return
 	}
-	app, err := appauth.AppRoleFor(claim.RoleController, nil)
+	app, err := appauth.AppRoleFor(claim.RoleController, nil, appauth.Planned{})
 	if err != nil {
 		s.logRequestFailure(r, err, "api: the controller's GitHub App")
 		s.writeFailure(w, r, http.StatusInternalServerError, "GITHUB_TOKEN_SOURCE_UNAVAILABLE", err.Error())

@@ -3,7 +3,8 @@
 // daemon-standin.ts to run Oh My Pi and the stand-in daemon under, and the prompt a launch of any
 // role starts with, for a reader of that prompt. It belongs to no module:
 // daemon-pane.ts runs it with `go run -overlay` as a main inside a checkout's packages/daemon, the
-// one place the daemon's internal packages can be imported from.
+// one place the daemon's internal packages can be imported from, with daemon-pane-architect.go
+// beside it where that checkout's daemon declares the function that file calls.
 //
 //	phase <role>             prints the phase the role's worker runs in, the first phase
 //	                         workflow.RoleFor gives to the role, then on a second line the word of
@@ -16,8 +17,12 @@
 //	                         prints the system prompt a launch of the role starts with
 //	                         (rolePrompt), byte for byte as the daemon writes its prompt file, for
 //	                         the rig's claim on the root issue of its tree or on a child under it;
-//	                         a root architect's prompt ends with the design gate steps of a
-//	                         deployment that sets no `gates.design`, as such a launch's does
+//	                         an architect's prompt ends with what the daemon tells every architect
+//	                         after its addressing (daemon.ArchitectAddressing) under a deployment
+//	                         that defines no role, lists no model and sets no `gates.design`, as
+//	                         such a launch's does: the deployment's roles and models, then, for the
+//	                         root's architect, the design gate steps; it fails, naming that
+//	                         function, in a checkout whose daemon lacks it (architectAddressing)
 package main
 
 import (
@@ -31,7 +36,6 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/daemon"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -268,15 +272,24 @@ func firstBytes(path string, n int) ([]byte, error) {
 	return head[:read], nil
 }
 
+// architectAddressing is what the architect of c is told after the sentence every launch is told,
+// as the daemon composes it for the rig's deployment (daemon.ArchitectAddressing, through
+// daemon-pane-architect.go, which sets it). It lives in a file of its own because a checkout of the
+// daemon module older than that function does not declare it, and a call to it would keep this
+// program from building there in every mode: daemon-pane.ts builds that file in only where the
+// checkout's daemon declares the function. It is nil in a build without it, and rolePrompt then
+// refuses an architect rather than compose a prompt that lacks what its daemon tells one.
+var architectAddressing func(c supervise.Claim) string
+
 // rolePrompt is the system prompt a launch of c starts with, composed as the daemon composes it
 // (specs.SpawnSpec): the role prompts snapshotted under stateDir, the role's parts concatenated
 // with the newlines that end them dropped, a blank line, then its addressing for the rig's
-// repository, which for the architect of a tree's root ends with the design gate steps of a
-// deployment that leaves `gates.design` unset (config.Gates.Steps), as workerSpawnSpec appends
-// them. It is the prompt of a deployment with no instructions file and no experiment, whose roles
-// run on Oh My Pi, a backend whose launch is told no prompt part of its own. The join is this
-// program's own copy of the daemon's (runtime.ComposePrompt), since the rig runs it against each
-// label's checkout of the daemon module, an older one among them, which lacks it.
+// repository, which for an architect ends with what the daemon tells every architect after it
+// (architectAddressing), as workerSpawnSpec appends it. It is the prompt of a deployment with no
+// instructions file and no experiment, whose roles run on Oh My Pi, a backend whose launch is told
+// no prompt part of its own. The join is this program's own copy of the daemon's
+// (runtime.ComposePrompt), since the rig runs it against each label's checkout of the daemon
+// module, an older one among them, which lacks it.
 func rolePrompt(stateDir, project string, c supervise.Claim) (string, error) {
 	composer, err := prompts.New(stateDir)
 	if err != nil {
@@ -294,8 +307,12 @@ func rolePrompt(stateDir, project string, c supervise.Claim) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if claim.IsTreeArchitect(c.Role, c.Issue, c.Tree) {
-		addressing += " " + daemon.DesignGateFragment(config.Gates{}.Steps())
+	if c.Role == claim.RoleArchitect {
+		if architectAddressing == nil {
+			return "", errors.New("this checkout's daemon module declares no daemon.ArchitectAddressing, the daemon's composition of " +
+				"what an architect is told after its addressing, so the rig composes no architect's prompt in it")
+		}
+		addressing += architectAddressing(c)
 	}
 	var body strings.Builder
 	for _, path := range parts.RolePromptPaths {

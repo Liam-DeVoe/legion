@@ -3105,6 +3105,22 @@ package api
 // or above. Read the base's own number and every open pull request again at the next merge rather
 // than from this line.)
 //
+// 222: a claim of `GET /legion/v1/state`'s `strandedClaims` names its claim token in a new key,
+// `strandedClaims.*.token`. Two claims of one issue can hold one role, a keyed agent's on another
+// role's step among them, so the issue and the role no longer name one claim; the boot's log line
+// and `legion state` read who suspended each stranded claim by that token (api.Suspenders), so
+// each takes the move its own suspender calls for. A caller whose contract is below 222 is served
+// each stranded claim without the key (one band of shaping.go at `strandedTokenContract`): a
+// plugin before INFRA-1048 reads a stranded claim as a strict object and would refuse the whole
+// state over it. From this entry the last number of answers.go's SupportedContracts is
+// `api.strandedTokenContract`, and `deploymentRolesContract` stays 221.
+// (This entry takes 222, the lowest number above the base's 221 (the entry above) that no other
+// open pull request declared: a reading of `const DaemonAPIVersion` at refs/pull/<n>/head, by the
+// contract check's own reader (declared_by_open_pull_requests), of each of the 428 open pull
+// requests, made between 2026-11-22T04:42:58Z and 04:46:33Z, found 220 the highest number
+// declared and none at 222. Read the base's own number and every open pull request again at the
+// next merge rather than from this line.)
+//
 // 227: the owner of an issue, its own architect, reports a step of its own: a step whose key is
 // owner, or the retro of a task whose retro is the owner's. A new route, `POST
 // /legion/v1/steps/complete` (`grantId`, `issue`, `step`, `summary`, and, as a completion of that
@@ -3127,12 +3143,12 @@ package api
 // already leaves out of the state served a caller below 221. The notice kind this entry adds
 // (`owner-step`) rides inside a notice row's payload, as 189's does, and is no key or value of an
 // answer a plugin parses. From this entry the last number of answers.go's SupportedContracts is
-// `api.completeStepContract`, and `deploymentRolesContract` stays 221.
-// (This entry takes 227, above the base's 221 (the roles a deployment defines, the entry above)
-// and above every number another open pull request declared, with 222 and 225 to 226 left to the
-// changes that build on the same base: a reading of `const DaemonAPIVersion` at
-// refs/pull/<n>/head for each of the 446 open pull requests, made between 2026-11-22T11:38:55Z and
-// 11:40:04Z, read all 446 and found 223 declared by #4805 and 224 by #4960 as the highest, and
-// nothing at 221, 222 or from 225 up. Read the base's own number and every open pull request again
-// at the next merge rather than from this line.)
+// `api.completeStepContract`; `deploymentRolesContract` stays 221 and `strandedTokenContract` 222.
+// (This entry takes 227, above 222 (the stranded claims' token, the entry above) and above every
+// number another open pull request declared, with 225 to 226 left to the changes that build on the
+// same base: a reading of `const DaemonAPIVersion` at refs/pull/<n>/head for each of the 446 open
+// pull requests, made between 2026-11-22T11:38:55Z and 11:40:04Z, read all 446 and found 223
+// declared by #4805 and 224 by #4960 as the highest, and nothing at 221, 222 or from 225 up. Read
+// the base's own number and every open pull request again at the next merge rather than from this
+// line.)
 const DaemonAPIVersion = 227

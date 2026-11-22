@@ -12,6 +12,7 @@ package plan
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -83,6 +84,23 @@ func RetroAgent(task string, steps []Step, types []Type) (Agent, string) {
 	return Agent{Key: "owner"}, "implementer"
 }
 
+// StoredAgentName is the name of the agent of step place of task, whose step is s and whose stored
+// name is stored: the last part of that agent's claim token, the one rule every reader of a stored
+// step names its agent by (the record's PlanStep.AgentName, and the store's read of a plan's
+// agents for an issue pod's slots). A step of the key owner names none, since its agent is the
+// tree's architect, whose token names the tree and no name on the issue. A row a release before the
+// stored names wrote holds none and reads as its role: that release ran each role at most once in
+// a task and refused every key but the owner's, so its role named its agent.
+func StoredAgentName(task string, place int, s Step, stored string) string {
+	switch {
+	case AgentOf(task, place, s).Owner():
+		return ""
+	case stored != "":
+		return stored
+	}
+	return s.Role
+}
+
 // DefaultTask is the id of the one task of an issue whose owner gives no plan, which runs the
 // project's default steps.
 const DefaultTask = "default"
@@ -110,12 +128,32 @@ type Task struct {
 // NamesSteps says whether t's block names a step at all.
 func (t Task) NamesSteps() bool { return len(t.Steps) > 0 }
 
-// RoleDef is a role a step can name: its name and the type of the work it does. How a step of the
-// role runs is decided by its name alone (RunsAs).
+// RoleDef is a role a step can name: its name, the type of the work it does, and the model and
+// the harness its agent starts on. How a step of the role runs is decided by its name alone
+// (RunsAs).
 type RoleDef struct {
 	Name string
 	Type Type
+	// Model is the model its agent starts with: "" for the deployment's default model.
+	Model string
+	// Backend is the harness its agent runs on, in the words of runtime.Backend: "omp" or
+	// "claude".
+	Backend string
 }
+
+// PlanRole is one `plan_role` block: the role's name (the block's id), its type, its model (""
+// names none, and the role's agent starts on the default model), and its prompt (the block's
+// text).
+type PlanRole struct {
+	Name   string
+	Type   Type
+	Model  string
+	Prompt string
+}
+
+// planRoleBackend is the harness of every role a plan defines: a role of a plan runs on Oh My Pi
+// (runtime.BackendOmp's word), and no setting changes it.
+const planRoleBackend = "omp"
 
 // Plan is one version of an owner's plan document as Legion reads it.
 type Plan struct {
@@ -123,14 +161,39 @@ type Plan struct {
 	Version    int
 	// Tasks are the document's `plan_task` blocks, in its order.
 	Tasks []Task
-	// RoleBlocks are the names of the roles the plan defines, one for each `plan_role` block, in
-	// the document's order.
-	RoleBlocks []string
+	// Roles are the roles the plan defines, one for each `plan_role` block, in the document's
+	// order.
+	Roles []PlanRole
 }
 
 // Deployment is what the deployment gives a plan: the roles a step can name, by name, which are
-// Legion's own (BuiltinRoles) and each role the deployment's settings define.
-type Deployment struct{ Roles map[string]RoleDef }
+// Legion's own (BuiltinRoles) and each role the deployment's settings define, the models a role
+// may name, and the owner's own role.
+type Deployment struct {
+	Roles map[string]RoleDef
+	// Models are the models the deployment lists.
+	Models []string
+	// Owner is the role of the owner of the plan's tasks: its name, its model and its harness.
+	Owner RoleDef
+}
+
+// RolesOf is the roles the steps of p can name: each role of d, then each role p defines that d
+// does not, as a RoleDef of its name, its type and its model on Oh My Pi. It is the one place that
+// answers which role a step names, and of which type, model and harness. The answer is a fresh
+// map, so a caller that changes it leaves d's roles whole.
+func RolesOf(p Plan, d Deployment) map[string]RoleDef {
+	roles := make(map[string]RoleDef, len(d.Roles)+len(p.Roles))
+	for name, role := range d.Roles {
+		roles[name] = role
+	}
+	for _, role := range p.Roles {
+		if _, ok := roles[role.Name]; ok {
+			continue
+		}
+		roles[role.Name] = RoleDef{Name: role.Name, Type: role.Type, Model: role.Model, Backend: planRoleBackend}
+	}
+	return roles
+}
 
 // Refusal is one reason Legion does not take a plan: the task it names, "" for a cause of the
 // whole plan, and the reason as the owner reads it.
@@ -157,6 +220,18 @@ var builtinRoles = []RoleDef{
 	{Name: "reviewer", Type: TypeReview},
 	{Name: "acceptance", Type: TypeReview},
 }
+
+// LegionNames is the one list of the names that no role of a plan takes, since Legion holds each
+// already: the architect and the merger are roles of a claim (claim.Roles), the controller is the
+// controller's role, and the five others are Legion's roles of a step (BuiltinRoles). `owner` is
+// in no list: it is the key of a task's owner, and a step's role and its key are two words, so a
+// role named owner collides with nothing. The answer is a fresh slice, so a caller that changes it
+// leaves the next caller's answer whole.
+func LegionNames() []string {
+	return slices.Clone(legionNames)
+}
+
+var legionNames = []string{"architect", "planner", "implementer", "tester", "reviewer", "merger", "controller", "acceptance"}
 
 // RunsAs is the phase a step of role runs as: each of Legion's five roles of a step its own phase,
 // and every other role, one the deployment defines, the phase step, where the role that works the

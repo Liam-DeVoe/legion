@@ -127,13 +127,14 @@ type Options struct {
 	// serve it on the contract it speaks (staleClaim). Nil is a daemon whose every claim a
 	// relaunch can carry.
 	NoPluginInstall func(c supervise.Claim) bool
-	// Backend is the harness one role's claims run on (config.Config.BackendFor, the daemon's
-	// own reading of `worker_backends` against runtime.Backends). A role's harness is the
-	// daemon's configuration and nothing the claim itself records, so the one route that has to
-	// know is handed it here: a compaction is an Oh My Pi command, and a Claude Code claim has
-	// no Oh My Pi session to compact (compact). Nil answers Oh My Pi for every role, which is
-	// what a deployment that configures no `worker_backends` runs.
-	Backend func(role claim.Role) runtime.Backend
+	// Backend is the harness a role's claim of an issue runs on (the daemon's roleBackends: a role
+	// the issue's plan defines runs on Oh My Pi, every other role on what `worker_backends` names
+	// against runtime.Backends). A role's harness is the daemon's configuration and the issue's
+	// plan, nothing the claim itself records, so the one route that has to know is handed it here:
+	// a compaction is an Oh My Pi command, and a Claude Code claim has no Oh My Pi session to
+	// compact (compact). Nil answers Oh My Pi for every role, which is what a deployment that
+	// configures no `worker_backends` runs.
+	Backend func(ctx context.Context, issue string, role claim.Role) (runtime.Backend, error)
 	// CallerPod is the runtime's pod at a request's address: the uid of the project's pod that
 	// holds addr, and false for an address no pod of the project holds (the Sandbox runtime's
 	// PodAt). GET /legion/v1/state authenticates nobody, so this is how it knows which claims'
@@ -345,7 +346,7 @@ type server struct {
 	pluginRelaunchable bool
 	noPluginInstall    func(c supervise.Claim) bool
 	// backend is Options.Backend: the harness one role's claims run on.
-	backend func(role claim.Role) runtime.Backend
+	backend func(ctx context.Context, issue string, role claim.Role) (runtime.Backend, error)
 	// controllerMu orders a capability mint against a registration and a controller grant, so a
 	// grant the replaced registration authorised is never recorded after the mint revoked them.
 	controllerMu sync.Mutex

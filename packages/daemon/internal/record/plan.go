@@ -16,9 +16,10 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/plan"
 )
 
-// The plan of an issue is three tables (store migration 20261117034837_issue_plans): the versions
-// given for it (issue_plans), the tasks of the plan (plan_tasks), each with where it stands and its
-// counts of returns, and the steps of each task (plan_steps). Every row is keyed by the issue and
+// The plan of an issue is four tables (store migrations 20261117034837_issue_plans and
+// 20261117201743_plan_roles): the versions given for it (issue_plans), the tasks of the plan
+// (plan_tasks), each with where it stands and its counts of returns, the steps of each task
+// (plan_steps), and the roles the plan defines (plan_roles). Every row is keyed by the issue and
 // its generation, and no row names an issues row, because an owner can give a plan before the
 // daemon records its issue: such a plan is written at generation 0. An issue that ran before plans
 // has no rows, and goes on as it did then. The count of starts of a step is not the plan's: it lives
@@ -152,19 +153,24 @@ type PlanStep struct {
 	Agent claim.Agent
 }
 
-// AgentName is the name of the step's agent: the last part of its claim token, and the one reader
-// of Agent. A step of the key owner has none, since its agent is the tree's architect, whose token
-// names the tree and no name on the issue. A step a release before the column wrote holds none and
-// reads as its role: that release ran each role at most once in a task and refused every key but
-// the owner's, so its role named its agent.
+// PlanRole is one role a plan defines with a role block: its name (the block's id), the version of
+// the plan that wrote it, its type, its model ("" for the default model) and its prompt, the
+// block's body.
+type PlanRole struct {
+	Issue       string
+	Generation  uint64
+	Role        string
+	PlanVersion int
+	Type        string
+	Model       string
+	Prompt      string
+}
+
+// AgentName is the name of the step's agent, by the one rule every reader of a stored step names
+// it by (plan.StoredAgentName), and the one reader of Agent: none for a step of the key owner, the
+// stored name, or the role on a step a release before the column wrote.
 func (s PlanStep) AgentName() claim.Agent {
-	switch {
-	case plan.AgentOf(s.Task, s.Position, plan.Step{Role: s.Role, Key: s.AgentKey}).Owner():
-		return ""
-	case s.Agent != "":
-		return s.Agent
-	}
-	return claim.Agent(s.Role)
+	return claim.Agent(plan.StoredAgentName(s.Task, s.Position, plan.Step{Role: s.Role, Key: s.AgentKey}, string(s.Agent)))
 }
 
 // RetroAgentOf is who does the retro of task, whose plan rows are steps, and the role of that run
@@ -182,11 +188,13 @@ func RetroAgentOf(task string, steps []PlanStep) (plan.Agent, string) {
 }
 
 // StoredPlan is the plan of an issue at one generation: the version in force, every task ordered by
-// its id, and the steps of each task by its id, ordered by place. Steps is never nil.
+// its id, the steps of each task by its id, ordered by place, and the roles the plan defines,
+// ordered by name. Steps and Roles are never nil.
 type StoredPlan struct {
 	Version PlanVersion
 	Tasks   []PlanTask
 	Steps   map[string][]PlanStep
+	Roles   []PlanRole
 }
 
 // Task is the plan's one task, the task its run is on whatever that task's state: this release's
@@ -267,6 +275,61 @@ func (s *Postgres) PutPlan(ctx context.Context, tx pgx.Tx, v PlanVersion, tasks 
 	return nil
 }
 
+// PutPlanRoles writes roles, the roles version of the plan of issue at generation defines, over
+// every role that generation holds, so a role an earlier version defined and this one does not is
+// gone, and nil leaves the generation with none. A role of another issue, generation or version is
+// refused before anything is written, so the transaction stays usable; a version the issue's plans
+// do not hold is refused by the store (the foreign key on issue_plans).
+func (s *Postgres) PutPlanRoles(ctx context.Context, tx pgx.Tx, issue string, generation uint64, version int, roles []PlanRole) error {
+	describe := fmt.Sprintf("put the roles of version %d of the plan of %s at generation %d", version, issue, generation)
+	for _, role := range roles {
+		if role.Issue != issue || role.Generation != generation || role.PlanVersion != version {
+			return fmt.Errorf("%s: role %s is of version %d of %s at generation %d", describe, role.Role, role.PlanVersion, role.Issue, role.Generation)
+		}
+	}
+	if _, err := tx.Exec(ctx, `delete from plan_roles where issue = $1 and generation = $2`, issue, int64(generation)); err != nil {
+		return fmt.Errorf("%s: %w", describe, err)
+	}
+	for _, role := range roles {
+		if _, err := tx.Exec(ctx, `insert into plan_roles (issue, generation, role, plan_version, type, model, prompt)
+			values ($1, $2, $3, $4, $5, $6, $7)`,
+			issue, int64(generation), role.Role, version, role.Type, role.Model, role.Prompt); err != nil {
+			return fmt.Errorf("%s: role %s: %w", describe, role.Role, err)
+		}
+	}
+	return nil
+}
+
+// planRoleColumns are the columns of a plan_roles row as scanPlanRole reads them.
+const planRoleColumns = `issue, generation, role, plan_version, type, model, prompt`
+
+func scanPlanRole(row pgx.Row) (PlanRole, error) {
+	var role PlanRole
+	var generation int64
+	if err := row.Scan(&role.Issue, &generation, &role.Role, &role.PlanVersion, &role.Type, &role.Model, &role.Prompt); err != nil {
+		return PlanRole{}, err
+	}
+	role.Generation = uint64(generation)
+	return role, nil
+}
+
+// PlanRoleOf is the role named role that the plan of issue defines at the issue's current
+// generation, and false, with no error, where that plan defines none of that name or the daemon
+// records no issue of that key: what a launch of a role of a plan reads.
+func (s *Postgres) PlanRoleOf(ctx context.Context, tx pgx.Tx, issue, role string) (PlanRole, bool, error) {
+	found, err := scanPlanRole(tx.QueryRow(ctx, `select plan_roles.issue, plan_roles.generation, plan_roles.role, plan_roles.plan_version,
+		plan_roles.type, plan_roles.model, plan_roles.prompt from plan_roles
+		join issues on issues.key = plan_roles.issue and issues.generation = plan_roles.generation
+		where plan_roles.issue = $1 and plan_roles.role = $2`, issue, role))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return PlanRole{}, false, nil
+	}
+	if err != nil {
+		return PlanRole{}, false, fmt.Errorf("read the role %s of the plan of %s: %w", role, issue, err)
+	}
+	return found, true, nil
+}
+
 const planVersionColumns = `issue, generation, version, source, artifact_id, given_by, given_at`
 
 // Plan is the plan of issue at generation, or nil where that generation has no plan rows.
@@ -303,6 +366,14 @@ func (s *Postgres) Plan(ctx context.Context, tx pgx.Tx, issue string, generation
 		plan.Steps[step.Task] = append(plan.Steps[step.Task], step)
 	}
 	if err := steps.Err(); err != nil {
+		return nil, fmt.Errorf("%s: %w", describe, err)
+	}
+	roles, err := tx.Query(ctx, `select `+planRoleColumns+` from plan_roles
+		where issue = $1 and generation = $2 order by role`, issue, int64(generation))
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", describe, err)
+	}
+	if plan.Roles, err = pgx.CollectRows(roles, func(row pgx.CollectableRow) (PlanRole, error) { return scanPlanRole(row) }); err != nil {
 		return nil, fmt.Errorf("%s: %w", describe, err)
 	}
 	return plan, nil
@@ -458,12 +529,13 @@ func (s *Postgres) PlansOfEarlierOwners(ctx context.Context, tx pgx.Tx, issue Is
 	return earlier, nil
 }
 
-// CarryPlan copies the plan of issue at generation from to generation to: every version, every task
-// and every step. carried is a hand-over that carries its run, whose tasks go on where they stood,
-// so each task keeps its state, its place and its counts. Without carried, the plan starts from its
-// start: each task waits at no act with every count 0. Neither copies a count of starts, which
-// step_starts keeps by place alone. Where from has no plan rows it writes nothing, so an issue that
-// ran before plans goes on as it did; a generation to that holds a plan already is refused.
+// CarryPlan copies the plan of issue at generation from to generation to: every version, every
+// task, every step and every role it defines. carried is a hand-over that carries its run, whose
+// tasks go on where they stood, so each task keeps its state, its place and its counts. Without
+// carried, the plan starts from its start: each task waits at no act with every count 0. Neither
+// copies a count of starts, which step_starts keeps by place alone. Where from has no plan rows it
+// writes nothing, so an issue that ran before plans goes on as it did; a generation to that holds
+// a plan already is refused.
 func (s *Postgres) CarryPlan(ctx context.Context, tx pgx.Tx, issue string, from, to uint64, carried bool) error {
 	describe := fmt.Sprintf("carry the plan of %s from generation %d to %d", issue, from, to)
 	if from == to {
@@ -497,6 +569,9 @@ func (s *Postgres) CarryPlan(ctx context.Context, tx pgx.Tx, issue string, from,
 		`insert into plan_steps (issue, generation, task, position, role, type, agent_key, agent)
 			select issue, $3, task, position, role, type, agent_key, agent
 			from plan_steps where issue = $1 and generation = $2`,
+		`insert into plan_roles (issue, generation, role, plan_version, type, model, prompt)
+			select issue, $3, role, plan_version, type, model, prompt
+			from plan_roles where issue = $1 and generation = $2`,
 	} {
 		if _, err := tx.Exec(ctx, statement, issue, int64(from), int64(to)); err != nil {
 			return fmt.Errorf("%s: %w", describe, err)
@@ -505,8 +580,8 @@ func (s *Postgres) CarryPlan(ctx context.Context, tx pgx.Tx, issue string, from,
 	return nil
 }
 
-// DeletePlan deletes the plan of issue at generation, every row of it in each of the three tables
-// (the tasks and the steps go with their versions, on delete cascade).
+// DeletePlan deletes the plan of issue at generation, every row of it in each of the four tables
+// (the tasks, the steps and the roles go with their versions, on delete cascade).
 func (s *Postgres) DeletePlan(ctx context.Context, tx pgx.Tx, issue string, generation uint64) error {
 	if _, err := tx.Exec(ctx, `delete from issue_plans where issue = $1 and generation = $2`, issue, int64(generation)); err != nil {
 		return fmt.Errorf("delete the plan of %s at generation %d: %w", issue, generation, err)

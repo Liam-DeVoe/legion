@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -144,9 +145,11 @@ func unpromptedPhaseWorker(issue, root record.Issue, gate record.TreeGate, role 
 // PhaseWorkerOwedTurn is whether role's worker of issue's phase is still owed a turn, the half of
 // a silence only the store can answer: false for a phase its terminating fact has met
 // (PhaseFinished) and for a role whose completion of this phase entry the workflow accepted (the
-// phase row's CompletedAt, which the next phase's start clears in clearHandoff). It answers the
-// role's phase row too, an empty row naming the issue and role where the record holds none, so
-// the silence repair reads it once.
+// phase row's CompletedAt, which the next phase's start clears in clearHandoff). The row is the
+// role's row now (record.PhaseRowOf), the row of the step whose entry was raised last, since a
+// role that stands at two steps has a row for each and its worker is owed the turn of the one it
+// works. It answers that row too, an empty row naming the issue and role where the record holds
+// none, so the silence repair reads it once.
 func PhaseWorkerOwedTurn(ctx context.Context, store record.Store, tx pgx.Tx, issue record.Issue, role claim.Role) (record.PhaseRow, bool, error) {
 	finished, err := PhaseFinished(ctx, store, tx, issue)
 	if err != nil || finished {
@@ -156,13 +159,8 @@ func PhaseWorkerOwedTurn(ctx context.Context, store record.Store, tx pgx.Tx, iss
 	if err != nil {
 		return record.PhaseRow{}, false, err
 	}
-	row := record.PhaseRow{Issue: issue.Key, Role: role}
-	for _, r := range rows {
-		if r.Role == role {
-			row = r
-			break
-		}
-	}
+	row := record.PhaseRowOf(rows, role)
+	row.Issue, row.Role = issue.Key, role
 	return row, row.CompletedAt.IsZero(), nil
 }
 
@@ -470,11 +468,11 @@ func (e *Engine) start(ctx context.Context, tx pgx.Tx, issue record.Issue, w Wal
 	if err != nil {
 		return err
 	}
-	entry, sent, err := e.enter(ctx, tx, issue, &w, role, told(at), movedBack, false)
+	in, err := e.enter(ctx, tx, issue, &w, role, told(at), movedBack, false)
 	if err != nil {
 		return err
 	}
-	return e.started(ctx, tx, issue, role, sent, entry, startMarks{stored: true})
+	return e.started(ctx, tx, issue, role, in.task, in.entry, startMarks{stored: true, freshSession: in.freshSession})
 }
 
 // startOwnersStep starts the step or the retro at w.Place, whose agent is the owner of the task: it
@@ -496,7 +494,7 @@ func (e *Engine) startOwnersStep(ctx context.Context, tx pgx.Tx, issue record.Is
 	if step, ok := w.planStepAt(w.Place); ok {
 		role = claim.Role(step.Role)
 	}
-	_, _, err = e.enter(ctx, tx, issue, &w, role, told(at), movedBack, false)
+	_, err = e.enter(ctx, tx, issue, &w, role, told(at), movedBack, false)
 	return err
 }
 
@@ -723,11 +721,11 @@ func (e *Engine) StartPromotedWorker(ctx context.Context, tx pgx.Tx, issue recor
 	if err != nil {
 		return err
 	}
-	entry, sent, err := e.enter(ctx, tx, issue, &w, role, task, false, false)
+	in, err := e.enter(ctx, tx, issue, &w, role, task, false, false)
 	if err != nil {
 		return err
 	}
-	return e.started(ctx, tx, issue, role, sent, entry, startMarks{resumeTask: true, stored: true})
+	return e.started(ctx, tx, issue, role, in.task, in.entry, startMarks{resumeTask: true, stored: true, freshSession: in.freshSession})
 }
 
 // PromotedWorkerClaim is the claim StartPromotedWorker's start of role on issue reaches: the
@@ -783,8 +781,9 @@ type startMarks struct {
 	// change whose budget is at risk.
 	ruleResume bool
 	// freshSession says the start must not resume the session the claim records but begin one of
-	// its own (record.SuperviseRequest.FreshSession). Only the operator's `legion claims retry
-	// --fresh-session` asks for it, which reaches the retry of a held phase alone (restart).
+	// its own (record.SuperviseRequest.FreshSession): the operator's `legion claims retry
+	// --fresh-session`, which reaches the retry of a held phase alone (restart), and the entry of a
+	// step whose agent takes the claim another agent last ran a step on (enter, anotherAgentsClaim).
 	freshSession bool
 	// reasserts says the start sends work the record already owes the role rather than carrying
 	// a fact new to the record, so it marks no movement of the issue (reassertion, startOrOwe). It
@@ -1046,13 +1045,19 @@ func startOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string
 // written (record.PhaseRow.EntryVerbatim), which only the resume of an answered root says. Every
 // raise writes it, so a raise that does not say it clears the mark an earlier entry's resume left.
 //
-// For an issue with plan rows, a phase worker's raise also writes the step the entry is a run of
-// (record.PhaseRow.StepTask, StepPlace): the walk's task and the place of the step the issue stands
-// in (placeOnWalk), from 1 for a step and 0 for the retro on the implementer's row and the merge on
-// the merger's, so the row's facts are the facts of that step's run. An issue with no plan rows
-// keeps no task and place 0, as it always did, and the architect's entry is no step of the issue's
-// task. w is the walk of issue's run as the caller read it, which only a phase worker's raise
-// reads; EnterArchitect gives none.
+// For an issue with plan rows, a phase worker's raise is on the row of the step the entry is a run
+// of (record.PhaseRow.StepTask, StepPlace): the walk's task and the place of the step the issue
+// stands in (placeOnWalk), from 1 for a step and 0 for the retro on the implementer's row and the
+// merge on the merger's, so the row's facts are the facts of that step's run. A role can stand at
+// two steps of a task, and each step's run keeps its own row: a run of a step that ran before
+// raises the row its earlier runs wrote, and a step's first run raises a row of its own, which
+// starts as the role's row now (record.PhaseRowOf) with no handoff (phaseHandoff), so it carries
+// what the role's one row carried from one phase to the next — the record it last named, the
+// commit its last review read — and leaves the earlier step's report standing for the task text
+// that names it (reportsBefore). An issue with no plan rows keeps no task and place 0, one row for
+// each role, as it always did, and the architect's entry is no step of the issue's task. w is the
+// walk of issue's run as the caller read it, which only a phase worker's raise reads;
+// EnterArchitect gives none.
 //
 // A phase worker's raise writes the claim of the step's agent on the row (record.PhaseRow.Claim,
 // Engine.stepToken), which record.WorkerClaim reads back, and the entry rises across the rows of
@@ -1062,38 +1067,51 @@ func startOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string
 // below it and the queue would refuse the task of the agent's next step; and no entry falls below
 // its own row's, which a row the release before raised and no completion named a claim on keeps.
 // An issue with no plan rows has one row for each claim, so its entry is the row's own plus one.
-func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, w *Walk, role claim.Role, task string, movedBack, verbatim bool) (int64, string, error) {
+//
+// The entry asks for a fresh session where its step's agent takes a claim another agent last ran a
+// step on (anotherAgentsClaim): a name that no agent of the plan in force holds can be given to a
+// new agent while a claim of it stands (record.NameAgents' pass 4), and that agent is not the one
+// whose session the claim records.
+func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, w *Walk, role claim.Role, task string, movedBack, verbatim bool) (entered, error) {
 	rows, err := e.store.Phases(ctx, tx, issue.Key)
 	if err != nil {
-		return 0, "", err
+		return entered{}, err
 	}
 	row := record.PhaseRowOf(rows, role)
+	worker := role != claim.RoleArchitect
+	at := record.StandsAt(issue)
+	if worker {
+		if place, _, _, ok := placeOnWalk(*w, standingIn(at)); w.Stored && ok {
+			var moves bool
+			if row, moves = stepRunRow(rows, row, role, w.Task, place.Place); moves {
+				if err := e.store.MovePhaseToStep(ctx, tx, issue.Key, role, w.Task, place.Place); err != nil {
+					return entered{}, err
+				}
+			}
+		}
+	}
 	row.Issue, row.Role = issue.Key, role
 	entry := row.Entry + 1
 	row.EntryVerbatim, row.EntryRaisedAt, row.EntryMovedBack = verbatim, e.now(), movedBack
-	worker := role != claim.RoleArchitect
 	var agent claim.Token
-	if worker {
-		at := record.StandsAt(issue)
-		if place, _, _, ok := placeOnWalk(*w, standingIn(at)); w.Stored && ok {
-			row.StepTask, row.StepPlace = w.Task, place.Place
+	fresh := false
+	if worker && recordsSteps(issue) {
+		place, ok := w.placeIn(at)
+		if ok {
+			agent, err = e.stepToken(ctx, tx, issue, *w, place, at, role)
+		} else {
+			agent, err = stepClaim(issue, issue.Key, role)
 		}
-		if recordsSteps(issue) {
-			if place, ok := w.PlaceOf(at); ok {
-				agent, err = e.stepToken(ctx, tx, issue, *w, place, at, role)
-			} else {
-				agent, err = stepClaim(issue, issue.Key, role)
-			}
-			if err != nil {
-				return 0, "", err
-			}
-			for _, other := range rows {
-				if other.Claim == agent && other.Entry >= entry {
-					entry = other.Entry + 1
-				}
-			}
-			row.Claim = agent
+		if err != nil {
+			return entered{}, err
 		}
+		fresh = ok && anotherAgentsClaim(rows, agent, *w, place)
+		for _, other := range rows {
+			if other.Claim == agent && other.Entry >= entry {
+				entry = other.Entry + 1
+			}
+		}
+		row.Claim = agent
 	}
 	row.Entry = entry
 	// The entry's sentence is named only while the row holds the task of that entry, as the row
@@ -1103,20 +1121,90 @@ func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, w *Wa
 	raised.EntryTask = task
 	row.EntryTask = namingTheReviewRound(task, role, issue.Phase, raised)
 	if err := e.store.PutPhase(ctx, tx, row); err != nil {
-		return 0, "", err
+		return entered{}, err
 	}
 	// Every entry a phase worker is handed is the start of a run of its step: a transition's start
 	// and the promotion's start of a mid-phase member (StartPromotedWorker), under the claim of the
 	// step's agent written on the row above. The architect's own entry is no step of the issue's task.
 	if !worker {
-		return row.Entry, row.EntryTask, nil
+		return entered{entry: row.Entry, task: row.EntryTask}, nil
 	}
 	if step, ok := standingStep(*w, issue); ok {
 		if err := e.startStep(ctx, tx, issue, step, agent, row.EntryTask); err != nil {
-			return 0, "", err
+			return entered{}, err
 		}
 	}
-	return row.Entry, row.EntryTask, nil
+	return entered{entry: row.Entry, task: row.EntryTask, freshSession: fresh}, nil
+}
+
+// entered is what an entry hands its start (enter): the entry, the task it stored, and whether the
+// start asks for a fresh session.
+type entered struct {
+	entry        int64
+	task         string
+	freshSession bool
+}
+
+// anotherAgentsClaim says whether agent, the claim the step at place of w is entered under, was
+// last on a step of another agent (plan.AgentOf): the row among rows, the issue's rows before this
+// entry, that names agent and whose entry was raised last, stands on a step whose agent is not
+// this step's. A claim that no row names on a step (a first start, a row a new generation cleared)
+// starts as it would, and so does an agent returning to a step of its own, a keyed agent's next
+// step included. A row's step of a task the plan in force no longer holds went with that task: a
+// step with no key is an agent of its own place, so that row was another agent's; a keyed agent
+// spans tasks and keeps its name by its key (record.NameAgents' pass 2), so it is the same agent.
+// A row of the task in force is judged by the step the plan in force holds at its place.
+func anotherAgentsClaim(rows []record.PhaseRow, agent claim.Token, w Walk, place record.TaskPlace) bool {
+	if !w.Stored || place.Kind != record.PlaceStep || place.Position < 1 || place.Position > len(w.Steps) {
+		return false
+	}
+	var last *record.PhaseRow
+	for i := range rows {
+		if row := &rows[i]; row.Claim == agent && row.StepTask != "" && row.StepPlace > 0 && (last == nil || row.Entry > last.Entry) {
+			last = row
+		}
+	}
+	if last == nil {
+		return false
+	}
+	agentAt := func(at int) plan.Agent {
+		step := w.Steps[at-1]
+		return plan.AgentOf(w.Task, at, plan.Step{Role: step.Role, Key: step.AgentKey})
+	}
+	this := agentAt(place.Position)
+	if last.StepTask != w.Task || last.StepPlace > len(w.Steps) {
+		return this.Key == ""
+	}
+	return agentAt(last.StepPlace) != this
+}
+
+// stepRunRow is the row an entry of role's step at place of task raises, among rows, and whether
+// it is the role's row of no step, which the entry moves to the step (record.Store.MovePhaseToStep):
+// the row the step's earlier runs wrote; else the role's row of no step, a row a new generation
+// cleared or the release before wrote, which was the role's one row and so is the step's, as the
+// one row of a role was raised at each step it ran; else, for a later step's first run, now, the
+// role's row now, with no handoff (phaseHandoff) and stamped with the step, so the new row carries
+// what the role's one row carried into its next phase and the row of the role's earlier step keeps
+// its report.
+func stepRunRow(rows []record.PhaseRow, now record.PhaseRow, role claim.Role, task string, place int) (record.PhaseRow, bool) {
+	var noStep *record.PhaseRow
+	for i, row := range rows {
+		switch {
+		case row.Role != role:
+		case row.StepTask == task && row.StepPlace == place:
+			return row, false
+		case row.StepTask == "" && noStep == nil:
+			noStep = &rows[i]
+		}
+	}
+	if noStep != nil {
+		row := *noStep
+		row.StepTask, row.StepPlace = task, place
+		return row, true
+	}
+	row := phaseHandoff{}.onto(now)
+	row.StepTask, row.StepPlace = task, place
+	return row, false
 }
 
 // EnterArchitect raises the phase entry a root's architect is handed on root, writes task as the
@@ -1138,8 +1226,8 @@ func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, w *Wa
 // that start. The entry is raised by no move back (record.PhaseRow.EntryMovedBack): that mark's
 // one reader is the completion route's entry fence, and the architect completes nothing there.
 func (e *Engine) EnterArchitect(ctx context.Context, tx pgx.Tx, root record.Issue, task string, verbatim bool) (int64, error) {
-	entry, _, err := e.enter(ctx, tx, root, nil, claim.RoleArchitect, task, false, verbatim)
-	return entry, err
+	in, err := e.enter(ctx, tx, root, nil, claim.RoleArchitect, task, false, verbatim)
+	return in.entry, err
 }
 
 // The labels of a started worker's task that a prompt or a skill names to the worker, each the

@@ -143,6 +143,17 @@ func TestAHooksRolesAndDefaultStepsTakeARoleOfTheDeployment(t *testing.T) {
 	if got := cfg.Projects["DEMO"].DefaultSteps; len(got) != 2 || got[1].Role != "checker" {
 		t.Errorf("DefaultSteps = %v, want [implementer checker]", got)
 	}
+	// A role stands at two steps, a role of the deployment as Legion's own, and a task needs no
+	// step implementer, so such default steps load too.
+	for _, list := range []string{"[implementer, checker, reviewer, checker]", "[tester, tester]", "[tester]"} {
+		cfg, err = Load(configFileWith(t, steps("  DEMO: {default_steps: "+list+"}\n")+checkerRole, "checker.md"), noEnv)
+		if err != nil {
+			t.Fatalf("Load of default_steps %s: %v", list, err)
+		}
+		if got := cfg.Projects["DEMO"].DefaultSteps; len(got) != strings.Count(list, ",")+1 {
+			t.Errorf("DefaultSteps of %s = %v", list, got)
+		}
+	}
 
 	for _, tc := range []struct{ name, path, want string }{
 		{"a hook of the role without roles", rolesFile(t, hook),
@@ -153,12 +164,6 @@ func TestAHooksRolesAndDefaultStepsTakeARoleOfTheDeployment(t *testing.T) {
 			`hooks[0].roles names "Checker", which is not a Legion role (architect, planner, implementer, tester, reviewer, merger)`},
 		{"default_steps of the role without roles", configFileWith(t, steps("  DEMO: {default_steps: [implementer, checker]}\n")),
 			"projects.DEMO.default_steps: step 2 of task default names the role checker, which neither the deployment nor the plan defines."},
-		{"default_steps this release refuses for another cause", configFileWith(t, steps("  DEMO: {default_steps: [tester, tester]}\n")),
-			"projects.DEMO.default_steps: task default names the role tester at steps 1 and 2. This release of Legion does not carry it out yet."},
-		// A role runs at most one step of a task, a role of the deployment as Legion's own.
-		{"default_steps that name a role of the deployment at two steps",
-			configFileWith(t, steps("  DEMO: {default_steps: [implementer, checker, reviewer, checker]}\n")+checkerRole, "checker.md"),
-			"projects.DEMO.default_steps: task default names the role checker at steps 2 and 4. This release of Legion does not carry it out yet."},
 		{"a refusal of an earlier key first", configFileWith(t, steps("  DEMO: {default_steps: [prober]}\n")+"admission_cap: 0\n"),
 			"admission_cap must be a positive integer"},
 	} {

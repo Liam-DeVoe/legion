@@ -701,11 +701,14 @@ func deploysIgnoredLine(key string) string {
 // demoProjectLines are the two lines of the one DEMO project workflowConfig and
 // kubernetesCheckConfig declare, which names neither `production_check` nor `default_steps`
 // (TestConfigCheckPrintsEachProjectsProductionCheck,
-// TestConfigCheckPrintsEachProjectsDefaultSteps); demoCheckConfigOK is them after the OK
-// line, which is what every check here prints before its first capability line.
+// TestConfigCheckPrintsEachProjectsDefaultSteps); modelsNoneLine is the line that follows the
+// project lines of a file that lists no `models`; demoCheckConfigOK is them after the OK line,
+// which is what every check here prints before its first capability line.
 var demoProjectLines = projectLines("DEMO")
 
-var demoCheckConfigOK = "Config OK: project=DEMO design-gate-steps=spec\n" + demoProjectLines
+const modelsNoneLine = "models: none\n"
+
+var demoCheckConfigOK = "Config OK: project=DEMO design-gate-steps=spec\n" + demoProjectLines + modelsNoneLine
 
 // tmuxCheckKeys are the top-level keys of a tmux legion.yaml `legion config check`
 // passes: the Stage 1 keys, the operator bearer and the github_apps a file with projects must
@@ -802,7 +805,7 @@ func TestConfigCheckWarnsForEveryProjectThatStillSetsDeploys(t *testing.T) {
 	code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
 
 	want := "Config OK: project=DEMO design-gate-steps=spec\n" + deploysIgnoredLine("DEMO") + deploysIgnoredLine("OTHER") +
-		demoProjectLines + projectLines("OTHER") + tmuxCapabilityGaps + tmuxPauseUnavailable
+		demoProjectLines + projectLines("OTHER") + modelsNoneLine + tmuxCapabilityGaps + tmuxPauseUnavailable
 	if code != 0 || out.String() != want || errb.Len() != 0 {
 		t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
 	}
@@ -842,7 +845,7 @@ func TestConfigCheckPrintsEachProjectsProductionCheck(t *testing.T) {
 
 	want := "Config OK: project=DEMO design-gate-steps=spec\n" + demoProjectLines +
 		"projects.OTHER.production_check: off — a merge that closes one of its issues opens no production check\n" + defaultStepsTodayLine("OTHER") +
-		tmuxCapabilityGaps + tmuxPauseUnavailable
+		modelsNoneLine + tmuxCapabilityGaps + tmuxPauseUnavailable
 	if code != 0 || out.String() != want || errb.Len() != 0 {
 		t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
 	}
@@ -862,7 +865,7 @@ func TestConfigCheckPrintsEachProjectsDefaultSteps(t *testing.T) {
 	want := "Config OK: project=DEMO design-gate-steps=spec\n" +
 		productionCheckTesterLine("DEMO") + "projects.DEMO.default_steps: [planner, implementer, tester, reviewer, acceptance:owner]" + runs +
 		productionCheckTesterLine("OTHER") + "projects.OTHER.default_steps: [implementer, reviewer]" + runs +
-		tmuxCapabilityGaps + tmuxPauseUnavailable
+		modelsNoneLine + tmuxCapabilityGaps + tmuxPauseUnavailable
 	if code != 0 || out.String() != want || errb.Len() != 0 {
 		t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
 	}
@@ -1008,7 +1011,7 @@ func TestConfigCheckWarnsOnAnAcceptedKeyAndExitsZero(t *testing.T) {
 	code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
 
 	warning := "setting max_fix_attempts changes nothing: nothing counts fix attempts any more, no CI verdict sends work back on its own (what a settlement names is told to the roles that work the issue), and the architect decides when to stop; remove max_fix_attempts from legion.yaml, where review_round_cap is the one cap left that blocks a pull request (dispatch://INFRA-956 R4)\n"
-	if want := "Config OK: project=DEMO design-gate-steps=spec\n" + warning + demoProjectLines + tmuxCapabilityGaps + tmuxPauseUnavailable; code != 0 || out.String() != want || errb.Len() != 0 {
+	if want := "Config OK: project=DEMO design-gate-steps=spec\n" + warning + demoProjectLines + modelsNoneLine + tmuxCapabilityGaps + tmuxPauseUnavailable; code != 0 || out.String() != want || errb.Len() != 0 {
 		t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
 	}
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
@@ -1194,7 +1197,7 @@ func TestConfigCheckReadsTheLaunchSecretsAsBootDoes(t *testing.T) {
 			}
 			want := demoCheckConfigOK
 			if tc.key == seedKey {
-				want = "Config OK: project=DEMO design-gate-steps=spec nats-nkey-user=" + public + "\n" + demoProjectLines
+				want = "Config OK: project=DEMO design-gate-steps=spec nats-nkey-user=" + public + "\n" + demoProjectLines + modelsNoneLine
 			}
 			want += tmuxCapabilityGaps + tmuxPauseUnavailable
 			if tc.refusal == nil {
@@ -1255,7 +1258,7 @@ func TestConfigCheckReadsTheDaemonNATSSeedAsBootDoes(t *testing.T) {
 				t.Fatalf("the check printed a seed: stdout %q stderr %q", out.String(), errb.String())
 			}
 			if tc.refusal == nil {
-				if want := "Config OK: project=DEMO design-gate-steps=spec nats-nkey-user=" + paneUser + " nats-daemon-nkey-user=" + daemonUser + "\n" + demoProjectLines + tmuxCapabilityGaps + tmuxPauseUnavailable; code != 0 || out.String() != want || errb.Len() != 0 {
+				if want := "Config OK: project=DEMO design-gate-steps=spec nats-nkey-user=" + paneUser + " nats-daemon-nkey-user=" + daemonUser + "\n" + demoProjectLines + modelsNoneLine + tmuxCapabilityGaps + tmuxPauseUnavailable; code != 0 || out.String() != want || errb.Len() != 0 {
 					t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
 				}
 			} else if want := "legion config check: " + tc.refusal(path); code != 1 || out.Len() != 0 || !strings.HasPrefix(errb.String(), want) {
@@ -1476,7 +1479,12 @@ func TestConfigCheckNamesTheResolvedPluginPair(t *testing.T) {
 			code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
 
 			secretsGap := "capability secrets is open: runtime.kubernetes.agent_secrets is not configured; to record a decision, add to legion.yaml: capabilities.decided.secrets: \"<reason>\"\n"
-			want := demoCheckConfigOK + strings.ReplaceAll(tc.roles, "<dir>", dir) + secretsGap + defaultCacheLine + tc.want
+			ok := demoCheckConfigOK
+			if tc.roles != "" {
+				// The role's model is the one model the file lists.
+				ok = strings.TrimSuffix(ok, modelsNoneLine) + "models: checker-model\n"
+			}
+			want := ok + strings.ReplaceAll(tc.roles, "<dir>", dir) + secretsGap + defaultCacheLine + tc.want
 			if code != 0 || out.String() != want || errb.Len() != 0 {
 				t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
 			}
@@ -2410,13 +2418,18 @@ func TestPlainStateNamesTheClaimsNothingWillWake(t *testing.T) {
 	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
 		`"admission":{"cap":2,"active":[],"waiting":[]},"issues":{},"pendingStatusWrites":[]`
 	// The claims as the operator routes serve them, which is the one surface that names a
-	// suspender: the released implementer of LEGION-208 beside the tester an operator suspended.
+	// suspender: the released implementer of LEGION-208 beside the tester an operator suspended,
+	// and two claims of LEGION-212 that hold the role tester, the tester's own, which an operator
+	// suspended, and key a's, named implementer, on its tester step, which the release suspended.
+	// The command reads each suspender by the claim's token.
 	operatorClaims := `{"claims":[` +
 		`{"token":"legion-legion-legion-208-implementer","issue":"LEGION-208","role":"implementer","state":"suspended","suspendedBy":"released","pluginContract":48},` +
-		`{"token":"legion-legion-legion-209-tester","issue":"LEGION-209","role":"tester","state":"suspended","suspendedBy":"operator","pluginContract":48}]}`
-	released := `[{"issue":"LEGION-208","role":"implementer","state":"suspended"},` +
-		`{"issue":"LEGION-209","role":"tester","state":"suspended"},` +
-		`{"issue":"LEGION-210","role":"reviewer","state":"failed"}]`
+		`{"token":"legion-legion-legion-209-tester","issue":"LEGION-209","role":"tester","state":"suspended","suspendedBy":"operator","pluginContract":48},` +
+		`{"token":"legion-legion-legion-212-tester","issue":"LEGION-212","role":"tester","state":"suspended","suspendedBy":"operator","pluginContract":48},` +
+		`{"token":"legion-legion-legion-212-implementer","issue":"LEGION-212","role":"tester","state":"suspended","suspendedBy":"released","pluginContract":48}]}`
+	released := `[{"issue":"LEGION-208","role":"implementer","state":"suspended","token":"legion-legion-legion-208-implementer"},` +
+		`{"issue":"LEGION-209","role":"tester","state":"suspended","token":"legion-legion-legion-209-tester"},` +
+		`{"issue":"LEGION-210","role":"reviewer","state":"failed","token":"legion-legion-legion-210-reviewer"}]`
 	// The phrase `legion state` puts before the claims a workflow start brings back
 	// (main.go's strandedPhrases), which names a retired claim beside a failed one and the acts
 	// that queue such a start (INFRA-1480).
@@ -2452,6 +2465,15 @@ func TestPlainStateNamesTheClaimsNothingWillWake(t *testing.T) {
 			name: "no bearer to read the suspensions with", stranded: released,
 			want: "claims nothing will wake: 3 — suspended workers, each brought back as its suspendedBy calls for (legion claims list --json) LEGION-208 implementer, LEGION-209 tester; " +
 				workflowStart + " LEGION-210 reviewer\n",
+		},
+		// Two claims of one role on one issue: each takes the move its own suspender calls for,
+		// read by its token, and neither takes the other's.
+		{
+			name: "two claims of one role on one issue", bearer: true,
+			stranded: `[{"issue":"LEGION-212","role":"tester","state":"suspended","token":"legion-legion-legion-212-tester"},` +
+				`{"issue":"LEGION-212","role":"tester","state":"suspended","token":"legion-legion-legion-212-implementer"}]`,
+			want: "claims nothing will wake: 2 — suspended workers, each brought back as its suspendedBy calls for (legion claims list --json) LEGION-212 tester; " +
+				"released, woken over ten minutes ago and the pod never came back LEGION-212 tester\n",
 		},
 		// INFRA-1480: a retired claim needs the same workflow start a failed worker does, and the
 		// operator claim list still names the one a release suspended before its close retired it

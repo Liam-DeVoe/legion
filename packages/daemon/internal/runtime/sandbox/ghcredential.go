@@ -96,7 +96,7 @@ func (r *Runtime) refreshGitHubCredentials(ctx context.Context) {
 		token string
 		ok    bool
 	}
-	bundles := appauth.NewBundles(r.gitHubCredential)
+	bundles := appauth.NewBundles(r.gitHubCredential, r.roleApps)
 	mints := map[string]mint{}
 	provisioning := func(repo ghrepo.Repository) (string, bool) {
 		key := strings.ToLower(repo.String())
@@ -138,10 +138,17 @@ func (r *Runtime) refreshGitHubCredentials(ctx context.Context) {
 		// provisioning token: it is the pod's, not the role's, and a bundle is rendered for it
 		// (refreshGitHubCredential). The roles are the ones the pod was built with (builtRoles),
 		// not the runtime's now: a pod built before a role of the deployment has no Secret of it,
-		// and asking for one would fail at every tick for a role no process of the pod runs.
+		// and asking for one would fail at every tick for a role no process of the pod runs. A
+		// slot of an agent of the plan whose name is no role of the runtime, and in which no stored
+		// claim runs yet, names no App to render it for and runs nothing that reads it: its
+		// claim's first launch writes it for that claim's role before its child starts
+		// (writeLaunchCredential).
 		repo, named := fetchRepository(pod)
 		for _, slot := range builtRoles(pod.Spec) {
 			if heldErr != nil && slot != claim.RoleController {
+				continue
+			}
+			if _, runs := held[slotKey{sandbox: pod.Name, slot: slot}]; !runs && slot != claim.RoleController && !slices.Contains(r.issueRoles, slot) {
 				continue
 			}
 			r.refreshGitHubCredential(ctx, pod, owner.UID, slot, held, repo, bundles)
@@ -292,6 +299,19 @@ func (r *Runtime) refreshGitHubCredential(ctx context.Context, pod *corev1.Pod, 
 	}
 }
 
+// roleBundle is the gh bundle of one slot of a pod of issue, the slot's claim's issue ("" for the
+// controller's pod), and the one place each path of this runtime that writes a slot's gh files
+// asks for one: the refresh and a launch into a pod it keeps (writeSlotCredential), and a pod's
+// build (gitHubBundles). The controller's is asked for by owner (controllerDefault, "" for none);
+// every other role's is built for repo through bundles, the caller's memo of its walk, on issue,
+// whose plan can define the role and decides the App of a role it defines.
+func (r *Runtime) roleBundle(ctx context.Context, bundles *appauth.Bundles, issue string, role claim.Role, repo ghrepo.Repository, controllerDefault string) (ghconfig.Bundle, error) {
+	if role == claim.RoleController {
+		return r.controllerCredential(ctx, controllerDefault)
+	}
+	return bundles.Bundle(ctx, issue, role, repo)
+}
+
 // errSecretNotOwned is a slot Secret another Sandbox owns: the pod's Sandbox was replaced since the
 // pod was read, so the write is the new Sandbox's to make.
 var errSecretNotOwned = errors.New("the slot's Secret is another Sandbox's")
@@ -378,12 +398,7 @@ func (r *Runtime) writeSlotCredential(ctx context.Context, pod *corev1.Pod, uid 
 			return slotCredential{}, nil
 		}
 		minting, cancel := call(ctx)
-		var bundle ghconfig.Bundle
-		if slot == claim.RoleController {
-			bundle, err = r.controllerCredential(minting, owner)
-		} else {
-			bundle, err = bundles.Bundle(minting, role, repo)
-		}
+		bundle, err := r.roleBundle(minting, bundles, secret.Annotations[annotationIssue], role, repo, owner)
 		cancel()
 		if err != nil {
 			return slotCredential{}, err
@@ -472,7 +487,7 @@ func (r *Runtime) writeLaunchCredential(ctx context.Context, pod *corev1.Pod, sp
 		return nil, err
 	}
 	repo, _ := fetchRepository(pod)
-	held, err := r.writeSlotCredential(ctx, pod, owner.UID, slot, repo, appauth.NewBundles(r.gitHubCredential), slotWrite{
+	held, err := r.writeSlotCredential(ctx, pod, owner.UID, slot, repo, appauth.NewBundles(r.gitHubCredential, r.roleApps), slotWrite{
 		role:     func(context.Context, *corev1.Secret) (claim.Role, error) { return role, nil },
 		launched: launchedRecord(spec.Generation, spec.Role),
 	})

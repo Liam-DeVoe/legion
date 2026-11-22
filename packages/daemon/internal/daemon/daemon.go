@@ -831,10 +831,11 @@ func closeStore(st *store.Store, log *slog.Logger) {
 
 // plan is what the daemon resolved from its configuration before touching anything.
 type plan struct {
-	// identity is the role's App bot identity for the owner whose installation holds the
-	// repository it works, from the workflow's token source (workflowRuntime.identity, which maps
-	// the record's repository to the one GitHub serves); nil without one.
-	identity func(ctx context.Context, role claim.Role, repository ghrepo.Repository) (runtime.GitIdentity, error)
+	// identity is the role's App bot identity on an issue, whose plan can define the role, for
+	// the owner whose installation holds the repository it works, from the workflow's token
+	// source (workflowRuntime.identity, which maps the record's repository to the one GitHub
+	// serves); nil without one.
+	identity func(ctx context.Context, issue string, role claim.Role, repository ghrepo.Repository) (runtime.GitIdentity, error)
 	// repository is the repository an issue works and its default branch
 	// (workflowRuntime.issueRepository: its record's, or, for an issue the workflow does not
 	// record, the one Dispatch resolves it to, read at the first launch and kept while the issue
@@ -1022,23 +1023,25 @@ type plan struct {
 // those Apps is built, since no pod may be compared against the boot's read, so it is not what
 // this asks.
 //
-// deployed is the App of each role the deployment defines (deploymentApps): such a role's own App
-// is the one its github_app names, and an issue pod runs those roles beside Legion's. A role that
-// acts as no App (appauth.ErrRoleNotDefined) holds no bundle, so its addressing names no owner.
-func (p plan) appOwners(runtimeName string, deployed appauth.DeploymentApps) func(claim.Role) []string {
-	return func(role claim.Role) []string {
-		app, err := appauth.AppRoleFor(role, deployed)
+// apps is the one value every reader of a claim's App holds (roleApps): such a role's own App is
+// the one its github_app names, a role of the issue's plan acts as the App of its type, and an
+// issue pod runs those roles beside Legion's, so a role of a plan reaches what its pod's other
+// roles reach. A role that acts as no App (appauth.ErrRoleNotDefined), or whose plan cannot be
+// read, holds no bundle, so its addressing names no owner.
+func (p plan) appOwners(runtimeName string, apps appauth.RoleApps) func(ctx context.Context, issue string, role claim.Role) []string {
+	return func(ctx context.Context, issue string, role claim.Role) []string {
+		app, err := apps.Of(ctx, issue, role)
 		if err != nil {
 			return nil
 		}
-		apps := []appauth.AppRole{app}
+		roles := []appauth.AppRole{app}
 		if runtimeName == "kubernetes" {
-			if apps, err = sandbox.PodAppRoles(role, deployed); err != nil {
+			if roles, err = sandbox.PodAppRoles(role, apps.Deployed); err != nil {
 				return nil
 			}
 		}
 		owners, read := p.installed.Owners(app)
-		for _, other := range apps {
+		for _, other := range roles {
 			if _, otherRead := p.installed.Owners(other); !otherRead {
 				read = false
 			}
@@ -1046,7 +1049,7 @@ func (p plan) appOwners(runtimeName string, deployed appauth.DeploymentApps) fun
 		if !read {
 			return nil
 		}
-		held := appauth.AddressingDirs(p.repositories.servesRepository, p.repositories.renames, p.installed, p.left, apps, ghrepo.Repository{})
+		held := appauth.AddressingDirs(p.repositories.servesRepository, p.repositories.renames, p.installed, p.left, roles, ghrepo.Repository{})
 		return slices.DeleteFunc(owners, func(owner string) bool { return !slices.Contains(held, owner) })
 	}
 }
@@ -1325,6 +1328,9 @@ func tmuxRuntime(cfg config.Config, project string, launchers map[runtime.Backen
 		repository func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, _ func() []ghrepo.Repository) (runtime.Runtime, error) {
 		opts := tmuxOptions(cfg, project, launchers, providerEnvDir, dispatchTokenFile, log)
 		opts.StreamAddress, opts.Conns = streamAddress, listener
+		// The one reader of a role's App, which the credential and each walk's memo of bundles
+		// read alike: the deployment's roles, and a role of an issue's plan from the store.
+		opts.RoleApps = roleApps(opts.RoleApps.Deployed, planRoleOf(st))
 		if tokens != nil {
 			// The two records the credentials write, shared by both as the Kubernetes runtime's
 			// three share them (appauth.Installed and appauth.LeftOut, kubernetes.go's
@@ -1332,8 +1338,10 @@ func tmuxRuntime(cfg config.Config, project string, launchers map[runtime.Backen
 			// every launch's addressing reads the owners its App reaches out of them. A pane
 			// projects nothing and nothing compares one against left — a directory left out
 			// of one pane's bundle is left out of the next pane's by the mint, not by a
-			// record — so the addressing is this runtime's one reader of it.
-			opts.GitHubCredential, opts.GH = appauth.GitHubCredential(tokens, served, cfg.RepositoryRenames, installed, left, deploymentApps(cfg.Roles), log), gh
+			// record — so the addressing is this runtime's one reader of it. The credential
+			// reads the roles' Apps the runtime's walks hold (opts.RoleApps), one reader for
+			// both.
+			opts.GitHubCredential, opts.GH = appauth.GitHubCredential(tokens, served, cfg.RepositoryRenames, installed, left, opts.RoleApps, log), gh
 			opts.ControllerCredential = appauth.ControllerCredential(tokens, served, cfg.RepositoryRenames, installed, left, log)
 			opts.ClaimRepository = claimRepository(st.ClaimIssue, repository)
 			opts.ClaimRole = st.ClaimRole
@@ -1377,7 +1385,8 @@ func claimRepository(issueOf func(context.Context, claim.Token) (string, error),
 // tmuxOptions translates the configuration into the tmux runtime's Options, all but the worker
 // stream and the GitHub credential function, which boot hands the factory: the `runtime.tmux`
 // block's pane variables, Oh My Pi overlays and take_over among them, each role's own overlays
-// (role_config_files), every declared experiment's arms (experiment.DeclaredVariants), and the
+// (role_config_files), the App each role of the deployment acts as (deploymentApps), which the
+// credential reads too, every declared experiment's arms (experiment.DeclaredVariants), and the
 // checker of the deployment's shared leak check (leak_check), which every pane is told.
 func tmuxOptions(cfg config.Config, project string, launchers map[runtime.Backend]tmux.Launcher, providerEnvDir, dispatchTokenFile string, log *slog.Logger) tmux.Options {
 	opts := tmux.Options{
@@ -1394,6 +1403,7 @@ func tmuxOptions(cfg config.Config, project string, launchers map[runtime.Backen
 		AdoptTimeout:            cfg.SlowCommandTimeout,
 		ProviderEnvDir:          providerEnvDir,
 		RoleConfigFiles:         cfg.RoleConfigFiles,
+		RoleApps:                appauth.RoleApps{Deployed: deploymentApps(cfg.Roles)},
 		LeakCheckManifestSHA256: cfg.LeakCheck.ManifestSHA256,
 		Log:                     log,
 	}
@@ -1476,6 +1486,10 @@ type supervision struct {
 	// hand gives it supervise.NewRefreshGate(0), the gate of a daemon that paces nothing, which
 	// grants every refresh.
 	refreshGate supervise.RefreshAdmitter
+	// backends is the one decision of the harness a role runs on for a claim of an issue
+	// (roleBackends), which the launch, the stale-plugin rule (noPluginInstall) and the API's
+	// compaction route read; nil in a supervision a test builds by hand reads worker_backends alone.
+	backends roleBackend
 	// pauses is the project's pause (projectPause), nil without a workflow: the boot loads its
 	// flag before it restores any claim, and asks the stop of every claim it finds live while the
 	// project is paused (start).
@@ -1724,19 +1738,23 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 	// The clean stops of session registrations the machines send run past their decisions and are
 	// counted here (sessionStopsInFlight).
 	var sessionStops sessionStopsInFlight
+	// The daemon's one reader of a role of a plan, which a launch's prompt and model, a launch's
+	// App (roleApps) and a role's harness (roleBackends) read alike.
+	planRole := planRoleOf(st)
+	backends := roleBackends(cfg.BackendFor, planRole)
 	sup.deps = supervise.Deps{
 		Runtime: rt,
 		Conns:   listener,
 		Store:   pruning(gateLaunch(tokens.Recording(st), p.checkLaunch), runtime.SecretsDir(cfg.StateDir), log),
 		Specs: specs{
 			stateDir: cfg.StateDir, project: p.project, instructions: p.instructions, secrets: p.secrets, prompts: p.prompts,
-			roles:    cfg.Roles,
+			roles: cfg.Roles, models: cfg.ListedModels(), planRole: planRole,
 			identity: p.identity, repository: p.launchRepository, owner: p.owner,
-			appOwners:   p.appOwners(cfg.Runtime.Name, deploymentApps(cfg.Roles)),
+			appOwners:   p.appOwners(cfg.Runtime.Name, roleApps(deploymentApps(cfg.Roles), planRole)),
 			designSteps: cfg.Gates.Steps(), slackChannels: cfg.Projects[cfg.Project].SlackChannels,
 			runtimeName: cfg.Runtime.Name, plugins: p.plugins,
 			commitIssueTrailerRepos: cfg.Projects[cfg.Project].CommitIssueTrailerRepos, same: p.repositories.same,
-			backend: cfg.BackendFor, hostWorkspaces: !rt.ProvisionsWorkspaces(), ensureWorkspace: p.ensureWorkspace,
+			backend: backends, hostWorkspaces: !rt.ProvisionsWorkspaces(), ensureWorkspace: p.ensureWorkspace,
 			variants: launchVariants(st, cfg.ExperimentsDeclared(), cfg.StateDir),
 		},
 		Identity:                adoptIdentity(p.identity, p.repository),
@@ -1780,7 +1798,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		RefreshGate:        refreshGate,
 		PluginContract:     api.DaemonAPIVersion,
 		PluginRelaunchable: p.pluginRelaunchable,
-		NoPluginInstall:    func(c supervise.Claim) bool { return noPluginInstall(cfg, c) },
+		NoPluginInstall:    func(c supervise.Claim) bool { return noPluginInstall(cfg, backends, c) },
 	}
 	if pauses != nil {
 		sup.deps.Paused, sup.deps.PauseStopped, sup.deps.WakeLetOut = pauses.service.Paused, pauses.stopped, pauses.wakeLetOut
@@ -1789,7 +1807,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 	stopping, beginStop := context.WithCancel(context.Background())
 	supervisionOf := &supervision{
 		cfg: cfg, log: log, plan: p, stream: listener, runtime: rt, supervisor: sup, tokens: tokens, claims: claims,
-		reports: reportsOfClaims(reports, claims), reportStore: st, refreshGate: refreshGate, pauses: pauses,
+		reports: reportsOfClaims(reports, claims), reportStore: st, refreshGate: refreshGate, pauses: pauses, backends: backends,
 		cancel: cancel, draining: draining, endDrain: endDrain, decided: api.NewRouteDecisions(),
 		stopping: stopping, beginStop: beginStop, sessionStops: &sessionStops,
 	}
@@ -2273,7 +2291,7 @@ func (s *supervision) endPluginRounds(claims []supervise.Claim) {
 // running wave relies on. It is posted mid-turn as well, since its turn is never waited out
 // (refreshPlugin).
 func (s *supervision) refreshStalePlugins(claims []supervise.Claim, trigger string) {
-	noInstall := func(c supervise.Claim) bool { return noPluginInstall(s.cfg, c) }
+	noInstall := func(c supervise.Claim) bool { return noPluginInstall(s.cfg, s.backends, c) }
 	parked, refreshes := s.parkedWakes()
 	s.refreshGate.Correct(refreshes)
 	refused := 0
@@ -2429,9 +2447,19 @@ func (s *supervision) parkedWakes() (map[claim.Token]bool, int) {
 // backend is the daemon's configuration (supervise.Deps.NoPluginInstall, handed this same
 // function); and the API's stale-caller refusal, which would otherwise hold such a worker's
 // grants, its handoff_complete and its ready on a relaunch that never comes
-// (api.Options.NoPluginInstall, api's staleClaim).
-func noPluginInstall(cfg config.Config, c supervise.Claim) bool {
-	return cfg.Runtime.Name == "kubernetes" && runtime.Of(cfg.BackendFor(c.Role)) == runtime.BackendClaude
+// (api.Options.NoPluginInstall, api's staleClaim). The harness is backends' for c's issue
+// (roleBackends, the one decision the launch reads too); nil reads worker_backends alone. A read
+// of the issue's plan that fails answers that an install can move the claim, as an Oh My Pi
+// role's answer is: the stale-plugin lane tries it again at its next pass.
+func noPluginInstall(cfg config.Config, backends roleBackend, c supervise.Claim) bool {
+	if cfg.Runtime.Name != "kubernetes" {
+		return false
+	}
+	if backends == nil {
+		backends = roleBackends(cfg.BackendFor, nil)
+	}
+	backend, err := backends(context.Background(), c.Issue, c.Role)
+	return err == nil && runtime.Of(backend) == runtime.BackendClaude
 }
 
 // reconcileBootOrphans retries only the boot reconciliation, boundedly. A listing error does not
@@ -2770,7 +2798,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 			// The same rule the lane itself reads, over the same configuration, so the count
 			// the state serves and the claims the pass posts are one set (refreshStalePlugins,
 			// and the NoPluginInstall option three lines below).
-			noPluginInstall: func(c supervise.Claim) bool { return noPluginInstall(cfg, c) },
+			noPluginInstall: func(c supervise.Claim) bool { return noPluginInstall(cfg, s.backends, c) },
 			architectStalls: architectStalls,
 		},
 		StateTransactions:  st,
@@ -2789,8 +2817,8 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		Deployment:         cfg.Deployment(),
 		ControllerLaunched: keeper != nil,
 		PluginRelaunchable: p.pluginRelaunchable,
-		NoPluginInstall:    func(c supervise.Claim) bool { return noPluginInstall(cfg, c) },
-		Backend:            cfg.BackendFor,
+		NoPluginInstall:    func(c supervise.Claim) bool { return noPluginInstall(cfg, s.backends, c) },
+		Backend:            s.backends,
 		Stopping:           s.stopping,
 		Drained:            s.draining,
 		Decisions:          s.decided,
@@ -3435,10 +3463,11 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 // adoptIdentity is the supervisor's identity for a working copy's adoption (supervise.Deps.Identity)
 // over identity, for the repository the claim's issue works (repository): its record's, or, for an
 // issue the workflow does not record, the one kept for it at its first launch, or read from
-// Dispatch where none is (workflowRuntime.issueRepository). The owner the lease is
-// minted for is identity's own to decide, since a record written before a transfer names an owner
-// whose installation no longer holds the repository. nil without a workflow.
-func adoptIdentity(identity func(context.Context, claim.Role, ghrepo.Repository) (runtime.GitIdentity, error), repository func(context.Context, string) (ghrepo.Repository, string, error)) func(context.Context, claim.Role, string) (runtime.GitIdentity, error) {
+// Dispatch where none is (workflowRuntime.issueRepository), and on the claim's issue, whose plan
+// can define the role. The owner the lease is minted for is identity's own to decide, since a
+// record written before a transfer names an owner whose installation no longer holds the
+// repository. nil without a workflow.
+func adoptIdentity(identity func(context.Context, string, claim.Role, ghrepo.Repository) (runtime.GitIdentity, error), repository func(context.Context, string) (ghrepo.Repository, string, error)) func(context.Context, claim.Role, string) (runtime.GitIdentity, error) {
 	if identity == nil || repository == nil {
 		return nil
 	}
@@ -3447,7 +3476,7 @@ func adoptIdentity(identity func(context.Context, claim.Role, ghrepo.Repository)
 		if err != nil {
 			return runtime.GitIdentity{}, err
 		}
-		return identity(ctx, role, repo)
+		return identity(ctx, issue, role, repo)
 	}
 }
 

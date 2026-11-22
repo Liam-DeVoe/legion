@@ -20,10 +20,17 @@ import (
 )
 
 // podRolesRuntime is the fake runtime with an issue pod built before some roles of the
-// deployment: lacks names each such role with the uid of the pod (runtime.IssuePodRoles).
+// deployment: lacks names each such role, and each slot the pod has none of, with the uid of the
+// pod (runtime.IssuePodRoles). A slot is the name its claim's token ends in.
 type podRolesRuntime struct {
 	*fake.Runtime
 	lacks map[claim.Role]string
+}
+
+func (r podRolesRuntime) PodLacksSlot(_ string, token claim.Token) (string, bool) {
+	_, agent, _ := token.Cut()
+	pod, lacks := r.lacks[claim.Role(agent)]
+	return pod, lacks
 }
 
 func (r podRolesRuntime) PodLacksRole(_ string, role claim.Role) (string, bool) {
@@ -33,7 +40,7 @@ func (r podRolesRuntime) PodLacksRole(_ string, role claim.Role) (string, bool) 
 
 // SlotWaitsForCredential answers that every launcher of the pod waits for a start's credential:
 // the pods of this fake are built by this release.
-func (podRolesRuntime) SlotWaitsForCredential(string, claim.Role) (string, bool) { return "", true }
+func (podRolesRuntime) SlotWaitsForCredential(claim.Token) (string, bool) { return "", true }
 
 // podWaitRunner is the outbox over a real PostgreSQL with the issue LEGION-208 stored, the
 // supervisor reading the claims of that store and its runtime answering that its pod lacks the
@@ -122,8 +129,8 @@ func TestAKeyedAgentsStartWaitsWhereThePodLacksItsSlotOrTheRoleOfItsStep(t *test
 		// names is what the wait's text names that the pod lacks.
 		names string
 	}{
-		{"the pod holds the slot and lacks the role of the step", implementer, "checker", "defined checker, the role of its step"},
-		{"the pod lacks the slot and holds the role of the step", checker, claim.RoleTester, "defined checker, the slot of the claim's agent"},
+		{"the pod holds the slot and lacks the role of the step", implementer, "checker", "without checker, the role of its step"},
+		{"the pod lacks the slot and holds the role of the step", checker, claim.RoleTester, "without checker, the slot of the claim's agent"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			runner, sup, rt, issue := podWaitRunner(t, map[claim.Role]string{"checker": "pod-1"})

@@ -295,9 +295,10 @@ func (e *Engine) endRun(ctx context.Context, tx pgx.Tx, issue string, place reco
 // the run of at's step that ended before that completion landed: a review the review event moved
 // on, whose end the transition wrote with no report, since the reviewer had not completed yet. A
 // record's report is the handoff the ending role's completion named, whichever of the two lands
-// first. The run is the latest of the place of role's step on the walk of issue's run (stepAt): of
-// at's place where at stands once in the line, and of the step role runs at step, where two steps
-// can run, ended, since the issue has left it and no start of it came since (handoff's current).
+// first. The run is the latest of the place of role's step on the walk of issue's run (stepAt):
+// the place that runs as at, and at step the step role runs, nearest where the task stands
+// (Walk.placeRunning), since a role can stand at two steps and the issue has left the one this
+// completion is of, and no start of it came since (handoff's current).
 // The write carries the run's identity and the report alone, and Dispatch writes each field once,
 // so it and the end merge in either order (record.StepRecord). A completion that names no handoff
 // writes nothing, and neither does a place whose latest run is not marked ended (record.RunEnded)
@@ -311,10 +312,7 @@ func (e *Engine) reportEndedStep(ctx context.Context, tx pgx.Tx, issue record.Is
 	if err != nil {
 		return err
 	}
-	place, ok := w.PlaceOf(at)
-	if at == phase.Step {
-		place, ok = w.placeOfRole(role)
-	}
+	place, ok := w.placeRunning(at, role)
 	if !ok {
 		return nil
 	}

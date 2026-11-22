@@ -1,16 +1,174 @@
 package sandbox
 
 import (
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/ghconfig"
+	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
+
+// An operator's pod volume may not take the form of a volume Legion gives a slot, `<launcher,
+// private, state, gh or agent-secrets-key>-<name>` for any name of the agent grammar: an issue's
+// plan can name an agent whose name no role has, `implementer-2`, and that agent's slot volumes
+// would collide with such a volume at its pod's build, which no check at the daemon's boot could
+// see by the plan, since no plan is known then. A name of another form stays the operator's.
+func TestAnOperatorVolumeMayNotTakeTheFormOfASlotsVolume(t *testing.T) {
+	legion := append(slices.Clone(claim.Roles), claim.RoleController)
+	check := func(name string) error {
+		pod := Pod{Volumes: []corev1.Volume{{Name: name, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}}}
+		return CheckPod(pod, legion, nil, testOptions().Tools, nil, nil, ompsessions.Store{}, false)
+	}
+	for _, name := range []string{"state-implementer-2", "launcher-security-reviewer", "private-a", "gh-implementer-3", "agent-secrets-key-checker"} {
+		want := "runtime.kubernetes.pod.volumes[0].name " + name + " has the form of a volume Legion gives each slot of a pod"
+		if err := check(name); err == nil || !strings.HasPrefix(err.Error(), want) {
+			t.Errorf("CheckPod of an operator volume %s = %v, want a refusal beginning %q", name, err, want)
+		}
+	}
+	for _, name := range []string{"operator-extra", "state", "statefile", "state-2", "gh-", "launchers-a"} {
+		if err := check(name); err != nil {
+			t.Errorf("CheckPod of an operator volume %s = %v, want it taken: it has no slot's form", name, err)
+		}
+	}
+}
+
+// secondImplementer is the agent of a plan's second implementer step on the rig's issue: a name
+// that is no role of the runtime.
+var secondImplementer = claim.Token("legion-legion-legion-208-implementer-2")
+
+// withPlanAgents is a store whose plan in force of the rig's issue names agents, each with the role
+// of its first step (Store.PlanAgents).
+func withPlanAgents(agents map[claim.Agent]claim.Role) rigOption {
+	return func(_ *rig, o *Options) { o.Store.(*fakeStore).plan(testTree, agents) }
+}
+
+// An issue pod has a slot for each role of the runtime and for each agent name of the issue's
+// plan that no role has: the first launch builds `--role implementer-2` with that slot's launcher,
+// gh, private and state volumes and its Secret, which holds the App of the agent's first step, and a
+// hello of that slot is taken as the claim `…-implementer-2`. A plan whose names are all roles
+// builds the pod a plan of no agents builds, byte for byte.
+func TestAnIssuePodHasASlotForEachAgentNameOfItsPlan(t *testing.T) {
+	g := newRig(t, nil, withPlanAgents(map[claim.Agent]claim.Role{
+		"implementer": claim.RoleImplementer, "reviewer": claim.RoleReviewer, "implementer-2": claim.RoleImplementer,
+	}))
+	loc := g.spawn(testSpec(t, deploymentImplementer, claim.RoleImplementer, testTree))
+	name := loc.Sandbox.Name
+	pod := g.pod(name)
+	if pod == nil {
+		t.Fatalf("the launch built no pod %s", name)
+	}
+	command := containerNamed(t, pod.Spec, runtime.IssuePodContainer).Command
+	if got, want := builtRoles(pod.Spec), append(slices.Clone(claim.Roles), "implementer-2"); !slices.Equal(got, want) {
+		t.Errorf("the pod's slots = %v, want %v (the launcher's command %q)", got, want, command)
+	}
+	for _, volume := range []string{roleVolume("launcher", "implementer-2"), roleVolume("private", "implementer-2"),
+		roleVolume(stateVolume, "implementer-2"), roleVolume(ghVolume, "implementer-2")} {
+		if !slices.ContainsFunc(pod.Spec.Volumes, func(v corev1.Volume) bool { return v.Name == volume }) {
+			t.Errorf("the pod has no volume %s", volume)
+		}
+	}
+	secret := g.secret(roleSecretName(name, "implementer-2"))
+	if secret == nil {
+		t.Fatalf("the Sandbox has no Secret %s", roleSecretName(name, "implementer-2"))
+	}
+	if !slices.ContainsFunc(secret.OwnerReferences, func(o metav1.OwnerReference) bool { return o.UID == g.sandbox(name).UID }) {
+		t.Errorf("the Secret %s is not the Sandbox's", secret.Name)
+	}
+	owner := string(secret.Data[GitHubDefaultKey])
+	if token, err := ghconfig.TokenFromHosts(secret.Data[GitHubHostsKey(owner)]); err != nil || token != staticCredentialToken(claim.RoleImplementer) {
+		t.Errorf("the implementer-2 Secret's %s hosts.yml holds %q (%v), want the implement App's %q", owner, token, err, staticCredentialToken(claim.RoleImplementer))
+	}
+	hello := shimwire.LauncherHello{Token: string(secret.Data[LauncherTokenFile]), Sandbox: name, Role: "implementer-2", PodUID: loc.Sandbox.PodUID, LauncherID: "l-implementer-2"}
+	if handler, _, reason := g.r.LauncherResolver()(hello); handler == nil {
+		t.Errorf("the launcher of the slot implementer-2 was refused: %s", reason)
+	}
+	g.r.launchers.mu.Lock()
+	_, accepted := g.r.launchers.sessions[secondImplementer]
+	g.r.launchers.mu.Unlock()
+	if !accepted {
+		t.Errorf("the launcher of the slot implementer-2 is not held as %s", secondImplementer)
+	}
+
+	plain := newRig(t, nil)
+	plainPod := plain.pod(plain.spawn(testSpec(t, deploymentImplementer, claim.RoleImplementer, testTree)).Sandbox.Name)
+	roles := newRig(t, nil, withPlanAgents(map[claim.Agent]claim.Role{"implementer": claim.RoleImplementer, "reviewer": claim.RoleReviewer}))
+	rolesPod := roles.pod(roles.spawn(testSpec(t, deploymentImplementer, claim.RoleImplementer, testTree)).Sandbox.Name)
+	if !reflect.DeepEqual(plainPod.Spec, rolesPod.Spec) {
+		t.Errorf("a plan whose agents are all roles built the pod\n%+v\nwant the pod a plan of no agents builds\n%+v", rolesPod.Spec, plainPod.Spec)
+	}
+}
+
+// The gh refresh passes over the slot of an agent of the plan in which no stored claim runs yet: its
+// name is no role's, so no App names it, and nothing in it reads its files. Once a claim of that
+// agent is stored, the refresh renders its slot for that claim's role as it does every other slot.
+func TestTheRefreshOfAPlanSlotWaitsForAClaimOfItsAgent(t *testing.T) {
+	g := newRig(t, nil, withPlanAgents(map[claim.Agent]claim.Role{"implementer-2": claim.RoleImplementer}))
+	loc := g.spawn(testSpec(t, deploymentImplementer, claim.RoleImplementer, testTree))
+	slot := roleSecretName(loc.Sandbox.Name, "implementer-2")
+	readSecrets := func() map[string]bool {
+		read := map[string]bool{}
+		for _, a := range g.requests() {
+			if a.verb == "get" && a.resource == "secrets" {
+				read[a.name] = true
+			}
+		}
+		return read
+	}
+	g.clearActions()
+	g.r.refreshGitHubCredentials(g.ctx)
+	read := readSecrets()
+	if !read[roleSecretName(loc.Sandbox.Name, claim.RoleImplementer)] {
+		t.Fatalf("the refresh read the Secrets %v, want the implementer's among them", read)
+	}
+	if read[slot] {
+		t.Errorf("the refresh read %s, want no read of the slot of an agent no stored claim is of", slot)
+	}
+	g.store.mu.Lock()
+	g.store.claims = append(g.store.claims, supervise.Claim{Token: secondImplementer, Issue: testTree, Role: claim.RoleImplementer, Generation: 1})
+	g.store.mu.Unlock()
+	g.clearActions()
+	g.r.refreshGitHubCredentials(g.ctx)
+	if !readSecrets()[slot] {
+		t.Errorf("the refresh after a claim of implementer-2 was stored read %v, want %s among them", readSecrets(), slot)
+	}
+}
+
+// The launcher credential a runtime holds for the slot of an agent of the plan goes with its
+// Sandbox, as each role's does, and the Secret of another Sandbox whose name begins with the
+// forgotten one's stays held.
+func TestTheLauncherCredentialOfAPlanSlotIsForgottenWithItsSandbox(t *testing.T) {
+	r, err := configure(testOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := SandboxName(secondImplementer)
+	s := &sandbox{ObjectMeta: metav1.ObjectMeta{Name: name, UID: "uid-sandbox"}}
+	other := &sandbox{ObjectMeta: metav1.ObjectMeta{Name: name + "1", UID: "uid-other"}}
+	held := map[*sandbox]*corev1.Secret{
+		s:     {ObjectMeta: metav1.ObjectMeta{Name: roleSecretName(name, "implementer-2")}, Data: map[string][]byte{LauncherTokenFile: []byte("token")}},
+		other: {ObjectMeta: metav1.ObjectMeta{Name: roleSecretName(other.Name, claim.RoleTester)}, Data: map[string][]byte{LauncherTokenFile: []byte("other")}},
+	}
+	for sandbox, secret := range held {
+		r.cacheLauncherCredential(sandbox, secret)
+	}
+	r.forgetLauncherCredentials(name)
+	if _, kept, _ := r.launcherAuth.lookup(held[s].Name, s.UID); kept {
+		t.Errorf("the implementer-2 launcher credential is still held after its Sandbox %s was forgotten", name)
+	}
+	if _, kept, _ := r.launcherAuth.lookup(held[other].Name, other.UID); !kept {
+		t.Errorf("the credential of %s was dropped with the Sandbox %s", held[other].Name, name)
+	}
+}
 
 // The slot of a claim's process is its agent's name, which can be no role (`implementer-2`), and
 // the controller's for the controller's token. Such a claim's locator is an issue pod's like any
@@ -106,5 +264,54 @@ func TestALocatorOfANameThatIsNoRoleIsAnIssuePodsAndIsObserved(t *testing.T) {
 				t.Errorf("detail %q lacks %q", obs.Detail, tc.detail)
 			}
 		})
+	}
+}
+
+// Two agents of one role run in one issue pod at one time, each in the slot of its own name: a
+// launch of `…-implementer` while `…-implementer-2` runs keeps the pod, starts in the slot
+// `implementer` with that slot's state home and address record, and sends no stop to the
+// launcher of `…-implementer-2`, whose generation goes on; each slot's Secret holds the implement
+// App's token. A slot picked by the role would put both agents in one slot, where the second's
+// start takes the first's state home and address record from under it.
+func TestTwoAgentsOfOneRoleRunAtOneTimeInTwoSlots(t *testing.T) {
+	g := newRig(t, nil, withPlanAgents(map[claim.Agent]claim.Role{
+		"implementer": claim.RoleImplementer, "implementer-2": claim.RoleImplementer,
+	}))
+	first := g.spawn(testSpec(t, secondImplementer, claim.RoleImplementer, testTree))
+	second := g.spawn(testSpec(t, deploymentImplementer, claim.RoleImplementer, testTree))
+	if second.Sandbox.PodUID != first.Sandbox.PodUID {
+		t.Fatalf("the launch of %s ran in pod %s, want the pod %s in which %s runs", deploymentImplementer, second.Sandbox.PodUID, first.Sandbox.PodUID, secondImplementer)
+	}
+	name := first.Sandbox.Name
+	for _, frame := range g.sent(secondImplementer) {
+		if stop, ok := frame.(shimwire.LauncherStop); ok {
+			t.Errorf("the launcher of %s was sent a stop of generation %d, want its generation left running", secondImplementer, stop.Generation)
+		}
+	}
+	s := g.sandbox(name)
+	if s == nil {
+		t.Fatalf("the Sandbox %s is gone", name)
+	}
+	for token, slot := range map[claim.Token]claim.Role{secondImplementer: "implementer-2", deploymentImplementer: claim.RoleImplementer} {
+		if got, want := startEnv(lastStart(t, g, token))["XDG_STATE_HOME"], roleStateHome(slot); got != want {
+			t.Errorf("the start of %s names the state home %q, want the slot %s's %q", token, got, slot, want)
+		}
+		if _, recorded := s.Annotations[addressesAnnotation(slot)]; !recorded {
+			t.Errorf("the Sandbox holds no address record of the slot %s for %s (annotations %v)", slot, token, s.Annotations)
+		}
+		secret := g.secret(roleSecretName(name, slot))
+		if secret == nil {
+			t.Errorf("the Sandbox has no Secret %s", roleSecretName(name, slot))
+			continue
+		}
+		owner := string(secret.Data[GitHubDefaultKey])
+		if token, err := ghconfig.TokenFromHosts(secret.Data[GitHubHostsKey(owner)]); err != nil || token != staticCredentialToken(claim.RoleImplementer) {
+			t.Errorf("the %s Secret's %s hosts.yml holds %q (%v), want the implement App's %q", slot, owner, token, err, staticCredentialToken(claim.RoleImplementer))
+		}
+	}
+	for _, loc := range []runtime.Locator{first, second} {
+		if obs, err := g.r.Probe(g.ctx, loc); err != nil || obs.Kind != runtime.Alive {
+			t.Errorf("%s after both launches: %s (%v), want it alive", loc.Claim, obs.Kind, err)
+		}
 	}
 }

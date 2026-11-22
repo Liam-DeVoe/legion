@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net"
 	"os"
 	"path/filepath"
@@ -129,7 +130,7 @@ var staticCredentialExpiry = time.Date(2026, 10, 8, 13, 0, 0, 0, time.UTC)
 // defines no role of its own); a role it does not define fails the test.
 func appOf(t testing.TB, role claim.Role) appauth.AppRole {
 	t.Helper()
-	app, err := appauth.AppRoleFor(role, nil)
+	app, err := appauth.AppRoleFor(role, nil, appauth.Planned{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,7 +140,7 @@ func appOf(t testing.TB, role claim.Role) appauth.AppRole {
 // legionApp is appOf for a helper with no test to fail: it panics on a role the deployment does
 // not define, which only a test of a role Legion does not have reaches.
 func legionApp(role claim.Role) appauth.AppRole {
-	app, err := appauth.AppRoleFor(role, nil)
+	app, err := appauth.AppRoleFor(role, nil, appauth.Planned{})
 	if err != nil {
 		panic(err)
 	}
@@ -163,8 +164,8 @@ func staticOwnerToken(role claim.Role, owner string) string {
 // sjawhar when repo is the zero Repository, which is how staticControllerCredential builds the
 // controller's — holding the role's App's token for that owner (appauth.AppRoleFor), and acme
 // holding acme's own, rendered as gh's files with a fixed expiry; repo's owner is the default.
-func staticCredential(_ context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
-	app, err := appauth.AppRoleFor(role, nil)
+func staticCredential(_ context.Context, _ string, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
+	app, err := appauth.AppRoleFor(role, nil, appauth.Planned{})
 	if err != nil {
 		return ghconfig.Bundle{}, err
 	}
@@ -184,7 +185,7 @@ func staticCredential(_ context.Context, role claim.Role, repo ghrepo.Repository
 // it is asked for none, which is what the controller's launch asks for, as
 // appauth.ControllerCredential answers one.
 func staticControllerCredential(ctx context.Context, defaultOwner string) (ghconfig.Bundle, error) {
-	bundle, err := staticCredential(ctx, claim.RoleController, ghrepo.Repository{})
+	bundle, err := staticCredential(ctx, "", claim.RoleController, ghrepo.Repository{})
 	if err != nil || defaultOwner == "" {
 		return bundle, err
 	}
@@ -225,8 +226,8 @@ var servedDirs = slices.Sorted(slices.Values(append(slices.Clone(staticDirs), ad
 // owner and never will (movedGhDirs).
 func servingAddedOwner(o *Options) {
 	o.GitHubDirs = func(ghrepo.Repository, []appauth.AppRole) []string { return servedDirs }
-	credential := func(ctx context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
-		bundle, err := staticCredential(ctx, role, repo)
+	credential := func(ctx context.Context, issue string, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
+		bundle, err := staticCredential(ctx, issue, role, repo)
 		if err != nil {
 			return bundle, err
 		}
@@ -235,7 +236,7 @@ func servingAddedOwner(o *Options) {
 	}
 	o.GitHubCredential = credential
 	o.ControllerCredential = func(ctx context.Context, defaultOwner string) (ghconfig.Bundle, error) {
-		bundle, err := credential(ctx, claim.RoleController, ghrepo.Repository{})
+		bundle, err := credential(ctx, "", claim.RoleController, ghrepo.Repository{})
 		if err != nil || defaultOwner == "" {
 			return bundle, err
 		}
@@ -310,7 +311,7 @@ func servingRenamed(repos ...ghrepo.Repository) func(*Options) {
 		apps := sourceOf(&namedLeases{}, installedOnServed{repos: listed})
 		o.CacheRepositories = listed
 		o.Tokens = servingTokens{served: served, renames: renames}
-		o.GitHubCredential = appauth.GitHubCredential(apps, served, renames, installed, left, nil, nil)
+		o.GitHubCredential = appauth.GitHubCredential(apps, served, renames, installed, left, appauth.RoleApps{}, nil)
 		o.ControllerCredential = appauth.ControllerCredential(apps, served, renames, installed, left, nil)
 		o.GitHubDirs = func(repo ghrepo.Repository, roles []appauth.AppRole) []string {
 			return appauth.GitHubDirs(served, renames, installed, left, roles, repo)
@@ -350,8 +351,9 @@ func launchOf(t *testing.T, r *Runtime, spec runtime.SpawnSpec) launch {
 // fakeStore is the runtime's durable state, in memory: every tree is live (its lifecycle open)
 // unless closed says its cleanup confirmed, a claim of an issue runs a process only when running
 // names it, in the tree it names, an issue's Sandbox belongs to a tree only when homes names it
-// (to none otherwise), and a claim is stored unretired only when unretired names it. The store's
-// own rule for a Sandbox's home is held by its tests (store.IssueSandboxHome); here a test sets it.
+// (to none otherwise), a claim is stored unretired only when unretired names it, and an issue's
+// plan names the agents agents gives it (none otherwise). The store's own rule for a Sandbox's
+// home is held by its tests (store.IssueSandboxHome); here a test sets it.
 type fakeStore struct {
 	mu        sync.Mutex
 	closed    map[string]bool
@@ -359,6 +361,7 @@ type fakeStore struct {
 	homes     map[string]string
 	unretired map[claim.Token]bool
 	claims    []supervise.Claim
+	agents    map[string]map[claim.Agent]claim.Role
 }
 
 // runningClaim is a claim of an issue that runs a process (token:state), in tree.
@@ -367,8 +370,21 @@ type runningClaim struct{ tree, claim string }
 func newFakeStore() *fakeStore {
 	return &fakeStore{
 		closed: map[string]bool{}, running: map[string]runningClaim{}, homes: map[string]string{},
-		unretired: map[claim.Token]bool{},
+		unretired: map[claim.Token]bool{}, agents: map[string]map[claim.Agent]claim.Role{},
 	}
+}
+
+func (s *fakeStore) PlanAgents(_ context.Context, _, issue string) (map[claim.Agent]claim.Role, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return maps.Clone(s.agents[issue]), nil
+}
+
+// plan sets the agents of issue's plan in force.
+func (s *fakeStore) plan(issue string, agents map[claim.Agent]claim.Role) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.agents[issue] = agents
 }
 
 func (s *fakeStore) ClaimUnretired(_ context.Context, token claim.Token) (bool, error) {

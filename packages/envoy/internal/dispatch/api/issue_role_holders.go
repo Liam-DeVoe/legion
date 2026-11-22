@@ -13,7 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
-	"github.com/sjawhar/envoy/internal/legionagents"
+	"github.com/sjawhar/envoy/internal/legionclaim"
 )
 
 // An issue's role holders are the sessions that hold its Legion roles, one session for each role
@@ -60,7 +60,7 @@ import (
 // issueRoleHolder is one pair of a publication: a role of the issue and the session that holds it.
 // Both are required: the route refuses a pair that leaves either out. The role is one of Legion's
 // six or a role the deployment defines, a name of the role grammar but the controller's
-// (legionagents.IsRole), so the shape spells the grammar and lists no roles.
+// (legionclaim.IsRole), so the shape spells the grammar and lists no roles.
 type issueRoleHolder struct {
 	Role    string `json:"role" required:"true" pattern:"^[a-z][a-z0-9-]{0,31}$"`
 	Session string `json:"session" required:"true"`
@@ -75,7 +75,7 @@ type issueRoleHolderRecord struct {
 }
 
 // issueRoleHolders is the stored set both routes answer: the issue and its holders, Legion's six in
-// the order of legionagents.Roles, which is the order the workflow reaches them, then every role the
+// the order of legionclaim.Roles, which is the order the workflow reaches them, then every role the
 // deployment defines by name. An issue where no session holds a role answers [].
 type issueRoleHolders struct {
 	Issue   string                  `json:"issue"`
@@ -129,7 +129,7 @@ const issueRoleHoldersStatement = `
 
 // readIssueRoleHolders answers the stored set of issueKey, and false when no issue carries the key.
 func readIssueRoleHolders(ctx context.Context, q queryer, issueKey string) (issueRoleHolders, bool, error) {
-	rows, err := q.Query(ctx, issueRoleHoldersStatement, issueKey, legionagents.Roles)
+	rows, err := q.Query(ctx, issueRoleHoldersStatement, issueKey, legionclaim.Roles)
 	if err != nil {
 		return issueRoleHolders{}, false, err
 	}
@@ -172,7 +172,7 @@ const maxRoleHolderSessionBytes = 256
 // the pairs that are not stored yet. A pair that changed is deleted before the insert, so the insert
 // meets neither key of the table, and a pair that did not change keeps its recorded_at. The body is
 // checked whole before the transaction opens: each role is a role of an issue
-// (legionagents.IsRole: one of Legion's six or a role the deployment defines), once, and each
+// (legionclaim.IsRole: one of Legion's six or a role the deployment defines), once, and each
 // session is a session id (text.IsSessionID) of at most maxRoleHolderSessionBytes, once. A body
 // that fails is 400 INVALID_ROLE_HOLDER and stores nothing, so no body gives a 500 from a check or
 // an index of the table, whose check takes the same roles.
@@ -203,10 +203,10 @@ func (s *server) putIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
 	roles := make([]string, len(holders))
 	sessions := make([]string, len(holders))
 	for index, holder := range holders {
-		if !legionagents.IsRole(holder.Role) {
+		if !legionclaim.IsRole(holder.Role) {
 			writeError(w, "INVALID_ROLE_HOLDER", http.StatusBadRequest, fmt.Sprintf(
 				"%s is no role of an issue. A role is a name of %s other than controller: one of %s, or a role the deployment defines.",
-				holder.Role, legionagents.RolePattern, strings.Join(legionagents.Roles, ", ")))
+				holder.Role, legionclaim.RolePattern, strings.Join(legionclaim.Roles, ", ")))
 			return
 		}
 		if slices.Contains(roles[:index], holder.Role) {

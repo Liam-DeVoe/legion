@@ -39,10 +39,10 @@ var idleWaitingKinds = []string{"supervise", "notice", "hook_prompt", "update_as
 	"conflict_confirm", "merge_forward"}
 
 // startWaitsForPodRow is the predicate of a start row that waits because the issue's pod lacks the
-// slot of the start's claim or the role of its step, built before the deployment defined that name
-// (the outbox's roleWaitsForItsPod writes its last error with pods.StartWaitsForPodPrefix, the
-// parameter %s names). Such a start is no delivery the
-// pod waits for: the pod cannot run it, and only its update round or its release lets it start.
+// slot of the start's claim or the role of its step, built before the deployment defined or the
+// issue's plan named that name (the outbox's roleWaitsForItsPod writes its last error with
+// pods.StartWaitsForPodPrefix, the parameter %s names). Such a start is no delivery the pod waits
+// for: the pod cannot run it, and only its update round or its release lets it start.
 // So both reads of idleWaitingKinds leave it out, `and not` it after `kind = any(…)`: the view's
 // Waiting (readIdleView), which main's rule and the idle rule read, and the release's boundary
 // (IssueReleaseStop), so the rule that holds a pod and the rule that cancels its release still

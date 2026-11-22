@@ -36,6 +36,9 @@ func (liveTrees) IssueSandboxHome(context.Context, string, string) (string, erro
 func (s liveTrees) ClaimUnretired(_ context.Context, token claim.Token) (bool, error) {
 	return token != "" && token == s.unretired, nil
 }
+func (liveTrees) PlanAgents(context.Context, string, string) (map[claim.Agent]claim.Role, error) {
+	return nil, nil
+}
 func (liveTrees) Claims(context.Context) ([]supervise.Claim, error) { return nil, nil }
 
 // The orphan sweep is told what knownClaims makes of the daemon's claims, and the Sandbox runtime
@@ -80,7 +83,7 @@ func TestTheOrphanSweepKeepsASuspendedControllersSandboxAndDeletesARetiredOnes(t
 				SessionStore: ompsessions.Store{Kind: ompsessions.StorePostgres, DSNSecret: "SESSION_DSN"},
 				Tools:        sandbox.Tools{GH: "/usr/bin/gh", Git: "/usr/bin/git", JJ: "/usr/bin/jj", Legion: "/opt/legion/bin/legion", AgentSecrets: "/opt/legion/bin/agent-secrets"},
 				BootTimeout:  time.Second, RegistrationIntervals: 3, BusyBackoff: time.Millisecond, TerminationGrace: time.Second, ProbeInterval: time.Hour, AdoptTimeout: time.Second,
-				Tokens: issueProvisionTokens{}, GitHubCredential: appauth.GitHubCredential(outboxTokens{}, servesLegion, ghrepo.Renames{}, legionInstalled, nil, nil, quietLogger()),
+				Tokens: issueProvisionTokens{}, GitHubCredential: appauth.GitHubCredential(outboxTokens{}, servesLegion, ghrepo.Renames{}, legionInstalled, nil, appauth.RoleApps{}, quietLogger()),
 				ControllerCredential: appauth.ControllerCredential(outboxTokens{}, servesLegion, ghrepo.Renames{}, legionInstalled, nil, quietLogger()),
 				GitHubDirs:           legionDirs, Conns: fake.NewConns(), Log: quietLogger(),
 				RepositoryCache: defaultRepositoryCache(t), CacheRepositories: noRepositories,

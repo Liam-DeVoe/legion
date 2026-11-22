@@ -33,12 +33,12 @@ func TestALaunchOfAReroledClaimWritesItsSlotsCredentialAtOnce(t *testing.T) {
 	logs := &lockedLog{}
 	g := newRig(t, nil, withOptions(func(o *Options) {
 		o.Log = slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
-		o.GitHubCredential = func(_ context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
+		o.GitHubCredential = func(_ context.Context, _ string, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
 			owner := strings.ToLower(repo.Owner())
 			if owner == "" {
 				owner = "sjawhar"
 			}
-			appRole, err := appauth.AppRoleFor(role, nil)
+			appRole, err := appauth.AppRoleFor(role, nil, appauth.Planned{})
 			if err != nil {
 				return ghconfig.Bundle{}, err
 			}

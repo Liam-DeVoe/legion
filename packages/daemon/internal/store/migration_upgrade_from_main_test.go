@@ -65,12 +65,10 @@ import (
 // migrated takes each of them in version order with the rest, the upgrade after the phase entry
 // whose columns it fills, and none of them touches outbox_kind_check.
 // dispatch://INFRA-1997's commit statuses of the checked head (20261117112334) are named here too:
-// that version stands above every other of this list but dispatch://INFRA-4109's 20261117200337,
-// the name of each step's agent (20261117213545), dispatch://INFRA-4374's 20261119003157,
-// dispatch://INFRA-4108's 20261120042902, dispatch://INFRA-4729's 20261120055717 and the claim of
-// each resume (20261121183336), so an upgrade of a database main migrated applies it just before
-// those six. It adds pull_requests.statuses at its default, the empty list, and it touches
-// no outbox_kind_check.
+// it stands above every other version of this list but the ones the list names after it, from
+// dispatch://INFRA-4109's 20261117200337 on, so an upgrade of a database main migrated applies it
+// just before all of those. It adds pull_requests.statuses at its default, the empty list, and it
+// touches no outbox_kind_check.
 // The reviewer's reviewed commit (20261116234034, `phases.reviewed_head`) is named here for the
 // same reason: it adds one column at its default, which every row it finds reads as no commit
 // (migration_20261116234034_test.go), and it touches no outbox_kind_check.
@@ -99,7 +97,11 @@ import (
 // dispatch://INFRA-4109's cutover of the update ask's mark (20261117200337) is applied after all
 // of these and touches no outbox_kind_check: it clears a claim's ask mark where that claim's ask
 // is still queued.
-// The name of each step's agent (20261117213545) stands above 20261117200337 and below
+// The roles a plan defines (20261117201743) stand above 20261117200337 and below the name of each
+// step's agent: the migration creates plan_roles, whose foreign key stands on issue_plans, so an
+// upgrade applies it after the plan's tables, and it touches no outbox_kind_check
+// (migration_20261117201743_test.go).
+// The name of each step's agent (20261117213545) stands above 20261117201743 and below
 // 20261119003157, so an upgrade applies it between those two: it adds `plan_steps.agent` to the
 // plan's step table and touches no outbox_kind_check, and every row it finds reads as its role
 // (migration_20261117213545_test.go).
@@ -126,6 +128,10 @@ import (
 // The claim of each resume (20261121183336) is applied after all of these and touches no
 // outbox_kind_check: it adds pod_resumes.claim at its default, the empty string, on every row it
 // finds, so it needs no row of its own here.
+// The key of a phases row by its step (20261122062637) is applied after the claim of each resume
+// and touches no outbox_kind_check: it writes the primary key of phases over step_task and
+// step_place, which the plan of an issue (20261117034837) added, and every row it finds keeps its
+// step (migration_20261122062637_test.go).
 var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,
@@ -135,7 +141,8 @@ var thisBranchsMigrations = []int{
 	20261113090512, 20261113110610, 20261113181500, 20261113182000, 20261114020537, 20261114031356,
 	20261114061900, 20261115194357, 20261116144907, 20261116165926, 20261116234034, 20261117000528,
 	20261117004117, 20261117023932, 20261117034837, 20261117064152, 20261117112334, 20261117200337,
-	20261117213545, 20261117223524, 20261119003157, 20261120042902, 20261120055717, 20261121183336,
+	20261117201743, 20261117213545, 20261117223524, 20261119003157, 20261120042902, 20261120055717,
+	20261121183336, 20261122062637,
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its
@@ -152,8 +159,9 @@ var thisBranchsMigrations = []int{
 // forward (20261117064152), the kind list with the plan record (20261117023932), the plan of an
 // issue's 20261117034837, dispatch://INFRA-1997's 20261117112334, dispatch://INFRA-4109's
 // 20261117200337, the name of each step's agent's 20261117213545, dispatch://INFRA-4374's
-// 20261119003157, dispatch://INFRA-4108's 20261120042902, dispatch://INFRA-4729's 20261120055717
-// and the claim of each resume's 20261121183336. That is why the loop below holds the list rather
+// 20261119003157, dispatch://INFRA-4108's 20261120042902, dispatch://INFRA-4729's 20261120055717,
+// the claim of each resume's 20261121183336 and the key of a phases row by its step's
+// 20261122062637. That is why the loop below holds the list rather
 // than counting it, so that a version added above any of them is named here rather than read as
 // main's.
 const mainsNewestMigration = 20261111212544

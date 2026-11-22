@@ -398,6 +398,14 @@ Each item below names a script, then what it proves.
   the control, `implementer:a tester reviewer`, runs step 2 in an agent and a session of its own.
   No GitHub, no cluster
 
+- `plan-roles.sh`
+
+  a role an owner's plan defines with a role block runs a step of that plan, with the plan's prompt on the plan's model, driven against the real Dispatch server this checkout builds, on a database of its own, and the whole daemon booted with `dispatch_url` at it, no role of the deployment and the listed model `prober-model`, over a PostgreSQL the caller names and a `nats-server` of the run's own, with three issues whose owners give their plans:
+  the owner writes `plan.md` with the role block `prober` (type `testing`, model `prober-model`) through the real `dispatch artifact` command, and the version read with its blocks lists it;
+  `register_plan` takes `implementer prober`, the prober launches with the plan's model and a prompt holding the plan's, and `dispatch steps --issue <KEY>`, run as a person with their personal token, prints step 2 `prober` of type `testing` with the model `prober-model`;
+  the control, the same task with no role block, is refused `409 PLAN_REFUSED` naming `prober`, and the role on the model `other-model`, which the deployment does not list, is refused naming `other-model`.
+  No GitHub, no cluster
+
 - `step-records-read.sh`
 
   the read, after the merge, of the step records of one issue a deployed Legion ran to done: `dispatch steps --issue <ISSUE>` run once in the operator's own shell with the operator's own credential, judged.
@@ -5148,6 +5156,51 @@ the broker is a native `nats-server`; GitHub's REST API is the driver's stand-in
 the Apps' tokens are placeholders; Envoy's listener is the package's `noticeListener`;
 and no agent runs: each claim is launched by the package's fake runtime, which provisions its own workspace, and played by the driver over its pane's connection.
 `AGENTS_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, kept and printed) keeps the transcript, the `nats-server`'s log, the daemon's own, Dispatch's (`dispatch.log`) and the driver's output.
+
+## plan-roles.sh
+
+```sh
+LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
+  [LEGION_E2E_NATS_BIN=<nats-server>] bash scripts/e2e/plan-roles.sh     # → "plan roles e2e: PASS in <n>s", exit 0
+```
+
+The live proof that a role an owner's plan defines with a role block runs a step of that plan, with the plan's prompt on the plan's model, run before the change merges.
+It runs on any Linux host with `go`, `git`, `jj` 0.38 or later (the daemon's boot refuses to start without them), `awk`, `bun` (after `bun install` at the checkout's root) and `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy))
+— no Docker, no cluster, no GitHub, no deployed Dispatch.
+`LEGION_TEST_PG_DSN` is required, its host must be loopback, and, as for [`handoff-records.sh`](#handoff-recordssh), the driver also creates Dispatch's own database on that server and drops it on exit, so the DSN's role must be allowed to create and drop databases and the server must offer `pgvector`.
+The script starts no database, and the broker is the run's own.
+A run takes two to five minutes, most of it building Dispatch and the driver.
+The four checks are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s;
+before them the script refuses a host with no `bun` or no `node_modules`, and exports `LEGION_E2E_REPO_ROOT`, the checkout the driver builds Dispatch from and runs the CLI out of.
+
+| check | what it holds |
+| :--- | :--- |
+| `prerequisites` | as for [`handoff-records.sh`](#handoff-recordssh) |
+| `broker` | that `nats-server`, with JetStream, listening on 127.0.0.1 and ready |
+| `driver` | a test binary of `TestPlanRolesLive` (`internal/daemon/plan_roles_live_test.go`, `-tags e2e`) |
+| `proof` | the steps below, each printing what it drove and what it read back between its own `== <name>` and `ok <name>`, or `FAIL <name>` |
+
+Nothing of a role's path is stood in for.
+The driver starts Dispatch as `handoff-records.sh`'s driver does (`startHandoffDispatch`), so the role block of each version is read by Dispatch's own parser, creates a project of the run's own (`DR<6 hex>`), maps `acme/widgets` to it, and creates three issues, each with a spec, in progress with the `legion` label.
+It seeds each issue in the daemon's store at `admitted` with no design gate and an open pull request at a clean head, and boots the whole daemon through `run`, the function `legion start` calls, with `dispatch_url` at that server, no role of the deployment and `models: [prober-model]`, so `register_plan` reads each version and its blocks with the daemon's own client and judges a role's model against that list.
+The issues walk as the package's whole-daemon test of a role a plan defines walks them (`walkImplementerProber`, `internal/daemon/plan_roles_test.go`):
+the owner gives its plan before a person approves the spec and the architect registers the gate;
+each role over the daemon's worker stream and its own routes, each answer a `message_end` frame naming the model its launch's spec named;
+a person's review and GitHub's merge as envelopes on the broker.
+The owner writes with the real `dispatch` CLI (`bun packages/envoy-client/bin/dispatch.ts artifact`) in its own session, and the reader is the same CLI run as a person's own shell runs it, with the personal token Dispatch minted for the person who set the project up, as [`step-records.sh`](#step-recordssh)'s reader runs.
+
+| step | driven by | read back as |
+| :--- | :--- | :--- |
+| `role-block-stored` | `dispatch artifact --issue <KEY> --name plan.md` as the owner's session, with the block `:::plan_role{#prober type="testing" model="prober-model"}` (body `# Prober` and `Probe the change.`) and the block `:::plan_task{#a steps="implementer prober"}` | the reference `dispatch://<KEY>/artifact/plan-md`; version 1 read with `?blocks=true` lists exactly `plan_role` `prober` with `type=testing`, `model=prober-model` and that body, and `plan_task` `a` |
+| `plan-role-runs` | `POST /legion/v1/plans/register` of that version under the architect's grant, before the gate opens; the gate opened; the implementer's completion; the prober's pass with a commit and no handoff record; the retro; GitHub's merge | `200` with one task `a` naming `implementer` and `prober`; the issue at `implementing`, then `step`, `retro`, `merging` and `done`; the prober's spawn spec names `prober-model` and its prompt, composed, holds the plan's prompt and Legion's worker part; its task names the issue, the task's text and ` Step 1 (implementer) reported:`; `dispatch steps --issue <KEY>` as the person prints exactly step 1 `implementer` of type `implementation`, step 2 `prober` of type `testing` with the model `prober-model`, the retro and the merge, each with an agent and ended `passed` |
+| `control-no-role-block` | the second issue given `implementer prober` with no role block | `409 PLAN_REFUSED` with `step 2 of task a names the role prober, which neither the deployment nor the plan defines.`, and no row of the issue in `issue_plans` or `plan_roles`; given to the first issue in place of its plan, the same input makes `plan-role-runs` print `FAIL plan-role-runs` |
+| `model-not-listed` | the third issue given the role block `prober` on the model `other-model` | `409 PLAN_REFUSED` with `step 2 of task a names the role prober, whose model other-model the deployment does not list; it lists prober-model.`, and no plan rows |
+
+What the proof stands in for lies outside the role:
+the broker is a native `nats-server`; GitHub's REST API is the driver's stand-in for the issues' pull requests;
+the Apps' tokens are placeholders; Envoy's listener is the package's `noticeListener`;
+and no agent runs: each claim is launched by the package's fake runtime, which provisions its own workspace, and played by the driver over its pane's connection.
+`PLAN_ROLES_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, kept and printed) keeps the transcript, the `nats-server`'s log, the daemon's own, Dispatch's (`dispatch.log`) and the driver's output.
 
 ## step-records-read.sh
 

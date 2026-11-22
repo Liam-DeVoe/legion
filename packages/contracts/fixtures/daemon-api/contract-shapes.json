@@ -32045,6 +32045,7 @@
       "strandedClaims.*.issue",
       "strandedClaims.*.role",
       "strandedClaims.*.state",
+      "strandedClaims.*.token",
       "wakesWaiting",
       "wakesWaiting.*",
       "wakesWaiting.*.claim",

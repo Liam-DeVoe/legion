@@ -192,7 +192,7 @@ func (p podWithRoles) roles(*Runtime) []claim.Role { return p.launched }
 // deployedRuntime is a runtime of a deployment that defines the roles of deployed, as
 // configureProber sets its issue roles and its map.
 func deployedRuntime(deployed appauth.DeploymentApps) *Runtime {
-	return &Runtime{issueRoles: issueRolesOf(deployed), deploymentApps: deployed}
+	return &Runtime{issueRoles: issueRolesOf(deployed), roleApps: appauth.RoleApps{Deployed: deployed}}
 }
 
 // The Apps a pod holds a bundle of are the Apps its roles act as, each named once, a role of the

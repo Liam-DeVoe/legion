@@ -58,7 +58,7 @@ import {
   LegionWaveReleaseRequest,
   LegionWaveReleaseResponse,
 } from "./legion-api";
-import { DISPATCH_KEY_PATTERN, isStepRole, LEGION_ROLES } from "./legion-roles";
+import { DISPATCH_KEY_PATTERN, isStepRole, LEGION_ROLES, roleToken } from "./legion-roles";
 import { PlanRatingCases } from "./plan-rating-cases";
 
 const fixtureDir = path.join(import.meta.dir, "..", "fixtures", "daemon-api");
@@ -2685,8 +2685,22 @@ const strandedClaimAt45 = z.strictObject({
 });
 
 test("a reader at the previous contract parses the state body this daemon serves", () => {
-  const state = fixture("state.json") as {
-    strandedClaims: { issue: string; role: string; state: string }[];
+  const golden = fixture("state.json") as {
+    strandedClaims: { issue: string; role: string; state: string; token?: string }[];
+  };
+  // Each entry names its claim's token since contract 222, a key the 45 reader does not know: a
+  // strict object refuses the entry, and so the whole state body, over it. That is why the state
+  // route serves a pod below 222 every entry without it (`api`'s `withoutStrandedTokens`, pinned
+  // on the Go side), and the entries below are read as such a pod is served them.
+  const withToken = golden.strandedClaims[0];
+  if (withToken?.token === undefined) {
+    throw new Error("state fixture lacks a stranded claim with its token");
+  }
+  const tokened = strandedClaimAt45.safeParse(withToken);
+  expect(tokened.success).toBeFalse();
+  expect(tokened.error?.issues[0]?.code).toBe("unrecognized_keys");
+  const state = {
+    strandedClaims: golden.strandedClaims.map(({ token: _token, ...entry }) => entry),
   };
   const builtin = new Set<string>(LEGION_ROLES);
   // The golden carries all three kinds: a failed claim, a released one whose wake never brought
@@ -2815,11 +2829,12 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   // aside: the mark names the contract the caller is served at, 199, the recorded contract below
   // the 201 the caller states (`recordedContractAtOrBelow`), INFRA-4605's, which moved no answer's
   // shape, and the lowest plugin contract reports the claims of the snapshot the route projected
-  // the body from, a pod at 201, which `state.json`'s own fixture does not hold. Two bands stand
-  // above 199: the repositories block's, and the roles of a deployment's (contract 221), which
-  // serves the state golden's issues at step and its claims of a role of the deployment as a
-  // caller below 221 reads them (`belowDeploymentRoles`). So the narrowing changes this one block
-  // and, beside it, only what that second band changes.
+  // the body from, a pod at 201, which `state.json`'s own fixture does not hold. Three bands stand
+  // above 199: the repositories block's, the roles of a deployment's (contract 221), which serves
+  // the state golden's issues at step and its claims of a role of the deployment as a caller below
+  // 221 reads them (`belowDeploymentRoles`), and the stranded claims' token's (contract 222), which
+  // serves each claim nothing will wake without its `token` (`withoutStrandedTokens`). So the
+  // narrowing changes this one block and, beside it, only what those two bands change.
   const { daemonApiVersion } = z
     .object({ daemonApiVersion: z.number() })
     .parse(fixture("version.json"));
@@ -2836,7 +2851,14 @@ test("a reader at contract 152 parses the repositories block served below 202", 
     lowestPluginContract: _lowest,
     ...rest
   } = fixtureBody("state.json");
-  expect(narrowedRest).toEqual(belowDeploymentRoles(rest));
+  const below = belowDeploymentRoles(rest) as Record<string, unknown>;
+  const stranded = below.strandedClaims as Record<string, unknown>[] | undefined;
+  expect(narrowedRest).toEqual({
+    ...below,
+    ...(stranded === undefined
+      ? {}
+      : { strandedClaims: stranded.map(({ token: _token, ...kept }) => kept) }),
+  });
 
   // What serving the current block would do, and why it is not served: the reader of 152 refuses
   // it for the three keys it requires beside the `withoutWebhookApp` and `caches` the block keeps,
@@ -3008,15 +3030,27 @@ test("the state golden shows a claim's capability report beside its locator", ()
 // each claim state the rule can name (internal/api's state_golden_test.go says so): LEGION-210's
 // failed implementer, whose issue is held, LEGION-211's suspended one, and LEGION-212's retired
 // tester, which only a start of the phase it owns — one no rule the daemon runs queues — would
-// relaunch (contract 56) — three keys each, neither the suspended nor the retired one wider than
-// the failed one — and a state with none carries an empty list rather than none.
+// relaunch (contract 56) — four keys each, neither the suspended nor the retired one wider than
+// the failed one, the fourth the claim's token, which tells two claims of one role on one issue
+// apart — and a state with none carries an empty list rather than none.
 test("the state golden names the claims nothing will wake, and the list may be left out", () => {
   const state = LegionStateResponse.parse(fixture("state.json"));
+  // Each claim is the one named for its role, so its token is that role's own (`roleToken`).
+  const entry = (
+    issue: "LEGION-210" | "LEGION-211" | "LEGION-212" | "LEGION-241",
+    role: Parameters<typeof roleToken>[2],
+    held: "failed" | "suspended" | "retired"
+  ) => ({
+    issue,
+    role,
+    state: held,
+    token: roleToken("legion", issue, role),
+  });
   expect(state.strandedClaims).toEqual([
-    { issue: "LEGION-210", role: "implementer", state: "failed" },
-    { issue: "LEGION-211", role: "implementer", state: "suspended" },
-    { issue: "LEGION-212", role: "tester", state: "retired" },
-    { issue: "LEGION-241", role: "checker", state: "failed" },
+    entry("LEGION-210", "implementer", "failed"),
+    entry("LEGION-211", "implementer", "suspended"),
+    entry("LEGION-212", "tester", "retired"),
+    entry("LEGION-241", "checker", "failed"),
   ]);
   expect(LegionStateResponse.parse(fixture("state-stage3.json")).strandedClaims).toEqual([]);
 

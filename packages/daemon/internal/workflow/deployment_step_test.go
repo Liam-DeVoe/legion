@@ -45,10 +45,16 @@ const stepHead = "0123456789abcdef0123456789abcdef01234567"
 
 // stepReports applies role's completion of key at its generation 1 with verdict ("" for none),
 // summary and returnTo (0 for none), as the route hands it to the engine, and fails the test on a
-// refusal; handoffRecord is the handoff record it names ("" for none).
+// refusal; handoffRecord is the handoff record it names ("" for none). It names the claim of the
+// agent the role names, as the route names the claim whose grant reported, which the completion
+// writes on the step's row and the claim of the role's worker is then read from (record.WorkerClaim).
 func stepReports(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, role claim.Role, verdict, summary, handoffRecord string, returnTo int) {
 	t.Helper()
-	fact := intake.HandoffComplete{Generation: 1, Issue: key, Role: role, Claim: claim.Token(string(role) + "-claim"), Summary: summary, Commit: stepHead,
+	agent, err := claim.AgentToken("legion", key, claim.Agent(role))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fact := intake.HandoffComplete{Generation: 1, Issue: key, Role: role, Claim: agent, Summary: summary, Commit: stepHead,
 		Verdict: verdict, HandoffRecord: handoffRecord, HandoffVersion: 1, ReturnTo: returnTo}
 	if result := applyFacts(t, pool, engine)(string(role)+"-"+verdict+"-"+handoffRecord+"-"+summary, fact); result.Refusal != nil {
 		t.Fatalf("the %s's completion of %s was refused: %+v", role, key, result.Refusal)
@@ -318,6 +324,31 @@ func TestARetryOfADeploymentStepRestartsItsRole(t *testing.T) {
 		assertWalksAt(t, pool, engine, root.Key, phase.Step, stepPlace(2))
 		if starts := roleStartsOf(t, pool, root.Key, "checker"); len(starts) != 1 || starts[0].Phase != phase.Step {
 			t.Fatalf("the checker's starts after the retry = %+v, want one, of step", starts)
+		}
+	})
+
+	// The operator's retry of a claim (api's retryClaim) names that claim, and the claim it names is
+	// fenced against the claim on the step of the role the hold is from: the step's role, which the
+	// held issue still records, and not the role of the phase step, which is none.
+	t.Run("the operator's retry of a hold from step names the step's claim", func(t *testing.T) {
+		pool := migratedPool(t)
+		engine := deploymentEngine()
+		root := checkerAtStep2(t, pool)
+		applyRefusingNothing(t, pool, engine, intake.ClaimFailed{Issue: root.Key, Role: "checker", Reason: "the pane died"})
+		project, err := claim.ProjectToken(root.Project)
+		if err != nil {
+			t.Fatalf("the project token: %v", err)
+		}
+		checker, err := claim.NewToken(project, root.Key, "checker")
+		if err != nil {
+			t.Fatalf("the checker's token: %v", err)
+		}
+
+		applyRefusingNothing(t, pool, engine, intake.RetryOrEscalate{Issue: root.Key, Decision: intake.RetryDecision, Claim: checker})
+
+		assertWalksAt(t, pool, engine, root.Key, phase.Step, stepPlace(2))
+		if starts := roleStartsOf(t, pool, root.Key, "checker"); len(starts) != 1 || starts[0].Phase != phase.Step {
+			t.Fatalf("the checker's starts after the operator's retry = %+v, want one, of step", starts)
 		}
 	})
 

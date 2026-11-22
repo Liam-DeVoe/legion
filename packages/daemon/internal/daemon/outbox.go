@@ -2558,10 +2558,11 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// A start whose claim's slot or step's role the issue's live pod was built before waits on
 		// this row, before it creates, retrees or hands anything to a claim: a launch into that pod
 		// would replace it with the issue's disk, and only the pod's update round or its release may
-		// (ruling 18). The claim runs in the slot of its agent (claim.Token.Cut), which is the role's
-		// own for a claim named by its role, and the slot of a keyed agent's first step for a step of
-		// another role, whose own resources the launch needs too.
-		if err := r.roleWaitsForItsPod(ctx, row, issue, slotOfToken(token, payload.Role), payload.Role); err != nil {
+		// (ruling 18). The claim runs in the slot of its agent, which the runtime picks from its
+		// token: the role's own for a claim named by its role, a keyed agent's first role's for a
+		// step of another role, whose own resources the launch needs too, and a name of its own for
+		// a second agent of one role (`implementer-2`).
+		if err := r.roleWaitsForItsPod(ctx, row, issue, token, payload.Role); err != nil {
 			return err
 		}
 		// A child carried into a tree of its own — a finished root's hand-over, or a person's label
@@ -2608,6 +2609,22 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 			err := r.reroleForStep(ctx, machine, token, row, payload)
 			if errors.Is(err, supervise.ErrStepLeft) {
 				r.log.Info("outbox start serves a step its issue left before the claim took its role; finished without acting", "row", row.ID,
+					"issue", issue.Key, "phase", payload.Phase, "entry", payload.Entry, "role", payload.Role, "claim", token)
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+		}
+		// The start of a step whose agent takes the claim another agent last ran a step on asks
+		// for a fresh session (payload.FreshSession, the workflow's enter): a claim that still runs
+		// that other agent's process ends it at its turn's end, as a re-role's does
+		// (suspendForStep), and the start waits; once the claim runs nothing, the resume below
+		// starts it in a new session.
+		if found && payload.FreshSession && payload.Entry > 0 && payload.Phase != "" {
+			err := r.suspendForStep(ctx, machine, token, row, payload, fmt.Sprintf("its claim's next step on %s is another agent's", row.Issue))
+			if errors.Is(err, supervise.ErrStepLeft) {
+				r.log.Info("outbox start serves a step its issue left before the claim ended the other agent's turn; finished without acting", "row", row.ID,
 					"issue", issue.Key, "phase", payload.Phase, "entry", payload.Entry, "role", payload.Role, "claim", token)
 				return nil
 			}
@@ -2729,7 +2746,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 			if payload.CheckLook > 0 {
 				reason = fmt.Sprintf("start row %d of %s (production check look %d)", row.ID, issue.Key, payload.CheckLook)
 			}
-			if err := machine.Handle(ctx, supervise.RequestRuleResume{Claim: token, Reason: reason, Start: work}); err != nil {
+			if err := machine.Handle(ctx, supervise.RequestRuleResume{Claim: token, Reason: reason, Start: work, FreshSession: payload.FreshSession}); err != nil {
 				brought = fmt.Errorf("resume claim %s: %w", token, err)
 			}
 		case supervise.StateFailed:
@@ -3213,18 +3230,32 @@ func (r *outbox) wakeTreeCloses(ctx context.Context, tree string) error {
 func (r *outbox) reroleForStep(ctx context.Context, machine *supervise.Machine, token claim.Token, row record.OutboxRow, payload record.SuperviseRequest) error {
 	role := payload.Role
 	ctx = supervise.Standing(ctx, func(ctx context.Context) (bool, error) { return r.stepStands(ctx, row, payload) })
-	if held := machine.Claim(); !held.RunsNothing() {
-		err := machine.Handle(ctx, supervise.RequestSuspend{Claim: token, By: supervise.SuspendedByDaemon,
-			Reason: fmt.Sprintf("its agent's next step on %s is the %s's", row.Issue, role)})
-		var refused *supervise.RefusedError
-		if err != nil && !errors.Is(err, supervise.ErrSuspendHeld) && !errors.As(err, &refused) {
-			return fmt.Errorf("suspend claim %s for its %s step: %w", token, role, err)
-		}
-		if held = machine.Claim(); !held.RunsNothing() {
-			return wait.Errorf("the %s step of %s waits for its claim %s to end its turn as %s", role, row.Issue, token, held.Role)
-		}
+	if err := r.suspendForStep(ctx, machine, token, row, payload, fmt.Sprintf("its agent's next step on %s is the %s's", row.Issue, role)); err != nil {
+		return err
 	}
 	return machine.Rerole(ctx, role)
+}
+
+// suspendForStep is a wait (wait.ErrWaiting) while machine's claim still runs a process that the
+// start of payload's step may not start in: the start asks it to suspend, as the daemon, keeping
+// its session, and waits on the row's backoff, as reroleForStep says; nil once the claim runs
+// nothing. The suspension is asked with the step's standing (supervise.Standing, stepStands), so a
+// step the issue left before it is supervise.ErrStepLeft. reason is the suspension's, for its line.
+func (r *outbox) suspendForStep(ctx context.Context, machine *supervise.Machine, token claim.Token, row record.OutboxRow, payload record.SuperviseRequest, reason string) error {
+	held := machine.Claim()
+	if held.RunsNothing() {
+		return nil
+	}
+	ctx = supervise.Standing(ctx, func(ctx context.Context) (bool, error) { return r.stepStands(ctx, row, payload) })
+	err := machine.Handle(ctx, supervise.RequestSuspend{Claim: token, By: supervise.SuspendedByDaemon, Reason: reason})
+	var refused *supervise.RefusedError
+	if err != nil && !errors.Is(err, supervise.ErrSuspendHeld) && !errors.As(err, &refused) {
+		return fmt.Errorf("suspend claim %s for its %s step: %w", token, payload.Role, err)
+	}
+	if held = machine.Claim(); !held.RunsNothing() {
+		return wait.Errorf("the %s step of %s waits for its claim %s to end its turn as %s", payload.Role, row.Issue, token, held.Role)
+	}
+	return nil
 }
 
 // stepStands says whether the step a start of a phase entry (payload) is for is still the work its
@@ -3980,18 +4011,19 @@ func (r *outbox) mergerWaitsForTheDesignGate(ctx context.Context, issue record.I
 	return wait.Errorf("the merger of %s waits for the design gate of %s to open", issue.Key, issue.Tree)
 }
 
-// roleWaitsForItsPod is the fence a start carries where the issue's live pod was built before the
-// deployment defined slot, the slot the start's claim runs in (slotOfToken), or role, the role of
-// the start's step (runtime.IssuePodRoles, whose PodLacksRole answers both, since a slot is named
-// for a role): a launch needs the slot's launcher, Secret and volumes and the role's own pod
-// resources, its role_config_files overlays among them, and a launch into a pod that lacks either
-// would replace it, ending every role in it and taking the issue's disk with everything they did
-// not push. A keyed agent's slot and its step's role can be two names. It answers a wait, whose
-// text begins with pods.StartWaitsForPodPrefix, names what the pod lacks (podLacking), and is
-// runtime.ErrAwaitsPodUpdate too, and the row tries again on its own backoff; once the pod is
-// gone — released, or replaced by its update round — the start creates the claim, whose launch
-// builds the new pod with every role. A runtime with no pods answers nothing, and the start goes
-// on as before.
+// roleWaitsForItsPod is the fence a start carries where the issue's live pod was built without the
+// slot token's claim runs in, which the runtime picks from the token (PodLacksSlot): the slot of
+// its agent, a role's own, or a name no role has that the issue's plan gave a second agent of one
+// role (`implementer-2`); or without role, the role of the start's step (PodLacksRole). A launch
+// needs the slot's launcher, Secret and volumes and the role's own pod resources, its
+// role_config_files overlays among them, and a launch into a pod that lacks either would replace
+// it, ending every agent in it and taking the issue's disk with everything they did not push. A
+// keyed agent's slot and its step's role can be two names. It answers a wait, whose text begins
+// with pods.StartWaitsForPodPrefix, names what the pod lacks (podLacking), and is
+// runtime.ErrAwaitsPodUpdate too, and the row tries again on its own backoff; once the pod is gone
+// — released, or replaced by its update round, which a pod without a slot of its plan opens by its
+// drift — the start creates the claim, whose launch builds the new pod with every slot. A runtime
+// with no pods answers nothing, and the start goes on as before.
 //
 // Under a deployment with no idle release (idleReleases false) main's rule never ends the wait,
 // and where no claim of the issue records a process in the pod (podRecorded) no update round
@@ -4004,12 +4036,12 @@ func (r *outbox) mergerWaitsForTheDesignGate(ctx context.Context, issue record.I
 // between two waits replaces the last error, and the next wait that finds no process tells it
 // again. Where the release is on, main's rule ends the wait, and its pass tells an operator's
 // suspension that holds the pod (releaseUnownedPod).
-func (r *outbox) roleWaitsForItsPod(ctx context.Context, row record.OutboxRow, issue record.Issue, slot, role claim.Role) error {
+func (r *outbox) roleWaitsForItsPod(ctx context.Context, row record.OutboxRow, issue record.Issue, token claim.Token, role claim.Role) error {
 	podRoles, ok := r.supervisor.deps.Runtime.(runtime.IssuePodRoles)
 	if !ok {
 		return nil
 	}
-	pod, lacking := podLacking(podRoles, issue.Key, slot, role)
+	pod, lacking := podLacking(podRoles, issue.Key, token, role)
 	if lacking == "" {
 		return nil
 	}
@@ -4031,38 +4063,32 @@ func (r *outbox) roleWaitsForItsPod(ctx context.Context, row record.OutboxRow, i
 	if told {
 		prefix = startWaitToldPrefix
 	}
-	return wait.Errorf("%s%s of %s: the pod %s was built before the deployment defined %s; its update round or its release replaces it: %w",
+	return wait.Errorf("%s%s of %s: the pod %s was built without %s; its update round or its release replaces it: %w",
 		prefix, role, issue.Key, pod, lacking, runtime.ErrAwaitsPodUpdate)
 }
 
-// podLacking is what the issue's live pod lacks of a start whose claim runs in slot on a step of
-// role, as the wait's text and the controller's notice name it, with the pod's uid: the role's name
-// alone for a claim named for its role, whose slot and role are one name; "<role>, the role of
-// its step" or "<slot>, the slot of the claim's agent" where the pod lacks one of two names, both
-// where it lacks the two, and "" where the pod holds both or no live pod stands.
-func podLacking(podRoles runtime.IssuePodRoles, issue string, slot, role claim.Role) (string, string) {
-	slotPod, lacksSlot := podRoles.PodLacksRole(issue, slot)
+// podLacking is what the issue's live pod lacks of a start whose claim is token's, on a step of
+// role, as the wait's text and the controller's notice name it, with the pod's uid: the role's
+// name alone for a claim named for its role, whose slot and role are one name; "<role>, the role
+// of its step" or "<agent>, the slot of the claim's agent" where the pod lacks one of two names,
+// both where it lacks the two, and "" where the pod holds both or no live pod stands. The slot is
+// the runtime's to pick (PodLacksSlot); the text names it by the agent the token ends in, the name
+// every slot of an issue pod carries.
+func podLacking(podRoles runtime.IssuePodRoles, issue string, token claim.Token, role claim.Role) (string, string) {
+	slotPod, lacksSlot := podRoles.PodLacksSlot(issue, token)
 	rolePod, lacksRole := podRoles.PodLacksRole(issue, role)
+	_, agent, _ := token.Cut()
 	switch {
-	case lacksRole && slot == role:
+	case lacksRole && string(agent) == string(role):
 		return rolePod, string(role)
 	case lacksSlot && lacksRole:
-		return slotPod, string(slot) + ", the slot of the claim's agent, and " + string(role) + ", the role of its step"
+		return slotPod, string(agent) + ", the slot of the claim's agent, and " + string(role) + ", the role of its step"
 	case lacksRole:
 		return rolePod, string(role) + ", the role of its step"
 	case lacksSlot:
-		return slotPod, string(slot) + ", the slot of the claim's agent"
+		return slotPod, string(agent) + ", the slot of the claim's agent"
 	}
 	return "", ""
-}
-
-// slotOfToken is the slot of the pod that token's claim runs in: its agent's name
-// (claim.Token.Cut), and role for a token that names no agent.
-func slotOfToken(token claim.Token, role claim.Role) claim.Role {
-	if _, agent, named := token.Cut(); named {
-		return claim.Role(agent)
-	}
-	return role
 }
 
 // reroleWaitsForCredential is the fence the start of an entry that re-roles its claim, token,
@@ -4080,7 +4106,7 @@ func (r *outbox) reroleWaitsForCredential(issue record.Issue, token claim.Token,
 	if !ok {
 		return nil
 	}
-	pod, waits := podRoles.SlotWaitsForCredential(issue.Key, slotOfToken(token, role))
+	pod, waits := podRoles.SlotWaitsForCredential(token)
 	if waits {
 		return nil
 	}
@@ -4107,7 +4133,7 @@ func podRecorded(claims []supervise.Claim, issue, pod string) bool {
 // the pod lacks (lacking, podLacking's words), what is true now, and that the pod's disk can hold
 // work a role did not push. It tells nobody to take the pod away.
 func podWaitWithNoReleaseWords(issue, pod string, role claim.Role, lacking string) string {
-	return fmt.Sprintf("%s of %s cannot start. The pod %s of %s was made before the deployment defined %s, and no role runs in that pod now. "+
+	return fmt.Sprintf("%s of %s cannot start. The pod %s of %s was made without %s, and no role runs in that pod now. "+
 		"The idle release of this deployment is off (idle_minutes: 0), so the daemon keeps that pod. The start of %s waits until an operator acts. "+
 		"The disk of that pod can hold work that a role did not push.", role, issue, pod, issue, lacking, role)
 }

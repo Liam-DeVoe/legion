@@ -150,6 +150,12 @@ type Store interface {
 	// daemon's orphan sweep still knows, suspended and failed ones included. The sweep reads it under
 	// the controller's pod turn, since the known set it was handed was read before it listed.
 	ClaimUnretired(ctx context.Context, token claim.Token) (bool, error)
+	// PlanAgents is each agent of issue's plan in force by its name (the name its claim token ends
+	// in), with the role of its first step: every step of the issue's generation but the owner's,
+	// whose agent holds no name on the issue. An issue with no plan rows has none. The slots of an
+	// issue pod are the runtime's roles and each of these names no role has (issueSlots); a slot
+	// no claim has run in yet holds the App of its agent's first role.
+	PlanAgents(ctx context.Context, project, issue string) (map[claim.Agent]claim.Role, error)
 	// Claims is every stored claim, including retired claims whose session files can
 	// remain on a Sandbox-owned volume until its cleanup reaps it.
 	Claims(ctx context.Context) ([]supervise.Claim, error)
@@ -203,11 +209,13 @@ type Options struct {
 	ControllerSlackChannels []string
 	// Pod is the operator's pod configuration, added to every worker pod and to the probe pod.
 	Pod Pod
-	// DeploymentApps is each role the deployment defines in its settings (`roles`) with the
-	// GitHub App it acts as (the daemon's deploymentApps). Its roles, sorted by name, follow
-	// Legion's six in the runtime's issue roles (issueRolesOf), and each takes overlays
-	// (RoleConfigFiles) as one of Legion's does. Nil is a deployment that defines no role.
-	DeploymentApps appauth.DeploymentApps
+	// RoleApps is the reader of a role's App that GitHubCredential reads (the daemon's roleApps):
+	// Deployed is each role the deployment defines in its settings (`roles`) with the GitHub App it
+	// acts as, and Plan reads a role the plan in force of an issue defines. The roles of Deployed,
+	// sorted by name, follow Legion's six in the runtime's issue roles (issueRolesOf), and each takes
+	// overlays (RoleConfigFiles) as one of Legion's does. A walk's memo of bundles reads both
+	// (appauth.NewBundles). A nil Deployed is a deployment that defines no role.
+	RoleApps appauth.RoleApps
 	// RoleConfigFiles is the operator's `role_config_files`: absolute paths of Oh My Pi settings
 	// overlays a role alone names in PI_CONFIG_FILES, by role, after the operator's own (Pod.Env's
 	// PI_CONFIG_FILES), so each outranks those (mainEnvironment, roleOperatorEnv), and the shim

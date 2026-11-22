@@ -46,12 +46,12 @@ import (
 // in the phase its step runs as (plan.RunsAs): a role the deployment defines, at step, and the role
 // acceptance, at accepting, whether the fresh agent of acceptance or the owner does it. Only a
 // review step's run writes the row's commit (the workflow's recordStepReview, from the step's
-// completion; recordOwnersReview, the head the owner's acceptance read; a role runs at most one
-// step of an issue), so a role with no review step never has one, and none is named where the row
-// holds no commit, as in the step's first run of a generation. Such a step reports with its verdict
-// and submits no review of GitHub's, so it gets no entry's sentence. A review step of the role
-// reviewer the owner does gets the reviewer's two sentences, as the reviewer does: its row is the
-// reviewer's.
+// completion; recordOwnersReview, the head the owner's acceptance read), and the first run of a
+// second step of the role starts from the row of its step before (stepRunRow), so a role with no
+// review step never has one, and none is named where the row holds no commit, as in the step's first
+// run of a generation. Such a step reports with its verdict and submits no review of GitHub's, so it
+// gets no entry's sentence. A review step of the role reviewer the owner does gets the reviewer's
+// two sentences, as the reviewer does: its row is the reviewer's.
 func namingTheReviewRound(task string, role claim.Role, at phase.Phase, row record.PhaseRow) string {
 	if role != claim.RoleReviewer {
 		if row.ReviewedHead != "" && plan.RunsAs(string(role)) == at {

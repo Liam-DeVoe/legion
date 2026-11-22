@@ -220,24 +220,30 @@ type IssuePodReader interface {
 }
 
 // ErrAwaitsPodUpdate is a launch of a claim into its issue's live pod that was built before the
-// deployment defined the slot the claim runs in (its agent's name) or the role of its step: the pod
-// has no launcher, Secret or volume of that slot, or none of that role's own resources, and a
+// deployment defined or the issue's plan named the slot the claim runs in (its agent's name), or
+// before the deployment defined the role of its step: the pod has no launcher, Secret or volume
+// of that slot, or none of that role's own resources, and a
 // launch that replaced it would end every role in it and delete the issue's disk with everything
 // a role did not push. The launch writes nothing and answers this; the pod's update round, which
 // asks each role in it to push first, or its release replaces it, and the claim starts in the new
 // pod (IssuePodRoles).
 var ErrAwaitsPodUpdate = errors.New("the issue's pod was built before the slot or the role of this launch, and only its update round or its release replaces it")
 
-// IssuePodRoles answers whether the issue's Sandbox holds a live pod whose launcher was built
-// without role, a name the caller asks both as the slot of a claim and as the role of its step
-// (slots are named for roles), and that pod's uid; and whether the launcher of slot in the issue's
-// live pod starts a child only once the slot's gh files hold the start's credential
-// (SlotWaitsForCredential), with the pod's uid where it does not: a launcher of an image before
-// that wait, which a re-role into its slot waits out until the pod's update round or its release.
-// A runtime with no pods (tmux) does not implement it.
+// IssuePodRoles answers, of the issue's Sandbox's live pod and with its uid, whether that pod was
+// built without the slot of token's claim (PodLacksSlot: the runtime picks the slot from the token,
+// the slot of the claim's agent, which can be a name no role has, `implementer-2`), and whether it
+// was built without role, the role of a start's step, whose own resources a launch needs too
+// (PodLacksRole: a second name beside the slot, since a keyed agent's slot and its step's role
+// can differ, and the token names the slot alone); and whether the launcher of token's slot in
+// that pod starts a child only once
+// the slot's gh files hold the start's credential (SlotWaitsForCredential), with the pod's uid
+// where it does not: a launcher of an image before that wait, which a re-role into its slot waits
+// out until the pod's update round or its release. A runtime with no pods (tmux) does not
+// implement it.
 type IssuePodRoles interface {
+	PodLacksSlot(issue string, token claim.Token) (pod string, lacks bool)
 	PodLacksRole(issue string, role claim.Role) (pod string, lacks bool)
-	SlotWaitsForCredential(issue string, slot claim.Role) (pod string, waits bool)
+	SlotWaitsForCredential(token claim.Token) (pod string, waits bool)
 }
 
 // LaunchSessionNamer names the session a launch's agent starts or resumes under, where the

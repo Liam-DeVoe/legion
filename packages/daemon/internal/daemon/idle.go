@@ -306,7 +306,7 @@ func podWaitHeldWords(issue string, waiting []claim.Role, suspended []string, id
 		names[i] = string(role)
 	}
 	roles := strings.Join(names, ", ")
-	return fmt.Sprintf("%s of %s cannot start. The pod of %s was made before the deployment defined the slot or the role that each of those starts needs, and no role runs in it. "+
+	return fmt.Sprintf("%s of %s cannot start. The pod of %s was made without the slot or the role that each of those starts needs, and no role runs in it. "+
 		"The daemon removes such a pod when it has had no activity for %d minutes, but not while an operator holds a claim of it. "+
 		"The operator suspended %s. Resume or stop that claim. Then the daemon replaces or removes the pod, and %s start in a new pod.",
 		roles, issue, issue, int(idle.Minutes()), strings.Join(suspended, ", "), roles)

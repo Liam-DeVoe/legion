@@ -1786,9 +1786,8 @@ type Refusal struct {
 
 // PlanRefused is the 409 PLAN_REFUSED refusal of a plan the owner gave, with one reason for each
 // cause: register_plan answers it for a plan that plan.Supported or plan.Validate refuses, and
-// the workflow for a version that changes or removes a running task (RunningTaskChanged), or one
-// whose agent this release cannot name (AgentUnnamed). The message holds every reason in its
-// order, so a reader of the sentence alone reads every cause.
+// the workflow for a version that changes or removes a running task (RunningTaskChanged). The
+// message holds every reason in its order, so a reader of the sentence alone reads every cause.
 func PlanRefused(reasons []plan.Refusal) *Refusal {
 	texts := make([]string, len(reasons))
 	for i, reason := range reasons {
@@ -1801,15 +1800,6 @@ func PlanRefused(reasons []plan.Refusal) *Refusal {
 // removes task, which is running: the owner stops it first.
 func RunningTaskChanged(task string) plan.Refusal {
 	return plan.Refusal{Task: task, Reason: fmt.Sprintf("task %s is running: stop it with stop_task before you change it.", task)}
-}
-
-// AgentUnnamed is the reason a version of the plan is refused when the agent of step place of task,
-// a fresh agent of its own, would take name, its role's, which another agent of the plan holds from
-// an earlier version (record.NameAgents). This release runs one agent of each role for an issue,
-// so such a version is refused as a plan before anything is written, never as an error of the write.
-func AgentUnnamed(task string, place int, name string) plan.Refusal {
-	return plan.Refusal{Task: task, Reason: fmt.Sprintf("step %d of task %s needs an agent of its own, and another agent of this plan holds the name %s of its role "+
-		"from an earlier version; this release runs one agent of each role for an issue. This release of Legion does not carry it out yet.", place, task, name)}
 }
 
 // PlanVersionOld is the 409 PLAN_VERSION_OLD refusal of version given of issue's plan document,

@@ -28,9 +28,11 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 )
 
 func testAppKey(t *testing.T) (*rsa.PrivateKey, string) {
@@ -232,7 +234,7 @@ func TestAppRoleForEveryRole(t *testing.T) {
 		{claim.RoleController, Review},
 	} {
 		t.Run(string(tc.role), func(t *testing.T) {
-			if got, err := AppRoleFor(tc.role, nil); err != nil || got != tc.want {
+			if got, err := AppRoleFor(tc.role, nil, Planned{}); err != nil || got != tc.want {
 				t.Errorf("AppRoleFor(%q, nil) = %q, %v; want %q", tc.role, got, err, tc.want)
 			}
 		})
@@ -259,18 +261,18 @@ func TestADeploymentRolesAppIsItsSetting(t *testing.T) {
 		{claim.RoleMerger, Implement},
 		{claim.RoleController, Review},
 	} {
-		if got, err := AppRoleFor(tc.role, deployed); err != nil || got != tc.want {
+		if got, err := AppRoleFor(tc.role, deployed, Planned{}); err != nil || got != tc.want {
 			t.Errorf("AppRoleFor(%q) under %v = %q, %v; want %q", tc.role, deployed, got, err, tc.want)
 		}
 	}
-	if got, err := AppRoleFor(claim.RoleImplementer, DeploymentApps{claim.RoleImplementer: Review}); err != nil || got != Implement {
+	if got, err := AppRoleFor(claim.RoleImplementer, DeploymentApps{claim.RoleImplementer: Review}, Planned{}); err != nil || got != Implement {
 		t.Errorf("AppRoleFor(implementer) under a map naming it review = %q, %v; want %q: the deployment never overrides a role of Legion's", got, err, Implement)
 	}
-	got, err := AppRoleFor("ghost", deployed)
+	got, err := AppRoleFor("ghost", deployed, Planned{})
 	if !errors.Is(err, ErrRoleNotDefined) || got != "" {
 		t.Fatalf("AppRoleFor(ghost) = %q, %v; want no App and an error that is ErrRoleNotDefined", got, err)
 	}
-	if want := "the role ghost is none of Legion's, and the deployment defines no such role"; err.Error() != want {
+	if want := "the role ghost is none of Legion's, and neither the deployment nor the issue's plan defines it"; err.Error() != want {
 		t.Errorf("AppRoleFor(ghost)'s error reads %q, want %q", err, want)
 	}
 }
@@ -283,9 +285,9 @@ func TestADeploymentRolesBundleIsMintedAsItsApp(t *testing.T) {
 	served := servesOneOf("sjawhar/legion")
 	repo := ghrepo.MustParse("sjawhar/legion")
 	deployed := DeploymentApps{"checker": Implement}
-	credential := GitHubCredential(sourceOf(ownerTokens{}, installedEverywhere("sjawhar/legion")), served, ghrepo.Renames{}, nil, nil, deployed, quietBundleLog())
+	credential := GitHubCredential(sourceOf(ownerTokens{}, installedEverywhere("sjawhar/legion")), served, ghrepo.Renames{}, nil, nil, RoleApps{Deployed: deployed}, quietBundleLog())
 	for role, app := range map[claim.Role]string{"checker": "implement", claim.RoleReviewer: "review"} {
-		bundle, err := credential(context.Background(), role, repo)
+		bundle, err := credential(context.Background(), "", role, repo)
 		if err != nil {
 			t.Fatalf("the bundle of %s: %v", role, err)
 		}
@@ -298,9 +300,94 @@ func TestADeploymentRolesBundleIsMintedAsItsApp(t *testing.T) {
 	}
 	var minted []string
 	counted := GitHubCredential(sourceOf(countingTokens{ownerTokens: ownerTokens{}, minted: &minted}, installedEverywhere("sjawhar/legion")), served,
-		ghrepo.Renames{}, nil, nil, deployed, quietBundleLog())
-	if _, err := counted(context.Background(), "ghost", repo); !errors.Is(err, ErrRoleNotDefined) || len(minted) != 0 {
+		ghrepo.Renames{}, nil, nil, RoleApps{Deployed: deployed}, quietBundleLog())
+	if _, err := counted(context.Background(), "", "ghost", repo); !errors.Is(err, ErrRoleNotDefined) || len(minted) != 0 {
 		t.Errorf("the bundle of ghost = %v, minting %v; want an error that is ErrRoleNotDefined and no mint", err, minted)
+	}
+}
+
+// planOf43 is the plan in force of LEGION-43 alone: coder, of the type implementation, and prober,
+// of the type testing. Every other issue's plan defines no role.
+func planOf43(_ context.Context, issue string, role claim.Role) (Planned, error) {
+	if issue != "LEGION-43" {
+		return Planned{}, nil
+	}
+	return map[claim.Role]Planned{"coder": {Defines: true, Type: plan.TypeImplementation}, "prober": {Defines: true, Type: plan.TypeTesting}}[role], nil
+}
+
+// A role the issue's plan defines gets its gh files minted as the App of its type: on LEGION-43,
+// coder (implementation) holds the implement App's write token and prober (testing) the review
+// App's. The plan is the issue's own, so coder asked for on LEGION-44, whose plan defines none, is
+// refused before any lease is minted.
+func TestARoleOfAPlansBundleIsMintedAsTheAppOfItsType(t *testing.T) {
+	served := servesOneOf("sjawhar/legion")
+	repo := ghrepo.MustParse("sjawhar/legion")
+	credential := GitHubCredential(sourceOf(ownerTokens{}, installedEverywhere("sjawhar/legion")), served, ghrepo.Renames{}, nil, nil, RoleApps{Plan: planOf43}, quietBundleLog())
+	for role, app := range map[claim.Role]string{"coder": "implement", "prober": "review"} {
+		bundle, err := credential(context.Background(), "LEGION-43", role, repo)
+		if err != nil {
+			t.Fatalf("the bundle of %s on LEGION-43: %v", role, err)
+		}
+		if token := bundleTokens(t, bundle)["sjawhar"]; !strings.HasPrefix(token, app+"-token-for-") {
+			t.Errorf("%s's hosts file holds %q, want the %s App's write token, %q…", role, token, app, app+"-token-for-")
+		}
+	}
+	var minted []string
+	counted := GitHubCredential(sourceOf(countingTokens{ownerTokens: ownerTokens{}, minted: &minted}, installedEverywhere("sjawhar/legion")), served,
+		ghrepo.Renames{}, nil, nil, RoleApps{Plan: planOf43}, quietBundleLog())
+	if _, err := counted(context.Background(), "LEGION-44", "coder", repo); !errors.Is(err, ErrRoleNotDefined) || len(minted) != 0 {
+		t.Errorf("the bundle of coder on LEGION-44 = %v, minting %v; want an error that is ErrRoleNotDefined and no mint", err, minted)
+	}
+}
+
+// One walk's memo builds a role that is none of Legion's once for each App it acts as on the
+// repository: two issues can define one name with two types, so coder of LEGION-43
+// (implementation) and coder of LEGION-45 (review) on one repository are two bundles of two Apps,
+// while a role of Legion's, and a role of the deployment (the checker), which acts as one App on
+// every issue whose plan does not define its name, is one bundle for every such issue of the
+// repository. LEGION-46's plan defines checker of the type review, which wins over the
+// deployment's for that issue, so its checker is a bundle of the review App of its own.
+func TestAWalksBundlesOfARoleOfAPlanAreTheirIssues(t *testing.T) {
+	repo := ghrepo.MustParse("sjawhar/legion")
+	plans := func(ctx context.Context, issue string, role claim.Role) (Planned, error) {
+		if (issue == "LEGION-45" && role == "coder") || (issue == "LEGION-46" && role == "checker") {
+			return Planned{Defines: true, Type: plan.TypeReview}, nil
+		}
+		return planOf43(ctx, issue, role)
+	}
+	apps := RoleApps{Deployed: DeploymentApps{"checker": Implement}, Plan: plans}
+	var built []string
+	credential := GitHubCredential(sourceOf(ownerTokens{}, installedEverywhere("sjawhar/legion")), servesOneOf("sjawhar/legion"), ghrepo.Renames{}, nil, nil,
+		apps, quietBundleLog())
+	counting := func(ctx context.Context, issue string, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
+		built = append(built, issue+"/"+string(role))
+		return credential(ctx, issue, role, repo)
+	}
+	bundles := NewBundles(counting, apps)
+	for _, ask := range []struct {
+		issue string
+		role  claim.Role
+		app   string
+	}{
+		{"LEGION-43", "coder", "implement"},
+		{"LEGION-45", "coder", "review"},
+		{"LEGION-43", "coder", "implement"},
+		{"LEGION-43", claim.RoleTester, "review"},
+		{"LEGION-45", claim.RoleTester, "review"},
+		{"LEGION-43", "checker", "implement"},
+		{"LEGION-45", "checker", "implement"},
+		{"LEGION-46", "checker", "review"},
+	} {
+		bundle, err := bundles.Bundle(context.Background(), ask.issue, ask.role, repo)
+		if err != nil {
+			t.Fatalf("the bundle of %s on %s: %v", ask.role, ask.issue, err)
+		}
+		if rendered := bundle.Dirs["sjawhar"]; rendered.App != ask.app {
+			t.Errorf("%s on %s is rendered for the %q App, want %q", ask.role, ask.issue, rendered.App, ask.app)
+		}
+	}
+	if want := []string{"LEGION-43/coder", "LEGION-45/coder", "LEGION-43/tester", "LEGION-43/checker", "LEGION-46/checker"}; !slices.Equal(built, want) {
+		t.Errorf("the walk built %v, want %v: a role of a plan once for each App it acts as, a role of Legion's and one of the deployment once for the repository", built, want)
 	}
 }
 

@@ -24,23 +24,23 @@ var deploymentImplementer = claim.Token("legion-legion-legion-208-implementer")
 
 // deploymentRig is the sandbox rig of a deployment that defines two roles of its own, the
 // checker acting as the implement App and the critic as the review App, with the daemon's own gh
-// answers built over that map (withProjectTokens reads Options.DeploymentApps, so the rig sets the
+// answers built over that map (withProjectTokens reads Options.RoleApps, so the rig sets the
 // map first).
 func deploymentRig(t *testing.T) *rig {
 	t.Helper()
 	return newRig(t, nil,
 		withOptions(func(o *Options) {
-			o.DeploymentApps = appauth.DeploymentApps{"checker": appauth.Implement, "critic": appauth.Review}
+			o.RoleApps.Deployed = appauth.DeploymentApps{"checker": appauth.Implement, "critic": appauth.Review}
 		}),
 		withProjectTokens(refusingOwnerTokens{refuse: new(atomic.Bool)}))
 }
 
-// The runtime holds the roles of its deployment (Options.DeploymentApps) as a field of its own:
+// The runtime holds the roles of its deployment (Options.RoleApps.Deployed) as a field of its own:
 // an overlay of a role the deployment defines is taken, the image probe is told it, and two
 // runtimes built in one process each keep their own list, so no package variable holds it.
 func TestTheRuntimeTakesADeploymentRolesOverlays(t *testing.T) {
 	withChecker := testOptions()
-	withChecker.DeploymentApps = appauth.DeploymentApps{"checker": appauth.Review}
+	withChecker.RoleApps.Deployed = appauth.DeploymentApps{"checker": appauth.Review}
 	withChecker.RoleConfigFiles = map[claim.Role][]string{"checker": {"/etc/checker.yml"}}
 	a, err := configure(withChecker)
 	if err != nil {
@@ -153,7 +153,7 @@ func TestAPodsLogAndBoundCountItsDeploymentsRoles(t *testing.T) {
 		t.Fatal(err)
 	}
 	deployed := testOptions()
-	deployed.DeploymentApps = appauth.DeploymentApps{"checker": appauth.Review}
+	deployed.RoleApps.Deployed = appauth.DeploymentApps{"checker": appauth.Review}
 	withChecker, err := configure(deployed)
 	if err != nil {
 		t.Fatal(err)
@@ -165,7 +165,8 @@ func TestAPodsLogAndBoundCountItsDeploymentsRoles(t *testing.T) {
 
 // An operator's pod volume may not take the name of a volume Legion gives a role of the
 // deployment, as it may not take one of Legion's own roles': the role's launcher volume in the
-// pod would collide with it.
+// pod would collide with it. Nor may it take that form for a name no role has: every agent's name
+// of an issue's plan gets a slot of its own (TestAnOperatorVolumeMayNotTakeTheFormOfASlotsVolume).
 func TestAnOperatorVolumeMayNotTakeADeploymentRolesVolumeName(t *testing.T) {
 	pod := Pod{Volumes: []corev1.Volume{{Name: "launcher-checker", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}}}
 	legion := append(slices.Clone(claim.Roles), claim.RoleController)
@@ -173,8 +174,8 @@ func TestAnOperatorVolumeMayNotTakeADeploymentRolesVolumeName(t *testing.T) {
 	if err := CheckPod(pod, append(slices.Clone(legion), "checker"), nil, testOptions().Tools, nil, nil, ompsessions.Store{}, false); err == nil || err.Error() != want {
 		t.Errorf("CheckPod with the checker among the roles = %v, want %q", err, want)
 	}
-	if err := CheckPod(pod, legion, nil, testOptions().Tools, nil, nil, ompsessions.Store{}, false); err != nil {
-		t.Errorf("CheckPod with no checker among the roles = %v, want no refusal", err)
+	if err := CheckPod(pod, legion, nil, testOptions().Tools, nil, nil, ompsessions.Store{}, false); err == nil {
+		t.Errorf("CheckPod with no checker among the roles took launcher-checker, want it refused: a plan can name an agent checker")
 	}
 }
 
@@ -182,7 +183,7 @@ func TestAnOperatorVolumeMayNotTakeADeploymentRolesVolumeName(t *testing.T) {
 // Sandbox, as each of Legion's roles' does: no deleted Sandbox's role keeps a credential cached.
 func TestTheLauncherCredentialOfADeploymentRoleIsForgottenWithItsSandbox(t *testing.T) {
 	opts := testOptions()
-	opts.DeploymentApps = appauth.DeploymentApps{"checker": appauth.Review}
+	opts.RoleApps.Deployed = appauth.DeploymentApps{"checker": appauth.Review}
 	r, err := configure(opts)
 	if err != nil {
 		t.Fatal(err)

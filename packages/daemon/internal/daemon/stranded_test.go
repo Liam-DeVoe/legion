@@ -476,7 +476,7 @@ func TestStateSnapshotKeepsStrandedClaimsConsistentWithWorkerStates(t *testing.T
 	}
 	worker := state.Issues[issue].Workers[claim.RoleImplementer].Claim
 	tester := state.Issues[retiredIssue].Workers[claim.RoleTester].Claim
-	wantStranded := []api.StrandedClaim{{Issue: retiredIssue, Role: claim.RoleTester, State: string(supervise.StateRetired)}}
+	wantStranded := []api.StrandedClaim{{Issue: retiredIssue, Role: claim.RoleTester, State: string(supervise.StateRetired), Token: retired.Token}}
 	if worker.State != string(supervise.StateIdle) || tester.State != string(supervise.StateRetired) ||
 		!reflect.DeepEqual(state.StrandedClaims, wantStranded) {
 		t.Fatalf("snapshot state = implementer %s, tester %s, stranded %v; want the idle implementer the snapshot saw, a retired tester and %v",

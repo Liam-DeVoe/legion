@@ -2,9 +2,12 @@ package daemon
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"maps"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -24,7 +27,7 @@ import (
 
 // noAppOwners is the owner supplier of a daemon with no GitHub App installed anywhere: every
 // role is told its App reaches no owner.
-func noAppOwners(claim.Role) []string { return nil }
+func noAppOwners(context.Context, string, claim.Role) []string { return nil }
 
 // A role the deployment defines launches with its own prompt file between the headless mechanics
 // and Legion's worker part (prompts.ComposeStep), so it is told the SEPARATE-POD line every phase
@@ -83,8 +86,176 @@ func TestADeploymentRoleLaunchesWithItsPromptAndModel(t *testing.T) {
 		t.Errorf("the tester's model = %q, want none: Legion's roles run the profile's @default", tester.Model)
 	}
 
-	if _, err := launch("ghost"); err == nil || !strings.Contains(err.Error(), "the deployment defines no role ghost") {
-		t.Errorf("the ghost's spawn spec = %v, want the refusal %q", err, "the deployment defines no role ghost")
+	if _, err := launch("ghost"); err == nil || !strings.Contains(err.Error(), "neither the deployment nor the plan of S1-2 defines the role ghost") {
+		t.Errorf("the ghost's spawn spec = %v, want the refusal %q", err, "neither the deployment nor the plan of S1-2 defines the role ghost")
+	}
+}
+
+// A role an owner's plan defines launches with the plan's prompt, kept as the daemon's own copy
+// under its state directory and named by the prompt's text, between the headless mechanics and
+// Legion's worker part, so it is told the SEPARATE-POD line every phase worker is told, and with
+// the model the plan gives it. Two launches of one prompt read one file, written 0600. The plan is
+// read for the claim's own issue: a role nobody defines for that issue is refused, naming the
+// issue and the role, with no prompt.
+func TestARoleOfAPlanLaunchesWithThePlansPromptAndModel(t *testing.T) {
+	composer, err := prompts.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const prompt = "# Prober\n\nProbe the change."
+	stateDir := t.TempDir()
+	s := specs{stateDir: stateDir, project: "s1", prompts: composer,
+		planRole: func(_ context.Context, issue string, role claim.Role) (record.PlanRole, bool, error) {
+			if issue != "LEGION-43" || role != "prober" {
+				return record.PlanRole{}, false, nil
+			}
+			return record.PlanRole{Issue: issue, Role: "prober", Type: "testing", Model: "m-one", Prompt: prompt}, true, nil
+		}}
+	launch := func(issue string, role claim.Role) (runtime.SpawnSpec, error) {
+		token, err := claim.NewToken("s1", issue, role)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s.SpawnSpec(context.Background(), supervise.Claim{Token: token, Issue: issue, Tree: "LEGION-42", Role: role})
+	}
+
+	spec, err := launch("LEGION-43", "prober")
+	if err != nil {
+		t.Fatalf("the prober's spawn spec: %v", err)
+	}
+	if spec.Model != "m-one" {
+		t.Errorf("the prober's model = %q, want m-one", spec.Model)
+	}
+	sum := sha256.Sum256([]byte(prompt))
+	copied := filepath.Join(stateDir, "plan-roles", hex.EncodeToString(sum[:])+".md")
+	merger, err := composer.Compose(claim.RoleMerger, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{merger.RolePromptPaths[0], copied, composer.Part("worker-common.md")}
+	if !slices.Equal(spec.Prompt.RolePromptPaths, want) {
+		t.Errorf("the prober's role prompt paths = %q, want %q", spec.Prompt.RolePromptPaths, want)
+	}
+	if info, err := os.Stat(copied); err != nil || info.Mode().Perm() != 0o600 {
+		t.Errorf("the copy of the prober's prompt = %v, %v; want a file of mode 0600", info, err)
+	}
+	composed, err := runtime.ComposePrompt(spec.Prompt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	own, line := strings.Index(composed, "# Prober"), strings.Index(composed, "SEPARATE-POD <ISSUE> <task> <reason>")
+	if own < 0 || line < own || !strings.Contains(composed, "Legion starts no pod for this line") {
+		t.Errorf("the prober's composed prompt holds its own text at %d and the SEPARATE-POD line at %d, want the text first and the line after it, with %q",
+			own, line, "Legion starts no pod for this line")
+	}
+	again, err := launch("LEGION-43", "prober")
+	if err != nil || !slices.Equal(again.Prompt.RolePromptPaths, spec.Prompt.RolePromptPaths) {
+		t.Errorf("a second launch of one prompt = %q, %v; want the same paths %q", again.Prompt.RolePromptPaths, err, spec.Prompt.RolePromptPaths)
+	}
+
+	for _, tc := range []struct {
+		issue string
+		role  claim.Role
+	}{{"LEGION-43", "ghost"}, {"LEGION-44", "prober"}} {
+		want := "neither the deployment nor the plan of " + tc.issue + " defines the role " + string(tc.role)
+		if _, err := launch(tc.issue, tc.role); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("the spawn spec of %s on %s = %v, want the refusal %q", tc.role, tc.issue, err, want)
+		}
+	}
+}
+
+// A copy of a plan role's prompt that a crash cut short, empty or holding the first half of the
+// prompt, is written again before a launch uses it: the copy is named by the prompt's hash, and a
+// launch that finds a file whose text does not hash to its name writes the whole prompt over it.
+func TestACutShortCopyOfAPlanRolesPromptIsWrittenAgainBeforeALaunch(t *testing.T) {
+	composer, err := prompts.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const prompt = "# Prober\n\nProbe the change, then report each probe that failed."
+	stateDir := t.TempDir()
+	s := specs{stateDir: stateDir, project: "s1", prompts: composer,
+		planRole: func(_ context.Context, issue string, role claim.Role) (record.PlanRole, bool, error) {
+			return record.PlanRole{Issue: issue, Role: "prober", Type: "testing", Prompt: prompt}, true, nil
+		}}
+	token, err := claim.NewToken("s1", "LEGION-43", "prober")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256([]byte(prompt))
+	copied := filepath.Join(stateDir, "plan-roles", hex.EncodeToString(sum[:])+".md")
+	for _, short := range []string{"", prompt[:len(prompt)/2]} {
+		if err := os.MkdirAll(filepath.Dir(copied), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(copied, []byte(short), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		spec, err := s.SpawnSpec(context.Background(), supervise.Claim{Token: token, Issue: "LEGION-43", Tree: "LEGION-42", Role: "prober"})
+		if err != nil {
+			t.Fatalf("the prober's spawn spec over a copy holding %q: %v", short, err)
+		}
+		if !slices.Contains(spec.Prompt.RolePromptPaths, copied) {
+			t.Fatalf("the prober's role prompt paths = %q, want them to hold the copy %s", spec.Prompt.RolePromptPaths, copied)
+		}
+		held, err := os.ReadFile(copied)
+		if err != nil || string(held) != prompt {
+			t.Errorf("the copy a crash left holding %q holds %q, %v once the launch read it; want the whole prompt %q", short, held, err, prompt)
+		}
+		if info, err := os.Stat(copied); err != nil || info.Mode().Perm() != 0o600 {
+			t.Errorf("the copy written again = %v, %v; want a file of mode 0600", info, err)
+		}
+	}
+}
+
+// One function decides a role's harness for a claim of an issue (roleBackends), and the launch and
+// the stale-plugin rule both read it. The deployment defines prober on Claude Code, and the plan in
+// force of LEGION-43 defines a prober of its own. LEGION-43's prober launches on Oh My Pi, the
+// harness of every role of a plan, and an install can move it; LEGION-44's prober is the
+// deployment's, launches on Claude Code and is the claim no install moves under Kubernetes.
+//
+// The control is the order this replaces, run by hand: roleBackends reading worker_backends alone.
+// LEGION-43's prober then launches on Claude Code, and the check of its launch fails.
+func TestARoleOfAPlanShadowedByADeploymentRoleOnClaudeCodeRunsOnOhMyPi(t *testing.T) {
+	composer, err := prompts.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	prompt := filepath.Join(t.TempDir(), "prober.md")
+	if err := os.WriteFile(prompt, []byte("You are the deployment's prober.\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{Runtime: config.Runtime{Name: "kubernetes"},
+		Roles:          []config.Role{{Name: "prober", Type: "testing", PromptFile: prompt, GitHubApp: config.RoleAppReview}},
+		WorkerBackends: map[claim.Role]runtime.Backend{"prober": runtime.BackendClaude}}
+	planRole := func(_ context.Context, issue string, role claim.Role) (record.PlanRole, bool, error) {
+		if issue != "LEGION-43" || role != "prober" {
+			return record.PlanRole{}, false, nil
+		}
+		return record.PlanRole{Issue: issue, Role: "prober", Type: "testing", Model: "m-one", Prompt: "# Prober\n\nProbe the change."}, true, nil
+	}
+	backends := roleBackends(cfg.BackendFor, planRole)
+	s := specs{stateDir: t.TempDir(), project: "s1", prompts: composer, roles: cfg.Roles, planRole: planRole, backend: backends, appOwners: noAppOwners}
+	for _, tc := range []struct {
+		issue     string
+		want      runtime.Backend
+		noInstall bool
+	}{{"LEGION-43", runtime.BackendOmp, false}, {"LEGION-44", runtime.BackendClaude, true}} {
+		token, err := claim.NewToken("s1", tc.issue, "prober")
+		if err != nil {
+			t.Fatal(err)
+		}
+		c := supervise.Claim{Token: token, Issue: tc.issue, Tree: "LEGION-42", Role: "prober"}
+		spec, err := s.SpawnSpec(context.Background(), c)
+		if err != nil {
+			t.Fatalf("the prober's spawn spec on %s: %v", tc.issue, err)
+		}
+		if spec.Backend != tc.want {
+			t.Errorf("the prober on %s launches on %q, want %q", tc.issue, spec.Backend, tc.want)
+		}
+		if got := noPluginInstall(cfg, backends, c); got != tc.noInstall {
+			t.Errorf("noPluginInstall of the prober on %s = %t, want %t", tc.issue, got, tc.noInstall)
+		}
 	}
 }
 
@@ -192,7 +363,11 @@ func TestAClaimsBackendIsItsRolesAndAClaudeRoleIsToldClaudeCodesTools(t *testing
 			if err != nil {
 				t.Fatal(err)
 			}
-			s := specs{stateDir: t.TempDir(), project: "s1", prompts: composer, backend: tc.backend, appOwners: noAppOwners}
+			var backend roleBackend
+			if tc.backend != nil {
+				backend = roleBackends(tc.backend, nil)
+			}
+			s := specs{stateDir: t.TempDir(), project: "s1", prompts: composer, backend: backend, appOwners: noAppOwners}
 			spec, err := s.SpawnSpec(context.Background(), supervise.Claim{Token: token, Issue: "S1-2", Tree: "S1-1", Role: tc.role})
 			if err != nil {
 				t.Fatalf("SpawnSpec: %v", err)
@@ -244,7 +419,7 @@ func TestAWorkersAddressingNamesItsRepositoryAndItsAppsReach(t *testing.T) {
 		repository: func(context.Context, string) (ghrepo.Repository, string, error) {
 			return ghrepo.MustParse("acme/widgets"), "release/v7.1", nil
 		},
-		appOwners: func(claim.Role) []string { return owners },
+		appOwners: func(context.Context, string, claim.Role) []string { return owners },
 	}
 	token, err := claim.NewToken("s1", "S1-2", claim.RoleImplementer)
 	if err != nil {
@@ -273,7 +448,7 @@ func TestAWorkersAddressingNamesItsRepositoryAndItsAppsReach(t *testing.T) {
 		{"no installation", nil, own + "your role's GitHub App is installed on no owner, so you have no GitHub owner and its token reaches no repository."},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			s.appOwners = func(claim.Role) []string { return tc.owners }
+			s.appOwners = func(context.Context, string, claim.Role) []string { return tc.owners }
 			got := launch()
 			if !strings.HasSuffix(got, tc.want) {
 				t.Fatalf("addressing = %q, want it to end with %q", got, tc.want)
@@ -287,8 +462,8 @@ func TestAWorkersAddressingNamesItsRepositoryAndItsAppsReach(t *testing.T) {
 	// The owners named are the role's own App's: an implementer's and a reviewer's addressing
 	// differ where their Apps' installations do, which is what the clause promises and what the
 	// owners of the repositories the project's records name could not say (INFRA-2543 R6).
-	s.appOwners = func(role claim.Role) []string {
-		app, err := appauth.AppRoleFor(role, nil)
+	s.appOwners = func(_ context.Context, _ string, role claim.Role) []string {
+		app, err := appauth.AppRoleFor(role, nil, appauth.Planned{})
 		if err != nil {
 			t.Fatalf("the App of %s: %v", role, err)
 		}
@@ -298,7 +473,7 @@ func TestAWorkersAddressingNamesItsRepositoryAndItsAppsReach(t *testing.T) {
 		t.Fatalf("the implementer's addressing = %q, want it to end with %q", got, want)
 	}
 
-	s.appOwners = func(claim.Role) []string { return owners }
+	s.appOwners = func(context.Context, string, claim.Role) []string { return owners }
 	s.repository = nil
 	if got := launch(); strings.Contains(got, "GitHub App is installed") || strings.Contains(got, "repository is") {
 		t.Fatalf("addressing with no repository resolved (a daemon with no workflow) = %q, want no repository sentence", got)
@@ -325,7 +500,7 @@ func TestTheControllersLaunchIsItsHeadlessPromptAndNoCheckout(t *testing.T) {
 			t.Error("the controller's launch asked for a repository")
 			return ghrepo.MustParse("acme/widgets"), "main", nil
 		},
-		identity: func(context.Context, claim.Role, ghrepo.Repository) (runtime.GitIdentity, error) {
+		identity: func(context.Context, string, claim.Role, ghrepo.Repository) (runtime.GitIdentity, error) {
 			t.Error("the controller's launch asked for a git identity")
 			return runtime.GitIdentity{}, nil
 		},
@@ -429,7 +604,7 @@ func TestTheControllersAddressingGainsTheReachItsAppGives(t *testing.T) {
 			var asked []claim.Role
 			s := specs{
 				stateDir: t.TempDir(), project: "s1", prompts: composer, designSteps: config.DesignGateOff.Steps(),
-				appOwners: func(role claim.Role) []string {
+				appOwners: func(_ context.Context, _ string, role claim.Role) []string {
 					asked = append(asked, role)
 					return tc.owners
 				},
@@ -585,7 +760,7 @@ func TestAClaudeLaunchCarriesTheIssueKeyItStampsIntoItsPane(t *testing.T) {
 				runtimeName:             "tmux",
 				commitIssueTrailerRepos: []ghrepo.Repository{ghrepo.MustParse("acme/widgets")},
 				same:                    newRepositories("acme", ghrepo.Renames{}).same,
-				backend:                 func(claim.Role) runtime.Backend { return backend },
+				backend:                 roleBackends(func(claim.Role) runtime.Backend { return backend }, nil),
 				repository: func(context.Context, string) (ghrepo.Repository, string, error) {
 					return ghrepo.MustParse("acme/widgets"), "main", nil
 				},
@@ -713,7 +888,9 @@ func TestSpawnSpecCarriesThePassthroughVariablesTheDaemonHolds(t *testing.T) {
 
 	bot := runtime.GitIdentity{Name: "legion-implement[bot]", Email: "9+legion-implement[bot]@users.noreply.github.com"}
 	s := specs{stateDir: t.TempDir(), project: "s1", prompts: composer, appOwners: noAppOwners,
-		identity: func(context.Context, claim.Role, ghrepo.Repository) (runtime.GitIdentity, error) { return bot, nil }}
+		identity: func(context.Context, string, claim.Role, ghrepo.Repository) (runtime.GitIdentity, error) {
+			return bot, nil
+		}}
 	token, err := claim.NewToken("s1", "S1-2", claim.RoleImplementer)
 	if err != nil {
 		t.Fatal(err)
@@ -766,12 +943,12 @@ func TestSpawnSpecPluginsSkipsAClaudeClaimAndNoOther(t *testing.T) {
 	// `worker_backends: {implementer: claude}`: every other role, and the controller, on Oh My Pi.
 	s := specs{stateDir: t.TempDir(), project: "s1", prompts: composer, runtimeName: "kubernetes", plugins: pair,
 		appOwners: noAppOwners,
-		backend: func(role claim.Role) runtime.Backend {
+		backend: roleBackends(func(role claim.Role) runtime.Backend {
 			if role == claim.RoleImplementer {
 				return runtime.BackendClaude
 			}
 			return runtime.BackendOmp
-		}}
+		}, nil)}
 	worker := func(role claim.Role) supervise.Claim {
 		token, err := claim.NewToken("s1", "S1-2", role)
 		if err != nil {
