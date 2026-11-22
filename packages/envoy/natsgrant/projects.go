@@ -29,20 +29,22 @@ type Scope struct {
 	Identity string
 }
 
-// ReplyRoot is the first token of every reply prefix the auth service grants a service
-// (InboxPrefix). With one root, a hub that runs the JetStream API in another account can carry
-// every service's deliveries back with one subject, ReplyRoot+".>": a push or ordered consumer's
-// deliveries, a KV watch's among them, go to the client's custom prefix and are published inside
-// the API's account. It is not nats.go's own "_INBOX", so no prefix under it reaches another
-// client's replies under _INBOX.>.
+// ReplyRoot is the first token of every reply prefix InboxPrefix makes, which is the prefix the
+// auth service grants a Legion daemon, held to its projects or whole. It is not the root of every
+// reply subject the service grants: Dispatch, a listener and a whole daemon also subscribe nats.go's
+// own _INBOX.>, and the measurement job's grant subscribes _INBOX_envoy_measure.>, a first token of
+// its own, until that grant moves under this root. So ReplyRoot+".>" carries a daemon's push and
+// ordered consumer deliveries (a KV watch's among them), which go to its custom prefix and are
+// published inside the account the JetStream API runs in, and no other kind's. It is not nats.go's
+// own "_INBOX", so no prefix under it reaches another client's replies under _INBOX.>.
 const ReplyRoot = "_INBOX_envoy"
 
 // InboxPrefix is the reply prefix of the client whose credential names identity: ReplyRoot, ".",
 // and identity with each byte outside [A-Za-z0-9-], including '_', escaped as '_' and two
 // lowercase hex digits. That last part is one subject token, and distinct identities have
 // distinct prefixes. Every '_' in it opens an escape that two hex digits close, so no identity's
-// token is a name the broker's own clients may take under ReplyRoot, such as _operator or
-// _measure, whose '_' is followed by a letter that is no hex digit. The client sets it
+// token is a name the broker may later give one of its own clients under ReplyRoot, such as
+// _operator or _measure, whose '_' is followed by a letter that is no hex digit. The client sets it
 // with nats.CustomInboxPrefix and the auth service grants InboxPrefix(identity)+".>" in place of
 // _INBOX.>; both ends call this function with the identity their credential names.
 func InboxPrefix(identity string) string {
@@ -51,7 +53,8 @@ func InboxPrefix(identity string) string {
 
 // token is prefix followed by s with each byte outside [A-Za-z0-9-], '_' included, written '_'
 // and its two lowercase hex digits: '_' always opens an escape, so distinct values give distinct
-// tokens, and the result holds no '.', wildcard, whitespace or control character.
+// tokens, and the part written after prefix holds no '.', wildcard, whitespace or control
+// character, so it is one subject token.
 func token(prefix, s string) string {
 	const digits = "0123456789abcdef"
 	var out strings.Builder

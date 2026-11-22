@@ -20,8 +20,10 @@ body: |-
   entry's person cannot see (`project_not_visible`), and a grant that cannot be held to projects
   (`grant_not_holdable`). A dispatch or listener entry with `-` is now refused at startup, as a
   measurement entry's is. A daemon entry with `*` is also granted its account's own reply prefix.
-  Every reply prefix the auth service grants is under one root, `_INBOX_envoy.`, then the account
-  as one escaped token (`natsgrant.ReplyRoot`, `natsgrant.InboxPrefix`).
+  Every reply prefix `natsgrant.InboxPrefix` makes (a daemon's, held or whole) is under one root,
+  `_INBOX_envoy.`, then the account as one escaped token (`natsgrant.ReplyRoot`); Dispatch, a
+  listener and a `*` daemon keep `_INBOX.>`, and the measurement job's `_INBOX_envoy_measure.`
+  moves under the root separately.
   List a Legion daemon with `*` until every reading of the release gate holds for a daemon that
   opens its consumers per project: `daemon-release-gate.sh`'s listener and daemon legs (each with
   `--deployment <owner/repo>`, which the script requires), the stored-wake read, the

@@ -33,7 +33,7 @@ import (
 // Dispatch refusing the broker's own account token, until Dispatch answers a question asked after
 // the refusal was seen (heldAccess); a project Dispatch has
 // not yet answered about; a project Dispatch does not hold, or whose answer says the entry's
-// person cannot see; and a grant entry natsgrant.WithinProjects cannot hold.
+// person cannot see it; and a grant entry natsgrant.WithinProjects cannot hold.
 // config.ParseNATSServices refuses a dispatch or listener entry with "-" at start, since their
 // grants carry KV calls.
 //
