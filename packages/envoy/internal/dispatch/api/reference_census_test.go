@@ -291,7 +291,7 @@ func seedCrossReferences(t *testing.T, fixture fragmentCensusFixture) crossRefer
 	cross := crossReferences{publicPerson: seedBob, privatePerson: hiddenPerson,
 		privateRole: "legion-" + strings.ToLower(seedPrivate) + "-reviewer", privateRepository: "acme/" + strings.ToLower(seedPrivate) + "-app"}
 	carol(http.MethodPut, "/api/v1/projects/"+seedPrivate+"/default-assignee", map[string]any{"assignee": cross.privatePerson})
-	carol(http.MethodPut, "/api/v1/settings/repo-projects/"+cross.privateRepository, map[string]any{"project": seedPrivate, "default": true})
+	carol(http.MethodPut, "/api/v1/projects/"+seedPrivate+"/default-repository", map[string]any{"repo": cross.privateRepository})
 	// session-priv, which acted in PRIV, holds the claim on PUB's issue, so that issue's reads and
 	// the payloads of its later writes name a holder the walkers that do not see PRIV may not see.
 	fixture.asSession(t, sessionOfPrivate, seedPublic, http.MethodPost, "/api/v1/issues/"+fixture.public.issue+"/claim", map[string]any{}, http.StatusOK)

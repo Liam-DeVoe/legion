@@ -92,9 +92,7 @@ type bootConfig struct {
 	DatabaseURL string
 	// AgentTokens is DISPATCH_AGENT_TOKEN parsed: every value the API accepts as the shared agent
 	// token, the first the current one.
-	AgentTokens    *auth.SharedAgentTokens
-	RepoProjects   string
-	DefaultProject string
+	AgentTokens *auth.SharedAgentTokens
 	// OIDCAccounts and AccessAccounts are DISPATCH_OIDC_ACCOUNTS and DISPATCH_ACCESS_ACCOUNTS: the
 	// Kubernetes service-account subjects whose tokens the API admits (none named admits every
 	// account of the issuer and audience), and those of them that read the routes of the read
@@ -499,6 +497,21 @@ func main() {
 		slog.Error("dispatch: install the block schema from the store", "error", err)
 		os.Exit(1)
 	}
+	// The rename pairs are read once, here, before any part that reads them is built: the API,
+	// the delivery reconcile and intakes and the CI reconcile are each given this one value
+	// (refs.Renames). The delivery reconcile and the intakes share the one Attributor built of it
+	// here (delivery.NewAttributor), and the API builds its own of the same pairs (api.NewDeps).
+	// A read that fails does not stop the boot: it is logged, it is one failure in the rename
+	// pass's summary below (renameRepositories), and the process serves with no pairs, so an old
+	// name reads as a repository of its own until a later boot reads the pairs.
+	renamesCtx, cancelRenames := context.WithTimeout(ctx, repoRenamesReadTimeout)
+	renamePairs, renamesErr := store.ReadRepoRenames(renamesCtx, database.Pool)
+	cancelRenames()
+	if renamesErr != nil {
+		slog.Error("dispatch: read the renamed repositories' pairs; serving with none", "error", renamesErr)
+	}
+	renames := refs.NewRenames(renamePairs)
+	attributor := delivery.NewAttributor(renames)
 
 	// document_search (migration 20261101182447) holds each document's latest search vector,
 	// 20261101182454's trigger keeps it in step from the deploy on, and this fills it for the
@@ -531,10 +544,6 @@ func main() {
 		slog.Warn("dispatch: anchored asks left out of asks_anchor_artifact_id: their anchor's artifact_id is not a lower-case document id, so settlement records no mark for them", "count", outside)
 	}
 
-	if err := validateDefaultProject(ctx, database, boot.DefaultProject); err != nil {
-		slog.Error("dispatch: validate default project", "error", err)
-		os.Exit(1)
-	}
 	// Every project has an owner (INFRA-3862): a project the access migration left with none is
 	// given to DISPATCH_PROJECT_OWNER_FALLBACK's full member, and while one still has none the boot
 	// refuses, naming each and both repairs, as an unknown default project refuses it.
@@ -655,12 +664,7 @@ func main() {
 	issueAskRepairDeps := api.Deps{Store: database, Docs: documentService, Events: broker}
 	repairIssueAsks(ctx, issueAskRepairDeps, issueAskRepairBootTimeout)
 	fillReviewContentHashes(ctx, database.Pool, reviewContentHashFillTimeout)
-	// The seed appends events, so it runs after restoreDecidedWordings, which takes the copy lock:
-	// TestCopyLockComesBeforeEveryPendingRowAndEvent reads main as one transaction.
-	if err := api.SeedRepoProjects(store.WithTransactionTracking(ctx), database, broker, boot.RepoProjects); err != nil {
-		slog.Error("dispatch: seed repository projects", "error", err)
-		os.Exit(1)
-	}
+	renameRepositories(ctx, database.Pool, renamePairs, renamesErr, repoRenamePassTimeout)
 
 	serviceTokens := serviceTokenVerifier(boot)
 	if serviceTokens != nil {
@@ -719,6 +723,7 @@ func main() {
 		Store:           database,
 		ServerURL:       serverURL,
 		Docs:            documentService,
+		Renames:         renames,
 		Embedder:        embedder,
 		Events:          broker,
 		App:             appCfg,
@@ -853,9 +858,9 @@ func main() {
 	//     the other processes' writes and answers their room queries) and the document sockets'
 	//     schema re-check (it closes this process's own sockets).
 	//   - a boot one-shot already serialised by an advisory lock or idempotent: the migrations,
-	//     retirePlainRefreshTokens, restoreDecidedWordings, repairIssueAsks and SeedRepoProjects
-	//     above, and the embedding coverage pass (two processes' passes at once leave what one
-	//     leaves).
+	//     retirePlainRefreshTokens, restoreDecidedWordings, repairIssueAsks and
+	//     renameRepositories above, and the embedding coverage pass (two processes' passes at
+	//     once leave what one leaves).
 	leaseCallers, err := database.Pool.Leases()
 	if err != nil {
 		slog.Error("dispatch: open the lease pool for the maintenance loops", "error", err)
@@ -1190,7 +1195,7 @@ func main() {
 	// ciInstance is filled in once this process is registered, below, and each pass records its
 	// counts in ci_reconcile_passes under the id it then holds.
 	ciInstance := &registeredInstance{}
-	reconciler, err := ciReconciler(natsClient, database, appCfg, boot.GitHubAPIBase, boot.ReviewerAppID, ciReconcileInterval, ciInstance)
+	reconciler, err := ciReconciler(natsClient, database, appCfg, boot.GitHubAPIBase, boot.ReviewerAppID, ciReconcileInterval, ciInstance, renames)
 	if err != nil {
 		slog.Error("dispatch: open the CI reconcile pass", "error", err)
 		os.Exit(1)
@@ -1222,7 +1227,7 @@ func main() {
 	// (it never touches it); the NATS consumer that catches events between reconcile passes needs
 	// a client, exactly like the outbox above. Both take the event broker: each writes
 	// issue.deployed on a pull request's issue once its shipping run is known (LEGION-781).
-	reconcile := delivery.NewReconcile(database.Pool, appCtx.GitHub(), broker).RecordGitHubReads(recordGitHubRead)
+	reconcile := delivery.NewReconcile(database.Pool, appCtx.GitHub(), broker, attributor).RecordGitHubReads(recordGitHubRead)
 	if boot.ReconcileAtStart {
 		reconcile.FirstPassAtStart()
 	}
@@ -1255,7 +1260,7 @@ func main() {
 		connectIntake := func(name string) (*bus.Client, error) {
 			return bus.Connect(envoyConfig.Envoy.NatsURLs, serverClient(bus.WithEnvironment(env.lookup), bus.WithName(name))...)
 		}
-		stopIntakes, err := delivery.StartIntakes(ctx, connectIntake, database.Pool, intakeLeases, appCtx.GitHub(), broker, settingsWake, appCtx.Architecture())
+		stopIntakes, err := delivery.StartIntakes(ctx, connectIntake, database.Pool, intakeLeases, appCtx.GitHub(), broker, settingsWake, appCtx.Architecture(), attributor)
 		if err != nil {
 			slog.Error("dispatch delivery: connect NATS", "error", err)
 			os.Exit(1)
@@ -1591,9 +1596,7 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		return bootConfig{}, err
 	}
 	boot := bootConfig{
-		DatabaseURL:    strings.TrimSpace(env.get("DATABASE_URL")),
-		RepoProjects:   strings.TrimSpace(env.get("DISPATCH_REPO_PROJECTS")),
-		DefaultProject: strings.TrimSpace(env.get("DISPATCH_DEFAULT_PROJECT")),
+		DatabaseURL: strings.TrimSpace(env.get("DATABASE_URL")),
 
 		// Checked once the issuer and audience are read (checkAccessSettings).
 		OIDCAccounts:         commaList(env, "DISPATCH_OIDC_ACCOUNTS"),
@@ -2156,6 +2159,11 @@ func publishDashboard(ctx context.Context, pool *store.Pool, webDistDir string, 
 // documents it leaves owed took 0.17-0.77 s.
 const decidedWordingRestoreTimeout = 30 * time.Second
 
+// repoRenamesReadTimeout bounds the boot's read of the rename pairs (store.ReadRepoRenames).
+// The read is of a table of tens of rows, so the bound is reached only when another session
+// holds a lock on that table, and a boot that waited for it would not serve.
+const repoRenamesReadTimeout = 30 * time.Second
+
 // restoreDecidedWordings is the boot's restoration of the wording each decided ask was decided on,
 // where a task of an earlier release reworded it, and its marking owed of each such block ask's own
 // document and copies (docs.Service.RestoreDecidedWordings), bounded by timeout. Each ask it
@@ -2182,6 +2190,32 @@ func fillReviewContentHashes(ctx context.Context, pool *store.Pool, timeout time
 			result, err := docs.FillReviewContentHashes(ctx, pool)
 			return []any{"filled", result.Filled, "unhashable", result.Unhashable}, err
 		})
+}
+
+// repoRenamePassTimeout bounds the boot's repository rename pass: one short transaction for each
+// line of fields (store.repoRenameLines). A pass that reaches the bound fails the transaction in
+// flight and the lines after it, and the next boot writes what is left. The pass's count of the
+// rows left has a bound of its own after this one, so the summary says what the bound left.
+const repoRenamePassTimeout = 30 * time.Second
+
+// renameRepositories is the boot's pass that writes, in every stored repository field, the new
+// name of each rename pair in place of its old name (store.RewriteRenamedRepositories), bounded by
+// timeout. pairs and readErr are what the boot's read of the pairs answered. A read that failed is
+// one failure of the pass, which then has no pairs and writes nothing, and the rows left on an old
+// name are unknown, since the pairs are. The pass logs its own lines; this logs its summary at
+// every boot, at INFO when nothing failed and no old name is known to be left, and at ERROR
+// otherwise, with left=unknown where nothing counted it. Either way the start goes on, and the
+// next boot tries again.
+func renameRepositories(ctx context.Context, pool *store.Pool, pairs []store.RepoRename, readErr error, timeout time.Duration) {
+	const summary = "dispatch: rewrote renamed repositories' old names"
+	bootTask(ctx, timeout, summary, summary, func(ctx context.Context) ([]any, error) {
+		pass := store.RewriteRenamedRepositories(ctx, pool, pairs)
+		if readErr != nil {
+			pass.Failures++
+			pass.Left = store.RepoRenamesLeft{}
+		}
+		return pass.LogArgs(), pass.Err()
+	})
 }
 
 // issueAskRepairBootTimeout bounds the boot's repair of the asks of closed and reopened issues.
@@ -2228,7 +2262,6 @@ func appContextOptions(boot bootConfig, rule identity.SignInRule, built routes.A
 	built.SignInRule = rule
 	built.OutsideOrigin = boot.OutsideOrigin
 	built.AgentTokens = boot.AgentTokens
-	built.DefaultProject = boot.DefaultProject
 	built.OIDCAccounts = boot.OIDCAccounts
 	built.AccessAccounts = boot.AccessAccounts
 	built.NewIssueLabel = boot.NewIssueLabel
@@ -2312,25 +2345,6 @@ func loadEnvoyConfig(env settingValues, options config.LoadOptions) (*config.Env
 		slog.Warn(warning.Message, "path", warning.Path, "fix", warning.Fix)
 	}
 	return cfg, nil
-}
-
-// validateDefaultProject confirms DISPATCH_DEFAULT_PROJECT names a project
-// that already exists, so a misconfigured deployment fails loudly at boot
-// instead of silently rejecting every unmapped external issue at request
-// time. An empty project (no default configured) is not validated here.
-func validateDefaultProject(ctx context.Context, database *store.Store, project string) error {
-	if project == "" {
-		return nil
-	}
-	ctx = store.WithTransactionTracking(ctx)
-	var exists bool
-	if err := database.Pool.QueryRow(ctx, `select exists(select 1 from projects where key = $1)`, project).Scan(&exists); err != nil {
-		return fmt.Errorf("query DISPATCH_DEFAULT_PROJECT %q: %w", project, err)
-	}
-	if !exists {
-		return fmt.Errorf("DISPATCH_DEFAULT_PROJECT %q does not exist", project)
-	}
-	return nil
 }
 
 // parsePort reads the port a setting names: decimal digits alone, 1-65535. The error names the

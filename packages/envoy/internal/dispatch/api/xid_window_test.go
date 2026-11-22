@@ -617,12 +617,7 @@ func xidWindowIssueCreateWithSpec(t *testing.T, f *xidFixture) {
 // did not make (reason already_exists) in a transaction of its own after that commit
 // (insertRelatedChecks), and the record's insert assigns that transaction its xid.
 func xidWindowExistingExternalIssue(t *testing.T, f *xidFixture) {
-	if mapped := dispatchRequest(t, f.handler, http.MethodPut, "/api/v1/settings/repo-projects/owner/repo", map[string]string{
-		"project": xidProject,
-	}, "alice"); mapped.Code != http.StatusOK {
-		t.Fatalf("map the repository: status=%d body=%s", mapped.Code, mapped.Body.String())
-	}
-	body := map[string]any{"external": "owner/repo#41", "title": "Tracked upstream", "actor": sessionActor()}
+	body := map[string]any{"project": xidProject, "external": "owner/repo#41", "title": "Tracked upstream", "actor": sessionActor()}
 	if created := sessionRequest(t, f.handler, http.MethodPost, "/api/v1/issues", body); created.Code != http.StatusCreated {
 		t.Fatalf("create the external issue: status=%d body=%s", created.Code, created.Body.String())
 	}

@@ -306,8 +306,9 @@ func normalizedBody(response *httptest.ResponseRecorder, objects documentObjects
 }
 
 // seedDocumentObjects writes, as carol, who owns both projects, what project's document reads
-// read: a document of the project and one of its issue, an architecture source, and a repository
-// mapping. Every write goes through its route.
+// read: a document of the project and one of its issue, and an architecture source, each through
+// its route, and a repository mapping as the last release left one (storeRepoMapping), which no
+// route writes now.
 func seedDocumentObjects(t *testing.T, seed privateSeed, project string) documentObjects {
 	t.Helper()
 	objects := documentObjects{project: project, issue: seed.issue[project]}
@@ -320,8 +321,7 @@ func seedDocumentObjects(t *testing.T, seed privateSeed, project string) documen
 	objects.issueDocument, objects.issueDocumentSlug = upload("/api/v1/issues/" + objects.issue + "/artifacts")
 	seed.mustRequest(t, callerCarol, http.MethodPut, "/api/v1/projects/"+project+"/architecture-sources/"+architectureRepo(project),
 		map[string]string{"branch": "main"}, http.StatusOK)
-	seed.mustRequest(t, callerCarol, http.MethodPut, "/api/v1/settings/repo-projects/acme/"+strings.ToLower(project)+"-app",
-		map[string]string{"project": project}, http.StatusOK)
+	storeRepoMapping(t, seed.database, "acme/"+strings.ToLower(project)+"-app", project, false)
 	return objects
 }
 

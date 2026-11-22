@@ -538,9 +538,10 @@ func seedHiddenWrites(t *testing.T) hiddenWriteSeed {
 	asCarol(http.MethodPut, "/api/v1/projects/"+seedPrivate+"/access/groups/"+group, nil)
 	priority := createdID(t, asCarol(http.MethodPost, "/api/v1/priorities", map[string]any{"title": "A priority PRIV's people steer"}))
 	// A repository PRIV maps, which an issue's external reference names; and one PUB maps, an
-	// issue of which PRIV's issue links (privateHeldURL).
-	asCarol(http.MethodPut, "/api/v1/settings/repo-projects/acme/p_x", map[string]any{"project": seedPrivate})
-	asCarol(http.MethodPut, "/api/v1/settings/repo-projects/acme/w_pub", map[string]any{"project": seedPublic})
+	// issue of which PRIV's issue links (privateHeldURL). No route writes a mapping now, so each
+	// is stored as the last release left it.
+	storeRepoMapping(t, seed.database, "acme/p_x", seedPrivate, false)
+	storeRepoMapping(t, seed.database, "acme/w_pub", seedPublic, false)
 	asCarol(http.MethodPatch, "/api/v1/issues/"+issue, map[string]any{"external_links": []map[string]string{{"url": privateHeldURL}}})
 	// s1, live at the walk's listener, holds PRIV's issue.
 	seed.mustRequest(t, callerCarolPrivToken, http.MethodPost, "/api/v1/issues/"+issue+"/claim",
