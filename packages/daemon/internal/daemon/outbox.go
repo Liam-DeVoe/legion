@@ -102,9 +102,10 @@ type outbox struct {
 	// releases no pod, and then a release arms none.
 	backstop time.Duration
 	// idleReleases is whether the deployment's idle release runs (attachIdleRelease sets it), so
-	// the idle rule for a pod with no live claim ends a start's wait for a pod built before its
-	// role. False is off (idle_minutes: 0, or a runtime with no issue pods), and then such a wait
-	// where no claim records a process in the pod is told to the controller (roleWaitsForItsPod).
+	// the idle rule for a pod with no live claim ends a start's wait for a pod that lacks the slot
+	// of the start's claim or the role of its step. False is off (idle_minutes: 0, or a runtime
+	// with no issue pods), and then such a wait where no claim records a process in the pod is told
+	// to the controller (roleWaitsForItsPod).
 	idleReleases bool
 	// readPullRequest reads one pull request from GitHub (one GET /pulls/{number}) and answers the
 	// implement App's client of its repository with it; applyMergeability applies what that read
@@ -2269,7 +2270,8 @@ func (r *outbox) workerOf(row record.OutboxRow, role claim.Role, rows []record.P
 	return token, nil
 }
 
-// publishToRole publishes message to topic, the Envoy topic of one role's claim
+// publishToRole publishes message to topic, the Envoy topic of one claim (the claim the row names,
+// else the claim of the worker on the row's role's step: workerToken)
 // (notify.RoleTopicPrefix and the claim's token), under the row's own key, so a retried row is
 // one delivery. It is updateAsk's publish, with keep: false; hookPrompt publishes with keep
 // through publishKeptToRole, which also says how each executor that publishes to a role's topic
@@ -2288,9 +2290,10 @@ func (r *outbox) publishToRole(ctx context.Context, row record.OutboxRow, topic,
 	return err == nil, err
 }
 
-// publishKeptToRole publishes message to topic, the Envoy topic of one role's claim
+// publishKeptToRole publishes message to topic, the Envoy topic of one claim (the claim the row
+// names, else the claim of the worker on the row's role's step: workerToken)
 // (notify.RoleTopicPrefix and the claim's token), under the row's own key, and asks the listener
-// to keep it for the role's next live holder, through the gate every publish of the outbox goes
+// to keep it for the claim's next live holder, through the gate every publish of the outbox goes
 // through (publishKept). A retry of the row while its copy is still on the role's kept lane
 // stores nothing new; notify.HTTPPublisher.PublishKept gives the listener's answers and what a
 // repeat after the copy's hand-over does. It is hookPrompt's publish; hookPrompt decides what
@@ -2310,8 +2313,9 @@ func (r *outbox) publishToRole(ctx context.Context, row record.OutboxRow, topic,
 // The row is not held for a holder as an architect's notice is held, so the kept copy is the
 // message's one keeper, and it can reach a later session than the one it was written for: for a
 // role nobody claims, the listener hands it to the first session that claims the role inside the
-// hour, which can be a later round's. That is intended — the role's topic names the issue's role,
-// not one session of it — and the hour bounds it: the listener drops a copy no live holder took
+// hour, which can be a later round's. That is intended — the topic names the claim, the agent of
+// one or more of the issue's steps, not one session of it — and the hour bounds it: the listener
+// drops a copy no live holder took
 // inside its hour (roleKeepWindow, packages/envoy/cmd/listener/role_keep.go), so no session is
 // handed one older than that, and a forwarded copy carries when it was kept (Envoy's
 // contracts.Envelope.KeptAt) beside what the message names of its round, so its reader judges
@@ -3466,11 +3470,13 @@ func (r *outbox) podDeleted(ctx context.Context, issue, why string) error {
 	return nil
 }
 
-// bundleIssueWorkspace is the first act of an idle pod's release: it asks the shim of the role
-// the release named — a process still running in the pod, because this row runs before the
-// `release` rows that stop them — for the git bundle of the unpushed work of the workspace every
-// role of the issue shares, and saves it in the daemon's own database. Only a shim can build it:
-// it runs the `jj` of the workspace it already works in, and it dies with its role's process.
+// bundleIssueWorkspace is the first act of an idle pod's release: it asks the shim of the claim
+// the save names (record.IssueBundle.Claim), or, for a row the release before wrote, of the claim
+// of the worker on the role's step — a process still running in the pod, because this row runs
+// before the `release` rows that stop them — for the git bundle of the unpushed work of the
+// workspace every role of the issue shares, and saves it in the daemon's own database. Only a shim
+// can build it: it runs the `jj` of the workspace it already works in, and it dies with its claim's
+// process.
 //
 // A bundle that cannot be built, and one above runtime.MaxWorkspaceBundleBytes, stop the release:
 // the pod stays, nothing having been stopped yet, and the work a role has not pushed is kept at

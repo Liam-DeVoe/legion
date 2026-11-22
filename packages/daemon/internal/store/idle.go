@@ -38,9 +38,10 @@ import (
 var idleWaitingKinds = []string{"supervise", "notice", "hook_prompt", "update_ask", "merge_queue_read", "merge_queue_removal",
 	"conflict_confirm", "merge_forward"}
 
-// startWaitsForPodRow is the predicate of a start row that waits because the issue's pod was
-// built before the deployment defined its role (the outbox's roleWaitsForItsPod writes its last
-// error with pods.StartWaitsForPodPrefix, the parameter %s names). Such a start is no delivery the
+// startWaitsForPodRow is the predicate of a start row that waits because the issue's pod lacks the
+// slot of the start's claim or the role of its step, built before the deployment defined that name
+// (the outbox's roleWaitsForItsPod writes its last error with pods.StartWaitsForPodPrefix, the
+// parameter %s names). Such a start is no delivery the
 // pod waits for: the pod cannot run it, and only its update round or its release lets it start.
 // So both reads of idleWaitingKinds leave it out, `and not` it after `kind = any(…)`: the view's
 // Waiting (readIdleView), which main's rule and the idle rule read, and the release's boundary
@@ -63,8 +64,9 @@ type IdleReleaseRow struct {
 	Boundary bool
 }
 
-// IdleReleaseMark is what a decision to release writes: the rows above and the role whose shim
-// the bundle is asked of. Rows empty means the pod is not released, and nothing is written.
+// IdleReleaseMark is what a decision to release writes: the rows above and the role of the claim
+// whose shim the bundle is asked of, the first live claim, which the save row names. Rows empty
+// means the pod is not released, and nothing is written.
 //
 // SuspendsNoRole is the release of a pod no role can use (workflow.UnownedPodRelease), whose
 // every claim is already failed, retired or suspended: it suspends no role and saves no bundle,
@@ -183,7 +185,7 @@ func (s *Store) UnownedPods(ctx context.Context, project, claimProject string, o
 // The mark records the ids the rows were given: first_row and last_row are the release's own
 // first and last, which is how a row of this release is told from a row of one that is over
 // (IssueReleaseStop, IssueRelease), and boundary_row is the row the mark names its boundary —
-// the stop of the first role process of the pod — which is where a delivery that reached the
+// the stop of the first live claim of the pod — which is where a delivery that reached the
 // pod after the mark cancels the release.
 //
 // It answers whether a release was marked. decide answering no rows writes nothing, which is the
@@ -198,8 +200,8 @@ func (s *Store) UnownedPods(ctx context.Context, project, claimProject string, o
 //
 // A mark that names no role and does not say it suspends none is refused before anything is
 // written, as a fault of the rule that decided it rather than of the database: the save of the
-// workspace is asked of the role the mark names, so a release without one and without the
-// second rule's kind is a release nobody can carry out.
+// workspace is asked of the claim the save row names, whose role the mark records, so a release
+// without one and without the second rule's kind is a release nobody can carry out.
 func (s *Store) ReleaseIdleIssue(ctx context.Context, project, issue string, decide func(pods.IdleView) (IdleReleaseMark, error)) (bool, error) {
 	if project == "" || issue == "" {
 		return false, errors.New("an idle release needs its project and its issue")
@@ -251,9 +253,9 @@ func (s *Store) ReleaseIdleIssue(ctx context.Context, project, issue string, dec
 			project, issue).Scan(&wake); err != nil {
 			return fmt.Errorf("read the newest wake of %s: %w", issue, err)
 		}
-		// The kind is the rule that decided this release, and the role is the one whose shim the
-		// save is asked of: a release that suspends no role has none, and leaves the column
-		// empty, which is the one spelling the table's check takes beside that kind.
+		// The kind is the rule that decided this release, and the role is that of the claim whose
+		// shim the save is asked of: a release that suspends no role has none, and leaves the
+		// column empty, which is the one spelling the table's check takes beside that kind.
 		kind, role := releaseKindIdle, string(mark.Role)
 		if mark.SuspendsNoRole {
 			kind, role = releaseKindUnowned, ""
