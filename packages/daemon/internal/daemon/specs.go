@@ -43,6 +43,10 @@ type specs struct {
 	// each launches with its own prompt file (prompts.ComposeStep) and its model, and the owner's
 	// addressing lists them in this order. Nil is a deployment that defines none.
 	roles []config.Role
+	// models are the models a role of an owner's plan can name (config.Config.ListedModels), in
+	// their order, which every architect's addressing lists after the roles (ModelsFragment).
+	// Nil is a deployment that lists none.
+	models []string
 	// planRole is the role of an issue's plan in force named role, and whether that plan defines
 	// one (planRoleOf, the daemon's one reader of a role of a plan): a role neither Legion nor
 	// the deployment defines launches with the plan's prompt and model. Nil in a test whose specs
@@ -234,10 +238,11 @@ func (s specs) workerSpawnSpec(ctx context.Context, c supervise.Claim) (runtime.
 		return runtime.SpawnSpec{}, fmt.Errorf("the addressing of %s: %w", c.Token, err)
 	}
 	addressing := addressingFragment(s.project, c, architect, spec.Repository, spec.DefaultBranch, s.ownersOf(ctx, c.Issue, c.Role))
-	// Every architect owns a plan, whose steps name the roles this sentence lists; it stands
-	// before the tree architect's design-gate line, which ends that addressing.
+	// Every architect owns a plan, whose steps name the roles this sentence lists and whose roles
+	// name the models the next one lists; both stand before the tree architect's design-gate line,
+	// which ends that addressing.
 	if c.Role == claim.RoleArchitect {
-		addressing += " " + DeploymentRolesFragment(s.roles)
+		addressing += " " + DeploymentRolesFragment(s.roles) + " " + ModelsFragment(s.models)
 	}
 	if claim.IsTreeArchitect(c.Role, c.Issue, c.Tree) {
 		addressing += " " + DesignGateFragment(s.designSteps)
@@ -696,6 +701,17 @@ func DeploymentRolesFragment(roles []config.Role) string {
 		entries = append(entries, entry)
 	}
 	return "The roles of this deployment, each with the type of its step: " + strings.Join(entries, ", ") + "."
+}
+
+// ModelsFragment is the sentence every architect is told right after the roles
+// (DeploymentRolesFragment): the models a role of its plan can name, the deployment's listed
+// models (config.Config.ListedModels) in their order, or, where it lists none, that a role of its
+// plan names none and starts on the default model.
+func ModelsFragment(models []string) string {
+	if len(models) == 0 {
+		return "This deployment lists no model, so a role of your plan names none and starts on the default model."
+	}
+	return "The models of this deployment, which a role of your plan can name: " + strings.Join(models, ", ") + "."
 }
 
 // stepRoleOrder is the order the owner is told Legion's five roles of a step in: the line's own.
