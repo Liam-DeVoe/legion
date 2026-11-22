@@ -49,7 +49,7 @@ var metadataServers = []netip.Addr{netip.MustParseAddr("fd20:ce::254"), netip.Mu
 // metadata server's IPv6 address (metadataServers). The answer completes "... resolves to". addr is
 // read as Canonical reads it. The proxy's check of every dial to the destination
 // (proxy.Server.upstreamAddresses) and config's start check of a destination URL that names an
-// address read this one answer, so the two cannot disagree.
+// address read this one answer, through proxy.PrivateUpstreamRefusal, so the two cannot disagree.
 func DestinationRefusal(addr netip.Addr) string {
 	addr = Canonical(addr)
 	switch {

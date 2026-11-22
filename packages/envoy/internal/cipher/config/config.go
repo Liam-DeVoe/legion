@@ -34,6 +34,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/netaddr"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
+	"github.com/sjawhar/envoy/internal/cipher/proxy"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/rulehost"
@@ -329,8 +330,10 @@ type Config struct {
 	// one entry, for the setting without BROKER_PROFILES_FILE, for a host that is not one lower-case
 	// host name, for a url that is not http or https, names no host or a port outside 1 to 65535,
 	// or carries a user, a path other than /, a query or a fragment, and for a url whose host every
-	// dial refuses - an address netaddr.DestinationRefusal names, localhost or a name under
-	// .localhost - unless BROKER_AIRLOCK_TEST_DIAL_ALLOW names that host and port; and, where the
+	// dial refuses - an address proxy.PrivateUpstreamRefusal refuses on a broker of these
+	// BROKER_AIRLOCK_CLUSTER_RANGES (one the proxy would tunnel to, or one
+	// netaddr.DestinationRefusal names), localhost or a name under .localhost, with or without a
+	// trailing dot - unless BROKER_AIRLOCK_TEST_DIAL_ALLOW names that host and port; and, where the
 	// broker reads the profiles file (AirlockResultRules), unless the profile DISPATCH_RESULTS_TOKEN
 	// binds the host, exactly and alone, of kind dpop, with a non-empty allow list, carried in
 	// Authorization alone.
@@ -2102,13 +2105,17 @@ func portInRange(port string) bool {
 
 // privateUpstreamDialable refuses, naming the setting, a private destination every dial of the
 // proxy refuses (proxy.Server.upstreamAddresses), so the broker does not start with a destination
-// no write can reach: a URL whose host is an address netaddr.DestinationRefusal names (loopback,
-// link-local, unspecified, multicast, a cloud metadata server's), or localhost or a name under
-// .localhost, which resolve to loopback alone (RFC 6761, section 6.3). The one exception is the
-// proxy's own: BROKER_AIRLOCK_TEST_DIAL_ALLOW naming the URL's host and port, the local stack's way
-// to reach a stand-in of Dispatch on loopback, which a production start refuses. A name that
-// resolves elsewhere is the dial's to check, since it can resolve differently at each dial.
-func privateUpstreamDialable(upstream PrivateUpstream, dialAllow []string) error {
+// no write can reach: a URL whose host is an address proxy.PrivateUpstreamRefusal refuses on a
+// broker of these cluster ranges (BROKER_AIRLOCK_CLUSTER_RANGES) - one the proxy would tunnel to
+// for a command, being neither private nor in 100.64.0.0/10 nor in the ranges, or a loopback,
+// link-local, unspecified, multicast or cloud metadata server's address - which is the dial's own
+// rule, read here rather than written twice; or localhost or a name under .localhost, with or
+// without the root's trailing dot, which resolve to loopback alone (RFC 6761, section 6.3). The
+// one exception is the proxy's own: BROKER_AIRLOCK_TEST_DIAL_ALLOW naming the URL's host and port,
+// the local stack's way to reach a stand-in of Dispatch on loopback, which a production start
+// refuses. A name that resolves elsewhere is the dial's to check, since it can resolve
+// differently at each dial.
+func privateUpstreamDialable(upstream PrivateUpstream, dialAllow []string, clusterRanges []netip.Prefix) error {
 	if upstream.URL == nil {
 		return nil
 	}
@@ -2122,11 +2129,11 @@ func privateUpstreamDialable(upstream PrivateUpstream, dialAllow []string) error
 	if slices.Contains(dialAllow, net.JoinHostPort(host, port)) {
 		return nil
 	}
-	if name := strings.ToLower(host); name == "localhost" || strings.HasSuffix(name, ".localhost") {
+	if name := strings.ToLower(strings.TrimSuffix(host, ".")); name == "localhost" || strings.HasSuffix(name, ".localhost") {
 		return fmt.Errorf("%s: the URL after its = names the host %s, which resolves to loopback, an address the airlock never dials", privateUpstreamSetting, host)
 	}
 	if addr, err := netip.ParseAddr(host); err == nil {
-		if why := netaddr.DestinationRefusal(addr); why != "" {
+		if why := proxy.PrivateUpstreamRefusal(addr, clusterRanges); why != "" {
 			return fmt.Errorf("%s: the URL after its = names %s, %s", privateUpstreamSetting, netaddr.Canonical(addr), why)
 		}
 	}
@@ -2570,7 +2577,7 @@ func Load(getenv func(string) string) (Config, error) {
 	if cfg.AirlockPrivateUpstream, err = ParsePrivateUpstream(getenv(privateUpstreamSetting)); err != nil {
 		return Config{}, err
 	}
-	if err = privateUpstreamDialable(cfg.AirlockPrivateUpstream, cfg.AirlockTestDialAllow); err != nil {
+	if err = privateUpstreamDialable(cfg.AirlockPrivateUpstream, cfg.AirlockTestDialAllow, cfg.AirlockClusterRanges); err != nil {
 		return Config{}, err
 	}
 	if cfg.AirlockPrivateUpstream.Host != "" && cfg.ProfilesFile == "" {

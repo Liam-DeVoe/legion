@@ -788,31 +788,38 @@ func TestTheResolveSettingMayNameThePortItsDialReaches(t *testing.T) {
 // <host>=<url> entry, read as that host and that URL, and unset is none. Two entries, the setting
 // with no profiles file, an entry not of that form, a host that is not one lower-case host name, and a
 // URL that does not parse, is not http or https, names no host or a port outside 1 to 65535, carries
-// a user, a path, a query or a fragment, or names a host every dial of the proxy refuses (localhost,
-// a name under .localhost, a loopback, link-local, unspecified or multicast address, a cloud
-// metadata server's IPv6 address) each refuse the start, naming the setting and the fault. No
-// refusal quotes the URL's user, path, query or fragment, where a credential can sit. A loopback
-// URL that BROKER_AIRLOCK_TEST_DIAL_ALLOW names with its port, the local stack's stand-in of
-// Dispatch, is read.
+// a user, a path, a query or a fragment, or names a host every dial of the proxy refuses (localhost
+// or a name under .localhost, with or without the root's trailing dot; a loopback, link-local,
+// unspecified or multicast address; a cloud metadata server's IPv6 address; an address the proxy
+// would tunnel to, public and outside BROKER_AIRLOCK_CLUSTER_RANGES) each refuse the start, naming
+// the setting and the fault. No refusal quotes the URL's user, path, query or fragment, where a
+// credential can sit. A private address, one in 100.64.0.0/10, one inside the cluster ranges
+// though public, and a loopback URL that BROKER_AIRLOCK_TEST_DIAL_ALLOW names with its port, the
+// local stack's stand-in of Dispatch, are read: each is an address the dial opens.
 func TestAPrivateUpstreamSettingIsRefusedUnlessItIsOne(t *testing.T) {
 	const setting = "BROKER_AIRLOCK_PRIVATE_UPSTREAM"
 	if cfg, err := Load(env(airlockEnv())); err != nil || cfg.AirlockPrivateUpstream.Host != "" || cfg.AirlockPrivateUpstream.URL != nil {
 		t.Fatalf("Load with %s unset = %+v, %v; want none", setting, cfg.AirlockPrivateUpstream, err)
 	}
-	for _, row := range []struct{ value, dialAllow, wantURL string }{
-		{"dispatch.test=http://dispatch.dispatch.svc.cluster.local:8766", "", "http://dispatch.dispatch.svc.cluster.local:8766"},
-		{" dispatch.test=https://10.0.0.5/ ", "", "https://10.0.0.5/"},
-		{"dispatch.test=http://127.0.0.1:8766", "127.0.0.1:8766", "http://127.0.0.1:8766"},
-		{"dispatch.test=http://localhost", "localhost:80", "http://localhost"},
+	for _, row := range []struct{ value, dialAllow, ranges, wantURL string }{
+		{"dispatch.test=http://dispatch.dispatch.svc.cluster.local:8766", "", "", "http://dispatch.dispatch.svc.cluster.local:8766"},
+		{" dispatch.test=https://10.0.0.5/ ", "", "", "https://10.0.0.5/"},
+		{"dispatch.test=http://10.0.0.5:8766", "", "", "http://10.0.0.5:8766"},
+		{"dispatch.test=http://[fd12:3456::5]:8766", "", "", "http://[fd12:3456::5]:8766"},
+		{"dispatch.test=http://100.64.1.1:8766", "", "", "http://100.64.1.1:8766"},
+		{"dispatch.test=http://34.118.224.10:8766", "", "34.118.224.0/20", "http://34.118.224.10:8766"},
+		{"dispatch.test=http://127.0.0.1:8766", "127.0.0.1:8766", "", "http://127.0.0.1:8766"},
+		{"dispatch.test=http://localhost", "localhost:80", "", "http://localhost"},
 	} {
 		e := airlockEnv()
 		e[setting] = row.value
 		if row.dialAllow != "" {
 			e["BROKER_AIRLOCK_TEST_DIAL_ALLOW"] = row.dialAllow
 		}
+		e["BROKER_AIRLOCK_CLUSTER_RANGES"] = row.ranges
 		cfg, err := Load(env(e))
 		if err != nil {
-			t.Fatalf("Load(%s=%q, BROKER_AIRLOCK_TEST_DIAL_ALLOW=%q): %v", setting, row.value, row.dialAllow, err)
+			t.Fatalf("Load(%s=%q, BROKER_AIRLOCK_TEST_DIAL_ALLOW=%q, BROKER_AIRLOCK_CLUSTER_RANGES=%q): %v", setting, row.value, row.dialAllow, row.ranges, err)
 		}
 		if got := cfg.AirlockPrivateUpstream; got.Host != "dispatch.test" || got.URL == nil || got.URL.String() != row.wantURL {
 			t.Fatalf("Load(%s=%q) read %+v; want the host dispatch.test and the URL %s", setting, row.value, got, row.wantURL)
@@ -838,7 +845,12 @@ func TestAPrivateUpstreamSettingIsRefusedUnlessItIsOne(t *testing.T) {
 		{"a URL with a fragment", "dispatch.test=http://10.0.0.5:8766#" + userWord, "", "has a fragment"},
 		{"a URL with an empty fragment", "dispatch.test=http://10.0.0.5:8766#", "", "has a fragment"},
 		{"localhost", "dispatch.test=http://localhost:8766", "", "resolves to loopback"},
+		{"localhost with the root's trailing dot", "dispatch.test=http://localhost.:8766", "", "resolves to loopback"},
 		{"a name under .localhost", "dispatch.test=http://dispatch.localhost:8766", "", "resolves to loopback"},
+		{"a name under .localhost with the root's trailing dot", "dispatch.test=http://dispatch.localhost.:8766", "", "resolves to loopback"},
+		{"a public address", "dispatch.test=http://8.8.8.8:8766", "", "which this proxy would also tunnel to"},
+		{"a documentation address, which the proxy reads as public", "dispatch.test=http://203.0.113.5:8766", "", "which this proxy would also tunnel to"},
+		{"a public IPv6 address", "dispatch.test=http://[2001:4860:4860::8888]:8766", "", "which this proxy would also tunnel to"},
 		{"a loopback address", "dispatch.test=http://127.0.0.1:8766", "", "a loopback or link-local address"},
 		{"a loopback IPv6 address", "dispatch.test=http://[::1]:8766", "", "a loopback or link-local address"},
 		{"the IPv4 metadata server", "dispatch.test=http://169.254.169.254", "", "a loopback or link-local address"},
@@ -865,6 +877,14 @@ func TestAPrivateUpstreamSettingIsRefusedUnlessItIsOne(t *testing.T) {
 	e[setting] = "dispatch.test=http://10.0.0.5:8766"
 	if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), setting) || !strings.Contains(err.Error(), "needs BROKER_PROFILES_FILE") {
 		t.Errorf("Load(%s with no profiles file) = %v; want a refusal naming the setting and BROKER_PROFILES_FILE", setting, err)
+	}
+	// The cluster ranges are the dial's: a public address the rows above take inside
+	// 34.118.224.0/20 is refused just outside it, naming both settings.
+	ranged := airlockEnv()
+	ranged["BROKER_AIRLOCK_CLUSTER_RANGES"] = "34.118.224.0/20"
+	ranged[setting] = "dispatch.test=http://34.118.240.1:8766"
+	if _, err := Load(env(ranged)); err == nil || !strings.Contains(err.Error(), setting) || !strings.Contains(err.Error(), "which this proxy would also tunnel to: list its range in BROKER_AIRLOCK_CLUSTER_RANGES") {
+		t.Errorf("Load(%s=%q, BROKER_AIRLOCK_CLUSTER_RANGES=34.118.224.0/20) = %v; want a refusal naming the setting and the address the proxy would tunnel to", setting, ranged[setting], err)
 	}
 }
 
