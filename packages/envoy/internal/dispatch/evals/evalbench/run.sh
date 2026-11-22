@@ -142,12 +142,16 @@ measure paint -token "$token" -server-log "$work/server-paint.log" -pg-log "$EVA
 
 if [ "$mode" = head ]; then
   # k13: no read of the first paint's path names events. The read path is the list read's
-  # handler and the registry reads it calls (api/evals.go readEvalList, evals.Store.Current,
-  # DayWindow, FirstDays and RefresherAge, and the folds of statistics.go).
+  # handler and the registry reads it calls in its one snapshot (api/evals.go readEvalList;
+  # evals.CurrentIn, FirstDaysIn and DayWindowIn of reads.go; RefresherAgeIn of refresher.go;
+  # ReadStoredFiguresIn of figures_read.go and figuresThrough of figures_refresher.go;
+  # delivery.GetSettings of delivery/store.go), and the folds of statistics.go.
   if [ -n "${EVALBENCH_SOURCE:-}" ]; then
     dispatch_src="$EVALBENCH_SOURCE/packages/envoy/internal/dispatch"
     read_path=("$dispatch_src/api/evals.go" "$dispatch_src/evals/reads.go" "$dispatch_src/evals/store.go"
-      "$dispatch_src/evals/statistics.go" "$dispatch_src/evals/refresher.go")
+      "$dispatch_src/evals/statistics.go" "$dispatch_src/evals/refresher.go"
+      "$dispatch_src/evals/figures_read.go" "$dispatch_src/evals/figures_refresher.go"
+      "$dispatch_src/delivery/store.go")
     # grep exits 1 when no line matches and above 1 when it could not read a file, which would
     # leave a file of the read path unread.
     searched=0
