@@ -65,12 +65,9 @@ import (
 // migrated takes each of them in version order with the rest, the upgrade after the phase entry
 // whose columns it fills, and none of them touches outbox_kind_check.
 // dispatch://INFRA-1997's commit statuses of the checked head (20261117112334) are named here too:
-// that version stands above every other of this list but dispatch://INFRA-4109's 20261117200337,
-// the name of each step's agent (20261117213545), dispatch://INFRA-4374's 20261119003157,
-// dispatch://INFRA-4108's 20261120042902, dispatch://INFRA-4729's 20261120055717 and the claim of
-// each resume (20261121183336), so an upgrade of a database main migrated applies it just before
-// those six. It adds pull_requests.statuses at its default, the empty list, and it touches
-// no outbox_kind_check.
+// an upgrade of a database main migrated applies it in version order with the rest of this list,
+// after each version of the list below it and before each version above it. It adds
+// pull_requests.statuses at its default, the empty list, and it touches no outbox_kind_check.
 // The reviewer's reviewed commit (20261116234034, `phases.reviewed_head`) is named here for the
 // same reason: it adds one column at its default, which every row it finds reads as no commit
 // (migration_20261116234034_test.go), and it touches no outbox_kind_check.
@@ -104,15 +101,13 @@ import (
 // plan's step table and touches no outbox_kind_check, and every row it finds reads as its role
 // (migration_20261117213545_test.go).
 // dispatch://INFRA-4374's kind list with the conflict's second read and the merge forward
-// (20261119003157) stands above every other version of this list but dispatch://INFRA-4108's
-// 20261120042902, dispatch://INFRA-4729's 20261120055717 and 20261121183336, and it is still the last of them to
-// rewrite outbox_kind_check: it is now that constraint's last word, and it names every kind the
+// (20261119003157) is the last version of this list to rewrite outbox_kind_check: no version above
+// it touches that constraint, so it is the constraint's last word, and it names every kind the
 // plan-record list names and its own two, phase_ended among them. The same migration deletes the
 // queued phase_ended rows, the seeded one below among them, and adds pull_requests.conflict_read
 // and pull_requests.merge_forward, both null on every row it finds.
 // dispatch://INFRA-4108's mark of a launch that had Oh My Pi resume a claim's session by its id
-// (20261120042902) stands above every other version of this list but dispatch://INFRA-4729's
-// 20261120055717 and 20261121183336; it adds claims.agent_resume_generation at its default, 0, on every row it finds,
+// (20261120042902) adds claims.agent_resume_generation at its default, 0, on every row it finds,
 // and touches no outbox_kind_check, so it needs no row of its own here.
 // dispatch://INFRA-4729's sequence of each value of the copy of Dispatch's issues (20261120055717)
 // touches no outbox_kind_check: it adds columns to dispatch_issues at their defaults, an index on
