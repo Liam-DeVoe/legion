@@ -439,6 +439,40 @@ func TestACreateRefusedAtTheCapLeavesNoConnectionOpen(t *testing.T) {
 	}
 }
 
+// A reader's Select leaves no connection open either. The state route and the boot's reconcile
+// read a record through info, whose Step 0 abandons a create another boot left open: it reads the
+// candidate on the candidate's own connection, finds it gone, and retires it. The daemon then
+// closes the connections of the names the record retired, never the current's nor an open
+// candidate's, which a repositories change settling beside it may still create. The control is the
+// code before this row, under which the abandoned candidate's connection stayed open.
+func TestAReadThatAbandonsACreateLeavesNoConnectionOpen(t *testing.T) {
+	pool := migratedPool(t)
+	cutover(t, pool, consumernames.CutoverDone)
+	js, _, _ := freshJetStream(t)
+	spec := freshSpec(t, &lockedBuffer{}, js)
+	d, err := newDurableNames(js, pool, spec)
+	if err != nil {
+		t.Fatalf("the daemon's creator: %v", err)
+	}
+	defer d.close()
+	dispatch := dispatchConsumerName(spec.Project)
+	abandoned := consumernames.FreshName(dispatch)
+	putRecord(t, pool, dispatch, consumernames.Record{Op: &consumernames.Op{Kind: consumernames.OpCreate, Owner: "another boot", Candidate: abandoned, Native: consumernames.NativeNew, ReservedAt: time.Now().Add(-time.Hour)}})
+
+	if _, err := d.info(context.Background(), dispatch); err == nil {
+		t.Fatalf("info of %s, whose record selects no consumer, answered", dispatch)
+	}
+	if retired := selectionOf(t, pool, dispatch).Retired; !slices.Contains(retired, abandoned) {
+		t.Fatalf("the record retired %v, want the abandoned candidate %s among them: the row abandoned nothing", retired, abandoned)
+	}
+	d.mu.Lock()
+	held := slices.Collect(maps.Keys(d.generations))
+	d.mu.Unlock()
+	if len(held) != 0 {
+		t.Fatalf("after the read the daemon holds %d connections, of %v; want none", len(held), held)
+	}
+}
+
 // A convert's replace left open, its candidate the current and its old the fixed name, is
 // settled by the fresh boot's Step 0: the daemon reads the fixed name on its own connection, whose
 // grant holds the fixed names' info, never on a generation's, which no fixed name has. A fixed name

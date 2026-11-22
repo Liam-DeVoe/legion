@@ -244,10 +244,15 @@ func (d *durableNames) drop(record consumernames.Record) {
 	if record.Op != nil {
 		names = append(names, record.Op.Candidate)
 	}
+	d.closeNames(record.Current, names)
+}
+
+// closeNames closes the connection of each of names the daemon holds one for, but current's.
+func (d *durableNames) closeNames(current string, names []string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	for _, physical := range names {
-		if open, ok := d.generations[physical]; ok && physical != record.Current {
+		if open, ok := d.generations[physical]; ok && physical != current {
 			open.Conn().Close()
 			delete(d.generations, physical)
 		}
@@ -323,10 +328,13 @@ func (d *durableNames) recordLastFloor(ctx context.Context, logical, current str
 
 // info is the info of the consumer logical's record selects, read fresh on its own connection, for
 // a reader: the boot's reconcile (Consumers.DispatchPosition) and the state route (Consumers.Lag).
-// It creates nothing, and closes no connection: a repositories change may be settling the same
-// logical name beside it (open), whose candidate's connection it must not close.
+// It creates nothing. Its Step 0 may abandon a create another boot left open, reading the
+// candidate on the candidate's own connection and retiring it, so it then closes the connections
+// of the names the record retired (closeNames). It closes no other: a repositories change may be
+// settling the same logical name beside it (open), whose candidate's connection it must not close.
 func (d *durableNames) info(ctx context.Context, logical string) (*jetstream.ConsumerInfo, error) {
 	sel, err := d.names.Select(ctx, logical, nil)
+	d.closeNames(sel.Record.Current, sel.Record.Retired)
 	switch {
 	case err != nil:
 		return nil, d.failed(logical, sel, consumernames.OperationSelect, err)
