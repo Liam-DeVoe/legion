@@ -411,7 +411,9 @@ test("draws the document's first block with the app's code blocked @phone", asyn
 // 4x CPU throttling, seven reads went out in front of the first block a reader can type in -
 // 4,328 to 5,493 ms on a load whose preview mounted at 5,611 - and the block needs none of
 // them: they fill the issue page's non-document panels (dispatch://INFRA-341, R11). They are
-// made after the editor's first batch now (`web/src/features/doc/first-batch.ts`).
+// made after the editor's first batch now (`web/src/features/doc/first-batch.ts`). One of the
+// seven, the repository mappings, is no longer read at all: a project's default repository
+// comes with the project list (#4457), so six remain.
 //
 // Each row holds the document's socket (`documentTransport`), so the first batch happens when
 // the row says so rather than when a loaded machine gets round to it, and reads the order off
@@ -424,7 +426,7 @@ test("draws the document's first block with the app's code blocked @phone", asyn
 // for those two reads, so they go out there rather than at the batch, which is the rule
 // working rather than failing.
 
-/** The seven, by the path each goes out on. `/references` is the spec's `part_of` read, which
+/** The six, by the path each goes out on. `/references` is the spec's `part_of` read, which
  *  the page makes only for a reader who has read the document before, so the row that reads it
  *  opens the spec twice. */
 function readsTheFirstBlockNeedsNone(issueKey: string, project: string): readonly string[] {
@@ -432,7 +434,6 @@ function readsTheFirstBlockNeedsNone(issueKey: string, project: string): readonl
     `/issues/${issueKey}/comments`,
     `/issues/${issueKey}/asks`,
     "/agents",
-    "/settings/repo-projects",
     `/projects/${project}/architecture-sources`,
     `/issues/${issueKey}/subscribers`,
     "/references",
@@ -482,7 +483,7 @@ test("the reads the first editable block needs none of go out after the editor's
 }, testInfo) => {
   test.skip(
     testInfo.project.name !== "iphone",
-    "the seven were measured on a phone, where the margin's cards are a sheet the reader opens"
+    "these reads were measured on a phone, where the margin's cards are a sheet the reader opens"
   );
   test.setTimeout(300_000);
   const { issueKey, path } = await seedDocument("specs-order.md", proseOnlyDocument);
@@ -561,7 +562,7 @@ test("a reader who opens a panel before the first batch has its read started the
 }, testInfo) => {
   test.skip(
     testInfo.project.name !== "iphone",
-    "the seven were measured on a phone, where the margin's cards are a sheet the reader opens"
+    "these reads were measured on a phone, where the margin's cards are a sheet the reader opens"
   );
   test.setTimeout(300_000);
   const { issueKey, path } = await seedDocument("specs-reached.md", proseOnlyDocument);
@@ -625,11 +626,11 @@ test("a page with no document on it makes those reads as it always did @phone", 
 }, testInfo) => {
   test.skip(
     testInfo.project.name !== "iphone",
-    "the seven were measured on a phone, where the margin's cards are a sheet the reader opens"
+    "these reads were measured on a phone, where the margin's cards are a sheet the reader opens"
   );
   test.setTimeout(300_000);
   const { issueKey } = await seedDocument("specs-no-document.md", proseOnlyDocument);
-  // Every one of the seven but the spec's `part_of` read, which belongs to the document this
+  // Every one of the six but the spec's `part_of` read, which belongs to the document this
   // page does not show.
   const paths = readsTheFirstBlockNeedsNone(issueKey, "BIG").filter(
     (read) => read !== "/references"
@@ -687,7 +688,7 @@ test("a page with no document on it makes those reads as it always did @phone", 
 
 // And the rule the three rows above are held to: a panel the page draws after the reader is in
 // place moves what they are looking at by no pixels (`web/src/features/doc/readers-place.ts`).
-// The panel here is the issue header's Subscribers list, whose read is one of the seven; the
+// The panel here is the issue header's Subscribers list, whose read is one of the six; the
 // row holds that read at the server until the reader is deep in the document, so the panel
 // lands under a page that has stopped moving rather than during the load, which is the state
 // the rule is about. The browser's own scroll anchoring is off (`withoutScrollAnchoring`), as

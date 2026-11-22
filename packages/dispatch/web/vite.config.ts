@@ -340,9 +340,6 @@ export default defineConfig({
       "@legion/contracts/related-forms": fileURLToPath(
         new URL("../../contracts/src/related-forms.ts", import.meta.url)
       ),
-      "@legion/contracts/repo": fileURLToPath(
-        new URL("../../contracts/src/repo.ts", import.meta.url)
-      ),
       "@legion/contracts": fileURLToPath(new URL("../../contracts/src/index.ts", import.meta.url)),
       "@legion/proof-editor/document-json": fileURLToPath(
         new URL("../../proof-editor/src/document-json.ts", import.meta.url)

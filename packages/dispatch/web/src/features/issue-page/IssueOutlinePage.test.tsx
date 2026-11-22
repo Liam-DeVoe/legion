@@ -44,9 +44,7 @@ function answerThePageReads(): void {
     ),
     // The viewer's issue states, which the header's pin reads (`api.getMyState`).
     http.get("/api/v1/me/state", () => Response.json({})),
-    // The repository mappings and the project's architecture sources, which Details' properties
-    // read (`RepoControl`, the components line).
-    http.get("/api/v1/settings/repo-projects", () => Response.json([])),
+    // The project's architecture sources, which Details' components line reads.
     http.get("/api/v1/projects/:project/architecture-sources", () => Response.json([])),
     // The documents' blocks, the issue's asks and its decisions.
     ...documentSurfaceHandlers()

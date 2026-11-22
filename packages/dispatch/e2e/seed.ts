@@ -23,7 +23,6 @@ import { sql } from "./psql";
 const tables = [
   "embeddings",
   "agent_tokens",
-  "repo_projects",
   "architecture_sources",
   "legion_current",
   "legion_observations",

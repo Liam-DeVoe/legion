@@ -7,7 +7,8 @@ import { createContext, useContext, useRef, useSyncExternalStore } from "react";
  * A document address spends its first seconds building one thing: the block a reader can type
  * in. Measured on this pod, `iphone` at 4x CPU throttling, the issue page made seven reads on
  * that path that the block needs none of - the issue's comments and asks, the agent registry,
- * the repository mappings, the project's architecture sources, the issue's subscribers and the
+ * the repository mappings (a read #4457 has since removed: a project's default repository comes
+ * with the project list), the project's architecture sources, the issue's subscribers and the
  * spec's `part_of` references - each costing the main thread the request, the answer's parse
  * and a panel's draw while the reader waited. They are the issue page's non-document panels,
  * and they are read after the editor's first batch instead.
@@ -23,8 +24,7 @@ import { createContext, useContext, useRef, useSyncExternalStore } from "react";
  * that opens one says otherwise, so every other page reads exactly as it did.
  *
  * Nor is a read held from a reader who has reached its panel. `useAfterTheFirstBatch` takes
- * that as its argument - the Subscribers panel opened, the repository picker reached for, the
- * review sheet pulled up - and `ReaderIsHere` says the same for a whole subtree, so an agent
+ * that as its argument - the Subscribers panel opened, the review sheet pulled up - and `ReaderIsHere` says the same for a whole subtree, so an agent
  * name inside a panel the reader opened reads the registry then rather than at the batch.
  */
 let awaited = false;
