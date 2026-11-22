@@ -642,10 +642,11 @@ func (h *historyJobReads) take() []historyJobRead {
 // TestASettingsChangeReadsTheJobsOfTheCardsItMovesAlone: over a settled history, the pass after
 // each change reads the history's jobs (historyJobReads, on the registry's pool) of the production
 // rule's names and of the cards the change moves (settingsMoves) alone. The apply step named moves
-// the production rule and its card, and the read asks for no name a staging card follows, so it
-// answers no staging card's job. The staging gate renamed moves the gate alone, and the read asks
-// for its old and new names and the production rule's, whose verdicts decide which projects each
-// deploy counts for and so which rows each project's day holds, and not the staging deploy's.
+// the production rule and with it every card: a push run counts for the projects of the deploy it
+// is, which the rule's containment decides, so the read asks for every card's names. The staging
+// gate renamed moves the gate alone, and the read asks for its old and new names and the
+// production rule's, whose verdicts decide which projects each deploy counts for and so which rows
+// each project's day holds, and not the staging deploy's.
 // Each read is logged with the rows it answered beside those a read of both rules' names and of
 // every card's under both settings answers.
 func TestASettingsChangeReadsTheJobsOfTheCardsItMovesAlone(t *testing.T) {
@@ -664,8 +665,8 @@ func TestASettingsChangeReadsTheJobsOfTheCardsItMovesAlone(t *testing.T) {
 		moves, asked, left []string
 	}{
 		{"the apply step named", func(s *delivery.DeliverySettings) { s.ProductionApplyStepName = new(settingsApplyStep) },
-			slices.Concat(leadTimeSlugs, []string{SlugDeployFrequency, SlugDeployRunSuccess, SlugProductionDeploy}),
-			original.ProductionJobNames, []string{gate, deploy}},
+			slices.Concat(leadTimeSlugs, []string{SlugDeployFrequency, SlugDeployRunSuccess, SlugProductionDeploy, SlugStagingE2E, SlugStagingDeploy}),
+			slices.Concat(original.ProductionJobNames, []string{gate, deploy}), nil},
 		{"the staging gate renamed", func(s *delivery.DeliverySettings) { s.StagingE2EJobName = new(renamed) },
 			[]string{SlugStagingE2E}, slices.Concat(original.ProductionJobNames, []string{gate, renamed}), []string{deploy}},
 	} {

@@ -431,7 +431,9 @@ func (s *Store) readMembers(ctx context.Context, projects, families, deployRepos
 //     row of a moved eval (on or after its first stored first input day), the rows of the evals
 //     slugs names and the members of families, held until the last chunk is built; and beside that
 //     build, the stored members of families of the repositories rewritten on those days
-//     (readMembers), none where it builds none;
+//     (readMembers), none where it builds none, of the CI family the push runs' alone: the days
+//     build no PR-checks run, whose project its pull request's issue decides (attribution.check),
+//     which no setting moves, so its members stand as stored;
 //   - then, in one transaction: those rows upserted where a value moved (upsertDays, which cuts
 //     them into statements of at most statementBytes of parameters); once, over every day
 //     written, those evals' stored rows of the repositories rewritten that the days no longer hold
@@ -479,15 +481,17 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 	// a read of its own names gives.
 	//
 	// A name that only cards the change leaves follow is not read, and the rewrite keeps what a read
-	// of it would build. Of the cards' rows it keeps the moved cards' alone (slugs), and it keeps no
-	// card's members: they are the day's push runs, every push run on main whatever its jobs. A
-	// card's jobs move only the values of its own rows, never which rows a day holds, since
-	// DeployJobsDay gives every card a part of each day with a push run; so each project's day holds
-	// the rows the walk's does, which the first days noteBuilt moves, the days written and their
-	// zero rows read. The production rule's names, unlike those, are read whatever slugs names (the
-	// two rules name one set where it did not move): its verdicts decide which projects a deploy
-	// counts for (attribution.deploy) and which lead times a day keeps (dropUnshipped), and so which
-	// rows each project's day holds.
+	// of it would build. Of the cards' rows it keeps the moved cards' alone (slugs). Their members
+	// are the day's push runs, every push run on main whatever its jobs, each counting for the
+	// projects of the deploy it is: a card's jobs move none of them, and the production rule moves
+	// which projects count each, so the rewrite keeps them where families names the CI family
+	// (settingsMoves). A card's jobs move only the values of its own rows, never which rows a day
+	// holds, since DeployJobsDay gives every card a part of each day with a push run; so each
+	// project's day holds the rows the walk's does, which the first days noteBuilt moves, the days
+	// written and their zero rows read. The production rule's names, unlike those, are read
+	// whatever slugs names (the two rules name one set where it did not move): its verdicts decide
+	// which projects a deploy counts for (attribution.deploy) and which lead times a day keeps
+	// (dropUnshipped), and so which rows each project's day holds.
 	followed := slices.DeleteFunc(slices.Concat(prevCards, cards), func(card measures.DeployJobCard) bool {
 		return !slices.Contains(slugs, cardSlugs[card.CardID])
 	})
@@ -746,6 +750,21 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 		},
 	); err != nil {
 		return err
+	}
+	// The days build the CI family's push runs alone (dayOf): a PR-checks run's member stands as
+	// stored, and none goes for not being built.
+	if slices.Contains(families, KindCI) {
+		pushes := map[string]bool{}
+		for _, h := range histories {
+			for _, runs := range h.pushesByDay {
+				for _, run := range runs {
+					pushes[RunMember(run.Repo, run.RunID)] = true
+				}
+			}
+		}
+		maps.DeleteFunc(stored, func(key memberKey, _ memberAt) bool {
+			return key.family == KindCI && !pushes[key.rowKey]
+		})
 	}
 
 	tx, err := pool.Begin(ctx)
