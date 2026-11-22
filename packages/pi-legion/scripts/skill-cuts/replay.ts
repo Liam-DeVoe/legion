@@ -4,27 +4,42 @@
  * a Messages body, or an OpenAI Responses body (gateway.ts's `isResponsesBody`); every round sends
  * the body in its own API, on the case's own model.
  *
- * A reply whose every tool call is a read of a file of the arm's skill (a `read` of
- * `skill://<skill>` or `skill://<skill>/<path>`, as cases.ts's `skillReadFile` reads one, or a
- * whole read by path of a file of the cut's own copy of the skill, as `pathReadFile` reads one) is
- * not the step: the agent is still loading the skill. Each of those reads is answered the way the
- * arm's files would answer it (arms.ts's `skillFile`: the file under a `[Skill file: <path>]`
- * header whose path is the skill's installed one, the same in every arm, or Oh My Pi's not-found
- * result for a file the arm lacks; `pathFile` for a read by path: Oh My Pi's result for that path,
- * at the path read, or its not-found result), in the form Oh My Pi sends a tool result in the
- * body's API, and the body goes again with the reply and the answers added; at most
- * `maxSkillRounds` times (MAX_SKILL_ROUNDS). In the arm of ours, whose skill is ours under its own
- * name, a read of the case's skill is such a read too, answered with Oh My Pi's unknown-skill text
- * (arms.ts's `unknownSkill`), since that arm does not install it; a read by path of the cut's own
- * copy is answered from our file at that path. A Messages reply goes back as the assistant's
- * message and its answers as one user message of `tool_result` blocks (F2); a Responses reply's
- * output items go back as they came (its reasoning items' encrypted content included), and after
- * all of them, in the order of the reply's calls, one `function_call_output` item per call holding
- * the answer's text (F8: the Responses API takes no error flag, and Oh My Pi sends none). The
- * first reply that holds no tool call, or any other tool call (a read of another skill, a read of
- * another path on disk, a read of a directory of the skill, a read by path of a file Oh My Pi
- * shows in a form the arms do not rebuild, any other tool), is the judged step, and so is the
- * reply after the last round, whatever it holds.
+ * A reply whose every tool call reads a skill file is not the step: the agent is still loading
+ * skills. A read of a skill file is a `read` of a file of the arm's skill (`skill://<skill>` or
+ * `skill://<skill>/<path>`, as cases.ts's `skillReadFile` reads one, or a whole read by path of a
+ * file of the cut's own copy of the skill, as `pathReadFile` reads one), or of a file of another
+ * skill (arms.ts's `otherSkillRead`: a `skill://` read of any other skill, or a whole read by path
+ * of a skill the profile lists). Each read of the arm's skill is answered the way the arm's files
+ * would answer it (arms.ts's `skillFile`: the file under a `[Skill file: <path>]` header whose
+ * path is the skill's installed one, the same in every arm, or Oh My Pi's not-found result for a
+ * file the arm lacks, or, in `none`, which installs no copy of the skill, Oh My Pi's unknown-skill
+ * result; `pathFile` for a read by path: Oh My Pi's result for that path, at the path read, or its
+ * not-found result). In the arm of ours, whose skill is ours under its own name, a read of the
+ * case's skill is answered with Oh My Pi's unknown-skill text (arms.ts's `unknownSkill`), since
+ * that arm does not install it, and a read by path of the cut's own copy is answered from our file
+ * at that path. Each read of another skill is answered from that skill's installed copy
+ * (`ReplayOptions.copies`, context.ts's `installedCopies` of the arm's capture's record), the same
+ * text in every arm, and a read of a skill the arm does not install gets Oh My Pi's unknown-skill
+ * result. The answers go in the form Oh My Pi sends a tool result in the body's API, and the body
+ * goes again with the reply and the answers added; at most `maxSkillRounds` times
+ * (MAX_SKILL_ROUNDS). A Messages reply goes back as the assistant's message and its answers as one
+ * user message of `tool_result` blocks (F2); a Responses reply's output items go back as they came
+ * (its reasoning items' encrypted content included), and after all of them, in the order of the
+ * reply's calls, one `function_call_output` item per call holding the answer's text (F8: the
+ * Responses API takes no error flag, and Oh My Pi sends none).
+ *
+ * The first reply that holds no tool call, or any tool call that reads no skill file (a read of
+ * another path on disk, a read of a directory of a skill, a read with a selector, a read by path
+ * of a file Oh My Pi shows in a form the arms do not rebuild, any other tool), ends the run. The
+ * judged step (`Replayed.step`) is each answered round's tool calls, the reads, without their
+ * answers, then that reply: the judge sees which files the agent read before it acted, so a case
+ * whose line governs a read of a file of the skill ("read references/x.md first") passes on that
+ * read. A reply after the last answered round whose every tool call still reads a skill file gets
+ * no verdict: the replay rejects with ReadsPastLastRound (READS_PAST_LAST_ROUND), and cli.ts makes
+ * the run again as any run with no verdict; judged, the read would fail in every arm. Each
+ * answered round's reads are recorded (`Replayed.reads`: the skill, the file, how it was read,
+ * and where the answer came from).
+ *
  * Every round goes with the same headers (`ReplayOptions.headers`), the ones Oh My Pi sent beside
  * the body (none beside a Responses body).
  *
@@ -50,8 +65,16 @@
 import { createHash } from "node:crypto";
 import { statSync } from "node:fs";
 import path from "node:path";
-import { type Arm, type ArmName, pathFile, skillFile, unknownSkill } from "./arms";
-import { skillReadFile } from "./cases";
+import {
+  type Arm,
+  type ArmName,
+  otherSkillRead,
+  pathFile,
+  type SkillCopy,
+  skillFile,
+  unknownSkill,
+} from "./arms";
+import { pathReadFile, skillReadFile } from "./cases";
 import {
   type ContentBlock,
   freshIdentity,
@@ -62,12 +85,18 @@ import {
   type RequestBody,
   type SendOptions,
   type Spent,
-  type ToolCall,
   toolCalls,
 } from "./gateway";
 
-/** The most times a replay answers a reply's skill reads and sends again. */
+/** The most rounds of skill reads a replay answers before a reply that holds another call or none.
+ *  Three: of 3,680 posted runs of the behaviour test, 137 had one round answered and none had two;
+ *  a read of another skill (dispatch-first, a skill that sends the agent to others), then a read of
+ *  the case's skill, then the act, takes two. */
 export const MAX_SKILL_ROUNDS = 3;
+
+/** How the reason of a run begins whose reply after the last answered round still only reads
+ *  skill files (ReadsPastLastRound): such a run gets no verdict. */
+export const READS_PAST_LAST_ROUND = "reads-past-last-round";
 
 /** The most cache breakpoints (`cache_control`) one Messages API request may hold. */
 export const MAX_BREAKPOINTS = 4;
@@ -143,76 +172,161 @@ export function withCacheBreakpoint(body: MessagesBody): MessagesBody {
   return { ...body, messages };
 }
 
-/** One replay: the judged step, how many rounds of skill reads were answered before it, what each
- *  reply used, in the order sent, and the session id every round of the run went with
- *  (gateway.ts's `freshIdentity`; null for a body that names none). */
+/** One read an answered round answered: the skill (the name the profile lists it under, or the
+ *  name a `skill://` URL gives a skill the profile does not list), the file inside its directory,
+ *  how it was read (`skill` for a `skill://` URL, `path` for a whole read by path), where the
+ *  answer came from (`arm`, the arm's own directory; `copy`, another skill's installed copy;
+ *  `absent`, Oh My Pi's unknown-skill or not-found result where the arm installs no copy of the
+ *  skill: every read of the case's skill in `none`), and whether the answer is an error. */
+export interface AnsweredRead {
+  readonly skill: string;
+  readonly file: string;
+  readonly by: "skill" | "path";
+  readonly from: "arm" | "copy" | "absent";
+  readonly isError: boolean;
+}
+
+/** One replay: the judged step (each answered round's tool calls, then the reply that ended the
+ *  run; its other fields are that reply's), how many rounds of skill reads were answered before
+ *  it and each one's reads, what each reply used, in the order sent, and the session id every
+ *  round of the run went with (gateway.ts's `freshIdentity`; null for a body that names none). */
 export interface Replayed {
   readonly step: Reply;
   readonly rounds: number;
+  readonly reads: readonly (readonly AnsweredRead[])[];
   readonly usage: Spent[];
   readonly userId: string | null;
 }
 
-/** How a replay runs: the most rounds of skill reads it answers, and the headers that go with the
- *  body on every round (gateway.ts's `SendOptions`: the `anthropic-*` headers Oh My Pi sent beside
- *  a captured Messages body, whose betas its fields need; none beside a Responses body). */
+/** What a replay rejects with when the reply after its last answered round still only reads skill
+ *  files: the run gets no verdict (see the file's header). `replayed` is the run as it stood, its
+ *  `step` that reply after the answered rounds' calls. Its message begins READS_PAST_LAST_ROUND,
+ *  and names the reply's reads. */
+export class ReadsPastLastRound extends Error {
+  constructor(
+    readonly replayed: Replayed,
+    last: readonly AnsweredRead[]
+  ) {
+    const files = last.map((read) => `${read.skill} ${read.file}`).join(", ");
+    super(
+      `${READS_PAST_LAST_ROUND}: after ${replayed.rounds} answered rounds of skill reads, the reply still only reads skill files (${files})`
+    );
+  }
+}
+
+/** How a replay runs: the most rounds of skill reads it answers; the installed copies of the
+ *  arm's other skills, which a read of one is answered from (arms.ts's `SkillCopy`, context.ts's
+ *  `installedCopies` of the arm's capture's record; none by default, and a read of a skill the
+ *  profile lists with no copy here fails the run); and the headers that go with the body on every
+ *  round (gateway.ts's `SendOptions`: the `anthropic-*` headers Oh My Pi sent beside a captured
+ *  Messages body, whose betas its fields need; none beside a Responses body). */
 export interface ReplayOptions extends SendOptions {
   readonly maxSkillRounds?: number;
+  readonly copies?: readonly SkillCopy[];
 }
 
-/** A tool call that reads a file of the arm's skill: the call's id, and either the file, as a
- *  path inside the skill's directory, of a `skill://` read, or the arm's answer to any other read
- *  it answers: a read by path of the cut's own copy (arms.ts's `pathFile`), or, in the arm of
- *  ours, a read of the skill it does not install (`unknownSkill`). */
-type SkillRead =
-  | { readonly id: string; readonly file: string }
-  | { readonly id: string; readonly answer: { readonly text: string; readonly isError: boolean } };
-
-/** The skill read `call` is, or undefined when it is any other tool call. A read of a directory
- *  of the skill is none: Oh My Pi answers it with a listing, which the arm does not rebuild; nor
- *  is a read by path that `pathFile` does not answer. */
-function skillRead(call: ToolCall, arm: Arm): SkillRead | undefined {
-  const { id, name, input } = call;
-  if (id === undefined || name !== "read") return undefined;
-  if (typeof input !== "object" || input === null || !("path" in input)) return undefined;
-  if (typeof input.path !== "string") return undefined;
-  const file = skillReadFile(arm.skill, input.path);
-  if (file === undefined) {
-    const theirs = arm.ours?.theirs;
-    const answer =
-      theirs !== undefined && skillReadFile(theirs, input.path) !== undefined
-        ? unknownSkill(arm, theirs)
-        : pathFile(arm, input.path);
-    return answer === undefined ? undefined : { id, answer };
-  }
-  if (arm.skillDir !== undefined) {
-    const stats = statSync(path.resolve(arm.skillDir, file), { throwIfNoEntry: false });
-    if (stats?.isDirectory()) return undefined;
-  }
-  return { id, file };
+/** A tool call that reads a skill file, answered: the call's id, the answer, and its record. */
+interface SkillRead {
+  readonly id: string;
+  readonly text: string;
+  readonly isError: boolean;
+  readonly read: AnsweredRead;
 }
 
-/** `body` with `content`, a reply whose every tool call is one of `reads`, and the arm's answer to
- *  each read added, in the form of the body's API (see the file's header). */
+/** The read `target` the tool call `id` makes, answered, or undefined when it reads no skill file
+ *  (see the file's header). A read of a directory of the arm's skill is none: Oh My Pi answers it
+ *  with a listing, which the arm does not rebuild; nor is a read by path that `pathFile` does not
+ *  answer, nor one `otherSkillRead` does not. In the arm of ours, a read of the case's skill
+ *  (`arm.ours.theirs`) gets Oh My Pi's unknown-skill text (`unknownSkill`): the arm does not
+ *  install it. */
+function skillRead(
+  id: string,
+  target: string,
+  arm: Arm,
+  copies: readonly SkillCopy[]
+): SkillRead | undefined {
+  const from = arm.skillDir === undefined ? "absent" : "arm";
+  const file = skillReadFile(arm.skill, target);
+  if (file !== undefined) {
+    if (arm.skillDir !== undefined) {
+      const stats = statSync(path.resolve(arm.skillDir, file), { throwIfNoEntry: false });
+      if (stats?.isDirectory()) return undefined;
+    }
+    const answer = skillFile(arm, file);
+    const read = { skill: arm.skill, file, by: "skill", from, isError: answer.isError } as const;
+    return { id, ...answer, read };
+  }
+  const theirs = arm.ours?.theirs;
+  const theirFile = theirs === undefined ? undefined : skillReadFile(theirs, target);
+  if (theirs !== undefined && theirFile !== undefined) {
+    const answer = unknownSkill(arm, theirs);
+    const read = {
+      skill: theirs,
+      file: theirFile,
+      by: "skill",
+      from: "absent",
+      isError: answer.isError,
+    } as const;
+    return { id, ...answer, read };
+  }
+  const byPath = pathFile(arm, target);
+  if (byPath !== undefined) {
+    const read = {
+      skill: arm.skill,
+      file: pathReadFile(arm, target) ?? target,
+      by: "path",
+      from,
+      isError: byPath.isError,
+    } as const;
+    return { id, ...byPath, read };
+  }
+  const other = otherSkillRead(arm, copies, target);
+  if (other === undefined) return undefined;
+  const { text, ...read } = other;
+  return { id, text, isError: other.isError, read };
+}
+
+/** The reads a reply's `content` makes, answered, or undefined when it holds no tool call, or a
+ *  tool call that reads no skill file. No read is answered unless every call is a `read` of a path
+ *  or URL, so a reply that also makes another call never fails on a read the replay cannot
+ *  answer (`otherSkillRead`'s throw). */
+function roundReads(
+  content: readonly ContentBlock[],
+  arm: Arm,
+  copies: readonly SkillCopy[]
+): SkillRead[] | undefined {
+  const calls: { id: string; target: string }[] = [];
+  for (const { id, name, input } of toolCalls(content)) {
+    const target = typeof input === "object" && input !== null ? Reflect.get(input, "path") : null;
+    if (id === undefined || name !== "read" || typeof target !== "string") return undefined;
+    calls.push({ id, target });
+  }
+  if (calls.length === 0) return undefined;
+  const reads: SkillRead[] = [];
+  for (const { id, target } of calls) {
+    const read = skillRead(id, target, arm, copies);
+    if (read === undefined) return undefined;
+    reads.push(read);
+  }
+  return reads;
+}
+
+/** `body` with `content`, a reply whose every tool call is one of `reads`, and the answer to each
+ *  read added, in the form of the body's API (see the file's header). */
 function answered(
   body: RequestBody,
   content: readonly ContentBlock[],
-  reads: readonly SkillRead[],
-  arm: Arm
+  reads: readonly SkillRead[]
 ): RequestBody {
-  const answers = reads.map((read) => ({
-    id: read.id,
-    ...("answer" in read ? read.answer : skillFile(arm, read.file)),
-  }));
   if (isResponsesBody(body)) {
-    const outputs = answers.map(({ id, text }) => ({
+    const outputs = reads.map(({ id, text }) => ({
       type: "function_call_output",
       call_id: id,
       output: text,
     }));
     return { ...body, input: [...body.input, ...content, ...outputs] };
   }
-  const results = answers.map(({ id, text, isError }) => ({
+  const results = reads.map(({ id, text, isError }) => ({
     type: "tool_result",
     tool_use_id: id,
     content: [{ type: "text", text }],
@@ -230,19 +344,22 @@ function answered(
 
 /** Sends `sent` for `arm`, the body with its cache breakpoint as `replayOnce` makes it (see the
  *  file's header) and the run's own session id `userId` (`freshIdentity`), which every round of
- *  the run keeps; answers its skill reads, and returns the judged step. `sent` is never changed,
- *  and every round's body shares its parts. `firstSettled` is told once the run's first send has
- *  its reply or its failure. */
+ *  the run keeps; answers its skill reads, and returns the judged step, or rejects with
+ *  ReadsPastLastRound. `sent` is never changed, and every round's body shares its parts.
+ *  `firstSettled` is told once the run's first send has its reply or its failure. */
 async function replaySent(
   sent: RequestBody,
   userId: string | null,
   arm: Arm,
   gateway: Gateway,
-  { maxSkillRounds = MAX_SKILL_ROUNDS, headers }: ReplayOptions,
+  { maxSkillRounds = MAX_SKILL_ROUNDS, copies = [], headers }: ReplayOptions,
   firstSettled?: () => void
 ): Promise<Replayed> {
   let body = sent;
   const usage: Spent[] = [];
+  const reads: AnsweredRead[][] = [];
+  // The answered rounds' tool calls, which the judged step holds before the reply that ends it.
+  const calls: ContentBlock[] = [];
   for (let rounds = 0; ; rounds += 1) {
     let reply: Reply;
     try {
@@ -251,22 +368,29 @@ async function replaySent(
       if (rounds === 0) firstSettled?.();
     }
     usage.push(reply.spent);
-    const calls = toolCalls(reply.message.content);
-    const reads = calls.map((call) => skillRead(call, arm));
-    if (
-      rounds >= maxSkillRounds ||
-      calls.length === 0 ||
-      !reads.every((read): read is SkillRead => read !== undefined)
-    ) {
-      return { step: reply, rounds, usage, userId };
+    const content = reply.message.content;
+    const round = roundReads(content, arm, copies);
+    const step = { ...reply, message: { ...reply.message, content: [...calls, ...content] } };
+    if (round === undefined) return { step, rounds, reads, usage, userId };
+    if (rounds >= maxSkillRounds) {
+      throw new ReadsPastLastRound(
+        { step, rounds, reads, usage, userId },
+        round.map(({ read }) => read)
+      );
     }
-    body = answered(body, reply.message.content, reads, arm);
+    reads.push(round.map(({ read }) => read));
+    // A Messages `tool_use` block, or a Responses `function_call` item.
+    calls.push(
+      ...content.filter((block) => block.type === "tool_use" || block.type === "function_call")
+    );
+    body = answered(body, content, round);
   }
 }
 
 /** Sends `body` for `arm` with a session id of its own when it names one (`freshIdentity`),
  *  answers its skill reads, and returns the judged step. Rejects when a send does (the gateway's
- *  `BudgetSpent` among them). */
+ *  `BudgetSpent` among them), and with ReadsPastLastRound when the reply after the last answered
+ *  round still only reads skill files. */
 export function replayOnce(
   body: RequestBody,
   arm: Arm,
@@ -278,11 +402,13 @@ export function replayOnce(
 }
 
 /** One arm's runs in a round: its arm, its captured body, the headers that go with it (its
- *  capture's `anthropic-*` headers, none beside a Responses body), and how many runs to make. */
+ *  capture's `anthropic-*` headers, none beside a Responses body), the installed copies of its
+ *  other skills (`ReplayOptions.copies`), and how many runs to make. */
 export interface ArmRuns {
   readonly arm: Arm;
   readonly body: RequestBody;
   readonly headers?: Readonly<Record<string, string>>;
+  readonly copies?: readonly SkillCopy[];
   readonly runs: number;
 }
 
@@ -374,7 +500,11 @@ export async function replayInterleaved(
       own.id,
       each.arm,
       gateway,
-      { ...options, ...(each.headers === undefined ? {} : { headers: each.headers }) },
+      {
+        ...options,
+        ...(each.headers === undefined ? {} : { headers: each.headers }),
+        ...(each.copies === undefined ? {} : { copies: each.copies }),
+      },
       settled.resolve
     );
     // Its outcome is read once every run has started; until then a failure is held, not thrown.

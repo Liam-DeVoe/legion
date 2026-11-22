@@ -7,8 +7,11 @@
  * - `skills/`: the arm's installed skills (`arm.profileSkills`), one directory each under its
  *   name. Each copy of the case's skill's source (cases.ts's `testedCopy`) comes from the arm's
  *   own directory; every other skill is its repository's directory at its commit, read through
- *   `source` and kept under the cache (`skills/<key of repo, commit, path>`). A second copy of a
- *   name, whose text differs (a profile skill's `namespace`), goes in
+ *   `source` and kept under the cache (`skills/<key of repo, commit, path>`). A skill directory
+ *   the repository holds as a symbolic link is read at the directory the link names in the
+ *   repository (`skillReadDir`), and one whose link leads out of the repository, or to no
+ *   directory of it, is an UnreadableDirectory naming the case, the link and its target. A
+ *   second copy of a name, whose text differs (a profile skill's `namespace`), goes in
  *   `namespaced/<namespace>/skills/<name>`, one more skills directory of its own
  *   (`namespacedDirs`), so Oh My Pi lists it as `<namespace>/<name>`. A skill a plugin reads as
  *   it loads and puts into the session itself (arms.ts's `Injection` of a plugin: the Envoy
@@ -98,8 +101,8 @@ import {
 import path from "node:path";
 import { messageFor } from "@legion/envoy-client/errors";
 import { mapLimit } from "../skill-scenarios/production-dispatch";
-import { type Arm, legionStore } from "./arms";
-import { type Case, listedName, testedCopy } from "./cases";
+import { type Arm, legionStore, type SkillCopy } from "./arms";
+import { type Case, listedName, type ProfileSkill, testedCopy } from "./cases";
 import {
   eachChunk,
   firstLine,
@@ -257,6 +260,21 @@ export interface ContextRecord {
    *  reason (`RepoSource.reads`; empty for a source that reads no GitHub). A context built at the
    *  same time from the same source adds its own. */
   readonly githubRetries: Readonly<Record<string, number>>;
+}
+
+/** The installed copy of each repository skill a context's `record` names (a `from` that names a
+ *  cache key), as replay.ts answers a read of it (arms.ts's `otherSkillRead`): the name it is
+ *  listed under, and its cache entry `<cacheDir>/skills/<key>`, the directory the context copied
+ *  it from. Every arm of a case installs the same entry, so a read of it gets the same text in
+ *  every arm. The arm's own skill (`arm`) and a stand-in (`stand-in`) are not repository skills,
+ *  and are left out. */
+export function installedCopies(
+  record: Pick<ContextRecord, "skills">,
+  cacheDir: string
+): SkillCopy[] {
+  return record.skills.flatMap(({ name, from }) =>
+    typeof from === "string" ? [] : [{ name, dir: path.join(cacheDir, "skills", from.key) }]
+  );
 }
 
 /** A subagent's agent definition: its name, which of Oh My Pi's agent directories holds it
@@ -529,6 +547,11 @@ type BlobEntry = Omit<TreeEntry, "type">;
  *  commits are dropped. */
 const TREE_LISTINGS = 16;
 
+/** How many one-level tree reads `ghSource` keeps, the one used longest ago dropped first: where
+ *  GitHub cuts a commit's tree short, the levels along a skill directory's path, which `link`
+ *  reads to find whether the directory is a link and `tree` then walks again. */
+const TREE_LEVELS = 64;
+
 /** Writes a blob of `mode` (git's: 100755 executable, 120000 a link) at `file`. */
 function writeBlob(file: string, mode: string, bytes: Uint8Array): void {
   mkdirSync(path.dirname(file), { recursive: true });
@@ -580,7 +603,9 @@ export interface GhOptions {
  * recursive tree short (`truncated`: a repository of too many entries), a directory is read
  * alone (`walk`): its tree found by one-level reads from the root along its path, then its own
  * recursive tree, or each of its levels read alone where GitHub cuts that short too, and each of
- * its blobs read alone over REST; `prefetch` reads nothing ahead for such a commit. A skill at the
+ * its blobs read alone over REST; `prefetch` reads nothing ahead for such a commit. A one-level
+ * read is kept while it is among the last TREE_LEVELS used, so the levels `link` reads along a
+ * path are not read again when `walk` follows it. A skill at the
  * repository's root (`.`) is its root's files, read the same way, at their whole paths: from the
  * commit's tree, or, where GitHub cuts it short, the root walked one level at a time; a root of
  * more than ROOT_SKILL_FILES files is an UnreadableDirectory, and `prefetch` reads none of it
@@ -717,33 +742,53 @@ export function ghSource(
     const route = `repos/${repo}/git/trees/${sha}${recursive ? "?recursive=1" : ""}`;
     return JSON.parse(new TextDecoder().decode(await api(route, false)));
   };
-  // The commit's recursive tree, its blob entries only, read once while it is among the last
-  // TREE_LISTINGS used. A read that failed is dropped, so the next one reads again.
-  const listingOf = (repo: string, commit: string): Promise<Listing> => {
-    const id = `${repo}@${commit}`;
-    const kept = trees.get(id);
+  // `read()`, kept in `map` under `id` while it is among the last `limit` used, the one used
+  // longest ago dropped first. A read that failed is dropped, so the next one reads again.
+  const keptRead = <T>(
+    map: Map<string, Promise<T>>,
+    id: string,
+    limit: number,
+    read: () => Promise<T>
+  ): Promise<T> => {
+    const kept = map.get(id);
     if (kept !== undefined) {
       // Used again: it goes to the end, the last to be dropped.
-      trees.delete(id);
-      trees.set(id, kept);
+      map.delete(id);
+      map.set(id, kept);
       return kept;
     }
-    const listing = treeRead(repo, commit, true).then((parsed) => {
-      const entries = parsed.tree
-        .filter((entry) => entry.type === "blob")
-        .map((entry) => ({ path: entry.path, mode: entry.mode, sha: entry.sha, size: entry.size }));
-      return { entries, truncated: parsed.truncated };
+    const fresh = read();
+    fresh.catch(() => {
+      if (map.get(id) === fresh) map.delete(id);
     });
-    listing.catch(() => {
-      if (trees.get(id) === listing) trees.delete(id);
-    });
-    trees.set(id, listing);
-    for (const old of trees.keys()) {
-      if (trees.size <= TREE_LISTINGS) break;
-      trees.delete(old);
+    map.set(id, fresh);
+    for (const old of map.keys()) {
+      if (map.size <= limit) break;
+      map.delete(old);
     }
-    return listing;
+    return fresh;
   };
+  // The commit's recursive tree, its blob entries only, read once while it is among the last
+  // TREE_LISTINGS used.
+  const listingOf = (repo: string, commit: string): Promise<Listing> =>
+    keptRead(trees, `${repo}@${commit}`, TREE_LISTINGS, () =>
+      treeRead(repo, commit, true).then((parsed) => {
+        const entries = parsed.tree
+          .filter((entry) => entry.type === "blob")
+          .map((entry) => ({
+            path: entry.path,
+            mode: entry.mode,
+            sha: entry.sha,
+            size: entry.size,
+          }));
+        return { entries, truncated: parsed.truncated };
+      })
+    );
+  // One level of the tree `sha` of `repo` (a commit's id names its root tree), read once while it
+  // is among the last TREE_LEVELS used: a tree's id fixes what it holds.
+  const levels = new Map<string, Promise<{ tree: TreeEntry[]; truncated: boolean }>>();
+  const levelOf = (repo: string, sha: string) =>
+    keptRead(levels, `${repo}@${sha}`, TREE_LEVELS, () => treeRead(repo, sha, false));
   // The blob entries under `dir` of `repo` at `commit`, a commit whose recursive tree GitHub cuts
   // short, at their paths in the repository, with no whole repository read: `dir`'s tree found by
   // one-level reads from the root along its path, then its own recursive tree, or, where GitHub
@@ -756,7 +801,7 @@ export function ghSource(
     const root = dir === ".";
     // One level of the tree `sha`, which is the tree of `at` ("" the root).
     const level = async (sha: string, at: string): Promise<TreeEntry[]> => {
-      const read = await treeRead(repo, sha, false);
+      const read = await levelOf(repo, sha);
       if (!read.truncated) return read.tree;
       throw new UnreadableDirectory(
         repo,
@@ -913,7 +958,7 @@ export function ghSource(
         // level GitHub cuts short even alone is an UnreadableDirectory, as in `walk`.
         const parent = path.posix.dirname(file);
         const level = async (sha: string, at: string): Promise<TreeEntry[]> => {
-          const read = await treeRead(repo, sha, false);
+          const read = await levelOf(repo, sha);
           if (!read.truncated) return read.tree;
           throw new UnreadableDirectory(
             repo,
@@ -1489,44 +1534,87 @@ interface AgentLink {
  *  which keep only that base of config.ts's `.omp`, `.claude`, `.codex` and `.gemini`: lines
  *  11-16 and 90-93; `.claude/agents` and the like are skipped by design, lines 13-16). */
 const PROJECT_AGENTS = ".omp/agents";
-/** The most symbolic links in a row `projectAgentsPath` follows; past them the path names
- *  nothing, as Oh My Pi's stat fails on a loop. */
+/** The most symbolic links in a row `followLinks` follows; past them the path names nothing, as
+ *  Oh My Pi's stat fails on a loop. */
 const LINK_HOPS = 8;
 
-/** Where a level's `.omp/agents` is (`projectAgentsPath`): its path in the repository and each
- *  link followed to reach it, or the link whose target leaves the repository. */
-type ProjectAgentsPath =
+/** Where a path of a repository leads (`followLinks`): its path in the repository and each link
+ *  followed to reach it, or the link whose target leaves the repository. */
+type LinkedPath =
   | { readonly path: string; readonly via: readonly string[] }
   | { readonly outside: { readonly link: string; readonly target: string } };
 
+/** Where `file` of `repo` at `commit` leads, as Oh My Pi's stat reaches it: while the repository
+ *  holds the path as a symbolic link (`RepoSource.link`), the link's target, taken from the
+ *  link's directory, LINK_HOPS in a row at most, with each link followed (`<link> -> <target>`);
+ *  or the first such link whose target is not in the repository (an absolute path, or one above
+ *  the repository's root), which no read of the repository gives. */
+async function followLinks(
+  source: RepoSource,
+  repo: string,
+  commit: string,
+  file: string
+): Promise<LinkedPath> {
+  let at = file;
+  const via: string[] = [];
+  for (let hops = 0; hops < LINK_HOPS; hops++) {
+    const target = await source.link?.(repo, commit, at);
+    if (target === undefined) break;
+    const resolved = path.posix.normalize(path.posix.join(path.posix.dirname(at), target));
+    if (path.posix.isAbsolute(target) || resolved === ".." || resolved.startsWith("../")) {
+      return { outside: { link: at, target } };
+    }
+    via.push(`${at} -> ${target}`);
+    at = resolved === "." ? "" : resolved;
+  }
+  return { path: at, via };
+}
+
 /** Where `<level>/.omp/agents` of `repo` at `commit` is, as Oh My Pi's stat reaches it: each
- *  symbolic link the repository holds at `<level>/.omp` or at its `agents` (`RepoSource.link`)
- *  followed to its target in the repository, LINK_HOPS in a row at most, with each link followed
- *  (`<link> -> <target>`); or the first such link whose target is not in the repository (an
- *  absolute path, or one above the repository's root), which the context cannot read. */
+ *  symbolic link the repository holds at `<level>/.omp` or at its `agents` followed to its target
+ *  in the repository (`followLinks`); or the first such link whose target is not in the
+ *  repository, which the context cannot read. */
 async function projectAgentsPath(
   source: RepoSource,
   repo: string,
   commit: string,
   level: string
-): Promise<ProjectAgentsPath> {
+): Promise<LinkedPath> {
   let at = level;
   const via: string[] = [];
   for (const name of [".omp", "agents"]) {
-    let next = path.posix.join(at, name);
-    for (let hops = 0; hops < LINK_HOPS; hops++) {
-      const target = await source.link?.(repo, commit, next);
-      if (target === undefined) break;
-      const resolved = path.posix.normalize(path.posix.join(path.posix.dirname(next), target));
-      if (path.posix.isAbsolute(target) || resolved === ".." || resolved.startsWith("../")) {
-        return { outside: { link: next, target } };
-      }
-      via.push(`${next} -> ${target}`);
-      next = resolved === "." ? "" : resolved;
-    }
-    at = next;
+    const reached = await followLinks(source, repo, commit, path.posix.join(at, name));
+    if ("outside" in reached) return reached;
+    via.push(...reached.via);
+    at = reached.path;
   }
   return { path: at, via };
+}
+
+/** The directory of `skill`'s repository that its files are read from: its own path, or, where
+ *  the repository holds that path as a symbolic link, the directory the link names in the
+ *  repository (`followLinks`), with each link followed (`via`; the root as `.`). build.ts names a
+ *  project skill held as a link by the link's path, where Oh My Pi lists it: Oh My Pi's scan of a
+ *  skills directory takes a link as a skill directory and reads what it names
+ *  (discovery/helpers.ts, lines 579-580 and 594-596, at the pinned tag). Throws an
+ *  UnreadableDirectory naming the case, the link and its target when a link leads out of the
+ *  repository, which no read of the repository gives; another error when a read fails. */
+async function skillReadDir(
+  c: ContextCase,
+  source: RepoSource,
+  skill: ProfileSkill
+): Promise<Extract<LinkedPath, { path: string }>> {
+  const reached = await followLinks(source, skill.repo, skill.commit, skill.path);
+  if (!("outside" in reached)) {
+    return { path: reached.path === "" ? "." : reached.path, via: reached.via };
+  }
+  const { link, target } = reached.outside;
+  throw new UnreadableDirectory(
+    skill.repo,
+    skill.commit,
+    link,
+    `case ${c.id}: the profile's skill ${listedName(skill)} is ${skill.path} of ${skill.repo} at ${skill.commit}, which holds ${link} as a symbolic link to ${target}, outside the repository, so no read of the repository gives the skill`
+  );
 }
 
 /** Whether `dir` holds an entry: a link that names nothing holds none. */
@@ -1574,7 +1662,7 @@ async function projectAgents(
   }
   for (const level of levels) {
     const where = path.posix.join(level, PROJECT_AGENTS);
-    let reached: ProjectAgentsPath;
+    let reached: LinkedPath;
     let dir: string | undefined;
     try {
       reached = await projectAgentsPath(source, repo, commit, level);
@@ -1956,14 +2044,19 @@ export async function buildContext(
   // directory (cases.ts's `testedCopy`); every other skill is its repository's.
   const tested = testedCopy(arm.profileSkills, arm.skill);
   // The repository skills the cache lacks, read ahead per repository and commit: one tree and a
-  // GraphQL batch per BLOB_BATCH blobs, where each file would take a call of its own.
+  // GraphQL batch per BLOB_BATCH blobs, where each file would take a call of its own. Each is read
+  // at the directory `skillReadDir` gives, kept by its cache key: its own, or the one its link
+  // names.
   const ahead = new Map<string, { repo: string; commit: string; dirs: string[] }>();
+  const readDirs = new Map<string, Extract<LinkedPath, { path: string }>>();
   for (const skill of arm.profileSkills) {
     const key = cacheKey(skill.repo, skill.commit, skill.path);
     if (tested(skill) || existsSync(path.join(options.cacheDir, "skills", key))) continue;
+    const read = await skillReadDir(c, source, skill);
+    readDirs.set(key, read);
     const id = `${skill.repo}@${skill.commit}`;
     const group = ahead.get(id) ?? { repo: skill.repo, commit: skill.commit, dirs: [] };
-    group.dirs.push(skill.path);
+    group.dirs.push(read.path);
     ahead.set(id, group);
   }
   // What the read ahead holds is released once the skills are installed, or once their step
@@ -1999,9 +2092,21 @@ export async function buildContext(
         skillRecords.push({ name: listed, from: "arm" });
       } else {
         const key = cacheKey(skill.repo, skill.commit, skill.path);
-        const cached = await builds.entry("skill", key, (dest) =>
-          source.tree(skill.repo, skill.commit, skill.path, dest)
-        );
+        const cached = await builds.entry("skill", key, async (dest) => {
+          // A skill whose cache entry was there at the read ahead is not in `readDirs`.
+          const read = readDirs.get(key) ?? (await skillReadDir(c, source, skill));
+          try {
+            await source.tree(skill.repo, skill.commit, read.path, dest);
+          } catch (error) {
+            if (!(error instanceof UnreadableDirectory) || read.via.length === 0) throw error;
+            throw new UnreadableDirectory(
+              skill.repo,
+              skill.commit,
+              read.path,
+              `case ${c.id}: the profile's skill ${listed} is ${skill.path} of ${skill.repo} at ${skill.commit}, which holds it as a symbolic link (${read.via.join(", ")}) to no directory of the repository: ${error.message}`
+            );
+          }
+        });
         cpSync(cached, dir, { recursive: true, verbatimSymlinks: true });
         skillRecords.push({
           name: listed,

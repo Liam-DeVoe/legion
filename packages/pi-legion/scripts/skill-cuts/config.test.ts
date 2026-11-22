@@ -8,8 +8,8 @@ import { cutOrSet, loadConfig, parseConfig, SkillCutsConfig, storeNamed } from "
 // key is refused by name. Every value here is made up; testdata/F7-skill-cuts.json is the made-up
 // configuration F7's capture used.
 
-/** A configuration with every required key, each a made-up value; it leaves out
- *  devboxClaudeConfigDir, the one optional key. */
+/** A configuration with every required key, each a made-up value; it leaves out the optional
+ *  keys (OPTIONAL_KEYS). */
 function valid(): Record<string, unknown> {
   return {
     owners: ["acme", "acme-labs"],
@@ -45,7 +45,7 @@ test("a configuration with every required key loads", () => {
 });
 
 /** The keys a configuration may leave out. */
-const OPTIONAL_KEYS = ["devboxClaudeConfigDir", "sets", "dotfilesRepo"];
+const OPTIONAL_KEYS = ["devboxClaudeConfigDir", "sets", "dotfilesRepo", "clones"];
 
 test.each(
   Object.keys(SkillCutsConfig.shape).filter((key) => !OPTIONAL_KEYS.includes(key))
@@ -117,6 +117,36 @@ test("a set id given twice, or one that cannot name a directory or a prefix, is 
   expect(
     refusal({ ...valid(), ...SETS, sets: [{ id: "alpha:set", repo: "acme/alpha-set" }] })
   ).toContain("sets[0].id");
+});
+
+// Catches: a pool clone made by hand (no installer records it) that the operator states for a
+// repository the copy lister does not read, so it names no copy, or for a directory that is no
+// path in the checkout.
+test("clones is optional; a clone of a directory of a repository, both of the owners, loads, and any other is refused by name", () => {
+  const clone = { repo: "acme/dotfiles", dir: ".private", clone: "acme-labs/private" };
+  expect(parseConfig(valid()).clones).toBeUndefined();
+  expect(parseConfig({ ...valid(), clones: [clone] }).clones).toEqual([clone]);
+  // An owner's name is read in any case, as GitHub reads it.
+  expect(
+    parseConfig({ ...valid(), clones: [{ ...clone, clone: "Acme-Labs/private" }] }).clones
+  ).toHaveLength(1);
+  expect(refusal({ ...valid(), clones: [clone, { ...clone, clone: "other/private" }] })).toContain(
+    "clones[1].clone: other/private is not a repository of an owner in owners"
+  );
+  expect(refusal({ ...valid(), clones: [{ ...clone, repo: "other/dotfiles" }] })).toContain(
+    "clones[0].repo: other/dotfiles is not a repository of an owner in owners"
+  );
+  for (const dir of ["", "/home/alpha/.private", "~/.private", ".private/", "a/../b", "./x"]) {
+    expect(refusal({ ...valid(), clones: [{ ...clone, dir }] })).toContain(
+      "clones[0].dir: a directory of the checkout as a path in the repository, such as .secrets"
+    );
+  }
+  expect(refusal({ ...valid(), clones: [{ ...clone, ref: "main" }] })).toContain(
+    'clones[0]: unknown key "ref"'
+  );
+  expect(refusal({ ...valid(), clones: [{ repo: "acme/dotfiles", dir: ".private" }] })).toContain(
+    "clones[0].clone: missing"
+  );
 });
 
 test("an unknown key is refused by name", () => {

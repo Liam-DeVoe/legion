@@ -10,10 +10,10 @@
  *
  *   bun scripts/skill-cuts/build.ts build-cases --config <skill-cuts.json> --key-file <file>
  *       (--cut <id> | --set <id>) --skill <name> --old <skill dir at the cut's base>
- *       --sessions <file> --seed <n> --copies <copies out dir> --count <count dir>
- *       --out <cases.jsonl> [--max <n>] [--budget-usd <n>] [--concurrency <n>]
- *       [--stop-projected-usd <n>] [--stop-after-sessions <n>] [--stop-zero-case-usd <n>]
- *       [--drop-navigation]
+ *       [--new <skill dir at the cut's head>] --sessions <file> --seed <n>
+ *       --copies <copies out dir> --count <count dir> --out <cases.jsonl> [--max <n>]
+ *       [--budget-usd <n>] [--concurrency <n>] [--stop-projected-usd <n>]
+ *       [--stop-after-sessions <n>] [--stop-zero-case-usd <n>] [--drop-navigation]
  *   bun scripts/skill-cuts/build.ts build-cases --config <skill-cuts.json> --key-file <file>
  *       (--cut <id> | --set <id>) --skill <name> --old <skill dir> --copies <copies out dir>
  *       --count <count dir> --written <n> (--context-session <store>:<hash> | --sessions <file>
@@ -74,13 +74,14 @@
  * one session open, a session before the one that reached the budget can be stopped by it too.
  *
  * **Going on.** The summary records the run's inputs: the cut, the skill, the seed, and the
- * SHA-256 of `--old`'s files, the sessions file, the copies files read and the count's query
- * outputs. When `--out` and its summary are there from a run of the same inputs, the build goes on
- * from them: every session they decided (dropped, or a case the cases file holds) is kept as it
- * was, with no pull and no reader call, and the build goes on in the same order from the first
- * session not decided, until `--max` cases in all; the budget counts the dollars already spent.
- * Inputs that differ are refused (exit 2), naming each; so is a cases file with no summary, and a
- * summary with no inputs. Each case is appended to the cases file as one whole line and then the
+ * SHA-256 of `--old`'s files, every file of `--new`, the sessions file, the copies files read and
+ * the count's query outputs. When `--out` and its summary are there from a run of the same
+ * inputs, the build goes on from them: every session they decided (dropped, or a case the cases
+ * file holds) is kept as it was, with no pull and no reader call, and the build goes on in the
+ * same order from the first session not decided, until `--max` cases in all; the budget counts
+ * the dollars already spent. Inputs that differ are refused (exit 2), naming each; so is a cases
+ * file with no summary, and a summary with no inputs (or with no `--new`, which an older
+ * build-cases did not take). Each case is appended to the cases file as one whole line and then the
  * summary is written to a temporary name and renamed, so both stay readable after a kill at any
  * moment; a case line the summary does not record (a kill between the two) is left out when the
  * build goes on, and its session is read again. For each session:
@@ -103,12 +104,28 @@
  *    message it leaves out: one marked `retryRecovery`, or an error with no content), each
  *    `custom_message` as a `custom` message (less the two plan-mode kinds it leaves out), each
  *    `branch_summary` as a `branchSummary` message. A string `content` is made one text block.
- * 3. The first successful read of a file of the skill (`read` of a `skill://<skill>` URL, as
- *    cases.ts's `skillReadFile` reads one) is found, and the copy its `[Skill file: <path>]` line
- *    names is placed by attribute.ts's own rules (`placer`: the prefix table, then a checkout,
- *    then the store's context), from `--count` and `--copies`, the two attribute.ts made the
- *    sessions file from. The session is kept only when they place the read at a copy of the cut's
- *    repository; one they place at another copy, or at none, is dropped with the rule named.
+ * 3. The session's reads of the skill are its reads of `skill://<skill>` files (as cases.ts's
+ *    `skillReadFile` reads one) and its reads of the skill's files by path, by count.sql's rule
+ *    (`readsByPath`: a path or URL that, its read selector taken off, ends `<skill>/SKILL.md` or
+ *    holds `skills/<skill>/references/`). The copy a read reads is placed by attribute.ts's own
+ *    rules (`placer`: the prefix table, then a checkout, then the store's context), from
+ *    `--count` and `--copies`, the two attribute.ts made the sessions file from: a `skill://`
+ *    read's at the path of its `[Skill file: <path>]` line, a read by path's at its own path, as
+ *    read. A case is built from a successful `skill://` read, or from a successful whole read by
+ *    path (no read selector) that they place at a copy of the cut's repository (a source). A
+ *    source's directory is its path up to the skill's directory, resolved as Oh My Pi's read
+ *    resolves it (cases.ts's `resolvedReadPath`): a relative path against the session's working
+ *    directory, its header's `cwd`, and a path under `~` against the home directory it ran under,
+ *    the part of its transcript's path before the first `/.omp/` (`sessionDirs`). The first
+ *    source is found. A first `skill://` read is kept only when they place it at a copy of the
+ *    cut's repository; one they place at another copy, or at none, is dropped with the rule
+ *    named. A session with neither, whose successful reads of the skill are all reads by path of
+ *    the kinds no case is built from (`pathKind`), is dropped by the first of their kinds in this
+ *    order: one with a read selector (`path-range`), one of another repository's copy or a URL
+ *    (`other-copy`), one at a path they place at no copy (`unattributed`), one of the cut's copy
+ *    whose relative or `~` path needs a directory the session does not name, or that resolves to
+ *    no absolute directory a case can name its copy by (`path-relative`); the drop's detail names
+ *    each read and why.
  *
  *    Every check that needs no model's answer runs here, before the session's first reader call,
  *    so a session such a check drops costs no reader spend: the placement; the model and thinking
@@ -118,14 +135,16 @@
  *    (below), built from every read the reader can reach, at each prompt build a step in its reach
  *    can run under: when no unit of those reads ships the cut repository's copy of the skill at any
  *    of them, no step's profile installs it. The
- *    checks of the step and its line (its model, the compaction and by-path reads before it, the
+ *    checks of the step and its line (its model, the compaction and the reads of the skill's
+ *    files before it, the form of each file read by path in the old and the new text, the
  *    line in the base text and in the read, a quote or restatement of it, and the profile of the
  *    reads before it) need the reader's answer, so they run after it and before the restatement
  *    check's and the audit's readers.
  * 4. The case reader (`skill-cuts read --prompt case`) is offered only the lines of the skill's
  *    base text (`--old`) that a case may name: those of each file that the session's own
- *    successful reads of that file hold whole (the text after its `[Skill file: …]` line, each
- *    line trimmed, among the messages the reader reads), each with its number in the base file.
+ *    successful reads of that file hold whole (the text after its `[Skill file: …]` line, or a
+ *    read by path's text less Oh My Pi's rows and its hashline line, `pathReadText`; each line
+ *    trimmed, among the messages the reader reads), each with its number in the base file.
  *    A file the session did not read is not offered, and a session whose reads hold no line of
  *    the base text is dropped before any reader call (`no-common-line`), since the skill's text
  *    may have changed after the session read it. It reads them and the session's messages window
@@ -139,22 +158,35 @@
  *    it would follow a compaction that follows the read, which drops it, so a session whose
  *    windows reach it with no step is dropped for that (`read-before-compaction`). Each message is
  *    cut to MESSAGE_CHARS (its start and its end kept), and each read result of the skill's files
- *    is left out with a note. The reader proposes the first step the skill governs, its message
- *    index, the line it exercises (one of those offered), the criterion, a violating step (a
- *    plausible next step that breaks the line and otherwise looks valid), and each message before
- *    the step that states the line's instruction in any wording; or no step. The session's record
- *    in the summary says how many windows the reader read (`windows`).
+ *    (a `skill://` read, or a whole read by path of a source's copy) is left out with a note. The
+ *    reader proposes the first step the skill governs, its message index, the line it exercises
+ *    (one of those offered), the criterion, a violating step (a plausible next step that breaks
+ *    the line and otherwise looks valid), and each message before the step that states the line's
+ *    instruction in any wording; or no step. The session's record in the summary says how many
+ *    windows the reader read (`windows`).
  * 5. The case: `messages` the model's messages before the step, `realStep` the real assistant
  *    message at it, `violatingStep` the reader's violating step as an assistant message (its text,
  *    then each tool call), `skillReads` the index of each read result of a `skill://<skill>` file
- *    in `messages`, `model` and `thinking` the branch's last `model_change` and
+ *    in `messages` and, when a source before the step read the cut's copy by path, `pathCopy` (the
+ *    first such source's resolved directory, with the session's `cwd` and `home` where known) and
+ *    the index of each whole read by path of a file of that copy, its path resolved with those
+ *    (cases.ts's `pathReadFile`), `model` and `thinking` the branch's last `model_change` and
  *    `thinking_level_change` before the step, `sessionDigest` its last `system-prompt-digest`
  *    before the step, `sessionStart` the header's timestamp, `source` the store and the SHA-256 of
  *    the path (never the path), `context` (`devbox`; `legion:<project>:<role>` from the session's
- *    role, below; or `subagent:<agent>`), and `profile` (below). Where a compaction precedes the
- *    step and every read of the skill follows it, `messages` is what Oh My Pi gives the model
- *    after it: the summary as a `compactionSummary` message, the entries it kept, and those after
- *    it.
+ *    role, below; or `subagent:<agent>`), and
+ *    `profile` (below). Where a compaction precedes the step and every read of the skill follows
+ *    it, `messages` is what Oh My Pi gives the model after it: the summary as a
+ *    `compactionSummary` message, the entries it kept, and those after it. Each other successful
+ *    read by path of the skill before the step (a selector, another copy, no copy, a path the
+ *    build cannot resolve, or the cut's copy at another directory than `pathCopy`) is answered as
+ *    recorded in every arm, and the case's `evidence` names each (EXCLUDED_READS), so the arms do
+ *    not differ in part without saying so. Each file read whole by path is held to the form in
+ *    which the arms answer a read by path (arms.ts's `pathFormFault`) in the old text, and in the
+ *    new text when `--new` gives one; a case with one they do not answer is dropped (`path-form`),
+ *    so no `behaviour` run fails on it. A build given no `--new` (no cut text yet) checks the old
+ *    text alone, and `behaviour screen` drops a case the new text fails (cli.ts). `--written` and
+ *    `--reprofile` check no read by path, and refuse `--new`.
  * 6. Secrets are taken out of the case (`removeSecrets`: private keys, bearer tokens, known token
  *    shapes, credentials in URLs, and key, token, secret and password assignments), each counted
  *    in `secretsRemoved`.
@@ -178,7 +210,8 @@
  *
  * A session gives no case, and its drop is counted by reason (DROP_REASONS), when: the store holds
  * no file of its hash; the pull fails or returns nothing; a line is not an entry; it has no
- * header; no read of a skill file succeeded; the first read is not the cut repository's copy; a
+ * header; no read of a file of the skill succeeded, or each read by path that succeeded is of a
+ * kind no case is built from (step 3); the first read is not the cut repository's copy; a
  * subagent's `session_init` line is not whole; no form below names a Legion session's role; the
  * session's reads of the skill hold no whole line of the base text; the reader's every reply is
  * refused, its call fails, or it finds no step in the windows it reads (or a step at or before
@@ -190,12 +223,14 @@
  * the restatement check finds a message before the step that states the line's instruction in
  * other words, or the check cannot read them all; the audit finds the real step breaks the line,
  * or the line does not govern it, or gives no answer; no route of the gateway serves the model
- * before the step, or there is none; a read before the step reads a file of the skill by its path
- * or with a selector, which arms.ts does not rebuild (a path that ends `/<skill>/SKILL.md`, holds
- * `skills/<skill>/`, or is under the skill's installed directory); a GitHub read the profile needs
- * fails; or the profile's units install no copy of the skill from the cut repository. A session
- * the readers reach costs one case reader call a window, one restatement call a window, and one
- * audit call.
+ * before the step, or there is none; a read before the step reads a file of the skill in a way
+ * the case neither holds nor names (a `skill://` file with a selector, or a path that ends
+ * `/<skill>/SKILL.md`, holds `skills/<skill>/` or is under the skill's installed directory and
+ * is no read the case holds in `skillReads` or names as an excluded read: an error result of such
+ * a read too); a file the case reads by path is one the arms do not answer in Oh My Pi's form; a
+ * GitHub read the profile needs fails; or the profile's units install no copy of the skill from
+ * the cut repository. A session the readers reach costs one case reader call a window, one
+ * restatement call a window, and one audit call.
  *
  * **The model.** A case runs on the session's own model, as its last `model_change` before the
  * step names it (`<gateway>/claude-opus-5-5`, `openai/gpt-6.1-sol`), and on no other. The
@@ -243,10 +278,11 @@
  * its first build. Below, "the session's start" means that time (a subagent's pools are read at
  * its own start):
  * - The units installed: each unit (`via`) of each prefix row that a `[Skill file: <path>]` of a
- *   read result before the step is under; for a path no row maps, each unit of the prefix rows of
- *   the copy attribute.ts's rules place the read at (a checkout, the store's context); and, for a
- *   Legion context, each Oh My Pi unit with a prefix row under `/opt/legion/` (a package the
- *   worker image carries) and each unit an `omp-plugins` manifest installs. A read no rule
+ *   read result before the step is under, or the path of a successful whole read by path of the
+ *   case's copy (`pathCopy`, `profileReads`); for a path no row maps, each unit of the prefix rows
+ *   of the copy attribute.ts's rules place the read at (a checkout, the store's context); and,
+ *   for a Legion context, each Oh My Pi unit with a prefix row under `/opt/legion/` (a package
+ *   the worker image carries) and each unit an `omp-plugins` manifest installs. A read no rule
  *   places is listed as left out; a copy a read is placed at that no prefix row names a unit for
  *   is installed alone. A read whose skill none of those units ships at the session's start (the
  *   copies output names a unit as the manifests name it later: a marketplace or plugin renamed
@@ -257,7 +293,10 @@
  *   GitHub's) at or before the session's start; a unit's repository that an installer of the
  *   units pins (copies.ts's `installerPins`: a `github:` dependency of an Oh My Pi plugins
  *   package.json, an `ensure_vendor` clone) at the last commit of the ref that installer names at
- *   the session's start, as the session's machine held it. A repository GitHub gives no commit of
+ *   the session's start, as the session's machine held it; for a Legion pod, the units of its
+ *   worker image's repository at the commit the image was built from, which the deployment's
+ *   Pulumi config and GitHub's build provenance of the image name (LEGION_IMAGE_RULE). A
+ *   repository GitHub gives no commit of
  *   at or before that time (`NoCommitThen`), such as one the dev box's installers install only by
  *   the copies output's later read, did not exist then, so nothing of it was installed then: it is
  *   left out, with the `gh api` read in the evidence. A session repository with no commit then has
@@ -340,8 +379,9 @@
  * did, and the largest peak resident memory read in the run (`peakRssBytes`).
  *
  * **build-cases --reprofile** builds the profile of each case of a case file again, from the
- * case and its session's head: its store, the `[Skill file: …]` lines of its messages, its start,
- * whether it carries a recorded prompt, and the working directory the header in the session's head
+ * case and its session's head: its store, the `[Skill file: …]` lines of its messages and the
+ * paths of its whole reads by path of its `pathCopy`, its start, whether it carries a recorded
+ * prompt, and the working directory the header in the session's head
  * names (capture.ts's `sessionHeads`: session-head.sql through the store command, one query per
  * store, each head saved under `<out>.sessions/`), at the time the profile is read: its root's
  * prompt builds (digest-times.sql, one query per store), with a top-level case's step's message
@@ -520,13 +560,14 @@ import {
   skillHeaderPath,
   stripSkillHeader,
 } from "../skill-scenarios/transcript";
-import { type Arm, installedDirOf, readResult } from "./arms";
+import { type Arm, installedDirOf, pathFormFault, readResult } from "./arms";
 import {
   type InstallersRow,
   type ManifestsRow,
   type ModelCount,
   modelCountOf,
   modelId,
+  type Placement,
   type Placer,
   type PrefixTableRow,
   placer,
@@ -546,6 +587,8 @@ import {
   Profile,
   type ProfileSkill,
   pathHash,
+  pathReadFile,
+  resolvedReadPath,
   skillReadFile,
   stepSkillFiles,
   Thinking,
@@ -740,7 +783,18 @@ export const DROP_REASONS = {
   "pull-failed": "the transcript pull failed or returned nothing",
   unparseable: "a line of the transcript is not one entry",
   "no-header": "the transcript has no session header with a start time",
-  "no-read": "no read of a skill:// file of the skill succeeded",
+  "no-read":
+    "no read of a file of the skill succeeded, by a skill:// URL or by its path (count.sql's rule)",
+  "path-range":
+    "the session's only successful reads of the skill are reads by path that no case is built from, and one has a read selector (a line range, `:raw`), which the arms do not answer",
+  "other-copy":
+    "the session's only successful reads of the skill are reads by path that no case is built from, none with a selector, and one reads another copy: attribute.ts's rules place it at another repository's copy, or it is a URL",
+  unattributed:
+    "the session's only successful reads of the skill are reads by path that no case is built from, none with a selector or of another copy, and one is at a path attribute.ts's rules place at no copy",
+  "path-relative":
+    "the session's only successful reads of the skill are whole reads by path of the cut's copy whose relative or `~` path needs a directory the session does not name (its header names no working directory, or its transcript's path no home, `<home>/.omp/…`), or that resolves to no absolute directory, so a case cannot name the copy (cases.ts's pathCopy)",
+  "path-form":
+    "a file of the cut's copy that the case's messages read whole by path is one the arms do not answer in Oh My Pi's form (arms.ts's pathFormFault, or a directory), in the old text or, when --new is given, the new",
   "not-cut-copy":
     "attribute.ts's rules (the prefix table, a checkout, the store's context) do not place the skill's first read at the cut repository's copy, or the profile installs no copy of it",
   "no-role":
@@ -750,6 +804,8 @@ export const DROP_REASONS = {
   "reader-failed": "the case reader's every reply was refused",
   "reader-error": "the case reader's call failed",
   "no-step": "the case reader found no step the skill governs",
+  "skill-as-material":
+    "the case reader finds that the agent's work at the skill's read is on the skill's own text (editing, rewriting, reviewing, testing, grading, scoring or comparing the skill or a copy of it), so its next step works on that text and does not follow it",
   "no-common-line":
     "the session's own successful reads of the skill's files hold no whole line of the base text, so the case reader has no line to offer",
   "step-not-after-read": "the case reader's step is at or before the skill's read",
@@ -775,7 +831,8 @@ export const DROP_REASONS = {
   "no-model": "no model_change or thinking_level_change before the step",
   "model-not-served":
     "no route of the gateway serves the session's model before the step (its id is the id of none of the configuration's servedModels), or none of its models from the skill's read on",
-  "read-by-path": "a read before the step reads a file of the skill by its path or with a selector",
+  "read-by-path":
+    "a read before the step reads a file of the skill in a way the case neither holds nor names: a skill:// file with a selector, or a path that ends `/<skill>/SKILL.md`, holds `skills/<skill>/` or is under the skill's installed directory and is neither a whole read of the case's copy (pathCopy) nor an excluded read of its evidence (an error result of such a read too)",
   "profile-failed": "a GitHub read the profile needs failed",
   "written-restates":
     "the restatement check finds that a written task states the line's instruction, in any wording (build-cases --written)",
@@ -1438,19 +1495,21 @@ function messageText(message: SessionMessage): string {
     .join("\n");
 }
 
-/** A skill read of the messages: the read result's index, its call's index, the file it read, and
- *  the path its `[Skill file: …]` line names. */
+/** A read of a file of the skill in the messages: the read result's index, its call's index, the
+ *  file it read (a path inside the skill's directory), the path its `[Skill file: …]` line names,
+ *  and whether it succeeded. `path`, for a whole read by path of the cut's copy (`copyReads`):
+ *  the path it read, whose result shows Oh My Pi's rows and no `[Skill file: …]` line. */
 interface SkillRead {
   readonly index: number;
   readonly call: number;
   readonly file: string;
   readonly header: string | undefined;
   readonly ok: boolean;
+  readonly path?: string;
 }
 
-/** Each read result of a `skill://<skill>` file in `messages`, in order. */
-function skillReads(messages: readonly SessionMessage[], skill: string): SkillRead[] {
-  const targets = readTargets(messages);
+/** The index in `messages` of each tool call's message, by the call's id. */
+function callIndices(messages: readonly SessionMessage[]): Map<string, number> {
   const calls = new Map<string, number>();
   for (const [index, message] of messages.entries()) {
     if (message.role !== "assistant") continue;
@@ -1458,6 +1517,13 @@ function skillReads(messages: readonly SessionMessage[], skill: string): SkillRe
       if (block.type === "toolCall" && block.id !== undefined) calls.set(block.id, index);
     }
   }
+  return calls;
+}
+
+/** Each read result of a `skill://<skill>` file in `messages`, in order. */
+function skillReads(messages: readonly SessionMessage[], skill: string): SkillRead[] {
+  const targets = readTargets(messages);
+  const calls = callIndices(messages);
   const reads: SkillRead[] = [];
   for (const [index, message] of messages.entries()) {
     if (message.role !== "toolResult" || message.toolName !== "read") continue;
@@ -1476,12 +1542,267 @@ function skillReads(messages: readonly SessionMessage[], skill: string): SkillRe
   return reads;
 }
 
+/** A read selector after a read's last `/` (`:raw`, `:1-40`). */
+const READ_SELECTOR = /:[^/]*$/;
+/** A path or URL with a scheme (`skill://`, `https://`). */
+const URL_TARGET = /^[a-z][a-z0-9+.-]*:\/\//i;
+
+/** Whether a read of `target` reads a file of skill `skill` by its path, by count.sql's rule: a
+ *  path or URL (no `skill://` one) that, its read selector taken off, ends `<skill>/SKILL.md` or
+ *  holds `skills/<skill>/references/` and more, each after a `/` or at its start. */
+function readsByPath(target: string, skill: string): boolean {
+  if (target.startsWith("skill://")) return false;
+  const file = `/${target.replace(READ_SELECTOR, "")}`;
+  const references = file.indexOf(`/skills/${skill}/references/`);
+  return (
+    file.endsWith(`/${skill}/SKILL.md`) ||
+    (references !== -1 && file.length > references + `/skills/${skill}/references/`.length)
+  );
+}
+
+/** The kinds of a read by path of the skill that no case is built from, in the order a session
+ *  whose only successful reads of the skill are such reads takes its drop reason from: a read
+ *  selector, another copy (or a URL), a path no rule places, the cut's copy at a path the build
+ *  cannot resolve to an absolute directory (`pathKind`). */
+const EXCLUDED_KINDS = [
+  "path-range",
+  "other-copy",
+  "unattributed",
+  "path-relative",
+] as const satisfies readonly DropReason[];
+type ExcludedKind = (typeof EXCLUDED_KINDS)[number];
+
+/** The check of a case's `pathCopy.dir` (cases.ts): an absolute directory with no empty, `.` or
+ *  `..` part and no `/` at its end. Its `cwd` and `home` are held to it too. */
+const PATH_COPY_DIR = Case.shape.pathCopy.unwrap().shape.dir;
+
+/** A case's copy of its skill as its session read it by path (cases.ts's `pathCopy`): its
+ *  directory, and the working and home directories a read's relative or `~` path resolves
+ *  against (cases.ts's `resolvedReadPath`). */
+type CopyPlace = NonNullable<Case["pathCopy"]>;
+
+/** The directories a session's reads by path resolve against (cases.ts's `resolvedReadPath`):
+ *  `cwd`, the working directory its header names; `home`, the home directory it ran under, the
+ *  part of its transcript's path before the first `/.omp/`. Oh My Pi resolves `~` against the
+ *  home directory (packages/utils/src/path.ts lines 59-70 at the pin) and writes its sessions
+ *  under its config root in that same home, `<home>/.omp/agent/sessions/` or a profile's
+ *  `<home>/.omp/profiles/<name>/agent/sessions/` (packages/utils/src/dirs.ts lines 127-146 and
+ *  360-363), so the transcript's path names it; a session whose config root another variable
+ *  moved names none. Each is left out when it is no absolute directory. */
+function sessionDirs(cwd: string | undefined, transcriptPath: string): Omit<CopyPlace, "dir"> {
+  const absolute = (dir: string | undefined) => {
+    const resolved =
+      dir !== undefined && path.posix.isAbsolute(dir) ? path.posix.resolve(dir) : undefined;
+    return resolved !== undefined && PATH_COPY_DIR.safeParse(resolved).success
+      ? resolved
+      : undefined;
+  };
+  const at = transcriptPath.indexOf("/.omp/");
+  const work = absolute(cwd);
+  const home = absolute(at > 0 ? transcriptPath.slice(0, at) : undefined);
+  return { ...(work === undefined ? {} : { cwd: work }), ...(home === undefined ? {} : { home }) };
+}
+
+/** A read by path of a file of the skill in the messages (`readsByPath`): the read result's index,
+ *  its call's index, the path read, whether it succeeded, and its kind. A `source` is a whole read
+ *  that attribute.ts's rules place at the cut repository's copy, at the absolute directory `dir`
+ *  (the path up to the skill's directory, attribute.ts's `copyPrefix`, resolved as Oh My Pi's read
+ *  resolves it: cases.ts's `resolvedReadPath`): a case can be built from it. Any other kind keeps
+ *  it out of a case (EXCLUDED_KINDS). `why` says why it is of its kind. */
+interface PathRead {
+  readonly index: number;
+  readonly call: number;
+  readonly target: string;
+  readonly ok: boolean;
+  readonly kind: "source" | ExcludedKind;
+  readonly dir?: string;
+  readonly why: string;
+}
+
+/** The kind of a read by path of `target` (PathRead), placed by `place` (attribute.ts's rules, on
+ *  the path as read, as the count places it), held to the cut's repository `cutRepo`, and its
+ *  directory resolved against the session's directories `dirs` (`sessionDirs`). A read of the cut's
+ *  copy whose relative or `~` path needs a directory `dirs` lacks, or that resolves to no absolute
+ *  directory a case can name, is `path-relative`. */
+function pathKind(
+  target: string,
+  place: (copyPath: string) => Placement,
+  cutRepo: string,
+  dirs: Omit<CopyPlace, "dir">
+): Pick<PathRead, "kind" | "dir" | "why"> {
+  if (READ_SELECTOR.test(target)) {
+    return { kind: "path-range", why: "a read selector after its last /" };
+  }
+  if (URL_TARGET.test(target)) {
+    return { kind: "other-copy", why: "a URL, read from the web at the commit it names" };
+  }
+  const placed = place(target);
+  if (placed.copy === undefined) {
+    const why = placed.outcome?.replace(/^unattributed: /, "") ?? "no rule places it at a copy";
+    return { kind: "unattributed", why };
+  }
+  const [repository = "", dir = ""] = placed.copy.split("\t");
+  const where = `the ${placed.rule} rule places it at ${repository} ${dir}`;
+  if (repository !== cutRepo) return { kind: "other-copy", why: where };
+  const copyDir = placed.prefix.replace(/\/$/, "");
+  const resolved = resolvedReadPath(copyDir, dirs);
+  if (resolved === undefined) {
+    const needs = /^[:@]?~/.test(copyDir)
+      ? "the home directory the session ran under, which its transcript's path does not name (no /.omp/ in it)"
+      : "the session's working directory, which its header does not name";
+    return { kind: "path-relative", why: `${where}, at ${copyDir}, which needs ${needs}` };
+  }
+  if (!PATH_COPY_DIR.safeParse(resolved).success) {
+    return {
+      kind: "path-relative",
+      why: `${where}, at ${resolved}, no absolute directory a case can name the copy by`,
+    };
+  }
+  return { kind: "source", dir: resolved, why: where };
+}
+
+/** Each read result of `messages` whose call reads a file of skill `skill` by its path
+ *  (`readsByPath`), in order, with its kind (`pathKind`). */
+function pathReads(
+  messages: readonly SessionMessage[],
+  skill: string,
+  place: (copyPath: string) => Placement,
+  cutRepo: string,
+  dirs: Omit<CopyPlace, "dir">
+): PathRead[] {
+  const targets = readTargets(messages);
+  const calls = callIndices(messages);
+  const reads: PathRead[] = [];
+  for (const [index, message] of messages.entries()) {
+    if (message.role !== "toolResult" || message.toolName !== "read") continue;
+    const target = targets.get(message.toolCallId ?? "");
+    if (target === undefined || !readsByPath(target, skill)) continue;
+    reads.push({
+      index,
+      call: calls.get(message.toolCallId ?? "") ?? index,
+      target,
+      ok: message.isError !== true,
+      ...pathKind(target, place, cutRepo, dirs),
+    });
+  }
+  return reads;
+}
+
+/** A read by path no case is built from, as a drop's detail and a case's evidence name it. A
+ *  `source` read is excluded only for being at another directory than the case's `pathCopy`. */
+function excludedRead(read: PathRead, pathCopy?: { readonly dir: string }): string {
+  const kind =
+    read.kind === "source" ? `another directory than the case's copy ${pathCopy?.dir}` : read.kind;
+  return `message ${read.index} answers the read of ${read.target} (${kind}: ${read.why})`;
+}
+
+/** Each read result of `messages` whose call reads a file of the cut's copy `pathCopy` whole by
+ *  its path (cases.ts's `pathReadFile`, which resolves a relative or `~` path with the copy's
+ *  `cwd` and `home`), in order, as a SkillRead of that file. */
+function copyReads(messages: readonly SessionMessage[], pathCopy: CopyPlace): SkillRead[] {
+  const targets = readTargets(messages);
+  const calls = callIndices(messages);
+  return messages.flatMap((message, index): SkillRead[] => {
+    if (message.role !== "toolResult" || message.toolName !== "read") return [];
+    const target = targets.get(message.toolCallId ?? "");
+    const file = target === undefined ? undefined : pathReadFile({ pathCopy }, target);
+    if (target === undefined || file === undefined) return [];
+    return [
+      {
+        index,
+        call: calls.get(message.toolCallId ?? "") ?? index,
+        file,
+        header: undefined,
+        ok: message.isError !== true,
+        path: target,
+      },
+    ];
+  });
+}
+
+/** Each whole read by path of a file of the copies `copies` in `messages` (`copyReads`), once,
+ *  in order. */
+function copiesReads(
+  messages: readonly SessionMessage[],
+  copies: readonly CopyPlace[]
+): SkillRead[] {
+  const reads = new Map<number, SkillRead>();
+  for (const copy of copies) {
+    for (const read of copyReads(messages, copy)) {
+      if (!reads.has(read.index)) reads.set(read.index, read);
+    }
+  }
+  return [...reads.values()].sort((a, b) => a.index - b.index);
+}
+
+/** A hashline line: `[<path>#<tag>]`, the path as Oh My Pi shows it (arms.ts's `PathRows`). */
+const HASHLINE_HEADER = /^\[.+#[0-9A-F]{4}\]$/;
+
+/** The text of the file a successful read by path shows: the result's text less what Oh My Pi
+ *  puts around the lines (arms.ts's `PathRows`), the `[<path>#<tag>]` line and each row's `<n>:` of
+ *  hashline rows, or each row's `<n>|` of numbered rows (`details.rowPrefixes`); plain rows as
+ *  they are. */
+function pathReadText(message: SessionMessage): string {
+  const text = message.content?.[0]?.text ?? "";
+  const lines = text.split("\n");
+  if (HASHLINE_HEADER.test(lines[0] ?? "")) {
+    return lines
+      .slice(1)
+      .map((line) => line.replace(/^\d+:/, ""))
+      .join("\n");
+  }
+  const details = message.details;
+  if (isObject(details) && Reflect.get(details, "rowPrefixes") === true) {
+    return lines.map((line) => line.replace(/^\d+\|/, "")).join("\n");
+  }
+  return text;
+}
+
+/** The text of the file the read `read` read, from its whole result `message`: a `skill://` read's
+ *  less its `[Skill file: …]` line, a read by path's less Oh My Pi's rows (`pathReadText`). */
+function readText(read: SkillRead, message: SessionMessage | undefined): string {
+  if (message === undefined) return "";
+  return read.path === undefined
+    ? stripSkillHeader(message.content?.[0]?.text ?? "")
+    : pathReadText(message);
+}
+
+/** Why the arms do not answer a whole read by path of one of `files` (paths inside the cut's copy)
+ *  in Oh My Pi's form from the old text or the new (arms.ts's `pathFormFault`), or undefined: the
+ *  arm whose text it is, its directory and the fault. With no new text (a build-cases run given no
+ *  `--new`), the old text alone. A file a text lacks they answer as not found; one a text holds as
+ *  a directory they do not answer. cli.ts's behaviour screen drops a case on it too. */
+export function pathFormIn(
+  files: readonly string[],
+  texts: { readonly old: string; readonly new?: string | undefined }
+): { readonly arm: "old" | "new"; readonly dir: string; readonly fault: string } | undefined {
+  const arms: (readonly ["old" | "new", string])[] = [
+    ["old", texts.old],
+    ...(texts.new === undefined ? [] : [["new", texts.new] as const]),
+  ];
+  for (const file of new Set(files)) {
+    for (const [arm, dir] of arms) {
+      const full = path.join(dir, file);
+      const stats = statSync(full, { throwIfNoEntry: false });
+      if (stats === undefined) continue;
+      const fault = stats.isFile()
+        ? pathFormFault(file, readFileSync(full))
+        : `${file} is no file, and the arms answer reads of files only`;
+      if (fault !== undefined) return { arm, dir, fault };
+    }
+  }
+  return undefined;
+}
+
 /** A successful read result whose first line is `[Skill file: <path>]`: its index in the
- *  messages, that path, and the skill its call names (`skill://<skill>`), when it names one. */
+ *  messages, that path, and the skill its call names (`skill://<skill>`), when it names one. With
+ *  `byPath`, a whole read by path of the cut's copy (`copyReads`): `header` is the path it read,
+ *  and `skill` the case's skill. */
 interface ShownRead {
   readonly index: number;
   readonly header: string;
   readonly skill: string | undefined;
+  readonly byPath?: true;
 }
 
 /** Each successful read result of `messages` that shows a skill file's path, any skill's. */
@@ -1498,10 +1819,26 @@ function shownReads(messages: readonly SessionMessage[]): ShownRead[] {
   });
 }
 
+/** The reads a profile is built from: each of `shownReads`, and each successful whole read by path
+ *  of a file of the cut's copies `copies` of `skill` (`copyReads`), in order. */
+function profileReads(
+  messages: readonly SessionMessage[],
+  skill: string,
+  copies: readonly CopyPlace[]
+): ShownRead[] {
+  const byPath = copiesReads(messages, copies).flatMap((read): ShownRead[] =>
+    read.ok && read.path !== undefined
+      ? [{ index: read.index, header: read.path, skill, byPath: true }]
+      : []
+  );
+  return [...shownReads(messages), ...byPath].sort((a, b) => a.index - b.index);
+}
+
 /** The lines of each base file in `files` that a successful read of it in `reads` holds whole
- *  (its text after the `[Skill file: …]` line; each line trimmed, as the builder's check of a
- *  proposed line compares them; blank lines aside), each with its number in the base file. A file
- *  no read holds a line of is not offered. `message` gives a read's whole message by its index. */
+ *  (`readText`: its text after the `[Skill file: …]` line, or less Oh My Pi's rows for a read by
+ *  path; each line trimmed, as the builder's check of a proposed line compares them; blank lines
+ *  aside), each with its number in the base file. A file no read holds a line of is not offered.
+ *  `message` gives a read's whole message by its index. */
 function offeredFiles(
   files: readonly { readonly path: string; readonly text: string }[],
   reads: readonly SkillRead[],
@@ -1510,13 +1847,13 @@ function offeredFiles(
   const texts = new Map(
     reads
       .filter((read) => read.ok)
-      .map((read): [number, string] => [read.index, message(read.index).content?.[0]?.text ?? ""])
+      .map((read): [number, string] => [read.index, readText(read, message(read.index))])
   );
   return files.flatMap((file) => {
     const held = new Set(
       reads
         .filter((read) => read.ok && read.file === file.path)
-        .flatMap((read) => textLines(stripSkillHeader(texts.get(read.index) ?? "")))
+        .flatMap((read) => textLines(texts.get(read.index) ?? ""))
         .map((line) => line.trim())
     );
     const lines = textLines(file.text).flatMap((text, index) =>
@@ -1528,22 +1865,26 @@ function offeredFiles(
 
 /** Why a read call of `messages` reads a file of the skill in a way arms.ts does not rebuild, or
  *  undefined: a `skill://<skill>` URL with a selector, or a path (its selector left aside) that
- *  ends `/<skill>/SKILL.md`, holds `skills/<skill>/`, or is under one of `installedDirs`. */
+ *  ends `/<skill>/SKILL.md`, holds `skills/<skill>/`, or is under one of `installedDirs`. A call
+ *  whose id `kept` holds (one the case holds as a read of its copy, or names as an excluded read)
+ *  is passed over. */
 function readByPath(
   messages: readonly SessionMessage[],
   skill: string,
-  installedDirs: readonly string[]
+  installedDirs: readonly string[],
+  kept: ReadonlySet<string>
 ): string | undefined {
   for (const [index, message] of messages.entries()) {
-    for (const { target } of readCalls([{ message }])) {
+    for (const { id, target } of readCalls([{ message }])) {
+      if (kept.has(id)) continue;
       if (readsSkillUrl(target, skill)) {
         if (skillReadFile(skill, target) === undefined) {
           return `message ${index} reads ${target}, with a selector`;
         }
         continue;
       }
-      if (/^[a-z][a-z0-9+.-]*:\/\//i.test(target)) continue;
-      const file = target.replace(/:[^/]*$/, "");
+      if (URL_TARGET.test(target)) continue;
+      const file = target.replace(READ_SELECTOR, "");
       if (
         file.endsWith(`/${skill}/SKILL.md`) ||
         file === `${skill}/SKILL.md` ||
@@ -2014,6 +2355,31 @@ const GitTree = z.looseObject({
   ),
   truncated: z.boolean().optional(),
 });
+/** GitHub's attestations of an artifact's digest: each one's Sigstore bundle, whose DSSE
+ *  envelope's payload is an in-toto statement in base64. */
+const Attestations = z.looseObject({
+  attestations: z.array(
+    z.looseObject({
+      bundle: z
+        .looseObject({ dsseEnvelope: z.looseObject({ payload: z.string() }).optional() })
+        .nullable()
+        .optional(),
+    })
+  ),
+});
+/** An in-toto statement of SLSA build provenance v1, as far as its resolved dependencies. */
+const Provenance = z.looseObject({
+  predicate: z.looseObject({
+    buildDefinition: z.looseObject({
+      resolvedDependencies: z.array(
+        z.looseObject({
+          uri: z.string().optional(),
+          digest: z.looseObject({ gitCommit: z.string().optional() }).optional(),
+        })
+      ),
+    }),
+  }),
+});
 
 /** What a repository holds at a commit, as copies.ts reads one: its skill copies, its manifest
  *  files parsed, and each file of those that could not be read or parsed, with why; for the
@@ -2027,6 +2393,25 @@ interface RepositoryAt {
   readonly contextSizes: ReadonlyMap<string, number>;
   readonly ompLevels: ReadonlySet<string>;
   readonly hidden: ReadonlySet<string>;
+}
+
+/** A symbolic link a project skills directory holds (GithubReads' `project`): its path, its text,
+ *  and whether it was followed to a directory of the repository, leaves the repository, or names
+ *  no directory of it. */
+interface ProjectLink {
+  readonly link: string;
+  readonly target: string;
+  readonly outcome: "followed" | "outside" | "no directory";
+}
+
+/** What GithubReads' `project` gives: the repository as Oh My Pi reads a project in it, the tree
+ *  reads it made, each skill link it met, and each of its levels the repository holds no
+ *  directory at (`missing`). */
+interface ProjectRead {
+  readonly at: RepositoryAt;
+  readonly reads: number;
+  readonly links: readonly ProjectLink[];
+  readonly missing: readonly string[];
 }
 
 /** Where Oh My Pi 18.18.6 says a skill it loads is left out of the system prompt's listing. */
@@ -2186,7 +2571,7 @@ export function tarballFiles(gzipped: Uint8Array): Map<string, string> {
 export class GithubReads {
   private readonly made = new Map<string, Promise<GhResult>>();
   private readonly held = new Map<string, Promise<RepositoryAt>>();
-  private readonly projects = new Map<string, Promise<{ at: RepositoryAt; reads: number }>>();
+  private readonly projects = new Map<string, Promise<ProjectRead>>();
   private readonly blobs = new Map<string, Promise<string>>();
 
   constructor(
@@ -2297,6 +2682,35 @@ export class GithubReads {
     return ghAnswer(args, result);
   }
 
+  /** The commit that GitHub's build provenance of the image digest `digest` (sha256, hex) names
+   *  in `repo`, one read of `repos/<repo>/attestations/sha256:<digest>`: of the first attestation
+   *  whose in-toto statement names a git commit as its first resolved dependency (SLSA provenance
+   *  v1's `buildDefinition.resolvedDependencies[0].digest.gitCommit`), that commit and the
+   *  dependency's uri. Undefined when GitHub holds no attestation of the digest there (a 404) or
+   *  none names a commit; throws when the read fails otherwise. */
+  async attestedCommit(
+    repo: string,
+    digest: string
+  ): Promise<{ readonly commit: string; readonly uri: string } | undefined> {
+    const args = ["api", `repos/${repo}/attestations/sha256:${digest}`];
+    const result = await this.call(args);
+    if (result.code !== 0 && /\b404\b|Not Found/.test(result.stderr)) return undefined;
+    const answer = Attestations.safeParse(parseJson(ghAnswer(args, result)));
+    for (const attestation of answer.data?.attestations ?? []) {
+      const payload = attestation.bundle?.dsseEnvelope?.payload;
+      if (payload === undefined) continue;
+      const statement = Provenance.safeParse(
+        parseJson(Buffer.from(payload, "base64").toString("utf8"))
+      );
+      const [first] = statement.data?.predicate.buildDefinition.resolvedDependencies ?? [];
+      const commit = first?.digest?.gitCommit;
+      if (commit !== undefined && /^[0-9a-f]{40}$/.test(commit)) {
+        return { commit, uri: first?.uri ?? "" };
+      }
+    }
+    return undefined;
+  }
+
   /** The entries of the tree `sha` of `repo` (a commit's id gives its root tree's): every entry
    *  below it when `recursive`, else those of its own level; and whether GitHub cut the answer
    *  short. The answer is not kept (a large repository's tree is megabytes); `at` and `project`
@@ -2405,17 +2819,22 @@ export class GithubReads {
    * working directory in a checkout of it: `at`'s reading of the entries of the directories it
    * reads, one level of each a call by its tree id. Those are each of `levels` (the working
    * directory's path in the checkout, then each parent up to the root, `""`), each directory of
-   * PROJECT_LEVEL_DIRS there, the skills directory of each PROJECT_SKILLS kind there, and each
-   * skill directory in it. So a repository whose whole tree GitHub cuts short is read too, and a
-   * large one in a few calls; for the paths the rebuild uses (CONTEXT_FILES, PROJECT_SKILLS) it
-   * gives what `at` gives. Read once for each commit and levels; gives its tree reads too.
+   * PROJECT_LEVEL_DIRS there, each skills directory of the PROJECT_SKILLS kinds there, and each
+   * skill directory in it. A skill directory a skills directory holds as a symbolic link (git's
+   * mode 120000) is read where the link's text, taken from the link's directory, names a
+   * directory of the repository, its entries kept under the link's path, as Oh My Pi's scan
+   * follows a link (PROJECT_SKILLS); a link out of the repository, or to no directory of it, is
+   * left out (`links` names each link, followed or not). So a repository whose whole tree GitHub
+   * cuts short is read too, and a large one in a few calls; for the paths the rebuild uses
+   * (CONTEXT_FILES, PROJECT_SKILLS) it gives what `at` gives. Read once for each commit and
+   * levels; gives its tree reads too.
    */
   project(
     repo: string,
     commit: string,
     levels: readonly string[],
     excludePaths: SkillCutsConfig["excludePaths"]
-  ): Promise<{ at: RepositoryAt; reads: number }> {
+  ): Promise<ProjectRead> {
     return readOnce(this.projects, [repo, commit, ...levels].join("\0"), () =>
       this.readProject(repo, commit, levels, excludePaths)
     );
@@ -2426,7 +2845,7 @@ export class GithubReads {
     commit: string,
     levels: readonly string[],
     excludePaths: SkillCutsConfig["excludePaths"]
-  ): Promise<{ at: RepositoryAt; reads: number }> {
+  ): Promise<ProjectRead> {
     const entries = await this.level(repo, commit, "");
     const read = new Set([""]);
     /** Adds one level of each directory of `dirs` that the entries read so far hold as a tree
@@ -2445,15 +2864,48 @@ export class GithubReads {
     // From the root down to the working directory: each level is a directory of the one above.
     const down = [...levels].reverse();
     for (const level of down) await readDirs([level]);
+    const missing = levels.filter((level) => !read.has(level));
     await readDirs(down.flatMap((level) => PROJECT_LEVEL_DIRS.map((dir) => under(level, dir))));
-    const skillDirs = down.flatMap((level) => PROJECT_SKILLS.map((kind) => under(level, kind.dir)));
+    const skillDirs = down.flatMap((level) =>
+      PROJECT_SKILLS.flatMap((kind) => kind.dirs.map((dir) => under(level, dir)))
+    );
     await readDirs(skillDirs);
     await readDirs(
       entries
         .filter((entry) => skillDirs.includes(path.posix.dirname(entry.path)))
         .map((entry) => entry.path)
     );
-    return { at: await this.fromEntries(repo, entries, excludePaths), reads: read.size };
+    const links: ProjectLink[] = [];
+    const linked = entries.filter(
+      (entry) => entry.mode === "120000" && skillDirs.includes(path.posix.dirname(entry.path))
+    );
+    for (const link of linked) {
+      const target = await this.blob(repo, link.sha);
+      const resolved = path.posix.normalize(path.posix.join(path.posix.dirname(link.path), target));
+      if (path.posix.isAbsolute(target) || resolved === ".." || resolved.startsWith("../")) {
+        links.push({ link: link.path, target, outcome: "outside" });
+        continue;
+      }
+      // The target's directories from the root down, each read as the entries above give it.
+      const parts = resolved.split("/");
+      for (let depth = 1; depth <= parts.length; depth++) {
+        await readDirs([parts.slice(0, depth).join("/")]);
+      }
+      if (!read.has(resolved)) {
+        links.push({ link: link.path, target, outcome: "no directory" });
+        continue;
+      }
+      links.push({ link: link.path, target, outcome: "followed" });
+      for (const child of entries.filter((each) => path.posix.dirname(each.path) === resolved)) {
+        entries.push({ ...child, path: `${link.path}/${path.posix.basename(child.path)}` });
+      }
+    }
+    return {
+      at: await this.fromEntries(repo, entries, excludePaths),
+      reads: read.size,
+      links,
+      missing,
+    };
   }
 
   /** What `repo` holds by the tree entries `entries`, as `at` reads it (see there). A SKILL.md or
@@ -2573,11 +3025,13 @@ interface PinnedVersion {
 
 /** The session repository: the repository the session's working directory is a checkout of
  *  (`sessionRepository`), or undefined; the working directory's path inside that checkout (`rel`,
- *  `""` at its root); and the evidence of it. */
+ *  `""` at its root); the evidence of it; and, where a parent's name gave it, that parent
+ *  (`byParent`), whose repository's tree must hold `rel` before it is taken (`caseProfile`). */
 interface Checkout {
   readonly repo: string | undefined;
   readonly rel: string;
   readonly line: Evidence;
+  readonly byParent?: string;
 }
 
 /** What the profile of one case is built from: its store, its context (the store's, for a
@@ -2600,6 +3054,9 @@ interface ProfileInput {
    *  start (PARENT_LOAD_RULE), a top-level session's at the build its step ran under
    *  (TOP_BUILD_RULE); every one at the session's start when absent. */
   readonly readTime?: ReadTime;
+  /** The names the session's recorded prompt lists (a subagent's), which alone admit a pool new
+   *  at the subagent's start (POOL_AT_START_RULE). */
+  readonly recordedListing?: readonly string[];
 }
 
 /** The items of the profile's evidence that name the session repository, and that say there is
@@ -2608,13 +3065,19 @@ const SESSION_REPOSITORY = "session repository ";
 const NO_SESSION_REPOSITORY = "no session repository";
 /** How a dev-box session's repository is found from its working directory. */
 const DEVBOX_CHECKOUT_RULE =
-  "a dev-box session's repository is the one repository of the copies output's list (repositories.tsv) named as the last part of its working directory, or of the nearest of that directory's parents named as any listed repository";
+  "a dev-box session's repository is the dev box's own repository (DEVBOX_INSTALLERS_RULE) where the working directory is in its checkout, the directory whose .claude/ the configuration's devboxClaudeConfigDir names as the dev box's CLAUDE_CONFIG_DIR; else the one repository of the copies output's list (repositories.tsv) named as the last part of its working directory, or of the nearest of that directory's parents named as any listed repository when that repository's tree at its commit holds the working directory's path below that parent: a parent's name alone decides nothing";
 /** Which units a dev-box profile installs beside those its session's reads come from. */
 const DEVBOX_INSTALLERS_RULE =
   "a dev box installs every unit the installers of its own repository install into Oh My Pi at the session's start, whether or not the session read from it: the one repository of the copies output (manifests.tsv) that holds both an installer script (installers/*.sh) and Claude Code's settings (.claude/settings.json), whose .claude/ is the dev box's Claude Code config directory, read at its commit of the session's start with each repository its installers pin, and resolved by copies.ts's rules (resolveInstallers)";
 /** How Oh My Pi 18.18.6 reads skills.ignoredSkills. */
 const IGNORED_RULE =
   "Oh My Pi 18.18.6 loads no skill whose name a pattern of skills.ignoredSkills matches as a Bun.Glob (extensibility/skills.ts, lines 386-389, 401-406, 437 and 544), so a session can neither list nor read it";
+/** When a pool new at a subagent's start is installed (fault A of the misses diagnosis). */
+const POOL_AT_START_RULE =
+  "Oh My Pi 18.18.6 has a subagent emit resources_discover as it starts and merges the skill directories its extensions give then into the snapshot its parent gave it (session/session-tools.ts, discoverStartupSkillPaths, lines 2530-2547, and #mergeDiscoveredSkillDirectories, lines 2350-2420), so a pool the dev box's skills-sources.json names at the subagent's start is listed where its clone is there then; which clones the host had then no repository records, so the profile installs such a pool only where the subagent's recorded listing names one of its skills, an inference from that listing, and the listing measure marks each name taken so (fromRecorded), since there the recorded listing both installs the names and is what the measure compares against";
+/** Which Claude Code plugins Oh My Pi lists for a session. */
+const CLAUDE_PLUGIN_RULE =
+  "Oh My Pi 18.18.6 lists the skills of a Claude Code plugin that Claude Code's registry installs for the project: a project- or local-scope install recorded for the active project, or one that enabledPlugins of the project's .claude/settings.json (or settings.local.json, or the config directory's settings.json) turns on (discovery/helpers.ts, readClaudeEnabledPlugins, lines 1310-1333, and loadClaudePluginRoots, lines 1494-1570), at priority 70, a second copy of a name under the plugin's name (discovery/claude-plugins.ts, lines 36 and 226-275); a user-scope install only where Oh My Pi's enabledProviders names claude-plugins or claude (extensibility/skills.ts, lines 361-362; capability/index.ts, lines 419-429), which no profile config read here sets. Claude Code installs the plugins a project's .claude/settings.json enables for that project, so a session in a checkout of the repository that holds those settings lists them; the registry itself is host state that no repository holds";
 
 /** The dev box's repository by DEVBOX_INSTALLERS_RULE, or undefined, with the evidence of why,
  *  when no repository or more than one holds both. */
@@ -2694,6 +3157,153 @@ function legionCatalog(
   };
 }
 
+/** Which commit of its repository a Legion pod's worker image carries. */
+const LEGION_IMAGE_RULE = `a Legion pod runs the worker image that its project's entry in the deployment's Pulumi config names at the deployment's commit of the session's start (Pulumi.prod.yaml in the directory above the project file's, the entry - key: <project>, its image: line), and that image carries the packages of its repository (the prefix-table.tsv rows under ${IMAGE_ROOT}) as the repository was at the commit the image was built from: the commit that the build provenance of the image's digest names (gh api repos/<repository>/attestations/sha256:<digest>, the gitCommit of its first resolved dependency); for an image whose digest has no such provenance there, the comment lines right above its image: line decide, by the first of their words, in their order, that names a commit: an image digest whose provenance names one (the base the image was built on), a commit of the repository (a word of 7 to 40 hex digits, letters and digits both), or a tag of the repository (a word of the form <name>-v<version> or v<version>, at the tag's last commit at or before the deployment's read); where none of these gives a commit, the repository is read at its default branch's commit at the session's start, as any other`;
+
+/** The `image:` value of the entry `- key: <project>` of the Pulumi config text `text`, and the
+ *  comment lines right above that line, each less its `#`; undefined when the text holds no such
+ *  entry with an `image:` line. The entry's lines are those after its `- key:` line that are
+ *  indented past its dash, or are comments; its `image:` is one of its own fields (indented two
+ *  past the dash), so neither a nested map's `image:` nor another key such as `daemonImage:` is
+ *  it. */
+function projectImage(
+  text: string,
+  project: string
+): { readonly image: string; readonly comment: readonly string[] } | undefined {
+  const unquoted = (value: string) => value.replace(/^["']|["']$/g, "");
+  const lines = text.split("\n");
+  const head = lines.findIndex((line) => {
+    const key = /^\s*- key:\s*(\S+)\s*$/.exec(line)?.[1];
+    return key !== undefined && unquoted(key) === project;
+  });
+  if (head < 0) return undefined;
+  const dash = (lines[head] ?? "").indexOf("-");
+  for (let at = head + 1; at < lines.length; at++) {
+    const line = lines[at] ?? "";
+    if (line.trim() === "" || /^\s*#/.test(line)) continue;
+    const indent = line.length - line.trimStart().length;
+    if (indent <= dash) return undefined;
+    const value = /^\s*image:\s*(\S+)\s*(?:#.*)?$/.exec(line)?.[1];
+    if (value === undefined || indent !== dash + 2) continue;
+    const comment: string[] = [];
+    for (let above = at - 1; above > head && /^\s*#/.test(lines[above] ?? ""); above--) {
+      comment.unshift((lines[above] ?? "").trim().replace(/^#\s?/, ""));
+    }
+    return { image: unquoted(value), comment };
+  }
+  return undefined;
+}
+
+/** The commit of `imageRepo` that the worker image of the project `project` carries, read from
+ *  the Pulumi config of `deployment` at `sha` (LEGION_IMAGE_RULE), with the evidence item that
+ *  says which rule gave it; no `sha`, and the evidence of why, when none did. Throws when a
+ *  GitHub read fails other than with a 404 of the config file or of a provenance. */
+async function legionImageCommit(
+  github: GithubReads,
+  read: {
+    readonly deployment: string;
+    readonly sha: string;
+    readonly projectPath: string;
+    readonly project: string;
+    readonly imageRepo: string;
+    readonly when: { readonly at: string; readonly words: string };
+  }
+): Promise<{ readonly sha?: string; readonly line: Evidence }> {
+  const { deployment, sha, project, imageRepo, when } = read;
+  const file = path.posix.join(
+    path.posix.dirname(path.posix.dirname(read.projectPath)),
+    "Pulumi.prod.yaml"
+  );
+  const item = `the worker image's commit of ${imageRepo}`;
+  const decided = (commit: string, how: string) => ({
+    sha: commit,
+    line: {
+      item,
+      source: `${how}, so the image's units of ${imageRepo} are read at ${commit}: ${LEGION_IMAGE_RULE}`,
+    },
+  });
+  const undecided = (why: string) => ({
+    line: {
+      item,
+      source: `${why}, so ${imageRepo} is read at its default branch's commit at the session's start: ${LEGION_IMAGE_RULE}`,
+    },
+  });
+  const config = `${deployment}:${file} at ${sha}`;
+  const text = await github.text(deployment, sha, file);
+  if (text === undefined) {
+    return undecided(
+      `${config} does not exist (gh api repos/${deployment}/contents/${file}?ref=${sha})`
+    );
+  }
+  const entry = projectImage(text, project);
+  if (entry === undefined) {
+    return undecided(`${config} holds no entry - key: ${project} with an image: line`);
+  }
+  const named = `${config} gives the project ${project} the image ${entry.image}`;
+  const digest = /@sha256:([0-9a-f]{64})\b/.exec(entry.image)?.[1];
+  let without = ", which names no digest";
+  if (digest !== undefined) {
+    const found = await github.attestedCommit(imageRepo, digest);
+    const asked = `gh api repos/${imageRepo}/attestations/sha256:${digest}`;
+    if (found !== undefined) {
+      return decided(found.commit, `${named}; ${asked} names ${found.uri} at ${found.commit}`);
+    }
+    without = `, whose digest has no build provenance that names a commit (${asked})`;
+  }
+  if (entry.comment.length === 0) {
+    return undecided(`${named}${without}, and no comment line is right above its image: line`);
+  }
+  const comment = entry.comment.join(" ");
+  const above = `${named}${without}; the comment right above its image: line`;
+  // The comment's words in their order: an image digest, a tag (`<name>-v<version>`, `v<version>`)
+  // or a commit (7 to 40 hex digits, letters and digits both: neither a run number nor a word).
+  const words = comment.matchAll(
+    /@sha256:([0-9a-f]{64})\b|((?:[\w.-]+-)?v\d+(?:\.\d+)+)|\b([0-9a-f]{7,40})\b/g
+  );
+  const tried = new Set<string>();
+  for (const [word, base, tag, hex] of words) {
+    if (tried.has(word) || (base !== undefined && base === digest)) continue;
+    tried.add(word);
+    if (base !== undefined) {
+      const found = await github.attestedCommit(imageRepo, base);
+      if (found !== undefined) {
+        return decided(
+          found.commit,
+          `${above} names the image digest sha256:${base}, whose build provenance (gh api repos/${imageRepo}/attestations/sha256:${base}) names ${found.uri} at ${found.commit}`
+        );
+      }
+      continue;
+    }
+    const ref = tag ?? hex ?? "";
+    if (tag === undefined && !(/[a-f]/.test(ref) && /[0-9]/.test(ref))) continue;
+    if (tag !== undefined && !(await github.hasTag(imageRepo, tag))) continue;
+    let commit: string;
+    try {
+      commit = await github.commitAt(imageRepo, ref, when.at);
+    } catch (error) {
+      // A word that is no commit of the repository, or a commit made after the read.
+      if (transientFailure(error)) throw error;
+      continue;
+    }
+    if (tag !== undefined) {
+      return decided(
+        commit,
+        `${above} names ${tag}, a tag of ${imageRepo} (gh api repos/${imageRepo}/git/matching-refs/tags/${tag}), whose last commit at or before ${when.words} ${when.at} is ${commit}`
+      );
+    }
+    if (commit.startsWith(ref)) {
+      const read = `gh api repos/${imageRepo}/commits?sha=${ref}&until=${when.at}`;
+      return decided(
+        commit,
+        `${above} names ${ref}, the commit ${commit} of ${imageRepo} (${read})`
+      );
+    }
+  }
+  return undecided(
+    `${above} names no image digest whose build provenance names a commit, no commit and no tag of ${imageRepo}`
+  );
+}
+
 /** The item of the evidence of a case or a load task that says how far the listing its rebuilt
  *  profile gives is from the listing its session saw; its source is a ListingMeasure as JSON. */
 export const LISTING_MEASURE = "listing measure";
@@ -2722,6 +3332,10 @@ export const ListingMeasure = z.strictObject({
     })
     .nullable(),
   why: z.string(),
+  /** The listed names the profile installed only because the recorded listing names one of their
+   *  pool's skills (POOL_AT_START_RULE): the measure cannot see a miss of them. Absent where none
+   *  is, and in a measure written before the mark. */
+  fromRecorded: z.array(z.string()).optional(),
 });
 export type ListingMeasure = z.infer<typeof ListingMeasure>;
 
@@ -2740,6 +3354,8 @@ interface ListingInput {
   readonly recorded: readonly string[] | undefined;
   readonly sessionDigest: string | null;
   readonly build?: BuildWindow;
+  /** The names the profile took from the recorded listing (ProfileResult's `fromRecorded`). */
+  readonly fromRecorded?: readonly string[];
 }
 
 /** What subagents.sql found of a top-level session's subagents between two times: the earliest
@@ -3136,7 +3752,19 @@ function listingMeasure(input: ListingInput, read: SubagentRead): Evidence {
       why: `${from}; ${NAMES_ONLY}`,
     };
   }
-  return { item: LISTING_MEASURE, source: JSON.stringify(measure) };
+  const taken = input.fromRecorded ?? [];
+  return {
+    item: LISTING_MEASURE,
+    source: JSON.stringify(taken.length === 0 ? measure : { ...measure, fromRecorded: taken }),
+  };
+}
+
+/** The names `evidence`'s listing measure says the profile took from the recorded listing
+ *  (POOL_AT_START_RULE); none where it holds no measure or no mark. */
+export function fromRecordedIn(
+  evidence: readonly { readonly item: string; readonly source: string }[] | undefined
+): readonly string[] {
+  return measureIn(evidence)?.fromRecorded ?? [];
 }
 
 /** The listing measure that `evidence` holds, or undefined. */
@@ -3156,12 +3784,15 @@ function listingCounts(measures: readonly (ListingMeasure | undefined)[]): Recor
     none: 0,
     missing: 0,
     added: 0,
+    fromRecorded: 0,
   };
   for (const measure of measures) {
     const kind = measure?.kind ?? "none";
     counts[kind] = (counts[kind] ?? 0) + 1;
     counts.missing = (counts.missing ?? 0) + (measure?.missing.length ?? 0);
     counts.added = (counts.added ?? 0) + (measure?.added.length ?? 0);
+    if ((measure?.fromRecorded?.length ?? 0) > 0)
+      counts.fromRecorded = (counts.fromRecorded ?? 0) + 1;
   }
   return counts;
 }
@@ -3215,15 +3846,18 @@ function unitNamespace(unit: string): string | undefined {
 /**
  * The session repository of a session of the context `context` whose working directory is `cwd`:
  * for a Legion context, the repository of its workspace (`/legion/workspaces/<owner>/<name>/
- * <workspace>/…`, the checkout at `<workspace>`); for any other (a dev box), the repository of
- * `repositories` (the copies output's list) named as the last part of `cwd`, else of its nearest
- * parent named as any of them, when one alone is named so (the checkout at that directory).
+ * <workspace>/…`, the checkout at `<workspace>`); for any other (a dev box), DEVBOX_CHECKOUT_RULE:
+ * the dev box's own repository `home` where `cwd` is in its checkout (`home.dir`), else the
+ * repository of `repositories` (the copies output's list) named as the last part of `cwd`, else
+ * of its nearest parent named as any of them, when one alone is named so; a parent's is marked
+ * (`byParent`), and `caseProfile` takes it only where its tree holds the path below that parent.
  * Otherwise none, and the evidence says which repositories matched.
  */
 function sessionRepository(
   context: string,
   cwd: string | undefined,
-  repositories: Iterable<string>
+  repositories: Iterable<string>,
+  home?: { readonly repo: string; readonly dir: string }
 ): Checkout {
   const none = (source: string): Checkout => ({
     repo: undefined,
@@ -3258,6 +3892,17 @@ function sessionRepository(
   if (cwd === undefined) {
     return none(`${DEVBOX_CHECKOUT_RULE}. The session names no working directory`);
   }
+  if (home !== undefined && (cwd === home.dir || cwd.startsWith(`${home.dir}/`))) {
+    const rel = path.posix.relative(home.dir, cwd);
+    return {
+      repo: home.repo,
+      rel,
+      line: {
+        item: `${SESSION_REPOSITORY}${home.repo}`,
+        source: `${DEVBOX_CHECKOUT_RULE}. The working directory ${cwd} is ${rel === "" ? "" : "under "}${home.dir}, the checkout of the dev box's repository ${home.repo}, whose .claude/ the configuration's devboxClaudeConfigDir names${inside(rel)}`,
+      },
+    };
+  }
   const listed = [...repositories];
   for (let dir = cwd; ; ) {
     const name = path.posix.basename(dir);
@@ -3271,8 +3916,9 @@ function sessionRepository(
         rel,
         line: {
           item: `${SESSION_REPOSITORY}${repo}`,
-          source: `${DEVBOX_CHECKOUT_RULE}. ${where}, which ${repo} alone of the list is named${inside(rel)}`,
+          source: `${DEVBOX_CHECKOUT_RULE}. ${where}, which ${repo} alone of the list is named${dir === cwd ? "" : `, and its tree holds ${rel}`}${inside(rel)}`,
         },
+        ...(dir === cwd ? {} : { byParent: dir }),
       };
     }
     if (named.length > 1) {
@@ -3290,30 +3936,74 @@ function sessionRepository(
 }
 
 /** The skill directories of the session repository Oh My Pi 18.18.6 lists for a working directory
- *  in a checkout of it (its project skills), each under the working directory and under each of
- *  its parents up to the checkout's root, in the order it admits them, each with its rank among
- *  the skills of one name (`unitRank`), where Oh My Pi reads it, and the namespace it lists a
- *  second copy of a name under (NAMESPACE_RULE): its directory is dotted, so its provider's id
- *  (discovery/builtin.ts, line 43; discovery/claude.ts, line 43). */
+ *  in a checkout of it (its project skills), by provider in the order it admits them: each kind's
+ *  directories (`dirs`) under the working directory alone (`at: "cwd"`) or under it and each of
+ *  its parents up to the checkout's root, the nearest first (`at: "each"`; at each level the
+ *  kind's `dirs` in order), each with its rank among the skills of one name (`unitRank`), whether
+ *  Oh My Pi lists a skill of it without a description (`describedOnly`), where it reads it, and
+ *  the namespace it lists a second copy of a name under (NAMESPACE_RULE): each directory is
+ *  dotted, so its provider's id (extensibility/skills.ts, skillNamespace, lines 96-116). Every
+ *  project provider is on: extensibility/skills.ts, isSourceEnabled, lines 341-363, turns off a
+ *  user-level source alone. Providers of one priority are taken in the order discovery/index.ts
+ *  imports them (lines 23-43; capability/index.ts, lines 177-184, puts a provider after those of
+ *  its own priority). Each scan takes a directory entry or a symbolic link of each skill
+ *  (discovery/helpers.ts, scanSkillsFromDir, lines 579-580 and 594-596), so a link a skills
+ *  directory holds is followed. */
 const PROJECT_SKILLS = [
   {
-    dir: ".omp/skills",
+    dirs: [".omp/skills"],
+    at: "each",
     rank: 1,
+    describedOnly: true,
     how: "Oh My Pi lists each <name>/SKILL.md that has a description under .omp/skills/ of the working directory and of each parent up to the repository's root, the nearest first (discovery/builtin.ts, loadSkills, lines 314-327, over getProjectAncestorDirs, lines 81-109)",
     namespace: "native",
   },
   {
-    dir: ".claude/skills",
+    dirs: [".claude/skills"],
+    at: "each",
     rank: 5,
+    describedOnly: false,
     how: "Oh My Pi lists each <name>/SKILL.md under .claude/skills/ of the working directory and of each parent up to the repository's root, the nearest first (discovery/claude.ts, loadSkills, lines 205-224)",
     namespace: "claude",
+  },
+  {
+    dirs: [".agent/skills", ".agents/skills"],
+    at: "each",
+    rank: 7,
+    describedOnly: false,
+    how: "Oh My Pi lists each <name>/SKILL.md under .agent/skills/ and .agents/skills/ of the working directory and of each parent up to the repository's root, the nearest first, .agent/ before .agents/ at each (discovery/agents.ts, loadSkills, lines 158-172, over getProjectPathCandidates, lines 140-155; priority 70, line 29)",
+    namespace: "agents",
+  },
+  {
+    dirs: [".codex/skills"],
+    at: "cwd",
+    rank: 8,
+    describedOnly: false,
+    how: "Oh My Pi lists each <name>/SKILL.md under .codex/skills/ of the working directory (discovery/codex.ts, loadSkills, lines 266-292, over getProjectCodexDir, lines 50-52; priority 70, line 48)",
+    namespace: "codex",
+  },
+  {
+    dirs: [".opencode/skills"],
+    at: "cwd",
+    rank: 9,
+    describedOnly: false,
+    how: "Oh My Pi lists each <name>/SKILL.md under .opencode/skills/ of the working directory (discovery/opencode.ts, loadSkills, lines 353-380, over discovery/helpers.ts's getProjectPath, lines 130-135; priority 55, line 50)",
+    namespace: "opencode",
+  },
+  {
+    dirs: [".github/skills"],
+    at: "cwd",
+    rank: 10,
+    describedOnly: true,
+    how: "Oh My Pi lists each <name>/SKILL.md that has a description under .github/skills/ of the working directory (discovery/github.ts, loadSkills, lines 286-296, over discovery/helpers.ts's getProjectPath, lines 130-135; priority 30, line 42)",
+    namespace: "github",
   },
 ] as const;
 
 /** Which of a project skill and another skill of its name Oh My Pi 18.18.6 gives a session, and
  *  where its source says so. */
 const PROJECT_PRECEDENCE =
-  "Oh My Pi 18.18.6 keeps under a name the first skill it admits, in its providers' order, highest priority first (capability/index.ts, lines 177-184 and 285-333; extensibility/skills.ts, resolveCollision, lines 141-223, lists a later one of other text under a namespace, as NAMESPACE_RULE says): its own provider (100) reads the project's .omp/skills of the working directory and of each parent up to the repository's root, the nearest first, before ~/.omp/agent/skills (discovery/builtin.ts, lines 81-109 and 314-342), extension packages come next (90, discovery/omp-plugins.ts, lines 136-169), then the Claude Code provider (80) reads ~/.claude/skills before the .claude/skills of the working directory and of each parent up to the repository's root, the nearest first (discovery/claude.ts, lines 205-249), then Claude Code's plugins (75 and 70, discovery/agent-plugins.ts and discovery/claude-plugins.ts); a skill of an extension's own directory (resources_discover) outranks them all (extensibility/skills.ts, lines 147-151)";
+  "Oh My Pi 18.18.6 keeps under a name the first skill it admits, in its providers' order, highest priority first (capability/index.ts, lines 177-184 and 285-333; extensibility/skills.ts, resolveCollision, lines 141-223, lists a later one of other text under a namespace, as NAMESPACE_RULE says): its own provider (100) reads the project's .omp/skills of the working directory and of each parent up to the repository's root, the nearest first, before ~/.omp/agent/skills (discovery/builtin.ts, lines 81-109 and 314-342), extension packages come next (90, discovery/omp-plugins.ts, lines 136-169), then the Claude Code provider (80) reads ~/.claude/skills before the .claude/skills of the working directory and of each parent up to the repository's root, the nearest first (discovery/claude.ts, lines 205-249), then Claude Code's plugins (75 and 70, discovery/agent-plugins.ts and discovery/claude-plugins.ts), then the .agent/skills and .agents/skills of the working directory and of each parent (70, discovery/agents.ts, lines 140-172), the working directory's .codex/skills (70, discovery/codex.ts, lines 266-292), its .opencode/skills (55, discovery/opencode.ts, lines 353-380) and its .github/skills (30, discovery/github.ts, lines 286-296), the providers of one priority in the order discovery/index.ts imports them (lines 23-43); a skill of an extension's own directory (resources_discover) outranks them all (extensibility/skills.ts, lines 147-151)";
 
 /** Where Oh My Pi 18.18.6 admits the skills of the unit `unit` among the skills of one name,
  *  earliest first (PROJECT_PRECEDENCE), counted as PROJECT_SKILLS counts a project's: a pool an
@@ -3407,13 +4097,14 @@ const CONTEXT_FILES: readonly {
 const CONTEXT_SLOT_RULE =
   "Oh My Pi 18.18.6 keeps one project context file at each level from the working directory up to the checkout's root (capability/context-file.ts, lines 36-46: one for each depth), the first in its providers' order, highest priority first (capability/index.ts, lines 177-184 and 285-333), and joins the files it keeps the farthest level first (system-prompt.ts, lines 392-398)";
 /** The directories of each level that the session repository's read reads (GithubReads'
- *  `project`): each one a file of CONTEXT_FILES or a kind of PROJECT_SKILLS is in (`.omp`,
- *  `.claude`, `.agent`, `.agents`, `.gemini`, `.github`). */
+ *  `project`): each one a file of CONTEXT_FILES or a skills directory of PROJECT_SKILLS is in
+ *  (`.omp`, `.claude`, `.agent`, `.agents`, `.gemini`, `.github`, `.codex`, `.opencode`). */
 const PROJECT_LEVEL_DIRS = [
   ...new Set(
-    [...CONTEXT_FILES.map((spec) => spec.file), ...PROJECT_SKILLS.map((kind) => kind.dir)].flatMap(
-      (file) => (file.includes("/") ? [file.slice(0, file.indexOf("/"))] : [])
-    )
+    [
+      ...CONTEXT_FILES.map((spec) => spec.file),
+      ...PROJECT_SKILLS.flatMap((kind) => kind.dirs),
+    ].flatMap((file) => (file.includes("/") ? [file.slice(0, file.indexOf("/"))] : []))
   ),
 ];
 
@@ -3440,6 +4131,9 @@ interface ProfileResult {
    *  under when its text there differs (NAMESPACE_RULE): the profile reads each repository at one
    *  commit, so it holds the copy once. */
   readonly again: readonly InstallPath[];
+  /** The listed names the profile installs only because the recorded listing names one of their
+   *  pool's skills (POOL_AT_START_RULE), sorted; empty for most profiles. */
+  readonly fromRecorded: readonly string[];
 }
 
 /** An install path of a copy: the copy, how its unit ships it, and its unit's namespace. */
@@ -3458,9 +4152,24 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   const { copies, github } = run;
   const evidence: Evidence[] = [];
   const commits = new Map<string, string>();
+  // A dev box's own repository is the checkout whose .claude/ the configuration names as its
+  // CLAUDE_CONFIG_DIR (DEVBOX_CHECKOUT_RULE); devboxHome's evidence is pushed where it is below.
+  const devboxRepo = input.context.startsWith("legion:") ? undefined : devboxHome(copies, []);
+  const claudeDir = run.config.devboxClaudeConfigDir;
   const checkout =
-    input.checkout ?? sessionRepository(input.context, input.cwd, copies.branches.keys());
+    input.checkout ??
+    sessionRepository(
+      input.context,
+      input.cwd,
+      copies.branches.keys(),
+      devboxRepo === undefined || claudeDir === undefined
+        ? undefined
+        : { repo: devboxRepo, dir: path.posix.dirname(claudeDir) }
+    );
   evidence.push(checkout.line);
+  // A checkout a parent's name gave is taken only where its repository's tree holds the working
+  // directory's path below that parent (`byParent`, checked once the repository is read).
+  let notCheckout = false;
   if (input.readTime !== undefined) evidence.push(input.readTime.line);
   // The time each repository is read at: a subagent's at its root's last prompt build before it
   // (PARENT_LOAD_RULE), but each repository a skills-sources pool clones at the subagent's start,
@@ -3483,7 +4192,8 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
       ? { at: readTime.at, words: readTime.words }
       : { at: input.sessionStart, words: "the session's start" };
   // The project skill directories Oh My Pi reads, in its order: each kind of PROJECT_SKILLS, under
-  // the working directory and then under each parent up to the checkout's root.
+  // the working directory and then, for a kind read at each level, under each parent up to the
+  // checkout's root; at each level the kind's directories in order.
   const levels = [checkout.rel];
   for (let level = checkout.rel; level !== ""; ) {
     const parent = path.posix.dirname(level);
@@ -3491,7 +4201,9 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
     levels.push(level);
   }
   const projectDirs = PROJECT_SKILLS.flatMap((kind) =>
-    levels.map((level) => ({ ...kind, dir: level === "" ? kind.dir : `${level}/${kind.dir}` }))
+    (kind.at === "cwd" ? levels.slice(0, 1) : levels).flatMap((level) =>
+      kind.dirs.map((dir) => ({ ...kind, dir: level === "" ? dir : `${level}/${dir}` }))
+    )
   );
   /** The commit of `repo` at the session's start, and the evidence for it; or no commit, when
    *  GitHub gives none then (NoCommitThen), and the evidence item that leaves it out, whose
@@ -3564,7 +4276,10 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
     }
     if (shown.has(read.header)) continue;
     shown.add(read.header);
-    const reading = `message ${read.index} reads [Skill file: ${read.header}]`;
+    const reading =
+      read.byPath === true
+        ? `message ${read.index} reads ${read.header} by its path`
+        : `message ${read.index} reads [Skill file: ${read.header}]`;
     let rows = copies.prefixes.filter((row) => prefixMatches(row.prefix ?? "", read.header));
     let under = (row: Record<string, string>) =>
       `${reading}, under the prefix-table.tsv row ${row.prefix}`;
@@ -3599,15 +4314,16 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
       }
     }
   }
+  // The repositories the worker image's packages come from: a plugin list (omp-plugins) is the
+  // pod's only when one of them holds it; another's (a dev box's own) installs nothing in a pod.
+  // Their units are read at the image's commit (LEGION_IMAGE_RULE, below).
+  const imageRepositories = new Set<string>();
   if (input.context.startsWith("legion:")) {
     const ompUnits = new Set(
       copies.installers
         .filter((row) => row.host === "omp")
         .map((row) => `${row.unit} (${row.manifest_repository}:${row.manifest_path})`)
     );
-    // The repositories the worker image's packages come from: a plugin list (omp-plugins) is the
-    // pod's only when one of them holds it; another's (a dev box's own) installs nothing in a pod.
-    const imageRepositories = new Set<string>();
     for (const row of copies.prefixes) {
       if (!(row.prefix ?? "").startsWith(IMAGE_ROOT)) continue;
       for (const via of vias(row.via ?? "")) {
@@ -3711,6 +4427,28 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   }
   for (const copy of alone.values()) repositories.add(copy.repo);
   if (deployment !== undefined) repositories.add(deployment);
+  // A dev-box session repository whose Claude Code settings enable plugins (CLAUDE_PLUGIN_RULE)
+  // is read whole with the repositories of the marketplaces that ship them.
+  if (checkout.repo !== undefined && !input.context.startsWith("legion:")) {
+    const repo = checkout.repo.toLowerCase();
+    const enabled = new Set(
+      copies.installers
+        .filter(
+          (row) =>
+            (row.manifest_repository ?? "").toLowerCase() === repo &&
+            row.manifest_path === CLAUDE_SETTINGS &&
+            row.action === "enables"
+        )
+        .map((row) => row.unit ?? "")
+    );
+    if (enabled.size > 0) repositories.add(checkout.repo);
+    for (const row of copies.installers) {
+      if (!enabled.has(row.unit ?? "") || !Object.hasOwn(MEMBER_ACTIONS, row.action ?? ""))
+        continue;
+      repositories.add(row.manifest_repository ?? "");
+      if ((row.copy_repository ?? "") !== "") repositories.add(row.copy_repository ?? "");
+    }
+  }
   if (home !== undefined) {
     repositories.add(home);
     for (const row of copies.installers) {
@@ -3727,8 +4465,9 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   const held = new Map<string, RepositoryAt>();
   // The session repository is read at its commit too, for its project skills and context files;
   // it joins the units' resolution only when it is a unit's repository. A unit's repository is
-  // read whole, for copies.ts's rules; one that is the session repository alone only where Oh My
-  // Pi reads a project (`project`), since a repository's whole tree can be more than GitHub gives.
+  // read whole, for copies.ts's rules; the session repository where Oh My Pi reads a project
+  // (`project`), whether or not it is a unit's too, since a repository's whole tree can be more
+  // than GitHub gives and the project read follows the links of its skills directories.
   const toRead = new Set(repositories);
   if (checkout.repo !== undefined) toRead.add(checkout.repo);
   let projectTree: RepositoryAt | undefined;
@@ -3739,13 +4478,17 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
       const { sha, line } = await readCommit(repo);
       if (sha === undefined) return { repo, none: line };
       const { excludePaths } = run.config;
-      return repositories.has(repo)
-        ? { repo, commit: { sha, line }, at: await github.at(repo, sha, excludePaths), reads: 0 }
-        : {
+      const project =
+        repo === checkout.repo ? await github.project(repo, sha, levels, excludePaths) : undefined;
+      return repositories.has(repo) || project === undefined
+        ? {
             repo,
             commit: { sha, line },
-            ...(await github.project(repo, sha, levels, excludePaths)),
-          };
+            at: await github.at(repo, sha, excludePaths),
+            reads: 0,
+            project,
+          }
+        : { repo, commit: { sha, line }, ...project, project };
     })
   );
   // A repository with no commit at the time it is read at did not exist then: nothing of it was
@@ -3781,7 +4524,8 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   // the ref that installer names at the session's start, as the session's machine held it then;
   // repositories.tsv's branch names the ref the copies output read, later.
   const pins = installerPins(
-    values.flatMap((value) => (repositories.has(value.repo) ? value.at.manifests : []))
+    values.flatMap((value) => (repositories.has(value.repo) ? value.at.manifests : [])),
+    run.config.clones
   );
   for (const [index, value] of values.entries()) {
     const pin = pins.find((each) => each.repository.toLowerCase() === value.repo.toLowerCase());
@@ -3824,7 +4568,10 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
       const manifests = values.flatMap((value) =>
         repositories.has(value.repo) || value.repo === home ? value.at.manifests : []
       );
-      for (const pin of [...installerPins(manifests), ...legionPins(manifests)]) {
+      for (const pin of [
+        ...installerPins(manifests, run.config.clones),
+        ...legionPins(manifests),
+      ]) {
         const known = (repo: string) => repo.toLowerCase() === pin.repository.toLowerCase();
         // A pin of no ref names the default branch, which a repository left out above had no
         // commit of then.
@@ -3857,6 +4604,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
             },
             at: await github.at(pin.repository, sha, run.config.excludePaths),
             reads: 0,
+            project: undefined,
           });
           fresh = true;
         } catch (error) {
@@ -3876,23 +4624,46 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
       }
     }
   }
-  for (const { repo, commit, at, reads: treeReads } of values) {
+  for (const { repo, commit, at, reads: treeReads, project } of values) {
     commits.set(repo, commit.sha);
     evidence.push(commit.line);
-    if (repo === checkout.repo) projectTree = at;
+    if (repo === checkout.repo && checkout.byParent !== undefined && checkout.rel !== "") {
+      const missing = project?.missing ?? [];
+      if (missing.includes(checkout.rel)) {
+        notCheckout = true;
+        evidence[evidence.indexOf(checkout.line)] = {
+          item: NO_SESSION_REPOSITORY,
+          source: `${DEVBOX_CHECKOUT_RULE}. The working directory ${input.cwd} is under ${checkout.byParent}, named as ${repo}, whose tree at ${commit.sha} holds no ${checkout.rel}, so that name alone does not make the directory a checkout of it`,
+        };
+      }
+    }
+    if (repo === checkout.repo && !notCheckout) projectTree = project?.at ?? at;
     const unitRepo = repositories.has(repo);
     if (unitRepo) held.set(repo, at);
+    const projectRead = `gh api repos/${repo}/git/trees/<tree id>, one directory a read (${project?.reads ?? treeReads} ${(project?.reads ?? treeReads) === 1 ? "read" : "reads"}), of the directories Oh My Pi reads a project's skills and context files from: each level from the working directory up to the checkout's root, its ${PROJECT_LEVEL_DIRS.map((dir) => `${dir}/`).join(", ")}, its ${PROJECT_SKILLS.flatMap((kind) => kind.dirs.map((dir) => `${dir}/`)).join(", ")} and each skill directory in them, a skill directory held as a link read at the directory it names. Their ${(project?.at ?? at).copies.length} SKILL.md files, read at that commit, give the session repository's project skills`;
     evidence.push(
       unitRepo
         ? {
             item: `the skills and manifests of ${repo} at ${commit.sha}`,
-            source: `gh api repos/${repo}/git/trees/${commit.sha}?recursive=1: its ${at.copies.length} SKILL.md files and ${at.manifests.length} manifest files, read at that commit and resolved by copies.ts's rules (resolveInstallers), give what each unit ships then`,
+            source: `gh api repos/${repo}/git/trees/${commit.sha}?recursive=1: its ${at.copies.length} SKILL.md files and ${at.manifests.length} manifest files, read at that commit and resolved by copies.ts's rules (resolveInstallers), give what each unit ships then${project === undefined ? "" : `; and ${projectRead}`}`,
           }
-        : {
-            item: `the skills of ${repo} at ${commit.sha}`,
-            source: `gh api repos/${repo}/git/trees/<tree id>, one directory a read (${treeReads} ${treeReads === 1 ? "read" : "reads"}), of the directories Oh My Pi reads a project's skills and context files from: each level from the working directory up to the checkout's root, its ${PROJECT_LEVEL_DIRS.map((dir) => `${dir}/`).join(", ")}, its ${PROJECT_SKILLS.map((kind) => `${kind.dir}/`).join(" and ")} and each skill directory in them. Their ${at.copies.length} SKILL.md files, read at that commit, give the session repository's project skills`,
-          }
+        : { item: `the skills of ${repo} at ${commit.sha}`, source: projectRead }
     );
+    // Each link of a project skills directory: followed to the directory it names in the
+    // repository, as Oh My Pi's scan follows it, or left out where it names none there.
+    for (const { link, target, outcome } of project?.links ?? []) {
+      evidence.push(
+        outcome === "followed"
+          ? {
+              item: `linked: ${repo} ${link} -> ${target}`,
+              source: `${repo} at ${commit.sha} holds ${link} as a symbolic link to ${target}, which Oh My Pi follows (discovery/helpers.ts, lines 579-580 and 594-596): the skill directory it names is read under the link's path`,
+            }
+          : {
+              item: `left out: ${repo} ${link} -> ${target}`,
+              source: `${repo} at ${commit.sha} holds ${link} as a symbolic link to ${target}, ${outcome === "outside" ? "outside the repository" : "which names no directory of the repository"}, so no repository read gives what it names`,
+            }
+      );
+    }
     for (const fault of at.faults) {
       const dir = path.posix.dirname(path.posix.dirname(fault.file));
       if (!unitRepo && !projectDirs.some((each) => each.dir === dir)) continue;
@@ -3905,6 +4676,46 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   // Each tree read at another commit than its repository's (a pinned package's release tag, a
   // pool host's at a subagent's start), by `<repo>@<commit>`.
   const trees = new Map<string, RepositoryAt>();
+  // A Legion pod's worker image carries the packages of its repository as that repository was at
+  // the commit the image was built from (LEGION_IMAGE_RULE), not at its default branch at the
+  // session's start: the units of that repository are resolved from its tree at that commit
+  // (`unitTree`), and their copies name it. The repository stays read at the session's start for
+  // anything else of it (a session repository's project skills and context files, a copy a read
+  // in its checkout is placed at).
+  const [imageRepo, ...moreImageRepos] = [...imageRepositories].sort();
+  let image: { readonly repo: string; readonly sha: string; readonly at: RepositoryAt } | undefined;
+  if (deployment !== undefined && imageRepo !== undefined) {
+    const depSha = commits.get(deployment);
+    const found =
+      moreImageRepos.length > 0 || depSha === undefined
+        ? {
+            line: {
+              item: `the worker image's commit of ${[...imageRepositories].sort().join(", ")}`,
+              source: `${moreImageRepos.length > 0 ? `the worker image's packages come from ${imageRepositories.size} repositories (the prefix-table.tsv rows under ${IMAGE_ROOT}), so which one the image's commit is of is not known` : `${deployment} has no commit at the session's start`}, so each is read at its default branch's commit at the session's start: ${LEGION_IMAGE_RULE}`,
+            },
+          }
+        : await legionImageCommit(github, {
+            deployment,
+            sha: depSha,
+            projectPath: projectFile?.path ?? "",
+            project: input.project ?? "",
+            imageRepo,
+            when: whenOf(deployment),
+          });
+    evidence.push(found.line);
+    if (found.sha !== undefined && found.sha !== commits.get(imageRepo) && held.has(imageRepo)) {
+      const at = await github.at(imageRepo, found.sha, run.config.excludePaths);
+      image = { repo: imageRepo, sha: found.sha, at };
+      trees.set(`${imageRepo}@${found.sha}`, at);
+      evidence.push({
+        item: `the skills and manifests of ${imageRepo} at ${found.sha}`,
+        source: `gh api repos/${imageRepo}/git/trees/${found.sha}?recursive=1: its ${at.copies.length} SKILL.md files and ${at.manifests.length} manifest files, read at the worker image's commit and resolved by copies.ts's rules (resolveInstallers), give what each unit of ${imageRepo} ships in the image`,
+      });
+    }
+  }
+  /** The tree a unit of `repo` ships from: the worker image's at its commit for the image's
+   *  repository, else `at`, the tree held at the session's start. */
+  const unitTree = (repo: string, at: RepositoryAt) => (repo === image?.repo ? image.at : at);
   // A subagent's pool hosts at its start: Oh My Pi rescans a pool's directories then, while the
   // host's plugin lists, installers and settings are what its root loaded (PARENT_LOAD_RULE).
   const poolAt = new Map<string, string>();
@@ -3925,7 +4736,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   // A package a plugin list pins by an exact npm version ships what that version ships
   // (NPM_PIN_RULE); the dev box's own plugin lists come first.
   const versions = new Map<string, PinnedVersion>();
-  const heldManifests = [...held.values()].flatMap((at) => at.manifests);
+  const heldManifests = [...held].flatMap(([repo, at]) => unitTree(repo, at).manifests);
   const lists = heldManifests.toSorted(
     (a, b) => Number(b.repository === home) - Number(a.repository === home)
   );
@@ -3949,7 +4760,11 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
         const at = await github.at(repo, sha, run.config.excludePaths);
         if (at.manifests.some((each) => each.path === pkg.path && each.kind === "omp-package")) {
           trees.set(`${repo}@${sha}`, at);
-          const rows = resolveInstallers(at.manifests, new CopyIndex(at.copies)).rows.filter(
+          const rows = resolveInstallers(
+            at.manifests,
+            new CopyIndex(at.copies),
+            run.config.clones
+          ).rows.filter(
             (row) =>
               row.unit === id &&
               row.manifestRepository === repo &&
@@ -3985,8 +4800,9 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
     });
   }
   const resolved = resolveInstallers(
-    [...held.values()].flatMap((at) => at.manifests),
-    new CopyIndex([...held.values()].flatMap((at) => at.copies))
+    [...held].flatMap(([repo, at]) => unitTree(repo, at).manifests),
+    new CopyIndex([...held].flatMap(([repo, at]) => unitTree(repo, at).copies)),
+    run.config.clones
   );
   /** The tree of `repo` a pool's directories are read at: its own at a subagent's start, else
    *  the one held. */
@@ -3996,8 +4812,11 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
     poolAt.size === 0
       ? resolved
       : resolveInstallers(
-          [...held].flatMap(([repo, at]) => poolTree(repo, at).manifests),
-          new CopyIndex([...held].flatMap(([repo, at]) => poolTree(repo, at).copies))
+          [...held].flatMap(([repo, at]) => poolTree(repo, unitTree(repo, at)).manifests),
+          new CopyIndex(
+            [...held].flatMap(([repo, at]) => poolTree(repo, unitTree(repo, at)).copies)
+          ),
+          run.config.clones
         );
   /** The rows by which `via`'s unit ships a skill at the session's start (copies.ts's rules): a
    *  pool's from its host's tree at the subagent's start. */
@@ -4045,8 +4864,17 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
 
   // The dev box's own installers at the session's start: each unit they install into Oh My Pi,
   // after the units the reads come from, so a read's unit keeps its place among those of a name.
+  // A pool's rows are its host's at the subagent's start (`poolResolved`); a pool that host names
+  // then and not at the root's build is admitted only where the recorded listing names one of
+  // its skills (POOL_AT_START_RULE), and its names are marked as taken from that listing.
+  const fromListing = new Set<string>();
   if (home !== undefined) {
-    for (const row of resolved.rows) {
+    const atBuild = new Set(resolved.rows.map((row) => `${row.unit}\0${row.manifestPath}`));
+    const rows = [
+      ...resolved.rows.filter((row) => !row.unit.startsWith("pool:")),
+      ...poolResolved.rows.filter((row) => row.unit.startsWith("pool:")),
+    ];
+    for (const row of rows) {
       if (
         row.manifestRepository !== home ||
         row.host !== "omp" ||
@@ -4057,9 +4885,62 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
       }
       const via = { unit: row.unit, repository: home, manifest: row.manifestPath };
       if (units.has(viaKey(via))) continue;
+      if (!atBuild.has(`${row.unit}\0${row.manifestPath}`)) {
+        const ships = shipsAtStart(via).map((each) => each.skill);
+        const named = ships.filter((name) => input.recordedListing?.includes(name) === true);
+        const pool = `${home}:${row.manifestPath} names ${row.unit.slice("pool:".length)} at ${poolAt.get(home)} (the subagent's start ${input.sessionStart}) and not at ${commits.get(home)} (the root's last prompt build)`;
+        if (named.length === 0) {
+          evidence.push({
+            item: `left out: ${row.unit}, a pool at the subagent's start`,
+            source: `${pool}, and the subagent's recorded listing names none of its skills (${ships.join(", ")}), so its host had not cloned it then: ${POOL_AT_START_RULE}`,
+          });
+          continue;
+        }
+        fromListing.add(viaKey(via));
+        units.set(viaKey(via), {
+          via,
+          why: `pool at the subagent's start: ${pool}; the subagent's recorded listing names ${named.join(", ")} of its skills, so its host had cloned it then (installed from the recorded listing): ${POOL_AT_START_RULE}`,
+        });
+        continue;
+      }
       units.set(viaKey(via), {
         via,
         why: `${DEVBOX_INSTALLERS_RULE}: ${home}:${row.manifestPath} at ${commits.get(home)} ${row.action} it into Oh My Pi`,
+      });
+    }
+  }
+  // The Claude Code plugins the session repository's own Claude Code settings enable, which
+  // Claude Code installs for that project and Oh My Pi lists for a session in it
+  // (CLAUDE_PLUGIN_RULE): each from the marketplace rows that ship its skills.
+  if (checkout.repo !== undefined && !input.context.startsWith("legion:") && !notCheckout) {
+    const repo = checkout.repo.toLowerCase();
+    const enabled = new Set(
+      resolved.rows
+        .filter(
+          (row) =>
+            row.manifestRepository.toLowerCase() === repo &&
+            row.manifestPath === CLAUDE_SETTINGS &&
+            row.action === "enables"
+        )
+        .map((row) => row.unit)
+    );
+    for (const row of resolved.rows) {
+      if (
+        !enabled.has(row.unit) ||
+        row.copyPath === undefined ||
+        !Object.hasOwn(MEMBER_ACTIONS, row.action)
+      ) {
+        continue;
+      }
+      const via = {
+        unit: row.unit,
+        repository: row.manifestRepository,
+        manifest: row.manifestPath,
+      };
+      if (units.has(viaKey(via))) continue;
+      units.set(viaKey(via), {
+        via,
+        why: `${CLAUDE_PLUGIN_RULE}: ${checkout.repo}:${CLAUDE_SETTINGS} at ${commits.get(checkout.repo)} enables ${row.unit.slice("plugin:".length)} in enabledPlugins, and ${row.manifestRepository}:${row.manifestPath} ${row.action} its skills`,
       });
     }
   }
@@ -4117,10 +4998,15 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
     rank: number | undefined;
     /** The namespace Oh My Pi lists a second copy of the name under (`unitNamespace`). */
     namespace?: string | undefined;
+    /** Whether its unit was admitted on the recorded listing (POOL_AT_START_RULE). */
+    fromRecorded?: boolean;
   }[] = [];
   for (const [key, { via, why }] of units) {
     const id = via.unit;
-    const start = atCommit(via.repository);
+    const start =
+      via.repository === image?.repo
+        ? `${image.repo} at ${image.sha} (the worker image's commit)`
+        : atCommit(via.repository);
     const version = id.startsWith("package:") ? versions.get(id) : undefined;
     let members = shipsAtStart(via);
     if (version !== undefined) {
@@ -4141,7 +5027,9 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
     }
     for (const row of members) {
       const commit =
-        version?.sha ?? (id.startsWith("pool:") ? poolAt.get(row.copyRepository) : undefined);
+        version?.sha ??
+        (id.startsWith("pool:") ? poolAt.get(row.copyRepository) : undefined) ??
+        (row.copyRepository === image?.repo ? image.sha : undefined);
       const copy = {
         repo: row.copyRepository,
         path: row.copyPath ?? "",
@@ -4158,6 +5046,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
         source: `${copy.repo} at ${commit ?? commits.get(copy.repo)}: ${how}${inR4 ? "" : "; installers.tsv, which the copies output read later, does not list it"}`,
         rank: unitRank(id),
         namespace: unitNamespace(id),
+        fromRecorded: fromListing.has(key),
       });
     }
     for (const row of later) {
@@ -4220,18 +5109,18 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   if (checkout.repo !== undefined && projectTree !== undefined) {
     const how = `project skill of ${checkout.repo}`;
     const start = `${how} at ${commits.get(checkout.repo)}`;
-    for (const { dir, rank, how: listing, namespace } of projectDirs) {
+    for (const { dir, rank, how: listing, namespace, describedOnly } of projectDirs) {
       for (const copy of projectTree.copies) {
         if (path.posix.dirname(copy.path) !== dir) continue;
         // A SKILL.md that could not be read is named in the faults' evidence, and is offered.
         if (
-          dir.endsWith(".omp/skills") &&
+          describedOnly &&
           copy.description === "" &&
           !copy.fault.startsWith("SKILL.md read failed")
         ) {
           evidence.push({
             item: `left out: skill ${copy.name} from ${checkout.repo} ${copy.path}`,
-            source: `${start}: its SKILL.md has no description, and Oh My Pi lists no skill of .omp/skills/ without one (discovery/builtin.ts, line 324; discovery/helpers.ts, line 543)`,
+            source: `${start}: its SKILL.md has no description, and Oh My Pi lists no skill of ${path.posix.basename(path.posix.dirname(dir))}/skills/ without one (requireDescription: discovery/builtin.ts, line 324; discovery/github.ts, line 294; discovery/helpers.ts, line 543)`,
           });
           continue;
         }
@@ -4324,9 +5213,16 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   }
   const skills = new Map<string, Omit<ProfileSkill, "commit"> & { readonly commit?: string }>();
   const again: InstallPath[] = [];
-  /** The tree a copy is read from: its own commit's when it names one, else its repository's. */
-  const treeOf = (copy: { repo: string; commit?: string | undefined }) =>
+  const fromRecorded = new Set<string>();
+  /** The tree a copy is read from: its own commit's when it names one, else the session
+   *  repository's project read when it holds the copy (a linked project skill is held there
+   *  alone), else its repository's. */
+  const treeOf = (copy: { repo: string; path?: string; commit?: string | undefined }) =>
     (copy.commit === undefined ? undefined : trees.get(`${copy.repo}@${copy.commit}`)) ??
+    (copy.repo === checkout.repo &&
+    projectTree?.copies.some((each) => each.path === (copy.path === "." ? "" : copy.path))
+      ? projectTree
+      : undefined) ??
     held.get(copy.repo) ??
     (copy.repo === checkout.repo ? projectTree : undefined);
   /** The blob of the SKILL.md of `copy` at the session's start, as read. */
@@ -4339,6 +5235,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
     const readAt = read !== undefined && same(pick.copy, read) ? read.index : undefined;
     if (pick === offer) {
       skills.set(offer.copy.name, offer.copy);
+      if (offer.fromRecorded === true) fromRecorded.add(offer.copy.name);
       evidence.push({
         item: `skill ${offer.copy.name} (${offer.copy.repo} ${offer.copy.path})`,
         source: `${offer.source}${readAt === undefined ? "" : `; message ${readAt} reads this copy`}`,
@@ -4362,6 +5259,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
           : listedName({ name: offer.copy.name, namespace: offer.namespace });
       if (differs && namespaced !== undefined && !skills.has(namespaced)) {
         skills.set(namespaced, { ...offer.copy, namespace: offer.namespace });
+        if (offer.fromRecorded === true) fromRecorded.add(namespaced);
         evidence.push({
           item: `skill ${namespaced} (${offer.copy.repo} ${offer.copy.path})`,
           source: `${offer.source}; under the name ${offer.copy.name} ${why}, and this copy's text differs: ${NAMESPACE_RULE}`,
@@ -4467,7 +5365,8 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   }
   const profilePlugins: Profile["plugins"] = [];
   for (const plugin of plugins.values()) {
-    const commit = await commitOf(plugin.repo);
+    // The plugin directory of a unit of the worker image is at the image's commit too.
+    const commit = plugin.repo === image?.repo ? image.sha : await commitOf(plugin.repo);
     profilePlugins.push({ repo: plugin.repo, commit, path: plugin.path, name: plugin.name });
     evidence.push({
       item: `plugin ${plugin.name} (${plugin.repo} ${plugin.path})`,
@@ -4559,7 +5458,9 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   }
   // A session repository with no commit then is left out above, so the profile names none.
   const sessionRepo =
-    checkout.repo === undefined || absent.has(checkout.repo) ? undefined : checkout.repo;
+    checkout.repo === undefined || absent.has(checkout.repo) || notCheckout
+      ? undefined
+      : checkout.repo;
   return {
     profile: {
       skills: profileSkills,
@@ -4575,6 +5476,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
     shipped,
     hidden,
     again,
+    fromRecorded: [...fromRecorded].sort(),
   };
 }
 
@@ -4582,7 +5484,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
 // build-cases
 
 const BUILD_CASES_USAGE =
-  "usage: build.ts build-cases --config <skill-cuts.json> --key-file <file> (--cut <id> | --set <id>) --skill <name> --old <dir> --sessions <file> --seed <n> --copies <dir> --count <dir> --out <cases.jsonl> [--max <n>] [--budget-usd <n>] [--concurrency <n>] [--stop-projected-usd <n>] [--stop-after-sessions <n>] [--stop-zero-case-usd <n>] [--drop-navigation]\n       build.ts build-cases --config <skill-cuts.json> --key-file <file> (--cut <id> | --set <id>) --skill <name> --old <dir> --copies <dir> --count <dir> --written <n> (--context-session <store>:<hash> | --sessions <file> --seed <n>) --out <cases.jsonl> [--session-cases <cases.jsonl>] [--reading-models <file>] [--model-pool <file>]... [--budget-usd <n>] [--drop-navigation]\n       build.ts build-cases --config <skill-cuts.json> --old <dir> --copies <dir> --count <dir> --reprofile <cases.jsonl> --out <new cases.jsonl>";
+  "usage: build.ts build-cases --config <skill-cuts.json> --key-file <file> (--cut <id> | --set <id>) --skill <name> --old <dir> [--new <dir>] --sessions <file> --seed <n> --copies <dir> --count <dir> --out <cases.jsonl> [--max <n>] [--budget-usd <n>] [--concurrency <n>] [--stop-projected-usd <n>] [--stop-after-sessions <n>] [--stop-zero-case-usd <n>] [--drop-navigation]\n       build.ts build-cases --config <skill-cuts.json> --key-file <file> (--cut <id> | --set <id>) --skill <name> --old <dir> --copies <dir> --count <dir> --written <n> (--context-session <store>:<hash> | --sessions <file> --seed <n>) --out <cases.jsonl> [--session-cases <cases.jsonl>] [--reading-models <file>] [--model-pool <file>]... [--budget-usd <n>] [--drop-navigation]\n       build.ts build-cases --config <skill-cuts.json> --old <dir> --copies <dir> --count <dir> --reprofile <cases.jsonl> --out <new cases.jsonl>";
 /** The flags only `build-cases --written` takes. */
 const WRITTEN_FLAGS = ["context-session", "session-cases", "reading-models", "model-pool"] as const;
 /** build-cases' options, of each of its forms. */
@@ -4593,6 +5495,7 @@ const BUILD_CASES_OPTIONS = {
   set: { type: "string" },
   skill: { type: "string" },
   old: { type: "string" },
+  new: { type: "string" },
   sessions: { type: "string" },
   seed: { type: "string" },
   copies: { type: "string" },
@@ -4781,6 +5684,10 @@ interface CaseRun {
   readonly cut: { readonly id: string; readonly repo: string };
   readonly skill: string;
   readonly old: string;
+  /** The skill's directory at the cut's head (`--new`): the new arm's text, whose files a case's
+   *  reads by path are checked against too (`pathFormIn`); undefined for a build given none (no
+   *  cut text yet), which checks the old text alone. */
+  readonly new: string | undefined;
   /** The skill's base files (`--old`). */
   readonly files: readonly { readonly path: string; readonly text: string }[];
   /** The path of each file of `--old` (`skillPaths`). */
@@ -5088,6 +5995,7 @@ async function sessionProfile(
     sessionStart: header.sessionStart,
     cwd: header.cwd,
     recordedPrompt: init !== undefined,
+    ...(init === undefined ? {} : { recordedListing: listingNames(init.systemPrompt) }),
     reads: shownReads(t.items.map((item) => item.slim)),
     readTime,
   });
@@ -5133,6 +6041,7 @@ async function sessionProfile(
     listed: listsSkill(recorded, profiled.profile.skills, skill),
     listing: {
       listed: listedNames(profiled),
+      fromRecorded: profiled.fromRecorded,
       recorded: init?.systemPrompt,
       sessionDigest:
         t.branch.flatMap((entry) =>
@@ -5237,22 +6146,52 @@ async function caseOf(
   const { sessionStart } = header;
   // Every message, light: what the scans of the whole session read.
   const allMessages = t.items.map((item) => item.slim);
+  // The session's reads of the skill: by a skill:// URL, and by its path (count.sql's rule). A case
+  // is built from a successful skill:// read, or from a successful whole read by path that
+  // attribute.ts's rules place at the cut's copy (a source); the step comes after the first of
+  // them.
   const reads = skillReads(allMessages, run.skill);
-  const first = reads.find((read) => read.ok);
+  const placeRead = (copyPath: string) => run.placer.place(store.name, copyPath, run.skill);
+  // A read by path relative to the session's working directory, or under `~`, resolves against
+  // its header's cwd and the home its transcript's path names.
+  const dirs = sessionDirs(header.cwd, transcriptPath);
+  const byPath = pathReads(allMessages, run.skill, placeRead, run.cut.repo, dirs);
+  const sourceCopies = [
+    ...new Set(byPath.flatMap((read) => (read.ok && read.dir !== undefined ? [read.dir] : []))),
+  ].map((dir): CopyPlace => ({ dir, ...dirs }));
+  const firstUrl = reads.find((read) => read.ok);
+  const firstPath = byPath.find((read) => read.ok && read.kind === "source");
+  const first =
+    firstPath === undefined || (firstUrl !== undefined && firstUrl.index < firstPath.index)
+      ? firstUrl
+      : firstPath;
   if (first === undefined) {
+    // A session whose only successful reads of the skill are reads by path that no case is built
+    // from is dropped by the first of their kinds, in EXCLUDED_KINDS' order.
+    const excluded = byPath.filter((read) => read.ok);
+    const kind = EXCLUDED_KINDS.find((each) => excluded.some((read) => read.kind === each));
+    if (kind !== undefined) {
+      return drop(
+        kind,
+        `the session reads ${run.skill} by path only so: ${excluded.map((read) => excludedRead(read)).join("; ")}`
+      );
+    }
     return drop(
       "no-read",
-      `${reads.length} read results of skill://${run.skill} files, none successful`
+      `${reads.length} read results of skill://${run.skill} files and ${byPath.length} of reads of its files by path, none successful`
     );
   }
   const firstAt = t.items[first.index]?.at ?? 0;
   record.model = lastBefore(t.branch, firstAt, modelChange);
-  // The copy the session read, placed by attribute.ts's own rules from the same count and copies
-  // output as the sessions file, so the builder keeps what attribute.ts counted for the cut's
-  // copy: a read in a checkout or one the store's context places, as well as one the prefix table
-  // maps.
-  const misplaced = placementDrop(run, store.name, first);
-  if (misplaced !== undefined) return misplaced;
+  // The copy a skill:// read read, placed by attribute.ts's own rules from the same count and
+  // copies output as the sessions file, so the builder keeps what attribute.ts counted for the
+  // cut's copy: a read in a checkout or one the store's context places, as well as one the prefix
+  // table maps (`placementDrop`). A read by path is a source only when they place it at the cut's
+  // copy.
+  if (first === firstUrl) {
+    const misplaced = placementDrop(run, store.name, firstUrl);
+    if (misplaced !== undefined) return misplaced;
+  }
 
   // The model and thinking level: the step's are the last before it, and the step comes after the
   // read, so each is the one in effect at the read or one set after it. A session that gives the
@@ -5300,9 +6239,12 @@ async function caseOf(
   const readable = t.items.filter((item) => boundaryAfterRead < 0 || item.at < boundaryAfterRead);
 
   // The lines the case reader may name: those of the base text the session's own successful
-  // reads of the skill's files held, among the messages it reads. A session with none gives no
-  // case, and no reader reads it.
-  const readsInReach = reads.filter((read) => read.ok && read.index < readable.length);
+  // reads of the skill's files held (by skill://, or whole by path from a source's copy), among
+  // the messages it reads. A session with none gives no case, and no reader reads it.
+  const pathFileReads = copiesReads(allMessages, sourceCopies);
+  const readsInReach = [...reads, ...pathFileReads].filter(
+    (read) => read.ok && read.index < readable.length
+  );
   const offered = offeredFiles(run.files, readsInReach, t.message);
   if (offered.length === 0) {
     const read = [...new Set(readsInReach.map((each) => each.file))];
@@ -5362,8 +6304,13 @@ async function caseOf(
     sessionStart,
     cwd: header.cwd,
     recordedPrompt: init !== undefined,
+    ...(init === undefined ? {} : { recordedListing: listingNames(init.systemPrompt) }),
   };
-  const reachableReads = shownReads(readable.map((item) => item.slim));
+  const reachableReads = profileReads(
+    readable.map((item) => item.slim),
+    run.skill,
+    sourceCopies
+  );
   let ships = false;
   for (const readTime of reach) {
     try {
@@ -5390,7 +6337,10 @@ async function caseOf(
       )
     );
   }
-  const hidden = skillReadResults(allMessages, run.skill);
+  const hidden = new Set([
+    ...skillReadResults(allMessages, run.skill),
+    ...pathFileReads.map((read) => read.index),
+  ]);
   const shown = (index: number, message: SessionMessage): CaseInput["messages"][number] => ({
     index,
     role: message.role ?? "message",
@@ -5463,6 +6413,14 @@ async function caseOf(
         return drop("reader-failed", error.message);
       }
       return drop("reader-error", messageFor(error));
+    }
+    // A session whose work at the read is on the skill's own text gives no case of the skill's
+    // behaviour in any window: its next step works on the text and does not follow it.
+    if ("material" in given) {
+      return drop(
+        "skill-as-material",
+        `the case reader, in window ${windows} (messages ${windowMessages[0]?.index} to ${windowMessages.at(-1)?.index}): ${given.material.why}`
+      );
     }
     let next = (windowMessages.at(-1)?.index ?? start) + 1;
     if (given.step === null) noStep = given.reason;
@@ -5561,13 +6519,41 @@ async function caseOf(
   const before = messagesBefore(t, stepItem.at, firstAt);
   if ("drop" in before) return drop(before.drop, before.detail);
   const messages = before.messages;
+  // The case's reads of the skill's files: each skill:// read, and, when a source before the step
+  // read the cut's copy whole by path, each whole read by path of a file of that copy (the first
+  // such source's resolved directory, with the session's cwd and home: the case's `pathCopy`).
+  // Each other successful read by path of the skill is answered as recorded in every arm, and the
+  // case's evidence names it (`excluded reads`).
   const caseReads = skillReads(messages, run.skill);
+  const casePaths = pathReads(messages, run.skill, placeRead, run.cut.repo, dirs);
+  const sourceDir = casePaths.find((read) => read.ok && read.kind === "source")?.dir;
+  const pathCopy: CopyPlace | undefined =
+    sourceDir === undefined ? undefined : { dir: sourceDir, ...dirs };
+  const fileReads = [
+    ...caseReads,
+    ...(pathCopy === undefined ? [] : copyReads(messages, pathCopy)),
+  ].sort((a, b) => a.index - b.index);
+  const answered = new Set(fileReads.map((read) => read.index));
+  const excluded = casePaths.filter((read) => read.ok && !answered.has(read.index));
   const installedDirs = caseReads.flatMap((read) => {
     const dir = installedDirOf(read.header, read.file);
     return dir === undefined ? [] : [dir];
   });
-  const byPath = readByPath(messages, run.skill, installedDirs);
-  if (byPath !== undefined) return drop("read-by-path", byPath);
+  const kept = new Set(
+    [...fileReads, ...excluded].map((read) => messages[read.index]?.toolCallId ?? "")
+  );
+  const unheld = readByPath(messages, run.skill, installedDirs, kept);
+  if (unheld !== undefined) return drop("read-by-path", unheld);
+  // A case whose read by path the arms do not answer in Oh My Pi's form would fail every
+  // `behaviour` run of it: the old text's, and the new text's when `--new` is given (cli.ts's
+  // screen drops a case on the new text's otherwise).
+  const formFault = pathFormIn(
+    fileReads.flatMap((read) => (read.path === undefined ? [] : [read.file])),
+    run
+  );
+  if (formFault !== undefined) {
+    return drop("path-form", `in the ${formFault.arm} text ${formFault.dir}: ${formFault.fault}`);
+  }
 
   const file = run.files.find((each) => each.path === answer.line.file);
   const wanted = answer.line.text.trim();
@@ -5576,16 +6562,12 @@ async function caseOf(
   if (file === undefined || lineNumber === 0) {
     return drop("line-not-in-base", `${answer.line.file}: ${JSON.stringify(answer.line.text)}`);
   }
-  const held = caseReads.some((read) => {
-    const message = messages[read.index];
-    return (
+  const held = fileReads.some(
+    (read) =>
       read.ok &&
       read.file === file.path &&
-      textLines(stripSkillHeader(message?.content?.[0]?.text ?? "")).some(
-        (line) => line.trim() === wanted
-      )
-    );
-  });
+      textLines(readText(read, messages[read.index])).some((line) => line.trim() === wanted)
+  );
   if (!held) {
     return drop(
       "line-not-in-read",
@@ -5616,7 +6598,11 @@ async function caseOf(
   const readTime = step?.read ?? reach[0];
   let profiled: ProfileResult;
   try {
-    profiled = await caseProfile(run, { ...profileInput, readTime, reads: shownReads(messages) });
+    profiled = await caseProfile(run, {
+      ...profileInput,
+      readTime,
+      reads: profileReads(messages, run.skill, pathCopy === undefined ? [] : [pathCopy]),
+    });
   } catch (error) {
     return drop("profile-failed", messageFor(error));
   }
@@ -5640,7 +6626,7 @@ async function caseOf(
     violatingStep: writtenMessage(answer.violatingStep, "violating"),
     criterion: answer.criterion,
   });
-  const skillReadIndices = caseReads.map((each) => each.index);
+  const skillReadIndices = fileReads.map((each) => each.index);
 
   // The whole history before the step, as the case keeps it, for a restatement of the line: every
   // message but the skill's own read results, window by window, each window one `restate` call.
@@ -5730,6 +6716,7 @@ async function caseOf(
     profile: withRecordedPrompt(profiled.profile, init, secrets.value.systemPrompt),
     messages: secrets.value.messages,
     skillReads: skillReadIndices,
+    ...(pathCopy === undefined ? {} : { pathCopy }),
     realStep: secrets.value.realStep,
     violatingStep: secrets.value.violatingStep,
     source: { store: store.name, pathHash: hash, kind: "session" },
@@ -5743,6 +6730,14 @@ async function caseOf(
         item: `${AUDIT_EVIDENCE}${audit.verdict}`,
         source: `the audit reader, given the line, the messages before the step as the judge reads them and the real step, and no criterion: ${audit.reason}`,
       },
+      ...(excluded.length === 0
+        ? []
+        : [
+            {
+              item: EXCLUDED_READS,
+              source: `each answered as recorded in every arm: ${excluded.map((read) => excludedRead(read, pathCopy)).join("; ")}`,
+            },
+          ]),
     ],
   });
   if (replaced !== undefined) replaced.replacement = built.id;
@@ -5751,6 +6746,7 @@ async function caseOf(
     step: stepIndex,
     listing: {
       listed: listedNames(profiled),
+      fromRecorded: profiled.fromRecorded,
       recorded: init?.systemPrompt,
       sessionDigest: digest ?? null,
       ...(step === undefined ? {} : { build: step.window }),
@@ -5884,6 +6880,9 @@ function readCopiesAndPlacer(
 const CONTEXT_EVIDENCE = /^(subagent |role |no role$|the recorded system prompt and tools$)/;
 /** The start of the item of a case's audit evidence, which comes after its profile's. */
 const AUDIT_EVIDENCE = "audit of the real step: ";
+/** The item of a case's evidence that names each successful read by path of the skill before its
+ *  step that the arms answer as recorded (`excludedRead`); it comes after the audit's. */
+export const EXCLUDED_READS = "excluded reads";
 /** The item of the profile's evidence for a Legion session whose working directory is no
  *  workspace, so its repository's context files are left out. */
 const NO_WORKSPACE = "left out: the session repository's context files";
@@ -5946,6 +6945,7 @@ async function reprofileCases(values: BuildCasesValues, io: BuildIo): Promise<nu
     "cut",
     "set",
     "skill",
+    "new",
     "sessions",
     "seed",
     "max",
@@ -6092,7 +7092,9 @@ async function reprofileCases(values: BuildCasesValues, io: BuildIo): Promise<nu
       store: store.name,
       context: store.context,
       project: legion ? store.context.slice("legion:".length) : undefined,
-      reads: contextReads(old) ?? shownReads(c.messages),
+      reads:
+        contextReads(old) ??
+        profileReads(c.messages, c.skill, c.pathCopy === undefined ? [] : [c.pathCopy]),
       sessionStart: c.sessionStart,
       cwd: held
         ? (head?.cwd ?? undefined)
@@ -6100,6 +7102,9 @@ async function reprofileCases(values: BuildCasesValues, io: BuildIo): Promise<nu
           ? undefined
           : `/legion/workspaces/${agents.repo}/`,
       recordedPrompt: c.profile.systemPrompt !== undefined,
+      ...(c.profile.systemPrompt === undefined
+        ? {}
+        : { recordedListing: listingNames(c.profile.systemPrompt) }),
       readTime: reading?.read,
       checkout:
         held || decided === undefined
@@ -6148,6 +7153,7 @@ async function reprofileCases(values: BuildCasesValues, io: BuildIo): Promise<nu
       listingMeasure(
         {
           listed: listedNames(profiled),
+          fromRecorded: profiled.fromRecorded,
           recorded: c.profile.systemPrompt,
           sessionDigest: c.sessionDigest,
           ...(reading?.window === undefined ? {} : { build: reading.window }),
@@ -6171,7 +7177,8 @@ async function reprofileCases(values: BuildCasesValues, io: BuildIo): Promise<nu
         (each) =>
           each.item.startsWith(AUDIT_EVIDENCE) ||
           each.item.startsWith(WRITTEN_EVIDENCE) ||
-          each.item.startsWith(CONTEXT_READ)
+          each.item.startsWith(CONTEXT_READ) ||
+          each.item === EXCLUDED_READS
       ),
     ];
     const built = Case.parse({ ...c, profile: { ...c.profile, ...profiled.profile }, evidence });
@@ -6540,6 +7547,10 @@ async function buildWrittenCases(values: BuildCasesValues, io: BuildIo): Promise
       );
     }
   }
+  // A written case reads the skill only by skill:// URLs, so no file read by path is checked.
+  if (values.new !== undefined) {
+    throw new Refused("--written takes no --new: a written case reads no file of the copy by path");
+  }
   if (!/^\d+$/.test(given.written) || Number(given.written) < 1) {
     throw new Refused(`--written ${given.written} is not a whole number of 1 or more`);
   }
@@ -6625,6 +7636,7 @@ async function buildWrittenCases(values: BuildCasesValues, io: BuildIo): Promise
     cut: unit,
     skill: given.skill,
     old: given.old,
+    new: undefined,
     files,
     skillPaths: skillPaths(given.old),
     dropNavigation: values["drop-navigation"] === true,
@@ -7041,13 +8053,16 @@ async function buildWrittenCases(values: BuildCasesValues, io: BuildIo): Promise
 
 /** What a build-cases run is made from, as its summary records it: a resumed run must be made
  *  from the same. The texts are digests of what the run read (`digestOf`); the paths are only
- *  for a reader of the summary. `dropNavigation` is absent from a summary written before
- *  `--drop-navigation`, which a run without the flag goes on from. */
+ *  for a reader of the summary. `new` is every file of `--new`, or null for a run given none; it
+ *  is absent from a summary written before build-cases took `--new`, so a build does not go on
+ *  from that one. `dropNavigation` is absent from a summary written before `--drop-navigation`,
+ *  which a run without the flag goes on from. */
 const CasesInputs = z.strictObject({
   cut: z.string(),
   skill: z.string(),
   seed: z.string(),
   old: Digested,
+  new: Digested.nullable().optional(),
   sessions: Digested,
   copies: Digested,
   count: Digested,
@@ -7104,6 +8119,15 @@ function inputsDiffer(was: CasesInputs, now: CasesInputs): string[] {
         ? "--drop-navigation was not given, now given"
         : "--drop-navigation was given, now not given"
     );
+  }
+  if (was.new === undefined || was.new?.sha256 !== now.new?.sha256) {
+    const shown = (given: Digested | null | undefined) =>
+      given === undefined
+        ? "not recorded (a build-cases run from before --new)"
+        : given === null
+          ? "not given"
+          : `${given.path} (sha256 ${given.sha256.slice(0, 12)})`;
+    differ.push(`--new was ${shown(was.new)}, now ${shown(now.new)}`);
   }
   return differ;
 }
@@ -7289,6 +8313,11 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
   const config = configFrom(given.config);
   const cut = cutOrSetOption({ cut: values.cut, set: values.set }, config);
   mustBeFile(path.join(given.old, "SKILL.md"), "--old's SKILL.md");
+  // No --new: a build before the cut has a text checks the old text alone.
+  const newDir = values.new;
+  if (newDir !== undefined && !statSync(newDir, { throwIfNoEntry: false })?.isDirectory()) {
+    throw new Refused(`--new ${newDir} is not a directory`);
+  }
   mustBeFile(given["key-file"], "--key-file");
   const files = skillFiles(given.old);
   const { copies, placer: placing } = readCopiesAndPlacer(config, given.count, given.copies);
@@ -7306,6 +8335,16 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
       given.old,
       files.map((file) => file.path)
     ),
+    new:
+      newDir === undefined
+        ? null
+        : digestOf(
+            newDir,
+            readdirSync(newDir, { recursive: true, withFileTypes: true })
+              .filter((entry) => entry.isFile())
+              .map((entry) => path.relative(newDir, path.join(entry.parentPath, entry.name)))
+              .sort()
+          ),
     sessions: {
       ...digestOf(path.dirname(given.sessions), [path.basename(given.sessions)]),
       path: given.sessions,
@@ -7376,6 +8415,7 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
     cut,
     skill: given.skill,
     old: given.old,
+    new: newDir,
     files,
     skillPaths: skillPaths(given.old),
     dropNavigation: inputs.dropNavigation === true,

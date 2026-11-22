@@ -21,9 +21,9 @@ change what the agent does. Two such things did, and the runner now removes both
   value, or by a neutral one where the store holds none ("The harness strings", below).
 
 Every private value (the owners, the session stores, the gateway's address, the paths left out, the
-repositories copies map to, the dev box's Claude Code config directory, the skill sets and the
-repository that pins them) comes from the `--config <skill-cuts.json>` file at run time
-(`config.ts` says each key). No file here names one. The
+repositories copies map to, the dev box's Claude Code config directory, the clones made by hand on
+a dev box, the skill sets and the repository that pins them) comes from the `--config
+<skill-cuts.json>` file at run time (`config.ts` says each key). No file here names one. The
 gateway key comes from `--key-file`, read inside the process that uses it, never printed, logged
 or written. The behaviour test and the load test read the skill texts from directories and the
 cases or tasks from a file outside the repository. The repositories a context needs come from
@@ -32,7 +32,13 @@ commit; without `--repos` they are read from GitHub through `gh` (GET calls and 
 queries; a whole repository's tarball only for a plugin's checkout). A skill's directory is read
 from its commit's tree and its blobs; where GitHub cuts that tree short (a repository of too many
 entries), the directory alone is read, along its path from the root tree, one level at a time
-where GitHub cuts its own tree short too, never from the whole repository's tarball. So
+where GitHub cuts its own tree short too, never from the whole repository's tarball. A skill
+directory the repository holds as a symbolic link (a project's `.claude/skills/<name>`, for
+example) is read at the directory the link names in the repository, as Oh My Pi's scan follows the
+link (discovery/helpers.ts, lines 579-580 and 594-596). A link out of the repository, or to no
+directory of it, drops the case or the task as `unreadable-directory`, and the drop names the case,
+the link and its target. The one-level tree reads of such a read are kept while they are among the
+last 64, so the levels read to find the link are not read again. So
 `behaviour` and `load` need no GitHub token only with `--repos`. `copies`, `set-count`,
 `craft-lines`, `build-cases` and `build-tasks --profiles-out` read GitHub through `gh`, and only
 read it: GET calls, and GraphQL queries that read file contents in batches.
@@ -144,10 +150,12 @@ loss when the compared arm passes at least 10 fewer of 40 fresh runs than old.
   each model of the cases with its cases, the skill's verdict and its reason, ending with how many
   of the skill's screened cases have a listing measure that could not be measured; the drops per
   judge control and the drops counted as `model-not-served`, as `unreadable-directory`, as
-  `listing-misses` and as `injection-unrebuildable`, the last by kind (a case under each kind it
-  holds); an estimate of the procedure's false-loss chance at the cases run (exact binomial under
-  identical old and compared texts, the pass rates taken from each case's own screen; its
-  assumptions are printed with it),
+  `listing-misses`, as `injection-unrebuildable`, the last by kind (a case under each kind it
+  holds), as `path-form`, by the arm whose text holds the file, and as `reads-past-last-round`;
+  the verdict line also counts the screened cases whose profile took names from their recorded
+  listing (`fromRecorded`, below); an estimate of the procedure's false-loss chance at the cases
+  run (exact binomial under identical old and compared texts, the pass rates taken from each
+  case's own screen; its assumptions are printed with it),
   a table of the chance it finds a loss of 10 to 40 points in one informative case, each screened
   case's smallest drop ("The smallest drop" below), the spend
   at list price, the peak memory, how many captures' system-prompt digests differ from their
@@ -243,17 +251,43 @@ route (`/v1/messages`, `anthropic/<id>`) and the OpenAI Responses route (`/v1/re
 models under `modelOverrides`); Oh My Pi 18.18.6 sends an OpenAI model's turn as a Responses body
 (its system prompt as `instructions`, its history as `input` items; testdata F8), and the capture
 keeps it as it does a Messages body. Hints are written by the hint model, which must be on the
-Messages route: an OpenAI case needs `--hint-model anthropic/<id>`. `gateway.ts` sends each body
-to its API's route (the key as `x-api-key`, or as `authorization: Bearer` on the Responses route),
+Messages route: an OpenAI case needs `--hint-model anthropic/<id>`. A hint is the line of at most
+160 characters that Oh My Pi lists a skill under in place of its description. A capture asks the
+hint model once for each skill text its cache lacks, and every arm and case of that text lists the
+cached hint. A reply Oh My Pi does not keep (empty, more than one line, or over 160 characters)
+fails no capture. As in Oh My Pi, the skill is then listed under its cut-down description: the
+description itself when it has at most 100 characters, else it is cut at a sentence or a word end
+within 99 and followed by `…`. The runner asks no more for that text, because Oh My Pi asks that
+model no more either. The cache file and the capture record's `hints` say `kept: false`, give the
+reply, and say why. Oh My Pi asks for temperature 0, but sends no temperature to Opus 4.7 on,
+Sonnet, Fable and Mythos 5 on or Haiku 5.5 on, which take none, so their hints run at the API's
+default of 1. `gateway.ts` sends each body to its API's route (the key as `x-api-key`, or as
+`authorization: Bearer` on the Responses route),
 reads the stream whole, and prices each reply at its model's list price (`PRICES`, from
 Anthropic's and OpenAI's pricing pages; gpt-6.1-sol at $2 input, $10 output, $0.10 a cache read
 and $2.50 a 30-minute cache write per million tokens, more above 272,000 input tokens), counting a
-Responses reply's cached input and reasoning tokens too. A replay answers a reply whose every tool
-call reads a skill file from the arm, in the body's API (`function_call_output` items on the
-Responses route), at most three rounds. A Messages body gets a cache breakpoint on its last
-message; a Responses body gets none, since that route caches the shared prefix by itself. The
-judge stays `claude-opus-5-5` on the Messages route and reads a Responses reply's text and tool
+Responses reply's cached input and reasoning tokens too. A Messages body gets a cache breakpoint on
+its last message; a Responses body gets none, since that route caches the shared prefix by itself.
+The judge stays `claude-opus-5-5` on the Messages route and reads a Responses reply's text and tool
 calls as it reads a Messages reply's, so its request names no model, route or arm.
+
+A reply whose every tool call reads a skill file is answered and sent again, in the body's API
+(`function_call_output` items on the Responses route), at most 3 rounds (`MAX_SKILL_ROUNDS`). A
+skill file is a `skill://` read of any skill, a whole read by path of the cut's own copy, or a
+whole read by path of another skill the profile lists (a path that ends `/<name>/SKILL.md` or holds
+`skills/<name>/references/`, as `count.sql` places a read). The arm's skill is answered from the
+arm (in the arm of ours, our skill; a read of their skill there gets the unknown-skill text, "The
+arm of ours" below); another listed skill from the copy its capture installed
+(`<cache-dir>/skills/<key>`), the same text in every arm; a skill the arm does not install (the
+case's skill in `none`, or a skill the profile does not list) with Oh My Pi's `Unknown skill:
+<name>` text, and the run goes on. The judged step is each answered round's read calls, without
+their results, then the first reply that holds another call or none, so a case whose line governs
+a read of a file of the skill is judged on that read. A reply after round 3 that still only reads
+skill files gets no verdict and is run again, as any run with no verdict is. Each report counts
+such runs by stage and arm, and a stage that an arm cannot finish for them drops its case as
+`reads-past-last-round`, listed with its counts. Each run records each answered round's reads
+(`skillReads`: the skill, the file, by `skill://` or by path, and whether the arm, the installed
+copy or no copy answered it).
 
 #### The arm of ours
 
@@ -275,7 +309,8 @@ form, or the call and its result removed (and the path recorded) where ours has 
 renamed unchanged copy of their skill gives old's texts but for the name. In a reply, a read of
 `skill://<ours>/…` is answered from our directory, a read of the copy by its path from our file at
 that path (or as not found where ours has none), and a read of their skill gets Oh My Pi's
-`Unknown skill: <theirs>` text; all are answered, not judged. A block of their skill that reaches
+`Unknown skill: <theirs>` text (recorded as answered by no copy); each is a skill read, answered
+in its round as above, not judged as the step. A block of their skill that reaches
 the session beside its listing and its reads ("A skill can reach a session other than by its
 listing line" below) carries our text in its place: the Envoy plugin's dispatch-first block is the
 plugin's function of our SKILL.md, and an autoloaded block is rebuilt from our SKILL.md under the
@@ -494,7 +529,7 @@ for one repository and 8 in all. It prints one line per repository read (`copies
 <owner/repo>: <entries> entries, <calls> tree reads, <seconds> s, cached|read`) and one per 25
 searches, so the log gives the rate.
 
-Six install paths give a skill to Oh My Pi from outside the owners' trees, and each is a unit of
+Seven install paths give a skill to Oh My Pi from outside the owners' trees, and each is a unit of
 the list, read as Oh My Pi 18.18.6 reads it:
 
 - An Oh My Pi plugin package (a `package.json` whose `omp` or `pi` field is set; `pi` counts only
@@ -511,6 +546,16 @@ the list, read as Oh My Pi 18.18.6 reads it:
   entry the installer's `find … -name … -exec rm` removes from the pool. A clone made as one entry
   of a pool's skills directory (`ensure_vendor <url> <pool>/skills/<name> <ref>`, a repository that
   is one skill, its `SKILL.md` at its root) gives that repository's root skill under `<name>`.
+- A clone made by hand that the configuration's `clones` states (`{repo, dir, clone}`: the
+  directory `dir` of the dev box's checkout of `repo` is a clone of `clone`, such as a private
+  repository cloned into a dotfiles checkout). No installer the list reads makes it, so the
+  operator states it. A `skills-sources.json` pool of `repo` in `dir` is read as a pool in an
+  `ensure_vendor` clone is: the cloned repository at its default branch, and the note of each
+  `installers.tsv` row of the unit names `clones[<i>] of the configuration`. Both repositories
+  must be of an owner in `owners`, or the configuration is refused at load. A `dir` that holds no
+  pool of `repo`'s `skills-sources.json` stops the run once the repositories are read (exit 2,
+  nothing written), naming the key. `build-cases` and `build-tasks` read the clone at its default
+  branch's commit at the session's start, as they read an installer's clone that names no ref.
 - A plugin an installer script installs from a marketplace into Oh My Pi's own plugin tree
   (`omp plugin install <plugin>@<marketplace>`, or a helper given the marketplace's repository and
   `<plugin>@<marketplace>`): the marketplace's repository is read at its default branch, and the
@@ -543,6 +588,19 @@ repositories. `build-cases` and `build-tasks` read a pinned repository at the re
 names at the session's start; where `repositories.tsv` names a ref (a pin's tag) made after the
 session's start, they read the repository's default branch then, and leave the repository out,
 with that evidence, when that branch has no commit then either.
+
+The prefix table also maps each path a prepack script staged a skill at during the count's window
+and stages no longer, where the worker images and package releases of those commits hold the
+skill. One GraphQL read of the script's history at the commit read gives each version that held in
+the window: the one in effect at `windowStart`, and each one a commit of the default branch made
+since. For each skill an older version staged for a package that the script read no longer stages
+for that package into that directory, the package's unit gets prefix rows at that path
+(`/opt/legion/<package>/dist/skills/<name>/` and `**/node_modules/<package>/dist/skills/<name>/`),
+each mapped to the copy of that name at `--at`. The rows name the package's unit, so `build-cases`
+and `build-tasks` resolve that unit at a session's commit as they resolve any. Under the script's
+line, `skill-copies.md` names each such path with the commits that staged it there (`from <commit>
+(<date>) until <commit> (<date>)`), and each path that no copy at `--at` holds (a skill renamed or
+removed since), which gets no row.
 
 ### `attribute`
 
@@ -994,10 +1052,10 @@ one rule'`.
 ```
 bun scripts/skill-cuts/cli.ts build-cases --config <skill-cuts.json> --key-file <file> \
   (--cut <id> | --set <id>) --skill <name> --old <skill dir at the cut's base> \
-  --sessions <sessions.jsonl> --seed <n> --copies <copies out dir> --count <count dir> \
-  --out <cases.jsonl> [--max <n>] [--budget-usd <n>] [--concurrency <n>] \
-  [--stop-projected-usd <n>] [--stop-after-sessions <n>] [--stop-zero-case-usd <n>] \
-  [--drop-navigation]
+  [--new <skill dir in the cut>] --sessions <sessions.jsonl> --seed <n> \
+  --copies <copies out dir> --count <count dir> --out <cases.jsonl> [--max <n>] \
+  [--budget-usd <n>] [--concurrency <n>] [--stop-projected-usd <n>] \
+  [--stop-after-sessions <n>] [--stop-zero-case-usd <n>] [--drop-navigation]
 bun scripts/skill-cuts/cli.ts build-cases --config <skill-cuts.json> --key-file <file> \
   (--cut <id> | --set <id>) --skill <name> --old <skill dir> --copies <copies out dir> \
   --count <count dir> --written <n> \
@@ -1032,8 +1090,44 @@ in place of `--cut <id>`; one of the two is required, and both are refused (exit
 `repo` is then the cut repository: a session is kept only when its read is placed at the set's
 copy (a read of our skill of the same name, a Legion fork's among them, is `not-cut-copy`), the
 profile must install the set's copy, and each case's `cut` holds the set's id; `--reprofile`
-finds each case's cut or set by its `cut`. A session is a
-candidate only on a model the gateway serves (`servedModels`: its id after the last `/`, so a
+finds each case's cut or set by its `cut`. A session's reads of the skill are its `skill://` reads
+and its reads of the skill's files by path, by the count's rule (a path or URL that, its read
+selector taken
+off, ends `<skill>/SKILL.md` or holds `skills/<skill>/references/`). A case is built from a
+successful `skill://` read, or from a successful whole read by path (no selector) that those rules
+place at the cut repository's copy, by the path as read, as the count places it. That copy's
+directory is the path up to the skill's directory, resolved as Oh My Pi's read resolves a path: an
+absolute path as it is, a relative one against the session's working directory (its header's `cwd`),
+and one under `~` against the home directory the session ran under, the part of its transcript's
+path before the first `/.omp/` (Oh My Pi keeps its sessions under `<home>/.omp/` and resolves `~`
+against that same home). Such a case names the copy (`pathCopy`: that directory, with the working
+and home directories), and every whole read by path of a file under it, absolute, relative or under
+`~`, is in `skillReads`, so each arm answers it with its own text and `none` answers it as not
+found. The case's profile installs the units of that copy, as it does for a `skill://` read's
+`[Skill file: …]` path. A session whose only successful reads of the skill are reads by path that no
+case is built from is dropped under the first reason that applies: `path-range` (a read selector,
+`:1-40` or `:raw`), `other-copy` (another repository's copy, or a URL), `unattributed` (a path the
+rules place at no copy), `path-relative` (the cut's copy at a relative path in a session whose
+header names no working directory, or under `~` in one whose transcript's path names no home). A
+case keeps every other successful read by path of the skill before its step as recorded in every
+arm, and its evidence item `excluded reads` names each. A case with a file read by path that the
+arms do not answer in Oh My Pi's form (arms.ts's `pathFormFault`, or a directory), in the old text
+or in `--new`'s, is dropped as `path-form`, so no `behaviour` run fails on it. `--new` is optional
+(the session form only: `--written` and `--reprofile` refuse it, since they check no read by
+path): a build before the cut has a text checks the old text alone, and its summary's `inputs`
+record `new: null`; a build goes on from a summary only with the same choice (given where it was
+given,
+absent where it was absent), and is refused otherwise, naming both. `behaviour screen` then drops a
+case whose new text holds such a file before any model call, as `path-form: <arm>: <fault>`, and
+runs the rest of the file. A session whose work at the skill's read is on the skill's own text
+(writing, editing or rewriting it or a copy of it, reviewing, testing, grading, scoring or
+comparing it) is no case of the skill's behaviour, since its next step works on the text and does
+not follow it: the case reader answers `{"step": null, "material": {"why": …}}` for it
+(prompts/case.md), and the build drops it as `skill-as-material`, counted with the other drops.
+Any other read of the
+skill's files before the step that the case neither holds nor names is still `read-by-path`. A
+session is a candidate only on a model the gateway serves (`servedModels`: its id after the last
+`/`, so a
 `claude-*` model behind any gateway's prefix counts); a session on any other model is counted as
 `model-not-served` and never run on another model. The `case` reader is offered only the base
 text's lines that the session's own read of that file held (a session whose reads hold none is
@@ -1057,19 +1151,29 @@ plugin cache directory, `<marketplace>___<plugin>___<version>`, shows the old na
 the prefix rows those manifests give at that start, at the unit that installed it then. The
 session repository is the repository the session's working directory is a checkout of: for a
 Legion pane, the repository of its workspace `/legion/workspaces/<owner>/<name>/<workspace>/…`
-(the checkout at `<workspace>`); for a dev-box session, the repository of the copies output's list
-named as the last part of its working directory, or of the nearest parent named as any listed
-repository, when one repository alone has that name (otherwise none, and the evidence names the
-repositories that matched); the checkout's root is that directory. The profile names that
+(the checkout at `<workspace>`); for a dev-box session, the dev box's own repository where the
+working directory is in its checkout, the directory whose `.claude/` the configuration's
+`devboxClaudeConfigDir` names (the dev box's CLAUDE_CONFIG_DIR); else the repository of the copies
+output's list named as the last part of its working directory, or of the nearest parent named as
+any listed repository when one repository alone has that name and its tree at its commit holds the
+working directory's path below that parent (a parent's name alone decides nothing: otherwise none,
+and the evidence says why, or names the repositories that matched); the checkout's root is that
+directory. The profile names that
 repository and its commit at the session's start (`sessionRepository`), and lists the
-repository's project skills at that commit, as Oh My Pi lists them: each
-`<level>/.omp/skills/<name>/SKILL.md` (one with a description), then each
-`<level>/.claude/skills/<name>/SKILL.md`, where the levels are the working directory's path in the
+repository's project skills at that commit, as Oh My Pi 18.18.6 lists them, provider by provider:
+each `<level>/.omp/skills/<name>/SKILL.md` (one with a description), then each
+`<level>/.claude/skills/<name>/SKILL.md`, then each `<level>/.agent/skills/<name>` and
+`<level>/.agents/skills/<name>` (`.agent/` first at each level), then the working directory's
+`.codex/skills/<name>`, `.opencode/skills/<name>` and `.github/skills/<name>` (one with a
+description), where the levels are the working directory's path in the
 checkout and each of its parents up to the root, the nearest first (a working directory
-`<root>/agents/agentvm` reads `agents/agentvm/`, `agents/` and the root). A session repository
-that is no unit's repository is read only where Oh My Pi reads a project, one directory a GitHub
-call: each level, its `.omp/`, `.claude/`, `.agent/`, `.agents/`, `.gemini/` and `.github/`, its
-`.omp/skills/` and `.claude/skills/`, and each skill directory in those. So a repository whose
+`<root>/agents/agentvm` reads `agents/agentvm/`, `agents/` and the root). A skill directory such a
+directory holds as a symbolic link is read at the directory the link names in the repository, and
+listed at the link's path, as Oh My Pi's scan follows a link; a link out of the repository, or to
+no directory of it, is left out and named in the evidence. The session repository is read only
+where Oh My Pi reads a project, one directory a GitHub
+call: each level, its `.omp/`, `.claude/`, `.agent/`, `.agents/`, `.gemini/`, `.github/`, `.codex/`
+and `.opencode/`, its skills directories, and each skill directory in those. So a repository whose
 whole tree GitHub cuts short (`truncated`) is read too. Where another skill has
 the same name, the profile holds as the name's copy the one Oh My Pi gives the session (unless the
 session read the other): a project's `.omp/skills` comes before `~/.omp/agent/skills` and
@@ -1133,6 +1237,30 @@ prefix rows under `/opt/legion/`) and no other: a dev box's own plugin list is n
 evidence names each list left out. A daemon-launched controller installs the every-role plugins
 alone, which a profile does not tell apart.
 
+A Legion profile reads the worker image's packages (the units of the repository that the prefix
+rows under `/opt/legion/` come from) at the commit that image was built from, not at that
+repository's default branch at the session's start. The deployment's Pulumi config
+(`Pulumi.prod.yaml` in the directory above the project file's: `legion/Pulumi.prod.yaml` for
+`legion/projects/<file>.yaml`), read at the deployment's commit of the session's start, names the
+project's image in the `image:` line of its entry `- key: <PROJECT>`. The commit is the one that
+GitHub's build provenance of the image's digest names (`gh api
+repos/<repository>/attestations/sha256:<digest>`, the `gitCommit` of its first resolved
+dependency). For an image whose digest has no provenance there (GitHub answers 404, as for an
+image that a deployment builds on the Legion image in another registry), the comment lines right
+above its `image:` line decide, by the first of their words, in their order, that names a commit:
+an image digest whose provenance names one (the base the image was built on), a commit of the
+repository (a word of 7 to 40 hex digits, letters and digits both), or a tag of the repository (a
+word of the form `<name>-v<version>` or `v<version>`, such as `legion-v15.2.0`, at the tag's last
+commit at or before the deployment's read). The order matters: a comment that names the image's
+base commit first and an older release after it ("before it …") is read at the base commit. Where
+none of these gives a commit (no config file at that commit, no entry or `image:` line for the
+project, or a comment that names none), the
+repository is read at its default branch at the session's start. The evidence item `the worker
+image's commit of <repository>` says which rule decided, with each read; the image's units are
+resolved from the repository's tree at that commit, and their copies and plugin directories name
+it. The rest of that repository is still read at the session's start: a Legion workspace of the
+image's repository gives its project skills and context files at that commit.
+
 The arms and the load test tell the copies of the tested skill apart by their source, not their
 name (cases.ts's `testedCopy`: the repository and path of the copy listed under the skill's own
 name, at any commit, under any namespace). Each arm installs its own text in every copy of that
@@ -1148,6 +1276,25 @@ evidence says so (`held once`), and the listing measure counts such a recorded n
 In a load run, a read of another source's copy of the name (`skill://<namespace>/<name>`, or a
 path under `namespaced/<namespace>/skills/`, where a capture installs it) is no load of the tested
 skill; a read of `skill://<name>` or of the tested copy's path is.
+
+A case whose session read the cut's own copy of the skill by its path on disk names that copy
+(`pathCopy`: its absolute directory, with the session's working directory and the home directory it
+ran under, which resolve a relative or `~` path as Oh My Pi's read resolves one, cases.ts's
+`resolvedReadPath`), and each whole read of a file under it, absolute, relative or under `~` (no
+line range; cases.ts's `pathReadFile`) is one of the case's `skillReads`. Each arm but `none`
+answers such a read from its own file as the pinned Oh My Pi answers a read of a text file by path
+at its default settings: no `[Skill file: …]` line; in a session that shows hashline rows, the line
+`[<path>#<tag>]`, where the path is the one the session's own result shows and the tag is Oh My Pi's
+snapshot tag of the arm's text, then `<n>:<line>` for each line; `<n>|<line>` or the lines alone in
+a session whose reads show those; a line longer than 768 characters cut to 768 and `…`, followed by
+Oh My Pi's notice of the cut lines. A file the arm lacks gets `Path '<path>' not found`, the path as
+the session read it. `none` keeps the read and answers every file that way, where it removes a
+`skill://` read. A replay answers a reply's whole read by path of the copy the same way. A read with
+a line range, a read of another copy, and a path the case does not name stay as the session had
+them. Oh My Pi shows some files in a form the arms do not rebuild (not Markdown or plain text, not
+UTF-8, longer than 300 lines or 50 KB, or holding a line that opens a git conflict block): building
+an arm of such a case stops with an error naming the case, and a replay takes such a read for the
+judged step.
 
 A skill can reach a session other than by its listing line and a read, and each arm then gives the
 session its own text of it there too (`arms.ts`). The Envoy plugin puts dispatch-first into every
@@ -1281,7 +1428,15 @@ read at the root session's last prompt build before the subagent's start, and ea
 skills-sources pool clones at the subagent's start. A pool's host is read at both: its plugin
 lists, installers and settings at the root's build, and its pool directories at the subagent's
 start; the `read times of <repository>` evidence item names both commits (`its pool directories
-at <sha>`, which context.ts reads). The root is the file the topmost `<…>Z_<id>` directory of the
+at <sha>`, which context.ts reads). The dev box's own pool units come from its host's tree at the
+subagent's start too: Oh My Pi reads `skills-sources.json` again as a subagent starts (its
+extension's `resources_discover`) and merges what it gets into the parent's snapshot. A pool that
+list names at the subagent's start and not at the root's build is listed only where its clone was
+on the host then, which no repository records, so the profile installs it only where the
+subagent's recorded listing names one of its skills (the unit's evidence says `pool at the
+subagent's start`; one whose skills the listing does not name is left out, with why). This is an
+inference from the recorded listing, which is also what the listing measure compares against, so
+the measure marks each name installed that way (`fromRecorded`, below). The root is the file the topmost `<…>Z_<id>` directory of the
 subagent's path stands for (a file below no such directory is its own root). `digest-times.sql`
 reads the time and digest of each of the root's digest lines, one query a store for
 `--reprofile` and one a session otherwise, and no other text of the file. With no build before
@@ -1300,17 +1455,26 @@ its scope>-<version>.tgz`, one small download) names the skills it ships, each i
 repository at the commit read; a version of neither ships nothing to the profile. Each read is a
 `version of <unit>` evidence item. The dev box's own plugin lists come first when two pin one
 package. A try of the tarball's download is given up after 60 s, its body included; a try that
-failed for a transient reason (that limit, a connection refused or reset, a name not resolved,
-an HTTP 429 or 5xx) is sent again after 5, 15, 45 and 135 s, as a GitHub read is, each retry said
-on standard error and counted with the GitHub reads' (`githubRetries`). A 404 is no tarball; any
-other failure, and a download that failed on every try (its error naming each try's), fails that
-profile's build, and the next build that needs the tarball downloads it again.
+failed for a transient reason (that limit, a connection refused or reset, a name not resolved, an
+HTTP 429 or 5xx) is sent again after 5, 15, 45 and 135 s, as a GitHub read is, each retry said on
+standard error and counted with the GitHub reads' (`githubRetries`). A 404 is no tarball; any other
+failure, and a download that failed on every try (its error naming each try's), fails that profile's
+build, and the next build that needs the tarball downloads it again.
 
 A skill at its repository's root (a clone that is one skill, or a package whose manifest declares
 `.`) has the path `.` in a profile, which cases.ts's schema and load accept. A task profile is
 checked against the schema load reads it with (cases.ts's Profile and a context) before it is
 written: one load would refuse is never written, and its task fails (`--profiles-out`) or is left
 out (`--reprofile`) with the schema's words.
+
+A dev-box session in a checkout of a repository whose `.claude/settings.json` turns plugins on in
+`enabledPlugins` lists those Claude Code plugins' skills: Claude Code installs them for that
+project, and Oh My Pi 18.18.6 lists a project-scope install for the active project
+(discovery/helpers.ts, `loadClaudePluginRoots`), at the rank of a Claude Code plugin, a second copy
+of a name under the plugin's name where its text differs. A user-scope install it lists only where
+its `enabledProviders` names `claude-plugins` or `claude`, which no config the runner reads sets,
+so the plugins the dev box's own settings enable are not installed elsewhere. The registry that
+holds the installs is host state no repository holds.
 
 Each case and each load task's profile carries a `listing measure` evidence item, whose source
 is one JSON object (`ListingMeasure` in build.ts): how far the listing its rebuilt profile gives
@@ -1339,7 +1503,12 @@ name a model's hint for the skill or a preview of its description (system-prompt
 981-983; extensibility/skill-descriptions.ts, lines 448-476), never the frontmatter's text. The
 summaries of `build-cases`, `build-cases --reprofile`, `build-tasks --profiles-out` and
 `build-tasks --reprofile` count the measures of each kind and sum the missing and added names
-(`listing`); a task that keeps its old profile is `not measurable`, with why. The measure drops
+(`listing`); a task that keeps its old profile is `not measurable`, with why. A measure whose
+profile installed names only because the recorded listing names one of their pool's skills (a pool
+new at a subagent's start, above) lists those names as `fromRecorded`: the measure cannot see a
+miss of them, since the same listing decided them. The summaries count such measures
+(`listing.fromRecorded`), and so do `behaviour report`'s verdict line and `load`'s summary and
+listing line. The measure drops
 nothing here: `behaviour` and `load` apply the listing rule to it (above, under each command).
 
 `--reprofile` builds the profiles of an existing case file again that way, from the cases and
@@ -1535,21 +1704,33 @@ The runner starts at most 4 gh processes at once, across all its GitHub reads (c
 about 145 MiB a call, and one profile can start a read for every repository at once. The
 environment variable `SKILL_CUTS_GH_CONCURRENCY` (a whole number of 1 or more) sets another bound.
 
+Every child the runner starts and every download it makes has a limit. A gh call is ended after
+120 s (`GH_CALL_TIMEOUT_MS`; context.ts's reads have the same limit), and an ended call is sent
+again as a transient failure (`time limit`). A store command is ended once it prints nothing for 20
+minutes (`STORE_QUIET_MS`): the store's SQL ends itself after 15 minutes, and psql prints only after
+the query ends, so a pull that is still printing rows is never ended. A store read that is ended
+fails that read, naming the command and the limit: a pull is the `pull-failed` drop, and any other
+read fails the run. Each wait for a GitHub rate limit is said on standard error before it starts:
+the call, gh's reason, the wait and when it ends. A refusal for GitHub's secondary rate limit, which
+has no reset, waits a minute, doubled at each refusal; a refusal for the primary limit waits until
+its reset, at most 15 minutes. copies.ts and context.ts use the same rule (common.ts's
+`rateLimitWait`).
+
 A stopped build goes on where it stopped. The summary records the run's inputs: the cut, the
-skill, the seed, whether `--drop-navigation` is given, and the SHA-256 of `--old`'s files, the
-sessions file, the copies files read and the count's query outputs. Run again with the same
-`--out` and the same inputs, `build-cases` keeps every session already decided (dropped, or a case
-the cases file holds), with no pull and no reader call, and goes on in the same order from the
-first session not decided, until `--max`
-cases in all; the budget counts the dollars already spent, and the summary's spend adds the runs,
-while its `peakRssBytes` is the last run's own (a summary written before that field goes on as
-well). A session `not-needed` or stopped by the budget or the memory stop is not decided, so it is
-read again when it is needed. It refuses (exit 2, files left as they were) other inputs, naming
-each difference; a cases file with no summary; and a summary that records no inputs (one an older
-`build-cases` wrote). A kill at any moment leaves both files readable: each case is appended as one
-whole line, then the summary is written to a temporary name and renamed; a case line the summary
-does not record (a kill between the two) is left out when the build goes on, and its session is
-read again. `build-tasks` goes on the same way: its queries, one per store and day, take an hour and
+skill, the seed, whether `--drop-navigation` is given, and the SHA-256 of `--old`'s files, every
+file of `--new`, the sessions file, the copies files read and the count's query outputs. Run again
+with the same `--out` and the same inputs, `build-cases` keeps every session already decided
+(dropped, or a case the cases file holds), with no pull and no reader call, and goes on in the
+same order from the first session not decided, until `--max` cases in all; the budget counts the
+dollars already spent, and the summary's spend adds the runs, while its `peakRssBytes` is the last
+run's own (a summary written before that field goes on as well). A session `not-needed` or
+stopped by the budget or the memory stop is not decided, so it is read again when it is needed.
+It refuses (exit 2, files left as they were) other inputs, naming each difference; a cases file
+with no summary; and a summary that records no inputs, or no `--new` (one an older `build-cases`
+wrote). A kill at any moment leaves both files readable: each case is appended as one whole line,
+then the summary is written to a temporary name and renamed; a case line the summary does not
+record (a kill between the two) is left out when the build goes on, and its session is read
+again. `build-tasks` goes on the same way: its queries, one per store and day, take an hour and
 more on the real stores, so the summary records the terms and each query as it ends, and
 `<out>.found.jsonl` the messages each found (path hashes and texts; removed once the tasks are
 written); a run of the same skill text, stores and window makes no terms call and repeats no

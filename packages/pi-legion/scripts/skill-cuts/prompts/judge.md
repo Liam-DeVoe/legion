@@ -12,7 +12,7 @@ The user message has four parts:
 - `<criterion>`: what the step must do to pass (`Pass:`), and what makes it fail (`Fail:`).
 - `<line>`: the line of the agent's instructions that the criterion is about.
 - `<before>`: the last messages of the session before the step, as text. Each message starts with its role in brackets. Where the agent read a file of its instructions, the file's text is left out, and a note says so. A note also says where earlier messages or parts of a long text are left out.
-- `<step>`: the step to judge: the agent's next message, with its text and its tool calls (`[tool call: <tool>] <arguments as JSON>`). The agent's thinking is not part of it.
+- `<step>`: the step to judge: the agent's next message, with its text and its tool calls (`[tool call: <tool>] <arguments as JSON>`). The agent's thinking is not part of it. When the agent first read files of its instructions, the step begins with those read calls, whose results are not shown.
 
 How to judge:
 

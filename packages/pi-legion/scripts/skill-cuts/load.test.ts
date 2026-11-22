@@ -1162,7 +1162,7 @@ describe("skill-cuts load applies the listing rule", () => {
   const sentWith = (from: number, text: string) =>
     recorder.requests.slice(from).filter((request) => request.body.includes(text)).length;
 
-  test("a task whose rebuilt listing misses more than 10% of its session's recorded names is dropped with that reason: in the summary's tasks, not run, counted, and out of the verdict", async () => {
+  test("a task whose rebuilt listing misses more than 10% of its session's recorded names is dropped with that reason: in the summary's tasks, not run, counted, and out of the verdict; a task whose profile took names from its recorded listing is counted as such", async () => {
     const { tasks, out, args } = listingTest(
       "listing-drop",
       [
@@ -1176,9 +1176,14 @@ describe("skill-cuts load applies the listing rule", () => {
         [NEED_2, 0],
       ])
     );
+    // need-1's profile took a name from its recorded listing (build.ts's fromRecorded mark).
+    const taken = {
+      ...measureItem(10),
+      source: JSON.stringify({ ...JSON.parse(measureItem(10).source), fromRecorded: ["cw-one"] }),
+    };
     writeTasksSummary(
       tasks,
-      { "need-1": measureItem(10), "need-2": measureItem(10, ["beta", "gamma"]) },
+      { "need-1": taken, "need-2": measureItem(10, ["beta", "gamma"]) },
       measureItem(10, ["beta"])
     );
     const from = recorder.requests.length;
@@ -1188,7 +1193,7 @@ describe("skill-cuts load applies the listing rule", () => {
       "listing-misses: its rebuilt listing misses 2 of the 10 names of the recorded session listing (20.0%), more than 10%: beta, gamma";
     expect(ran.stdout).toContain(`task need-2 (need, from a session): dropped, not run: ${misses}`);
     expect(ran.stdout).toContain(
-      `the listing rule (${tasks}.summary.json): 2 tasks' listings measured, 0 not measurable, 1 tasks dropped`
+      `the listing rule (${tasks}.summary.json): 2 tasks' listings measured, 0 not measurable, 1 tasks dropped, each missing more than 10% of the names its session's recorded listing holds, 1 installed names their recorded listing gave them (fromRecorded); `
     );
     expect(sentWith(from, NEED_2)).toBe(0);
     expect(sentWith(from, NEED)).toBe(3);
@@ -1203,6 +1208,7 @@ describe("skill-cuts load applies the listing rule", () => {
       measured: 2,
       notMeasurable: 0,
       dropped: 1,
+      fromRecorded: 1,
     });
     expect(summary.verdict).toEqual({
       descriptionFault: true,
@@ -1326,7 +1332,7 @@ describe("skill-cuts load applies the listing rule", () => {
     ]);
     expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
     expect(ran.stdout).toContain(
-      "tasks dropped, each missing more than 10% of the names its session's recorded listing holds; 2 tasks carry the Envoy plugin's block of the skill, 1 of them on the assumption that their session had Dispatch"
+      "tasks dropped, each missing more than 10% of the names its session's recorded listing holds, 0 installed names their recorded listing gave them (fromRecorded); 2 tasks carry the Envoy plugin's block of the skill, 1 of them on the assumption that their session had Dispatch"
     );
     const summary = z
       .looseObject({ listing: z.unknown(), dispatch: z.unknown() })
@@ -1821,8 +1827,9 @@ process.stdout.write(JSON.stringify(answers[route]));
   ]);
   expect(summary().verdict.reason).toBe("no verdict yet: tasks need-1, near-1 lack runs");
   expect(routes().filter((route) => route.includes("/tarball/"))).toEqual([]);
-  // The commit's tree once; then for each task the root, skills/ and skills/beta twice.
-  expect(routes()).toHaveLength(9);
+  // The commit's tree once; for the first task the root, skills/ and skills/beta twice (its tree
+  // and its one level); for the second only skills/beta's tree, the levels kept from the first.
+  expect(routes()).toHaveLength(6);
   expect(recorder.requests.length).toBe(before);
 
   const again = await load();
@@ -1833,7 +1840,7 @@ process.stdout.write(JSON.stringify(answers[route]));
   expect(again.said).toContain(
     `load: task near-1 (near-miss, written): dropped before, skipped: ${dropped}\n`
   );
-  expect(routes()).toHaveLength(9);
+  expect(routes()).toHaveLength(6);
   expect(summary().tasks.map((task) => task.dropped)).toEqual([dropped, dropped]);
   expect(recorder.requests.length).toBe(before);
 }, 60_000);

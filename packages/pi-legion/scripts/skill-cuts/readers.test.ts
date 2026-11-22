@@ -682,6 +682,9 @@ const ROWS: Record<ReaderName, Row> = {
       caseStep,
       restated,
       { step: null, reason: "No step after the read follows a line of the skill." },
+      // The agent's work at the read is on the skill's text: build.ts drops it as
+      // skill-as-material.
+      { step: null, material: { why: "The agent rewrites alpha's SKILL.md (message 5)." } },
     ],
     bad: [
       {
@@ -702,6 +705,8 @@ const ROWS: Record<ReaderName, Row> = {
       },
       { answer: { ...caseStep, criterion: { pass: "x" } }, why: "criterion.fail" },
       { answer: { step: null }, why: "reason" },
+      { answer: { step: null, material: {} }, why: "material.why" },
+      { answer: { step: null, material: { why: "x" }, reason: "y" }, why: "Unrecognized key" },
       {
         answer: { ...caseStep, violatingStep: { text: " ", toolCalls: [] } },
         why: "violatingStep: holds no text and no tool call",

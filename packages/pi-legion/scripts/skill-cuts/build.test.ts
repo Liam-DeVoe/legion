@@ -5,12 +5,14 @@ import path from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { SessionEntry, type SessionMessage, stripSkillHeader } from "../skill-scenarios/transcript";
+import { type Arm, buildArm, pathFile, snapshotTag } from "./arms";
 import {
   type BuildIo,
   currentBranch,
   DROP_REASONS,
   type DropReason,
   type Evidence,
+  EXCLUDED_READS,
   EXIT,
   fileHash,
   GithubReads,
@@ -103,9 +105,14 @@ const DOTS_OLD = "9".repeat(40);
 /** When acme/fresh and acme/newproj got their first commit: after every made-up session's start,
  *  so GitHub gives no commit of either at or before a session's start. */
 const FRESH_MADE = "2026-11-20T03:00:00.000Z";
+/** The commit of acme/skills a made-up worker image of the project ACME was built from: its
+ *  package @acme/pi-acme stages omicron besides alpha and beta. Its first 8 digits, IMAGE_WORD,
+ *  are a commit word a comment can name. */
+const IMAGE_SHA = "a1".repeat(20);
+const IMAGE_WORD = IMAGE_SHA.slice(0, 8);
 /** The release tags GitHub lists of each made-up repository. */
 const TAGS: Readonly<Record<string, readonly string[]>> = {
-  "acme/skills": ["pi-acme-v1.0.0"],
+  "acme/skills": ["pi-acme-v1.0.0", "acme-image-v2.0.0"],
   "acme/kit": ["kit-v1.0.0", "kit-v2.0.0"],
 };
 const LINE = "2. Write each step's result on one line.";
@@ -554,6 +561,114 @@ const SESSIONS: Record<
   },
 };
 
+/** A change of F1 that makes the read call at message `index` a read of `target` by its path, and
+ *  its result (the next message) a successful one in the form Oh My Pi shows a read by path in
+ *  hashline rows: `[<path>#<tag>]`, then `<n>:<line>` for each line of `text`, by default the text
+ *  F1's result showed less its `[Skill file: …]` line. */
+function readByPathAt(index: number, target: string, text?: string) {
+  return (lines: Record<string, unknown>[]) => {
+    setReadTarget(lines, index, target);
+    const result = messageLines(lines)[index + 1]?.message;
+    if (result === undefined) throw new Error(`F1 has no message ${index + 1}`);
+    const body = text ?? stripSkillHeader(result.content?.[0]?.text ?? "");
+    const rows = body.split("\n").map((line, n) => `${n + 1}:${line}`);
+    const header = `[${target.replace(/:[^/]*$/, "")}#${snapshotTag(body)}]`;
+    result.content = [{ type: "text", text: [header, ...rows].join("\n") }];
+    result.isError = false;
+    result.details = { totalLines: rows.length, rowPrefixes: true };
+  };
+}
+
+/** F1's working directory and the home directory of its scratch profile (testdata/CAPTURE.md):
+ *  F1_SKILLS is under the home, at `.omp/profiles/fixture/agent/skills`. */
+const F1_CWD = "/legion/scratch/tmp/acme-1/t1-runs/f1/work";
+const F1_HOME = "/legion/scratch/tmp/acme-1/t1-runs/f1/home";
+/** F1's copy of alpha relative to F1_CWD, and under `~` (F1_HOME). */
+const F1_RELATIVE = "../home/.omp/profiles/fixture/agent/skills/alpha";
+const F1_TILDE = "~/.omp/profiles/fixture/agent/skills/alpha";
+
+/** A change of F1 that reads alpha's two files by path under `dir` at messages 1 and 3. */
+const readsUnder = (dir: string) => (lines: Record<string, unknown>[]) => {
+  readByPathAt(1, `${dir}/SKILL.md`)(lines);
+  readByPathAt(3, `${dir}/references/x.md`)(lines);
+};
+
+/** The made-up sessions that read alpha by its path, in store_a at `/sessions/<name>.jsonl` (or
+ *  their own path): each is F1 changed by its entry, as SESSIONS' are, and none is in the build
+ *  over every made-up session. F1's reads of alpha (messages 1 and 3) become reads by path: of the
+ *  copy F1 read, which the prefix table places at the cut's copy, by its absolute path
+ *  (path-read), relative to F1's working directory (path-relative-read), or under `~` in a
+ *  session whose transcript is under that home's `.omp/` (path-home); the relative ones in a
+ *  session whose header names no working directory (path-no-cwd), and the `~` ones in one whose
+ *  transcript's path names no home (path-no-home); with a read selector (path-range); of
+ *  acme/other's copy (path-other); or in a directory of `skills/alpha` that no directory of the
+ *  path says the repository of, which three copies have (path-unattributed). path-mixed keeps
+ *  F1's skill:// reads and reads acme/other's copy by path at message 5; path-form is path-read
+ *  with a read at message 5 of a file that only the new text holds, in a form the arms do not
+ *  answer (NEW_WIDE). */
+const BY_PATH: Record<
+  string,
+  { change: (lines: Record<string, unknown>[]) => void; path?: string }
+> = {
+  "path-read": { change: readsUnder(`${F1_SKILLS}/alpha`) },
+  "path-relative-read": { change: readsUnder(F1_RELATIVE) },
+  "path-home": {
+    change: readsUnder(F1_TILDE),
+    path: `${F1_HOME}/.omp/profiles/fixture/agent/sessions/--work--/path-home.jsonl`,
+  },
+  "path-no-cwd": {
+    change: (lines) => {
+      readsUnder(F1_RELATIVE)(lines);
+      const header = lines.find((line) => line.type === "session");
+      if (header !== undefined) header.cwd = undefined;
+    },
+  },
+  "path-no-home": { change: readsUnder(F1_TILDE) },
+  "path-range": {
+    change: (lines) => {
+      readByPathAt(1, `${F1_SKILLS}/alpha/SKILL.md:1-20`)(lines);
+      readByPathAt(3, `${F1_SKILLS}/alpha/references/x.md:raw`)(lines);
+    },
+  },
+  "path-other": { change: readsUnder("/elsewhere/other-skills/alpha") },
+  "path-unattributed": { change: readsUnder("/home/dev/notes/skills/alpha") },
+  "path-mixed": {
+    change: readByPathAt(5, "/elsewhere/other-skills/alpha/SKILL.md", "# alpha of acme/other"),
+  },
+  "path-form": {
+    change: (lines) => {
+      readsUnder(`${F1_SKILLS}/alpha`)(lines);
+      readByPathAt(5, `${F1_SKILLS}/alpha/references/wide.md`, "Line 1.")(lines);
+    },
+  },
+};
+
+/** A file only the new text of alpha holds: 301 lines, more than a read by path shows whole, so
+ *  the arms do not answer a read of it (arms.ts's `pathFormFault`). */
+const NEW_WIDE = {
+  path: "references/wide.md",
+  text: Array.from({ length: 301 }, (_, n) => `Line ${n + 1}.`).join("\n"),
+};
+
+/** The made-up sessions whose work at the skill's read is on alpha's own text, in store_a at
+ *  `/sessions/<name>.jsonl`, each F1 changed by its entry: a session that rewrites the skill and
+ *  reads it by skill:// (material-writing), and one in an eval checkout that grades the skill and
+ *  reads its files whole by path (material-eval). The stand-in case reader answers `material` for
+ *  each; none is in the build over every made-up session. */
+const MATERIAL: Record<string, { change: (lines: Record<string, unknown>[]) => void }> = {
+  "material-writing": {
+    change: (lines) =>
+      setText(lines, 0, () => "Rewrite the alpha skill's SKILL.md so that each rule is shorter."),
+  },
+  "material-eval": {
+    change: (lines) => {
+      setText(lines, 0, () => "Grade the alpha skill's text against the eval's rubric.");
+      readsUnder(`${F1_SKILLS}/alpha`)(lines);
+      workingDirectory("/home/dev/evals/alpha-grade")(lines);
+    },
+  },
+};
+
 /** A change of F1 that sets the working directory its header names. */
 function workingDirectory(cwd: string) {
   return (lines: Record<string, unknown>[]) => {
@@ -575,7 +690,8 @@ function compaction(kept: unknown): Record<string, unknown> {
 }
 
 /** The made-up path of session `name`. */
-const sessionPath = (name: string) => SESSIONS[name]?.path ?? `/sessions/${name}.jsonl`;
+const sessionPath = (name: string) =>
+  SESSIONS[name]?.path ?? BY_PATH[name]?.path ?? `/sessions/${name}.jsonl`;
 
 /** The made-up session case `c` comes from. */
 const nameOf = (c: Case) =>
@@ -636,7 +752,9 @@ const EARLIER_FILLERS = 35;
 /** Session `name`'s transcript text: F1, changed by `change` (the session's own, unless given). */
 function sessionText(
   name: string,
-  change: ((lines: Record<string, unknown>[]) => void) | undefined = SESSIONS[name]?.change
+  change: ((lines: Record<string, unknown>[]) => void) | undefined = SESSIONS[name]?.change ??
+    BY_PATH[name]?.change ??
+    MATERIAL[name]?.change
 ): string {
   const lines = f1Lines();
   setText(lines, 5, () => `Step 3 (case ${name}).`);
@@ -870,7 +988,7 @@ const NAV_READS = ["nav-step", "nav-skill-md", "nav-nothing", "nav-earlier"];
  *  the window offers SKILL.md's lines, is that read under NAVIGATION_LINE, and where it does not,
  *  nav-step's and nav-earlier's is the task call under X_LINE, nav-skill-md's the task call under
  *  LINE, and nav-nothing gives no step. nav-earlier gives no step until a window holds its task
- *  call. */
+ *  call. A `material-` session gives the answer that the agent works on the skill's own text. */
 function caseAnswer(name: string, transcript: string): unknown {
   const criterion = CRITERION;
   const messages = transcript.split('<message index="');
@@ -886,6 +1004,9 @@ function caseAnswer(name: string, transcript: string): unknown {
     restatements: name === "restated" ? [{ messageIndex: 0, quote: RESTATED }] : [],
   });
   const noStep = { step: null, reason: "No step of the transcript is decided by the skill." };
+  if (name.startsWith("material-")) {
+    return { step: null, material: { why: "The agent works on alpha's text (message 0)." } };
+  }
   if (name === "nav-earlier" && step === undefined) return noStep;
   if (NAV_READS.includes(name) && read !== undefined && transcript.includes(SKILL_MD_OFFERED)) {
     return proposal(read, { file: "SKILL.md", text: NAVIGATION_LINE });
@@ -1154,6 +1275,10 @@ const USER_RULES = "# Made-up user rules\n\nAnswer each question in one line.\n"
  *  it. */
 const SLOT_RULE =
   "Oh My Pi 18.18.6 keeps one project context file at each level from the working directory up to the checkout's root (capability/context-file.ts, lines 36-46: one for each depth), the first in its providers' order, highest priority first (capability/index.ts, lines 177-184 and 285-333), and joins the files it keeps the farthest level first (system-prompt.ts, lines 392-398)";
+/** How a dev-box session's repository is found from its working directory, as a profile's
+ *  evidence says it. */
+const CHECKOUT_RULE =
+  "a dev-box session's repository is the dev box's own repository (DEVBOX_INSTALLERS_RULE) where the working directory is in its checkout, the directory whose .claude/ the configuration's devboxClaudeConfigDir names as the dev box's CLAUDE_CONFIG_DIR; else the one repository of the copies output's list (repositories.tsv) named as the last part of its working directory, or of the nearest of that directory's parents named as any listed repository when that repository's tree at its commit holds the working directory's path below that parent: a parent's name alone decides nothing";
 /** The made-up repositories as each was at the commit SHA: every file's path and text. acme/skills
  *  holds `older` and no `newer`; its installer links each skill of skills/ into Oh My Pi's user
  *  skills, and its prepack script stages alpha and beta for the package @acme/pi-acme; it holds
@@ -1185,6 +1310,11 @@ const INSTALLER = [
   "done",
   "",
 ].join("\n");
+/** The mark of a made-up file that the stand-in gh gives as a symbolic link (mode 120000): the
+ *  rest of its text is the link's target. */
+const LINK_MARK = "\u0000link:";
+const link = (target: string) => `${LINK_MARK}${target}`;
+
 const REPOSITORIES: Record<string, Record<string, string>> = {
   // acme/infra is the deployment of the suite's Legion project ACME: its project file alone, so
   // a pod installs the worker image's packages alone. acme/deploy is a deployment in full, which
@@ -1394,6 +1524,37 @@ const REPOSITORIES: Record<string, Record<string, string>> = {
     ".claude/skills/nova/SKILL.md": projectSkillMd("nova"),
     "CLAUDE.md": "# Made-up rules of a new project\n\nKeep each change small.\n",
   },
+  // A repository whose project skills are in each directory Oh My Pi 18.18.6 reads beside
+  // .omp/skills and .claude/skills: upsilon in .agent/skills, rho in .agents/skills, sigma in
+  // .github/skills, and plain there with no description, which Oh My Pi does not list there;
+  // and two links in .claude/skills: tau to skills/tau in the repository, and away to a
+  // directory outside it.
+  "acme/agents": {
+    ".agent/skills/upsilon/SKILL.md": projectSkillMd("upsilon"),
+    ".agents/skills/rho/SKILL.md": projectSkillMd("rho"),
+    ".github/skills/sigma/SKILL.md": projectSkillMd("sigma"),
+    ".github/skills/plain/SKILL.md": "---\nname: plain\n---\n\n# plain\n",
+    ".claude/skills/tau": link("../../skills/tau"),
+    ".claude/skills/away": link("../../../outside/away"),
+    "skills/tau/SKILL.md": projectSkillMd("tau"),
+  },
+  // A project whose Claude Code settings turn on the plugin plug-tools of the marketplace
+  // acme-plugs (acme/plugs), and one whose settings turn on none. plug-tools ships plug-one, a
+  // beta of other text than acme/skills' and an alpha of the same text.
+  "acme/plug": {
+    ".claude/settings.json": JSON.stringify({ enabledPlugins: { "plug-tools@acme-plugs": true } }),
+  },
+  "acme/unplug": { ".claude/settings.json": "{}\n" },
+  "acme/plugs": {
+    ".claude-plugin/marketplace.json": JSON.stringify({
+      name: "acme-plugs",
+      plugins: [{ name: "plug-tools", source: "./plugins/plug-tools" }],
+    }),
+    "plugins/plug-tools/skills/plug-one/SKILL.md": skillMd("plug-one"),
+    "plugins/plug-tools/skills/beta/SKILL.md":
+      "---\nname: beta\ndescription: Use for the plug's own beta.\n---\n\n# beta of plug-tools\n",
+    "plugins/plug-tools/skills/alpha/SKILL.md": skillMd("alpha"),
+  },
 };
 
 /** The ref the copies output read acme/pack at, later than the sessions (repositories.tsv). */
@@ -1449,6 +1610,24 @@ const PINNED: Record<string, { sha: string; files: Record<string, string> }> = {
       }),
     },
   },
+  // acme/skills as a made-up worker image of ACME carries it (IMAGE_SHA, also its tag
+  // acme-image-v2.0.0): its prepack stages omicron too.
+  [`acme/skills@${IMAGE_SHA}`]: {
+    sha: IMAGE_SHA,
+    files: {
+      ...Object.fromEntries(
+        Object.entries(REPOSITORIES["acme/skills"] ?? {}).filter(
+          ([file]) => file !== "scripts/pi-plugin-prepack.sh"
+        )
+      ),
+      "skills/omicron/SKILL.md": skillMd("omicron"),
+      "scripts/pi-plugin-prepack.sh": (
+        REPOSITORIES["acme/skills"]?.["scripts/pi-plugin-prepack.sh"] ?? ""
+      ).replace("skills=( alpha beta )", "skills=( alpha beta omicron )"),
+    },
+  },
+  "acme/skills@acme-image-v2.0.0": { sha: IMAGE_SHA, files: {} },
+  [`acme/skills@${IMAGE_WORD}`]: { sha: IMAGE_SHA, files: {} },
 };
 
 /** A gzipped tar of `files`, each under `package/`, as npm packs a package. */
@@ -1486,6 +1665,10 @@ const filesAt = (repository: string, id: string): Record<string, string> | undef
 
 /** The blob id the stand-in gives a file's text. */
 const blobId = (text: string) => createHash("sha1").update(text).digest("hex");
+/** A made-up file's mode and blob text: a link's (LINK_MARK) is 120000 and its target. */
+const linkMode = (text: string) => (text.startsWith(LINK_MARK) ? "120000" : "100644");
+const blobText = (text: string) =>
+  text.startsWith(LINK_MARK) ? text.slice(LINK_MARK.length) : text;
 /** The one file a batch of blobs gives cut short, so it is read alone. */
 const CUT_SHORT = REPOSITORIES["acme/skills"]?.["docker/omp-plugins/package.json"] ?? "";
 /** The made-up repositories whose whole tree the stand-in gh gives cut short (`truncated`). */
@@ -1516,7 +1699,7 @@ function treeLevel(repo: string, id: string): Record<string, unknown>[] | undefi
     entries.set(
       name,
       rest.length === 0
-        ? { path: name, mode: "100644", type: "blob", sha: blobId(text), size: text.length }
+        ? { path: name, mode: linkMode(text), type: "blob", sha: blobId(text), size: text.length }
         : { path: name, mode: "040000", type: "tree", sha: treeId(repo, `${prefix}${name}`) }
     );
   }
@@ -1560,7 +1743,7 @@ const io = (lines: string[]): BuildIo => ({
           const text = texts.find((each) => blobId(each) === id);
           if (text === undefined) return [alias, null];
           const cut = text === CUT_SHORT;
-          return [alias, { isBinary: false, isTruncated: cut, text: cut ? null : text }];
+          return [alias, { isBinary: false, isTruncated: cut, text: cut ? null : blobText(text) }];
         }
       );
       return ok(JSON.stringify({ data: { repository: Object.fromEntries(blobs) } }));
@@ -1612,7 +1795,7 @@ const io = (lines: string[]): BuildIo => ({
           truncated: cut,
           tree: files.slice(0, cut ? 1 : files.length).map(([file, text]) => ({
             path: file,
-            mode: "100644",
+            mode: linkMode(text),
             type: "blob",
             sha: blobId(text),
             size: text.length,
@@ -1623,7 +1806,10 @@ const io = (lines: string[]): BuildIo => ({
     const blob = files.find(([, text]) => blobId(text) === id);
     if (kind === "blobs" && blob !== undefined) {
       return ok(
-        JSON.stringify({ encoding: "base64", content: Buffer.from(blob[1]).toString("base64") })
+        JSON.stringify({
+          encoding: "base64",
+          content: Buffer.from(blobText(blob[1])).toString("base64"),
+        })
       );
     }
     return { code: 1, stdout: "", stderr: "gh: Not Found (HTTP 404)\n" };
@@ -1636,6 +1822,8 @@ const setupDir = path.join(scratch, "setup");
 const config = path.join(setupDir, "skill-cuts.json");
 const keyFile = path.join(setupDir, "key");
 const old = path.join(setupDir, "old", "alpha");
+/** alpha's directory at the cut's head (`--new`): the old text less LINE, and NEW_WIDE. */
+const newDir = path.join(setupDir, "new", "alpha");
 const copiesDir = path.join(setupDir, "copies");
 const countDir = path.join(setupDir, "count");
 const psqlLog = path.join(setupDir, "psql.log");
@@ -1668,10 +1856,28 @@ beforeAll(() => {
     path.join(old, "references", "x.md"),
     `${stripSkillHeader(messages[4]?.content?.[0]?.text ?? "")}\n`
   );
+  mkdirSync(path.join(newDir, "references"), { recursive: true });
+  writeFileSync(
+    path.join(newDir, "SKILL.md"),
+    readFileSync(path.join(old, "SKILL.md"), "utf8").replace(`${LINE}\n`, "")
+  );
+  writeFileSync(
+    path.join(newDir, "references", "x.md"),
+    readFileSync(path.join(old, "references", "x.md"))
+  );
+  writeFileSync(path.join(newDir, NEW_WIDE.path), NEW_WIDE.text);
 
   const files: Record<string, Record<string, string>> = { store_a: {}, store_b: {}, store_c: {} };
   for (const [name, session] of Object.entries(SESSIONS)) {
     const store = files[session.store] ?? {};
+    store[sessionPath(name)] = sessionText(name);
+  }
+  for (const name of Object.keys(BY_PATH)) {
+    const store = files.store_a ?? {};
+    store[sessionPath(name)] = sessionText(name);
+  }
+  for (const name of Object.keys(MATERIAL)) {
+    const store = files.store_a ?? {};
     store[sessionPath(name)] = sessionText(name);
   }
   // A subagent the good session started, one level below its directory, whose recorded prompt
@@ -2042,6 +2248,8 @@ function buildArgs(sessions: string, out: string, seed: string, ...extra: string
     "alpha",
     "--old",
     old,
+    "--new",
+    newDir,
     "--sessions",
     sessions,
     "--seed",
@@ -2795,7 +3003,7 @@ describe("build-cases over every made-up session", () => {
     expect(c?.profile.sessionRepository).toEqual({ repo: "acme/proj", commit: SHA });
     const evidence = Object.fromEntries(c?.evidence?.map((each) => [each.item, each.source]) ?? []);
     expect(evidence["session repository acme/proj"]).toBe(
-      "a dev-box session's repository is the one repository of the copies output's list (repositories.tsv) named as the last part of its working directory, or of the nearest of that directory's parents named as any listed repository. The working directory /home/dev/src/proj is named proj, which acme/proj alone of the list is named"
+      `${CHECKOUT_RULE}. The working directory /home/dev/src/proj is named proj, which acme/proj alone of the list is named`
     );
     expect(evidence["context file acme/proj CLAUDE.md"]).toBe(
       `${SLOT_RULE}: at the checkout's root, depth 0, acme/proj (the session repository) has CLAUDE.md at ${SHA}, and Oh My Pi keeps CLAUDE.md, priority 10 (discovery/claude-md.ts, lines 20-30, over discovery/helpers.ts's loadStandaloneContextFiles (lines 844-900), registered after agents-md.ts (discovery/index.ts, lines 24-25))`
@@ -2818,8 +3026,7 @@ describe("build-cases over every made-up session", () => {
     }
     const why = (name: string) =>
       byName(name)?.evidence?.find((each) => each.item === "no session repository")?.source;
-    const rule =
-      "a dev-box session's repository is the one repository of the copies output's list (repositories.tsv) named as the last part of its working directory, or of the nearest of that directory's parents named as any listed repository.";
+    const rule = `${CHECKOUT_RULE}.`;
     expect(why("two-repos")).toBe(
       `${rule} The working directory /home/dev/src/skills/notes is under /home/dev/src/skills, named skills, which 2 repositories of the list are named (acme/skills, forker/skills), so which one it is a checkout of is not known`
     );
@@ -2900,7 +3107,7 @@ describe("build-cases over every made-up session", () => {
     ]);
     const evidence = Object.fromEntries(c?.evidence?.map((each) => [each.item, each.source]) ?? []);
     expect(evidence["session repository acme/proj"]).toBe(
-      "a dev-box session's repository is the one repository of the copies output's list (repositories.tsv) named as the last part of its working directory, or of the nearest of that directory's parents named as any listed repository. The working directory /home/dev/src/proj/agents/agentvm is under /home/dev/src/proj, named proj, which acme/proj alone of the list is named; the working directory is agents/agentvm in the checkout"
+      `${CHECKOUT_RULE}. The working directory /home/dev/src/proj/agents/agentvm is under /home/dev/src/proj, named proj, which acme/proj alone of the list is named, and its tree holds agents/agentvm; the working directory is agents/agentvm in the checkout`
     );
     // Of two kappa, the one of the nearer level (agents/) comes first.
     expect(evidence["left out: skill kappa from acme/proj .claude/skills/kappa"]).toStartWith(
@@ -3273,6 +3480,250 @@ describe("build-cases over every made-up session", () => {
     );
   });
 });
+
+describe("build-cases over reads of the skill by path", () => {
+  const out = path.join(scratch, "by-path", "cases.jsonl");
+  let code = -1;
+  let cases: Case[] = [];
+  let requests: RecordedRequest[] = [];
+  const caseNamed = (name: string) =>
+    cases.find((each) => each.source.pathHash === pathHash(sessionPath(name)));
+  const record = (name: string) =>
+    summaryOf(out).sessions.find((each) => each.hash === fileHash(sessionPath(name)));
+  /** The path each read call of `c` reads, by the call's id. */
+  const readPaths = (c: Case | undefined) =>
+    new Map(
+      (c?.messages ?? []).flatMap((message) =>
+        (message.content ?? []).flatMap((block): [string, unknown][] =>
+          block.type === "toolCall" && block.name === "read"
+            ? [[block.id ?? "", Reflect.get(Object(block.arguments), "path")]]
+            : []
+        )
+      )
+    );
+  beforeAll(async () => {
+    const sessions = sessionsFile("by-path.jsonl", Object.keys(BY_PATH));
+    const from = recorder.requests.length;
+    code = await main(buildArgs(sessions, out, "3"), io([]));
+    requests = recorder.requests.slice(from);
+    cases = loadCases(out, old);
+  }, HOOK_BUILD_MS);
+
+  test("a whole read of the cut's copy by its path builds a case that names the copy, holds the read in skillReads, installs the copy, and hides the read's text from the case reader", () => {
+    expect(code).toBe(EXIT.ok);
+    const c = caseNamed("path-read");
+    // The copy as the read's path gives it, and the session's working directory; its transcript's
+    // path names no home.
+    expect(c?.pathCopy).toEqual({ dir: `${F1_SKILLS}/alpha`, cwd: F1_CWD });
+    expect(c?.skillReads).toEqual([2, 4]);
+    const paths = readPaths(c);
+    expect(c?.skillReads.map((index) => paths.get(c.messages[index]?.toolCallId ?? ""))).toEqual([
+      `${F1_SKILLS}/alpha/SKILL.md`,
+      `${F1_SKILLS}/alpha/references/x.md`,
+    ]);
+    // The line comes from the read by path, less Oh My Pi's rows.
+    expect(c?.line.text).toBe(LINE);
+    expect(c?.profile.skills).toContainEqual(
+      expect.objectContaining({ name: "alpha", repo: "acme/skills", path: "skills/alpha" })
+    );
+    expect(
+      c?.evidence?.some((each) =>
+        each.source.startsWith(`message 2 reads ${F1_SKILLS}/alpha/SKILL.md by its path`)
+      )
+    ).toBe(true);
+    expect(c?.evidence?.some((each) => each.item === EXCLUDED_READS)).toBe(false);
+    const reader = requests.filter(
+      (request) =>
+        request.body.includes("(case path-read)") && request.body.includes("propose one case")
+    );
+    expect(reader.length).toBeGreaterThan(0);
+    for (const request of reader) {
+      expect(request.body).toContain("[the text of a file of the skill, left out");
+      expect(request.body).not.toContain(`[${F1_SKILLS}/alpha/SKILL.md#`);
+    }
+  });
+
+  test("a whole read of the cut's copy relative to the session's working directory, or under ~ in a session whose transcript names its home, builds a case whose pathCopy resolves it, and each arm answers it at the path the session read", () => {
+    for (const [name, dir, dirs] of [
+      ["path-relative-read", F1_RELATIVE, { cwd: F1_CWD }],
+      ["path-home", F1_TILDE, { cwd: F1_CWD, home: F1_HOME }],
+    ] as const) {
+      const c = caseNamed(name);
+      expect({ name, pathCopy: c?.pathCopy }).toEqual({
+        name,
+        pathCopy: { dir: `${F1_SKILLS}/alpha`, ...dirs },
+      });
+      expect({ name, skillReads: c?.skillReads }).toEqual({ name, skillReads: [2, 4] });
+      if (c === undefined) continue;
+      const target = `${dir}/SKILL.md`;
+      const armOf = (arm: "old" | "new" | "none") =>
+        buildArm(c, arm, { old, new: newDir }, path.join(scratch, `arm-${name}-${arm}`));
+      const textAt = (arm: Arm, index: number) => arm.messages[index]?.content?.[0]?.text ?? "";
+      /** The absolute path the arm's record names as the file the read opened. */
+      const opened = (arm: Arm, index: number) =>
+        (arm.messages[index]?.details as { meta?: { source?: { value?: string } } } | undefined)
+          ?.meta?.source?.value;
+      // old: the old text's rows under the session's own hashline line, at the path it read.
+      const oldArm = armOf("old");
+      expect(textAt(oldArm, 2).split("\n")[0]).toStartWith(`[${target}#`);
+      expect(textAt(oldArm, 2)).toContain(`:${LINE}`);
+      expect(opened(oldArm, 2)).toBe(`${F1_SKILLS}/alpha/SKILL.md`);
+      // new: its own text, which has no LINE, at the same path; a new read of it, as replay
+      // asks one, is answered the same way.
+      const newArm = armOf("new");
+      expect(textAt(newArm, 2).split("\n")[0]).toStartWith(`[${target}#`);
+      expect(textAt(newArm, 2)).not.toContain(LINE);
+      expect(textAt(newArm, 4)).toContain("The alpha steps are counted from one");
+      expect(pathFile(newArm, target)).toEqual({ text: textAt(newArm, 2), isError: false });
+      // none: Oh My Pi's not-found result for the path as read.
+      const noneArm = armOf("none");
+      expect(textAt(noneArm, 2)).toBe(`Path '${target}' not found`);
+      expect(noneArm.messages[2]?.isError).toBe(true);
+    }
+  });
+
+  test("a session that reads alpha by path only with a selector, of another copy, at a path no rule places, or of the cut's copy at a relative or ~ path whose directory the session does not name is dropped under that reason, with no reader call", () => {
+    const expected: Record<string, [DropReason, string]> = {
+      "path-range": [
+        "path-range",
+        `message 2 answers the read of ${F1_SKILLS}/alpha/SKILL.md:1-20 (path-range: a read selector after its last /)`,
+      ],
+      "path-other": [
+        "other-copy",
+        "message 2 answers the read of /elsewhere/other-skills/alpha/SKILL.md (other-copy: the prefix table rule places it at acme/other skills/alpha)",
+      ],
+      "path-unattributed": [
+        "unattributed",
+        "message 2 answers the read of /home/dev/notes/skills/alpha/SKILL.md (unattributed: the path ends with skills/alpha/, the skill directory of 3 repositories",
+      ],
+      "path-no-cwd": [
+        "path-relative",
+        `message 2 answers the read of ${F1_RELATIVE}/SKILL.md (path-relative: the prefix table rule places it at acme/skills skills/alpha, at ${F1_RELATIVE}, which needs the session's working directory, which its header does not name)`,
+      ],
+      "path-no-home": [
+        "path-relative",
+        `message 2 answers the read of ${F1_TILDE}/SKILL.md (path-relative: the prefix table rule places it at acme/skills skills/alpha, at ${F1_TILDE}, which needs the home directory the session ran under, which its transcript's path does not name (no /.omp/ in it))`,
+      ],
+    };
+    for (const [name, [reason, detail]] of Object.entries(expected)) {
+      expect({ name, reason: record(name)?.reason }).toEqual({ name, reason });
+      expect(record(name)?.detail).toContain(detail);
+      expect(record(name)?.windows).toBeUndefined();
+      expect(requests.some((request) => request.body.includes(`(case ${name})`))).toBe(false);
+    }
+  });
+
+  test("a session that reads alpha by skill:// and another copy by path builds its case from the skill:// reads, keeps the other read as recorded, and names it in its evidence", () => {
+    const c = caseNamed("path-mixed");
+    expect(c?.pathCopy).toBeUndefined();
+    expect(c?.skillReads).toEqual([2, 4]);
+    expect(c?.messages[6]?.content?.[0]?.text).toStartWith(
+      "[/elsewhere/other-skills/alpha/SKILL.md#"
+    );
+    expect(c?.evidence?.find((each) => each.item === EXCLUDED_READS)?.source).toBe(
+      "each answered as recorded in every arm: message 6 answers the read of /elsewhere/other-skills/alpha/SKILL.md (other-copy: the prefix table rule places it at acme/other skills/alpha)"
+    );
+  });
+
+  test("a case whose read by path is of a file the arms do not answer in Oh My Pi's form, in the new text, is dropped as path-form", () => {
+    expect(record("path-form")?.reason).toBe("path-form");
+    expect(record("path-form")?.detail).toBe(
+      `in the new text ${newDir}: ${NEW_WIDE.path} has 301 lines, and a read by path shows 300, then the end of each block past them`
+    );
+    expect(caseNamed("path-form")).toBeUndefined();
+  });
+
+  test("the summary counts each drop by its reason", () => {
+    const summary = summaryOf(out);
+    expect(summary.drops).toEqual({
+      "path-range": 1,
+      "other-copy": 1,
+      unattributed: 1,
+      "path-relative": 2,
+      "path-form": 1,
+    });
+    expect(Object.keys(summary.drops).every((reason) => reason in DROP_REASONS)).toBe(true);
+    expect(summary.casesBuilt).toBe(4);
+    expect(cases.map((each) => each.source.pathHash).sort()).toEqual(
+      ["path-read", "path-relative-read", "path-home", "path-mixed"]
+        .map((name) => pathHash(sessionPath(name)))
+        .sort()
+    );
+  });
+});
+
+/** `args` less `--new` and its directory: a build before the cut has a text. */
+const withoutNew = (args: readonly string[]) =>
+  args.filter((arg, at) => arg !== "--new" && args[at - 1] !== "--new");
+
+// A branch's `--set` build runs before the cut has a text, so build-cases takes --new as
+// optional.
+describe("build-cases without --new", () => {
+  const out = path.join(scratch, "no-new", "cases.jsonl");
+  let code = -1;
+  beforeAll(async () => {
+    const sessions = sessionsFile("no-new.jsonl", ["path-form"]);
+    code = await main(withoutNew(buildArgs(sessions, out, "3")), io([]));
+  }, HOOK_BUILD_MS);
+
+  // Catches: a build that needs a cut text it does not have yet refused, or one that checks a
+  // read by path against a text it was not given.
+  test("writes new: null in its summary's inputs and checks the old text alone: a read by path of a file only the new text holds builds a case", () => {
+    expect(code).toBe(EXIT.ok);
+    const summary = JSON.parse(readFileSync(`${out}.summary.json`, "utf8")) as {
+      inputs: { new: unknown };
+      casesBuilt: number;
+    };
+    expect(summary.inputs.new).toBeNull();
+    expect(summary.casesBuilt).toBe(1);
+    expect(loadCases(out, old).map((c) => c.source.pathHash)).toEqual([
+      pathHash(sessionPath("path-form")),
+    ]);
+  });
+
+  // Catches: a resumed build that mixes cases checked against the new text with cases that were
+  // not.
+  test("a resume with the other choice of --new is refused, naming it, and leaves the files as they were", async () => {
+    const sessions = sessionsFile("no-new.jsonl", ["path-form"]);
+    const before = readFileSync(`${out}.summary.json`, "utf8");
+    const given: string[] = [];
+    expect(await main(buildArgs(sessions, out, "3"), io(given))).toBe(EXIT.refused);
+    expect(given.join("\n")).toContain(`--new was not given, now ${newDir} (sha256 `);
+    expect(readFileSync(`${out}.summary.json`, "utf8")).toBe(before);
+    // The reverse: a build given --new, resumed without it.
+    const withNew = path.join(scratch, "with-new", "cases.jsonl");
+    expect(await main(buildArgs(sessions, withNew, "3"), io([]))).toBe(EXIT.ok);
+    const dropped: string[] = [];
+    expect(await main(withoutNew(buildArgs(sessions, withNew, "3")), io(dropped))).toBe(
+      EXIT.refused
+    );
+    expect(dropped.join("\n")).toMatch(
+      new RegExp(`--new was ${newDir} \\(sha256 [0-9a-f]{12}\\), now not given`)
+    );
+  }, 60_000);
+});
+
+// The architect's rule (2026-11-22T16:58:39Z): a session that reads the skill as material, to
+// edit, test, grade or compare it, is no case of the skill's behaviour, since its next step works
+// on the text and does not follow it.
+test("a skill:// read in a skill-writing session and a whole-file path read in an eval checkout are dropped as skill-as-material on the case reader's answer, and a normal case is kept", async () => {
+  const out = path.join(scratch, "material", "cases.jsonl");
+  const names = ["material-writing", "material-eval", "good"];
+  const sessions = sessionsFile("material.jsonl", names);
+  const lines: string[] = [];
+  expect(await main(buildArgs(sessions, out, "1"), io(lines))).toBe(EXIT.ok);
+  const summary = summaryOf(out);
+  for (const name of ["material-writing", "material-eval"]) {
+    const record = summary.sessions.find((each) => each.hash === fileHash(sessionPath(name)));
+    expect(record?.reason).toBe("skill-as-material");
+    expect(record?.detail).toStartWith("the case reader, in window 1 (messages ");
+    expect(record?.detail).toEndWith("): The agent works on alpha's text (message 0).");
+  }
+  expect(summary.drops).toEqual({ "skill-as-material": 2 });
+  expect(loadCases(out, old).map((c) => c.source.pathHash)).toEqual([
+    pathHash(sessionPath("good")),
+  ]);
+}, 60_000);
 
 test("a dev-box session that read a skill of a github: dependency's package and one of a cloned pool gets a profile that holds each unit's skills, the pool's at the commit its installer pins at the session's start", async () => {
   const out = path.join(scratch, "pinned-units", "cases.jsonl");
@@ -3689,7 +4140,7 @@ test("build-cases refuses an unknown cut and a sessions line whose path is not i
   );
   expect(recorder.requests.length).toBe(from);
   expect(logLength()).toBe(logged);
-});
+}, 60_000);
 
 test("build-cases refuses an --out inside a git or jj checkout, its own and --reprofile's, before any read", async () => {
   const from = recorder.requests.length;
@@ -3727,7 +4178,7 @@ test("build-cases refuses an --out inside a git or jj checkout, its own and --re
   expect(recorder.requests.length).toBe(from);
   expect(logLength()).toBe(logged);
   expect(ghCalls.length).toBe(calls);
-});
+}, 60_000);
 
 /** The made-up session that reads alpha from the skill set alpha-set: F1 with its reads of alpha
  *  moved to a dev box's Oh My Pi plugins directory, which holds acme/alpha-set under its
@@ -4523,6 +4974,33 @@ test("build-cases --written with --context-session refuses --sessions and --seed
   expect(ghCalls.length).toBe(calls);
 });
 
+// Catches: a written or re-profile build given --new, which neither reads (a written case reads
+// no file of the copy by path, and a re-profile builds profiles only), taking it in silence.
+test("build-cases --written and --reprofile refuse --new, before any read", async () => {
+  const context = ["--context-session", `store_a:${fileHash(sessionPath("good"))}`];
+  const dir = path.join(scratch, "written-new");
+  const from = recorder.requests.length;
+  const logged = psqlLogLength();
+  const calls = ghCalls.length;
+  const written: string[] = [];
+  const out = path.join(dir, "cases.jsonl");
+  expect(await main(writtenArgs(out, ...context, "--new", newDir), io(written))).toBe(
+    EXIT.refused
+  );
+  expect(written.join("\n")).toContain("--written takes no --new");
+  const reprofiled: string[] = [];
+  const reprofile = [
+    ...["build-cases", "--config", config, "--old", old, "--copies", copiesDir],
+    ...["--count", countDir, "--reprofile", out, "--out", path.join(dir, "reprofiled.jsonl")],
+  ];
+  expect(await main([...reprofile, "--new", newDir], io(reprofiled))).toBe(EXIT.refused);
+  expect(reprofiled.join("\n")).toContain("so it takes no --new");
+  expect(existsSync(dir)).toBe(false);
+  expect(recorder.requests.length).toBe(from);
+  expect(psqlLogLength()).toBe(logged);
+  expect(ghCalls.length).toBe(calls);
+});
+
 test("build-tasks proposes terms, reads first user messages per store and day, and writes labelled tasks", async () => {
   const skillDir = path.join(setupDir, "old", "alpha");
   const out = path.join(scratch, "tasks", "tasks.jsonl");
@@ -4773,7 +5251,7 @@ describe("build-cases goes on from where a run stopped", () => {
     expect(sessionsRefused.join("\n")).toContain(`--sessions was ${sessions}`);
     expect(sessionsRefused.join("\n")).toContain("holds a build of other inputs");
     expect(readFileSync(`${killed}.summary.json`, "utf8")).toBe(before);
-  });
+  }, 60_000);
 });
 
 // build-cases --drop-navigation: a step under a line that only sends the agent to a file of the
@@ -5403,7 +5881,7 @@ test("build-tasks refuses --sessions, --seed and --max without --first-read, and
   expect(recorder.requests.length).toBe(from);
   expect(readFileSync(psqlLog, "utf8").length).toBe(logged);
   expect(existsSync(out)).toBe(false);
-});
+}, 60_000);
 
 test("removeSecrets takes out each secret shape and counts it, and leaves plain text alone", () => {
   const token = fixtureSecret("tok");
@@ -5521,7 +5999,7 @@ test("a transcript read from its spool, in chunks of any size, gives the entries
     }
   }
   expect(refusedNames).toEqual(["broken"]);
-});
+}, 60_000);
 
 /** A sessions file of `count` sessions no store holds, each with no path. */
 function absentSessions(file: string, count: number): string {
@@ -5663,7 +6141,7 @@ test("build-cases refuses a stop bound that is no number, before any read", asyn
   }
   expect(recorder.requests.length).toBe(from);
   expect(existsSync(out)).toBe(false);
-});
+}, 60_000);
 
 /** An io whose peak resident memory is PEAK_BYTES until it prints a line `decided` matches, and
  *  OVER_LIMIT from then on; what it writes to standard error goes to `errors`. */
@@ -6094,7 +6572,7 @@ test("build-tasks refuses --profiles-out without --copies and --count, or withou
   expect(recorder.requests.length).toBe(from);
   expect(readFileSync(psqlLog, "utf8").length).toBe(logged);
   expect(existsSync(out)).toBe(false);
-});
+}, 60_000);
 
 /** The arguments of a build-tasks run in the reader's mode on store_a, with `extra`. */
 const tasksArgs = (out: string, ...extra: string[]) => [
@@ -6365,7 +6843,7 @@ test("build-tasks refuses a bound that is no number, a bound with no candidate s
   expect(recorder.requests.length).toBe(from);
   expect(psqlLogLength()).toBe(logged);
   expect(existsSync(out)).toBe(false);
-});
+}, 60_000);
 
 test("build-tasks with no bound writes the pinned bytes: the tasks, the summary, the profiles and the printed lines of a run with --model and of one with --profiles-out", async () => {
   /** The SHA-256 of `text`, the suite's scratch directory in it written `<scratch>`. */
@@ -6396,7 +6874,9 @@ test("build-tasks with no bound writes the pinned bytes: the tasks, the summary,
     "model summary": "fd2cf470c0eaa72f67f8a326ecfaeafd58a63ed82764f9aae296cfffc84bff8b",
     "model printed": "bf894d108dd96d68557fc836907c898f504618a57f906e073f786c51c1144dc3",
     "profiles tasks": "6978ce55a25eb77c1f126e1b0e35e0f4899d63975797aee26b9e32d53ff3dea0",
-    "profiles summary": "d55948c92214318081f732b92f557f7118708818af63b01a92274f485d5bf000",
+    // The summary's listing counts gained `fromRecorded` (the misses diagnosis, cause A), and the
+    // Legion context session's evidence `the worker image's commit of acme/skills` (cause C2).
+    "profiles summary": "c16018d2feab918d905861c0faf6bf6891ee33818c67b404f5496a792eda9c5a",
     "profiles printed": "6e4a4b3f3da89a2faa7e4e21ab71ad7d844a05da52f0aa836ebc41b6baee1532",
     "profiles profiles": "26bf1079e50926d2c9e1bdc9482bca041b0a71392fb091f4352c437ab81932c4",
   });
@@ -6504,6 +6984,543 @@ test("a session repository whose whole tree GitHub cuts short is read one direct
     ["", ".claude", ".claude/skills", ".claude/skills/omega"]
       .map((dir) => `repos/acme/big/git/trees/${treeId("acme/big", dir)}`)
       .sort()
+  );
+}, 120_000);
+
+// Catches (the misses diagnosis, cause C3, and the dev box's dotfiles checkout of Group 2): a
+// working directory mapped to a repository by a parent directory's name alone, and the dev box's
+// own checkout mapped to the repository named as its parent.
+test("a dev-box session in the checkout whose .claude/ devboxClaudeConfigDir names gets the dev box's repository, and one under a parent named as a listed repository whose tree lacks the path below it gets no session repository, saying why", async () => {
+  const sessions = {
+    "/sessions/dots-home.jsonl": "/home/dev/.dotfiles",
+    "/sessions/proj-missing.jsonl": "/home/dev/src/proj/missing/dir",
+  };
+  const store = changedStore("checkouts", (files) => {
+    for (const [file, cwd] of Object.entries(sessions)) {
+      (files.store_a ?? {})[file] = inDirectory(sessionText("good"), cwd);
+    }
+  });
+  writeFileSync(
+    store,
+    JSON.stringify({
+      ...JSON.parse(readFileSync(store, "utf8")),
+      devboxClaudeConfigDir: "/home/dev/.dotfiles/.claude",
+    })
+  );
+  const copies = copiesWith("copies-checkouts", {
+    "manifests.tsv": [
+      ["acme/home", "installers/omp.sh", "installer-script", "tree", 4, "links skills", ""],
+      ["acme/home", ".claude/settings.json", "claude-settings", "tree", 0, "none", ""],
+    ],
+  });
+  const file = path.join(setupDir, "checkouts.jsonl");
+  writeFileSync(
+    file,
+    Object.keys(sessions)
+      .map((each) => `${JSON.stringify({ store: "store_a", hash: fileHash(each), path: each })}\n`)
+      .join("")
+  );
+  const out = path.join(scratch, "checkouts", "cases.jsonl");
+  const args = buildArgs(file, out, "1", "--copies", copies);
+  args[args.indexOf("--config") + 1] = store;
+  const lines: string[] = [];
+  expect(await main(args, io(lines))).toBe(EXIT.ok);
+  const cases = loadCases(out, old);
+  const evidenceOf = (file: string) =>
+    Object.fromEntries(
+      cases
+        .find((c) => c.source.pathHash === pathHash(file))
+        ?.evidence?.map((each) => [each.item, each.source]) ?? []
+    );
+  expect(evidenceOf("/sessions/dots-home.jsonl")["session repository acme/home"]).toBe(
+    `${CHECKOUT_RULE}. The working directory /home/dev/.dotfiles is /home/dev/.dotfiles, the checkout of the dev box's repository acme/home, whose .claude/ the configuration's devboxClaudeConfigDir names`
+  );
+  const missing = evidenceOf("/sessions/proj-missing.jsonl");
+  expect(missing["session repository acme/proj"]).toBeUndefined();
+  expect(missing["no session repository"]).toBe(
+    `${CHECKOUT_RULE}. The working directory /home/dev/src/proj/missing/dir is under /home/dev/src/proj, named as acme/proj, whose tree at ${SHA} holds no missing/dir, so that name alone does not make the directory a checkout of it`
+  );
+  expect(
+    cases.find((c) => c.source.pathHash === pathHash("/sessions/proj-missing.jsonl"))?.profile
+      .sessionRepository
+  ).toBeUndefined();
+}, 120_000);
+
+// Catches (the misses diagnosis, cause C1): a project skill of .agent/skills, .agents/skills or
+// .github/skills, or one whose directory is a symbolic link in .claude/skills, missing from the
+// rebuilt profile, though Oh My Pi 18.18.6 lists each.
+test("build-cases --reprofile of a session in a workspace of acme/agents lists its .agent/skills, .agents/skills and .github/skills, follows a skill directory linked inside the repository, and names the link out of it and the .github skill with no description as left out", async () => {
+  const legion = (await profileCases()).find(
+    (c) => c.source.pathHash === pathHash(sessionPath("legion"))
+  ) as Case;
+  const moved = "/sessions/agents-legion.jsonl";
+  const store = changedStore("agents-dirs", (files) => {
+    (files.store_b ?? {})[moved] = inDirectory(
+      sessionText("legion"),
+      "/legion/workspaces/acme/agents/acme-13"
+    );
+  });
+  const dir = path.join(scratch, "agents-dirs");
+  const from = path.join(dir, "old.jsonl");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    from,
+    `${JSON.stringify({ ...legion, source: { ...legion.source, pathHash: pathHash(moved) } })}\n`
+  );
+  const fresh = path.join(dir, "reprofiled.jsonl");
+  const lines: string[] = [];
+  const args = ["--old", old, "--copies", copiesDir, "--count", countDir];
+  const code = await main(
+    ["build-cases", "--config", store, ...args, "--reprofile", from, "--out", fresh],
+    io(lines)
+  );
+  expect({ code, said: code === EXIT.ok ? "" : lines.join("\n") }).toEqual({
+    code: EXIT.ok,
+    said: "",
+  });
+  const [c] = loadCases(fresh, old);
+  const project = (c?.profile.skills ?? []).filter((skill) => skill.repo === "acme/agents");
+  expect(project.map((skill) => `${skill.name} ${skill.path}`).sort()).toEqual([
+    "rho .agents/skills/rho",
+    "sigma .github/skills/sigma",
+    "tau .claude/skills/tau",
+    "upsilon .agent/skills/upsilon",
+  ]);
+  const evidence = Object.fromEntries(c?.evidence?.map((each) => [each.item, each.source]) ?? []);
+  expect(evidence["linked: acme/agents .claude/skills/tau -> ../../skills/tau"]).toContain(
+    "which Oh My Pi follows"
+  );
+  expect(evidence["left out: acme/agents .claude/skills/away -> ../../../outside/away"]).toContain(
+    "outside the repository"
+  );
+  expect(evidence["left out: skill plain from acme/agents .github/skills/plain"]).toContain(
+    "its SKILL.md has no description"
+  );
+  expect(evidence["skill rho (acme/agents .agents/skills/rho)"]).toContain(
+    "discovery/agents.ts, loadSkills, lines 158-172"
+  );
+  expect(evidence["skill sigma (acme/agents .github/skills/sigma)"]).toContain(
+    "discovery/github.ts, loadSkills, lines 286-296"
+  );
+}, 120_000);
+
+// Catches (the misses diagnosis, cause A): a pool that the dev box's skills-sources.json names at
+// a subagent's start and not at its root's last prompt build left out though the subagent listed
+// its skills, or installed though the subagent's host had not cloned it yet.
+test("a subagent whose dev box's skills-sources.json names a pool at its start and not at its root's last prompt build gets that pool only where its recorded listing names one of the pool's skills, its names marked fromRecorded, and otherwise has it left out, saying why", async () => {
+  // Two subagents of PINNED_ROOT that read alpha alone: one's recorded listing names pack-two too.
+  const listings: Record<string, string> = {
+    "pool-listed": "- pack-two: Use for the pack-two steps.\n",
+    "pool-unlisted": "",
+  };
+  const pathOf = (name: string) => `${PINNED_ROOT}/${name}.jsonl`;
+  const store = changedStore("pool-start", (files) => {
+    for (const [name, extra] of Object.entries(listings)) {
+      const lines = f1Lines();
+      setText(lines, 5, () => `Step 3 (case ${name}).`);
+      SESSIONS.subagent?.change?.(lines);
+      const init = lines.find((line) => line.type === "session_init");
+      if (init !== undefined) {
+        init.systemPrompt = [
+          (SUBAGENT_PROMPT[0] ?? "").replace("</skills>", `${extra}</skills>`),
+          ...SUBAGENT_PROMPT.slice(1),
+        ];
+      }
+      (files.store_a ?? {})[pathOf(name)] = lines
+        .map((line) => `${JSON.stringify(line)}\n`)
+        .join("");
+    }
+  });
+  // acme/dots is the dev box's repository: it holds an installer script and Claude Code's
+  // settings. At the root's last build (DOTS_OLD) its skills-sources.json does not exist; at the
+  // subagent's start (SHA) it names the pool vendor/acme-pack, a clone of acme/pack.
+  const copies = copiesWith("copies-pool-start", {
+    "manifests.tsv": [
+      ["acme/dots", "installers/omp.sh", "installer-script", "tree", 1, "clones", ""],
+      ["acme/dots", ".claude/settings.json", "claude-settings", "tree", 0, "none", ""],
+    ],
+  });
+  const file = path.join(setupDir, "pool-start.jsonl");
+  writeFileSync(
+    file,
+    Object.keys(listings)
+      .map((name) => {
+        const row = { store: "store_a", hash: fileHash(pathOf(name)), path: pathOf(name) };
+        return `${JSON.stringify(row)}\n`;
+      })
+      .join("")
+  );
+  const out = path.join(scratch, "pool-start", "cases.jsonl");
+  const args = buildArgs(file, out, "1", "--copies", copies);
+  args[args.indexOf("--config") + 1] = store;
+  const lines: string[] = [];
+  const code = await main(args, io(lines));
+  expect({ code, said: code === EXIT.ok ? "" : lines.join("\n") }).toEqual({
+    code: EXIT.ok,
+    said: "",
+  });
+  const cases = loadCases(out, old);
+  const caseOf = (name: string) => cases.find((c) => c.source.pathHash === pathHash(pathOf(name)));
+  const evidenceOf = (name: string) =>
+    Object.fromEntries(caseOf(name)?.evidence?.map((each) => [each.item, each.source]) ?? []);
+  const poolSkills = (name: string) =>
+    (caseOf(name)?.profile.skills ?? [])
+      .filter((skill) => skill.repo === "acme/pack")
+      .map((skill) => `${skill.name} ${skill.commit}`)
+      .sort();
+  const names = `acme/dots:skills-sources.json names vendor/acme-pack at ${SHA} (the subagent's start ${F1_START}) and not at ${DOTS_OLD} (the root's last prompt build)`;
+  // The recorded listing names pack-two, so the host had cloned the pool: it is installed, and
+  // each of its names is marked as taken from that listing.
+  expect(poolSkills("pool-listed")).toEqual([`pack-one ${PACK_PIN}`, `pack-two ${PACK_PIN}`]);
+  const listed = evidenceOf("pool-listed");
+  expect(listed["unit pool:vendor/acme-pack (acme/dots:skills-sources.json)"]).toStartWith(
+    `pool at the subagent's start: ${names}; the subagent's recorded listing names pack-two of its skills, so its host had cloned it then (installed from the recorded listing): Oh My Pi 18.18.6 has a subagent emit resources_discover as it starts`
+  );
+  const listedMeasure = ListingMeasure.parse(JSON.parse(listed[LISTING_MEASURE] ?? "{}"));
+  expect(listedMeasure.fromRecorded).toEqual(["pack-one", "pack-two"]);
+  // The recorded listing names none of the pool's skills: the host had not cloned it yet.
+  expect(poolSkills("pool-unlisted")).toEqual([]);
+  const unlisted = evidenceOf("pool-unlisted");
+  expect(unlisted["unit pool:vendor/acme-pack (acme/dots:skills-sources.json)"]).toBeUndefined();
+  expect(unlisted["left out: pool:vendor/acme-pack, a pool at the subagent's start"]).toStartWith(
+    `${names}, and the subagent's recorded listing names none of its skills (pack-one, pack-two), so its host had not cloned it then: Oh My Pi 18.18.6 has a subagent emit resources_discover`
+  );
+  const unlistedMeasure = ListingMeasure.parse(JSON.parse(unlisted[LISTING_MEASURE] ?? "{}"));
+  expect(unlistedMeasure.fromRecorded).toBeUndefined();
+}, 120_000);
+
+// Catches (the misses diagnosis, cause B1): the skills of a Claude Code plugin that the session
+// repository's own Claude Code settings turn on left out of a dev-box profile, or installed for a
+// project whose settings do not turn it on.
+test("a dev-box session in a checkout whose .claude/settings.json turns a Claude Code plugin on in enabledPlugins gets the plugin's skills at a Claude Code plugin's rank, a second copy of a name under the plugin's name only where its text differs, and a session in a checkout whose settings turn none on gets none", async () => {
+  const sessions = {
+    "/sessions/plug-on.jsonl": "/home/dev/src/plug",
+    "/sessions/plug-off.jsonl": "/home/dev/src/unplug",
+  };
+  const store = changedStore("plugins-enabled", (files) => {
+    for (const [file, cwd] of Object.entries(sessions)) {
+      (files.store_a ?? {})[file] = inDirectory(sessionText("good"), cwd);
+    }
+  });
+  // As copies.ts gives them: acme/plug's settings turn plug-tools on, and the marketplace
+  // acme-plugs (acme/plugs) ships its skills.
+  const plugin = "plugin:plug-tools@acme-plugs";
+  const row = (repo: string, manifest: string, kind: string, action: string, skill: string) => [
+    repo,
+    manifest,
+    kind,
+    action,
+    plugin,
+    "claude-code",
+    skill,
+    "acme/plugs",
+    `plugins/plug-tools/skills/${skill}`,
+    "",
+  ];
+  const shipped = ["alpha", "beta", "plug-one"];
+  const copies = copiesWith("copies-plugins", {
+    "repositories.tsv": ["acme/plug", "acme/unplug", "acme/plugs"].map((repo) => [
+      repo,
+      "main",
+      SHA,
+      "no",
+      "no",
+      "",
+      3,
+      "whole",
+      0,
+      "",
+    ]),
+    "installers.tsv": [
+      ...shipped.map((skill) =>
+        row("acme/plug", ".claude/settings.json", "claude-settings", "enables", skill)
+      ),
+      ...shipped.map((skill) =>
+        row("acme/plugs", ".claude-plugin/marketplace.json", "claude-marketplace", "ships", skill)
+      ),
+    ],
+    "skill-copies.tsv": shipped.map((skill) => [
+      "acme/plugs",
+      `plugins/plug-tools/skills/${skill}`,
+      skill,
+      10,
+      "no",
+      "no",
+      "",
+      "",
+      "",
+    ]),
+  });
+  const file = path.join(setupDir, "plugins-enabled.jsonl");
+  writeFileSync(
+    file,
+    Object.keys(sessions)
+      .map((each) => `${JSON.stringify({ store: "store_a", hash: fileHash(each), path: each })}\n`)
+      .join("")
+  );
+  const out = path.join(scratch, "plugins-enabled", "cases.jsonl");
+  const args = buildArgs(file, out, "1", "--copies", copies);
+  args[args.indexOf("--config") + 1] = store;
+  const lines: string[] = [];
+  const code = await main(args, io(lines));
+  expect({ code, said: code === EXIT.ok ? "" : lines.join("\n") }).toEqual({
+    code: EXIT.ok,
+    said: "",
+  });
+  const cases = loadCases(out, old);
+  const caseOf = (file: string) => cases.find((c) => c.source.pathHash === pathHash(file));
+  const fromPlugin = (file: string) =>
+    (caseOf(file)?.profile.skills ?? [])
+      .filter((skill) => skill.repo === "acme/plugs")
+      .map((skill) => `${skill.namespace === undefined ? "" : `${skill.namespace}/`}${skill.name}`)
+      .sort();
+  const on = caseOf("/sessions/plug-on.jsonl");
+  expect(on?.profile.sessionRepository).toEqual({ repo: "acme/plug", commit: SHA });
+  // plug-one is the plugin's alone; acme/skills' beta, a unit of a lower rank, keeps the bare
+  // name, and the plugin's beta of other text is listed under the plugin's name; its alpha, of
+  // the same text as the alpha the session read, is dropped.
+  expect(fromPlugin("/sessions/plug-on.jsonl")).toEqual(["plug-one", "plug-tools/beta"]);
+  const evidence = Object.fromEntries(on?.evidence?.map((each) => [each.item, each.source]) ?? []);
+  const unit = evidence[`unit ${plugin} (acme/plugs:.claude-plugin/marketplace.json)`];
+  expect(unit).toStartWith(
+    "Oh My Pi 18.18.6 lists the skills of a Claude Code plugin that Claude Code's registry installs for the project"
+  );
+  expect(unit).toEndWith(
+    `: acme/plug:.claude/settings.json at ${SHA} enables plug-tools@acme-plugs in enabledPlugins, and acme/plugs:.claude-plugin/marketplace.json ships its skills`
+  );
+  expect(evidence["skill plug-tools/beta (acme/plugs plugins/plug-tools/skills/beta)"]).toContain(
+    "under the name beta Oh My Pi gives the session the copy of acme/skills skills/beta under that name"
+  );
+  expect(evidence["skill plug-tools/beta (acme/plugs plugins/plug-tools/skills/beta)"]).toContain(
+    "and this copy's text differs"
+  );
+  expect(
+    evidence["left out: skill alpha from acme/plugs plugins/plug-tools/skills/alpha"]
+  ).toContain("its SKILL.md is the same, and Oh My Pi drops such a copy");
+  // acme/unplug's settings turn no plugin on: the plugin's skills are no part of its profile.
+  const off = caseOf("/sessions/plug-off.jsonl");
+  expect(off?.profile.sessionRepository).toEqual({ repo: "acme/unplug", commit: SHA });
+  expect(fromPlugin("/sessions/plug-off.jsonl")).toEqual([]);
+  expect((off?.evidence ?? []).filter((each) => each.item.startsWith(`unit ${plugin}`))).toEqual(
+    []
+  );
+}, 120_000);
+
+// Catches (the misses diagnosis, cause C2): a Legion pod's worker image read at its repository's
+// default branch at the session's start, where the pod ran an image built from an older commit.
+test("build-cases --reprofile of a Legion pane reads the worker image's packages at the commit that the deployment's Pulumi config and GitHub's build provenance name: the image digest's, else that of a digest or a tag the comment above its image: line names, else its default branch at the session's start, its evidence saying which rule decided", async () => {
+  const legion = (await profileCases()).find(
+    (c) => c.source.pathHash === pathHash(sessionPath("legion"))
+  ) as Case;
+  const digest = (n: number) => String(n).repeat(64);
+  const attested = digest(1);
+  const statement = {
+    predicateType: "https://slsa.dev/provenance/v1",
+    predicate: {
+      buildDefinition: {
+        resolvedDependencies: [
+          {
+            uri: "git+https://github.com/acme/skills@refs/heads/main",
+            digest: { gitCommit: IMAGE_SHA },
+          },
+        ],
+      },
+    },
+  };
+  const provenance = JSON.stringify({
+    attestations: [
+      {
+        bundle: {
+          dsseEnvelope: { payload: Buffer.from(JSON.stringify(statement)).toString("base64") },
+        },
+      },
+    ],
+  });
+  // A made-up Pulumi config of acme/infra: another project's entry first, whose comment names a
+  // tag, and ACME's, whose daemonImage names the attested digest; neither is ACME's image.
+  const pulumi = (comment: readonly string[], image: string) =>
+    [
+      "config:",
+      "  legion:projects:",
+      "    - key: OTHER",
+      "      # The worker image built on acme-image-v2.0.0.",
+      `      image: registry.example/acme/worker@sha256:${digest(9)}`,
+      "    - key: ACME",
+      "      instructions: acme.md",
+      ...comment.map((line) => `      # ${line}`),
+      `      image: ${image}`,
+      `      daemonImage: registry.example/acme/worker@sha256:${attested}`,
+      "",
+    ].join("\n");
+  /** The legion case built again, with gh's answers to the Pulumi config and the provenance. */
+  const reprofiled = async (name: string, text: string) => {
+    const dir = path.join(scratch, `image-${name}`);
+    mkdirSync(dir, { recursive: true });
+    const from = path.join(dir, "old.jsonl");
+    writeFileSync(from, `${JSON.stringify(legion)}\n`);
+    const fresh = path.join(dir, "reprofiled.jsonl");
+    const lines: string[] = [];
+    const standin = io(lines);
+    const code = await main(
+      [
+        ...["build-cases", "--config", config, "--old", old, "--copies", copiesDir],
+        ...["--count", countDir, "--reprofile", from, "--out", fresh],
+      ],
+      {
+        ...standin,
+        gh: async (args) => {
+          const route = args.find((arg) => arg.startsWith("repos/")) ?? "";
+          const asked = /^repos\/acme\/skills\/attestations\/sha256:([0-9a-f]{64})$/.exec(route);
+          if (route === "repos/acme/infra/contents/legion/Pulumi.prod.yaml") {
+            ghCalls.push([...args]);
+            return args.includes(`ref=${SHA}`)
+              ? { code: 0, stdout: text, stderr: "" }
+              : { code: 1, stdout: "", stderr: "gh: Not Found (HTTP 404)\n" };
+          }
+          if (asked !== null) {
+            ghCalls.push([...args]);
+            return asked[1] === attested
+              ? { code: 0, stdout: provenance, stderr: "" }
+              : { code: 1, stdout: "", stderr: "gh: Not Found (HTTP 404)\n" };
+          }
+          return standin.gh(args);
+        },
+      }
+    );
+    expect({ code, said: code === EXIT.ok ? "" : lines.join("\n") }).toEqual({
+      code: EXIT.ok,
+      said: "",
+    });
+    const [c] = loadCases(fresh, old);
+    const evidence = Object.fromEntries(c?.evidence?.map((each) => [each.item, each.source]) ?? []);
+    return {
+      skills: (c?.profile.skills ?? [])
+        .filter((skill) => skill.repo === "acme/skills")
+        .map((skill) => `${skill.name} ${skill.commit}`)
+        .sort(),
+      plugins: c?.profile.plugins ?? [],
+      why: evidence["the worker image's commit of acme/skills"] ?? "",
+    };
+  };
+  const config0 = `acme/infra:legion/Pulumi.prod.yaml at ${SHA} gives the project ACME the image`;
+  const atImage = `, so the image's units of acme/skills are read at ${IMAGE_SHA}: a Legion pod runs the worker image`;
+  const imaged = [`alpha ${IMAGE_SHA}`, `beta ${IMAGE_SHA}`, `omicron ${IMAGE_SHA}`];
+
+  // The image's own digest has provenance: its package, and that package's directory, are read
+  // at the commit it names, where the package stages omicron too.
+  const own = await reprofiled(
+    "own",
+    pulumi([], `registry.example/acme/worker@sha256:${attested}`)
+  );
+  expect(own.skills).toEqual(imaged);
+  expect(own.plugins).toContainEqual({
+    repo: "acme/skills",
+    commit: IMAGE_SHA,
+    path: "packages/pi-acme",
+    name: "pi-acme",
+  });
+  expect(own.why).toStartWith(
+    `${config0} registry.example/acme/worker@sha256:${attested}; gh api repos/acme/skills/attestations/sha256:${attested} names git+https://github.com/acme/skills@refs/heads/main at ${IMAGE_SHA}${atImage}`
+  );
+
+  // An image with no provenance, whose comment names the base it was built on.
+  const plus = `registry.example/acme/worker-plus@sha256:${digest(2)}`;
+  const base = await reprofiled(
+    "base",
+    pulumi(
+      ["worker-plus, built on the base", `registry.example/acme/worker@sha256:${attested}.`],
+      plus
+    )
+  );
+  expect(base.skills).toEqual(imaged);
+  expect(base.why).toStartWith(
+    `${config0} ${plus}, whose digest has no build provenance that names a commit (gh api repos/acme/skills/attestations/sha256:${digest(2)}); the comment right above its image: line names the image digest sha256:${attested}, whose build provenance (gh api repos/acme/skills/attestations/sha256:${attested}) names git+https://github.com/acme/skills@refs/heads/main at ${IMAGE_SHA}${atImage}`
+  );
+
+  // An image with no provenance, whose comment names a tag of the repository.
+  const tagged = await reprofiled(
+    "tag",
+    pulumi(["worker-plus, built on acme-image-v2.0.0; before it v0.9.0."], plus)
+  );
+  expect(tagged.skills).toEqual(imaged);
+  expect(tagged.why).toContain(
+    "; the comment right above its image: line names acme-image-v2.0.0, a tag of acme/skills (gh api repos/acme/skills/git/matching-refs/tags/acme-image-v2.0.0), whose last commit at or before "
+  );
+  expect(tagged.why).toContain(` is ${IMAGE_SHA}${atImage}`);
+
+  // Neither: the package is read at the default branch at the session's start, as before.
+  const none = await reprofiled("none", pulumi(["worker-plus of this week."], plus));
+  expect(none.skills).toEqual([`alpha ${SHA}`, `beta ${SHA}`]);
+  expect(none.why).toStartWith(
+    `${config0} ${plus}, whose digest has no build provenance that names a commit (gh api repos/acme/skills/attestations/sha256:${digest(2)}); the comment right above its image: line names no image digest whose build provenance names a commit, no commit and no tag of acme/skills, so acme/skills is read at its default branch's commit at the session's start: a Legion pod runs the worker image`
+  );
+}, 240_000);
+
+// Catches (the misses diagnosis, cause C2, measured on a LINUX architect-root): an image comment
+// that names the base's commit first and an older release after it ("before it …") read at the
+// older release.
+test("build-cases --reprofile of a Legion pane whose image has no provenance reads the worker image's packages at the commit the comment above its image: line names first, past a hex word that is no commit of the repository and before a tag it names later", async () => {
+  const legion = (await profileCases()).find(
+    (c) => c.source.pathHash === pathHash(sessionPath("legion"))
+  ) as Case;
+  const image = `registry.example/acme/worker-plus@sha256:${"5".repeat(64)}`;
+  const pulumi = [
+    "config:",
+    "  legion:projects:",
+    "    - key: ACME",
+    // 0badc0de is no commit of acme/skills; pi-acme-v1.0.0, a tag of it, is at SHA.
+    `      # worker-plus sha-0badc0de (run 41669921756), on the build of acme/skills ${IMAGE_WORD};`,
+    "      # before it the build on pi-acme-v1.0.0.",
+    `      image: ${image}`,
+    "",
+  ].join("\n");
+  const dir = path.join(scratch, "image-commit-word");
+  mkdirSync(dir, { recursive: true });
+  const from = path.join(dir, "old.jsonl");
+  writeFileSync(from, `${JSON.stringify(legion)}\n`);
+  const fresh = path.join(dir, "reprofiled.jsonl");
+  const lines: string[] = [];
+  const standin = io(lines);
+  const code = await main(
+    [
+      ...["build-cases", "--config", config, "--old", old, "--copies", copiesDir],
+      ...["--count", countDir, "--reprofile", from, "--out", fresh],
+    ],
+    {
+      ...standin,
+      gh: async (args) => {
+        const route = args.find((arg) => arg.startsWith("repos/")) ?? "";
+        if (route === "repos/acme/infra/contents/legion/Pulumi.prod.yaml") {
+          ghCalls.push([...args]);
+          return args.includes(`ref=${SHA}`)
+            ? { code: 0, stdout: pulumi, stderr: "" }
+            : { code: 1, stdout: "", stderr: "gh: Not Found (HTTP 404)\n" };
+        }
+        if (route.startsWith("repos/acme/skills/attestations/")) {
+          ghCalls.push([...args]);
+          return { code: 1, stdout: "", stderr: "gh: Not Found (HTTP 404)\n" };
+        }
+        return standin.gh(args);
+      },
+    }
+  );
+  expect({ code, said: code === EXIT.ok ? "" : lines.join("\n") }).toEqual({
+    code: EXIT.ok,
+    said: "",
+  });
+  const [c] = loadCases(fresh, old);
+  expect(
+    (c?.profile.skills ?? [])
+      .filter((skill) => skill.repo === "acme/skills")
+      .map((skill) => `${skill.name} ${skill.commit}`)
+      .sort()
+  ).toEqual([`alpha ${IMAGE_SHA}`, `beta ${IMAGE_SHA}`, `omicron ${IMAGE_SHA}`]);
+  const evidence = Object.fromEntries(c?.evidence?.map((each) => [each.item, each.source]) ?? []);
+  expect(evidence["the worker image's commit of acme/skills"]).toStartWith(
+    `acme/infra:legion/Pulumi.prod.yaml at ${SHA} gives the project ACME the image ${image}, whose digest has no build provenance that names a commit (gh api repos/acme/skills/attestations/sha256:${"5".repeat(64)}); the comment right above its image: line names ${IMAGE_WORD}, the commit ${IMAGE_SHA} of acme/skills (gh api repos/acme/skills/commits?sha=${IMAGE_WORD}&until=`
+  );
+  expect(evidence["the worker image's commit of acme/skills"]).toContain(
+    `), so the image's units of acme/skills are read at ${IMAGE_SHA}: a Legion pod runs the worker image`
   );
 }, 120_000);
 

@@ -3,7 +3,15 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { SessionEntry, type SessionMessage, stripSkillHeader } from "../skill-scenarios/transcript";
-import { type Case, caseKind, loadCases, pathHash, pathReadFile, skillReadFile } from "./cases";
+import {
+  type Case,
+  caseKind,
+  loadCases,
+  pathHash,
+  pathReadFile,
+  resolvedReadPath,
+  skillReadFile,
+} from "./cases";
 
 // The loader of the case file, on F1 (testdata/F1): an Oh My Pi 18.18.6 session of a scratch
 // profile with the made-up skills alpha and beta, captured with
@@ -383,6 +391,39 @@ test("pathReadFile reads whole reads by path of the case's own copy only", () =>
   expect(pathReadFile({}, `${COPY}/SKILL.md`)).toBeUndefined();
 });
 
+// Catches: a read of the copy by a relative or `~` path, as a session in a checkout of the cut's
+// repository makes one, that the case leaves out of skillReads, so every arm sends the base text
+// there; or one resolved otherwise than Oh My Pi's read resolves it.
+test("pathReadFile resolves a relative read against the copy's cwd and a ~ read against its home, as Oh My Pi's read does, and reads none whose directory the copy does not name", () => {
+  const cwd = "/home/agent/src/acme-skills";
+  const home = "/home/agent";
+  const c = { pathCopy: { dir: COPY, cwd, home } };
+  expect(pathReadFile(c, "skills/alpha/SKILL.md")).toBe("SKILL.md");
+  expect(pathReadFile(c, "./skills/alpha/references/x.md")).toBe("references/x.md");
+  expect(pathReadFile(c, "docs/../skills/alpha/SKILL.md")).toBe("SKILL.md");
+  expect(pathReadFile(c, "~/src/acme-skills/skills/alpha/SKILL.md")).toBe("SKILL.md");
+  // Oh My Pi takes a stray `:` or `@` off the start of a path before it resolves it.
+  expect(pathReadFile(c, ":~/src/acme-skills/skills/alpha/SKILL.md")).toBe("SKILL.md");
+  expect(pathReadFile(c, "@~/src/acme-skills/skills/alpha/SKILL.md")).toBe("SKILL.md");
+  // A selector, a directory, another copy, and a path that leaves the copy are still none.
+  expect(pathReadFile(c, "skills/alpha/SKILL.md:1-5")).toBeUndefined();
+  expect(pathReadFile(c, "skills/alpha/references/")).toBeUndefined();
+  expect(pathReadFile(c, "../eval/skills/alpha/SKILL.md")).toBeUndefined();
+  expect(pathReadFile(c, "skills/alpha/../beta/SKILL.md")).toBeUndefined();
+  // With no cwd, a relative read is none; with no home, a `~` read is none.
+  expect(pathReadFile({ pathCopy: { dir: COPY, home } }, "skills/alpha/SKILL.md")).toBeUndefined();
+  expect(
+    pathReadFile({ pathCopy: { dir: COPY, cwd } }, "~/src/acme-skills/skills/alpha/SKILL.md")
+  ).toBeUndefined();
+  // expandTilde's forms: `~` alone, `~/<rest>` kept as written, `~<rest>` joined (normalized).
+  expect(resolvedReadPath("~", { home })).toBe(home);
+  expect(resolvedReadPath("~/a//b", { home })).toBe("/home/agent/a//b");
+  expect(resolvedReadPath("~a/../b", { home })).toBe("/home/agent/b");
+  // An absolute path is kept as written; a URL is no path.
+  expect(resolvedReadPath("/srv/a/../b", { cwd })).toBe("/srv/a/../b");
+  expect(resolvedReadPath("https://example.com/skills/alpha/SKILL.md", { cwd })).toBeUndefined();
+});
+
 /** F1's case whose session also read alpha's SKILL.md by path in COPY (8), its first five lines
  *  there (10), and OTHER_COPY's SKILL.md (12): the results as Oh My Pi shows them, cut short. */
 function pathCase(id: string): Case {
@@ -422,6 +463,40 @@ test("a case whose session read its own copy by path loads with that read in ski
   const cases = loadCases(caseFile("path", [pathCase("c-path")]), base);
   expect(cases).toEqual([pathCase("c-path")]);
   expect(cases[0]?.pathCopy).toEqual({ dir: COPY });
+});
+
+test("a case whose copy names its cwd and home loads with a relative and a ~ read of it in skillReads, refuses either left out, and refuses a cwd or home that is no absolute directory", () => {
+  const base = alphaDir("base-path-resolved");
+  // The read of SKILL.md relative to the working directory, and a whole read of references/x.md
+  // under `~` in the place of the read with a selector.
+  const targets: Record<string, string> = {
+    path_skill: "skills/alpha/SKILL.md",
+    path_range: "~/src/acme-skills/skills/alpha/references/x.md",
+  };
+  const relative = pathCase("c-resolved");
+  relative.messages = relative.messages.map((message) => {
+    const call = message.content?.[0];
+    const target = targets[call?.id ?? ""];
+    if (message.role !== "assistant" || call === undefined || target === undefined) return message;
+    return { ...message, content: [{ ...call, arguments: { path: target } }] };
+  });
+  const resolved = {
+    ...relative,
+    skillReads: [2, 4, 8, 10],
+    pathCopy: { dir: COPY, cwd: "/home/agent/src/acme-skills", home: "/home/agent" },
+  };
+  expect(loadCases(caseFile("path-resolved", [resolved]), base)).toEqual([resolved]);
+  const left = { ...resolved, id: "c-resolved-left", skillReads: [2, 4, 8] };
+  const leftFile = caseFile("path-resolved-left", [left]);
+  expect(() => loadCases(leftFile, base)).toThrow(
+    `case c-resolved-left (${leftFile}:1): the read result at index 10 (~/src/acme-skills/skills/alpha/references/x.md) is not in skillReads`
+  );
+  for (const where of [{ cwd: "src/acme-skills" }, { home: "/home/agent/" }]) {
+    const bad = caseFile("path-where", [{ ...resolved, pathCopy: { dir: COPY, ...where } }]);
+    expect(() => loadCases(bad, base)).toThrow(
+      `case c-resolved (${bad}:1) is not a case: pathCopy.${Object.keys(where)[0]}: is not an absolute directory with no / at its end`
+    );
+  }
 });
 
 test("refuses a whole read by path of the copy that skillReads leaves out, a path read in skillReads it does not answer, and a copy that is no absolute directory", () => {

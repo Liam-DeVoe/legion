@@ -311,6 +311,21 @@ test("retries a 429 after the wait its retry-after asks for", async () => {
   expect(slept).toEqual([7000]);
 });
 
+test("outlasts a rate guard that refuses for 60 s though it asks for a 1 s wait", async () => {
+  // The guard looks back 60 s; it answers 429 with `retry-after: 1` until a minute has passed.
+  let waited = 0;
+  const { gateway, sent, slept } = world(() => {
+    waited = slept.reduce((sum, ms) => sum + ms, 0);
+    return waited < 60_000
+      ? refusal(429, "rate_limit_error", "priority guard: held back", { "retry-after": "1" })
+      : f5("text");
+  });
+  const reply = await gateway.send(BODY);
+  expect(reply.message.stop_reason).toBe("end_turn");
+  expect(waited).toBeGreaterThanOrEqual(60_000);
+  expect(sent.length).toBeLessThanOrEqual(GATEWAY_TRIES);
+});
+
 test("backs off on a 5xx: 1 s, then 2 s", async () => {
   const { gateway, sent, slept } = world((n) =>
     n === 1
