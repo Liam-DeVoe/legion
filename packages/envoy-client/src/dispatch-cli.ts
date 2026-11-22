@@ -252,8 +252,8 @@ export async function runDispatchCli(
   }
   // `dispatch login` logs the machine in, before any session of it exists: a person runs it in a
   // terminal, so it reads no host, no session and no envoy.json (`dispatch-commands/login.ts`).
-  // Unlike a call below, which runs on the token files once both are set with `DISPATCH_URL` and
-  // nothing beside them, it refuses while either token file is set, after its own `--help`.
+  // It refuses while either token file is set, after its own `--help`; `tokenFilesTarget` in
+  // `dispatch-config.ts` says when a call below runs on the files.
   if (argv[0] === "login") {
     return await loginCommand(argv.slice(1), env, {
       print,

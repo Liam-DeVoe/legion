@@ -59,17 +59,12 @@ interface Bounds {
 
 /** One row's client and what it is held to. */
 interface Cycle extends Bounds {
-  readonly name: string;
-  readonly life: number;
   readonly client: BrokerTokenClient;
   readonly trades: () => number;
   readonly refreshes: () => number;
   /** Run after each call: a row whose file an older build rewrote takes out what it keeps. */
   readonly afterCall?: () => Promise<void>;
 }
-
-/** A cycle as its builder makes it, before its client names it ({@link clientOf}). */
-type Unnamed = Omit<Cycle, "name">;
 
 /** What a row's client did over its span. */
 interface Counted {
@@ -78,15 +73,18 @@ interface Counted {
 }
 
 /**
- * Calls `cycle.client.token()` every {@link STEP_SECONDS} across {@link LIVES} lives from
- * `start`, and after each call holds the trades and the refreshes of the last life, and the time
- * since the last refresh, to the row's bounds, naming the call that broke one.
+ * Builds `client`'s cycle at an access-token life of `life` seconds from `start`, held to
+ * `bounds`, calls its client's `token()` every {@link STEP_SECONDS} across {@link LIVES} lives,
+ * and after each call holds the trades and the refreshes of the last life, and the time since the
+ * last refresh, to the row's bounds, naming the client, S and the call that broke one.
  */
-async function run(cycle: Cycle, start: number): Promise<Counted> {
-  const life = cycle.life * 1000;
+async function run(client: Client, life: number, start: number, bounds: Bounds): Promise<Counted> {
+  const cycle = await client.cycle(life, start, bounds);
+  const name = `${client.name} at S = ${life} s`;
+  const lifeMs = life * 1000;
   const traded: number[] = [];
   const refreshed: number[] = [];
-  for (let at = 0; at < LIVES * life; at += STEP_SECONDS * 1000) {
+  for (let at = 0; at < LIVES * lifeMs; at += STEP_SECONDS * 1000) {
     setSystemTime(new Date(start + at));
     await cycle.client.token();
     await cycle.afterCall?.();
@@ -96,20 +94,20 @@ async function run(cycle: Cycle, start: number): Promise<Counted> {
       if (last !== undefined) {
         expect(
           (at - last) / 1000,
-          `${cycle.name}: a refresh at ${at / 1000} s comes ${(at - last) / 1000} s after the last`
+          `${name}: a refresh at ${at / 1000} s comes ${(at - last) / 1000} s after the last`
         ).toBeGreaterThan(cycle.refreshGap);
       }
       refreshed.push(at);
     }
     const inLife = (times: readonly number[]): number =>
-      times.filter((time) => time > at - life).length;
+      times.filter((time) => time > at - lifeMs).length;
     expect(
       inLife(traded),
-      `${cycle.name}: the trades in the life up to the call at ${at / 1000} s`
+      `${name}: the trades in the life up to the call at ${at / 1000} s`
     ).toBeLessThanOrEqual(cycle.tradesPerLife);
     expect(
       inLife(refreshed),
-      `${cycle.name}: the refreshes in the life up to the call at ${at / 1000} s`
+      `${name}: the refreshes in the life up to the call at ${at / 1000} s`
     ).toBeLessThanOrEqual(cycle.refreshesPerLife);
   }
   cycle.client.close();
@@ -137,7 +135,7 @@ async function deviceLoginCycle(
   read: boolean,
   bounds: Bounds,
   olderBuild = false
-): Promise<Unnamed> {
+): Promise<Cycle> {
   const stub = stubDeviceLoginBroker({ accessSeconds: life });
   stops.push(stub.stop);
   const path = join(makeDirectory(), "legion", "device-login.json");
@@ -156,7 +154,6 @@ async function deviceLoginCycle(
     await writeFile(path, JSON.stringify(json), { mode: 0o600 });
   };
   return {
-    life,
     client: made.client,
     trades: () => stub.trades.length,
     refreshes: () => stub.refreshes.length,
@@ -174,7 +171,7 @@ async function deviceLoginCycle(
  * lapses. Its refreshes are the refresh grants the broker is sent: a person's client refreshes
  * nothing there, so its rows allow none.
  */
-async function personCycle(life: number, start: number, bounds: Bounds): Promise<Unnamed> {
+async function personCycle(life: number, start: number, bounds: Bounds): Promise<Cycle> {
   const ends = start + LIVES * life * 1000;
   const broker = stubBroker((trade) => {
     const left = Math.floor((ends - Date.now()) / 1000);
@@ -197,7 +194,6 @@ async function personCycle(life: number, start: number, bounds: Bounds): Promise
   const made = await brokerTokenClient(env, "ses_cycle", {});
   if (made === undefined) throw new Error("the factory made no client for a person");
   return {
-    life,
     client: made.client,
     trades: () => broker.trades.length,
     refreshes: () =>
@@ -209,42 +205,28 @@ async function personCycle(life: number, start: number, bounds: Bounds): Promise
 /** How long a row may take: every call is a turn of the event loop, and a trade a request. */
 const ROW_MS = 120_000;
 
-/** A row's client: its name in the row's title, and the builder of its cycle at a life from a
- *  start, held to the row's bounds. */
+/** A row's client: its name, which the row's title and `run`'s failures carry, and the builder of
+ *  its cycle at a life from a start, held to the row's bounds. */
 interface Client {
   readonly name: string;
   readonly cycle: (life: number, start: number, bounds: Bounds) => Promise<Cycle>;
 }
 
-/** The client `name` names, whose cycles `build` makes, each named for the client and its life. */
-function clientOf(
-  name: string,
-  build: (life: number, start: number, bounds: Bounds) => Promise<Unnamed>
-): Client {
-  return {
-    name,
-    cycle: async (life, start, bounds) => ({
-      name: `${name} at S = ${life} s`,
-      ...(await build(life, start, bounds)),
-    }),
-  };
-}
-
 /** A device login's read or plain client ({@link deviceLoginCycle}), whose file an older build
  *  rewrites where `olderBuild` is set. */
 function deviceLoginClient(read: boolean, olderBuild = false): Client {
-  return clientOf(
-    `a device login's ${read ? "read" : "plain"} client${olderBuild ? " whose file an older build rewrote" : ""}`,
-    (life, _start, bounds) => deviceLoginCycle(life, read, bounds, olderBuild)
-  );
+  return {
+    name: `a device login's ${read ? "read" : "plain"} client${olderBuild ? " whose file an older build rewrote" : ""}`,
+    cycle: (life, _start, bounds) => deviceLoginCycle(life, read, bounds, olderBuild),
+  };
 }
 
 const READ = deviceLoginClient(true);
 const PLAIN = deviceLoginClient(false);
-const PERSON_CLIENT = clientOf(
-  "a person's read client whose sign-in credential nears its end",
-  personCycle
-);
+const PERSON_CLIENT: Client = {
+  name: "a person's read client whose sign-in credential nears its end",
+  cycle: personCycle,
+};
 
 // Fifteen rows: each access-token life S against each of the three clients, with the bounds each
 // row states and the rule it follows. A token of S s renews after the corpus's moment m for S
@@ -292,8 +274,7 @@ test.each([
 ])(
   "$client.name trades and refreshes within its bounds at an access-token life of $life s",
   async ({ client, life, ...bounds }) => {
-    const start = Date.now();
-    await run(await client.cycle(life, start, bounds), start);
+    await run(client, life, Date.now(), bounds);
   },
   ROW_MS
 );
@@ -307,8 +288,8 @@ test(
   async () => {
     const start = Date.now();
     const bounds = { tradesPerLife: 2, refreshesPerLife: 2, refreshGap: -30 };
-    const plain = await run(await PLAIN.cycle(30, start, bounds), start);
-    const read = await run(await READ.cycle(30, start, bounds), start);
+    const plain = await run(PLAIN, 30, start, bounds);
+    const read = await run(READ, 30, start, bounds);
     expect(read.refreshes).toBeLessThanOrEqual(plain.refreshes);
   },
   ROW_MS
@@ -328,8 +309,7 @@ test.each([
 ])(
   "at an access-token life of 120 s $client.name trades and refreshes within its bounds",
   async ({ client, ...bounds }) => {
-    const start = Date.now();
-    await run(await client.cycle(120, start, bounds), start);
+    await run(client, 120, Date.now(), bounds);
   },
   ROW_MS
 );

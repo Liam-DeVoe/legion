@@ -9,9 +9,9 @@
 //
 // It is the one `dispatch` command that is no Dispatch tool: a person runs it in a terminal,
 // before any session exists, so it reads no host, no session and no envoy.json, only the
-// environment's broker settings. Unlike a Dispatch call, which runs on the command's token files
-// once both are set with `DISPATCH_URL` and nothing beside them (`tokenFilesTarget` in
-// `dispatch-config.ts`), it refuses while either file is set.
+// environment's broker settings. It refuses while either of the command's token files is set,
+// after its own `--help`; `tokenFilesTarget` in `dispatch-config.ts` says when a Dispatch call
+// runs on the files.
 
 import { hostname } from "node:os";
 import {

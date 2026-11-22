@@ -412,38 +412,20 @@ function wordsOf(named: string, copy: Copy, cwd: string): string {
 
 describe("the dispatch command's token files", () => {
   test("the token files refuse every setting beside them", async () => {
-    const broker = stubBroker(900);
+    // The broker's address is a name only: a trade needs AGENT_SECRETS_URL and an identity
+    // beside DISPATCH_URL, and no command here sets all three ("the stand-in broker gets no
+    // request" does).
+    const brokerUrl = "http://broker.test";
     // One stand-in Dispatch and listener for every row: a row sends nothing when neither hears
     // more than it had heard before the row ran.
     const dispatch = standInDispatch();
     const listener = standInListener();
-    // A trade needs AGENT_SECRETS_URL and an identity the broker takes, set together: here a
-    // kubernetes identity with the projected token it presents, beside DISPATCH_URL. No row below
-    // sets both, so this is the one case here whose broker check can fail: it fails if the files
-    // stop refusing.
-    const pod = copyFiles();
-    const projected = path.join(pod.dir, "projected");
-    writeFileSync(projected, `${fixtureSecret("proj")}\n`);
-    const brokerSet = await run(
-      ["projects"],
-      commandEnvironment(pod, dispatch.url, {
-        ENVOY_URL: listener.url,
-        AGENT_SECRETS_URL: broker.url,
-        AGENT_SECRETS_MACHINE_IDENTITY: "kubernetes",
-        AGENT_SECRETS_MACHINE_TOKEN_FILE: projected,
-      }),
-      pod.dir
-    );
-    expect(broker.trades).toEqual([]);
-    expect(brokerSet.code, brokerSet.stdout).toBe(2);
-    expect(brokerSet.stdout).toContain("AGENT_SECRETS_URL is set");
-    expect(brokerSet.stdout).toContain("AGENT_SECRETS_MACHINE_IDENTITY is set");
     // Each row's problems, so a failure names every row that fails rather than the first.
     const problems: string[] = [];
     for (const { row, named, change } of REFUSED) {
       const copy = copyFiles();
       const heard = dispatch.presented.length + listener.presented.length;
-      const changed = change({ copy, brokerUrl: broker.url });
+      const changed = change({ copy, brokerUrl });
       const cwd = changed.cwd ?? copy.dir;
       const env = commandEnvironment(copy, dispatch.url, {
         ENVOY_URL: listener.url,
@@ -472,7 +454,7 @@ describe("the dispatch command's token files", () => {
     // nothing.
     const copy = copyFiles();
     const together = REFUSED.filter(({ row }) => row !== "DISPATCH_BROKER_DPOP_KEY_FILE alone");
-    const changes = together.map(({ change }) => change({ copy, brokerUrl: broker.url }));
+    const changes = together.map(({ change }) => change({ copy, brokerUrl }));
     const cwd = changes.find((changed) => changed.cwd !== undefined)?.cwd ?? copy.dir;
     const env = commandEnvironment(
       copy,
@@ -567,6 +549,10 @@ describe("the dispatch command's token files", () => {
     const projected = path.join(copy.dir, "projected");
     writeFileSync(projected, `${fixtureSecret("proj")}\n`);
 
+    // The case where a trade could happen: AGENT_SECRETS_URL and an identity the broker takes,
+    // a kubernetes identity with the projected token it presents, beside DISPATCH_URL. Its
+    // broker check is what holds a Dispatch call beside the token files to trading nothing,
+    // so it comes first: it fails if the files stop refusing.
     const refused = await run(
       ["projects"],
       commandEnvironment(copy, dispatch.url, {
@@ -577,10 +563,10 @@ describe("the dispatch command's token files", () => {
       }),
       copy.dir
     );
+    expect([broker.trades, dispatch.presented, listener.presented]).toEqual([[], [], []]);
     expect(refused.code).toBe(2);
     expect(refused.stdout).toContain("AGENT_SECRETS_URL is set");
     expect(refused.stdout).toContain("AGENT_SECRETS_MACHINE_IDENTITY is set");
-    expect([broker.trades, dispatch.presented, listener.presented]).toEqual([[], [], []]);
 
     const env = commandEnvironment(copy, dispatch.url, { ENVOY_URL: listener.url });
     expect((await run(["projects"], env, copy.dir)).code).toBe(0);
@@ -598,10 +584,9 @@ describe("the dispatch command's token files", () => {
     // it nothing, so no device grant starts and no login is kept on the copy.
     const broker = stubDeviceLoginBroker();
     servers.push(broker);
-    const dispatch = standInDispatch();
     const copy = copyFiles();
     const loginFile = path.join(tempDir(), "legion", "device-login.json");
-    const env = commandEnvironment(copy, dispatch.url, {
+    const env = commandEnvironment(copy, "http://dispatch.test", {
       HOME: tempDir(),
       AGENT_SECRETS_URL: broker.url,
       AGENT_SECRETS_MACHINE_IDENTITY: "device-login",
@@ -637,12 +622,9 @@ describe("the dispatch command's token files", () => {
 
   test("a tool's dry run beside the token files prints the arguments", async () => {
     // Beside the settings the token files refuse, a dry run that does not ask Dispatch prints the
-    // arguments, as it does with Dispatch off. It returns before any request, so no stand-in here
-    // could hear one: neither the stand-in Dispatch, whose address the command needs, nor a
-    // broker, since a broker credential trades at its first request (`brokerCredential`).
-    const dispatch = standInDispatch();
+    // arguments, as it does with Dispatch off. It returns before any request.
     const copy = copyFiles();
-    const env = commandEnvironment(copy, dispatch.url, {
+    const env = commandEnvironment(copy, "http://dispatch.test", {
       AGENT_SECRETS_URL: "http://broker.test",
       AGENT_SECRETS_MACHINE_IDENTITY: "device-login",
     });
