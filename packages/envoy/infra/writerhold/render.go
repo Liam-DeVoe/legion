@@ -29,7 +29,7 @@ const natsContainer = "nats"
 
 // ImageRef is the image reference the StatefulSet pins for nats-server, parsed strictly as
 // <repository>:<major>.<minor>.<patch>[-<suffix>]@sha256:<64 hex>, for example
-// mirror.gcr.io/library/nats:2.15.1-alpine@sha256:2ae5…: the tag says which release runs, and the
+// docker.io/library/nats:2.15.1-alpine@sha256:2ae5…: the tag says which release runs, and the
 // digest which bytes. The binding compares each pod's running image with Digest and each server's
 // /varz version with Version.
 type ImageRef struct {

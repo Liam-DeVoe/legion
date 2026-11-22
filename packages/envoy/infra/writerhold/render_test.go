@@ -26,8 +26,9 @@ import (
 )
 
 // renderImage is the nats image the deployment's envoy-cluster program pins (Pulumi.prod.yaml
-// natsImage, at 32d9f0fa6a).
-const renderImage = "mirror.gcr.io/library/nats:2.15.1-alpine@sha256:2ae57dfba3063d5e25fecb75256118c0882a1a2d2cf7d0fba17a7c701df956f6"
+// natsImage, at 32d9f0fa6a), by its upstream's name, the one .github/ci-images.yaml's row of it
+// gives: the tag and digest the deployment pins, and no registry CI fetches from.
+const renderImage = "docker.io/library/nats:2.15.1-alpine@sha256:2ae57dfba3063d5e25fecb75256118c0882a1a2d2cf7d0fba17a7c701df956f6"
 
 // renderRevision is the fixture StatefulSet's status.updateRevision.
 const renderRevision = "envoy-nats-6d9c8b7f5"

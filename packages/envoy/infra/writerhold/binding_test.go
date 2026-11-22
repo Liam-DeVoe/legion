@@ -25,7 +25,7 @@ import (
 
 // renderImageID is the imageID the kubelet reports for a container started from renderImage: the
 // repository with the digest it pulled.
-const renderImageID = "mirror.gcr.io/library/nats@sha256:2ae57dfba3063d5e25fecb75256118c0882a1a2d2cf7d0fba17a7c701df956f6"
+const renderImageID = "docker.io/library/nats@sha256:2ae57dfba3063d5e25fecb75256118c0882a1a2d2cf7d0fba17a7c701df956f6"
 
 // bindingPod is hub pod i as the API server reports it once it runs: its revision label, and its
 // containers' statuses, the nats container's with imageID.
@@ -212,7 +212,7 @@ func TestHoldTheConfigurationBinding(t *testing.T) {
 		names  []string
 	}{
 		{"another image digest", func(o []runtime.Object) {
-			o[2].(*corev1.Pod).Status.ContainerStatuses[1].ImageID = "mirror.gcr.io/library/nats@sha256:" + strings.Repeat("f", 64)
+			o[2].(*corev1.Pod).Status.ContainerStatuses[1].ImageID = "docker.io/library/nats@sha256:" + strings.Repeat("f", 64)
 		}, []string{"pod envoy-nats-0 runs image sha256:" + strings.Repeat("f", 64) + ", not the pinned " + renderImage}},
 		{"another revision", func(o []runtime.Object) {
 			o[2].(*corev1.Pod).Labels[appsv1.ControllerRevisionHashLabelKey] = "envoy-nats-0000000"
@@ -257,12 +257,12 @@ func TestHoldTheConfigurationBinding(t *testing.T) {
 	})
 
 	for _, reference := range []string{
-		"mirror.gcr.io/library/nats:2.15.1-alpine",
-		"mirror.gcr.io/library/nats@sha256:2ae57dfba3063d5e25fecb75256118c0882a1a2d2cf7d0fba17a7c701df956f6",
-		"mirror.gcr.io/library/nats:latest@sha256:2ae57dfba3063d5e25fecb75256118c0882a1a2d2cf7d0fba17a7c701df956f6",
-		"mirror.gcr.io/library/nats:2.15@sha256:2ae57dfba3063d5e25fecb75256118c0882a1a2d2cf7d0fba17a7c701df956f6",
-		"mirror.gcr.io/library/nats:2.15.1-alpine@sha256:2ae57dfba3063d5e",
-		"mirror.gcr.io/library/nats:2.15.1-alpine@sha512:2ae57dfba3063d5e25fecb75256118c0882a1a2d2cf7d0fba17a7c701df956f6",
+		"docker.io/library/nats:2.15.1-alpine",
+		"docker.io/library/nats@sha256:2ae57dfba3063d5e25fecb75256118c0882a1a2d2cf7d0fba17a7c701df956f6",
+		"docker.io/library/nats:latest@sha256:2ae57dfba3063d5e25fecb75256118c0882a1a2d2cf7d0fba17a7c701df956f6",
+		"docker.io/library/nats:2.15@sha256:2ae57dfba3063d5e25fecb75256118c0882a1a2d2cf7d0fba17a7c701df956f6",
+		"docker.io/library/nats:2.15.1-alpine@sha256:2ae57dfba3063d5e",
+		"docker.io/library/nats:2.15.1-alpine@sha512:2ae57dfba3063d5e25fecb75256118c0882a1a2d2cf7d0fba17a7c701df956f6",
 		"localhost:5000/nats@sha256:2ae57dfba3063d5e25fecb75256118c0882a1a2d2cf7d0fba17a7c701df956f6",
 	} {
 		t.Run("the reference "+reference+" is UNKNOWN", func(t *testing.T) {
