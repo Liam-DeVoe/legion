@@ -313,7 +313,9 @@ func runCurrentCommand(t *testing.T, builds *twoBuilds, wants []int, args ...str
 func runPrinted(t *testing.T, builds *twoBuilds, want int, line string) string {
 	t.Helper()
 	command := exec.Command("sh", "-c", line)
-	command.Env = append(command.Environ(), "PATH="+filepath.Dir(builds.binary)+string(os.PathListSeparator)+os.Getenv("PATH"))
+	command.Env = append(command.Environ(),
+		"PATH="+filepath.Dir(builds.binary)+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"DISPATCH_SERVER_URL="+builds.current().url(""))
 	if filepath.Base(builds.binary) != "envoy-dispatch" {
 		t.Fatalf("this tree's server is built as %s, so no shell finds it as envoy-dispatch", builds.binary)
 	}
