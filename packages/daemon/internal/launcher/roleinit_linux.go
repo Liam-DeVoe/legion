@@ -83,13 +83,14 @@ func roleInit(stop context.Context, cfg RoleInitConfig) error {
 // role's own namespace once it is built, and makes it the directory the shim starts in. A
 // reviewer whose LEGION_WORKSPACE is its own clone of the issue (workspace.ReviewLocation of the
 // issue's workspace on the same volume) makes that clone from the issue's shared clone, or brings
-// the one there to the head, with the first compiled git and jj on its PATH, the image's own and
-// never their wrappers (workspace.ProvisionReviewClone): this runs as the reviewer's role-init,
-// after the launcher has answered the start, so the wait counts against the registration deadline
-// a launching role is given, which holds the pod's provisioning bound. Every other role covers the
-// volume's reviews directory with an empty filesystem of its own, as the roles directory is
-// covered, so no role but the reviewer sees or writes a reviewer's clone. A role told no
-// workspace, the controller, has none to ready.
+// the one there to the head the daemon gives it (workspace.ReviewHeadEnv), refusing to start
+// where the clone cannot stand there, with the first compiled git and jj on its PATH, the image's
+// own and never their wrappers (workspace.ProvisionReviewClone): this runs as the reviewer's
+// role-init, after the launcher has answered the start, so the wait counts against the
+// registration deadline a launching role is given, which holds the pod's provisioning bound.
+// Every other role covers the volume's reviews directory with an empty filesystem of its own, as
+// the roles directory is covered, so no role but the reviewer sees or writes a reviewer's clone. A
+// role told no workspace, the controller, has none to ready.
 func roleWorkspace(ctx context.Context, cfg RoleInitConfig) error {
 	dir := os.Getenv("LEGION_WORKSPACE")
 	if dir == "" {
@@ -98,7 +99,7 @@ func roleWorkspace(ctx context.Context, cfg RoleInitConfig) error {
 	issue := workspace.IssueWorkspace(dir)
 	switch {
 	case cfg.Role == string(claim.RoleReviewer) && issue != dir:
-		request, err := workspace.ReviewRequestFor(dir, os.Getenv("LEGION_ISSUE"), os.Getenv("LEGION_DEFAULT_BRANCH"))
+		request, err := workspace.ReviewRequestFor(dir, os.Getenv("LEGION_ISSUE"), os.Getenv("LEGION_DEFAULT_BRANCH"), os.Getenv(workspace.ReviewHeadEnv))
 		if err != nil {
 			return err
 		}

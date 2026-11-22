@@ -165,13 +165,14 @@ type Config struct {
 	// reads nothing, so a record names no session and no model, which is the API-only daemon and
 	// every test that reads no agent.
 	StepAgent func(ctx context.Context, tx pgx.Tx, agent claim.Token) StepAgent
-	// WorkspaceDir is the directory the runtime starts an issue's role processes in, the issue's
+	// WorkspaceDir is the directory the runtime starts an issue's role process in, that role's
 	// working copy, which the task of each start and resume of a phase's worker names (the working
-	// copy line of task and of resumeText). The daemon reads it from the runtime it runs
-	// (engineWorkspaceDir in internal/daemon), the one place each runtime puts that directory. Nil,
-	// or "" for an issue, names no directory, and the task names the branch alone: an API-only
-	// daemon and every test that runs no runtime.
-	WorkspaceDir func(record.Issue) string
+	// copy line of task and of resumeText): the issue's workspace for every role but the reviewer,
+	// and the reviewer's own clone of the issue for the reviewer. The daemon reads it from the
+	// runtime it runs (engineWorkspaceDir in internal/daemon), the one place each runtime puts that
+	// directory. Nil, or "" for an issue, names no directory, and the task names the branch alone:
+	// an API-only daemon and every test that runs no runtime.
+	WorkspaceDir func(record.Issue, claim.Role) string
 }
 
 // Engine interprets the table of each issue's walk (Walk: Table, or the table of its plan's line)

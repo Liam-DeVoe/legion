@@ -35,12 +35,14 @@ func (s Standing) String() string { return s.lines + s.owners }
 
 // WorkingCopy is the standing of a start of an issue with no plan rows, its working copy line
 // alone: ` Working copy: branch legion/<KEY>, directory <dir>.`, with the directory dir gives the
-// issue (Config.WorkspaceDir), and ` Working copy: branch legion/<KEY>.` where dir is nil or gives
-// none. The branch is the issue's (claim.IssueBranch), which its workspace's bookmark names.
-func WorkingCopy(issue record.Issue, dir func(record.Issue) string) Standing {
+// worker of the issue's phase (Config.WorkspaceDir, given RoleFor of issue.Phase: the reviewer's
+// own clone for the reviewer, the issue's workspace for every other role), and ` Working copy:
+// branch legion/<KEY>.` where dir is nil or gives none. The branch is the issue's
+// (claim.IssueBranch), which its workspace's bookmark names.
+func WorkingCopy(issue record.Issue, dir func(record.Issue, claim.Role) string) Standing {
 	where := ""
 	if dir != nil {
-		where = dir(issue)
+		where = dir(issue, RoleFor(issue.Phase))
 	}
 	if where == "" {
 		return Standing{lines: fmt.Sprintf(" %s: branch %s.", workingCopyLabel, claim.IssueBranch(issue.Key))}
@@ -101,7 +103,7 @@ func (e *Engine) standingPart(ctx context.Context, tx pgx.Tx, issue record.Issue
 
 // standingText is standingPart's text for the worker of issue's phase, from the walk w of its
 // run, the directory dir gives its working copy, and its phases rows, which only a step's text reads.
-func standingText(issue record.Issue, dir func(record.Issue) string, w Walk, rows []record.PhaseRow) (Standing, error) {
+func standingText(issue record.Issue, dir func(record.Issue, claim.Role) string, w Walk, rows []record.PhaseRow) (Standing, error) {
 	at := WorkingCopy(issue, dir)
 	if !w.Stored {
 		return at, nil

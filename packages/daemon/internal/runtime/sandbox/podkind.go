@@ -458,10 +458,11 @@ func roleHomesVolumes() []corev1.Volume {
 }
 
 // agentEnv tells each agent its tree, issue and workspace (roleWorkspace: the reviewer's own clone
-// for the reviewer, with the default branch its role-init checks that clone out at where origin
-// no longer holds the issue's branch), the issue key it stamps into its commits where the project
-// names its repository (LEGION_ISSUE_TRAILER, left out of an agent that stamps none), where its gh
-// reads its credentials, and uv's directories on the issue's volume.
+// for the reviewer, with the head the daemon gives it, which its role-init checks that clone out
+// at, where the spec names one, and the default branch it checks it out at where the daemon gives
+// no head and origin no longer holds the issue's branch), the issue key it stamps into its commits
+// where the project names its repository (LEGION_ISSUE_TRAILER, left out of an agent that stamps
+// none), where its gh reads its credentials, and uv's directories on the issue's volume.
 func (issuePod) agentEnv(l launch) []corev1.EnvVar {
 	var trailer, review []corev1.EnvVar
 	if l.spec.IssueTrailer != "" {
@@ -469,6 +470,9 @@ func (issuePod) agentEnv(l launch) []corev1.EnvVar {
 	}
 	if l.spec.Role == claim.RoleReviewer {
 		review = []corev1.EnvVar{{Name: "LEGION_DEFAULT_BRANCH", Value: l.spec.DefaultBranch}}
+		if l.spec.ReviewHead != "" {
+			review = append(review, corev1.EnvVar{Name: workspace.ReviewHeadEnv, Value: l.spec.ReviewHead})
+		}
 	}
 	return slices.Concat(
 		[]corev1.EnvVar{

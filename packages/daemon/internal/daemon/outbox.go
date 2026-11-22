@@ -3736,12 +3736,18 @@ func (r *outbox) ensureWorkspace(ctx context.Context, key string, repo ghrepo.Re
 }
 
 // ensureReviewClone makes key's reviewer's own clone (workspace.ProvisionReviewClone), or brings
-// the one there to the current head, at every reviewer launch on the daemon's host (the launch's
-// spec, specs.ensureReviewClone), after ensureWorkspace has made sure of the shared clone it is
+// the one there to head, the head of key's pull request the launch read from the store ("" where
+// it records none), at every reviewer launch on the daemon's host (the launch's spec,
+// specs.ensureReviewClone), after ensureWorkspace has made sure of the shared clone it is
 // cloned from. It takes the issue's turn, as a provision of the issue's workspace does, so it
 // never reads a shared clone that the issue's own provision is still making, and hands the clone
-// the repository's store lock and the checkout places a provision takes (provisionIn).
-func (r *outbox) ensureReviewClone(ctx context.Context, key string, repo ghrepo.Repository, defaultBranch string) error {
+// the repository's store lock and the checkout places a provision takes (provisionIn). A head the
+// shared clone lacks is fetched from GitHub, at the repository the issue's record names, straight
+// into a review clone made for it, with the read lease of the owner GitHub holds the repository
+// under now, minted only when that fetch runs, under the store lock, as provisionIn mints its own
+// (workspace.OriginWithToken); nothing of the shared clone's configuration is read by that fetch.
+// What the clone logs, a stale lock it removed or a clone it made again, is a warning.
+func (r *outbox) ensureReviewClone(ctx context.Context, key string, repo ghrepo.Repository, defaultBranch, head string) error {
 	if r.podsProvision() {
 		return nil
 	}
@@ -3753,6 +3759,17 @@ func (r *outbox) ensureReviewClone(ctx context.Context, key string, repo ghrepo.
 	if err != nil {
 		return fmt.Errorf("provision the review clone of %s: %w", key, err)
 	}
+	mint := func() (string, error) {
+		if r.tokens == nil {
+			return "", errors.New("supervise executor has no GitHub App token manager")
+		}
+		served := r.repositories.serving(repo)
+		lease, err := r.tokens.ReadToken(ctx, served.Owner())
+		if err != nil {
+			return "", fmt.Errorf("mint the read token for %s to fetch the head %s reviews: %w", served, key, err)
+		}
+		return lease.Token, nil
+	}
 	issue, releaseIssue := r.provisions.issues.take(located.Dir)
 	defer releaseIssue()
 	issue.Lock()
@@ -3760,9 +3777,10 @@ func (r *outbox) ensureReviewClone(ctx context.Context, key string, repo ghrepo.
 	store, releaseStore := r.provisions.stores.take(located.Clone)
 	defer releaseStore()
 	if err := r.provisionReview(ctx, workspace.ReviewRequest{
-		Clone: located.Clone, Dir: dir, Repo: repo, Issue: key, DefaultBranch: defaultBranch,
+		Clone: located.Clone, Dir: dir, Repo: repo, Issue: key, DefaultBranch: defaultBranch, Head: head,
+		Origin:    workspace.OriginWithToken(workspace.GitHubURL(repo), mint, r.stateDir),
 		StoreLock: store, CheckoutSlot: r.provisions.slot,
-		Log: func(line string) { r.log.Info("review clone: "+line, "issue", key) },
+		Log: func(line string) { r.log.Warn("review clone: "+line, "issue", key) },
 	}); err != nil {
 		return fmt.Errorf("provision the review clone of %s: %w", key, err)
 	}

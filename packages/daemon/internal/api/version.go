@@ -3233,9 +3233,10 @@ package api
 // issue's workspace, and its git runs no program a configuration names. Every launch of a reviewer
 // is told LEGION_WORKSPACE at that clone: under tmux `<state_dir>/reviews/<owner>/<repo>/<issue>`,
 // and in a pod `/legion/reviews/<owner>/<repo>/<issue>` (workspace.ReviewLocation), which the
-// reviewer's role-init makes or brings to the head before its shim starts there, refusing to
-// start the reviewer when the clone's HEAD is not that head. A pod's reviewer is also told
-// LEGION_DEFAULT_BRANCH, GIT_CONFIG_GLOBAL=/dev/null, GIT_CONFIG_NOSYSTEM=1 and two more
+// reviewer's role-init makes or brings to the head the daemon gives it (the pull request's head
+// it records) before its shim starts there, refusing to start the reviewer when the clone cannot
+// stand on that head. A pod's reviewer is also told LEGION_REVIEW_HEAD where the daemon records a
+// head, LEGION_DEFAULT_BRANCH, GIT_CONFIG_GLOBAL=/dev/null, GIT_CONFIG_NOSYSTEM=1 and two more
 // GIT_CONFIG pairs (core.fsmonitor=false, core.hooksPath=/dev/null), every one of them a name the
 // runtime owns; the image's git wrapper changes every git command of LEGION_ROLE=reviewer; and the
 // launcher's lock sweep and restore and the shim's release bundle map a review location back to

@@ -151,11 +151,12 @@ var runtimeOwned = func() map[string]bool {
 	}
 	// GIT_CONFIG_COUNT and each GIT_CONFIG_KEY_<n>/GIT_CONFIG_VALUE_<n> GitConfigEnv sets, and the
 	// reviewer's (gitConfigEnvFor): its two pairs more, no global or system configuration, and the
-	// default branch its role-init checks its own clone out at (agentEnv).
+	// head and the default branch its role-init checks its own clone out at (agentEnv).
 	for _, entry := range slices.Concat(GitConfigEnv(), gitConfigEnvFor(claim.RoleReviewer)) {
 		owned[entry.Name] = true
 	}
 	owned["LEGION_DEFAULT_BRANCH"] = true
+	owned[workspace.ReviewHeadEnv] = true
 	return owned
 }()
 

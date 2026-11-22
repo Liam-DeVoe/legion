@@ -871,14 +871,25 @@ next removal.
 The reviewer is the one role that works in no issue workspace. Its pane starts in a clone of its
 own at `<state_dir>/reviews/<owner>/<repo>/<issue, lowercased>`, which no other role's pane works
 in (`workspace.ProvisionReviewClone`). Every reviewer launch, after its issue's workspace, makes
-that clone or brings it to the head, under the issue's turn: a `git clone --no-checkout
---no-hardlinks` of the shared clone, which copies the object files rather than linking them, with
-origin's branches as the shared clone records them, origin set to GitHub, and a detached checkout
-of `legion/<ISSUE>` at origin, or of the default branch where origin has no such branch, with jj
-colocated in it. A clone that is already there gets those branches fetched again from the shared
-clone, with no network, and a `jj new` on the head. Its stale git locks are removed first, and the
-reviewer's earlier writes stay in a change of their own. The launch is refused, naming both
-commits, when the clone's `HEAD` is not that head afterwards. The shared clone's store lock is
+that clone or brings it to the head under review, under the issue's turn. That head is the head
+of the issue's pull request the daemon records, or, for an issue it records none for,
+`legion/<ISSUE>` at origin as the shared clone records it, else the default branch. A new clone is
+a `git clone --no-checkout --no-hardlinks --no-local` of the shared clone, which takes the objects
+through git's transport rather than as copies of the shared clone's files, so no
+`objects/info/alternates` the shared clone holds reaches it, with origin's branches as the shared
+clone records them, the head fetched from the shared clone by its id where no branch brings it,
+origin set to GitHub, and a detached checkout of the head, with jj colocated in it. Where the
+shared clone does not hold the head, the daemon fetches that commit from GitHub, at the issue's
+recorded repository, straight into the new clone, with the repository owner's read lease, and
+reads nothing of the shared clone's configuration for it. A clone that is already there gets
+those branches and the head fetched again from the shared clone, and a `jj new` on the head. Its
+stale git locks are removed first, and the reviewer's earlier writes stay in a change of their
+own. Two clones are made again instead, and the daemon logs a warning for each: one that holds an
+`objects/info/alternates` file, which is removed first, and one whose head the shared clone does
+not hold, which a new clone fetching that head from GitHub replaces once whole. The launch is
+refused, naming both commits, when neither the shared clone nor GitHub gives the head, leaving the
+clone there as it was, or when the clone's `HEAD` is not that head afterwards. The shared clone's
+store lock is
 held only while the clone or its fetch reads the shared clone, and the checkout takes one of the 16
 places. The clone is removed with the issue's workspace. It costs the disk one more copy of the
 repository's objects and one checkout.

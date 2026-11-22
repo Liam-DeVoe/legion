@@ -18,11 +18,16 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/reviewround"
 )
 
-// textEngine is stepEngine whose runtime places an issue's working copy at /work/<KEY>
-// (Config.WorkspaceDir).
+// textEngine is stepEngine whose runtime places an issue's working copy at /work/<KEY>, and the
+// reviewer's own clone of it at /reviews/<KEY> (Config.WorkspaceDir).
 func textEngine() *Engine {
 	engine := stepEngine(nil)
-	engine.cfg.WorkspaceDir = func(issue record.Issue) string { return "/work/" + issue.Key }
+	engine.cfg.WorkspaceDir = func(issue record.Issue, role claim.Role) string {
+		if role == claim.RoleReviewer {
+			return "/reviews/" + issue.Key
+		}
+		return "/work/" + issue.Key
+	}
 	return engine
 }
 
@@ -98,7 +103,8 @@ func withoutRoundsSentences(t *testing.T, pool *pgxpool.Pool, task string) strin
 	return cut
 }
 
-// The task each agent of an owner's plan is told names its working copy, its task and its step in
+// The task each agent of an owner's plan is told names its working copy (the reviewer's own clone
+// for the reviewer), its task and its step in
 // it, each step of the task in order and the report of each earlier step, and, last of what the
 // task composes, the task's text inside a fence, which only the reviewer's two sentences of the
 // review round follow: the reviewer of the task `implementer reviewer` reads the implementer's
@@ -111,6 +117,7 @@ func TestATaskNamesItsWorkingCopyItsStepAndTheReportsBeforeIt(t *testing.T) {
 	seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "reviewer")
 	const continued = "Continue root. Issue: LEGION-208. Phase: "
 	const working = " Working copy: branch legion/LEGION-208, directory /work/LEGION-208."
+	const reviewing = " Working copy: branch legion/LEGION-208, directory /reviews/LEGION-208."
 	const steps = " Steps: 1 implementer, 2 reviewer then Legion's retro and merge."
 	const text = "Build the widget."
 
@@ -121,7 +128,7 @@ func TestATaskNamesItsWorkingCopyItsStepAndTheReportsBeforeIt(t *testing.T) {
 
 	completes(t, pool, engine, claim.RoleImplementer, "implement", 1)
 	reviewer := daemonsLines(t, "reviewer", withoutRoundsSentences(t, pool, lastStart(t, pool, root.Key, claim.RoleReviewer)), text)
-	hasPrefix(t, "reviewer", reviewer, continued+"reviewing."+working+" Task: a. Step 2 of 2: reviewer."+steps+
+	hasPrefix(t, "reviewer", reviewer, continued+"reviewing."+reviewing+" Task: a. Step 2 of 2: reviewer."+steps+
 		" Step 1 (implementer) reported: implement version 1."+
 		" Handoff: implement version 1 (dispatch handoff-read --issue LEGION-208 --phase implement --version 1).")
 
@@ -135,7 +142,7 @@ func TestATaskNamesItsWorkingCopyItsStepAndTheReportsBeforeIt(t *testing.T) {
 	})
 
 	resumed := daemonsLines(t, "resumed reviewer", withoutRoundsSentences(t, pool, lastStart(t, pool, root.Key, claim.RoleReviewer)), text)
-	if want := continued + "reviewing." + working + " Task: a. Step 2 of 2: reviewer." + steps +
+	if want := continued + "reviewing." + reviewing + " Task: a. Step 2 of 2: reviewer." + steps +
 		" Step 1 (implementer) reported: implement version 1. Resume the existing phase work."; resumed != want {
 		t.Fatalf("the resumed reviewer's task before the owner's text = %q,\nwant %q", resumed, want)
 	}
@@ -278,6 +285,43 @@ func TestATaskOfAnIssueWithNoPlanRowsIsTodaysTextWithItsWorkingCopy(t *testing.T
 	}
 }
 
+// The reviewer's task names its own clone of the issue as its working copy, the directory its
+// runtime starts it in (Config.WorkspaceDir, given the reviewer's role), and never the issue's
+// shared workspace, which the tester's and the implementer's runs write; every other role's task
+// names the shared workspace. Each start of a phase's worker is told the working copy of that
+// phase's role, a promoted start's resume task as a transition's start task.
+func TestTheReviewersTaskNamesItsOwnCloneAsItsWorkingCopy(t *testing.T) {
+	for _, tc := range []struct {
+		at      phase.Phase
+		role    claim.Role
+		working string
+	}{
+		{phase.Reviewing, claim.RoleReviewer, " Working copy: branch legion/LEGION-208, directory /reviews/LEGION-208."},
+		{phase.Testing, claim.RoleTester, " Working copy: branch legion/LEGION-208, directory /work/LEGION-208."},
+		{phase.Implementing, claim.RoleImplementer, " Working copy: branch legion/LEGION-208, directory /work/LEGION-208."},
+	} {
+		t.Run(string(tc.role), func(t *testing.T) {
+			engine := textEngine()
+			pool := migratedPool(t)
+			root := stepRoot(t, pool, tc.at)
+			applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
+				issue, err := engine.store.Issue(ctx, tx, root.Key)
+				if err != nil {
+					return err
+				}
+				return engine.StartPromotedWorker(ctx, tx, *issue, tc.role)
+			})
+			task := lastStart(t, pool, root.Key, tc.role)
+			if want := "Continue root. Issue: LEGION-208. Phase: " + string(tc.at) + "." + tc.working; !strings.HasPrefix(task, want) {
+				t.Fatalf("the %s's task = %q,\nwant it to start %q", tc.role, task, want)
+			}
+			if tc.role == claim.RoleReviewer && strings.Contains(task, "/work/") {
+				t.Fatalf("the reviewer's task %q names the issue's shared workspace", task)
+			}
+		})
+	}
+}
+
 // taskReaders is what a step's worker reads to learn what its task's lines say: the composed
 // prompt of each role that works a step, the retro or the merge (rolePrompt), and the skills those
 // prompts send them to, legion-worker's with its references and legion-retro's.
@@ -319,7 +363,7 @@ func TestEachTaskLabelIsOneThePromptsName(t *testing.T) {
 	steps := []record.PlanStep{{Task: "a", Position: 1, Role: "implementer"}, {Task: "a", Position: 2, Role: "reviewer"}}
 	w := Walk{Stored: true, Task: "a", Text: "Build the widget.", Steps: steps, Line: []phase.Phase{phase.Implementing, phase.Reviewing, phase.Retro, phase.Merging}}
 	rows := []record.PhaseRow{{Role: claim.RoleImplementer, HandoffRecord: "implement-1", HandoffVersion: 1}}
-	at, err := standingText(issue, func(record.Issue) string { return "/work" }, w, rows)
+	at, err := standingText(issue, func(record.Issue, claim.Role) string { return "/work" }, w, rows)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -369,7 +413,7 @@ func TestEachTaskLabelIsOneThePromptsName(t *testing.T) {
 	for _, p := range []phase.Phase{phase.Retro, phase.Merging} {
 		after := issue
 		after.Phase = p
-		at, err := standingText(after, func(record.Issue) string { return "/work" }, w, rows)
+		at, err := standingText(after, func(record.Issue, claim.Role) string { return "/work" }, w, rows)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -399,7 +443,7 @@ func TestAStepsTaskPlacesTheOwnersTextLastInsideAFence(t *testing.T) {
 	steps := []record.PlanStep{{Task: "a", Position: 1, Role: "implementer"}, {Task: "a", Position: 2, Role: "reviewer"}}
 	w := Walk{Stored: true, Task: "a", Text: text, Steps: steps, Line: []phase.Phase{phase.Implementing, phase.Reviewing, phase.Retro, phase.Merging}}
 	rows := []record.PhaseRow{{Role: claim.RoleImplementer, HandoffRecord: "implement-1", HandoffVersion: 1}}
-	at, err := standingText(issue, func(record.Issue) string { return "/work" }, w, rows)
+	at, err := standingText(issue, func(record.Issue, claim.Role) string { return "/work" }, w, rows)
 	if err != nil {
 		t.Fatal(err)
 	}
