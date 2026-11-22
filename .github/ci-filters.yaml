@@ -2651,6 +2651,7 @@ envoy_go_race:
   - '!packages/envoy/internal/cipher/approval/**/*_test.go'
   - '!packages/envoy/internal/cipher/ciphertest/**/*_test.go'
   - '!packages/envoy/internal/cipher/config/**/*_test.go'
+  - '!packages/envoy/internal/cipher/dispatchread/**/*_test.go'
   - '!packages/envoy/internal/cipher/e2e/**/*_test.go'
   - '!packages/envoy/internal/cipher/enroll/**/*_test.go'
   - '!packages/envoy/internal/cipher/exchange/**/*_test.go'
