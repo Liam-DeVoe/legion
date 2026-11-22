@@ -2005,15 +2005,16 @@ export function legionPlanRatingLoneField(
  * role does not work report the commit the workspace stands on instead, the merger's reports the
  * head the merger merged, and a check report carries neither commit nor record (the look pushed
  * nothing), so all three are optional here, and the daemon requires each where it applies.
- * `verdict` is `approve` or `changes` for the reviewer's completion (`LEGION_REVIEWER_VERDICTS`,
- * `REVIEWER_VERDICT_REQUIRED`; contract 225, before which a reviewer's `pass` is read as approve
- * and its `fail` as changes), `pass`, `pending` or `fail` for a check report
- * (`CHECK_VERDICT_REQUIRED`), and the empty string for every other phase completion: one that
- * names a verdict is refused (`VERDICT_NOT_TAKEN`), since Dispatch's check states at the tested
- * head decide the testing phase. It stays a string on the wire, as the Go field is.
- * `testedCommit` is the reviewer's alone (contract 225; `VERDICT_ROLE_FORBIDDEN` from every other
- * role): the commit of the tester's pass its verdict carries to `commit`, where no commit since
- * that one changes code that runs. `wakeAt` is the check report's alone (contract 54): when the
+ * `verdict` is `approve` or `changes` for the completion of a review step, the reviewer's
+ * (`LEGION_REVIEWER_VERDICTS`, `REVIEWER_VERDICT_REQUIRED`; contract 225, before which a
+ * reviewer's `pass` is read as approve and its `fail` as changes), which the daemon takes only
+ * from the claim the step's record names (`VERDICT_CALLER_FORBIDDEN`), `pass`, `pending` or
+ * `fail` for a check report (`CHECK_VERDICT_REQUIRED`), and the empty string for every other phase
+ * completion: the tester's that names a verdict is refused (`VERDICT_NOT_TAKEN`), since Dispatch's
+ * check states at the tested head decide the testing phase, and every other role's
+ * (`VERDICT_ROLE_FORBIDDEN`), the architect's among them, whose acceptance is its `sign_off`. It
+ * stays a string on the wire, as the Go field is. No completion names the commit of a tester's
+ * pass. `wakeAt` is the check report's alone (contract 54): when the
  * checking agent asks to be woken for its next look, which a pending report on a look that is not
  * the check's last must name (`CHECK_WAKE_REQUIRED`) and which no other verdict and no phase
  * completion may carry (`CHECK_WAKE_UNEXPECTED`). It is a `LegionInstant`, not a `timestamp`:
@@ -2035,7 +2036,6 @@ export const LegionHandoffCompleteRequest = z
     summary: nonEmptyString,
     verdict: z.string(),
     commit: nonEmptyString.optional(),
-    testedCommit: nonEmptyString.optional(),
     handoffId: nonEmptyString.optional(),
     handoffVersion: z.number().int().positive().optional(),
     wakeAt: LegionInstant.optional(),
@@ -2056,19 +2056,20 @@ export const LegionHandoffCompleteRequest = z
  * contract (`REVIEWER_VERDICT_REQUIRED`). */
 export const LEGION_REVIEWER_VERDICTS = ["approve", "changes"] as const;
 
-/** `api.ReviewVerdictRequest`, the reviewer's verdict past review (`POST
- * /legion/v1/review-verdict`, contract 225): the round's recorded reviewer's `verdict` on
- * `commit`, the head its issue's pull request moved to while the issue stands in accepting, retro
- * or merging, with `testedCommit` where the verdict carries the tester's pass to that head, and
- * `summary`. It writes no handoff and ends no phase. The daemon refuses a caller that is not that
- * reviewer (`VERDICT_CALLER_FORBIDDEN`), an issue that does not stand past its review
- * (`VERDICT_NOT_PAST_REVIEW`) and a commit that is not the pull request's current head
- * (`VERDICT_HEAD_NOT_CURRENT`); it answers an empty object. */
+/** `api.ReviewVerdictRequest`, the verdict past review of the agent of a review step (`POST
+ * /legion/v1/review-verdict`, contract 225): its `verdict` on `commit`, the head its issue's pull
+ * request moved to while the issue stands in accepting, retro or merging, and `summary`. `issue`
+ * is the issue the verdict is for: the architect that ran a child's owner acceptance names it,
+ * since its grant is of its own issue, and the reviewer leaves it out, so the grant's issue is the
+ * one. It writes no handoff and ends no phase. The daemon refuses a caller that the record names
+ * the agent of no review step of that issue's task (`VERDICT_CALLER_FORBIDDEN`), an issue that does
+ * not stand past its review (`VERDICT_NOT_PAST_REVIEW`) and a commit that is not the pull
+ * request's current head (`VERDICT_HEAD_NOT_CURRENT`); it answers an empty object. */
 export const LegionReviewVerdictRequest = z.strictObject({
   grantId: nonEmptyString,
   verdict: z.enum(LEGION_REVIEWER_VERDICTS),
   commit: nonEmptyString,
-  testedCommit: nonEmptyString.optional(),
+  issue: nonEmptyString.optional(),
   summary: nonEmptyString,
 });
 

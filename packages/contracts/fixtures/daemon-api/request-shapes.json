@@ -1538,7 +1538,6 @@
       "planReason",
       "returnTo",
       "summary",
-      "testedCommit",
       "verdict",
       "wakeAt"
     ]
@@ -1626,8 +1625,8 @@
     "fieldPaths": [
       "commit",
       "grantId",
+      "issue",
       "summary",
-      "testedCommit",
       "verdict"
     ]
   },

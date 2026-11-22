@@ -788,12 +788,9 @@ type PhaseEntry struct {
 // body, handed to the next implementer, and the head it is of, whose code an approval approves.
 // The reviewer's verdict writes it (workflow's handoff): approve as approved and changes as
 // changes_requested, at the commit the verdict names, with the summary its completion carried as
-// the body; and TestedCommit, the commit of the tester's pass the verdict carries to Head, ""
-// where it carries none. A person's request for changes writes it too (workflow's review), at the
-// commit its webhook named. The state keeps a GitHub review's spelling, and TestedCommit is a key
-// of its own, because a daemon of the release before the reviewer's verdict reads this same
-// column: it decodes the column leniently, so it reads the state and the head as it always has and
-// skips the key it does not know.
+// the body. A person's request for changes writes it too (workflow's review), at the commit its
+// webhook named. The state keeps a GitHub review's spelling, because a daemon of the release
+// before the reviewer's verdict reads this same column as it always has.
 //
 // ToldStuckHead and ToldStuckState are the daemon's own mark beside it rather than anything the
 // decision said: the head and GitHub's merge state an approval of this decision was last reported
@@ -810,7 +807,6 @@ type ReviewDecision struct {
 	State          string     `json:"state"`
 	Body           string     `json:"body,omitempty"`
 	Head           string     `json:"head,omitempty"`
-	TestedCommit   string     `json:"testedCommit,omitempty"`
 	ToldStuckHead  string     `json:"toldStuckHead,omitempty"`
 	ToldStuckState MergeState `json:"toldStuckState,omitempty"`
 }

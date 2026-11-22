@@ -323,11 +323,13 @@ const schemas: Record<string, z.ZodType> = {
   // case "the rated completion the daemon reads parses under the contract's names" below.
   "handoff-complete-request-rated.json": LegionHandoffCompleteRequest,
   // `api.HandoffCompleteRequest` as the reviewer's completion of reviewing sends it (contract
-  // 225): its verdict approve on the head its record names, carrying the tester's pass from
-  // `testedCommit`. Written by `internal/api`'s TestReviewerVerdictBodiesGolden, with the two
-  // below: the reviewer's verdict past review (`api.ReviewVerdictRequest`) and its empty answer.
+  // 225): its verdict approve on the head its record names. Written by `internal/api`'s
+  // TestReviewerVerdictBodiesGolden, with the three below: the reviewer's verdict past review
+  // (`api.ReviewVerdictRequest`), the owner's, which names the issue it is for, and their empty
+  // answer.
   "handoff-complete-request-reviewer.json": LegionHandoffCompleteRequest,
   "review-verdict-request.json": LegionReviewVerdictRequest,
+  "review-verdict-request-owner.json": LegionReviewVerdictRequest,
   "review-verdict.json": LegionEmptyResponse,
   // The controller's side review: its naming of a side reviewer
   // (`api.PullRequestReviewerRequest`) and the verdict it relays from that reviewer

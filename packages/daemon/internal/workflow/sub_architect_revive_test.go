@@ -130,8 +130,12 @@ var reviewerApproves = reviveMove{
 	},
 	apply: func(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string) {
 		t.Helper()
+		reviewer, err := claim.NewToken("legion", key, claim.RoleReviewer)
+		if err != nil {
+			t.Fatalf("the reviewer token of %s: %v", key, err)
+		}
 		if result := applyFacts(t, pool, engine)("approved-"+key, intake.HandoffComplete{Generation: 1, Issue: key, Role: claim.RoleReviewer,
-			Claim: "review-claim", Summary: "approved", Verdict: "approve", Commit: headOne, HandoffRecord: "review-" + key, HandoffVersion: 1}); result.Refusal != nil {
+			Claim: reviewer, Summary: "approved", Verdict: "approve", Commit: headOne, HandoffRecord: "review-" + key, HandoffVersion: 1}); result.Refusal != nil {
 			t.Fatalf("the reviewer's approval of %s was refused: %+v", key, result.Refusal)
 		}
 	},

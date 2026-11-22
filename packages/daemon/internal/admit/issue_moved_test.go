@@ -981,6 +981,7 @@ func TestTheRecordKeepsWhenAnIssueLastMoved(t *testing.T) {
 					t.Fatalf("seed the %s's row: %v", row.Role, err)
 				}
 			}
+			seedReviewerStep(t, tx, issueKey, "review-claim")
 		})
 		before := movedAt(t, pool, issueKey)
 		if before.IsZero() {

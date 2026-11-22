@@ -55,7 +55,7 @@ func (rig *verdictRig) mergeState(t *testing.T) string {
 func (rig *verdictRig) noCompare(t *testing.T) {
 	t.Helper()
 	if _, events := rig.github.recorded(); slices.ContainsFunc(events, func(e string) bool { return strings.HasPrefix(e, "compared") }) {
-		t.Fatalf("GitHub saw %v, want no compare call: the carry reads the reviewer's testedCommit, never a diff", events)
+		t.Fatalf("GitHub saw %v, want no compare call: the carry reads the reviewer's tested commit, never a diff", events)
 	}
 }
 
@@ -71,18 +71,16 @@ func (rig *verdictRig) nothingWrittenOn(t *testing.T, head string) {
 	}
 }
 
-// approveCarrying is the reviewer's completion of reviewing approving commit, carrying the
-// tester's pass at tested ("" for none).
+// approveCarrying is the reviewer's completion of reviewing approving commit; the tester's pass at
+// tested is no longer anything a completion carries.
 func approveCarrying(commit, tested string, n int) intake.HandoffComplete {
-	fact := reviewerVerdict("approve", commit, n)
-	fact.TestedCommit = tested
-	return fact
+	return reviewerVerdict("approve", commit, n)
 }
 
-// verdictPastReview is the recorded reviewer's verdict past review at commit, carrying the tester's
-// pass at tested ("" for none), as the review-verdict route queues it.
+// verdictPastReview is the recorded reviewer's verdict past review at commit, as the review-verdict
+// route queues it; the tester's pass at tested is no longer anything a verdict carries.
 func verdictPastReview(word, commit, tested string) intake.ReviewVerdict {
-	return intake.ReviewVerdict{Issue: "CAPTURE-1", Claim: "review-claim", Verdict: word, Commit: commit, TestedCommit: tested, Summary: "read the push"}
+	return intake.ReviewVerdict{Issue: "CAPTURE-1", Claim: captureReviewer, Verdict: word, Commit: commit, Summary: "read the push"}
 }
 
 // testerPassAt fails the test unless CAPTURE-1's tester row holds its pass at commit, or no pass at
@@ -99,10 +97,10 @@ func testerPassAt(t *testing.T, pool *store.Pool, commit string) {
 }
 
 // C2's carry, on CAPTURE-1's legion/ head with the tester's pass recorded at code (H1), in
-// reviewing. A push to code-2 (H2) and the reviewer's approve with commit H2 and testedCommit H1
+// reviewing. A push to code-2 (H2) and the reviewer's approve with commit H2 and tested commit H1
 // keep the tester's pass at H2 and write success there, and the fake GitHub records no compare
-// call. After a push to code-3 (H3), an approve with commit H3 and no testedCommit, or with
-// testedCommit code-0 (H0), a commit that is not the tester's, carries no pass: it moves the issue
+// call. After a push to code-3 (H3), an approve with commit H3 and no tested commit, or with
+// tested commit code-0 (H0), a commit that is not the tester's, carries no pass: it moves the issue
 // back to testing and writes nothing on H3. H3's approve is past review when it follows H2's
 // settled round (the review-verdict call), and the reviewer's completion when the push to H3 came
 // in reviewing; both carry by the one rule.
@@ -120,7 +118,7 @@ func TestLegionVerdictCarry(t *testing.T) {
 		return rig
 	}
 
-	t.Run("testedCommit H1 carries the tester's pass to H2", func(t *testing.T) {
+	t.Run("tested commit H1 carries the tester's pass to H2", func(t *testing.T) {
 		rig := carried(t)
 		if runs := rig.github.legionRuns("code-2"); len(runs) != 1 || runs[0].Conclusion != "success" {
 			t.Fatalf("legion-verdict runs on code-2 = %+v, want one concluding success", runs)
@@ -132,7 +130,7 @@ func TestLegionVerdictCarry(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		tested string
-	}{{"no testedCommit", ""}, {"testedCommit H0", "code-0"}} {
+	}{{"no tested commit", ""}, {"tested commit H0", "code-0"}} {
 		t.Run("past review, after a push to H3, an approve naming "+tc.name+" carries no pass", func(t *testing.T) {
 			rig := carried(t)
 			rig.pushedTo(t, "code-2", "code-3")

@@ -49,7 +49,7 @@ func reviewAt(id int64, state, head string) intake.HandoffComplete {
 	if state == "changes_requested" {
 		verdict = "changes"
 	}
-	fact := reviewerVerdict(verdict, head, "")
+	fact := reviewerVerdict(verdict, head)
 	fact.Summary, fact.HandoffRecord, fact.HandoffVersion = "the review", "review-"+strconv.FormatInt(id, 10), int(id)
 	return fact
 }

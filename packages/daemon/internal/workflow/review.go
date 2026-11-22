@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/verdict"
@@ -723,10 +724,9 @@ func (e *Engine) review(ctx context.Context, tx pgx.Tx, fact intake.PullRequestR
 
 // decisionOf is the round's decision the reviewer's verdict writes on its row (handoff): approve
 // as approved and changes as changes_requested, at the commit the verdict names, the head the
-// reviewer reviewed, with the summary its completion carried as the body and the commit of the
-// tester's pass the verdict carries to that head ("" for none); nil for no verdict, which decides
-// nothing and leaves the round stuck (stuckUndecided). The state keeps a GitHub review's
-// spelling, which a daemon of the release before the verdict reads in the same column
+// reviewer reviewed, with the summary its completion carried as the body; nil for no verdict,
+// which decides nothing and leaves the round stuck (stuckUndecided). The state keeps a GitHub
+// review's spelling, which a daemon of the release before the verdict reads in the same column
 // (record.ReviewDecision).
 func decisionOf(fact intake.HandoffComplete) *record.ReviewDecision {
 	var state string
@@ -738,7 +738,7 @@ func decisionOf(fact intake.HandoffComplete) *record.ReviewDecision {
 	default:
 		return nil
 	}
-	return &record.ReviewDecision{State: state, Body: fact.Summary, Head: fact.Commit, TestedCommit: fact.TestedCommit}
+	return &record.ReviewDecision{State: state, Body: fact.Summary, Head: fact.Commit}
 }
 
 // The fact that wrote a review-stuck notice, its summary. The architect prompt
@@ -1039,7 +1039,7 @@ func (e *Engine) settleRound(ctx context.Context, tx pgx.Tx, issue record.Issue,
 		// approved, and an approve beside that request's reason would tell the implementer the
 		// opposite of what sent the work back.
 		handoff := row
-		own, err := e.reviewerVerdictAt(ctx, tx, issue.Key, pr, row.Decision.Head)
+		own, err := e.reviewerVerdictAt(ctx, tx, issue, pr, row.Decision.Head)
 		if err != nil {
 			return false, err
 		}
@@ -1283,40 +1283,186 @@ func (e *Engine) askMergeStateFor(ctx context.Context, tx pgx.Tx, pr *record.Pul
 	return nil
 }
 
-// recordVerdict records the verdict of issue's reviewer, claim by, on pr at commit, with the
-// commit of the tester's pass it carries there ("" for none): the row the writer of legion-verdict
-// reads a Legion head's reviewer's verdict from (store.Verdict, the daemon's writeVerdict). The
-// round's decision (record.PhaseRow.Decision) cannot be that row, since a person's request for
-// changes replaces it, and a person's later approval of the same head lifts that refusal and
-// leaves the reviewer's approve to write success again (spec R4). A pull request not recorded yet
-// records nothing, since there is no head to write on.
-func (e *Engine) recordVerdict(ctx context.Context, tx pgx.Tx, issue string, pr *record.PullRequest, by claim.Token, word, commit, tested string) error {
+// reviewStep is one review step of an issue's task, a step of the type review (plan.TypeReview):
+// its place, the phase it runs as, and its agent (stepAgent), "" where none is known. In this
+// release the review steps are the reviewer's and the owner's acceptance (plan.BuiltinRoles).
+type reviewStep struct {
+	place record.StepPlace
+	at    phase.Phase
+	agent claim.Token
+}
+
+// reviewSteps is each review step of w's task, the walk of issue's run, in the task's order, with
+// its agent (stepAgent).
+func (e *Engine) reviewSteps(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk) ([]reviewStep, error) {
+	var steps []reviewStep
+	for i, step := range w.Steps {
+		if step.Type != plan.TypeReview || i >= len(w.Line) {
+			continue
+		}
+		place := record.TaskPlace{Kind: record.PlaceStep, Position: i + 1}.StepPlace(w.Task)
+		agent, err := e.stepAgent(ctx, tx, issue, place, w.Line[i])
+		if err != nil {
+			return nil, err
+		}
+		steps = append(steps, reviewStep{place: place, at: w.Line[i], agent: agent})
+	}
+	return steps, nil
+}
+
+// stepAgent is the agent of the review step at place of issue's task, which runs as at: the claim
+// the latest start of that place records (record.StepStart.Agent: the start writes the phase
+// worker's claim, stepClaim, and for the owner's acceptance the architect that owns the issue,
+// acceptingAgent). A reviewer's step no start recorded an agent of started under the release
+// before the daemon recorded each step's start, and can still be at work when this release
+// deploys, so its agent is the issue's reviewer claim, the claim that step's role runs under. Any
+// other step no start recorded has no agent, "".
+func (e *Engine) stepAgent(ctx context.Context, tx pgx.Tx, issue record.Issue, place record.StepPlace, at phase.Phase) (claim.Token, error) {
+	start, err := e.store.StepStarts(ctx, tx, issue.Key, place)
+	if err != nil || start.Agent != "" || at != phase.Reviewing {
+		return claim.Token(start.Agent), err
+	}
+	return stepClaim(issue, issue.Key, claim.RoleReviewer)
+}
+
+// stepOfAgent is the review step of steps whose record names agent its agent, and false where none
+// does. No claim is the agent of two steps of one task: each step's agent is its own role's claim.
+func stepOfAgent(steps []reviewStep, agent claim.Token) (reviewStep, bool) {
+	i := slices.IndexFunc(steps, func(step reviewStep) bool { return step.agent != "" && step.agent == agent })
+	if i < 0 {
+		return reviewStep{}, false
+	}
+	return steps[i], true
+}
+
+// agentsOf names the agent of each of steps, for a refusal that says whose verdict the daemon
+// takes, "no claim yet" for a step with none.
+func agentsOf(steps []reviewStep) string {
+	if len(steps) == 0 {
+		return "its task has no review step"
+	}
+	named := make([]string, 0, len(steps))
+	for _, step := range steps {
+		agent := string(step.agent)
+		if agent == "" {
+			agent = "no claim yet"
+		}
+		named = append(named, fmt.Sprintf("step %d, run in %s: %s", step.place.Place, step.at, agent))
+	}
+	return "its review steps' agents are " + strings.Join(named, "; ")
+}
+
+// passed says whether step has passed on w, the walk of issue's run: its place stands before the
+// place issue stands at, as every step's does in the retro and the merge. The step issue stands in
+// has not passed: its own agent's completion or request decides it at the head it stands at.
+func (step reviewStep) passed(w Walk, issue record.Issue) bool {
+	stands, ok := w.PlaceOf(record.StandsAt(issue))
+	if !ok {
+		return false
+	}
+	return stands.Kind != record.PlaceStep || step.place.Place < stands.Position
+}
+
+// reviewStepRefusal is the refusal of fact, a completion that carries a verdict, where the step
+// issue stands in is a review step (plan.TypeReview) whose agent (stepAgent) is another claim than
+// fact's: VERDICT_CALLER_FORBIDDEN (spec R5: the daemon takes a review step's verdict only from the
+// claim that runs that step, as its step record names it). A step with no agent names no claim the
+// verdict may come from. nil where the claim is the step's agent, or the issue stands in no review
+// step.
+func (e *Engine) reviewStepRefusal(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.HandoffComplete) (*intake.Refusal, error) {
+	w, err := e.walk(ctx, tx, issue)
+	if err != nil {
+		return nil, err
+	}
+	place, role, typ, ok := placeOnWalk(w, issue.Phase)
+	if !ok || typ != plan.TypeReview {
+		return nil, nil
+	}
+	agent, err := e.stepAgent(ctx, tx, issue, place, issue.Phase)
+	if err != nil || agent == fact.Claim {
+		return nil, err
+	}
+	named := "no claim"
+	if agent != "" {
+		named = "claim " + string(agent)
+	}
+	return &intake.Refusal{Status: 403, Code: "VERDICT_CALLER_FORBIDDEN", Message: fmt.Sprintf(
+		"the verdict of step %d of %s, the %s's, is taken only from the claim its step record names as its agent, %s, and this completion is claim %s's; nothing was recorded",
+		place.Place, issue.Key, role, named, fact.Claim)}, nil
+}
+
+// recordAcceptance records the owner's acceptance as the verdict of its review step (spec R5):
+// by's sign_off as approve, and its request_backward_move as changes, word either, at the head the
+// record holds for issue's pull request pr, which is the head the owner accepted or sent back. An
+// issue that does not stand in accepting, a request that names no claim, a pull request not
+// recorded or at no head, and a tree that lingers, whose request changes nothing, record nothing.
+func (e *Engine) recordAcceptance(ctx context.Context, tx pgx.Tx, issue record.Issue, by claim.Token, word store.VerdictWord, pr *record.PullRequest) error {
+	if issue.Phase != phase.Accepting || by == "" || pr == nil || pr.HeadSHA == "" {
+		return nil
+	}
+	if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers {
+		return err
+	}
+	return e.recordStepVerdict(ctx, tx, issue, pr, phase.Accepting, by, string(word), pr.HeadSHA)
+}
+
+// recordStepVerdict records the verdict of the review step issue runs at at on the walk of its run,
+// by the claim by, on pr at commit: the row the writer of legion-verdict reads a Legion head's review
+// step's verdict from (store.Verdict, keyed by the step's task and place). The round's decision
+// (record.PhaseRow.Decision) cannot be that row, since a person's request for changes replaces it,
+// and a person's later approval of the same head lifts that refusal and leaves the reviewer's
+// approve to write success again (spec R4). A pull request not recorded yet records nothing, since
+// there is no head to write on, and neither does a phase the walk runs no review step at.
+func (e *Engine) recordStepVerdict(ctx context.Context, tx pgx.Tx, issue record.Issue, pr *record.PullRequest, at phase.Phase, by claim.Token, word, commit string) error {
 	if pr == nil {
 		return nil
 	}
+	w, err := e.walk(ctx, tx, issue)
+	if err != nil {
+		return err
+	}
+	place, _, typ, ok := placeOnWalk(w, at)
+	if !ok || typ != plan.TypeReview {
+		return nil
+	}
+	return e.recordVerdict(ctx, tx, issue.Key, pr, place, by, word, commit)
+}
+
+// recordVerdict records by's verdict word of the review step at place of issue's task on pr at
+// commit (recordStepVerdict, reviewVerdict).
+func (e *Engine) recordVerdict(ctx context.Context, tx pgx.Tx, issue string, pr *record.PullRequest, place record.StepPlace, by claim.Token, word, commit string) error {
 	repository, err := ghrepo.Parse("the repository of "+issue+"'s pull request", pr.Repo)
 	if err != nil {
 		return err
 	}
 	_, err = store.RecordVerdictTx(ctx, tx, store.Verdict{Repository: repository, Number: pr.Number, Head: commit, Issue: issue,
-		Verdict: store.VerdictWord(word), TestedCommit: tested, Session: string(by), RecordedAt: e.now()})
+		Task: place.Task, Step: place.Place, Verdict: store.VerdictWord(word), Session: string(by), RecordedAt: e.now()})
 	return err
 }
 
-// reviewerVerdictAt is the verdict issue's reviewer recorded on pr at commit (recordVerdict), ""
-// where none is recorded or pr is not recorded yet. A round's decision can be a person's request
-// for changes, which replaces the reviewer's (record.PhaseRow.Decision), so the move a rejected
-// round makes reads this row to tell whether the reviewer's own verdict rejected it (settleRound).
-func (e *Engine) reviewerVerdictAt(ctx context.Context, tx pgx.Tx, issue string, pr *record.PullRequest, commit string) (store.VerdictWord, error) {
+// reviewerVerdictAt is the verdict issue's reviewer's step recorded on pr at commit
+// (recordStepVerdict), "" where none is recorded, pr is not recorded yet, or the walk runs no step
+// in reviewing. A round's decision can be a person's request for changes, which replaces the
+// reviewer's (record.PhaseRow.Decision), so the move a rejected round makes reads this row to tell
+// whether the reviewer's own verdict rejected it (settleRound).
+func (e *Engine) reviewerVerdictAt(ctx context.Context, tx pgx.Tx, issue record.Issue, pr *record.PullRequest, commit string) (store.VerdictWord, error) {
 	if pr == nil || commit == "" {
 		return "", nil
 	}
-	repository, err := ghrepo.Parse("the repository of "+issue+"'s pull request", pr.Repo)
+	w, err := e.walk(ctx, tx, issue)
 	if err != nil {
 		return "", err
 	}
-	given, found, err := store.VerdictTx(ctx, tx, repository, pr.Number, commit)
-	if err != nil || !found || given.Issue != issue {
+	place, _, _, ok := placeOnWalk(w, phase.Reviewing)
+	if !ok {
+		return "", nil
+	}
+	repository, err := ghrepo.Parse("the repository of "+issue.Key+"'s pull request", pr.Repo)
+	if err != nil {
+		return "", err
+	}
+	given, found, err := store.StepVerdictTx(ctx, tx, repository, pr.Number, commit, place.Task, place.Place)
+	if err != nil || !found || given.Issue != issue.Key {
 		return "", err
 	}
 	return given.Verdict, nil

@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -37,13 +38,14 @@ import (
 // phase (HANDOFF_NOT_NEW). The implementer's completion of implementing is also held to an open
 // pull request on its branch, or a merged one recorded (implementationPullRequest:
 // HANDOFF_NO_PULL_REQUEST). A check report carries no commit and no record (nothing was pushed or
-// written) and a Verdict of pass, pending or fail; a reviewer's completion a Verdict of approve or
-// changes (reviewerVerdictOf) on the head its Commit names (VERDICT_COMMIT_REQUIRED). No other
-// phase completion carries a verdict (VERDICT_NOT_TAKEN, CheckStatesContract): Dispatch's check
-// states at the tested head decide the testing phase, and the tester's completion names the test
-// record whose check states serial the move waits for (handoffRecord). TestedCommit is the
-// reviewer's alone (VERDICT_ROLE_FORBIDDEN from every other role): the commit of the tester's pass
-// that its verdict carries to Commit.
+// written) and a Verdict of pass, pending or fail. A phase completion carries a Verdict only where
+// its step is of the type review (stepRoles): the reviewer's, approve or changes
+// (reviewerVerdictOf), on the head its Commit names (VERDICT_COMMIT_REQUIRED), which the workflow
+// takes only from the claim the step's record names (VERDICT_CALLER_FORBIDDEN). A testing step's
+// completion carries none (VERDICT_NOT_TAKEN, CheckStatesContract): Dispatch's check states at the
+// tested head decide the testing phase, and the tester's completion names the test record whose
+// check states serial the move waits for (handoffRecord). Every other role's verdict is refused
+// VERDICT_ROLE_FORBIDDEN, the architect's among them: the owner's acceptance is its sign_off.
 // WakeAt is the check report's alone: on a pending it is when the checking agent asks to be woken
 // for its next look, which no other verdict and no phase completion carries (checkReport). It is a
 // pointer so that a report naming no time is told from one naming a time at all: with the field
@@ -71,7 +73,6 @@ type HandoffCompleteRequest struct {
 	Summary        string     `json:"summary"`
 	Verdict        string     `json:"verdict"`
 	Commit         string     `json:"commit,omitempty"`
-	TestedCommit   string     `json:"testedCommit,omitempty"`
 	HandoffID      string     `json:"handoffId,omitempty"`
 	HandoffVersion int        `json:"handoffVersion,omitempty"`
 	WakeAt         *time.Time `json:"wakeAt,omitempty"`
@@ -158,10 +159,10 @@ func (a *completionAnswer) answered() int {
 // completion — which a tester's plugin below CheckStatesContract still sends with pass or fail, as
 // a check report names a verdict — would be recorded as a report on production nobody made. A
 // phase completion is held to its commit (the implementer's and the merger's, and the tester's,
-// the head it tested: TESTED_HEAD_REQUIRED), the Dispatch handoff
-// record a file-backed phase ends with (handoffRecord), the refusal of a verdict
-// (VERDICT_NOT_TAKEN), the wake no phase carries (CHECK_WAKE_UNEXPECTED), the
-// run and the phase entry its claim serves, the implementer's in implementing to an open pull
+// the head it tested: TESTED_HEAD_REQUIRED), the Dispatch handoff record a file-backed phase ends
+// with (handoffRecord), the refusal of a verdict where the completion's step takes none
+// (VERDICT_NOT_TAKEN, VERDICT_ROLE_FORBIDDEN), the wake no phase carries (CHECK_WAKE_UNEXPECTED),
+// the run and the phase entry its claim serves, the implementer's in implementing to an open pull
 // request on its branch or a merged one recorded (implementationPullRequest), and one of a phase
 // its role does not run is refused HANDOFF_NOT_CURRENT_PHASE: by the entry fence (entryFence),
 // before the fact, when the entry its claim serves differs from the role's phases row, and
@@ -211,15 +212,6 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	// and answer from different decisions — a run taken before a delivery was confirmed beside
 	// the entry that confirmation left.
 	c := machine.Claim()
-	// testedCommit is the reviewer's word alone, the commit of the tester's pass its verdict
-	// carries to the head it reviewed, so it is refused from every other role before either path
-	// below reads anything, a check report's included: a check report is the tester's or the
-	// implementer's.
-	if req.TestedCommit != "" && grant.Role != claim.RoleReviewer {
-		s.writeFailure(w, r, http.StatusBadRequest, "VERDICT_ROLE_FORBIDDEN", fmt.Sprintf(
-			"only a reviewer reports testedCommit, the commit of the tester's pass its verdict carries to the head it reviewed; send this %s's completion again without it, and nothing was recorded", grant.Role))
-		return
-	}
 	// A completion is a check report when the caller's own live assignment is a look of its
 	// issue's production check (the doc above), and a phase completion otherwise.
 	if look := c.ServingCheck(); look.Look > 0 {
@@ -251,27 +243,34 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	if (grant.Role == claim.RoleImplementer || grant.Role == claim.RoleMerger) && !s.requireFailureFields(w, r, field{"commit", req.Commit}) {
 		return
 	}
-	// A phase completion carries no verdict but a reviewer's (VERDICT_NOT_TAKEN, narrowed from
-	// CheckStatesContract to every step that is not a review): the states Dispatch publishes at
-	// the tested head decide the testing phase (workflow's decideTesting), and the reviewer's
-	// approve or changes (reviewerVerdictOf, which takes a reviewer on the contract before the
-	// reviewer's verdict at that contract's words) is a verdict on the head its handoff record
-	// names, which the completion reports as its commit (VERDICT_COMMIT_REQUIRED, past the record
-	// below). A plugin at CheckStatesContract or later sends no other role's verdict, so one naming
-	// one is refused before anything is recorded. A tester's plugin below the contract, in a turn
-	// when its daemon was upgraded, still sends pass or fail, which the route ignores so that the
-	// completion is taken and the states decide; no other role ever sent one, so another role's
-	// below the contract is refused alike.
+	// A phase completion carries a verdict only where its step is of the type review: the
+	// reviewer's approve or changes (reviewerVerdictOf, which takes a reviewer on the contract
+	// before the reviewer's verdict at that contract's words) is a verdict on the head its handoff
+	// record names, which the completion reports as its commit (VERDICT_COMMIT_REQUIRED, past the
+	// record below), and the workflow takes it only from the claim the step's record names
+	// (VERDICT_CALLER_FORBIDDEN). A testing step's completion carries none (VERDICT_NOT_TAKEN,
+	// CheckStatesContract): the states Dispatch publishes at the tested head decide it
+	// (workflow's decideTesting). A tester's plugin below that contract, in a turn when its daemon
+	// was upgraded, still sends pass or fail, which the route ignores so that the completion is
+	// taken and the states decide. Every other role's verdict is refused VERDICT_ROLE_FORBIDDEN, at
+	// any contract: no step of another type takes one, the architect's acceptance is its sign_off,
+	// and the merger runs no step of a plan. Each refusal is written before anything is recorded.
 	verdict := ""
-	switch {
-	case grant.Role == claim.RoleReviewer:
+	switch stepType := stepRoles[string(grant.Role)].Type; {
+	case stepType == plan.TypeReview:
 		var refusal string
 		if verdict, refusal = reviewerVerdictOf(req.Verdict, c.PluginContract); refusal != "" {
 			s.writeFailure(w, r, http.StatusBadRequest, "REVIEWER_VERDICT_REQUIRED", refusal)
 			return
 		}
-	case req.Verdict != "" && (c.PluginContract >= CheckStatesContract || grant.Role != claim.RoleTester):
-		s.writeFailure(w, r, http.StatusBadRequest, "VERDICT_NOT_TAKEN", verdictNotTaken)
+	case req.Verdict == "":
+	case stepType == plan.TypeTesting:
+		if c.PluginContract >= CheckStatesContract {
+			s.writeFailure(w, r, http.StatusBadRequest, "VERDICT_NOT_TAKEN", verdictNotTaken)
+			return
+		}
+	default:
+		s.writeFailure(w, r, http.StatusBadRequest, "VERDICT_ROLE_FORBIDDEN", verdictRoleForbidden(grant.Role))
 		return
 	}
 	// The step a failed step's task returns to is the tester's alone to name, since its step fails
@@ -427,20 +426,18 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	// another commit (the record is the phase's handoff); the next phase's completion at the same
 	// commit (the implementer's retro, standing on its implementing pass's last push) is a
 	// different one, since the phase and the role are in the key; and so is a second report of the
-	// same phase naming another verdict or another testedCommit — the reviewer's corrected approve
-	// or changes and the tested commit that verdict carries, the only fields a role may report
-	// differently of one handoff — since a refusal the workflow commits is recorded as processed,
-	// and a corrected report must not be answered as that refusal's duplicate. The verdict is the
-	// one the workflow is handed (a stale reviewer's pass is its approve), and a testedCommit is
-	// keyed only where one is named, so every completion that names none keeps the key it had
-	// before the field. The verdict segment of every other role's completion is empty: no other
-	// completion carries one (VERDICT_NOT_TAKEN), and a tester's plugin below CheckStatesContract
-	// has its verdict ignored, so its completion takes the key of the same completion with none. The
-	// summary is left out on purpose: a call that only rewords it is the same completion, and the
-	// first one is what the workflow took. The position is read before the fact's own transaction:
-	// should the issue move in between, the engine re-reads
-	// it there and refuses a completion whose role no longer owns the phase, or whose run is no
-	// longer the issue's (workflow's HANDOFF_STALE_GENERATION guard).
+	// same phase naming another verdict - the reviewer's corrected approve or changes, the only
+	// field a role may report differently of one handoff - since a refusal the workflow commits is
+	// recorded as processed, and a corrected report must not be answered as that refusal's
+	// duplicate. The verdict is the one the workflow is handed (a stale reviewer's pass is its
+	// approve). The verdict segment of every other role's completion is empty: no other
+	// completion carries one (VERDICT_NOT_TAKEN, VERDICT_ROLE_FORBIDDEN), and a tester's plugin
+	// below CheckStatesContract has its verdict ignored, so its completion takes the key of the
+	// same completion with none. The summary is left out on purpose: a call that only rewords it is
+	// the same completion, and the first one is what the workflow took. The position is read before
+	// the fact's own transaction: should the issue move in between, the engine re-reads it there and
+	// refuses a completion whose role no longer owns the phase, or whose run is no longer the
+	// issue's (workflow's HANDOFF_STALE_GENERATION guard).
 	//
 	// The run the completion is attributed to is part of the key for that guard's sake: a completion
 	// the route let through and the engine then refused as stale is recorded under it, and without
@@ -472,9 +469,6 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 		counted = position.task + ":" + counted
 	}
 	eventID := fmt.Sprintf("handoff:%s:%d:%d:%d:%s:%s:%s:%s:%s", grant.Issue, treeGeneration, issue.Generation, serving, grant.Role, issue.Phase, counted, reported, verdict)
-	if req.TestedCommit != "" {
-		eventID += ":" + req.TestedCommit
-	}
 	returnTo := 0
 	if req.ReturnTo != nil {
 		returnTo = *req.ReturnTo
@@ -493,7 +487,7 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	// answered already received and the first rating stands, and a completion the workflow
 	// refused for its rating leaves the key unspent, so the same completion, corrected, applies.
 	result, err := s.apply(r.Context(), "api", eventID, intake.HandoffComplete{Generation: serving, Entry: entry, Issue: grant.Issue, Role: grant.Role, Claim: grant.Claim,
-		Summary: req.Summary, Verdict: verdict, Commit: req.Commit, TestedCommit: req.TestedCommit,
+		Summary: req.Summary, Verdict: verdict, Commit: req.Commit,
 		HandoffRecord: req.HandoffID, HandoffVersion: req.HandoffVersion, StatesSerial: statesSerial,
 		PlanRating: rating, MustRate: c.PluginContract >= PlanRatingContract, ReturnTo: returnTo})
 	if err != nil {
@@ -545,10 +539,21 @@ func returnToRefusal(req HandoffCompleteRequest, failsAStep bool, what string) *
 	return nil
 }
 
-// verdictNotTaken is the refusal VERDICT_NOT_TAKEN: a completion that names a verdict where its
-// step takes none, since only a reviewer's completion carries one and Dispatch's check states at
-// the tested head decide the testing phase.
-const verdictNotTaken = "this completion names a verdict, and only a reviewer's completion carries one: Dispatch's check states at the tested head decide the testing phase; send it again without verdict; nothing was recorded"
+// stepRoles is Legion's own roles of a step by name (plan.BuiltinRoles), whose type says which
+// completion carries a verdict: a claim role that names one of them runs its step, and the
+// architect, the merger and the controller run none.
+var stepRoles = plan.BuiltinRoles()
+
+// verdictNotTaken is the refusal VERDICT_NOT_TAKEN: a testing step's completion that names a
+// verdict, which its step takes none of, since Dispatch's check states at the tested head decide the
+// testing phase.
+const verdictNotTaken = "this completion of a testing step names a verdict, and a testing step's completion carries none: Dispatch's check states at the tested head decide the testing phase; send it again without verdict; nothing was recorded"
+
+// verdictRoleForbidden is the refusal VERDICT_ROLE_FORBIDDEN: the completion of role, which runs
+// no step of the type review and no testing step, names a verdict.
+func verdictRoleForbidden(role claim.Role) string {
+	return fmt.Sprintf("only the agent of a review step sends a verdict: the reviewer with its handoff_complete, and the owner, whose acceptance is its sign_off (approve) or its request_backward_move (changes). This %s's completion names one; send it again without verdict; nothing was recorded", role)
+}
 
 // handoffRecord reads the Dispatch handoff record a completion of issue's file-backed phase of,
 // whose handoff word is word, names, holds it to the completion, and answers it: the record must be

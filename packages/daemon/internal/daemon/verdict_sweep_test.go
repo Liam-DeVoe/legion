@@ -230,14 +230,15 @@ var recordedAt = time.Date(2026, 11, 21, 6, 30, 0, 0, time.UTC)
 var widgets = ghrepo.MustParse("acme/widgets")
 
 // seedReviewerVerdict records CAPTURE-1's reviewer's verdict at code, as the reviewer's completion
-// recorded it before the daemon stopped.
+// recorded it before the daemon stopped: the verdict of its review step, step 4 of the task
+// default.
 func seedReviewerVerdict(word verdict.Word) func(*testing.T, *store.Pool) {
 	return func(t *testing.T, pool *store.Pool) {
 		t.Helper()
 		reviewingWithPass(t, pool)
 		inStore(t, pool, func(ctx context.Context, tx pgx.Tx) error {
 			_, err := store.RecordVerdictTx(ctx, tx, store.Verdict{Repository: widgets, Number: 86, Head: "code", Issue: "CAPTURE-1",
-				Verdict: word, Session: "review-claim", RecordedAt: recordedAt})
+				Task: "default", Step: 4, Verdict: word, Session: "review-claim", RecordedAt: recordedAt})
 			return err
 		})
 	}

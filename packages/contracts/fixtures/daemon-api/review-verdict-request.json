@@ -2,6 +2,5 @@
   "grantId": "grant-for-one-command",
   "verdict": "approve",
   "commit": "c0de0000000000000000000000000000000000ff",
-  "testedCommit": "7e57000000000000000000000000000000000aa1",
   "summary": "The merge forward changes no code that runs."
 }

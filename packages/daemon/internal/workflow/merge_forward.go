@@ -1,7 +1,6 @@
 package workflow
 
 import (
-	"cmp"
 	"context"
 	"fmt"
 	"slices"
@@ -157,25 +156,24 @@ func (e *Engine) clearMergeForward(ctx context.Context, tx pgx.Tx, issue string)
 // forward was asked of. It runs in whatever phase issue stands in, and once for each ask: the
 // record keeps the new head as the one the merge left (record.MergeForward.Landed), which is a
 // new value rather than a change of the one the record holds, since a copy of the pull request
-// shares it. It says whether the move was such a landing, which asks the reviewer what any other
-// move past review asks it (askVerdict).
+// shares it. It says whether the move was such a landing, which asks the agents of the review
+// steps what any other move past review asks them (askVerdict).
 //
 // The worker of the phase the issue stands in, when the landed reaches it - the tester, the
 // reviewer or the merger (record.MergeForwardReaches) - is told the old head and the new one and
 // to read what the merge changed before it goes on (record.MergeForwardLanded). An issue past its
-// review (record.PastReview) stands on a verdict at an older head, so the round's recorded
-// reviewer is asked to read what changed since its last verdict, the merge among it, and send its
-// verdict at the new head (record.MergeForwardReview, from the head of that verdict, verdictSince,
-// or the head the merge was asked of where the record holds none), which the daemon records as the
-// round's decision there and writes legion-verdict from (reviewVerdict); the record keeps that the
-// verdict was asked for (ReviewAsked), which the landed the merger is told in merging
-// (record.MergeForwardMessage.Message) reads. That holds only where the issue's task has a reviewer
-// step (the walk's line holds reviewing): a task whose plan has none stands on no verdict at the
-// old head, no reviewer step runs for it, and a merger told to wait for a reviewer's verdict would
-// wait for good, so nothing is asked and the merger goes on at the new head. The architect and the
-// implementer are told nothing: the architect's checks-red notice already said the merge was asked
-// for, and the implementer pushed it. A tree that lingers (record.TreeLingers, where every role is
-// suspended) records and tells nothing.
+// review (record.PastReview) stands on verdicts at an older head, so the agent of each review step
+// of its task that has passed is asked to read what changed since its step's last verdict, the
+// merge among it, and send its verdict at the new head (askReviewSteps: the reviewer by
+// record.MergeForwardReview, the architect that ran the owner's acceptance by a role message),
+// which the daemon records as that step's verdict there and writes legion-verdict from
+// (reviewVerdict); the record keeps that a verdict was asked for (ReviewAsked), which the landed
+// the merger is told in merging (record.MergeForwardMessage.Message) reads. A task whose plan has
+// no review step stands on no verdict at the old head, so nothing is asked and the merger goes on
+// at the new head: a merger told to wait for a verdict would wait for good. The architect and the
+// implementer are told nothing else: the architect's checks-red notice already said the merge was
+// asked for, and the implementer pushed it. A tree that lingers (record.TreeLingers, where every
+// role is suspended) records and tells nothing.
 func (e *Engine) mergeForwardLanded(ctx context.Context, tx pgx.Tx, issue record.Issue, pr *record.PullRequest) (bool, error) {
 	asked := pr.MergeForward
 	if asked == nil || asked.Landed != "" || asked.Head == pr.HeadSHA {
@@ -185,36 +183,22 @@ func (e *Engine) mergeForwardLanded(ctx context.Context, tx pgx.Tx, issue record
 		return true, err
 	}
 	at := record.StandsAt(issue)
-	w, err := e.walk(ctx, tx, issue)
-	if err != nil {
-		return true, err
-	}
-	review := record.PastReview(issue) && slices.Contains(w.Line, phase.Reviewing)
-	var recipients []roleRecipient
 	if worker := RoleFor(at); record.MergeForwardReaches(record.MergeForwardLanded, worker) {
-		recipients = append(recipients, roleRecipient{issue: issue.Key, role: worker, row: issue.Key})
-	}
-	since := asked.Head
-	if review {
-		recipients = append(recipients, roleRecipient{issue: issue.Key, role: claim.RoleReviewer, row: issue.Key})
-		reviewer, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleReviewer)
+		addressed, err := e.addressRoles(issue.Project, []roleRecipient{{issue: issue.Key, role: worker, row: issue.Key}}, nil)
 		if err != nil {
 			return true, err
 		}
-		since = cmp.Or(verdictSince(reviewer, pr.HeadSHA, asked.Head), asked.Head)
-	}
-	addressed, err := e.addressRoles(issue.Project, recipients, nil)
-	if err != nil {
-		return true, err
-	}
-	for _, to := range addressed {
-		role, _ := to.token.Role()
-		step, head := record.MergeForwardLanded, asked.Head
-		if review && role == claim.RoleReviewer {
-			step, head = record.MergeForwardReview, since
+		for _, to := range addressed {
+			if err := e.enqueue(ctx, tx, to.issue, record.MergeForwardMessage{Role: worker, Step: record.MergeForwardLanded, Head: asked.Head,
+				Landed: pr.HeadSHA, Base: asked.Base, Phase: at, PullRequest: pr.Number, Why: asked.Why}); err != nil {
+				return true, err
+			}
 		}
-		if err := e.enqueue(ctx, tx, to.issue, record.MergeForwardMessage{Role: role, Step: step, Head: head, Landed: pr.HeadSHA,
-			Base: asked.Base, Phase: at, PullRequest: pr.Number, Why: asked.Why}); err != nil {
+	}
+	review := false
+	if record.PastReview(issue) {
+		var err error
+		if review, err = e.askReviewSteps(ctx, tx, issue, pr, asked.Head, asked.Base, asked.Why); err != nil {
 			return true, err
 		}
 	}

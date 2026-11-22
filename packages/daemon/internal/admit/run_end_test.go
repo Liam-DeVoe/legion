@@ -378,12 +378,11 @@ func TestEveryWayOutOfAStepEndsItsRun(t *testing.T) {
 					t.Fatalf("%s's pull request holds first read %+v and merge forward %+v, want the first read released and nothing asked", awaiting, pr.ConflictRead, pr.MergeForward)
 				}
 			}}},
-		// The recorded reviewer's verdict past review (workflow's reviewVerdict): an approve that
-		// carries no tester's pass to the head sends the issue back to testing, which ends its
-		// step's run, and a changes moves no phase, so the run stays open.
+		// The reviewer's verdict past review (workflow's reviewVerdict) records its step's verdict
+		// and moves no phase, approve or changes, so the run stays open.
 		"ReviewVerdict": {
-			{name: "the recorded reviewer's approve that carries no pass sends the accepting child back to testing", arrange: reviewedAccepting,
-				fact: intake.ReviewVerdict{Issue: inAccepting, Claim: "review-claim", Verdict: "approve", Commit: "head-6", Summary: "read the push"}, leaves: inAccepting},
+			{name: "the recorded reviewer's approve keeps the accepting child in its step", arrange: reviewedAccepting,
+				fact: intake.ReviewVerdict{Issue: inAccepting, Claim: "review-claim", Verdict: "approve", Commit: "head-6", Summary: "read the push"}, keeps: inAccepting},
 			{name: "the recorded reviewer's changes keeps the accepting child in its step", arrange: reviewedAccepting,
 				fact: intake.ReviewVerdict{Issue: inAccepting, Claim: "review-claim", Verdict: "changes", Commit: "head-6", Summary: "the push breaks it"}, keeps: inAccepting},
 		},
@@ -471,8 +470,9 @@ func TestEveryWayOutOfAStepEndsItsRun(t *testing.T) {
 
 // reviewedAccepting gives the finishing tree's member in accepting its open pull request #6 at
 // head-6, a push past head-5, the commit its tester passed and its reviewer approved under the
-// claim review-claim, and the rows of that pass and that approve. Its arguments are a row's
-// arrange's.
+// claim review-claim, the rows of that pass and that approve, and the record of its reviewer's
+// step, step 4 of the task default, naming review-claim its agent, ended. Its arguments are a
+// row's arrange's.
 func reviewedAccepting(t *testing.T, pool *pgxpool.Pool, _ *Admission, _ intake.Handler) {
 	t.Helper()
 	inTx(t, pool, func(tx pgx.Tx) {
@@ -490,7 +490,24 @@ func reviewedAccepting(t *testing.T, pool *pgxpool.Pool, _ *Admission, _ intake.
 				t.Fatalf("seed the %s's row of %s: %v", row.Role, inAccepting, err)
 			}
 		}
+		seedReviewerStep(t, tx, inAccepting, "review-claim")
 	})
+}
+
+// seedReviewerStep records agent as the agent of the latest start of issue's reviewer's step, step
+// 4 of the task default, ended, as the daemon's start and the move out of reviewing write it.
+func seedReviewerStep(t *testing.T, tx pgx.Tx, issue string, agent claim.Token) {
+	t.Helper()
+	records := record.NewStore()
+	place := record.StepPlace{Task: "default", Kind: record.PlaceStep, Place: 4}
+	if _, err := records.RaiseStepStarts(context.Background(), tx, issue, place, func(int64) record.StepRecord {
+		return record.StepRecord{Task: place.Task, Step: place.Place, Kind: place.Kind, Agent: string(agent)}
+	}); err != nil {
+		t.Fatalf("record %s as the agent of %s's reviewer's step: %v", agent, issue, err)
+	}
+	if _, _, err := records.EndStepStart(context.Background(), tx, issue, place); err != nil {
+		t.Fatalf("end %s's reviewer's step: %v", issue, err)
+	}
 }
 
 // zeroFact is the zero value of the fact type kind names, for a kind the table applies to the
