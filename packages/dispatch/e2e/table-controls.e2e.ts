@@ -8214,3 +8214,118 @@ test("a references Retry on the Artifacts tab keeps the keyboard focus while its
   }
   expect(wrong, wrong.join("; ")).toEqual([]);
 });
+
+// SLOW(>=2s): a question's backlinks read answered, failed over its answer and retried in the
+// Inbox, at each of two widths.
+// INFRA-3135, round 24 (the tester's, measured in builds Jobs infra-3135-n2-h and -n2-b at 3fce6150
+// and da0804df, and this row in -n-red at 3fce6150): a message on another issue mentions a
+// question, and the reader opens Referenced by (1) on the question's card in the Inbox, which reads
+// its backlinks. A second such message makes the live feed read them again, which fails (500, three
+// times by the shared retry policy), and the panel says "Referenced by unavailable." with Retry
+// over the list it still holds. Enter on Retry, with the read it sends held, draws Retry natively
+// disabled (`disabled={query.isFetching}`, features/refs/ReferencedBy.tsx:323; the card's panel,
+// features/inbox/AskCard.tsx:558, passes no `retried`, which only the new issue page's Details
+// does), and the focus falls to the body for the whole hold, in Chromium, Firefox and WebKit at
+// 1440x900 and 390x664, at both commits. Once the read answers the line goes and the focus moves to
+// the panel's first source link, with no scroll. A read that holds no answer yet is another path:
+// TanStack sets it back to pending the moment Retry sends, so the line and Retry go in the press's
+// own render, and the page's rescue lands the focus on the card's first option at both commits. The
+// rules: a control held while the read its press started is out is held through
+// components/held-press.ts, never natively disabled, so it keeps the keyboard focus
+// (packages/dispatch/AGENTS.md:53); and a landing the reader's press caused is what the press drew
+// in its place, else the control now at the place, else the nearest control in sight before it,
+// else the region's stop (2026-11-22 12:16Z). A focused control disabled under the press, which
+// each engine moves to the body at its own time, and a focused control taken away, for which
+// Firefox and WebKit fire no `focusout`: the clause of the `webkit` and `firefox` projects that
+// names the page-own focus row (e2e/playwright.config.ts).
+test("the Inbox card's Referenced by Retry keeps the keyboard focus while its read is out @firefox @webkit", async ({
+  page,
+}) => {
+  // Two widths, each with a read answered, failed through the shared policy's retries and held.
+  test.setTimeout(120_000);
+  await createProject({ key: "CORE", name: "Core" });
+  await createProject({ key: "OPS", name: "Operations" });
+  const asker = {
+    actor: { id: "e2e-backlink-asker", kind: "session" as const },
+    as: "agent" as const,
+  };
+  // The backlinks read of the question the row is on: answered, failed or held as the row says.
+  const reads = { held: [] as Route[], mode: "answer" as "answer" | "fail" | "hold", target: "" };
+  await page.route(
+    (url) =>
+      url.pathname === "/api/v1/references" &&
+      reads.target !== "" &&
+      (url.searchParams.get("to") ?? "").includes(reads.target),
+    async (route) => {
+      if (route.request().method() !== "GET") return route.fallback();
+      if (reads.mode === "hold") {
+        reads.held.push(route);
+        return;
+      }
+      if (reads.mode === "answer") return route.continue();
+      await route.fulfill({
+        body: JSON.stringify({ code: "INTERNAL", error: "The backlinks read failed." }),
+        contentType: "application/json",
+        status: 500,
+      });
+    }
+  );
+  const wrong: string[] = [];
+  for (const size of [
+    { height: 900, width: 1440 },
+    { height: 664, width: 390 },
+  ]) {
+    await page.setViewportSize(size);
+    const where = `Inbox at ${size.width}x${size.height}`;
+    const issue = await createIssue({ project: "CORE", title: `Rollout order at ${size.width}` });
+    await patchIssue(issue.key, { assignee: "alice" });
+    const ask = await createAsk(
+      issue.key,
+      {
+        options: [{ label: "Ship" }, { label: "Hold" }],
+        question: `Which rollout order at ${size.width}?`,
+      },
+      asker
+    );
+    const source = await createIssue({ project: "OPS", title: `Mirror plan at ${size.width}` });
+    await createMessage(source.key, { body: `Depends on dispatch://${issue.key}/ask/${ask.id}.` });
+    reads.mode = "answer";
+    reads.target = ask.id;
+    await page.goto("/");
+    await expect(inboxRow(page, ask.id)).toBeVisible();
+    const card = await askCard(page, ask.id);
+    await card.getByRole("button", { name: /^Referenced by \(1\)$/ }).focus();
+    await page.keyboard.press("Enter");
+    const panel = card.getByRole("region", { name: "Referenced by" });
+    // The read has answered once the panel lists the message that mentions the question.
+    await expect(panel.getByText(`Message · ${source.key}`).first()).toBeVisible();
+    reads.mode = "fail";
+    await createMessage(source.key, { body: `Again dispatch://${issue.key}/ask/${ask.id}.` });
+    // The live feed reads the backlinks again, and the shared policy retries the 500 twice.
+    const failed = panel.getByText("Referenced by unavailable.");
+    await expect(failed).toBeVisible();
+    await panel.getByRole("button", { exact: true, name: "Retry" }).focus();
+    reads.mode = "hold";
+    await page.keyboard.press("Enter");
+    await expect.poll(() => reads.held.length, `${where}: Retry sent no read`).toBe(1);
+    // The focus fixup of a disabled control runs in a rendering update; two frames hold one.
+    await nextFrames(page);
+    await nextFrames(page);
+    // One read is the answer: Retry's read is held, and its press's renders have all run.
+    const holding = await focusPlace(page);
+    if (holding.body) {
+      wrong.push(`${where}: with the read Retry sent held the focus is on the body`);
+    }
+    reads.mode = "answer";
+    for (const route of reads.held.splice(0)) await route.continue();
+    await expect(failed).toHaveCount(0);
+    await settledScrollTop(page);
+    await nextFrames(page);
+    // One read is the answer: the read has answered, its line is gone, the window holds still.
+    const landed = await focusPlace(page);
+    if (landed.body) {
+      wrong.push(`${where}: after the read Retry sent answers the focus is on the body`);
+    }
+  }
+  expect(wrong, wrong.join("; ")).toEqual([]);
+});
