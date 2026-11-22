@@ -4071,7 +4071,7 @@ func (m *Machine) judge(ctx context.Context, observation runtime.Observation, al
 		// ends and what runs the stop then). The held stop, once it runs, stops the process and
 		// suspends the claim, and nothing replaces it. An observation once that hold has ended
 		// repoints the process as any does, which runs a stop still held (replaceNow, endHeld).
-		if m.turnCopyHolds(m.deps.Clock.Now()) {
+		if m.turnCopyHolds() {
 			m.log.Info("supervise: the process is alive at a stale address while a stop is held over the copy of its turn's end; it is left to that stop, and an observation after the copy repoints it if it still runs",
 				"incarnation", observation.Locator.Incarnation, "copy", m.turnCopy.seq, "detail", observation.Detail)
 			return nil

@@ -81,6 +81,11 @@ var copyEnds = []struct {
 	pastDue bool
 }{{name: "AtTheCopysEnd"}, {name: "PastTheCopysDue", pastDue: true}}
 
+// wakeTurnsAtTheDue bounds the timers the parked wake's row fires on its clock's move to the
+// copy's due: that move fires one or two at the due, and a wake parked again at the due for no
+// time at all comes due again at once, which an unbounded move would never finish.
+const wakeTurnsAtTheDue = 20
+
 // turnCopyDue is the due of the copy of its turn's end the claim's machine is still waiting to hear
 // end (turnCopy.due), read under the machine's lock. It fails where the machine waits for none.
 func turnCopyDue(t *testing.T, h *harness) time.Time {
@@ -195,8 +200,9 @@ func parkStaleRelaunch(t *testing.T, h *harness) {
 // The control of the rows at the copy's end is the wake's turn ending the hold as it comes: the
 // claim is then suspended at the wake's turn, while the copy is still being taken, and those rows
 // fail there. The control of the pause's window's row past the due is wakeNow's guard without the
-// due: the wake is parked again at the due for no time at all, its turn comes again at once, and
-// the row never gets past the clock's move to the due.
+// due: the wake is parked again at the due for no time at all and its turn comes again at once,
+// so the clock's move to the due never ends; the move is bounded (advanceAtMost), and the row
+// fails there, naming the wake parked again at the due.
 func TestAParkedWakeWaitsForTheTurnsCopyItsHeldStopWaitsFor(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -249,7 +255,11 @@ func TestAParkedWakeWaitsForTheTurnsCopyItsHeldStopWaitsFor(t *testing.T) {
 					}
 					if end.pastDue {
 						due := turnCopyDue(t, h)
-						stopsOnceAt(t, h, tc.by, "the copy's due passed", func() { h.advance(due.Sub(h.clock.Now())) })
+						stopsOnceAt(t, h, tc.by, "the copy's due passed", func() {
+							if !h.advanceAtMost(due.Sub(h.clock.Now()), wakeTurnsAtTheDue) {
+								t.Fatalf("the wake came due %d times at the copy's due and was parked again each time, want its turn there to end the hold", wakeTurnsAtTheDue)
+							}
+						})
 					} else {
 						begin()
 						waitsOnItsProcess(t, h, loc)

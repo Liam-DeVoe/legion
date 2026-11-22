@@ -362,11 +362,11 @@ func StalePluginContract(got, want int) Refusal {
 
 // StalePluginContractUnderStop refuses a registration whose plugin speaks a contract this daemon
 // does not, made while a stop is held over the claim and the copy of its last turn's end is still
-// being taken (supervise's staleRegistration): the daemon relaunches nothing and charges nothing
-// then, since the plugin's exit on this 409 meets that stop, which suspends the claim, and the
-// claim's next launch is onto the current plugin. The status and the opening sentence are
-// StalePluginContract's, and the plugin stops on this 409 as on that one; only the remedy says
-// what happens instead of a relaunch.
+// being taken within its budget (supervise's turnCopyHolds, staleRegistration): the daemon
+// relaunches nothing and charges nothing then, since the plugin's exit on this 409 meets that
+// stop, which suspends the claim, and the claim's next launch is onto the current plugin. The
+// status and the opening sentence are StalePluginContract's, and the plugin stops on this 409 as
+// on that one; only the remedy says what happens instead of a relaunch.
 func StalePluginContractUnderStop(got, want int) Refusal {
 	return staleContract(got, want, "the daemon relaunches nothing: this process's exit on this refusal meets the stop held over this claim, which suspends it, and the claim's next launch is onto the current plugin")
 }

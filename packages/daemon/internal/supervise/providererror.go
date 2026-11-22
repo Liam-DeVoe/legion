@@ -81,7 +81,7 @@ func (m *Machine) providerErrored(ctx context.Context, r StreamPromptResult) err
 		return err
 	}
 	if holdsTheIssue(r.HTTPStatus) {
-		if m.turnCopyHolds(m.deps.Clock.Now()) {
+		if m.turnCopyHolds() {
 			m.log.Warn("supervise: a provider error that fails the claim came while the held stop waits for the copy of its turn's end; the stop runs once that wait is over",
 				"delivery", r.DeliveryID, "httpStatus", r.HTTPStatus, "copy", m.turnCopy.seq, "by", m.held.By)
 			return m.persist(ctx)

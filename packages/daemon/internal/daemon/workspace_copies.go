@@ -213,12 +213,14 @@ func (w *workflowRuntime) tickWorkspaceCopies(ctx context.Context) {
 // Info once a period for the issue, and at no other due tick (noLiveRole). The pass also forgets
 // the retry of every issue that has left the workflow (forgetClosed, closedRetries): one the
 // project does not record, as the issue of a branch pushed from outside, and one closed — done, or
-// parked out of the workflow — with its tree or on its own. No copy of such an issue can be stored
-// to pay its retry, so the cadence's memory would grow with every issue that ever failed a copy,
-// and the log would name each closed one under runningCopyNoRole once a period for as long as the
-// daemon runs. A live issue keeps its retry between phases, while its claims are retired: a phase
-// worker's exit and an operator's stop retire a claim, and the next phase's start brings it back
-// on the same workspace.
+// parked out of the workflow — with its tree or on its own. No live role of such an issue will be
+// asked for a copy that pays its retry: its roles are retired or stopped, and the check role a
+// merged issue keeps (workflow's leave) runs only for a production check's look, whose turn ends
+// are copied as any turn's are. Kept, the retry would grow the cadence's memory with every issue
+// that ever failed a copy, and the log would name each closed one under runningCopyNoRole once a
+// period for as long as the daemon runs. A live issue keeps its retry between phases, while its
+// claims are retired: a phase worker's exit and an operator's stop retire a claim, and the next
+// phase's start brings it back on the same workspace.
 //
 // Which issues are in a turn is read from the claims the daemon's own store holds rather than
 // from anything this process remembers, so a daemon that has just restarted reads it exactly as
@@ -286,28 +288,22 @@ func (w *workflowRuntime) forgetClosedRetries(ctx context.Context) error {
 // closedRetries is which of owed have left the workflow, read from the daemon's records of the
 // project's issues: an issue the project does not record, and one closed with its tree or on its
 // own, its record or its tree root's out of the workflow (record.InWorkflow) — done, or parked at
-// backlog, icebox or triage — as an issue close and a tree close leave them. Claims say nothing
-// here: a phase worker's exit and an operator's stop retire a claim of an issue still in the
-// workflow, and the next phase's start brings it back.
+// backlog, icebox or triage — as an issue close and a tree close leave them. The tree roots those
+// records leave out are read in the one query record.ReadTreeRoots makes, and an issue whose root
+// the project does not record is judged by its own record. Claims say nothing here: a phase
+// worker's exit and an operator's stop retire a claim of an issue still in the workflow, and the
+// next phase's start brings it back.
 func (w *workflowRuntime) closedRetries(ctx context.Context, tx pgx.Tx, owed []string) (map[string]bool, error) {
 	issues, err := w.records.IssuesOf(ctx, tx, w.dispatchProject, owed)
 	if err != nil {
 		return nil, err
 	}
-	recorded := make(map[string]record.Issue, len(issues))
-	var roots []string
-	for _, issue := range issues {
-		recorded[issue.Key] = issue
-		if !slices.Contains(owed, issue.Tree) && !slices.Contains(roots, issue.Tree) {
-			roots = append(roots, issue.Tree)
-		}
-	}
-	above, err := w.records.IssuesOf(ctx, tx, w.dispatchProject, roots)
+	recorded, err := record.ReadTreeRoots(ctx, tx, w.records, w.dispatchProject, issues)
 	if err != nil {
 		return nil, err
 	}
-	for _, root := range above {
-		recorded[root.Key] = root
+	for _, issue := range issues {
+		recorded[issue.Key] = issue
 	}
 	closed := make(map[string]bool, len(owed))
 	for _, key := range owed {

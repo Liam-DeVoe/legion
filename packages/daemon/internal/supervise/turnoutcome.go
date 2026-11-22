@@ -124,7 +124,7 @@ func turnOutcome(m *Machine, ctx context.Context, ev Event) error {
 	if run < m.deps.Limits.LaunchFailures {
 		return m.persist(ctx)
 	}
-	if m.turnCopyHolds(m.deps.Clock.Now()) {
+	if m.turnCopyHolds() {
 		m.log.Warn("supervise: a run of refused turns at the launch failure limit came while the held stop waits for the copy of its turn's end; the stop runs once that wait is over",
 			"refusedRun", run, "limit", m.deps.Limits.LaunchFailures, "copy", m.turnCopy.seq, "by", m.held.By)
 		return m.persist(ctx)

@@ -2728,7 +2728,7 @@ func finishReady(m *Machine, ctx context.Context) error {
 // left to what runs it: run here it would stop the process the copy still asks, and the claim, idle
 // or ready holding the stop, has nothing of a ready to publish meanwhile.
 func reready(m *Machine, ctx context.Context, _ Event) error {
-	if m.turnCopyHolds(m.deps.Clock.Now()) {
+	if m.turnCopyHolds() {
 		m.log.Info("supervise: the agent said ready again while its held stop waits for the copy of its turn's end; the stop runs once that wait is over",
 			"copy", m.turnCopy.seq, "by", m.held.By)
 		return nil

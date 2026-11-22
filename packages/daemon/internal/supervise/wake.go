@@ -328,11 +328,12 @@ func (m *Machine) waitOnMachine(ctx context.Context, waiting *wake) error {
 // Every hold a launch's turn finds here is over a process that still runs: the suspend of a claim
 // in a turn (holdSuspension), the suspend of a launch that did start a process
 // (holdSuspendUntilReady), and the suspend of an idle or ready claim while the copy its last turn's
-// end started is still being taken (suspend, heldForTurnCopy), which are the only three the machine
-// keeps, and letGo drops a hold with the process it is held for. A suspend of a parked claim that
-// records no process is held no more — it is decided where it arrives, since there is no process
-// to protect and the wake's turn is tens of minutes away over a wave (holdSuspendUntilReady) — and
-// that suspension takes the wake with it, so no turn of such a claim is reached at all.
+// end started is still being taken within its budget (suspend, heldForTurnCopy), which are the
+// only three the machine keeps, and letGo drops a hold with the process it is held for. A suspend
+// of a parked claim that records no process is held no more — it is decided where it arrives,
+// since there is no process to protect and the wake's turn is tens of minutes away over a wave
+// (holdSuspendUntilReady) — and that suspension takes the wake with it, so no turn of such a claim
+// is reached at all.
 //
 // A stop held for the copy its turn's end started (turnCopyHolds, which states when that hold
 // ends) is not ended here: ending it now would stop the process the copy asks and cut that copy
@@ -340,7 +341,10 @@ func (m *Machine) waitOnMachine(ctx context.Context, waiting *wake) error {
 // then — its wait for the copy begun and the copy ended — its let-go takes the wake as the launch
 // it met (letGo, launchMet), which is what ending it here would have done. Where it has not run by
 // then, the wake's turn at the due ends the hold (endHeld), as it would have here; a hold dropped
-// meanwhile leaves the wake to run its launch at that turn.
+// meanwhile leaves the wake to run its launch at that turn. That end can be a project pause's stop
+// still waiting for the prompt's answer (stopWaitsForResult), which the wake's turn then ends
+// before the answer has come: it is what a parked wake does to a held stop where no copy is taken,
+// and the copy's due leaves it so.
 //
 // The two ways out of a held suspension that take the wake off the machine leave nothing of this
 // refresh waiting in the pacing, so the end of this decision gives the credit of the refresh gate
@@ -397,8 +401,9 @@ func wakeNow(m *Machine, ctx context.Context, _ Event) error {
 			// decision (endRefreshLane).
 			return nil
 		}
-		// A stop held for a turn's copy: the wake waits for that copy too (the doc above).
-		if now := m.deps.Clock.Now(); m.turnCopyHolds(now) {
+		// A stop held for a turn's copy: the wake waits for that copy too (the doc above). now is
+		// read before the hold's own read of the clock, so the park it answers is never negative.
+		if now := m.deps.Clock.Now(); m.turnCopyHolds() {
 			c := m.turnCopy
 			m.log.Info("supervise: this claim's wake came due while its held stop waits for the copy of its turn's end; the wake waits for that copy too",
 				"kind", waiting.kind, "copy", c.seq, "until", c.due, "reason", m.held.Reason, "by", m.held.By)

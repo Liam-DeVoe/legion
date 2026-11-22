@@ -93,10 +93,17 @@ func (t *fakeTimer) Stop() bool {
 
 // Advance moves time forward by d, firing what falls due on the way.
 func (c *fakeClock) Advance(d time.Duration) {
+	c.AdvanceAtMost(d, 0)
+}
+
+// AdvanceAtMost is Advance that fires at most fires timers on the way, none meaning no limit, and
+// reports whether it reached the end of d: a test bounds a move that a timer arming itself again
+// at once would never finish, and fails saying what it waited for rather than hanging.
+func (c *fakeClock) AdvanceAtMost(d time.Duration, fires int) bool {
 	c.mu.Lock()
 	until := c.now.Add(d)
 	c.mu.Unlock()
-	for {
+	for fired := 0; ; fired++ {
 		c.mu.Lock()
 		var next *fakeTimer
 		for _, timer := range c.timers {
@@ -110,7 +117,11 @@ func (c *fakeClock) Advance(d time.Duration) {
 		if next == nil {
 			c.now = until
 			c.mu.Unlock()
-			return
+			return true
+		}
+		if fires > 0 && fired == fires {
+			c.mu.Unlock()
+			return false
 		}
 		next.fired = true
 		c.now = next.at
@@ -897,6 +908,14 @@ func (h *harness) handleWithoutPanic(ev Event) error {
 func (h *harness) advance(d time.Duration) {
 	h.clock.Advance(d)
 	h.m.Wait()
+}
+
+// advanceAtMost is advance bounded to fires timers (fakeClock.AdvanceAtMost), and reports whether
+// it reached the end of d.
+func (h *harness) advanceAtMost(d time.Duration, fires int) bool {
+	done := h.clock.AdvanceAtMost(d, fires)
+	h.m.Wait()
+	return done
 }
 
 func (h *harness) claim() Claim { return h.m.Claim() }

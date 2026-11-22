@@ -196,7 +196,7 @@ func (m *Machine) chargePrompt(ctx context.Context, why string) error {
 		return m.persist(ctx)
 	}
 	if m.held != nil {
-		if m.turnCopyHolds(m.deps.Clock.Now()) {
+		if m.turnCopyHolds() {
 			m.claim.Budgets.PromptFailures = failures
 			m.log.Warn("supervise: prompt failure at the limit while a stop is held over the copy of its turn's end; the failure is charged, and the held stop runs once that copy and what the stop is held for are over",
 				"why", why, "promptFailures", failures, "limit", m.deps.Limits.PromptFailures, "copy", m.turnCopy.seq, "by", m.held.By)

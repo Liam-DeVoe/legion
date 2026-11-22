@@ -156,7 +156,7 @@ func (m *Machine) backstopStalledTurn(ctx context.Context, ev StallBackstop) err
 	// sweep posts it again: the first post after the copy's reported end or its due decides the
 	// turn as any post does. The line names that due as until, whether or not the stop has begun
 	// its wait for the copy, since the hold ends there either way.
-	if m.turnCopyHolds(m.deps.Clock.Now()) {
+	if m.turnCopyHolds() {
 		m.log.Info(backstopLeftToTheTurnCopy,
 			"copy", m.turnCopy.seq, "until", m.turnCopy.due, "bound", ev.Bound, "deadline", ev.Deadline, "lastStep", last, "by", m.held.By)
 		return nil

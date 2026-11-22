@@ -62,10 +62,15 @@ func TestAPausesStopOfARoleWhoseTurnsCopyIsStillBeingTakenWaitsForThatCopy(t *te
 // held for the turn's end waits: no longer than the copy's budget from the turn's end, and never
 // past the stop's own deadline, which for an operator's suspension is the stop timeout from its
 // arrival. A suspension that may not be held, the one a fresh session posts, waits for no copy:
-// its asker read the claim in no turn and is owed the stop at once.
+// its asker read the claim in no turn and is owed the stop at once. Nor does one asked once the
+// copy's budget has run out with the copy still unreported: a held stop's wait for the copy ends
+// at its due (turnCopyHolds), and a suspension asked after it is decided at once, as where no copy
+// is taken, and is not answered held.
 //
 // The control is the hold taken out, as above: the daemon's and the operator's stops then run at
-// once, and those cases fail at the stop's answer.
+// once, and those cases fail at the stop's answer. The control of the row past the due is the hold
+// asked of any copy still being taken, whatever its due: that row is then answered held, and fails
+// at the stop's answer.
 func TestAStopThatReachesAnIdleClaimWaitsForItsTurnsCopyNoLongerThanEitherBound(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -80,18 +85,21 @@ func TestAStopThatReachesAnIdleClaimWaitsForItsTurnsCopyNoLongerThanEitherBound(
 			ask: RequestSuspend{By: SuspendedByOperator}, lands: testStop},
 		{name: "a fresh session's suspension goes at once",
 			ask: RequestSuspend{By: SuspendedByOperator, NeverHold: true, Reason: "a fresh session was asked for"}},
+		{name: "a daemon's suspension past the copy's budget goes at once",
+			ask: RequestSuspend{By: SuspendedByDaemon, Reason: "the tree of LEGION-208 lingers"}, after: testCopyBudget + time.Second},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h, _ := copyingHarness(t)
 			h.reach(StateIdle)
 			h.advance(tc.after)
+			turnCopyDue(t, h)
 			tc.ask.Claim = h.token
 
 			err := h.handle(tc.ask)
 
 			if tc.lands == 0 {
 				if err != nil {
-					t.Fatalf("the suspension that may not be held = %v, want it decided now", err)
+					t.Fatalf("the suspension = %v, want it decided now", err)
 				}
 				h.wantState(StateSuspended)
 				h.wantCalls("Suspend", 1)

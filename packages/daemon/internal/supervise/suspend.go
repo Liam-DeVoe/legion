@@ -70,25 +70,27 @@ var ErrPauseEnded = errors.New("the pause this stop names has ended, so nothing 
 // that suspension ends no phase, and the wake that brings the pod back resumes the claim with the
 // task it kept (SuspendSource.RetiresPhaseTask).
 //
-// A claim whose last turn's end started a copy that is still being taken (Machine.turnCopy) is idle
-// or ready, and a suspension reaching it — the outbox asking its row again, an operator's own, a
-// project pause's stop — is held rather than run (holdRequest), whether or not a stop was held for
-// that turn's end, and waits for that copy as a stop held for the end does (waitForTurnCopy): at
-// most the copy's budget from the turn's end, and never past the suspension's own deadline.
-// Stopped now, it would take the process the copy is asking, and a pause stops an idle role at
-// once, so a role whose turn ended a moment before the pause would lose the copy of that turn to
-// it. A held stop already waiting is joined as a suspension arriving in a turn joins it, its
-// deadline moving the stop earlier. Either is answered ErrSuspendHeld, in the copy's words
-// (heldForTurnCopy). A suspension that may not be held (RequestSuspend.NeverHold) is decided now,
-// as it always was for a claim in no turn: its asker read the claim in no turn and is owed the
-// stop at once.
+// A claim whose last turn's end started a copy that is still being taken within its budget
+// (turnCopyInBudget) is idle or ready, and a suspension reaching it — the outbox asking its row
+// again, an operator's own, a project pause's stop — is held rather than run (holdRequest),
+// whether or not a stop was held for that turn's end, and waits for that copy as a stop held for
+// the end does (waitForTurnCopy): at most the copy's budget from the turn's end, and never past the
+// suspension's own deadline. Stopped now, it would take the process the copy is asking, and a pause
+// stops an idle role at once, so a role whose turn ended a moment before the pause would lose the
+// copy of that turn to it. A held stop already waiting is joined as a suspension arriving in a turn
+// joins it, its deadline moving the stop earlier. Either is answered ErrSuspendHeld, in the copy's
+// words (heldForTurnCopy). Past the copy's due a suspension is decided now, as it is where no copy
+// is being taken: a held stop's wait for the copy ends there (turnCopyHolds), and so does a new
+// one's. A suspension that may not be held (RequestSuspend.NeverHold) is decided now too, as it
+// always was for a claim in no turn: its asker read the claim in no turn and is owed the stop at
+// once.
 func suspend(m *Machine, ctx context.Context, ev Event) error {
 	request, err := suspendRequest(m, ev)
 	if err != nil {
 		return err
 	}
 	asked := ev.(RequestSuspend)
-	if m.turnCopy == nil || asked.NeverHold {
+	if !m.turnCopyInBudget() || asked.NeverHold {
 		return m.suspendNow(ctx, request, false)
 	}
 	err = m.holdRequest(request, asked, heldForTurnCopy)

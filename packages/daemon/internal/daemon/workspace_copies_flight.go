@@ -492,14 +492,16 @@ func (c *runningCopies) retries() []string {
 // forgetClosed drops the entry of every issue closed names, retry and all, unless a copy or a
 // release's save of it holds its place: the issues owing a retry that the cadence's read of the
 // daemon's records found out of the workflow (workflowRuntime.closedRetries). Such an issue has no
-// pod whose work a copy could hold: the project does not record it, as the issue of a branch
-// pushed from outside, or it is closed — done, or parked out of the workflow — with its tree or on
-// its own. An entry kept for it would never be cleared, since no copy of it can be stored, and its
-// retry would have the cadence log it under runningCopyNoRole once a period for as long as the
-// daemon runs (noLiveRole). An issue still in the workflow keeps its retry whatever its claims
-// are doing: released, or retired between phases by a phase worker's exit or an operator's stop,
-// its retry runs once a role of it is live again. Only closed's issues are dropped, so an entry a
-// copy writes after the read that made closed is left to the next pass.
+// role that will be asked for a copy to pay its retry: the project does not record it, as the
+// issue of a branch pushed from outside, or it is closed — done, or parked out of the workflow —
+// with its tree or on its own, its roles retired or stopped, and the check role a merged issue
+// keeps runs only for a production check's look, whose turn ends are copied as any turn's are. An
+// entry kept for it would wait for a role that does not come, and its retry would have the cadence
+// log it under runningCopyNoRole once a period for as long as the daemon runs (noLiveRole). An
+// issue still in the workflow keeps its retry whatever its claims are doing: released, or retired
+// between phases by a phase worker's exit or an operator's stop, its retry runs once a role of it
+// is live again. Only closed's issues are dropped, so an entry a copy writes after the read that
+// made closed is left to the next pass.
 func (c *runningCopies) forgetClosed(closed map[string]bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

@@ -192,7 +192,7 @@ func (m *Machine) refreshPlugin(ctx context.Context, trigger string, admitted bo
 	// meanwhile, or one still standing once its copy's budget has run out, leaves the claim to the
 	// next sweep, which posts it again. A credit this post carries goes back at the end of the
 	// decision (endRefreshLane). The controller's claim takes no copy, so it never waits here.
-	if m.turnCopyHolds(m.deps.Clock.Now()) {
+	if m.turnCopyHolds() {
 		m.log.Info("supervise: the process speaks another plugin contract while a stop is held over the copy of its turn's end; nothing is relaunched, and that stop takes the process",
 			"incarnation", m.claim.Locator.Incarnation, "pluginContract", m.claim.PluginContract,
 			"daemonApiVersion", m.deps.PluginContract, "copy", m.turnCopy.seq, "trigger", trigger)
@@ -519,7 +519,7 @@ func (m *Machine) staleRegistration(ctx context.Context, got int) error {
 	// drop the held stop with the process (relaunchAfterFailure, letGo). The refusal says so in its
 	// own words (claim.StalePluginContractUnderStop): it is the 409 of any stale registration,
 	// which the plugin stops on, but no relaunch follows it.
-	if m.turnCopyHolds(m.deps.Clock.Now()) {
+	if m.turnCopyHolds() {
 		m.log.Info("supervise: a registration on another plugin contract reached a claim whose held stop waits for the copy of its turn's end; nothing is relaunched or charged here, and the process's exit on this refusal meets that stop",
 			"pluginContract", got, "daemonApiVersion", m.deps.PluginContract, "copy", m.turnCopy.seq)
 		return claim.StalePluginContractUnderStop(got, m.deps.PluginContract)

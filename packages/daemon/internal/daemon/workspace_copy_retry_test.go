@@ -193,13 +193,16 @@ func TestTheCadenceKeepsTheRetryOfALiveIssueBetweenPhases(t *testing.T) {
 }
 
 // An issue closed — done, or parked out of the workflow, on its own or with its tree, as an issue
-// close and a tree close leave it — has no pod whose work a copy could hold, so the cadence
-// forgets a retry it owes, and the due ticks after it name it under no_live_role no more, ask
-// nothing and owe it nothing. Kept, it was a line at Info every 5 minutes for as long as the
-// daemon ran, since the store keeps a closed issue's retired claims for ever.
+// close and a tree close leave it — has no live role the cadence will ask for a copy to pay its
+// retry, so the cadence forgets a retry it owes, and the due ticks after it name it under
+// no_live_role no more, ask nothing and owe it nothing. Kept, it was a line at Info every 5 minutes
+// for as long as the daemon ran, since the store keeps a closed issue's retired claims for ever.
 //
 // The control is the cadence keeping the retry of every issue a claim names: the rows whose issue
-// has a retired claim then name it again at the first due tick, and fail there.
+// has a retired claim then name it again at the first due tick, and fail there. The child rows
+// have a control each: the closed child of a live tree's is the decision without the issue's own
+// record, and the child of a parked tree's the decision without its root's; each fails at the
+// first due tick.
 func TestTheCadenceForgetsTheRetryOfAClosedIssue(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -228,6 +231,15 @@ func TestTheCadenceForgetsTheRetryOfAClosedIssue(t *testing.T) {
 			putOutboxIssue(t, rig.pool, rig.issues, parked)
 			child := rig.issue
 			child.Key, child.Parent, child.Title = "LEGION-209", record.ParentOf(rig.issue.Key), "child"
+			putOutboxIssue(t, rig.pool, rig.issues, child)
+			return child.Key
+		}},
+		// A child closed as done on its own, under a root still in the workflow: its own record
+		// is what says it is closed.
+		{name: "AClosedChildOfALiveTree", close: func(t *testing.T, rig *copyRig) string {
+			child := rig.issue
+			child.Key, child.Parent, child.Title = "LEGION-209", record.ParentOf(rig.issue.Key), "child"
+			child.Status, child.Phase = record.DoneStatus, phase.Done
 			putOutboxIssue(t, rig.pool, rig.issues, child)
 			return child.Key
 		}},
