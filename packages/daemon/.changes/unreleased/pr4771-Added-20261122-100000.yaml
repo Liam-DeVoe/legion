@@ -1,0 +1,36 @@
+kind: Added
+body: |-
+    `legion replay` is a new tool for a developer who changes how the daemon gives out its admission
+    slots. It replays a recorded window of a project's daemon through the daemon's own admission
+    pass, under a slot rule that the caller names, on a simulated clock. It reports the issues
+    finished, the started work that waits for a slot, the priority that holders take and the other
+    delays, and names each assumption that a result rests on. `collect` and `collect-merges` collect
+    a window from the daemon's log lines, from Dispatch and from GitHub, with GET requests alone.
+    `neutralize` renames the private names of a window for test data. `run` replays a window, and
+    `scorecard` reads the same measures from the record of a window. `validate` checks a replay
+    against the record, `forecast` checks it against a recorded change of the rule, and `compare`
+    compares the rules on two windows. `rules` prints the seven rules that a replay can run, each
+    with its commit. The tool writes nothing to a running daemon, to Dispatch or to GitHub. The page
+    "Replaying a recorded window" of the docs says how to collect a window and how to run each
+    command, and gives each measure, each rule and each assumption.
+
+    `legion state` prints a `slots:` line under its admission line. It says what each holder of a
+    slot does now (`working`, `stopped`, `person`, `issue` or `idle`, each with the oldest time in
+    it), how many started issues wait for a slot, in two readings, and how many holders rank below
+    the first issue that waits for one. From daemon API contract 217, `legion state --json` carries
+    the same reading as `admission.slots`, each slot carries its holder's `state` and `since`, and
+    each issue carries its `rank` and `rootRank`. A caller of an older contract gets the state
+    without them. The controller's tick notice carries the reading as `slots`.
+
+    The daemon writes one `admission: a pass moved slots` line for each admission pass that gives
+    out or takes back a slot. The line gives the slots in use, the cap, each slot given out or taken
+    back with its issue and reason, and each issue of the line that the pass went past, with its
+    reason. The daemon's slot rule does not change.
+
+    The migration `20261121103000_slots_reading_times` adds the tables `issue_holds` and
+    `slot_waits` and the column `claims.stopped_at`. Before a rollback below this release, stop
+    every daemon of the database and run the way back that docs/kubernetes.md gives in "Rolling back
+    the release that reads the slots".
+time: 2026-11-22T10:00:00.000000000Z
+custom:
+    Issue: pr4771
