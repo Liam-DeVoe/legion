@@ -258,8 +258,8 @@ type StallBackstop struct {
 // so the action is idempotent: the first post of a round records the round, its reasons and its
 // clock, and each later post of the same round changes nothing. The round's terms are fixed when
 // it opens, so the ask a role reads and the record an operator reads name the same reasons. The
-// machine asks the role nothing: the sweep enqueues the round's ask to the role's own Envoy topic
-// (record.UpdateAsk), and the outbox marks it on the claim once it reached a session
+// machine asks the role nothing: the sweep enqueues the round's ask to the Envoy topic of this
+// claim (record.UpdateAsk.Claim), and the outbox marks it on the claim once it reached a session
 // (Machine.PublishUpdateAsk).
 type PodUpdateOpen struct {
 	Claim   claim.Token
@@ -272,8 +272,8 @@ type PodUpdateOpen struct {
 // the moment the round ends at the latest: the round's recorded opening (Claim.UpdateOpenedAt)
 // plus pod_update_grace_minutes. The sweep (internal/daemon) builds the text from the round's
 // record, so the text names one moment for every role of the round, and the text rides
-// record.UpdateAsk to the role's own Envoy topic. That message can arrive in the middle of a
-// turn, so the text tells the role to act now rather than after the turn.
+// record.UpdateAsk to the Envoy topic of the claim it asks. That message can arrive in the middle
+// of a turn, so the text tells the role to act now rather than after the turn.
 //
 // The text names the round's own id, and the role passes it back in its answer
 // (PodUpdateSignalled): an answer counts only for the round whose ask the role read, so the id
@@ -2718,8 +2718,10 @@ func retry(m *Machine, ctx context.Context, ev Event) error {
 // reviveArchitect, for example) — and for a phase worker whose issue works no phase of its role,
 // which the route has already established before it reaches the machine (api's retryStart starts
 // the phase itself for every other one).
-// The daemon's controller has a retry of its own, its keeper, so it alone is refused. A claim's
-// role never changes, so the refusal cannot race the decision it guards.
+// The daemon's controller has a retry of its own, its keeper, so it alone is refused. The refusal
+// reads the claim's role inside the machine's decision, which no re-role runs beside (Rerole holds
+// the same lock), and the controller's claim holds no step and is never re-roled, so the refusal
+// cannot race the decision it guards.
 //
 // It relaunches the session the claim records, unless the retry asks for a new one
 // (RequestOperatorRetry.FreshSession) or the provider refused that session out of the claim's
@@ -2971,8 +2973,8 @@ func exit(m *Machine, ctx context.Context, ev Event) error {
 // (dispatch://INFRA-2981 R9), so the ask the sweep publishes and the record an operator reads name
 // the same reasons for one round id, however the drift the sweep reads moves while the round runs.
 //
-// The machine asks the role nothing. The sweep enqueues the round's ask to the role's own Envoy
-// topic once the claim records the round (internal/daemon's openPodUpdate, record.UpdateAsk), and
+// The machine asks the role nothing. The sweep enqueues the round's ask to the Envoy topic of this
+// claim once the claim records the round (internal/daemon's openPodUpdate, record.UpdateAsk), and
 // the outbox marks the claim asked once that publish reached a session (Machine.PublishUpdateAsk):
 // an ask that reached none marks nothing, so a later sweep asks again. A claim whose process is
 // suspended or released is not revived for the ask: if no ask has reached it, the sweep asks it
@@ -3019,8 +3021,9 @@ func openPodUpdate(m *Machine, ctx context.Context, ev Event) error {
 
 // updateTaskPrefix starts the delivery id of every ask an update round queued as a task, which
 // only an older daemon did; the round and a fresh word of that ask's own complete it
-// (updateTaskID). This daemon publishes the round's ask to the role's Envoy topic instead
-// (record.UpdateAsk), so an id of this shape is one a restored claim brings back from the store.
+// (updateTaskID). This daemon publishes the round's ask to the Envoy topic of the claim it asks
+// instead (record.UpdateAsk), so an id of this shape is one a restored claim brings back from the
+// store.
 const updateTaskPrefix = "update:"
 
 // updateTaskID is a delivery id of one ask of round, and names no other ask of it. A rotation
@@ -3285,17 +3288,17 @@ func podUpdateSignalled(m *Machine, ctx context.Context, ev Event) error {
 // does next.
 //
 // What it does next is never "answer the round named here". A round that replaced another is
-// asked of the role only at a later sweep (internal/daemon's openPodUpdate publishes once the
+// asked of the claim only at a later sweep (internal/daemon's openPodUpdate publishes once the
 // claim records the round), so the id this refusal prints is one whose words the worker may not
 // have read, and an answer given for it would be counted for a round the worker was never asked
 // (podUpdateSignalled is the one guard that stops exactly that). So the worker is told how the
-// daemon asks — once per round, as a message on the role's own topic — and to answer the round
-// the newest such message names, or to end its turn where no message names the claim's round.
-// For a claim the daemon is asking nothing of, it is told so.
+// daemon asks — once per round, as a message on its own role topic, the topic of its claim — and
+// to answer the round the newest such message names, or to end its turn where no message names the
+// claim's round. For a claim the daemon is asking nothing of, it is told so.
 func foreignRoundRefusal(c Claim, answered string) error {
 	in, next := fmt.Sprintf("%q", c.UpdateRound), fmt.Sprintf(
-		"The daemon asks each role one time in each update round. "+
-			"The daemon sends that ask as a message on the role's own topic. "+
+		"The daemon asks you one time in each update round. "+
+			"The daemon sends that ask as a message on your role topic. "+
 			"Answer with the round that the newest such message names. "+
 			"If no such message names round %q, the daemon has nothing to ask you now. End your turn",
 		c.UpdateRound)
