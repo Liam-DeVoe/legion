@@ -393,9 +393,9 @@ type PodUpdateEnded struct {
 // Round is the round the worker answers for, which the ask it read named (UpdateTask): an answer
 // counts only for the round the claim stands in, and one naming any other round is refused
 // (podUpdateSignalled). Head is the commit it reports as the head of its issue branch at origin,
-// "" when the branch is not there — a planner before its first push — and is the worker's word,
-// which nothing verifies. Generation and Session are the claim it says it holds, as every agent
-// request carries them.
+// "" when the branch is not there — a planner step that runs before the branch's first push — and
+// is the worker's word, which nothing verifies. Generation and Session are the claim it says it
+// holds, as every agent request carries them.
 type PodUpdateSignalled struct {
 	Claim      claim.Token
 	Generation uint64

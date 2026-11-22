@@ -5,9 +5,12 @@
 #
 #   scripts/e2e/step-records-read.sh INFRA-123
 #
-# It exits 0 and prints `PASS: …` only when the read lists a record of each of steps 1 to 5, of
-# the retro and of the merge, every record it lists has ended, every record of kind step and of
-# kind retro names an agent, and every record of kind step names the model that answered. A
+# It exits 0 and prints `PASS: …` only when the read lists a record of each step from 1 to the
+# highest step any record names, of the retro and of the merge, every record it lists has ended,
+# every record of kind step and of kind retro names an agent, and every record of kind step names
+# the model that answered. An issue that is done ran every step of its task, whatever its plan, so
+# its records name its last step; a record lost for that last step is the one gap the read cannot
+# see, since it learns the steps from the records alone. A
 # record of kind merge with no agent passes, with one line that says so: GitHub merged the pull
 # request before a merger started, so no merger ran that step, and its record says so. It exits 1
 # and prints one `FAIL: …` line per fault when the read lists records and one of those does not
@@ -50,6 +53,7 @@ awk -v issue="$issue" '
     runs++
     place = ($3 == "step") ? "step " $2 : "the " $3
     seen[place] = 1
+    if ($3 == "step" && $2 + 0 > last) last = $2 + 0
     # A run that has ended prints its end, a moment, in column 11; steps.ts prints `running` there
     # (and in column 12) for one that has not, and any other text there is no end either.
     if ($11 !~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]/) faults[++count] = "the record never ended: " $0
@@ -60,11 +64,13 @@ awk -v issue="$issue" '
   END {
     if (status) exit status
     if (runs != listed) unknown("the header says " listed " records and " runs " lines of runs follow it")
-    split("step 1,step 2,step 3,step 4,step 5,the retro,the merge", places, ",")
-    for (i = 1; i <= 7; i++) if (!(places[i] in seen)) faults[++count] = issue ": no record of " places[i]
+    if (last == 0) faults[++count] = issue ": no record of any step"
+    for (i = 1; i <= last; i++) if (!(("step " i) in seen)) faults[++count] = issue ": no record of step " i
+    split("the retro,the merge", places, ",")
+    for (i = 1; i <= 2; i++) if (!(places[i] in seen)) faults[++count] = issue ": no record of " places[i]
     for (i = 1; i <= noted; i++) print notes[i]
     for (i = 1; i <= count; i++) print "FAIL: " faults[i]
     if (count) exit 1
-    print "PASS: " issue ": " runs " records; steps 1 to 5, the retro and the merge each have one, each record ended, each step and retro with an agent, each step with a model"
+    print "PASS: " issue ": " runs " records; steps 1 to " last ", the retro and the merge each have one, each record ended, each step and retro with an agent, each step with a model"
   }
 ' <<<"$read_out"

@@ -77,6 +77,24 @@ describe("step-records-read.sh", () => {
     expect(code).toBe(1);
   });
 
+  // A plan in another order than the default steps runs only its own steps: `implementer reviewer`
+  // is two steps, and its read passes on steps 1 to 2; without step 1 it fails, naming it.
+  test("a plan of two steps passes on steps 1 to 2, and fails without step 1", () => {
+    const two = [
+      run("1 step implementer implementation attempt 1"),
+      run("2 step reviewer review attempt 1"),
+      whole[whole.length - 2],
+      whole[whole.length - 1],
+    ];
+    const passed = read(`${[`${key}: ${two.length} steps in 1 tasks`, ...two].join("\n")}\n`);
+    expect(passed.stdout).toContain(`PASS: ${key}: 4 records; steps 1 to 2, the retro and the merge each have one`);
+    expect(passed.code).toBe(0);
+    const missing = two.slice(1);
+    const failed = read(`${[`${key}: ${missing.length} steps in 1 tasks`, ...missing].join("\n")}\n`);
+    expect(failed.stdout).toContain(`FAIL: ${key}: no record of step 1`);
+    expect(failed.code).toBe(1);
+  });
+
   test("a record still running fails, exit 1, naming its line", () => {
     const { code, stdout } = read(
       changed(whole, / 5 step acceptance /, (line) =>

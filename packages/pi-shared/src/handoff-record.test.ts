@@ -736,7 +736,7 @@ test("the branch head is the issue bookmark at origin, and empty when the remote
   };
   await expect(answer(TIP)).resolves.toBe(TIP);
   expect(calls).toEqual([["log", "-r", REMOTE, "--no-graph", "-T", "commit_id"]]);
-  // A planner before its first push: no branch at the remote, and no error.
+  // A planner step that runs before the branch's first push: no branch at the remote, and no error.
   await expect(answer("")).resolves.toBe("");
 
   // The issue key names the branch, and a worker sets its own environment.

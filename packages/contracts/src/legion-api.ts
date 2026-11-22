@@ -1472,8 +1472,8 @@ export type LegionTurnOutcome = z.output<typeof LegionTurnOutcomeResponse>;
  * message it read named it: the daemon takes the answer only for the round its claim stands in,
  * and refuses one naming any other round with 409 and a sentence naming both. `head` is the
  * commit the worker reports as the head of `legion/<issue>@origin`, empty or absent when the
- * branch is not there (a planner before its first push); the daemon records it and verifies
- * nothing of it. */
+ * branch is not there (a planner step that runs before the branch's first push); the daemon
+ * records it and verifies nothing of it. */
 export const LegionReadyForUpdateRequest = z.strictObject({
   claimToken: nonEmptyString,
   sessionId: nonEmptyString,

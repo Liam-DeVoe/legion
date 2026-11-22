@@ -393,7 +393,7 @@ Each item below names a script, then what it proves.
 - `step-records-read.sh`
 
   the read, after the merge, of the step records of one issue a deployed Legion ran to done: `dispatch steps --issue <ISSUE>` run once in the operator's own shell with the operator's own credential, judged.
-  It passes only when steps 1 to 5, the retro and the merge each have a record, every record has ended, every record of kind `step` or `retro` names an agent and every record of kind `step` a model;
+  It passes only when each step from 1 to the highest step a record names, the retro and the merge each have a record, every record has ended, every record of kind `step` or `retro` names an agent and every record of kind `step` a model;
   a read that lists no record, or that fails, is `UNKNOWN` and never a pass.
   A deployed Dispatch and the operator's credential; it starts nothing
 
@@ -6918,7 +6918,7 @@ either fails, saying so, when `read_app_logins` has not run.
 `lib/app-logins.test.ts` runs the helper, and `read_app_logins` over it, against a stand-in GitHub, `lib/github-apps.test.ts` runs the input checks over the same stand-in, and `lib/reviewer-thread.test.ts` drives `reviewer_thread` with the logins set.
 
 `clean_smoke_main` is Stage 3's `smoke-main-clean` and the cleanup inside Stage 4b's `done`:
-one fixture pull request, on the branch `proof/clean-main-<project, lowercased>`, that removes the handoffs and learnings proof merges leave on the smoke `main`.
+one fixture pull request, on the branch `proof/clean-main-<project, lowercased>`, that removes the handoffs and retro learnings earlier proof merges left on the smoke `main`.
 Stage 3's project is a fresh key per run, but Stage 4b's is `LEGSMOKE` in every run, so the branch's name alone cannot tell the run's own from one an earlier run left.
 The run records the branch as its own (`smoke_cleanup_branch`) once it has read that no such branch exists (`smoke_branch_state`, through `matching-refs`, which answers an absent branch with an empty list), just before it makes it, and empties the record once the merge has deleted it;
 it fails, naming the branch, when one is already there.
