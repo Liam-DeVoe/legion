@@ -683,7 +683,8 @@ func (s *server) firstRelayCursor(ctx context.Context, read func()) (int64, time
 	}
 	// A test of the first start commits an event after this read and before the wait below ends,
 	// which is the one window its subject lives in; the hook is how it knows the read is done,
-	// rather than resting on a sleep (live_events_horizon_test.go). Nil outside tests.
+	// rather than resting on a sleep (event_stream_relay_test.go, through relayStartReads). Nil
+	// outside tests.
 	if s.relayStartRead != nil {
 		s.relayStartRead()
 	}
