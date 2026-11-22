@@ -1504,16 +1504,18 @@ func ApprovalFollows(gate record.DesignGate, version int, mark record.EventMark)
 }
 
 // DesignApprovalStands reports whether the approval a news item names, of version to of the
-// document artifact, is still the person's current word: the gate's row for the item's step holds
-// that document, and its approved version is to. It is the approval case of the question
-// ApprovalFollows answers for a review — is this recorded decision still the person's current
-// word — asked when a task that names the decision is sent, not when it was composed. Where the
-// step now records another document (a registration that named one since), a later approval has
-// replaced the one the item names, or a changes request has cleared it (ApplyDesignGateEvent), the
-// item would tell the holder of a version that is no longer the person's word. A new version that
-// closed the gate since leaves it standing: the gate keeps that approval as the version a person
-// approved below the latest. It is named for the design gate because ApprovalStands already
-// answers the pull request's question of a review.
+// document artifact, still stands: the gate's row for the item's step holds that document, and its
+// approved version is to. That approval is either kind the row records there: a person's, or the
+// ancestor's approval a basis opened the step on at the version the root registered
+// (record.OpenOnBasis). It is the approval case of the question ApprovalFollows answers for a
+// review — is this recorded decision still the word that stands on the version — asked when a task
+// that names the decision is sent, not when it was composed. Where the step now records another
+// document (a registration that named one since), a later approval has replaced the one the item
+// names, a changes request has cleared it (ApplyDesignGateEvent), or a basis that opened it has
+// ended (record.CloseBasis), the item would tell the holder of a version that no approval stands
+// on any more. A new version that closed the gate since leaves a person's approval standing: the
+// gate keeps it as the version a person approved below the latest. It is named for the design gate
+// because ApprovalStands already answers the pull request's question of a review.
 func DesignApprovalStands(gate record.DesignGate, artifact string, to int) bool {
 	return gate.ArtifactID == artifact && gate.ApprovedVersion != nil && *gate.ApprovedVersion == to
 }

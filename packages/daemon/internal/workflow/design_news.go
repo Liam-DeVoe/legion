@@ -153,10 +153,14 @@ const (
 	// NewsAwaitingPerson is a member told nothing while it waits on a person, since no phase
 	// holder works it.
 	NewsAwaitingPerson NewsState = "awaiting-person"
-	// NewsStopped is a member told nothing while it stands in held, or in awaiting_children while a
-	// Dispatch child of it is open (record.UntoldHeld): the restart, or the return from the
-	// children, that moves it back into its phase carries what it is owed then.
+	// NewsStopped is a member told nothing while it stands in held (record.UntoldHeld): the restart
+	// that moves it back into its phase carries what it is owed then.
 	NewsStopped NewsState = "stopped"
+	// NewsAwaitingChildren is a parent told nothing while it stands in awaiting_children, a
+	// Dispatch child of it open (record.UntoldAwaitingChildren): no restart moves it back, and the
+	// admission pass's return once no child of it is open (ReturnFromChildren) carries what it is
+	// owed then.
+	NewsAwaitingChildren NewsState = "awaiting-children"
 	// NewsDone is a member told nothing because its work is done.
 	NewsDone NewsState = "done"
 	// NewsOutOfWorkflow is a member told nothing because its Dispatch status takes it out of the
@@ -177,10 +181,12 @@ const (
 // no longer stands, and hands it the rest (News).
 //
 // Both forms lead with the gate sentence when the opening is owed to the audience, said of the
-// gate as it stands at send: the opened sentence while the standing gate is open, naming the step
-// approved last, and the closed sentence, naming the version that closed it, once a later version
-// has (gateOpenedSentence, gateClosedSentence, which tellGateMoved also writes). So a merger's
-// release reads the words its prompt quotes, and news sent after the gate closed again says so.
+// gate as it stands at send (gateAtSend): the opened message while the standing gate is open,
+// naming the step approved last, and, where a gated step stands open on an ancestor's approval,
+// each such step with the approval it stands on (gateOpenedOnBasis); and the closed sentence,
+// naming the version that closed it, once a later version has (gateClosedSentence). tellGateMoved
+// writes both through the same two functions, so a merger's release reads the words its prompt
+// quotes, and news sent after the gate closed again says so.
 //
 // To a holder it then names, for each step, the version pair as the version its phase last took,
 // the sections and the typed blocks that changed (requirements and the other non-check blocks for
@@ -223,12 +229,11 @@ func RenderNews(news News) string {
 // gateAtSend is the gate sentence of tree as gates stand now. The standing gate is closed when a
 // step the tree is gated on holds a row that is not open (classify.StandingGate, the predicate the
 // merger's hold reads too), and the sentence names that row's latest version, the one with its
-// reviewer. Otherwise it is open, and the sentence names the approval that opened it: the row
-// whose approval Dispatch recorded last (record.EventMark.After), the later step in the tree's
-// order where the marks cannot tell. Where a step stands open on an ancestor's approval
-// (basisStepsOf), it is the opened message that names each such step's basis and says no person
-// approved the root's version of it (gateOpenedOnBasis), as tellGateMoved says it. It is "" when no
-// row holds an approval, which says nothing.
+// reviewer. Otherwise it is open, and the sentence is the opened message of the approval that
+// opened it: the row whose approval Dispatch recorded last (record.EventMark.After), the later
+// step in the tree's order where the marks cannot tell, with each step that stands open on an
+// ancestor's approval (basisStepsOf), as tellGateMoved says it (gateOpenedOnBasis). It is "" when
+// no row holds an approval, which says nothing.
 func gateAtSend(tree string, steps []record.DesignStep, gates map[record.DesignStep]record.DesignGate) string {
 	if held, closed := classify.StandingGate(steps, gates); closed {
 		return gateClosedSentence(tree, held.Step.OrSpec(), held.ArtifactID, held.LatestVersion)
@@ -247,10 +252,7 @@ func gateAtSend(tree string, steps []record.DesignStep, gates map[record.DesignS
 	if openedStep == "" {
 		return ""
 	}
-	if onBasis := basisStepsOf(steps, gates); len(onBasis) > 0 {
-		return gateOpenedOnBasis(tree, openedStep, opened.ArtifactID, *opened.ApprovedVersion, onBasis)
-	}
-	return gateOpenedSentence(tree, openedStep, opened.ArtifactID, *opened.ApprovedVersion)
+	return gateOpenedOnBasis(tree, openedStep, opened.ArtifactID, *opened.ApprovedVersion, basisStepsOf(steps, gates))
 }
 
 // holderNews is the holder's form after its gate sentence: what changed for its issue, then the
@@ -446,6 +448,9 @@ func memberWords(member NewsMember, gates map[record.DesignStep]record.DesignGat
 		return "told nothing while it waits on a person: no phase holder works it."
 	case NewsStopped:
 		return "told nothing while it is stopped: the restart that moves it back into its phase carries what it is owed then."
+	case NewsAwaitingChildren:
+		return "told nothing while it waits on its open children: the return that moves it back into its phase once no child " +
+			"of it is open carries what it is owed then."
 	case NewsDone:
 		return "told nothing: its work is done."
 	case NewsOutOfWorkflow:

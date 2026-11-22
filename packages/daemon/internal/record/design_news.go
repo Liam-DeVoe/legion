@@ -260,10 +260,14 @@ const (
 	UntoldAdmitted UntoldReason = "admitted"
 	// UntoldAwaitingPerson is a member that waits on a person, whose phase no worker holds.
 	UntoldAwaitingPerson UntoldReason = "awaiting-person"
-	// UntoldHeld is a member that stands in held, or a parent that stands in awaiting_children
-	// while a Dispatch child of it is open: the restart, or the return from awaiting_children, that
-	// moves it back into its phase carries what it is owed then.
+	// UntoldHeld is a member that stands in held: the restart that moves it back into its phase
+	// carries what it is owed then.
 	UntoldHeld UntoldReason = "held"
+	// UntoldAwaitingChildren is a parent that stands in awaiting_children while a Dispatch child of
+	// it is open: no restart moves it back, and the admission pass's return that moves it back into
+	// its phase once no child of it is open (workflow's ReturnFromChildren) carries what it is owed
+	// then.
+	UntoldAwaitingChildren UntoldReason = "awaiting-children"
 	// UntoldHeldBack is a member none of the reasons above explains: its holder has not taken a
 	// version that concerns it, and OwedNews holds that news back, because the tree's standing gate
 	// is not open or the tree lingers.
@@ -437,8 +441,10 @@ func untold(member Issue, merged, heldBack, owes, other bool) UntoldReason {
 		return UntoldAdmitted
 	case member.Phase == phase.AwaitingPerson:
 		return UntoldAwaitingPerson
-	case member.Phase == phase.Held || member.Phase == phase.AwaitingChildren:
+	case member.Phase == phase.Held:
 		return UntoldHeld
+	case member.Phase == phase.AwaitingChildren:
+		return UntoldAwaitingChildren
 	case heldBack || phase.RoleFor(member.Phase) == "":
 		return UntoldHeldBack
 	}

@@ -312,13 +312,13 @@ func (r *versionNewsLive) boot(gates string, steps []record.DesignStep, repo str
 	r.rt, r.built = fake.NewRuntime(), &built{}
 	r.rt.InPod = true
 	r.dispatchAs(versionNewsPerson, http.MethodPost, "/api/v1/projects", map[string]string{"key": cfg.Project, "name": "Approved version news, " + gates}, nil)
-	r.dispatchAs(versionNewsPerson, http.MethodPut, "/api/v1/settings/repo-projects/"+repo, map[string]any{"project": cfg.Project, "default": true}, nil)
+	r.dispatchAs(versionNewsPerson, http.MethodPut, "/api/v1/projects/"+cfg.Project+"/default-repository", map[string]any{"repo": repo}, nil)
 	fixture()
 	r.seed()
 	o := fakeRuntime(r.rt, r.built)
 	o.workflowTokens = &workflowTokenRecorder{}
 	r.d = startDaemonWithin(t, cfg, o, r.log(), 2*time.Minute)
-	r.note("daemon booted under gates.design: %s, project %s mapped to %s, dispatch_url %s", gates, cfg.Project, repo, r.dispatch.base)
+	r.note("daemon booted under gates.design: %s, project %s with default repository %s, dispatch_url %s", gates, cfg.Project, repo, r.dispatch.base)
 	// The boot's run of each seeded start is its claim's first launch, so none before it counts.
 	for _, tree := range r.trees {
 		for _, member := range tree.members {
@@ -337,7 +337,12 @@ func (r *versionNewsLive) boot(gates string, steps []record.DesignStep, repo str
 	r.standAtTheirEntries()
 }
 
-// rootIssuesFixture is the first run's trees, each named for the step that drives it.
+// rootIssuesFixture is the first run's trees, each named for the step that drives it. No root
+// stands in planning through accepting while a child of it is open: the first admission pass would
+// move such a root to awaiting_children and stop its worker (dispatch://INFRA-3320 R9), so a step
+// would read a phase the boot left. A root with children stands in a phase that wait does not
+// hold instead: merging (a6), retro (r6), or admitted, where its own first phase waits for its
+// children (a5-child, whose root's checks A5 changes, while a5's own root tests alone).
 func (r *versionNewsLive) rootIssuesFixture() {
 	architect, implementer, tester := claim.RoleArchitect, claim.RoleImplementer, claim.RoleTester
 	reviewer, merger := claim.RoleReviewer, claim.RoleMerger
@@ -346,21 +351,24 @@ func (r *versionNewsLive) rootIssuesFixture() {
 	r.tree("a1", true, false, versionNewsMember{phase.Admitted, []claim.Role{architect}})
 	r.tree("a3-accepting", true, false, versionNewsMember{phase.Accepting, []claim.Role{architect}})
 	r.tree("a3-implementing", true, true, versionNewsMember{phase.Implementing, []claim.Role{architect, implementer}})
-	r.tree("a5", true, false, versionNewsMember{phase.Testing, []claim.Role{architect, tester}},
+	r.tree("a5", true, false, versionNewsMember{phase.Testing, []claim.Role{architect, tester}})
+	r.tree("a5-child", true, false, versionNewsMember{phase.Admitted, []claim.Role{architect}},
 		versionNewsMember{phase.Testing, []claim.Role{tester}})
 	r.tree("a6", false, false, versionNewsMember{phase.Merging, []claim.Role{architect, merger}},
 		versionNewsMember{phase.Reviewing, []claim.Role{reviewer}})
 	r.tree("a7", true, false, versionNewsMember{phase.Retro, []claim.Role{architect, implementer}})
 	r.tree("a7-open", true, false, versionNewsMember{phase.Retro, []claim.Role{architect, implementer}})
-	r.tree("r6", true, false, versionNewsMember{phase.Implementing, []claim.Role{architect, implementer}},
+	r.tree("r6", true, false, versionNewsMember{phase.Retro, []claim.Role{architect, implementer}},
 		versionNewsMember{phase.Implementing, []claim.Role{implementer}}, versionNewsMember{phase.Testing, []claim.Role{tester}})
 }
 
 // offFixture is the second run's trees: one whose holders must hear nothing, and one whose
-// tester's pass is the delivery the same window sees.
+// tester's pass is the delivery the same window sees. The silent tree's root stands in retro, a
+// phase the wait on its open child does not hold (rootIssuesFixture), so nothing but the approved
+// version could send its holders anything.
 func (r *versionNewsLive) offFixture() {
 	architect := claim.RoleArchitect
-	r.tree("off", false, false, versionNewsMember{phase.Implementing, []claim.Role{architect, claim.RoleImplementer}},
+	r.tree("off", false, false, versionNewsMember{phase.Retro, []claim.Role{architect, claim.RoleImplementer}},
 		versionNewsMember{phase.Reviewing, []claim.Role{claim.RoleReviewer}})
 	r.tree("off-control", false, false, versionNewsMember{phase.Testing, []claim.Role{architect, claim.RoleTester}})
 }

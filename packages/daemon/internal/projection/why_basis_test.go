@@ -11,10 +11,12 @@ import (
 
 // The design gate's sentence of `why` says that the root waits for a person's approval of each
 // gated step's document, which is untrue of a step on an ancestor's approval (dispatch://INFRA-3320,
-// R1 and R2). Where the root of a shut tree holds such a step, each gated step is named with its
-// own state: a step open on an ancestor's approval names that approval and no person's approval of
-// the root's document, and a step that waits on the ancestor's approval request names that
-// request. A tree whose root holds neither reads the table's sentence, as before.
+// R1 and R2). Where the root of a shut tree holds such a step, each step the tree is gated on is
+// named with its own state: a step open on an ancestor's approval names that approval and no
+// person's approval of the root's document, and a step that waits on the ancestor's approval
+// request names that request. A Verification document the root registered under a deployment that
+// gates the spec alone is one of those steps (record.TreeSteps), whichever of the two stands on a
+// basis. A tree whose root holds neither reads the table's sentence, as before.
 func TestTheDesignGateWhyGivesAStepOnAnAncestorsApprovalItsOwnWords(t *testing.T) {
 	basis := record.GateBasis{Issue: "LEGION-90", ArtifactID: "artifact-90", Version: 5, Approval: record.EventMark{Seq: 40, At: projectedAt},
 		Approver: "user:alice", RegisteredAt: projectedAt}
@@ -22,6 +24,11 @@ func TestTheDesignGateWhyGivesAStepOnAnAncestorsApprovalItsOwnWords(t *testing.T
 		basis, "ask-90")
 	open := record.OpenOnBasis(record.DesignGate{Issue: "LEGION-100", Step: record.DesignStepSpec, ArtifactID: "artifact-LEGION-100", LatestVersion: 2}, basis)
 	criteria := record.DesignGate{Issue: "LEGION-100", Step: record.DesignStepCriteria, ArtifactID: "artifact-criteria", LatestVersion: 3}
+	pendingCriteria := record.PendOnBasis(criteria, record.GateBasis{Issue: "LEGION-90", ArtifactID: "artifact-90-checks", Version: 4,
+		RegisteredAt: projectedAt}, "ask-91")
+	approvedSpec := record.DesignGate{Issue: "LEGION-100", Step: record.DesignStepSpec, ArtifactID: "artifact-LEGION-100", LatestVersion: 2,
+		ApprovedVersion: new(2), ApprovedMark: record.EventMark{Seq: 30, At: projectedAt}}
+	specAlone := []record.DesignStep{record.DesignStepSpec}
 	const shut = "The design gate of its tree stands shut, and the daemon starts no issue of that tree until it opens."
 	for _, tc := range []struct {
 		name  string
@@ -37,6 +44,14 @@ func TestTheDesignGateWhyGivesAStepOnAnAncestorsApprovalItsOwnWords(t *testing.T
 			map[record.DesignStep]record.DesignGate{record.DesignStepSpec: open, record.DesignStepCriteria: criteria},
 			shut + " The criteria step of LEGION-100 waits for a person's approval of its Verification document at version 3." +
 				" The spec step of LEGION-100 stands open on an ancestor's approval: a person approved version 5 of the primary document of LEGION-90."},
+		{"a spec a person approved beside a registered Verification document that waits on the ancestor's approval request", specAlone,
+			map[record.DesignStep]record.DesignGate{record.DesignStepSpec: approvedSpec, record.DesignStepCriteria: pendingCriteria},
+			shut + " The spec step of LEGION-100 stands open on a person's approval." +
+				" The criteria step of LEGION-100 waits on the ancestor's approval request ask-91, which asks a person to approve version 4 of the Verification document of LEGION-90."},
+		{"a spec open on the ancestor's approval beside a registered Verification document with its reviewer", specAlone,
+			map[record.DesignStep]record.DesignGate{record.DesignStepSpec: open, record.DesignStepCriteria: criteria},
+			shut + " The spec step of LEGION-100 stands open on an ancestor's approval: a person approved version 5 of the primary document of LEGION-90." +
+				" The criteria step of LEGION-100 waits for a person's approval of its Verification document at version 3."},
 		{"a spec step with no basis", nil, shutGate("LEGION-100"),
 			"The design gate of its tree stands shut: LEGION-100 waits for a person's approval of each gated step's document at its current version, and the daemon starts no issue of that tree until it opens."},
 	} {

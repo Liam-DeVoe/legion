@@ -43,7 +43,11 @@ body: |-
   the wait, with their pull requests, and asks for no merge of the default branch. Every testing
   task of a parent, an issue with a Dispatch child, waited or not, asks the tester to test the
   head merged with the tip of the pull request's base branch once it carries the children's
-  merges, in a checkout of its own, and to record each result with that base commit. Migration
+  merges, in a checkout of its own, and to record each result with that base commit. This release
+  replaces the rule of #3995's note that the root and sub-architect prompts sign off a parent
+  after its last round: a parent is signed off once each check a role runs has a pass at its head
+  whose observed line names a base commit carrying every needed child's merge, and a parent with
+  an open child waits in `awaiting_children`. Migration
   `20261114232555_awaiting_children` adds the phase, the held start with `children_wait_children`,
   `children_waited_at`, `phases.entry_from`, `phases.entry_given_task`,
   `phases.entry_given_entry` and `phases.entry_given_generation`. A caller below daemon

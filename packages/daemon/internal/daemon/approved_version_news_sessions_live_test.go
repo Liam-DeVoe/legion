@@ -83,8 +83,8 @@
 //     before the assertion. It passes when the reviewer's transcript holds an Envoy message naming
 //     version 2 and the changed check, the child's architect's transcript holds its envoy_publish
 //     to the reviewer's role topic naming the same, and the child has no approval request;
-//   - off-the-architect-tells-the-holders: under gates.design off, a root in implementing and its
-//     child in reviewing, both holders and the child's own architect live; the root's architect
+//   - off-the-architect-tells-the-holders: under gates.design off, a root in retro and its child
+//     in reviewing, both holders and the child's own architect live; the root's architect
 //     is asked to write version 2 of the root's spec. It passes when each holder's transcript
 //     holds an Envoy message naming version 2 and the change, and the root architect's transcript
 //     holds its envoy_publish to that holder's role topic naming the same;
@@ -231,7 +231,7 @@ const (
 // news task (prompts/go/worker-common.md).
 const (
 	sessionsArchitectMark = "Send that news yourself: for a version of a child's documents"
-	sessionsWorkerMark    = "A news task tells you that a person approved a new version of your tree's design."
+	sessionsWorkerMark    = "A news task tells you of an approved new version of your tree's design."
 )
 
 // sessionsLive is what every run of part two shares: the broker, the listener and Dispatch, the
@@ -532,7 +532,7 @@ func (s *sessionsLive) newRun(t *testing.T, name, arm string, gates config.Desig
 		s: s, name: name, arm: arm, repo: "acme/" + strings.ToLower(cfg.Project), launchable: map[claim.Token]bool{},
 	}
 	r.dispatchAs(http.MethodPost, "/api/v1/projects", map[string]string{"key": cfg.Project, "name": "Approved version news sessions"}, nil)
-	r.dispatchAs(http.MethodPut, "/api/v1/settings/repo-projects/"+r.repo, map[string]any{"project": cfg.Project, "default": true}, nil)
+	r.dispatchAs(http.MethodPut, "/api/v1/projects/"+cfg.Project+"/default-repository", map[string]any{"repo": r.repo}, nil)
 	r.rt = newLocalRuntime(t, cfg.StateDir, s.legion, s.omp, s.home, s.profile)
 	r.rt.daemonURL, r.rt.envoyURL, r.rt.natsURLs = cfg.DaemonURL, s.listener, []string{s.natsURL}
 	r.rt.overlays = func(claim.Token) []string { return s.overlays }

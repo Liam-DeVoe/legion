@@ -29,9 +29,9 @@
 #     root architect for a root in accepting and the implementer for one in implementing; an
 #     answered decision block alone sends nothing, in a window the accepting root's task arrives in;
 #   - a5-the-tester-passes-and-the-reviewer-is-told: a tester in a turn at a checks-only approval
-#     completes with a pass, and the reviewer's start task names the changed check, while the
-#     start task of the reviewer of the root's child, whose issue that version changed nothing of,
-#     names none;
+#     completes with a pass, and the reviewer's start task names the changed check, while in a
+#     second tree, whose root waits at admitted for its child, the start task of that child's
+#     reviewer, whose issue its root's checks-only version changed nothing of, names none;
 #   - a6-a-merged-root-is-told-nothing: a root in merging on a pull request GitHub reports merged
 #     is sent nothing and its merger's request_backward_move is refused naming the merge, while
 #     its unmerged child in reviewing is sent the task;
@@ -193,7 +193,7 @@ part_one_checks=(
   a2-the-reviewer-is-told-the-changed-sections:11
   a1-one-request-opens-both-rows:5
   a3-a-checks-change-reaches-accepting-and-implementing:7
-  a5-the-tester-passes-and-the-reviewer-is-told:8
+  a5-the-tester-passes-and-the-reviewer-is-told:9
   a6-a-merged-root-is-told-nothing:5
   a7-the-merger-waits-then-reads-the-opening:7
   r6-only-the-root-is-told-of-its-checks:4

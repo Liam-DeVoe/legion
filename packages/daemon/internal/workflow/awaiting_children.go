@@ -438,7 +438,7 @@ func acceptedEntry(row record.PhaseRow) bool {
 //     then queues the reconcile of the tree's news where the move leaves the holder owed news
 //     (queueMovedNews), as a transition does, so news whose change set no start could carry yet
 //     is sent once the reconcile has recorded it. While the parent waits it is owed nothing
-//     (record.UntoldHeld).
+//     (record.UntoldAwaitingChildren).
 //
 // It counts nothing — no pass, no pair, no round — and does not wait for the design gate, which
 // holds no phase already under way. The start goes through the one writer of a phase worker's
