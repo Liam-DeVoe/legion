@@ -1783,9 +1783,10 @@ function withEvidence(
   writeFileSync(s.casesFile, cases.map((c) => `${JSON.stringify(c)}\n`).join(""));
 }
 
-/** The end of a verdict's line where `count` of `screened` cases' listings were not measured. */
-const unmeasured = (count: number, screened: number) =>
-  `; the listing of ${count} of its ${screened} screened cases could not be measured`;
+/** The end of a verdict's line where `count` of `screened` cases' listings were not measured and
+ *  `assumed` of them rest on the assumption that their session had Dispatch. */
+const unmeasured = (count: number, screened: number, assumed = 0) =>
+  `; the listing of ${count} of its ${screened} screened cases could not be measured, and ${assumed} of the ${screened} rest on the assumption that their session had Dispatch`;
 
 // The architect's rules for dropped cases, the listing measure and pooled confirms
 // (2026-11-22): the results are planted as the runner writes them, so no row calls a model but
@@ -2081,6 +2082,82 @@ describe("refusals before any model call", () => {
     const reported = await cli(report(s).map((arg) => (arg === s.out ? inCheckout : arg)));
     expect({ code: reported.code, stderr: reported.stderr }).toEqual({ code: 0, stderr: "" });
   }, 60_000);
+});
+
+// The architect, 2026-11-22T07:48:46Z: "Count, per report, the cases resting on the assumption,
+// beside the listing measure".
+describe("behaviour: the cases resting on the assumption that their session had Dispatch", () => {
+  test("report counts them beside the listing on the verdict line, and gives each source of the answer in its dispatch line", async () => {
+    const s = scenario("dispatch-count", LOSS_SKILL(), [
+      { id: "c01" },
+      { id: "c02" },
+      { id: "c03" },
+      { id: "c04" },
+      { id: "c05" },
+      { id: "c06" },
+    ]);
+    plantSix(s, ["c01", "c06"], "c01");
+    // Four cases whose captures carry the Envoy plugin's block, each with where its answer comes
+    // from, as a stage records it.
+    const answers = { c02: "legion-role", c03: "assumed", c04: "assumed", c05: "transcript" };
+    for (const [id, dispatch] of Object.entries(answers)) {
+      const note = (arm: string) => ({
+        bodyFile: `captures/${arm}-planted/${id}.body.json`,
+        captureDigest: null,
+        sessionDigest: null,
+        dispatch,
+      });
+      const screen = plantedStage(s, id, "screen", KEPT);
+      plantResult(s, id, {
+        stages: { screen: { ...screen, captures: { old: note("old"), new: note("new") } } },
+      });
+    }
+    const ran = await cli(report(s));
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    const lines = ran.stdout.split("\n");
+    expect(lines).toContain(
+      `verdict: no loss detected by the registered rule: no confirmed case is a loss (0 flagged of 6 informative), and the planted-loss control (case c01) is a loss and its false-loss control is no loss${unmeasured(6, 6, 2)}`
+    );
+    expect(lines).toContain(
+      "dispatch: 4 cases carry the Envoy plugin's block of the skill: 2 rest on the assumption that their session had Dispatch, 1 take it from a Legion role, 1 from their transcript (arms.ts's dispatchOf)"
+    );
+  });
+
+  test("a capture that carries the Envoy plugin's block records where the answer that its session had Dispatch comes from, and report counts it", async () => {
+    const s = scenario("dispatch-capture", LOSS_SKILL(), [{ id: "c04" }]);
+    recordCaptures(s, ["old", "new", "none"]);
+    // Each saved capture's record as a capture of the plugin's block writes it.
+    const texts = { old: textDigest(s.old), new: textDigest(s.new) };
+    for (const name of ["old", "new", "none"] as const) {
+      const c = s.cases[0] as Case;
+      const arm = buildArm(c, name, { old: s.old, new: s.new }, path.join(s.dir, "arms", c.id));
+      const file = capturePaths(armCaptureDir(s.out, arm, texts), c.id, name).record;
+      writeFileSync(
+        file,
+        JSON.stringify({
+          ...JSON.parse(readFileSync(file, "utf8")),
+          injections:
+            name === "none"
+              ? []
+              : [{ by: "plugin", plugin: "pi-envoy", name: "dispatch-first", at: 0 }],
+          dispatch: { from: "assumed", why: "its context is devbox, and the runner assumes it" },
+        })
+      );
+    }
+    answer = behaviourStandIn;
+    const ran = await cli(behaviour("screen", s));
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    const captures = result(s.out, "c04").stages.screen?.captures ?? {};
+    expect(Object.entries(captures).map(([arm, note]) => [arm, note.dispatch])).toEqual([
+      ["old", "assumed"],
+      ["new", "assumed"],
+      ["none", undefined],
+    ]);
+    const reported = await cli(report(s));
+    expect(reported.stdout.split("\n")).toContain(
+      "dispatch: 1 cases carry the Envoy plugin's block of the skill: 1 rest on the assumption that their session had Dispatch, 0 take it from a Legion role, 0 from their transcript (arms.ts's dispatchOf)"
+    );
+  });
 });
 
 // The architect's rule (2026-11-22T07:48:46Z): a case whose block of its skill the arms cannot

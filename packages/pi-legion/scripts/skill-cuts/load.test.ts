@@ -754,8 +754,12 @@ const ENVOY_ENTRY = {
 
 /** Saves under `out` each task's Oh My Pi capture, where the command reads it back: F2's body
  *  with the task's text as its one message, and the fields of its record that the load test
- *  reads. */
-function saveCaptures(out: string, lines: readonly { id: string; text: string }[]): void {
+ *  reads, `record`'s over them. */
+function saveCaptures(
+  out: string,
+  lines: readonly { id: string; text: string }[],
+  record: Record<string, unknown> = {}
+): void {
   for (const { id, text } of lines) {
     const files = loadCapturePaths(out, "omp", id);
     writeTree(path.dirname(files.body), {
@@ -774,6 +778,7 @@ function saveCaptures(out: string, lines: readonly { id: string; text: string }[
         hintCalls: [],
         // A saved capture holds the harness-string rule's record, or it is refused.
         harness: { head: null, replaced: [] },
+        ...record,
       }),
     });
   }
@@ -1284,6 +1289,48 @@ describe("skill-cuts load applies the listing rule", () => {
       ["near-1", 0, true],
       ["need-2", 0, false],
     ]);
+  });
+
+  // The architect, 2026-11-22T07:48:46Z: count, per report, the cases resting on the assumption
+  // that their session had Dispatch, beside the listing measure.
+  test("the summary and the listing rule's line count, beside the listing, the tasks that carry the Envoy plugin's block and those that rest on the assumption that their session had Dispatch", async () => {
+    const dir = path.join(scratch, "dispatch-count");
+    const made = setup(dir);
+    const skill = path.join(dir, "dispatch-first");
+    writeTree(skill, { "SKILL.md": DISPATCH_FIRST_SKILL });
+    // One task in a dev box's context, one in a Legion role's: each profile installs the plugin.
+    const lines = [
+      { id: "box-1", text: NEED, label: "need", source: "written", profile: "box.json" },
+      { id: "pod-1", text: NEAR, label: "near-miss", source: "written", profile: "pod.json" },
+    ];
+    const tasks = path.join(dir, "tasks.jsonl");
+    writeFileSync(tasks, lines.map((line) => `${JSON.stringify(line)}\n`).join(""));
+    const withEnvoy = { ...BETA_PROFILE, plugins: [ENVOY_ENTRY] };
+    writeFileSync(path.join(dir, "box.json"), JSON.stringify(withEnvoy));
+    writeFileSync(
+      path.join(dir, "pod.json"),
+      JSON.stringify({ ...withEnvoy, context: "legion:acme:worker" })
+    );
+    const out = path.join(dir, "out");
+    saveCaptures(out, lines, {
+      listing: [{ name: "dispatch-first", hint: "Use to search the made-up tracker first." }],
+      injections: [{ by: "plugin", plugin: "pi-envoy", name: "dispatch-first", at: 0 }],
+    });
+    answer = () => TEXT;
+    const ran = await cli([
+      ...["load", "--config", made.config, "--key-file", made.keyFile, "--skill", skill],
+      ...["--tasks", tasks, "--host", "omp", "--out", out],
+      ...["--omp", path.join(dir, "no-omp-runs-here"), "--scratch", path.join(dir, "scratch")],
+      ...["--cache-dir", path.join(dir, "cache")],
+    ]);
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(ran.stdout).toContain(
+      "tasks dropped, each missing more than 10% of the names its session's recorded listing holds; 2 tasks carry the Envoy plugin's block of the skill, 1 of them on the assumption that their session had Dispatch"
+    );
+    const summary = z
+      .looseObject({ listing: z.unknown(), dispatch: z.unknown() })
+      .parse(JSON.parse(readFileSync(path.join(out, "summary.json"), "utf8")));
+    expect(summary.dispatch).toEqual({ carryBlock: 2, assumed: 1, legionRole: 1, transcript: 0 });
   });
 });
 

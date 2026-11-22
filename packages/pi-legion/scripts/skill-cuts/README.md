@@ -592,9 +592,24 @@ from the plugin's own `skills/dispatch-first/SKILL.md`, which it reads as it loa
 keeps that block, and a capture runs with Dispatch off, so each arm but `none` puts the block, built
 from its own SKILL.md by the plugin's own function, where the plugin puts it; `none` puts none, and
 gets a hidden stand-in of the file (`hide: true`), so the plugin still loads and the listing names
-nothing more. A case does not record whether its session had Dispatch; the runner takes it that it
-did. Oh My Pi gives a subagent each skill its agent definition's `autoloadSkills` names as a
-`skill-prompt` message before its task (task/executor.ts, lines 5573-5607), and the transcript
+nothing more. Whether the session had Dispatch is taken from the case where the case says
+(arms.ts's `dispatchOf`): a Legion role's session had it (its context is
+`legion:<project>:<role>`), and so did a subagent of one (its evidence item `subagent <agent>`
+names a `legion:<project>` store); so did a session one of whose messages holds the dispatch-first
+block (the marker `<dispatch-first-skill>`, which opens the Envoy plugin's block and Claude Code's
+session-start hook output alike) or calls Dispatch (a `dispatch_<command>` tool, a write of an
+`xd://dispatch_<command>` device, or a `dispatch` command in a bash call). A dev box's session
+that shows neither is taken to have had it. Each arm carries the answer and why (`arm.dispatch`),
+each capture's record keeps it beside `injections` (`dispatch`), and the block goes in on each
+answer. On 2026-11-22, of the 180 distinct cases built so far, 101 take it from a Legion role, 53
+from the transcript (each a `dispatch` command in a bash call) and 26 rest on the assumption.
+`behaviour report` counts, for each skill, the cases whose captures carry the block by where the
+answer comes from (its `dispatch:` line), and its verdict line gives how many of the screened
+cases rest on the assumption beside how many listings could not be measured; `load` counts its
+tasks the same way beside its listing counts (the summary's `dispatch`, from each task profile's
+context alone, since a task holds no message of its session). Oh My Pi gives a subagent each
+skill its agent definition's `autoloadSkills` names as a `skill-prompt` message before its task
+(task/executor.ts, lines 5573-5607), and the transcript
 keeps it: each arm but `none` rebuilds that message from its own SKILL.md under the recorded path,
 as Oh My Pi renders it (the body, a blank line, `---`, a blank line and `Skill: <path>`, put through
 Oh My Pi's prompt format, which takes the padding out of a table's cells), and `none` leaves it
@@ -615,8 +630,9 @@ dispatch-first in a profile that installs the Envoy plugin is captured with the 
 the tested text and the hidden stand-in, and a profile that also installs a copy under its own name
 is refused: the plugin would put that copy in. The load test refuses dispatch-first on Claude Code,
 whose Envoy plugin puts it into a session from a session-start hook the test does not run, and a
-subagent profile whose agent definition (read from the profile's plugins at their commits)
-autoloads the tested skill: the subagent has its text before its task whatever the listing says.
+subagent profile whose agent definition (read in Oh My Pi's order: the dev box's user agents, then
+the profile's plugins, each at its commit) autoloads the tested skill: the subagent has its text
+before its task whatever the listing says.
 In any other profile such a skill is listed and tested like any other.
 
 On 2026-11-22 the commits of cybermonklabs/legion the cases use (155 of them) have one skill a
@@ -626,23 +642,60 @@ name in `packages/pi-legion/agents/`). Both set `disable-model-invocation`, so n
 and the load test refuses them. The other plugins the profiles install hold skills, and one of them
 agents, but inject and autoload none, and no agent of Oh My Pi's own autoloads a skill.
 
+Oh My Pi reads a subagent's agent definition at the subagent's start from the user agents
+directory (`~/.omp/agent/agents`, or `~/.omp/profiles/<name>/agent/agents` under a named profile)
+before any plugin's `agents/`, and takes the first file of the agent's name (task/discovery.ts,
+lines 53-74, 93-120 and 157-162; task/structured-subagent.ts, lines 538-541; utils/src/dirs.ts,
+lines 361-363). The dev box's repository links its own agents there: its installers/omp.sh links
+`${DOTFILES_DIR}/omp/agents` as `${OMP_AGENT_DIR}/agents`, `OMP_AGENT_DIR` being
+`${HOME}/.omp/agent` (lines 9 and 43 on 2026-11-22, lines 9 and 52 on 2026-10-31). So for a
+subagent's context the runner reads first the directory that an installer script of a repository
+of the profile (`installers/*.sh`: an `ensure_link` or `ln -s` line whose target is
+`.omp/agent/agents` under the home) links there (context.ts's `userAgents`); the record's `agent`
+names that line (`linkedBy`). Oh My Pi reads those agents at each subagent's start, from the dev
+box's checkout as it is then, so the runner reads the installers and the directory they link at
+the commit of the subagent's start: the commit the case's `read times of <repository>` evidence
+item gives for that repository's pool directories (the commit after "its pool directories at"),
+else the one commit the profile holds the repository at. A profile that holds such a repository
+at two commits with no such item reads none, and the record's `leftOut` says why. It reads none
+for a Legion store's session, whose pod runs no dev box's installers, and none when two
+repositories of the profile each link one, which the record's `leftOut` says. On 2026-11-22 the
+dev box's repository holds 25 agent definitions and none autoloads a skill; two are named
+`thermonuclear-code-quality` and `thermonuclear-deep-review`, so a dev box's subagent of either
+name runs the box's definition, which autoloads nothing, though the profile also installs
+pi-legion's. Oh My Pi reads a project's `.omp/agents` before the user's; a profile does not hold
+it, and the runner does not read it.
+
+A profile is read at the prompt build its session ran under. Oh My Pi 18.18.6 writes a
+`system-prompt-digest` line in a session's file when its prompt changes, just before the first
+reply under the new prompt (session/session-tools.ts, lines 1818-1827), and a top-level session
+reads every skill directory again, a pool's among them, as it starts and on each reload that
+rebuilds its prompt (lines 2321-2337, 2466-2506 and 2530-2547). So a top-level case is read at the
+line of the build its step ran under: the last of its session's lines at or before its step's
+message (`realStep`'s time), or the next line when that one holds the case's `sessionDigest` and
+the last does not (the step was the first reply under its build, whose line Oh My Pi writes as
+that reply ends). Every repository, a pool's too, is read at that line's time; a case under the
+session's first build, and every task (it runs as its session's first message), is read at the
+session's start, when Oh My Pi made that build. `build-cases` takes the lines from the transcript,
+`--reprofile` from `digest-times.sql`, which serves a top-level session as its own root (one
+query a store). The `read times` evidence item names the step's time, the line used (its place,
+time and digest) and the time read.
+
 A subagent's profile (a session that recorded its prompt) is read at two times. Oh My Pi 18.18.6
 gives a subagent the skills its parent loaded (task/structured-subagent.ts, lines 806-818 and
 895-902), a subagent of a subagent its parent's, and the subagent rescans only the skill
-directories an extension names (session/session-tools.ts, lines 2350-2560). So each repository is
+directories an extension names (session/session-tools.ts, lines 2350-2452). So each repository is
 read at the root session's last prompt build before the subagent's start, and each repository a
-skills-sources pool clones at the subagent's start. A pool's host (the dotfiles: its
-skills-sources.json, plugin lists, installers and settings) is read at both: its plugin lists,
-installers and settings at the root's build, what the parent loaded, and its pool directories at
-the subagent's start, what Oh My Pi rescans then; the `read times of <repository>` evidence item
-names both commits. The root is the file the topmost `<…>Z_<id>` directory of the subagent's path
-stands for, and each prompt build writes one `system-prompt-digest` line in it
-(session/session-tools.ts, lines 1795-1830). `digest-times.sql` reads the times of those lines
-before the subagent's start, one query a store for `--reprofile` and one a subagent session
-otherwise, and no other text of the file. With no build before the start (a root the store does
-not hold, or one with no digest line before it), every repository is read at the subagent's
-start. The `read times` evidence item names both times and which was used; a pin whose tag has no
-commit at the time read leaves its repository at the commit read, and the evidence says so.
+skills-sources pool clones at the subagent's start. A pool's host is read at both: its plugin
+lists, installers and settings at the root's build, and its pool directories at the subagent's
+start; the `read times of <repository>` evidence item names both commits (`its pool directories
+at <sha>`, which context.ts reads). The root is the file the topmost `<…>Z_<id>` directory of the
+subagent's path stands for (a file below no such directory is its own root). `digest-times.sql`
+reads the time and digest of each of the root's digest lines, one query a store for
+`--reprofile` and one a session otherwise, and no other text of the file. With no build before
+the start, every repository is read at the subagent's start. The `read times` evidence item names
+both times and which was used; a pin whose tag has no commit at the time read leaves its
+repository at the commit read, and the evidence says so.
 
 A package a plugin list pins by an exact npm version (`"@scope/name": "1.2.3"`, no range) ships
 the skills of that release, not its repository's default branch: `bun install` installs that
@@ -668,10 +721,21 @@ is one JSON object (`ListingMeasure` in build.ts): how far the listing its rebui
 session saw. A session that recorded its system prompt (a subagent's) is measured against that
 prompt's `<skills>` lines (`session listing`). A top-level session records only its prompt's
 digest, and the build makes no prompt, so `rebuiltDigest` is always null; it is measured against
-the recorded listing of a subagent it started (`subagent listing`: the earliest one-level child
-of its directory whose `session_init` holds a listing, read with `subagents.sql`, one query a
-store, since Oh My Pi gives a subagent its parent's skills: task/structured-subagent.ts, lines
-811-818 and 900; task/executor.ts, lines 662-666 and 5256), else it is `not measurable`. The
+the recorded listing of a subagent it started under the build its profile is read at (`subagent
+listing`: the earliest one-level child of its directory whose `session_init` holds a listing and
+whose header's time falls between that build's line and the next, or before the second line for
+the first build; read with `subagents.sql`, one query a store, since Oh My Pi gives a subagent its
+parent's skills: task/structured-subagent.ts, lines 811-818 and 900; task/executor.ts, lines
+662-666 and 5256), else it is `not measurable`, with why: a subagent spawned under another build
+is never used. The measure says the store holds no such subagent only after `subagents.sql` was
+asked, and names the window it asked for; a session the store was not asked about (it recorded
+its own listing, no build of it is known, the store no longer holds it, or the query failed) is
+`not measurable` with that reason. A task the reader picked from a session is asked about by the
+path hash its profile was rebuilt from, as every other session is. A context session
+(`--context-session`) has no step: its measured subagent is the earliest of all whose
+`session_init` holds a listing, found first, and its profile is read at the build that subagent
+was spawned under (the session's last line before the subagent's start), so the measure compares
+one build with itself. The
 item names the recorded names the profile does not list (`missing`), those it lists that the
 recording lacks (`added`), and `missingShare`. Only names are compared: Oh My Pi lists under each
 name a model's hint for the skill or a preview of its description (system-prompt.ts, lines
