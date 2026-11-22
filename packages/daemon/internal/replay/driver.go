@@ -271,10 +271,10 @@ type Divergence struct {
 	// does not record, began in the replay while the issue's tree ran no lifecycle there, which the
 	// replay wrote no claim of and went on (ensureClaim).
 	NoLifecycleTurns int `json:"noLifecycleTurns"`
-	// InferredSlots is how many of the start state's slots the trace inferred an issue held from
-	// before the reach (assumption 34), and SlotCountDifference the slots the trace holds right
-	// after the first slot line less the slots in use that line says (SlotCount.Difference), for
-	// which the start state names no issue.
+	// InferredSlots is how many of the start state's slots the trace inferred an issue held with no
+	// slot line of it (assumption 34), and SlotCountDifference the slots the trace holds right after
+	// the slot line at the window's start, the first at or after it, less the slots in use that line
+	// says (SlotCount.Difference), for which the start state names no issue.
 	InferredSlots       int `json:"inferredSlots"`
 	SlotCountDifference int `json:"slotCountDifference"`
 }
@@ -567,6 +567,7 @@ func (d *driver) run() error {
 		}
 	}
 	d.openSeeded()
+	d.releaseSeededHolds()
 	if err := d.drain(); err != nil {
 		return err
 	}

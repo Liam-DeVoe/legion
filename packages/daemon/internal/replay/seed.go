@@ -78,10 +78,10 @@ type SeedReport struct {
 	// production check's (assumption 30).
 	LeftOut map[int]int
 	// InferredSlots is how many of the slots the start state wrote the trace inferred an issue held
-	// from before the reach (SlotSpan.Inferred, assumption 34).
+	// with no slot line of it (SlotSpan.Inferred, assumption 34).
 	InferredSlots int
-	// SlotCount is the trace's check of the slots it holds against the slots in use its first slot
-	// line says (Trace.SlotCount), whose difference is no issue's.
+	// SlotCount is the trace's check of the slots it holds against the slots in use the slot line at
+	// the window's start says (Trace.SlotCount), whose difference is no issue's.
 	SlotCount SlotCount
 }
 

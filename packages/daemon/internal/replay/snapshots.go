@@ -330,6 +330,37 @@ func (s *snapshots) timelineAt() Timeline {
 	return s.timeline
 }
 
+// beginWaitsAt begins each issue of tl that waits for a slot in its first state, taken at tl's
+// start, at the moment starts gives it, where that is earlier: the moment the record shows it
+// began that wait (recordedWaitStarts). The start state is the record's (assumption 6), so when
+// its waits began is part of it, and the measures that run back to a wait's beginning
+// (Scorecard.MedianSlotWaitMinutes) read it as the record's own scorecard and the line timeline
+// do. The state before tl's start is the first state carried back; no measure counts time before
+// the start. The waits on other issues that stand at the start need nothing: the measures count
+// their hours from the window's start alone (measureSpan).
+func (tl Timeline) beginWaitsAt(starts map[string]time.Time) {
+	for key, since := range starts {
+		c := tl.Issues[key]
+		if c == nil || len(c.States) == 0 || !c.States[0].At.Equal(tl.From) || !waitsForSlot(c.States[0].IssueState) ||
+			!since.Before(tl.From) {
+			continue
+		}
+		c.States = slices.Insert(c.States, 0, Stint{At: since, IssueState: c.States[0].IssueState})
+	}
+}
+
+// startWaiters is the issues of tl that wait for a slot in their first state, taken at tl's start.
+func (tl Timeline) startWaiters() []string {
+	var keys []string
+	for key, c := range tl.Issues {
+		if len(c.States) > 0 && c.States[0].At.Equal(tl.From) && waitsForSlot(c.States[0].IssueState) {
+			keys = append(keys, key)
+		}
+	}
+	slices.Sort(keys)
+	return keys
+}
+
 // waitsOnIssues says whether the timeline holds a wait of an issue on another issue
 // (assumption 4).
 func (s *snapshots) waitsOnIssues() bool {

@@ -332,6 +332,9 @@ Last, it prints each assumption that the run rests on, with the number of outbox
 A replay's scorecard names the assumptions from 1 to 25 that its measures rest on.
 `run.json` and the output of `run` also name the tool's own assumptions, from 26 on.
 The gap between the two timelines is the error of reading a record from its lines, which the scorecard of every record rests on.
+The daemon writes the line of an issue's wait for its open children once for each generation of its tree.
+So a line timeline reads that wait again, with no line, where the issue's last open child closed and another opened before its own first phase started.
+An issue that waits for a slot at the window's start began that wait where the record shows, in both timelines, since the start state is the record's.
 
 ### `legion replay scorecard`
 
@@ -949,6 +952,9 @@ The tool reads every hold at its recorded time: a design gate, a link on a child
 
 **Evidence in a recorded window.** _The holds that the record names._
 The daemon's lines give each design gate's opening and closing, each held phase and its release, each pause and resume, each tree that lingers, and each boot's catch-up.
+A window of a release that writes no line where a phase is held reads each hold from the failed claim of the phase's worker.
+That hold ends at its release line, at the next launch of a claim of the issue in the failed role, at the issue's next move, or at its leave, whichever comes first.
+A relaunch or a move with no release line shows the record working the phase again, and the replay releases the hold there as it releases a recorded one.
 Dispatch's events give each link, label and status.
 The test `TestEveryHoldHasASourceInTheReplay` builds one small window for each hold of the daemon, and fails where a start does not wait from the start of the hold to its end.
 
@@ -1745,13 +1751,17 @@ If a repair at a boot, or a change of the mapping, gave or took a slot that no r
 Read each process start in the window, and the release that its part gives.
 After a boot that starts a new release, look in the record for a slot or a move that no fact of the window explains.
 
-### Assumption 34: An issue the record first shows in a phase that keeps a slot, whose first slot line gives a slot back or which no slot line names, held a slot from before the window's reach, until that line or, with none, until the rule gives the slot back
+### Assumption 34: An issue the record first shows in a phase that keeps a slot, whose first slot line gives a slot back or which no slot line names, held a slot from before the window's reach, until that line or, with none, until the rule gives the slot back; and an issue that stands at the window's start in a worker's phase that keeps a slot, with no slot line holding it there and no wait that gives the slot back, whose worker started in that run of phases after its last slot went back, held one from its last entry into that run until the rule gives it back
 
 The tool's own.
 Doubtful where the reach begins with slots in use and no line names their holders, because the slot is then read from the phase alone.
+Doubtful too where a slot is taken again by a way that writes no slot line, because the slot at the window's start is then read from the worker's start alone.
+The daemon starts the worker of a phase that keeps a slot only once the issue holds one, so a worker that started after the issue's last slot went back is the record's sight of a slot that no line names.
+An issue whose work came back with no slot and whose worker has not started owes its start, and is given no slot.
 
-**Evidence in a recorded window.** _The first slot line after the reach._
-The first `admission:` slot line after the start of the reach gives the slots in use.
+**Evidence in a recorded window.** _The slot line at the window's start._
+The first `admission:` slot line at or after the window's start gives the slots in use where the start state places them.
+A window whose log holds no slot line from its start on is read at the last slot line before it, whose count stands at the start.
 The start state reports the difference between that count and the slots that the trace holds right after the line, and the holders that it inferred.
 `run.json` carries both, as `divergence.slotCountDifference` and `divergence.inferredSlots`.
 
@@ -1771,6 +1781,6 @@ A holder that the inference misses moves each measure the other way.
 - Slots: Up for the slots held, with no worker in a turn above all, by the span of the inferred slot.
 
 **The reading that would test it.** _The slot count against the trace._
-Compare the slots in use that the first slot line after the reach gives with the slots that the trace holds right after that line.
+Compare the slots in use that the slot line at the window's start gives with the slots that the trace holds right after that line.
 A difference of zero, with no inferred holder, means that the window does not rest on this assumption.
 A longer `--before` moves the reach back, which can make the difference smaller where the lines exist.

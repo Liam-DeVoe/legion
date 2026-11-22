@@ -451,6 +451,39 @@ func lineTimeline(t Trace, ranks rankFunc, rule func(time.Time) record.SlotRule)
 	return tl
 }
 
+// recordedWaitStarts is, for each of keys that t's record shows waiting for a slot at at, the
+// moment it began that wait: the first of the run of moments up to at in which its line reading
+// waits for one (waitsForSlot, as waitRuns joins them), read as lineTimeline reads each moment.
+// An issue the record shows waiting for none at at is left out. Each issue is read alone, at its
+// own moments, so the cost is that of its own reading.
+func recordedWaitStarts(t Trace, ranks rankFunc, rule func(time.Time) record.SlotRule, at time.Time, keys []string) map[string]time.Time {
+	r := &lineReader{t: t, ranks: ranks, rule: rule, index: map[string]*issueIndex{}}
+	starts := make(map[string]time.Time, len(keys))
+	for _, key := range keys {
+		x := r.of(key)
+		if x == nil {
+			continue
+		}
+		var since time.Time
+		waiting := false
+		for _, moment := range r.moments(x) {
+			if moment.After(at) {
+				break
+			}
+			switch {
+			case !waitsForSlot(r.stateAt(x, moment)):
+				waiting = false
+			case !waiting:
+				since, waiting = moment, true
+			}
+		}
+		if waiting {
+			starts[key] = since
+		}
+	}
+	return starts
+}
+
 // issueWaits is iss's waits on other issues as the measures count them: its link and children
 // waits, in the order they began, each run of them that overlap read as one wait, from the first
 // one's start to the last one's end, ended by what ended the last.

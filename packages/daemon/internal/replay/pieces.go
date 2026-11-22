@@ -488,10 +488,8 @@ func (d *driver) heldSignOff(key string) error {
 }
 
 // failPiece enters the failure of the claim of p's role that ends p (intake.ClaimFailed), which
-// holds the issue, and queues the hold's recorded end at its recorded offset from the failure: the
-// architect's retry (intake.RetryOrEscalate), the operator's (intake.RestartPhase), or nothing for a
-// person's todo on the held root, whose own event releases it; and each escalation of the hold at
-// its own offset.
+// holds the issue, and queues the hold's recorded end and escalations at their recorded offsets
+// from the failure (queueHoldEnd).
 func (d *driver) failPiece(p *piece) error {
 	failed := ClaimFailed{LineHead: LineHead{Time: p.end}, Claim: ClaimRef{Issue: p.issue, Role: p.role}}
 	for _, line := range d.lines.failed {
@@ -502,43 +500,65 @@ func (d *driver) failPiece(p *piece) error {
 	if err := d.claimFailed(failed); err != nil {
 		return err
 	}
-	hold := p.hold
-	if hold == nil {
-		return nil
+	if p.hold != nil {
+		d.queueHoldEnd(p.issue, p.role, p.hold, d.clock.Instant())
 	}
-	failedAt := d.clock.Instant()
+	return nil
+}
+
+// releaseSeededHolds queues the end and the escalations of each hold that stands at the window's
+// start, which the start state places (Seed) and no failure of the replay's begins: each at its
+// recorded time, the hold having begun at its recorded start (queueHoldEnd).
+func (d *driver) releaseSeededHolds() {
+	for _, key := range sortedKeys(d.script.pieces) {
+		iss := d.trace.Issues[key]
+		for i := range iss.Waits {
+			if hold := &iss.Waits[i]; hold.Kind == WaitHeld && standsAt(hold.Start, hold.End, d.window.From) {
+				d.queueHoldEnd(key, hold.Role, hold, hold.Start)
+			}
+		}
+	}
+}
+
+// queueHoldEnd queues what ends hold, a hold of key's role's claim that began at began in the
+// replay, each at its recorded offset from the hold's start: each escalation of the hold from the
+// window's start on, and the hold's end where the record shows the issue working the held phase
+// again (Wait.released) — the architect's retry (intake.RetryOrEscalate), the operator's
+// (intake.RestartPhase), or nothing for a person's todo on the held root, whose own event releases
+// it. A hold the record shows going on with no release line (WaitWentOn) is released as the
+// architect's retry releases one, under the daemon's own reason.
+func (d *driver) queueHoldEnd(key string, role claim.Role, hold *Wait, began time.Time) {
 	for _, escalation := range d.lines.escalated {
-		if escalation.Issue == p.issue && escalation.Time.After(hold.Start) && (hold.End.IsZero() || escalation.Time.Before(hold.End)) {
-			d.push(&item{at: failedAt.Add(escalation.Time.Sub(hold.Start)), class: classAct, rec: escalation.Time, order: lineOrder,
+		if escalation.Issue == key && escalation.Time.After(hold.Start) && !escalation.Time.Before(d.window.From) &&
+			(hold.End.IsZero() || escalation.Time.Before(hold.End)) {
+			d.push(&item{at: began.Add(escalation.Time.Sub(hold.Start)), class: classAct, rec: escalation.Time, order: lineOrder,
 				run: func() error {
-					_, err := d.apply("api", d.factID("escalate", p.issue), intake.RetryOrEscalate{Issue: p.issue, Decision: intake.EscalateDecision,
+					_, err := d.apply("api", d.factID("escalate", key), intake.RetryOrEscalate{Issue: key, Decision: intake.EscalateDecision,
 						Reason: escalation.Reason})
 					return err
 				}})
 		}
 	}
-	if hold.EndedBy != WaitReleased {
-		return nil
+	if !hold.released() {
+		return
 	}
 	reason := ""
 	for _, line := range d.lines.released {
-		if line.Issue == p.issue && line.Time.Equal(hold.End) {
+		if line.Issue == key && line.Time.Equal(hold.End) {
 			reason = line.Reason
 		}
 	}
 	if reason == heldRootReleaseReason {
-		return nil
+		return
 	}
-	at := failedAt.Add(hold.End.Sub(hold.Start))
-	d.push(&item{at: at, class: classAct, rec: hold.End, order: lineOrder, run: func() error {
+	d.push(&item{at: began.Add(hold.End.Sub(hold.Start)), class: classAct, rec: hold.End, order: lineOrder, run: func() error {
 		if reason == operatorRetryReason {
-			_, err := d.apply("api", d.factID("restart", p.issue), intake.RestartPhase{Issue: p.issue, Role: p.role})
+			_, err := d.apply("api", d.factID("restart", key), intake.RestartPhase{Issue: key, Role: role})
 			return err
 		}
-		_, err := d.apply("api", d.factID("retry", p.issue), intake.RetryOrEscalate{Issue: p.issue, Decision: intake.RetryDecision, Reason: reason})
+		_, err := d.apply("api", d.factID("retry", key), intake.RetryOrEscalate{Issue: key, Decision: intake.RetryDecision, Reason: reason})
 		return err
 	}})
-	return nil
 }
 
 // claimFailed enters a recorded claim failure: the claim the stub holds is failed, its turn

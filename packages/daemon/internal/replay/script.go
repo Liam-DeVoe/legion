@@ -332,7 +332,10 @@ func buildScript(t Trace, w Window, lines recordLines) (script, error) {
 }
 
 // issuePieces is iss's pieces of work that end at or after the window's start, in order: each
-// visit's segment, cut at each hold of its role's claim inside it.
+// visit's segment, cut at each hold of its role's claim inside it. The rest of a segment after a
+// hold the record shows released (Wait.released) is a piece of its own, opened by the retry that
+// releases it; a hold the record shows going on past the segment's end leaves that piece none of
+// the segment's length.
 func issuePieces(t Trace, iss *IssueTrace) []*piece {
 	var pieces []*piece
 	for i := range iss.Visits {
@@ -362,11 +365,14 @@ func issuePieces(t Trace, iss *IssueTrace) []*piece {
 		for _, hold := range holds {
 			pieces = append(pieces, &piece{issue: iss.Key, visit: visit, phase: visit.Phase, role: role, opens: opens, start: start,
 				end: hold.Start, ends: endFailure, hold: hold})
-			if hold.EndedBy != WaitReleased {
+			if !hold.released() {
 				released = false
 				break
 			}
 			start, opens = hold.End, opensOnRetry
+			if !until.IsZero() && start.After(until) {
+				start = until
+			}
 		}
 		if !released {
 			continue

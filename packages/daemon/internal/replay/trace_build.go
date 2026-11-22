@@ -47,9 +47,10 @@ type Trace struct {
 	// Passed is every candidate of the line a pass passed over, which the record line alone names:
 	// none for a window that does not hold that kind.
 	Passed []PassedOver
-	// InferredSlots is how many issues the trace infers held a slot from before the reach that no
-	// slot line names (SlotSpan.Inferred, assumption 34), and SlotCount the check of the slots it
-	// holds, seen and inferred, against the record's own count at the first slot line.
+	// InferredSlots is how many slots the trace infers an issue held that no slot line names
+	// (SlotSpan.Inferred, assumption 34): from before the reach, or at the window's start, and
+	// SlotCount the check of the slots it holds, seen and inferred, against the record's own count
+	// at the window's start.
 	InferredSlots int
 	SlotCount     SlotCount
 	// Controller is the turns of the project's controller, whose claim names no issue.
@@ -311,11 +312,13 @@ type SlotMove struct {
 
 // SlotSpan is one slot an issue held, from its Start to its End (zero while held at the window's
 // end). Before is a slot the issue already held where the log begins: one its first slot line gives
-// back, or one no slot line names that the trace infers from the phase the log first shows it in
-// (Inferred, assumption 34). Reason is the path that took it back where the record line says it,
-// and ForWait a slot taken back because the issue waited on another issue (a link or its
-// children), read from the reason or from a wait the trace holds at that moment: the issue then
-// stands in the line for a slot of its own again.
+// back, or one no slot line names that the trace infers from the phase the log first shows it in.
+// Inferred is a slot no slot line names that the trace infers (assumption 34): one held from before
+// the reach (inferSlots), or one an issue that stands at the window's start in a worker's phase that
+// keeps a slot took again by a way no line shows (inferStartSlots). Reason is the path that took it
+// back where the record line says it, and ForWait a slot taken back because the issue waited on
+// another issue (a link or its children), read from the reason or from a wait the trace holds at
+// that moment: the issue then stands in the line for a slot of its own again.
 type SlotSpan struct {
 	Start, End time.Time
 	Before     bool
@@ -325,23 +328,24 @@ type SlotSpan struct {
 	ForWait    bool
 }
 
-// SlotCount is the check of the slots the trace holds against the record's own count of them
-// (assumption 34). Each line of a slot move, `admission: slot taken|released` and a pass's record
-// line alike, carries the slots the project held once the move was made (SlotMove.Slots), so at the
-// first slot move the log holds, the slots the trace holds right after it, each seen in a line or
-// inferred held from before the reach, are counted beside that count.
+// SlotCount is the check of the slots the trace holds against the record's own count of them at the
+// window's start, where the start state places the slots (assumption 34). Each line of a slot
+// move, `admission: slot taken|released` and a pass's record line alike, carries the slots the
+// project held once the move was made (SlotMove.Slots), so at the first slot move the log holds at
+// or after the window's start, or at the last before it where it holds none from then on, the slots
+// the trace holds right after it, each seen in a line or inferred, are counted beside that count.
 type SlotCount struct {
-	// At is the moment of the first slot move the log holds, zero where it holds none.
+	// At is the moment of the slot move the count is checked at, zero where the log holds none.
 	At time.Time
 	// Recorded is the slots in use that move's line says the project held once it was made, and
 	// Held the slots the trace holds right after it.
 	Recorded, Held int
 }
 
-// Difference is the slots the trace holds right after the first slot move less the slots its line
-// says were in use: zero where the trace accounts for every slot the record held, below zero by
-// each slot the record held for an issue the trace holds none for, and above it by each slot the
-// trace holds that the record did not.
+// Difference is the slots the trace holds right after the slot move at the window's start less the
+// slots its line says were in use: zero where the trace accounts for every slot the record held
+// there, below zero by each slot the record held for an issue the trace holds none for, and above
+// it by each slot the trace holds that the record did not.
 func (c SlotCount) Difference() int { return c.Held - c.Recorded }
 
 // PassedOver is one candidate of the line a pass passed over, as its record line names it.
@@ -366,7 +370,7 @@ const (
 	// WaitPerson is a root waiting on a person's answer to an ask or review of its spec.
 	WaitPerson WaitKind = "person"
 	// WaitHeld is an issue held where its phase's worker failed, until its architect or the
-	// operator releases it.
+	// operator releases it, or the record shows its phase going on with no release (WaitWentOn).
 	WaitHeld WaitKind = "held"
 )
 
@@ -390,6 +394,11 @@ const (
 	WaitAnswered WaitEnd = "answered"
 	// WaitReleased is a held phase released (`workflow: a held phase is released`).
 	WaitReleased WaitEnd = "released"
+	// WaitWentOn is a hold the record shows over with no line of its release: the next launch of a
+	// claim of the issue in the hold's role, which ran the held phase's worker again, or the
+	// issue's next recorded move, which names a phase it stood in other than held
+	// (traceBuilder.holdWentOn).
+	WaitWentOn WaitEnd = "went_on"
 	// WaitMovedOn is a wait that stood when the issue's own phase moved on, which no rule the
 	// daemon runs lets happen; the trace ends the wait there rather than carry it on.
 	WaitMovedOn WaitEnd = "moved_on"
@@ -416,6 +425,11 @@ type Wait struct {
 	Role       claim.Role
 	Reason     string
 }
+
+// released says whether w, a hold, ended with the record's issue working the held phase again:
+// its release line (WaitReleased), or the phase going on with none (WaitWentOn). A hold that ends
+// otherwise ended with its issue's leave, or stands at the window's end.
+func (w Wait) released() bool { return w.EndedBy == WaitReleased || w.EndedBy == WaitWentOn }
 
 // TurnEnd is how a turn ended.
 type TurnEnd string
@@ -581,9 +595,11 @@ func BuildTrace(w Window) (Trace, error) {
 		t: &Trace{Project: w.Project, From: w.From, To: w.To, Start: w.From.Add(-time.Duration(w.Before)), Parts: w.Parts,
 			GateSteps: w.GateSteps, TickInterval: time.Duration(w.TickInterval), Branches: map[string]string{},
 			Issues: map[string]*IssueTrace{}},
-		held:     make(map[string]bool, len(w.Lines)),
-		turns:    map[claim.Token]turnAt{},
-		backKind: map[string]string{},
+		held:        make(map[string]bool, len(w.Lines)),
+		turns:       map[claim.Token]turnAt{},
+		backKind:    map[string]string{},
+		treeEntered: map[string]bool{},
+		named:       map[entryRef]bool{},
 	}
 	for _, msg := range w.Lines {
 		b.held[msg] = true
@@ -669,6 +685,18 @@ type traceBuilder struct {
 	last     time.Time
 	// children is every issue ever shown under each parent (childrenOf), built once reading ends.
 	children map[string][]string
+	// treeEntered is each issue whose first entry was into a live tree as a child, at the tree's
+	// generation (maybeEnter), and named each entry whose generation a line of the daemon named
+	// (generationIs): once every line is read, the first entry of each such child takes its tree
+	// root's generation as the lines leave it (childGenerations).
+	treeEntered map[string]bool
+	named       map[entryRef]bool
+}
+
+// entryRef is one entry of an issue's trace: its issue and its index in the issue's Entries.
+type entryRef struct {
+	issue string
+	index int
 }
 
 // issue is key's trace, made where none is yet.
@@ -864,7 +892,13 @@ func (b *traceBuilder) childFiled(iss *IssueTrace, event DispatchEvent) {
 // maybeEnter enters iss into the workflow at event where the issue, of the window's project,
 // stands in none and the event shows it todo: as a child of the tree of a parent that stands in
 // the workflow, or, handed to Legion, as the root of a tree of its own. An entry after a leave is a
-// reopen, at the next generation.
+// reopen, at the next generation (workflow's ReenterChild, admit's readmit). A child's first entry
+// is at its tree's generation, as the daemon records a child it holds no record of
+// (workflow's recordChild, enterChild with the root's generation), not at a first generation of its
+// own: a child filed under a tree the daemon re-admitted stands at the tree's generation from its
+// entry, which the moves the record makes of it are made at. The root's generation is read again
+// once every line is read (childGenerations), since a line naming it may come after the child's
+// entry.
 func (b *traceBuilder) maybeEnter(iss *IssueTrace, event DispatchEvent) {
 	if iss.Project != b.t.Project || iss.openVisit() != nil || event.Issue.Status != "todo" {
 		return
@@ -879,6 +913,10 @@ func (b *traceBuilder) maybeEnter(iss *IssueTrace, event DispatchEvent) {
 		return
 	}
 	generation := iss.Generation() + 1
+	if root, ok := b.t.Issues[tree]; ok && tree != iss.Key && len(iss.Entries) == 0 {
+		generation = max(root.Generation(), 1)
+		b.treeEntered[iss.Key] = true
+	}
 	iss.Entries = append(iss.Entries, Entry{At: event.At, Tree: tree, Generation: generation, Reopen: len(iss.Entries) > 0})
 	iss.Visits = append(iss.Visits, Visit{Phase: phase.Admitted, Enter: event.At})
 }
@@ -932,7 +970,8 @@ func (b *traceBuilder) onLine(line LogLine) {
 		b.issue(l.Issue)
 	case WaitsForChildren:
 		// The daemon tells each issue's children wait once for its generation, so each line is a
-		// wait of its own; what ends one is read once every event is (childrenWaitEnds).
+		// wait of its own; what ends one, and a wait of the same generation that begins again with
+		// no line, is read once every event is (childrenWaitEnds).
 		iss := b.issue(l.Issue)
 		b.generationIs(iss, l.Generation)
 		iss.Waits = append(iss.Waits, Wait{Kind: WaitChildren, Start: at})
@@ -1045,7 +1084,11 @@ func (b *traceBuilder) onLine(line LogLine) {
 		} else {
 			b.unplaced(UnplacedPause, "", at, "%s at %s ends the pause %d, which the trace does not hold open", l.Msg, stamp(at), l.Pause)
 		}
-	case Launched, ProcessStart, BootStage:
+	case Launched:
+		if iss, ok := b.t.Issues[l.Claim.Issue]; ok && l.Claim.Issue != "" {
+			b.holdWentOn(iss, at, l.Claim.Role)
+		}
+	case ProcessStart, BootStage:
 	}
 }
 
@@ -1068,10 +1111,38 @@ func (b *traceBuilder) boot(at time.Time, seen bool) {
 
 // generationIs sets iss's latest entry to generation, the generation a line of the daemon names
 // for its record, which is the record's own count where the trace counted otherwise (an earlier
-// reopen before the inputs reach).
+// reopen before the inputs reach), and marks it named, so no reading of a tree's generation sets it
+// again (childGenerations).
 func (b *traceBuilder) generationIs(iss *IssueTrace, generation uint64) {
 	if entry := iss.entry(); entry != nil && generation > 0 {
 		entry.Generation = generation
+		b.named[entryRef{issue: iss.Key, index: len(iss.Entries) - 1}] = true
+	}
+}
+
+// childGenerations reads again, once every line is read, the generations of each child whose first
+// entry was into a live tree (maybeEnter): that entry stands at its tree root's generation at the
+// entry, as the lines leave the root's, since a line naming the root's may come after the child's
+// entry (a root's children wait is written by the pass of the fact that released the child), and
+// each later entry stands one past the entry before it (workflow's ReenterChild). An entry whose
+// generation a line named (generationIs) keeps it.
+func (b *traceBuilder) childGenerations() {
+	for _, key := range slices.Sorted(maps.Keys(b.treeEntered)) {
+		iss := b.t.Issues[key]
+		for i := range iss.Entries {
+			entry := &iss.Entries[i]
+			switch {
+			case b.named[entryRef{issue: key, index: i}]:
+			case i > 0:
+				entry.Generation = iss.Entries[i-1].Generation + 1
+			default:
+				if root, ok := b.t.Issues[entry.Tree]; ok && entry.Tree != key {
+					if at := root.entryAt(entry.At); at != nil {
+						entry.Generation = max(at.Generation, 1)
+					}
+				}
+			}
+		}
 	}
 }
 
@@ -1091,10 +1162,12 @@ func pastImplementing(p phase.Phase) bool {
 
 // moved reads one `workflow: phase changed` line: the move that ends the visit the issue stands in
 // and begins the next one, or, for a move into a phase today's workflow folds into the one it
-// left, a mark inside the visit.
+// left, a mark inside the visit. Either ends the issue's hold, which no move of the record is made
+// under (holdWentOn).
 func (b *traceBuilder) moved(l PhaseChanged) {
 	at := l.Time
 	iss := b.issue(l.Issue)
+	b.holdWentOn(iss, at, "")
 	from, to := foldPhase(l.From), foldPhase(l.To)
 	source, sourced := MoveSources[l.Trigger]
 	if !sourced {
@@ -1288,6 +1361,33 @@ func (b *traceBuilder) holdBegins(iss *IssueTrace, at time.Time, from phase.Phas
 	iss.Waits = append(iss.Waits, Wait{Kind: WaitHeld, Start: at, From: from, Role: role, Reason: reason})
 }
 
+// holdWentOn ends iss's hold at at where the record shows the held phase going on with no line of
+// a release (WaitWentOn): at a launch of a claim of the issue in the hold's role (role), or at the
+// issue's next recorded move (role empty); a launch of another role ends nothing.
+//
+// A window of a release that writes no `workflow: a phase is held` reads each hold from the failed
+// claim of the phase's worker (ClaimFailed), and that release writes a line where a hold ends only
+// where the engine releases it (workflow/engine.go at 958173da, the commit of legion-v20.42.5:
+// claimFailed moves the issue into held and writes no line, and retryPhase, which every retry and a
+// held root's todo release through, writes `workflow: a held phase is released`). Such a window
+// shows most of those failures followed by no release line at all, but by the same claim launched
+// again, the phase's worker running once more, or by a move whose line names the phase the worker
+// failed in as the one the issue left. The move's line is written by transition with the phase the
+// issue stood in (from := issue.Phase), held for a held issue, and the engine's table holds no row
+// out of held, so the issue stood in its phase, not held, when it moved. Whatever ended the hold,
+// or kept the failure from holding at all, wrote no line, and the record has the issue working its
+// phase again from the relaunch or the move on; the hold ends there, and a replay releases it at
+// that moment as it releases a recorded one (driver.queueHoldEnd), so its next piece opens on the
+// retry and the recorded move is applied. A hold no relaunch, move, release or leave ends stands at
+// the window's end, as the record leaves it.
+func (b *traceBuilder) holdWentOn(iss *IssueTrace, at time.Time, role claim.Role) {
+	wait := iss.openWait(WaitHeld)
+	if wait == nil || role != "" && wait.Role != role {
+		return
+	}
+	wait.End, wait.EndedBy = at, WaitWentOn
+}
+
 // left reads an issue's leaving the workflow: the visit it stands in ends, and so do its hold and
 // every turn of its claims. Its waits on a person and on other issues end there too, once every
 // event is read (finish), since an answer read later may have ended one sooner.
@@ -1363,19 +1463,21 @@ func (b *traceBuilder) turnEnds(ref ClaimRef, at time.Time, by TurnEnd, ownLine 
 	turns[open.index].End, turns[open.index].EndedBy = at, by
 }
 
-// finish builds what the reading left to build once every line and event is read: the per-slot
-// moves no record line took, each issue's slot spans, the slots it infers held from before the
-// reach and its check of them against the record's count, each issue's link, children and person
-// waits' ends, its worker starts and segments, and the ticks; and it ends what stands at the
-// window's end.
+// finish builds what the reading left to build once every line and event is read: the generations
+// of the children that entered a live tree, the per-slot moves no record line took, each issue's
+// slot spans, the slots it infers held from before the reach, each issue's link, children and
+// person waits' ends, the slots it infers held at the window's start, its check of the slots
+// against the record's count there, each issue's worker starts and segments, and the ticks; and it
+// ends what stands at the window's end.
 func (b *traceBuilder) finish() {
+	b.childGenerations()
 	b.t.Slots = append(b.t.Slots, b.buffered...)
 	b.buffered = nil
 	slices.SortStableFunc(b.t.Slots, func(x, y SlotMove) int { return x.At.Compare(y.At) })
 	b.spans()
 	b.inferSlots()
-	b.countSlots()
-	for _, key := range slices.Sorted(maps.Keys(b.t.Issues)) {
+	keys := slices.Sorted(maps.Keys(b.t.Issues))
+	for _, key := range keys {
 		iss := b.t.Issues[key]
 		if len(iss.Visits) > 0 && len(iss.Dispatch) == 0 {
 			b.unplaced(UnplacedEntry, key, iss.Visits[0].Enter, "%s runs in the workflow and the window holds no Dispatch event of it", key)
@@ -1383,6 +1485,11 @@ func (b *traceBuilder) finish() {
 		b.linkWaits(iss)
 		b.childrenWaitEnds(iss)
 		b.personWaitEnds(iss)
+	}
+	b.inferStartSlots()
+	b.countSlots()
+	for _, key := range keys {
+		iss := b.t.Issues[key]
 		slices.SortStableFunc(iss.Waits, func(x, y Wait) int { return x.Start.Compare(y.Start) })
 		for i := range iss.Waits {
 			if iss.Waits[i].EndedBy == "" {
@@ -1470,15 +1577,154 @@ func (b *traceBuilder) inferSlots() {
 	}
 }
 
-// countSlots checks the slots the trace holds against the record's own count at the first slot
-// move the log holds (SlotCount): the slots that stand just before that move, begun before it or
-// before the reach and not given back before it, seen and inferred alike, and that move's own slot,
-// given out or taken back.
+// inferStartSlots gives each issue that stands at the window's start in a worker's phase its rule
+// keeps a slot in, and that holds none there by the slot lines, the slot it held from its last
+// entry into that run of phases (assumption 34): its last slot went back before the start, or no
+// line names one, and it took one again by a way the window holds no slot line of. The issue
+// holds no slot span that stands at the start; no wait of it stands at the start that gives the
+// slot back under the rule (a link or its children where the rule gives the slot back for them, a
+// person or a hold where it keeps none awaiting a person or held); and a worker of the run started
+// in it after its last slot went back and before the start, which is the record's sight of the
+// slot, since the daemon starts the worker of a phase that keeps a slot only once its issue holds
+// one (workflow.StartOrOwe). An issue whose work came back with no slot and whose worker has not
+// started owes its start (Seed's owedStarts), and an architect's turn starts on no slot, so neither
+// is given one. The slot runs from the later of the run's entry and the end of the issue's last
+// slot until the rule gives it back, as inferSlots reads it; a slot line after the start that gives
+// the issue a slot before then shows it held none, and leaves it without. Each is counted
+// (Trace.InferredSlots). An issue the slot puts in flight at the start has its link waits read
+// again, since they are read in flight alone, and one of them that stands at the start, which
+// would have given the slot back, takes it away again.
+func (b *traceBuilder) inferStartSlots() {
+	from := b.t.From
+	rule := b.t.ruleAt(from)
+	for _, key := range slices.Sorted(maps.Keys(b.t.Issues)) {
+		iss := b.t.Issues[key]
+		at := slices.IndexFunc(iss.Visits, func(visit Visit) bool { return standsAt(visit.Enter, visit.Exit, from) })
+		if at < 0 || !workerPhase(iss.Visits[at].Phase) || !b.t.ruleAt(iss.Visits[at].Enter).PhaseKeepsSlot(iss.Visits[at].Phase) ||
+			slotStandsAt(iss, from) || waitGivesBackAt(iss, from, rule) {
+			continue
+		}
+		first := at
+		for first > 0 {
+			visit, before := iss.Visits[first], iss.Visits[first-1]
+			if visit.In == nil || !before.Exit.Equal(visit.Enter) || before.Phase == phase.Admitted ||
+				!b.t.ruleAt(before.Enter).PhaseKeepsSlot(before.Phase) {
+				break
+			}
+			first--
+		}
+		start := iss.Visits[first].Enter
+		for _, span := range iss.Slots {
+			if !span.End.IsZero() && span.End.Before(from) && span.End.After(start) {
+				start = span.End
+			}
+		}
+		started := slices.ContainsFunc(iss.Turns, func(turn Turn) bool {
+			if turn.Start.Before(start) || !turn.Start.Before(from) {
+				return false
+			}
+			visit := visitOf(iss, turn.Start)
+			return visit != nil && workerPhase(visit.Phase) && turn.Claim.Role == phaseRole(visit.Phase)
+		})
+		if !started {
+			continue
+		}
+		span := SlotSpan{Start: start, Inferred: true}
+		for i := at; i < len(iss.Visits); i++ {
+			visit := iss.Visits[i]
+			if i > at && visit.In == nil {
+				break // a later run, which began with an entry of its own
+			}
+			if !b.t.ruleAt(visit.Enter).PhaseKeepsSlot(visit.Phase) {
+				span.End = visit.Enter
+				break
+			}
+			if span.End = visit.Exit; span.End.IsZero() {
+				break
+			}
+		}
+		if slices.ContainsFunc(iss.Slots, func(given SlotSpan) bool {
+			return given.Start.After(from) && (span.End.IsZero() || given.Start.Before(span.End))
+		}) {
+			continue
+		}
+		flying := withinStretches(iss.inFlight(), from)
+		place := len(iss.Slots)
+		for place > 0 && iss.Slots[place-1].Start.After(span.Start) {
+			place--
+		}
+		iss.Slots = slices.Insert(iss.Slots, place, span)
+		if !flying {
+			b.readLinkWaitsAgain(iss)
+			if waitGivesBackAt(iss, from, rule) {
+				iss.Slots = slices.Delete(iss.Slots, place, place+1)
+				b.readLinkWaitsAgain(iss)
+				continue
+			}
+		}
+		b.t.InferredSlots++
+	}
+}
+
+// workerPhase says whether p is a phase a worker other than the architect works (phaseRole), whose
+// start waits for a slot where the rule keeps one in p.
+func workerPhase(p phase.Phase) bool {
+	role := phaseRole(p)
+	return role != "" && role != claim.RoleArchitect
+}
+
+// slotStandsAt says whether a slot span of iss stands at at: begun at or before it and not ended
+// before it.
+func slotStandsAt(iss *IssueTrace, at time.Time) bool {
+	return slices.ContainsFunc(iss.Slots, func(span SlotSpan) bool {
+		return !span.Start.After(at) && (span.End.IsZero() || !span.End.Before(at))
+	})
+}
+
+// waitGivesBackAt says whether a wait of iss that stands at at (standsAt) gives the issue's slot
+// back under rule: a link or children wait where the rule gives the slot back for it, a wait on a
+// person where the rule keeps no slot awaiting one, a hold where it keeps none held.
+func waitGivesBackAt(iss *IssueTrace, at time.Time, rule record.SlotRule) bool {
+	return slices.ContainsFunc(iss.Waits, func(wait Wait) bool {
+		if !standsAt(wait.Start, wait.End, at) {
+			return false
+		}
+		switch wait.Kind {
+		case WaitLink:
+			return rule.OrMain().LinkWaitGivesBack
+		case WaitChildren:
+			return rule.OrMain().ChildrenWaitGivesBack
+		case WaitPerson:
+			return !rule.PhaseKeepsSlot(phase.AwaitingPerson)
+		case WaitHeld:
+			return !rule.PhaseKeepsSlot(phase.Held)
+		}
+		return false
+	})
+}
+
+// readLinkWaitsAgain reads iss's link waits again from its slots as they stand (linkWaits), which
+// are read in the stretches it is in flight alone.
+func (b *traceBuilder) readLinkWaitsAgain(iss *IssueTrace) {
+	iss.Waits = slices.DeleteFunc(iss.Waits, func(wait Wait) bool { return wait.Kind == WaitLink })
+	b.linkWaits(iss)
+}
+
+// countSlots checks the slots the trace holds against the record's own count at the window's
+// start, where the start state places them (SlotCount): at the first slot move the log holds at or
+// after the start, or, where it holds none, at the last before it, whose count stands at the start.
+// It counts the slots that stand just before that move, begun before it or before the reach and
+// not given back before it, seen and inferred alike, and that move's own slot, given out or taken
+// back.
 func (b *traceBuilder) countSlots() {
 	if len(b.t.Slots) == 0 {
 		return
 	}
-	first := b.t.Slots[0]
+	at := slices.IndexFunc(b.t.Slots, func(move SlotMove) bool { return !move.At.Before(b.t.From) })
+	if at < 0 {
+		at = len(b.t.Slots) - 1
+	}
+	first := b.t.Slots[at]
 	held := 0
 	for _, iss := range b.t.Issues {
 		for _, span := range iss.Slots {
@@ -1750,65 +1996,148 @@ func (iss *IssueTrace) visitExitAfter(at time.Time) (time.Time, bool) {
 // childrenWaitEnds ends each of iss's children waits, which its line began: at the first moment
 // after it began that no open child is left (the last child closed, or moved out from under it),
 // that its tree's design gate closed, that the issue left the workflow or that its phase moved on,
-// or, failing all of those, at the start of the issue's next children wait.
+// or, failing all of those, at the start of the issue's next children wait. A wait whose children
+// or gate ended it begins again where the record's daemon held the issue for its children again
+// with no line of it (childrenWaitAgain), and that wait is ended the same way.
 func (b *traceBuilder) childrenWaitEnds(iss *IssueTrace) {
 	candidates := b.childrenOf(iss.Key)
+	var again []Wait
 	for i := range iss.Waits {
-		wait := &iss.Waits[i]
-		if wait.Kind != WaitChildren || wait.EndedBy != "" {
+		if iss.Waits[i].Kind != WaitChildren || iss.Waits[i].EndedBy != "" {
 			continue
 		}
-		wait.On = b.childrenAt(iss.Key, candidates, wait.Start)
-		root := iss.Key
-		if entry := iss.entryAt(wait.Start); entry != nil {
-			root = entry.Tree
-		}
-		type change struct {
-			at  time.Time
-			end WaitEnd
-		}
-		var changes []change
-		for _, key := range candidates {
-			for _, event := range b.t.Issues[key].Dispatch {
-				if event.Issue != nil && event.At.After(wait.Start) {
-					changes = append(changes, change{at: event.At})
-				}
+		since := iss.Waits[i].Start
+		b.childrenWaitEnd(iss, candidates, &iss.Waits[i])
+		for ended := iss.Waits[i]; ; {
+			next, begins := b.childrenWaitAgain(iss, candidates, ended, since)
+			if !begins {
+				break
 			}
-		}
-		if tree, ok := b.t.Issues[root]; ok {
-			for _, gate := range tree.Gates {
-				if gate.Kind == GateClosedFact && gate.At.After(wait.Start) {
-					changes = append(changes, change{at: gate.At, end: WaitGateClosed})
-				}
-			}
-		}
-		if exit, left := iss.visitExitAfter(wait.Start); !exit.IsZero() {
-			end := WaitMovedOn
-			if left {
-				end = WaitLeft
-			}
-			changes = append(changes, change{at: exit, end: end})
-		}
-		if next := iss.nextWaitStart(wait); !next.IsZero() {
-			changes = append(changes, change{at: next, end: WaitMovedOn})
-		}
-		slices.SortStableFunc(changes, func(x, y change) int { return x.at.Compare(y.at) })
-		for _, c := range changes {
-			if c.end == "" {
-				if open := b.childrenAt(iss.Key, candidates, c.at); len(open) > 0 {
-					continue
-				}
-				c.end = WaitChildDone
-				for _, key := range wait.On {
-					if state := dispatchStateBefore(b.t.Issues[key].Dispatch, c.at, false); state != nil && state.Parent != iss.Key {
-						c.end = WaitChildMovedOut
-					}
-				}
-			}
-			wait.End, wait.EndedBy = c.at, c.end
-			break
+			b.childrenWaitEnd(iss, candidates, &next)
+			again = append(again, next)
+			ended = next
 		}
 	}
+	iss.Waits = append(iss.Waits, again...)
+}
+
+// childrenWaitEnd ends wait, a children wait of iss (childrenWaitEnds), among candidates, every
+// issue ever shown under it.
+func (b *traceBuilder) childrenWaitEnd(iss *IssueTrace, candidates []string, wait *Wait) {
+	wait.On = b.childrenAt(iss.Key, candidates, wait.Start)
+	type change struct {
+		at  time.Time
+		end WaitEnd
+	}
+	var changes []change
+	for _, key := range candidates {
+		for _, event := range b.t.Issues[key].Dispatch {
+			if event.Issue != nil && event.At.After(wait.Start) {
+				changes = append(changes, change{at: event.At})
+			}
+		}
+	}
+	if tree, ok := b.t.Issues[treeOf(iss, wait.Start)]; ok {
+		for _, gate := range tree.Gates {
+			if gate.Kind == GateClosedFact && gate.At.After(wait.Start) {
+				changes = append(changes, change{at: gate.At, end: WaitGateClosed})
+			}
+		}
+	}
+	if exit, left := iss.visitExitAfter(wait.Start); !exit.IsZero() {
+		end := WaitMovedOn
+		if left {
+			end = WaitLeft
+		}
+		changes = append(changes, change{at: exit, end: end})
+	}
+	if next := iss.nextWaitStart(wait); !next.IsZero() {
+		changes = append(changes, change{at: next, end: WaitMovedOn})
+	}
+	slices.SortStableFunc(changes, func(x, y change) int { return x.at.Compare(y.at) })
+	for _, c := range changes {
+		if c.end == "" {
+			if open := b.childrenAt(iss.Key, candidates, c.at); len(open) > 0 {
+				continue
+			}
+			c.end = WaitChildDone
+			for _, key := range wait.On {
+				if state := dispatchStateBefore(b.t.Issues[key].Dispatch, c.at, false); state != nil && state.Parent != iss.Key {
+					c.end = WaitChildMovedOut
+				}
+			}
+		}
+		wait.End, wait.EndedBy = c.at, c.end
+		return
+	}
+}
+
+// childrenWaitAgain is the children wait of iss that begins after ended, a children wait its
+// children or its tree's gate ended, and whether one does: at the first moment after ended's end
+// that an open child stands under the issue again with its tree's gate open, while the issue
+// stands in the visit it waited in and before its next children wait's line. The daemon judges the
+// wait afresh at each pass (record.ChildWaits) but writes its line once for a generation of the
+// tree (admit's tellChildrenFirst, record.Store.TellChildrenFirst), so a root whose last open child
+// closed at a full cap, and that its architect files another child under before its own first
+// phase can start, waits for that child again with no line; read from the line alone, it would
+// stand waiting for a slot alone. The gate stands open where the line began it (since), the daemon
+// judging only an issue of an open gate, and from then as the tree's gate facts leave it.
+func (b *traceBuilder) childrenWaitAgain(iss *IssueTrace, candidates []string, ended Wait, since time.Time) (Wait, bool) {
+	if ended.EndedBy != WaitChildDone && ended.EndedBy != WaitChildMovedOut && ended.EndedBy != WaitGateClosed {
+		return Wait{}, false
+	}
+	until, _ := iss.visitExitAfter(ended.Start)
+	if next := iss.nextWaitStart(&ended); !next.IsZero() && (until.IsZero() || next.Before(until)) {
+		until = next
+	}
+	before := func(at time.Time) bool { return at.After(ended.End) && (until.IsZero() || at.Before(until)) }
+	var gates []GateFact
+	if tree, ok := b.t.Issues[treeOf(iss, ended.Start)]; ok {
+		gates = tree.Gates
+	}
+	var moments []time.Time
+	for _, key := range candidates {
+		for _, event := range b.t.Issues[key].Dispatch {
+			if event.Issue != nil && before(event.At) {
+				moments = append(moments, event.At)
+			}
+		}
+	}
+	for _, gate := range gates {
+		if before(gate.At) {
+			moments = append(moments, gate.At)
+		}
+	}
+	slices.SortFunc(moments, time.Time.Compare)
+	moments = slices.CompactFunc(moments, time.Time.Equal)
+	open, read := true, 0
+	for _, at := range moments {
+		for ; read < len(gates) && !gates[read].At.After(at); read++ {
+			if gate := gates[read]; gate.At.After(since) {
+				switch gate.Kind {
+				case GateRegisteredFact:
+					open = gate.Open
+				case GateOpenedFact, GateApproved:
+					open = true
+				case GateClosedFact, GateChangesRequested:
+					open = false
+				}
+			}
+		}
+		if open && len(b.childrenAt(iss.Key, candidates, at)) > 0 {
+			return Wait{Kind: WaitChildren, Start: at}, true
+		}
+	}
+	return Wait{}, false
+}
+
+// treeOf is the tree iss stood in at at: its latest entry's at or before it, or its own where it had
+// entered none.
+func treeOf(iss *IssueTrace, at time.Time) string {
+	if entry := iss.entryAt(at); entry != nil {
+		return entry.Tree
+	}
+	return iss.Key
 }
 
 // personWaitEnds ends each of iss's waits on a person, which its line began: at the first act of a

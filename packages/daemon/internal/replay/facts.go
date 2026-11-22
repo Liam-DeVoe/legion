@@ -224,7 +224,7 @@ var FactSources = map[string]FactSource{
 	"SignOff":           {Way: FactInjected, From: "a recorded move by sign_off, at the end of its accepting segment, and again at each leave of a member beneath while it is refused"},
 	"BackwardMove":      {Way: FactInjected, From: "a recorded move by backward, at the end of its segment"},
 	"CloseRoot":         {Way: FactInjected, From: "a recorded leave of a root at done with no person's close and no move to done, at its offset in the architect's segment"},
-	"RetryOrEscalate":   {Way: FactInjected, From: "each recorded `workflow: a held phase is released` of an architect's retry, and each `workflow: a phase is held` of an escalation, at its offset from the hold"},
+	"RetryOrEscalate":   {Way: FactInjected, From: "each recorded `workflow: a held phase is released` of an architect's retry, each end of a hold the record shows going on with no release line (a relaunch of the held role's claim, or the issue's next move), and each `workflow: a phase is held` of an escalation, at its offset from the hold"},
 	"RestartPhase":      {Way: FactInjected, From: "each recorded `workflow: a held phase is released` of the operator's retry, at its offset from the hold"},
 	"ChildAdoption":     {Way: FactInjected, From: "each recorded `workflow: a queued root joined a live tree`, the release of a queued root into a tree, at its offset in the releasing architect's segment"},
 	"GateRegistered":    {Way: FactInjected, From: "each recorded `workflow: design gate registered`, with what register_gate reads of the document rebuilt from the shadow, at its offset in the architect's segment"},

@@ -396,6 +396,14 @@ func (b *windowBuilder) issueEvent(at time.Time, key, kind string, actor eventAc
 // names, or as a tree of its own.
 func (b *windowBuilder) file(at time.Time, key string, f filing) {
 	b.t.Helper()
+	b.filedBy(at, key, f, builtPerson)
+}
+
+// filedBy is actor filing key at at (issue.created): a person, or an architect's session filing a
+// child of its tree. The record holds it under the tree filing names, at that tree's generation, as
+// the daemon records a child (workflow's enterChild), or as a tree of its own at its first.
+func (b *windowBuilder) filedBy(at time.Time, key string, f filing, actor eventActor) {
+	b.t.Helper()
 	if _, filed := b.issues[key]; filed {
 		b.t.Fatalf("%s is filed twice", key)
 	}
@@ -403,13 +411,15 @@ func (b *windowBuilder) file(at time.Time, key string, f filing) {
 	if _, err := fmt.Sscanf(key, builtProject+"-%d", &number); err != nil {
 		b.t.Fatalf("%s is no key of project %s: %v", key, builtProject, err)
 	}
-	tree := f.Tree
+	tree, generation := f.Tree, 1
 	if tree == "" {
 		tree = key
+	} else if root, filed := b.issues[tree]; filed {
+		generation = root.generation
 	}
 	b.issues[key] = &builtIssue{Key: key, Number: number, Title: f.Title, Status: f.Status, Parent: f.Parent, Rank: f.Rank,
-		Labels: slices.Clone(f.Labels), BlockedBy: slices.Clone(f.BlockedBy), Created: at, tree: tree, generation: 1}
-	b.issueEvent(at, key, "issue.created", builtPerson)
+		Labels: slices.Clone(f.Labels), BlockedBy: slices.Clone(f.BlockedBy), Created: at, tree: tree, generation: generation}
+	b.issueEvent(at, key, "issue.created", actor)
 }
 
 // edit is a person changing key at at: the change is made to the issue as it stands, and the event

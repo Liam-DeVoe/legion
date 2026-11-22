@@ -346,14 +346,17 @@ func TestReplayStatesAreTheProjectionsStates(t *testing.T) {
 }
 
 // The two timelines of a replay agree (design 10.1; the design review's Q5): on every fixture
-// window, each measure of the line timeline, which BuildTrace reads from the replay's own log
-// through the window's line kinds as it reads a record, stands within a third of R5's gap for that
-// measure of the snapshot timeline, which the admission passes' own views give: 10% of the issues
-// done and of the slots given each day, 0.05 of the share of priority taken, 30% of every other
-// measure (the median wait for a slot and the hours of reading (a) among them), and, for each
-// issue's first slot and its done, 60 minutes at the median. A gap of the line timeline wider than
-// that would make a record's scorecard, which only the lines can give, err by more than a replay
-// may.
+// window, and on a window shaped as a deployment's (deploymentShapedWindow: issues placed at its
+// start, holds read from failed claims, children filed in it, a stop and a boot), each measure of
+// the line timeline, which BuildTrace reads from the replay's own log through the window's line
+// kinds as it reads a record, stands within a third of R5's gap for that measure of the snapshot
+// timeline, which the admission passes' own views give: 10% of the issues done and of the slots
+// given each day, 0.05 of the share of priority taken, 30% of every other measure (the median wait
+// for a slot and the hours of reading (a) among them), and, for each issue's first slot and its
+// done, 60 minutes at the median. A gap of the line timeline wider than that would make a record's
+// scorecard, which only the lines can give, err by more than a replay may. The deployment-shaped
+// window holds a root that waits for its children again after its last child closed, with no line
+// of the second wait, since the daemon tells a generation's wait once.
 func TestSnapshotAndLineTimelinesAgree(t *testing.T) {
 	dsn := os.Getenv("LEGION_TEST_PG_DSN")
 	if dsn == "" {
@@ -383,29 +386,41 @@ func TestSnapshotAndLineTimelinesAgree(t *testing.T) {
 					if slowdown == 0 {
 						slowdown = 1
 					}
-					result, err := Run(context.Background(), RunConfig{Window: window, Rule: record.MainRule, Branch: run.branch,
-						Seed: run.want.Seed, Slowdown: slowdown, PGDSN: dsn, Out: t.TempDir()})
-					if err != nil {
-						t.Fatalf("window %s, run %s: the replay failed: %v", name, run.name, err)
-					}
-					var timeErrors []float64
-					for _, gap := range result.Gaps {
-						if strings.HasPrefix(gap.Measure, "firstSlot[") || strings.HasPrefix(gap.Measure, "doneAt[") {
-							timeErrors = append(timeErrors, math.Abs(gap.Gap()))
-							continue
-						}
-						if allowed := validationGap(gap.Measure, gap.Snapshot) / 3; math.Abs(gap.Gap()) > allowed+fixtureTolerance {
-							t.Errorf("window %s, run %s: %s is %v in the snapshot timeline and %v in the line timeline, a gap of %v, above a third of R5's gap, %v",
-								name, run.name, gap.Measure, gap.Snapshot, gap.Line, gap.Gap(), allowed)
-						}
-					}
-					if errorMinutes := median(timeErrors); errorMinutes > 60.0/3+fixtureTolerance {
-						t.Errorf("window %s, run %s: the median gap of each issue's first slot and done between the two timelines is %v minutes, above a third of R5's 60",
-							name, run.name, errorMinutes)
-					}
+					timelinesAgree(t, dsn, window, run.branch, run.want.Seed, slowdown)
 				})
 			}
 		})
+	}
+	t.Run("deployment-shaped", func(t *testing.T) {
+		timelinesAgree(t, dsn, deploymentShapedWindow(t), MainBranch, 1, 1)
+	})
+}
+
+// timelinesAgree replays window under main on branch, with seed and slowdown, and fails for each
+// measure in which the line timeline stands further from the snapshot timeline than a third of
+// R5's gap for it, and where the median gap of each issue's first slot and done is above a third
+// of R5's 60 minutes (TestSnapshotAndLineTimelinesAgree).
+func timelinesAgree(t *testing.T, dsn string, window Window, branch Branch, seed int64, slowdown float64) {
+	t.Helper()
+	result, err := Run(context.Background(), RunConfig{Window: window, Rule: record.MainRule, Branch: branch, Seed: seed,
+		Slowdown: slowdown, PGDSN: dsn, Out: t.TempDir()})
+	if err != nil {
+		t.Fatalf("the replay failed: %v", err)
+	}
+	var timeErrors []float64
+	for _, gap := range result.Gaps {
+		if strings.HasPrefix(gap.Measure, "firstSlot[") || strings.HasPrefix(gap.Measure, "doneAt[") {
+			timeErrors = append(timeErrors, math.Abs(gap.Gap()))
+			continue
+		}
+		if allowed := validationGap(gap.Measure, gap.Snapshot) / 3; math.Abs(gap.Gap()) > allowed+fixtureTolerance {
+			t.Errorf("%s is %v in the snapshot timeline and %v in the line timeline, a gap of %v, above a third of R5's gap, %v",
+				gap.Measure, gap.Snapshot, gap.Line, gap.Gap(), allowed)
+		}
+	}
+	if errorMinutes := median(timeErrors); errorMinutes > 60.0/3+fixtureTolerance {
+		t.Errorf("the median gap of each issue's first slot and done between the two timelines is %v minutes, above a third of R5's 60",
+			errorMinutes)
 	}
 }
 

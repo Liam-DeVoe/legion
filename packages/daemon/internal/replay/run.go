@@ -276,6 +276,9 @@ func Run(ctx context.Context, cfg RunConfig) (RunResult, error) {
 		result.Segments = d.segments
 	}
 	result.snapshot = d.snap.timelineAt()
+	// An issue that waits for a slot at the start began that wait where the record shows, its start
+	// state being the record's.
+	result.snapshot.beginWaitsAt(recordedWaitStarts(trace, ranksOf(trace), trace.ruleAt, w.From, result.snapshot.startWaiters()))
 	result.Scorecard = d.scorecard(Measure(result.snapshot))
 	lined, err := d.lineTimeline()
 	if err != nil {
