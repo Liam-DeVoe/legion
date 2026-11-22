@@ -99,9 +99,7 @@ blocker's close, and name the merged commit in its task
 (`gh api repos/<owner>/<repo>/pulls/<n> --jq .merge_commit_sha`); for a repository that pins the
 other one by commit (a lock file or dependency pin), the pin is that merged commit. Your `gh` reads
 every repository your App is installed on (`-R owner/repo`).
-
-A change in a repository that another project's deployment runs is filed in that project with `--parent` your root; tell its controller on `notifications.role.legion-<project>-controller`.
-If the create answers `PROJECT_SCOPE` or `PARENT_INPUT`, ask that controller to file it instead.
+A child in a repository another project's deployment runs is filed in that project (`dispatch issue --project <KEY> --parent <root> …`), and that project's controller is told on `notifications.role.legion-<project>-controller`.
 
 ## Recording a wait on other work
 
