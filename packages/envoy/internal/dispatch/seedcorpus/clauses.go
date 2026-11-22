@@ -129,8 +129,14 @@ func modelClauses(key, handover string) []clause {
 			count("inversion lenses triggered by it", "from "+current(`from_kind = 'lens' and kind = 'triggered_by'`)+" t join "+
 				current(`from_kind = 'lens' and kind = 'has_kind' and to_id = 'inversion'`)+" k on k.from_id = t.from_id where t.to_id in "+premortem, 1, key),
 		}},
-		{name: "bullet 20, an interaction node a second credential wrote, held at author visibility", reads: []read{
+		{name: "bullet 20, an interaction node a second credential wrote, held at author visibility, and a run whose author names nobody", reads: []read{
 			count("interaction nodes bob's credential made, reserved for it", `from graph_nodes where kind = 'interaction' and made_by->>'id' = $1 and visibility = 'author'`, 1, bob),
+			count("interaction nodes of the seeded issue's project whose author names no credential, held at author",
+				`from graph_nodes n join going_requests r on r.id::text = n.id
+				where n.kind = 'interaction' and n.visibility = 'author' and r.words = $2
+				  and r.project = (select project_key from issues where key = $1)
+				  and coalesce(n.made_by->>'id', '') = '' and coalesce(n.made_by->>'owner', '') = '' and coalesce(n.made_by->>'service', '') = ''`,
+				1, key, nobodysRunWords),
 		}},
 		{name: "bullet 21, a criterion the person wrote in a comment, a second in an ask, a third in a message", reads: []read{
 			count("kinds the parents of c-said, c-asked and c-messaged are of", `from (select distinct to_kind from `+current(`from_kind = 'block' and from_id in ('`+

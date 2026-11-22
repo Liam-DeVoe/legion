@@ -738,6 +738,16 @@ var indexPasses = map[string]string{
 	// The test corpus loader's roles: each role's node, its page and holder, from the loader's own
 	// list of the roles it holds, through graphstore.Write, reading no projection.
 	"seedcorpus/agents.go#writeRoles": "the test corpus loader's own list of its roles and the sessions holding them",
+	// The test corpus loader's end of a role's claim and its return, for agent-page.sh: the end
+	// retracts each held_by the role states now, read from the store's own current tuples of that
+	// role, and the return asserts the one held_by the driver names, each through graphstore.Write,
+	// reading no projection and mending none.
+	"seedcorpus/claims.go#EndClaim":     "the test corpus loader's role the driver names and the held_by tuples the store states of it now",
+	"seedcorpus/claims.go#RestoreClaim": "the test corpus loader's role and the session the driver names",
+	// The test corpus loader's run whose author names nobody: the going_requests row it inserts
+	// itself, from the loader's own words, and the run's node written from that row through
+	// graphstore.WriteRun, reading no projection to mend another.
+	"seedcorpus/nobody.go#writeNobodysRun": "the test corpus loader's own run, the going_requests row it inserts in the same transaction",
 	// The seed's issues, asks and messages: each one's node, in its project, drawn from the plan
 	// before the batch writes its rows.
 	"cmd/dispatch-seed/write_core.go#writeIssues":     "the seed's own plan",

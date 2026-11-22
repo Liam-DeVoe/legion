@@ -3,13 +3,15 @@
 // Seed and Check directly. It is test support. No deployment builds it, it declares no HTTP route
 // and it mounts nothing on any server: it writes through the API's own handlers, which api.Register
 // places on a mux of this process that no listener serves (apiServer), through the store's own
-// writer of a role's facts (writeRoles), and, for the one shape no writer of the tree makes, by
-// one statement of its own (nestReplies). Decision 5 of dispatch://INFRA-1098's plan is why: a
-// reply nested under another reply, as the walks over comments.reply_to read one, cannot be
-// written through the API, whose comment write climbs to the thread head before it stores (api's
-// threadHeadOf). It publishes no event and marks none published, its own or any other writer's,
-// and it refuses a database holding events it did not write unless its caller says the database
-// is a test copy (Options.TestCopy, `seed --test-copy`).
+// writers of a role's facts (writeRoles) and of a run (writeNobodysRun), and, for the two shapes no
+// writer of the tree makes, by two statements of its own: nestReplies, and the going_requests row
+// of a run whose author names nobody (writeNobodysRun). Decision 5 of dispatch://INFRA-1098's plan
+// is why: a reply nested under another reply, as the walks over comments.reply_to read one, cannot
+// be written through the API, whose comment write climbs to the thread head before it stores (api's
+// threadHeadOf), and no route of this tree records a run asked by a credential that names nobody.
+// It publishes no event and marks none published, its own or any other writer's, and it refuses a
+// database holding events it did not write unless its caller says the database is a test copy
+// (Options.TestCopy, `seed --test-copy`).
 //
 // # The record
 //
@@ -72,7 +74,13 @@
 //     pre-mortem. This head.
 //  20. An interaction node a second credential wrote, and one node held at `author` visibility:
 //     bob's run of the command bar (the going route), an interaction node, which the store always
-//     holds at visibility author for the credential that asked it. This head.
+//     holds at visibility author for the credential that asked it. This head. Beside it, which
+//     dispatch://INFRA-1098's architect accepted for c-visibility (its V7 reads a row whose author
+//     reaches nobody): a run whose author names no credential, the shared bearer's empty author {},
+//     its going_requests row written as a release before the going POST's refusal of such an asker
+//     wrote it, and its interaction node written from that row by the store's own writer of a run
+//     an earlier build recorded (graphstore.WriteRun, which backfill-graph-store calls); the
+//     self-check reads it within bullet 20's clause, by its words (writeNobodysRun). This head.
 //  21. A criterion the person wrote in a comment, a second in an ask, a third in a message:
 //     `criterion` blocks whose `parent` names alice's comment, her ask and her message (block
 //     schema 6), and requirement r-said serving the first, so c-one-tree walks up from a

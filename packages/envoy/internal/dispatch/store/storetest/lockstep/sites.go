@@ -403,6 +403,24 @@ var storeWriteCallSites = map[string]string{
 	// TestEveryStoreWriteTakesOneLockOrder proves of Write; cmd/dispatch-corpus and the corpus's
 	// Go tests are its callers, over a database no server writes a role of while it runs.
 	"seedcorpus/agents.go#writeRoles": "graphstore#TestEveryStoreWriteTakesOneLockOrder",
+	// The test corpus loader's end of a role's claim and its return (dispatch://INFRA-1098's T10,
+	// seedcorpus' EndClaim and RestoreClaim, which cmd/dispatch-corpus's end-claim and restore-claim
+	// run for agent-page.sh, since `bun run dispatch:local` runs no outbox to state them): each reads
+	// the role's node and, for the end, the held_by tuples the role states now, holding no row, and
+	// then appends the held_by retraction or assertion through one Write in a transaction of its
+	// own, at the sentinel and under no owner row, since a role stands under no issue. Its order is
+	// the order TestEveryStoreWriteTakesOneLockOrder proves of Write, over a database no server
+	// writes a role's claim of while it runs.
+	"seedcorpus/claims.go#EndClaim":     "graphstore#TestEveryStoreWriteTakesOneLockOrder",
+	"seedcorpus/claims.go#RestoreClaim": "graphstore#TestEveryStoreWriteTakesOneLockOrder",
+	// The test corpus loader's run of the command bar whose author names nobody (seedcorpus'
+	// writeNobodysRun, c-visibility's V7): in a transaction of its own it inserts the run's
+	// going_requests row, as a release before the going POST refused such an asker wrote it, and
+	// then writes the run's node from that row through WriteRun, which takes the row `for no key
+	// update` and writes the nodes in ascending (kind, id) before their tuples, under no owner row,
+	// as no run stands under one. Its order is WriteRun's, which TestEveryStoreWriteTakesOneLockOrder
+	// proves of the Write it makes; no other writer can reach the row before the transaction commits.
+	"seedcorpus/nobody.go#writeNobodysRun": "graphstore#TestEveryStoreWriteTakesOneLockOrder",
 	// The one writer of an ask's answer state: asks.Settled.Queue states the answer on the ask's
 	// node, appended under the event it is given or held for the caller's, and then writes the
 	// row; the catch-up of a follow another build recorded states it on the node. Each site that

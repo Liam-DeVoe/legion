@@ -37,15 +37,22 @@
 #       left out, until the version of the spec that states their move: this tree moves none of them
 #       into the store before then. A component is written only by the architecture importer from
 #       a repository on GitHub, which no server this harness boots reaches, so the fixture writes
-#       none and the inventory holds none; `census --store` still reads the component censuses.
+#       none and the inventory holds none, which its `inventory: component` line says with the
+#       count the baseline's rows hold; `census --store` still reads the component censuses.
 #   O   The old answers, on the baseline before the upgrade: the coverage and results reads; the
 #       Spec, Verification and Plan documents read with their blocks (GET .../text?blocks=true);
 #       and, as the person, the three reads the one inbox replaces (GET /api/v1/inbox,
 #       GET /api/v1/me/replies and GET /api/v1/agents/{session_id}/messages).
 #   U   The upgrade: the baseline stops, keeping the database, and this head's envoy-dispatch (on
-#       PATH, or HEAD_BINARY) boots over it, migrates it and runs its boot's passes; then
-#       `envoy-dispatch backfill-graph-store` writes the store's nodes of the rows the release
-#       before wrote.
+#       PATH, or HEAD_BINARY) boots over it, migrates it and runs its boot's passes, which the
+#       driver waits for by the line `dispatch: boot backfill done`; then `envoy-dispatch
+#       backfill-graph-store` writes the store's nodes of the rows the release before wrote; then
+#       the driver waits, polling every 2 s for at most 300 s, until no document_block_versions row
+#       holds store_owed_at, the mark of a document the block index owes this build, printing the
+#       documents it saw owed at its start and failing naming those still owed. A census before
+#       that reads every block of an owed document as a difference, since the reconciliation has
+#       not yet stated its part_of, and a wait on owed documents alone can pass before the backfill
+#       marks anything, so it comes after both. Each step of the run prints a `time:` line.
 #   S   The store's supertags against R21's closed list of thirty-one, handoff apart where this head
 #       does not hold INFRA-1336's merge: each the store lacks fails, and so does each the store
 #       holds that the list does not name and each node whose supertag sits outside the list.
@@ -163,8 +170,9 @@ readonly session="graph-census-$stamp"
 agent_session="019a1c0c-0000-7000-8000-$(printf '%012d' "$(($(date +%s) % 1000000 * 100000 + $$ % 100000))")"
 readonly agent_session
 readonly fixture_role="graph-census-$stamp"
-# How long the conversion of the in-flight issues may take, polled every 2 s (R).
-readonly convert_limit=300
+# How long the conversion of the in-flight issues may take, polled every 2 s (R), and how long the
+# block index may take to drain the documents backfill-graph-store marked owed (U).
+readonly convert_limit=300 owed_limit=300
 
 # R21's closed list of supertags, spec version 117: the thirty-one, handoff among them, and the
 # query and query version nodes R28's approval row points at. priority, step and plan are not on it
@@ -192,6 +200,18 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 # --- helpers -------------------------------------------------------------------------------------
+
+# step_begin and step_end WHAT: the time a step of the run took, printed as one `time:` line with
+# the wall-clock moments it began and ended, so a slow step is named in the run's own output.
+step_started=$SECONDS
+step_started_at=""
+step_begin() {
+  step_started=$SECONDS
+  step_started_at="$(date -u +%H:%M:%S)"
+}
+step_end() {
+  printf 'time: %s took %d s, from %s to %s\n' "$1" "$((SECONDS - step_started))" "$step_started_at" "$(date -u +%H:%M:%S)"
+}
 
 # field SECTION WHAT JQ: one value of the last answer's body, which must be there, in $value.
 field() {
@@ -308,7 +328,9 @@ readonly handoff_held
 
 # --- B: the baseline writes the fixture ----------------------------------------------------------
 
+step_begin
 baseline_start
+step_end "the baseline's build and boot"
 # The run's bearer, which baseline_start boots every server with; read before it is unset, and
 # printed nowhere.
 token="$baseline_token"
@@ -327,6 +349,7 @@ else
 fi
 sign_in B "$login" " at the baseline"
 
+step_begin
 send POST /api/v1/projects "$(jq -cn --arg k "$project" --argjson a "$(actor)" '{key: $k, name: ("The census of " + $k), actor: $a}')"
 want_status 201 B "create the project $project"
 as_person PUT "/api/v1/projects/$project/default-assignee" "$(jq -cn --arg p "$login" '{assignee: $p}')"
@@ -424,6 +447,7 @@ if [[ "$handoff_held" == 1 ]]; then
   want_status 201 B "the agent records a handoff of $main"
 fi
 settled B
+step_end "the baseline's write of the fixture through its API"
 pass B "the baseline's API wrote the fixture: $(printf '%s=%s ' upstream "${key_of[upstream]}" main "$main" child "${key_of[child]}")"
 
 # --- I: the inventory, before the upgrade -------------------------------------------------------
@@ -435,7 +459,13 @@ while IFS= read -r kind; do
     fail I "the fixture wrote at least one $kind" "a gap in the fixture: the baseline's rows hold no $kind, and a census over a kind nobody wrote proves nothing"
   printf 'inventory: %s %s\n' "$kind" "$count"
 done < <(inventory_kinds)
-pass I "the inventory holds $(grep -c . "$work/inventory.tsv") records of $(inventory_kinds | grep -c .) migrated kinds, every kind at least one; the rows of ${excepted_tables[*]} are left out (R21's exception)"
+# A component is no record of this inventory: only the architecture importer writes one, from an
+# architecture repository on GitHub, which no server lib-baseline.sh boots reaches, so the fixture
+# seeds none. The line says so beside the count the baseline's rows hold, rather than leaving the
+# kind out unnamed; census --store still reads the component censuses (C).
+query I "count the baseline's components" "select count(*) from components"
+printf 'inventory: component %s (not seeded: only the architecture importer writes a component, from an architecture repository on GitHub, which no server lib-baseline.sh boots reaches)\n' "$answer"
+pass I "the inventory holds $(grep -c . "$work/inventory.tsv") records of $(inventory_kinds | grep -c .) migrated kinds, every kind at least one; components are not seeded (the line above says why); the rows of ${excepted_tables[*]} are left out (R21's exception)"
 
 # --- O: the old answers, on the baseline --------------------------------------------------------
 
@@ -458,19 +488,47 @@ pass O "the baseline answered the coverage and results reads, the three document
 baseline_stop_server
 wait_zero U "no server process of the database is live" \
   "select count(*) from server_processes where heartbeat_at > now() - interval '15 seconds'" 60
+step_begin
 baseline_boot head "$head_binary" "$baseline_database_url"
 head_pid="$baseline_boot_pid"
 base="$baseline_boot_url"
 readonly head_log="$baseline_log"
-started=$SECONDS
+step_end "the upgrade's boot of this head, until it listens"
+step_begin
 until grep -q 'dispatch: boot backfill done' "$head_log"; do
-  ((SECONDS - started < 300)) || fail U "this head's boot runs its backfill passes" "no 'dispatch: boot backfill done' within 300 s"
+  ((SECONDS - step_started < 300)) || fail U "this head's boot runs its backfill passes" "no 'dispatch: boot backfill done' within 300 s"
   sleep 1
 done
+step_end "the wait for the boot's line '$(grep -m 1 -o 'msg="dispatch: boot backfill done"' "$head_log")'"
+step_begin
 (env -u PGHOSTADDR -u PGSERVICE -u PGSERVICEFILE DATABASE_URL="$database_url" HOME="$work/home" "$head_binary" backfill-graph-store) \
   >"$work/backfill.out" 2>&1 || fail U "envoy-dispatch backfill-graph-store" "it exited $?: $(tail -c 1500 "$work/backfill.out")"
 grep -E 'complete=|kind=' "$work/backfill.out" | sed 's/^/backfill: /' || true
-pass U "this head's server booted over the baseline's database at $base, ran its boot's passes, and envoy-dispatch backfill-graph-store wrote the store's nodes of the release before's rows"
+step_end "envoy-dispatch backfill-graph-store"
+# The census holds the store to the projections only once the block index has drained every
+# document the backfill marked owed (document_block_versions.store_owed_at): before that the
+# reconciliation has not yet stated the blocks' part_of, and the census reads each such block as a
+# difference. A wait on owed documents alone can pass before the backfill marks anything, so it
+# runs after both the boot's line and backfill-graph-store.
+step_begin
+owed_documents() {
+  query U "read the documents the block index owes this build's mark" \
+    "select coalesce(string_agg(coalesce(a.ref_key, d.artifact_id::text), ' ' order by 1), '') from document_block_versions d
+     left join artifacts a on a.id = d.artifact_id where d.store_owed_at is not null"
+}
+owed_documents
+owed_first="$answer"
+printf 'owed documents at %s: %d (%s)\n' "$(date -u +%H:%M:%S)" "$(wc -w <<<"$owed_first")" "${owed_first:-none}"
+while [[ -n "$answer" ]]; do
+  ((SECONDS - step_started < owed_limit)) ||
+    fail U "the block index drains every document backfill-graph-store marked owed within $owed_limit s" \
+      "after $owed_limit s these still owe it (store_owed_at set): $answer"
+  sleep 2
+  owed_documents
+done
+printf 'owed documents at %s: 0\n' "$(date -u +%H:%M:%S)"
+step_end "the wait until no document_block_versions row holds store_owed_at (it saw $(wc -w <<<"$owed_first") at its start, 0 at its end)"
+pass U "this head's server booted over the baseline's database at $base, ran its boot's passes, envoy-dispatch backfill-graph-store wrote the store's nodes of the release before's rows, and the block index drained the $(wc -w <<<"$owed_first") documents it owed"
 
 # --- S: R21's supertags ------------------------------------------------------------------------
 
@@ -510,9 +568,11 @@ done
 
 # --- C: each census of the store, both ways -----------------------------------------------------
 
+step_begin
 census_code=0
 (env -u PGHOSTADDR -u PGSERVICE -u PGSERVICEFILE DATABASE_URL="$database_url" HOME="$work/home" "$head_binary" census --store) \
   >"$work/census.out" 2>&1 || census_code=$?
+step_end "envoy-dispatch census --store"
 grep -E '^census: (store|project) ' "$work/census.out" | grep -v ' checks ' || true
 [[ "$census_code" == 0 ]] || fail C "envoy-dispatch census --store reads zero differences" "it exited $census_code: $(grep -E 'differ|refus|incomplete|error' "$work/census.out" | head -n 20)"
 summary="$(grep -E '^census: store rows_checked=' "$work/census.out" | tail -n 1)"

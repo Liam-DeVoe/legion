@@ -182,6 +182,10 @@ func (s *seeder) writeModelIssue(ctx context.Context) error {
 		return fmt.Errorf("ask the command bar as bob: %w", err)
 	}
 	s.corpus.set("model.interaction", run.ID)
+	// A run whose author names nobody beside it, which no route of this tree records (writeNobodysRun).
+	if err := s.writeNobodysRun(ctx); err != nil {
+		return err
+	}
 	return s.writeAgents(ctx, key)
 }
 
