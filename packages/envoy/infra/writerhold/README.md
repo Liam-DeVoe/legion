@@ -193,8 +193,8 @@ decides, not the journal.
   works as before: set's rerun, `hold abort` after a stop, or `hold release` with nothing changed.
   With no `--hold` the refusal says the broker refused a released restore while a hold is held,
   names the route's answer, and says the hold's id is the one `hold prepare` and `hold set` printed:
-  the route's 400 carries no hold id, no route lists the log, and `hold status` reads the lost row
-  first. No row is written.
+  no route lists the log, and `hold status` reads the lost row first. When the route admits the
+  held restore, its message names the hold's id too. No row is written.
 - After any other entry the row comes back `released`: with the hold's id when `--hold` names a hold
   that has not ended (a row lost in `prepare`, before `hold set`'s move, after an abort from
   `prepare`, or before the hold's journal was written), and the output says whether the hold's
@@ -207,8 +207,13 @@ decides, not the journal.
 - `--bootstrap` writes the first row, and only into an empty log.
 - A restore the broker refuses 409 `clock_skew` (this machine's clock and the broker's differ by
   more than the allowance, or the row would be signed before the latest row the broker accepted)
-  or 409 `below_floor` (a log or journal it judges by does not verify) stores nothing, and the
-  command is UNKNOWN, naming the code. Neither is a reason to send `held`.
+  or 409 `below_floor` (a log entry or journal it judges by does not verify, was signed by a key it
+  no longer lists, or is below its floor) stores nothing, and the command is UNKNOWN, naming the
+  code. Neither is a reason to send `held`.
+- Each refusal prints the broker's message beside its code, quoted, since part of it (a record's
+  hold id) is a database writer's choice. It names what was refused: the hold whose journal holds
+  the restore and whether a held restore is admitted, the key id of a signature no listed key
+  verifies, or the rows a database admin deletes or restores by hand when no route can clear them.
 
 ## Creates after a restart
 

@@ -331,9 +331,9 @@ func restore(ctx context.Context, records *holdrecord.Client, o options, stdout 
 		err := records.Bootstrap(ctx)
 		switch {
 		case errors.As(err, &lost):
-			return refusef(StepPreflight, "--bootstrap writes the first row only into an empty log, and the log's next gen is %d: restore the row with `hold restore`, naming an open hold with --hold <its hold id>", lost.RestoreGen)
+			return refusef(StepPreflight, "--bootstrap writes the first row only into an empty log, and the log's next gen is %d%s: restore the row with `hold restore`, naming an open hold with --hold <its hold id>", lost.RestoreGen, brokerSays(err))
 		case errors.As(err, &refused) && refused.Code == "row_exists":
-			return refusef(StepPreflight, "--bootstrap writes the first row only into an empty log, and a row is there (row_exists)")
+			return refusef(StepPreflight, "--bootstrap writes the first row only into an empty log, and a row is there (row_exists%s)", brokerSays(err))
 		case err != nil:
 			return restoreUnknown(err)
 		}
@@ -376,7 +376,7 @@ func restore(ctx context.Context, records *holdrecord.Client, o options, stdout 
 			// The route's 400 names no hold id for this code, and no route lists the log, so the
 			// line names where the held hold's id was printed: the prepare and set that began it.
 			// `hold status` reads the row first, so it shows nothing while the row is lost.
-			return refusef(StepPreflight, "the broker refused a released restore while a hold is held (%v): the log's latest entry is a held row of a hold that has not ended, so the row was lost mid-hold; the hold's id is the one `hold prepare` and `hold set` printed when they began it; restore the row with `hold restore --hold <that id>`, which brings it back held", err)
+			return refusef(StepPreflight, "the broker refused a released restore while a hold is held (%v%s): the log's latest entry is a held row of a hold that has not ended, so the row was lost mid-hold; the hold's id is the one `hold prepare` and `hold set` printed when they began it; restore the row with `hold restore --hold <that id>`, which brings it back held", err, brokerSays(err))
 		}
 		// The route's log holds a held row of this hold, which has not ended: the row was lost
 		// mid-hold, and comes back held at the gen the route named for the released one.
@@ -386,13 +386,13 @@ func restore(ctx context.Context, records *holdrecord.Client, o options, stdout 
 		// After a prepare entry the broker restores released only with that entry's hold id, which
 		// its 409 names (RouteError.HoldID), since no route lists the log.
 		if refused.HoldID != "" {
-			return refusef(StepPreflight, "the log's latest entry is a prepare row of hold %s, and the broker restores released after it only with that hold's id: restore it with `hold restore --hold %s`", refused.HoldID, refused.HoldID)
+			return refusef(StepPreflight, "the log's latest entry is a prepare row of hold %s, and the broker restores released after it only with that hold's id (%v%s): restore it with `hold restore --hold %s`", refused.HoldID, err, brokerSays(err), refused.HoldID)
 		}
 		other := ""
 		if holdID != "" {
 			other = " of a hold other than " + holdID
 		}
-		return refusef(StepPreflight, "the log's latest entry is a prepare row%s, and the broker restores released after it only with that hold's id, which its answer does not name (%v): restore it with `hold restore --hold <its hold id>`", other, err)
+		return refusef(StepPreflight, "the log's latest entry is a prepare row%s, and the broker restores released after it only with that hold's id, which its answer does not name (%v%s): restore it with `hold restore --hold <its hold id>`", other, err, brokerSays(err))
 	}
 	if err != nil {
 		return restoreUnknown(err)
@@ -422,17 +422,39 @@ func restoreAt(ctx context.Context, records *holdrecord.Client, phase natsgrant.
 	return row, gen, err
 }
 
-// restoreUnknown is err, a restore the broker did not take, as the command answers it: a 409
-// clock_skew (the row's signed_at outside the five-minute allowance of the broker's clock, or before
-// the latest row the broker accepted; nothing stored) is UNKNOWN naming the code, since it says
-// nothing of the log's latest entry, so it is never a reason to send held. A 409 below_floor is
-// already UNKNOWN (holdrecord answers it as ErrUnknown); every other error is returned as it is.
+// restoreUnknown is err, a restore the broker did not take, as the command answers it, with the
+// broker's message beside the code (brokerSays). A 409 clock_skew (the row's signed_at outside the
+// five-minute allowance of the broker's clock, or before the latest row the broker accepted) and a
+// 409 below_floor (a record it judges the restore by reads as unknown: a log entry or a journal
+// that does not verify, one signed by a key the broker no longer lists, or one below its floor)
+// each store nothing and are UNKNOWN naming the code, since neither says anything of the log's
+// latest entry, so neither is a reason to send held. Every other refusal is returned as it is,
+// with the message.
 func restoreUnknown(err error) error {
 	var refused *holdrecord.RouteError
-	if errors.As(err, &refused) && refused.Code == "clock_skew" {
-		return unknownf(StepPreflight, err, "the broker refused the restore 409 clock_skew and stored nothing: this machine's clock and the broker's differ by more than the allowance, or the row would be signed before the latest row the broker accepted; correct the clock and run it again")
+	switch {
+	case !errors.As(err, &refused):
+		return err
+	case refused.Code == "clock_skew":
+		return unknownf(StepPreflight, err, "the broker refused the restore 409 clock_skew and stored nothing%s: this machine's clock and the broker's differ by more than the allowance, or the row would be signed before the latest row the broker accepted; correct the clock and run it again", brokerSays(err))
+	case refused.Code == "below_floor":
+		return unknownf(StepPreflight, err, "the broker refused the restore 409 below_floor and stored nothing: a record it judges the restore by reads as unknown%s", brokerSays(err))
+	case refused.Message == "":
+		return err
 	}
-	return err
+	return fmt.Errorf("%w%s", err, brokerSays(err))
+}
+
+// brokerSays is the message of err's route refusal (RouteError.Message, #4679 round 8), which
+// names what the broker refused: a hold and whether a held restore is admitted, the rows a database
+// admin repairs by hand, a key id, the times compared. It is printed beside the code, quoted as
+// data, since part of it (a record's hold id) is a database writer's choice. "" for none.
+func brokerSays(err error) string {
+	var refused *holdrecord.RouteError
+	if !errors.As(err, &refused) || refused.Message == "" {
+		return ""
+	}
+	return fmt.Sprintf("; the broker says %q", refused.Message)
 }
 
 // keygen makes the operator's hold signing key: an Ed25519 pair, whose private half, the seed as

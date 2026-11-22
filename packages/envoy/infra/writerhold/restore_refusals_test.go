@@ -64,11 +64,12 @@ func (b *refusingBroker) sent() []string {
 
 // #4679's round 6 refuses a restore whose signed_at is outside the clock-skew allowance 409
 // clock_skew, and one judged against a log or journal that does not verify 409 below_floor; each
-// stores nothing. `hold restore` (and `--bootstrap`) reads each as UNKNOWN (exit 2) naming the code,
-// and neither is a reason to send `held`: one restore is sent, released. The control for
-// clock_skew is restore at e7790f6d22, which returned the route's error as a refusal (exit 1); for
-// below_floor it already read UNKNOWN there, through holdrecord's own refusal mapping, which this
-// row pins.
+// stores nothing. `hold restore` (and `--bootstrap`) reads each as UNKNOWN (exit 2) naming the code
+// and the broker's message beside it (RouteError.Message, #4679 round 8), and neither is a reason to
+// send `held`: one restore is sent, released. The control for clock_skew is restore at e7790f6d22,
+// which returned the route's error as a refusal (exit 1); for below_floor it already read UNKNOWN
+// there, through holdrecord's own refusal mapping, which this row pins. The control for the message
+// is restore at 449251ffc3, which printed the code alone.
 func TestHoldARestoreRefusedForTheClockOrTheFloorIsUnknown(t *testing.T) {
 	for _, code := range []string{"clock_skew", "below_floor"} {
 		for _, args := range [][]string{{"--reason", "the row is gone"}, {"--bootstrap", "--reason", "the first row"}} {
@@ -80,6 +81,7 @@ func TestHoldARestoreRefusedForTheClockOrTheFloorIsUnknown(t *testing.T) {
 				require.Equal(t, 2, exit, "restore answered %s: %s%s", code, stdout.String(), stderr.String())
 				require.True(t, strings.Contains(stderr.String(), "UNKNOWN"), "the line is not UNKNOWN: %s", stderr.String())
 				require.Contains(t, stderr.String(), code)
+				require.Contains(t, stderr.String(), "the restore stores nothing: "+code+" in this row", "the broker's message is not printed")
 				require.Equal(t, []string{"released"}, b.sent(), "the restores sent")
 			})
 		}
