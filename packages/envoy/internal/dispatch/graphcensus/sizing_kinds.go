@@ -27,6 +27,11 @@ const (
 	movedWithBlocks = "blocks-child"
 )
 
+// movedWithSpecs is the change that holds the approved spec of each spec source of a project in
+// the store (the work-units plan's D3 and D9). It is no child of the parent change, and its writes
+// land in the same two tables, so the sizing sums them beside the children's.
+const movedWithSpecs = "spec-store"
+
 // StoreKind is one term of the projection: one kind of write the five children of
 // the parent change move, the child that moves it, how many nodes and how many tuples one such
 // write appends, and how many such writes the database's own history holds inside the window.
@@ -135,7 +140,12 @@ const (
 //   - the lenses child's interaction, its frames and its node stated gone once the release before
 //     deletes its row, a lens and its finding blocks, a lens kind, a constraint, a risk, a node's
 //     state and a pointer's retarget (#b-r-interaction, #b-r-lens, #b-r-lens-catalogue,
-//     #b-r-constraint-risk), every one of them assumed.
+//     #b-r-constraint-risk), every one of them assumed;
+//   - the spec store's nodes of the approved spec of a spec source (specstore): a node's first
+//     version, with its base attributes, each version and each removal an approval or a level's
+//     import appends to it, a hold the import keeps with its base attributes and its hold value,
+//     the hold stated gone once its statement is written, and the repair_issue the import's child
+//     issue names on it, every one of them assumed.
 //
 // Every node of an issue, a document, an ask, a message, a comment and a block states its project
 // or its parties beside its visibility and state, written by the create that makes it: each of
@@ -656,6 +666,38 @@ func storeKinds() []StoreKind {
 		Driver: "assumed at 1 a day, since production writes no pointer before the lenses child ships: a retarget of" +
 			" a lens's, a risk's or a requirement's pointer, the retraction of the far end it held and the assertion" +
 			" of the new one",
+	}, {
+		// Counted off specstore's writesOf, which an approval of a change request (Apply) and the
+		// import of an approved level (Import) write a node of the approved spec through: a node's
+		// first version writes the node, in its project, with its visibility, state and project.
+		Name: "spec_node", MovedBy: movedWithSpecs, Nodes: 1, Tuples: 3, Assumed: 10 * sizingWindowDays,
+		Driver: "assumed at 10 a day, since no table holds the approved spec of a spec source before this release: the" +
+			" node of a statement, check, component or interface an approval or a level's import writes first, and" +
+			" its visibility, state and project",
+	}, {
+		Name: "spec_version", MovedBy: movedWithSpecs, Tuples: 1, Assumed: 20 * sizingWindowDays,
+		Driver: "assumed at 20 a day, each assumed node's first version beside as many approved changes of nodes already" +
+			" there: the version value, the node's fields with the act's provenance",
+	}, {
+		Name: "spec_removal", MovedBy: movedWithSpecs, Tuples: 1, Assumed: 1 * sizingWindowDays,
+		Driver: "assumed at 1 a day, since no table holds the approved spec before this release: the removed value an" +
+			" approval appends to a node its change request removes",
+	}, {
+		// Counted off specstore's Import, which keeps each statement of a level it cannot resolve
+		// as a hold.
+		Name: "spec_hold", MovedBy: movedWithSpecs, Nodes: 1, Tuples: 4, Assumed: 10 * sizingWindowDays / 7,
+		Driver: "assumed at 10 a week, one level's import a week holding ten statements, since no table holds a level" +
+			" before this release: the hold's node, its visibility, state and project, and its hold value",
+	}, {
+		Name: "spec_hold_cleared", MovedBy: movedWithSpecs, Tuples: 1, Assumed: 10 * sizingWindowDays / 7,
+		Driver: "assumed at one for each assumed hold, 10 a week: the hold's node stated gone by the approval or the" +
+			" import that writes its statement",
+	}, {
+		// Counted off api's repairIssueHook, which the child issue a level's import opens for its
+		// holds names itself on each of them through.
+		Name: "spec_repair_issue", MovedBy: movedWithSpecs, Tuples: 1, Assumed: 10 * sizingWindowDays / 7,
+		Driver: "assumed at one for each assumed hold, 10 a week: the repair_issue value that names the child issue the" +
+			" import opens for its holds",
 	}}
 }
 

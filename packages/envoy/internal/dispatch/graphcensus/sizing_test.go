@@ -1301,6 +1301,14 @@ func TestTheSizingCountsEveryTupleTheWritersAppend(t *testing.T) {
 		"risk":             {tuples: 11, writes: 11 * sizingWindowDays, assumed: true},
 		"node_state":       {tuples: 1, writes: 10 * sizingWindowDays, assumed: true},
 		"pointer_retarget": {tuples: 2, writes: 1 * sizingWindowDays, assumed: true},
+		// No table holds the approved spec of a spec source, or a level, before this release, so
+		// each of its terms reads the writes it is assumed at.
+		"spec_node":         {tuples: 3, writes: 10 * sizingWindowDays, assumed: true},
+		"spec_version":      {tuples: 1, writes: 20 * sizingWindowDays, assumed: true},
+		"spec_removal":      {tuples: 1, writes: 1 * sizingWindowDays, assumed: true},
+		"spec_hold":         {tuples: 4, writes: 10 * sizingWindowDays / 7, assumed: true},
+		"spec_hold_cleared": {tuples: 1, writes: 10 * sizingWindowDays / 7, assumed: true},
+		"spec_repair_issue": {tuples: 1, writes: 10 * sizingWindowDays / 7, assumed: true},
 	}
 	for _, name := range slices.Sorted(maps.Keys(want)) {
 		got, printedTerm := terms[name]

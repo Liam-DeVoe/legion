@@ -349,6 +349,29 @@ var storeWriteCallSites = map[string]string{
 	// TestEveryApiStoreWriterTakesTheStoreLockOrder).
 	"architecture/importer.go#RetireComponents": "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	"architecture/importer.go#stateComponents":  "architecture#TestTheImportTakesTheStoreLockOrder",
+	// The approved spec of each spec source of a project (the work-units plan's D3 and D9): a
+	// spec_node for each statement, check, component and interface, and a spec_import_hold for each
+	// statement a level's import could not resolve, every fact of either a value at the sentinel.
+	// Each writer of those nodes takes the lock of its repository's approved spec first
+	// (specstore.Lock), before it reads the spec it writes against, and then writes every node in
+	// one node write in ascending (kind, id), so the holds it clears come before the spec's nodes:
+	// an approval of a change request (Apply), queued on the approval's write phase after its
+	// reviews, under the owner lock that approval took before the spec's lock, and the import of an
+	// approved level (Import), in a transaction of its own that takes no owner lock. Every writer of
+	// a spec_node or a spec_import_hold row holds that one lock, so none of them holds such a row
+	// while it waits on a row an approval took before it. specstore's
+	// TestAnApprovalOfAChangeRequestTakesTheStoreLockOrder and
+	// TestTheLevelImportTakesTheStoreLockOrder hold each to those steps.
+	"specstore/apply.go#Apply":   "specstore#TestAnApprovalOfAChangeRequestTakesTheStoreLockOrder",
+	"specstore/import.go#Import": "specstore#TestTheLevelImportTakesTheStoreLockOrder",
+	// The repair issue of the holds a level's import kept: the child issue the import opens through
+	// the issue route's own create (createIssueWith), whose hook names it on each hold it lists, in
+	// the create's transaction after the create's own writes. Under the project's owner lock the
+	// create takes first, the hook reads the holds again, and then appends one repair_issue value on
+	// each hold's node at the sentinel: tuples and no node row, which lock no row. api's
+	// TestTheRepairIssueTakesTheStoreLockOrder holds the hook to reading nothing of the store before
+	// that owner lock.
+	"api/spec_import.go#repairIssueHook": "api#TestTheRepairIssueTakesTheStoreLockOrder",
 	// The statement that states every stale lens gone with all that stands under it, in its
 	// caller's transaction (the block-index tick's own, a document's removal's): the owner lock of
 	// each issue a stale lens's document names first, which a document's removal holds already, so
