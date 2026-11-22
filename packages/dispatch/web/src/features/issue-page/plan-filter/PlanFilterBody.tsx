@@ -381,6 +381,7 @@ export function PlanFilterBody({
           inView={inView}
           land={landing ? revealed : undefined}
           onLanded={setTaken}
+          readings={published.readings}
           reveal={revealed}
         />
       )}
@@ -460,13 +461,17 @@ function taskLine(
   return { marks: pageChrome, words: word ?? "" };
 }
 
-/** The words the chart names a chip's target by, as a tie's chip names it (`NodeRow.tsx`'s
- *  `Chip`): a block whose words the chip's reading holds by the line the names store projects
- *  from that reading (`namesBlockByLine`, `KnownReferences.lines`), and any other target by the
- *  name the store holds for it - a task whose words hold none by the page's word for its kind
- *  (`tree-drafts.ts`'s `treeContext`) - each cut as a chip cuts it (`chipName`). Nothing for a
- *  chip the tree has not named (no `reading`), and nothing while the store holds no name for it. */
-function chipLine(chip: NodeChip | undefined, { lines, names }: KnownReferences): string {
+/** The words the chart names a chip's target by - a need's, and a statement's a step serves - as
+ *  a tie's chip names it (`NodeRow.tsx`'s `Chip`): a block whose words the chip's reading holds by
+ *  the line the names store projects from that reading (`namesBlockByLine`,
+ *  `KnownReferences.lines`), and any other target by the name the store holds for it - a task or
+ *  a statement whose words hold none by the page's word for its kind (`tree-drafts.ts`'s
+ *  `treeContext`) - each cut as a chip cuts it (`chipName`). Nothing for a chip the tree has not
+ *  named (no `reading`), and nothing while the store holds no name for it. */
+function chipLine(
+  chip: Pick<NodeChip, "reading" | "ref"> | undefined,
+  { lines, names }: KnownReferences
+): string {
   if (chip?.reading === undefined) return "";
   const route = parseNodeReference(chip.ref);
   const name = namesBlockByLine(route, chip.reading) ? lines.get(chip.ref) : names.get(chip.ref);
@@ -574,6 +579,7 @@ function PlanChart({
   inView,
   land,
   onLanded,
+  readings,
   reveal,
 }: {
   entries: readonly PlanEntry[];
@@ -588,6 +594,9 @@ function PlanChart({
   land: string | undefined;
   /** Says the address's node has taken the focus. */
   onLanded: (id: string) => void;
+  /** How the page names each target its batched read answered (`PublishedReferences.readings`),
+   *  which a step's row names the statement it is drawn under by (`BarRow`). */
+  readings: PublishedReferences["readings"];
   /** The node the address names: the task a cycle's row stands for where it is one of its own. */
   reveal: string | undefined;
 }): ReactNode {
@@ -908,6 +917,7 @@ function PlanChart({
               focused={focused === place.key}
               key={place.key}
               onFocus={() => takeFocus(place.key, place.task)}
+              readings={readings}
               tabStop={tabStop === place.key}
             />
           )
@@ -1047,6 +1057,7 @@ function BarRow({
   end,
   focused,
   onFocus,
+  readings,
   tabStop,
 }: {
   bar: PlanBar;
@@ -1054,6 +1065,10 @@ function BarRow({
   end: number;
   focused: boolean;
   onFocus: () => void;
+  /** How the page names each target its batched read answered (`PublishedReferences.readings`):
+   *  the reading the statement the row is drawn under is named by, as the tree's chip of it would
+   *  carry it (`issue-tree.ts`'s `targetNaming`). */
+  readings: PublishedReferences["readings"];
   tabStop: boolean;
 }): ReactNode {
   const task = bar.task;
@@ -1066,12 +1081,15 @@ function BarRow({
   // The statements the task serves, each a chip: the parent the filter draws as no row, where it
   // is a statement, and each statement the task is also under. The parent is drawn as a chip
   // beside those, not as a row's text line, so it is named as they are and not through
-  // `node-line.tsx`'s `NodeParentLine`, which draws a parent as the text line of a row: each by
-  // the line the names store projects beside its name from the reading the page published for
-  // it, its first block that holds words (`KnownReferences.lines`), a reference inside it read as
-  // its short form, since a name inside a name resolves nothing, cut as every chip of the page
-  // names a block (`chipName`). One the store holds no line for yet, and a parent the model gives
-  // no address, is named by nothing, as a chip draws nothing until its name comes.
+  // `node-line.tsx`'s `NodeParentLine`, which draws a parent as the text line of a row: each as
+  // the row's needs are named (`chipLine`), so as a tie's chip names it - by the line the names
+  // store projects from the reading the page published for it where that reading holds words,
+  // and by the page's word for its kind where it holds none - a reference inside the line read
+  // as its short form, since a name inside a name resolves nothing. The tree draws the parent no
+  // chip, so the parent is named by its address and the reading the page published for it
+  // (`readings`), which is the reading the tree's chip of it carries. One the store holds no
+  // name for yet, one the page published no reading for, and a parent the model gives no
+  // address, are named by nothing, as a chip draws nothing until its name comes.
   //
   // Each chip's React key, unique within the task and the same on every render. Two chips of one
   // task can carry the same reference: the server refuses a pointer named twice only by its raw
@@ -1080,17 +1098,18 @@ function BarRow({
   // hold it: `ref:` begins the first, and a count and a space begin each repeat, so no repeat
   // takes another chip's key.
   const keyed = new Map<string, number>();
+  const parent = task.parentLine;
   const serves = [
-    ...(task.parentLine === undefined || task.parentLine.type !== "requirement"
+    ...(parent?.type !== "requirement" || parent.reference === undefined
       ? []
-      : [task.parentLine.reference]),
-    ...task.alsoUnder.map((chip) => chip.ref),
+      : [{ reading: readings.get(parent.reference), ref: parent.reference }]),
+    ...task.alsoUnder,
   ]
-    .flatMap((reference) => {
-      const held = reference === undefined ? undefined : known.lines.get(reference);
-      if (reference === undefined || held === undefined) return [];
-      const route = parseNodeReference(reference);
-      return [{ line: chipName(route, held), reference, route }];
+    .flatMap((chip) => {
+      const line = chipLine(chip, known);
+      return line === ""
+        ? []
+        : [{ line, reference: chip.ref, route: parseNodeReference(chip.ref) }];
     })
     .map((one) => {
       const base = `ref:${one.reference}`;
