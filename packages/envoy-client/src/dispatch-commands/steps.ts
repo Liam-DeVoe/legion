@@ -49,7 +49,7 @@ export async function stepsCommand(context: CommandContext): Promise<DispatchToo
   // The generated shape lets either list be null; Dispatch writes `[]`, and null reads the same.
   // A Dispatch older than the plan's tasks sends no `needs` or `planned`: no task line prints.
   const tasks = (read.tasks ?? []).map((task) => ({ ...task, steps: task.steps ?? [] }));
-  const records = tasks.flatMap((task) => task.steps);
+  const count = tasks.reduce((count, task) => count + task.steps.length, 0);
   const lines = tasks.flatMap((task) => {
     const runs = task.steps.map(stepLine);
     const planned = task.planned ?? [];
@@ -57,7 +57,7 @@ export async function stepsCommand(context: CommandContext): Promise<DispatchToo
     return [taskLine(task.task, task.needs ?? null, planned), ...runs];
   });
   return {
-    text: [`${read.issue}: ${records.length} steps in ${tasks.length} tasks`, ...lines].join("\n"),
+    text: [`${read.issue}: ${count} steps in ${tasks.length} tasks`, ...lines].join("\n"),
     details: { issue: read.issue, tasks },
   };
 }
