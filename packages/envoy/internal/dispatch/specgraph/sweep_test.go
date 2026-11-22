@@ -151,10 +151,11 @@ func baseStates(t *testing.T, p *readerProcess, base fstest.MapFS) map[string]st
 // the inputs judged and hold the digest of judged, fail by name where the sweep skips an input that
 // it built, drops one that it judged, writes an input's bytes otherwise, reads a base of other bytes,
 // or judges an input by another right. known holds the lines that the sweep reported of each of its
-// known positives (knownPositives), by its words, which no floor counts: a sweep that no longer calls
-// the judgment (movesBeyond) for an input that moves a state toward true, with no right or beyond a
-// right, whether it skips that judgment, counts such an input as read or hands the judgment other
-// states or another right, fails by the name of the known positive (sweepAgainst).
+// known positives (knownPositives), by its words, which no floor counts: a sweep that skips the
+// judgment (judgeAnswer) for them or counts one as read, hands the judgment the base's states for the
+// reader's answer, or hands it a right wider than the input's at the places that a known positive
+// moves, fails by that known positive's name (sweepAgainst); one that hands it no right, or a right
+// narrower than the input's, fails by the inputs that move a state toward true by their right.
 type sweepCount struct {
 	inputs, refused, same, moved, byRight int
 	rights                                []string

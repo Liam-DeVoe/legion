@@ -652,25 +652,30 @@ const (
 )
 
 // knownPositives is each input that a sweep must report at the base name, with moves, the lines of
-// the states that it is built to move toward true, as movesBeyond writes them, in their order. The
-// domain test holds the judgment to its definition in each case; what the known positives show, and
-// it does not, is that each sweep calls the judgment, with the reader's answer and the base's states
-// and with the input's right, and fails by its lines, so a sweep that skips the judgment, counts such
-// an input as read or hands the judgment other states or another right fails by the known positive's
-// name (sweepAgainst). One for each kind of input that the judgment can report: with no right, and
-// with a right that names its places; each moves each kind of state. At wait-cycle, the failing run
-// of a-restart-keeps-the-message (results.json /4) with the outcome pass, with no right: that check
-// reads true, a-message-survives-a-restart, its own state and envoy-delivers-messages read met, and
-// the wait of u-b on a-message-survives-a-restart ends. It shows that each sweep hands the judgment
-// the reader's answer with no right. And at silent-leg, the leg arm of go-checks at m2 (jobs.json /1),
-// which ended with no result of the check, taken out, with the right knownRight, which leaves out each
-// place that the input moves at the first subject and names each that it moves at the third with a
-// state that is neither the base's nor the input's (false for the check, not_met for the statements
-// and the own state): the check a-restart-loses-no-message, which silent-leg reads unknown at the
-// first and third subjects, reads true there, a-stored-message-survives-a-restart, its own state and
-// messages-reach-sessions read met there, and the wait of u-a on a-stored-message-survives-a-restart
-// ends at the first subject. It shows that each sweep hands the judgment the input's right, the
-// places that it names and those that it leaves out. whole is the states of the base.
+// the states that it is built to move toward true, as judgeAnswer writes them, in their order. The
+// domain test holds the judgment of an answer (judgeAnswer) to its definition over whole answers of
+// each base; what the known positives show, and it does not, is that each sweep calls judgeAnswer at
+// their bases with the reader's answer and a right no wider than the input's at the places that they
+// move, and fails by their lines (sweepAgainst): a sweep that skips the judgment for them or counts
+// one as read, or hands it the base's states for the reader's answer, fails by both names, and one
+// that hands it a right wider than the input's at those places fails by the second. A sweep that
+// hands it no right, or a right narrower than the input's, fails by the inputs that move a state
+// toward true by their right, not by these. One for each kind of input that the judgment can report:
+// with no right, and with a right that names its places; each moves each kind of state. At
+// wait-cycle, the failing run of a-restart-keeps-the-message (results.json /4) with the outcome
+// pass, with no right: that check reads true, a-message-survives-a-restart, its own state and
+// envoy-delivers-messages read met, and the wait of u-b on a-message-survives-a-restart ends. It
+// shows that each sweep hands the judgment the reader's answer. And at silent-leg, the leg arm of
+// go-checks at m2 (jobs.json /1), which ended with no result of the check, taken out, with the right
+// knownRight, which leaves out each place that the input moves at the first subject and names each
+// that it moves at the third with a state that is neither the base's nor the input's (false for the
+// check, not_met for the statements and the own state): the check a-restart-loses-no-message, which
+// silent-leg reads unknown at the first and third subjects, reads true there,
+// a-stored-message-survives-a-restart, its own state and messages-reach-sessions read met there, and
+// the wait of u-a on a-stored-message-survives-a-restart ends at the first subject. It shows that
+// each sweep hands the judgment a right no wider than the input's at the places that the input
+// moves: a right that names no place, or that allows the input's state at one of them, would not
+// report it. whole is the states of the base.
 func knownPositives(t *testing.T, name string, base fstest.MapFS, whole map[string]string) []sweepInput {
 	t.Helper()
 	switch name {
