@@ -160,7 +160,8 @@ test("a middle button's press and release on a link are prevented, so the browse
           release: dispatch(link, "mouseup", { button: 1 }).defaultPrevented,
         }).toEqual({ release: true, text });
       }
-      // Away from a link a middle press is the editor's as before, and a primary one is always.
+      // Away from a link a middle press is the editor's as before, and a primary one with no
+      // modifier is always.
       const paragraph = view.dom.querySelector("p");
       if (paragraph === null) throw new Error("no paragraph");
       expect(offer(view, paragraph, "mouseup", { button: 1 }).handled).toBe(false);
@@ -224,8 +225,8 @@ test("a click that ends a drag across a link opens nothing", async () => {
 
       expect(offer(view, away, "click").handled).toBe(false);
       expect(opened).toEqual([]);
-      // A Ctrl click is never a drag's end: ProseMirror reads its press as selecting the node it
-      // lands in, which leaves a selection across the link that the reader never made.
+      // A Ctrl click opens the link whatever the selection: the editor takes its press, so the
+      // press starts no drag and leaves the selection across the link as it was.
       expect(offer(view, away, "click", { ctrlKey: true }).handled).toBe(true);
       expect(opened).toEqual([["https://example.com/a", true]]);
 
@@ -239,6 +240,67 @@ test("a click that ends a drag across a link opens nothing", async () => {
     },
     { openLink }
   );
+});
+
+// dispatch://INFRA-2160, R1: ProseMirror reads a primary press with Ctrl (Cmd on a Mac) as
+// selecting the node it lands in, here the paragraph around the link. That selection stood after
+// the Ctrl+click had opened the link in a new tab, and the next plain click on the link read it as
+// the end of a drag across the link and opened nothing.
+test("a Ctrl or Cmd click on a link leaves the selection as it was, and a plain click after it opens the link", async () => {
+  for (const modifier of [{ ctrlKey: true }, { metaKey: true }] satisfies MouseEventInit[]) {
+    const { openLink, opened } = recordedOpener();
+    await withMarksEditor(
+      LINKS,
+      ({ view }) => {
+        const issue = linkOf(view, "the other issue");
+        const selection = () => ({
+          collapsed: view.dom.ownerDocument.getSelection()?.isCollapsed,
+          editor: view.state.selection.toJSON(),
+        });
+        // happy-dom lays nothing out, so ProseMirror finds a press inside no node, where a Ctrl
+        // press selects nothing; a browser finds this one in the link's words, in the paragraph
+        // that opens at 0.
+        view.posAtCoords = () => ({ inside: 0, pos: 25 });
+        view.focus();
+        caretAt(view, 3);
+        const before = selection();
+
+        // The modified click as a browser sends it: the press, the release, then the click.
+        const press = dispatch(issue, "mousedown", modifier);
+        dispatch(issue, "mouseup", modifier);
+        dispatch(issue, "click", modifier);
+        const afterModified = selection();
+        // The plain click after it, whose press and release ProseMirror hears as before.
+        dispatch(issue, "mousedown");
+        dispatch(issue, "mouseup");
+        const plainOpens = offer(view, issue, "click").handled;
+        // With Shift or Alt held too the click is the browser's own, and its press ProseMirror's.
+        const shiftOrAltTaken = [{ shiftKey: true }, { altKey: true }].map(
+          (keys) => offer(view, issue, "mousedown", { ...modifier, ...keys }).handled
+        );
+
+        expect({
+          modifier,
+          opened,
+          plainOpens,
+          prevented: press.defaultPrevented,
+          selection: afterModified,
+          shiftOrAltTaken,
+        }).toEqual({
+          modifier,
+          opened: [
+            ["dispatch://CORE-2", true],
+            ["dispatch://CORE-2", false],
+          ],
+          plainOpens: true,
+          prevented: true,
+          selection: before,
+          shiftOrAltTaken: [false, false],
+        });
+      },
+      { openLink }
+    );
+  }
 });
 
 test("an anchor inside a host island is the host's, and one a node view draws as its own is the editor's", async () => {

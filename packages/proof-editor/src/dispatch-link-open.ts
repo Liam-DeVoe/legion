@@ -22,7 +22,11 @@
  * - A primary click with no modifier opens the link, in every access mode and inside commented
  *   text, unless a drag selected text across it; Ctrl or Cmd opens it in a new tab. ProseMirror has
  *   no built-in `click` handler, so this one runs for every click inside the editor, a widget's and
- *   a node view's included, whatever their `stopEvent` says.
+ *   a node view's included, whatever their `stopEvent` says. The press of a Ctrl or Cmd click on a
+ *   link mark or a header's pointer is prevented and taken, so ProseMirror, which reads it as
+ *   selecting the node it lands in, selects nothing, and a plain click after it opens the link
+ *   too. A title prevents every press itself, and the picture fallback keeps every press from the
+ *   editor and puts the caret after itself on a primary one (Dispatch's `picture-view.ts`).
  * - A middle click (`auxclick`, button 1) opens it in a new tab, which also cancels the browser's
  *   own new tab for an anchor with a real `href`. Its press and its release are prevented, so the
  *   browser pastes nothing into the document (Linux pastes its primary selection on a middle
@@ -106,9 +110,9 @@ function linkAt(view: EditorView, target: EventTarget | null): EditorLink | unde
 /** The link a primary click opens, or undefined for a click that opens none: the one a drag that
  *  ended on it selected text across - which the click must not throw away by opening the link -
  *  opens nothing. A title prevents its own press, so an older selection elsewhere may stand while
- *  it is clicked; only one across the link counts. A Ctrl or Cmd click is never a drag's end:
- *  ProseMirror reads its press as selecting the node it lands in, which leaves a selection across
- *  the link that the reader never made. */
+ *  it is clicked; only one across the link counts. A Ctrl or Cmd click opens the link whatever
+ *  the selection: the editor takes its press (`takeLinkPress`), so the press starts no drag and
+ *  leaves the selection as it was, which may be an older one across the link. */
 function clickedLink(view: EditorView, event: MouseEvent): EditorLink | undefined {
   if (event.button !== 0 || event.shiftKey || event.altKey) {
     return undefined;
@@ -200,6 +204,29 @@ function preventMiddleButton(view: EditorView, event: MouseEvent): boolean {
   return true;
 }
 
+/** A press on a link that the editor takes and prevents: a middle button's (`preventMiddleButton`),
+ *  and the primary button's with Ctrl or Cmd and neither Shift nor Alt, the press of a click that
+ *  opens the link in a new tab. ProseMirror's own `mousedown` handler reads that press as
+ *  selecting the node it lands in (Ctrl, or Cmd on a Mac: its `selectNodeModifier`), and selects
+ *  it on the release: for a link mark, the paragraph around it. That selection stood across the
+ *  link, and the next plain click on it read it as a drag's end and opened nothing
+ *  (dispatch://INFRA-2160, R1). ProseMirror runs that handler only for a press no
+ *  `handleDOMEvents` handler took, and hears the release only through the listener the handler
+ *  adds, so a press taken here changes no selection; prevented, it moves no caret and focuses
+ *  nothing either. */
+function takeLinkPress(view: EditorView, event: MouseEvent): boolean {
+  const newTab =
+    event.button === 0 && (event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey;
+  if (!newTab) {
+    return preventMiddleButton(view, event);
+  }
+  if (linkAt(view, event.target) === undefined) {
+    return false;
+  }
+  event.preventDefault();
+  return true;
+}
+
 /** The plugin that opens the document's links through the host's `openLink` (the module's doc
  *  says which links and how). */
 export function dispatchLinkOpenPlugin(openLink: OpenLink) {
@@ -231,7 +258,7 @@ export function dispatchLinkOpenPlugin(openLink: OpenLink) {
               }
               return true;
             },
-            mousedown: preventMiddleButton,
+            mousedown: takeLinkPress,
             mouseup: preventMiddleButton,
             keydown(view, event) {
               const altEnter =
