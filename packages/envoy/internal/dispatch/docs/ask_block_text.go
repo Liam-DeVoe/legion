@@ -631,16 +631,17 @@ func normalizeAskOptions(options []model.AskOption) []model.AskOption {
 // loses no word. It can still lose what is no word - an image, a link whose text is empty - so a
 // paragraph that writes more than the text in it is refused before the write, and the refusal
 // quotes it and names where the question can be written without losing it. A decision that keeps
-// its content rule (pmdoc.ContentBreak) takes it from a document edit inserting the question
-// after that paragraph's block, the path an agent has, and from the document editor, where a
-// person writes it. A decision that breaks its rule takes it from the editor alone: the question
-// leaves a paragraph after its options, or a second bullet list, where it stands, and a document
-// edit that leaves a decision it changes breaking its rule is refused (validateEditedAskBlocks).
-// The condition is the rule, not the paragraph's place: an insert beside a paragraph before the
-// options of a decision holding an empty paragraph or a second bullet list after them is refused
-// just the same, and every paragraph of a decision keeping the rule stands before its options.
-// The block and the paragraph are quoted as data (quotedAskChild), never written into the reason
-// raw.
+// its content rule takes it from a document edit inserting the question after that paragraph's
+// block, the path an agent has, and from the document editor, where a person writes it. Where the
+// decision breaks its content rule (pmdoc.AskContentError, which reads the decisions nested in its
+// options too) it takes it from the editor alone: the insert leaves it breaking that rule, and a
+// document edit that leaves a decision it changes so is refused (validateEditedAskBlocks), so the
+// refusal gives the rule's own reason, which refuses that insert too. The condition is the rule,
+// not the paragraph's place: an insert beside a paragraph before the options of a decision
+// holding an empty paragraph or a second bullet list after them, or an option holding a decision
+// that breaks the rule, is refused just the same, and every paragraph of a decision keeping the
+// rule stands before its options. The block and the paragraph are quoted as data
+// (quotedAskChild), never written into the reason raw.
 func refuseEmptyQuestionEdit(block askBlock, edit AskBlockEdit) error {
 	for _, child := range block.node.Children {
 		if child.Type == "bullet_list" || writesNothingButItsText(child) {
@@ -650,25 +651,22 @@ func refuseEmptyQuestionEdit(block askBlock, edit AskBlockEdit) error {
 		if err != nil {
 			return err
 		}
-		if rule, broken := pmdoc.ContentBreak(block.node, block.node.Children); broken != "" {
-			return &ErrAskBlockUnrepresentable{Field: "block", Reason: fmt.Sprintf(
-				"ask block %q has an empty question, and writing a question into it would delete what one of its "+
-					"paragraphs holds, which is no text: %s; the decision also holds %s, which its content rule, %s, "+
-					"does not allow, and a document edit that leaves it so is refused, so no insert of the question "+
-					"applies - write the question in the document editor, which keeps what the paragraph holds",
-				block.id, quoted, broken, rule)}
+		loses := fmt.Sprintf("ask block %q has an empty question, and writing a question into it would delete what one of its "+
+			"paragraphs holds, which is no text: %s; ", block.id, quoted)
+		if broken := pmdoc.AskContentError(block.node); broken != nil {
+			return &ErrAskBlockUnrepresentable{Field: "block", Reason: loses + broken.Error() +
+				", and a document edit that leaves it so is refused, so no insert of the question applies - " +
+				"write the question in the document editor, which keeps what the paragraph holds"}
 		}
 		// A paragraph the document has yet to stamp an id into has no block an insert names.
 		insert := "after that paragraph's block once the document has settled its block ids (a few seconds)"
 		if id, _ := child.Attrs[pmdoc.BlockIDAttr].(string); id != "" {
 			insert = fmt.Sprintf("after %q", "block:"+id)
 		}
-		return &ErrAskBlockUnrepresentable{Field: "block", Reason: fmt.Sprintf(
-			"ask block %q has an empty question, and writing a question into it would delete what one of its "+
-				"paragraphs holds, which is no text: %s; write the question beside that paragraph instead - "+
-				"a document edit inserting it %s (dispatch doc-edit) writes it into the decision, "+
-				"and so does the document editor; either keeps what the paragraph holds",
-			block.id, quoted, insert)}
+		return &ErrAskBlockUnrepresentable{Field: "block", Reason: loses + fmt.Sprintf(
+			"write the question beside that paragraph instead - a document edit inserting it %s (dispatch doc-edit) "+
+				"writes it into the decision, and so does the document editor; either keeps what the paragraph holds",
+			insert)}
 	}
 	if edit.Question != nil && normalizeAskQuestion(*edit.Question) != "" {
 		return nil

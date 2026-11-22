@@ -1154,20 +1154,23 @@ func TestEditAskOfAnEmptyQuestionNamesTheStep(t *testing.T) {
 	})
 
 	// That insert mends the decision only where the decision keeps its content rule: elsewhere the
-	// question leaves a paragraph after its options, or a second bullet list, where it stands, and
-	// a document edit that leaves a decision it changes so is refused. The first layout is the
-	// review's: an empty question, the options, then an image, where the insert after the image
-	// lands after the options. In the second an image stands before the options, where the insert
-	// lands, and a second bullet list after them. Each refusal names the document editor alone, as
-	// its whole text says, and the insert it named before is refused.
+	// question leaves it breaking that rule where it stands, and a document edit that leaves a
+	// decision it changes so is refused. The first layout is the review's: an empty question, the
+	// options, then an image, where the insert after the image lands after the options. In the
+	// second an image stands before the options, where the insert lands, and a second bullet list
+	// after them. In the third an image stands before the options and an option holds a decision
+	// with two lists, which the rule reads too, where the refusal named the insert, which is
+	// refused. Each refusal gives the rule's own reason and names the document editor alone, as its
+	// whole text says, and the insert after the image is refused.
 	for _, test := range []struct {
 		name string
 		// layout lays out the decision, which holds its question and then its options.
 		layout func(t *testing.T, ask *pmdoc.Node)
-		// photo is the index of the image's paragraph among the decision's blocks, and broken what
-		// of them breaks its content rule.
-		photo  int
-		broken string
+		// photo is the index of the image's paragraph among the decision's blocks; ask names the
+		// decision that breaks the content rule as its refusal does, and broken what of its blocks
+		// breaks it.
+		photo       int
+		ask, broken string
 	}{
 		{
 			name: "an image after the options of an empty question",
@@ -1176,6 +1179,7 @@ func TestEditAskOfAnEmptyQuestionNamesTheStep(t *testing.T) {
 				ask.Children = append(ask.Children, parsedBlock(t, "![a photo](/photo.png)\n"))
 			},
 			photo:  2,
+			ask:    `"ask-lists"`,
 			broken: "a paragraph after its options",
 		},
 		{
@@ -1185,6 +1189,20 @@ func TestEditAskOfAnEmptyQuestionNamesTheStep(t *testing.T) {
 				ask.Children = append(ask.Children, parsedBlock(t, "- Defer: Wait a week\n"))
 			},
 			photo:  0,
+			ask:    `"ask-lists"`,
+			broken: "a second bullet list",
+		},
+		{
+			name: "an image before the options and an option holding a decision with two lists",
+			layout: func(t *testing.T, ask *pmdoc.Node) {
+				ask.Children[0] = parsedBlock(t, "![a photo](/photo.png)\n")
+				nested := parsedBlock(t, ":::ask{#ask-nested urgency=\"med\" multiple=\"false\" state=\"open\"}\nWhich day?\n\n- Monday\n:::\n")
+				nested.Children = append(nested.Children, parsedBlock(t, "- Tuesday\n"))
+				item := ask.Children[1].Children[0]
+				item.Children = append(item.Children, nested)
+			},
+			photo:  0,
+			ask:    `"ask-nested", asking "Which day?",`,
 			broken: "a second bullet list",
 		},
 	} {
@@ -1200,10 +1218,10 @@ func TestEditAskOfAnEmptyQuestionNamesTheStep(t *testing.T) {
 			err := sendAskOptions(service, artifactID, AskBlockEdit{Question: new("Should we ship?")})
 			want := `block: ask block "ask-lists" has an empty question, and writing a question into it would delete ` +
 				`what one of its paragraphs holds, which is no text: block ` + strconv.Quote(photo) +
-				` (paragraph) reads "![a photo](/photo.png)"; the decision also holds ` + test.broken +
-				`, which its content rule, paragraph+ bullet_list?, does not allow, and a document edit that leaves ` +
-				`it so is refused, so no insert of the question applies - write the question in the document ` +
-				`editor, which keeps what the paragraph holds`
+				` (paragraph) reads "![a photo](/photo.png)"; ask block ` + test.ask + ` holds ` + test.broken +
+				` where its content rule, paragraph+ bullet_list?, allows one or more paragraphs and then at most ` +
+				`one bullet list, last, and a document edit that leaves it so is refused, so no insert of the ` +
+				`question applies - write the question in the document editor, which keeps what the paragraph holds`
 			if err == nil || err.Error() != want {
 				t.Fatalf("refusal =\n%v\nwant\n%s", err, want)
 			}

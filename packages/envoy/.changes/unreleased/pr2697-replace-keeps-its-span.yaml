@@ -13,16 +13,17 @@ body: |-
   link went with its URL and a span cut to end on a space was written with character references:
   narrow the `find` to the span's inside, or spell the whole span's markup in it. Each span is
   weighed alone, so a `find` that spells one link's markup and covers a second link
-  (`wrote [this](https://a.example/1) and that`) is refused naming `that`. A link is spelled only
-  with the URL and title it has, by every quote of an edit: a `replace`'s or a `delete`'s `find`,
-  or an `insert`'s or a `move`'s quote anchor, that writes a link's text under another URL or
-  title (`wrote [this](https://wrong.example/9) today`, or that link alone,
-  `[this](https://wrong.example/9)`) is refused with `400 FIND_CROSSES_SPAN` naming the link, with
-  its own URL and title in the markup to spell, where each was taken with no word that the link
-  had changed. So is one that spells only part of a link's text as another link, or a bare link as
-  a link to another URL. A bare URL or a bare `www.` link is its own markup, so a `find` that
-  covers the whole of it spells it: `docs at https://example.com/x` was refused with that same
-  `find` as the markup to spell.
+  (`wrote [this](https://a.example/1) and that`) is refused naming `that`. A `find` names text to
+  change, so a `replace`'s or a `delete`'s spells each link with the URL and title it has: one that
+  writes a link's text under another URL or title (`wrote [this](https://wrong.example/9) today`,
+  or that link alone, `[this](https://wrong.example/9)`) is refused with `400 FIND_CROSSES_SPAN`
+  naming the link, with its own URL and title in the markup to spell, where each was taken with no
+  word that the link had changed. So is one that spells only part of a link's text as another
+  link, or a bare link as a link to another URL. An `insert`'s or a `move`'s quote anchor names a
+  place, not text to change, so it finds its block whatever URL or title it spells a link with, as
+  it did, and the link stays as the document holds it. A bare URL or a bare `www.` link is its own
+  markup, so a `find` that covers the whole of it spells it: `docs at https://example.com/x` was
+  refused with that same `find` as the markup to spell.
 
   The rule has two limits. No `find` spells strikethrough's markup, so a `find` crossing a struck
   span's edge is narrowed to its inside, and the text outside it replaced in an operation of its

@@ -192,21 +192,41 @@ type Span struct {
 	Markdown string
 }
 
+// Crossing is why a quote crosses a marked span of its textblock (TextblockAt.CrossedSpan), or
+// CrossesNoSpan where it crosses none.
+type Crossing uint8
+
+const (
+	// CrossesNoSpan is a quote that crosses no span.
+	CrossesNoSpan Crossing = iota
+	// CrossesEdge is a quote text is written over that covers text inside a span and text
+	// outside it, and spells no link with another URL or title.
+	CrossesEdge
+	// SpellsAnotherLink is a quote that spells a link with another URL or title than the link
+	// has, and covers text outside it too.
+	SpellsAnotherLink
+	// SpellsAnotherLinkAlone is a quote that spells a link so and covers the link's whole text
+	// and nothing outside it.
+	SpellsAnotherLinkAlone
+	// SpellsAnotherLinkInside is a quote that spells a link so and covers part of the link's
+	// text and nothing outside it.
+	SpellsAnotherLinkInside
+)
+
 // CrossedSpan is the first span of the textblock, in the order the spans end, that the quote
-// matching r crosses, and whether r covers no text outside that span (alone); where the quote
-// crosses none, crossed is false and the span and alone are zero. spelled is how the quote spells
-// r (QuoteFinder.FindSpelling), and writes says text is written over r, as a replace writes its
+// matching r crosses, and why it crosses it (crossing); where the quote crosses none, the span is
+// zero and crossing is CrossesNoSpan. spelled is how the quote spells r
+// (QuoteFinder.FindSpelling), and overwrites says text is written over r, as a replace writes its
 // with over its find.
 //
 // A quote that spells a link with another URL or title crosses that link wherever it stands: a
 // link is spelled only with its own URL and title, and a quote copied from an older read after
-// another writer changed the link would name it with no word of the change. That holds for a
-// quote over the link's text alone (`[this](https://wrong.example/9)`) or inside it, for one over
-// its text and more, for one that spells only part of its text as another link
+// another writer changed the link may name it with no word of the change. That holds for a quote
+// over the link's text alone (`[this](https://wrong.example/9)`) or inside it, for one over its
+// text and more, for one that spells only part of its text as another link
 // (`[one](https://b.example/2) two` over `[one two](https://a.example/1)`), and for a bare link
 // spelled as a link with another URL (`[https://a.example/1](https://b.example/2)`). A quote that
-// writes nothing over r - a delete's find, an insert's or a move's anchor - crosses a span in that
-// way alone.
+// writes nothing over r, a delete's find, crosses a span in that way alone.
 //
 // Text written over r lands outside every span whose edge r crosses, covering text inside the
 // span and text outside it, so a link r covered goes with its URL, and a span it cut to end or
@@ -221,7 +241,7 @@ type Span struct {
 // and that`, where `that` is a second link) crosses the second span's edge. One that spells only
 // the part of a span it covers (`**bold** now` in `**Sami said bold** now`) still crosses that
 // span's edge, and a quote matched as written spells no markup at all.
-func (at TextblockAt) CrossedSpan(r Range, spelled Spelling, writes bool) (span Span, alone, crossed bool) {
+func (at TextblockAt) CrossedSpan(r Range, spelled Spelling, overwrites bool) (span Span, crossing Crossing) {
 	type open struct {
 		mark Mark
 		// first is the index of the span's first child, and from its position.
@@ -253,14 +273,22 @@ func (at TextblockAt) CrossedSpan(r Range, spelled Spelling, writes bool) (span 
 			markup, own := spelled.writes(o.mark, o.from, pos)
 			// A quote that spells no other link crosses a span only where text is written over r,
 			// and then no span r lies inside, nor one whose markup it spells over the whole span.
-			if own && (!writes || inside || (covers && markup)) {
+			if own && (!overwrites || inside || (covers && markup)) {
 				continue
 			}
 			found := spanOf(o.mark, children[o.first:index])
 			if own && covers && found.Markdown != "" && found.Markdown == found.Text {
 				continue
 			}
-			return found, inside, true
+			switch {
+			case own:
+				return found, CrossesEdge
+			case inside && covers:
+				return found, SpellsAnotherLinkAlone
+			case inside:
+				return found, SpellsAnotherLinkInside
+			}
+			return found, SpellsAnotherLink
 		}
 		opened = kept
 		if child == nil || (pos >= r.To && len(opened) == 0) {
@@ -276,7 +304,33 @@ func (at TextblockAt) CrossedSpan(r Range, spelled Spelling, writes bool) (span 
 		}
 		pos += nodeSize(child)
 	}
-	return Span{}, false, false
+	return Span{}, CrossesNoSpan
+}
+
+// SpanOver is the text of the textblock that r covers written under mark alone, as a quote spells
+// it with mark's markup: over the word `one` of `[one two](https://a.example/1)`, with that link's
+// mark, its Markdown is `[one](https://a.example/1)`. A refusal of a quote inside a link it spells
+// as another (SpellsAnotherLinkInside) names it, which keeps the range the quote named. r must end
+// between characters, as every range a matcher returns does (slice16).
+func (at TextblockAt) SpanOver(mark Mark, r Range) (Span, error) {
+	var runs []*Node
+	pos := at.Content.From
+	for _, child := range at.Node.Children {
+		size := nodeSize(child)
+		from, to := max(pos, r.From), min(pos+size, r.To)
+		if from < to {
+			if child.Type == "text" && to-from < size {
+				text, err := slice16(child.Text, from-pos, to-pos)
+				if err != nil {
+					return Span{}, err
+				}
+				child = &Node{Type: "text", Text: text, Attrs: child.Attrs, Marks: child.Marks}
+			}
+			runs = append(runs, child)
+		}
+		pos += size
+	}
+	return spanOf(mark, runs), nil
 }
 
 // spanOf is the span mark covers over runs, the textblock's children it covers, with its text and
