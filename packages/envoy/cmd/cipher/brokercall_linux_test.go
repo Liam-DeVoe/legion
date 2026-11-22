@@ -56,7 +56,7 @@ func TestEnrollThroughTheHelperPastTheBoundSaysTheOutcomeIsUnknown(t *testing.T)
 	meter := startStallMeter(t)
 	start := time.Now()
 	stdout, stderr, exit := runAgentSecrets(t, binary, rig.URL, keyDir, env, args...)
-	requireOnTime(t, meter, "enroll --helper past the helper's bound", start, bound)
+	requireCommandOnTime(t, meter, "enroll --helper past the helper's bound", start, bound)
 	rows := enrollmentsOf(t, rig, runtimeID)
 	outcome := fmt.Sprintf("exit %d, stdout %q, stderr %q; the broker's rows for %s: %+v", exit, stdout, stderr, runtimeID, rows)
 	if n := slow.held.Load(); n != 1 {

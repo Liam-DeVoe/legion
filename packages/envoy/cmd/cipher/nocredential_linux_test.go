@@ -66,7 +66,7 @@ func TestRegisterWaitReturnsAtOnceWithoutALauncherCredential(t *testing.T) {
 	meter := startStallMeter(t)
 	start := time.Now()
 	out, err := cmd.Output()
-	elapsed := requireOnTime(t, meter, "register --wait 10 with no credential", start, 0)
+	elapsed := requireCommandOnTime(t, meter, "register --wait 10 with no credential", start, 0)
 	if err != nil || strings.TrimSpace(string(out)) != "ran" {
 		t.Fatalf("the command must still run: %q %v (stderr %q)", out, err, stderr.String())
 	}

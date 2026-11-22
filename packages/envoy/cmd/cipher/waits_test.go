@@ -8,6 +8,8 @@
 package main
 
 import (
+	"fmt"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -44,14 +46,40 @@ func untilGiveUp(t *testing.T) time.Duration {
 
 // waitsGaveUp reports whether the moment every wait for a fact in these tests gives up has passed
 // (untilGiveUp). Under -timeout 0 it never has. The prompt job helper has the deadline
-// helperTimeout gives it, so its waits give up before the test's.
+// helperTimeout gives it, so its waits give up before the test's. When it has passed, it notes so
+// on stderr (noteGaveUp) before the caller fails the test with its own text.
 func waitsGaveUp(t *testing.T) bool {
-	return untilGiveUp(t) <= 0
+	if untilGiveUp(t) > 0 {
+		return false
+	}
+	noteGaveUp(t)
+	return true
+}
+
+// noteGaveUp writes to stderr, at once, that a wait of t gave up at the binary's deadline less
+// waitMargin, as testwait's own waits do (testwait.gaveUp): without -v a failed subtest's text is
+// printed only when its parent test ends, and go test's alarm, should it come first, prints no
+// running test's log, so this line is what still names the test whose wait gave up. The caller
+// then fails the test with the text that says what it waited for.
+func noteGaveUp(t *testing.T) {
+	_, _ = fmt.Fprintf(os.Stderr, "testwait: %s: gave up waiting %s before the test binary's deadline\n", t.Name(), waitMargin)
+}
+
+// heldBeforeGiveUp is testwait.Holds bounded by the moment every wait for a fact in these tests
+// gives up (untilGiveUp): whether condition held by then. When it did not, it notes so on stderr
+// (noteGaveUp), and the caller fails the test with its own text.
+func heldBeforeGiveUp(t *testing.T, condition func() bool) bool {
+	if testwait.Holds(untilGiveUp(t), testwait.Poll, condition) {
+		return true
+	}
+	noteGaveUp(t)
+	return false
 }
 
 // received is the next value ch receives, and true; or, when the moment every wait for a fact in
-// these tests gives up passes first, the zero value and false, and the caller fails the test with
-// its own text. A value ch has by then is still taken.
+// these tests gives up passes first, the zero value and false, having noted so on stderr
+// (noteGaveUp), and the caller fails the test with its own text, after anything it must kill
+// first. A value ch has by then is still taken.
 func received[T any](t *testing.T, ch <-chan T) (T, bool) {
 	t.Helper()
 	giveUp := time.NewTimer(untilGiveUp(t))
@@ -64,6 +92,7 @@ func received[T any](t *testing.T, ch <-chan T) (T, bool) {
 		case v := <-ch:
 			return v, true
 		default:
+			noteGaveUp(t)
 			var zero T
 			return zero, false
 		}
@@ -130,15 +159,21 @@ func (m *stallMeter) heldUp() time.Duration {
 	return held
 }
 
-// lateSlack is how much later than its own deadline code a row times may end, beyond the time this
-// process was held up meanwhile (stallMeter). What such code still does once its deadline has
+// lateSlack is how much later than its own deadline code in this process may end, beyond the time
+// this process was held up meanwhile (stallMeter). What such code still does once its deadline has
 // passed - a cleanup call to a fake in this process, the report of its failure - takes
-// milliseconds at the machine's own speed, and the meter counts the time the machine took from it.
-// Code whose own deadline ends late, by seconds, is past lateSlack.
-const lateSlack = 5 * time.Second
+// milliseconds at the machine's own speed, and the meter counts the time the machine took from it;
+// the most lateness a row measured beyond that, frozen 16 s after every 0.25 s of running at a load
+// of 800, is in the pull request's record. Code whose own deadline ends late, by seconds, is past it.
+const lateSlack = time.Second
 
-// endsByItsDeadline waits for ch, the end of code started at start under a deadline of its own,
-// deadline after start, and answers what ch received. The wait is bounded
+// commandLateSlack is lateSlack for a command in another process (an agent-secrets binary the test
+// runs, a helper subprocess): it also starts a process, ends it and drains its pipes, and the
+// meter counts only the time this process was held up, not the time the machine starved that one.
+const commandLateSlack = 5 * time.Second
+
+// endsByItsDeadline waits for ch, the end of code in this process started at start under a
+// deadline of its own, deadline after start, and answers what ch received. The wait is bounded
 // only by the moment every wait for a fact in these tests gives up (received), so a machine that
 // held the code up does not fail the row; the row fails where the code was late on its own
 // (requireOnTime). what names the code for the failure's text.
@@ -152,18 +187,33 @@ func endsByItsDeadline[T any](t *testing.T, meter *stallMeter, what string, star
 	return v
 }
 
-// requireOnTime fails t where code started at start under a deadline of its own, deadline after
-// start (0 for code that should not wait at all), and ended just now, ended later than that
-// deadline by more than lateSlack plus the time meter, started before start, counted this process
-// held up: that is code whose own deadline came late, or that waited for something it should not.
-// It answers how long the code took. what names the code for the failure's text.
+// requireOnTime fails t where code in this process, started at start under a deadline of its own,
+// deadline after start (0 for code that should not wait at all), and ended just now, ended later
+// than that deadline by more than lateSlack plus the time meter, started before start, counted
+// this process held up: that is code whose own deadline came late, or that waited for something it
+// should not. It answers how long the code took, and logs how late it was. what names the code for
+// the failure's text.
 func requireOnTime(t *testing.T, meter *stallMeter, what string, start time.Time, deadline time.Duration) time.Duration {
+	t.Helper()
+	return onTimeWithin(t, meter, what, start, deadline, lateSlack)
+}
+
+// requireCommandOnTime is requireOnTime for a command in another process (commandLateSlack).
+func requireCommandOnTime(t *testing.T, meter *stallMeter, what string, start time.Time, deadline time.Duration) time.Duration {
+	t.Helper()
+	return onTimeWithin(t, meter, what, start, deadline, commandLateSlack)
+}
+
+func onTimeWithin(t *testing.T, meter *stallMeter, what string, start time.Time, deadline, slack time.Duration) time.Duration {
 	t.Helper()
 	took := time.Since(start)
 	held := meter.heldUp()
-	if late := took - deadline - held; late > lateSlack {
+	late := took - deadline - held
+	if late > slack {
 		t.Fatalf("%s ended %s after it started, past its %s deadline; this process was held up %s of that, so the code was %s late on its own, more than %s",
-			what, took.Round(time.Millisecond), deadline, held.Round(time.Millisecond), late.Round(time.Millisecond), lateSlack)
+			what, took.Round(time.Millisecond), deadline, held.Round(time.Millisecond), late.Round(time.Millisecond), slack)
 	}
+	t.Logf("on time: %s took %s against its %s deadline, %s held up, %s late on its own (slack %s)",
+		what, took.Round(time.Millisecond), deadline, held.Round(time.Millisecond), late.Round(time.Millisecond), slack)
 	return took
 }

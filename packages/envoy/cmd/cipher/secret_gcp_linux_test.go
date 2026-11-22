@@ -118,7 +118,7 @@ func gcloudStubIn(t *testing.T, dir, last string) (gcloudCommand, gcloudChild) {
 func (c gcloudChild) cleanUp(t *testing.T) {
 	t.Helper()
 	pid := c.pid()
-	if pid == 0 && !testwait.Holds(untilGiveUp(t), testwait.Poll, func() bool { pid = c.pid(); return pid != 0 }) {
+	if pid == 0 && !heldBeforeGiveUp(t, func() bool { pid = c.pid(); return pid != 0 }) {
 		t.Errorf("the stub gcloud's child never named itself in %s: where it started, it may still run", c.pidFile)
 		return
 	}
@@ -211,9 +211,9 @@ func (c gcloudChild) kill(t *testing.T, pid int) {
 // gcloudWaitDelay for a gcloud that exited), less the time this process was held up
 // (endsByItsDeadline). It fails t where call ends before release (the stub did not hold it), and
 // where the child is not seen or call has not ended when the waits of these tests give up. Where
-// it fails t before call has returned, t ends by killing the child (cleanUp), which lets a call
-// held by the child's open output return, and then waits for call, failing where it has not
-// returned when the waits give up.
+// it fails t before call has returned, t ends by running release, so nothing the row set up still
+// holds the call, then killing the child (cleanUp), which lets a call held by the child's open
+// output return, and then waits for call, failing where it has not returned when the waits give up.
 func (c gcloudChild) callEnds(t *testing.T, what string, after time.Duration, release func(), call func() error) error {
 	t.Helper()
 	done, finished := make(chan error, 1), make(chan struct{})
@@ -228,6 +228,7 @@ func (c gcloudChild) callEnds(t *testing.T, what string, after time.Duration, re
 			return
 		default:
 		}
+		release()
 		c.cleanUp(t)
 		if _, ok := received(t, finished); !ok {
 			t.Errorf("%s was still waiting on gcloud after its test ended, %s before the test binary's deadline", what, waitMargin)
@@ -266,7 +267,7 @@ func (c gcloudChild) requireGone(t *testing.T) {
 	t.Helper()
 	pid := c.pid()
 	var readErr error
-	gone := testwait.Holds(untilGiveUp(t), testwait.Poll, func() bool {
+	gone := heldBeforeGiveUp(t, func() bool {
 		running, err := c.runs(pid)
 		readErr = err
 		return err != nil || !running
@@ -323,13 +324,18 @@ func TestGcloudLoginListAtItsDeadlineKillsGcloudsChild(t *testing.T) {
 // moment of its gcloud call (onGcloudStep): gcloudStarted or gcloudWaited.
 const gcloudSignalAt = "AGENT_SECRETS_GCLOUD_SIGNAL_AT"
 
+// gcloudSignInDeadline is the variable that sets TestGcloudSignInSignalHelper's deadline on each
+// store call (storeCallDeadline), 60s where it is unset.
+const gcloudSignInDeadline = "AGENT_SECRETS_GCLOUD_DEADLINE"
+
 // TestGcloudSignInSignalHelper is the process the gcloud sign-in signal rows signal: `secret list`
 // against a fake broker serving the GCP store, with no other source of a Google credential, so
 // its sign-in runs `gcloud auth list` through the stub gcloud of gcloudStubIn, written beside the
 // pid file AGENT_SECRETS_GCLOUD_SIGNAL_HELPER names. It prints RETURNED <exit code> should the
-// form return. Without gcloudSignalAt the stub never answers and the deadline on each store call
-// stays 60s, so TestGcloudSignInEndedByASignalKillsGcloudsChild's signal comes while the call
-// runs. With gcloudSignalAt set, it sends SIGINT to the thread that runs onGcloudStep at that
+// form return. Without gcloudSignalAt the stub never answers, so the call ends only at the deadline
+// on each store call (gcloudSignInDeadline) or by a signal, and
+// TestGcloudSignInEndedByASignalKillsGcloudsChild's signal comes while the call runs. With
+// gcloudSignalAt set, it sends SIGINT to the thread that runs onGcloudStep at that
 // step, once the stub's child has named itself, so the signal is handled on that thread before
 // runRecorded goes on; at gcloudWaited the stub exits at once, leaving its child holding its
 // output (TestGcloudSignInSignalledAtGcloudsStartOrEndKillsGcloudsChild).
@@ -337,6 +343,13 @@ func TestGcloudSignInSignalHelper(t *testing.T) {
 	pidFile := os.Getenv("AGENT_SECRETS_GCLOUD_SIGNAL_HELPER")
 	if pidFile == "" {
 		t.Skip("subprocess helper")
+	}
+	if d := os.Getenv(gcloudSignInDeadline); d != "" {
+		deadline, err := time.ParseDuration(d)
+		if err != nil {
+			t.Fatal(err)
+		}
+		useStoreCallDeadline(t, deadline)
 	}
 	fake := newFakeSecretManager()
 	startFakeSecretManager(t, fake)
@@ -425,12 +438,16 @@ func (h *signInHelper) requireEndedByInterrupt(t *testing.T) {
 // TestGcloudSignInEndedByASignalKillsGcloudsChild: a sign-in whose gcloud never answers, ended by
 // an interrupt sent to agent-secrets alone (gcloud, in a group of its own, gets no signal sent to
 // agent-secrets' group, a terminal's Ctrl-C included), ends as the interrupt ends it - by SIGINT,
-// a shell's status 130 - and the child that held gcloud's output is gone with it.
+// a shell's status 130 - at once, and the child that held gcloud's output is gone with it. The
+// call's deadline is an hour (gcloudSignInDeadline), so only the interrupt can end it while the
+// test waits: a signal path that waited behind the call would never end. The end is timed from the
+// interrupt against no deadline of its own (requireCommandOnTime), so a path that waits for
+// anything first fails at once.
 func TestGcloudSignInEndedByASignalKillsGcloudsChild(t *testing.T) {
 	child := gcloudChild{pidFile: filepath.Join(t.TempDir(), "child.pid")}
 	t.Cleanup(func() { child.cleanUp(t) })
-	helper := startSignInHelper(t, child)
-	seen := testwait.Holds(untilGiveUp(t), testwait.Poll, func() bool {
+	helper := startSignInHelper(t, child, gcloudSignInDeadline+"=1h")
+	seen := heldBeforeGiveUp(t, func() bool {
 		pid := child.pid()
 		if pid == 0 {
 			return false
@@ -443,6 +460,8 @@ func TestGcloudSignInEndedByASignalKillsGcloudsChild(t *testing.T) {
 		helper.ended(10 * time.Second)
 		t.Fatalf("the stub gcloud's child was never seen running, %s before the test binary's deadline; the helper said %q", waitMargin, helper.out.String())
 	}
+	meter := startStallMeter(t)
+	sent := time.Now()
 	if err := helper.cmd.Process.Signal(syscall.SIGINT); err != nil {
 		t.Fatal(err)
 	}
@@ -451,6 +470,7 @@ func TestGcloudSignInEndedByASignalKillsGcloudsChild(t *testing.T) {
 		helper.ended(10 * time.Second)
 		t.Fatalf("agent-secrets was still running after its interrupt, %s before the test binary's deadline; it said %q", waitMargin, helper.out.String())
 	}
+	requireCommandOnTime(t, meter, "agent-secrets after its interrupt, which ends it at once", sent, 0)
 	helper.requireEndedByInterrupt(t)
 	child.requireGone(t)
 }
@@ -485,7 +505,10 @@ func TestGcloudSignInSignalledAtGcloudsStartOrEndKillsGcloudsChild(t *testing.T)
 func TestGcloudThatExitsLeavingAChildTakesTheChildWithIt(t *testing.T) {
 	dir := t.TempDir()
 	goAhead := filepath.Join(dir, "go")
-	gcloud, child := gcloudStubIn(t, dir, "while [ ! -e "+shellWord(goAhead)+" ]; do sleep 0.01; done\nexit 0")
+	// The stub waits for the go-ahead, and gives up when this test's process is gone, so a test
+	// that failed before its release leaves no stub behind.
+	wait := "while [ ! -e " + shellWord(goAhead) + " ]; do kill -0 " + strconv.Itoa(os.Getpid()) + " 2>/dev/null || exit 1; sleep 0.01; done\nexit 0"
+	gcloud, child := gcloudStubIn(t, dir, wait)
 	release := func() {
 		if err := os.WriteFile(goAhead, nil, 0o600); err != nil {
 			t.Fatal(err)

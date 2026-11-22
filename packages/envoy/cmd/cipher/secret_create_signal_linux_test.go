@@ -26,7 +26,6 @@ import (
 	"google.golang.org/grpc/codes"
 
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
-	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // TestCreateSignalHelper is the process the tests below signal. It creates on GCP's fake Secret
@@ -222,7 +221,7 @@ func helperCommand() *exec.Cmd {
 // these tests give up has passed (waitsGaveUp).
 func (p *createProcess) waitFor(want string) {
 	p.t.Helper()
-	if !testwait.Holds(untilGiveUp(p.t), testwait.Poll, func() bool { return strings.Contains(p.out.String(), want) }) {
+	if !heldBeforeGiveUp(p.t, func() bool { return strings.Contains(p.out.String(), want) }) {
 		p.t.Fatalf("the create never printed %q, %s before the test binary's deadline: %q", want, waitMargin, p.out.String())
 	}
 }
@@ -237,8 +236,9 @@ func (p *createProcess) signal(sig syscall.Signal) {
 
 // endedBy waits for the process and fails the test unless sig ended it, the create never having
 // returned. The wait's one bound is the moment the waits of these tests give up (waitsGaveUp): a
-// process sig did not end, still waiting on a store call held for an hour, fails the test then,
-// and is killed.
+// process sig did not end fails the test then, and is killed. That bound decides only whether the
+// process ended; whether the signal, not the store call's own deadline, ended it is the row's to
+// show (endsAtOnceBy).
 func (p *createProcess) endedBy(sig syscall.Signal) string {
 	p.t.Helper()
 	waited := make(chan struct{})
@@ -255,6 +255,26 @@ func (p *createProcess) endedBy(sig syscall.Signal) string {
 	if ws := p.cmd.ProcessState.Sys().(syscall.WaitStatus); !ws.Signaled() || ws.Signal() != sig || strings.Contains(out, "RETURNED") {
 		p.t.Fatalf("the create ended %v, output %q; want it ended by %s before it returned", p.cmd.ProcessState, out, sig)
 	}
+	return out
+}
+
+// heldDeadline is the deadline on each store call (AGENT_SECRETS_CREATE_DEADLINE) of the rows whose
+// second signal ends the process at once: longer than any run, so with the store holding its
+// answer for an hour, nothing but that signal can end the process while the test waits.
+const heldDeadline = "AGENT_SECRETS_CREATE_DEADLINE=1h"
+
+// endsAtOnceBy sends sig, which must end the process at once, and answers its output once sig has
+// ended it (endedBy). Two things decide that the signal ended it, not the call it interrupts: the
+// row's store call can end no other way (heldDeadline), so a signal path that waits behind the call
+// never ends and fails endedBy; and the end is timed from the signal against no deadline of its own
+// (requireCommandOnTime), so a path that waits for anything first fails at once, not at the give-up.
+func (p *createProcess) endsAtOnceBy(sig syscall.Signal) string {
+	p.t.Helper()
+	meter := startStallMeter(p.t)
+	sent := time.Now()
+	p.signal(sig)
+	out := p.endedBy(sig)
+	requireCommandOnTime(p.t, meter, "the create after its signal "+signalNoun(sig)+", which ends it at once", sent, 0)
 	return out
 }
 
@@ -275,12 +295,11 @@ func TestCreateSignalBeforeTheCreateAnswerDeletesTheEmptySecret(t *testing.T) {
 // process at once, naming the empty secret that may stay and the command that clears it. The
 // second is sent only once the process has received the first, so the two cannot merge.
 func TestCreateSecondSignalBeforeTheCreateAnswerNamesWhatMayStay(t *testing.T) {
-	p := startCreate(t, helperCommand(), "AGENT_SECRETS_CREATE_HOLD=CreateSecret:1h")
+	p := startCreate(t, helperCommand(), "AGENT_SECRETS_CREATE_HOLD=CreateSecret:1h", heldDeadline)
 	p.waitFor("CREATED")
 	p.signal(syscall.SIGINT)
 	p.waitFor("SIGNALLED interrupt")
-	p.signal(syscall.SIGTERM)
-	out := p.endedBy(syscall.SIGTERM)
+	out := p.endsAtOnceBy(syscall.SIGTERM)
 	if !strings.Contains(out, "a second signal") || !strings.Contains(out, clearEmptySecret) {
 		t.Fatalf("output %q; want the interrupted create's empty secret and its cleanup command", out)
 	}
@@ -444,13 +463,13 @@ func TestCreateSecondSignalEndsAtOnceNamingWhatMayStay(t *testing.T) {
 		first, second syscall.Signal
 		want, not     []string
 	}{
-		{"GCP, the add in flight", []string{"AGENT_SECRETS_CREATE_HOLD=AddSecretVersion:1h"}, true, "CALL AddSecretVersion", syscall.SIGINT, syscall.SIGINT,
+		{"GCP, the add in flight", []string{"AGENT_SECRETS_CREATE_HOLD=AddSecretVersion:1h", heldDeadline}, true, "CALL AddSecretVersion", syscall.SIGINT, syscall.SIGINT,
 			[]string{"a second signal (interrupt)", newTestID, "empty or holding the value", "`agent-secrets secret show NEW_TEST`", "`" + clearEmptySecret + "`"},
 			[]string{"CALL ListSecretVersions", "CALL DeleteSecret"}},
-		{"GCP, the delete in flight", []string{"AGENT_SECRETS_CREATE_HOLD=DeleteSecret:1h"}, false, "CALL DeleteSecret", syscall.SIGTERM, syscall.SIGTERM,
+		{"GCP, the delete in flight", []string{"AGENT_SECRETS_CREATE_HOLD=DeleteSecret:1h", heldDeadline}, false, "CALL DeleteSecret", syscall.SIGTERM, syscall.SIGTERM,
 			[]string{"a second signal (termination)", "the empty secret " + newTestID, "another writer may now hold that name", "agent-secrets-create label is", "`" + clearEmptySecret + "`"},
 			[]string{"holding the value", "REREAD"}},
-		{"AWS, the create in flight", []string{"AGENT_SECRETS_CREATE_STORE=aws", "AGENT_SECRETS_CREATE_HOLD=CreateSecret:1h"}, true, "CALL CreateSecret", syscall.SIGHUP, syscall.SIGTERM,
+		{"AWS, the create in flight", []string{"AGENT_SECRETS_CREATE_STORE=aws", "AGENT_SECRETS_CREATE_HOLD=CreateSecret:1h", heldDeadline}, true, "CALL CreateSecret", syscall.SIGHUP, syscall.SIGTERM,
 			[]string{"a second signal (termination)", "the store may hold NEW_TEST", "or no NEW_TEST at all", "`agent-secrets secret show NEW_TEST`"},
 			[]string{"REREAD"}},
 	} {
@@ -468,8 +487,7 @@ func TestCreateSecondSignalEndsAtOnceNamingWhatMayStay(t *testing.T) {
 				p.signal(row.first)
 				p.waitFor(row.hung)
 			}
-			p.signal(row.second)
-			out := p.endedBy(row.second)
+			out := p.endsAtOnceBy(row.second)
 			for _, want := range row.want {
 				if !strings.Contains(out, want) {
 					t.Fatalf("output %q; want %q", out, want)

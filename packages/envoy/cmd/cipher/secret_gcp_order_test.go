@@ -29,6 +29,7 @@ import (
 
 	"google.golang.org/grpc/codes"
 
+	"github.com/sjawhar/envoy/internal/googleidentity"
 	"github.com/sjawhar/envoy/internal/testport"
 )
 
@@ -520,7 +521,7 @@ func TestGCPSecretMetadataSourceIsPresentWhenItYieldsAToken(t *testing.T) {
 		saysNot      string
 		onlyCall     string
 	}{
-		{"mints a token, never answers the email read", answerGoogle, answerHeld, 0, 0,
+		{"mints a token, never answers the email read", answerGoogle, answerHeld, 0, googleidentity.ProbeTimeout,
 			[]string{"using the metadata server: this machine's or this pod's identity\n"}, "", "Bearer metadata-not-a-secret"},
 		{"answers neither", answerHeld, answerHeld, 1, 10 * time.Second,
 			[]string{"found no Google credential", "the metadata server: no metadata server"}, "ask the metadata server for this machine's access token", ""},

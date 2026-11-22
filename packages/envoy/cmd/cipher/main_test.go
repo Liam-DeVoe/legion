@@ -1283,7 +1283,7 @@ func TestEnrollWaitGivesUpAtItsBound(t *testing.T) {
 	meter := startStallMeter(t)
 	start := time.Now()
 	exit, stderr, elapsed := runExecForm(t, binary, broker.URL, keyDir, "AGENT_SECRETS_ENROLL_WAIT=1s")
-	requireOnTime(t, meter, "the call held by a marker nothing follows", start, time.Second)
+	requireCommandOnTime(t, meter, "the call held by a marker nothing follows", start, time.Second)
 	if exit != 1 || !strings.Contains(stderr, "AGENT_SECRETS_KEY_DIR holds enrollment.pending and no key.pem yet") || !strings.Contains(stderr, "(waited 1s while ") ||
 		strings.Contains(stderr, keyDir) || strings.Contains(stderr, "no broker identity for this process") {
 		t.Fatalf("exit = %d, stderr = %q, want exit 1 naming the launcher's marker and the wait, and no later source", exit, stderr)
@@ -1322,7 +1322,7 @@ func TestEnrollWaitNeedsAFreshMarker(t *testing.T) {
 			meter := startStallMeter(t)
 			start := time.Now()
 			exit, stderr, _ := runExecForm(t, binary, broker.URL, tc.keyDir)
-			requireOnTime(t, meter, "the call with no fresh marker, which must not wait", start, 0)
+			requireCommandOnTime(t, meter, "the call with no fresh marker, which must not wait", start, 0)
 			if exit == 0 || !strings.Contains(stderr, tc.want) {
 				t.Fatalf("exit = %d, stderr = %q, want a failure naming %q", exit, stderr, tc.want)
 			}
