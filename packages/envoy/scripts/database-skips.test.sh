@@ -21,8 +21,13 @@
 #      passes in the other has its failure's lines printed, whichever run failed, and none of the
 #      passing run's own, and one that passed in the first run and was running when the second
 #      timed out is printed as unfinished; a package spelled other than canonically
-#      (`./cmd/./cipherd/`, `.//cmd/cipherd/`, `./cmd/cipherd/../cipherd/`) is still counted; and a
-#      report of the broker's tests whose only skips are the expected ones passes;
+#      (`./cmd/./cipherd/`, `.//cmd/cipherd/`, `./cmd/cipherd/../cipherd/`) is still counted; a
+#      report of the broker's tests whose only skips are the expected ones passes; a test that
+#      failed in gotestsum's first attempt and passed on its rerun passes, and one that failed both
+#      fails; and with --run, one leg's share as go-test-split.sh prints it, an EXPECTED_SKIPS line
+#      whose test the share gives another leg is not looked for and a listed package of which the
+#      share holds no test is no silent package, while a line whose test the share names still is,
+#      and a --run of any other shape is refused;
 #   4. --timeout 1s on ./internal/cipher/api/, beside a planted parallel test that runs three
 #      seconds and one that passes first, ends the package's binary on its timeout: the counter
 #      prints a go_test_exit that is not 0, the timeout's panic (which test2json files under the
@@ -48,9 +53,11 @@
 #
 # Usage: packages/envoy/scripts/database-skips.test.sh
 #
-# Needs go, jq and git, this repository's git checkout, and a scratch Postgres named by both
-# BROKER_TEST_DATABASE_URL and DISPATCH_TEST_DATABASE_URL, as ci.yaml's envoy-go job sets them;
-# with either unset it fails, naming it, since every control but 2 and 3 runs database tests.
+# Needs go, gotestsum, jq and git, this repository's git checkout, and a scratch Postgres named
+# by both BROKER_TEST_DATABASE_URL and DISPATCH_TEST_DATABASE_URL, as ci.yaml's envoy-go job sets
+# them; with either unset it fails, naming it, since every control but 2 and 3 runs database
+# tests. Each run of the counter takes no retry, whatever the event (GO_TEST_RETRY=off): what a
+# control holds is one attempt's result. Its jsonfiles stay in this test's own directory.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -71,6 +78,7 @@ cleanup() {
   rm -rf "$WORK"
 }
 trap cleanup EXIT
+export GO_TEST_RETRY=off GO_TEST_REPORTS="$WORK/go-test-reports"
 
 PASSED=0
 FAILED=0
@@ -293,6 +301,34 @@ grep -v '"FuzzAirlock"' "$WORK/quiet.json" >"$WORK/stale.json"
 count stale bash "$COUNTER" --report "$WORK/stale.json" "${QUIET[@]}"
 unknown_report stale "EXPECTED_SKIPS names $airlock FuzzAirlock" \
   "an EXPECTED_SKIPS line whose test a report of its package does not hold is UNKNOWN"
+# gotestsum's jsonfile holds every attempt, each package's beginning at its `start` event: a
+# test is read by the last attempt that ran it.
+{ ev start "$brokerapi"; ev fail "$brokerapi" TestFlaky; ev pass "$brokerapi" TestHealthzIsPublic; ev fail "$brokerapi"
+  ev start "$brokerapi"; ev pass "$brokerapi" TestFlaky; ev pass "$brokerapi"; } >"$WORK/rerun-passed.json"
+count rerun-passed bash "$COUNTER" --report "$WORK/rerun-passed.json" ./internal/cipher/api/
+judge "$([ "$(code rerun-passed)" = 0 ] && [ "$(out rerun-passed)" = 'database_skips=0' ] && echo 0 || echo 1)" \
+  "control 3: a test that failed in the first attempt and passed on its rerun passes" "$(seen rerun-passed)"
+sed '$d' "$WORK/rerun-passed.json" | sed '$d' >"$WORK/rerun-failed.json"
+{ ev fail "$brokerapi" TestFlaky; ev fail "$brokerapi"; } >>"$WORK/rerun-failed.json"
+count rerun-failed bash "$COUNTER" --report "$WORK/rerun-failed.json" ./internal/cipher/api/
+judge "$([ "$(code rerun-failed)" = 1 ] && said rerun-failed "FAIL $brokerapi TestFlaky" && echo 0 || echo 1)" \
+  "control 3: a test that failed in both attempts fails, naming it" "$(seen rerun-failed)"
+# One leg's share of the three packages: no test of the airlock's package, so neither its
+# expected skips nor a run of its own.
+{ ev pass "$brokerapi" TestHealthzIsPublic; ev pass "$brokerapi"
+  ev pass "$cmdbroker" TestBootBindsOnlyAfterTheCatchUp; ev pass "$cmdbroker"; ev pass "$airlock"; } >"$WORK/share.json"
+count share bash "$COUNTER" --report "$WORK/share.json" --run '^(TestBootBindsOnlyAfterTheCatchUp|TestHealthzIsPublic)$' "${QUIET[@]}"
+judge "$([ "$(code share)" = 0 ] && [ "$(out share)" = 'database_skips=0' ] && echo 0 || echo 1)" \
+  "control 3: with --run, a line whose test the share gives another leg is not looked for, nor a package the share holds no test of" "$(seen share)"
+count share-whole bash "$COUNTER" --report "$WORK/share.json" "${QUIET[@]}"
+unknown_report share-whole "holds no test that passed or failed in $airlock, which has test files" \
+  "the same report without --run is UNKNOWN"
+count share-named bash "$COUNTER" --report "$WORK/share.json" --run '^(FuzzAirlock|TestBootBindsOnlyAfterTheCatchUp|TestHealthzIsPublic)$' "${QUIET[@]}"
+unknown_report share-named "EXPECTED_SKIPS names $airlock FuzzAirlock" \
+  "with --run, a line whose test the share names and the report does not hold is UNKNOWN"
+count share-shape bash "$COUNTER" --report "$WORK/share.json" --run 'TestHealthz.*' "${QUIET[@]}"
+judge "$([ "$(code share-shape)" = 1 ] && said share-shape "--run takes a leg's share as go-test-split.sh prints it" && echo 0 || echo 1)" \
+  "control 3: a --run of another shape than go-test-split.sh prints is refused" "$(seen share-shape)"
 
 echo "database-skips.test.sh: control 4, --timeout" >&2
 plant wait internal/cipher/api "$WAIT_BODY"

@@ -98,6 +98,9 @@ jobs:
             ~/.cache/go-build
           key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ format('go-envoy-test-{0}-{1}-', runner.os, runner.arch) }}
+      # gotestsum, which the backend count and the database-skips steps below run their tests
+      # under, through .github/scripts/go-test.sh, on PATH for every later step.
+      - uses: ./.github/actions/install-gotestsum
       - name: Size the service for this lane's Dispatch processes
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
       # The server's version and the pgvector version it offers, read from the service itself, so
@@ -238,7 +241,8 @@ jobs:
         run: packages/envoy/scripts/database-skips.test.sh
       # c8 also asks that the database broker suites run with BROKER_TEST_DATABASE_URL set and that
       # none skips. go test reports a skip as a pass, so this step is where the broker's packages
-      # and its command run: it runs ./internal/cipher/... and ./cmd/cipherd/ with -json (less the
+      # and its command run: it runs ./internal/cipher/... and ./cmd/cipherd/ under gotestsum
+      # through .github/scripts/go-test.sh (less the
       # race lane's packages under the tree, the auth service's natscallout, which envoy-go-race
       # runs: the script's DEFAULT_EXCEPT), which the unit step above leaves out, fails on a failed
       # test, and fails on any skipped test there
@@ -256,6 +260,27 @@ jobs:
       - name: Count the database broker suites' skips
         timeout-minutes: 30
         run: packages/envoy/scripts/database-skips.sh --timeout 20m --skip '^(TestSettingsNameTheGoogleExchangeAudienceOnEitherStore)$'
+      # The jsonfile and the rerun report each of the two counting steps leaves
+      # (.github/scripts/go-test.sh names them for the job and the script), which ci-ok downloads
+      # to name each test that passed only on its retry.
+      - name: Upload the backend count's gotestsum jsonfile
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: go-test-envoy-go-backend-count
+          path: |
+            ${{ runner.temp }}/go-test-reports/envoy-go-backend-count.json
+            ${{ runner.temp }}/go-test-reports/envoy-go-backend-count.rerun-fails.txt
+          overwrite: true
+      - name: Upload the database-skips step's gotestsum jsonfile
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: go-test-envoy-go-database-skips
+          path: |
+            ${{ runner.temp }}/go-test-reports/envoy-go-database-skips.json
+            ${{ runner.temp }}/go-test-reports/envoy-go-database-skips.rerun-fails.txt
+          overwrite: true
       # The statement timings (ci_job_reads.py's STATEMENT_TIMING_*): each Pair of
       # TestStatementTimings in internal/dispatch/docs and refs fails when this release's statement
       # is not faster than the one it replaced, on the database cmd/dispatch-seed fills. The step

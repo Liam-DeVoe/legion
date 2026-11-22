@@ -1,0 +1,56 @@
+What `go test -list` printed, which .github/scripts/go-test-split.test.sh feeds
+.github/scripts/go-test-split.sh through GO_TEST_LIST_OUTPUT. Each file is the command's whole
+standard output, captured with go1.27.3 on 2026-11-22.
+
+logmask.txt
+  cd packages/envoy && go test -list '.*' ./internal/cipher/logmask > logmask.txt
+  Thirteen Tests, a Benchmark and two Fuzz targets, then the package's `ok` line.
+
+no-test-files.txt
+  go test -list '.*' ./notests > no-test-files.txt
+  run in a scratch module (go.mod: `module example.com/split` and `go 1.24`) whose package
+  notests holds one file, notests.go:
+
+    package notests
+
+    // Answer is the one declaration of a package with no test files.
+    func Answer() int { return 42 }
+
+  The package's `?` line, `[no test files]`, and no name.
+
+test-example-fuzz.txt
+  go test -list '.*' ./scratch > test-example-fuzz.txt
+  run in the same scratch module, whose package scratch holds scratch.go:
+
+    package scratch
+
+    // Greeting is what ExampleGreeting prints.
+    func Greeting() string { return "hello" }
+
+  and scratch_test.go:
+
+    package scratch
+
+    import (
+    	"fmt"
+    	"testing"
+    )
+
+    func TestAdds(t *testing.T) {
+    	if 1+1 != 2 {
+    		t.Fatal("1+1 is not 2")
+    	}
+    }
+
+    func ExampleGreeting() {
+    	fmt.Println(Greeting())
+    	// Output: hello
+    }
+
+    func FuzzReverses(f *testing.F) {
+    	f.Add("seed")
+    	f.Fuzz(func(t *testing.T, s string) {})
+    }
+
+  A Test, a Fuzz target and an Example, then the package's `ok` line. No package of this
+  repository holds an Example, which is why this one is a scratch package.

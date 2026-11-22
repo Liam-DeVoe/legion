@@ -1,0 +1,18 @@
+{"Time":"2026-11-22T23:21:40.809031025Z","Action":"start","Package":"example.com/gotestfixtures/twice"}
+{"Time":"2026-11-22T23:21:40.824715218Z","Action":"run","Package":"example.com/gotestfixtures/twice","Test":"TestFailsEveryAttempt"}
+{"Time":"2026-11-22T23:21:40.824812425Z","Action":"output","Package":"example.com/gotestfixtures/twice","Test":"TestFailsEveryAttempt","Output":"=== RUN   TestFailsEveryAttempt\n","OutputType":"frame"}
+{"Time":"2026-11-22T23:21:40.825365369Z","Action":"output","Package":"example.com/gotestfixtures/twice","Test":"TestFailsEveryAttempt","Output":"    twice_test.go:10: attempt 1 fails, as a broken test does\n","OutputType":"error"}
+{"Time":"2026-11-22T23:21:40.825412516Z","Action":"output","Package":"example.com/gotestfixtures/twice","Test":"TestFailsEveryAttempt","Output":"--- FAIL: TestFailsEveryAttempt (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-11-22T23:21:40.825427253Z","Action":"fail","Package":"example.com/gotestfixtures/twice","Test":"TestFailsEveryAttempt","Elapsed":0}
+{"Time":"2026-11-22T23:21:40.825453256Z","Action":"output","Package":"example.com/gotestfixtures/twice","Output":"FAIL\n","OutputType":"frame"}
+{"Time":"2026-11-22T23:21:40.826259258Z","Action":"output","Package":"example.com/gotestfixtures/twice","Output":"FAIL\texample.com/gotestfixtures/twice\t0.016s\n","OutputType":"frame"}
+{"Time":"2026-11-22T23:21:40.826305221Z","Action":"fail","Package":"example.com/gotestfixtures/twice","Elapsed":0.017}
+{"Time":"2026-11-22T23:21:44.14247257Z","Action":"start","Package":"example.com/gotestfixtures/twice"}
+{"Time":"2026-11-22T23:21:44.160107294Z","Action":"run","Package":"example.com/gotestfixtures/twice","Test":"TestFailsEveryAttempt"}
+{"Time":"2026-11-22T23:21:44.16043982Z","Action":"output","Package":"example.com/gotestfixtures/twice","Test":"TestFailsEveryAttempt","Output":"=== RUN   TestFailsEveryAttempt\n","OutputType":"frame"}
+{"Time":"2026-11-22T23:21:44.160545575Z","Action":"output","Package":"example.com/gotestfixtures/twice","Test":"TestFailsEveryAttempt","Output":"    twice_test.go:10: attempt 2 fails, as a broken test does\n","OutputType":"error"}
+{"Time":"2026-11-22T23:21:44.160579192Z","Action":"output","Package":"example.com/gotestfixtures/twice","Test":"TestFailsEveryAttempt","Output":"--- FAIL: TestFailsEveryAttempt (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-11-22T23:21:44.160591609Z","Action":"fail","Package":"example.com/gotestfixtures/twice","Test":"TestFailsEveryAttempt","Elapsed":0}
+{"Time":"2026-11-22T23:21:44.160628624Z","Action":"output","Package":"example.com/gotestfixtures/twice","Output":"FAIL\n","OutputType":"frame"}
+{"Time":"2026-11-22T23:21:44.16412798Z","Action":"output","Package":"example.com/gotestfixtures/twice","Output":"FAIL\texample.com/gotestfixtures/twice\t0.020s\n","OutputType":"frame"}
+{"Time":"2026-11-22T23:21:44.164557163Z","Action":"fail","Package":"example.com/gotestfixtures/twice","Elapsed":0.022}

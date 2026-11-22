@@ -2473,8 +2473,8 @@ public, and GitHub serves a public repository's git data to any valid token.
 ## The job reads nothing of the tree but ci-ok.sh, ci-ok.jq, ci-ok-reconcile.sh and
 
 The job reads nothing of the tree but ci-ok.sh, ci-ok.jq, ci-ok-reconcile.sh and the
-gh-read.sh and runner-shutdown.sh they source, so the .github cone is the whole checkout
-it needs.
+gh-read.sh and runner-shutdown.sh they source, and ci-ok-retries.sh and the go-test.jq it
+includes, so the .github cone is the whole checkout it needs.
 
 ## Why a draft pull request is refused in a step
 

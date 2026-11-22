@@ -378,13 +378,16 @@ so a store or use change cannot pass on one backend alone.
 packages/envoy/scripts/backend-count.sh PACKAGE... -- TEST...
 ```
 
-It runs only the named tests in only the named packages, `go test -json -count=1 -timeout 5m
--run '^(TEST|…)$' PACKAGE...`, each package a `./` path under `packages/envoy`, and prints the
-test log as the tests run, each test's `=== RUN` line and its `--- PASS`, `--- FAIL` or
-`--- SKIP` line, then `TEST aws=N gcp=M` for each named test, then `go_test_exit=E`. It exits 1
+It runs only the named tests in only the named packages, under gotestsum through
+`.github/scripts/go-test.sh` (`go test -json -count=1 -timeout 5m -run '^(TEST|…)$'` of them,
+which a merge group reruns once from the root test of each that failed), each package a `./`
+path under `packages/envoy`, and prints the test log as the tests run, each test's `=== RUN`
+line and its `--- PASS`, `--- FAIL` or `--- SKIP` line, then `TEST aws=N gcp=M` for each named
+test, each subtest counted by the last attempt that ran it, then `go_test_exit=E`. It exits 1
 when no package or no test is named, when a package is not a `./` path, when a name is not a Go
 test name, when a named test has no passing run on either backend (a test in none of the named
-packages included), or when go test failed. It counts only the tests it names, so the `aws` and
+packages included), when a test failed in its last attempt, or when go-test.sh failed. It
+counts only the tests it names, so the `aws` and
 `gcp` subtests of other tests cannot stand in for a new test's.
 `GO_TEST_SKIP` is go test's `-skip` pattern: the negative control
 `GO_TEST_SKIP='^(TestA|TestB)$/^aws$'` makes both lines read `aws=0` and the run exit 1.
@@ -396,8 +399,9 @@ step and its database-skips step skip them by name (`BACKEND_COUNT_TESTS` in
 
 ## database-skips.sh
 
-The one skip counter of the module's database-backed packages: it runs `go test -json` and
-counts the tests that skipped, and fails on any. A database suite skips, which go test counts
+The one skip counter of the module's database-backed packages: it runs the packages under
+gotestsum, through `.github/scripts/go-test.sh`, and counts the tests that skipped in the
+jsonfile that run writes, and fails on any. A database suite skips, which go test counts
 as a pass and prints nothing for without `-v`, when its variable is unset, and a `t.Skip`
 left in one skips it with the variable set.
 
@@ -414,17 +418,24 @@ its default table, `./internal/cipher/...` and `./cmd/cipherd/`, less the packag
 `DEFAULT_EXCEPT` takes out of them: the race lane's packages under the broker's tree, of which the
 auth service's `natscallout`, which opens no database, is the one today (`DATABASE_SKIPS_PATTERN`
 in `.github/scripts/ci_job_reads.py`, which refuses the script when `DEFAULT_EXCEPT` says
-anything else). That is one `go test -json -count=1 -timeout 15m` from `packages/envoy`, whose
-test log it prints as the tests run (each test's `=== RUN` line and its `--- PASS`, `--- FAIL`
-or `--- SKIP` line), then it reads that report. `--var NAME` names a variable the packages
-need, and repeats; with none it is `BROKER_TEST_DATABASE_URL`. A named variable that is unset
-or empty prints `database_skips=UNKNOWN` naming it, and nothing runs.
+anything else). That is one `go test -json -count=1 -timeout 15m` from `packages/envoy`, under
+gotestsum, whose test log it prints as the tests run (each test's `=== RUN` line and its
+`--- PASS`, `--- FAIL` or `--- SKIP` line), then it reads the jsonfile, each test by the last
+attempt that ran it, since a merge group reruns a failed test once. `--var NAME` names a
+variable the packages need, and repeats; with none it is `BROKER_TEST_DATABASE_URL`. A named
+variable that is unset or empty prints `database_skips=UNKNOWN` naming it, and nothing runs.
 `--race` adds `-race`, and `--timeout D` replaces the `-timeout`, as `GO_TEST_TIMEOUT` does
 when `--timeout` is not given; it bounds each package's test binary and not the run, since
 the packages run several at a time, so one that starts late ends later. `--skip PATTERN` adds
 go test's `-skip`; go test reports nothing for a test it leaves out, so that test is neither
-run nor counted as a skip. `--report` reads a `go test -json` report instead and runs nothing,
-and refuses the four options that shape a run.
+run nor counted as a skip. `--run PATTERN` is one leg's share of the packages' tests as
+`.github/scripts/go-test-split.sh` prints it, `^(Name|…)$` or `^$`, and no other shape: an
+`EXPECTED_SKIPS` line whose test the share gives another leg is not looked for, and a listed
+package the share holds no test of is not read as one whose tests did not run. `--jsonfile NAME`
+names the jsonfile go-test.sh leaves for the step that uploads it,
+`${GITHUB_JOB:-local}-database-skips.json` unless given. `--report` reads a `go test -json`
+report or a gotestsum jsonfile instead and runs nothing, and refuses the five options that shape
+a run alone.
 
 It names the packages as `go list` does under the run's own flags, so a pattern spelled
 `./cmd/./cipherd/` counts the package it runs. It prints `SKIP PACKAGE TEST` for each skip of a
@@ -438,12 +449,13 @@ holds no test that passed or failed (its tests all skipped, or its `TestMain` re
 it ran them), and an `EXPECTED_SKIPS` line whose package is listed but whose test the report
 does not hold, print `database_skips=UNKNOWN`, name what could not be read, and exit 1. A
 failed test fails the count, read from a report as in a run. It exits 0 only when tests ran,
-none skipped but the expected ones, none failed, and go test passed. A failure prints, on
-stderr, each failed test, each test a failed package never finished, that package's output
-from its first `panic: ` on, that of its tests that did not pass, and any line test2json files
-under a test after that test's own `--- PASS` or `--- SKIP` (a timed-out binary's goroutine
-dump and a data race report among them), the build output and, for a run of its own, go test's
-stderr. A run of its own also prints each package's `pass|fail PACKAGE <seconds>s` on stderr.
+none skipped but the expected ones, none failed in its last attempt, and go-test.sh passed. A
+failure prints, on stderr, each test that failed in its last attempt, each test a failed package
+never finished, that package's output from its first `panic: ` on, that of its tests that did
+not pass, and any line test2json files under a test after that test's own `--- PASS` or
+`--- SKIP` (a timed-out binary's goroutine dump and a data race report among them), the build
+output and, for a run of its own, go-test.sh's stderr. A run of its own also prints each
+package's `pass|fail PACKAGE <seconds>s` on stderr.
 
 `ci.yaml`'s `envoy-go` job runs it as "Count the database broker suites' skips", with
 `--timeout 20m`, the unit step's own `-timeout`, `--skip` of the one test of
@@ -455,8 +467,9 @@ Dispatch API through it as the second line above.
 skip counter": a skip planted through a Go overlay in `./internal/cipher/api/`, `./cmd/cipherd/`
 and `./internal/dispatch/api/` is counted; either variable unset or empty is UNKNOWN; a report
 that shows no run (no test ran, only expected skips ran, or one package ran none) is UNKNOWN,
-a failed test fails, a race report filed under a passed subtest is printed, and a skip in a
-package spelled other than canonically is counted;
+a failed test fails, a race report filed under a passed subtest is printed, a skip in a
+package spelled other than canonically is counted, a test that failed once and passed on its
+rerun passes, and a leg's `--run` share holds only the expected skips it names;
 `--timeout 1s` ends a package's binary; and a copy with
 one `EXPECTED_SKIPS` line deleted, in a temporary checkout, counts that test's skip. It needs
 a scratch Postgres named by both `BROKER_TEST_DATABASE_URL` and `DISPATCH_TEST_DATABASE_URL`.

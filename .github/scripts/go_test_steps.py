@@ -2,10 +2,10 @@
 go-test-step-expansion.py and check-test-reach.sh import.
 
 It loads `.github/workflows/ci.yaml` and every workflow a job of it calls (`documents`), picks
-each step whose `run:` holds a `go test` (or a gotestsum command) in one of the Go modules
-(`steps_of`, one step at a time `step_of`), and reads each such step line by line into its
-`go test` commands (`commands_of`, `read_block`): packages, `-tags`, `-race`, `-run` and `-skip`,
-through the variables a line sets before its command, the wrappers GO_WRAPPERS names, `for` loops
+each step whose `run:` holds a `go test` (or a gotestsum command, or a `.github/scripts/go-test.sh`
+command) in one of the Go modules (`steps_of`, one step at a time `step_of`), and reads each such
+step line by line into its `go test` commands (`commands_of`, `read_block`): packages, `-tags`,
+`-race`, `-run` and `-skip`, through the variables a line sets before its command, `for` loops
 over packages, and the scripts AUDITED_SCRIPTS reads.
 
 A step is read in each form the workflows write it in. A matrix job's step is read once for each
@@ -18,7 +18,9 @@ that uses the action, so a reader keys it as it keys any step of the file. A ste
 one command that runs a shell script of the repository is read through the script's own lines
 (`script_step`), where the reader can read every line of it. A gotestsum command is read as the
 `go test` it wraps: its `--packages` list and the `go test` flags after its `--`
-(`parse_gotestsum`). A `-run` that `.github/scripts/go-test-split.sh` prints is the leg's share of
+(`parse_gotestsum`), and so is a `.github/scripts/go-test.sh` command, which takes gotestsum's
+`--jsonfile`, `--packages` and `--` and runs gotestsum with them. A `-run` that
+`.github/scripts/go-test-split.sh` prints is the leg's share of
 its packages, which the legs of the job run between them, so the command is read as running its
 packages whole and is marked `split`. The variables a line sets before its command, and those a
 `-exec 'env NAME=value'` hands the test binary, are the command's own environment (`GoTest.env`).
@@ -79,8 +81,13 @@ SPLIT = ".github/scripts/go-test-split.sh"
 # What read_block assigns the variable a `$(…)` call of SPLIT sets, so the `-run` that expands it
 # is known as the split's: no pattern a step writes is this text.
 SPLIT_RUN = "(the -run go-test-split.sh prints)"
-# A run: that starts a go test or a gotestsum, by its comment-free lines.
-GO_TEST_TEXT = re.compile(r"\b(?:go\s+test|gotestsum)\b")
+# A run: that starts a go test, a gotestsum or a go-test.sh, by its comment-free lines.
+GO_TEST_TEXT = re.compile(r"\b(?:go\s+test|gotestsum|go-test\.sh)\b")
+# The commands read as gotestsum (parse_gotestsum), by the last part of the word that names them:
+# gotestsum itself, and .github/scripts/go-test.sh, through which every Go step of a job ci-ok
+# needs runs it, whose own flags before `--` (--jsonfile, --packages, --rerun-fails-max-failures,
+# --race-memory) are gotestsum's or a switch.
+GOTESTSUM_COMMANDS = ("gotestsum", "go-test.sh")
 # gotestsum's own flags that take a value, as `--flag value` or `--flag=value`; every other flag
 # before its `--` is a switch. `--raw-command` makes the words after `--` a whole command and
 # `--watch` runs no fixed set, so a command with either is refused rather than read.
@@ -140,18 +147,20 @@ BACKEND_COUNT_TESTS = (
 # (backend-count.sh) was read as running nothing until its entry below, and its five tests'
 # second run was seen by no reader. An entry here is how such a script is read.
 AUDITED_SCRIPTS = {
-    # It moves into packages/envoy (`cd "$(dirname "$0")/.."`) and runs one `go test -json
-    # -count=1` over its packages, its stdout through tee into the report and through jq to the
-    # log, then counts the skips in its report. With no package argument it
+    # It moves into packages/envoy (`cd "$(dirname "$0")/.."`) and runs one
+    # .github/scripts/go-test.sh over its packages, which runs gotestsum, whose first run is one
+    # `go test -json -count=1` of them (a rerun in a merge group runs a failed test again and no
+    # other), then counts the skips in the jsonfile. With no package argument it
     # runs its DEFAULT_PACKAGES, ./internal/cipher/... and ./cmd/cipherd/, less the import paths its
     # DEFAULT_EXCEPT's `grep -Ev '/internal/cipher/natscallout$'` takes out of `go list` of them (the
     # race lane's packages under the tree, ci_job_reads.DATABASE_SKIPS_PATTERN), with no -tags,
     # -race, -run or -skip, under -timeout "${GO_TEST_TIMEOUT:-15m}". A package argument replaces
-    # those packages, `--race` adds -race, `--skip P` adds -skip P, `--timeout D` sets the -timeout,
-    # and `--var NAME` decides only whether it runs at all. With `--report FILE` it reads a report
-    # and runs no test. envoy-go's count step passes the first argument list below, whose command
-    # is that run in the listing form this module reads, and envoy-go-race-api's race step the
-    # second. The first's --skip leaves out the backend count's test of ./internal/cipher/api/.
+    # those packages, `--race` adds -race, `--skip P` adds -skip P, `--run P` adds -run P,
+    # `--timeout D` sets the -timeout, and `--var NAME` and `--jsonfile NAME` decide only whether it
+    # runs at all and where its jsonfile goes. With `--report FILE` it reads a report and runs no
+    # test. envoy-go's count step passes the first argument list below, whose command is that run in
+    # the listing form this module reads, and envoy-go-race-api's race step the second. The first's
+    # --skip leaves out the backend count's test of ./internal/cipher/api/.
     "packages/envoy/scripts/database-skips.sh": AuditedScript(
         module="packages/envoy",
         commands={
@@ -162,14 +171,14 @@ AUDITED_SCRIPTS = {
             "--var DISPATCH_TEST_DATABASE_URL --var BROKER_TEST_DATABASE_URL --race --timeout 70m ./internal/dispatch/api/":
                 "go test -json -count=1 -race -timeout 70m ./internal/dispatch/api/",
         },
-        sha256="0cebbf7338939ae971410db78bbfc77aecfbe701f20bff12654d4547c111d50e",
+        sha256="c1eb4ef3970b09b25700aa81a2c94943700b5a46ab31324d4495e030293eecba",
     ),
-    # It moves into packages/envoy (`cd "$(dirname "$0")/.."`) and runs one `go test -json
-    # -count=1 -timeout "${GO_TEST_TIMEOUT:-5m}" -run '^(TEST|…)$'` over the packages before its
-    # `--`, the -run built from the test names after it, its stdout through tee into its events
-    # file and through jq to the log, then counts each test's `aws` and `gcp` passes. GO_TEST_SKIP
-    # adds a -skip, which no step sets, and envoy-go's job sets neither variable. envoy-go's count
-    # step passes the argument list below.
+    # It moves into packages/envoy (`cd "$(dirname "$0")/.."`) and runs one
+    # .github/scripts/go-test.sh over the packages before its `--`, which runs gotestsum, whose
+    # first run is one `go test -json -count=1 -timeout "${GO_TEST_TIMEOUT:-5m}" -run '^(TEST|…)$'`
+    # of them, the -run built from the test names after it, then counts each test's `aws` and `gcp`
+    # passes in the jsonfile. GO_TEST_SKIP adds a -skip, which no step sets, and envoy-go's job sets
+    # neither variable. envoy-go's count step passes the argument list below.
     "packages/envoy/scripts/backend-count.sh": AuditedScript(
         module="packages/envoy",
         commands={
@@ -177,30 +186,26 @@ AUDITED_SCRIPTS = {
                 f"go test -json -count=1 -timeout 5m -run '^({'|'.join(BACKEND_COUNT_TESTS)})$' "
                 "./cmd/cipher/ ./internal/cipher/api/",
         },
-        sha256="aa38059ddcceec956439d50c373969648085ebfc5c4e658b03e1ad60fcfc20cc",
+        sha256="ebe385e698039bb01af54bec30ab758019a8e86492711ed5e42adae7b2bc5af7",
     ),
     # It moves into packages/envoy/infra (`cd "$(dirname "$0")/.."`) and, given `run`, runs one
-    # `go test -v -count=1 -race` over the import paths `go list ./...` lists less those its
-    # EXCLUDE, `/internal/textcheck$`, matches: the text checks, whose tests the text-check job
-    # runs. Given `compile`, it builds those race test binaries with `-c` and runs none, which
+    # .github/scripts/go-test.sh over the import paths `go list ./...` lists less those its
+    # EXCLUDE, `/internal/textcheck$`, matches (the text checks, whose tests the text-check job
+    # runs), which runs gotestsum, whose first run is one `go test -json -count=1 -race` of them.
+    # Given `compile`, it builds those race test binaries with `-c` and runs none, which
     # ci-caches.yaml's envoy-infra fill alone does, outside ci.yaml. envoy-infra-go's unit step
     # passes `run`.
     "packages/envoy/infra/scripts/race-unit.sh": AuditedScript(
         module="packages/envoy/infra",
         commands={
-            "run": "go list ./... | grep -Ev '/internal/textcheck$' | xargs go test -v -count=1 -race",
+            "run": "go list ./... | grep -Ev '/internal/textcheck$' | xargs go test -json -count=1 -race",
         },
-        sha256="4eeb8a4de7dbf57bbaf5ee67836fe2707c6aa094059746f582630e6f1e8ef084",
+        sha256="37f140fa3c272e04f9871ed47bd262a793776f9e4b7e0f4bc6a0993be5467d5d",
     ),
 }
 # A variable a step sets before its command, as the steps write it: GODEBUG=checkfinalizers=1.
 # A value holding `$` is left for the caller to refuse, since what it expands to is the shell's.
 ENV_PREFIX = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=[^$]*$")
-# The wrappers a step runs a go command under. Each bounds how the test binary runs and changes
-# which tests it runs in no way, so the command behind it is read as though it stood alone; one
-# this tuple does not name is refused rather than guessed at. Matched by the end of the word,
-# since a step writes the path from its own working directory.
-GO_WRAPPERS = (".github/scripts/race_memory.py",)
 # go commands that run no test, so a step may hold one and the reader need not read it.
 NO_TEST_GO = ("build", "vet", "list", "install", "mod", "work", "env", "generate", "tool", "run")
 # The commands a line that names no `go` may still start one through, or move the directory a
@@ -661,7 +666,7 @@ def read_block(step: Step, lines: list[str], variables: dict[str, str],
             command.env = {**line_env(line), **command.env}
             found.append(command)
             continue
-        if words and words[0].rsplit("/", 1)[-1] == "gotestsum":
+        if words and words[0].rsplit("/", 1)[-1] in GOTESTSUM_COMMANDS:
             command = parse_gotestsum(step, expand(command_text, variables))
             command.env = {**line_env(line), **command.env}
             found.append(command)
@@ -673,17 +678,17 @@ def read_block(step: Step, lines: list[str], variables: dict[str, str],
 
 
 def go_command(line: str) -> tuple[list[str], str]:
-    """The command a line runs, with the variables it sets before it and the wrapper it runs it
-    under dropped: its words, and its text with those words removed.
+    """The command a line runs, with the variables it sets before it dropped: its words, and its
+    text with those words removed.
 
     A step writes `GODEBUG=checkfinalizers=1 go test …` and
-    `RACE_MEM_LIMIT_KB=8388608 ../../.github/scripts/race_memory.py go test …`. Neither the
-    variables nor the wrapper changes which test functions the command runs, which is all the
-    readers read, so both are dropped and what is left is the go command, or the gotestsum
-    command that runs it. A value holding `$`, and a wrapper GO_WRAPPERS does not name, are left
-    where they are, so the caller refuses the line rather than guessing. The text is cut word by
-    word off the line itself, so the quoting of what is left - a `-run` pattern above all - is
-    the line's own. The variables themselves are line_env's.
+    `RACE_MEM_LIMIT_KB=8388608 ../../.github/scripts/go-test.sh --race-memory …`. The variables
+    change which test functions the command runs in no way, which is all the readers read, so
+    they are dropped and what is left is the go command, or the gotestsum or go-test.sh command
+    that runs it. A value holding `$` is left where it is, so the caller refuses the line rather
+    than guessing. The text is cut word by word off the line itself, so the quoting of what is
+    left - a `-run` pattern above all - is the line's own. The variables themselves are
+    line_env's.
     """
     rest = line.strip()
     while True:
@@ -692,10 +697,6 @@ def go_command(line: str) -> tuple[list[str], str]:
             rest = head[1]
             continue
         break
-    head = rest.split(None, 1)
-    if (len(head) == 2 and head[0].endswith(GO_WRAPPERS)
-            and head[1].split(None, 1)[0] in ("go", "gotestsum")):
-        rest = head[1]
     return rest.split(), rest
 
 

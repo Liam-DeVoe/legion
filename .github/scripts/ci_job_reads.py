@@ -1170,13 +1170,15 @@ AIRLOCK_AXIOMS_STEP = "Print the theorems' axioms"
 AIRLOCK_AXIOMS_SCRIPT = f"{ENVOY}/scripts/airlock-lean-axioms.sh"
 AIRLOCK_MUTANTS_STEP = "Mutants of the airlock and its proxy"
 AIRLOCK_MUTANTS_SCRIPT = f"{ENVOY}/scripts/airlock-mutants.sh"
-# The document service's race step runs under .github/scripts/race_memory.py, which fails it with
-# a log when the race binary's memory passes RACE_MEM_LIMIT_KB (the step's comment in
-# ci-job-envoy-go-race-docs.yaml says why), so its line is a shell assignment and a script, not a
-# go command the simple form reduces.
+# The document service's race step runs through .github/scripts/go-test.sh --race-memory, which
+# runs gotestsum under .github/scripts/race_memory.py, which fails it with a log when the race
+# binary's memory passes RACE_MEM_LIMIT_KB (the step's comment in ci-job-envoy-go-race-docs.yaml
+# says why), so its line is a shell assignment and a script, not a go command the simple form
+# reduces.
 RACE_DOCS_STEP = "Race-test the document service"
-RACE_DOCS_SCRIPT = ("RACE_MEM_LIMIT_KB=8388608 ../../.github/scripts/race_memory.py "
-                    "go test -json -race -count=1 -timeout 60m ./internal/dispatch/docs/")
+RACE_DOCS_SCRIPT = ("RACE_MEM_LIMIT_KB=8388608 ../../.github/scripts/go-test.sh --race-memory "
+                    "--jsonfile envoy-go-race-docs-race.json --packages ./internal/dispatch/docs/ "
+                    "-- -race -count=1 -timeout 60m")
 # The same package under Go's cleanup detector. GODEBUG is a GO* name, which is outside
 # ENV_ALLOWED wherever it is set, so this step too is pinned whole rather than reduced.
 FINALIZERS_STEP = "Test the document service under the cleanup detector"
@@ -1252,6 +1254,29 @@ def ceiling_run(job):
 def ceiling_reads(job):
     """pg-connection-ceiling.sh itself, which `job`'s sizing step runs."""
     return reads((CEILING, f"{at(job, CEILING_STEP)} runs it"))
+
+
+# The step that installs gotestsum, which each job takes before the Go steps that run
+# .github/scripts/go-test.sh, and the script and its jq module.
+GOTESTSUM_INSTALL = "./.github/actions/install-gotestsum"
+GO_TEST_SCRIPT = ".github/scripts/go-test.sh"
+GO_TEST_JQ = ".github/scripts/go-test.jq"
+
+
+def gotestsum_reads(job, runs_it):
+    """What a job whose Go steps run go-test.sh reads beside their closures: the install action,
+    the gotestsum and gotestsum-aarch64 rows it installs and the fetch helper it sources, and
+    go-test.sh with the jq module it reads the jsonfile with. `runs_it` cites what in the job
+    runs go-test.sh."""
+    return reads(
+        (".github/actions/install-gotestsum/**", at(job, GOTESTSUM_INSTALL)),
+        (".github/ci-tools.yaml", ".github/actions/install-gotestsum/action.yml:29-30 installs the tarball of the "
+                                  "gotestsum row, or of gotestsum-aarch64 on an arm64 runner"),
+        (".github/scripts/ci-tools.sh", ".github/actions/install-gotestsum/action.yml:19 sources it, and ci_tools_fetch "
+                                        "reads that row's two sources"),
+        (GO_TEST_SCRIPT, runs_it),
+        (GO_TEST_JQ, ".github/scripts/go-test.sh:162 reads the jsonfile with it"),
+    )
 
 
 def two_builds_go_step():
@@ -3378,6 +3403,8 @@ SCRIPT_TEST_GATES = [
         ("packages/envoy/scripts/database-skips.sh", "its last case hashes this script, the one AUDITED_SCRIPTS reads"),
         ("packages/envoy/scripts/backend-count.sh", "its last case hashes this script, which AUDITED_SCRIPTS reads too"),
         ("packages/envoy/infra/scripts/race-unit.sh", "its last case hashes this script, which AUDITED_SCRIPTS reads too"),
+        (GO_TEST_SCRIPT, "its step-reader case reads envoy-go-race-docs' step that runs it, and go_test_steps.py's "
+                         "script_step reads its text to find it reads its arguments"),
         (f"{SCRIPTS}/ci_job_reads.py", "its last case imports this file for the reads this gate declares"),
     ]),
     harness("check_test_reach_test", "Test the test-reach search", f"{SCRIPTS}/check-test-reach.test.sh", [
@@ -3386,6 +3413,25 @@ SCRIPT_TEST_GATES = [
         (f"{SCRIPTS}/ci_filter_coverage.py", "the engine the step reader imports, linked in beside it"),
         (f"{SCRIPTS}/workflow_paths.py", "the path model that engine imports, linked in beside it"),
         (f"{SCRIPTS}/go_build_tags.py", "the Go build-tag module the search and that engine import, linked in beside it"),
+    ]),
+    harness("go_test_test", "Test the Go test runner and its merge-group retry", f"{SCRIPTS}/go-test.test.sh", [
+        (GO_TEST_SCRIPT, "the script under test, copied into the fixture repository (go-test.test.sh:53)"),
+        (GO_TEST_JQ, "go-test.test.sh:53 copies it beside go-test.sh, which reads the jsonfile with it"),
+        (f"{SCRIPTS}/race_memory.py", "go-test.test.sh:53 copies it beside go-test.sh, whose --race-memory case runs it"),
+        (f"{SCRIPTS}/testdata/go-test/**", "go-test.test.sh:54 copies the fixture module whose tests every case runs"),
+        (DATABASE_SKIPS_SCRIPT, "go-test.test.sh:55 copies it, and its database-skips case runs it over a fixture package"),
+        ("packages/envoy/scripts/backend-count.sh", "go-test.test.sh:55 copies it, and its backend-count case runs it over a fixture package"),
+    ]),
+    harness("go_test_split_test", "Test the run-time split of a package's tests between legs",
+            f"{SCRIPTS}/go-test-split.test.sh", [
+        (f"{SCRIPTS}/go-test-split.sh", "the script under test"),
+        (f"{SCRIPTS}/testdata/go-test-split/*.txt", "the captured go test -list listings each case feeds the script"),
+    ]),
+    harness("ci_ok_retries_test", "Test ci-ok's naming of the Go tests that passed on their retry",
+            f"{SCRIPTS}/ci-ok-retries.test.sh", [
+        (f"{SCRIPTS}/ci-ok-retries.sh", "the script under test"),
+        (GO_TEST_JQ, "ci-ok-retries.sh reads each jsonfile with its no_test_failures"),
+        (f"{SCRIPTS}/testdata/ci-ok-retries/*", "the captured jsonfiles and rerun reports each case reads"),
     ]),
 ]
 
@@ -3957,6 +4003,7 @@ GATES = [
                          "scripts/dispatch/ask-census.ts:10-18 (tsc -p scripts/dispatch); scripts/priorities-seed.ts:30-39 "
                          "and priorities-seed.test.ts:2")
       + setup_go("test", f"{DAEMON}/go.mod")
+      + gotestsum_reads("test", f"{at('test', 'Test the Go test runner and its merge-group retry')} runs it over its fixture module")
       + biome(at("test", "Lint the Dispatch census script")) + bun_job("test")),
 
     # The session message-wait suite, in a job of its own: it is the one test of the whole test
@@ -4475,6 +4522,8 @@ GATES = [
         *[(g, f"{at('envoy-go', DIFFERENTIAL_STEP)} runs internal/dispatch/pmdoc/gen/differential.sh, whose "
               "gen/differential.ts reads the corpus through the browser editor's engines") for g in PMDOC_GEN],
     ) + repository_markdown_reads("envoy-go") + ceiling_reads("envoy-go") + setup_go("envoy-go", f"{ENVOY}/go.mod")
+      + gotestsum_reads("envoy-go", f"{DATABASE_SKIPS_SCRIPT} and backend-count.sh, which "
+                                    f"{at('envoy-go', DATABASE_SKIPS_STEP)} and the backend count run, run their tests through it")
       + bun_job("envoy-go")),
 
     # envoy-go's fast half: its format and generated-code checks, the shell-script tests,
@@ -4632,7 +4681,9 @@ GATES = [
         (f"{ENVOY}/internal/testnats/nats.go", f"{at('envoy-infra-go', 'Pull the NATS and Postgres test container images')}: consts Image, HubImage"),
         (f"{ENVOY}/internal/testpg/testpg.go", f"{at('envoy-infra-go', 'Pull the NATS and Postgres test container images')}: const Image"),
         (TAGGED_TESTS, f"{at('envoy-infra-go', INFRA_NATSLIVE_STEP)} takes each call's -run from it"),
-    ) + setup_go("envoy-infra-go", f"{INFRA}/go.mod") + darwin_vet_reads("envoy-infra-go", INFRA_DARWIN_VET, INFRA)),
+    ) + setup_go("envoy-infra-go", f"{INFRA}/go.mod") + darwin_vet_reads("envoy-infra-go", INFRA_DARWIN_VET, INFRA)
+      + gotestsum_reads("envoy-infra-go", f"{INFRA_RACE_UNIT_SCRIPT}, which {at('envoy-infra-go', INFRA_PLAIN_STEP)} runs, "
+                                          "runs its tests through it")),
 
     # The text-check job: one `go test` of each module's text checks, in that module's own
     # directory, the Dispatch API's source guards by name, and the supervise table's two pure
@@ -4676,7 +4727,7 @@ GATES = [
     # envoy-go unit step and its plain companion are built from too. Two steps are not race_step's
     # text, and each gate pins its whole line: envoy-go-race-api's runs its package through
     # database-skips.sh (RACE_API_SCRIPT), which counts that run's skips, and envoy-go-race-docs'
-    # runs the package under .github/scripts/race_memory.py
+    # runs the package through .github/scripts/go-test.sh --race-memory
     # (dispatch://INFRA-1085), so its gate pins that whole line while the lane table still names
     # the package, which is what keeps it out of the unit step.
     gate("envoy_go_race", "envoy-go-race", runs=[race_step(RACE_JOBS["envoy-go-race"]), ceiling_run("envoy-go-race")],
@@ -4689,15 +4740,19 @@ GATES = [
         ]),
     ], reads=reads(
         (DATABASE_SKIPS_SCRIPT, f"{at('envoy-go-race-api', RACE_API.step)} runs the package through it"),
-    ) + ceiling_reads("envoy-go-race-api") + setup_go("envoy-go-race-api", f"{ENVOY}/go.mod")),
+    ) + ceiling_reads("envoy-go-race-api") + setup_go("envoy-go-race-api", f"{ENVOY}/go.mod")
+      + gotestsum_reads("envoy-go-race-api", f"{DATABASE_SKIPS_SCRIPT}, which {at('envoy-go-race-api', RACE_API.step)} "
+                                             "runs, runs the package through it")),
 
     gate("envoy_go_race_docs", "envoy-go-race-docs", runs=[ceiling_run("envoy-go-race-docs")], exact=[
         pinned_step("envoy-go-race-docs", RACE_DOCS_STEP, ENVOY, RACE_DOCS_SCRIPT, [
             (ENVOY, ["./internal/dispatch/docs/"], "go test -race -count=1 -timeout 60m ./internal/dispatch/docs/", {"race": True}),
         ]),
     ], reads=reads(
-        (".github/scripts/race_memory.py", f"{at('envoy-go-race-docs', RACE_DOCS_STEP)} runs the package under it"),
-    ) + ceiling_reads("envoy-go-race-docs") + setup_go("envoy-go-race-docs", f"{ENVOY}/go.mod")),
+        (".github/scripts/race_memory.py", ".github/scripts/go-test.sh:150 runs gotestsum under it, for "
+                                           f"{at('envoy-go-race-docs', RACE_DOCS_STEP)}'s --race-memory"),
+    ) + ceiling_reads("envoy-go-race-docs") + setup_go("envoy-go-race-docs", f"{ENVOY}/go.mod")
+      + gotestsum_reads("envoy-go-race-docs", f"{at('envoy-go-race-docs', RACE_DOCS_STEP)} runs the package through it")),
 
     # A second gate on envoy_go_race_docs: this job runs the same package, so it reads that
     # closure and no other, and check-ci-filters.sh keys a claim by (job, step), so the two gates
@@ -4803,9 +4858,11 @@ GATES = [
     gate("airlock_lean", AIRLOCK_JOB, runs=[
         # Each mutant runs in a copy of packages/envoy under $TMPDIR with one patch applied, so
         # what these compile is this tree's packages, one patched file apart.
-        script_run(AIRLOCK_MUTANTS_SCRIPT, "go test -count=1 -run FuzzAirlock ./internal/cipher/proxyrules/",
+        script_run(AIRLOCK_MUTANTS_SCRIPT,
+                   '"$GO_TEST" --jsonfile "$name.json" --packages ./internal/cipher/proxyrules/ -- -count=1 -run FuzzAirlock',
                    f"run by {at(AIRLOCK_JOB, AIRLOCK_MUTANTS_STEP)} for each go-* and lean-* mutant", ENVOY, AIRLOCK_PKGS),
-        script_run(AIRLOCK_MUTANTS_SCRIPT, 'go test -count=1 -v -run "$pattern" ./internal/cipher/proxy/',
+        script_run(AIRLOCK_MUTANTS_SCRIPT,
+                   '"$GO_TEST" --jsonfile "$name.json" --packages ./internal/cipher/proxy/ -- -count=1 -run "$pattern"',
                    f"run by {at(AIRLOCK_JOB, AIRLOCK_MUTANTS_STEP)} for each proxy-* mutant, with the tests its "
                    "`# must fail:` lines name", ENVOY, ["./internal/cipher/proxy/"]),
     ], exact=[
@@ -4828,7 +4885,9 @@ GATES = [
         (AIRLOCK_MUTANTS_SCRIPT, f"{at(AIRLOCK_JOB, AIRLOCK_MUTANTS_STEP)} is one line running it"),
         (f"{ENVOY}/internal/cipher/proxy/testdata/mutants/**",
          f"{AIRLOCK_MUTANTS_SCRIPT}'s mutant_file finds each proxy mutant there, and apply_patch applies it"),
-    ) + setup_go(AIRLOCK_JOB, f"{ENVOY}/go.mod")),
+    ) + setup_go(AIRLOCK_JOB, f"{ENVOY}/go.mod")
+      + gotestsum_reads(AIRLOCK_JOB, f"{AIRLOCK_MUTANTS_SCRIPT}, which {at(AIRLOCK_JOB, AIRLOCK_MUTANTS_STEP)} runs, runs "
+                                     "each mutant's tests through it")),
 
 
     # The listener image this job builds and smokes is built from the repository root, so every

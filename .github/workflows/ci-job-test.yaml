@@ -256,6 +256,18 @@ on:
         description: "ci.yaml's needs.changes.outputs.check_test_reach_test: check-test-reach.test.sh and what it tests."
         type: string
         required: true
+      go_test_test:
+        description: "ci.yaml's needs.changes.outputs.go_test_test: go-test.test.sh and what it tests."
+        type: string
+        required: true
+      go_test_split_test:
+        description: "ci.yaml's needs.changes.outputs.go_test_split_test: go-test-split.test.sh and what it tests."
+        type: string
+        required: true
+      ci_ok_retries_test:
+        description: "ci.yaml's needs.changes.outputs.ci_ok_retries_test: ci-ok-retries.test.sh and what it tests."
+        type: string
+        required: true
 
 # A `|` between proxy entries makes a go command fall through to the next source after ANY error,
 # where a `,` falls through only after a 404 or a 410 (Go's module reference, "GOPROXY protocol").
@@ -271,7 +283,8 @@ jobs:
     runs-on: ubuntu-24.04-arm
     # No step here carries a -timeout of its own any more: the two go test steps that did, and
     # the Stage 1 proof beside them, are .github/workflows/ci-job-daemon-go.yaml's now. What is
-    # left is the Bun install, the Claude Code plugin build, the thirty-two shell-script harnesses
+    # left is the Bun install, the Claude Code plugin build, the shell-script harnesses (the Go
+    # test runner's among them, whose fixture module's tests take a few minutes of gotestsum and go)
     # and a handful of Bun suites — the 325 s of setup dispatch://INFRA-1052 measured before the
     # plain Go step started, less the tool installs that went with those steps. Thirty minutes is
     # about six times that, which leaves a slow runner room and still fails a hung harness inside
@@ -573,14 +586,19 @@ jobs:
       # Go, but no Actions cache: the go-daemon entry holds what compiling packages/daemon
       # leaves behind, and it went to .github/workflows/ci-job-daemon-go.yaml with the steps
       # that compiled it. What runs go here is the held-port build of the envoy listener below,
-      # the CI-filter check's go list over a scratch module and the build-tag lister, none of
-      # which that entry is filled for. The daemon's go.mod is still the one Go pin of this
-      # repository's three modules that a job without one of its own reads.
+      # the CI-filter check's go list over a scratch module, the build-tag lister and the Go test
+      # runner's fixture module, none of which that entry is filled for. The daemon's go.mod is
+      # still the one Go pin of this repository's three modules that a job without one of its own
+      # reads.
       - id: setup-go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/daemon/go.mod
           cache: false
+
+      # After setup-go: go-test.test.sh below runs .github/scripts/go-test.sh, and so gotestsum,
+      # over its fixture Go module.
+      - uses: ./.github/actions/install-gotestsum
 
       # The traced row of scripts/e2e/lib/process-tree.test.ts runs the rig's process helpers
       # under strace, which the runner image does not carry, and on GitHub Actions a program a
@@ -617,6 +635,22 @@ jobs:
       - name: Test the test-reach search
         if: inputs.changes-result != 'success' || inputs.check_test_reach_test == 'true'
         run: .github/scripts/check-test-reach.test.sh
+
+      # The script every Go step of a job ci-ok needs runs its tests through, over a fixture Go
+      # module of its own (.github/scripts/testdata/go-test), with gotestsum and go: the merge
+      # group's retry and each case it must refuse, the read of the jsonfile after gotestsum ends,
+      # and the counters and the memory sampler that run through it.
+      - name: Test the Go test runner and its merge-group retry
+        if: inputs.changes-result != 'success' || inputs.go_test_test == 'true'
+        run: .github/scripts/go-test.test.sh
+
+      - name: Test the run-time split of a package's tests between legs
+        if: inputs.changes-result != 'success' || inputs.go_test_split_test == 'true'
+        run: .github/scripts/go-test-split.test.sh
+
+      - name: Test ci-ok's naming of the Go tests that passed on their retry
+        if: inputs.changes-result != 'success' || inputs.ci_ok_retries_test == 'true'
+        run: .github/scripts/ci-ok-retries.test.sh
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()

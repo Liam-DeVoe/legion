@@ -90,7 +90,10 @@ jobs:
       # Each mutant of the airlock (internal/cipher/proxyrules/testdata/mutants) and of its proxy
       # (internal/cipher/proxy/testdata/mutants), applied to a copy of packages/envoy:
       # the comparison against the model built above, the proofs or the tests a proxy patch names
-      # must catch each one, and the script prints one CHECK line per mutant.
+      # must catch each one, and the script prints one CHECK line per mutant. Its Go tests run
+      # under gotestsum (.github/scripts/go-test.sh) with the retry off, since each is expected to
+      # fail, so gotestsum is installed first.
+      - uses: ./.github/actions/install-gotestsum
       - name: Mutants of the airlock and its proxy
         run: bash packages/envoy/scripts/airlock-mutants.sh
 

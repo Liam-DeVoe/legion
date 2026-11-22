@@ -1,0 +1,14 @@
+{"Time":"2026-11-22T23:26:19.856712266Z","Action":"start","Package":"example.com/gotestfixtures/testmain"}
+{"Time":"2026-11-22T23:26:19.866803806Z","Action":"run","Package":"example.com/gotestfixtures/testmain","Test":"TestLeavesState"}
+{"Time":"2026-11-22T23:26:19.866887294Z","Action":"output","Package":"example.com/gotestfixtures/testmain","Test":"TestLeavesState","Output":"=== RUN   TestLeavesState\n","OutputType":"frame"}
+{"Time":"2026-11-22T23:26:19.866917921Z","Action":"output","Package":"example.com/gotestfixtures/testmain","Test":"TestLeavesState","Output":"--- PASS: TestLeavesState (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-11-22T23:26:19.86693568Z","Action":"pass","Package":"example.com/gotestfixtures/testmain","Test":"TestLeavesState","Elapsed":0}
+{"Time":"2026-11-22T23:26:19.86694645Z","Action":"output","Package":"example.com/gotestfixtures/testmain","Output":"PASS\n","OutputType":"frame"}
+{"Time":"2026-11-22T23:26:19.866954305Z","Action":"output","Package":"example.com/gotestfixtures/testmain","Output":"TestMain: a test left state behind\n"}
+{"Time":"2026-11-22T23:26:19.868185742Z","Action":"output","Package":"example.com/gotestfixtures/testmain","Output":"FAIL\texample.com/gotestfixtures/testmain\t0.010s\n","OutputType":"frame"}
+{"Time":"2026-11-22T23:26:19.868222483Z","Action":"fail","Package":"example.com/gotestfixtures/testmain","Elapsed":0.012}
+{"Time":"2026-11-22T23:26:26.558957609Z","Action":"start","Package":"example.com/gotestfixtures/testmain"}
+{"Time":"2026-11-22T23:26:26.574026126Z","Action":"output","Package":"example.com/gotestfixtures/testmain","Output":"testing: warning: no tests to run\n"}
+{"Time":"2026-11-22T23:26:26.574223936Z","Action":"output","Package":"example.com/gotestfixtures/testmain","Output":"PASS\n","OutputType":"frame"}
+{"Time":"2026-11-22T23:26:26.575459341Z","Action":"output","Package":"example.com/gotestfixtures/testmain","Output":"ok  \texample.com/gotestfixtures/testmain\t0.016s [no tests to run]\n"}
+{"Time":"2026-11-22T23:26:26.575513833Z","Action":"pass","Package":"example.com/gotestfixtures/testmain","Elapsed":0.017}

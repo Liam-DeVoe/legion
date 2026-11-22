@@ -4,24 +4,29 @@
 # The one skip counter of the envoy module's database-backed packages. go test counts a skipped
 # test as a pass and, without -v, prints nothing for it, so a package run with its database
 # variable unset, or with a t.Skip left in one of its tests, reads as green. This script runs
-# `go test -json` and counts the skips in that report, and fails on any.
+# the packages under gotestsum, through .github/scripts/go-test.sh, and counts the skips in the
+# jsonfile that run writes, and fails on any.
 #
-#   database-skips.sh [--var NAME]... [--race] [--timeout D] [--skip PATTERN] [PACKAGE...]
-#   database-skips.sh --report FILE [PACKAGE...]
+#   database-skips.sh [--var NAME]... [--race] [--timeout D] [--skip PATTERN] [--run PATTERN] [--jsonfile NAME] [PACKAGE...]
+#   database-skips.sh --report FILE [--run PATTERN] [PACKAGE...]
 #
 # PACKAGE is a pattern under packages/envoy: `./dir/`, that package alone, or `./dir/...`, it
 # and every package under it. With none it counts DEFAULT_PACKAGES below, the broker's packages
 # and its command, which need BROKER_TEST_DATABASE_URL, less the packages DEFAULT_EXCEPT takes out
 # of them. From packages/envoy it runs one
 #
-#   go test -json -count=1 [-race] [-skip PATTERN] -timeout D PACKAGE...
+#   .github/scripts/go-test.sh --jsonfile NAME --packages "PACKAGE..." -- -count=1 [-race] [-skip PATTERN] [-run PATTERN] -timeout D
 #
-# and prints its test log to stdout as the tests run: the Output of each -json event, which holds
-# each test's `=== RUN` line and its `--- PASS`, `--- FAIL` or `--- SKIP` line, since -json runs
-# the test binary verbose (-test.v=test2json; a -v beside it would pass -test.v=true after that
-# and take test2json's framing away). Then it reads that report. `--var NAME` names a variable
-# the packages need, and repeats; with none it is BROKER_TEST_DATABASE_URL. When a named variable
-# is unset or empty it prints `database_skips=UNKNOWN` naming it and exits 1, and runs no test.
+# which runs `gotestsum --format standard-verbose` over them, so the test log on stdout holds each
+# test's `=== RUN` line and its `--- PASS`, `--- FAIL` or `--- SKIP` line as the tests run, and in
+# a merge group runs a failed test once more (go-test.sh's header says when, and what it refuses
+# to rerun). Then it reads the jsonfile, every attempt of the run, taking each test's result from
+# the last attempt that ran it (.github/scripts/go-test.jq, last_attempt_results): a test that
+# failed once and passed on its rerun passed. NAME is the jsonfile's file name, which go-test.sh
+# keeps for the step that uploads it, ${GITHUB_JOB:-local}-database-skips.json unless given.
+# `--var NAME` names a variable the packages need, and repeats; with none it is
+# BROKER_TEST_DATABASE_URL. When a named variable is unset or empty it prints
+# `database_skips=UNKNOWN` naming it and exits 1, and runs no test.
 # `--race` adds -race.
 # `--timeout D` sets the -timeout, and without it the -timeout is ${GO_TEST_TIMEOUT:-15m}. The
 # -timeout bounds each package's test binary, not the run, since go test runs the packages
@@ -29,26 +34,32 @@
 # `--skip PATTERN` is go test's -skip, for a test another step of the same job runs in the same
 # build and environment (envoy-go's backend count): go test reports nothing for a test -skip
 # leaves out, so it is neither run twice nor counted as a skip here.
-# `--report FILE` reads FILE instead and runs nothing, which the controls use; the four options
-# that shape a run are refused beside it.
+# `--run PATTERN` is one leg's share of the packages' tests, as .github/scripts/go-test-split.sh
+# prints it, `^(Name|Name|...)$` or `^$`, and no other shape: the run passes it to go test, and the
+# reading holds an EXPECTED_SKIPS line only where the share names its test, so a test the split
+# gave another leg is not looked for here. A leg's share can hold no test of a listed package, so
+# with --run the report must hold a test that passed or failed, but not one of each package.
+# `--report FILE` reads FILE instead and runs nothing, which the controls use; the five options
+# that shape a run alone are refused beside it.
 #
 # It prints each skipped test of a package the patterns name (as `go list` names them under the
 # run's own flags) as `SKIP PACKAGE TEST`, then `database_skips=N`, and for a run of its own
-# `go_test_exit=E`, go test's own exit status. A report that shows no run is no count at all: it
+# `go_test_exit=E`, go-test.sh's exit status. A report that shows no run is no count at all: it
 # prints `database_skips=UNKNOWN` and names what it could not read, rather than a zero. That is a
 # report that is missing or empty, or that holds no test that passed or failed of a listed
 # package with test files (a package whose tests all skipped, or whose TestMain returned before
 # it ran them); and an EXPECTED_SKIPS line whose package is listed and whose test the report does
 # not hold, since that line then excuses nothing it can name. It exits 0 only when every listed
 # package with test files shows tests run, none of them skipped but those EXPECTED_SKIPS names
-# and none failed, and, for a run of its own, go test passed; 1 otherwise. A run of its own also
-# prints each listed package's `pass|fail PACKAGE <seconds>s` on stderr. On a failure it prints,
-# on stderr, each failed test, each test a failed package never finished, the failed packages'
-# output (a failed test's own lines, a timed-out binary's goroutine dump, a data race, and any line
-# test2json files under a test after that test's own `--- PASS` or `--- SKIP`), go test's build
-# output and, for a run of its own, its stderr. Each of those is read per run of a test, so a test
-# a binary runs twice under one name - with -count, or a TestMain that calls m.Run twice - that
-# fails in one run and passes in the other still has its failure's lines printed.
+# and none failed in its last attempt, and, for a run of its own, go-test.sh passed; 1 otherwise.
+# A run of its own also prints each listed package's `pass|fail PACKAGE <seconds>s` on stderr. On
+# a failure it prints, on stderr, each test that failed in its last attempt, each test a failed
+# package never finished, the failed packages' output (a failed test's own lines, a timed-out
+# binary's goroutine dump, a data race, and any line test2json files under a test after that
+# test's own `--- PASS` or `--- SKIP`), go test's build output and, for a run of its own,
+# go-test.sh's stderr. The output is read per run of a test, so a test a binary runs twice under
+# one name - with -count, or a TestMain that calls m.Run twice - that fails in one run and passes
+# in the other still has its failure's lines printed.
 set -euo pipefail
 # sort and comm compare the test lists under one collation, whatever the caller's locale.
 export LC_ALL=C
@@ -56,6 +67,8 @@ export LC_ALL=C
 # A relative --report is the caller's path; every go command runs from packages/envoy.
 caller="$PWD"
 cd "$(dirname "$0")/.."
+# go-test.sh and the go-test.jq it and this script read the jsonfile with.
+scripts="$(cd ../../.github/scripts && pwd)"
 
 # The broker's packages and its command, less DEFAULT_EXCEPT: every package of each opens the
 # broker's Postgres, named by BROKER_TEST_DATABASE_URL, or skips. DEFAULT_EXCEPT is a `grep -Ev`
@@ -99,20 +112,22 @@ by_run='def by_run: foreach .[] as $e ({};
   if $e.Test != null and $e.Action == "run" then .["\($e.Package) \($e.Test)"] += 1 else . end;
   if $e.Test == null then $e else $e + {_run: "\($e.Package) \($e.Test) \(.["\($e.Package) \($e.Test)"] // 0)"} end);'
 
-# failures prints, on stderr, what a failed run left in the report: each failed test, each run of a
-# test a failed package started and never ended (the one a timed-out binary was running), every
-# output line of a failed package but those of the runs of its tests that passed or skipped, every
-# line filed under a run of a test after that run's own `--- PASS` or `--- SKIP` line, and every
-# line from the package's first `panic: ` on (so the goroutine dump of a timeout, a data race and
-# the package's own FAIL line), the build output, and, for a run of its own, go test's stderr.
+# failures prints, on stderr, what a failed run left in the report: each test that failed in the
+# last attempt that ran it, each run of a test a failed package started and never ended (the one a
+# timed-out binary was running), every output line of a failed package but those of the runs of
+# its tests that passed or skipped, every line filed under a run of a test after that run's own
+# `--- PASS` or `--- SKIP` line, and every line from the package's first `panic: ` on (so the
+# goroutine dump of a timeout, a data race and the package's own FAIL line), the build output,
+# and, for a run of its own, go-test.sh's stderr. A rerun's lines are a run of the test like any
+# other, so a failed first attempt's lines are printed beside a failed rerun's.
 failures() {
+  jq -n -r -L "$scripts" 'include "go-test"; last_attempt_results(inputs)
+    | select(.Test != null and .Action == "fail") | "FAIL \(.Package) \(.Test)"' "$report" >&2 || true
   jq -rs "$by_run"' [by_run] as $events
     | (reduce ($events[] | select(.Test != null and (.Action == "pass" or .Action == "fail" or .Action == "skip"))) as $e ({}; .[$e._run] = true)) as $ended
     | (reduce ($events[] | select(.Action == "fail" and .Test == null)) as $e ({}; .[$e.Package] = true)) as $failed
-    | $events[] | select(.Test != null)
-    | if .Action == "fail" then "FAIL \(.Package) \(.Test)"
-      elif .Action == "run" and $failed[.Package] and ($ended[._run] | not) then "UNFINISHED \(.Package) \(.Test)"
-      else empty end' "$report" >&2 || true
+    | $events[] | select(.Test != null and .Action == "run" and $failed[.Package] and ($ended[._run] | not))
+    | "UNFINISHED \(.Package) \(.Test)"' "$report" >&2 || true
   # test2json files each output line under the test whose framing line came last. A test's own
   # output comes before its `--- PASS` or `--- SKIP` line, so a line filed under it after that line
   # is another's: a data race report after a subtest passed, or a panic after a parallel test
@@ -146,9 +161,14 @@ unknown() {
 }
 
 usage() {
-  echo "database-skips.sh: $1 (usage: database-skips.sh [--var NAME]... [--race] [--timeout D] [--skip PATTERN] [PACKAGE...], or --report FILE [PACKAGE...])" >&2
+  echo "database-skips.sh: $1 (usage: database-skips.sh [--var NAME]... [--race] [--timeout D] [--skip PATTERN] [--run PATTERN] [--jsonfile NAME] [PACKAGE...], or --report FILE [--run PATTERN] [PACKAGE...])" >&2
   exit 1
 }
+
+# The one shape of --run this script reads: the anchored alternation of whole test names
+# go-test-split.sh prints, or `^$`, which it prints for a leg the hash gives no test. Its names are
+# read off its own text: a regexp matched here would be a second engine beside go test's.
+RUN_SHAPE='^\^(\((Test|Fuzz|Example)[A-Za-z0-9_]*(\|(Test|Fuzz|Example)[A-Za-z0-9_]*)*\))?\$$'
 
 while IFS= read -r line; do
   [ -n "$line" ] || continue
@@ -160,6 +180,9 @@ vars=()
 race=()
 skip=()
 timeout=""
+run=()
+jsonfile="${GITHUB_JOB:-local}-database-skips.json"
+jsonfile_given=false
 packages=()
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -182,6 +205,17 @@ while [ $# -gt 0 ]; do
       skip=(-skip "$2")
       shift 2
       ;;
+    --run)
+      [[ "${2:-}" =~ $RUN_SHAPE ]] || usage "--run takes a leg's share as go-test-split.sh prints it, ^(Name|Name|...)\$ or ^\$, not \"${2:-}\""
+      run=(-run "$2")
+      shift 2
+      ;;
+    --jsonfile)
+      [ -n "${2:-}" ] || usage "--jsonfile needs the jsonfile's file name"
+      jsonfile="$2"
+      jsonfile_given=true
+      shift 2
+      ;;
     --report)
       [ -n "${2:-}" ] || usage "--report needs the go test -json report to read"
       case "$2" in
@@ -194,8 +228,8 @@ while [ $# -gt 0 ]; do
     *) usage "unknown argument $1: a package is a pattern under packages/envoy that starts with ./" ;;
   esac
 done
-if [ -n "$report" ] && { [ ${#vars[@]} -gt 0 ] || [ ${#race[@]} -gt 0 ] || [ -n "$timeout" ] || [ ${#skip[@]} -gt 0 ]; }; then
-  usage "--report reads a run made elsewhere, so --var, --race, --timeout and --skip, which shape a run of its own, are refused beside it"
+if [ -n "$report" ] && { [ ${#vars[@]} -gt 0 ] || [ ${#race[@]} -gt 0 ] || [ -n "$timeout" ] || [ ${#skip[@]} -gt 0 ] || [ "$jsonfile_given" = true ]; }; then
+  usage "--report reads a run made elsewhere, so --var, --race, --timeout, --skip and --jsonfile, which shape a run of its own, are refused beside it"
 fi
 # runs is what the go list and go test below are given: the patterns as written, or for the
 # default table the import paths go list prints for it under the run's own flags, less
@@ -235,18 +269,20 @@ listed="$(jq -R -s -c '[split("\n")[] | select(length > 0) | split(" ") | {(.[0]
 under='def under($pkg): $listed[$pkg] == true;'
 
 if [ -z "$report" ]; then
-  report="$work/report.json"
+  report="$("$scripts/go-test.sh" --path "$jsonfile")" || usage "the jsonfile is a file name ending in .json, not \"$jsonfile\""
   go_test_exit=0
-  # tee keeps the whole stream as the report; the reader of the log takes a line it cannot
-  # parse as nothing, so it neither fails nor closes the pipe before go test ends.
-  go test -json -count=1 "${race[@]}" "${skip[@]}" -timeout "${timeout:-${GO_TEST_TIMEOUT:-15m}}" "${runs[@]}" 2>"$work/stderr" |
-    tee "$report" | jq --unbuffered -Rrj 'fromjson? | objects | .Output | strings' ||
-    go_test_exit=${PIPESTATUS[0]}
+  # go-test.sh prints gotestsum's test log to stdout as the tests run and leaves the jsonfile at
+  # $report for the step that uploads it; its stderr, go test's own among it, is printed with the
+  # failures.
+  "$scripts/go-test.sh" --jsonfile "$jsonfile" --packages "${runs[*]}" -- \
+    -count=1 "${race[@]}" "${skip[@]}" "${run[@]}" -timeout "${timeout:-${GO_TEST_TIMEOUT:-15m}}" 2>"$work/stderr" ||
+    go_test_exit=$?
 fi
 
 [ -e "$report" ] || unknown "the report $report does not exist"
 [ -s "$report" ] || unknown "the report $report is empty"
-jq -r --argjson listed "$listed" "$under"' select(.Action == "pass" or .Action == "fail" or .Action == "skip") | select(under(.Package // "")) | "\(.Action) \(.Package) \(.Test // "")"' "$report" >"$work/ended" 2>"$work/jq" ||
+# Each test's and each package's result in the last attempt that ran it.
+jq -n -r -L "$scripts" --argjson listed "$listed" 'include "go-test"; '"$under"' last_attempt_results(inputs) | select(under(.Package // "")) | "\(.Action) \(.Package) \(.Test // "")"' "$report" >"$work/ended" 2>"$work/jq" ||
   unknown "the report $report is not a go test -json stream ($(head -c 200 "$work/jq"))"
 # A test that passed or failed is the evidence a package's tests ran: a skip is what this script
 # counts, so a package whose tests all skipped shows none ran, and so does a package whose TestMain
@@ -254,12 +290,21 @@ jq -r --argjson listed "$listed" "$under"' select(.Action == "pass" or .Action =
 # must hold one; a package with none has nothing to run.
 awk 'NF == 3 && $1 != "skip" { print $2 }' "$work/ended" | sort -u >"$work/evidenced"
 [ -s "$work/evidenced" ] || unknown "the report $report holds no test of a package under ${packages[*]} that passed or failed"
-awk '$2 + $3 > 0 { print $1 }' "$work/listed" | sort -u | comm -23 - "$work/evidenced" >"$work/silent"
-[ ! -s "$work/silent" ] || unknown "the report $report holds no test that passed or failed in $(paste -sd ',' "$work/silent" | sed 's/,/, /g'), which has test files"
+if [ ${#run[@]} -eq 0 ]; then
+  awk '$2 + $3 > 0 { print $1 }' "$work/listed" | sort -u | comm -23 - "$work/evidenced" >"$work/silent"
+  [ ! -s "$work/silent" ] || unknown "the report $report holds no test that passed or failed in $(paste -sd ',' "$work/silent" | sed 's/,/, /g'), which has test files"
+fi
 
 awk 'NF == 3 && $1 == "skip" { print $2, $3 }' "$work/ended" | sort -u >"$work/skipped"
 awk 'NF == 3 { print $2, $3 }' "$work/ended" | sort -u >"$work/held"
 printf '%s\n' "$EXPECTED_SKIPS" | jq -R -r --argjson listed "$listed" "$under"' select(length > 0) | split(" ") | select(under(.[0])) | "\(.[0]) \(.[1])"' | sort -u >"$work/expected"
+# With --run, a line is held only where the leg's share names its test: the split gave any other
+# to another leg.
+if [ ${#run[@]} -gt 0 ]; then
+  sed -E 's/^\^\(?//; s/\)?\$$//' <<<"${run[1]}" | tr '|' '\n' >"$work/selected"
+  awk 'NR == FNR { keep[$0] = 1; next } $2 in keep' "$work/selected" "$work/expected" >"$work/expected-in-leg"
+  mv "$work/expected-in-leg" "$work/expected"
+fi
 comm -23 "$work/expected" "$work/held" >"$work/stale"
 [ ! -s "$work/stale" ] || unknown "EXPECTED_SKIPS names $(paste -sd ',' "$work/stale" | sed 's/,/, /g'), under ${packages[*]}, which the report $report does not hold"
 
@@ -274,9 +319,9 @@ status=0
 awk '$1 == "fail"' "$work/ended" >"$work/failed"
 [ ! -s "$work/failed" ] || status=1
 if [ -n "$go_test_exit" ]; then
-  # Each listed package's time, which go test prints without -json and the CI steps' limits are
-  # set from, on stderr.
-  jq -r --argjson listed "$listed" "$under"' select(.Test == null and (.Action == "pass" or .Action == "fail") and under(.Package // "")) | "\(.Action) \(.Package) \(.Elapsed // 0)s"' "$report" >&2 || true
+  # Each listed package's time in its last attempt, which go test prints without -json and the CI
+  # steps' limits are set from, on stderr.
+  jq -n -r -L "$scripts" --argjson listed "$listed" 'include "go-test"; '"$under"' last_attempt_results(inputs) | select(.Test == null and (.Action == "pass" or .Action == "fail") and under(.Package // "")) | "\(.Action) \(.Package) \(.Elapsed // 0)s"' "$report" >&2 || true
   echo "go_test_exit=$go_test_exit"
   [ "$go_test_exit" -eq 0 ] || status=1
 fi

@@ -32,13 +32,14 @@
 #        with no name, every mutant of both testdata/mutants directories; a name is a patch's
 #        file name, with or without the .patch suffix (for example go-carries-value).
 #
-# Needs go, GNU patch or git (the patches are plain unified diffs, and `git apply -p1`
-# applies them where patch is not installed), and, for the model mutants, lake from the Lean
-# toolchain this environment names (ELAN_HOME and PATH are taken as they are); a missing
-# lake exits 2. The Go mutants need the built model, and the proxy mutants need neither. One
-# `CHECK <mutant>: PASS` line, after the line naming what caught it, or `CHECK <mutant>: FAIL:
-# <why>` line per mutant, and a non-zero exit when any mutant was not caught. The `airlock-lean`
-# job of `ci.yaml` runs it.
+# Needs go, gotestsum (every Go test here runs under .github/scripts/go-test.sh, with its retry
+# off: a mutant's run is expected to fail, so a rerun would only run the failure again), GNU patch
+# or git (the patches are plain unified diffs, and `git apply -p1` applies them where patch is not
+# installed), and, for the model mutants, lake from the Lean toolchain this environment names
+# (ELAN_HOME and PATH are taken as they are); a missing lake exits 2. The Go mutants need the
+# built model, and the proxy mutants need neither. One `CHECK <mutant>: PASS` line, after the line
+# naming what caught it, or `CHECK <mutant>: FAIL: <why>` line per mutant, and a non-zero exit when
+# any mutant was not caught. The `airlock-lean` job of `ci.yaml` runs it.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -48,6 +49,9 @@ AIRLOCK_PKG_DIR="$ENVOY_DIR/internal/cipher/proxyrules"
 MUTANT_DIR="$AIRLOCK_PKG_DIR/testdata/mutants"
 PROXY_MUTANT_DIR="$ENVOY_DIR/internal/cipher/proxy/testdata/mutants"
 MODEL="$AIRLOCK_PKG_DIR/lean/.lake/build/bin/airlock-model"
+GO_TEST="$REPO_DIR/.github/scripts/go-test.sh"
+# Every run against a mutant is expected to fail, so none takes the merge group's retry.
+export GO_TEST_RETRY=off
 
 usage() {
 	cat <<'EOF'
@@ -68,7 +72,7 @@ those tests alone.
 No patch is ever applied to this repository. It prints one `CHECK <mutant>: PASS` or
 `CHECK <mutant>: FAIL: <why>` line per mutant and a last line saying how many were caught,
 exits non-zero when a mutant was not caught, and exits 2 after a `CHECK setup: FAIL` when go,
-lake or both patch and git are missing.
+gotestsum, lake or both patch and git are missing.
 EOF
 }
 
@@ -81,6 +85,10 @@ esac
 
 if ! command -v go >/dev/null 2>&1; then
 	echo "CHECK setup: FAIL: go is not on PATH"
+	exit 2
+fi
+if ! command -v gotestsum >/dev/null 2>&1; then
+	echo "CHECK setup: FAIL: gotestsum is not on PATH (.github/actions/install-gotestsum installs it)"
 	exit 2
 fi
 if ! command -v patch >/dev/null 2>&1 && ! command -v git >/dev/null 2>&1; then
@@ -158,6 +166,8 @@ fi
 
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/airlock-mutants.XXXXXX")"
 trap 'rm -rf "$WORK_DIR"' EXIT
+# Each run's jsonfile stays with the mutant's copy: no upload step reads a mutant's failure.
+export GO_TEST_REPORTS="$WORK_DIR/go-test-reports"
 
 # copy_envoy writes a copy of packages/envoy into <dest>/packages/envoy, laid out as in the
 # repository so the patches' own a/packages/envoy/... paths apply with patch -p1. A Go mutant
@@ -175,15 +185,16 @@ copy_envoy() {
 }
 
 # compare runs the comparison fuzz test over the seed corpus in <copy>, against <model>, and
-# answers 0 when the two sides disagreed, 1 when they agreed, 2 when the test did not run. The go
-# command stands on a line of its own, which is how .github/scripts/check-ci-filters.sh reads what
-# a script's go command compiles.
+# answers 0 when the two sides disagreed, 1 when they agreed, 2 when the test did not run. The
+# go-test.sh command stands on a line of its own, which is how .github/scripts/check-ci-filters.sh
+# holds the text a script's go command runs to the Run ci_job_reads.py lists for it.
 compare() {
-	local copy="$1" model="$2" log="$3"
+	local copy="$1" model="$2" log="$3" name
+	name="$(basename "$copy")"
 	if (
 		cd "$copy/packages/envoy" || exit 2
 		export GOWORK=off AIRLOCK_MODEL="$model"
-		go test -count=1 -run FuzzAirlock ./internal/cipher/proxyrules/
+		"$GO_TEST" --jsonfile "$name.json" --packages ./internal/cipher/proxyrules/ -- -count=1 -run FuzzAirlock
 	) >"$log" 2>&1; then
 		return 1
 	fi
@@ -209,14 +220,15 @@ must_fail() {
 # proxy_tests runs <tests>, the named tests of a proxy mutant, in <copy> and answers 0 when every
 # one of them ran and failed, 1 when one of them passed, 2 when one of them did not run - a copy
 # that does not build, or a name no test of the suite has. MISSED is set to the ones that passed or
-# did not run.
+# did not run. gotestsum's standard-verbose log holds each test's `=== RUN` and `--- FAIL` lines.
 proxy_tests() {
-	local copy="$1" log="$2" tests="$3" test verdict=0 pattern
+	local copy="$1" log="$2" tests="$3" test verdict=0 pattern name
 	pattern="^($(paste -sd '|' <<<"$tests"))\$"
+	name="$(basename "$copy")"
 	(
 		cd "$copy/packages/envoy" || exit 2
 		export GOWORK=off
-		go test -count=1 -v -run "$pattern" ./internal/cipher/proxy/
+		"$GO_TEST" --jsonfile "$name.json" --packages ./internal/cipher/proxy/ -- -count=1 -run "$pattern"
 	) >"$log" 2>&1
 	MISSED=""
 	while read -r test; do

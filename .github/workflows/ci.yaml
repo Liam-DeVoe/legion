@@ -169,6 +169,9 @@ jobs:
       check_ts_filters_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_ts_filters_test }}
       go_test_step_expansion_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.go_test_step_expansion_test }}
       check_test_reach_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_test_reach_test }}
+      go_test_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.go_test_test }}
+      go_test_split_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.go_test_split_test }}
+      ci_ok_retries_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.ci_ok_retries_test }}
       # Selected like any other job now that no run of this workflow is a push to main.
       # docs-pages.yaml still builds and deploys main's site, on a push trigger of its own.
       docs: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.docs }}
@@ -380,6 +383,9 @@ jobs:
       check_ts_filters_test: ${{ needs.changes.outputs.check_ts_filters_test }}
       go_test_step_expansion_test: ${{ needs.changes.outputs.go_test_step_expansion_test }}
       check_test_reach_test: ${{ needs.changes.outputs.check_test_reach_test }}
+      go_test_test: ${{ needs.changes.outputs.go_test_test }}
+      go_test_split_test: ${{ needs.changes.outputs.go_test_split_test }}
+      ci_ok_retries_test: ${{ needs.changes.outputs.ci_ok_retries_test }}
 
   # why: .github/ci-notes/ci.md#why-the-daemons-go-suite-is-a-job-of-its-own
   daemon-go:
@@ -1030,6 +1036,23 @@ jobs:
         run: |
           echo "::error::ci-ok is failure on attempt $RUN_ATTEMPT of this merge-group run, whatever the jobs of it did: a merge group is tested once, the queue builds a new group rather than re-running one, and this attempt judges a tree the queue is no longer waiting on."
           exit 1
+
+      # Each Go step's gotestsum jsonfile and rerun report (.github/scripts/go-test.sh), uploaded as
+      # a go-test-* artifact, read for the summary: each test that passed only on its retry and each
+      # package that failed with no test failing. A run whose Go jobs all skipped uploads none, and
+      # the step below says so; the report decides nothing of the verdict.
+      - name: Download the Go steps' gotestsum jsonfiles
+        if: ${{ always() }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: go-test-*
+          path: ${{ runner.temp }}/go-test-reports
+          merge-multiple: true
+      - name: Name each Go test that passed only on its retry
+        if: ${{ always() }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/go-test-reports"
+          .github/scripts/ci-ok-retries.sh "$RUNNER_TEMP/go-test-reports"
 
       # why: .github/ci-notes/ci.md#needs-is-tojsonneeds-changes-result-and-outputs-with-every-other-jobs-result
       - name: Judge every job of this run

@@ -10,11 +10,13 @@
 # header says so). This harness needs no Go at all: every case is text, read as the script reads
 # it, or a file's hash.
 #
-# The case that named this harness: a step whose line sets a variable before its command, or runs
-# it under the memory wrapper, was refused, and the refusal stopped the whole run at exit 2 with
+# The case that named this harness: a step whose line set a variable before its command, or ran
+# it under the memory sampler, was refused, and the refusal stopped the whole run at exit 2 with
 # no pair list at all - so the rule answered nothing about any pair while
 # `RACE_MEM_LIMIT_KB=… race_memory.py go test …` stood in ci-job-envoy-go-race-docs.yaml and
-# `GODEBUG=checkfinalizers=1 go test …` in ci-job-envoy-go-docs-finalizers.yaml.
+# `GODEBUG=checkfinalizers=1 go test …` in ci-job-envoy-go-docs-finalizers.yaml. The race-docs
+# line is a .github/scripts/go-test.sh command now, `RACE_MEM_LIMIT_KB=… go-test.sh --race-memory
+# …`, read as the gotestsum command it runs.
 #
 # The modules are imported from the directory they live in, the way check-ci-filters.sh imports
 # its own (PYTHONPATH, no bytecode), so the code under test is the file a person and CI run. It
@@ -65,16 +67,22 @@ line='GODEBUG=checkfinalizers=1 go test -v -count=1 -timeout 29m ./internal/disp
 check "the variable is dropped" "$(is "$(command_of "$line")" "go test -v -count=1 -timeout 29m ./internal/dispatch/docs/")"
 check "the text begins at go" "$(is "$(text_of "$line")" "go test -v -count=1 -timeout 29m ./internal/dispatch/docs/")"
 
-echo "case: a variable and the memory wrapper (the race-docs lane)"
-line='RACE_MEM_LIMIT_KB=8388608 ../../.github/scripts/race_memory.py go test -json -race -count=1 -timeout 60m ./internal/dispatch/docs/'
-check "both are dropped" "$(is "$(command_of "$line")" "go test -json -race -count=1 -timeout 60m ./internal/dispatch/docs/")"
+echo "case: a variable and a go-test.sh command (the race-docs lane)"
+line='RACE_MEM_LIMIT_KB=8388608 ../../.github/scripts/go-test.sh --race-memory --jsonfile envoy-go-race-docs-race.json --packages ./internal/dispatch/docs/ -- -race -count=1 -timeout 60m'
+check "the variable is dropped and the go-test.sh command is left" \
+  "$(is "$(command_of "$line")" "../../.github/scripts/go-test.sh --race-memory --jsonfile envoy-go-race-docs-race.json --packages ./internal/dispatch/docs/ -- -race -count=1 -timeout 60m")"
 
 echo "case: more than one variable before the command"
 check "each is dropped" "$(is "$(command_of 'A=1 B=2 go test ./pkg')" "go test ./pkg")"
 
-echo "case: the wrapper's own path is read from its end, as a step writes it"
-check "a deeper relative path is still the wrapper" \
-  "$(is "$(command_of '../../../.github/scripts/race_memory.py go test ./pkg')" "go test ./pkg")"
+echo "case: a go-test.sh command is read as the go test gotestsum runs, whatever path names it"
+check "its --packages, its go test flags after --, and the variable before it" \
+  "$(is "$(py 'step = steps.Step(workflow="(a test case)", job="(a job)", name="(a step)",
+                  workdir="packages/envoy", script=sys.argv[1])
+command, = steps.commands_of(step, lambda step, text: "(not-run)")
+print(" ".join(command.packages), command.race, command.run, command.env)' \
+    "RACE_MEM_LIMIT_KB=1 ../../../.github/scripts/go-test.sh --race-memory --rerun-fails-max-failures 3 --jsonfile a.json --packages './a/ ./b/' -- -count=1 -race -run '^(TestOne)\$'")" \
+    "./a/ ./b/ True ^(TestOne)\$ {'RACE_MEM_LIMIT_KB': '1'}")"
 
 echo "case: a -run pattern keeps its quoting"
 line="GODEBUG=checkfinalizers=1 go test -run '^(TestOne|TestTwo)\$' ./pkg"
@@ -84,10 +92,10 @@ check "the text keeps the quotes the line wrote" \
 echo "case: what it leaves for the caller to refuse"
 check "a value needing the shell is left in place" \
   "$(is "$(command_of 'GOFLAGS=$EXTRA go test ./pkg')" 'GOFLAGS=$EXTRA go test ./pkg')"
-check "a wrapper GO_WRAPPERS does not name is left in place" \
+check "a command the reader does not read is left in place" \
   "$(is "$(command_of 'timeout 60 go test ./pkg')" "timeout 60 go test ./pkg")"
-check "a wrapper with no go command behind it is left in place" \
-  "$(is "$(command_of '../../.github/scripts/race_memory.py --help')" "../../.github/scripts/race_memory.py --help")"
+check "the memory sampler written before a go command is no wrapper of it: it is left in place" \
+  "$(is "$(command_of '../../.github/scripts/race_memory.py go test ./pkg')" "../../.github/scripts/race_memory.py go test ./pkg")"
 check "a bare assignment is left in place" "$(is "$(command_of 'NAME=value')" "NAME=value")"
 
 echo "case: the two steps whose lines this harness exists for are read as ci.yaml writes them"
@@ -98,8 +106,9 @@ lines = [step["run"].strip()
          for job in document["jobs"].values() for step in job["steps"] if "run" in step]
 print(sum(1 for line in lines
           for words, _ in [steps.go_command(line)]
-          if len(words) > 1 and words[0] == "go" and words[1] == "test"))' "$file")
-  check "$file holds a go test line this reader reads" "$(is "$found" "1")"
+          if (len(words) > 1 and words[0] == "go" and words[1] == "test")
+          or (words and words[0].rsplit("/", 1)[-1] in steps.GOTESTSUM_COMMANDS)))' "$file")
+  check "$file holds a go test or go-test.sh line this reader reads" "$(is "$found" "1")"
 done
 
 # Four steps of this repository carry a `-skip` (daemon-go's two, envoy-go's unit step and
@@ -296,6 +305,9 @@ jobs:
       - name: A gotestsum command
         run: gotestsum --format standard-verbose --jsonfile forms.json --packages "./internal/c/ ./internal/d/" -- -count=1 -race -tags e2e -run '^(TestOne)$' -skip '^(TestTwo)$'
         working-directory: packages/envoy
+      - name: A go-test.sh command
+        run: RACE_MEM_LIMIT_KB=8388608 ../../.github/scripts/go-test.sh --race-memory --rerun-fails-max-failures 3 --jsonfile forms-e.json --packages "./internal/e/ ./internal/f/" -- -count=1 -race -run '^(TestThree)$'
+        working-directory: packages/envoy
       - name: A package split between the legs
         run: |
           pattern=$(../../.github/scripts/go-test-split.sh ${{ matrix.leg }} 2 ./internal/split/)
@@ -355,6 +367,8 @@ check "a script a step runs is read through its lines, in the directory it moves
   "$(has "$read" "$job / A go test in a script | packages/envoy | ./internal/script/ |")"
 check "a gotestsum command is read as the go test it wraps: its --packages, and the flags after its --" \
   "$(has "$read" "$job / A gotestsum command | packages/envoy | ./internal/c/ ./internal/d/ | tags=e2e race=True run=^(TestOne)\$ skip=^(TestTwo)\$ split=False env=")"
+check "a go-test.sh command is read as the gotestsum command it runs, the variable before it in its environment" \
+  "$(has "$read" "$job / A go-test.sh command | packages/envoy | ./internal/e/ ./internal/f/ | tags= race=True run=^(TestThree)\$ skip= split=False env=RACE_MEM_LIMIT_KB=8388608")"
 check "a package go-test-split.sh splits between the legs is read as run whole, and marked a split" \
   "$(has "$read" "$job / A package split between the legs | packages/envoy | ./internal/split/ | tags= race=False run= skip= split=True env=")"
 check "a variable set before the command is part of the command's environment" \
@@ -394,4 +408,4 @@ print(" ".join(path for path in steps.documents()
 check "each workflow the step reader reads is among those reads${unread:+ (add it there and to that ci.yaml filter): $unread}" \
   "$(is "$unread" "")"
 
-summary "go_test_steps.py reads a go command behind the variables and wrapper a step writes"
+summary "go_test_steps.py reads a go command behind the variables a step writes"

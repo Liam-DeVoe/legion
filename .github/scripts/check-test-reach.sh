@@ -93,13 +93,14 @@
 # .github/scripts/go_test_steps.py, the reader go-test-step-expansion.py uses, in any Go module of
 # the tree: its packages, `./...` and `go list | grep -Ev` (piped into `xargs` or assigned first,
 # resolved here from the tree, the import paths the module's go.mod gives each directory), `for`
-# loops, `-tags`, `-race`, `-run`, `-skip`, `-exec`, a gotestsum command as the `go test` it wraps
-# (its `--packages`, and the `go test` flags after its `--`), a `-run` that
+# loops, `-tags`, `-race`, `-run`, `-skip`, `-exec`, a gotestsum command, and a
+# .github/scripts/go-test.sh command, as the `go test` it wraps (its `--packages`, and the `go
+# test` flags after its `--`), a `-run` that
 # .github/scripts/go-test-split.sh prints as the leg's share of packages its job runs whole, a
 # script the step runs whose lines the reader reads, and the scripts its AUDITED_SCRIPTS reads
 # (database-skips.sh, backend-count.sh and race-unit.sh, by their arguments); a `-run "$pattern"`
 # from .github/scripts/go-tagged-tests.sh is the alternation that script prints, read off the
-# source as it reads it, and race_memory.py is a wrapper. A script of TEST_BINARY_SCRIPTS (pmdoc's
+# source as it reads it. A script of TEST_BINARY_SCRIPTS (pmdoc's
 # differential.sh) is read by each `<binary> -test.run '<pattern>'` it runs, with the variables it
 # sets for that run. A test file is in a step's build when its constraint and its file name hold
 # for the step's GOOS and GOARCH, with `cgo`, the step's `-tags` and, under `-race`, `race`. A
