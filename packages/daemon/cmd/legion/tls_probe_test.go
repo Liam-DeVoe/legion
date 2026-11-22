@@ -18,6 +18,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -427,14 +428,14 @@ func TestTrimTLSDetailKeepsNoPartOfAURLItsBoundsFallInside(t *testing.T) {
 
 func TestTLSCommandClientClassifiesApplicationErrorBeforeTruncatingDetail(t *testing.T) {
 	response := strings.Repeat("x", tlsDetailLimit) + " invalid XML received " + strings.Repeat("y", tlsDetailLimit)
-	client := tlsCommandClient{
+	client := loggedStandIn(t, tlsCommandClient{
 		clientName:      "aws",
 		timeout:         tlsDefaultProbeTimeout,
 		applicationSeen: awsResponseSeen,
 		command: func(tlsSite) (string, []string, []string) {
 			return "sh", []string{"-c", `printf %s "$1" >&2; exit 255`, "sh", response}, nil
 		},
-	}
+	})
 
 	outcome := client.probe(context.Background(), controlTLSSite, tlsRunTerms{})
 
@@ -581,6 +582,7 @@ func TestImageFloorTLSClientsClassifyTheirMeasuredOutput(t *testing.T) {
 			client.command = func(tlsSite) (string, []string, []string) {
 				return "sh", []string{"-c", `printf %s "$1" >&2; exit "$2"`, "sh", testCase.stderr, testCase.exit}, nil
 			}
+			client = loggedStandIn(t, client)
 
 			if outcome := client.probe(context.Background(), controlTLSSite, tlsRunTerms{}); outcome.status != testCase.want {
 				t.Fatalf("%s probe = %+v, want status %q", testCase.client, outcome, testCase.want)
@@ -657,6 +659,7 @@ func TestImageTLSClientsReadAnHTTPErrorAfterTheHandshakeAsAnAcceptance(t *testin
 			command.command = func(tlsSite) (string, []string, []string) {
 				return "sh", []string{"-c", `printf %s "$1"; printf %s "$2" >&2; exit "$3"`, "sh", row.stdout, row.stderr, row.exit}, nil
 			}
+			command = loggedStandIn(t, command)
 			var client tlsClient = command
 			if row.client == "chromium" {
 				client = tlsChromiumClient{tlsCommandClient: command}
@@ -763,6 +766,7 @@ func TestImageTLSClientsRefuseTheFixtureChainAsThePublicSites(t *testing.T) {
 				client.command = func(tlsSite) (string, []string, []string) {
 					return "sh", []string{"-c", script, "sh", output, row.exit}, nil
 				}
+				client = loggedStandIn(t, client)
 				if outcome := client.probe(context.Background(), controlTLSSite, tlsRunTerms{}); outcome.status != tlsCertificateRefused || outcome.signatureFailed {
 					t.Fatalf("%s at the %s chain = %+v, want refused, no failed signature", row.client, site, outcome)
 				}
@@ -796,7 +800,7 @@ func TestTLSProbeCountsARefusalAtAPublicSiteOnlyWhereItNamesTheSitesChain(t *tes
 		client.command = func(tlsSite) (string, []string, []string) {
 			return "sh", []string{"-c", script, "sh", output, exit}, nil
 		}
-		return client
+		return loggedStandIn(t, client)
 	}
 	for _, row := range tlsRefusalRows {
 		for column, output := range map[string]string{"public": row.public, "fixture": row.fixture} {
@@ -863,6 +867,7 @@ func TestImageTLSClientsAtTheVendoredChains(t *testing.T) {
 		client.command = func(tlsSite) (string, []string, []string) {
 			return "sh", []string{"-c", script, "sh", output, exit}, nil
 		}
+		client = loggedStandIn(t, client)
 		outcome := client.probe(context.Background(), testTLSSite("", "vendored emSign"), tlsRunTerms{})
 		switch {
 		case afterHandshake && outcome.status == tlsCertificateRefused:
@@ -914,6 +919,7 @@ func TestTLSProbeFailsAClientWhoseStoreHoldsTheDistrustedRoot(t *testing.T) {
 		client.command = func(tlsSite) (string, []string, []string) {
 			return "sh", []string{"-c", `printf %s "$1" >&2; exit 1`, "sh", output}, nil
 		}
+		client = loggedStandIn(t, client)
 		if outcome := client.probe(context.Background(), emSign, tlsRunTerms{}); !outcome.signatureFailed {
 			t.Errorf("%s at the emSign chain = %+v, want a failed signature read from its output", name, outcome)
 		}
@@ -927,6 +933,7 @@ func TestTLSProbeFailsAClientWhoseStoreHoldsTheDistrustedRoot(t *testing.T) {
 		client.command = func(tlsSite) (string, []string, []string) {
 			return "sh", []string{"-c", `printf %s "$1" >&2; exit 1`, "sh", output}, nil
 		}
+		client = loggedStandIn(t, client)
 		if outcome := client.probe(context.Background(), emSign, tlsRunTerms{}); outcome.status != tlsCertificateRefused || outcome.signatureFailed {
 			t.Errorf("%s at the emSign chain = %+v, want an ordinary refusal: the rule cannot read its output", name, outcome)
 		}
@@ -1362,7 +1369,7 @@ func TestImageTLSProbeFailsAPodTrustSettingThatAcceptsTheEmSignChain(t *testing.
 						}
 						return "sh", []string{"-c", script, "sh", kind}, set
 					}
-					clients = append(clients, client)
+					clients = append(clients, loggedStandIn(t, client))
 				}
 				return clients
 			}
@@ -1471,6 +1478,7 @@ func TestImageOptionalTLSClientsClassifyTheirMeasuredOutput(t *testing.T) {
 			client.command = func(tlsSite) (string, []string, []string) {
 				return "sh", []string{"-c", `printf %s "$1"; printf %s "$2" >&2; exit "$3"`, "sh", testCase.stdout, testCase.stderr, testCase.exit}, nil
 			}
+			client = loggedStandIn(t, client)
 
 			if outcome := client.probe(context.Background(), controlTLSSite, tlsRunTerms{}); outcome.status != testCase.want {
 				t.Fatalf("%s probe = %+v, want status %q", testCase.client, outcome, testCase.want)
@@ -1490,13 +1498,13 @@ func TestOptionalTLSClientIsAbsentOffPATHAndHeldToTheChainsOnIt(t *testing.T) {
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	acceptingEverySite := func(program string) tlsClient {
-		return tlsOptionalClient{program: program, tlsCommandClient: tlsCommandClient{
+		return tlsOptionalClient{program: program, tlsCommandClient: loggedStandIn(t, tlsCommandClient{
 			clientName: "optional",
 			timeout:    tlsDefaultProbeTimeout,
 			command: func(tlsSite) (string, []string, []string) {
 				return program, []string{"-c", "exit 0"}, nil
 			},
-		}}
+		})}
 	}
 
 	sites := testTLSSites(t.TempDir())
@@ -1720,6 +1728,11 @@ func TestTLSProbeCurlReadsNoCurlrc(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(bin, "curl"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// The stand-in's line in record is its first act, and its limit is counted from that line
+	// (standInLog).
+	previous := tlsPositiveControlSpec
+	t.Cleanup(func() { tlsPositiveControlSpec = previous })
+	tlsPositiveControlSpec.limitClock = standInLogAt(record).clock
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	env := []string{"PATH=" + os.Getenv("PATH")}
 	// The stand-in curl accepts every site, the isolation control included, so the controls fail;
@@ -1800,9 +1813,15 @@ func TestPublicTLSSitesAreAskedOnlyWhereTheirPositiveControlAccepts(t *testing.T
 // A run the probe's deadline ended has no verdict, which fails nothing and leaves the chain unasked.
 func TestVendoredTLSSitesAreAskedOnlyWhereTheirPositiveControlGetsPastTheChain(t *testing.T) {
 	bin := t.TempDir()
+	// Every curl installed here first logs its run, and the positive controls' limit is counted
+	// from that line (standInLog).
+	curlRuns := standInLogAt(filepath.Join(t.TempDir(), "runs"))
+	previous := tlsPositiveControlSpec
+	t.Cleanup(func() { tlsPositiveControlSpec = previous })
+	tlsPositiveControlSpec.limitClock = curlRuns.clock
 	install := func(script string) {
 		t.Helper()
-		if err := os.WriteFile(filepath.Join(bin, "curl"), []byte(script), 0o755); err != nil {
+		if err := os.WriteFile(filepath.Join(bin, "curl"), []byte(logFirst(t, script, "curl", curlRuns)), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -1863,8 +1882,6 @@ func TestVendoredTLSSitesAreAskedOnlyWhereTheirPositiveControlGetsPastTheChain(t
 		return "#!/bin/sh\ncase \"$*\" in\n*" + pattern + "*) " + action + " ;;\n" + refusesTheControl + "esac\n" + pastTheChain
 	}
 	atTheChain, atTheIsolation := "emsign-ecc-root-ca-g3*"+tlsEmSignHost, "emsign-ecc-root-ca-g3*"+tlsControlHost
-	previous := tlsPositiveControlSpec.timeout
-	t.Cleanup(func() { tlsPositiveControlSpec.timeout = previous })
 	for _, row := range []struct{ name, script, want string }{
 		{name: "its limit ended the run at the chain", script: stalls(atTheChain, "exec sleep 30"),
 			want: "vendored emSign positive control at " + publicEmSignTLSSite.url + " was unavailable: its 300ms limit ended it after "},
@@ -1883,10 +1900,13 @@ func TestVendoredTLSSitesAreAskedOnlyWhereTheirPositiveControlGetsPastTheChain(t
 		})
 	}
 
+	// The probe's deadline passes once the run at the chain has logged its start
+	// (deadlineOnceLogged), not 300 ms from the probe's start, which a loaded machine can spend
+	// before that run's curl has started.
 	t.Run("the probe's deadline ended the run at the chain", func(t *testing.T) {
 		install(stalls(atTheChain, "exec sleep 30"))
 		tlsPositiveControlSpec.timeout = time.Minute
-		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+		ctx, cancel := deadlineOnceLogged(curlRuns, "curl "+publicEmSignTLSSite.url)
 		defer cancel()
 		sites, err := probeVendoredTLSSites(ctx, env, stateDir, testTLSSites(stateDir))
 		var noVerdict tlsNoVerdicts
@@ -2004,10 +2024,13 @@ func TestTLSProbeHoldsEachClientToItsSitesAndNamesEveryUnknown(t *testing.T) {
 
 // A TLS run the probe's deadline (--probe-budget) ends has no verdict, wherever it ran and whatever
 // it printed: the probe reads no output of a run it did not let finish. It fails nothing and gets
-// no second run, since the deadline has passed.
+// no second run, since the deadline has passed. The deadline falls once the AAA run has logged its
+// start (deadlineOnceLogged), so the emSign run before it has answered on any machine: a deadline
+// 200 ms from the probe's start can pass before a loaded machine has started the emSign run's shell.
 func TestTLSProbeRunCutByTheProbesDeadlineHasNoVerdict(t *testing.T) {
 	sites := testTLSSites(t.TempDir())[:2]
-	client := tlsCommandClient{
+	runs := standInLogAt(filepath.Join(t.TempDir(), "runs"))
+	client := loggedStandInTo(tlsCommandClient{
 		clientName: "curl",
 		timeout:    tlsDefaultProbeTimeout,
 		command: func(site tlsSite) (string, []string, []string) {
@@ -2016,8 +2039,8 @@ func TestTLSProbeRunCutByTheProbesDeadlineHasNoVerdict(t *testing.T) {
 			}
 			return "sh", []string{"-c", "exec sleep 30"}, nil
 		},
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	}, runs)
+	ctx, cancel := deadlineOnceLogged(runs, "curl AAA")
 	defer cancel()
 
 	observations, noVerdict, err := probeTLSClients(ctx, []tlsClient{client}, sites, nil)
@@ -2054,13 +2077,13 @@ func TestTLSCommandClientClassifiesOutputStreams(t *testing.T) {
 		{name: "reports another failure as unavailable", stderr: "network is unreachable", exit: "failure", want: tlsNetworkUnavailable},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
-			client := tlsCommandClient{
+			client := loggedStandIn(t, tlsCommandClient{
 				clientName: "generic",
 				timeout:    tlsDefaultProbeTimeout,
 				command: func(tlsSite) (string, []string, []string) {
 					return "sh", []string{"-c", `printf %s "$1"; printf %s "$2" >&2; test "$3" != failure`, "sh", testCase.stdout, testCase.stderr, testCase.exit}, nil
 				},
-			}
+			})
 
 			if outcome := client.probe(context.Background(), controlTLSSite, tlsRunTerms{}); outcome.status != testCase.want {
 				t.Fatalf("client.probe() = %+v, want status %q", outcome, testCase.want)
@@ -2080,13 +2103,13 @@ func TestTLSChromiumClientClassifiesNavigationResult(t *testing.T) {
 		{name: "reports another navigation failure as unavailable", stderr: "Page load failed: net::ERR_NAME_NOT_RESOLVED", want: tlsNetworkUnavailable},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
-			client := tlsChromiumClient{tlsCommandClient: tlsCommandClient{
+			client := tlsChromiumClient{tlsCommandClient: loggedStandIn(t, tlsCommandClient{
 				clientName: "chromium",
 				timeout:    tlsChromiumProbeTimeout,
 				command: func(tlsSite) (string, []string, []string) {
 					return "sh", []string{"-c", `printf %s "$1"; printf %s "$2" >&2`, "sh", testCase.stdout, testCase.stderr}, nil
 				},
-			}}
+			})}
 
 			outcome := client.probe(context.Background(), controlTLSSite, tlsRunTerms{})
 			if outcome.status != testCase.want {
@@ -2106,6 +2129,7 @@ func TestImageTLSChromiumClientHasColdStartHeadroom(t *testing.T) {
 	chromium.command = func(tlsSite) (string, []string, []string) {
 		return "sh", []string{"-c", "exec sleep 21"}, nil
 	}
+	chromium.tlsCommandClient = loggedStandIn(t, chromium.tlsCommandClient)
 
 	outcome := chromium.probe(context.Background(), controlTLSSite, tlsRunTerms{})
 	if outcome.status != tlsConnectionAccepted {
@@ -2158,11 +2182,13 @@ const (
 
 // shTLSClient is a command client named name with a limit of one second whose run at a site is sh
 // running script, as the constants above say, answer giving what it prints there and the status it
-// exits with. Each run first appends "<name> <site>" to dir/runs.
+// exits with. Each run first appends "<name> <site>" to dir/runs, and its limit is counted from
+// that line (standInLog).
 func shTLSClient(name, dir, script string, answer func(tlsSite) (string, int)) tlsCommandClient {
 	return tlsCommandClient{
 		clientName: name,
 		timeout:    time.Second,
+		limitClock: standInLogAt(filepath.Join(dir, "runs")).clock,
 		command: func(site tlsSite) (string, []string, []string) {
 			output, status := answer(site)
 			return "sh", []string{"-c", `printf '%s %s\n' "$0" "$1" >>"$2/runs"; ` + script, name, site.name, dir, output, strconv.Itoa(status)}, nil
@@ -2193,72 +2219,229 @@ func tlsRunsLogged(t *testing.T, dir string) []string {
 	return strings.Split(strings.TrimSuffix(string(raw), "\n"), "\n")
 }
 
-// tlsRunLogLines is how many runs the stand-ins sharing dir have logged (shTLSClient), and whether
-// the log could be read: a log not yet written holds none, and a read that fails says nothing.
-func tlsRunLogLines(dir string) (int, bool) {
-	raw, err := os.ReadFile(filepath.Join(dir, "runs"))
-	if errors.Is(err, os.ErrNotExist) {
-		return 0, true
-	}
-	return strings.Count(string(raw), "\n"), err == nil
-}
-
-// tlsStandInStart bounds the wait for a stand-in's log line (fromTheRunsLogLine,
-// deadlineAtTheFirstLogLine): longer than any loaded machine takes to start a shell, and only a
-// stand-in that never starts waits it out.
+// tlsStandInStart bounds the wait for a stand-in's log line (standInLog): longer than any loaded
+// machine takes to start a shell, and only a stand-in that never starts waits it out.
 const tlsStandInStart = time.Minute
 
-// fromTheRunsLogLine is the limit clock (tlsCommandClient.limitClock) of stand-ins that log to
-// dir/runs (shTLSClient): each run's limit, its real length, is counted from the moment the run's
-// own line is in the log, which is the stand-in's first act, and not from before its shell
-// starts, and then ends the run as the client's own limit does, with errTLSRunLimit. A loaded
-// machine can take longer than a stand-in's one-second limit to start a shell, and a limit that
-// counted that start would end a run that answers, or a run before it has logged itself; past its
-// log line, a stand-in that answers runs nothing but shell builtins. The probe runs one run at a
-// time, so a line past those the log held when the run began is that run's own. A read of the log
-// that fails changes nothing, and a run that logs nothing within tlsStandInStart has its limit
-// counted from then.
-func fromTheRunsLogLine(dir string) func(context.Context, time.Duration) (context.Context, context.CancelFunc) {
-	return func(ctx context.Context, limit time.Duration) (context.Context, context.CancelFunc) {
-		var before int
+// standInLog is a log every run of the stand-ins sharing it writes one line to as its first act
+// (shTLSClient, loggedStandIn, logFirst), and the limit clock (tlsCommandClient.limitClock and
+// tlsClientSpec.limitClock) that counts each such run's limit, at its real length, from the moment
+// the run's own line is in the log, and not from before its shell starts, then ends the run as the
+// client's own limit does, with errTLSRunLimit. A loaded machine can take longer than a
+// stand-in's limit to start a shell, and a limit that counted that start would end a run meant to
+// answer, or a run before it had logged itself. The probe runs one run at a time, so a line past
+// those the log held when a run began is that run's own. A read of the log that fails changes
+// nothing, and a run that logs nothing within tlsStandInStart has its limit counted from then.
+// The clock records each run's start: its line, and how long after the run began the line was
+// seen, which the run's elapsed time holds and its limit does not (startsOf).
+type standInLog struct {
+	path   string
+	mu     sync.Mutex
+	starts []standInStart
+}
+
+// standInStart is one run's line in a standInLog, and how long after the run asked for its limit
+// clock, just before its command started, the line was seen.
+type standInStart struct {
+	line  string
+	after time.Duration
+}
+
+// standInLogs holds the one standInLog of each log path (standInLogAt).
+var standInLogs sync.Map
+
+// standInLogAt is the standInLog of the log at path, which every client logging there shares.
+func standInLogAt(path string) *standInLog {
+	log, _ := standInLogs.LoadOrStore(path, &standInLog{path: path})
+	return log.(*standInLog)
+}
+
+// lines are the log's whole lines, and whether it could be read: a log not yet written holds none.
+func (l *standInLog) lines() ([]string, bool) {
+	raw, err := os.ReadFile(l.path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, true
+	}
+	if err != nil {
+		return nil, false
+	}
+	lines := strings.Split(string(raw), "\n")
+	return lines[:len(lines)-1], true
+}
+
+// clock is the log's limit clock, as standInLog says.
+func (l *standInLog) clock(ctx context.Context, limit time.Duration) (context.Context, context.CancelFunc) {
+	asked := time.Now()
+	var before int
+	testwait.Holds(tlsStandInStart, testwait.Poll, func() bool {
+		lines, read := l.lines()
+		before = len(lines)
+		return read
+	})
+	run, cancel := context.WithCancelCause(ctx)
+	go func() {
 		testwait.Holds(tlsStandInStart, testwait.Poll, func() bool {
-			n, read := tlsRunLogLines(dir)
-			before = n
-			return read
-		})
-		run, cancel := context.WithCancelCause(ctx)
-		go func() {
-			testwait.Holds(tlsStandInStart, testwait.Poll, func() bool {
-				n, read := tlsRunLogLines(dir)
-				return run.Err() != nil || read && n > before
-			})
-			limited := time.NewTimer(limit)
-			defer limited.Stop()
-			select {
-			case <-limited.C:
-				cancel(errTLSRunLimit)
-			case <-run.Done():
+			if lines, read := l.lines(); read && len(lines) > before {
+				l.mu.Lock()
+				l.starts = append(l.starts, standInStart{line: lines[before], after: time.Since(asked)})
+				l.mu.Unlock()
+				return true
 			}
-		}()
-		return run, func() { cancel(context.Canceled) }
+			return run.Err() != nil
+		})
+		limited := time.NewTimer(limit)
+		defer limited.Stop()
+		select {
+		case <-limited.C:
+			cancel(errTLSRunLimit)
+		case <-run.Done():
+		}
+	}()
+	return run, func() { cancel(context.Canceled) }
+}
+
+// startsOf is how long after its run began each of the first n runs that logged line was seen to
+// start, in the order they ran, waiting for the clock to have seen n of them.
+func (l *standInLog) startsOf(t *testing.T, line string, n int) []time.Duration {
+	t.Helper()
+	var after []time.Duration
+	if !testwait.Holds(tlsStandInStart, testwait.Poll, func() bool {
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		after = after[:0]
+		for _, start := range l.starts {
+			if start.line == line {
+				after = append(after, start.after)
+			}
+		}
+		return len(after) >= n
+	}) {
+		t.Fatalf("the stand-ins' log %s showed %d starts of %q, want %d", l.path, len(after), line, n)
+	}
+	return after[:n]
+}
+
+// loggedStandIn is c, whose every run is sh -c <script>, with each run first appending
+// "<client> <site>" to a log of its own, and its limit counted from that line (standInLog), as
+// shTLSClient's are.
+func loggedStandIn(t *testing.T, c tlsCommandClient) tlsCommandClient {
+	t.Helper()
+	return loggedStandInTo(c, standInLogAt(filepath.Join(t.TempDir(), "runs")))
+}
+
+// loggedStandInTo is loggedStandIn with log as the log. A stand-in whose run is no sh -c cannot
+// log its start first, and its run panics, naming it: a test built it wrong.
+func loggedStandInTo(c tlsCommandClient, log *standInLog) tlsCommandClient {
+	command := c.command
+	c.command = func(site tlsSite) (string, []string, []string) {
+		program, args, set := command(site)
+		if program != "sh" || len(args) < 2 || args[0] != "-c" {
+			panic(fmt.Sprintf("%s's stand-in at %s runs %s %q, not sh -c: it cannot log its start first", c.clientName, site.name, program, args))
+		}
+		args = slices.Clone(args)
+		args[1] = `printf '%s\n' "$LEGION_TLS_STANDIN_RUN" >>'` + log.path + `'; ` + args[1]
+		return program, args, append(slices.Clone(set), "LEGION_TLS_STANDIN_RUN="+c.clientName+" "+site.name)
+	}
+	c.limitClock = log.clock
+	return c
+}
+
+// logFirst is script, a stand-in program beginning #!/bin/sh, whose first act appends
+// "<name> <URL of the site it runs at>" (LEGION_TLS_URL, which the probe gives every run) to log.
+func logFirst(t *testing.T, script, name string, log *standInLog) string {
+	t.Helper()
+	body, ok := strings.CutPrefix(script, "#!/bin/sh\n")
+	if !ok {
+		t.Fatalf("the stand-in %q does not begin #!/bin/sh: it cannot log its start first", script)
+	}
+	return "#!/bin/sh\nprintf '%s\\n' \"" + name + " $LEGION_TLS_URL\" >>'" + log.path + "'\n" + body
+}
+
+// deadlineOnceLogged is a probe context that the probe's deadline ends once log holds line one
+// more time than it did when the context was made: at a moment of the run that line names, not at
+// a time a loaded machine can reach before that run's shell has started (deadlineOnceLoggedUnder).
+// Its cancel ends it with context.Canceled where the deadline has not come.
+func deadlineOnceLogged(log *standInLog, line string) (context.Context, context.CancelFunc) {
+	return deadlineOnceLoggedUnder(context.Background(), log, line)
+}
+
+// probeDeadlineOnceLogged puts in newProbeDeadline's place, until t ends, the deadline of a
+// `legion probe-image --probe-budget` run, whatever its budget: it passes once log holds line one
+// more time than it did when the probe began (deadlineOnceLoggedUnder).
+func probeDeadlineOnceLogged(t *testing.T, log *standInLog, line string) {
+	previous := newProbeDeadline
+	t.Cleanup(func() { newProbeDeadline = previous })
+	newProbeDeadline = func(ctx context.Context, _ time.Duration) (context.Context, context.CancelFunc) {
+		return deadlineOnceLoggedUnder(ctx, log, line)
 	}
 }
 
-// deadlineAtTheFirstLogLine is a probe context that the probe's deadline ends once the first run
-// of the stand-ins sharing dir has logged itself: it ends with the cause context.DeadlineExceeded,
-// which is how a run tells the probe's deadline from its own limit (tlsCommandClient.run), at a
-// moment of that run rather than at a time a loaded machine can reach before the run's shell has
-// started. Its cancel ends it with context.Canceled where the deadline has not come.
-func deadlineAtTheFirstLogLine(dir string) (context.Context, context.CancelFunc) {
-	ctx, cancel := context.WithCancelCause(context.Background())
+// deadlineOnceLoggedUnder is a factDeadline under parent that ends as a deadline does, its Err and
+// the cause of a context derived from it context.DeadlineExceeded, once log holds line one more
+// time than it did when it was made, and as parent ends where parent ends first: the probe reads
+// its deadline by Err in places, and a run tells it from its own limit by that cause
+// (tlsCommandClient.run). A read of the log that fails changes nothing, and a line that never
+// comes ends it after tlsStandInStart.
+func deadlineOnceLoggedUnder(parent context.Context, log *standInLog, line string) (context.Context, context.CancelFunc) {
+	deadline := &factDeadline{values: context.WithoutCancel(parent), done: make(chan struct{})}
+	var before int
+	testwait.Holds(tlsStandInStart, testwait.Poll, func() bool {
+		n, read := log.count(line)
+		before = n
+		return read
+	})
 	go func() {
 		testwait.Holds(tlsStandInStart, testwait.Poll, func() bool {
-			n, read := tlsRunLogLines(dir)
-			return ctx.Err() != nil || read && n > 0
+			n, read := log.count(line)
+			return parent.Err() != nil || deadline.Err() != nil || read && n > before
 		})
-		cancel(context.DeadlineExceeded)
+		if err := parent.Err(); err != nil {
+			deadline.end(err)
+		}
+		deadline.end(context.DeadlineExceeded)
 	}()
-	return ctx, func() { cancel(context.Canceled) }
+	return deadline, func() { deadline.end(context.Canceled) }
+}
+
+// count is how many times the log holds line, and whether it could be read.
+func (l *standInLog) count(line string) (int, bool) {
+	lines, read := l.lines()
+	n := 0
+	for _, logged := range lines {
+		if logged == line {
+			n++
+		}
+	}
+	return n, read
+}
+
+// factDeadline is a context that ends when end is first called, with that error as its Err and,
+// for a context derived from it, its cause. It carries its parent's values without its parent's
+// cancellation (values), so a derived context reads no cause but this one's end.
+type factDeadline struct {
+	values context.Context
+	done   chan struct{}
+	mu     sync.Mutex
+	err    error
+}
+
+func (c *factDeadline) Deadline() (time.Time, bool) { return time.Time{}, false }
+func (c *factDeadline) Done() <-chan struct{}       { return c.done }
+func (c *factDeadline) Value(key any) any           { return c.values.Value(key) }
+
+func (c *factDeadline) Err() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.err
+}
+
+func (c *factDeadline) end(err error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.err == nil {
+		c.err = err
+		close(c.done)
+	}
 }
 
 // timedTLSClient is a client that sums the time its runs at each site took, by the site's name.
@@ -2278,22 +2461,25 @@ func (c timedTLSClient) probe(ctx context.Context, site tlsSite, terms tlsRunTer
 // own limit ends that run, which has no verdict, and its one more run refuses the chain in that
 // client's own terms, so the probe passes. Each client is built as the probe builds it
 // (tlsClientSpec.build), from a copy of its spec whose program is a stand-in named by an absolute
-// path, so gh's and codegraph-node's own paths are replaced too, and whose limit is 300 ms. A
-// client whose shell waits on a child holding the output pipe returns within its limit, the stop's
-// grace and procgroup.WaitDelay, since its limit stops its whole process group. The positive
-// controls' curl gets no second run: its own limit fails the probe.
+// path, so gh's and codegraph-node's own paths are replaced too, and whose limit is 300 ms,
+// counted from the stand-in's own start (standInLog). A client whose shell waits on a child
+// holding the output pipe returns within its limit, the stop's grace and procgroup.WaitDelay,
+// counted from its start, since its limit stops its whole process group. The positive controls'
+// curl gets no second run: its own limit fails the probe.
 func TestTLSProbeRunsEveryImageClientAgainAfterItsLimitAtAReachedSite(t *testing.T) {
 	const limit = 300 * time.Millisecond
 	stubs, stateDir := t.TempDir(), t.TempDir()
-	// standIn writes an executable stand-in that runs firstRun on its first run of all, then exits
-	// 0 at the control and prints refusal on stderr and exits 1 at every other site.
+	stubRuns := standInLogAt(filepath.Join(stubs, "runs"))
+	// standIn writes an executable stand-in that logs its run first (logFirst), runs firstRun on
+	// its first run of all, then exits 0 at the control and prints refusal on stderr and exits 1
+	// at every other site.
 	standIn := func(name, firstRun, refusal string) string {
 		path := filepath.Join(stubs, name)
 		script := "#!/bin/sh\n" +
 			"if [ ! -e '" + path + ".ran' ]; then : >'" + path + ".ran'; " + firstRun + "; fi\n" +
 			"[ \"$LEGION_TLS_URL\" != '" + controlTLSSite.url + "' ] || exit 0\n" +
 			"echo '" + refusal + "' >&2\nexit 1\n"
-		if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		if err := os.WriteFile(path, []byte(logFirst(t, script, name, stubRuns)), 0o755); err != nil {
 			t.Fatal(err)
 		}
 		return path
@@ -2306,7 +2492,7 @@ func TestTLSProbeRunsEveryImageClientAgainAfterItsLimitAtAReachedSite(t *testing
 	}
 	clients := make([]tlsClient, 0, len(workerTLSClients))
 	for _, spec := range workerTLSClients {
-		spec.program, spec.timeout = standIn(spec.name, "exec sleep 30", refusalOf(spec)), limit
+		spec.program, spec.timeout, spec.limitClock = standIn(spec.name, "exec sleep 30", refusalOf(spec)), limit, stubRuns.clock
 		clients = append(clients, spec.build("omp", nil, stateDir))
 	}
 
@@ -2329,11 +2515,12 @@ func TestTLSProbeRunsEveryImageClientAgainAfterItsLimitAtAReachedSite(t *testing
 
 	t.Run("a shell waiting on a child that holds the output pipe", func(t *testing.T) {
 		spec := workerTLSClients[0]
-		spec.program, spec.timeout = standIn("held", "sleep 30 & wait", refusalOf(spec)), limit
+		spec.program, spec.timeout, spec.limitClock = standIn("held", "sleep 30 & wait", refusalOf(spec)), limit, stubRuns.clock
 		started := time.Now()
 		outcome := spec.build("omp", nil, stateDir).probe(context.Background(), emSignTLSSite, tlsRunTerms{reached: true})
-		if elapsed, bound := time.Since(started), limit+procgroup.StopGrace+procgroup.WaitDelay; outcome.status != tlsNoVerdict || elapsed >= bound {
-			t.Errorf("a run whose shell waits on a child holding its output = %+v after %s, want no verdict within %s", outcome, elapsed, bound)
+		elapsed := time.Since(started) - stubRuns.startsOf(t, "held "+emSignTLSSite.url, 1)[0]
+		if bound := limit + procgroup.StopGrace + procgroup.WaitDelay; outcome.status != tlsNoVerdict || elapsed >= bound {
+			t.Errorf("a run whose shell waits on a child holding its output = %+v %s after its start, want no verdict within %s", outcome, elapsed, bound)
 		}
 	})
 
@@ -2349,6 +2536,7 @@ func TestTLSProbeRunsEveryImageClientAgainAfterItsLimitAtAReachedSite(t *testing
 		previous := tlsPositiveControlSpec
 		t.Cleanup(func() { tlsPositiveControlSpec = previous })
 		tlsPositiveControlSpec.program, tlsPositiveControlSpec.timeout = path, limit
+		tlsPositiveControlSpec.limitClock = standInLogAt(path + ".runs").clock
 
 		err := probeTLSPositiveControls(context.Background(), nil, t.TempDir(), servedTLSSites())
 
@@ -2369,7 +2557,9 @@ func TestTLSProbeRunsEveryImageClientAgainAfterItsLimitAtAReachedSite(t *testing
 // hangs until the client's own limit ends the run (a blackhole): a public site is never counted
 // reached, so that run is unknown rather than one with no verdict. The control is the path main's
 // no-verdict exit is for: a run the probe's deadline cuts at that same public host has no verdict,
-// and the probe exits 75 naming it.
+// and the probe exits 75 naming it. That deadline passes once the run has logged its start
+// (probeDeadlineOnceLogged): a budget of seconds can pass, on a loaded machine, before the runs
+// ahead of it have started their shells.
 func TestProbeImagePassesWhenAPublicHostGoesDownAfterItsPositiveControl(t *testing.T) {
 	omp := imageOmp(t)
 	img := inImage(t, thisBinarysContract, omp)
@@ -2407,8 +2597,10 @@ func TestProbeImagePassesWhenAPublicHostGoesDownAfterItsPositiveControl(t *testi
 		})
 	}
 
-	cut := shTLSClient("node", t.TempDir(), `[ "$1" != "public emSign" ] || exec sleep 30; `+tlsAnswers, down)
+	dir := t.TempDir()
+	cut := shTLSClient("node", dir, `[ "$1" != "public emSign" ] || exec sleep 30; `+tlsAnswers, down)
 	cut.timeout = time.Minute
+	probeDeadlineOnceLogged(t, standInLogAt(filepath.Join(dir, "runs")), "node public emSign")
 	code, stdout, stderr := probeImageAt(theseTLSClients(cut), passingTLSPositiveControls, askedPublic, img.flags("--probe-budget", shortProbeBudget)...)
 	detail, ok := bootprobe.NoVerdict(stderr)
 	if code != bootprobe.NoVerdictExit || !ok || !strings.Contains(detail, "node public emSign: the probe's deadline ended it after ") || strings.Contains(stdout, bootprobe.OKPrefix) {
@@ -2468,11 +2660,14 @@ func TestTLSProbePassesALaterClientWhoseSlowFirstRunAtEmSignRefusesOnItsSecondRu
 // limit still has no verdict after its second run. Nothing failed, so `legion probe-image` exits
 // bootprobe.NoVerdictExit with the line the daemon reads, naming the client and the site, and
 // prints neither the OK line nor the failure's. The TLS run took its limit and two times its limit,
-// and less than that plus what the two stops can add (StopGrace and WaitDelay each).
+// and less than that plus what the two stops can add (StopGrace and WaitDelay each), from each
+// run's own start: each limit is counted from that start (standInLog), and the time a loaded
+// machine takes to start the shell is none of the run's.
 func TestTLSProbeExits75NamingAClientThatNeverAnswersAtAReachedSite(t *testing.T) {
 	omp := imageOmp(t)
 	img := inImage(t, thisBinarysContract, omp)
-	node := shTLSClient("node", t.TempDir(), tlsSleepsAtEmSign, nodeAnswer)
+	dir := t.TempDir()
+	node := shTLSClient("node", dir, tlsSleepsAtEmSign, nodeAnswer)
 	timed := timedTLSClient{tlsClient: node, spent: map[string]time.Duration{}}
 
 	code, stdout, stderr := probeImageWith(theseTLSClients(timed), passingTLSPositiveControls, img.flags()...)
@@ -2486,8 +2681,12 @@ func TestTLSProbeExits75NamingAClientThatNeverAnswersAtAReachedSite(t *testing.T
 	}
 	least := 3 * node.timeout
 	most := least + 2*(procgroup.StopGrace+procgroup.WaitDelay)
-	if spent := timed.spent[emSignTLSSite.name]; spent < least || spent >= most {
-		t.Errorf("node's emSign TLS run took %s, want at least %s and less than %s", spent, least, most)
+	spent := timed.spent[emSignTLSSite.name]
+	for _, start := range standInLogAt(filepath.Join(dir, "runs")).startsOf(t, "node emSign", 2) {
+		spent -= start
+	}
+	if spent < least || spent >= most {
+		t.Errorf("node's emSign TLS run took %s from its starts, want at least %s and less than %s", spent, least, most)
 	}
 }
 
@@ -2502,15 +2701,14 @@ func TestTLSProbeExits75NamingAClientThatNeverAnswersAtAReachedSite(t *testing.T
 // records which of the two fired first when it fires: such a run is unavailable too, and never one
 // with no verdict.
 //
-// Every stand-in's limit is counted from its own start (fromTheRunsLogLine): a loaded machine can
-// take longer than the one-second limit to start a shell, and a limit counted from before that
-// would end a run that answers, or the last row's run before its trap was set.
+// Every stand-in's limit is counted from its own start, as shTLSClient counts it (standInLog): a
+// loaded machine can take longer than the one-second limit to start a shell, and a limit counted
+// from before that would end a run that answers, or the last row's run before its trap was set.
 func TestTLSProbeFailsAClientWhoseLimitPassesAtASiteNoRunReached(t *testing.T) {
 	omp := imageOmp(t)
 	img := inImage(t, thisBinarysContract, omp)
 	dir := t.TempDir()
 	node := shTLSClient("node", dir, `[ "$1" != control ] || exec sleep 30; `+tlsAnswers, nodeAnswer)
-	node.limitClock = fromTheRunsLogLine(dir)
 	controlsCut := func(context.Context, []string, string, []tlsSite) error {
 		return tlsNoVerdicts{"emSign positive control at " + emSignTLSSite.url + ": the probe's deadline ended it after 0.1s: signal: terminated"}
 	}
@@ -2530,7 +2728,6 @@ func TestTLSProbeFailsAClientWhoseLimitPassesAtASiteNoRunReached(t *testing.T) {
 
 	dir = t.TempDir()
 	node = shTLSClient("node", dir, `[ "$1" != control ] || exec sleep 30; `+tlsAnswers, nodeAnswer)
-	node.limitClock = fromTheRunsLogLine(dir)
 	code, stdout, stderr = probeImageWith(theseTLSClients(node), passingTLSPositiveControls, img.flags()...)
 	detail, ok := bootprobe.NoVerdict(stderr)
 	if code != bootprobe.NoVerdictExit || !ok || !strings.HasPrefix(detail, "node control: its 2s limit ended it after ") || strings.Contains(stderr, "worker TLS probe failed") {
@@ -2545,7 +2742,6 @@ func TestTLSProbeFailsAClientWhoseLimitPassesAtASiteNoRunReached(t *testing.T) {
 	dir = t.TempDir()
 	vendoredHang := shTLSClient("aws", dir, `[ "$1" != "vendored emSign" ] || exec sleep 30; `+tlsAnswers, awsAnswer)
 	vendoredHang.applicationSeen = awsResponseSeen
-	vendoredHang.limitClock = fromTheRunsLogLine(dir)
 	code, stdout, stderr = probeImageWith(theseTLSClients(vendoredHang), passingTLSPositiveControls, img.flags()...)
 	detail, ok = bootprobe.NoVerdict(stderr)
 	if code != bootprobe.NoVerdictExit || !ok || !strings.HasPrefix(detail, "aws vendored emSign: its 2s limit ended it after ") || strings.Contains(stderr, "worker TLS probe failed") {
@@ -2555,12 +2751,10 @@ func TestTLSProbeFailsAClientWhoseLimitPassesAtASiteNoRunReached(t *testing.T) {
 	dir = t.TempDir()
 	aws := shTLSClient("aws", dir, tlsSleepsAtEmSign, awsAnswer)
 	aws.applicationSeen = awsResponseSeen
-	aws.limitClock = fromTheRunsLogLine(dir)
 	if _, noVerdict, err := probeTLSClients(context.Background(), []tlsClient{aws}, servedTLSSites(), nil); err == nil || !strings.Contains(err.Error(), "aws cannot verify refusal of the emSign chain: its 1s limit ended it after ") || len(noVerdict) != 0 {
 		t.Errorf("probeTLSClients() with emSign unreached = %v, runs with no verdict %q; want aws's emSign run to fail", err, noVerdict)
 	}
 	node = shTLSClient("node", dir, tlsAnswers, nodeAnswer)
-	node.limitClock = fromTheRunsLogLine(dir)
 	if _, noVerdict, err := probeTLSClients(context.Background(), []tlsClient{node, aws}, servedTLSSites(), nil); err != nil || len(noVerdict) != 1 || !strings.HasPrefix(noVerdict[0], "aws emSign: its 2s limit ended it after ") {
 		t.Errorf("probeTLSClients() with emSign reached by node's refusal = %v, runs with no verdict %q; want aws's emSign run alone with no verdict", err, noVerdict)
 	}
@@ -2571,16 +2765,18 @@ func TestTLSProbeFailsAClientWhoseLimitPassesAtASiteNoRunReached(t *testing.T) {
 	// and the trap exits 1 once it reads, from a pipe, that the deadline has passed. Inside the
 	// grace the trap starts no process and sleeps for no fixed time: one that slept 0.6 s in a
 	// /bin/sleep of its own was SIGKILLed at the grace's end on a loaded machine, which took that
-	// long to start it.
+	// long to start it. The deadline ends the probe's context as a real deadline does, its Err and
+	// the cause of the run's context context.DeadlineExceeded (factDeadline), so a run that read
+	// the probe's context once its stop was over, and not the cause its own context recorded when
+	// its limit fired, takes the deadline for what ended it, and fails the row.
 	dir = t.TempDir()
 	deadlinePassed := filepath.Join(dir, "deadline")
 	if err := syscall.Mkfifo(deadlinePassed, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	stopped := shTLSClient("node", dir, `trap ': >"$2/trapped"; read -r _ <"$2/deadline"; exit 1' TERM; /bin/sleep 30 & wait`, nodeAnswer)
-	stopped.limitClock = fromTheRunsLogLine(dir)
-	ctx, cancel := context.WithCancelCause(context.Background())
-	defer cancel(context.Canceled)
+	deadline := &factDeadline{values: context.Background(), done: make(chan struct{})}
+	defer deadline.end(context.Canceled)
 	go func() {
 		if !testwait.Holds(tlsStandInStart, testwait.Poll, func() bool {
 			_, err := os.Stat(filepath.Join(dir, "trapped"))
@@ -2588,7 +2784,7 @@ func TestTLSProbeFailsAClientWhoseLimitPassesAtASiteNoRunReached(t *testing.T) {
 		}) {
 			return
 		}
-		cancel(context.DeadlineExceeded)
+		deadline.end(context.DeadlineExceeded)
 		// The trap opens the pipe right after it marks its start, so this open, which waits for
 		// a reader, returns.
 		if told, err := os.OpenFile(deadlinePassed, os.O_WRONLY, 0); err == nil {
@@ -2596,9 +2792,9 @@ func TestTLSProbeFailsAClientWhoseLimitPassesAtASiteNoRunReached(t *testing.T) {
 			_ = told.Close()
 		}
 	}()
-	outcome := stopped.probe(ctx, controlTLSSite, tlsRunTerms{})
-	if ctx.Err() == nil {
-		t.Fatalf("the run returned %+v before the probe's deadline; the row needs the deadline to pass while the limit's stop is under way", outcome)
+	outcome := stopped.probe(deadline, controlTLSSite, tlsRunTerms{})
+	if err := deadline.Err(); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("the run returned %+v with the probe's context ended by %v, want its deadline passed; the row needs the deadline to pass while the limit's stop is under way", outcome, err)
 	}
 	if outcome.status != tlsNetworkUnavailable || !strings.HasPrefix(outcome.detail, "its 1s limit ended it after ") || !strings.HasSuffix(outcome.detail, ": exit status 1") {
 		t.Errorf("a run its 1s limit stopped, which exited after the probe's deadline = %+v, want unavailable naming its 1s limit", outcome)
@@ -2606,15 +2802,16 @@ func TestTLSProbeFailsAClientWhoseLimitPassesAtASiteNoRunReached(t *testing.T) {
 }
 
 // c-slow-probe-passes case (5): the positive controls keep their rule, so a control its own limit
-// ends fails the probe at once, with no second run: a pod with no egress fails here.
+// ends fails the probe at once, with no second run: a pod with no egress fails here. The curl
+// logs its run first, and its limit is counted from that line (standInLog).
 func TestTLSProbeFailsAPositiveControlThatPassesItsLimit(t *testing.T) {
 	omp := imageOmp(t)
 	img := inImage(t, thisBinarysContract, omp)
-	runs := filepath.Join(t.TempDir(), "runs")
-	img.install(t, "curl", "#!/bin/sh\nprintf '%s\\n' \"$LEGION_TLS_URL\" >>'"+runs+"'\nexec sleep 30\n")
-	previous := tlsPositiveControlSpec.timeout
-	t.Cleanup(func() { tlsPositiveControlSpec.timeout = previous })
-	tlsPositiveControlSpec.timeout = time.Second
+	runs := standInLogAt(filepath.Join(t.TempDir(), "runs"))
+	img.install(t, "curl", "#!/bin/sh\nprintf '%s\\n' \"$LEGION_TLS_URL\" >>'"+runs.path+"'\nexec sleep 30\n")
+	previous := tlsPositiveControlSpec
+	t.Cleanup(func() { tlsPositiveControlSpec = previous })
+	tlsPositiveControlSpec.timeout, tlsPositiveControlSpec.limitClock = time.Second, runs.clock
 
 	code, stdout, stderr := probeImageWith(passingImageTLSClients, probeTLSPositiveControls, img.flags()...)
 
@@ -2625,7 +2822,7 @@ func TestTLSProbeFailsAPositiveControlThatPassesItsLimit(t *testing.T) {
 	if _, ok := bootprobe.NoVerdict(stderr); ok {
 		t.Errorf("stderr %q carries the no-verdict line beside the failure", stderr)
 	}
-	raw, err := os.ReadFile(runs)
+	raw, err := os.ReadFile(runs.path)
 	if got := strings.Count(string(raw), emSignTLSSite.url+"\n"); err != nil || got != 1 {
 		t.Errorf("the emSign positive control ran %d times (%v), want once: %q", got, err, raw)
 	}
@@ -2659,7 +2856,11 @@ func TestTLSProbeTakesTheServedCopiesPositiveControlsVerdict(t *testing.T) {
 		t.Fatalf("probe-image with a served copy's control cut by the deadline = %d, stdout %q, stderr %q; want exit %d naming %q", code, stdout, stderr, bootprobe.NoVerdictExit, cut)
 	}
 
-	img.install(t, "curl", "#!/bin/sh\necho 'curl: (77) error setting certificate file: '\"$3\" >&2\nexit 77\n")
+	curlRuns := standInLogAt(filepath.Join(t.TempDir(), "runs"))
+	previous := tlsPositiveControlSpec
+	t.Cleanup(func() { tlsPositiveControlSpec = previous })
+	tlsPositiveControlSpec.limitClock = curlRuns.clock
+	img.install(t, "curl", logFirst(t, "#!/bin/sh\necho 'curl: (77) error setting certificate file: '\"$3\" >&2\nexit 77\n", "curl", curlRuns))
 	code, stdout, stderr = probeImageWithSites(passingImageTLSClients, passingTLSPositiveControls, probeVendoredTLSSites, unaskedPublicTLSSites, img.flags()...)
 	if want := "worker TLS probe cannot verify test chains: vendored emSign positive control at https://" + tlsEmSignHost + "/ was unavailable: exit status 77: curl: (77) error setting certificate file: "; code != 1 || !strings.Contains(stderr, want) || strings.Contains(stdout, bootprobe.OKPrefix) {
 		t.Fatalf("probe-image with a curl that cannot read its root = %d, stdout %q, stderr %q; want exit 1 naming %q", code, stdout, stderr, want)
@@ -2740,8 +2941,8 @@ func TestTLSProbeFailsWhenAFailureStandsBesideARunWithNoVerdict(t *testing.T) {
 // (TestTLSProbeFailsWhenAFailureStandsBesideARunWithNoVerdict).
 func TestTLSProbeFailsAnAcceptanceASignalEndedAtAPublicSite(t *testing.T) {
 	client := func(script string) tlsCommandClient {
-		return tlsCommandClient{clientName: "node", timeout: tlsDefaultProbeTimeout, applicationSeen: tlsFetchAnswer.MatchString,
-			command: func(tlsSite) (string, []string, []string) { return "sh", []string{"-c", script}, nil }}
+		return loggedStandIn(t, tlsCommandClient{clientName: "node", timeout: tlsDefaultProbeTimeout, applicationSeen: tlsFetchAnswer.MatchString,
+			command: func(tlsSite) (string, []string, []string) { return "sh", []string{"-c", script}, nil }})
 	}
 	signalled := client(`printf 'Error: HTTP 503\n' >&2; kill -9 $$`)
 	exited := client(`printf 'Error: HTTP 503\n' >&2; exit 1`)
@@ -2780,8 +2981,8 @@ func TestTLSProbeFailsAnAcceptanceASignalEndedAtAPublicSite(t *testing.T) {
 func TestTLSProbeFailsAChromiumAcceptanceASignalEndedAtAPublicSite(t *testing.T) {
 	const dom = `<html><head><meta name="color-scheme" content="light dark"></head><body><pre style="word-wrap: break-word; white-space: pre-wrap;">Your client successfully connected to the site. That's bad!` + "\n" + `</pre></body></html>`
 	chromium := func(script string) tlsClient {
-		return tlsChromiumClient{tlsCommandClient: tlsCommandClient{clientName: "chromium", timeout: tlsChromiumProbeTimeout, applicationSeen: chromiumHTTPAnswer,
-			command: func(tlsSite) (string, []string, []string) { return "sh", []string{"-c", script, "sh", dom}, nil }}}
+		return tlsChromiumClient{tlsCommandClient: loggedStandIn(t, tlsCommandClient{clientName: "chromium", timeout: tlsChromiumProbeTimeout, applicationSeen: chromiumHTTPAnswer,
+			command: func(tlsSite) (string, []string, []string) { return "sh", []string{"-c", script, "sh", dom}, nil }})}
 	}
 	dumpedThenKilled := chromium(`printf '%s' "$1"; kill -9 $$`)
 	refusedThenKilled := chromium(`echo 'Page load failed: net::ERR_CERT_AUTHORITY_INVALID' >&2; kill -9 $$`)
@@ -2841,6 +3042,7 @@ func TestTLSProbeFailsAnAnswered200ASignalEndedAtAPublicSite(t *testing.T) {
 				client.command = func(tlsSite) (string, []string, []string) {
 					return "sh", []string{"-c", row.script, "sh", answered[name]}, nil
 				}
+				client = loggedStandIn(t, client)
 				observations, noVerdict, err := probeTLSClients(context.Background(), []tlsClient{client}, []tlsSite{publicEmSignTLSSite}, nil)
 				if len(observations) != 1 || observations[0].status != row.status || len(noVerdict) != 0 {
 					t.Fatalf("probeTLSClients() observed %+v, runs with no verdict %q; want one run, %s", observations, noVerdict, row.status)
@@ -2903,7 +3105,10 @@ func TestTLSProbeReadsAKilledRunThatPrintedAnAnswerAsAccepted(t *testing.T) {
 // c-slow-probe-passes case (9): the TLS line of a run its own limit ended says so, with the limit,
 // the second run's two times the first, and how long the run took; the line of a run a signal
 // ended before its limit names the signal; a run that exited on its own keeps the detail it always
-// had. Each detail then carries what the run printed and its error.
+// had. Each detail then carries what the run printed and its error. Each run's limit is counted
+// from its own start (standInLog), so its time is read from the line less that start, which a
+// loaded machine can stretch and the limit does not count; the line prints tenths of a second, so
+// each bound allows half a tenth.
 func TestTLSProbeLineNamesWhatEndedARunAndAfterHowLong(t *testing.T) {
 	omp := imageOmp(t)
 	img := inImage(t, thisBinarysContract, omp)
@@ -2923,21 +3128,25 @@ func TestTLSProbeLineNamesWhatEndedARunAndAfterHowLong(t *testing.T) {
 		return elapsed, err == nil
 	}
 	bound := (procgroup.StopGrace + procgroup.WaitDelay).Seconds()
+	const halfATenth = 0.05
+	runs := standInLogAt(filepath.Join(dir, "runs"))
 	emSign := tlsLines(stdout, "node", emSignTLSSite.name)
 	if len(emSign) != 2 {
 		t.Fatalf("node's emSign lines = %q, want two; stdout %q, stderr %q", emSign, stdout, stderr)
 	}
+	nodeStarts := runs.startsOf(t, "node emSign", 2)
 	for i, limit := range []float64{1, 2} {
 		form := regexp.MustCompile(`^probe-image: TLS client node emSign: no verdict \(its ` + strconv.FormatFloat(limit, 'f', -1, 64) + `s limit ended it after ([0-9]+\.[0-9])s: signal: terminated\)$`)
-		if elapsed, ok := seconds(emSign[i], form); !ok || elapsed < limit || elapsed >= limit+bound {
-			t.Errorf("node's emSign line %d = %q, want it to name its %gs limit and a time from %gs to less than %gs", i+1, emSign[i], limit, limit, limit+bound)
+		elapsed, ok := seconds(emSign[i], form)
+		if ran := elapsed - nodeStarts[i].Seconds(); !ok || ran < limit-halfATenth || ran >= limit+bound+halfATenth {
+			t.Errorf("node's emSign line %d = %q, started %s into its run, want it to name its %gs limit and a time from %gs to less than %gs after that start", i+1, emSign[i], nodeStarts[i], limit, limit, limit+bound)
 		}
 	}
 	signal := regexp.MustCompile(`^probe-image: TLS client aws emSign: unavailable \(signal: killed ended it after ([0-9]+\.[0-9])s, before its 1s limit: signal: killed\)$`)
 	if lines := tlsLines(stdout, "aws", emSignTLSSite.name); len(lines) != 1 {
 		t.Errorf("aws's emSign lines = %q, want one", lines)
-	} else if elapsed, ok := seconds(lines[0], signal); !ok || elapsed >= 1 {
-		t.Errorf("aws's emSign line = %q, want it to name the signal and a time under its 1s limit", lines[0])
+	} else if elapsed, ok := seconds(lines[0], signal); !ok || elapsed-runs.startsOf(t, "aws emSign", 1)[0].Seconds() >= 1+halfATenth {
+		t.Errorf("aws's emSign line = %q, want it to name the signal and a time under its 1s limit after its start", lines[0])
 	}
 	if lines := tlsLines(stdout, "node", aaaTLSSite.name); len(lines) != 1 || lines[0] != "probe-image: TLS client node AAA: refused ("+trimTLSDetail("exit status 1: "+nodeTLSRefusal)+")" {
 		t.Errorf("node's AAA lines = %q, want the refusal's detail as a run that exited has always had it", lines)
@@ -2949,8 +3158,8 @@ func TestTLSProbeLineNamesWhatEndedARunAndAfterHowLong(t *testing.T) {
 // control run, and its line names a 2s limit where the first named 1s. A run the probe's deadline
 // ended gets no second run, nor does any run after it, which never starts.
 //
-// Each limit is counted from the stand-in's own start (fromTheRunsLogLine), and the deadline falls
-// once aws's emSign run has logged itself (deadlineAtTheFirstLogLine): a loaded machine took 1.2 s
+// Each limit is counted from the stand-in's own start, as shTLSClient counts it (standInLog), and
+// the deadline falls once aws's emSign run has logged itself (deadlineOnceLogged): a loaded machine took 1.2 s
 // to start node's shell at emSign, whose one-second limit then ended a run that answers, and longer
 // than the subtest's 300 ms deadline to start aws's, which the deadline ended before it had logged
 // itself. Each limit still ends its run as the client's own does, after its whole length, so a run
@@ -2960,7 +3169,6 @@ func TestTLSProbeRunsARunWithNoVerdictAgainAfterEveryOtherRunAtTwiceItsLimit(t *
 	aws := shTLSClient("aws", dir, tlsSleepsAtEmSign, awsAnswer)
 	aws.applicationSeen = awsResponseSeen
 	node := shTLSClient("node", dir, tlsAnswers, nodeAnswer)
-	aws.limitClock, node.limitClock = fromTheRunsLogLine(dir), fromTheRunsLogLine(dir)
 
 	observations, noVerdict, err := probeTLSClients(context.Background(), []tlsClient{aws, node}, servedTLSSites(), compromisedTLSSites())
 
@@ -2986,8 +3194,7 @@ func TestTLSProbeRunsARunWithNoVerdictAgainAfterEveryOtherRunAtTwiceItsLimit(t *
 		dir := t.TempDir()
 		aws := shTLSClient("aws", dir, tlsSleepsAtEmSign, awsAnswer)
 		node := shTLSClient("node", dir, tlsAnswers, nodeAnswer)
-		aws.limitClock, node.limitClock = fromTheRunsLogLine(dir), fromTheRunsLogLine(dir)
-		ctx, cancel := deadlineAtTheFirstLogLine(dir)
+		ctx, cancel := deadlineOnceLogged(standInLogAt(filepath.Join(dir, "runs")), "aws emSign")
 		defer cancel()
 
 		observations, noVerdict, err := probeTLSClients(ctx, []tlsClient{aws, node}, servedTLSSites(), compromisedTLSSites())
@@ -3010,7 +3217,7 @@ func TestTLSProbeRunsARunWithNoVerdictAgainAfterEveryOtherRunAtTwiceItsLimit(t *
 // context runLimit gives a run ends limit after the call, with the cause errTLSRunLimit, which is
 // how the run tells its limit from the probe's deadline. The stand-ins of
 // TestTLSProbeRunsARunWithNoVerdictAgainAfterEveryOtherRunAtTwiceItsLimit count theirs from their
-// own start instead (fromTheRunsLogLine), and this holds the clock they stand beside.
+// own start instead (standInLog), and this holds the clock they stand beside.
 func TestATLSRunsOwnLimitIsCountedFromBeforeItsCommandStarts(t *testing.T) {
 	const limit = 7 * time.Second
 	before := time.Now()
@@ -3034,14 +3241,19 @@ func TestATLSRunsOwnLimitIsCountedFromBeforeItsCommandStarts(t *testing.T) {
 
 // A failure seen before the probe's deadline stands, also inside a step that returns after it: the
 // emSign positive control is refused at once, and the AAA control, slow, is cut by the deadline,
-// which leaves that run with no verdict and the emSign failure deciding the probe.
+// which leaves that run with no verdict and the emSign failure deciding the probe. The curl logs
+// its run first; its limit is counted from that line (standInLog), and the probe's deadline passes
+// once the AAA control's run has logged it (probeDeadlineOnceLogged), not at a budget of seconds
+// a loaded machine can spend before the emSign control's curl has answered.
 func TestTLSProbeKeepsAFailureSeenBeforeTheDeadline(t *testing.T) {
 	omp := imageOmp(t)
 	img := inImage(t, thisBinarysContract, omp)
-	img.install(t, "curl", "#!/bin/sh\n[ \"$LEGION_TLS_URL\" != '"+aaaTLSSite.url+"' ] || exec sleep 30\necho 'curl: (60) SSL certificate problem: unable to get local issuer certificate' >&2\nexit 60\n")
-	previous := tlsPositiveControlSpec.timeout
-	t.Cleanup(func() { tlsPositiveControlSpec.timeout = previous })
-	tlsPositiveControlSpec.timeout = time.Minute
+	curlRuns := standInLogAt(filepath.Join(t.TempDir(), "runs"))
+	img.install(t, "curl", logFirst(t, "#!/bin/sh\n[ \"$LEGION_TLS_URL\" != '"+aaaTLSSite.url+"' ] || exec sleep 30\necho 'curl: (60) SSL certificate problem: unable to get local issuer certificate' >&2\nexit 60\n", "curl", curlRuns))
+	previous := tlsPositiveControlSpec
+	t.Cleanup(func() { tlsPositiveControlSpec = previous })
+	tlsPositiveControlSpec.timeout, tlsPositiveControlSpec.limitClock = time.Minute, curlRuns.clock
+	probeDeadlineOnceLogged(t, curlRuns, "curl "+aaaTLSSite.url)
 
 	code, stdout, stderr := probeImageWith(passingImageTLSClients, probeTLSPositiveControls, img.flags("--probe-budget", shortProbeBudget)...)
 

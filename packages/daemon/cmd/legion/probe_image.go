@@ -165,7 +165,7 @@ func runProbeImage(ctx context.Context, f *probeImageFlags, args []string, stdou
 	}
 	if f.probeBudget > 0 {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, f.probeBudget)
+		ctx, cancel = newProbeDeadline(ctx, f.probeBudget)
 		defer cancel()
 	}
 	if f.roleNamespaces != "" {
@@ -435,4 +435,12 @@ func checkRoleOverlays(ctx context.Context, entries []roleOverlays, check func(v
 		}
 	}
 	return 0, noVerdict
+}
+
+// newProbeDeadline is the context the probe runs under once --probe-budget gives it a budget:
+// ctx, ended with context.DeadlineExceeded once budget has passed. A test puts its own in place,
+// to end the probe at a moment of a stand-in's run rather than at a time a loaded machine can
+// reach before that run's shell has started (tls_probe_test.go's deadlineOnceLogged).
+var newProbeDeadline = func(ctx context.Context, budget time.Duration) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(ctx, budget)
 }
