@@ -22,7 +22,7 @@ import {
   userHeaders,
 } from "./api";
 import { seedWholeIssue, type WholeIssueSeed } from "./issue-layout-seed";
-import { asPlanner, HEAD_SHA, pause, recorderActor } from "./issue-layout-seed-support";
+import { asPlanner, HEAD_SHA, pause, readTree, recorderActor } from "./issue-layout-seed-support";
 import { OPEN_QUESTION_BLOCK_ID, requirementText } from "./issue-layout-seed-text";
 import { issuePage, presetCount, presetRow } from "./issue-page";
 import type { Gate } from "./issue-page-t-tree";
@@ -44,9 +44,8 @@ import type { ApiRequest } from "./traffic";
  * or overtaken - and a node reserved for its author, and the marks, the overtaken lines, the
  * counts and the Settle act the new issue page draws for them
  * (`web/src/features/issue-page/node-states/`). It reuses the readers and writers the other
- * `e2e/issue-page-*.ts` files export, and none of them changes for it. It holds its own copies of
- * two that `e2e/issue-page-w.ts` keeps private: `treeReadAs` repeats the page-and-merge loop of
- * its `requestedTreeRead`, and `postAs` mirrors its `write`.
+ * `e2e/issue-page-*.ts` files export, and none of them changes for it. It holds its own copy of
+ * one that `e2e/issue-page-w.ts` keeps private: `postAs` mirrors its `write`.
  *
  * - **The writers** `writeNodeState` and `settleNodeApi` send one request each, as a person,
  *   through the server's node state routes (`packages/envoy/internal/dispatch/api/node_state.go`):
@@ -133,39 +132,6 @@ export async function settleNodeApi(
 // ---------------------------------------------------------------------------------------------
 // The tree read, as one reader gets it.
 // ---------------------------------------------------------------------------------------------
-
-/** Issue `key`'s tree read with no view as `login` gets it, every page of it in order, merged
- *  into one answer. */
-export async function treeReadAs(key: string, login = "alice"): Promise<IssueTreeRead> {
-  const headers = await userHeaders(login);
-  const pageAt = async (cursor: string | null): Promise<IssueTreeRead> => {
-    const path = routeUrl(
-      "/api/v1/issues/{key}/tree",
-      { key },
-      cursor === null ? undefined : { cursor }
-    );
-    const response = await fetch(new URL(path, baseUrlOf()), { headers });
-    if (!response.ok) {
-      throw new Error(
-        `GET ${path} as ${login} failed: ${response.status} ${await response.text()}`
-      );
-    }
-    return (await response.json()) as IssueTreeRead;
-  };
-  const first = await pageAt(null);
-  const pages = [first];
-  for (let cursor = first.cursor; cursor !== null; ) {
-    const next = await pageAt(cursor);
-    pages.push(next);
-    cursor = next.cursor;
-  }
-  return {
-    ...first,
-    cursor: null,
-    nodes: pages.flatMap((one) => one.nodes ?? []),
-    tuples: pages.flatMap((one) => one.tuples ?? []),
-  };
-}
 
 /** The reads `treeIdOf` names a node by - the issue read and the asks read - as `login` reads
  *  them, so a row names each node by the id the page draws it under. */
@@ -459,7 +425,7 @@ export async function seedNodeStates(whole: WholeIssueSeed): Promise<NodeStateSe
   );
 
   const before = await readUntil(
-    () => treeReadAs(key),
+    () => readTree(key, null),
     (read) =>
       (read.nodes ?? []).some((node) => blockIdOfNode(node) === SHAPING_DECISION_ID) &&
       (read.nodes ?? []).some((node) => node.text.includes(STATEMENT_9_WORDS)),
@@ -509,7 +475,7 @@ export async function seedNodeStates(whole: WholeIssueSeed): Promise<NodeStateSe
   for (const name of PROPOSED_NODES) await writeNodeState(key, addresses[name], "proposed");
   for (const name of OVERTAKEN_NODES) await writeNodeState(key, addresses[name], "overtaken");
 
-  const answer = await treeReadAs(key);
+  const answer = await readTree(key, null);
   const stateOf = (id: string) => answer.nodes?.find((one) => one.id === id)?.state;
   for (const name of PROPOSED_NODES) {
     expect(stateOf(nodes[name].id), `the tree read does not answer ${name} proposed`).toBe(

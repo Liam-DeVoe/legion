@@ -93,9 +93,8 @@ export function useSettleIssue(): string | undefined {
  * since the tree read's subscription hears no read but the tree's and its views' own
  * (`subscribeTreeFreshness` in `tree-read/tree-read.ts`), and another issue's coverage is no
  * query of the page's. The write is one of the issue the tree is drawn for (`issue`), whatever
- * issue its path names, since the subscription holds for the writes of its own issue alone:
- * while it is out no read of the tree or of its views is sent, and each asked for meanwhile is
- * read once when it settles, before this callback runs.
+ * issue its path names, since the subscription holds for the writes of its own issue alone;
+ * `subscribeTreeFreshness` says what it holds while the write is out.
  * A refusal reads nothing again.
  */
 export function useSettle(key: string, reference: string, landed: () => void) {

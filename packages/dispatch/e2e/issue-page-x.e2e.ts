@@ -17,6 +17,7 @@ import { treeIdOf } from "../web/src/features/issue-page/tree-read/tree-nodes";
 import { parseNodeReference } from "../web/src/features/refs/routes";
 import { wordsOf as readingWords } from "../web/src/features/refs/tree-fragment";
 import { seedWholeIssue } from "./issue-layout-seed";
+import { readTree } from "./issue-layout-seed-support";
 import { gotoIssue, issuePage, issueRead, openDetails, phase } from "./issue-page";
 import {
   DESKTOP,
@@ -94,7 +95,6 @@ import {
   type TreeItem,
   treeIdReads,
   treeItemsDrawn,
-  treeReadAs,
 } from "./issue-page-x";
 import { type Browser, expect, type Locator, type Page, type Route, test } from "./test";
 import { type ApiRequests, expectLoadSettled, watchApiRequests } from "./traffic";
@@ -1210,7 +1210,7 @@ test("a node reserved for its author is on its author's page and on nobody else'
     const seeded = await seedAuthorOnly();
     const key = seeded.whole.key;
     const plain = presetPath(key, "conversation");
-    const hers = await treeReadAs(key, "alice");
+    const hers = await readTree(key, null);
     expect(hers.converted, "the seeded issue's tree read does not answer converted").toBe(true);
     const reserved = new Map(
       RESERVED_NODES.map((name) => [

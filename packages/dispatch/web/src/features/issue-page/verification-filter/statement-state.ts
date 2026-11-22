@@ -174,8 +174,8 @@ export function verificationReading({
  */
 function carriesCheck(node: TreeNode, checks: readonly CheckReading[]): boolean {
   // A proposed statement carries no check, and a proposed check, or one at or under an
-  // overtaken node, covers no statement. The coverage read's count below still counts a proposed
-  // check: leaving it out there is the server's.
+  // overtaken node, covers no statement. The coverage read's count below leaves out a proposed
+  // check as well, since it serves nothing yet (`queueServingBlockCounts` in `coverage.go`).
   if (outOfCounts(node)) return false;
   checks = inCounts(checks);
   return checks.length > 0 || (node.counts?.checks ?? 0) > 0;
