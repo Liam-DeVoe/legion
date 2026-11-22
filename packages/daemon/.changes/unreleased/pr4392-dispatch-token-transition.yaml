@@ -20,12 +20,13 @@ body: |-
   log line (`waitingOnThePodNotWaitedFor`) names a refused claim with a session that had not
   answered, whether or not it records the round, as having lost its unpushed work, and a gone
   pod's message on the issue names such a claim that records the round.
-  When the daemon replaces the pod through the refused claim, it writes one message on the issue.
-  The message names each member of the round that had not answered, and it says that no role
-  process ran in the pod. When the daemon replaces the pod through the process of another claim,
-  it reads the issue workspace for such a claim before the replacement, as it does for a claim
-  that the round passed over. The message on the issue names the claim if that read found work or
-  failed.
+  When the daemon replaces the pod through the refused claim, its message on the issue names each
+  member of the round that had not answered, but not a member with no session whose launch waits
+  on the pod. The message says that no role process ran in the pod. When no member is left to
+  name, the daemon writes no message. When the daemon replaces the pod through the process of
+  another claim, it reads the issue workspace for such a claim before the replacement, as it does
+  for a claim that the round passed over. The message on the issue names the claim if that read
+  found work or failed.
   Each launch that carries the transition token is logged at Warn. `legion state --json`
   gains `dispatchCredential` under the setting: the daemon's session, the launches since the boot
   that carried the transition token with the time of the last one, and

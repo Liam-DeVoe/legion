@@ -225,28 +225,27 @@ func TestPodUpdateGoesThroughAProcessASecondClaimStartsWhileTheFirstWaits(t *tes
 }
 
 // replacedThroughAProcessBesideAWaitingClaim carries a round to its replacement through the
-// tester's process, beside the implementer, whose process died in the pod and whose relaunch the
-// runtime refused for want of the pod's round (diesRefused): a member of the round with a session
-// whose launch waits on the pod (awaitsRoundPod), which has not answered and has no process to
-// answer with. The round waits on no answer of it (waitingClaims) and passes over no claim, so it
-// ends on the tester's answer. work is what a read of the issue's workspace finds. notWaited is
-// each other claim of the issue, a claim with a session that the round neither asks nor waits for
-// and that does not answer it: a failed claim. It holds that the pod is replaced once, through the
-// tester's process, and that the replacement's one line names the roles of notWaited under
-// notWaitedFor and the implementer under waitingOnThePodNotWaitedFor, and it returns the rig and
-// that line.
-func replacedThroughAProcessBesideAWaitingClaim(t *testing.T, work runtime.WorkspaceWork, notWaited ...podUpdateRole) (*podUpdateRig, map[string]any) {
+// tester's process, beside waiting, whose process died in the pod and whose relaunch the runtime
+// refused for want of the pod's round (diesRefused): a member of the round with a session whose
+// launch waits on the pod (awaitsRoundPod), which has not answered and has no process to answer
+// with. The round waits on no answer of it (waitingClaims) and passes over no claim, so it ends on
+// the tester's answer. work is what a read of the issue's workspace finds. notWaited is each other
+// claim of the issue, a claim with a session that the round neither asks nor waits for and that
+// does not answer it: a failed claim. It holds that the pod is replaced once, through the tester's
+// process, and that the replacement's one line names the roles of notWaited under notWaitedFor and
+// waiting under waitingOnThePodNotWaitedFor, and it returns the rig and that line.
+func replacedThroughAProcessBesideAWaitingClaim(t *testing.T, work runtime.WorkspaceWork, waiting claim.Role, notWaited ...podUpdateRole) (*podUpdateRig, map[string]any) {
 	t.Helper()
-	rig := newPodUpdateRig(t, append([]podUpdateRole{readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester)}, notWaited...)...)
+	rig := newPodUpdateRig(t, append([]podUpdateRole{readyWorker(waiting), readyWorker(claim.RoleTester)}, notWaited...)...)
 	tester := rig.tokens[claim.RoleTester]
 	rig.rt.ScriptWorkspaceWork(podUpdateIssue, work)
 	rig.drifts(podUpdateExchangeDrift)
-	rig.refuseUntilReplaced(claim.RoleImplementer)
-	rig.diesRefused(claim.RoleImplementer)
+	rig.refuseUntilReplaced(waiting)
+	rig.diesRefused(waiting)
 
 	rig.tick()
 	rig.awaitAsked(claim.RoleTester, podUpdateRound)
-	rig.awaitRound(claim.RoleImplementer, podUpdateRound)
+	rig.awaitRound(waiting, podUpdateRound)
 	rig.signal(claim.RoleTester, "c0ffee")
 	replaced := rig.awaitReplacement(1, "once the tester answered")
 	if got := replaced[0].Pod; got.Claim != tester || podOf(got.Locator) != podUpdatePod {
@@ -263,7 +262,7 @@ func replacedThroughAProcessBesideAWaitingClaim(t *testing.T, work runtime.Works
 		roles[i] = role.role
 	}
 	wantField(t, line, "notWaitedFor", roles...)
-	wantField(t, line, "waitingOnThePodNotWaitedFor", claim.RoleImplementer)
+	wantField(t, line, "waitingOnThePodNotWaitedFor", waiting)
 	return rig, line
 }
 
@@ -296,7 +295,7 @@ func wantReadThroughTheTester(t *testing.T, rig *podUpdateRig, line map[string]a
 // made no read, and the issue was written nothing.
 func TestPodUpdateReadsTheWorkspaceForAWaitingClaimBesideAProcess(t *testing.T) {
 	rig, line := replacedThroughAProcessBesideAWaitingClaim(t,
-		runtime.WorkspaceWork{Head: passedOverHead, Commits: []string{passedOverCommit}, Count: 1})
+		runtime.WorkspaceWork{Head: passedOverHead, Commits: []string{passedOverCommit}, Count: 1}, claim.RoleImplementer)
 	wantReadThroughTheTester(t, rig, line, "found work")
 	messages := rig.messages()
 	if len(messages) != 1 {
@@ -319,32 +318,37 @@ func TestPodUpdateReadsTheWorkspaceForAWaitingClaimBesideAProcess(t *testing.T) 
 // The negative control is #4392 at a4cdff2799: the line named the read as not made, since the
 // round passed over no claim.
 func TestPodUpdateWritesNothingWhereTheReadForAWaitingClaimFindsNoWork(t *testing.T) {
-	rig, line := replacedThroughAProcessBesideAWaitingClaim(t, runtime.WorkspaceWork{Head: passedOverHead})
+	rig, line := replacedThroughAProcessBesideAWaitingClaim(t, runtime.WorkspaceWork{Head: passedOverHead}, claim.RoleImplementer)
 	wantReadThroughTheTester(t, rig, line, "found no work")
 	if messages := rig.messages(); len(messages) != 0 {
 		t.Errorf("the issue was written %q, want nothing: the read found no work", messages)
 	}
 }
 
-// Beside the waiting implementer, the planner failed: a claim with a session that the round
-// neither asks nor waits for (notWaitedFor). The replacement through the tester's process reads the
-// workspace, the read finds work, and the one message on the issue names each of the two once, in
-// the group's order: the implementer, then the planner. The implementer is a waiting member
-// (lostWaitingClaims) and the planner a claim the round did not wait for, so a message that named
-// the one kind after the other would name the planner first.
+// The waiting member is the planner, and beside it two claims failed, the implementer and the
+// reviewer: claims with a session that the round neither asks nor waits for (notWaitedFor). The
+// group is read in the order of the claims' tokens, which end in the role, so the implementer comes
+// before the planner and the reviewer after it. The replacement through the tester's process reads
+// the workspace, the read finds work, and the one message on the issue names each of the three
+// once, in the group's order: the implementer, the planner, the reviewer. A list that named the
+// claims the round did not wait for and then the waiting members, or the waiting members first,
+// would name the planner last or first.
 //
-// The control is the message's list built as the claims the round did not wait for and then the
-// waiting members: this test then fails, and its message names the planner first.
+// The controls are the message's list built as either of those two lists joined: this test then
+// fails, and its message names the planner last, or first.
 func TestPodUpdateNamesEachClaimItDidNotWaitForInTheGroupsOrder(t *testing.T) {
+	failed := func(role claim.Role) podUpdateRole {
+		return podUpdateRole{role: role, state: supervise.StateFailed, session: true, contract: readyWorker(role).contract}
+	}
 	rig, line := replacedThroughAProcessBesideAWaitingClaim(t,
 		runtime.WorkspaceWork{Head: passedOverHead, Commits: []string{passedOverCommit}, Count: 1},
-		podUpdateRole{role: claim.RolePlanner, state: supervise.StateFailed, session: true, contract: readyWorker(claim.RolePlanner).contract})
+		claim.RolePlanner, failed(claim.RoleImplementer), failed(claim.RoleReviewer))
 	wantReadThroughTheTester(t, rig, line, "found work")
 	messages := rig.messages()
 	if len(messages) != 1 {
 		t.Fatalf("the issue was written %d messages, want one: %q", len(messages), messages)
 	}
-	if want := toldNotWaitedForRoles + "implementer (launching), planner (failed)."; !strings.Contains(messages[0], want) {
+	if want := toldNotWaitedForRoles + "implementer (failed), planner (launching), reviewer (failed)."; !strings.Contains(messages[0], want) {
 		t.Errorf("the message does not say %q, which names each claim once, in the group's order:\n%s", want, messages[0])
 	}
 }
@@ -410,6 +414,84 @@ func TestPodUpdateNamesNoPassedOverClaimThatAnsweredWhileItsMachineDecides(t *te
 	}
 	wantReadThroughTheTester(t, rig, lines[0], "found work")
 	wantField(t, lines[0], "notWaitedFor", claim.RoleImplementer)
+	if messages := rig.messages(); len(messages) != 0 {
+		t.Errorf("the issue was written %q, want nothing: the implementer answered the round, and no other claim lost work", messages)
+	}
+}
+
+// The implementer answered the round in the pod, and then its process died there and the runtime
+// refused its relaunch for want of the pod's round (diesRefused): a member of the round with a
+// session whose launch waits on the pod, and that answered. The round passed over no claim. The
+// implementer's retry of its launch is in its decision while the sweep decides the replacement:
+// the runtime holds that retry inside Resume (holdNextResume), and the machine has published the
+// claim with its answer. The replacement's decision reads a claim whose machine is deciding as one
+// that has not answered (roundGroup's mask), so the implementer is a waiting member that had not
+// answered, as the line names it under waitingOnThePodNotWaitedFor. The read's gate reads the
+// claims as the decision does, so the read is due, as for a claim the round passed over that
+// answered while its machine was deciding: it is made through the tester and finds work. The
+// message on the issue reads the claims unmasked (noticeGroup): the implementer answered, so the
+// issue is written nothing.
+//
+// The negative control is #4392 at e88e162d96fe: the gate read the waiting members unmasked, so the
+// line named the implementer under waitingOnThePodNotWaitedFor and said that no read was made
+// because no such member had not answered.
+func TestPodUpdateReadsTheWorkspaceForAWaitingMemberThatAnsweredWhileItsMachineDecides(t *testing.T) {
+	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
+	token, tester := rig.tokens[claim.RoleImplementer], rig.tokens[claim.RoleTester]
+	rig.rt.ScriptWorkspaceWork(podUpdateIssue, runtime.WorkspaceWork{Head: passedOverHead, Commits: []string{passedOverCommit}, Count: 1})
+	rig.drifts(podUpdateExchangeDrift)
+
+	rig.tick()
+	rig.awaitAsked(claim.RoleImplementer, podUpdateRound)
+	rig.awaitAsked(claim.RoleTester, podUpdateRound)
+	rig.signal(claim.RoleImplementer, "c0ffee")
+	rig.refuseUntilReplaced(claim.RoleImplementer)
+	rig.diesRefused(claim.RoleImplementer)
+	if c := rig.claimOf(claim.RoleImplementer); c.UpdateSignalledAt == nil {
+		t.Fatalf("the refused implementer is %+v, want its answer to the round standing", c)
+	}
+	rig.signal(claim.RoleTester, "c0ffee")
+	rig.settleAll()
+	if n := len(rig.replacements()); n != 0 {
+		t.Fatalf("the pod was replaced %d times before the sweep the test holds the implementer's retry at, want none", n)
+	}
+
+	holding, release := rig.holdNextResume(claim.RoleImplementer, podUpdateReplacementPod)
+	retried := make(chan int, 1)
+	go func() { retried <- rig.clock.fire(podRoundRetry) }()
+	select {
+	case <-holding:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the implementer's retry of its launch did not reach Resume")
+	}
+	m, _ := rig.sup.Machine(token)
+	if view := m.View().Claim; m.Deciding() == nil || view.UpdateSignalledAt == nil || view.Locator != nil || podOf(view.AwaitsPod) != podUpdatePod {
+		t.Fatalf("the implementer's machine decides %v and publishes %+v, want it deciding with its answer published and its launch waiting on pod %s",
+			m.Deciding(), view, podUpdatePod)
+	}
+	rig.tick()
+	release()
+	select {
+	case fired := <-retried:
+		if fired != 1 {
+			t.Fatalf("%d retries of a refused launch were armed, want the implementer's one", fired)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the implementer's retry did not end once its Resume was let go")
+	}
+
+	replaced := rig.replacements()
+	if len(replaced) != 1 || replaced[0].Pod.Claim != tester || podOf(replaced[0].Pod.Locator) != podUpdatePod {
+		t.Fatalf("ReplacePod was asked %+v at the sweep, want once, through the tester's process in pod %s", replaced, podUpdatePod)
+	}
+	rig.awaitClaim(claim.RoleTester, "the round's end", func(c supervise.Claim) bool { return c.UpdateRound == "" })
+	lines := loggedLines(t, rig.logs.String(), podUpdateReplacedLine)
+	if len(lines) != 1 {
+		t.Fatalf("the replacement was logged %+v, want one line", lines)
+	}
+	wantReadThroughTheTester(t, rig, lines[0], "found work")
+	wantField(t, lines[0], "notWaitedFor")
+	wantField(t, lines[0], "waitingOnThePodNotWaitedFor", claim.RoleImplementer)
 	if messages := rig.messages(); len(messages) != 0 {
 		t.Errorf("the issue was written %q, want nothing: the implementer answered the round, and no other claim lost work", messages)
 	}
