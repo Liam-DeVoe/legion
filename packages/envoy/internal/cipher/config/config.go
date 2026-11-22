@@ -870,14 +870,17 @@ type Config struct {
 	// parted by whitespace or commas, each the unpadded base64url of its 32 bytes and refused by its
 	// place in the list, never its text: every write of the /v1/nats-hold routes must be signed by
 	// one of them, and so must every row the auth service reads. It is the one list a hold record
-	// verifies against: the operator signs only with the newest key, and a retired key stays in the
-	// list, verify-only, while any stored hold row, record, log entry, record delete or cutover row
-	// it signed remains, since a record whose key leaves the list reads as unknown and a journal
-	// that does then refuses every released restore. Each signature names its key's id
-	// (signedrecord.KeyID), which such a refusal names; infra/README.md gives the rotation's steps
-	// and the read that shows a key's records gone. BROKER_NATS_HOLD_POOL_SIZE is the
-	// connections of the hold read's own Postgres pool, which it uses rather than the broker's, so
-	// a slow hold read takes no connection a secret request waits on.
+	// and a records-only copy (internal/bus/kvrecords) verify against: the operator signs only with
+	// the newest key and destroys the old private key at a rotation, since the broker takes any
+	// write a listed key signs. A record whose key leaves the list reads as unknown, and a journal
+	// that does then refuses every released restore; the log and the journals are kept, and no route
+	// deletes them, so a retired key stays in the list, verify-only, until the hand repair deletes
+	// every stored hold row, record, log entry, record delete and cutover row it signed. Each
+	// signature names its key's id (signedrecord.KeyID), which such a refusal names;
+	// infra/README.md gives the rotation's steps, the read of what a key signed, and the hand repair
+	// (its step 4). BROKER_NATS_HOLD_POOL_SIZE is the connections of the hold read's own Postgres
+	// pool, which it uses rather than the broker's, so a slow hold read takes no connection a secret
+	// request waits on.
 	NATS NATSCallout
 	// BROKER_LEASE_SECONDS: an enrollment's lease. A session renews it while it runs; one whose
 	// lease runs out is no longer enrolled and its calls are refused. Time while no broker was

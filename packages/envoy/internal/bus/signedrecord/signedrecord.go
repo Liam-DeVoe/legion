@@ -67,16 +67,18 @@ func KeyID(key ed25519.PublicKey) string {
 // keyIDBytes is how many bytes of a key's SHA-256 its id holds.
 const keyIDBytes = 8
 
-// UnlistedKeyError is a signature whose key id names no key of the list it was verified against:
-// a record signed by a key since removed from the list, or by a key never in it. It carries the id,
-// which holds no key material, and is ErrBadSignature too.
+// UnlistedKeyError is a signature whose key id, in the exact form KeyID writes, names no key of
+// the list it was verified against: a record signed by a key since removed from the list, or by a
+// key never in it. It carries the id, which holds no key material, and is ErrBadSignature too. An
+// id in any other form is a signature that does not decode, never this error, so a reader that
+// suggests putting a key back in the list suggests it only for an id some key could have.
 type UnlistedKeyError struct {
 	KeyID string
 }
 
-// Error names the key id.
+// Error names the key id and says no listed key has it.
 func (e *UnlistedKeyError) Error() string {
-	return fmt.Sprintf("%v: signed by key %s, which is not in the list", ErrBadSignature, e.KeyID)
+	return fmt.Sprintf("%v: signed by key id %s, which no listed key has", ErrBadSignature, e.KeyID)
 }
 
 // Unwrap is ErrBadSignature.
@@ -208,8 +210,9 @@ func Sign(key ed25519.PrivateKey, lines []string) (string, error) {
 // *UnlistedKeyError, carrying the id, when no listed key has it, and ErrBadSignature naming the id
 // when that key did not sign these lines. A sig with no key id, as Sign wrote before signatures
 // named their key, is verified by trying each listed key, and refused saying it was signed with no
-// key id when none verifies it. A sig that does not decode, its key id included, is refused naming
-// no part of it, since a database writer chooses that text.
+// key id when none verifies it. The id and the signature are read only in the one text Sign writes
+// for them (decodeExact); a sig in any other text does not decode, and is refused naming no part of
+// it, since a database writer chooses that text.
 func Verify(keys []ed25519.PublicKey, sig string, lines []string) error {
 	if sig == "" {
 		return ErrNoSignature
@@ -222,8 +225,12 @@ func Verify(keys []ed25519.PublicKey, sig string, lines []string) error {
 	if !named {
 		encoded = sig
 	}
-	raw, err := base64.RawURLEncoding.DecodeString(encoded)
-	if err != nil || len(raw) != ed25519.SignatureSize || (named && !isKeyID(kid)) {
+	raw, ok := decodeExact(encoded, ed25519.SignatureSize)
+	if named {
+		_, idOK := decodeExact(kid, keyIDBytes)
+		ok = ok && idOK
+	}
+	if !ok {
 		return fmt.Errorf("%w: the signature does not decode", ErrBadSignature)
 	}
 	listed := false
@@ -245,10 +252,15 @@ func Verify(keys []ed25519.PublicKey, sig string, lines []string) error {
 	return fmt.Errorf("%w: key %s did not sign these lines", ErrBadSignature, kid)
 }
 
-// isKeyID reports whether s is a key id as KeyID writes it: the unpadded base64url of 8 bytes.
-func isKeyID(s string) bool {
+// decodeExact decodes s as the unpadded base64url of exactly n bytes, read only in the one text
+// that encodes them: of exactly their encoded length, with zero spare bits (Strict), and with no
+// line break, which Go's decoder skips even in Strict mode, and which the length then leaves short.
+func decodeExact(s string, n int) ([]byte, bool) {
+	if len(s) != base64.RawURLEncoding.EncodedLen(n) {
+		return nil, false
+	}
 	decoded, err := base64.RawURLEncoding.Strict().DecodeString(s)
-	return err == nil && len(decoded) == keyIDBytes
+	return decoded, err == nil && len(decoded) == n
 }
 
 // ParsePublicKeys reads a list of the operator's public keys from the text of setting: entries
@@ -280,12 +292,13 @@ func ParsePublicKeys(setting, raw string) ([]ed25519.PublicKey, error) {
 // again below the old history's, so an old row at a higher gen verifies too, but was signed before
 // it. After a point-in-time restore the old history's later rows were signed after the restored
 // row, so the check catches them only once the floor accepts a new move signed more than
-// SignedAtSkew after the old history's latest row. A signing time later than the reader's clock
-// plus SignedAtSkew (a row stored before the hold's routes judged signing times, or a reader whose
-// clock jumped back) moves the time later gens are judged against no further than that, so it
-// cannot hold a correct clock back (NotBackdated). It lives as long as its reader's process: a
-// reader that starts again starts with no floor, which is the residual the hold's design states.
-// The zero Floor has accepted nothing, so it accepts any gen; it is safe for concurrent use.
+// SignedAtSkew after the old history's latest row. While the latest signing time is later than the
+// reader's clock plus SignedAtSkew (a row stored before the hold's routes judged signing times, or
+// a reader whose clock jumped back), a later gen is judged against the reader's clock itself, not
+// that time, so it cannot hold a correct clock back (NotBackdated). It lives as long as its
+// reader's process: a reader that starts again starts with no floor, which is the residual the
+// hold's design states. The zero Floor has accepted nothing, so it accepts any gen; it is safe for
+// concurrent use.
 type Floor struct {
 	mu       sync.Mutex
 	gen      uint64
