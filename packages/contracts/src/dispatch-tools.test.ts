@@ -1332,6 +1332,20 @@ describe("dispatchToolSpecs", () => {
     expect(rows.map(([name]) => [name, uploadTypeFrom(name)])).toEqual(rows);
   });
 
+  // A name is the writer's own argument, and AskGate's gate reads it on the session's own thread
+  // (uploadIsDocument), so reading it takes time in step with its length. At 30d7caaa the
+  // trailing-digit pattern was not anchored at its start (CodeQL js/polynomial-redos), and a name
+  // of 256,000 ".0" parts took 11 s, against 2 ms at e5e5e945. A long tail of digit parts is
+  // still cut whole.
+  test("reads a name of many digit parts in time in step with its length", () => {
+    const started = performance.now();
+    expect(uploadTypeFrom(`${".0".repeat(256_000)}x`)).toBe("name");
+    expect(uploadTypeFrom(`rows.jsonl${".1".repeat(256_000)}`)).toBe("name");
+    expect(uploadTypeFrom(`Plan v1${".2".repeat(256_000)}`)).toBe("path");
+    expect(uploadTypeFrom(`notes.md${".3".repeat(256_000)}`)).toBe("markdown");
+    expect(performance.now() - started).toBeLessThan(1_000);
+  }, 60_000);
+
   // The rule is what --help prints, so it holds for both kinds of name: the stored text for any
   // name, and --path for a name that is not Markdown.
   test("the stored-text rule names a way out for both kinds of name", () => {
