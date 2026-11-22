@@ -5200,6 +5200,41 @@ case_result "a symbol its file holds only inside a longer word, TesterVerdictReq
     "citation-our-code: f-our-1 cites .*TesterVerdictRequire([^d]|$)" \
     "$(fixture_run "$dir" --citations)"
 
+# 176. A local text tool the machine ends by a signal while finish reads the verdict is never
+# read as a verdict (test round 46, the architect's class of round 46: every local text tool's
+# status is read where it runs). finish runs in the gate's own shell after the mode's
+# subshell, where bound_mode's functions do not stand, so its tools run bare: at 919871f2 a
+# grep killed in `grep -qxF "PASS $family" "$REPORTED"` read as no PASS, and the honest
+# fixture's --citations ended 'FAIL citation-our-code: it reported no verdict, so its code
+# crashed', exit 1; and the awk of declared_assertions killed there left no assertion
+# declared, and every assertion the mode had passed failed as one the table does not
+# declare, '6 of 6 assertions failed', exit 1. The case puts first on PATH, in turn, a grep
+# that kills its own process with SIGKILL when it is asked for the line 'PASS
+# citation-our-code', and an awk that does so when it is given declared_assertions'
+# program, and runs --citations over the honest fixture with each; each must end exit 2,
+# cannot run, every assertion it leaves of the kind environment, its last line naming the
+# tool and signal 9, and never a FAIL.
+for tool in grep awk; do
+    dir="$(fresh "finish-$tool-killed")"
+    mkdir -p "$dir/finish-bin"
+    case "$tool" in
+    grep) condition='[ "$1" = -qxF ] && [ "$2" = "PASS citation-our-code" ]' ;;
+    awk) condition='case "$*" in *'"'"'mode == "self-test"'"'"'*) true ;; *) false ;; esac' ;;
+    esac
+    {
+        printf '#!/usr/bin/env bash\n'
+        printf '# A %s the machine ends by SIGKILL while finish reads the verdict.\n' "$tool"
+        printf '%s && kill -9 $$\n' "$condition"
+        printf 'exec %q "$@"\n' "$(command -v "$tool")"
+    } >"$dir/finish-bin/$tool"
+    chmod +x "$dir/finish-bin/$tool"
+    finish_start="$EPOCHSECONDS"
+    out="$(PATH="$dir/finish-bin:$PATH" fixture_run "$dir" --citations)"
+    bound_case "the $tool of finish, ended by SIGKILL while it reads the verdict of an honest --citations, makes it cannot run, of the kind environment, naming $tool and the signal, and fails nothing" \
+        "^check\\.sh cannot run --citations: .*$tool.*signal 9 \\(SIGKILL\\)" \
+        "$out" "$((EPOCHSECONDS - finish_start))" 150
+done
+
 # ==== the summary of check.test.sh begins below this line, where cases_copy cuts it ====
 # The summary, by the three endings and their precedence (check.sh's header): run_ending
 # reads every case this file counted, the ones that could not run among them, and this
