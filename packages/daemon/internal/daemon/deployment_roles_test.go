@@ -656,9 +656,9 @@ func newSliceFourRig(t *testing.T, below string) *sliceFourRig {
 
 // storeOfSliceFour is a database of this test's own carrying every embedded migration whose version
 // is below the one whose name ends below, applied by hand in version order (applyMigrationsByHand):
-// with deploymentRolesMigration, the schema slice 4 leaves; with planRolesMigration
-// (plan_roles_test.go), the schema of the release before a plan could define a role. It answers the
-// store, its URL and the version of the migration whose name ends below.
+// with deploymentRolesMigration, the schema of the release before a deployment could define a role;
+// with planRolesMigration (plan_roles_test.go), the schema of the release before a plan could
+// define one. It answers the store, its URL and the version of the migration whose name ends below.
 func storeOfSliceFour(t *testing.T, below string) (*store.Store, string, int) {
 	t.Helper()
 	dsn := testdb.Database(t, "legion_slice_four")
