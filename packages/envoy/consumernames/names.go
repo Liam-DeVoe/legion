@@ -528,13 +528,16 @@ func (n *Names) Replace(ctx context.Context, sel Selection, start uint64, create
 }
 
 // launch creates sel's open operation's candidate and publishes it. No name is sent to the
-// server's create twice: each retry retires the candidate it tried and reserves a fresh one. A
-// create whose outcome is unknown is settled with an info: a candidate the server holds is
-// adopted, and one it does not is retired, with a fresh candidate tried once in its place, by
-// start sequence. At the stream's max_consumers the retired names the server holds are deleted
-// and a fresh candidate tried, then a replace's predecessor, whose start is saved; a family that
-// cannot delete (Config.NoDelete) is answered the cap at once. A refusal the server answered leaves
-// the operation open for Step 0.
+// server's create twice: each retry reserves a fresh candidate. A create whose outcome is unknown
+// is settled with an info: a candidate the server holds is adopted, and one it does not is
+// retired, kept named while its create can still land (rereserve), with a fresh candidate tried
+// once in its place, by start sequence. At the stream's max_consumers the retired names the server
+// holds are deleted and those it does not hold dropped (settleRetired), and a fresh candidate tried
+// in place of the refused one, then a replace's predecessor, whose start is saved; a family that
+// cannot delete (Config.NoDelete) is answered the cap at once. A candidate the server refused at
+// the cap is not retired: the server answered its create, so it names no consumer, now or later,
+// and a key whose every call meets the cap keeps a record of one size. A refusal the server
+// answered leaves the operation open for Step 0.
 func (n *Names) launch(ctx context.Context, sel Selection, create CreateFunc, operation Operation) (Selection, error) {
 	predecessorDeleted, retried := false, false
 	for attempt := 0; ; attempt++ {
@@ -545,12 +548,15 @@ func (n *Names) launch(ctx context.Context, sel Selection, create CreateFunc, op
 		case err == nil:
 			return n.publish(ctx, sel, info, operation, OutcomeOK)
 		case errors.Is(err, ErrConsumerLimit):
+			// The server answered the create, so the candidate is no consumer, now or later: the
+			// fresh one takes its place in the operation, and it is not retired.
+			record := sel.Record.clone()
 			switch {
 			case n.cfg.NoDelete:
 				n.observe(operation, OutcomeLimit)
 				return sel, stepError(sel.Logical, operation, op.Candidate, err)
 			case attempt == 0:
-				n.deleteRetiredHeld(ctx, sel)
+				record = n.settleRetired(ctx, sel.Logical, record, true)
 			case op.Kind == OpReplace && op.Old != "" && !predecessorDeleted:
 				if err := n.deleteOwned(ctx, sel.Logical, op.Old); err != nil {
 					n.observe(operation, OutcomeError)
@@ -561,7 +567,7 @@ func (n *Names) launch(ctx context.Context, sel Selection, create CreateFunc, op
 				n.observe(operation, OutcomeLimit)
 				return sel, stepError(sel.Logical, operation, op.Candidate, err)
 			}
-			next, err := n.rereserve(ctx, sel, op.Native)
+			next, err := n.reserveFresh(ctx, sel, record, op.Native)
 			if err != nil {
 				n.observeErr(operation, err)
 				return next, err
@@ -617,13 +623,23 @@ func (n *Names) boundedCreate(ctx context.Context, create CreateFunc, op Op, sta
 	return create(ctx, op.Candidate, start)
 }
 
-// rereserve retires sel's open operation's candidate and reserves a fresh one, keeping native as
-// the operation's native policy, then runs Config.Reserved on it. The retired candidate's create
-// may still be in flight, so it is kept named until its bound has passed (abandonCandidate).
+// rereserve retires sel's open operation's candidate, whose create may still be in flight, and
+// reserves a fresh one, keeping native as the operation's native policy, then runs Config.Reserved
+// on it. The retired candidate is kept named until its create can no longer land
+// (abandonCandidate). The write also drops each retired name the server no longer holds, by
+// DropRetired's rule (settleRetired), so a key whose every call retires a candidate (Step 0's
+// settlement of the operation the call before left open, at a full cap or under a create the
+// server keeps refusing) names only those that can still land, and each call reads only those.
 func (n *Names) rereserve(ctx context.Context, sel Selection, native Native) (Selection, error) {
-	op := sel.Record.Op
-	record := n.abandonCandidate(sel.Record.clone(), *op)
-	retry := *op
+	record := n.settleRetired(ctx, sel.Logical, sel.Record.clone(), false)
+	return n.reserveFresh(ctx, sel, n.abandonCandidate(record, *sel.Record.Op), native)
+}
+
+// reserveFresh writes record, sel's record as its caller settled it, with a fresh candidate in
+// place of sel's open operation's, keeping native as the operation's native policy, reserved now
+// by this process under its own create bound, then runs Config.Reserved on it.
+func (n *Names) reserveFresh(ctx context.Context, sel Selection, record Record, native Native) (Selection, error) {
+	retry := *sel.Record.Op
 	retry.Candidate, retry.Native, retry.ReservedAt, retry.Owner, retry.CreateWithin = FreshName(n.cfg.Prefix(sel.Logical)), native, n.cfg.Now(), n.cfg.Owner, n.cfg.CreateBound
 	record.Op = &retry
 	next, err := n.write(ctx, sel, record)
@@ -730,13 +746,31 @@ func (n *Names) publish(ctx context.Context, sel Selection, info *jetstream.Cons
 	return next, nil
 }
 
-// deleteRetiredHeld deletes the retired names of sel that the server holds, to free their slots.
-func (n *Names) deleteRetiredHeld(ctx context.Context, sel Selection) {
-	for _, name := range sel.Record.Retired {
-		if _, err := n.info(ctx, sel.Logical, name); err == nil {
-			n.observeErr(OperationCleanup, n.cfg.Server.Delete(ctx, name))
+// settleRetired is record, logical's, with each retired name the server does not hold dropped by
+// DropRetired's rule (an abandoned candidate read absent stays until its create can no longer
+// land), and, with deleteHeld, each name the server holds deleted to free its slot and dropped
+// once the server confirms the delete. A name whose read fails, or that another key owns, stays
+// for Cleanup. It reads each retired name once, so its reads are as many as the names the record
+// keeps.
+func (n *Names) settleRetired(ctx context.Context, logical string, record Record, deleteHeld bool) Record {
+	now := n.cfg.Now()
+	for _, name := range slices.Clone(record.Retired) {
+		if name == record.Current {
+			continue
+		}
+		_, err := n.info(ctx, logical, name)
+		switch {
+		case err == nil && deleteHeld:
+			err := n.cfg.Server.Delete(ctx, name)
+			n.observeErr(OperationCleanup, err)
+			if err == nil {
+				record, _ = record.DropRetired(name, true, now)
+			}
+		case errors.Is(err, ErrNotFound):
+			record, _ = record.DropRetired(name, false, now)
 		}
 	}
+	return record
 }
 
 // Delete deletes logical's current consumer: it reserves the delete, reads the consumer's floor

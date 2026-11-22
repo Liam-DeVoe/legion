@@ -51,9 +51,10 @@ revision:
 
 - **Lifetime.** A record is never deleted and never expires. Publishing a new `current` clears
   `last_floor`. A replaced predecessor whose delete the server confirmed leaves `retired` again;
-  one whose delete failed stays there for the cleanup. A cleanup drops a retired name the server
-  does not hold, except an abandoned candidate read absent before its time has passed: its create
-  can still land, and the consumer it makes must stay named, so the next cleanup deletes it. Names
+  one whose delete failed stays there for the cleanup. A cleanup, and each retirement of a
+  candidate, drops a retired name the server does not hold, except an abandoned candidate read
+  absent before its time has passed: its create can still land, and the consumer it makes must
+  stay named, so the next cleanup deletes it. Names
   ends each create once the family's `Config.CreateBound` has passed since the operation's
   reservation, its `Config.Reserved` hook's time included, and sends no create past it: the bound
   its requests run under, the session family's consumer requests' 10 s, the listener's durable
@@ -190,14 +191,21 @@ revision:
   retried by the next call's Step 0.
 - **Delete:** reserve, read and save the floor (one that cannot be read stops the call), delete,
   clear the current.
-- **At a full cap:** the retired names the server holds are deleted, and the create is tried once
-  more. The cap is never updated (`Config.NoDelete` answers at once for a family that cannot delete).
+- **At a full cap:** the retired names the server holds are deleted, those it does not hold are
+  dropped by `DropRetired`'s rule, and the create is tried once more with a fresh candidate. The
+  refused candidate is not retired: the server answered its create, so it names no consumer, now
+  or later. The cap is never updated (`Config.NoDelete` answers at once for a family that cannot
+  delete).
 - **A missing current:** a record whose current the server no longer holds is created again at its
   `last_floor` plus one when that floor was read from that consumer on this stream, else at its
   saved start. With neither, the call is refused (`ErrNoSafeStart`). It never searches the
   server's other consumers and never uses a first-create rule.
 - **Ambiguous answers:** an unanswered create is checked with an info: present means adopt (as
   above), missing means retire. No name is sent to the server's create twice.
+- **A bounded record:** each retirement of a candidate (Step 0's, or a retry's after an unanswered
+  create) also drops the retired names the server no longer holds, by `DropRetired`'s rule. So a
+  key refused at every call, at a full cap or by a create the server keeps refusing, keeps only the
+  candidates retired less than their create bound ago, and each call reads only those.
 
 ## The two modes
 
