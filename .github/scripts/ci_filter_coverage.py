@@ -872,18 +872,26 @@ def check_filter_inputs(workflows: dict, problems: list[Annotation]) -> None:
 
 # A `steps.<id>.outputs.<name>` of an output of the changes job: which step's verdict it hands on.
 STEP_OUTPUT_REF = re.compile(r"steps\.([A-Za-z0-9_-]+)\.outputs\.([A-Za-z0-9_-]+)")
+# The changes job's unnamed-file step and its one output, `found`: true when the pull request
+# changes a file that no filter names, which selects every job. A job's output reads it beside its
+# filter, `${{ steps.filter.outputs.<name> == 'true' || steps.unnamed.outputs.found == 'true' }}`.
+UNNAMED_STEP_ID = "unnamed"
+UNNAMED_OUTPUT = "found"
 
 
 def check_output_steps(document: dict, filters: dict, problems: list[Annotation]) -> None:
     """Rule 19: every `steps.<id>.outputs.<name>` an output of the changes job hands on must name
-    the job's dorny/paths-filter step and a filter .github/ci-filters.yaml holds. Which step
-    declares a name was the other half of this rule, and the filters being one file has left it
-    no subject: the step hands that file over whole, so a name is a filter of the job exactly when
-    the file holds it. A reference to a paths-filter step that reads no such file is passed over
-    here, since rule 21 refuses that step and no filter of it was read to hold the name to; so is
-    every name while no filter was read at all, since each way that happens is refused on its own
-    (changes_filters, rule 21) and holding the names to nothing would refuse every output again.
-    REF_OUTPUT is no filter's verdict: check_ci_ok holds it and the one step that writes it."""
+    the job's dorny/paths-filter step and a filter .github/ci-filters.yaml holds, or the job's
+    unnamed-file step (UNNAMED_STEP_ID) and its `found`, in an output that reads a filter too: the
+    output is then true where its filter matches or the pull request changes a file no filter
+    names. Which step declares a name was the other half of this rule, and the filters being one
+    file has left it no subject: the step hands that file over whole, so a name is a filter of the
+    job exactly when the file holds it. A reference to a paths-filter step that reads no such file
+    is passed over here, since rule 21 refuses that step and no filter of it was read to hold the
+    name to; so is every name while no filter was read at all, since each way that happens is
+    refused on its own (changes_filters, rule 21) and holding the names to nothing would refuse
+    every output again. REF_OUTPUT is no filter's verdict: check_ci_ok holds it and the one step
+    that writes it."""
     job = (document.get("jobs") or {}).get("changes") or {}
     steps = job.get("steps") or []
     ids = [str(s.get("id", "")) for s in steps if s.get("id")]
@@ -891,11 +899,23 @@ def check_output_steps(document: dict, filters: dict, problems: list[Annotation]
     for output, expression in (job.get("outputs") or {}).items():
         if output == REF_OUTPUT:
             continue
-        for step_id, name in STEP_OUTPUT_REF.findall(str(expression)):
+        references = STEP_OUTPUT_REF.findall(str(expression))
+        for step_id, name in references:
             if step_id not in ids:
                 problems.append(error(WORKFLOW, f"the changes job's output {output} reads "
                                                 f"steps.{step_id}.outputs.{name}, and the job has no step {step_id}, "
                                                 f"so the output is empty on every run"))
+            elif step_id == UNNAMED_STEP_ID and step_id not in filter_steps:
+                if name != UNNAMED_OUTPUT:
+                    problems.append(error(WORKFLOW, f"the changes job's output {output} reads "
+                                                    f"steps.{step_id}.outputs.{name}, and the unnamed-file step writes "
+                                                    f"{UNNAMED_OUTPUT} alone, so the output is empty on every run"))
+                elif not any(other in filter_steps for other, _ in references):
+                    problems.append(error(WORKFLOW, f"the changes job's output {output} reads "
+                                                    f"steps.{step_id}.outputs.{name} and no filter, so its job runs only "
+                                                    f"for a file no filter names; write it as its filter's match or "
+                                                    f"that step's, ${{{{ steps.<id>.outputs.<filter> == 'true' || "
+                                                    f"steps.{UNNAMED_STEP_ID}.outputs.{UNNAMED_OUTPUT} == 'true' }}}}"))
             elif step_id not in filter_steps:
                 problems.append(error(WORKFLOW, f"the changes job's output {output} reads "
                                                 f"steps.{step_id}.outputs.{name}, and step {step_id} is no "

@@ -922,8 +922,10 @@ go_test_step_expansion_test: &go_test_step_expansion_test
   - '.github/workflows/dispatch-browser.yaml'
   - '.github/workflows/docs-site.yaml'
   - '.github/workflows/worker-image.yaml'
+  - '.github/actions/*/action.yml'
   - 'packages/envoy/scripts/database-skips.sh'
   - 'packages/envoy/scripts/backend-count.sh'
+  - 'packages/envoy/infra/scripts/race-unit.sh'
   - '.github/scripts/ci_job_reads.py'
 check_test_reach_test: &check_test_reach_test
   - *ci_router

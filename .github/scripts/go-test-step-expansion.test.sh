@@ -247,6 +247,123 @@ EOF
 check "a line the reader cannot read is refused, by step and line" \
   "$(is "$(reader_refusals "$fixture")" ".github/workflows/ci-job-envoy-go.yaml's envoy-go / Time-box the tests: this reader cannot read \`timeout 60 go test ./internal/bus/\`")"
 
+# The forms a go test takes once ci.yaml's jobs are matrix jobs whose steps live in local
+# composite actions and run their Go tests through gotestsum: a matrix value a step reads, a step
+# of a composite action, a script a step runs, a gotestsum command, a package go-test-split.sh
+# splits between the legs, and an input the job that calls the workflow gives it; and the
+# variables a command's line, or its `-exec 'env …'`, hands the test binary. One fixture tree holds
+# a step of each form, and each check reads the go test commands the reader makes of that step:
+# its directory, packages, -tags, -race, -run, -skip, whether it is a split and its environment.
+echo "case: the reader reads a go test in each form a step of the new layout writes it"
+forms="$fixture/forms"
+mkdir -p "$forms/.github/workflows" "$forms/.github/actions/unit-tests" "$forms/scripts" "$forms/packages/envoy"
+cat >"$forms/.github/workflows/ci.yaml" <<'EOF'
+jobs:
+  forms:
+    uses: ./.github/workflows/ci-job-forms.yaml
+    with:
+      packages: ./internal/input/
+EOF
+cat >"$forms/.github/workflows/ci-job-forms.yaml" <<'EOF'
+on:
+  workflow_call:
+    inputs:
+      packages:
+        type: string
+        required: true
+jobs:
+  forms:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        leg: [1, 2]
+        include:
+          - leg: 1
+            packages: ./internal/a/
+          - leg: 2
+            packages: ./internal/b/
+    steps:
+      - name: A go test in a matrix value
+        run: go test -count=1 ${{ matrix.packages }}
+        working-directory: packages/envoy
+      - name: A go test in a composite action
+        uses: ./.github/actions/unit-tests
+        with:
+          packages: ./internal/action/
+      - name: A go test in a script
+        run: scripts/unit.sh
+      - name: A gotestsum command
+        run: gotestsum --format standard-verbose --jsonfile forms.json --packages "./internal/c/ ./internal/d/" -- -count=1 -race -tags e2e -run '^(TestOne)$' -skip '^(TestTwo)$'
+        working-directory: packages/envoy
+      - name: A package split between the legs
+        run: |
+          pattern=$(../../.github/scripts/go-test-split.sh ${{ matrix.leg }} 2 ./internal/split/)
+          gotestsum --format standard-verbose --jsonfile split-${{ matrix.leg }}.json --packages ./internal/split/ -- -count=1 -run "$pattern"
+        working-directory: packages/envoy
+      - name: A variable set before the command
+        run: GODEBUG=checkfinalizers=1 go test -count=1 ./internal/docs/
+        working-directory: packages/envoy
+      - name: A variable the test binary gets through -exec
+        run: go test -count=1 -exec 'env GODEBUG=checkfinalizers=1' ./internal/docs/
+        working-directory: packages/envoy
+      - name: The caller's input
+        run: go test -count=1 ${{ inputs.packages }}
+        working-directory: packages/envoy
+EOF
+cat >"$forms/.github/actions/unit-tests/action.yml" <<'EOF'
+name: Unit tests
+description: Runs the packages its user names.
+inputs:
+  packages:
+    description: The packages.
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: The packages' tests
+      shell: bash
+      run: go test -count=1 ${{ inputs.packages }}
+      working-directory: packages/envoy
+EOF
+cat >"$forms/scripts/unit.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")/../packages/envoy"
+go test -count=1 ./internal/script/
+EOF
+# read_forms <root>: one line per go test command of each step the reader reads under root: the
+# step's file and name, its directory, the packages, and what the command reads them under.
+read_forms() { py 'import pathlib
+steps.ROOT = pathlib.Path(sys.argv[1])
+for step in steps.steps_of(steps.documents()):
+    for command in steps.commands_of(step, lambda step, text: "(not-run)"):
+        env = " ".join(f"{name}={value}" for name, value in sorted(command.env.items()))
+        print(f"{step.workflow} / {step.name} | {step.workdir} | {chr(32).join(command.packages)} | tags={command.tags} "
+              f"race={command.race} run={command.run} skip={command.skip} split={command.split} env={env}")' "$1"; }
+# has <text> <string>: true/false for check, a fixed-string match: these lines hold ^, $ and |.
+has() { grep -Fq -- "$2" <<<"$1" && echo true || echo false; }
+read=$(read_forms "$forms")
+job=.github/workflows/ci-job-forms.yaml
+check "a matrix value is read into the step that reads it, once for each leg${read:+ (read: $read)}" \
+  "$(has "$read" "$job / A go test in a matrix value | packages/envoy | ./internal/a/ |")"
+check "and the other leg's value too" \
+  "$(has "$read" "$job / A go test in a matrix value | packages/envoy | ./internal/b/ |")"
+check "a step that uses a composite action is read through the action's step, under the input it gives, and keyed as the step" \
+  "$(has "$read" "$job / A go test in a composite action | packages/envoy | ./internal/action/ |")"
+check "a script a step runs is read through its lines, in the directory it moves to" \
+  "$(has "$read" "$job / A go test in a script | packages/envoy | ./internal/script/ |")"
+check "a gotestsum command is read as the go test it wraps: its --packages, and the flags after its --" \
+  "$(has "$read" "$job / A gotestsum command | packages/envoy | ./internal/c/ ./internal/d/ | tags=e2e race=True run=^(TestOne)\$ skip=^(TestTwo)\$ split=False env=")"
+check "a package go-test-split.sh splits between the legs is read as run whole, and marked a split" \
+  "$(has "$read" "$job / A package split between the legs | packages/envoy | ./internal/split/ | tags= race=False run= skip= split=True env=")"
+check "a variable set before the command is part of the command's environment" \
+  "$(has "$read" "$job / A variable set before the command | packages/envoy | ./internal/docs/ | tags= race=False run= skip= split=False env=GODEBUG=checkfinalizers=1")"
+check "a variable an -exec 'env …' hands the test binary is part of the command's environment" \
+  "$(has "$read" "$job / A variable the test binary gets through -exec | packages/envoy | ./internal/docs/ | tags= race=False run= skip= split=False env=GODEBUG=checkfinalizers=1")"
+check "an input the job that calls the workflow gives is read into the step" \
+  "$(has "$read" "$job / The caller's input | packages/envoy | ./internal/input/ |")"
+
 # AUDITED_SCRIPTS holds a person's reading of each script, pinned by its SHA-256, and the script
 # refuses a step whose script's text has moved on. The script runs by hand, so nothing else tells
 # the pull request that edits an audited script: #2856 changed database-skips.sh's

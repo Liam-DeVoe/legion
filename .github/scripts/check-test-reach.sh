@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Every test of this repository runs in a CI job that `ci-ok` needs. This search reads the
-# workflows and the tree, runs no `go`, `bun` or build command, and fails on each of the five ways
+# workflows and the tree, runs no `go`, `bun` or build command, and fails on each of the nine ways
 # a test can be left out of every such job while each job stays green:
 #
 #   1. tag: a `_test.go` file whose `//go:build` constraint names a tag (no platform: `linux`,
@@ -33,16 +33,49 @@
 #      15 lines use the words proof, smoke, check or test, that no required step runs - directly,
 #      through a script, an action or a `package.json` script it runs, or through a test it runs -
 #      and whose first 15 lines carry neither the tool line (a comment that starts
-#      `legion: tool - `) nor the not-a-test line (`legion: not a test - `);
+#      `legion: tool - `) nor the not-a-test line (`legion: not a test - `); and a `*.test.sh`
+#      harness, or a script whose header's first line of prose calls it a test or a proof (`A
+#      proof that…`, `Tests for…`, `The smoke test of…`), that carries the not-a-test line, which
+#      marks only a script that acts on GitHub, a release or a deployment and judges no code;
 #   5. schedule: a step of a workflow, of a job, or of its own `if:`, that runs only on `schedule`
 #      or `workflow_dispatch` and runs a test command (`go test`, `bun test`, `playwright test`, a
-#      `bun run` script that runs one, a `.test.sh` harness) that no required job runs with the
-#      same text.
+#      `bun run` script that comes to one, through a tool's runs lines too, a `.test.sh` harness)
+#      that no required job runs with the same text in the same directory, unless its workflow
+#      carries the tool line and a required job runs each test it runs in the same mode (rule 7);
+#   6. unrun: a Go test function (Test, Fuzz, Example) that no required step's go test runs: no
+#      step's packages hold its package (a Go module no step runs, a package `go list ./... |
+#      grep -Ev` leaves out), no step that runs its package builds its file under that step's
+#      GOOS, GOARCH, -tags and -race (a `//go:build` constraint or a `_GOOS`/`_GOARCH` file-name
+#      suffix no test step meets; a go vet or a build for a platform is no run), or each step that
+#      builds it leaves it out by its -run or -skip. A test that reads raceEnabled counts as run
+#      only by a step without -race, and a `//go:build !race` file is built by such a step alone,
+#      so either needs a plain step whose -run and -skip select it; a `//go:build race` file needs
+#      a -race step;
+#   7. outside: a step of a workflow ci-ok does not need (one run on a pull request only when its
+#      own files change, on a push, by another event, or a workflow of this repository such a
+#      workflow calls) that runs a test command no required job runs with the same text in the
+#      same directory; where its workflow carries the tool line, it passes when a required job
+#      runs each test it runs in the same mode (a Bun file with the same `--preload`s, a Go test
+#      under the same -race, a harness), so a repeat count passes and a preload no required job
+#      passes fails;
+#   8. release: a step of a release workflow (.github/workflows/release*.yaml) that runs a test
+#      command and that .github/release-checks.yaml does not list with the artifact it checks,
+#      a `go test` over the tree's source above all; an entry of that list that names no step of
+#      a release workflow; and a listed step running `go test` whose environment holds no
+#      variable an earlier step of its own job built (wrote into $GITHUB_ENV, or named in its
+#      `with:` or run:, as a build step names the image tag it loads);
+#   9. runs: a tool (a source file a package script runs as `bun <file>`) that a workflow step
+#      reaches through `bun run`, whose source names in a string a script of that package.json
+#      that no `legion: runs - <script> [<argument>…]` line of its first 15 lines names: what a
+#      tool runs is read through those lines.
+#
+# A shell step that runs no test command - a release step that checks a version it stamped, a
+# scheduled step that reads the runner's disk - is not read.
 #
 # Each finding is one line, `check-test-reach: <kind>: <path>[:<line>]: <test, tag or variable>:
 # <reason>`. It exits 1 when there is one, 0 when there is none, and 2 when it cannot read an
-# input: a workflow, the registry, a step whose `go test` it cannot read, a `-skip` or `-run` it
-# cannot read.
+# input: a workflow, the registry, the list of release checks, a step whose `go test` it cannot
+# read, a `-skip` or `-run` it cannot read.
 #
 # A required job is one ci.yaml's `ci-ok` needs, and `ci-ok` and `pr-title` themselves; a job of
 # a workflow such a job calls is a part of it. A held-back job (`agent-harness` and `kind` run in
@@ -50,26 +83,37 @@
 # queue runs it. A part whose `if:` admits only `schedule` or `workflow_dispatch`, a step whose own
 # `if:` does, and a step that carries `continue-on-error`, run no required test.
 #
-# How it reads a step. A `go test` step is read with .github/scripts/go_test_steps.py, the reader
-# go-test-step-expansion.py uses: its packages, `./...` and `go list | grep -Ev | xargs` (resolved
-# here from the tree, the import paths the module's go.mod gives each directory), `for` loops,
-# `-tags`, `-race`, `-run`, `-skip`, `-exec`, and the scripts its AUDITED_SCRIPTS reads
-# (database-skips.sh, and backend-count.sh by its arguments); a `-run "$pattern"` from
-# .github/scripts/go-tagged-tests.sh is the alternation that script prints, read off the source as
-# it reads it, and race_memory.py is a wrapper. A script of TEST_BINARY_SCRIPTS (pmdoc's
+# How it reads a step. Each job is read once for each leg of its matrix, with each
+# `${{ matrix.<name> }}` its steps write replaced by the leg's value, and each job of a workflow
+# of this repository a job calls under the inputs that job's `with:` gives, each
+# `${{ inputs.<name> }}` replaced; a step that `uses:` a local composite action is read through
+# the action's own run: steps, under the inputs its `with:` gives them. A job's GOOS and GOARCH
+# are its runner's (darwin on a macos runner, arm64 on an arm one), and a step's env: or its
+# command's own `GOOS=`/`GOARCH=` overrides them. A `go test` step is read with
+# .github/scripts/go_test_steps.py, the reader go-test-step-expansion.py uses, in any Go module of
+# the tree: its packages, `./...` and `go list | grep -Ev` (piped into `xargs` or assigned first,
+# resolved here from the tree, the import paths the module's go.mod gives each directory), `for`
+# loops, `-tags`, `-race`, `-run`, `-skip`, `-exec`, a gotestsum command as the `go test` it wraps
+# (its `--packages`, and the `go test` flags after its `--`), a `-run` that
+# .github/scripts/go-test-split.sh prints as the leg's share of packages its job runs whole, a
+# script the step runs whose lines the reader reads, and the scripts its AUDITED_SCRIPTS reads
+# (database-skips.sh, backend-count.sh and race-unit.sh, by their arguments); a `-run "$pattern"`
+# from .github/scripts/go-tagged-tests.sh is the alternation that script prints, read off the
+# source as it reads it, and race_memory.py is a wrapper. A script of TEST_BINARY_SCRIPTS (pmdoc's
 # differential.sh) is read by each `<binary> -test.run '<pattern>'` it runs, with the variables it
-# sets for that run. A test file is in a
-# step's build when its constraint and its file name hold for linux on the step's runner
-# architecture, with `cgo`, the step's `-tags` and, under `-race`, `race`. A `-run` and a `-skip`
-# are matched against a test's name level by level, as `go test` splits them; only the top level
-# decides whether the test runs. `bun test` reads its paths (a `./` path is a file or a
-# directory, any other word a part of the path) and `--path-ignore-patterns`; `-t` narrows the
-# tests of a file it runs and is read as running the file. `bun run <script>` is read through the
-# `package.json` of the step's directory, and a shell script of the repository the step runs by
-# its path (from the step's directory, or from the root through `$GITHUB_WORKSPACE`) through that
-# script's own commands, with the variables it exports. A `playwright test` runs every spec under its
-# `--config`'s directory that its file filters keep: its `--project`s and `--grep` choose among
-# those specs and are not read, so a spec counts as run by every Playwright step of its config.
+# sets for that run. A test file is in a step's build when its constraint and its file name hold
+# for the step's GOOS and GOARCH, with `cgo`, the step's `-tags` and, under `-race`, `race`. A
+# `-run` and a `-skip` are matched against a test's name level by level, as `go test` splits
+# them; only the top level decides whether the test runs. `bun test` reads its paths (a `./` path
+# is a file or a directory, any other word a part of the path), `--path-ignore-patterns` and its
+# `--preload`s; `-t` narrows the tests of a file it runs and is read as running the file.
+# `bun run <script>` is read through the `package.json` of the step's directory, a tool a package
+# script runs (`bun <file>`) through the package scripts its `legion: runs - ` lines name, and a
+# shell script of the repository the step runs by its path (from the step's directory, or from the
+# root through `$GITHUB_WORKSPACE`) through that script's own commands, with the variables it
+# exports. A `playwright test` runs every spec under its `--config`'s directory that its file
+# filters keep: its `--project`s and `--grep` choose among those specs and are not read, so a spec
+# counts as run by every Playwright step of its config.
 #
 # How it reads a gate. A Go file of a test (a `_test.go` file, or one that imports `testing`) is
 # read token by token: each function's reads of os.Getenv and os.LookupEnv, the names that hold a
@@ -132,13 +176,14 @@ from pathlib import Path
 import yaml
 
 import go_test_steps as steps
-from ci_filter_coverage import called_workflows, script_lines, squash, step_workdir
+from ci_filter_coverage import script_lines, squash, step_workdir
 from go_build_tags import EXTRA_ARCH, EXTRA_OS, go_skips_dir, is_tag
 
 ROOT = Path.cwd()
 WORKFLOWS = ".github/workflows"
 CI = f"{WORKFLOWS}/ci.yaml"
 REGISTRY = ".github/test-variables.yaml"
+RELEASE_CHECKS = ".github/release-checks.yaml"
 VERDICT = "ci-ok"
 # The jobs main's ruleset requires besides the verdict, which ci-ok does not need.
 ALSO_REQUIRED = ("ci-ok", "pr-title")
@@ -304,33 +349,22 @@ def exported(script: str) -> set[str]:
     return names
 
 
-def action_steps(uses: str, seen: frozenset = frozenset()) -> list[tuple[str, dict]]:
-    """The run: steps of a local composite action, with those of the local actions it uses, as
-    (action file, step)."""
-    if not uses.startswith("./") or uses in seen:
-        return []
-    base = uses.removeprefix("./").rstrip("/")
-    path = next((f"{base}/{name}" for name in ("action.yml", "action.yaml") if (ROOT / base / name).is_file()), None)
-    if path is None:
-        return []
-    found = []
-    for step in ((load_yaml(path).get("runs") or {}).get("steps") or []):
-        if step.get("run"):
-            found.append((path, step))
-        elif step.get("uses"):
-            found += action_steps(str(step["uses"]), seen | {uses})
-    return found
-
-
 @dataclass
 class Part:
-    job: str  # ci.yaml's job id
+    job: str  # ci.yaml's job id, or the id of the job of another workflow it starts from
     workflow: str  # the file holding the part's steps
     name: str  # the part's own job id in that file
     body: dict
     document: dict
     required: bool
     arch: str
+    goos: str = "linux"  # the runner's: darwin on a macos runner, windows on a windows one
+    leg: dict = field(default_factory=dict)  # the matrix values of this leg of the job
+    inputs: dict = field(default_factory=dict)  # what the job that calls its workflow gives it
+
+    @property
+    def contexts(self) -> dict[str, dict[str, str]]:
+        return {"matrix": self.leg, "inputs": self.inputs}
 
 
 @dataclass
@@ -345,15 +379,27 @@ class RunStep:
     exported: frozenset[str]
     skipped: bool  # continue-on-error
     scheduled: bool  # its own `if:`, or its action step's, admits only schedule and workflow_dispatch
+    values: dict = field(default_factory=dict)  # its env: blocks' variables, with their values
+    own_name: str = ""  # the workflow step's own name, an action's step under it included
+    keys: frozenset[str] = frozenset()  # the workflow step's name, id and uses, as a list names it
 
     @property
     def label(self) -> str:
         return f"{self.part.workflow}'s {self.part.name} / {self.name}"
 
 
+def runner_platform(runs_on: str) -> tuple[str, str]:
+    """The GOOS and GOARCH a job's `runs-on` gives its steps."""
+    goos = "darwin" if "macos" in runs_on else "windows" if "windows" in runs_on else "linux"
+    return goos, "arm64" if "arm" in runs_on else "amd64"
+
+
 def parts_of(job_id: str, workflow: str, name: str, body: dict, document: dict, required: bool,
-             seen: frozenset) -> list[Part]:
+             seen: frozenset, inputs: dict | None = None) -> list[Part]:
+    """The parts one job is: itself, once for each leg of its matrix, or each part of the
+    workflow of this repository it calls, under the inputs its `with:` gives that workflow."""
     required = required and not scheduled_only(body.get("if"))
+    inputs = inputs or {}
     uses = str(body.get("uses") or "")
     if uses.startswith(f"./{WORKFLOWS}/"):
         path = uses.removeprefix("./")
@@ -363,42 +409,69 @@ def parts_of(job_id: str, workflow: str, name: str, body: dict, document: dict, 
             return []
         called = load_yaml(path)
         found = []
-        for part, part_body in (called.get("jobs") or {}).items():
-            found += parts_of(job_id, path, part, part_body or {}, called, required, seen | {path})
+        for leg in steps.matrix_legs(body):
+            given = {**steps.input_defaults(called),
+                     **{str(k): steps.substitute(steps.context_text(v), {"matrix": leg, "inputs": inputs})
+                        for k, v in (body.get("with") or {}).items()}}
+            for part, part_body in (called.get("jobs") or {}).items():
+                found += parts_of(job_id, path, part, part_body or {}, called, required, seen | {path}, given)
         return found
     if uses:
         return []
-    runs_on = str(body.get("runs-on") or "")
-    return [Part(job=job_id, workflow=workflow, name=name, body=body, document=document,
-                 required=required, arch="arm64" if "arm" in runs_on else "amd64")]
+    found = []
+    for leg in steps.matrix_legs(body):
+        goos, arch = runner_platform(steps.substitute(str(body.get("runs-on") or ""), {"matrix": leg, "inputs": inputs}))
+        found.append(Part(job=job_id, workflow=workflow, name=name, body=body, document=document,
+                          required=required, arch=arch, goos=goos, leg=leg, inputs=inputs))
+    return found
 
 
 def run_steps(part: Part) -> list[RunStep]:
-    base = set(RUNNER_ENV) | set((part.document.get("env") or {})) | set((part.body.get("env") or {}))
+    contexts = part.contexts
+    values = {**steps.env_text(part.document.get("env"), contexts), **steps.env_text(part.body.get("env"), contexts)}
+    base = set(RUNNER_ENV) | set(values)
     written: set[str] = set()
     found = []
     for index, step in enumerate(part.body.get("steps") or []):
         name = str(step.get("name") or f"step {index + 1}")
-        env = frozenset(base | written | set(step.get("env") or {}))
+        keys = frozenset(str(step[key]) for key in ("name", "id", "uses") if step.get(key))
+        step_values = {**values, **steps.env_text(step.get("env"), contexts)}
+        env = frozenset(base | written | set(step_values))
         skipped = bool(step.get("continue-on-error"))
         scheduled = scheduled_only(step.get("if"))
-        if step.get("run"):
-            script = str(step["run"])
-            found.append(RunStep(part, index, name, getattr(step, "line", 0),
-                                 step_workdir(part.document, part.body, step), script, env,
-                                 frozenset(exported(script)), skipped, scheduled))
+        line = getattr(step, "line", 0)
+        for run in step_runs(part, step, contexts):
+            found.append(RunStep(part, index, f"{name} ({run.action})" if run.action else name, line, run.workdir,
+                                 run.script, frozenset(env | set(run.values)), frozenset(exported(run.script)),
+                                 skipped, scheduled or scheduled_only(run.condition),
+                                 {**step_values, **run.values}, name, keys))
             if not scheduled:
-                written |= env_written(script)
-        elif step.get("uses"):
-            for path, inner in action_steps(str(step["uses"])):
-                script = str(inner["run"])
-                inner_env = frozenset(env | set(inner.get("env") or {}))
-                found.append(RunStep(part, index, f"{name} ({path})", getattr(step, "line", 0),
-                                     str(inner.get("working-directory") or "."), script, inner_env,
-                                     frozenset(exported(script)), skipped,
-                                     scheduled or scheduled_only(inner.get("if"))))
-                if not scheduled:
-                    written |= env_written(script)
+                written |= env_written(run.script)
+    return found
+
+
+@dataclass
+class StepRun:
+    script: str
+    workdir: str
+    values: dict  # the variables an action's step's own env: sets
+    action: str = ""  # the action file the step is of, or "" for a workflow's own run: step
+    condition: object = None  # an action's step's own `if:`
+
+
+def step_runs(part: Part, step: dict, contexts: dict) -> list[StepRun]:
+    """What one workflow step runs, with the leg's matrix values and the caller's inputs read in:
+    its own run:, or the run: of each step of the local composite action it uses, under the
+    inputs its `with:` gives them."""
+    if step.get("run"):
+        return [StepRun(steps.substitute(str(step["run"]), contexts),
+                        steps.substitute(step_workdir(part.document, part.body, step), contexts), {})]
+    given = {str(k): steps.substitute(steps.context_text(v), contexts) for k, v in (step.get("with") or {}).items()}
+    found = []
+    for path, inner, inputs in steps.local_action_steps(str(step.get("uses") or ""), given):
+        inner_contexts = {"inputs": inputs}
+        found.append(StepRun(steps.substitute(str(inner["run"]), inner_contexts), steps.action_workdir(inner, inputs),
+                             steps.env_text(inner.get("env"), inner_contexts), path, inner.get("if")))
     return found
 
 
@@ -407,7 +480,6 @@ class Workflows:
     parts: list[Part]
     steps: list[RunStep]
     required_jobs: set[str]
-    documents: dict
 
 
 def workflows() -> Workflows:
@@ -421,10 +493,7 @@ def workflows() -> Workflows:
     for job_id, body in jobs.items():
         parts += parts_of(job_id, CI, job_id, body or {}, ci, job_id in required, frozenset())
     found = [step for part in parts for step in run_steps(part)]
-    documents = {CI: ci}
-    for path in called_workflows(ci):
-        documents[path] = load_yaml(path)
-    return Workflows(parts, found, required, documents)
+    return Workflows(parts, found, required)
 
 
 def required_steps(flows: Workflows) -> list[RunStep]:
@@ -622,10 +691,16 @@ def go_tree(files: list[str]) -> GoTree:
     return tree
 
 
-def truths(tags: str, race: bool, goarch: str) -> frozenset[str]:
-    """The names a constraint reads as true in a step's build: linux on the runner's architecture,
-    cgo, every release, the step's -tags and, under -race, race."""
-    true = {"linux", "unix", goarch, "gc", "cgo"} | GO_RELEASES
+# The GOOS values the `unix` constraint holds for.
+UNIX = frozenset({"aix", "android", "darwin", "dragonfly", "freebsd", "hurd", "illumos", "ios", "linux",
+                  "netbsd", "openbsd", "solaris"})
+
+
+def truths(tags: str, race: bool, goarch: str, goos: str = "linux") -> frozenset[str]:
+    """The names a constraint reads as true in a step's build: its GOOS (linux unless the runner
+    or the step says otherwise) and its architecture, cgo, every release, the step's -tags and,
+    under -race, race."""
+    true = {goos, goarch, "gc", "cgo"} | GO_RELEASES | ({"unix"} if goos in UNIX else set())
     true |= {tag for tag in re.split(r"[,\s]+", tags) if tag}
     if race:
         true.add("race")
@@ -634,8 +709,8 @@ def truths(tags: str, race: bool, goarch: str) -> frozenset[str]:
 
 @dataclass(eq=False)
 class GoRun:
-    """One `go test` of a required step: the package directories it builds and how, and the
-    variables in its environment."""
+    """One `go test` of a step: the package directories it builds and how, and the variables in
+    its environment."""
 
     step: RunStep
     text: str
@@ -646,9 +721,10 @@ class GoRun:
     skip: list[str]
     goarch: str
     env: frozenset[str]
+    goos: str = "linux"
 
     def __post_init__(self) -> None:
-        self.true = truths(self.tags, self.race, self.goarch)
+        self.true = truths(self.tags, self.race, self.goarch, self.goos)
         self.directory_set = set(self.directories)
         self._files: dict[str, list[GoFile]] = {}
         self._pattern = None
@@ -661,11 +737,11 @@ class GoRun:
     def files(self, tree: GoTree, directory: str) -> list[GoFile]:
         if directory not in self._files:
             self._files[directory] = [f for f in tree.by_directory.get(directory, [])
-                                      if f.builds(self.true, "linux", self.goarch)]
+                                      if f.builds(self.true, self.goos, self.goarch)]
         return self._files[directory]
 
     def builds(self, go_file: GoFile) -> bool:
-        return go_file.directory in self.directory_set and go_file.builds(self.true, "linux", self.goarch)
+        return go_file.directory in self.directory_set and go_file.builds(self.true, self.goos, self.goarch)
 
     def runs(self, name: str) -> bool:
         if name.startswith("Benchmark") or name in self.skip:
@@ -703,11 +779,12 @@ def split_levels(pattern: str) -> list[str]:
     return levels
 
 
-def buildable_directory(tree: GoTree, directory: str, true: set[str], goarch: str) -> bool:
-    return any(f.builds(true, "linux", goarch) for f in tree.by_directory.get(directory, []))
+def buildable_directory(tree: GoTree, directory: str, true: set[str], goarch: str, goos: str = "linux") -> bool:
+    return any(f.builds(true, goos, goarch) for f in tree.by_directory.get(directory, []))
 
 
-def expand_pattern(tree: GoTree, workdir: str, argument: str, true: set[str], goarch: str) -> list[str]:
+def expand_pattern(tree: GoTree, workdir: str, argument: str, true: set[str], goarch: str,
+                   goos: str = "linux") -> list[str]:
     """The package directories one argument of a go command names, from its directory."""
     if argument.endswith("/...") or argument == "...":
         base = argument[:-4].rstrip("/") if argument != "..." else "."
@@ -727,7 +804,7 @@ def expand_pattern(tree: GoTree, workdir: str, argument: str, true: set[str], go
                         skipped = True
                         break
                     parent = parent / part
-                if not skipped and buildable_directory(tree, directory, true, goarch):
+                if not skipped and buildable_directory(tree, directory, true, goarch, goos):
                     found.append(directory)
         return found
     if argument.startswith((".", "/")):
@@ -801,7 +878,7 @@ def split_shell(text: str, operators: tuple[str, ...] = ("&&", "||", ";", "|")) 
     return parts
 
 
-def static_answer(tree: GoTree, goarch: str):
+def static_answer(tree: GoTree, goarch: str, goos: str = "linux"):
     """The answer go_test_steps.read_block asks for, read off the tree: the alternation
     go-tagged-tests.sh prints, and the import paths `go list … | grep …` prints."""
 
@@ -816,10 +893,10 @@ def static_answer(tree: GoTree, goarch: str):
         words = shlex.split(stages[0])
         if words[:2] != ["go", "list"] or any(word.startswith("-") for word in words[2:]):
             raise steps.Refused(f"{step.label}: `{text}` is no package lister this search reads")
-        true = truths("", False, goarch)
+        true = truths("", False, goarch, goos)
         directories = []
         for argument in words[2:] or ["."]:
-            directories += expand_pattern(tree, step.workdir, argument, true, goarch)
+            directories += expand_pattern(tree, step.workdir, argument, true, goarch, goos)
         paths = [tree.import_path(d) or d for d in dict.fromkeys(directories)]
         for stage in stages[1:]:
             grep = GREP.match(stage)
@@ -834,28 +911,42 @@ def static_answer(tree: GoTree, goarch: str):
 
 
 def go_runs(flows: Workflows, tree: GoTree) -> list[GoRun]:
-    by_key = {(s.part.workflow, s.part.name, s.name): s for s in flows.steps if s.part.workflow in flows.documents}
     runs = []
-    for shared in steps.steps_of(flows.documents):
-        step = by_key.get((shared.workflow, shared.job, shared.name))
-        if step is None or step.skipped or step.scheduled or not step.part.required:
-            continue
-        for command in steps.commands_of(shared, static_answer(tree, step.part.arch)):
-            runs.append(go_run(tree, step, command))
     for step in required_steps(flows):
+        runs += step_go_runs(tree, step)
         for line in commands(step.script):
             runs += binary_runs(tree, step, line)
     return runs
 
 
+def step_go_runs(tree: GoTree, step: RunStep) -> list[GoRun]:
+    """The `go test` commands one step starts, read by go_test_steps.step_of in any Go module of
+    the tree: in its own run:, in the script it runs, through the composite action it is a step
+    of, and with its matrix leg's values and its caller's inputs read in."""
+    shared = steps.step_of(step.part.workflow, step.part.name, step.own_name, step.workdir, step.script,
+                           tuple(sorted(tree.modules)))
+    if shared is None:
+        return []
+    goos, goarch = platform(step, {})
+    return [go_run(tree, step, command) for command in steps.commands_of(shared, static_answer(tree, goarch, goos))]
+
+
+def platform(step: RunStep, command_env: dict) -> tuple[str, str]:
+    """The GOOS and GOARCH a command builds for: its own line's, else its step's env:, else its
+    runner's."""
+    return (command_env.get("GOOS") or step.values.get("GOOS") or step.part.goos,
+            command_env.get("GOARCH") or step.values.get("GOARCH") or step.part.arch)
+
+
 def go_run(tree: GoTree, step: RunStep, command: steps.GoTest, extra: frozenset = frozenset()) -> GoRun:
-    true = truths(command.tags, command.race, step.part.arch)
+    goos, goarch = platform(step, command.env)
+    true = truths(command.tags, command.race, goarch, goos)
     directories = []
     for argument in command.packages:
-        directories += expand_pattern(tree, command.step.workdir, argument, true, step.part.arch)
+        directories += expand_pattern(tree, command.step.workdir, argument, true, goarch, goos)
     return GoRun(step, command.text, list(dict.fromkeys(directories)), command.tags, command.race,
-                 command.run, steps.skip_names(command.skip) or [], step.part.arch,
-                 frozenset(step.env | step.exported | inline_env(step.script) | extra))
+                 command.run, steps.skip_names(command.skip) or [], goarch,
+                 frozenset(step.env | step.exported | inline_env(step.script) | set(command.env) | extra), goos)
 
 
 # The scripts that build one package's test binary with `go test -c` and run tests of it with
@@ -920,6 +1011,69 @@ def skip_findings(tree: GoTree, runs: list[GoRun]) -> list[Finding]:
                     found.append(Finding("skip", go_file.path, line, name,
                                          f"{run.step.label} skips it and no other required step runs it"))
     return found
+
+
+# ------------------------------------------------------------------------------ rule 6: unrun
+def race_readers(tree: GoTree) -> set[tuple[str, str]]:
+    """The (file, test) pairs whose test function reads raceEnabled: a test that changes what it
+    does under the race detector, so a -race step does not run it whole."""
+    found = set()
+    for go_file in tree.files.values():
+        if not go_file.is_test or "raceEnabled" not in go_file.text:
+            continue
+        for function in go_functions(go_file, go_tokens(go_file.text)):
+            if not function.receiver and any(t.kind == "ident" and t.text == "raceEnabled" for t in function.body):
+                found.add((go_file.path, function.name))
+    return found
+
+
+def unrun_findings(tree: GoTree, runs: list[GoRun], reported: set) -> list[Finding]:
+    """Each test function (Test, Fuzz, Example) that no required step's go test runs: no step's
+    packages hold its package, no step that runs its package builds its file under that step's
+    GOOS, GOARCH, -tags and -race, or each step that builds it leaves it out by its -run or
+    -skip. A test that reads raceEnabled counts as run only by a step without -race. A file the
+    tag rule names, and a test the skip rule names, are theirs (`reported`)."""
+    by_directory: dict[str, list[GoRun]] = defaultdict(list)
+    for run in runs:
+        for directory in run.directory_set:
+            by_directory[directory].append(run)
+    readers = race_readers(tree)
+    found = []
+    for go_file in tree.files.values():
+        if not go_file.is_test or go_file.path in reported:
+            continue
+        candidates = by_directory.get(go_file.directory, [])
+        building = [run for run in candidates if run.builds(go_file)]
+        for name, line in go_file.tests:
+            if name.startswith("Benchmark") or (go_file.path, name) in reported:
+                continue
+            race_impossible = (go_file.path, name) in readers
+            if any(run.runs(name) and not (race_impossible and run.race) for run in building):
+                continue
+            found.append(Finding("unrun", go_file.path, line, name,
+                                 unrun_reason(go_file, name, candidates, building, race_impossible)))
+    return found
+
+
+def unrun_reason(go_file: GoFile, name: str, candidates: list[GoRun], building: list[GoRun],
+                 race_impossible: bool) -> str:
+    def labels(runs: list[GoRun]) -> str:
+        named = sorted({run.step.label for run in runs})
+        return ", ".join(named[:3]) + (f" and {len(named) - 3} more" if len(named) > 3 else "")
+
+    if not candidates:
+        return f"no required step's go test runs its package, {go_file.directory}"
+    if not building:
+        shape = (f"`//go:build {go_file.constraint}`" if go_file.constraint is not None
+                 else f"its file name's `{Path(go_file.path).stem.removesuffix('_test').rsplit('_', 1)[-1]}`")
+        return (f"{shape} holds for none of the GOOS, GOARCH, -tags and -race of the required steps that run "
+                f"its package ({labels(candidates)}), and a go vet or a build is no run")
+    if race_impossible and any(run.runs(name) for run in building):
+        return (f"it reads raceEnabled, so only a step without -race runs it whole, and each required step "
+                f"that runs it ({labels([run for run in building if run.runs(name)])}) runs it under -race")
+    kept_out = " (its `//go:build " + go_file.constraint + "` keeps it out of each -race build)" if (
+        go_file.constraint and "race" in constraint_names(go_file.constraint)) else ""
+    return f"each required step that builds it{kept_out} ({labels(building)}) leaves it out by its -run or -skip"
 
 
 def go_runners(tree: GoTree, runs: list[GoRun], go_file: GoFile, test: str | None) -> list[GoRun]:
@@ -1991,6 +2145,26 @@ class BunRun:
     step: RunStep
     files: set[str]
     env: frozenset[str]
+    # The modules its `--preload`s load before each file: a flag that changes what the files
+    # judge, so two runs of one file are one mode only where they preload the same.
+    preloads: frozenset[str] = frozenset()
+
+
+# A source file `bun` runs as a program, not a test: a tool, whose `legion: runs - <script>`
+# lines name the package scripts it runs, `<script> [<argument>…]`.
+TOOL_SOURCE = re.compile(r"\.(?:ts|tsx|js|mjs|cjs|mts|cts)$")
+RUNS_LINE = re.compile(r"^\s*(?:#|//|--|;|\*|/\*\*?)\s*legion: runs - (\S+)(.*?)\s*(?:\*/)?\s*$")
+
+
+def runs_lines(path: str) -> list[tuple[str, list[str], int]]:
+    """The package scripts a tool's first 15 lines name in `legion: runs - ` lines, each with the
+    arguments the line gives it and its line."""
+    found = []
+    for number, line in enumerate(head(path), start=1):
+        match = RUNS_LINE.match(line)
+        if match:
+            found.append((match.group(1), words_of(match.group(2)), number))
+    return found
 
 
 BUN_VALUE_FLAGS = {"--timeout", "--preload", "-t", "--test-name-pattern", "--rerun-each", "--max-concurrency",
@@ -2049,6 +2223,9 @@ class BunReader:
         self.file_set = set(files)
         self.tests = bun_test_files(files)
         self.packages: dict[str, dict] = {}
+        # Each tool a package script runs (`bun <file>`), reached through `bun run` from a
+        # workflow step, with the directory whose package.json holds that script.
+        self.tools: dict[str, str] = {}
 
     def scripts(self, directory: str) -> dict[str, str]:
         path = join(directory, "package.json")
@@ -2082,10 +2259,22 @@ class BunReader:
                 words = words[1:]
         environment = frozenset(step.env | step.exported | env)
         if words[:2] == ["bun", "test"]:
-            return [BunRun(step, self.bun_test(cwd, words[2:]), environment)]
+            files, preloads = self.bun_test(cwd, words[2:])
+            return [BunRun(step, files, environment, preloads)]
         playwright = self.playwright_at(words)
         if playwright is not None:
             return [BunRun(step, self.playwright(cwd, words[playwright:]), environment)]
+        tool = self.tool_at(cwd, words)
+        if tool is not None and ("tool", tool) not in seen:
+            # A tool a package script runs: what it runs is the package scripts its runs lines
+            # name, each run as `bun run <script> <arguments>` from the same directory.
+            if any(entry[0] not in ("script", "tool") for entry in seen):
+                self.tools.setdefault(tool, cwd)
+            found = []
+            for script, arguments, _ in runs_lines(tool):
+                found += self.command(step, cwd, ["bun", "run", script, *arguments], frozenset(env),
+                                      seen | {("tool", tool)})
+            return found
         if words[:2] == ["bun", "run"] and len(words) > 2:
             name, extra = words[2], words[3:]
             if extra[:1] == ["--"]:
@@ -2125,8 +2314,15 @@ class BunReader:
                 return start + 2
         return None
 
-    def bun_test(self, cwd: str, arguments: list[str]) -> set[str]:
-        filters, ignored, index = [], [], 0
+    def tool_at(self, cwd: str, words: list[str]) -> str | None:
+        """The source file a `bun <file>` command runs as a program, or None."""
+        if words[:1] != ["bun"] or len(words) < 2 or not TOOL_SOURCE.search(words[1]):
+            return None
+        path = join(cwd, words[1])
+        return path if path in self.file_set else None
+
+    def bun_test(self, cwd: str, arguments: list[str]) -> tuple[set[str], frozenset[str]]:
+        filters, ignored, preloads, index = [], [], set(), 0
         while index < len(arguments):
             word = arguments[index]
             index += 1
@@ -2137,6 +2333,8 @@ class BunReader:
                     index += 1
                 if flag == "--path-ignore-patterns":
                     ignored.append(value)
+                elif flag == "--preload":
+                    preloads.add(join(cwd, value))
                 continue
             filters.append(word)
         under = [f for f in self.tests if cwd in (".", "") or f.startswith(f"{cwd}/")]
@@ -2153,7 +2351,7 @@ class BunReader:
             else:
                 chosen |= {f for f in under if word in os.path.relpath(f, cwd if cwd else ".")}
         return {f for f in chosen
-                if not any(fnmatch.fnmatch(os.path.relpath(f, cwd or "."), pattern.removeprefix("./")) for pattern in ignored)}
+                if not any(fnmatch.fnmatch(os.path.relpath(f, cwd or "."), pattern.removeprefix("./")) for pattern in ignored)}, frozenset(preloads)
 
     def playwright(self, cwd: str, arguments: list[str]) -> set[str]:
         config, filters, index = None, [], 0
@@ -2454,12 +2652,66 @@ def script_findings(files: list[str], flows: Workflows, tree: GoTree, go: list[G
         found.append(Finding("script", path, 1, Path(path).name,
                              "it uses the words proof, smoke, check or test, no required step runs it, and it "
                              "carries neither `legion: tool - ` nor `legion: not a test - ` in its first 15 lines"))
+    return found + marker_findings(candidates)
+
+
+# A harness of a script it tests, by its name.
+HARNESS_NAME = re.compile(r"[._]test\.(?:sh|bash)$")
+# A header's first line of prose that says the script is a test or a proof (`A proof that…`,
+# `Tests for…`, `The smoke test of…`), where the word is what the script is, not what a thing it
+# starts or reads is (`A smoke stack.`, `Starts the stack the smoke checks run on.`).
+CALLS_ITSELF = re.compile(r"^(?:(?:a|an|the|this(?:\s+script)?(?:\s+is)?(?:\s+an?)?)\s+)?(?:[\w-]+\s+){0,2}?"
+                          r"(?:tests?|proofs?)\b|^(?:proves|smoke-tests)\b", re.IGNORECASE)
+COMMENT_MARK = re.compile(r"^\s*(?:#!.*|#+|//+|/\*+|\*+/?|--|;)\s*")
+
+
+def calls_itself_a_test(lines: list[str]) -> bool:
+    """Whether a header's first line of prose, its shebang and its legion: lines aside, calls the
+    script a test, a proof or a smoke test."""
+    for line in lines:
+        if line.startswith("#!") or TOOL_LINE.match(line) or NOT_A_TEST_LINE.match(line) or RUNS_LINE.match(line):
+            continue
+        prose = COMMENT_MARK.sub("", line, count=1).strip()
+        if prose:
+            return bool(CALLS_ITSELF.match(prose))
+    return False
+
+
+def marker_findings(candidates: list[str]) -> list[Finding]:
+    """Each `*.test.sh` harness, and each script whose header calls it a test, a proof or a smoke
+    test, that carries `legion: not a test - `: that line marks only a script that acts on
+    GitHub, a release or a deployment and judges no code, so on a test it hides the test from
+    rule 4 whether a job runs it or not."""
+    found = []
+    for path in candidates:
+        lines = head(path)
+        marked = next((number for number, line in enumerate(lines, start=1) if NOT_A_TEST_LINE.match(line)), 0)
+        if not marked:
+            continue
+        if HARNESS_NAME.search(path):
+            what = "it is a harness (*.test.sh)"
+        elif calls_itself_a_test(lines):
+            what = "its header calls it a test, a proof or a smoke test"
+        else:
+            continue
+        found.append(Finding("script", path, marked, Path(path).name,
+                             f"{what}, and it carries `legion: not a test - `, which marks only a script that acts "
+                             "on GitHub, a release or a deployment and judges no code: give it the tool line, or "
+                             "run it in a job ci-ok needs"))
     return found
 
 
 def package_script_texts(reader: BunReader, cwd: str, words: list[str], seen: set) -> list[str]:
+    """The text of the package script a `bun run <script>` command runs, and of each package
+    script it runs in turn, a tool's runs lines' scripts among them."""
     while words and INLINE.match(words[0]):
         words = words[1:]
+    tool = reader.tool_at(cwd, words)
+    if tool is not None and ("tool", tool) not in seen:
+        texts = []
+        for script, arguments, _ in runs_lines(tool):
+            texts += package_script_texts(reader, cwd, ["bun", "run", script, *arguments], seen | {("tool", tool)})
+        return texts
     if words[:2] != ["bun", "run"] and words[:2] != ["npm", "run"] or len(words) < 3:
         return []
     script = reader.scripts(cwd).get(words[2])
@@ -2471,48 +2723,10 @@ def package_script_texts(reader: BunReader, cwd: str, words: list[str], seen: se
     return texts
 
 
-# ------------------------------------------------------------------------- rule 5: schedules
+# ---------------------------------------------------- rules 5, 7 and 8: steps no merge waits for
 TEST_COMMAND = re.compile(r"\bgo\s+(?:-C\s+\S+\s+)?test\b(?!.*\s-c\b)|\bbun\s+test\b|\bplaywright\s+test\b|\.test\.sh\b|_test\.sh\b")
-
-
-def schedule_findings(files: list[str], flows: Workflows, reader: BunReader) -> list[Finding]:
-    required_lines = set()
-    for step in required_steps(flows):
-        for line in script_lines(step.script):
-            required_lines.add(squash(line))
-    called_by_required = {part.workflow for part in flows.parts if part.required}
-    found = []
-    for path in sorted(f for f in files if f.startswith(f"{WORKFLOWS}/") and f.endswith((".yaml", ".yml"))):
-        document = load_yaml(path)
-        scheduled = triggers(document) <= SCHEDULED and triggers(document)
-        for name, body in (document.get("jobs") or {}).items():
-            body = body or {}
-            # A job every step of which runs only on schedule or workflow_dispatch, or else one
-            # whose steps are read one by one for an `if:` of their own that says so. A job that
-            # calls a workflow is read in that workflow's own file for the steps' `if:`.
-            job_scheduled = bool(scheduled) or scheduled_only(body.get("if"))
-            uses = str(body.get("uses") or "")
-            if uses.startswith(f"./{WORKFLOWS}/"):
-                if not job_scheduled or uses.removeprefix("./") in called_by_required:
-                    continue
-                parts = parts_of(name, path, name, body, document, False, frozenset())
-            elif uses:
-                continue
-            else:
-                parts = [Part(name, path, name, body, document, False, "amd64")]
-            for part in parts:
-                for step in run_steps(part):
-                    if not (job_scheduled or step.scheduled):
-                        continue
-                    for line in script_lines(step.script):
-                        if not is_test_command(reader, step.workdir, line):
-                            continue
-                        if squash(line) in required_lines:
-                            continue
-                        found.append(Finding("schedule", part.workflow, step.line, step.name,
-                                             f"it runs `{squash(line)}` only on schedule or workflow_dispatch, "
-                                             "and no required job runs that text"))
-    return found
+GO_TEST_COMMAND = re.compile(r"\bgo\s+(?:-C\s+\S+\s+)?test\b(?!.*\s-c\b)")
+RELEASE_WORKFLOW = re.compile(rf"^{re.escape(WORKFLOWS)}/release[^/]*\.ya?ml$")
 
 
 def is_test_command(reader: BunReader, cwd: str, line: str) -> bool:
@@ -2524,35 +2738,287 @@ def is_test_command(reader: BunReader, cwd: str, line: str) -> bool:
     return False
 
 
+@dataclass
+class Outside:
+    """A step no required job runs, with the workflow it starts in and how it is read."""
+    top: str  # the workflow file a trigger starts, which holds the part or calls its workflow
+    step: RunStep
+    kind: str  # schedule (it runs only on schedule or workflow_dispatch), release, or outside
+
+
+def outside_steps(files: list[str], flows: Workflows) -> list[Outside]:
+    """Every step that runs in no job ci-ok needs: each step of ci.yaml's other jobs and of each
+    other workflow (through each workflow of this repository its jobs call, but one a required
+    job calls, whose steps are ci-ok's), and each step of a required job whose own `if:` admits
+    only schedule and workflow_dispatch. A workflow that runs only when another calls it is read
+    through its callers."""
+    called_by_required = {part.workflow for part in flows.parts if part.required}
+    found = []
+    for step in flows.steps:
+        if not step.part.required or step.scheduled:
+            scheduled = step.scheduled or scheduled_only(step.part.body.get("if"))
+            found.append(Outside(CI, step, "schedule" if scheduled else "outside"))
+    for path in sorted(f for f in files if f.startswith(f"{WORKFLOWS}/") and f.endswith((".yaml", ".yml"))):
+        if path == CI or path in called_by_required:
+            continue
+        document = load_yaml(path)
+        events = triggers(document)
+        if not events or events == {"workflow_call"}:
+            continue
+        scheduled_workflow = events <= SCHEDULED
+        for name, body in (document.get("jobs") or {}).items():
+            body = body or {}
+            uses = str(body.get("uses") or "")
+            if uses.removeprefix("./") in called_by_required:
+                continue
+            job_scheduled = scheduled_workflow or scheduled_only(body.get("if"))
+            for part in parts_of(name, path, name, body, document, False, frozenset()):
+                for step in run_steps(part):
+                    if RELEASE_WORKFLOW.match(path):
+                        kind = "release"
+                    elif job_scheduled or step.scheduled or scheduled_only(part.body.get("if")):
+                        kind = "schedule"
+                    else:
+                        kind = "outside"
+                    found.append(Outside(path, step, kind))
+    return found
+
+
+def carries_tool_line(path: str) -> bool:
+    return any(TOOL_LINE.match(line) for line in head(path))
+
+
+def uncovered(step: RunStep, reader: BunReader, tree: GoTree, go: list[GoRun], bun: list[BunRun],
+              harnesses: set[str]) -> list[str]:
+    """What a step no merge waits for runs that no required job runs in the same mode: each test
+    file of its Bun and Playwright runs that no required run runs with the same preloads, each Go
+    test it runs that no required go test runs under the same -race (builds and selects), and each
+    harness it runs that no required step runs. A step whose test commands this search reads as
+    no run at all is uncovered too: nothing it read is what a required job runs."""
+    missing, read = [], 0
+    for run in reader.runs(step):
+        read += 1
+        for path in sorted(run.files):
+            if not any(path in other.files and other.preloads == run.preloads for other in bun):
+                missing.append(path + (f" with --preload {' '.join(sorted(run.preloads))}" if run.preloads else ""))
+    try:
+        outside_go = step_go_runs(tree, step)
+    except (steps.Refused, Unreadable) as refusal:
+        return missing + [f"a go test this search cannot read ({refusal})"]
+    for run in outside_go:
+        read += 1
+        for directory in run.directories:
+            for go_file in run.files(tree, directory):
+                for name, _ in go_file.tests:
+                    if run.runs(name) and not any(other.race == run.race and other.builds(go_file) and other.runs(name)
+                                                  for other in go):
+                        missing.append(f"{name} of {directory}" + (" under -race" if run.race else ""))
+    cwd = step.workdir
+    for command in commands(step.script):
+        path = repository_script(cwd, words_of(command))
+        if path is not None and HARNESS_NAME.search(path):
+            read += 1
+            if path not in harnesses:
+                missing.append(path)
+    if not read:
+        missing.append("test commands this search reads as no run a required job makes")
+    return missing
+
+
+def outside_findings(outside: list[Outside], flows: Workflows, reader: BunReader, tree: GoTree,
+                     go: list[GoRun], bun: list[BunRun], listed: set[tuple[str, str, str]]) -> list[Finding]:
+    """Rules 5, 7 and 8: each step no merge waits for that runs a test command (`go test`, `bun
+    test`, `playwright test`, a `*.test.sh` harness, a `bun run` script that comes to one,
+    through a tool's runs lines too). A release step passes where .github/release-checks.yaml
+    lists it. Any other passes where a required job runs that very line in that very directory,
+    or where its workflow carries the tool line and every test it runs a required job runs in the
+    same mode. A step that runs no test command is not read."""
+    required_lines = {(step.workdir, squash(line)) for step in required_steps(flows) for line in script_lines(step.script)}
+    harnesses = set()
+    for step in required_steps(flows):
+        for command in commands(step.script):
+            path = repository_script(step.workdir, words_of(command))
+            if path is not None:
+                harnesses.add(path)
+    found = []
+    for entry in outside:
+        step = entry.step
+        tests = [line for line in script_lines(step.script) if is_test_command(reader, step.workdir, line)]
+        if not tests:
+            continue
+        if entry.kind == "release":
+            if any((step.part.workflow, step.part.name, key) in listed for key in step.keys):
+                continue
+            line = next((line for line in tests if GO_TEST_COMMAND.search(line)), tests[0])
+            reason = (f"it runs `{squash(line)}` over the tree's source in a release workflow: a release checks "
+                      "an artifact it built, and a test of the source runs in a job ci-ok needs"
+                      if GO_TEST_COMMAND.search(line) else
+                      f"it runs `{squash(line)}` in a release workflow")
+            found.append(Finding("release", step.part.workflow, step.line, step.name,
+                                 f"{reason}, and {RELEASE_CHECKS} lists no such step with the artifact it checks"))
+            continue
+        lines = [line for line in tests if (step.workdir, squash(line)) not in required_lines]
+        if not lines:
+            continue
+        if carries_tool_line(entry.top):
+            missing = uncovered(step, reader, tree, go, bun, harnesses)
+            if not missing:
+                continue
+            more = f" and {len(missing) - 1} more" if len(missing) > 1 else ""
+            found.append(Finding(entry.kind, step.part.workflow, step.line, step.name,
+                                 f"its workflow carries the tool line, and it runs {missing[0]}{more}, which no "
+                                 "required job runs in that mode"))
+            continue
+        for line in lines:
+            where = ("only on schedule or workflow_dispatch" if entry.kind == "schedule"
+                     else "in a workflow no merge waits for")
+            found.append(Finding(entry.kind, step.part.workflow, step.line, step.name,
+                                 f"it runs `{squash(line)}` {where}, and no required job runs that text there"))
+    return found
+
+
+# ------------------------------------------------------------------- rule 8: the release checks
+@dataclass
+class ReleaseCheck:
+    workflow: str
+    job: str
+    step: str
+    artifact: str
+    line: int
+
+    @property
+    def subject(self) -> str:
+        return f"{self.workflow} / {self.job} / {self.step}"
+
+
+def release_checks() -> list[ReleaseCheck]:
+    if not (ROOT / RELEASE_CHECKS).is_file():
+        raise Unreadable(f"{RELEASE_CHECKS} is missing: it is the list of each release step that runs a check")
+    entries = load_yaml(RELEASE_CHECKS).get("checks")
+    if not isinstance(entries, list):
+        raise Unreadable(f"{RELEASE_CHECKS} has no `checks:` list")
+    found = []
+    for entry in entries:
+        line = getattr(entry, "line", 0)
+        if not isinstance(entry, dict):
+            raise Unreadable(f"{RELEASE_CHECKS}:{line}: an entry is not a mapping")
+        unknown = set(entry) - {"workflow", "job", "step", "artifact"}
+        missing = [key for key in ("workflow", "job", "step", "artifact") if not str(entry.get(key) or "").strip()]
+        if unknown or missing:
+            raise Unreadable(f"{RELEASE_CHECKS}:{line}: an entry holds {', '.join(sorted(unknown)) or 'no other key'} "
+                             f"and lacks {', '.join(missing) or 'nothing'}; each names workflow, job, step and artifact")
+        found.append(ReleaseCheck(str(entry["workflow"]), str(entry["job"]), str(entry["step"]),
+                                  str(entry["artifact"]), line))
+    return found
+
+
+ENV_REFERENCE = re.compile(r"\benv\.([A-Za-z_][A-Za-z0-9_]*)|\$\{?([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def release_findings(entries: list[ReleaseCheck]) -> list[Finding]:
+    """Each entry of .github/release-checks.yaml that names no step of a release workflow, and
+    each that names a step running `go test` whose environment holds no variable an earlier step
+    of its own job built: written into $GITHUB_ENV, or named by that step's `with:` or run: (the
+    image tag a build step pushes or loads, the file it writes). Such a test reads the tree's
+    source, which a job ci-ok needs tests, and not the artifact the release publishes."""
+    found = []
+    for entry in entries:
+        def finding(reason: str) -> None:
+            found.append(Finding("release", RELEASE_CHECKS, entry.line, entry.subject, reason))
+
+        if not RELEASE_WORKFLOW.match(entry.workflow):
+            finding(f"it names {entry.workflow}, which is no release workflow ({WORKFLOWS}/release*.yaml)")
+            continue
+        if not (ROOT / entry.workflow).is_file():
+            finding(f"it names {entry.workflow}, which is not in the repository")
+            continue
+        document = load_yaml(entry.workflow)
+        job = (document.get("jobs") or {}).get(entry.job)
+        if not isinstance(job, dict):
+            finding(f"{entry.workflow} has no job {entry.job}")
+            continue
+        job_steps = job.get("steps") or []
+        index = next((i for i, step in enumerate(job_steps)
+                      if entry.step in {str(step[key]) for key in ("name", "id", "uses") if step.get(key)}), None)
+        if index is None:
+            finding(f"job {entry.job} of {entry.workflow} has no step whose name, id or uses is {entry.step}")
+            continue
+        script = str(job_steps[index].get("run") or "")
+        if not any(GO_TEST_COMMAND.search(line) for line in script_lines(script)):
+            continue
+        environment = (set(document.get("env") or {}) | set(job.get("env") or {}) | set(job_steps[index].get("env") or {})
+                       | inline_env(script)) - RUNNER_ENV
+        built = set()
+        for earlier in job_steps[:index]:
+            text = json.dumps(earlier.get("with") or {}) + "\n" + str(earlier.get("run") or "")
+            built |= {a or b for a, b in ENV_REFERENCE.findall(text)} | env_written(str(earlier.get("run") or ""))
+            environment |= env_written(str(earlier.get("run") or ""))
+        if not (environment & built) - RUNNER_ENV:
+            finding("it runs go test, and its environment holds no variable an earlier step of its job built, so it "
+                    f"tests the tree's source and not the artifact it names ({entry.artifact})")
+    return found
+
+
+# -------------------------------------------------------------------- rule 9: a tool's runs lines
+def runs_findings(reader: BunReader) -> list[Finding]:
+    """Each tool a workflow step reaches through `bun run` whose source names, in a string, a
+    script of its package.json that no `legion: runs - ` line of its first 15 lines names: what
+    it runs is read through those lines alone."""
+    found = []
+    for tool, cwd in sorted(reader.tools.items()):
+        scripts = reader.scripts(cwd)
+        named = {script for script, _, _ in runs_lines(tool)}
+        text = strip_comments(read_text(tool))
+        for match in TS_STRING.finditer(text):
+            value = match.group()[1:-1]
+            if value in scripts and value not in named and "${" not in value:
+                found.append(Finding("runs", tool, text.count("\n", 0, match.start()) + 1, value,
+                                     f"the tool names the package script {value} of {join(cwd, 'package.json')} in "
+                                     "a string, and no `legion: runs - ` line of its first 15 lines names it"))
+    return found
+
+
 # --------------------------------------------------------------------------------------- main
+KINDS = ("tag", "skip", "unrun", "variable", "script", "runs", "schedule", "outside", "release")
+
+
 def main() -> int:
     files = tree_files()
     flows = workflows()
     rows = registry()
+    entries = release_checks()
     tree = go_tree(files)
     go = go_runs(flows, tree)
     reader = BunReader(files)
     bun = [run for step in required_steps(flows) for run in reader.runs(step)]
+    outside = outside_steps(files, flows)
+    for entry in outside:
+        reader.runs(entry.step)  # each tool a step no merge waits for reaches, for rule 9
     go_gates = GoGates(tree)
     go_gates.analyse()
     # The test files, and every other TypeScript file a required step's `bun test` runs by its
     # path (`bun test ./test/rig.ts`), which Bun runs as a test file whatever its name.
     ts_files = sorted(set(reader.tests) | {path for run in bun for path in run.files if TS_SOURCE.search(path)})
     gates = go_gates.gates + ts_gates(TsTree(files), ts_files)
-    findings = (tag_findings(tree, go) + skip_findings(tree, go)
+    tags, skips = tag_findings(tree, go), skip_findings(tree, go)
+    reported = {finding.path for finding in tags} | {(finding.path, finding.subject) for finding in skips}
+    listed = {(entry.workflow, entry.job, entry.step) for entry in entries}
+    findings = (tags + skips + unrun_findings(tree, go, reported)
                 + variable_findings(rows, gates, flows, tree, go, bun)
                 + script_findings(files, flows, tree, go, reader, bun)
-                + schedule_findings(files, flows, reader))
-    unique = sorted(set(findings), key=lambda f: (("tag", "skip", "variable", "script", "schedule").index(f.kind),
-                                                  f.path, f.line, f.subject, f.reason))
+                + outside_findings(outside, flows, reader, tree, go, bun, listed)
+                + release_findings(entries)
+                + runs_findings(reader))
+    unique = sorted(set(findings), key=lambda f: (KINDS.index(f.kind), f.path, f.line, f.subject, f.reason))
     for finding in unique:
         print(finding)
     if unique:
-        print(f"check-test-reach: {len(unique)} finding(s); each is a test, a tag, a variable, a script or "
-              "a step that no job ci-ok needs reaches as this search's header says", file=sys.stderr)
+        print(f"check-test-reach: {len(unique)} finding(s); each is a test, a tag, a variable, a script, a "
+              "tool or a step that no job ci-ok needs reaches as this search's header says", file=sys.stderr)
         return 1
     print(f"check-test-reach: every test reaches a job ci-ok needs: {len(go)} go test command(s), "
-          f"{len(bun)} Bun or Playwright run(s), {len(gates)} variable gate(s), {len(rows)} registry row(s)")
+          f"{len(bun)} Bun or Playwright run(s), {len(gates)} variable gate(s), {len(rows)} registry row(s), "
+          f"{len(entries)} release check(s)")
     return 0
 
 

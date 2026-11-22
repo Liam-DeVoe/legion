@@ -81,6 +81,18 @@ jobs:
       - name: Test dispatch dashboard
         run: bun run test
         working-directory: packages/dispatch
+      # The web tests once more, cold: packages/dispatch's `test:web:cold`, the web lane with the
+      # preload web/src/__tests__/hold-lazy-loads.ts, which holds back each module the web app
+      # loads lazily for 1 s once a file's rows have begun. A row that reads text or a part such a
+      # module renders without waiting for it then fails here, where in the web lane it fails only
+      # when the order puts it first among its file's rows. It is the web-cold lane that
+      # .github/workflows/dispatch-unit-repeat.yaml repeats under several seeds, run once: a
+      # preload changes what the files judge, so a lane a tool repeats with one runs in a job ci-ok
+      # needs too (.github/scripts/check-test-reach.sh, rule 7). One run of it took at most 101 s
+      # in that workflow (run 44339340132). The step above built contracts, which it reads.
+      - name: Test dispatch dashboard with each lazy load held back
+        run: bun run test:web:cold web/src
+        working-directory: packages/dispatch
       # The build writes dist/THIRD_PARTY_NOTICES.txt, failing on a bundled package whose license
       # cannot be determined; the listing shows the build shipped it.
       - name: Build dispatch dashboard

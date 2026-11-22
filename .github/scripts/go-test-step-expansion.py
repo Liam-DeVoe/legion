@@ -69,11 +69,16 @@ itself and not the workspace it was copied from. It reads the steps with
 .github/scripts/go_test_steps.py, which sits beside it in both trees and says how a step is read:
 the documents, the step's directory and its comment-free lines (through `ci_filter_coverage`'s
 own helpers), `for` loops, the variables and wrappers before a command, `-skip`, and the scripts
-its AUDITED_SCRIPTS reads. Two lines are answered by running them in the step's own directory
-(`go_test_steps.shell_answer`): a `-run "$pattern"` assigned from a `$(…)` call of
-`.github/scripts/go-tagged-tests.sh`, and the package list of `go list … | grep -Ev '…' | xargs`.
-Keep `GOMODCACHE` and `GOCACHE` the same for both runs: the second run then reuses the first
-run's compile.
+its AUDITED_SCRIPTS reads; a step into the local composite action it uses, a matrix job's step
+once per leg with the leg's values read in, a called workflow's step with the inputs its caller
+gives, a script a step runs whose lines the reader can read, and a gotestsum command as the
+`go test` it wraps (its `--packages` and the flags after its `--`). A package a job splits
+between its legs with `.github/scripts/go-test-split.sh` is listed whole for each leg, and the
+legs of one job, keyed as one step, count once in the pairs. Two lines are answered by running
+them in the step's own directory (`go_test_steps.shell_answer`): a `-run "$pattern"` assigned
+from a `$(…)` call of `.github/scripts/go-tagged-tests.sh`, and the package list of `go list … |
+grep -Ev '…'`, piped into `xargs` or assigned first. Keep `GOMODCACHE` and `GOCACHE` the same
+for both runs: the second run then reuses the first run's compile.
 
 A `-skip '^(Name|Name|…)$'` names tests a step leaves out, which are subtracted from what the step
 runs. A `Benchmark…` name a listing prints is left out of the verdict: no step passes `-bench`, so
@@ -368,7 +373,9 @@ def expansion() -> Expansion:
                         continue  # no step passes -bench, so no step runs it
                     functions += 1
                     runners = pairs.setdefault((package, name), [])
-                    if step not in runners:
+                    # The legs of one matrix job, and the steps of the composite action one step
+                    # uses, are that one step: each is keyed as the step the workflow writes.
+                    if all(runner.key != step.key for runner in runners):
                         runners.append(step)
         report.append(f"  {step.label}")
         report.append(f"      in {step.workdir}: {len(commands)} go test command(s), "

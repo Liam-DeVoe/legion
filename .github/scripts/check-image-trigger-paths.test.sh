@@ -700,6 +700,43 @@ check "names the job and the narrowing term" \
   "$(contains "$out" "^::error::jobs.docker builds or calls an image its job publishes, and is gated on needs.changes.outputs.gated, which hands it steps.filter.outputs.gated only while \`$(printf '%s' "$full_ci" | sed 's|[.*]|\\&|g')\` holds")"
 check "says what the author must do" "$(contains "$out" 'drop the narrowing term from that output, which leaves the filter deciding the job, or keep the narrowed output for a job whose every docker/build-push-action step publishes nothing')"
 
+echo "case: an output its filter or the unnamed-file step makes true is read as its filter"
+# The changes job's output for a job whose filter matches, or whose pull request changes a file no
+# filter names, as the unnamed-file step reports in its `found` output: the second term only
+# widens the changes the job runs on, so the filter still decides every change it selects. A
+# second term that reads any other step says nothing this check can read, and is refused.
+#
+# unnamed_output <root> <step id>: rewrites the changes job's output into that shape, its second
+# term reading steps.<step id>.outputs.found.
+unnamed_output() {
+  local root=$1 step=$2
+  python3 - "$root/.github/workflows/image.yaml" "$step" <<'PY'
+import sys
+path, step = sys.argv[1], sys.argv[2]
+text = open(path).read()
+plain = "      gated: ${{ steps.filter.outputs.gated }}\n"
+assert text.count(plain) == 1, "the fixture's output is not the plain shape"
+widened = ("      gated: ${{ steps.filter.outputs.gated == 'true' || steps." + step
+           + ".outputs.found == 'true' }}\n")
+open(path, "w").write(text.replace(plain, widened))
+PY
+}
+
+root=$(fixture unnamed-output)
+gate_build_job "$root" "$all_inputs"
+unnamed_output "$root" unnamed
+run_check "$root"
+check "unnamed-output: an output its filter or the unnamed-file step makes true passes" "$(is "$status" 0)"
+check "unnamed-output: and its filter decides the build" "$(contains "$out" 'jobs.docker.if (jobs.changes filter gated)')"
+
+root=$(fixture unnamed-output-other-step)
+gate_build_job "$root" "$all_inputs"
+unnamed_output "$root" decide
+run_check "$root"
+check "unnamed-output-other-step: a second term that reads another step fails" "$(is "$status" 1)"
+check "unnamed-output-other-step: names the output it cannot read" \
+  "$(contains "$out" 'is gated on needs.changes.outputs.gated, which is not a dorny/paths-filter filter this check can read')"
+
 echo "case: a gate reaches the build however it is written"
 # gate_probe <root> <docker job header> [extra job yaml]: a changes job exposing img (covers
 # every input) and narrow (covers docker/** only), with the build job's header supplied.

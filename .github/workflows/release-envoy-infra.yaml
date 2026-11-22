@@ -158,18 +158,15 @@ jobs:
           .github/scripts/release-push.sh version envoy-infra-v \
             --patch-path scripts/go-third-party-notices.sh --patch-path .github/envoy-infra-targets.json \
             -- "${paths[@]}" >> "$GITHUB_OUTPUT"
-      # The module's vet, both live-test tags included, and its unit tests, before anything is
-      # built: ci.yaml's envoy-infra-go job runs them on a pull request only when its filter selects
-      # the job, so the release checks the behaviour it publishes itself, as
-      # release-envoy-listener.yaml runs its container smoke test in its docker job before
-      # release_publish publishes. Vet compiles the live tests without running them; the unit tests
-      # start no container, so this job needs no Docker.
+      # The module's vet, both live-test tags included, before anything is built. Vet compiles the
+      # live tests without running them and starts no container, so this job needs no Docker. The
+      # module's unit tests do not run here: ci.yaml's envoy-infra-go job runs each of them under
+      # -race (scripts/race-unit.sh run) before each merge that changes what they read, and a
+      # release checks only what it builds, as release-envoy-listener.yaml's docker job smoke-tests
+      # the image it built (.github/release-checks.yaml).
       - name: Vet envoy-infra, its live-test tags included
         if: steps.version.outputs.skip != 'true'
         run: go -C packages/envoy/infra vet -tags pulumilive,natslive ./...
-      - name: Unit test envoy-infra
-        if: steps.version.outputs.skip != 'true'
-        run: go -C packages/envoy/infra test ./...
       # The address the plugin's schema names as its download URL, derived from the repository
       # this run is in (.github/scripts/repo-paths.sh plugin_download_url), so a renamed or
       # transferred repository releases a plugin that points at its own releases instead of a

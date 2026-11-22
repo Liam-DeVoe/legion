@@ -315,13 +315,17 @@
 #      rule 8 holds that list equal to its filter and a hand would have to copy it otherwise.
 #  18. retired: the `filters` input is now a path, which cannot reach the environment-variable cap.
 #  19. an output of the changes job reading `steps.<id>.outputs.<name>` where <id> is no step of
-#      the job, or is a step that is not its dorny/paths-filter step, or where <name> is no
-#      filter of .github/ci-filters.yaml, naming the output and the reference. Such an output is
-#      empty on every run, which reads as a filter that never matched: the job it gates would be
-#      skipped on every change it selects, and nothing else here would say so. Which step
-#      declares a name was the other half of this rule and has no subject left: the filters are
-#      one file, which the one step hands the action whole, so a name is a filter of the job
-#      exactly when that file holds it,
+#      the job, or is a step that is neither its dorny/paths-filter step nor its unnamed-file
+#      step (id `unnamed`), or where <name> is no filter of .github/ci-filters.yaml, naming the
+#      output and the reference. Such an output is empty on every run, which reads as a filter
+#      that never matched: the job it gates would be skipped on every change it selects, and
+#      nothing else here would say so. The unnamed-file step's one output, `found`, is true where
+#      the pull request changes a file no filter names; an output reads it beside its filter,
+#      `${{ steps.filter.outputs.<name> == 'true' || steps.unnamed.outputs.found == 'true' }}`,
+#      and one that reads any other output of that step, or reads it with no filter, fails too.
+#      Which step declares a name was the other half of this rule and has no subject left: the
+#      filters are one file, which the one step hands the action whole, so a name is a filter of
+#      the job exactly when that file holds it,
 #  20. a step's vets for another platform - the Runs of mode vet whose env sets GOOS, one per
 #      tag set, today the three darwin vet steps ci_job_reads.py's darwin_vet pins - that
 #      between them pass over a file go builds for that platform under some tags, naming the

@@ -1,5 +1,7 @@
 name: Dispatch unit suite repeated
 
+# legion: tool - repeats each lane of the Dispatch unit suite under several seeds to find the rows that fail only sometimes, for whoever reads its weekly report and fixes such a row; no merge waits for it.
+#
 # The Dispatch unit suite's three lanes, each under several seeds and the web and harness lanes
 # many times over, to find the rows that fail only sometimes. The web lane is
 # `bun run test:web web/src`, the web-cold lane is

@@ -2,6 +2,11 @@
  *  runs one lane of the Dispatch unit suite with every test run `k` times, and reports each row
  *  that failed (INFRA-1511).
  *
+ *  legion: tool - repeats one lane of the Dispatch unit suite under one seed and reports each row that failed, for dispatch-unit-repeat.yaml's weekly run and a person who chases a row that fails only sometimes.
+ *  legion: runs - test:web web/src
+ *  legion: runs - test:web:cold web/src
+ *  legion: runs - test:harness e2e/__tests__
+ *
  *    bun run test:repeat --lane web --out /tmp/repeat-web
  *    bun run test:repeat --lane web-cold --reruns 1 --out /tmp/repeat-web-cold
  *    bun run test:repeat --lane harness --reruns 5 --seed 1234 --out /tmp/repeat-harness

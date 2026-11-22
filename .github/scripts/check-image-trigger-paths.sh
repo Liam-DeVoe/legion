@@ -48,10 +48,14 @@
 #     is read WHOLE, never searched for a `steps.<id>.outputs.<name>` inside it: a reference a
 #     term this check has not read decides reaches the job narrower than its filter, and
 #     crediting the job with the filter's whole coverage would assert a build the gate does not
-#     start. Two shapes are read (output_filter): the PLAIN one, where the reference is a `||`
+#     start. Three shapes are read (output_filter): the PLAIN one, where the reference is a `||`
 #     disjunct of its own — `${{ steps.filter.outputs.x }}`, and ci.yaml's `${{ github.event_name
 #     == 'workflow_dispatch' && 'true' || steps.filter.outputs.x }}`, whose earlier disjunct can
-#     only hand the job the string 'true' — and the NARROWED one, where the reference is the last
+#     only hand the job the string 'true' — the FILTERED OR UNNAMED one, the plain one with its
+#     reference compared with 'true' and one last disjunct, the unnamed-file step's verdict, `${{
+#     steps.filter.outputs.x == 'true' || steps.unnamed.outputs.found == 'true' }}`, which only
+#     widens the changes the job runs on and is read as the plain reference (a last disjunct that
+#     reads any other step is refused) — and the NARROWED one, where the reference is the last
 #     `&&` conjunct of its disjunct, `${{ <term> && steps.filter.outputs.x || 'false' }}`,
 #     ci.yaml's `full-ci` outputs. A narrowed output runs the job on fewer changes than its
 #     filter selects, so it is admitted only for a job whose every `docker/build-push-action`
@@ -207,6 +211,15 @@ FILTERS_FILE = ".github/ci-filters.yaml"
 PATH_EVENTS = ("push", "pull_request", "pull_request_target", "merge_group")
 NEEDS_OUTPUT = re.compile(r"needs\.([\w-]+)\.outputs\.([\w-]+)")
 STEP_OUTPUT = re.compile(r"steps\.([\w-]+)\.outputs\.([\w-]+)")
+# A filter's reference compared with 'true', which hands the job 'true' exactly where the bare
+# reference does: `steps.filter.outputs.x == 'true'`.
+STEP_OUTPUT_TRUE = re.compile(r"(steps\.[\w-]+\.outputs\.[\w-]+)\s*==\s*'true'")
+# The changes job's unnamed-file step and its one output: true when the pull request changes a
+# file that no filter names, which selects every job. A job's output may add it after its
+# filter's reference, `${{ steps.filter.outputs.x == 'true' || steps.unnamed.outputs.found ==
+# 'true' }}`: the term only widens the changes the job runs on, so the filter's match still
+# reaches it whole. A second term that reads any other step is refused like any other shape.
+UNNAMED_TERM = re.compile(r"steps\.unnamed\.outputs\.found\s*==\s*'true'")
 EQUALS_TRUE = re.compile(r"needs\.([\w-]+)\.outputs\.([\w-]+)\s*==\s*'true'")
 # The only `if:` terms that do not narrow which CHANGES reach a job anywhere, so, with CALL_MODE
 # below, the only ones that can sit beside the filters clause without being refused. GitHub's
@@ -1217,7 +1230,8 @@ def output_filter(document: dict, needed: str, output: str) -> tuple[str, str, s
     The expression is read WHOLE, never searched: a `steps.<id>.outputs.<name>` inside a term
     this check has not read can reach the job narrower than its filter. GitHub's `&&` binds
     tighter than `||`, so an expression is a `||` of disjuncts, each a `&&` of conjuncts, and
-    exactly one disjunct may hold the reference. Two shapes are read:
+    exactly one disjunct may hold the reference, the unnamed-file step's term aside. Three shapes
+    are read:
 
       * PLAIN, the reference being the whole disjunct: `${{ steps.filter.outputs.x }}`, and
         `${{ <term> && 'true' || steps.filter.outputs.x }}`, the shape ci.yaml's
@@ -1225,6 +1239,13 @@ def output_filter(document: dict, needed: str, output: str) -> tuple[str, str, s
         holds it to: `||` yields the first truthy operand, so one whose own last conjunct is
         the literal `'true'` either falls through to the reference or hands the job 'true',
         and the filter's match reaches the job's `if:` unnarrowed either way. The term is "".
+      * FILTERED OR UNNAMED, the plain shape whose reference is compared with 'true' and followed
+        by one last disjunct, the unnamed-file step's verdict:
+        `${{ steps.filter.outputs.x == 'true' || steps.unnamed.outputs.found == 'true' }}`, with
+        the workflow_dispatch term before it or not. The job then runs where its filter matches
+        or the pull request changes a file no filter names: the last term only widens, so the
+        filter's match reaches the job whole, and it is read as the plain reference. The term
+        is "".
       * NARROWED, the reference being the LAST conjunct of its disjunct:
         `${{ <term> && steps.filter.outputs.x || 'false' }}`, ci.yaml's `full-ci` shape, whose
         <term> is every conjunct beside it. The job then runs on fewer changes than its filter
@@ -1234,13 +1255,17 @@ def output_filter(document: dict, needed: str, output: str) -> tuple[str, str, s
         shape writes.
 
     Anything else is refused by returning None, which gating_filters reports as an output it
-    cannot read: the reference in two disjuncts, a conjunct beside it that is not last, a
-    widening disjunct this check cannot prove yields 'true', any other fallback."""
+    cannot read: the reference in two disjuncts, a last term that reads any other step than the
+    unnamed-file step's `found`, a conjunct beside it that is not last, a widening disjunct this
+    check cannot prove yields 'true', any other fallback."""
     upstream = (document.get("jobs") or {}).get(needed) or {}
     expression = str((upstream.get("outputs") or {}).get(output, "")).strip()
     if not (expression.startswith("${{") and expression.endswith("}}")):
         return None
     disjuncts = [unwrap(part) for part in split_top(unwrap(expression), "||")]
+    filtered = STEP_OUTPUT_TRUE.fullmatch(disjuncts[-2]) if len(disjuncts) >= 2 else None
+    if filtered and UNNAMED_TERM.fullmatch(disjuncts[-1]):
+        disjuncts = [*disjuncts[:-2], filtered.group(1)]
     holders = [index for index, part in enumerate(disjuncts) if STEP_OUTPUT.search(part)]
     if len(holders) != 1:
         return None

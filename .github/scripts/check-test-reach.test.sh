@@ -3,7 +3,16 @@
 # of finding - a `_test.go` file with a tag no job passes, a test one `-skip` leaves out, a Go test
 # and a Bun test that skip on a variable no job sets, an assertion that runs only when such a
 # variable is set, a script with no tool line that no job runs, and a scheduled step - each of
-# which must fail and name its file; and the registry's classes, each held to a gate.
+# which must fail and name its file; and the registry's classes, each held to a gate. Then the
+# fixtures of the forms the layout of matrix jobs writes, each named in its checks: a go test in a
+# matrix value, in a script, in a composite action and in a called workflow's input, read as runs;
+# gotestsum's `-skip` and `-tags` after its `--`; a package go-test-split.sh splits, read whole;
+# workflows no merge waits for (run on a pull request only when their files change, schedule-only,
+# workflow_dispatch-only, a called workflow) with a test, a preload or a repeat count; release
+# steps listed, unlisted, and reading nothing their job built; race-impossible tests, a module or
+# an excluded package no step runs, and constraints and file names no test step's platform meets;
+# a tool's runs lines and a script its source names; and the not-a-test line on a harness, a
+# proof and a script that cancels runs.
 #
 # Each case builds a miniature repository under a temporary directory and symlinks the real
 # script, the step reader it imports (go_test_steps.py) and the modules that one imports into it,
@@ -129,7 +138,36 @@ variables:
     jobs: [bun]
     why: Selects the flagged row, which the bun job runs.
 YAML
+  printf 'checks: []\n' > "$root/.github/release-checks.yaml"
   echo "$root"
+}
+
+# required_job <root> <job id> <the job's body, indented four spaces>: one more job of ci.yaml,
+# which ci-ok needs.
+required_job() {
+  local root=$1 job=$2 body=$3
+  printf '  %s:\n%s\n' "$job" "$body" >> "$root/.github/workflows/ci.yaml"
+  sed -i "s|^    needs: \[\(.*\)\]\$|    needs: [\1, $job]|" "$root/.github/workflows/ci.yaml"
+}
+
+# unit_only <root>: the go job's unit step runs the unit and live packages alone, so a package the
+# case adds is run only by the steps the case gives it.
+unit_only() {
+  sed -i 's|        run: go test -v -count=1 ./...|        run: go test -v -count=1 ./unit/ ./live/|' "$1/.github/workflows/ci.yaml"
+}
+
+# go_test_file <path> <package> <constraint or ""> <test name…>: a test file of empty tests.
+go_test_file() {
+  local path=$1 package=$2 constraint=$3
+  shift 3
+  mkdir -p "$(dirname "$path")"
+  {
+    [ -z "$constraint" ] || printf '//go:build %s\n\n' "$constraint"
+    printf 'package %s\n\nimport "testing"\n' "$package"
+    for name in "$@"; do
+      printf '\nfunc %s(t *testing.T) {}\n' "$name"
+    done
+  } > "$path"
 }
 
 # run_check <root>: runs the search, setting `out` to its combined output and `status` to its exit
@@ -140,6 +178,15 @@ run_check() {
   out=$("$root/.github/scripts/check-test-reach.sh" 2>&1)
   status=$?
   set -e
+}
+
+# passes <description>: the last run exited 0, and its output is shown only where it did not.
+passes() {
+  if [ "$status" -eq 0 ]; then
+    check "$1" true
+  else
+    check "$1 (exit $status): $out" false
+  fi
 }
 
 # row <root> <variable> <line…>: one more row of the registry.
@@ -538,5 +585,686 @@ row "$root" FIXTURE_ODD 'class: sometimes' 'why: No class.'
 run_check "$root"
 check "exits 2" "$(is "$status" 2)"
 check "names the row" "$(contains "$out" "FIXTURE_ODD's class is 'sometimes'")"
+
+# The forms a go test takes in the layout of matrix jobs and composite actions. Each fixture's test
+# file carries a tag that only the form under test passes, so a search that does not read the form
+# names the file as a tag no required step passes, and the case fails.
+echo "case: a test whose only go test is a matrix value of a job"
+root=$(fixture go-matrix)
+go_test_file "$root/packages/envoy/unit/matrix_test.go" unit matrixtag TestOnlyInTheMatrix
+required_job "$root" matrix '    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - leg: tagged
+            command: go test -count=1 -tags matrixtag ./unit/
+    steps:
+      - name: The leg'"'"'s tests
+        run: ${{ matrix.command }}
+        working-directory: packages/envoy'
+run_check "$root"
+passes "go-matrix: the go test in the matrix value is read as a run"
+
+echo "case: a test whose only go test is in a script a job runs"
+root=$(fixture go-script)
+go_test_file "$root/packages/envoy/unit/script_test.go" unit scripttag TestOnlyInTheScript
+cat > "$root/scripts/tagged-tests.sh" <<'SH'
+#!/usr/bin/env bash
+# Runs the unit package's scripttag tests.
+set -euo pipefail
+cd "$(dirname "$0")/../packages/envoy"
+go test -count=1 -tags scripttag ./unit/
+SH
+chmod +x "$root/scripts/tagged-tests.sh"
+required_job "$root" scripted '    runs-on: ubuntu-24.04
+    steps:
+      - name: The script'"'"'s tests
+        run: scripts/tagged-tests.sh'
+run_check "$root"
+passes "go-script: the script's go test, in the directory it moves to, is read as a run"
+
+echo "case: a test whose only go test is in a composite action a job runs"
+root=$(fixture go-action)
+go_test_file "$root/packages/envoy/unit/action_test.go" unit actiontag TestOnlyInTheAction
+mkdir -p "$root/.github/actions/tagged-tests"
+cat > "$root/.github/actions/tagged-tests/action.yml" <<'YAML'
+name: Tagged tests
+description: Runs the unit package's tests under the tags its user names.
+inputs:
+  tags:
+    description: The build tags.
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: The tagged tests
+      shell: bash
+      run: go test -count=1 -tags ${{ inputs.tags }} ./unit/
+      working-directory: packages/envoy
+YAML
+required_job "$root" action '    runs-on: ubuntu-24.04
+    steps:
+      - name: The action'"'"'s tests
+        uses: ./.github/actions/tagged-tests
+        with:
+          tags: actiontag'
+run_check "$root"
+passes "go-action: the action's go test, under the input its user gives, is read as a run"
+
+echo "case: a test whose only go test is an input a job gives a called workflow"
+root=$(fixture go-called-input)
+go_test_file "$root/packages/envoy/unit/input_test.go" unit inputtag TestOnlyInTheInput
+cat > "$root/.github/workflows/called-tests.yaml" <<'YAML'
+name: Called tests
+on:
+  workflow_call:
+    inputs:
+      command:
+        type: string
+        required: true
+jobs:
+  tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: The caller's command
+        run: ${{ inputs.command }}
+        working-directory: packages/envoy
+YAML
+required_job "$root" called '    uses: ./.github/workflows/called-tests.yaml
+    with:
+      command: go test -count=1 -tags inputtag ./unit/'
+run_check "$root"
+passes "go-called-input: the go test the caller's input gives is read as a run"
+
+echo "case: a test that a -skip passed through gotestsum, after its --, leaves out"
+root=$(fixture gotestsum-skip)
+cat >> "$root/packages/envoy/unit/unit_test.go" <<'GO'
+
+func TestSkipped(t *testing.T) {}
+GO
+sed -i "s|        run: go test -v -count=1 ./...|        run: gotestsum --format standard-verbose --jsonfile unit.json --packages ./... -- -count=1 -skip '^(TestSkipped)\$'|" \
+  "$root/.github/workflows/ci.yaml"
+run_check "$root"
+check "gotestsum-skip: fails" "$(is "$status" 1)"
+check "gotestsum-skip: names TestSkipped and the step whose gotestsum skips it" \
+  "$(contains "$out" "^check-test-reach: skip: packages/envoy/unit/unit_test.go:11: TestSkipped: .*'s go / Unit test skips it")"
+
+echo "case: a test file whose build tag only a -tags passed through gotestsum names"
+root=$(fixture gotestsum-tags)
+go_test_file "$root/packages/envoy/unit/gotestsum_test.go" unit gotestsumtag TestOnlyThroughGotestsum
+required_job "$root" gotestsum '    runs-on: ubuntu-24.04
+    steps:
+      - name: The tagged tests through gotestsum
+        run: gotestsum --format standard-verbose --jsonfile tagged.json --packages "./unit/" -- -count=1 -tags gotestsumtag
+        working-directory: packages/envoy'
+run_check "$root"
+passes "gotestsum-tags: the -tags after gotestsum's -- builds the file"
+
+echo "case: a package a job splits between its legs at run time is read as run whole"
+root=$(fixture split)
+go_test_file "$root/packages/envoy/split/split_test.go" split splittag TestTheFirstShare TestTheSecondShare
+required_job "$root" split '    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        leg: [1, 2]
+    steps:
+      - name: This leg'"'"'s share of the split package
+        run: |
+          pattern=$(../../.github/scripts/go-test-split.sh ${{ matrix.leg }} 2 ./split/)
+          gotestsum --format standard-verbose --jsonfile split-${{ matrix.leg }}.json --packages ./split/ -- -count=1 -tags splittag -run "$pattern"
+        working-directory: packages/envoy'
+run_check "$root"
+passes "split: each leg is read as running the split package whole"
+
+# Workflows ci-ok does not need, each of whose steps that runs a test file is read.
+echo "case: a workflow run on a pull request only when its own files change, with a preload"
+root=$(fixture pr-preload)
+printf '%s\n' '{ "name": "web", "scripts": { "test": "bun test", "test:cold": "bun test --preload ./hold.ts" } }' \
+  > "$root/packages/web/package.json"
+printf 'export {};\n' > "$root/packages/web/hold.ts"
+cat > "$root/.github/workflows/web-cold.yaml" <<'YAML'
+name: Web cold
+on:
+  pull_request:
+    paths:
+      - .github/workflows/web-cold.yaml
+      - packages/web/hold.ts
+jobs:
+  cold:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: The web tests with the preload
+        run: bun run test:cold
+        working-directory: packages/web
+YAML
+run_check "$root"
+check "pr-preload: fails" "$(is "$status" 1)"
+check "pr-preload: names the workflow, the step and its command" \
+  "$(contains "$out" '^check-test-reach: outside: .github/workflows/web-cold.yaml:[0-9]*: The web tests with the preload: it runs `bun run test:cold` in a workflow no merge waits for')"
+sed -i '1a # legion: tool - runs the web tests with a preload, for a person who chases a late load.' "$root/.github/workflows/web-cold.yaml"
+run_check "$root"
+check "pr-preload: still fails with the tool line, since no required job passes that preload" "$(is "$status" 1)"
+check "pr-preload: names the preload no required job passes" \
+  "$(contains "$out" '^check-test-reach: outside: .github/workflows/web-cold.yaml:[0-9]*: The web tests with the preload: its workflow carries the tool line, and it runs packages/web/flag.test.ts with --preload packages/web/hold.ts')"
+
+echo "case: the same kind of workflow with a repeat count alone, and the tool line"
+root=$(fixture pr-repeat-tool)
+printf '%s\n' '{ "name": "web", "scripts": { "test": "bun test", "test:repeat": "bun test --rerun-each=20" } }' \
+  > "$root/packages/web/package.json"
+cat > "$root/.github/workflows/web-repeat.yaml" <<'YAML'
+name: Web repeated
+# legion: tool - repeats the web tests to find the rows that fail only sometimes, for a person who fixes one.
+on:
+  pull_request:
+    paths:
+      - .github/workflows/web-repeat.yaml
+jobs:
+  repeat:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: The web tests twenty times
+        run: bun run test:repeat
+        working-directory: packages/web
+YAML
+run_check "$root"
+passes "pr-repeat-tool: a repeat count of what a required job runs, in a tool workflow, passes"
+sed -i '/legion: tool - /d' "$root/.github/workflows/web-repeat.yaml"
+run_check "$root"
+check "pr-repeat-tool: and fails without the tool line" "$(is "$status" 1)"
+check "pr-repeat-tool: names the step" \
+  "$(contains "$out" '^check-test-reach: outside: .github/workflows/web-repeat.yaml:[0-9]*: The web tests twenty times: it runs `bun run test:repeat` in a workflow no merge waits for')"
+
+echo "case: a workflow run only on schedule, with a step that runs a test file"
+root=$(fixture schedule-only)
+mkdir -p "$root/packages/other"
+printf '{ "name": "other", "scripts": { "test": "bun test" } }\n' > "$root/packages/other/package.json"
+cat > "$root/packages/other/nightly.test.ts" <<'TS'
+import { expect, test } from "bun:test";
+
+test("the nightly row", () => {
+  expect(1).toBe(1);
+});
+TS
+cat > "$root/.github/workflows/nightly-bun.yaml" <<'YAML'
+name: Nightly Bun
+on:
+  schedule:
+    - cron: "17 3 * * *"
+jobs:
+  nightly:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: The other package's tests
+        run: bun test ./nightly.test.ts
+        working-directory: packages/other
+YAML
+run_check "$root"
+check "schedule-only: fails" "$(is "$status" 1)"
+check "schedule-only: names the workflow, the step and its command" \
+  "$(contains "$out" '^check-test-reach: schedule: .github/workflows/nightly-bun.yaml:[0-9]*: The other package.s tests: it runs `bun test ./nightly.test.ts` only on schedule or workflow_dispatch')"
+
+echo "case: a workflow run only by workflow_dispatch, with a step that runs a test file"
+root=$(fixture dispatch-only)
+go_test_file "$root/packages/envoy/ondemand/ondemand_test.go" ondemand "" TestOnDemand
+cat > "$root/.github/workflows/on-demand.yaml" <<'YAML'
+name: On demand
+on: workflow_dispatch
+jobs:
+  ondemand:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: The on-demand suite
+        run: go test -count=1 -run '^(TestOnDemand)$' ./ondemand/
+        working-directory: packages/envoy
+YAML
+run_check "$root"
+check "dispatch-only: fails" "$(is "$status" 1)"
+check "dispatch-only: names the workflow, the step and its command" \
+  "$(contains "$out" '^check-test-reach: schedule: .github/workflows/on-demand.yaml:[0-9]*: The on-demand suite: it runs `go test')"
+
+echo "case: a workflow no merge waits for whose job calls a workflow that runs a test file"
+root=$(fixture called-workflow)
+mkdir -p "$root/packages/other"
+printf '{ "name": "other", "scripts": { "test": "bun test" } }\n' > "$root/packages/other/package.json"
+cat > "$root/packages/other/other.test.ts" <<'TS'
+import { expect, test } from "bun:test";
+
+test("the other row", () => {
+  expect(1).toBe(1);
+});
+TS
+cat > "$root/.github/workflows/other-suite.yaml" <<'YAML'
+name: Other suite
+on: workflow_call
+jobs:
+  suite:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: The other package's tests
+        run: bun test
+        working-directory: packages/other
+YAML
+cat > "$root/.github/workflows/other.yaml" <<'YAML'
+name: Other
+on:
+  pull_request:
+    paths:
+      - packages/other/**
+jobs:
+  call:
+    uses: ./.github/workflows/other-suite.yaml
+YAML
+run_check "$root"
+check "called-workflow: fails" "$(is "$status" 1)"
+check "called-workflow: names the called workflow's step and its command" \
+  "$(contains "$out" '^check-test-reach: outside: .github/workflows/other-suite.yaml:[0-9]*: The other package.s tests: it runs `bun test` in a workflow no merge waits for')"
+
+echo "case: two shell steps that run no test file and no script are not read"
+root=$(fixture release-stamp)
+cat > "$root/.github/workflows/release.yaml" <<'YAML'
+name: Release
+on:
+  push:
+    branches: [main]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check the stamped version
+        run: |
+          version=$(out/tool --version)
+          test "$version" = "tool v1"
+YAML
+run_check "$root"
+passes "release-stamp: a release step that checks a version it stamped passes"
+
+root=$(fixture schedule-shell)
+cat > "$root/.github/workflows/weekly-disk.yaml" <<'YAML'
+name: Weekly disk
+on:
+  schedule:
+    - cron: "41 4 * * 1"
+jobs:
+  disk:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Read the runner's disk
+        run: df -h && echo "the runner's disk"
+YAML
+run_check "$root"
+passes "schedule-shell: a scheduled shell step that runs no test passes"
+
+# Release workflows: a step that runs a check passes where the list of release checks names it,
+# with what it checks; a go test there must read what its own job built.
+# smoke_package <root>: a smoke test a required job runs too, as every test of the tree is run.
+smoke_package() {
+  go_test_file "$1/packages/envoy/smoke/smoke_test.go" smoke smoke TestTheImageAnswers
+  required_job "$1" smoke '    runs-on: ubuntu-24.04
+    steps:
+      - name: Smoke-test the image of the tree
+        run: go test -count=1 -tags smoke ./smoke/
+        working-directory: packages/envoy'
+}
+echo "case: a release workflow's step that the list of release checks names"
+root=$(fixture release-listed)
+smoke_package "$root"
+cat > "$root/.github/workflows/release.yaml" <<'YAML'
+name: Release
+on:
+  push:
+    branches: [main]
+jobs:
+  image:
+    runs-on: ubuntu-24.04
+    env:
+      FIXTURE_SMOKE_IMAGE: fixture-smoke:latest
+    steps:
+      - name: Build the image the smoke test runs against
+        run: docker build -t "$FIXTURE_SMOKE_IMAGE" .
+      - name: Smoke-test the built image
+        run: go test -count=1 -tags smoke ./smoke/
+        working-directory: packages/envoy
+YAML
+cat > "$root/.github/release-checks.yaml" <<'YAML'
+checks:
+  - workflow: .github/workflows/release.yaml
+    job: image
+    step: Smoke-test the built image
+    artifact: the image the job's build step tagged FIXTURE_SMOKE_IMAGE
+YAML
+run_check "$root"
+passes "release-listed: a listed step whose go test reads what its job built passes"
+
+echo "case: a release workflow's step that runs go test over the source, unlisted"
+root=$(fixture release-go-source)
+cat > "$root/.github/workflows/release.yaml" <<'YAML'
+name: Release
+on:
+  push:
+    branches: [main]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Unit test before the release
+        run: go test -count=1 ./unit/
+        working-directory: packages/envoy
+YAML
+run_check "$root"
+check "release-go-source: fails" "$(is "$status" 1)"
+check "release-go-source: names the release step and its go test" \
+  "$(contains "$out" '^check-test-reach: release: .github/workflows/release.yaml:[0-9]*: Unit test before the release: it runs `go test -count=1 ./unit/` over the tree.s source in a release workflow')"
+
+echo "case: a listed release step whose go test reads no variable its own job built"
+root=$(fixture release-unbuilt)
+smoke_package "$root"
+cat > "$root/.github/workflows/release.yaml" <<'YAML'
+name: Release
+on:
+  push:
+    branches: [main]
+jobs:
+  image:
+    runs-on: ubuntu-24.04
+    env:
+      FIXTURE_SMOKE_TARGET: example
+    steps:
+      - name: Get ready
+        run: echo ready
+      - name: Smoke-test the target
+        run: go test -count=1 -tags smoke ./smoke/
+        working-directory: packages/envoy
+YAML
+cat > "$root/.github/release-checks.yaml" <<'YAML'
+checks:
+  - workflow: .github/workflows/release.yaml
+    job: image
+    step: Smoke-test the target
+    artifact: the target
+YAML
+run_check "$root"
+check "release-unbuilt: fails" "$(is "$status" 1)"
+check "release-unbuilt: names the entry" \
+  "$(contains "$out" '^check-test-reach: release: .github/release-checks.yaml:2: .github/workflows/release.yaml / image / Smoke-test the target: it runs go test, and its environment holds no variable an earlier step of its job built')"
+
+# Race-impossible tests: a //go:build !race file, and a test that reads raceEnabled, count as run
+# only by a step without -race whose -run and -skip select them; a //go:build race file only by
+# a -race step.
+race_job() {
+  required_job "$1" race '    runs-on: ubuntu-24.04
+    steps:
+      - name: Race-test the racy package
+        run: go test -count=1 -race ./racy/
+        working-directory: packages/envoy'
+}
+echo "case: a test in a //go:build !race file of a package only a -race step runs"
+root=$(fixture norace-file)
+unit_only "$root"
+go_test_file "$root/packages/envoy/racy/racy_test.go" racy "" TestUnderTheDetector
+go_test_file "$root/packages/envoy/racy/norace_test.go" racy '!race' TestTooSlowForTheDetector
+race_job "$root"
+run_check "$root"
+check "norace-file: fails" "$(is "$status" 1)"
+check "norace-file: names TestTooSlowForTheDetector" \
+  "$(contains "$out" '^check-test-reach: unrun: packages/envoy/racy/norace_test.go:[0-9]*: TestTooSlowForTheDetector: ')"
+check "norace-file: and not the test the -race step runs" "$(is "$(contains "$out" 'TestUnderTheDetector')" false)"
+
+echo "case: a test that reads raceEnabled in a package only a -race step runs"
+root=$(fixture race-enabled)
+unit_only "$root"
+mkdir -p "$root/packages/envoy/racy"
+printf '//go:build race\n\npackage racy\n\nconst raceEnabled = true\n' > "$root/packages/envoy/racy/race_enabled_test.go"
+printf '//go:build !race\n\npackage racy\n\nconst raceEnabled = false\n' > "$root/packages/envoy/racy/race_disabled_test.go"
+cat > "$root/packages/envoy/racy/storm_test.go" <<'GO'
+package racy
+
+import "testing"
+
+func TestTheStormAtFullSize(t *testing.T) {
+	connections := 500
+	if raceEnabled {
+		connections = 200
+	}
+	_ = connections
+}
+GO
+race_job "$root"
+run_check "$root"
+check "race-enabled: fails" "$(is "$status" 1)"
+check "race-enabled: names TestTheStormAtFullSize and why" \
+  "$(contains "$out" '^check-test-reach: unrun: packages/envoy/racy/storm_test.go:5: TestTheStormAtFullSize: it reads raceEnabled')"
+required_job "$root" storm '    runs-on: ubuntu-24.04
+    steps:
+      - name: The storm at full size
+        run: go test -count=1 -run '"'"'^(TestTheStormAtFullSize)$'"'"' ./racy/
+        working-directory: packages/envoy'
+run_check "$root"
+passes "race-enabled: and passes once a step without -race selects it"
+
+echo "case: a test added to bus/norace_test.go while the plain step's -run list stays as it was"
+root=$(fixture bus-norace)
+unit_only "$root"
+go_test_file "$root/packages/envoy/internal/bus/bus_test.go" bus "" TestTheBusDelivers
+go_test_file "$root/packages/envoy/internal/bus/norace_test.go" bus '!race' TestTheFloodAtFullSize
+required_job "$root" bus '    runs-on: ubuntu-24.04
+    steps:
+      - name: Race-test the bus
+        run: go test -count=1 -race ./internal/bus/
+        working-directory: packages/envoy
+      - name: Test what the race build cannot run
+        run: go test -count=1 -run '"'"'^(TestTheFloodAtFullSize)$'"'"' ./internal/bus/
+        working-directory: packages/envoy'
+run_check "$root"
+passes "bus-norace: the bus as the -run list names it passes"
+printf '\nfunc TestAddedLater(t *testing.T) {}\n' >> "$root/packages/envoy/internal/bus/norace_test.go"
+run_check "$root"
+check "bus-norace: fails once norace_test.go holds a test the -run list does not name" "$(is "$status" 1)"
+check "bus-norace: names TestAddedLater" \
+  "$(contains "$out" '^check-test-reach: unrun: packages/envoy/internal/bus/norace_test.go:[0-9]*: TestAddedLater: each required step that builds it')"
+
+echo "case: a test in a //go:build race file of a package no -race step runs"
+root=$(fixture race-file)
+go_test_file "$root/packages/envoy/racy/racy_test.go" racy "" TestPlain
+go_test_file "$root/packages/envoy/racy/race_only_test.go" racy race TestOnlyUnderTheDetector
+run_check "$root"
+check "race-file: fails" "$(is "$status" 1)"
+check "race-file: names TestOnlyUnderTheDetector" \
+  "$(contains "$out" '^check-test-reach: unrun: packages/envoy/racy/race_only_test.go:[0-9]*: TestOnlyUnderTheDetector: `//go:build race` holds for none')"
+
+echo "case: a Go module with a test no step runs"
+root=$(fixture module-unrun)
+mkdir -p "$root/tools/extra"
+printf 'module example.com/extra\n\ngo 1.27\n' > "$root/tools/extra/go.mod"
+go_test_file "$root/tools/extra/extra_test.go" extra "" TestTheExtraModule
+run_check "$root"
+check "module-unrun: fails" "$(is "$status" 1)"
+check "module-unrun: names TestTheExtraModule" \
+  "$(contains "$out" '^check-test-reach: unrun: tools/extra/extra_test.go:[0-9]*: TestTheExtraModule: no required step.s go test runs its package, tools/extra')"
+
+echo "case: a package the only step that runs its module leaves out by its exclusion list"
+root=$(fixture excluded-package)
+go_test_file "$root/packages/envoy/excluded/excluded_test.go" excluded "" TestLeftOut
+sed -i "s#        run: go test -v -count=1 ./...#        run: go list ./... | grep -Ev '/excluded\$' | xargs go test -v -count=1#" \
+  "$root/.github/workflows/ci.yaml"
+run_check "$root"
+check "excluded-package: fails" "$(is "$status" 1)"
+check "excluded-package: names TestLeftOut" \
+  "$(contains "$out" '^check-test-reach: unrun: packages/envoy/excluded/excluded_test.go:[0-9]*: TestLeftOut: no required step.s go test runs its package')"
+check "excluded-package: and not the tests the list keeps" "$(is "$(contains "$out" 'TestUnit')" false)"
+
+# Constraints and file-name suffixes, against each test step's GOOS, GOARCH and tags. A go vet
+# for darwin compiles the package for darwin and runs none of its tests.
+vet_darwin() {
+  required_job "$1" vet-darwin '    runs-on: ubuntu-24.04
+    steps:
+      - name: Vet the unit package for darwin
+        run: GOOS=darwin go vet ./unit/
+        working-directory: packages/envoy'
+}
+echo "case: a //go:build darwin test file in a package whose only darwin step is a go vet"
+root=$(fixture darwin-build)
+go_test_file "$root/packages/envoy/unit/darwin_build_test.go" unit darwin TestOnDarwin
+vet_darwin "$root"
+run_check "$root"
+check "darwin-build: fails" "$(is "$status" 1)"
+check "darwin-build: names TestOnDarwin" \
+  "$(contains "$out" '^check-test-reach: unrun: packages/envoy/unit/darwin_build_test.go:[0-9]*: TestOnDarwin: `//go:build darwin` holds for none')"
+required_job "$root" darwin '    runs-on: macos-15
+    steps:
+      - name: Test the unit package on darwin
+        run: go test -count=1 ./unit/
+        working-directory: packages/envoy'
+run_check "$root"
+passes "darwin-build: and passes once a step on a macos runner runs the package"
+
+echo "case: a *_darwin_test.go file in a package whose only darwin step is a go vet"
+root=$(fixture darwin-name)
+go_test_file "$root/packages/envoy/unit/prompt_darwin_test.go" unit "" TestThePromptOnDarwin
+vet_darwin "$root"
+run_check "$root"
+check "darwin-name: fails" "$(is "$status" 1)"
+check "darwin-name: names TestThePromptOnDarwin" \
+  "$(contains "$out" '^check-test-reach: unrun: packages/envoy/unit/prompt_darwin_test.go:[0-9]*: TestThePromptOnDarwin: its file name.s `darwin` holds for none')"
+
+echo "case: a test file whose //go:build constraint no step that runs tests meets"
+root=$(fixture constraint-unmet)
+go_test_file "$root/packages/envoy/unit/s390x_test.go" unit 'linux && s390x' TestOnS390x
+run_check "$root"
+check "constraint-unmet: fails" "$(is "$status" 1)"
+check "constraint-unmet: names TestOnS390x" \
+  "$(contains "$out" '^check-test-reach: unrun: packages/envoy/unit/s390x_test.go:[0-9]*: TestOnS390x: `//go:build linux && s390x` holds for none')"
+
+# A tool a step reaches through `bun run`: what it runs is read through the `legion: runs - `
+# lines of its header, and a package script its source names that no such line names fails.
+echo "case: a tool that names, in a runs line, a package script with a preload no required job passes"
+root=$(fixture tool-runs-preload)
+printf '%s\n' '{ "name": "web", "scripts": { "test": "bun test", "test:cold": "bun test --preload ./hold.ts", "repeat": "bun tools/repeat.ts" } }' \
+  > "$root/packages/web/package.json"
+printf 'export {};\n' > "$root/packages/web/hold.ts"
+mkdir -p "$root/packages/web/tools"
+cat > "$root/packages/web/tools/repeat.ts" <<'TS'
+// legion: tool - repeats a lane of the web tests, for a person who chases a row that fails only sometimes.
+// legion: runs - test:cold
+
+console.log("repeating the cold lane");
+TS
+cat > "$root/.github/workflows/web-repeat.yaml" <<'YAML'
+name: Web repeated by the tool
+# legion: tool - repeats the web tests' cold lane through the repeat tool, for a person who chases a row.
+on:
+  pull_request:
+    paths:
+      - .github/workflows/web-repeat.yaml
+jobs:
+  repeat:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: The cold lane through the tool
+        run: bun run repeat
+        working-directory: packages/web
+YAML
+run_check "$root"
+check "tool-runs-preload: fails" "$(is "$status" 1)"
+check "tool-runs-preload: names the step and the preload the tool's runs line comes to" \
+  "$(contains "$out" '^check-test-reach: outside: .github/workflows/web-repeat.yaml:[0-9]*: The cold lane through the tool: its workflow carries the tool line, and it runs packages/web/flag.test.ts with --preload packages/web/hold.ts')"
+
+echo "case: a step that uses a local action whose step runs that test"
+root=$(fixture action-runs-preload)
+printf '%s\n' '{ "name": "web", "scripts": { "test": "bun test", "test:cold": "bun test --preload ./hold.ts" } }' \
+  > "$root/packages/web/package.json"
+printf 'export {};\n' > "$root/packages/web/hold.ts"
+mkdir -p "$root/.github/actions/cold-lane"
+cat > "$root/.github/actions/cold-lane/action.yml" <<'YAML'
+name: Cold lane
+description: Runs the web tests with the preload that holds each lazy load back.
+runs:
+  using: composite
+  steps:
+    - name: The cold lane
+      shell: bash
+      run: bun run test:cold
+      working-directory: packages/web
+YAML
+cat > "$root/.github/workflows/web-cold.yaml" <<'YAML'
+name: Web cold
+# legion: tool - runs the web tests' cold lane, for a person who chases a late load.
+on:
+  schedule:
+    - cron: "5 6 * * 2"
+jobs:
+  cold:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: The cold lane through the action
+        uses: ./.github/actions/cold-lane
+YAML
+run_check "$root"
+check "action-runs-preload: fails" "$(is "$status" 1)"
+check "action-runs-preload: names the step that uses the action, and the preload" \
+  "$(contains "$out" '^check-test-reach: schedule: .github/workflows/web-cold.yaml:[0-9]*: The cold lane through the action (.github/actions/cold-lane/action.yml): its workflow carries the tool line, and it runs packages/web/flag.test.ts with --preload packages/web/hold.ts')"
+
+echo "case: a tool whose source names a package script that no runs line names"
+root=$(fixture tool-unlisted)
+printf '%s\n' '{ "name": "web", "scripts": { "test": "bun test", "check-all": "bun tools/check-all.ts" } }' \
+  > "$root/packages/web/package.json"
+mkdir -p "$root/packages/web/tools"
+cat > "$root/packages/web/tools/check-all.ts" <<'TS'
+// legion: tool - runs the web package's tests before a commit, for a person who runs it by hand.
+
+const script = "test";
+Bun.spawnSync(["bun", "run", script]);
+TS
+required_job "$root" check-all '    runs-on: ubuntu-24.04
+    steps:
+      - name: Check all of the web package
+        run: bun run check-all
+        working-directory: packages/web'
+run_check "$root"
+check "tool-unlisted: fails" "$(is "$status" 1)"
+check "tool-unlisted: names the tool and the script" \
+  "$(contains "$out" '^check-test-reach: runs: packages/web/tools/check-all.ts:3: test: the tool names the package script test of packages/web/package.json in a string, and no `legion: runs - ` line')"
+sed -i '1a // legion: runs - test' "$root/packages/web/tools/check-all.ts"
+run_check "$root"
+passes "tool-unlisted: and passes once a runs line names it"
+
+# The not-a-test line marks only a script that acts on GitHub, a release or a deployment and
+# judges no code: a harness, or a script whose header calls it a test or a proof, fails on it,
+# whatever its name.
+echo "case: a *.test.sh harness that carries the not-a-test line"
+root=$(fixture testsh-not-a-test)
+printf '#!/usr/bin/env bash\n# legion: not a test - checks the flags file by hand.\n# Reads the flags file.\necho ok\n' \
+  > "$root/scripts/flags.test.sh"
+run_check "$root"
+check "testsh-not-a-test: fails" "$(is "$status" 1)"
+check "testsh-not-a-test: names the harness" \
+  "$(contains "$out" '^check-test-reach: script: scripts/flags.test.sh:2: flags.test.sh: it is a harness (\*.test.sh), and it carries `legion: not a test - `')"
+
+echo "case: a script a workflow runs to cancel runs, with the not-a-test line"
+root=$(fixture cancel-script)
+printf '#!/usr/bin/env bash\n# legion: not a test - cancels the merge-group runs a newer queue entry replaced.\n# The merge-group runs the queue has replaced, cancelled one by one.\necho cancel\n' \
+  > "$root/.github/scripts/cancel-replaced.sh"
+cat > "$root/.github/workflows/cancel.yaml" <<'YAML'
+name: Cancel
+on: pull_request
+jobs:
+  cancel:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Cancel the replaced runs
+        run: .github/scripts/cancel-replaced.sh
+YAML
+run_check "$root"
+passes "cancel-script: passes"
+
+echo "case: a script not named *.test.sh whose header calls it a proof, with the not-a-test line"
+root=$(fixture proof-not-a-test)
+printf '#!/usr/bin/env bash\n# legion: not a test - prints what the reviewer reads.\n# A proof that the store keeps every row it was handed.\necho proof\n' \
+  > "$root/scripts/store-rows.sh"
+run_check "$root"
+check "proof-not-a-test: fails" "$(is "$status" 1)"
+check "proof-not-a-test: names the script" \
+  "$(contains "$out" '^check-test-reach: script: scripts/store-rows.sh:2: store-rows.sh: its header calls it a test, a proof or a smoke test, and it carries `legion: not a test - `')"
 
 summary "check-test-reach.sh"

@@ -3545,6 +3545,33 @@ check "fails" "$(is "$status" 1)"
 check "names the output and says that step writes no filter's verdict" \
   "$(contains "$out" "::error file=.github/workflows/ci.yaml::the changes job's output image reads steps.note.outputs.image, and step note is no dorny/paths-filter step of the job, so it writes no filter's verdict and the output is empty on every run")"
 
+echo "case: an output its filter or the unnamed-file step makes true"
+# A job's output is true where its filter matches or where the pull request changes a file no
+# filter names, which the changes job's unnamed-file step reports in its one output, `found`.
+# Rule 19 takes that step's `found` beside the filter's verdict; a second term that reads any
+# other step of the job is empty on every run, as any such reference is.
+# unnamed_step <root> <step id>: gives the changes job the unnamed-file step and makes the image
+# output read the filter or steps.<step id>.outputs.found.
+unnamed_step() {
+  local root=$1 step=$2
+  replace "$root/.github/workflows/ci.yaml" '      image: ${{ steps.filter.outputs.image }}' \
+    "      image: \${{ steps.filter.outputs.image == 'true' || steps.$step.outputs.found == 'true' }}"
+  replace "$root/.github/workflows/ci.yaml" "    steps:"$'\n'"      - uses: dorny/paths-filter@v4" \
+    $'    steps:\n      - name: Find a changed file no filter names\n        id: '"$step"$'\n        run: echo found=false >> "$GITHUB_OUTPUT"\n      - uses: dorny/paths-filter@v4'
+}
+root=$(fixture output-unnamed)
+unnamed_step "$root" unnamed
+run_check "$root"
+check "output-unnamed: the filter's verdict or the unnamed-file step's passes" "$(is "$status" 0)"
+check "output-unnamed: and says nothing of the output" "$(is "$(contains "$out" "the changes job's output image")" false)"
+
+root=$(fixture output-unnamed-other-step)
+unnamed_step "$root" note
+run_check "$root"
+check "output-unnamed-other-step: a second term reading another step fails" "$(is "$status" 1)"
+check "output-unnamed-other-step: names the output and the step that writes no filter's verdict" \
+  "$(contains "$out" "::error file=.github/workflows/ci.yaml::the changes job's output image reads steps.note.outputs.found, and step note is no dorny/paths-filter step of the job")"
+
 echo "case: an output naming a filter the filters file does not hold"
 # Renaming the filter leaves EXCLUDED naming one the file has not got as well, which is its own
 # refusal; what this case is about is the output that now reads nothing.

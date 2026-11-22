@@ -3374,8 +3374,10 @@ SCRIPT_TEST_GATES = [
         (".github/workflows/dispatch-browser.yaml", "its step-reader case reads it, a workflow a job of ci.yaml calls"),
         (".github/workflows/docs-site.yaml", "its step-reader case reads it, a workflow a job of ci.yaml calls"),
         (".github/workflows/worker-image.yaml", "its step-reader case reads it, a workflow a job of ci.yaml calls"),
+        (".github/actions/*/action.yml", "its step-reader case reads the local composite action a step of those workflows uses, as steps_of follows it"),
         ("packages/envoy/scripts/database-skips.sh", "its last case hashes this script, the one AUDITED_SCRIPTS reads"),
         ("packages/envoy/scripts/backend-count.sh", "its last case hashes this script, which AUDITED_SCRIPTS reads too"),
+        ("packages/envoy/infra/scripts/race-unit.sh", "its last case hashes this script, which AUDITED_SCRIPTS reads too"),
         (f"{SCRIPTS}/ci_job_reads.py", "its last case imports this file for the reads this gate declares"),
     ]),
     harness("check_test_reach_test", "Test the test-reach search", f"{SCRIPTS}/check-test-reach.test.sh", [
