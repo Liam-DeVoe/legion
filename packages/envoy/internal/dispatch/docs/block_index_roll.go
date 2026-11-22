@@ -213,7 +213,10 @@ var markVersionedDocuments = `
 // clears it, so whichever process of the build holds the lease next runs it. It answers owed only
 // once its transaction has committed, and nil where it fails. Before a horizon is proven the
 // cursor holds no row, so no debt can be recorded: such a tick owes the pass only while another
-// build serves (rollNow), and the process's next tick owes it otherwise.
+// build serves (rollNow), and the process's next tick owes it otherwise. A rollNow pass does not
+// count as the process's pass (objectPassFinished), so the process's first tick with a proven
+// horizon owes the pass however recently a rollNow pass ran: the other build may have removed or
+// made a document after it and stopped before that tick, and no event that tick reads names it.
 func (s *Service) readEventsAfterCursor(ctx context.Context, tick *BlockIndexTick) (full bool, owed *time.Time, err error) {
 	safe, err := s.blockIndexHorizon().Safe(ctx)
 	if err != nil {
@@ -370,7 +373,8 @@ const orphanedNodesSwept = 20
 const objectPassInterval = 10 * time.Minute
 
 // rollNow is the debt a tick answers while another build serves before any horizon is proven
-// (readEventsAfterCursor): no cursor row holds it, so the pass runs and no row is cleared.
+// (readEventsAfterCursor): no cursor row holds it, so the pass runs, no row is cleared, and the
+// pass does not count as the process's own (objectPassFinished).
 var rollNow time.Time
 
 // writeObjectNodesAnotherBuildWrote is the block-index tick's second step: while this build owes
@@ -436,10 +440,12 @@ func (s *Service) writeObjectNodesAnotherBuildWrote(ctx context.Context, tick *B
 	case more:
 		return more, nil
 	}
-	s.objectPassFinished.Store(s.now().UnixNano())
 	if owed == &rollNow {
+		// A pass no cursor row records is not the process's pass: its first tick with a proven
+		// horizon still owes one, which reads what another build did after this pass.
 		return false, nil
 	}
+	s.objectPassFinished.Store(s.now().UnixNano())
 	if _, err := s.store.Pool.Exec(ctx, `
 		update block_index_event_cursors set object_nodes_owed_at = null
 		where build_commit = $1 and object_nodes_owed_at = $2
