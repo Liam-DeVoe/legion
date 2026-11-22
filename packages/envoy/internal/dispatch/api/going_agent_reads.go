@@ -2,11 +2,11 @@ package api
 
 // going_agent_reads.go is the agent's two reads outside Dispatch, which the server makes for it,
 // since the agent holds no secret and reads nothing but its socket: a GitHub read, of a
-// repository Dispatch maps to a project the run's person can read, through the server's GitHub
-// App; and a web read, of an address the person's words or a tool result of the run names, which
-// must resolve to a public address, checked on every connection the read makes - after the DNS
-// answer and on each redirect - through its dialer's Control hook, so a name that resolves to a
-// public address once and a private one the next time cannot pass. A read stops at
+// repository that is the default repository of a project the run's person can read, through the
+// server's GitHub App; and a web read, of an address the person's words or a tool result of the
+// run names, which must resolve to a public address, checked on every connection the read makes -
+// after the DNS answer and on each redirect - through its dialer's Control hook, so a name that
+// resolves to a public address once and a private one the next time cannot pass. A read stops at
 // agentwire.CallBodyLimit or goingWebReadTime and says it was cut.
 
 import (
@@ -40,12 +40,13 @@ const (
 // goingRepositoryPart is an owner or a repository name as GitHub spells one.
 var goingRepositoryPart = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
 
-// githubRead reads a repository through the server's GitHub App: the repository must be one
-// Dispatch maps to a project (repo_projects), and that project one the run's person can read, as
-// the route table answers the person's own read of the project's architecture sources, a small
-// read any credential of the project may make, which the project scope check judges; the read is
-// GET of the path under the repository's API path, with an installation token of the App, its
-// body cut at agentwire.CallBodyLimit.
+// githubRead reads a repository through the server's GitHub App: the repository must be the
+// default repository of a project (projects.default_repo), under its new name where a rename pair
+// renames it away, and one such project one the run's person can read, as the route table answers
+// the person's own read of the project's architecture sources, a small read any credential of the
+// project may make, which the project scope check judges. Dispatch finds no project from a
+// repository in any other way. The read is GET of the path under the repository's API path, with
+// an installation token of the App, its body cut at agentwire.CallBodyLimit.
 func (a *AgentListener) githubRead(ctx context.Context, request agentwire.CallRequest, doer goingInProcess) (agentwire.CallAnswer, *agentwire.Error) {
 	owner, name, split := strings.Cut(request.Repository, "/")
 	if !split || !goingRepositoryPart.MatchString(owner) || !goingRepositoryPart.MatchString(name) || owner == ".." || name == ".." {
@@ -55,23 +56,29 @@ func (a *AgentListener) githubRead(ctx context.Context, request agentwire.CallRe
 	if refusal != nil {
 		return agentwire.CallAnswer{}, refusal
 	}
-	repo := refs.ExternalRepo(owner, name)
-	var project string
-	err := a.s.deps.Store.Pool.QueryRow(ctx, `select project from repo_projects where repo = $1`, repo).Scan(&project)
-	unmapped := goingAgentRefusal(agentwire.CodeRepositoryUnmapped,
-		"Dispatch maps %s to no project you can read, so the server does not read it", repo)
-	switch {
-	case errors.Is(err, pgx.ErrNoRows):
-		return agentwire.CallAnswer{}, unmapped
-	case err != nil:
-		return agentwire.CallAnswer{}, goingAgentFailed(agentwire.CallCall, err)
-	}
-	read, err := http.NewRequestWithContext(ctx, http.MethodGet, "/api/v1/projects/"+url.PathEscape(project)+"/architecture-sources", nil)
+	repo := a.s.deps.Renames.Canonical(refs.ExternalRepo(owner, name))
+	rows, err := a.s.deps.Store.Pool.Query(ctx, `select key from projects where default_repo = $1 order by key`, repo)
 	if err != nil {
 		return agentwire.CallAnswer{}, goingAgentFailed(agentwire.CallCall, err)
 	}
-	if answer := doer.serve(read); answer.status != 0 && answer.status != http.StatusOK {
-		return agentwire.CallAnswer{}, unmapped
+	projects, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return agentwire.CallAnswer{}, goingAgentFailed(agentwire.CallCall, err)
+	}
+	readable := false
+	for _, project := range projects {
+		read, err := http.NewRequestWithContext(ctx, http.MethodGet, "/api/v1/projects/"+url.PathEscape(project)+"/architecture-sources", nil)
+		if err != nil {
+			return agentwire.CallAnswer{}, goingAgentFailed(agentwire.CallCall, err)
+		}
+		if answer := doer.serve(read); answer.status == 0 || answer.status == http.StatusOK {
+			readable = true
+			break
+		}
+	}
+	if !readable {
+		return agentwire.CallAnswer{}, goingAgentRefusal(agentwire.CodeRepositoryUnmapped,
+			"%s is the default repository of no project you can read, so the server does not read it", repo)
 	}
 	if a.s.deps.GitHub == nil {
 		return agentwire.CallAnswer{}, goingAgentRefusal(agentwire.CodeGitHubUnavailable, "this server holds no GitHub App")

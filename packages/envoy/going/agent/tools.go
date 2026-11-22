@@ -72,7 +72,7 @@ var outsideReads = []contracts.DispatchTool{
 	{
 		Name: toolGitHubRead,
 		Description: "Read GitHub through Dispatch's GitHub App: a GET of a path under one repository's API path, such as pulls/12, " +
-			"issues/7/comments or contents/README.md. Only a repository Dispatch maps to a project the person can read is read.",
+			"issues/7/comments or contents/README.md. Only a repository that is the default repository of a project the person can read is read.",
 		Arguments: []contracts.ToolField{
 			{Name: "repository", Kind: contracts.ToolFieldString, Required: true, Description: "The repository as owner/name."},
 			{Name: "path", Kind: contracts.ToolFieldString, Required: true, Description: "The path under the repository's API path, with its query, such as pulls/12/files?per_page=50."},

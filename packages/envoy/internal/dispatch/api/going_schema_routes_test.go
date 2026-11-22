@@ -371,8 +371,6 @@ func newGoingSchemaSeed(t *testing.T, rig goingWritesRig) *goingSchemaSeed {
 	f.direct = goingSchemaWrite[model.Message](s, http.MethodPost, "/api/v1/agents/"+goingPlanner+"/messages", map[string]any{
 		"body": "Where is the dashboard?", "delivery": "aside",
 	}).ID
-	// An issue's external reference names a repository mapped to the issue's project.
-	rig.fixture(t, "alice", http.MethodPut, "/api/v1/settings/repo-projects/acme/widgets", map[string]any{"project": "DEMO"})
 	f.ask, f.optionsAsk = s.newAsk(false), s.newAsk(true)
 	f.comment, f.suggestion = s.newComment(), s.newSuggestion()
 	f.mentioned, f.mentionedBlock = s.newMentioned()
@@ -503,7 +501,7 @@ func (items goingSchemaItemsOf) byID(tool string) []goingSchemaSet {
 // goingSchemaFresh is the items each tool's write spoils for the next call, which the seed makes
 // afresh before every call of that tool: an issue a call closes or claims, an ask it resolves or
 // answers, a comment it resolves, a document it edits or removes, a group or a priority it
-// deletes, a mapping, a source or a daemon it removes.
+// deletes, a source or a daemon it removes.
 var goingSchemaFresh = map[string][]string{
 	"dispatch_issue_update":               {"issue"},
 	"dispatch_claim":                      {"issue"},
@@ -516,7 +514,6 @@ var goingSchemaFresh = map[string][]string{
 	"dispatch_plan_approve":               {"issue"},
 	"dispatch_review":                     {"issue"},
 	"dispatch_result":                     {"result"},
-	"dispatch_unmap_repo":                 {"mapping"},
 	"dispatch_remove_architecture_source": {"source"},
 	"dispatch_unset_legion_daemon":        {"daemon"},
 	"dispatch_edit_session_group":         {"group"},
@@ -582,8 +579,6 @@ func (s *goingSchemaSeed) items(tool string) goingSchemaItemsOf {
 			items.document = s.newDocument()
 		case "editable":
 			s.newEditable(&items)
-		case "mapping":
-			s.rig.fixture(s.t, "alice", http.MethodPut, "/api/v1/settings/repo-projects/acme/arch", map[string]any{"project": "DEMO"})
 		case "source":
 			s.rig.fixture(s.t, "alice", http.MethodPut, "/api/v1/projects/DEMO/architecture-sources/acme/wide", map[string]any{"branch": "main"})
 		case "daemon":
@@ -639,7 +634,7 @@ func (items goingSchemaItemsOf) value(s *goingSchemaSeed, tool string) goingSche
 			return fmt.Sprintf("acme/widgets#%d", s.next())
 		case "repo":
 			switch tool {
-			case "dispatch_issue", "dispatch_issue_update", "dispatch_architecture_sync":
+			case "dispatch_issue", "dispatch_issue_update", "dispatch_architecture_sync", "dispatch_set_default_repository":
 				return "acme/arch"
 			case "dispatch_save_architecture_source", "dispatch_remove_architecture_source":
 				return "wide"
@@ -1098,20 +1093,10 @@ func (items goingSchemaItemsOf) repair(tool string, arguments map[string]any) {
 	}
 }
 
-// goingSchemaStateRefusals are the codes a route answers 400 with for a state no schema can
-// state, which the test does not count as a refusal of a call's shape, each with why. Each is
-// named in the words of the field whose value meets it.
-var goingSchemaStateRefusals = map[string]string{
-	"PROJECT_UNMAPPED": "an issue's external reference names a repository the repository settings map to no project",
-}
-
 // goingSchemaShapeRefusal reports whether a route's answer refuses a call for its shape: a 400,
 // a 413 or a 422 by its status, or a code that names the input as wrong (INVALID_*, *_INPUT,
-// *_REQUIRED, *VALIDATION*) at any status, and none of goingSchemaStateRefusals.
+// *_REQUIRED, *VALIDATION*) at any status.
 func goingSchemaShapeRefusal(status int, code string) bool {
-	if _, state := goingSchemaStateRefusals[code]; state {
-		return false
-	}
 	switch status {
 	case http.StatusBadRequest, http.StatusRequestEntityTooLarge, http.StatusUnprocessableEntity:
 		return true

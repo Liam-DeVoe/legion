@@ -72,12 +72,12 @@ var DispatchTools = []DispatchTool{
 		Name:        "dispatch_issue",
 		Description: "Create a native Dispatch issue for newly tracked work. Search first with dispatch search; if potentially duplicate issues exist, this returns 409 POSSIBLE_DUPLICATE unless --force is set after reading them, or, when the refusal cannot be recorded, creates the issue and names the near copy to read in the result. Where the spec is large, or changed in a way you cannot check alone, a fresh read-only reader can find its gaps and check its factual claims; a Legion architect can use `plan-gap-analyst` and `plan-reviewer`. A spec holding an ask block whose body breaks its content rule (one or more question paragraphs, then at most one bullet list of options, last) is refused with 400 INVALID_ASK_BLOCK. A check block whose ci_check names the CI check run that proves it carries no run, keeps when before_merge, names its negative_control, and holds no recorded result. A write that adds a check block, or changes a check's ci_check, run, when or negative_control, so that it breaks one of those rules is refused with 400 INVALID_CI_CHECK, which names the block and the rule. A check that already holds a result never becomes CI's: write a new check block under a new id. Create a project only when a person asks for one; work that spans projects goes in the project that owns most of it. Dispatch then runs the related-item check (waiting at most five seconds; dispatch related runs it without writing), and the result says, right after the line naming what was created, which items it found and how it searched, that it searched and found nothing, or that no check was made, why, and the dispatch search to run instead. With --force, the result also names each issue whose title you forced past. Do not use it when an existing issue already covers the work; read or update that issue instead. An issue is a native KEY or external owner/repo#n reference. An external reference addresses an existing Dispatch issue, including one linked to that GitHub pull request; only dispatch issue with --external creates a native issue.",
 		Arguments: []ToolField{
-			{Name: "project", Kind: ToolFieldString, Required: true, Description: "Project key for the new issue."},
+			{Name: "project", Kind: ToolFieldString, Required: true, Description: "Project key for the new issue. Every create needs one, also a create that names external.", Min: new(float64(1))},
 			{Name: "title", Kind: ToolFieldString, Required: true, Description: "Concise issue title, at most 1,000 characters.", Max: new(float64(1000))},
 			{Name: "parent", Kind: ToolFieldString, Description: "Optional parent issue."},
 			{Name: "blocked_by", Kind: ToolFieldArray, Description: "Issue keys this issue waits on; a key of any project, so work tracked elsewhere can be named. Dispatch refuses a dependency cycle.", Max: new(float64(20)), Item: &ToolField{Kind: ToolFieldString, Required: true, Min: new(float64(1))}},
 			{Name: "advances", Kind: ToolFieldArray, Description: "Ids of the deployment's priorities this issue advances, which dispatch priorities lists. A child inherits every priority the issues above it advance, so name here only what this issue adds.", Max: new(float64(20)), Item: &ToolField{Kind: ToolFieldString, Required: true, Min: new(float64(1))}},
-			{Name: "external", Kind: ToolFieldString, Description: "Optional external issue reference, owner/repo#n. Its repository is mapped to this project in repository settings (dispatch map-repo): a repository mapped to no project is refused with 400 PROJECT_UNMAPPED unless the deployment names a default project, and one mapped to another project with 400 EXTERNAL_PROJECT_MISMATCH."},
+			{Name: "external", Kind: ToolFieldString, Description: "Optional external issue reference, owner/repo#n: the GitHub issue to import into the project this call names. A reference already imported into that project answers its issue and creates nothing; one already imported into another project is refused with 400 EXTERNAL_PROJECT_MISMATCH."},
 			{Name: "force", Kind: ToolFieldBoolean, Description: "Create even though POSSIBLE_DUPLICATE listed similar issues; pass it only after reading them."},
 			{Name: "spec", Kind: ToolFieldString, Description: "Optional initial primary-document markdown. Write a spec as skill://dispatch-writing-specs says."},
 			{Name: "labels", Kind: ToolFieldArray, Description: "Optional initial labels, at most 20 labels of up to 40 characters.", Max: new(float64(20)), Item: &ToolField{Kind: ToolFieldString, Required: true, Min: new(float64(1)), Max: new(float64(40))}},
@@ -625,38 +625,11 @@ var DispatchTools = []DispatchTool{
 	},
 	{
 		Name:        "dispatch_list_repo_mappings",
-		Description: "List every GitHub repository Dispatch maps to a project, whether it is its project's default and the name it was renamed to. Use it to learn which project a repository's work and pull requests belong to.",
+		Description: "List the GitHub repository to project mappings as the last release left them, each with whether it was its project's default and the name it was renamed to. Nothing changes them any more, and Dispatch finds no project from a repository: a project's default repository is the one dispatch set-default-repository sets.",
 		Arguments:   []ToolField{},
 		Example:     json.RawMessage("{}"),
 		Routes: []ToolRoute{
 			{Method: "GET", Pattern: "/api/v1/settings/repo-projects"},
-		},
-	},
-	{
-		Name:        "dispatch_map_repo",
-		Description: "Map a GitHub repository to a project, or change its mapping: the project its pull requests and issues belong to, whether it is the project's one default repository, and the name it was renamed to. Use it when a person asks to connect a repository to a project. Undo does not change it back: change the setting again to put it back.",
-		Arguments: []ToolField{
-			{Name: "owner", Kind: ToolFieldString, Required: true, Description: "The GitHub owner of the repository, such as acme."},
-			{Name: "repo", Kind: ToolFieldString, Required: true, Description: "The repository's name without its owner, such as infra."},
-			{Name: "project", Kind: ToolFieldString, Required: true, Description: "The project key the repository maps to."},
-			{Name: "default", Kind: ToolFieldBoolean, Description: "Make it the project's one default repository."},
-			{Name: "renamed_to", Kind: ToolFieldString, Nullable: true, Description: "The owner/name the repository is called today; an empty text clears it, and absent or null leaves it."},
-		},
-		Example: json.RawMessage("{\"owner\":\"acme\",\"repo\":\"infra\",\"project\":\"DSP\"}"),
-		Routes: []ToolRoute{
-			{Method: "PUT", Pattern: "/api/v1/settings/repo-projects/{owner}/{repo}", Path: map[string]string{"owner": "owner", "repo": "repo"}, Body: []string{"project", "default", "renamed_to"}},
-		},
-	},
-	{
-		Name:        "dispatch_unmap_repo",
-		Description: "Remove a repository's mapping to its project. An issue that names the repository keeps it. Use it when a person asks to disconnect a repository. Undo does not change it back: change the setting again to put it back.",
-		Arguments: []ToolField{
-			{Name: "owner", Kind: ToolFieldString, Required: true, Description: "The GitHub owner of the repository, such as acme."},
-			{Name: "repo", Kind: ToolFieldString, Required: true, Description: "The repository's name without its owner, such as infra."},
-		},
-		Example: json.RawMessage("{\"owner\":\"acme\",\"repo\":\"infra\"}"),
-		Routes: []ToolRoute{
-			{Method: "DELETE", Pattern: "/api/v1/settings/repo-projects/{owner}/{repo}", Path: map[string]string{"owner": "owner", "repo": "repo"}},
 		},
 	},
 	{
@@ -759,6 +732,18 @@ var DispatchTools = []DispatchTool{
 		Example: json.RawMessage("{\"project\":\"DSP\",\"assignee\":\"ana@example.com\"}"),
 		Routes: []ToolRoute{
 			{Method: "PUT", Pattern: "/api/v1/projects/{key}/default-assignee", Path: map[string]string{"key": "project"}, Body: []string{"assignee"}},
+		},
+	},
+	{
+		Name:        "dispatch_set_default_repository",
+		Description: "Set or clear a project's default repository: the repository an issue of the project resolves to when neither the issue nor an issue above it names one. Use it when a person names the repository a project's work is done in. Undo does not change it back: change the setting again to put it back.",
+		Arguments: []ToolField{
+			{Name: "project", Kind: ToolFieldString, Required: true, Description: "Project key, such as DSP."},
+			{Name: "repo", Kind: ToolFieldString, Required: true, Nullable: true, Description: "The repository as owner/name, such as acme/infra, or null to clear the default."},
+		},
+		Example: json.RawMessage("{\"project\":\"DSP\",\"repo\":\"acme/infra\"}"),
+		Routes: []ToolRoute{
+			{Method: "PUT", Pattern: "/api/v1/projects/{key}/default-repository", Path: map[string]string{"key": "project"}, Body: []string{"repo"}},
 		},
 	},
 	{

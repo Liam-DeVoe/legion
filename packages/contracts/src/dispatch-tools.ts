@@ -932,7 +932,11 @@ export const dispatchToolSpecs = [
       `${RELATED_CHECK_RESULT} With --force, the result also names each issue whose title you forced past. ` +
       `Do not use it when an existing issue already covers the work; read or update that issue instead. ${ISSUE_REFERENCE}`,
     arguments: (z) => ({
-      project: z.string().describe("Project key for the new issue."),
+      project: z
+        .string({ min: 1 })
+        .describe(
+          "Project key for the new issue. Every create needs one, also a create that names external."
+        ),
       title: z
         .string({ max: ISSUE_TITLE_MAX })
         .describe("Concise issue title, at most 1,000 characters."),
@@ -952,7 +956,7 @@ export const dispatchToolSpecs = [
       external: z
         .string()
         .describe(
-          "Optional external issue reference, owner/repo#n. Its repository is mapped to this project in repository settings (dispatch map-repo): a repository mapped to no project is refused with 400 PROJECT_UNMAPPED unless the deployment names a default project, and one mapped to another project with 400 EXTERNAL_PROJECT_MISMATCH."
+          "Optional external issue reference, owner/repo#n: the GitHub issue to import into the project this call names. A reference already imported into that project answers its issue and creates nothing; one already imported into another project is refused with 400 EXTERNAL_PROJECT_MISMATCH."
         )
         .optional(),
       force: z

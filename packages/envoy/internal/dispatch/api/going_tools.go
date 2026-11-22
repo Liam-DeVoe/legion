@@ -666,12 +666,11 @@ var goingWriteTools = map[string]goingWriteTool{
 
 	// The tools whose spec binds their routes. A setting's value before is not read, so a
 	// setting's change is not undone: the person changes it again to put it back.
-	"dispatch_map_repo":                       {Undo: goingUndoNotUndone, Class: goingClassSetting, Event: "settings.repo_project.updated"},
-	"dispatch_unmap_repo":                     {Undo: goingUndoNotUndone, Class: goingClassSetting, Event: "settings.repo_project.updated"},
 	"dispatch_save_architecture_source":       {Undo: goingUndoNotUndone, Class: goingClassSetting, Event: "settings.architecture_source.updated"},
 	"dispatch_remove_architecture_source":     {Undo: goingUndoNotUndone, Class: goingClassSetting, Event: "settings.architecture_source.updated"},
 	"dispatch_sync_first_architecture_source": {Undo: goingUndoNotUndone, Class: goingClassSetting, Event: "architecture.synced"},
 	"dispatch_set_default_assignee":           {Undo: goingUndoNotUndone, Class: goingClassSetting, Event: "settings.project_default_assignee.updated"},
+	"dispatch_set_default_repository":         {Undo: goingUndoNotUndone, Class: goingClassSetting, Event: "project.updated"},
 	"dispatch_set_delivery_settings":          {Undo: goingUndoNotUndone, Class: goingClassSetting, Event: goingNoEvent},
 	"dispatch_set_legion_daemon":              {Undo: goingUndoNotUndone, Class: goingClassSetting, Event: goingNoEvent},
 	"dispatch_unset_legion_daemon":            {Undo: goingUndoNotUndone, Class: goingClassSetting, Event: goingNoEvent},

@@ -298,8 +298,8 @@ const (
 	// CodeSignInUnavailable is a call whose person's membership the sign-in issuer could not
 	// confirm now; the call can be made again.
 	CodeSignInUnavailable = "SIGN_IN_UNAVAILABLE"
-	// CodeRepositoryUnmapped is a GitHub read of a repository Dispatch maps to no project the
-	// run's person can read.
+	// CodeRepositoryUnmapped is a GitHub read of a repository that is the default repository of
+	// no project the run's person can read.
 	CodeRepositoryUnmapped = "GITHUB_REPOSITORY_UNMAPPED"
 	// CodeGitHubUnavailable is a GitHub read the server cannot make: no GitHub App, or GitHub
 	// refused or failed.

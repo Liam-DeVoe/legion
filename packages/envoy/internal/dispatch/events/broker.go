@@ -444,7 +444,9 @@ func Quiet(e model.Event) bool {
 		// decision and agreed with it, which asks its agent for nothing. A priority's write is
 		// the deployment's own configuration of what work advances, which open pages refetch on
 		// and nobody is asked anything by. A command-bar plan's change is the person's own
-		// bookkeeping, which their pages read again on and which wakes no agent.
+		// bookkeeping, which their pages read again on and which wakes no agent. This build
+		// writes no settings.repo_project.updated; the case stays for the events and outbox rows
+		// an earlier build wrote (outbox/publisher.go).
 		return true
 	case "ask.edited":
 		// A version move of an approval request that an earlier version already moved since it was

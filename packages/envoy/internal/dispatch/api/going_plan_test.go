@@ -895,7 +895,6 @@ func TestAChangeNamesTheIssueAnEarlierCreateMakes(t *testing.T) {
 		}
 	})
 
-	rig.exec(t, `insert into repo_projects (repo, project, created_by) values ('acme/held', 'DEMO', '{"kind":"system","id":"test"}'::jsonb)`)
 	for _, found := range []struct {
 		name, external, title string
 		// landed makes the create's request record a landing beside the issue it found. The route

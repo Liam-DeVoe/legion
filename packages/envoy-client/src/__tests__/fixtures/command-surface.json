@@ -1,5 +1,5 @@
 {
-  "commands": 136,
+  "commands": 135,
   "refusals": 29,
   "runs": [
     {
@@ -2092,43 +2092,6 @@
       "outcome": "result",
       "text": [
         "{\"route\":\"GET /api/v1/users\"}"
-      ]
-    },
-    {
-      "tool": "dispatch_map_repo",
-      "call": "valid",
-      "args": {
-        "owner": "acme",
-        "project": "DSP",
-        "repo": "infra"
-      },
-      "requests": [
-        {
-          "method": "PUT",
-          "path": "/api/v1/settings/repo-projects/acme/infra",
-          "headers": {
-            "Accept": "application/json",
-            "Authorization": "Bearer secret",
-            "Content-Type": "application/json"
-          },
-          "body": {
-            "actor": {
-              "id": "session-1",
-              "kind": "session",
-              "origin": {
-                "cwd": "/workspace",
-                "host": "omp",
-                "machine": "test-machine",
-                "session_title": "Record the command surface"
-              }
-            },
-            "project": "DSP"
-          }
-        }
-      ],
-      "outcome": "result",
-      "text": [
-        "{\"route\":\"PUT /api/v1/settings/repo-projects/{owner}/{repo}\"}"
       ]
     },
     {
@@ -4277,6 +4240,42 @@
       ]
     },
     {
+      "tool": "dispatch_set_default_repository",
+      "call": "valid",
+      "args": {
+        "project": "DSP",
+        "repo": "acme/infra"
+      },
+      "requests": [
+        {
+          "method": "PUT",
+          "path": "/api/v1/projects/DSP/default-repository",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret",
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "actor": {
+              "id": "session-1",
+              "kind": "session",
+              "origin": {
+                "cwd": "/workspace",
+                "host": "omp",
+                "machine": "test-machine",
+                "session_title": "Record the command surface"
+              }
+            },
+            "repo": "acme/infra"
+          }
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "{\"route\":\"PUT /api/v1/projects/{key}/default-repository\"}"
+      ]
+    },
+    {
       "tool": "dispatch_set_delivery_settings",
       "call": "valid",
       "args": {
@@ -4525,41 +4524,6 @@
       "outcome": "result",
       "text": [
         "{\"route\":\"POST /api/v1/projects/{key}/architecture-source/sync\"}"
-      ]
-    },
-    {
-      "tool": "dispatch_unmap_repo",
-      "call": "valid",
-      "args": {
-        "owner": "acme",
-        "repo": "infra"
-      },
-      "requests": [
-        {
-          "method": "DELETE",
-          "path": "/api/v1/settings/repo-projects/acme/infra",
-          "headers": {
-            "Accept": "application/json",
-            "Authorization": "Bearer secret",
-            "Content-Type": "application/json"
-          },
-          "body": {
-            "actor": {
-              "id": "session-1",
-              "kind": "session",
-              "origin": {
-                "cwd": "/workspace",
-                "host": "omp",
-                "machine": "test-machine",
-                "session_title": "Record the command surface"
-              }
-            }
-          }
-        }
-      ],
-      "outcome": "result",
-      "text": [
-        "{\"route\":\"DELETE /api/v1/settings/repo-projects/{owner}/{repo}\"}"
       ]
     },
     {

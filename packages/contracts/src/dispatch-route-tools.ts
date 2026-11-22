@@ -345,47 +345,10 @@ export const dispatchRouteToolSpecs = [
     name: "dispatch_list_repo_mappings",
     example: {},
     description:
-      "List every GitHub repository Dispatch maps to a project, whether it is its project's default and the name it was renamed to. Use it to learn which project a repository's work and pull requests belong to.",
+      "List the GitHub repository to project mappings as the last release left them, each with whether it was its project's default and the name it was renamed to. Nothing changes them any more, and Dispatch finds no project from a repository: a project's default repository is the one dispatch set-default-repository sets.",
     arguments: () => ({}),
     strict: true,
     routes: get("/api/v1/settings/repo-projects"),
-  },
-  {
-    name: "dispatch_map_repo",
-    example: { owner: "acme", repo: "infra", project: "DSP" },
-    description: `Map a GitHub repository to a project, or change its mapping: the project its pull requests and issues belong to, whether it is the project's one default repository, and the name it was renamed to. Use it when a person asks to connect a repository to a project. ${NOT_UNDONE_SETTING}`,
-    arguments: (z) => ({
-      owner: z.string().describe(REPOSITORY_OWNER),
-      repo: z.string().describe(REPOSITORY_NAME),
-      project: z.string().describe("The project key the repository maps to."),
-      default: z.boolean().describe("Make it the project's one default repository.").optional(),
-      renamed_to: z
-        .string()
-        .nullable()
-        .optional()
-        .describe(
-          "The owner/name the repository is called today; an empty text clears it, and absent or null leaves it."
-        ),
-    }),
-    strict: true,
-    routes: send("PUT", "/api/v1/settings/repo-projects/{owner}/{repo}", {
-      params: { owner: "owner", repo: "repo" },
-      body: ["project", "default", "renamed_to"],
-    }),
-  },
-  {
-    name: "dispatch_unmap_repo",
-    example: { owner: "acme", repo: "infra" },
-    description: `Remove a repository's mapping to its project. An issue that names the repository keeps it. Use it when a person asks to disconnect a repository. ${NOT_UNDONE_SETTING}`,
-    arguments: (z) => ({
-      owner: z.string().describe(REPOSITORY_OWNER),
-      repo: z.string().describe(REPOSITORY_NAME),
-    }),
-    strict: true,
-    routes: send("DELETE", "/api/v1/settings/repo-projects/{owner}/{repo}", {
-      params: { owner: "owner", repo: "repo" },
-      body: [],
-    }),
   },
   {
     name: "dispatch_check_app_installation",
@@ -493,6 +456,23 @@ export const dispatchRouteToolSpecs = [
     routes: send("PUT", "/api/v1/projects/{key}/default-assignee", {
       params: { key: "project" },
       body: ["assignee"],
+    }),
+  },
+  {
+    name: "dispatch_set_default_repository",
+    example: { project: "DSP", repo: "acme/infra" },
+    description: `Set or clear a project's default repository: the repository an issue of the project resolves to when neither the issue nor an issue above it names one. Use it when a person names the repository a project's work is done in. ${NOT_UNDONE_SETTING}`,
+    arguments: (z) => ({
+      project: z.string().describe(PROJECT_KEY),
+      repo: z
+        .string()
+        .nullable()
+        .describe("The repository as owner/name, such as acme/infra, or null to clear the default."),
+    }),
+    strict: true,
+    routes: send("PUT", "/api/v1/projects/{key}/default-repository", {
+      params: { key: "project" },
+      body: ["repo"],
     }),
   },
   {
