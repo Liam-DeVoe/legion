@@ -1151,17 +1151,22 @@ AIRLOCK_FUZZ_SCRIPT = "go test -fuzz FuzzAirlock -fuzztime=120s -run FuzzAirlock
 AIRLOCK_BUILD_STEP = "Build the Lean model"
 AIRLOCK_AXIOMS_STEP = "Print the theorems' axioms"
 AIRLOCK_AXIOMS_SCRIPT = f"{ENVOY}/scripts/airlock-lean-axioms.sh"
+# Go's cleanup detector: at each collection the runtime reports a cleanup or a finalizer whose
+# closure or argument reaches the object it is attached to. internal/dispatch/docs is the only
+# package of the repository that registers a cleanup (runtime.AddCleanup in roomcursor.go and
+# tree.go), so every run of its tests runs under it: envoy-go-race-docs' race run below, and the
+# plain run of what the race build cannot run (race_impossible_script), and no job runs the
+# package a third time for the detector alone.
+CLEANUP_DETECTOR = "GODEBUG=checkfinalizers=1"
+CLEANUP_DETECTOR_PACKAGES = ("internal/dispatch/docs",)
 # The document service's race step runs under .github/scripts/race_memory.py, which fails it with
 # a log when the race binary's memory passes RACE_MEM_LIMIT_KB (the step's comment in
-# ci-job-envoy-go-race-docs.yaml says why), so its line is a shell assignment and a script, not a
-# go command the simple form reduces.
+# ci-job-envoy-go-race-docs.yaml says why), and under the cleanup detector, so its line is shell
+# assignments and a script, not a go command the simple form reduces. GODEBUG is a GO* name,
+# which is outside ENV_ALLOWED wherever it is set, so the step is pinned whole.
 RACE_DOCS_STEP = "Race-test the document service"
-RACE_DOCS_SCRIPT = ("RACE_MEM_LIMIT_KB=8388608 ../../.github/scripts/race_memory.py "
+RACE_DOCS_SCRIPT = (f"{CLEANUP_DETECTOR} RACE_MEM_LIMIT_KB=8388608 ../../.github/scripts/race_memory.py "
                     "go test -json -race -count=1 -timeout 60m ./internal/dispatch/docs/")
-# The same package under Go's cleanup detector. GODEBUG is a GO* name, which is outside
-# ENV_ALLOWED wherever it is set, so this step too is pinned whole rather than reduced.
-FINALIZERS_STEP = "Test the document service under the cleanup detector"
-FINALIZERS_SCRIPT = "GODEBUG=checkfinalizers=1 go test -v -count=1 -timeout 34m ./internal/dispatch/docs/"
 # Every lane whose tests start a Dispatch process sizes its Postgres service in its CEILING_STEP,
 # which runs .github/scripts/pg-connection-ceiling.sh. The check reads the step's run: line, not
 # what the script runs, so each such gate declares the script, and the go run on the script's line
@@ -2125,8 +2130,10 @@ def race_impossible_tests(root, packages=None) -> dict:
 def race_impossible_script(packages) -> str:
     """A plain run of the tests the detector makes impossible: one `go test` per package
     of `packages` (race_impossible_tests), each naming that package's own tests, anchored and
-    sorted, in its -run, under a 10-minute timeout."""
-    return "\n".join(f"go test -count=1 -timeout 10m -run '^({'|'.join(sorted(names))})$' ./{under}"
+    sorted, in its -run, under a 10-minute timeout, and under the cleanup detector for a package
+    of CLEANUP_DETECTOR_PACKAGES."""
+    return "\n".join(f"{CLEANUP_DETECTOR + ' ' if under in CLEANUP_DETECTOR_PACKAGES else ''}"
+                     f"go test -count=1 -timeout 10m -run '^({'|'.join(sorted(names))})$' ./{under}"
                      for under, names in packages.items())
 
 
@@ -2606,8 +2613,7 @@ SCRIPT_TEST_GATES = [
         (f"{SCRIPTS}/ci_filter_coverage.py", "the module imports it for step_workdir and called_workflows"),
         (f"{SCRIPTS}/workflow_paths.py", "the path model that engine imports"),
         (f"{SCRIPTS}/go_build_tags.py", "the Go build-tag module that engine imports"),
-        (".github/workflows/ci-job-envoy-go-race-docs.yaml", "its two-steps case reads this file's own go test line, the wrapper one"),
-        (".github/workflows/ci-job-envoy-go-docs-finalizers.yaml", "its two-steps case reads this file's own go test line, the GODEBUG one"),
+        (".github/workflows/ci-job-envoy-go-race-docs.yaml", "its one-step case reads this file's own go test line, the wrapper one"),
         (".github/workflows/ci-job-envoy-go.yaml", "its audited-step case reads this file's step that runs database-skips.sh"),
         (".github/workflows/ci-job-envoy-go-race-api.yaml", "its audited-step case reads this file's step that runs database-skips.sh with arguments"),
         (".github/workflows/ci-job-*.yaml", "its step-reader case reads every go test step of each workflow a job of ci.yaml calls, as the module's documents() loads them"),
@@ -2617,6 +2623,7 @@ SCRIPT_TEST_GATES = [
         (".github/workflows/worker-image.yaml", "its step-reader case reads it, a workflow a job of ci.yaml calls"),
         ("packages/envoy/scripts/database-skips.sh", "its last case hashes this script, the one AUDITED_SCRIPTS reads"),
         ("packages/envoy/scripts/backend-count.sh", "its last case hashes this script, which AUDITED_SCRIPTS reads too"),
+        ("packages/envoy/infra/scripts/race-unit.sh", "its last case hashes this script, which AUDITED_SCRIPTS reads too"),
         (f"{SCRIPTS}/ci_job_reads.py", "its last case imports this file for the reads this gate declares"),
     ]),
 ]
@@ -3561,15 +3568,6 @@ GATES = [
     ], reads=reads(
         (".github/scripts/race_memory.py", f"{at('envoy-go-race-docs', RACE_DOCS_STEP)} runs the package under it"),
     ) + ceiling_reads("envoy-go-race-docs") + setup_go("envoy-go-race-docs", f"{ENVOY}/go.mod")),
-
-    # A second gate on envoy_go_race_docs: this job runs the same package, so it reads that
-    # closure and no other, and check-ci-filters.sh keys a claim by (job, step), so the two gates
-    # claim different steps and do not collide.
-    gate("envoy_go_race_docs", "envoy-go-docs-finalizers", runs=[ceiling_run("envoy-go-docs-finalizers")], exact=[
-        pinned_step("envoy-go-docs-finalizers", FINALIZERS_STEP, ENVOY, FINALIZERS_SCRIPT, [
-            (ENVOY, ["./internal/dispatch/docs/"], "go test -v -count=1 -timeout 34m ./internal/dispatch/docs/", {}),
-        ]),
-    ], reads=ceiling_reads("envoy-go-docs-finalizers") + setup_go("envoy-go-docs-finalizers", f"{ENVOY}/go.mod")),
 
     gate("dispatch_memory", "dispatch-memory", runs=[ceiling_run("dispatch-memory")], exact=[
         pinned_step("dispatch-memory", MEMORY_STEP, ENVOY, MEMORY_SCRIPT, [

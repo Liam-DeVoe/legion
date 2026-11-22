@@ -1032,6 +1032,7 @@ go_test_step_expansion_test: &go_test_step_expansion_test
   - '.github/workflows/worker-image.yaml'
   - 'packages/envoy/scripts/database-skips.sh'
   - 'packages/envoy/scripts/backend-count.sh'
+  - 'packages/envoy/infra/scripts/race-unit.sh'
   - '.github/scripts/ci_job_reads.py'
 
 # why: .github/ci-notes/ci.md#test-the-test-job-the-claude-code-plugin-build-the-changelog
@@ -3188,9 +3189,7 @@ envoy_go_claim_model:
 envoy_go_race_docs:
   - *ci_router
   - *ci_filters_data
-  # why: .github/ci-notes/ci.md#envoy_go_race_docs-two-jobs-run-this-package-under-the-detector-and-share
   - '.github/workflows/ci-job-envoy-go-race-docs.yaml'
-  - '.github/workflows/ci-job-envoy-go-docs-finalizers.yaml'
   - '.github/scripts/race_memory.py'
   - '.github/scripts/pg-connection-ceiling.sh'
   - *go_workspace
@@ -3244,6 +3243,10 @@ envoy_go_race_docs:
   - '!packages/envoy/internal/dispatch/auth/**/*_test.go'
   - '!packages/envoy/internal/dispatch/benchtime/**/*_test.go'
   - '!packages/envoy/internal/dispatch/bytelru/**/*_test.go'
+  - '!packages/envoy/internal/dispatch/docs/anchor_blocks_xid_window_test.go'
+  - '!packages/envoy/internal/dispatch/docs/race_disabled_test.go'
+  - '!packages/envoy/internal/dispatch/docs/upload_memory_test.go'
+  - '!packages/envoy/internal/dispatch/docs/xid_window_test.go'
   - '!packages/envoy/internal/dispatch/duty/**/*_test.go'
   - '!packages/envoy/internal/dispatch/events/**/*_test.go'
   - '!packages/envoy/internal/dispatch/githubreads/**/*_test.go'

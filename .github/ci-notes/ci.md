@@ -971,12 +971,6 @@ a race job of twenty minutes or more must not run on every change under that tre
 its own tests read - this package's, and pmdoc's, which one of them names through
 `..`. A dependency's testdata no test of this job reads is not an input.
 
-## envoy_go_race_docs: Two jobs run this package under the detector and share
-
-Two jobs run this package under the detector and share this filter, so it names
-both of their files (ci_job_reads.py gates envoy-go-race-docs and
-envoy-go-docs-finalizers on it).
-
 ## private_names_port: The private-name port harness, in a job of its own: it
 
 The private-name port harness, in a job of its own: it builds the `legion` binary
@@ -1057,8 +1051,8 @@ ci-ok job's `needs:`, without which the verdict is reached before that job ends 
 nothing about it, and a gate in
 .github/scripts/ci_job_reads.py. An output an event must force is written in `changes`' outputs
 rather than left to its filter, as every output's workflow_dispatch case is, and so is one an
-event must hold back, as the ten slow suites' pull-request case is
-(.github/ci-notes/ci.md#the-ten-slow-suites-whose-runner-time-dwarfs-every-other-jobs-the).
+event must hold back, as the nine slow suites' pull-request case is
+(.github/ci-notes/ci.md#the-nine-slow-suites-whose-runner-time-dwarfs-every-other-jobs-the).
 The ci-filters job's .github/scripts/check-ci-filters.sh holds the filter to that gate,
 CI_OK_SELECTED_BY to the `if:`s, the report step to every job, the ci-ok job's `needs:` to
 every job of the file but the exempt ones, and the re-run term to every job but `ci-ok` and
@@ -1078,7 +1072,7 @@ internal/daemon test binary daemon-go's race step does — and pi-legion; the te
 it while it ran the daemon's Go suite and does not now), go-docs (docs, and the build job
 of docs-pages.yaml, which saves it), go-envoy (envoy-e2e-local and envoy-session-stall, which
 build the same listener and natsd, listener-server-change and envoy-go-checks, which build the
-listener, and envoy-go-race-docs and envoy-go-docs-finalizers), go-envoy-test (envoy-go, which
+listener, and envoy-go-race-docs), go-envoy-test (envoy-go, which
 builds the test binary of every package of the envoy module, envoy-go-claim-model, which builds
 the API's of that set, and the binaries, multiprocess
 and visual jobs of dispatch-browser.yaml, which build the Dispatch server and the real
@@ -1321,9 +1315,9 @@ a pull request is held to. The `full-ci` label no longer decides whether this su
 only which lane it runs: that job's `lane:` input reads the label, and
 .github/ci-notes/ci.md#what-the-lane-input-reads says what each event gets.
 
-## The ten slow suites, whose runner time dwarfs every other job's. The
+## The nine slow suites, whose runner time dwarfs every other job's. The
 
-The ten slow suites, whose runner time dwarfs every other job's. The merge queue runs
+The nine slow suites, whose runner time dwarfs every other job's. The merge queue runs
 them on the tree the change lands as, and that is where their result normally comes from;
 a pull request runs them only when it carries the label `full-ci`, or one of them when it
 carries that one's `lane:<output>` label (the next entry). Each is false on a
@@ -1341,10 +1335,10 @@ names one of them, which reads `skipped` on a pull request without the label.
 A pull request label `lane:<output>` turns on that one output of `changes`, where its paths
 matched, as `full-ci` turns on all of them. `<output>` is one of the nine outputs the
 `full-ci` term gates: `envoy_go`, `envoy_go_race`, `envoy_go_race_api`, `envoy_go_claim_model`,
-`envoy_go_race_docs` (which gates envoy-go-race-docs and envoy-go-docs-finalizers both),
-`dispatch_memory`, `dispatch_multiprocess`, `dispatch_two_builds` and `envoy_smoke`. It is for
+`envoy_go_race_docs`, `dispatch_memory`, `dispatch_multiprocess`, `dispatch_two_builds` and
+`envoy_smoke`. It is for
 a pull request that needs one slow suite's result at its head - a test that only that suite
-runs, or a `ci_check` naming that job - without running the other nine. Each output's term
+runs, or a `ci_check` naming that job - without running the other eight. Each output's term
 names its own label, so the label that turns an output on is written beside it and nowhere
 else, and the paths term stays: a lane label never runs a suite its filter did not select.
 
@@ -1394,7 +1388,7 @@ and so reads the same files.
 ## The paths filter's own verdict for every filter, before the `full-ci` term
 
 The paths filter's own verdict for every filter, before the `full-ci` term (`(github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci'))`) rewrites
-the nine outputs the ten slow suites run behind. On a pull request without that
+the nine outputs the nine slow suites run behind. On a pull request without that
 label each of those nine is `false` whether its paths matched or not, so a reader of the
 outputs alone cannot tell "the filter said no" from "the label is absent"; with this
 beside them ci-ok's report tells the two apart and says which
@@ -1760,7 +1754,7 @@ them out), the architecture-note check over this repository's own .dispatch/arch
 through the composite action .github/actions/architecture-check, and the spec-file check over
 its .dispatch/spec through the composite action .github/actions/spec-check, both of which
 other repositories can call. The slow half, the envoy-go job (the module's unit tests, the
-container-backed NATS matrix and the integration suite), is one of the ten slow suites,
+container-backed NATS matrix and the integration suite), is one of the nine slow suites,
 which run in the merge queue and on a pull request labelled `full-ci`, while these checks
 must come back on every push. No Postgres service: nothing here opens a database. It
 restores go-envoy rather than go-envoy-test, the family of the slow half (the test binary of
@@ -1891,17 +1885,21 @@ without its lock races the room's peers, which no ordinary run shows
 (TestReadsOfALiveDocumentRunBesideItsPeers, internal/dispatch/docs/live_read_race_test.go:39,
 LEGION-499).
 
-## The cleanup detector run of the document service
-
-The same package under Go's cleanup detector, which names what the memory of envoy-go-race-docs' race run went to:
-GODEBUG=checkfinalizers=1 makes the runtime report a cleanup or a finalizer whose closure or
-argument reaches the object it is attached to, a cycle that keeps that object alive for the
-life of the process, and that is the defect that held this package's memory
-(dispatch://INFRA-1085). This is the only package of the repository that registers a cleanup,
-so no other job needs it. It runs without -race: the detector is the runtime's own
-bookkeeping, and a plain binary leaves the runner room the race binary does not. It reads the
-same closure as envoy-go-race-docs, so it reuses that filter and that `changes` output rather
-than taking one of its own.
+The same run is the package's run under Go's cleanup detector: GODEBUG=checkfinalizers=1 makes
+the runtime report a cleanup or a finalizer whose closure or argument reaches the object it is
+attached to, a cycle that keeps that object alive for the life of the process, and that is the
+defect that held this package's memory (dispatch://INFRA-1085). This is the only package of the
+repository that registers a cleanup, so no other job needs it. The detector is the runtime's own
+bookkeeping and runs beside the race detector in one process, so no job runs the package again
+for it: the job envoy-go-docs-finalizers that ran all of its tests a second time, plain, for this
+detector alone (994.286 s, job 137289139624, against 1770.949 s for this run, job 137289139255)
+is gone.
+The package's TestMain count of the services its tests left alive, which that job ran with -v
+to print, prints here too, since -json streams the binary's own output (`docs: 1286 services
+built, 0 still alive` in job 137289139255), and fails the run as it did there. What the race
+build cannot run or runs shrunk - the room-memory bounds, the full-size render-reuse storms and
+the xid window tests, whose gap bound only a plain build judges - runs plain, under the cleanup
+detector too, in envoy-go's step "Test what the race build cannot run at all or at full size".
 
 ## The real-process memory tests, and why they are a job of their own
 
