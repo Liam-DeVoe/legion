@@ -361,6 +361,7 @@ const OTHER_DELTA = copyRow("acme/other", ".claude/skills/delta", "delta");
 const ORG1_OMEGA = copyRow("org1/legion", "skills/omega", "omega");
 const ORG2_OMEGA = copyRow("org2/legion", "skills/omega", "omega");
 const ROOT_SIGMA = copyRow("acme/rootskills", "sigma", "sigma");
+const KILN_ETA = copyRow("acme/kiln", "skills/eta", "eta");
 
 function checkoutWorld(): R4Tables {
   const world = f7World();
@@ -375,6 +376,7 @@ function checkoutWorld(): R4Tables {
       ORG1_OMEGA,
       ORG2_OMEGA,
       ROOT_SIGMA,
+      KILN_ETA,
     ],
   };
 }
@@ -421,6 +423,30 @@ test.each([
     "/home/acme/cache/sigma/SKILL.md",
     undefined,
     "unattributed: no copy's skill directory ends the path, and its context installs no copy of sigma",
+  ],
+  [
+    "a read inside a clone an installer makes (<dir>/vendor/<name>/) is no checkout of a repository the clone's directories do not name",
+    "/home/acme/.dotfiles/vendor/eta-pack/skills/eta/SKILL.md",
+    undefined,
+    "unattributed: the path ends with skills/eta/, the skill directory of acme/kiln, inside /home/acme/.dotfiles/vendor/eta-pack/, a copy of another repository that an installer writes, which names none of them; no prefix row maps it, and the context rule claims no copy for a read inside a clone",
+  ],
+  [
+    "a read inside a clone that no prefix row maps is unattributed, though its context installs one copy of its name",
+    "/home/acme/.dotfiles/vendor/alpha-pack/skills/alpha/SKILL.md",
+    undefined,
+    "unattributed: no copy's skill directory ends the path, which is inside /home/acme/.dotfiles/vendor/alpha-pack/, a clone an installer makes; no prefix row maps it, and the context rule claims no copy for a read inside a clone",
+  ],
+  [
+    "a read inside a package a plugins package.json installs (node_modules/<name>/) is no checkout of a repository it does not name",
+    "/home/acme/.dotfiles/omp/plugins/node_modules/eta-tools/skills/eta/SKILL.md",
+    undefined,
+    "unattributed: the path ends with skills/eta/, the skill directory of acme/kiln, inside /home/acme/.dotfiles/omp/plugins/node_modules/eta-tools/, a copy of another repository that an installer writes, which names none of them, and its context installs no copy of eta",
+  ],
+  [
+    "a read inside a clone whose directory names the repository is a checkout of it",
+    "/home/acme/.dotfiles/vendor/kiln/skills/eta/SKILL.md",
+    KILN_ETA,
+    "checkout: to acme/kiln skills/eta: the path ends with skills/eta/, its skill directory, and the path names kiln in a directory of the copy an installer writes at /home/acme/.dotfiles/vendor/kiln/",
   ],
 ] as const)("%s", (_name, readPath, copy, outcome) => {
   const skill = path.posix.basename(path.posix.dirname(readPath));

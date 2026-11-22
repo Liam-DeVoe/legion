@@ -3268,9 +3268,33 @@ export function resolveInstallers(manifests: readonly Manifest[], index: CopyInd
             };
       // Scanned as Oh My Pi scans an extension's skill directory (`CopyIndex.scan`), less each
       // entry an installer of the repository removes from it (`prunes`).
-      const scanned = inside
+      const found = inside
         ? index.scan(from.repository, from.dir, { self: false })
         : { members: [], undescribed: [] };
+      // A clone an installer makes as one entry of the pool's skills directory (`ensure_vendor
+      // <url> <pool>/skills/<entry>`: a repository that is one skill, its SKILL.md at its root) is
+      // read as Oh My Pi reads any entry there (`CopyIndex.scan`): the clone's root when it holds a
+      // SKILL.md, else each entry of the root that holds one.
+      const entries = inside
+        ? clones.filter(({ fact: vendor }) => vendor.repo !== "" && dirOf(vendor.dir) === dir)
+        : [];
+      const scanned = { members: [...found.members], undescribed: [...found.undescribed] };
+      for (const { fact: vendor } of entries) {
+        const repository = index.spelling(vendor.repo);
+        const entry = path.posix.basename(vendor.dir);
+        const root = index.at(repository, "");
+        const held =
+          root === undefined
+            ? index
+                .childrenOf(repository, "")
+                .map(({ child, copy }) => ({ copy, rel: joinPath(entry, child) }))
+            : [{ copy: root, rel: entry }];
+        for (const member of held) {
+          const unread = member.copy.fault.startsWith("SKILL.md read failed");
+          if (member.copy.description === "" && !unread) scanned.undescribed.push(member.copy);
+          else scanned.members.push(member);
+        }
+      }
       const prunes = sameRepository(factsOf(manifests, "prunes")).filter(
         (prune) => prune.fact.dir === dir
       );
@@ -3295,10 +3319,12 @@ export function resolveInstallers(manifests: readonly Manifest[], index: CopyInd
         });
         continue;
       }
-      const cloned =
-        clone === undefined
-          ? ""
-          : `; ${clone.manifest.path} clones ${from.repository} into ${clone.fact.dir} at ${clone.fact.ref || "the commit it was cloned at (this list reads its default branch)"}`;
+      const cloned = [...(clone === undefined ? [] : [clone]), ...entries]
+        .map(
+          (each) =>
+            `; ${each.manifest.path} clones ${index.spelling(each.fact.repo)} into ${each.fact.dir} at ${each.fact.ref || "the commit it was cloned at (this list reads its default branch)"}`
+        )
+        .join("");
       units.push({
         id: `pool:${source.root}`,
         host: "omp",

@@ -455,7 +455,7 @@ import { armPromptBlocks, type SavedHead, sessionHeads } from "./capture";
 import {
   Case,
   loadCases,
-  type Profile,
+  Profile,
   type ProfileSkill,
   pathHash,
   skillReadFile,
@@ -500,7 +500,15 @@ import {
   spawnGh,
   type TreeEntry,
 } from "./copies";
-import { mtimeRange, PULL_PAGE, pullSql, sessionPathsSql, sessionsSql, tasksSql } from "./countsql";
+import {
+  mtimeRange,
+  PULL_PAGE,
+  pullSql,
+  sessionPathsSql,
+  sessionsSql,
+  subagentsSql,
+  tasksSql,
+} from "./countsql";
 import {
   addModelSpend,
   BudgetSpent,
@@ -1777,15 +1785,27 @@ const GitTree = z.looseObject({
 });
 
 /** What a repository holds at a commit, as copies.ts reads one: its skill copies, its manifest
- *  files parsed, and each file of those that could not be read or parsed, with why; and, for the
+ *  files parsed, and each file of those that could not be read or parsed, with why; for the
  *  context files a session in a checkout of it gets (`CONTEXT_FILES`), the size of each file of
- *  those names, by path, and each directory whose `.omp/` holds anything (`""` the root). */
+ *  those names, by path, and each directory whose `.omp/` holds anything (`""` the root); and the
+ *  directory of each copy Oh My Pi lists no line of (`hiddenFromListing`). */
 interface RepositoryAt {
   readonly copies: readonly SkillCopy[];
   readonly manifests: readonly Manifest[];
   readonly faults: readonly { readonly file: string; readonly why: string }[];
   readonly contextSizes: ReadonlyMap<string, number>;
   readonly ompLevels: ReadonlySet<string>;
+  readonly hidden: ReadonlySet<string>;
+}
+
+/** Where Oh My Pi 18.18.6 says a skill it loads is left out of the system prompt's listing. */
+const HIDDEN_RULE =
+  "Oh My Pi 18.18.6 sets a skill's hide from its SKILL.md frontmatter's hide: true or disable-model-invocation: true (extensibility/skills.ts, lines 289, 494, 554 and 649; packages/utils/src/frontmatter.ts, lines 14-44, reads disable-model-invocation as disableModelInvocation), loads it, so skill:// reads it, and lists only the skills whose hide is not true (system-prompt.ts, lines 961-983)";
+
+/** Whether the SKILL.md text `text` keeps its skill out of Oh My Pi's listing (HIDDEN_RULE). */
+function hiddenFromListing(text: string): boolean {
+  const fields = frontmatter(text);
+  return fields?.hide === true || fields?.["disable-model-invocation"] === true;
 }
 
 /** `cache`'s promise for `key`, made by `make` when it holds none. A promise that rejects with a
@@ -2096,6 +2116,7 @@ export class GithubReads {
       excludePaths
     );
     await this.prefetch(repo, [...skillEntries, ...candidates.map(({ entry }) => entry)]);
+    const hidden = new Set<string>();
     const copies = await mapLimit(skillEntries, GITHUB_JOBS, async (entry): Promise<SkillCopy> => {
       const dir = dirOf(entry.path);
       const base = {
@@ -2108,7 +2129,9 @@ export class GithubReads {
         parent: "",
       };
       try {
-        return { ...base, ...skillFields(dir, repo, await this.blob(repo, entry.sha)) };
+        const text = await this.blob(repo, entry.sha);
+        if (hiddenFromListing(text)) hidden.add(dir);
+        return { ...base, ...skillFields(dir, repo, text) };
       } catch (error) {
         // A read that failed for a transient reason on every try fails the whole read, which is
         // then not kept (`readOnce`), so a later caller reads it again; any other is a fault.
@@ -2160,7 +2183,7 @@ export class GithubReads {
         contextSizes.set(entry.path, entry.size ?? 1);
       }
     }
-    return { copies, manifests, faults, contextSizes, ompLevels };
+    return { copies, manifests, faults, contextSizes, ompLevels, hidden };
   }
 }
 
@@ -2212,6 +2235,238 @@ const NO_SESSION_REPOSITORY = "no session repository";
 /** How a dev-box session's repository is found from its working directory. */
 const DEVBOX_CHECKOUT_RULE =
   "a dev-box session's repository is the one repository of the copies output's list (repositories.tsv) named as the last part of its working directory, or of the nearest of that directory's parents named as any listed repository";
+/** Which units a dev-box profile installs beside those its session's reads come from. */
+const DEVBOX_INSTALLERS_RULE =
+  "a dev box installs every unit the installers of its own repository install into Oh My Pi at the session's start, whether or not the session read from it: the one repository of the copies output (manifests.tsv) that holds both an installer script (installers/*.sh) and Claude Code's settings (.claude/settings.json), whose .claude/ is the dev box's Claude Code config directory, read at its commit of the session's start with each repository its installers pin, and resolved by copies.ts's rules (resolveInstallers)";
+/** How Oh My Pi 18.18.6 reads skills.ignoredSkills. */
+const IGNORED_RULE =
+  "Oh My Pi 18.18.6 loads no skill whose name a pattern of skills.ignoredSkills matches as a Bun.Glob (extensibility/skills.ts, lines 386-389, 401-406, 437 and 544), so a session can neither list nor read it";
+
+/** The dev box's repository by DEVBOX_INSTALLERS_RULE, or undefined, with the evidence of why,
+ *  when no repository or more than one holds both. */
+function devboxHome(copies: Copies, evidence: Evidence[]): string | undefined {
+  const holding = (kind: string, file?: string) =>
+    new Set(
+      copies.manifests
+        .filter((row) => row.kind === kind && (file === undefined || row.path === file))
+        .map((row) => row.repository ?? "")
+    );
+  const settings = holding("claude-settings", CLAUDE_SETTINGS);
+  const homes = [...holding("installer-script")].filter((repo) => settings.has(repo)).sort();
+  const [home] = homes;
+  if (homes.length === 1 && home !== undefined) return home;
+  evidence.push({
+    item: "left out: the dev box's installers",
+    source: `${DEVBOX_INSTALLERS_RULE}; ${homes.length === 0 ? "no repository holds both" : `${homes.length} repositories hold both (${homes.join(", ")})`}, so the profile installs only the units the session's reads come from`,
+  });
+  return undefined;
+}
+
+/** The item of the evidence of a case or a load task that says how far the listing its rebuilt
+ *  profile gives is from the listing its session saw; its source is a ListingMeasure as JSON. */
+export const LISTING_MEASURE = "listing measure";
+/** A listing measure: `kind` says which listing the rebuilt one is set against (the session's own
+ *  recorded prompt's, a subagent's of it, or none: `not measurable`); `recorded` the names that
+ *  listing holds, `listed` those the rebuilt profile lists (its skills less those Oh My Pi hides),
+ *  `missing` the recorded names the profile does not list, `added` the names it lists that the
+ *  recording lacks, `missingShare` missing ÷ recorded (null with no recorded name);
+ *  `sessionDigest` the session's first system-prompt-digest, `rebuiltDigest` always null (the
+ *  build makes no prompt), `subagent` the subagent whose listing is used, and `why` in words. */
+export const ListingMeasure = z.strictObject({
+  kind: z.enum(["session listing", "subagent listing", "not measurable"]),
+  recorded: z.number().nullable(),
+  listed: z.number(),
+  missing: z.array(z.string()),
+  added: z.array(z.string()),
+  missingShare: z.number().nullable(),
+  sessionDigest: z.string().nullable(),
+  rebuiltDigest: z.null(),
+  subagent: z
+    .strictObject({
+      pathHash: z.string(),
+      agent: z.string(),
+      subagents: z.number(),
+      recorded: z.number(),
+    })
+    .nullable(),
+  why: z.string(),
+});
+export type ListingMeasure = z.infer<typeof ListingMeasure>;
+
+/** What a listing measure of one session is made from: the names its rebuilt profile lists, its
+ *  recorded system prompt when it has one (a subagent's), and its first system-prompt digest. */
+interface ListingInput {
+  readonly listed: readonly string[];
+  readonly recorded: readonly string[] | undefined;
+  readonly sessionDigest: string | null;
+}
+
+/** A subagent of a top-level session whose recorded prompt holds a skill listing (subagents.sql):
+ *  its path hash, its agent, its prompt's blocks, and how many subagents the session has and how
+ *  many of them record a listing. */
+interface SubagentListing {
+  readonly pathHash: string;
+  readonly agent: string;
+  readonly blocks: readonly string[];
+  readonly subagents: number;
+  readonly recorded: number;
+}
+
+const SubagentRow = z.strictObject({
+  parent: z.string(),
+  hash: z.string(),
+  start: z.string().nullable(),
+  init: z.string(),
+  subagents: z.number(),
+  recorded: z.number(),
+});
+
+/** The subagent with a recorded listing of each session of `pathHashes` in the store `store`
+ *  that has one, by the session's path hash: one subagents.sql query, none for no hash. */
+async function subagentListings(
+  command: string,
+  store: string,
+  pathHashes: readonly string[]
+): Promise<Map<string, SubagentListing>> {
+  const found = new Map<string, SubagentListing>();
+  if (pathHashes.length === 0) return found;
+  for (const row of await storeRows(command, store, subagentsSql([...new Set(pathHashes)]))) {
+    const parsed = SubagentRow.safeParse(row);
+    const init = parsed.success ? SessionInit.safeParse(parseJson(parsed.data.init)) : undefined;
+    if (!parsed.success || init?.success !== true) continue;
+    found.set(parsed.data.parent, {
+      pathHash: parsed.data.hash,
+      agent: init.data.agent,
+      blocks: init.data.systemPrompt,
+      subagents: parsed.data.subagents,
+      recorded: parsed.data.recorded,
+    });
+  }
+  return found;
+}
+
+/** The names of the `<skills>` listing of the recorded prompt `blocks`, as capture.ts's
+ *  `skillListing` reads a body's (`- <name>: <text>`), in order. */
+function listingNames(blocks: readonly string[]): string[] {
+  const names: string[] = [];
+  for (const text of blocks) {
+    const block = /<skills>\n([\s\S]*?)<\/skills>/.exec(text)?.[1];
+    for (const line of block?.split("\n") ?? []) {
+      const name = /^- ([^:\s]+): /.exec(line)?.[1];
+      if (name !== undefined && !names.includes(name)) names.push(name);
+    }
+  }
+  return names;
+}
+
+/** Where Oh My Pi says a subagent's listing is its parent's, and what the measure compares. */
+const SUBAGENT_LISTING_RULE =
+  "Oh My Pi 18.18.6 gives a subagent its parent's skills unfiltered (task/structured-subagent.ts, resolveAutoloadSkills, lines 811-818, and line 900; task/executor.ts, lines 662-666 and 5256)";
+const NAMES_ONLY =
+  "names are compared, not descriptions: Oh My Pi lists under each name a model's hint for the skill or a preview of its description (system-prompt.ts, lines 981-983; extensibility/skill-descriptions.ts, lines 448-476)";
+
+/** The listing measure of one session (LISTING_MEASURE): against its own recorded listing, else
+ *  against `subagent`'s, else not measurable, `gone` saying why when the store holds the session
+ *  no longer. */
+function listingMeasure(
+  input: ListingInput,
+  subagent: SubagentListing | undefined,
+  gone?: string
+): Evidence {
+  const listed = [...new Set(input.listed)].sort();
+  const against =
+    input.recorded !== undefined
+      ? input.recorded
+      : gone === undefined
+        ? subagent?.blocks
+        : undefined;
+  const digest = `the session's first system-prompt-digest is ${input.sessionDigest ?? "none"}, and the rebuilt prompt has no digest: the build makes no prompt`;
+  let measure: ListingMeasure;
+  if (against === undefined) {
+    measure = {
+      kind: "not measurable",
+      recorded: null,
+      listed: listed.length,
+      missing: [],
+      added: [],
+      missingShare: null,
+      sessionDigest: input.sessionDigest,
+      rebuiltDigest: null,
+      subagent: null,
+      why: `the session records no system prompt, only its digest; ${digest}; ${gone ?? "the store holds no subagent of it whose recorded prompt holds a skill listing (subagents.sql)"}`,
+    };
+  } else {
+    const recorded = listingNames(against);
+    const missing = recorded.filter((name) => !listed.includes(name));
+    const from =
+      input.recorded !== undefined || subagent === undefined
+        ? "the session recorded its system prompt, and its capture sends it whole"
+        : `the session records only its prompt's digest, and ${digest}; the listing is the recorded one of its subagent ${subagent.pathHash} (agent ${subagent.agent}, the earliest of its ${subagent.recorded} of ${subagent.subagents} subagents whose recorded prompt holds a listing), since ${SUBAGENT_LISTING_RULE}`;
+    measure = {
+      kind: input.recorded !== undefined ? "session listing" : "subagent listing",
+      recorded: recorded.length,
+      listed: listed.length,
+      missing,
+      added: listed.filter((name) => !recorded.includes(name)),
+      missingShare: recorded.length === 0 ? null : missing.length / recorded.length,
+      sessionDigest: input.sessionDigest,
+      rebuiltDigest: null,
+      subagent:
+        input.recorded !== undefined || subagent === undefined
+          ? null
+          : {
+              pathHash: subagent.pathHash,
+              agent: subagent.agent,
+              subagents: subagent.subagents,
+              recorded: subagent.recorded,
+            },
+      why: `${from}; ${NAMES_ONLY}`,
+    };
+  }
+  return { item: LISTING_MEASURE, source: JSON.stringify(measure) };
+}
+
+/** The listing measure that `evidence` holds, or undefined. */
+function measureIn(evidence: readonly Evidence[] | undefined): ListingMeasure | undefined {
+  const item = evidence?.find((each) => each.item === LISTING_MEASURE);
+  const parsed = item === undefined ? undefined : ListingMeasure.safeParse(parseJson(item.source));
+  return parsed?.success === true ? parsed.data : undefined;
+}
+
+/** A summary's counts of listing measures: how many of each kind, and the missing and added names
+ *  summed; `none` those that hold no measure. */
+function listingCounts(measures: readonly (ListingMeasure | undefined)[]): Record<string, number> {
+  const counts: Record<string, number> = {
+    "session listing": 0,
+    "subagent listing": 0,
+    "not measurable": 0,
+    none: 0,
+    missing: 0,
+    added: 0,
+  };
+  for (const measure of measures) {
+    const kind = measure?.kind ?? "none";
+    counts[kind] = (counts[kind] ?? 0) + 1;
+    counts.missing = (counts.missing ?? 0) + (measure?.missing.length ?? 0);
+    counts.added = (counts.added ?? 0) + (measure?.added.length ?? 0);
+  }
+  return counts;
+}
+
+/** `evidence` with `measure` before its audit item, or last when it has none. */
+function withMeasure(evidence: readonly Evidence[], measure: Evidence): Evidence[] {
+  const out = evidence.filter((each) => each.item !== LISTING_MEASURE);
+  const audit = out.findIndex((each) => each.item.startsWith(AUDIT_EVIDENCE));
+  out.splice(audit < 0 ? out.length : audit, 0, measure);
+  return out;
+}
+
+/** The names a rebuilt profile lists: its skills, less those Oh My Pi hides (HIDDEN_RULE). */
+function listedNames(result: Pick<ProfileResult, "profile" | "hidden">): string[] {
+  return result.profile.skills
+    .map((skill) => skill.name)
+    .filter((name) => !result.hidden.has(name));
+}
 
 /**
  * The session repository of a session of the context `context` whose working directory is `cwd`:
@@ -2431,6 +2686,8 @@ interface ProfileResult {
   readonly profile: Profile;
   readonly evidence: Evidence[];
   readonly shipped: ReadonlySet<string>;
+  /** The names of the profile's skills Oh My Pi leaves out of its listing (HIDDEN_RULE). */
+  readonly hidden: ReadonlySet<string>;
 }
 
 /** Why a profile is refused: it installs no copy of the cut repository's skill. */
@@ -2569,6 +2826,10 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
     }
   }
 
+  // A dev box installs every unit its own repository's installers install into Oh My Pi at the
+  // session's start, whether or not the session read from it (DEVBOX_INSTALLERS_RULE).
+  const home = input.context.startsWith("legion:") ? undefined : devboxHome(copies, evidence);
+
   // What each unit ships at the session's start. installers.tsv says what it ships at the commit
   // the copies output read, which is later; so each repository of a unit is read at its commit
   // of the session's start (its tree, its SKILL.md files and its manifests) and resolved by
@@ -2590,6 +2851,19 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
     for (const row of listed(via)) repositories.add(row.copy_repository ?? "");
   }
   for (const copy of alone.values()) repositories.add(copy.repo);
+  if (home !== undefined) {
+    repositories.add(home);
+    for (const row of copies.installers) {
+      if (
+        row.manifest_repository === home &&
+        row.host === "omp" &&
+        Object.hasOwn(MEMBER_ACTIONS, row.action ?? "") &&
+        (row.copy_repository ?? "") !== ""
+      ) {
+        repositories.add(row.copy_repository ?? "");
+      }
+    }
+  }
   const held = new Map<string, RepositoryAt>();
   // The session repository is read at its commit too, for its project skills and context files;
   // it joins the units' resolution only when it is a unit's repository. A unit's repository is
@@ -2636,6 +2910,39 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
       },
       at: await github.at(value.repo, sha, run.config.excludePaths),
     };
+  }
+  // A repository the dev box's installers pin at the session's start that no unit of the copies
+  // output names (a clone an installer made then and removed since) is read at that ref too.
+  if (home !== undefined) {
+    const manifests = values.find((value) => value.repo === home)?.at.manifests ?? [];
+    for (const pin of installerPins(manifests)) {
+      const known = (repo: string) => repo.toLowerCase() === pin.repository.toLowerCase();
+      if (values.some((value) => known(value.repo))) continue;
+      const pinned = `${pin.manifest.repository}:${pin.manifest.path}`;
+      try {
+        const ref = pin.ref === "" ? (await github.branch(pin.repository)).branch : pin.ref;
+        const sha = await github.commitAt(pin.repository, ref, input.sessionStart);
+        repositories.add(pin.repository);
+        values.push({
+          repo: pin.repository,
+          commit: {
+            sha,
+            line: {
+              item: `commit ${sha} of ${pin.repository}`,
+              source: `the last commit of ${ref}, the ref ${pinned} ${pin.ref === "" ? "clones (its default branch: the installer names no ref)" : "pins"} at the session's start, at or before ${input.sessionStart}: gh api repos/${pin.repository}/commits?sha=${ref}&until=${input.sessionStart}`,
+            },
+          },
+          at: await github.at(pin.repository, sha, run.config.excludePaths),
+          reads: 0,
+        });
+      } catch (error) {
+        if (transientFailure(error)) throw error;
+        evidence.push({
+          item: `left out: ${pin.repository}, which ${pinned} pins at the session's start`,
+          source: messageFor(error),
+        });
+      }
+    }
   }
   for (const { repo, commit, at, reads: treeReads } of values) {
     commits.set(repo, commit.sha);
@@ -2707,6 +3014,27 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
     const known = readCopies.get(name);
     if (row !== undefined && (known === undefined || known.index === read.index)) {
       readCopies.set(name, { repo: row.repository, path: row.path, index: read.index });
+    }
+  }
+
+  // The dev box's own installers at the session's start: each unit they install into Oh My Pi,
+  // after the units the reads come from, so a read's unit keeps its place among those of a name.
+  if (home !== undefined) {
+    for (const row of resolved.rows) {
+      if (
+        row.manifestRepository !== home ||
+        row.host !== "omp" ||
+        row.copyPath === undefined ||
+        !Object.hasOwn(MEMBER_ACTIONS, row.action)
+      ) {
+        continue;
+      }
+      const via = { unit: row.unit, repository: home, manifest: row.manifestPath };
+      if (units.has(viaKey(via))) continue;
+      units.set(viaKey(via), {
+        via,
+        why: `${DEVBOX_INSTALLERS_RULE}: ${home}:${row.manifestPath} at ${commits.get(home)} ${row.action} it into Oh My Pi`,
+      });
     }
   }
 
@@ -2850,6 +3178,30 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
     });
   }
   offers.push(...projectOffers);
+  // The dev box's Oh My Pi config, read at the session's start: Oh My Pi loads no skill whose name
+  // a pattern of its skills.ignoredSkills matches (IGNORED_RULE).
+  const ignores =
+    home === undefined
+      ? []
+      : (held.get(home)?.manifests ?? []).flatMap((manifest) =>
+          manifest.facts.flatMap((fact) =>
+            fact.type === "ignores"
+              ? fact.patterns.map((pattern) => ({ pattern, file: manifest.path }))
+              : []
+          )
+        );
+  for (let at = offers.length - 1; at >= 0 && ignores.length > 0; at--) {
+    const offer = offers[at];
+    const by = ignores.find(({ pattern }) => new Bun.Glob(pattern).match(offer?.copy.name ?? ""));
+    if (offer === undefined || by === undefined) continue;
+    offers.splice(at, 1);
+    const inProject = projectOffers.indexOf(offer);
+    if (inProject >= 0) projectOffers.splice(inProject, 1);
+    evidence.push({
+      item: `left out: skill ${offer.copy.name} (${offer.copy.repo} ${offer.copy.path})`,
+      source: `${offer.how}; ${home}:${by.file} at ${commits.get(home ?? "")} names ${by.pattern} in skills.ignoredSkills: ${IGNORED_RULE}`,
+    });
+  }
 
   // Each name's copy: the one the session read, when a unit ships it at the session's start (the
   // read shows which of the copies of one name the host gave the session); else a project skill
@@ -2965,6 +3317,17 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   )) {
     profileSkills.push({ ...skill, commit: await commitOf(skill.repo) });
   }
+  // A skill whose SKILL.md hides it is installed, so skill:// reads it, and not listed.
+  const hidden = new Set<string>();
+  for (const skill of profileSkills) {
+    const at = held.get(skill.repo) ?? (skill.repo === checkout.repo ? projectTree : undefined);
+    if (at?.hidden.has(skill.path) !== true) continue;
+    hidden.add(skill.name);
+    evidence.push({
+      item: `not listed: skill ${skill.name}`,
+      source: `${skill.repo} ${skill.path} at ${skill.commit}: ${HIDDEN_RULE}`,
+    });
+  }
   const profilePlugins: Profile["plugins"] = [];
   for (const plugin of plugins.values()) {
     const commit = await commitOf(plugin.repo);
@@ -3069,6 +3432,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
     },
     evidence,
     shipped,
+    hidden,
   };
 }
 
@@ -3183,7 +3547,7 @@ function readCandidates(file: string, config: SkillCutsConfig): Candidate[] {
 
 /** What one session gave: a case, or a drop with its reason. */
 type Outcome =
-  | { readonly case: Case; readonly step: number }
+  | { readonly case: Case; readonly step: number; readonly listing: ListingInput }
   | { readonly drop: DropReason; readonly detail: string };
 
 /** What one session's build reads beside the session. */
@@ -3315,6 +3679,8 @@ export interface SessionProfile {
   readonly profile: Profile & { readonly context: string };
   readonly evidence: Evidence[];
   readonly secretsRemoved: number;
+  /** What its listing measure is made from (`listingMeasure`). */
+  readonly listing: ListingInput;
   readonly listed: boolean;
 }
 
@@ -3383,6 +3749,18 @@ async function sessionProfile(
     evidence: [...evidence, ...profiled.evidence],
     secretsRemoved: secrets.removed,
     listed: listsSkill(recorded, profiled.profile.skills, skill),
+    listing: {
+      listed: listedNames(profiled),
+      recorded: init?.systemPrompt,
+      sessionDigest:
+        t.branch.flatMap((entry) =>
+          entry.type === "custom" &&
+          entry.customType === "system-prompt-digest" &&
+          typeof entry.data === "string"
+            ? [entry.data]
+            : []
+        )[0] ?? null,
+    },
   };
 }
 
@@ -3825,7 +4203,15 @@ async function caseOf(
       },
     ],
   });
-  return { case: built, step: stepIndex };
+  return {
+    case: built,
+    step: stepIndex,
+    listing: {
+      listed: listedNames(profiled),
+      recorded: init?.systemPrompt,
+      sessionDigest: digest ?? null,
+    },
+  };
 }
 
 /** One model's line of the summary's `byModel`. */
@@ -3975,6 +4361,20 @@ async function reprofileCases(
     const hashes = cases.filter((c) => c.source.store === name).map((c) => c.source.pathHash);
     heads.set(name, await sessionHeads(config.psqlCommand, name, hashes, `${given.out}.sessions`));
   }
+  // A case whose session records no prompt is measured against a subagent of it whose recorded
+  // prompt holds a listing: one subagents.sql query a store, for the sessions the store holds.
+  const subagents = new Map<string, Map<string, SubagentListing>>();
+  for (const [name, saved] of heads) {
+    const hashes = cases
+      .filter(
+        (c) =>
+          c.source.store === name &&
+          c.profile.systemPrompt === undefined &&
+          saved.get(c.source.pathHash)?.head?.held === true
+      )
+      .map((c) => c.source.pathHash);
+    subagents.set(name, await subagentListings(config.psqlCommand, name, hashes));
+  }
   const rebuilt: Case[] = [];
   const records: Record<string, unknown>[] = [];
   const leftOut: { id: string; why: string }[] = [];
@@ -4063,6 +4463,17 @@ async function reprofileCases(
       ...profiled.evidence.flatMap((each) =>
         each.item === NO_WORKSPACE && why.length > 0 ? why : [each]
       ),
+      listingMeasure(
+        {
+          listed: listedNames(profiled),
+          recorded: c.profile.systemPrompt,
+          sessionDigest: c.sessionDigest,
+        },
+        subagents.get(store.name)?.get(c.source.pathHash),
+        held
+          ? undefined
+          : "the store holds the session no longer (session-head.sql), so no subagent of it is read"
+      ),
       ...old.filter((each) => each.item.startsWith(AUDIT_EVIDENCE)),
     ];
     const built = Case.parse({ ...c, profile: { ...c.profile, ...profiled.profile }, evidence });
@@ -4078,6 +4489,7 @@ async function reprofileCases(
       removed: before.filter((name) => !after.includes(name)),
       plugins: built.profile.plugins.map((plugin) => plugin.name),
       contextFiles: built.profile.contextFiles.map((file) => `${file.repo} ${file.path}`),
+      listing: measureIn(built.evidence) ?? null,
     });
     io.out(
       `build-cases: ${c.id}: profile of ${after.length} skills (${before.length} before), each in its repository at its commit\n`
@@ -4095,6 +4507,7 @@ async function reprofileCases(
       cases: records,
       leftOut,
       githubRetries: run.github.retries.record(),
+      listing: listingCounts(records.map((each) => ListingMeasure.safeParse(each.listing).data)),
     })
   );
   // The file must load as the behaviour commands load it.
@@ -4508,6 +4921,9 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
         pullCalls: pulls,
         githubRetries: run.github.retries.record(prior?.githubRetries),
         readerSpend: addSpend(priorSpend, run.gateway.spend()),
+        listing: listingCounts(
+          caseRecords.map((each) => ListingMeasure.safeParse(each.listing).data)
+        ),
       })
     );
   };
@@ -4556,7 +4972,27 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
       }
       record.pulls = pulled.calls;
       if (pulled.bytes === 0) return { drop: "pull-failed", detail: "the pull returned no row" };
-      return caseOf(run, store, transcriptPath, spool, record, wanted);
+      const made = await caseOf(run, store, transcriptPath, spool, record, wanted);
+      if (!("case" in made)) return made;
+      // The listing measure: a top-level session's is against a subagent of it, read from the
+      // store one query at a time with the pulls; a failed read leaves it not measurable.
+      const hash = made.case.source.pathHash;
+      let subagents = new Map<string, SubagentListing>();
+      let failed: string | undefined;
+      if (made.listing.recorded === undefined) {
+        try {
+          subagents = await oneAtATime(() =>
+            subagentListings(config.psqlCommand, store.name, [hash])
+          );
+        } catch (error) {
+          failed = `subagents.sql failed: ${messageFor(error)}`;
+        }
+      }
+      const measure = listingMeasure(made.listing, subagents.get(hash), failed);
+      return {
+        ...made,
+        case: { ...made.case, evidence: withMeasure(made.case.evidence ?? [], measure) },
+      };
     };
     const worked = outcome()
       .finally(() => rmSync(spool, { force: true }))
@@ -4671,6 +5107,7 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
         context: built.context,
         step: outcome.step,
         recordedPrompt: built.profile.systemPrompt !== undefined,
+        listing: measureIn(built.evidence) ?? null,
         windows: record.windows,
         messages: built.messages.length,
         skillReads: built.skillReads,
@@ -5037,7 +5474,12 @@ async function writeProfiles<T extends TaskLine>(
   spool: string,
   skill: string,
   io: BuildIo
-): Promise<{ tasks: T[]; notes: Record<string, unknown>[]; queries: number }> {
+): Promise<{
+  tasks: T[];
+  notes: Record<string, unknown>[];
+  queries: number;
+  listing: Record<string, number>;
+}> {
   mkdirSync(plan.dir, { recursive: true });
   const paths = new Map<string, string>();
   const wanted = new Map<string, string[]>();
@@ -5051,6 +5493,38 @@ async function writeProfiles<T extends TaskLine>(
     queries += resolved.queries;
     for (const [hash, filePath] of resolved.paths) paths.set(`${store}\0${hash}`, filePath);
   }
+  // A session that records no prompt is measured against a subagent of it whose recorded prompt
+  // holds a listing (`listingMeasure`): one subagents.sql query a store, for the session of each
+  // session task and the context session.
+  const sessionOf = (task: T) => {
+    const session = sessions.get(task.id);
+    const filePath =
+      session?.path ??
+      (session?.hash === undefined ? undefined : paths.get(`${session.store}\0${session.hash}`));
+    return session === undefined || filePath === undefined
+      ? undefined
+      : { store: session.store, pathHash: pathHash(filePath) };
+  };
+  const measured = [
+    ...tasks.flatMap((task) => {
+      const session = task.source === "session" ? sessionOf(task) : undefined;
+      return session === undefined ? [] : [session];
+    }),
+    ...(context === undefined ? [] : [{ store: context.store, pathHash: context.pathHash }]),
+  ];
+  const subagents = new Map<string, SubagentListing>();
+  for (const store of new Set(measured.map((each) => each.store))) {
+    const hashes = measured.filter((each) => each.store === store).map((each) => each.pathHash);
+    const found = await subagentListings(plan.run.config.psqlCommand, store, hashes);
+    queries += 1;
+    for (const [hash, listing] of found) subagents.set(`${store}\0${hash}`, listing);
+  }
+  if (context !== undefined && measureIn(context.built.evidence) === undefined) {
+    context.built.evidence.push(
+      listingMeasure(context.built.listing, subagents.get(`${context.store}\0${context.pathHash}`))
+    );
+  }
+  const measures: (ListingMeasure | undefined)[] = [];
   const notes: Record<string, unknown>[] = [];
   const out: T[] = [];
   for (const task of tasks) {
@@ -5097,19 +5571,31 @@ async function writeProfiles<T extends TaskLine>(
     }
     const file = path.resolve(plan.dir, `${task.id}.json`);
     writeWhole(file, json(built.profile));
+    const session = sessionOf(task);
+    const evidence =
+      task.source === "written"
+        ? built.evidence
+        : withMeasure(
+            built.evidence,
+            listingMeasure(
+              built.listing,
+              session === undefined
+                ? undefined
+                : subagents.get(`${session.store}\0${session.pathHash}`)
+            )
+          );
+    measures.push(measureIn(evidence));
     notes.push({
       task: task.id,
       from: task.source === "written" ? "context-session" : "session",
       profile: file,
       context: built.profile.context,
       skills: built.profile.skills.length,
-      ...(task.source === "written"
-        ? {}
-        : { secretsRemoved: built.secretsRemoved, evidence: built.evidence }),
+      ...(task.source === "written" ? {} : { secretsRemoved: built.secretsRemoved, evidence }),
     });
     out.push({ ...task, profile: file });
   }
-  return { tasks: out, notes, queries };
+  return { tasks: out, notes, queries, listing: listingCounts(measures) };
 }
 
 /** What a summary records of a run's profiles: where they are, the context session (with the
@@ -5118,7 +5604,7 @@ async function writeProfiles<T extends TaskLine>(
 function profilesRecord(
   plan: ProfilesPlan,
   context: ContextProfile | undefined,
-  written: { notes: Record<string, unknown>[]; queries: number }
+  written: { notes: Record<string, unknown>[]; queries: number; listing: Record<string, number> }
 ): Record<string, unknown> {
   return {
     dir: path.resolve(plan.dir),
@@ -5135,6 +5621,7 @@ function profilesRecord(
           },
     tasks: written.notes,
     sessionQueries: written.queries,
+    listing: written.listing,
     githubRetries: plan.run.github.retries.record(),
   };
 }
@@ -5730,6 +6217,43 @@ async function reprofileTasks(
     sessionQueries += resolved.queries;
     for (const [hash, filePath] of resolved.paths) paths.set(`${store}\0${hash}`, filePath);
   }
+  // A session that records no prompt is measured against a subagent of it whose recorded prompt
+  // holds a listing (`listingMeasure`): one subagents.sql query a store, for the session of each
+  // session task the store holds and the context session.
+  const measured = [
+    ...sessionTasks.flatMap((task) =>
+      paths.has(`${task.store}\0${task.pathHash}`)
+        ? [{ store: task.store, pathHash: task.pathHash }]
+        : []
+    ),
+    ...(context === undefined ? [] : [{ store: context.store, pathHash: context.pathHash }]),
+  ];
+  const subagents = new Map<string, SubagentListing>();
+  for (const store of new Set(measured.map((each) => each.store))) {
+    const hashes = measured.filter((each) => each.store === store).map((each) => each.pathHash);
+    const found = await subagentListings(config.psqlCommand, store, hashes);
+    sessionQueries += 1;
+    for (const [hash, listing] of found) subagents.set(`${store}\0${hash}`, listing);
+  }
+  if (context !== undefined && measureIn(context.built.evidence) === undefined) {
+    context.built.evidence.push(
+      listingMeasure(context.built.listing, subagents.get(`${context.store}\0${context.pathHash}`))
+    );
+  }
+  /** The measure of a task that keeps its old profile `text`: not measurable, for `why`. */
+  const keptMeasure = (text: string | undefined, why: string) => {
+    const kept = Profile.safeParse(parseJson(text ?? ""));
+    return listingMeasure(
+      {
+        listed: kept.success ? kept.data.skills.map((each) => each.name) : [],
+        recorded: undefined,
+        sessionDigest: null,
+      },
+      undefined,
+      why
+    );
+  };
+  const measures: (ListingMeasure | undefined)[] = [];
 
   const same = (a: Evidence, b: Evidence) => a.item === b.item && a.source === b.source;
   const lines: Task[] = [];
@@ -5770,14 +6294,22 @@ async function reprofileTasks(
           io.err(`build-tasks: ${task.id}: left out: ${why}`);
           continue;
         }
-        rebuilt = { text: json(built.profile), evidence: built.evidence };
+        rebuilt = {
+          text: json(built.profile),
+          evidence: withMeasure(
+            built.evidence,
+            listingMeasure(built.listing, subagents.get(`${task.store}\0${task.pathHash}`))
+          ),
+        };
       }
     }
     const text = rebuilt?.text ?? was?.text;
     const evidence = rebuilt?.evidence ?? [
-      ...evidenceBefore,
+      ...evidenceBefore.filter((each) => each.item !== LISTING_MEASURE),
       ...(gone === undefined ? [] : [gone]),
+      keptMeasure(was?.text, gone?.source ?? "the task keeps its old profile"),
     ];
+    measures.push(measureIn(evidence));
     const outcome = rebuilt === undefined ? "kept" : text === was?.text ? "unchanged" : "changed";
     counts[outcome] += 1;
     const file = path.join(dir, `${task.id}.json`);
@@ -5817,6 +6349,7 @@ async function reprofileTasks(
       from: path.resolve(from),
       skill,
       counts,
+      listing: listingCounts(measures),
       leftOut,
       profiles: {
         dir,

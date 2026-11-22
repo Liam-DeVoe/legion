@@ -48,12 +48,18 @@
  *      from the session's working directory). The longest such directory wins; copies of several
  *      repositories at it are told apart by the repository's owner and name, else its name, in
  *      the path; a tie left is unattributed. A one-segment skill directory counts only when the
- *      path names its repository.
+ *      path names its repository. A path inside a copy of another repository that an installer
+ *      writes (`<dir>/vendor/<name>/`, a package under `node_modules/`, a plugin under
+ *      `plugins/cache/`) is a checkout only of a repository that the path from that copy's own
+ *      directory on names; when it names none, step 3 decides.
  *   3. The store's context. The units (packages, plugins, a host's user skills, each named with its
  *      manifest in prefix-table.tsv's `via`) that the store's own step-1 reads come from are the
  *      units its context installs. Their copies are the installers.tsv rows of those units and the
  *      prefix rows' own copies. When they hold exactly one copy of the row's skill name, the row
- *      goes to that copy. A store with no step-1 read installs no unit.
+ *      goes to that copy. A store with no step-1 read installs no unit. A row whose path is inside
+ *      an `ensure_vendor` clone (`<dir>/vendor/<name>/`) goes to no copy by this step: no prefix
+ *      row maps that clone, so the copies output's end time holds no installer that makes it, and
+ *      the copies the context installs then are other copies than the clone the read came from.
  *   4. Otherwise the row is unattributed for its skill name.
  *   `placer` is these four steps, and the one place a read's copy is decided: `attribute` counts
  *   each row where it puts it, and build.ts's `build-cases` keeps a session only when it puts the
@@ -879,10 +885,55 @@ function prefixTable(rows: readonly PrefixMatcher[]) {
 }
 
 /** What the checkout rule says of a copy-path prefix: the copy it places the read at, or
- *  undefined with the copies it cannot tell apart, and why, in the report's words. */
+ *  undefined with the copies it cannot tell apart, and why, in the report's words. `toContext`:
+ *  the path is inside a clone an installer makes and names none of the repositories whose skill
+ *  directory ends it, so the rule places nothing and the store's context rule decides. */
 export interface CheckoutDecision {
   readonly copy: string | undefined;
   readonly why: string;
+  readonly toContext?: true;
+}
+
+/** A copy of another repository that an installer writes, in a path's segments (`cloneAt`). */
+interface InstalledCopy {
+  readonly start: number;
+  readonly own: number;
+  readonly kind: "clone" | "package" | "plugin";
+}
+
+/**
+ * Where, in the segments `segments` of a path, the copy of another repository that an installer
+ * writes starts, of those that start before the segment `end`, after the last of these
+ * directories (the nearest to `end`): `vendor/<name>`, an `ensure_vendor` clone (copies.ts,
+ * `parseInstaller`: a clone of a repository at `vendor/<name>` of the installer's repository,
+ * `kind` "clone"); `node_modules/<name>` and `node_modules/@<scope>/<name>`, a package a plugins
+ * package.json installs (copies.ts's `**\/node_modules/<name>/` locations, "package"); and
+ * `plugins/cache/<dir>`, a plugin a marketplace installs (`**\/plugins/cache/…`, "plugin").
+ * `start` is the copy's first segment, `own` the last segment of its own directory (`<name>`,
+ * `@<scope>/<name>`, `<dir>`). Undefined when none starts before `end`.
+ */
+function cloneAt(segments: readonly string[], end: number): InstalledCopy | undefined {
+  let found: InstalledCopy | undefined;
+  for (let at = 0; at + 1 < end; at++) {
+    const segment = segments[at];
+    if (segment === "vendor") found = { start: at + 1, own: at + 1, kind: "clone" };
+    else if (segment === "node_modules") {
+      const scoped = segments[at + 1]?.startsWith("@") === true && at + 2 < end;
+      found = { start: at + 1, own: scoped ? at + 2 : at + 1, kind: "package" };
+    } else if (segment === "plugins" && segments[at + 1] === "cache" && at + 2 < end) {
+      found = { start: at + 2, own: at + 2, kind: "plugin" };
+    }
+  }
+  return found;
+}
+
+/** The directory of the `ensure_vendor` clone (`cloneAt`, kind "clone") that the copy-path
+ *  prefix `prefix` (`copyPrefix`, ending with the skill's own directory) is inside, or undefined
+ *  when it is inside none. */
+function cloneDirectory(prefix: string): string | undefined {
+  const segments = prefix.replace(/\/+$/, "").split("/");
+  const clone = cloneAt(segments, segments.length - 1);
+  return clone?.kind === "clone" ? segments.slice(0, clone.own + 1).join("/") : undefined;
 }
 
 /**
@@ -895,8 +946,12 @@ export interface CheckoutDecision {
  * name (`.dotfiles` holds `dotfiles`). Copies of several repositories at that directory are told
  * apart by it: the one the path names most; any other tie is unattributed. A skill directory of
  * one segment (a skill at its repository's root) ends every path of a skill of that name, so it
- * matches only a path that names its repository. Undefined when no copy's directory ends the
- * prefix, and for a `skill://` prefix, which names no directory.
+ * matches only a path that names its repository. A path inside a copy of another repository that
+ * an installer writes (`cloneAt`: `<dir>/vendor/<name>/`, a package under `node_modules/`, a
+ * plugin under `plugins/cache/`) is no checkout of a repository that the path from that copy's
+ * own directory on does not name: such a directory matches only a repository named there, and
+ * when none is, the rule places nothing and the context rule decides (`toContext`). Undefined when
+ * no copy's directory ends the prefix, and for a `skill://` prefix, which names no directory.
  */
 export function checkoutRule(
   copies: readonly Pick<SkillCopiesRow, "repository" | "path">[]
@@ -913,7 +968,10 @@ export function checkoutRule(
     const segments = prefix.replace(/\/+$/, "").split("/");
     for (let start = 0; start < segments.length && !prefix.startsWith("skill://"); start++) {
       const dir = segments.slice(start).join("/");
-      const before = segments.slice(0, start);
+      const clone = cloneAt(segments, start);
+      // Inside a clone, only the clone's own directories name a repository.
+      const before = segments.slice(clone?.start ?? 0, start);
+      const inside = clone === undefined ? "" : segments.slice(0, clone.own + 1).join("/");
       /** 2 when the path names the repository's owner and name, 1 its name, else 0. */
       const named = (repository: string) => {
         const [owner = "", name = ""] = repository.split("/");
@@ -922,20 +980,31 @@ export function checkoutRule(
         return before.some((segment) => segment.includes(name)) ? 1 : 0;
       };
       const oneSegment = start === segments.length - 1;
-      const repositories = (byDir.get(dir) ?? []).filter(
-        (repository) => !oneSegment || named(repository) > 0
+      const ending = byDir.get(dir) ?? [];
+      const repositories = ending.filter(
+        (repository) => (!oneSegment && clone === undefined) || named(repository) > 0
       );
-      if (repositories.length === 0) continue;
+      if (repositories.length === 0) {
+        if (clone !== undefined && ending.length > 0) {
+          decision = {
+            copy: undefined,
+            why: `the path ends with ${dir}/, the skill directory of ${ending.join(", ")}, inside ${inside}/, a copy of another repository that an installer writes, which names none of them`,
+            toContext: true,
+          };
+          break;
+        }
+        continue;
+      }
       const best = Math.max(...repositories.map(named));
       const chosen = repositories.filter((repository) => named(repository) === best);
       const [only] = chosen;
       const ends = `the path ends with ${dir}/`;
       const naming = (repository: string) =>
-        `the path names ${best === 2 ? repository : `${repository.split("/")[1]} in a directory`}`;
+        `the path names ${best === 2 ? repository : `${repository.split("/")[1]} in a directory`}${clone === undefined ? "" : ` of the copy an installer writes at ${inside}/`}`;
       if (repositories.length === 1 && only !== undefined) {
         decision = {
           copy: copyKey(only, dir),
-          why: `to ${only} ${dir}: ${ends}, its skill directory${oneSegment ? `, and ${naming(only)}` : ""}`,
+          why: `to ${only} ${dir}: ${ends}, its skill directory${oneSegment || clone !== undefined ? `, and ${naming(only)}` : ""}`,
         };
       } else if (chosen.length === 1 && only !== undefined && best > 0) {
         decision = {
@@ -1074,12 +1143,24 @@ export function placer(outputs: readonly QueryOutput[], r4: R4Tables): Placer {
         outcome: `checkout: ${byCheckout.why}`,
       };
     }
-    if (byCheckout !== undefined) {
+    if (byCheckout !== undefined && byCheckout.toContext === undefined) {
       return {
         prefix,
         copy: undefined,
         rule: undefined,
         outcome: `unattributed: ${table}${byCheckout.why}`,
+      };
+    }
+    // A read inside an `ensure_vendor` clone that no prefix row maps is of the clone, which the
+    // copies output does not hold at its end time; the copies the context installs then are
+    // others, so the context rule claims none of them for it.
+    const clone = cloneDirectory(prefix);
+    if (clone !== undefined) {
+      return {
+        prefix,
+        copy: undefined,
+        rule: undefined,
+        outcome: `unattributed: ${table}${byCheckout?.why ?? `no copy's skill directory ends the path, which is inside ${clone}/, a clone an installer makes`}; no prefix row maps it, and the context rule claims no copy for a read inside a clone`,
       };
     }
     const [only] = context;
@@ -1096,7 +1177,7 @@ export function placer(outputs: readonly QueryOutput[], r4: R4Tables): Placer {
       copy: undefined,
       rule: undefined,
       outcome:
-        `unattributed: ${table}no copy's skill directory ends the path, and its context installs ` +
+        `unattributed: ${table}${byCheckout?.why ?? "no copy's skill directory ends the path"}, and its context installs ` +
         (context.length === 0
           ? `no copy of ${skill}`
           : `${context.length} copies of ${skill} (${context.map(shown).join(", ")})`),
@@ -1834,8 +1915,8 @@ export function readCountMarkdown(report: Report): string {
     "## How a read is attributed",
     "",
     "1. The prefix table (prefix-table.tsv): a read goes to the copy that every row whose prefix matches its copy path maps to, when they map to one copy.",
-    "2. A checkout: a read whose path ends with a copy's skill directory in its repository (with a path boundary before it) is a read of that copy in a checkout of its repository; the longest such directory wins. Copies of several repositories at that directory are told apart by the path before it: the one whose owner and name are two directories of it in a row, else the one whose name a directory holds (`.dotfiles` holds `dotfiles`); a tie left is unattributed. A skill directory of one segment (a skill at its repository's root) counts only when the path names its repository.",
-    "3. The store's context: the units (packages, plugins, a host's user skills) that the store's own reads of step 1 come from are the units its context installs. Their copies are the copies their installers.tsv rows ship, stage, install, link or enable, and the copies of their prefix rows. When those hold exactly one copy of the read's skill name, the read goes to that copy.",
+    "2. A checkout: a read whose path ends with a copy's skill directory in its repository (with a path boundary before it) is a read of that copy in a checkout of its repository; the longest such directory wins. Copies of several repositories at that directory are told apart by the path before it: the one whose owner and name are two directories of it in a row, else the one whose name a directory holds (`.dotfiles` holds `dotfiles`); a tie left is unattributed. A skill directory of one segment (a skill at its repository's root) counts only when the path names its repository. A path inside a copy of another repository that an installer writes (`<dir>/vendor/<name>/`, an `ensure_vendor` clone; a package under `node_modules/`; a plugin under `plugins/cache/`) is a checkout only of a repository that the path from that copy's own directory on names; when it names none, step 3 decides.",
+    "3. The store's context: the units (packages, plugins, a host's user skills) that the store's own reads of step 1 come from are the units its context installs. Their copies are the copies their installers.tsv rows ship, stage, install, link or enable, and the copies of their prefix rows. When those hold exactly one copy of the read's skill name, the read goes to that copy. A read inside an `ensure_vendor` clone (`<dir>/vendor/<name>/`) that no prefix row maps goes to no copy by this step: the copies the context installs at the copies output's end time are other copies than that clone.",
     "4. Otherwise the read is unattributed for its skill name.",
     "",
     "Two copies of one name are a tie when their sessions differ by at most that name's unattributed sessions.",

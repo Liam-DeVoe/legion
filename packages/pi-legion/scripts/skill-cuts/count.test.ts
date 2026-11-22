@@ -19,6 +19,7 @@ import {
   sessionPathsSql,
   sessionsSql,
   sqlString,
+  subagentsSql,
   tasksSql,
 } from "./countsql";
 import {
@@ -235,6 +236,19 @@ describe("countsql.ts fills the SQL", () => {
     expect(sql).not.toContain("{{");
     for (const bad of [hash.toUpperCase(), "0123456789abcdef", "x'; DROP TABLE y; --"]) {
       expect(() => sessionPathsSql([hash, bad])).toThrow(
+        `${JSON.stringify(bad)} is not a path hash of 64 hex characters`
+      );
+    }
+  });
+
+  test("subagents.sql is filled with the path hashes, each a SHA-256 in lowercase hex, and refuses any other", () => {
+    const hash = createHash("sha256").update("made-up/a.jsonl").digest("hex");
+    const sql = subagentsSql([hash]);
+    expect(sql).toStartWith("SET LOCAL statement_timeout = '15min';");
+    expect(sql).toContain(`WHERE h.hash = ANY (ARRAY['${hash}']::text[])`);
+    expect(sql).not.toContain("{{");
+    for (const bad of [hash.toUpperCase(), "0123456789abcdef", "x'; DROP TABLE y; --"]) {
+      expect(() => subagentsSql([hash, bad])).toThrow(
         `${JSON.stringify(bad)} is not a path hash of 64 hex characters`
       );
     }
@@ -856,6 +870,29 @@ describe.skipIf(serverDsn === undefined)(
       const rows = run(names.first, sessionPathsSql([...files.map((each) => each.hash), missing]));
       expect(rows).toEqual(files.toSorted((a, b) => (a.path < b.path ? -1 : 1)));
       expect(run(names.first, sessionPathsSql([missing]))).toEqual([]);
+    });
+
+    test("subagents.sql: of a session's subagents one level below its directory, the one with a recorded skill listing, its session_init line whole; no row for a session with none, or a hash the store does not hold", () => {
+      const hashOf = (file: string) => createHash("sha256").update(storedPath(file)).digest("hex");
+      const lines = readFileSync(F1_SUBAGENT, "utf8").split("\n");
+      const header = JSON.parse(lines.find((line) => line.includes('"type":"session"')) ?? "{}");
+      const init = lines.find((line) => line.startsWith('{"type":"session_init"'));
+      expect(init).toContain("<skills>");
+      const missing = createHash("sha256").update("made-up/missing.jsonl").digest("hex");
+      expect(
+        run(names.first, subagentsSql([hashOf(F1_SESSION), hashOf(F1_SUBAGENT), missing]))
+      ).toEqual([
+        {
+          parent: hashOf(F1_SESSION),
+          hash: hashOf(F1_SUBAGENT),
+          start: header.timestamp,
+          init,
+          subagents: 1,
+          recorded: 1,
+        },
+      ]);
+      // The third database holds F1's session alone: no file below its directory, so no row.
+      expect(run(names.third, subagentsSql([hashOf(F1_SESSION)]))).toEqual([]);
     });
   }
 );

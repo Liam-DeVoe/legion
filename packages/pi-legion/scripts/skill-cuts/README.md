@@ -315,7 +315,9 @@ the list, read as Oh My Pi 18.18.6 reads it:
   the repository's owner.
 - An `ensure_vendor <url> <name> <ref>` clone of an installer script, which a `skills-sources.json`
   pool under `vendor/<name>/` feeds to Oh My Pi: the cloned repository at that ref, less each
-  entry the installer's `find … -name … -exec rm` removes from the pool.
+  entry the installer's `find … -name … -exec rm` removes from the pool. A clone made as one entry
+  of a pool's skills directory (`ensure_vendor <url> <pool>/skills/<name> <ref>`, a repository that
+  is one skill, its `SKILL.md` at its root) gives that repository's root skill under `<name>`.
 
 Each repository a pin names (the dependency's, the clone's) is read at the pin's ref, in place of
 its default branch's commit when an owner's listing holds it too; `repositories.tsv`'s `branch`
@@ -344,6 +346,10 @@ copy's reading sessions by model, and writes each ranked skill's
 sessions whose file's head names no model; `notQueried`, those no models query held;
 `notAnthropic`; `served`, those on a model the gateway serves; `withModel`), which `behaviour
 --reading-models` reads. Without `--models` it writes no models file.
+A path inside a copy of another repository that an installer writes (`<dir>/vendor/<name>/`, a
+package under `node_modules/`, a plugin under `plugins/cache/`) is a checkout only of a repository
+the copy's own directories name, and a read inside an `ensure_vendor` clone that no prefix row
+maps goes to no copy by the context rule either: it is unattributed.
 
 ### `build-cases` and `build-tasks`
 
@@ -432,6 +438,43 @@ session read it, and a file of a parent is shown under the session's checkout (i
 directory less that path). `load` on Claude Code gives the user-level file as user memory,
 `CLAUDE.md` in its scratch `CLAUDE_CONFIG_DIR`, and the other files in the same checkout. A
 subagent's recorded prompt is sent as recorded.
+
+A dev-box profile installs, beside the units its session's reads come from, every unit the dev
+box's own installers install into Oh My Pi at the session's start: the one repository of the
+copies output that holds both an installer script (`installers/*.sh`) and Claude Code's settings
+(`.claude/settings.json`) is read at its commit of the session's start, with each repository its
+installers pin (a repository the copies output no longer names is read at the pinned ref, or its
+default branch when the installer names none), and each unit its installers then install into
+Oh My Pi (plugin lists, skill pools, plugin installs, linked user skills) is installed. With no
+such repository, or several, the evidence says so and only the read units are installed. A skill
+whose name a pattern of that repository's Oh My Pi config `skills.ignoredSkills` matches is left
+out (Oh My Pi 18.18.6 loads no such skill: extensibility/skills.ts, lines 386-389 and 401-406). A
+skill whose `SKILL.md` frontmatter sets `hide: true` or `disable-model-invocation: true` is
+installed, so `skill://` reads it, and the evidence marks it `not listed`: Oh My Pi loads it and
+leaves it out of the prompt's listing (extensibility/skills.ts, line 494; system-prompt.ts,
+lines 961-983). Oh My Pi lists a second skill of one name and other text as
+`<namespace>/<name>` (extensibility/skills.ts, lines 164-223); a profile installs one copy of a
+name, so such a recorded line is counted missing.
+
+Each case and each load task's profile carries a `listing measure` evidence item, whose source
+is one JSON object (`ListingMeasure` in build.ts): how far the listing its rebuilt profile gives
+(its skills less those Oh My Pi hides, the tested skill included) is from the listing its
+session saw. A session that recorded its system prompt (a subagent's) is measured against that
+prompt's `<skills>` lines (`session listing`). A top-level session records only its prompt's
+digest, and the build makes no prompt, so `rebuiltDigest` is always null; it is measured against
+the recorded listing of a subagent it started (`subagent listing`: the earliest one-level child
+of its directory whose `session_init` holds a listing, read with `subagents.sql`, one query a
+store, since Oh My Pi gives a subagent its parent's skills: task/structured-subagent.ts, lines
+811-818 and 900; task/executor.ts, lines 662-666 and 5256), else it is `not measurable`. The
+item names the recorded names the profile does not list (`missing`), those it lists that the
+recording lacks (`added`), and `missingShare`. Only names are compared: Oh My Pi lists under each
+name a model's hint for the skill or a preview of its description (system-prompt.ts, lines
+981-983; extensibility/skill-descriptions.ts, lines 448-476), never the frontmatter's text. The
+summaries of `build-cases`, `build-cases --reprofile`, `build-tasks --profiles-out` and
+`build-tasks --reprofile` count the measures of each kind and sum the missing and added names
+(`listing`); a task that keeps its old profile is `not measurable`, with why. Nothing is dropped
+by the measure: a report applies its rules.
+
 `--reprofile` builds the profiles of an existing case file again that way, from the cases and
 their sessions' heads (no transcript pulled, no reader call), and writes a new file in which only
 `profile` and the profile's part of `evidence` differ. A case holds no working directory, so each

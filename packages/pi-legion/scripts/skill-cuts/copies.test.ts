@@ -20,6 +20,7 @@ import {
   type Gh,
   type GhResult,
   type InstallerRow,
+  installerPins,
   KEEP_RULES_VERSION,
   keepsEntry,
   lenientFields,
@@ -1254,6 +1255,66 @@ describe("the skills of an Oh My Pi plugin package, as Oh My Pi scans them", () 
       "installs pool:vendor/pack other acme/pack",
     ]);
     expect(rows[0]?.note).toContain("installers/omp.sh removes dd-drop from it");
+  });
+
+  test("a clone an installer makes as one entry of a pool's skills directory (`ensure_vendor <url> <pool>/skills/<name>`) gives the cloned repository's root skill under that entry", () => {
+    const dots = "acme/pkgs";
+    const manifestOf = (file: string, kind: ManifestKind, text: string): Manifest => ({
+      repository: dots,
+      path: file,
+      kind,
+      source: "tree",
+      ...parseManifest(kind, file, text),
+      error: "",
+      rows: 0,
+    });
+    const pin = sha1("one-skill pin");
+    const manifests = [
+      manifestOf(
+        "skills-sources.json",
+        "omp-skill-sources",
+        JSON.stringify({ sources: [{ root: "vendor/one" }] })
+      ),
+      manifestOf("omp/extensions/skill-pools.ts", "omp-extension", EXTENSION_TEXT),
+      manifestOf(
+        "installers/omp.sh",
+        "installer-script",
+        [
+          OMP_INSTALLER_TEXT.trimEnd(),
+          "# The made-up repository is the skill itself, so it is cloned one level down.",
+          `ensure_vendor https://github.com/acme/one-skill.git one/skills/one ${pin}`,
+          "",
+        ].join("\n")
+      ),
+    ];
+    // The cloned repository's one SKILL.md is at its root.
+    const root: SkillCopy = {
+      repository: "acme/one-skill",
+      path: "",
+      file: "SKILL.md",
+      blob: sha1("one-skill root"),
+      fork: false,
+      archived: false,
+      parent: "",
+      name: "one",
+      nameFrom: "frontmatter",
+      description: "Use when the made-up one skill is due.",
+      descriptionBytes: 38,
+      fault: "",
+    };
+    const resolved = resolveInstallers(manifests, new CopyIndex([root]));
+    expect(
+      resolved.rows.map((row) => `${row.action} ${row.unit} ${row.skill} ${row.copyRepository}`)
+    ).toEqual(["installs pool:vendor/one one acme/one-skill"]);
+    expect(resolved.rows[0]?.note).toContain(
+      `installers/omp.sh clones acme/one-skill into vendor/one/skills/one at ${pin}`
+    );
+    expect(
+      resolved.prefixes.map((row) => [row.prefix, row.repository, row.path, row.name])
+    ).toEqual([["**/vendor/one/skills/one/", "acme/one-skill", "", "one"]]);
+    expect(installerPins(manifests).map((each) => `${each.repository} ${each.ref}`)).toEqual([
+      `acme/one-skill ${pin}`,
+    ]);
   });
 });
 
