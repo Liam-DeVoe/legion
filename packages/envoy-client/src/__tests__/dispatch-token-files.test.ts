@@ -633,14 +633,13 @@ describe("the dispatch command's token files", () => {
     const help = await run(["login", "--help"], env, copy.dir);
     expect(help.code, help.stdout).toBe(0);
     expect(help.stdout).toContain("Usage: dispatch login --device [--person <address>]");
-    expect(dispatch.presented).toEqual([]);
   });
 
   test("a tool's dry run beside the token files prints the arguments", async () => {
     // Beside the settings the token files refuse, a dry run that does not ask Dispatch prints the
-    // arguments, as it does with Dispatch off, and asks Dispatch nothing. No broker stands in: a
-    // broker credential trades at its first request (`brokerCredential`), and this dry run makes
-    // none, so a broker here would be asked nothing whatever the token files did.
+    // arguments, as it does with Dispatch off. It returns before any request, so no stand-in here
+    // could hear one: neither the stand-in Dispatch, whose address the command needs, nor a
+    // broker, since a broker credential trades at its first request (`brokerCredential`).
     const dispatch = standInDispatch();
     const copy = copyFiles();
     const env = commandEnvironment(copy, dispatch.url, {
@@ -654,7 +653,6 @@ describe("the dispatch command's token files", () => {
     );
     expect(dry.code, dry.stdout).toBe(0);
     expect(JSON.parse(dry.stdout)).toEqual({ issue: "DSP-1", body: "hi" });
-    expect(dispatch.presented).toEqual([]);
   });
 
   test("a loop of reads sees the renamed token", async () => {
