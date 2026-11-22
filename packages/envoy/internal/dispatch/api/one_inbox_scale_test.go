@@ -10,7 +10,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -402,14 +401,12 @@ func measureOneInboxPath(t *testing.T, path oneInboxPath, side *oneInboxSide) {
 	for reading := 1; reading <= oneInboxReadings; reading++ {
 		taken = append(taken, path.run(t, side, reading))
 	}
-	sorted := slices.Sorted(slices.Values(taken))
 	beside := ""
 	if path.beside != nil {
 		beside = " " + path.beside(t, side)
 	}
-	t.Logf("measurement-two: %s p50=%.2fms p95=%.2fms p99=%.2fms n=%d%s taken_at=%s", path.name,
-		msOf(percentileOfDismissedScale(sorted, 0.50)), msOf(percentileOfDismissedScale(sorted, 0.95)),
-		msOf(percentileOfDismissedScale(sorted, 0.99)), len(sorted), beside, oneInboxNow())
+	figures, _ := oneInboxPercentiles(taken)
+	t.Logf("measurement-two: %s %s n=%d%s taken_at=%s", path.name, figures, len(taken), beside, oneInboxNow())
 }
 
 // oneInboxAsksWaitingOn counts the open asks narrowed by where (over the ask a, its issue i and
@@ -563,8 +560,8 @@ func oneInboxWrittenBy(t *testing.T, database *store.Store, xid int64) []oneInbo
 
 // installOneInboxAudit records, for every statement that writes a table of the schema, the
 // transaction it ran in, the table, the operation and how many rows it wrote, through a statement
-// trigger reading the statement's transition table. It is installed over the base build's own
-// database after the timings, so no reading pays for it, and removed when the test ends.
+// trigger reading the statement's transition table. It is installed over a build's database after
+// the timings, so no reading pays for it, and removed when the test ends.
 func installOneInboxAudit(t *testing.T, database *store.Store) {
 	t.Helper()
 	ctx := context.Background()

@@ -220,22 +220,12 @@ func attemptOfALostKeyedClaim(t *testing.T) {
 		t.Fatalf("the first sender's claim = %v, %v; want it taken", ok, err)
 	}
 	rig.requireProjects(key, "the first sender claimed the owed attempt")
-	facts := func() int {
-		t.Helper()
-		var count int
-		if err := rig.database.Pool.QueryRow(ctx, `
-			select count(*) from graph_tuples where from_kind = $1 and from_id = $2
-		`, graphstore.KindDeliveryAttempt, key.ID()).Scan(&count); err != nil {
-			t.Fatalf("count the facts of the attempt's node: %v", err)
-		}
-		return count
-	}
-	before := facts()
+	before := rig.tupleCount(key)
 	claimed, ok, err := rig.direct.claimQueuedMention(ctx, queued)
 	if err != nil || ok || !claimed.IsZero() {
 		t.Fatalf("the second claim = %v, %v, %v; want it lost, with no claim and no error", claimed, ok, err)
 	}
-	if after := facts(); after != before {
+	if after := rig.tupleCount(key); after != before {
 		t.Fatalf("the lost claim appended %d fact(s) to the attempt's node, want none", after-before)
 	}
 	var stands time.Time
@@ -510,8 +500,8 @@ func attemptAnOlderBuildUpdates(t *testing.T) {
 	`, created.ID, "session:s1"); err != nil {
 		t.Fatalf("update the attempt as an older build: %v", err)
 	}
-	if row, _ := rig.readAttempt(key); row.nodeKind != nil || row.nodeAddress != nil {
-		t.Fatalf("the attempt an older build updated names node %v/%v, want none", row.nodeKind, row.nodeAddress)
+	if row, found := rig.readAttempt(key); !found || row.nodeKind != nil || row.nodeAddress != nil {
+		t.Fatalf("the attempt an older build updated is found %t and names node %v/%v, want it found naming none", found, row.nodeKind, row.nodeAddress)
 	}
 	rig.reply("/api/v1/comments/"+created.ID+"/reply", map[string]any{"body": "Answered mid-roll."}, http.StatusCreated)
 	if _, held, err := graphstore.ReadNode(context.Background(), rig.database.Pool, graphstore.KindDeliveryAttempt, key.ID()); err != nil || !held {
@@ -930,15 +920,13 @@ func (r *attemptRig) requireEveryAttemptRowIsANode(unmarked ...string) {
 	if err != nil {
 		r.t.Fatalf("read the attempt rows: %v", err)
 	}
-	var keys []graphstore.AttemptKey
-	for rows.Next() {
+	keys, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (graphstore.AttemptKey, error) {
 		var key graphstore.AttemptKey
-		if err := rows.Scan(&key.Comment, &key.Target, &key.Message, &key.Attempt); err != nil {
-			r.t.Fatalf("read an attempt row: %v", err)
-		}
-		keys = append(keys, key)
+		return key, row.Scan(&key.Comment, &key.Target, &key.Message, &key.Attempt)
+	})
+	if err != nil {
+		r.t.Fatalf("read the attempt rows: %v", err)
 	}
-	rows.Close()
 	nodes, err := graphstore.NodesOfKind(ctx, r.database.Pool, graphstore.KindDeliveryAttempt)
 	if err != nil {
 		r.t.Fatalf("read the delivery_attempt nodes: %v", err)
@@ -949,8 +937,8 @@ func (r *attemptRig) requireEveryAttemptRowIsANode(unmarked ...string) {
 	}
 	for _, key := range keys {
 		if slices.Contains(unmarked, key.ID()) {
-			if row, _ := r.readAttempt(key); row.nodeKind != nil {
-				r.t.Fatalf("the attempt row of %s an older build updated names node %s, want none", key.ID(), *row.nodeKind)
+			if row, found := r.readAttempt(key); !found || row.nodeKind != nil {
+				r.t.Fatalf("the attempt row of %s an older build updated is found %t and names node %v, want it found naming none", key.ID(), found, row.nodeKind)
 			}
 			continue
 		}
@@ -973,19 +961,14 @@ func (r *attemptRig) requireEveryAttemptRowIsANode(unmarked ...string) {
 			storeNames[name] = true
 		}
 	}
-	kinds, err := r.database.Pool.Query(ctx, `
+	kinds, err := readStrings(ctx, r.database.Pool, `
 		select distinct kind from graph_tuples
 		where from_kind = $1 and to_kind = $2 and kind <> all($3)
 	`, graphstore.KindDeliveryAttempt, graphstore.KindValue, graphstoretest.BaseAttributes())
 	if err != nil {
 		r.t.Fatalf("read the value kinds of the attempts: %v", err)
 	}
-	defer kinds.Close()
-	for kinds.Next() {
-		var kind string
-		if err := kinds.Scan(&kind); err != nil {
-			r.t.Fatalf("read a value kind of the attempts: %v", err)
-		}
+	for _, kind := range kinds {
 		if !storeNames[kind] {
 			r.t.Errorf("an attempt states a value of kind %q, which no attribute node of delivery_attempt stores its values under", kind)
 		}
@@ -1110,16 +1093,21 @@ func requirePublishedDestinationsProjectTheOutboxsTuples(t *testing.T, database 
 	if err != nil {
 		t.Fatalf("read the outbox's deliveries: %v", err)
 	}
-	for rows.Next() {
-		var event int64
-		var eventType, from, to string
-		if err := rows.Scan(&event, &eventType, &from, &to); err != nil {
-			t.Fatalf("read an outbox delivery: %v", err)
-		}
-		got = append(got, eventType+" "+from+" > "+to)
-		reached[event] = append(reached[event], topicOfNode(t, to))
+	type delivery struct {
+		event               int64
+		eventType, from, to string
 	}
-	rows.Close()
+	deliveries, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (delivery, error) {
+		var read delivery
+		return read, row.Scan(&read.event, &read.eventType, &read.from, &read.to)
+	})
+	if err != nil {
+		t.Fatalf("read the outbox's deliveries: %v", err)
+	}
+	for _, read := range deliveries {
+		got = append(got, read.eventType+" "+read.from+" > "+read.to)
+		reached[read.event] = append(reached[read.event], topicOfNode(t, read.to))
+	}
 	slices.Sort(got)
 	want = slices.Clone(want)
 	slices.Sort(want)
@@ -1181,8 +1169,11 @@ func requirePublishedDestinationsProjectTheOutboxsTuples(t *testing.T, database 
 			routed++
 		}
 	}
+	if err := events.Err(); err != nil {
+		t.Fatalf("read the events of %s: %v", issueKey, err)
+	}
 	if routed == 0 {
-		t.Errorf("the run held no event about neither a comment nor a message that reached a route, so it proves nothing of one")
+		t.Errorf("the run held no event about something other than a comment or a message that reached a route, so it proves nothing of one")
 	}
 }
 

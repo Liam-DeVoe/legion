@@ -267,7 +267,7 @@ const versionTableException = "none, and none to take: the table is a migration 
 // without taking its owner. No writer a server runs is one: the lock table holds those that open
 // their own transaction behind a held owner lock (item_row_owner_lock_test.go), those that write
 // inside a transaction their caller opened rest on the lock that caller took, which that table
-// does not drive (itemRowLockNoRow names each with why), and the ten entries here that take no
+// does not drive (itemRowLockNoRow names each with why), and the twelve entries here that take no
 // owner lock each say why they take none. What this test keeps out is a writer arriving unnamed:
 // a `delete from comments` added tomorrow (dispatch://INFRA-1523) reds here until its function is
 // on the census with the lock it takes.

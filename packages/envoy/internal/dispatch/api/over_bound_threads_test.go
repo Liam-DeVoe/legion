@@ -176,13 +176,7 @@ func requireOwnUnmarkedRow(t *testing.T, database *store.Store, login, thread st
 // thread_logins.
 func requireEventNames(t *testing.T, database *store.Store, eventType, id string, logins ...string) {
 	t.Helper()
-	var named []string
-	if err := database.Pool.QueryRow(context.Background(), `
-		select coalesce(array(select jsonb_array_elements_text(payload->'thread_logins')), '{}')
-		from events where type = $1 and payload->>'id' = $2
-	`, eventType, id).Scan(&named); err != nil {
-		t.Fatalf("read the %s of %s: %v", eventType, id, err)
-	}
+	named, _ := threadLoginsOf(t, database, eventType, id)
 	for _, login := range logins {
 		if !slices.Contains(named, login) {
 			t.Errorf("the %s of %s names %v, want %s among them", eventType, id, named, login)

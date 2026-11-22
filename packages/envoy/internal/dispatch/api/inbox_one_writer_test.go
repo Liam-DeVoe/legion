@@ -390,11 +390,13 @@ func requireRelationTuples(t *testing.T, database *store.Store, kind, node strin
 		       || case when asserted then '' else ' retracted' end
 		from graph_tuples
 		where kind = $1 and (from_kind || ':' || from_id = $2 or to_kind || ':' || to_id = $2)
-		order by 1
 	`, kind, node)
 	if err != nil {
 		t.Fatalf("read the %s tuples of %s: %v", kind, node, err)
 	}
+	// Both sides are sorted here, as Go orders bytes: SQL's order would follow the database's
+	// collation, which need not agree.
+	slices.Sort(got)
 	want = slices.Clone(want)
 	slices.Sort(want)
 	if !slices.Equal(got, want) {

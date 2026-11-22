@@ -8,8 +8,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/contracts"
-	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -57,9 +58,10 @@ func mentionsAreTuples(t *testing.T) {
 		fmt.Sprintf("comment:%s > session:s1 @%d", session, created(session)))
 	requireRelationTuples(t, database, graphstore.TupleMentions, "comment:"+role,
 		fmt.Sprintf("comment:%s > role:unheld @%d", role, created(role)))
+	forwardedAt := created(forwarded)
 	requireRelationTuples(t, database, graphstore.TupleMentions, "comment:"+forwarded,
-		fmt.Sprintf("comment:%s > role:reviewer @%d", forwarded, created(forwarded)),
-		fmt.Sprintf("comment:%s > session:s1 @%d", forwarded, created(forwarded)))
+		fmt.Sprintf("comment:%s > role:reviewer @%d", forwarded, forwardedAt),
+		fmt.Sprintf("comment:%s > session:s1 @%d", forwarded, forwardedAt))
 	requireRelationTuples(t, database, graphstore.TupleMentions, "comment:"+nobody)
 
 	message := createIssueMessage(t, handler, issue.Key, map[string]any{"body": "Ask dispatch://person/" + mentionedPerson + " about the copy."}, "alice")
@@ -70,9 +72,7 @@ func mentionsAreTuples(t *testing.T) {
 	document := createInteractionIssue(t, handler, "MEND", "A spec that names a person", "Ask [@Person](dispatch://person/"+mentionedPerson+
 		") about the copy, and tell [@Agent](dispatch://agent/s1) and [@Reviewer](dispatch://role/reviewer).\n")
 	// The spec's blocks are the block index's to write, which the reconciliation's tick runs.
-	if _, err := deps.Docs.(*docs.Service).ReconcileBlockIndex(ctx, docs.BlockIndexCursors{}, nil); err != nil {
-		t.Fatalf("index the spec's blocks: %v", err)
-	}
+	reconcileBlockIndexPass(t, deps)
 	blocks, err := readStrings(ctx, database.Pool, `
 		select t.from_kind || ':' || t.from_id from graph_tuples t
 		join document_blocks b on b.node_kind = t.from_kind and b.node_address = t.from_id
@@ -231,15 +231,13 @@ func requireMentionRowsProjectTheTuples(t *testing.T, database *store.Store, com
 		resolved         *string
 		stored           bool
 	}
-	var held []mentionRow
-	for rows.Next() {
-		var row mentionRow
-		if err := rows.Scan(&row.target, &row.resolved, &row.delivery, &row.stored); err != nil {
-			t.Fatalf("read a comment_mentions row of %s: %v", comment, err)
-		}
-		held = append(held, row)
+	held, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (mentionRow, error) {
+		var read mentionRow
+		return read, row.Scan(&read.target, &read.resolved, &read.delivery, &read.stored)
+	})
+	if err != nil {
+		t.Fatalf("read the comment_mentions rows of %s: %v", comment, err)
 	}
-	rows.Close()
 	if len(held) == 0 {
 		t.Fatalf("comment %s holds no comment_mentions row", comment)
 	}

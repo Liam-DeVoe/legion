@@ -266,27 +266,29 @@ func assertDismissedScaleSeed(t *testing.T, shape *dismissedScaleShape) {
 	}
 	// The routes' own reading of the same seed, both halves together: what each state answers is
 	// what the measurement then times.
-	for _, state := range []struct {
-		query string
+	for _, read := range []struct {
+		query url.Values
 		total int
 	}{
-		{"inbox", dismissedScaleInboxRows()},
-		{"unread", dismissedScaleUnreadRows()},
-		// The pile itself is asserted above, in the tables the marks live in.
-		{"dismissed", shape.dismissedReplies + shape.dismissedAgents},
+		{url.Values{"state": {"inbox"}}, dismissedScaleInboxRows()},
+		{url.Values{"state": {"unread"}}, dismissedScaleUnreadRows()},
+		// The Dismissed view is read a page at a time, as the measurement reads it; the pile itself
+		// is asserted above, in the tables the marks live in.
+		{url.Values{"state": {"dismissed"}, "limit": {fmt.Sprint(dismissedScalePage)}},
+			min(shape.dismissedReplies+shape.dismissedAgents, dismissedScalePage)},
 	} {
-		if rows := dismissedScaleRows(t, shape, state.query); rows != state.total {
-			t.Fatalf("state=%s on %s answered %d rows, want %d", state.query, shape.name, rows, state.total)
+		if rows := dismissedScaleRows(t, shape, read.query); rows != read.total {
+			t.Fatalf("%s on %s answered %d rows, want %d", read.query.Encode(), shape.name, rows, read.total)
 		}
 	}
 }
 
-// dismissedScaleRows is how many Thread and Agent rows the one read answers the seeded person in
-// one state with no limit, which is every row of that state, as the Inbox page draws them.
-func dismissedScaleRows(t *testing.T, shape *dismissedScaleShape, state string) int {
+// dismissedScaleRows is how many Thread and Agent rows the one read answers the seeded person
+// under query: with no limit, every row of its state, as the Inbox page draws them.
+func dismissedScaleRows(t *testing.T, shape *dismissedScaleShape, query url.Values) int {
 	t.Helper()
 	rows := 0
-	for _, entry := range readMeInboxAs(t, shape.handler, dismissedScaleLogin, url.Values{"state": {state}}).Entries {
+	for _, entry := range readMeInboxAs(t, shape.handler, dismissedScaleLogin, query).Entries {
 		if entry.Thread != nil || entry.Agent != nil {
 			rows++
 		}
@@ -345,7 +347,8 @@ func dismissedScaleUnreadAgentReplies(t *testing.T, shape *dismissedScaleShape) 
 
 // dismissedScaleDeepCursor is the cursor a page 50,000 rows deep resumes from: the row at that
 // depth of the order the Dismissed view draws its rows in - newest dismissal first, then the
-// node's kind and id descending - written as the one read writes its next_cursor (meInboxCursor).
+// root's id, as a uuid, descending (meInboxOrder) - written as the one read writes its next_cursor
+// (meInboxCursor).
 func dismissedScaleDeepCursor(t *testing.T, shape *dismissedScaleShape) string {
 	t.Helper()
 	var cursor meInboxCursor
@@ -356,7 +359,7 @@ func dismissedScaleDeepCursor(t *testing.T, shape *dismissedScaleShape) string {
 			union all
 			select dismissed_at, 'message', message_id::text from user_agent_thread_dismissed where login = $1
 		) dismissed
-		order by at desc, kind desc, id desc
+		order by at desc, id::uuid desc
 		offset $2::int limit 1
 	`, dismissedScaleLogin, dismissedScaleCursorDepth-1).Scan(&cursor.moment, &cursor.kind, &cursor.id); err != nil {
 		t.Fatalf("read the cursor %d deep: %v", dismissedScaleCursorDepth, err)

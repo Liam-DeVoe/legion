@@ -430,17 +430,7 @@ func TestTwoSnoozesOfOneRowLeaveItAndItsTupleAgreeing(t *testing.T) {
 		t.Fatalf("state the second snooze's tuple: %v", err)
 	}
 
-	one := storetest.SingleConnection(t, database)
-	sender := deps
-	sender.Store = one
-	server := http.NewServeMux()
-	t.Cleanup(Register(server, t.Context(), sender).Wait)
-	conn, err := one.Pool.Acquire(ctx)
-	if err != nil {
-		t.Fatalf("acquire the third snooze's connection: %v", err)
-	}
-	backend := conn.Conn().PgConn().PID()
-	conn.Release()
+	server, backend := oneConnectionHandler(t, deps)
 	answered := make(chan *httptest.ResponseRecorder, 1)
 	go func() { answered <- snooze(server, first) }()
 	if answer, early := storetest.WaitForQueuedBehind(t, holder, backend, answered, storeStepWait); early {

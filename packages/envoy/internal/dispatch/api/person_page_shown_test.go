@@ -73,11 +73,8 @@ func TestAPersonPageAnswersOnlyWhereThePersonHoldsANodeTheReaderMaySee(t *testin
 func TestAPersonPageRowCarriesTheTreeOfItsFirstLine(t *testing.T) {
 	handler, _ := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "LINE", "A person's page lines", "Spec.\n")
-	created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments",
+	createThreadComment(t, handler, issue.Key,
 		map[string]any{"body": "A **bold** first line.\n\nA second paragraph the line leaves out."}, "alice")
-	if created.Code != http.StatusCreated {
-		t.Fatalf("seed a comment: status=%d body=%s", created.Code, created.Body.String())
-	}
 	const page = "/api/v1/people/alice/nodes"
 	if line, _ := valueAt(t, treesRequest(t, handler, page, false), "rows.0.first_line"); string(line) != `"A **bold** first line."` {
 		t.Fatalf("GET %s: the newest row's first line is %s, want the comment's", page, line)

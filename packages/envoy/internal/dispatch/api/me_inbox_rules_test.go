@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"os"
 	"reflect"
@@ -253,13 +252,9 @@ func meInboxWalkDepth(t *testing.T) int {
 // meInboxSessionComment is one comment written on issue by the session id, a root.
 func meInboxSessionComment(t *testing.T, handler http.Handler, issue, session, body string) string {
 	t.Helper()
-	response := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue+"/comments", map[string]any{
+	return createThreadComment(t, handler, issue, map[string]any{
 		"body": body, "actor": map[string]any{"kind": "session", "id": session},
-	})
-	if response.Code != http.StatusCreated {
-		t.Fatalf("%s's comment: status=%d body=%s", session, response.Code, response.Body.String())
-	}
-	return decodeBody[model.Comment](t, response).ID
+	}, "").ID
 }
 
 // settleOutboxWithin runs the outbox until every event of issue is published, failing once ctx
@@ -330,13 +325,7 @@ func meInboxOwnWrites(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	issue := createTestIssue(t, handler, "OWN", "Alice's own writes")
 	comment := createThreadComment(t, handler, issue, map[string]any{"body": "Alice's own comment."}, "alice")
-	asked := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue+"/asks", map[string]any{
-		"question": "Alice's own question?", "options": []map[string]string{{"label": "Yes"}, {"label": "No"}},
-	}, "alice")
-	if asked.Code != http.StatusCreated {
-		t.Fatalf("alice's ask: status=%d body=%s", asked.Code, asked.Body.String())
-	}
-	ask := decodeBody[model.Ask](t, asked)
+	ask := createReferenceAPIAsk(t, handler, issue, "Alice's own question?")
 	message := createIssueMessage(t, handler, issue, map[string]any{"body": "Alice's own message."}, "alice")
 	unread := readMeInboxAs(t, handler, "alice", url.Values{"state": {myRepliesStateUnread}})
 	walked := readMeInboxAs(t, handler, "alice", nil)
@@ -508,7 +497,7 @@ func meInboxClaimantAndRoute(t *testing.T) {
 	}
 }
 
-// meInboxAgentEntry is the entry of alice's read under state whose node is the root message.
+// meInboxAgentEntry is the entry of login's read under state whose node is the root message.
 func meInboxAgentEntry(t *testing.T, handler http.Handler, login, state, root string) (meInboxEntry, bool) {
 	t.Helper()
 	return meInboxEntryOfNode(readMeInboxAs(t, handler, login, url.Values{"state": {state}}), graphstore.KindMessage, root)
@@ -558,13 +547,7 @@ func meInboxReadByID(t *testing.T) {
 func meInboxAskOnce(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	issue := createTestIssue(t, handler, "ONCE", "An ask that waits on alice")
-	asked := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue+"/asks", map[string]any{
-		"question": "Bob's question for alice?", "options": []map[string]string{{"label": "Yes"}, {"label": "No"}},
-	}, "bob")
-	if asked.Code != http.StatusCreated {
-		t.Fatalf("bob's ask: status=%d body=%s", asked.Code, asked.Body.String())
-	}
-	ask := decodeBody[model.Ask](t, asked)
+	ask := createPersonAsk(t, handler, issue, "bob", "Bob's question for alice?")
 	createThreadComment(t, handler, issue, map[string]any{"body": "Alice writes in its thread.", "ask_id": ask.ID}, "alice")
 	createThreadComment(t, handler, issue, map[string]any{"body": "Bob answers her there.", "ask_id": ask.ID}, "bob")
 	if reached := meInboxDeliveredTo(t, database, graphstore.KindAsk, ask.ID); !slices.Contains(reached, graphstore.KindPerson+":alice") {
@@ -603,13 +586,13 @@ func meInboxDismissed(t *testing.T) {
 	if !heldThread || threadRow.Thread == nil || !heldAgent || agentRow.Agent == nil {
 		t.Fatalf("alice's inbox is %v, want the comment thread's row and the conversation's agent row", meInboxNodes(inbox))
 	}
-	dismissed := dispatchRequest(t, handler, http.MethodPost, "/api/v1/me/inbox/dismiss", map[string]any{
-		"threads": []string{"reply:" + thread.ID, "agent:" + root.ID},
+	dismissed := postInboxDismiss(t, handler, "alice", map[string]any{
+		"threads": []string{inboxDismissReplyPrefix + thread.ID, inboxDismissAgentPrefix + root.ID},
 		"seen_replies": map[string]any{
-			"reply:" + thread.ID: map[string]any{"version": *threadRow.Thread.Version},
-			"agent:" + root.ID:   map[string]any{"newest_reply": agentRow.Agent.Reply.ID, "unread_replies": agentRow.Agent.UnreadReplyIDs},
+			inboxDismissReplyPrefix + thread.ID: map[string]any{"version": *threadRow.Thread.Version},
+			inboxDismissAgentPrefix + root.ID:   map[string]any{"newest_reply": agentRow.Agent.Reply.ID, "unread_replies": agentRow.Agent.UnreadReplyIDs},
 		},
-	}, "alice")
+	})
 	if dismissed.Code != http.StatusOK {
 		t.Fatalf("dismiss: status=%d body=%s", dismissed.Code, dismissed.Body.String())
 	}
@@ -630,13 +613,7 @@ func meInboxDismissed(t *testing.T) {
 func meInboxSnoozed(t *testing.T) {
 	handler, _ := newTestHandlerWithStore(t)
 	issue := createTestIssue(t, handler, "SNOOZE", "A snoozed ask")
-	asked := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue+"/asks", map[string]any{
-		"question": "Snooze me?", "options": []map[string]string{{"label": "Yes"}, {"label": "No"}},
-	}, "bob")
-	if asked.Code != http.StatusCreated {
-		t.Fatalf("bob's ask: status=%d body=%s", asked.Code, asked.Body.String())
-	}
-	ask := decodeBody[model.Ask](t, asked)
+	ask := createPersonAsk(t, handler, issue, "bob", "Snooze me?")
 	until := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
 	if snoozed := dispatchRequest(t, handler, http.MethodPut, "/api/v1/me/asks/"+ask.ID+"/snooze", map[string]any{"snoozed_until": until}, "alice"); snoozed.Code/100 != 2 {
 		t.Fatalf("snooze: status=%d body=%s", snoozed.Code, snoozed.Body.String())
@@ -692,7 +669,7 @@ func meInboxWalkDepthCase(t *testing.T) {
 	// chain writes a root and replies under it, each one under the one before and each by a
 	// session of its own, and alice's reply under the root, which the walk reads the chain down
 	// from. It answers the chain's comments, root first, and alice's reply.
-	chain := func(replies int) ([]string, string, string) {
+	chain := func(replies int) ([]string, string) {
 		t.Helper()
 		created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{
 			"project": "DEEP", "title": fmt.Sprintf("A chain of %d replies", replies),
@@ -716,7 +693,7 @@ func meInboxWalkDepthCase(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		settleOutboxWithin(t, ctx, deps, issue, fmt.Sprintf("a chain of %d replies", replies))
-		return comments, reply, issue
+		return comments, reply
 	}
 	sessionsOf := func(from, to int) []string {
 		sessions := []string{}
@@ -739,7 +716,7 @@ func meInboxWalkDepthCase(t *testing.T) {
 	}
 	const cutLine = "the comment thread walk stopped at its depth bound"
 
-	atBound, whole, _ := chain(depth)
+	atBound, whole := chain(depth)
 	reached := sessionsReached(whole)
 	if !slices.Equal(reached, sessionsOf(0, depth)) {
 		t.Errorf("alice's reply under a chain of %d replies reached %v, want every one of its %d authors", depth, reached, depth+1)
@@ -748,7 +725,7 @@ func meInboxWalkDepthCase(t *testing.T) {
 		t.Errorf("the walk of a chain at its bound reported a cut: %s", lines)
 	}
 
-	longer, cutReply, _ := chain(depth + 1)
+	longer, cutReply := chain(depth + 1)
 	reached = sessionsReached(cutReply)
 	if !slices.Equal(reached, sessionsOf(0, depth)) {
 		t.Errorf("alice's reply under a chain of %d replies reached %v, want the authors down to the bound and not s-%02d past it",
@@ -896,21 +873,10 @@ func TestTheOneReadCarriesTheDisplayTreesThePageAsksFor(t *testing.T) {
 	handler, _, root, reply, _ := directConversationFrom(t, "alice")
 	decodeBody[model.Message](t, reply("An answer with **weight**."))
 	issue := createTestIssue(t, handler, "TREES", "Trees on every row")
-	asked := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue+"/asks", map[string]any{
-		"question": "Is this **bold**?", "options": []map[string]string{{"label": "Yes"}, {"label": "No"}},
-	}, "bob")
-	if asked.Code != http.StatusCreated {
-		t.Fatalf("bob's ask: status=%d body=%s", asked.Code, asked.Body.String())
-	}
-	ask := decodeBody[model.Ask](t, asked)
+	ask := createPersonAsk(t, handler, issue, "bob", "Is this **bold**?")
 	createThreadComment(t, handler, issue, map[string]any{"body": "A reply in _the_ thread.", "ask_id": ask.ID}, "bob")
 	for _, pass := range []string{"first", "second"} {
-		request := httptest.NewRequest(http.MethodGet, "/api/v1/me/inbox?state=inbox", nil)
-		request.Header.Set("X-Dispatch-User", "alice")
-		request.Header.Set(displayTreesHeader, "1")
-		response := httptest.NewRecorder()
-		handler.ServeHTTP(response, request)
-		answer := decodeMeInbox(t, response)
+		answer := decodeMeInbox(t, treesRequest(t, handler, "/api/v1/me/inbox?state=inbox", true))
 		askEntry, heldAsk := meInboxEntryOfNode(answer, graphstore.KindAsk, ask.ID)
 		agentEntry, heldAgent := meInboxEntryOfNode(answer, graphstore.KindMessage, root.ID)
 		if !heldAsk || askEntry.Ask == nil || !heldAgent || agentEntry.Agent == nil {

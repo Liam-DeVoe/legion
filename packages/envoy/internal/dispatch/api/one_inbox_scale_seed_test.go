@@ -7,9 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os"
-	"regexp"
-	"strconv"
 	"testing"
 	"time"
 
@@ -23,8 +20,8 @@ import (
 // every trigger firing as it does for any insert, and what only a server writes whole (a project,
 // an issue, an ask, a message and its delivery) through that server's API. One seed serves every
 // measurement over it: this build's handler for the participant set, the base build booted as a
-// process for the write baseline, and both builds for c-p99 (one_inbox_p99_test.go), so all of
-// them read one corpus.
+// process for the write baseline, and both builds for c-p99 (one_inbox_p99_test.go), which seeds
+// it once on each build's database, so all of them read the same corpus.
 //
 // Every shape is named, written, and asserted before anything is read off it
 // (assertOneInboxCorpus), because a measurement over a seed that did not land is worse than none:
@@ -50,10 +47,11 @@ import (
 // It fills both tables the one read's plan is held on to scale: comments with the threads above,
 // and messages with each person's conversations, a session of their own answering each one-off
 // message they sent it (seedOneInboxConversations) - at the 205 messages the threads alone hold,
-// the planner chose sequential scans inside the read's message walks, and none once messages held
-// 150,205 rows (T10). And it holds the two sorts of ask each write that moves who an ask waits on is
-// counted over (seedOneInboxMoves): one whose old person also wrote in its thread, and one whose old
-// person holds nothing else there.
+// the planner chose sequential scans inside the read's message walks. The conversations add 43,980
+// more, two to a conversation, and c-p99's scan rule (explainOneInboxRead) fails a run whose read
+// still scans messages sequentially. And it holds the two sorts of ask each write that moves who an
+// ask waits on is counted over (seedOneInboxMoves): one whose old person also wrote in its thread,
+// and one whose old person holds nothing else there.
 
 const (
 	// oneInboxParticipantBound is R4's bound on the live participants of one thread, which the
@@ -881,15 +879,7 @@ func assertOneInboxCorpus(t *testing.T, database *store.Store, corpus *oneInboxC
 // depth the walk no longer stops at would measure a shape the bound no longer names.
 func assertOneInboxCommentThreadDepth(t *testing.T) {
 	t.Helper()
-	source, err := os.ReadFile("../outbox/publisher.go")
-	if err != nil {
-		t.Fatalf("read outbox.maxCommentThreadDepth's declaration: %v", err)
-	}
-	declared := regexp.MustCompile(`(?m)^\s*maxCommentThreadDepth\s*=\s*(\d+)\s*$`).FindSubmatch(source)
-	if declared == nil {
-		t.Fatal("outbox/publisher.go declares no maxCommentThreadDepth = <number>, which the chain's depth copies")
-	}
-	if depth, _ := strconv.Atoi(string(declared[1])); depth != oneInboxCommentThreadDepth {
+	if depth := meInboxWalkDepth(t); depth != oneInboxCommentThreadDepth {
 		t.Fatalf("outbox.maxCommentThreadDepth is %d and the corpus's chain is %d links long: move oneInboxCommentThreadDepth with it",
 			depth, oneInboxCommentThreadDepth)
 	}

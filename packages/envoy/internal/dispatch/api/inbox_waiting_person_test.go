@@ -34,7 +34,7 @@ import (
 func TestTheAssigneeArmFollowsWhoAnAskWaitsOn(t *testing.T) {
 	ctx := context.Background()
 	database := storetest.Open(t)
-	trace := &assigneeArmTrace{}
+	trace := &sentStatements{}
 	traced := storetest.TracedStore(t, database, trace)
 	handler, _, _ := newTestServer(t, testServerOptions{
 		store: traced,
@@ -177,26 +177,22 @@ func TestTheAssigneeArmFollowsWhoAnAskWaitsOn(t *testing.T) {
 		ten := defaultFallThroughProject(t, handler, "ARMT", 6, 4)
 		// Two asks of the project that do not fall through to its default: one on an issue
 		// somebody holds, and one handed to somebody.
-		created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{
+		held := requireCreatedIssue(t, dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{
 			"project": "ARMT", "title": "Held", "spec": "A spec",
-		}, "alice")
-		if created.Code != http.StatusCreated {
-			t.Fatalf("create the held issue: status=%d body=%s", created.Code, created.Body.String())
-		}
-		held := decodeBody[model.Issue](t, created).Key
+		}, "alice")).Key
 		assignIssue(t, handler, held, "dana")
 		onHeld := createIssueAsk(t, handler, held, "Is it dana's?")
 		handed := createIssueAsk(t, handler, ten.issue, "Is it carol's?")
 		handAskOn(t, handler, handed, "carol", "alice")
 
 		statements := func(project string) (int, int64) {
-			before := len(trace.counted.Statements())
+			trace.take()
 			response := countedWrite(t, handler, http.MethodPut, "/api/v1/projects/"+project+"/default-assignee",
 				map[string]any{"assignee": "bob"}, "alice")
 			if response.Code != http.StatusOK {
 				t.Fatalf("move %s's default: status=%d body=%s", project, response.Code, response.Body.String())
 			}
-			return len(trace.counted.Statements()) - before, latestEventOf(t, database, "settings.project_default_assignee.updated")
+			return len(trace.take()), latestEventOf(t, database, "settings.project_default_assignee.updated")
 		}
 		oneCount, oneEvent := statements("ARM1")
 		tenCount, tenEvent := statements("ARMT")
@@ -492,22 +488,6 @@ func TestAMoveOfTheDefaultTakesTurnsWithEveryWriteThatDecidesWhoAnAskWaitsOn(t *
 	ctx := context.Background()
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	seedPeople(t, database, "carol", "erin")
-	// oneConnection is a server whose store is one connection of its own, and the backend of that
-	// connection.
-	oneConnection := func(t *testing.T) (http.Handler, uint32) {
-		t.Helper()
-		one := storetest.SingleConnection(t, database)
-		sender := deps
-		sender.Store = one
-		mux := http.NewServeMux()
-		t.Cleanup(Register(mux, t.Context(), sender).Wait)
-		conn, err := one.Pool.Acquire(ctx)
-		if err != nil {
-			t.Fatalf("acquire the server's connection: %v", err)
-		}
-		defer conn.Release()
-		return mux, conn.Conn().PgConn().PID()
-	}
 	// race sends first on its own server, waits for it to queue behind holder, then sends the move
 	// of project's default to bob on another, waits for that to queue too, lets holder go, and
 	// answers both responses. holder goes however race ends, so a write still queued behind it
@@ -515,8 +495,8 @@ func TestAMoveOfTheDefaultTakesTurnsWithEveryWriteThatDecidesWhoAnAskWaitsOn(t *
 	race := func(t *testing.T, holder pgx.Tx, project string, first func(http.Handler) *httptest.ResponseRecorder) (*httptest.ResponseRecorder, *httptest.ResponseRecorder) {
 		t.Helper()
 		defer func() { _ = holder.Rollback(context.Background()) }()
-		firstServer, firstBackend := oneConnection(t)
-		moveServer, moveBackend := oneConnection(t)
+		firstServer, firstBackend := oneConnectionHandler(t, deps)
+		moveServer, moveBackend := oneConnectionHandler(t, deps)
 		firstAnswer := make(chan *httptest.ResponseRecorder, 1)
 		go func() { firstAnswer <- first(firstServer) }()
 		if answer, early := storetest.WaitForQueuedBehind(t, holder, firstBackend, firstAnswer, storeStepWait); early {
@@ -804,36 +784,6 @@ func TestASessionsReplyReachesWhoStartedItsDirectConversation(t *testing.T) {
 	}
 	requireRelationTuples(t, database, graphstore.TupleDeliveredTo, "message:"+decodeBody[model.Message](t, replied).ID)
 }
-
-// assigneeArmTrace is the tracer on the pool of TestTheAssigneeArmFollowsWhoAnAskWaitsOn's server.
-// It records, through a storetest.StatementRecorder, every statement of a request countedRead
-// marks, a statement sent in a batch among them, and hands every statement on to connectionWatch,
-// so a watched write's statements are read on the connection each ran on.
-type assigneeArmTrace struct {
-	counted storetest.StatementRecorder
-}
-
-func (a *assigneeArmTrace) TraceQueryStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
-	if ctx.Value(countedRead{}) != nil {
-		a.counted.TraceQueryStart(ctx, conn, data)
-	}
-	return connectionWatch{}.TraceQueryStart(ctx, conn, data)
-}
-
-func (a *assigneeArmTrace) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
-
-func (a *assigneeArmTrace) TraceBatchStart(ctx context.Context, _ *pgx.Conn, _ pgx.TraceBatchStartData) context.Context {
-	return ctx
-}
-
-func (a *assigneeArmTrace) TraceBatchQuery(ctx context.Context, conn *pgx.Conn, data pgx.TraceBatchQueryData) {
-	if ctx.Value(countedRead{}) != nil {
-		a.counted.TraceQueryStart(ctx, conn, pgx.TraceQueryStartData{SQL: data.SQL, Args: data.Args})
-	}
-	connectionWatch{}.TraceBatchQuery(ctx, conn, data)
-}
-
-func (a *assigneeArmTrace) TraceBatchEnd(context.Context, *pgx.Conn, pgx.TraceBatchEndData) {}
 
 // countedWrite sends one request as login on a context countedRead marks.
 func countedWrite(t *testing.T, handler http.Handler, method, target string, body any, login string) *httptest.ResponseRecorder {

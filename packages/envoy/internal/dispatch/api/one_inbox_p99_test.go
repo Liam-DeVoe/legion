@@ -3,14 +3,12 @@
 package api
 
 import (
-	"bytes"
 	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
 	"maps"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
@@ -347,11 +345,7 @@ func requireOneInboxHistoryInTheStore(t *testing.T, database *store.Store) {
 // comments or messages in any of them, printing the plan of each read that makes one.
 func explainOneInboxRead(t *testing.T, database *store.Store) {
 	t.Helper()
-	ctx := context.Background()
-	var horizon int64
-	if err := database.Pool.QueryRow(ctx, `select coalesce(max(id), 0) from events`).Scan(&horizon); err != nil {
-		t.Fatalf("read the event log's horizon: %v", err)
-	}
+	horizon := eventHead(t, database)
 	var scans []string
 	var plans []string
 	for _, reader := range oneInboxReaders {
@@ -601,7 +595,7 @@ func countOneInboxMoves(t *testing.T, here *oneInboxHere) {
 			t.Fatalf("read the store's last tuple before %s's move %q: %v", move.write, move.what, err)
 		}
 		here.statements.ownStatements(t, here.traced)
-		response := countedOneInboxWrite(t, here.handler, oneInboxHeavy, move.method, move.path, move.body)
+		response := countedWrite(t, here.handler, move.method, move.path, move.body, oneInboxHeavy)
 		if response.Code != http.StatusOK {
 			t.Fatalf("%s's move %q: %d %s", move.write, move.what, response.Code, response.Body.String())
 		}
@@ -710,23 +704,6 @@ func countOneInboxMoves(t *testing.T, here *oneInboxHere) {
 			}
 		}
 	}
-}
-
-// countedOneInboxWrite sends body to path as login through this build's handler, on a request
-// marked countedRead, so the traced store records the statements it runs.
-func countedOneInboxWrite(t *testing.T, handler http.Handler, login, method, path string, body any) *httptest.ResponseRecorder {
-	t.Helper()
-	payload, err := json.Marshal(body)
-	if err != nil {
-		t.Fatalf("encode %s %s: %v", method, path, err)
-	}
-	request := httptest.NewRequestWithContext(context.WithValue(context.Background(), countedRead{}, true), method, path,
-		bytes.NewReader(payload))
-	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set(baselineIdentityHeader, login)
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, request)
-	return response
 }
 
 // quietOneInboxStatements answers the statements a counted write ran once it has run none for a

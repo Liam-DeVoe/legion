@@ -25,13 +25,14 @@ import (
 // written through its real route, and the tuples it appended are held to recipients written out by
 // hand, never computed: a role mention that forwards to a session, whose two mentions the case
 // names, and a thread a person takes part in by a mention alone, whose next reply reaches her and
-// nobody else, among them. Only after those is the stored record compared with what the delivery
-// code's own attempts say, each side named where they differ. Then the record stands as written: an
-// ask's delivery stands past its issue's close, a change of assignee appends the new person's
-// delivery and the old one's retraction under its one event, a change whose append fails leaves
-// neither and the assignee as it was, and no tuple is ever updated. Last, the deliveries are the
-// record whatever read draws them: with every user_threads row deleted, the one read answers the
-// rows it answered before.
+// nobody else, among them. The case that writes every arm but the direct conversation's then
+// compares the stored record with what the delivery code's own attempts say, each side named where
+// they differ, and shows the deliveries are the record whatever read draws them: with every
+// user_threads row deleted, the one read answers the rows it answered before. The direct
+// conversation's arm is a case of its own after it. Last, the record stands as written: an ask's
+// delivery stands past its issue's close, a change of assignee appends the new person's delivery
+// and the old one's retraction under its one event, a change whose append fails leaves neither and
+// the assignee as it was, and no tuple is ever updated.
 func TestDeliveryToAPersonIsWrittenByTheWriteThatDelivers(t *testing.T) {
 	t.Run("the outbox's destinations name no person", deliveryGapNamesNoPerson)
 	t.Run("each arm appends the deliveries its write reaches, as written out by hand", deliveryArmsByHand)
@@ -69,9 +70,10 @@ func deliveryArmsByHand(t *testing.T) {
 	root := createThreadComment(t, handler, issue.Key, map[string]any{"body": "Is the copy final?"}, "bob")
 	createThreadComment(t, handler, issue.Key, map[string]any{"body": "Nearly.", "reply_to": root.ID}, "carol")
 	third := createThreadComment(t, handler, issue.Key, map[string]any{"body": "It is now.", "reply_to": root.ID}, "alice")
+	thirdAt := at("comment.created", third.ID)
 	requireRelationTuples(t, database, graphstore.TupleDeliveredTo, "comment:"+third.ID,
-		fmt.Sprintf("comment:%s > person:bob @%d", third.ID, at("comment.created", third.ID)),
-		fmt.Sprintf("comment:%s > person:carol @%d", third.ID, at("comment.created", third.ID)))
+		fmt.Sprintf("comment:%s > person:bob @%d", third.ID, thirdAt),
+		fmt.Sprintf("comment:%s > person:carol @%d", third.ID, thirdAt))
 
 	// A comment that mentions a person reaches that person, who takes part in the thread from it
 	// without writing in it; the thread's next reply, by its author, reaches her alone.
@@ -132,6 +134,9 @@ func deliveryArmsByHand(t *testing.T) {
 	before := map[string][]string{}
 	for _, login := range logins {
 		before[login] = meInboxNodes(readMeInboxAs(t, handler, login, nil))
+		if len(before[login]) == 0 {
+			t.Fatalf("%s's read answers nothing before user_threads is emptied, so the comparison after it shows nothing", login)
+		}
 	}
 	if _, err := database.Pool.Exec(context.Background(), `delete from user_threads`); err != nil {
 		t.Fatalf("delete every user_threads row: %v", err)
