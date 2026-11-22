@@ -410,7 +410,7 @@ A Legion issue pod does not run that whole package: `skills/legion-worker/refere
 
 CI leaves that package out of `envoy-go`'s package list and runs it under `-race` in
 `envoy-go-race-api`, the job that runs it by itself, through `packages/envoy/scripts/database-skips.sh`,
-which gives it 39 minutes (`--timeout 39m`) and counts its skips
+which gives it 41 minutes (`--timeout 41m`) and counts its skips
 (`.github/workflows/ci-job-envoy-go-race-api.yaml`, which holds that job's steps); `text-checks`
 runs its seventeen source-guard tests by name, and `envoy-go-claim-model` its two claim model tests.
 `docs` runs under `-race` in `envoy-go-race-docs`, which gives it 55 (`-timeout 55m`).

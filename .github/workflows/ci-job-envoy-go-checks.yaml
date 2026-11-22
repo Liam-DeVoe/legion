@@ -60,22 +60,27 @@ jobs:
     # runs 44657322918 and 44657415021 at 8cfd2682, by the rule envoy-go's comment gives
     # (dispatch://INFRA-1075, check 6224bb0e), and the dispatch run at each later head, which may
     # raise a limit and never lower one (the architect's rule of 2026-11-20, the issue's
-    # open-items.md). The job's bound is its slowest time, 1,208 s in run 44717243297 at 66058706
-    # (job 136223826114), against 830 s and 853 s in the pair (run 44657322918, job 136026780288,
-    # and run 44657415021, job 136039517954), 988 s in run 44687712471 at 56f4dabc (job
-    # 136126010901), 1,042 s in run 44790111577 at 85f6b018 (job 136476756211) and 1,000 s in run
-    # 44846096964 at 28ce7c74 (job 136669775694), 20.13 minutes, plus the largest -timeout of its
-    # go test calls, the alone step's 2m, plus 6: 20.13 + 2 + 6 = 28.13, so 29. Its other go
-    # commands are builds, the darwin vet and two `go run`s, which run no test binary and carry no
-    # -timeout. The step that tests the API's wall-clock measurements alone is in this pair too,
-    # and its comment gives its reading. The steps that grew, against run 44657415021: the
-    # daemon-release-gate.sh verdict test 162 s against 11 s (main's #4449 added its cases; 137 s
-    # at 56f4dabc); the autodeploy.sh
-    # test 62 s against 13 s, loadtest/vm 190 s against 153 s and loadtest/cluster 184 s against
-    # 168 s (main's #4387 changed deploy/scripts and both load-test drivers; 13 s, 155 s and 169 s
-    # at 56f4dabc); and the darwin vet 194 s against 143 s and the API's wall-clock step 178 s
-    # against 140 s, unattributed.
-    timeout-minutes: 29
+    # open-items.md). The job's bound is its slowest time, 1,295 s in run 44939290502 at 3a4ffe0b
+    # (job 136952816406), against 1,208 s in run 44717243297 at 66058706 (job 136223826114), 830 s
+    # and 853 s in the pair (run 44657322918, job 136026780288, and run 44657415021, job
+    # 136039517954), 988 s in run 44687712471 at 56f4dabc (job 136126010901), 1,042 s in run
+    # 44790111577 at 85f6b018 (job 136476756211), 1,000 s in run 44846096964 at 28ce7c74 (job
+    # 136669775694) and 1,008 s in run 44953084676 at 4165260d (job 136995819928), 21.58 minutes,
+    # plus the largest -timeout of its go test calls, the alone step's 2m, plus 6:
+    # 21.58 + 2 + 6 = 29.58, so 30, raised from the 29 that run 44717243297 set
+    # (20.13 + 2 + 6 = 28.13). Its other go commands are builds, the darwin vet and two `go run`s,
+    # which run no test binary and carry no -timeout. The step that tests the API's wall-clock
+    # measurements alone is in this pair too, and its comment gives its reading. The steps that
+    # grew in run 44717243297, against run 44657415021: the daemon-release-gate.sh verdict test
+    # 162 s against 11 s (main's #4449 added its cases; 137 s at 56f4dabc); the autodeploy.sh test
+    # 62 s against 13 s, loadtest/vm 190 s against 153 s and loadtest/cluster 184 s against 168 s
+    # (main's #4387 changed deploy/scripts and both load-test drivers; 13 s, 155 s and 169 s at
+    # 56f4dabc); and the darwin vet 194 s against 143 s and the API's wall-clock step 178 s
+    # against 140 s, unattributed. Run 44939290502, 87 s longer, read the dev-stack.sh isolation
+    # test at 94 s against 18 s (main's #4135 and #4735 changed dev-stack.sh and its test after
+    # run 44846096964 read 16 s; 83 s in run 44953084676), loadtest/cluster at 189 s and the
+    # darwin vet at 195 s, and each other step named here at or under run 44717243297's time.
+    timeout-minutes: 30
     # The Postgres the API's alone step runs against, as envoy-go-race-api's: the same image, the
     # same settings on the server's own command line and the same health check. envoy-go's own
     # service says what each setting buys and why this container can do without durability
@@ -220,7 +225,7 @@ jobs:
       # -timeout 1m, by R6 from the pair at 8cfd2682 (envoy-go's comment gives the rule): this
       # call's slowest package on the slower run is cmd/spec-check, 20.0 s (run 44657322918, job
       # 136026780288), and 20.0 / 30 = 0.67, so 1m, the smallest whole minute there is; its
-      # slowest reading since is 22.7 s (run 44717243297 at 66058706, job 136223826114), 0.76, the
+      # slowest reading since is 23.6 s (run 44939290502 at 3a4ffe0b, job 136952816406), 0.79, the
       # same 1m.
       # The `go test -json` stream goes to a file the upload step below publishes and is replayed
       # to the log, as the display-tree fixture check's is.

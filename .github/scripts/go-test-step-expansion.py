@@ -412,9 +412,9 @@ AUDITED_SCRIPTS = {
                 "go list ./internal/cipher/... ./cmd/cipherd/ | grep -Ev '/internal/cipher/natscallout$' | "
                 "xargs go test -json -count=1 -skip '^(TestSettingsNameTheGoogleExchangeAudienceOnEitherStore)$' "
                 "-timeout 9m",
-            "--var DISPATCH_TEST_DATABASE_URL --var BROKER_TEST_DATABASE_URL --race --timeout 39m "
+            "--var DISPATCH_TEST_DATABASE_URL --var BROKER_TEST_DATABASE_URL --race --timeout 41m "
             "--keep \"$RUNNER_TEMP/go-test-json/race-api.json\" ./internal/dispatch/api/":
-                "go test -json -count=1 -race -timeout 39m ./internal/dispatch/api/",
+                "go test -json -count=1 -race -timeout 41m ./internal/dispatch/api/",
         },
         sha256="59fdcfa7225b116bbc60b0ddff66cbd28add159223820b5b3885d130e03a5f4f",
     ),

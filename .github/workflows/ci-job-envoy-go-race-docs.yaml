@@ -37,18 +37,21 @@ jobs:
     # which may raise a limit and never lower one (the architect's rule of 2026-11-20, the issue's
     # open-items.md). The step's -timeout is the smallest whole minute at which its slowest
     # package's slowest reading takes at most half of it: internal/dispatch/docs, this job's one
-    # package, 1,630.5 s in run 44846096964 at 28ce7c74 (job 136669775477), against 1,613.4 s in
-    # run 44790111577 at 85f6b018 (job 136476756178), 1,609.7 s in run 44717243297 at 66058706
-    # (job 136223826761), 1,602.2 s in run 44687712471 at 56f4dabc (job 136126011928), and
-    # 1,603.9 s and 1,590.7 s in the pair (run 44657322918, job 136026779859, and run
-    # 44657415021, job 136039518210); 1,630.5 / 30 = 54.35, so 55m. Run 44846096964 raised it
-    # from the 54m the pair's 1,603.9 / 30 = 53.46 gave and the dispatch runs before it kept
-    # (1,613.4 / 30 = 53.78 at most). The job's bound is its slowest time, 1,724 s (run
-    # 44846096964, job 136669775477), against 1,698 s, 1,688 s and 1,682 s in those three runs and
-    # 1,681 s and 1,671 s in the pair (jobs 136026779859 and 136039518210), 28.73 minutes, plus
-    # that -timeout plus 6: 28.73 + 55 + 6 = 89.73, so 90, raised from the 89 the pair's
-    # 28.02 + 54 + 6 = 88.02 gave. The limit must fire before the runner cancels the job, so a
-    # hung test prints the dump that names it. The pair and the four dispatch runs since it ran
+    # package, 1,630.5 s in run 44846096964 at 28ce7c74 (job 136669775477), against 1,610.8 s in
+    # run 44953084676 at 4165260d (job 136995819889), 1,530.2 s in run 44939290502 at 3a4ffe0b
+    # (job 136952816397), 1,613.4 s in run 44790111577 at 85f6b018 (job 136476756178), 1,609.7 s
+    # in run 44717243297 at 66058706 (job 136223826761), 1,602.2 s in run 44687712471 at 56f4dabc
+    # (job 136126011928), and 1,603.9 s and 1,590.7 s in the pair (run 44657322918, job
+    # 136026779859, and run 44657415021, job 136039518210); 1,630.5 / 30 = 54.35, so 55m. Run
+    # 44846096964 raised it from the 54m the pair's 1,603.9 / 30 = 53.46 gave and the dispatch
+    # runs before it kept (1,613.4 / 30 = 53.78 at most). The job's bound is its slowest time,
+    # 1,724 s (run 44846096964, job 136669775477), against 1,705 s and 1,605 s in runs
+    # 44953084676 and 44939290502, 1,698 s, 1,688 s and 1,682 s in runs 44790111577, 44717243297
+    # and 44687712471, and 1,681 s and 1,671 s in the pair (jobs 136026779859 and 136039518210),
+    # 28.73 minutes, plus that -timeout plus 6: 28.73 + 55 + 6 = 89.73, so 90, raised from the 89
+    # the pair's 28.02 + 54 + 6 = 88.02 gave. Runs 44939290502 and 44953084676 read under those,
+    # so neither raised either limit. The limit must fire before the runner cancels the job, so a
+    # hung test prints the dump that names it. The pair and the six dispatch runs since it ran
     # this job on arm64 (ubuntu-24.04-arm); the pair at 4f1f4436 read the package at 1,353.2 s at
     # most, on x64 (ubuntu-24.04).
     timeout-minutes: 90

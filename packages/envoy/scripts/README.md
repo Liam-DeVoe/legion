@@ -510,7 +510,7 @@ left in one skips it with the variable set.
 BROKER_TEST_DATABASE_URL=postgres://… packages/envoy/scripts/database-skips.sh
 DISPATCH_TEST_DATABASE_URL=postgres://… BROKER_TEST_DATABASE_URL=postgres://… \
   packages/envoy/scripts/database-skips.sh --var DISPATCH_TEST_DATABASE_URL \
-  --var BROKER_TEST_DATABASE_URL --race --timeout 39m ./internal/dispatch/api/
+  --var BROKER_TEST_DATABASE_URL --race --timeout 41m ./internal/dispatch/api/
 packages/envoy/scripts/database-skips.sh --report REPORT.json [PACKAGE...]
 ```
 

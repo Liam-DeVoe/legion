@@ -43,9 +43,11 @@ jobs:
     # 44657415021 (job 136039518265) and 920.3 s in run 44657322918 (job 136026780616), the pair,
     # and 951.6 s in run 44687712471 at 56f4dabc (job 136126010942); 1,004.5 / 36 = 27.90, so 28m
     # (1,004.5 s is 59.8 % of 28m and would be 62.0 % of 27m), and 28 + 6 = 34. Run 44790111577
-    # at 85f6b018 (job 136476756355) read the `ok` line at 914.3 s, whose job took 971 s, and run
+    # at 85f6b018 (job 136476756355) read the `ok` line at 914.3 s, whose job took 971 s, run
     # 44846096964 at 28ce7c74 (job 136669775984) at 999.4 s, 59.5 % of 28m, whose job took
-    # 1,056 s; both are under those, so neither raised either limit. Measure again before
+    # 1,056 s, run 44939290502 at 3a4ffe0b (job 136952816521) at 964.4 s, 57.4 %, whose job took
+    # 1,014 s, and run 44953084676 at 4165260d (job 136995819870) at 958.3 s, 57.0 %, whose job
+    # took 1,021 s; all four are under those, so none raised either limit. Measure again before
     # changing either: a package that has grown past 60 % of its deadline is a deadline to raise,
     # not a flake to re-run.
     timeout-minutes: 34

@@ -37,18 +37,23 @@ jobs:
     # which may raise a limit and never lower one (the architect's rule of 2026-11-20, the issue's
     # open-items.md). The step's --timeout is the smallest whole minute at which its slowest
     # package's slowest reading takes at most half of it: internal/dispatch/api, this job's one
-    # package, 1,154.1 s in run 44687712471 at 56f4dabc (job 136126011060), against 1,123.8 s and
-    # 1,118.6 s in the pair (run 44657322918, job 136026779922, and run 44657415021, job
-    # 136039518473); 1,154.1 / 30 = 38.47, so 39m; database-skips.sh (main's #4456) passes it to
-    # go test as -timeout. The job's bound is its slowest time, 1,306 s (run 44687712471, job
-    # 136126011060), against 1,270 s and 1,265 s in the pair (jobs 136026779922 and
-    # 136039518473), 21.77 minutes, plus that -timeout plus 6: 21.77 + 39 + 6 = 66.77, so 67.
-    # Run 44717243297 at 66058706 (job 136223826570) read the package at 1,095.4 s and the job at
-    # 1,227 s, run 44790111577 at 85f6b018 (job 136476756266) at 1,105.3 s and 1,243 s, and run
-    # 44846096964 at 28ce7c74 (job 136669775497) at 1,120.9 s and 1,254 s, under those, so none of
-    # the three raised either limit. The limit must fire before the runner cancels the
-    # job, so a hung test prints the dump that names it.
-    timeout-minutes: 67
+    # package, 1,202.6 s in run 44953084676 at 4165260d (job 136995820251), against 1,199.9 s in
+    # run 44939290502 at 3a4ffe0b (job 136952816541), 1,154.1 s in run 44687712471 at 56f4dabc
+    # (job 136126011060) and 1,123.8 s and 1,118.6 s in the pair (run 44657322918, job
+    # 136026779922, and run 44657415021, job 136039518473); 1,202.6 / 30 = 40.09, so 41m;
+    # database-skips.sh (main's #4456) passes it to go test as -timeout. Both runs raised it from
+    # the 39m that run 44687712471 set (1,154.1 / 30 = 38.47): run 44939290502's alone gives 40m,
+    # 1,199.9 / 30 = 39.996. The job's bound is its slowest time, 1,353 s (run 44953084676,
+    # job 136995820251), against 1,349 s in run 44939290502 (job 136952816541), 1,306 s in run
+    # 44687712471 (job 136126011060) and 1,270 s and 1,265 s in the pair (jobs 136026779922 and
+    # 136039518473), 22.55 minutes, plus that -timeout plus 6: 22.55 + 41 + 6 = 69.55, so 70,
+    # raised from the 67 that run 44687712471 set (21.77 + 39 + 6 = 66.77). Run 44717243297 at
+    # 66058706 (job 136223826570) read the package at 1,095.4 s and the job at 1,227 s, run
+    # 44790111577 at 85f6b018 (job 136476756266) at 1,105.3 s and 1,243 s, and run 44846096964 at
+    # 28ce7c74 (job 136669775497) at 1,120.9 s and 1,254 s, under run 44687712471's, so none of
+    # those three raised either limit. The limit must fire before the runner cancels the job, so
+    # a hung test prints the dump that names it.
+    timeout-minutes: 70
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -101,7 +106,7 @@ jobs:
       # which the upload step below publishes: the stream and its -count=1 are envoy-go-race's, for
       # the reason its own step gives, and the log is what the script prints rather than a replay.
       - name: Race-test the Dispatch API
-        run: scripts/database-skips.sh --var DISPATCH_TEST_DATABASE_URL --var BROKER_TEST_DATABASE_URL --race --timeout 39m --keep "$RUNNER_TEMP/go-test-json/race-api.json" ./internal/dispatch/api/
+        run: scripts/database-skips.sh --var DISPATCH_TEST_DATABASE_URL --var BROKER_TEST_DATABASE_URL --race --timeout 41m --keep "$RUNNER_TEMP/go-test-json/race-api.json" ./internal/dispatch/api/
         working-directory: packages/envoy
       # Always, and one artifact per run attempt, for the reasons envoy-go's own upload step gives.
       - name: Upload the go test -json stream
