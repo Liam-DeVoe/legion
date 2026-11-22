@@ -298,10 +298,9 @@ func decideService(ctx context.Context, deps Deps, services []config.NATSService
 			break
 		}
 	}
-	// A listed Kubernetes account's token is taken only from an issuer its entry names: the same
-	// account name in another cluster is another ServiceAccount, which the entry does not list. An
-	// edge listener's entry is held to its issuers as every other is, since its token from an
-	// issuer it names is answered with the edge's grant (scopeGrant).
+	// A listed Kubernetes account's token, an edge listener's included, is taken only from an
+	// issuer its entry names: the same account name in another cluster is another ServiceAccount,
+	// which the entry does not list.
 	if entry == nil || !entry.Google && !slices.Contains(entry.Issuers, identity.Issuer) {
 		return Decision{}, refuse(labelServiceNotListed, "service not listed: "+identity.Account)
 	}
