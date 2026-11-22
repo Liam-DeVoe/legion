@@ -230,7 +230,7 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "job finishes after you answer, commit and push what it made. Then call ready_for_update again with the same round. " +
   "The call ends no phase. The daemon holds your next task until your process comes back on the new pod, in this same session. " +
   "request_backward_move returns an issue to an earlier phase (`to`, `reason`). A phase worker moves its own issue. " +
-  "The architect that owns an issue in accepting moves it, named by `issue`, back to implementing or testing. That move " +
+  "The architect that owns an issue in accepting moves it, named by `issue`, back to planning, implementing or testing. That move " +
   "counts a review round. " +
   "read_build reports the build this process runs: the plugin package and version the process loaded, and the contract that build speaks. " +
   "It also reports the contract the daemon states on its answer to the health route. " +
@@ -256,7 +256,8 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "Dispatch children and the start it holds: no phase of a parent starts while an open child stands under it, and the " +
   "parent goes back by itself once none is, to that start, a held test, review or acceptance as testing unless its pull " +
   "request merged during the wait), and while an issue beneath it is still in the workflow " +
-  "(SIGNOFF_CHILD_IN_WORKFLOW, naming each one). A parent is accepted on a head that need not carry its children's " +
+  "(SIGNOFF_CHILD_IN_WORKFLOW, naming each one), since a parent is accepted only once no issue beneath it is still in the workflow. " +
+  "A parent is accepted on a head that need not carry its children's " +
   "merges, once each check a role runs has a pass at that head whose observed line names a base commit carrying every " +
   "needed child's merge; send one whose pass names an older base commit, or none, back to testing with " +
   "request_backward_move. Run each one to done; unless its pull request has merged, the next admission pass moves the " +

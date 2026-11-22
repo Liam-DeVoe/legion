@@ -3167,7 +3167,7 @@ package api
 // `gatedSteps`. Every reader from 214 on takes `treeRuns` and `basis` as optional and reads the
 // six words (`packages/contracts/src/legion-api.ts`).
 // The change ships store migrations `20261114064234_design_gate_basis` and
-// `20261119185013_outbox_kinds_with_the_basis_seeds`, which keep the basis on the gate row and
+// `20261122154643_outbox_kinds_with_the_basis_seeds`, which keep the basis on the gate row and
 // admit the two outbox kinds that read it; they move the daemon's own record and are no part of
 // this number. Nor are the new notice kinds `basis-ended`, `basis-changes-requested` and
 // `resting-root`, which reach an architect's session as text, as every notice kind does.

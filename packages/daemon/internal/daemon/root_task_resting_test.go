@@ -70,7 +70,7 @@ func TestARootTaskNarrowedOfEveryDecisionStillNamesTheRootsRestingOnIt(t *testin
 				t.Fatalf("encode what the task names: %v", err)
 			}
 			runtime := &workflowRuntime{pool: pool, records: records}
-			task, kept, err := runtime.rootTask(ctx, supervise.Claim{Token: mustClaimToken(t, heldTaskRoot, claim.RoleArchitect), Tree: heldTaskRoot},
+			task, kept, _, err := runtime.rootTask(ctx, supervise.Claim{Token: mustClaimToken(t, heldTaskRoot, claim.RoleArchitect), Tree: heldTaskRoot},
 				supervise.Delivery{ID: "outbox-71", Task: "a person decided on the tree", Kept: named, Entry: tc.entry})
 			if err != nil {
 				t.Fatalf("narrow the held task: %v", err)

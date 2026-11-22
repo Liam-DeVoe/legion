@@ -1081,13 +1081,14 @@ func TestBasisGateRefusals(t *testing.T) {
 	r.writeDocument(root.Key, "verification.md", checksMarkdown(rigCheck{id: "k1", serves: []string{p2 + "@v1"}}))
 	cases.opens("a check whose serves names P2 pinned to another version", call(), onBasis(parent.Key, pv, pinned("p2")))
 	// The step closed at R's later versions and this registration opened it again, which moves the
-	// tree's standing gate: the tree's roles are told it opened on the ancestor's approval, and
-	// nothing they are told says a person approved R's document.
+	// tree's standing gate: the tree's roles are told it opened on the ancestor's approval, by a role
+	// message or by the task that carries the news a holder is owed (openingWordsTold), and nothing
+	// they are told says a person approved R's document.
 	opened := fmt.Sprintf("The spec step stands open on an ancestor's approval: a person approved version %d of the primary document of %s", pv, parent.Key)
 	ownVersion := fmt.Sprintf("No person approved version %d of its spec document", rv)
 	roleMessages := r.roleMessages(root.Key)
-	if !slices.ContainsFunc(roleMessages, func(body string) bool { return strings.Contains(body, opened) && strings.Contains(body, ownVersion) }) {
-		t.Fatalf("the role messages of %s's tree = %q, want the opening naming %q and %q", root.Key, roleMessages, opened, ownVersion)
+	if !r.openingWordsTold(root.Key, root.Key, opened, ownVersion) {
+		t.Fatalf("the role messages of %s's tree = %q and no opening its told rows owe names %q and %q", root.Key, roleMessages, opened, ownVersion)
 	}
 	for _, body := range roleMessages {
 		if strings.Contains(body, "a person approved version "+fmt.Sprint(rv)+" of its") {

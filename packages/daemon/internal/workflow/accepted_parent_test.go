@@ -36,7 +36,8 @@ func signOffNow(t *testing.T, pool *pgxpool.Pool, id, key string) intake.Result 
 
 // A6. A parent is accepted after its children: sign_off is refused while any issue beneath the
 // one being accepted is still in the workflow, naming each of them, and is taken once the last
-// of them leaves. A parent is accepted once its checks pass on a base commit that carries its
+// of them leaves, since a parent is accepted only once no issue beneath it is still in the
+// workflow. A parent is accepted once its checks pass on a base commit that carries its
 // children's merges, so accepting it first would send a head to the merge queue that no check ran
 // with that work.
 func TestSignOffIsRefusedWhileAnIssueBeneathIsInTheWorkflow(t *testing.T) {

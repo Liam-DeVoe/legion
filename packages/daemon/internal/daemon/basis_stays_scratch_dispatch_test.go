@@ -1306,8 +1306,10 @@ func TestPendingBasisWaitsOnTheAncestorRequest(t *testing.T) {
 	r.reopenedOnPending(member.basisRun, phase.AwaitingChildren)
 	standsOpen := fmt.Sprintf("The spec step stands open on an ancestor's approval: a person approved version %d of the primary document of %s",
 		member.basisVersion, member.parent.Key)
+	// The planner is told the opening once: by a role message, or, where it is owed news of the
+	// approved design, by the task that carries that news (openingWordsTold).
 	testwait.Eventually(t, "the daemon to tell the planner of "+member.member.Key+" the opening on the ancestor's approval", func() bool {
-		return slices.ContainsFunc(r.roleMessages(member.member.Key), func(body string) bool { return strings.Contains(body, standsOpen) })
+		return r.openingWordsTold(member.root.Key, member.member.Key, standsOpen)
 	})
 	if standing := r.record(member.member.Key).Phase; standing != phase.Planning {
 		t.Fatalf("the member %s stands at %s after its root's step opened again, want planning", member.member.Key, standing)

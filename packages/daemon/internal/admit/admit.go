@@ -1459,6 +1459,21 @@ func (a *Admission) readmit(ctx context.Context, tx pgx.Tx, stored record.Issue,
 		// the comparison against them is made. The carry writes no view fact either: the old root's
 		// (record.Issue.ViewOf) is what its own spec registration read of its own documents, and
 		// this issue's stands as it is until its own architect registers its spec.
+		//
+		// What the orphan's holders took of the approved design (record.DesignTold) stays with the
+		// gate it was taken from, as the copy does: the carry clears no generation, so its holder
+		// row stands as its last holder left it, at versions of the very documents the carried rows
+		// name. The phase the promotion starts again inherits it rather than taking a new baseline
+		// (workflow's Engine.enter), and is owed whatever the old root's gate approved since. Only
+		// the generation clear of a tree the orphan still belongs to takes the row away, with that
+		// tree's gate.
+		//
+		// The carried gate is the new tree's, and the new tree's architect starts from it: the carry
+		// takes its architect's baseline at the versions the carried rows stand approved at
+		// (record.Store.BaselineTold, which leaves a row already there as it stands), as a tree's
+		// first opening takes its own (workflow's putGateTold). Its architect never saw the versions
+		// the old root's gate approved before, so it is owed no summary of them, and is owed what a
+		// later approval of the carried documents changes.
 		if len(gates) > 0 {
 			// The pairs the orphan itself holds before the carry: a member of a gated tree holds
 			// the copy its hand-over carried to it, and the carry writes the old root's rows over
@@ -1479,12 +1494,15 @@ func (a *Admission) readmit(ctx context.Context, tx pgx.Tx, stored record.Issue,
 					return fmt.Errorf("carry gate to re-admitted orphan %s: %w", stored.Key, err)
 				}
 			}
+			if err := a.store.BaselineTold(ctx, tx, stored.Key, record.AudienceArchitect, stored.Key, a.now()); err != nil {
+				return fmt.Errorf("take the baseline of re-admitted orphan %s's architect: %w", stored.Key, err)
+			}
 			// The carry binds this issue's steps to the old root's documents, so it moves the pairs
 			// of an orphan that held none and leaves those of one re-admitted onto the same
 			// documents (record.PublishChangedGates); a carry is the one path that gives an issue a
 			// gate without its architect registering anything, so Dispatch hears of it here or
 			// nowhere.
-			if err := record.PublishChangedGates(ctx, a.store, tx, stored.Key, held, a.now()); err != nil {
+			if err := record.PublishChangedGates(ctx, a.store, tx, a.engine.GatedSteps(), stored.Key, held, a.now()); err != nil {
 				return fmt.Errorf("publish the gates carried to re-admitted orphan %s: %w", stored.Key, err)
 			}
 		}
@@ -1566,7 +1584,10 @@ func (a *Admission) carriedGate(ctx context.Context, tx pgx.Tx, key string, gate
 // (workflow.Engine.ParkedDecisionTask) tells it to request approval of the latest version. One
 // approval is kept, read from the first required step whose approved version sits below its
 // latest, because readmitted_approvals keeps one row for each root; it carries that step, so the
-// task names the document the person reviewed rather than the spec of every deployment.
+// task names the document the person reviewed rather than the spec of every deployment. The
+// required steps are the ones the root's tree is gated on (record.TreeSteps), so a Verification
+// document its architect registered as criteria beside a deployment that gates spec and not
+// criteria is read after the spec, as every other rule of the gate reads it.
 //
 // The approval read is the person's own (record.DesignGate.ApprovedByPerson), never the version
 // an ancestor's approval opened the step at (dispatch://INFRA-3320, R2 and R3): a step that stands
@@ -1590,7 +1611,7 @@ func (a *Admission) keepStaleApproval(ctx context.Context, tx pgx.Tx, key string
 		return fmt.Errorf("read the gate of re-admitted %s: %w", key, err)
 	}
 	unregistered := false
-	for _, step := range steps {
+	for _, step := range record.TreeSteps(steps, gates) {
 		gate, ok := gates[step]
 		if !ok {
 			unregistered = true

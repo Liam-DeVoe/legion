@@ -9,7 +9,7 @@ body: |-
   or resume path starts a role of it. Its architect gets one `awaiting-children` notice, and a
   worker whose phase the move ended is told to push what it has and stop, in a `phase_ended`
   message, the kind #4464 stopped writing for a conflict, which migration
-  `20261119185013_outbox_kinds_with_the_basis_seeds` keeps in the outbox's kind check. That
+  `20261122154643_outbox_kinds_with_the_basis_seeds` keeps in the outbox's kind check. That
   worker's pending task for the phase is retired (the supervise op `retire_task`). The start held
   for a worker stopped in the middle of its phase, or for a start not yet delivered, is the task
   that worker was given for the entry the phase stands on: after a retry, the retry's task,

@@ -8,19 +8,19 @@ import (
 
 // basisSeedsVersion is the version of the migration this file tests, so the test can migrate
 // through everything before it whatever lands beside it.
-const basisSeedsVersion = 20261119185013
+const basisSeedsVersion = 20261122154643
 
 // A pending-basis seed reads the ancestor's request a root's step waits on (record.PendingBasisSeed)
 // and a re-parent seed the new parent of a root that ran (record.ReparentSeed). The outbox refuses
 // a kind its constraint does not name, so neither row could be queued before this migration: the
 // negative control is that refusal, read before the migration, on a database that already carries
-// the merge-forward kind list (20261119003157), which this version stands above. After it both rows
+// the design news's kind list (20261119203047), which this version stands above. After it both rows
 // are queued, and so is every kind the constraint already named, the plan record, the conflict's
-// second read, the merge forward and the phase-ended message among them, since the migration
-// rewrites the list whole and a kind left out would stop its own effect. A kind that is none is
-// still refused, and so is a merge-lane kind, which went with the merge the daemon no longer
-// submits.
-func TestTheOutboxTakesTheBasisSeedKindsWith20261119185013(t *testing.T) {
+// second read, the merge forward, the reconcile of a tree's news and the phase-ended message among
+// them, since the migration rewrites the list whole and a kind left out would stop its own effect.
+// A kind that is none is still refused, and so is a merge-lane kind, which went with the merge the
+// daemon no longer submits.
+func TestTheOutboxTakesTheBasisSeedKindsWith20261122154643(t *testing.T) {
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, basisSeedsVersion-1)
@@ -45,7 +45,7 @@ func TestTheOutboxTakesTheBasisSeedKindsWith20261119185013(t *testing.T) {
 		"check_look", "check_bound", "role_message", "phase_ended", "issue_bundle", "issue_release",
 		"gated_steps_publish", "claim_release", "hook_prompt", "design_gates_publish", "update_ask",
 		"merge_queue_read", "merge_queue_removal", "role_holders_publish", "step_record", "plan_record",
-		"conflict_confirm", "merge_forward", "pending_basis_seed", "reparent_seed",
+		"conflict_confirm", "merge_forward", "design_changes", "pending_basis_seed", "reparent_seed",
 	} {
 		if err := queue(kind); err != nil {
 			t.Fatalf("queue a %s row after the migration: %v", kind, err)

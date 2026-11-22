@@ -789,6 +789,11 @@ func (w *workflowRuntime) queueGatedStepsPublish(ctx context.Context) error {
 // The lane is woken on commit (projectRecords), which before attach reaches nothing: the outbox's
 // first sweep runs whatever this pass left.
 //
+// Each set says which of its rows hold their tree under this boot's steps (record.GateDocuments),
+// so a boot on a `gates.design` the operator has changed since corrects what Dispatch holds, and
+// a row still pending from an older daemon, whose set says nothing of it, takes this boot's set
+// in its place (the enqueue writes a payload that differs).
+//
 // The same pass over the gates it holds queues one pending-basis seed (record.PendingBasisSeed)
 // for each step of the project that waits, closed, on an ancestor's approval request
 // (record.DesignGate.PendingOnBasis), whatever phase its root stands in, since the boot's catch-up
@@ -816,7 +821,7 @@ func (w *workflowRuntime) queueRecordedGatesPublish(ctx context.Context) error {
 		}
 		var pending []record.DesignGate
 		for _, issue := range live {
-			publish := record.DesignGatesPublish{Issue: issue, Gates: record.GateDocuments(gates[issue])}
+			publish := record.DesignGatesPublish{Issue: issue, Gates: record.GateDocuments(w.gatedSteps, gates[issue])}
 			if err := w.records.EnqueueDesignGates(scoped, tx, publish, now); err != nil {
 				return err
 			}
@@ -1206,18 +1211,25 @@ func (w *workflowRuntime) rootHears(ctx context.Context, c supervise.Claim, _ su
 // task left naming no decision still names them. A task left naming nothing at all is retired
 // rather than sent, and its delivery's write releases whatever it still held.
 //
+// A task that also carries news of the approved design (supervise.Delivery.News: since #3711 a
+// root architect's entry start carries the kept decisions and the news it is owed) is narrowed in
+// the start's own text, the one the news follows (record.DeliveryNews.Task), and the narrowed text
+// and the news are rendered again by the one render every task of news goes through
+// (narrowedNews, designNews, renderNews). So the news it carries is exactly what its text names,
+// and no later send renders the text the start wrote, which still names the released decision.
+//
 // It is the machine that asks, because the machine owns the pending delivery: the hand-over that
 // moved the issue commits in a transaction of its own, with no lock on this claim, and a task
 // rewritten there would be overwritten by the machine's next write of what memory still held. The
 // write here serializes with every fact (intake.SerializeFacts), since it writes the catch-up a
 // ready would write, and takes no lock of the daemon's: the machine asks it holding its own.
-func (w *workflowRuntime) rootTask(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, []byte, error) {
+func (w *workflowRuntime) rootTask(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, []byte, []byte, error) {
 	if len(d.Kept) == 0 {
-		return d.Task, d.Kept, nil
+		return d.Task, d.Kept, d.News, nil
 	}
 	var named record.KeptDecisions
 	if err := json.Unmarshal(d.Kept, &named); err != nil {
-		return "", nil, fmt.Errorf("decode what the task held for %s names: %w", c.Token, err)
+		return "", nil, nil, fmt.Errorf("decode what the task held for %s names: %w", c.Token, err)
 	}
 	stays := record.KeptDecisions{KeptApproval: named.KeptApproval}
 	// The record every rewrite of a recorded root reads (workflow.NarrowRootTask): the tree's root
@@ -1283,11 +1295,11 @@ func (w *workflowRuntime) rootTask(ctx context.Context, c supervise.Claim, d sup
 		}
 		return workflow.CatchUpTheTreesOwed(scoped, tx, w.records, w.gatedSteps, trees, time.Now().UTC())
 	}); err != nil {
-		return "", nil, fmt.Errorf("read what the task held for %s still names of %s's tree: %w", c.Token, c.Tree, err)
+		return "", nil, nil, fmt.Errorf("read what the task held for %s still names of %s's tree: %w", c.Token, c.Tree, err)
 	}
 	committed()
 	if len(stays.Decisions) == len(named.Decisions) {
-		return d.Task, d.Kept, nil
+		return d.Task, d.Kept, d.News, nil
 	}
 	// A task that carries the root's own first task keeps it: a decision leaving this tree says
 	// nothing about whether the tree has been taken up, and a rewrite from the decisions alone
@@ -1304,19 +1316,44 @@ func (w *workflowRuntime) rootTask(ctx context.Context, c supervise.Claim, d sup
 		task = workflow.KeptDecisionsTask(c.Tree, stays)
 	}
 	if task == "" {
-		return "", nil, nil
+		return "", nil, nil, nil
 	}
-	if len(stays.Decisions) == 0 && stays.Approved == 0 {
-		// The task names no decision now, so it holds none: the rows it named were released
-		// above, and a kept record naming nothing would have this delivery hold what it no
-		// longer says.
+	// A task that names no decision now holds none: the rows it named were released above, and a
+	// kept record naming nothing would have this delivery hold what it no longer says.
+	var kept []byte
+	if len(stays.Decisions) > 0 || stays.Approved != 0 {
+		var err error
+		if kept, err = keptJSON(&stays); err != nil {
+			return "", nil, nil, fmt.Errorf("encode what the task held for %s still names: %w", c.Token, err)
+		}
+	}
+	task, news, err := w.narrowedNews(ctx, c, d, task)
+	if err != nil {
+		return "", nil, nil, err
+	}
+	return task, kept, news, nil
+}
+
+// narrowedNews is the narrowed text of d, a root architect's held task (rootTask), with the news
+// d carries rendered after it: the news's own text (record.DeliveryNews.Task) becomes task, and the
+// one render every task of news goes through (designNews) renders the two again, so the news it
+// answers is exactly what the text it answers names. A task that carries no news is task alone.
+func (w *workflowRuntime) narrowedNews(ctx context.Context, c supervise.Claim, d supervise.Delivery, task string) (string, []byte, error) {
+	if len(d.News) == 0 {
 		return task, nil, nil
 	}
-	kept, err := keptJSON(&stays)
-	if err != nil {
-		return "", nil, fmt.Errorf("encode what the task held for %s still names: %w", c.Token, err)
+	var carried record.DeliveryNews
+	if err := json.Unmarshal(d.News, &carried); err != nil {
+		return "", nil, fmt.Errorf("decode the news the task held for %s carries: %w", c.Token, err)
 	}
-	return task, kept, nil
+	carried.Task = task
+	narrowed := d
+	var err error
+	if narrowed.News, err = json.Marshal(carried); err != nil {
+		return "", nil, fmt.Errorf("encode the news the narrowed task held for %s carries: %w", c.Token, err)
+	}
+	narrowed.Task = task
+	return w.designNews(ctx, c, narrowed)
 }
 
 // treeClosable answers supervise's Deps.TreeClosable: a tree a workflow issue backs closes when
@@ -2388,6 +2425,11 @@ func entrySweepPeriod(override time.Duration) time.Duration {
 // project raises none. Each run's event id is its own — the word, the project, this boot and the
 // run's time — since processed_events is shared by every project's daemon. A failed apply is
 // logged, and the next run tries again, as applyControllerTick does.
+//
+// The same tick queues the reconcile of each tree's news of its approved design that
+// record.OwedNews owes and no queued row will reconcile (queueOwedDesignNews): the backstop for
+// news no fact queued a row for, which queues nothing while the project is paused, as the gate of
+// the entry sweep's fact answers no then. A failed pass is logged, and the next tick tries again.
 func (w *workflowRuntime) tickEntrySweep(ctx context.Context) {
 	ticker := time.NewTicker(entrySweepPeriod(w.entrySweep))
 	defer ticker.Stop()
@@ -2397,6 +2439,9 @@ func (w *workflowRuntime) tickEntrySweep(ctx context.Context) {
 			return
 		case at := <-ticker.C:
 			w.applyEntrySweep(ctx, at)
+			if err := w.queueOwedDesignNews(ctx); err != nil {
+				w.log.Warn("queue the reconcile of the news each tree is owed failed", "error", err)
+			}
 		}
 	}
 }

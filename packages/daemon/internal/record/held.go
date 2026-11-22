@@ -39,8 +39,9 @@ const (
 	// still open (Issue.Phase awaiting_children): the daemon runs no phase of the parent's own
 	// work and holds the start it had while a child of it is open.
 	HeldAwaitingChildren HeldReason = "awaiting_children"
-	// HeldDesignGate is an issue of a tree whose design gate stands shut at a step the
-	// deployment gates (TreeGate.Open).
+	// HeldDesignGate is an issue of a tree whose design gate stands shut at a step that holds the
+	// tree (TreeGate.Open over TreeSteps): a step the deployment gates, or a criteria step the root
+	// registered beside a deployment that gates spec and not criteria.
 	HeldDesignGate HeldReason = "design_gate"
 	// HeldDispatchBlocker is an issue an unfinished Dispatch issue holds where it stands
 	// (blockers.Holds, which fills LineFacts.Held).

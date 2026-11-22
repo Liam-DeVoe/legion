@@ -448,12 +448,14 @@ A root waiting on its gate at a daemon's deploy
 is recorded as waiting at that daemon's first boot, keeping its slot. The gate stays closed until a person approves the
 spec at its current version; `designGate.approvedVersion` is `null`, or lower than `currentVersion`,
 until someone approves the latest version from the document's header or the Inbox. An approval of an
-earlier version does not count: the spec changed since. The gate holds the tree's start and its merge, and work already in flight goes on.
-Where `gates.design` lists more than one step, `gatedSteps` carries one entry per step, each with
-its own `artifactId`, `currentVersion`, `approvedVersion` and `status` (`unregistered`, `waiting`,
-`approved`, `changes_requested`, `open_on_basis` or `pending_on_basis`): the tree waits until every
-entry reads `approved` or `open_on_basis`, and `designGate` beside it is the `spec` step's record
-alone.
+earlier version does not count: the spec changed since. The gate holds the tree's start and its
+merger's start, and work already in flight goes on. `gatedSteps` carries one entry for each step
+that holds the tree, each with its own `artifactId`, `currentVersion`, `approvedVersion` and
+`status` (`unregistered`, `waiting`, `approved`, `changes_requested`, `open_on_basis` or
+`pending_on_basis`): one per step `gates.design` lists, then `criteria` where the deployment's list
+names `spec` and not `criteria` and the root registered its Verification document. The tree waits
+until every entry reads `approved` or `open_on_basis`, and `designGate` beside it is the `spec`
+step's record alone.
 
 A root whose architect wrote its spec as a view on an ancestor can register the step on that
 ancestor's approval. Then the step reads `open_on_basis`: it is open, and no person approved the
