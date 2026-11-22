@@ -385,6 +385,46 @@ func (p StoredPlan) TaskOfBranch(issueKey, branch string) (string, bool) {
 	return "", false
 }
 
+// BaseOf is the branch the pull request of task of p, the plan of issue, is based on, and whether
+// it is the task's join branch, which the join of its needs makes (join true): the one rule the
+// join's executor, the opener of a task's pull request and the task text read. It is issue's
+// default branch for the task that merges (the one task no task needs, plan.Sinks), for a task that
+// needs none and for a task none of whose steps is of the type implementation, whose pull request
+// shows the joined work of its needs, which its steps read. A task with one need is based on that
+// need's branch (BranchOf). A task with several is based on its join branch, its own branch and
+// claim.JoinBranchSuffix, where the work of its needs is joined and from which its branch starts,
+// so its pull request shows its own work alone. It is read for a task its first start gave a branch
+// (AssignTaskBranch). A task p does not hold, and a need it does not hold, answer the default
+// branch.
+func (p StoredPlan) BaseOf(issue Issue, task string) (base string, join bool) {
+	at := slices.IndexFunc(p.Tasks, func(row PlanTask) bool { return row.Task == task })
+	if at < 0 || len(p.Tasks[at].Needs) == 0 || p.merges(task) || !slices.ContainsFunc(p.Steps[task], func(step PlanStep) bool {
+		return step.Type == plan.TypeImplementation
+	}) {
+		return issue.DefaultBranch, false
+	}
+	of := p.Tasks[at]
+	if len(of.Needs) > 1 {
+		return of.BranchOf(issue.Key) + claim.JoinBranchSuffix, true
+	}
+	need := slices.IndexFunc(p.Tasks, func(row PlanTask) bool { return row.Task == of.Needs[0] })
+	if need < 0 {
+		return issue.DefaultBranch, false
+	}
+	return p.Tasks[need].BranchOf(issue.Key), false
+}
+
+// merges says whether task is the task of p whose work merges: the one task no task needs
+// (plan.Sinks), and none where several are such tasks, which plan.Supported refuses.
+func (p StoredPlan) merges(task string) bool {
+	tasks := make([]plan.Task, 0, len(p.Tasks))
+	for _, row := range p.Tasks {
+		tasks = append(tasks, plan.Task{ID: row.Task, Needs: row.Needs})
+	}
+	sinks := plan.Sinks(tasks)
+	return len(sinks) == 1 && sinks[0] == task
+}
+
 // PutPlan stores version v of the plan of v.Issue at v.Generation, with the tasks it gives and the
 // steps of those tasks. The same version given twice is refused, and so is a task or a step of
 // another issue or generation, or a step of a task v does not give, whose step the write would
