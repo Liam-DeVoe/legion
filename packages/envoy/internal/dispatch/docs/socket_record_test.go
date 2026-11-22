@@ -222,11 +222,12 @@ func (l *recordingListener) find(remote string) *serverSocket {
 	return nil
 }
 
-// socketWrite is one Write to a server socket: when it began, when it returned (zero while it has
-// not), and the bytes the connection accepted of it - the n it returned - which are the bytes that
-// went on the wire.
+// socketWrite is one Write to a server socket: when it began, the bytes it asked to send, when it
+// returned (zero while it has not), and the bytes the connection accepted of it - the n it
+// returned - which are the bytes that went on the wire.
 type socketWrite struct {
 	startedAt  time.Time
+	asked      []byte
 	returnedAt time.Time
 	bytes      []byte
 }
@@ -245,7 +246,7 @@ type serverSocket struct {
 func (s *serverSocket) Write(payload []byte) (int, error) {
 	s.mu.Lock()
 	at := len(s.writes)
-	s.writes = append(s.writes, socketWrite{startedAt: time.Now()})
+	s.writes = append(s.writes, socketWrite{startedAt: time.Now(), asked: append([]byte(nil), payload...)})
 	s.mu.Unlock()
 	n, err := s.Conn.Write(payload)
 	returnedAt := time.Now()
