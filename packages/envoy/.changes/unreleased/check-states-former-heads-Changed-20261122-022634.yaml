@@ -55,10 +55,17 @@ body: |-
     before Dispatch learned of a rename reaches the same history as every record after, and two
     histories applied apart before the rename was known are joined into one
     (`pull_request_former_heads_resolve`); there is no partition by name and no copying of history
-    on a rename. A close or a merge under any name ends the lifecycle: applying the records drops
+    on a rename. A close or a merge under any name ends the lifecycle and starts the next
+    generation, while a rename and a move to another issue keep it: applying the records drops
     each head the pull request reached before the last close (`pull_request_former_heads_pulls.ended`,
-    `pull_request_former_heads_rows`), so no history of a closed lifecycle reaches a later one
-    through a row's next move or its re-key, in whatever order the records commit; the delete of an
+    `generation`, `pull_request_former_heads_rows`), so no history of a closed lifecycle reaches a
+    later one through a row's next move or its re-key, in whatever order the records commit; and
+    ended provenance stays ended: the drain keeps the place of each result
+    (`pull_request_former_heads_results`), and a result's commit becomes a candidate only where a
+    result there was recorded after the last close, or, recorded before the release, where no close
+    is known, so a reopen never brings back a result or a head of the lifecycle its close ended,
+    however healthy the read of the commits, while a result recorded since the close, and a head the
+    reopened pull request visits, count in the new lifecycle; the delete of an
     open row stored under a repository's old name, the re-key, keeps that row's head in the one
     history, and its trigger marks the canonical row's issue owed in the delete's own transaction,
     whichever build deletes it, so that head's states are published. A former head's rows in

@@ -285,11 +285,12 @@ func (c *checkStatesSettler) settleRound(ctx context.Context, issue string) (mor
 	}
 	var published []model.Event
 	if !exists {
-		// An issue nobody has any more has no state to publish, and its marks and its pending
-		// candidates settle nothing.
+		// An issue nobody has any more has no state to publish, and its marks, its pending
+		// candidates and the places of its results settle nothing.
 		if _, err := pool.Exec(ctx, `
-			with marks as (delete from check_states_owed where id = any($1))
-			delete from pull_request_former_heads_pending where issue_key = $2`, marks, issue); err != nil {
+			with marks as (delete from check_states_owed where id = any($1)),
+				pending as (delete from pull_request_former_heads_pending where issue_key = $2)
+			delete from pull_request_former_heads_results where issue_key = $2`, marks, issue); err != nil {
 			return false, fmt.Errorf("delete the marks of %s, which no longer exists: %w", issue, err)
 		}
 	} else {

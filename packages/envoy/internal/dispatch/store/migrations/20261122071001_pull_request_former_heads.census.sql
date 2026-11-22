@@ -1,4 +1,4 @@
--- Two sequences, seven new tables and fifteen functions, triggers on pull_request_heads,
+-- Two sequences, eight new tables and fifteen functions, triggers on pull_request_heads,
 -- check_results and ci_check_results that run only on later writes and only append to two of the
 -- new tables, a lock on those three held to the commit, and a seed that writes only the new tables
 -- of identities, names and former heads and check_states_owed: nothing is refused or rewritten.

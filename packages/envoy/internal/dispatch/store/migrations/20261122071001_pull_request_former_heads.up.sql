@@ -32,9 +32,13 @@
 -- same pull request as every record after.
 --
 --   pull_request_former_heads_pulls
---                              one row per pull request: its identity, its number, and ended, the
+--                              one row per pull request: its identity, its number, ended, the
 --                              place in pull_request_former_heads_order of the last close or merge
---                              of it under any of its names, null where none is known.
+--                              of it under any of its names, null where none is known, and
+--                              generation, its lifecycle's number. A rename and a move to another
+--                              issue keep the lifecycle; each close or merge applied ends it, and
+--                              the reopened pull request is of the next (generation + 1), so an
+--                              answer read in one lifecycle can tell it is about an ended one.
 --   pull_request_former_heads_aliases
 --                              each name (lowercased) and number the settler has found a pull
 --                              request under, and its identity. A name a rename maps to another
@@ -43,9 +47,10 @@
 --                              (pull_request_former_heads_resolve), and a name never leaves.
 --   pull_request_former_heads  one row per pull request (its identity) and head it left while
 --                              open, with when it last left that head and since, the place at
---                              which the pull request reached that head, or at which the row was
---                              made, null for a head reached before this release. verified is false
---                              on a candidate, a commit of the results of the pull request's issue
+--                              which the pull request reached that head, or, on a candidate, the
+--                              place of the result that made it one, null for a head reached or a
+--                              result recorded before this release. verified is false on a
+--                              candidate, a commit of the results of the pull request's issue
 --                              (below), which no read of the pull request's commits has confirmed
 --                              yet: the settler computes no state there until one does. No foreign
 --                              key, and only the settler writes it.
@@ -60,7 +65,14 @@
 --   pull_request_former_heads_pending
 --                              the commits and the rows owed to an issue's candidates: a result's
 --                              commit, or a row that starts an open lifecycle at the issue, which
---                              the triggers below append and the issue's settle drains. No key.
+--                              the triggers below append, each with its place in
+--                              pull_request_former_heads_order, and the issue's settle drains. No
+--                              key.
+--   pull_request_former_heads_results
+--                              the settler's own record of when each result was recorded: for an
+--                              issue and a commit of its population (below), the latest place of a
+--                              result there, which the drain keeps from the pending rows. A
+--                              result recorded before this release has none.
 --   pull_request_former_heads_rows
 --                              the settler's own state: for each open row of a pull request it
 --                              applied a record of, by its name, the head it stands at and the
@@ -93,14 +105,15 @@
 -- at which it reached it; an open row that goes, as the re-key's delete of the row stored under a
 -- name the repository was renamed away from, keeps the head it stood at the same way, since the
 -- pull request it stood for is the one its other name stands for; a close or a merge under any
--- name ends the pull request's lifecycle, so it raises the pull request's ended place and drops
--- every row of history reached before it; and a head reached before the last end is of a
--- lifecycle that ended, so a move on from it keeps nothing. A row stored under an old name can stay
--- open, unread, while the row under the canonical name closes and reopens, and the head it stands
--- at is of the lifecycle the close ended. A record of another name can commit after a record of a
--- later place was applied; whatever the order, a row of history stays only where its place is
--- after the pull request's last end, so the settler answers as it would have, had every record
--- committed in the order of its places.
+-- name ends the pull request's lifecycle, so it raises the pull request's ended place, starts the
+-- next generation and drops every row of history reached before it, candidates whose result was
+-- recorded before it included; and a head reached before the last end is of a lifecycle that
+-- ended, so a move on from it keeps nothing. A row stored under an old name can stay open, unread,
+-- while the row under the canonical name closes and reopens, and the head it stands at is of the
+-- lifecycle the close ended. A record of another name can commit after a record of a later place
+-- was applied; whatever the order, a row of history stays only where its place is after the pull
+-- request's last end, so the settler answers as it would have, had every record committed in the
+-- order of its places.
 --
 -- pull_request_former_heads_resolve(name, number) is the identity of a pull request a name and a
 -- number stand for today: the identity of that name where the settler met it before, else the
@@ -150,6 +163,13 @@
 --   - the install leaves the population for each open row, by the same function the drain calls.
 -- Each leaves its candidates by pull_request_former_heads_leave(), unverified, where the pull
 -- request holds no row of the commit yet; the settler confirms them as it confirms the install's.
+-- Ended provenance stays ended: leave takes a commit only where a result there was recorded after
+-- the pull request's last end (pull_request_former_heads_results), or, for a result recorded before
+-- this release, which has no place, only where no end of the pull request is known. So a reopen,
+-- whose start leaves the issue's whole population, never brings back a result of the lifecycle
+-- its close ended, however healthy the read that would confirm it, while a result recorded since
+-- the close, while the pull request was closed included, is a candidate of the new lifecycle; and
+-- a head the reopened pull request truly visits is its former head by its own record.
 -- A head an open pull request left since this release has its row once applied, verified, so a
 -- result there leaves nothing to read. They draw from one population through those functions, so
 -- they cannot drift apart. A result and a row's start written at once in two transactions are
@@ -192,7 +212,8 @@ create sequence pull_request_former_heads_pull_ids as integer;
 create table pull_request_former_heads_pulls (
     pull integer primary key default nextval('pull_request_former_heads_pull_ids'),
     number integer not null,
-    ended bigint
+    ended bigint,
+    generation integer not null default 1
 );
 
 create table pull_request_former_heads_aliases (
@@ -229,9 +250,17 @@ create table pull_request_former_heads_pending (
     issue_key text not null,
     repo text,
     number integer,
-    commit_sha text
+    commit_sha text,
+    seq bigint not null default nextval('pull_request_former_heads_order')
 );
 create index pull_request_former_heads_pending_issue on pull_request_former_heads_pending (issue_key);
+
+create table pull_request_former_heads_results (
+    issue_key text not null,
+    commit_sha text not null,
+    place bigint not null,
+    primary key (issue_key, commit_sha)
+);
 
 create table pull_request_former_heads_rows (
     pull integer not null,
@@ -280,12 +309,14 @@ create function pull_request_former_heads_pull_of(text, integer) returns integer
 $$;
 
 -- Joins identity $2 into $1: $2's names, rows of history and rows of the settler's state become
--- $1's, the later of their ends stands, and every row of history reached before it goes. Called
--- by pull_request_former_heads_resolve alone, which holds the registry's lock alone, so no other
--- transaction holds the lock of either identity.
+-- $1's, the later of their ends stands, and every row of history reached before it goes. The
+-- joined pull request is of a generation after both, so no answer read about either before the
+-- join applies to it. Called by pull_request_former_heads_resolve alone, which holds the
+-- registry's lock alone, so no other transaction holds the lock of either identity.
 create function pull_request_former_heads_join(integer, integer) returns void language plpgsql as $$
 declare
   last_end bigint;
+  last_generation integer;
 begin
   update pull_request_former_heads_aliases set pull = $1 where pull = $2;
   insert into pull_request_former_heads (pull, head_sha, left_at, verified, since)
@@ -298,11 +329,11 @@ begin
   delete from pull_request_former_heads where pull = $2;
   update pull_request_former_heads_rows set pull = $1 where pull = $2;
   delete from pull_request_former_heads_reads where pull = $2;
-  select greatest(kept.ended, joined.ended) into last_end
+  select greatest(kept.ended, joined.ended), greatest(kept.generation, joined.generation) + 1 into last_end, last_generation
   from pull_request_former_heads_pulls kept, pull_request_former_heads_pulls joined
   where kept.pull = $1 and joined.pull = $2;
   delete from pull_request_former_heads_pulls where pull = $2;
-  update pull_request_former_heads_pulls set ended = last_end where pull = $1;
+  update pull_request_former_heads_pulls set ended = last_end, generation = last_generation where pull = $1;
   if last_end is not null then
     delete from pull_request_former_heads where pull = $1 and (since is null or since < last_end);
   end if;
@@ -380,14 +411,15 @@ begin
 end $$;
 
 -- Applies the records of the pull request of an identity, the records of each of its names, in the
--- order of their places, and deletes them (above); the caller holds its lock. Answers how many it
--- applied.
+-- order of their places, and deletes them (above); each close or merge it applies starts the next
+-- generation. The caller holds its lock. Answers how many it applied.
 create function pull_request_former_heads_apply(integer) returns integer language plpgsql as $$
 declare
   taken pull_request_former_heads_moves[];
   seqs bigint[];
   fact pull_request_former_heads_moves;
   last_end bigint;
+  last_generation integer;
   entered bigint;
 begin
   select coalesce(array_agg(applied order by applied.seq), '{}'), coalesce(array_agg(applied.seq), '{}')
@@ -399,7 +431,7 @@ begin
     return 0;
   end if;
   delete from pull_request_former_heads_moves where seq = any(seqs);
-  select pulls.ended into last_end from pull_request_former_heads_pulls pulls where pulls.pull = $1;
+  select pulls.ended, pulls.generation into last_end, last_generation from pull_request_former_heads_pulls pulls where pulls.pull = $1;
   foreach fact in array taken loop
     -- The place at which the row reached the head it leaves, null where no applied record shows it.
     entered := null;
@@ -416,6 +448,7 @@ begin
       end if;
     elsif fact.op = 'UPDATE' and fact.old_open and not fact.new_open then
       last_end := greatest(last_end, fact.seq);
+      last_generation := last_generation + 1;
       delete from pull_request_former_heads former where former.pull = $1 and (former.since is null or former.since < last_end);
     end if;
     if fact.op = 'DELETE' or not fact.new_open then
@@ -425,7 +458,7 @@ begin
       on conflict (pull, repo) do update set head_sha = excluded.head_sha, since = excluded.since;
     end if;
   end loop;
-  update pull_request_former_heads_pulls set ended = last_end where pull = $1;
+  update pull_request_former_heads_pulls set ended = last_end, generation = last_generation where pull = $1;
   return cardinality(taken);
 end $$;
 
@@ -474,14 +507,20 @@ $$;
 
 -- Leaves each of the commits given as a candidate of the pull request of an identity, where a row
 -- of it is open at the issue given and no open row of it stands at the commit, unverified, where it
--- holds no row of the commit yet; answers whether it left one. It takes no lock itself: the
--- install holds the tables, and the drain takes the pull request's lock first.
+-- holds no row of the commit yet, and only where the commit's result is of the lifecycle that has
+-- not ended: its place (pull_request_former_heads_results, of the issue given) is after the pull
+-- request's last end, or, for a result recorded before this release, which has none, no end is
+-- known (above). The candidate's since is that place. Answers whether it left one. It takes no lock
+-- itself: the install holds the tables, and the drain takes the pull request's lock first.
 create function pull_request_former_heads_leave(integer, text, text[]) returns boolean language plpgsql as $$
 begin
-  insert into pull_request_former_heads (pull, head_sha, verified)
-  select $1, candidate.commit_sha, false
+  insert into pull_request_former_heads (pull, head_sha, verified, since)
+  select $1, candidate.commit_sha, false, placed.place
   from unnest($3) as candidate (commit_sha)
-  where exists (
+  join pull_request_former_heads_pulls pulls on pulls.pull = $1
+  left join pull_request_former_heads_results placed on placed.issue_key = $2 and placed.commit_sha = candidate.commit_sha
+  where (pulls.ended is null or placed.place > pulls.ended)
+    and exists (
       select 1 from pull_request_heads head
       join pull_request_former_heads_aliases alias on alias.repo = lower(head.repo) and alias.number = head.number
       where alias.pull = $1 and head.issue_key = $2 and head.state = 'open')
@@ -520,13 +559,15 @@ begin
 end $$;
 
 -- What a settle of an issue runs before it reads former heads (api/check_states.go, settleRound):
--- it takes the issue's pending rows; finds the identity of each pull request an open row of the
--- issue stands for, and of every name a record of their numbers was written under, before it
--- takes any lock of a pull request; then, holding the registry's lock shared, so no identity is
--- joined any more, reads those identities again and, for each in the order of the identities,
--- under its lock, applies its records and leaves the commits of the pending results, and the
--- issue's whole population where a row of it is pending as started. Answers how many pending rows
--- it took.
+-- it takes the issue's pending rows and keeps the latest place of each pending result's commit
+-- (pull_request_former_heads_results), whether or not a pull request of the issue is open now, so
+-- a result recorded while its pull request was closed counts once the pull request reopens; finds
+-- the identity of each pull request an open row of the issue stands for, and of every name a
+-- record of their numbers was written under, before it takes any lock of a pull request; then,
+-- holding the registry's lock shared, so no identity is joined any more, reads those identities
+-- again and, for each in the order of the identities, under its lock, applies its records and
+-- leaves the commits of the pending results, and the issue's whole population where a row of it
+-- is pending as started. Answers how many pending rows it took.
 create function pull_request_former_heads_drain(text) returns integer language plpgsql as $$
 declare
   taken integer;
@@ -537,7 +578,11 @@ declare
   held integer;
 begin
   with pending as (
-    delete from pull_request_former_heads_pending where issue_key = $1 returning repo, number, commit_sha
+    delete from pull_request_former_heads_pending where issue_key = $1 returning repo, number, commit_sha, seq
+  ), placed as (
+    insert into pull_request_former_heads_results (issue_key, commit_sha, place)
+    select $1, pending.commit_sha, max(pending.seq) from pending where pending.commit_sha is not null group by pending.commit_sha
+    on conflict (issue_key, commit_sha) do update set place = greatest(pull_request_former_heads_results.place, excluded.place)
   )
   select count(*), coalesce(array_agg(distinct commit_sha) filter (where commit_sha is not null), '{}'),
     coalesce(array_agg(distinct lower(repo) || '#' || number) filter (where commit_sha is null), '{}')
