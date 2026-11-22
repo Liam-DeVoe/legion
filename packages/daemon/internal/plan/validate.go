@@ -106,8 +106,7 @@ func cycles(tasks []Task) [][]string {
 // from a task to one it needs, taken in the order its block writes them; from alone when it is
 // to, and nil when no path leads there.
 func shortestPath(needs map[string][]string, from, to string) []string {
-	parent := map[string]string{}
-	reached := map[string]bool{from: true}
+	parent := map[string]string{from: from}
 	for queue := []string{from}; len(queue) > 0; queue = queue[1:] {
 		at := queue[0]
 		if at == to {
@@ -120,8 +119,8 @@ func shortestPath(needs map[string][]string, from, to string) []string {
 			return path
 		}
 		for _, next := range needs[at] {
-			if !reached[next] {
-				reached[next], parent[next] = true, at
+			if _, reached := parent[next]; !reached {
+				parent[next] = at
 				queue = append(queue, next)
 			}
 		}
