@@ -522,6 +522,8 @@ lacks what the hook wrote, as a Claude Code subagent's can (Claude Code issue 46
 `DISPATCH_HOST` unset and `CLAUDE_CODE_CHILD_SESSION=1`, which Claude Code sets in every Bash it
 runs; `dispatch` then takes host `claude` and Claude Code's rule, so `CLAUDE_CONFIG_DIR`, the
 session's own directory, comes ahead of any `ENVOY_CONFIG_FILE` an outer session exported.
+`dispatch login` reads no envoy.json, and `dispatch proxy` reads it only under
+`DISPATCH_TOKEN_BROKER=1`.
 
 `readEnvoyConfig(path, env, { cwd })` reads that file and a checkout's `<cwd>/.envoy/envoy.json`
 as written, running no command. Each section is strict: an unknown key is refused naming it, and
@@ -1126,8 +1128,10 @@ the issuer's discovery document once. A broker access token lasts `BROKER_ACCESS
 (900 seconds by default), and the client trades again five minutes before the token lapses
 (`DEFAULT_RENEW_BEFORE_MS`). So with the broker's default, a long-lived session that keeps
 calling trades about every ten minutes. `dispatch proxy` is such a session: it runs for the life
-of the command it starts (below). Every other `dispatch` command, Claude Code hook and `envoy-send`
-is a process of its own, so each one trades once.
+of the command it starts (below). Every other `dispatch` call that calls Dispatch, Claude Code hook
+and `envoy-send` is a process of its own, so each one trades once, and a `dispatch` call once more
+where Dispatch answers `401 BROKER_TOKEN_NOT_ACTIVE` and `DispatchClient` sends the request again.
+`dispatch login` trades none: it makes the login that a machine's trades use.
 
 A revoke of the sign-in on Dispatch ends the tokens of that sign-in, and the next trade is
 refused with words that name `agent-secrets login`. Dispatch gives the sign-in's tokens no

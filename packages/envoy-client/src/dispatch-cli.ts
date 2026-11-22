@@ -102,12 +102,14 @@ function stateWriteFailed(problem: string): string {
 const LITERAL_FORM =
   "AskGate reviews a Dispatch write, and lets it post, only when it is sent as one bash call of literal words: `dispatch <command> <words…>`. Each word is plain text, text in single quotes (also over more than one line), or text in double quotes with no `$`, backtick or `\\`. A `\\` at the end of a line continues the command. Before it, one `cd <path> &&` is permitted; after it, one `2>&1`, one here-document opened with a quoted delimiter (`<<'EOF'`) and one `| head -n N` or `| tail -n N`. For text with `$` or a backtick in it, use `--<field>-file - <<'EOF'`. A variable, `~`, a glob, an assignment, another redirect (`2>/dev/null`, `> file`), another pipe, another command (`;`, `&&`, `||`), a loop, xargs, `bash -c`, a script, an alias, or a process that a program or an eval cell starts carries no marker.";
 
-/** A line that refuses a spec command before it reaches Dispatch, each at the start of the line:
- *  `dispatch <command> was not called: …` (an argument problem, exit 2, wherever it is found;
- *  AskGate's block of a write wears the same line and exits 1), or a usage refusal
- *  (exit 2), which is `dispatch: ` and its reason. The CLI's other `dispatch: ` lines refuse
- *  nothing: a result's warning
- *  (`dispatch: warning: `), the note that the session's state was not written
+/** A line that refuses a call before it reaches Dispatch, each at the start of the line:
+ *  `dispatch <command> was not called: …` (an argument problem of a spec command or of
+ *  `dispatch login`, exit 2, wherever it is found; AskGate's block of a write wears the same line
+ *  and exits 1), or a usage refusal (exit 2), which is `dispatch: ` and its reason: a spec
+ *  command's, and `dispatch proxy`'s refusal of its session or of Dispatch's configuration. The
+ *  proxy's own refusals (`dispatch proxy: …`) and `dispatch login`'s answers at the broker
+ *  (`dispatch login: …`) are of neither form. The CLI's other `dispatch: ` lines refuse nothing:
+ *  a result's warning (`dispatch: warning: `), the note that the session's state was not written
  *  (STATE_WRITE_FAILED), and the notice of a file that is not read, printed beside a result. */
 const NOT_CALLED = /^dispatch ([a-z][a-z-]*) was not called: /;
 const NOT_A_REFUSAL = [
@@ -125,9 +127,9 @@ export interface CliRefusal {
 }
 
 /**
- * Each spec command's refusal the dispatch CLI printed in `text`, by its first line: what a reader
- * of the CLI's output (an agent's transcript, where a pipe can hide the exit) needs to tell a
- * refused call from one Dispatch answered. A line counts only at the start of a line of `text`.
+ * Each refusal of those two forms the dispatch CLI printed in `text`, by its first line: what a
+ * reader of the CLI's output (an agent's transcript, where a pipe can hide the exit) needs to tell
+ * a refused call from one Dispatch answered. A line counts only at the start of a line of `text`.
  */
 export function cliRefusals(text: string): CliRefusal[] {
   const found: CliRefusal[] = [];
@@ -519,11 +521,11 @@ export async function runDispatchCli(
   if ("refused" in session) return refuse(session.refused, USAGE, parsed.tool);
   const { host, sessionId, dir, file } = session;
   if (parsed.dryRun && !dryRunAsksDispatch(parsed.tool, parsed.args)) {
-    // The call's own argument check, so the call refuses no arguments its dry run passed; what
-    // the call needs besides (Dispatch's configuration, this session's state, Dispatch's answers)
-    // a dry run does not read. It runs with Dispatch off too, reading a dashboard-URL ref only
-    // against a server it knows, and its standard output is the JSON alone. A call whose dry run
-    // Dispatch answers goes on below, as the call itself does.
+    // The call's own argument check, so the call refuses no arguments its dry run passed. Of
+    // Dispatch's configuration it reads only the server URLs a dashboard-URL ref is read against,
+    // and it refuses nothing for what the configuration holds; it reads no state of this session
+    // and asks Dispatch nothing, so it runs with Dispatch off too, and its standard output is the
+    // JSON alone. A call whose dry run Dispatch answers goes on below, as the call itself does.
     const settings =
       file.path === null
         ? null

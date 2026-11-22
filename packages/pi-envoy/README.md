@@ -419,7 +419,8 @@ A session reads one envoy.json, with a section for Dispatch and one for Envoy:
 An Oh My Pi profile (`OMP_PROFILE` other than `default`) reads `$PI_CODING_AGENT_DIR/envoy.json`;
 any other session reads the file `ENVOY_CONFIG_FILE` names, else
 `${XDG_CONFIG_HOME:-~/.config}/legion/envoy.json`. The session's `dispatch` command reads the file
-the session chose, which the extension hands it in `ENVOY_CONFIG_FILE`. The `dispatch` section of a
+the session chose, which the extension hands it in `ENVOY_CONFIG_FILE` (`dispatch login` reads
+none, and `dispatch proxy` none without `DISPATCH_TOKEN_BROKER=1`). The `dispatch` section of a
 `<cwd>/.envoy/envoy.json` merges over it: its server is used only with the token written beside it,
 and its token only beside its own server. An `envoy` section there is not read, which the start
 notice says, and a checkout's file that is not valid refuses Dispatch alone, and only while
@@ -455,10 +456,16 @@ whose tasks reach nobody. When a
 section is off for a reason worth saying, the session says so once at its start:
 `envoy: no envoy.json at <path>: Dispatch and Envoy are off`, the lost `DISPATCH_URL` when
 `DISPATCH_TOKEN_FILE` is set and no server is named (`DISPATCH_TOKEN_FILE is set and DISPATCH_URL
-is not, so Dispatch is off: …`, which every `dispatch` command that reads Dispatch's configuration
-also prints), the section's error, what a checkout's file holds that is not read, or that inbound
-messages are off and why. Invalid configuration, an invalid URL, or an empty token makes every
-`dispatch` command that reads the configuration exit 2 naming the source of the error.
+is not, so Dispatch is off: …`, which a `dispatch` call that resolves Dispatch also prints), the
+section's error, what a checkout's file holds that is not read, or that inbound messages are off
+and why. A `dispatch` call resolves Dispatch when it is a spec command's call, but not its
+`--help`, a call refused for its arguments or its session, or a dry run that asks Dispatch nothing
+(every dry run but `dispatch result`'s of a record), or when it is a `dispatch proxy` run or
+`--dry-run` under `DISPATCH_TOKEN_BROKER=1` whose arguments and session the proxy takes. Invalid
+configuration, an invalid URL, or an empty token makes such a call exit 2 naming the source of the
+error. A dry run that asks Dispatch nothing reads the file only for the server URLs that a
+dashboard-URL ref is read against, and refuses nothing for what it holds; `dispatch login` reads
+none of it.
 
 `~/.config/opencode/envoy.json` and a checkout's `.opencode/envoy.json` are not read. While the old
 user file is there and the session's file is missing, Dispatch and Envoy stay off unless a variable

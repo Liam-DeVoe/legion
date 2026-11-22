@@ -1521,12 +1521,13 @@ function refusalBlocks(
   }));
   const logged = new Set<number>();
   for (const call of calls) {
-    // The commands of the call the CLI logged: every one but a `--help` that printed help, and a
-    // `--dry-run` only when its argument check refused it. The CLI checks a command's name before
-    // its flags, so a help call of an unknown command is refused and logged like any usage
-    // refusal. A usage refusal (`dispatch: …`) is logged under tool `dispatch` when the CLI could
-    // not name the command, so the ledger line and the printed refusal are one refusal and match
-    // here.
+    // The commands of the call the CLI may have logged: every one but a `--help` that printed
+    // help, and a `--dry-run` only when its argument check refused it. `dispatch proxy` and
+    // `dispatch login` are among them though the CLI logs neither, so no ledger line has their
+    // tool. The CLI checks a command's name before its flags, so a help call of an unknown command
+    // is refused and logged like any usage refusal. A usage refusal (`dispatch: …`) is logged
+    // under tool `dispatch` when the CLI could not name the command, so the ledger line and the
+    // printed refusal are one refusal and match here.
     const candidates = ops.flatMap((op, place) =>
       op.kind === "dispatch" &&
       op.step.id === call.step.id &&
@@ -2700,9 +2701,11 @@ const indented = (text: string, depth = 6) =>
  *     are not judged (SpecWork.unjudged: it pastes a sibling issue's spec) is printed with why, and
  *     the row is flagged `unjudged=N`: a write whose only check is one of these has no answer to
  *     whether the agent acted on what came back.
- *   - refusals: every refused spec command (refusalBlocks: an `error` line of the CLI's ledger,
- *     or a refusal a call's output shows that the ledger holds no line of: an `eval` cell's, whose
- *     kernel knows no session, or one the CLI made with no session) is followed by a call
+ *   - refusals: every refused `dispatch` call (refusalBlocks: an `error` line of the CLI's
+ *     ledger, which logs spec commands alone, or a refusal a call's output shows that the ledger
+ *     holds no line of: an `eval` cell's, whose kernel knows no session, one the CLI made with no
+ *     session, or a refusal of `dispatch login`'s arguments or of `dispatch proxy`'s session or
+ *     configuration, which the CLI logs nowhere) is followed by a call
  *     the ledger logs as a success, in a later tool call, with no skill file read between them. A
  *     call the agent made before the refusal came back is no fix: it cannot show that the agent
  *     fixed the call from the refusal alone. Each failing refusal is printed with its text.
