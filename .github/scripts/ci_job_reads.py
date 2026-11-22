@@ -1083,6 +1083,9 @@ SCHEMA_SCRIPT = (
 # moves no closure: the whole package compiles under the tag, whichever tests the run selects, so
 # each entry's Run is the plain tagged go test the step ran before.
 TAGGED_TESTS = ".github/scripts/go-tagged-tests.sh"
+# The wrapper envoy-infra-go's natslive step runs each go test under: it gives the go test a
+# -timeout of what is left of the job's limit (go-test-step-expansion.py's GO_WRAPPERS).
+GO_WITHIN_JOB = ".github/scripts/go-test-within-job.sh"
 NATS_MATRIX_STEP = "Test the container-backed NATS matrix (natslive)"
 NATS_MATRIX_SCRIPT = f"""\
 rig=$(../../{TAGGED_TESTS} natslive ./internal/testnats)
@@ -1100,17 +1103,9 @@ go test -count=1 -timeout 5m -tags natslive -run "$edge" -v ./cmd/listener/"""
 INFRA_NATSLIVE_STEP = "Live tests of envoy-infra against nats-server (natslive)"
 INFRA_NATSLIVE_PACKAGES = ["./core", "./seed", "./gcp"]
 INFRA_NATSLIVE_SCRIPT = f"""\
-worker=$$
-until [ "$(ps -o comm= -p "$worker")" = Runner.Worker ]; do
-  worker=$(ps -o ppid= -p "$worker" | tr -d ' ')
-  if [ "${{worker:-1}}" -le 1 ]; then echo "::error::no Runner.Worker among this step's parents, so the job's start cannot be read"; exit 1; fi
-done
 for pkg in {" ".join(INFRA_NATSLIVE_PACKAGES)}; do
   pattern=$(../../../{TAGGED_TESTS} natslive "$pkg")
-  ran=$(ps -o etimes= -p "$worker" | tr -d ' ')
-  left=$((JOB_TIMEOUT_MINUTES * 60 - ran - 60))
-  if [ "$left" -lt 60 ]; then echo "::error::$pkg: $left s of the job's limit are left, too few to run its live tests in"; exit 1; fi
-  go test -count=1 -timeout "${{left}}s" -tags natslive -run "$pattern" "$pkg"
+  ../../../{GO_WITHIN_JOB} go test -count=1 -tags natslive -run "$pattern" "$pkg"
 done"""
 MEMORY_STEP = "Memory tests of the Dispatch server"
 MEMORY_SCRIPT = f"""\
@@ -2580,6 +2575,9 @@ SCRIPT_TEST_GATES = [
     harness("disk_watch_test", "Test the machine watch", f"{SCRIPTS}/disk_watch.test.sh", [
         (f"{SCRIPTS}/disk_watch.py", "the module under test"),
     ]),
+    harness("go_test_within_job_test", "Test the go test job-limit wrapper", f"{SCRIPTS}/go-test-within-job.test.sh", [
+        (GO_WITHIN_JOB, "the script under test"),
+    ]),
     # The one harness of the job that is not under .github/scripts and sources no test-lib.sh.
     harness("priorities_seed_check_test", "Test the priorities seed check (a stand-in Dispatch)",
             "scripts/priorities-seed-check.test.sh", [
@@ -3492,6 +3490,7 @@ GATES = [
         (f"{ENVOY}/internal/testnats/nats.go", f"{at('envoy-infra-go', 'Pull the NATS and Postgres test container images')}: consts Image, HubImage"),
         (f"{ENVOY}/internal/testpg/testpg.go", f"{at('envoy-infra-go', 'Pull the NATS and Postgres test container images')}: const Image"),
         (TAGGED_TESTS, f"{at('envoy-infra-go', INFRA_NATSLIVE_STEP)} takes each call's -run from it"),
+        (GO_WITHIN_JOB, f"{at('envoy-infra-go', INFRA_NATSLIVE_STEP)} runs each go test under it"),
     ) + setup_go("envoy-infra-go", f"{INFRA}/go.mod") + darwin_vet_reads("envoy-infra-go", INFRA_DARWIN_VET, INFRA)),
 
     # The text-check job: one `go test` of each module's text checks, in that module's own

@@ -240,6 +240,10 @@ on:
         description: "ci.yaml's needs.changes.outputs.disk_watch_test: disk_watch.test.sh and what it tests."
         type: string
         required: true
+      go_test_within_job_test:
+        description: "ci.yaml's needs.changes.outputs.go_test_within_job_test: go-test-within-job.test.sh and what it tests."
+        type: string
+        required: true
       priorities_seed_check_test:
         description: >-
           ci.yaml's needs.changes.outputs.priorities_seed_check_test:
@@ -543,6 +547,10 @@ jobs:
       - name: Test the machine watch
         if: inputs.changes-result != 'success' || inputs.disk_watch_test == 'true'
         run: .github/scripts/disk_watch.test.sh
+
+      - name: Test the go test job-limit wrapper
+        if: inputs.changes-result != 'success' || inputs.go_test_within_job_test == 'true'
+        run: .github/scripts/go-test-within-job.test.sh
 
       - name: Test the priorities seed check (a stand-in Dispatch)
         if: inputs.changes-result != 'success' || inputs.priorities_seed_check_test == 'true'
