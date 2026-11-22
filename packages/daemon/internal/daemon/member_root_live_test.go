@@ -23,6 +23,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -48,10 +49,12 @@ const memberRootOldToolRootEnv = "LEGION_E2E_OLD_TOOL_ROOT"
 // memberRootDriver is the driver every tool root runs, relative to the root.
 const memberRootDriver = "packages/pi-legion/test/gate-holder-driver.ts"
 
-// TestAMemberThatBecomesARootIsRelaunchedAndRegisters drives the proof's steps against one booted
-// daemon and one Dispatch. It needs bun and each tool root's node_modules, and fails naming what
-// is missing rather than skipping.
-func TestAMemberThatBecomesARootIsRelaunchedAndRegisters(t *testing.T) {
+// memberRootTools reads what each live proof here needs, and fails naming what is missing rather
+// than skipping: the broker for Dispatch's events and the daemon's intake, this checkout's root,
+// bun, and each tool root with its node_modules and the driver. It answers the broker's URL, the
+// checkout's root and the two tools.
+func memberRootTools(t *testing.T) (string, string, []memberTool) {
+	t.Helper()
 	natsURL := os.Getenv(liveNATSURLEnv)
 	if natsURL == "" {
 		t.Fatalf("%s is unset, so there is no broker for Dispatch's events and the daemon's intake; scripts/e2e/member-becomes-root.sh starts a nats-server and sets it", liveNATSURLEnv)
@@ -79,19 +82,42 @@ func TestAMemberThatBecomesARootIsRelaunchedAndRegisters(t *testing.T) {
 			}
 		}
 	}
+	return natsURL, root, tools
+}
+
+// memberRootRig boots the person-handover rig the live proofs here share, over the broker and the
+// checkout memberRootTools read, with the supervision sweep a relaunch rides each second, and the
+// daemon's log written where the script names it.
+func memberRootRig(t *testing.T, natsURL, root string) *personHandoverRig {
+	t.Helper()
 	r := newPersonHandoverRigOn(t, scratchDispatchOptions{natsURL: natsURL, root: root}, 2)
 	// The pass that relaunches a claim under its issue's gate root rides the supervision sweep.
 	r.tune = func(o *overrides) { o.orphanSweep = time.Second }
 	if daemonLog := os.Getenv(liveDaemonLogEnv); daemonLog != "" {
 		// Registered before the boot, this cleanup runs after the daemon has stopped, so the file
-		// holds the whole log the rig kept in memory.
+		// holds the whole log the rig kept in memory. Each proof of a run appends its own daemon's
+		// log under its name.
 		t.Cleanup(func() {
-			if err := os.WriteFile(daemonLog, []byte(r.logs.String()), 0o600); err != nil {
+			file, err := os.OpenFile(daemonLog, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+			if err == nil {
+				_, err = fmt.Fprintf(file, "== %s\n%s", t.Name(), r.logs.String())
+				err = errors.Join(err, file.Close())
+			}
+			if err != nil {
 				t.Errorf("write the daemon's log: %v", err)
 			}
 		})
 	}
 	r.boot()
+	return r
+}
+
+// TestAMemberThatBecomesARootIsRelaunchedAndRegisters drives the proof's steps against one booted
+// daemon and one Dispatch. It needs bun and each tool root's node_modules, and fails naming what
+// is missing rather than skipping.
+func TestAMemberThatBecomesARootIsRelaunchedAndRegisters(t *testing.T) {
+	natsURL, root, tools := memberRootTools(t)
+	r := memberRootRig(t, natsURL, root)
 	home := t.TempDir()
 
 	// The world: P, a root at work whose design gate the person opened, and M, its child,
@@ -147,6 +173,69 @@ func TestAMemberThatBecomesARootIsRelaunchedAndRegisters(t *testing.T) {
 	}
 	if gate := r.gates(member.Key)[record.DesignStepSpec]; gate.ArtifactID != member.PrimaryArtifactID || gate.LatestVersion != 1 {
 		t.Fatalf("the daemon records %s's spec step as %+v, want version 1 of %s", member.Key, gate, member.PrimaryArtifactID)
+	}
+}
+
+// TestAGateHolderUnderAParentRegistersItsOwnGate drives k32's gate holder: M, a root its own
+// architect runs, which holds its own design gate, is set by a person under P, a root at work.
+// M keeps its own gate (issues.holds_gate: an issue that ran as a root holds it, R15 of
+// dispatch://INFRA-3320), so its gate root is itself and its pod and LEGION_TREE stay (R17).
+// Relaunched - its process lost and launched again in its session - its registration names M as
+// its tree; it edits its spec, and each plugin's legion tool, this checkout's and the oldest
+// contract's in the fleet, registers M's own gate at the new version, which the daemon takes.
+func TestAGateHolderUnderAParentRegistersItsOwnGate(t *testing.T) {
+	natsURL, root, tools := memberRootTools(t)
+	r := memberRootRig(t, natsURL, root)
+	home := t.TempDir()
+
+	labelled := map[string]any{"labels": []string{"legion"}}
+	parent := r.create(asSession, "Lighthouse beacon overhaul", labelled)
+	r.admit(parent.Key)
+	member := r.create(asSession, "Breakwater tide logger", labelled)
+	r.admit(member.Key)
+	architect := r.architectToken(member.Key)
+	first := r.awaitLaunch(architect, 0)
+	if first.Tree != member.Key {
+		t.Fatalf("the first launch of %s names LEGION_TREE=%q, want its own %s", architect, first.Tree, member.Key)
+	}
+	memberRegister(t, r, first)
+
+	// The person sets M under P, a root at work: M holds its own gate still.
+	r.patch(member.Key, asPerson, map[string]any{"parent": parent.Key})
+	r.quiet(member.Key)
+
+	// M's architect's process is lost, and the daemon launches it again in its session.
+	launched := r.launches(string(architect))
+	var lost *runtime.Locator
+	for _, c := range r.d.claims() {
+		if c.Token == architect {
+			lost = c.Locator
+		}
+	}
+	if lost == nil {
+		t.Fatalf("the daemon holds no process of %s to lose", architect)
+	}
+	r.rt.Emit(runtime.Observation{Locator: *lost, Kind: runtime.Gone})
+	second := r.awaitLaunch(architect, launched)
+	if second.Tree != member.Key {
+		t.Fatalf("the relaunch of %s names LEGION_TREE=%q, want its own gate root %s", architect, second.Tree, member.Key)
+	}
+	after := memberRegister(t, r, second)
+	if after.Tree != member.Key {
+		t.Fatalf("the relaunch's registration of %s answered tree %q, want %s", architect, after.Tree, member.Key)
+	}
+
+	version := r.editDocument(member.PrimaryArtifactID, insertParagraph("The logger samples every ten minutes."))
+	call := map[string]any{"op": "register_gate", "issue": member.Key, "artifactId": member.PrimaryArtifactID, "version": version,
+		"step": string(record.DesignStepSpec)}
+	for _, tool := range tools {
+		told := memberToolCall(t, tool, home, r, after, member.Key, call)
+		if told.IsError || !slices.Contains(told.DaemonRequests, "POST /legion/v1/gates/register") {
+			t.Fatalf("%s's register_gate of %s, its own gate under %s, answered %+v, want it taken", tool.name, member.Key, parent.Key, told)
+		}
+	}
+	if gate := r.gates(member.Key)[record.DesignStepSpec]; gate.ArtifactID != member.PrimaryArtifactID || gate.LatestVersion != version {
+		t.Fatalf("the daemon records %s's spec step as %+v, want version %d of %s", member.Key, gate, version, member.PrimaryArtifactID)
 	}
 }
 

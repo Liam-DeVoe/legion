@@ -1334,14 +1334,16 @@ func (a *Admission) releaseSlotsForWaits(ctx context.Context, tx pgx.Tx, issues 
 //
 // Each reads an issue of this project in the workflow whose gate root runs (record.RunningRoots
 // over the pass's chains: the gate root in Legion's work and not waiting in the line for its first
-// start), so an issue under a root still queued, or on an unknown chain with no gate root, stays
-// where it stands, a queued root is left alone (record.LineFacts.Queued), and a root handed over
-// in awaiting_children comes back once its promotion has started it. A key a hold still names
-// (held, the pass's own predicate) is read on the first pass after the hold ends, as the promotion
-// reads it. The engine leaves alone a parent held, in retro or in merging, whose pull request has
-// merged, or whose phase's role stands on an entry a role's move back raised out of retro or
-// merging (record.PhaseRow.EntryFrom), and a second pass finds a moved parent in awaiting_children
-// already, so it sends nothing again.
+// start), so an issue under a root still queued stays where it stands, a queued root is left alone
+// (record.LineFacts.Queued), and a root handed over in awaiting_children comes back once its
+// promotion has started it. An issue whose own chain the copy cannot show to its top is decided
+// nothing either (R16 of dispatch://INFRA-3320): at work, it goes on in the list it stands in,
+// neither moved into awaiting_children nor taken back from it, until the daemon has read Dispatch
+// again. A key a hold still names (held, the pass's own predicate) is read on the first pass after
+// the hold ends, as the promotion reads it. The engine leaves alone a parent held, in retro or in
+// merging, whose pull request has merged, or whose phase's role stands on an entry a role's move
+// back raised out of retro or merging (record.PhaseRow.EntryFrom), and a second pass finds a
+// moved parent in awaiting_children already, so it sends nothing again.
 //
 // It runs before the releases (promoteHolds), so the slot a stopped parent held is freed on this
 // very pass by the one rule for a phase that keeps none (releaseSlots, record.NeedsSlot), and the
@@ -1369,7 +1371,7 @@ func (a *Admission) childrenWaits(ctx context.Context, tx pgx.Tx, issues []recor
 	}
 	wrote := false
 	for _, parent := range parents {
-		if parent.Project != a.project || !record.InWorkflow(parent) || held(parent.Key) {
+		if parent.Project != a.project || !record.InWorkflow(parent) || held(parent.Key) || !facts.Chains.Chain(parent.Key).Known() {
 			continue
 		}
 		if _, runs := running[facts.Chains.GateRoot(parent.Key)]; !runs {

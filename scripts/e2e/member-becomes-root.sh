@@ -65,5 +65,6 @@ export LEGION_E2E_REPO_ROOT="$root"
 export LEGION_E2E_OLD_TOOL_ROOT="$old_root"
 # shellcheck source-path=SCRIPTDIR source=lib/live-daemon-proof.sh
 . "$root/scripts/e2e/lib/live-daemon-proof.sh"
-live_daemon_proof 'member becomes root' member-becomes-root TestAMemberThatBecomesARootIsRelaunchedAndRegisters \
+live_daemon_proof 'member becomes root' member-becomes-root \
+  'TestAMemberThatBecomesARootIsRelaunchedAndRegisters|TestAGateHolderUnderAParentRegistersItsOwnGate' \
   "${MEMBER_BECOMES_ROOT_EVIDENCE_DIR:-}"

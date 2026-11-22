@@ -43,9 +43,11 @@ func TestAnUnknownChainStartsNothingAndRefusesCallsAndSignOff(t *testing.T) {
 		labelledTodo(loopB, loopA),
 		// An issue at work under a parent the copy lacks.
 		inWork(atWork, "CHAIN-31", phase.Implementing, "in_progress"),
-		// Two chains of 33 links, under CHAIN-101, under 102, and so on up to 133, which has no
-		// parent: CHAIN-100 at work, and a labelled todo issue beside it.
-		labelledTodo(deepTodo, "CHAIN-101"),
+		// A chain of 33 links: CHAIN-100 at work under 101, and so on up to 133, which has no
+		// parent, and under it a labelled todo issue, 34 links from the top, open under an issue
+		// at work: the children-first wait is no decision taken on an unknown chain, so CHAIN-100
+		// is not moved into awaiting_children and goes on in the list it stands in.
+		labelledTodo(deepTodo, deepAtWork),
 		inWork(deepAtWork, "CHAIN-101", phase.Implementing, "in_progress"),
 	}
 	for i := 101; i <= 133; i++ {

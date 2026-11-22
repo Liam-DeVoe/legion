@@ -179,10 +179,14 @@ live_daemon_proof() {
     LEGION_E2E_DAEMON_LOG="$evidence/daemon.log" \
     TMPDIR="$work" \
     "$driver" -test.count=1 -test.timeout=20m -test.v \
-    -test.run "^$test_name\$" 2>&1 | tee "$evidence/proof.log" ||
+    -test.run "^($test_name)\$" 2>&1 | tee "$evidence/proof.log" ||
     fail "the proof's driver failed; see $evidence/proof.log and $evidence/daemon.log"
-  # A driver that skipped, or whose -test.run matched nothing, exits 0 having proved nothing.
-  grep -q "^--- PASS: $test_name" "$evidence/proof.log" ||
-    fail "the proof's driver ran no step: it skipped, or -test.run matched no test; see $evidence/proof.log"
+  # A driver that skipped, or whose -test.run matched nothing, exits 0 having proved nothing. A
+  # proof may name several tests, separated by |, and each must pass.
+  local name
+  for name in ${test_name//|/ }; do
+    grep -q "^--- PASS: $name " "$evidence/proof.log" ||
+      fail "the proof's driver ran no step of $name: it skipped, or -test.run matched no test; see $evidence/proof.log"
+  done
   pass
 }
