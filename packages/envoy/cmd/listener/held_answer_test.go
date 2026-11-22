@@ -13,7 +13,24 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/listenerwire"
 )
+
+// readingKeyTaken is request naming the key-taken answer as one its client reads
+// (listenerwire.ReadsHeader), as @legion/envoy-client names it on a send or a publish that names
+// its session.
+func readingKeyTaken(request *http.Request) *http.Request {
+	request.Header.Set(listenerwire.ReadsHeader, listenerwire.ReadsKeyTaken)
+	return request
+}
+
+// publishFromReading is rig.publishFrom by a client that reads the key-taken answer
+// (readingKeyTaken).
+func (rig *senderLimitRig) publishFromReading(t *testing.T, sender, topic string, fields map[string]any) limitedAnswer {
+	t.Helper()
+	body := map[string]any{"topic": topic, "source_session": sender, "message": countedMessage}
+	return serveLimited(t, rig.mux, rig.harness.logs.String, readingKeyTaken(postJSON("/v1/messages/publish", messageJSON(t, body, fields))))
+}
 
 // heldAnswer is a send's or a publish's answer as these tests read it: the limitedAnswer (status,
 // body, the request's record line), with the envelope the body carries.
@@ -74,8 +91,8 @@ func (a heldAnswer) requireHeld(t *testing.T, what string, kept contracts.Envelo
 // requireKeyTaken fails unless the answer is status with duplicate and kept's event_id and times
 // (issued_at, expires_at, kept_at), and carries none of what kept's sender wrote or who it is: no
 // payload, payload_summary, payload_ref, source, source_session or sender, and not words, which
-// that sender wrote. It is the answer a caller gets for repeating another sender's key
-// (requestSender.answer).
+// that sender wrote. It is the answer a caller that reads the key-taken answer
+// (listenerwire.ReadsKeyTaken) gets for repeating another sender's key (requestSender.answer).
 func (a heldAnswer) requireKeyTaken(t *testing.T, what string, status int, kept contracts.Envelope, words string) {
 	t.Helper()
 	a.requireStatus(t, what, status)
@@ -90,6 +107,31 @@ func (a heldAnswer) requireKeyTaken(t *testing.T, what string, status int, kept 
 	if got.Payload != "" || got.PayloadSummary != "" || got.PayloadRef != "" || got.Source != "" ||
 		got.SourceSession != "" || got.Sender != nil || strings.Contains(a.raw, words) {
 		t.Fatalf("%s answered %s, which carries what the other sender wrote or who it is", what, a.raw)
+	}
+}
+
+// requireOwnEnvelope fails unless the answer is status with duplicate and the envelope the
+// request built: an event_id that is not kept's, the asker's session and its own words asked,
+// whole by the envelope schema every client release parses (listenerwire.Envelope.Validate, which
+// @legion/contracts' EnvelopeSchema mirrors), and none of what kept's sender wrote (words); and
+// unless the request's record line names kept's event_id, session and asked. It is the answer a
+// caller that does not read the key-taken answer gets for repeating another sender's key
+// (requestSender.answer), the one a listener before that answer gave every repeat.
+func (a heldAnswer) requireOwnEnvelope(t *testing.T, what string, status int, kept contracts.Envelope, words, session, asked string) {
+	t.Helper()
+	a.requireStatus(t, what, status)
+	got := a.envelope
+	if !a.Duplicate || got.EventID == "" || got.EventID == kept.EventID || got.SourceSession != session || got.PayloadSummary != asked {
+		t.Fatalf("%s answered %s, want duplicate and the envelope its own request built: a new event_id, session %q and its own words %q", what, a.raw, session, asked)
+	}
+	if err := got.Validate(); err != nil {
+		t.Fatalf("%s answered %s, which the envelope schema every client parses refuses: %v", what, a.raw, err)
+	}
+	if strings.Contains(a.raw, words) {
+		t.Fatalf("%s answered %s, which carries what the other sender wrote", what, a.raw)
+	}
+	if a.line["event_id"] != kept.EventID || a.line["source_session"] != session || a.line["payload_summary"] != asked {
+		t.Fatalf("%s wrote the line %v, want the copy's event_id %s, the asker's session %q and its own words %q", what, a.line, kept.EventID, session, asked)
 	}
 }
 

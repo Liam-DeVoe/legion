@@ -6,9 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // errStoredCopyUnread is wrapped by the error of a send, a topic publish or a role forward whose
@@ -41,74 +43,104 @@ type storedReader interface {
 
 // requestSender is who a send or a publish speaks for, which decides how much of a stored copy
 // its answer may carry (answer): the event_id, source and source_session of the envelope the
-// route built from the request, and, where the request presented a secrets-broker token, the
-// session that token proves (brokerCaller).
+// route built from the request, where the request presented a secrets-broker token the session
+// that token proves (brokerCaller), and whether the request names the key-taken answer as one it
+// reads (listenerwire.ReadsKeyTaken).
 type requestSender struct {
 	eventID, source, session string
 	proven                   bool
 	tokenSession             string
+	readsKeyTaken            bool
 }
 
 // senderOf is the sender of r, whose route built item from it.
 func senderOf(r *http.Request, item contracts.Envelope) requestSender {
-	sender := requestSender{eventID: item.EventID, source: item.Source, session: item.SourceSession}
+	sender := requestSender{eventID: item.EventID, source: item.Source, session: item.SourceSession, readsKeyTaken: readsKeyTaken(r)}
 	if caller, ok := brokerCaller(r); ok {
 		sender.proven, sender.tokenSession = true, caller.Session
 	}
 	return sender
 }
 
-// answer is held, a copy the stream holds under a request's message id, as the request's answer
-// may carry it. The request's own copy (its own event_id, which the bus's resend or a role
-// send's own earlier forward or keep stored) is answered whole, and so is a copy whose source
-// and source_session are the request's, where, when the copy names a session and the request
-// proved one with a broker token, that is the copy's. A copy that names no session names no
-// owner a token could prove, so a same-source caller with no session reads it whole with or
-// without a token, as a caller on the shared bearer always could. Any other copy is another
-// sender's message under a key this caller repeated, which may be known or guessed (a Dispatch
-// mention key, a role key taken verbatim), so the answer says only that the key is taken: the
-// copy's event_id and its times, with the topic and dedupe key it was stored under and the reply it
-// asks for (expects_reply, which every answer of a stored copy names, expectsReplyAnswer), and none
-// of what the other sender wrote or who it is (payload, payload_summary, payload_ref, source,
-// source_event_id, source_session, sender, trace_id and the rest).
-//
-// A caller that names no session and the source dispatch reads Dispatch's own copies whole: the
-// route trusts a caller's source and an empty session as it always has (sessionNotBound).
-func (s requestSender) answer(held contracts.Envelope) contracts.Envelope {
-	if held.EventID == s.eventID ||
-		held.Source == s.source && held.SourceSession == s.session &&
-			(!s.proven || held.SourceSession == "" || held.SourceSession == s.tokenSession) {
-		return held
+// readsKeyTaken is whether r names the key-taken answer among those it reads, in any of its
+// listenerwire.ReadsHeader values, with any case and spacing.
+func readsKeyTaken(r *http.Request) bool {
+	for _, value := range r.Header.Values(listenerwire.ReadsHeader) {
+		for _, token := range strings.Split(value, ",") {
+			if strings.EqualFold(strings.TrimSpace(token), listenerwire.ReadsKeyTaken) {
+				return true
+			}
+		}
 	}
-	return contracts.Envelope{
-		EventID:      held.EventID,
-		Topic:        held.Topic,
-		DedupeKey:    held.DedupeKey,
-		IssuedAt:     held.IssuedAt,
-		ExpiresAt:    held.ExpiresAt,
-		KeptAt:       held.KeptAt,
-		ExpectsReply: held.ExpectsReply,
+	return false
+}
+
+// answer is held, a copy the stream holds under a request's message id, as the request's answer
+// may carry it; asked is the envelope the route built for the request. A copy the sender may read
+// (mayRead) is answered whole. Any other copy is another sender's message under a key this caller
+// repeated, which may be known or guessed (a Dispatch mention key, a role key taken verbatim, the
+// Legion daemon's sequential legion-outbox keys), so the answer gives none of what the other
+// sender wrote or who it is (payload, payload_summary, payload_ref, source, source_event_id,
+// source_session, sender, trace_id and the rest). To a request that reads the key-taken answer
+// (listenerwire.ReadsKeyTaken) it says only that the key is taken: the copy's event_id and its
+// times, with the topic and dedupe key it was stored under and the reply it asks for
+// (expects_reply, which every answer of a stored copy names, expectsReplyAnswer). To any other
+// request it is asked, the answer a listener before the key-taken answer gave every repeat, which
+// a client that parses every answer as a whole envelope reads, and which the route marks as a
+// duplicate (answerStored).
+func (s requestSender) answer(held, asked contracts.Envelope) contracts.Envelope {
+	switch {
+	case s.mayRead(held):
+		return held
+	case s.readsKeyTaken:
+		return contracts.Envelope{
+			EventID:      held.EventID,
+			Topic:        held.Topic,
+			DedupeKey:    held.DedupeKey,
+			IssuedAt:     held.IssuedAt,
+			ExpiresAt:    held.ExpiresAt,
+			KeptAt:       held.KeptAt,
+			ExpectsReply: held.ExpectsReply,
+		}
+	default:
+		return asked
 	}
 }
 
+// mayRead is whether the sender may read held whole: held is the request's own copy (its own
+// event_id, which the bus's resend or a role send's own earlier forward or keep stored), or held
+// names a session and its source and source_session are the request's, where, when the request
+// proved a session with a broker token, that is held's. A copy that names no session has no owner
+// a caller can prove, so it is whole only for its own request: a caller that names no session,
+// with or without a token, may be anyone that names none, the Legion daemon's role messages
+// (no source and no session) and Dispatch's sends among them.
+func (s requestSender) mayRead(held contracts.Envelope) bool {
+	if held.EventID == s.eventID {
+		return true
+	}
+	return held.SourceSession != "" && held.Source == s.source && held.SourceSession == s.session &&
+		(!s.proven || held.SourceSession == s.tokenSession)
+}
+
 // publishHeld publishes *item within ctx through publish, marks record's charge by the stream's
-// answer to that publish (senderCharge.published), and leaves in *item the envelope the stream
-// holds for it, which it reads through reader, as sender may read it (requestRecord.answerStored).
-// It is the one publish of the send route and of the topic publish, so neither can answer an
-// envelope the stream does not hold: a route answers *item, and after a duplicate verdict *item
-// is the stored copy, not the envelope the route built. It publishes through publishPastInProcess,
-// so a refusal of the publish as still in process under an earlier one is made again until the
-// stream names that one's copy.
+// answer to that publish (senderCharge.published), and leaves in *item the answer of the envelope
+// the stream holds for it, which it reads through reader, as sender may read it
+// (requestRecord.answerStored). It is the one publish of the send route and of the topic publish,
+// so neither answers its own envelope for a copy its sender may read, or names another sender's
+// words: a route answers *item. It publishes through publishPastInProcess, so a refusal of the
+// publish as still in process under an earlier one is made again until the stream names that
+// one's copy.
 //
 // A publish the stream stored as a new copy leaves *item as it was, and duplicate false. A
 // duplicate verdict names the copy the stream holds under the same message id, at its sequence
-// (bus.StoredAck), and *item becomes that copy as storedCopy reads it, whole for its own sender
-// and its ids, times and expects_reply alone for anyone else. duplicate is whether that copy is
-// another request's, which is when its event_id is not *item's: a caller's repeat under the same
-// idempotency_key built a new envelope, with a new event_id, that no stored message carries. A
-// verdict that answers the bus's own resend after a closed connection (bus.StoredAck.Resent) can
-// name the copy this request's first send stored, which carries its own event_id: that copy is
-// this request's, answered with no duplicate as any new copy is.
+// (bus.StoredAck), and *item becomes the answer of that copy as storedCopy reads it: whole for its
+// own sender, and for anyone else the key-taken answer or the envelope the route built
+// (requestSender.answer). duplicate is whether that copy is another request's, which is when its
+// event_id is not *item's: a caller's repeat under the same idempotency_key built a new envelope,
+// with a new event_id, that no stored message carries. A verdict that answers the bus's own resend
+// after a closed connection (bus.StoredAck.Resent) can name the copy this request's first send
+// stored, which carries its own event_id: that copy is this request's, answered with no duplicate
+// as any new copy is.
 //
 // A copy that cannot be read is an error wrapping errStoredCopyUnread, with *item untouched, and
 // the charge stays marked by the publish's own answer. A copy that cannot be read after the
@@ -134,15 +166,15 @@ func publishHeld(ctx context.Context, reader storedReader, publish storedPublish
 
 // answerStored makes *item, the envelope a route built for its request, the answer of held, a
 // copy the stream or the role's kept lane holds under the request's message id, as sender may
-// read it (requestSender.answer). The record's line then names that copy's event_id and, from
-// the envelope built for the request (asked), who asked and with what words. duplicate is
-// whether held is another request's copy, which is when its event_id is not the built
-// envelope's.
+// read it (requestSender.answer). The record's line then names that copy's event_id, whatever the
+// answer carries, and, from the envelope built for the request (asked), who asked and with what
+// words. duplicate is whether held is another request's copy, which is when its event_id is not
+// the built envelope's.
 func (rec *requestRecord) answerStored(item *contracts.Envelope, held contracts.Envelope, sender requestSender) (duplicate bool) {
 	asked := *item
 	rec.asked = &asked
-	rec.item = item
-	*item = sender.answer(held)
+	rec.held = held.EventID
+	*item = sender.answer(held, asked)
 	return held.EventID != asked.EventID
 }
 

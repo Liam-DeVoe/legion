@@ -17,20 +17,24 @@ import (
 )
 
 // Dispatch's send marked with a role nobody claims is kept for the role's next holder and
-// answered 202 with the copy the role's kept lane holds (keepRoleSend). Its repeat under the same
-// idempotency_key, asking for another reply, is answered with the first send's kept copy, with
-// duplicate and that copy's expects_reply, as the publish route's kept answer is (roleSend.kept).
-// A copy an agent kept on the lane under the same dedupe key is another sender's: the 202 gives
-// its event_id and times alone, with duplicate, and none of what the agent wrote. The control is
-// the first send, answered its own kept copy whole with no duplicate and its own expects_reply.
+// answered 202 with the copy the role's kept lane holds (keepRoleSend). Dispatch names the
+// key-taken answer as one it reads (listenerwire.ReadsHeader), and its sends name no session, so
+// no later request can prove a copy its own: its repeat under the same idempotency_key, asking
+// for another reply, is answered with the first send's kept copy's ids, times and expects_reply
+// alone, with duplicate, as the publish route's kept answer gives another sender's copy
+// (roleSend.kept). A copy an agent kept on the lane under the same dedupe key is answered the
+// same way, with none of what the agent wrote. A marked send that does not name the header gets
+// the envelope its own request built, kept, with duplicate. The control is the first send,
+// answered its own kept copy whole with no duplicate and its own expects_reply.
 func TestARoleMarkedSendKeptForTheRoleAnswersTheKeptCopy(t *testing.T) {
 	rig := newSenderLimitRig(t)
 	const principal = "system:serviceaccount:dispatch:dispatch"
 	useDispatchPrincipal(rig.deps, principal)
 	target := "ses_marked_send_target_" + id.New()
 	rig.live(t, target, nil)
-	// send is Dispatch's send to target marked with role, under key, asking for reply.
-	send := func(t *testing.T, role, key, words, reply string) heldAnswer {
+	// sendAs is Dispatch's send to target marked with role, under key, asking for reply, naming
+	// the key-taken answer as one it reads where reads is set; send is Dispatch's own, which does.
+	sendAs := func(t *testing.T, reads bool, role, key, words, reply string) heldAnswer {
 		t.Helper()
 		body := messageJSON(t, map[string]any{
 			"target_session": target, "source": "dispatch", "message": words, "idempotency_key": key,
@@ -38,7 +42,14 @@ func TestARoleMarkedSendKeptForTheRoleAnswersTheKeptCopy(t *testing.T) {
 		}, nil)
 		request := postJSON("/v1/messages/send", body)
 		request = request.WithContext(withVerifiedPrincipal(request.Context(), principal))
+		if reads {
+			request = readingKeyTaken(request)
+		}
 		return held(t, serveLimited(t, rig.mux, rig.harness.logs.String, request))
+	}
+	send := func(t *testing.T, role, key, words, reply string) heldAnswer {
+		t.Helper()
+		return sendAs(t, true, role, key, words, reply)
 	}
 	expectsReply := func(t *testing.T, answer heldAnswer) string {
 		t.Helper()
@@ -64,20 +75,29 @@ func TestARoleMarkedSendKeptForTheRoleAnswersTheKeptCopy(t *testing.T) {
 		}
 	})
 
-	t.Run("case: a repeat asking for another reply answers the first send's kept copy with duplicate and its expects_reply", func(t *testing.T) {
+	t.Run("case: a repeat asking for another reply answers the first send's kept copy's ids, times and expects_reply alone, with duplicate", func(t *testing.T) {
 		role, key := "marked-send-repeat-"+id.New(), uuid.NewString()
 		send(t, role, key, "dispatch's words", "optional").requireStatus(t, "the first marked send", http.StatusAccepted)
 		kept := heldCopy(t, rig.harness.client, bus.KeptRoleSubject(role))
 		repeat := send(t, role, key, "dispatch's words again", "required")
-		repeat.requireStatus(t, "the repeated marked send", http.StatusAccepted)
-		if !reflect.DeepEqual(repeat.envelope, kept) || !repeat.Duplicate {
-			t.Fatalf("the repeated marked send answered %s, want the first send's kept copy %+v whole with duplicate", repeat.raw, kept)
-		}
+		repeat.requireKeyTaken(t, "the repeated marked send", http.StatusAccepted, kept, "dispatch's words")
 		if got := expectsReply(t, repeat); got != "optional" {
 			t.Fatalf("the repeated marked send answered expects_reply %q, want the kept copy's %q", got, "optional")
 		}
 		if repeat.line["event_id"] != kept.EventID {
 			t.Fatalf("the repeated marked send wrote the line %v, want the kept copy's event_id %s", repeat.line, kept.EventID)
+		}
+	})
+
+	t.Run("case: a repeat whose client does not read the key-taken answer gets its own envelope, kept, with duplicate", func(t *testing.T) {
+		role, key := "marked-send-unread-"+id.New(), uuid.NewString()
+		words := "dispatch's first words " + id.New()
+		send(t, role, key, words, "optional").requireStatus(t, "the first marked send", http.StatusAccepted)
+		kept := heldCopy(t, rig.harness.client, bus.KeptRoleSubject(role))
+		repeat := sendAs(t, false, role, key, "the repeat's own words", "required")
+		repeat.requireOwnEnvelope(t, "the repeated marked send that does not read the key-taken answer", http.StatusAccepted, kept, words, "", "the repeat's own words")
+		if !repeat.Kept {
+			t.Fatalf("the repeated marked send that does not read the key-taken answer answered %s, want kept", repeat.raw)
 		}
 	})
 

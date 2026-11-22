@@ -199,10 +199,11 @@ func TestARolePublishRepeatedUnderOneIdempotencyKeyAnswersTheStoredCopy(t *testi
 // A second request under K that the route's record answers as a repeat of that forward, with no
 // forward of its own (another sender's to the same role, or the same sender's to another role the
 // same holder holds), is a request of its own too: once its sender takes that role and repeats,
-// the echo answers the same stored forward, short for another sender and whole with duplicate for
-// the forward's own. Two more cases clear the route's record of K before the second request,
-// which is then forwarded again, not answered from the record, and recorded through the stream's
-// confirmation, as a forward always was: the echo answers the same stored forward.
+// the echo answers the same stored forward, its key-taken answer for another sender whose client
+// reads it and whole with duplicate for the forward's own. Two more cases clear the route's record
+// of K before the second request, which is then forwarded again, not answered from the record,
+// and recorded through the stream's confirmation, as a forward always was: the echo answers the
+// same stored forward.
 func TestARoleRepeatFromTheSenderThatTookTheRoleAnswersTheStoredForward(t *testing.T) {
 	rig := newSenderLimitRig(t)
 
@@ -281,8 +282,9 @@ func TestARoleRepeatFromTheSenderThatTookTheRoleAnswersTheStoredForward(t *testi
 			if row.other {
 				second, role, who = "ses_role_echo_recorded_mallory_"+id.New(), roleA, "Mallory's request to role A"
 			}
-			// answers fails unless answer is what second gets for the stored forward: the
-			// key taken for another sender, the whole forward with duplicate for its own.
+			// answers fails unless answer is what second, whose client reads the key-taken
+			// answer, gets for the stored forward: the key taken for another sender, the whole
+			// forward with duplicate for its own.
 			answers := func(what string, answer heldAnswer) {
 				t.Helper()
 				if row.other {
@@ -294,10 +296,10 @@ func TestARoleRepeatFromTheSenderThatTookTheRoleAnswersTheStoredForward(t *testi
 			if row.forward {
 				rig.deps.confirmed.Clear(publishDedupePrefix+key, bob)
 			}
-			answers(who, held(t, rig.publishFrom(t, second, contracts.RoleTopicPrefix+role,
+			answers(who, held(t, rig.publishFromReading(t, second, contracts.RoleTopicPrefix+role,
 				map[string]any{"idempotency_key": key, "message": "the second request's own body"})))
 			claimRoleFor(t, rig.deps.registry, rig.deps.sessions, second, role, nil)
-			answers(who+", repeated after it took the role", held(t, rig.publishFrom(t, second, contracts.RoleTopicPrefix+role,
+			answers(who+", repeated after it took the role", held(t, rig.publishFromReading(t, second, contracts.RoleTopicPrefix+role,
 				map[string]any{"idempotency_key": key, "message": "the repeat's own body"})))
 			heldForward(t, rig.harness.client, bob)
 		})

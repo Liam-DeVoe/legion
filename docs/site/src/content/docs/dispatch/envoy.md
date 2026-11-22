@@ -666,15 +666,21 @@ refused the same way while the stream is full and stored once it has room, with 
 
 A send, a topic publish or a role send that the stream answers as a duplicate of another
 request's copy, a repeat under the same idempotency key, is answered `200` with `duplicate: true`
-and that stored copy, its `event_id` included, never the envelope the listener built for the
-repeat. When the listener cannot read that copy back, the answer is `503` with `Retry-After: 1`
-and the body `envoy: the stream already knows this message's id, and no stored copy of it was
-read: …`, and the same request again gets the copy once it can be read. The stored copy is
-answered whole to its own request and to its own sender, the same `source` and `source_session`
-and, where the copy names a session, the session a secrets-broker token proves; anyone else
-repeating the key learns only that it is taken: the copy's `event_id`, its times, its topic, its
-dedupe key and the reply it asks for, and nothing the other sender wrote. Envoy's clients report
-that answer as not delivered, naming the copy's `event_id`.
+and an answer read from that stored copy. When the listener cannot read that copy back, the
+answer is `503` with `Retry-After: 1` and the body `envoy: the stream already knows this message's
+id, and no stored copy of it was read: …`, and the same request again gets the copy once it can
+be read. The stored copy is answered whole, its `event_id` included, to its own request and to
+its own sender: the same `source` and the `source_session` the copy names and, where the request
+presents a secrets-broker token, the session the token proves. A copy that names no session is
+whole only to its own request, since no caller can prove it owns it. Anyone else repeating the key
+gets nothing the other sender wrote. A request that sends the header `Envoy-Reads: key-taken`
+learns only that the key is taken: the copy's `event_id`, its times, its topic, its dedupe key and
+the reply it asks for. Any other request gets the envelope the listener built for it, with
+`duplicate: true`, as every repeat got before this answer existed, so a client of an earlier
+release still reads it. The TypeScript clients (`envoy-client`, and the `pi-envoy` and
+`claude-envoy` tools through it) send the header on a send or a publish that names its session,
+and report the shorter answer as not delivered, naming the copy's `event_id`. Dispatch sends it
+and records the answer as a duplicate. The Legion daemon reads only the status.
 
 ### The sender limit
 

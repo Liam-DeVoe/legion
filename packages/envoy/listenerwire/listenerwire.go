@@ -75,6 +75,21 @@ type APIError struct {
 // those routes leaves the code out.
 const CodeMaybeStored = "maybe_stored"
 
+// ReadsHeader is the request header in which a client of the send and the publish routes names
+// the answers it reads beyond the whole envelope every client release reads, as a comma-separated
+// list of tokens; the listener reads it on those two routes alone. ReadsKeyTaken is the one token
+// there is: the key-taken answer, which a request gets for a copy another sender stored under its
+// message id. That answer carries the copy's event_id, topic, dedupe_key, times and expects_reply
+// with Duplicate, and leaves every other string field empty, so a client that parses each answer
+// as a whole envelope (@legion/envoy-client before it sent this header) rejects it. A request that
+// does not name ReadsKeyTaken gets, for such a copy, the envelope the listener built for it, with
+// Duplicate: a whole envelope, as a listener before the key-taken answer gave every repeat.
+// @legion/envoy-client names ReadsKeyTaken on a send or a publish that names its source_session.
+const (
+	ReadsHeader   = "Envoy-Reads"
+	ReadsKeyTaken = "key-taken"
+)
+
 // MessageBody is the message a send or a publish carries, which the listener builds the envelope
 // it puts on the bus from. A sender that leaves Source out speaks as an agent.
 type MessageBody struct {
@@ -125,13 +140,16 @@ type PublishRequest struct {
 
 // SendResponse is the answer to a targeted send. Duplicate reports that JetStream already held
 // another request's copy of this message, so the stream stored nothing new; the publish still
-// reached the agent's subject. The envelope is then the copy the stream holds, read back at the
-// sequence its duplicate verdict named (the listener's publishHeld): its event_id, its issued_at
-// and its body are that copy's, not those of the envelope the listener built for this request,
-// which no stored message carries. A verdict that names this request's own copy, which a resend
-// after a closed connection can, answers that copy with no Duplicate. A copy that cannot be read
-// is the 503 with Retry-After: 1 that the listener writes under its storedCopyUnreadablePrefix,
-// never an envelope the stream does not hold.
+// reached the agent's subject. The envelope then comes from the copy the stream holds, read back
+// at the sequence its duplicate verdict named (the listener's publishHeld): that copy whole, for
+// its own sender, whose source and source_session are the request's, a token's session where the
+// request presents one; the key-taken answer, for a request that names ReadsKeyTaken
+// (ReadsHeader); and the envelope the listener built for this request, for any other, which no
+// stored message carries. A copy that names no session is whole only for its own request (the
+// same event_id). A verdict that names this request's own copy, which a resend after a closed
+// connection can, answers that copy with no Duplicate. A copy that cannot be read is the 503 with
+// Retry-After: 1 that the listener writes under its storedCopyUnreadablePrefix, never an envelope
+// the stream does not hold.
 // What recognises that repeat, and for how long, is stated on DELIVERY_DUPLICATE_WINDOW_MS in
 // @legion/contracts (contracts.DeliveryDuplicateWindow in the listener's module). It can only be
 // true for a send whose dedupe key names the upstream event
@@ -178,8 +196,9 @@ type SendResponse struct {
 // (PublishResponse). The message reaches the session that holds the role then, live, through the
 // lane's walk. It carries no recipient_state and no state: the message was not stored for the
 // target, so nothing about the target was read. The envelope is the copy the lane holds, as
-// PublishResponse's kept answer gives it: whole for its own sender, and its ids, times and
-// expects_reply alone with Duplicate for a copy another sender kept under the same key.
+// PublishResponse's kept answer gives it: whole for its own sender, and, with Duplicate, the
+// key-taken answer or the envelope built for the request for a copy another sender kept under the
+// same key (SendResponse).
 type KeptSendResponse struct {
 	Envelope
 	// ExpectsReply is this answer's expects_reply: the kept copy's, written in the dialect the
@@ -253,8 +272,8 @@ type PublishResponse struct {
 	Recipients          *int `json:"recipients,omitempty"`
 	RecipientsConnected *int `json:"recipients_connected,omitempty"`
 	// Duplicate reports that the stream already held another request's copy of this message,
-	// under this one's message id, so it stored nothing new and the envelope is the copy it holds
-	// (the listener's publishHeld), as a send's Duplicate reports it (SendResponse). Only a
+	// under this one's message id, so it stored nothing new and the envelope comes from the copy it
+	// holds (the listener's publishHeld) as a send's does (SendResponse). Only a
 	// publish whose dedupe key names its event gets a message id
 	// (contracts.DedupeKeyNamesTheUpstreamEvent in the listener's module), so only such a repeat
 	// gets it: the shared transport's, under the idempotency_key it mints once per message, among

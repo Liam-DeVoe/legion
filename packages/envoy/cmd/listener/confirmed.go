@@ -198,7 +198,9 @@ type roleSend struct {
 
 // settle counts and logs the send's outcome, the one delivery line a send writes, once its answer
 // is written. It counts and logs as delivery_status the label the role lane gives the same outcome,
-// and logs the outcome itself as reason.
+// and logs the outcome itself as reason. Its event_id is the copy the stream or the kept lane held
+// where the send answered one (requestRecord.held), as the request's own line names it, whatever
+// the answer carries.
 func (s *roleSend) settle(outcome sendOutcome) {
 	s.d.delivery.messagesDelivered.Inc([2]string{"delivery_status", outcome.deliveryStatus()})
 	level := slog.LevelWarn
@@ -206,7 +208,11 @@ func (s *roleSend) settle(outcome sendOutcome) {
 	case sendDelivered, sendSkipped, sendDedupe, sendUnclaimed, sendKept:
 		level = slog.LevelInfo
 	}
-	s.d.delivery.logger.DeliveryLog(level, "listener publish role send", s.holder, s.item.Topic, s.item.EventID, outcome.deliveryStatus(),
+	eventID := s.item.EventID
+	if s.record.held != "" {
+		eventID = s.record.held
+	}
+	s.d.delivery.logger.DeliveryLog(level, "listener publish role send", s.holder, s.item.Topic, eventID, outcome.deliveryStatus(),
 		slog.String("reason", string(outcome)),
 		slog.String("dedupe_key", s.item.DedupeKey),
 		slog.Int("attempts", s.attempts),
@@ -222,10 +228,10 @@ func (s *roleSend) delivered(outcome sendOutcome) {
 }
 
 // deliveredHeld answers a forward the stream already held on recipient's agent subject, as
-// delivered does: 200 with the forward the stream holds at seq, read back (storedCopy) with the
-// forward mark taken off its dedupe key, so the answer, the request's record line and the delivery
-// line name the copy the stream holds and not the envelope this send built; whole for its own
-// sender, and its ids, times and expects_reply alone for anyone else (requestSender.answer).
+// delivered does: 200 with the answer of the forward the stream holds at seq, read back
+// (storedCopy) with the forward mark taken off its dedupe key, so the request's record line and
+// the delivery line name the copy the stream holds; the forward whole for its own sender, and for
+// anyone else the key-taken answer or the envelope this send built (requestSender.answer).
 // recipient is the holder this send forwards to, or, for an echo's repeat, the earlier holder the
 // route stored this key's forward for (settledBeforeForward); the answer still names the holder
 // this send resolved. duplicate is whether the copy is another request's, which is when its
@@ -304,13 +310,12 @@ func (s *roleSend) noHolder(result roles.Resolution) {
 // exactly one delivery line.
 //
 // A repeat of a dedupe key whose copy is still on the lane inside its hour stored nothing new
-// (storeKeptRoleCopy), so the answer is that first copy's envelope and event id, and the request's
-// record line and the send's delivery line name it too: the send's envelope becomes the copy's,
-// whole for its own sender and its ids, times and expects_reply alone for anyone else
-// (requestSender.answer). Such a repeat is forgiven: it costs its sender nothing, though
-// noHolder's wake report marked its charge, unless an earlier forward of the same send failed with
-// no refusal, which may have stored the message for the holder it went to and marked the charge so
-// (sendToRole).
+// (storeKeptRoleCopy), so the answer comes from that first copy, and the request's record line
+// and the send's delivery line name its event id: the copy whole for its own sender, and for
+// anyone else the key-taken answer or the envelope this send built (requestSender.answer). Such a
+// repeat is forgiven: it costs its sender nothing, though noHolder's wake report marked its
+// charge, unless an earlier forward of the same send failed with no refusal, which may have stored
+// the message for the holder it went to and marked the charge so (sendToRole).
 //
 // 202 rather than 200, so a sender tells the three answers of a role send apart by status alone:
 // 200, the message is with a live holder; 202, no live session holds the role and the message
@@ -322,7 +327,7 @@ func (s *roleSend) kept(result roles.Resolution, kept keptRoleCopy) {
 	}
 	// The kept copy is another request's when its event_id is not this send's, whether the keep
 	// read it as a repeat or answered its own resend or in-process refusal with it, which the 202
-	// says with duplicate as a 200 does (deliveredHeld), and which tells a client the shorter
+	// says with duplicate as a 200 does (deliveredHeld), and which tells a client the key-taken
 	// answer another sender gets (requestSender.answer) from a whole one.
 	duplicate := s.record.answerStored(&s.item, kept.item, s.sender)
 	s.holder = result.Holder

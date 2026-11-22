@@ -97,14 +97,15 @@ func roleMarkRefusal(r *http.Request, dispatchPrincipal string) string {
 // does (roleSend.noHolder): a role released with its pod is brought back only by the wake, and the
 // daemons decide what a wake of a role whose holder is live means. It answers the 202
 // listenerwire.KeptSendResponse with the copy the lane holds, which the record's line names too,
-// as the publish route's kept answer does (roleSend.kept): whole for its own sender and its ids
-// and times alone for anyone else (requestSender.answer), with duplicate where it is another
-// request's copy, and its expects_reply the copy's (expectsReplyAnswer). The wake costs the sender
-// one, and so does a copy the keep stored; one the lane already held inside its hour costs nothing
-// (senderCharge). A keep that stored nothing is the bus-unavailable 503, which the sender retries
-// under the same key, and the lane stores that message once (bus.KeptMsgID); a keep whose publish
-// went unacknowledged may have stored the copy, so its 503 says so (writeBusUnavailable,
-// listenerwire.CodeMaybeStored) and it costs the sender as a stored one.
+// as the publish route's kept answer does (roleSend.kept): whole for its own sender, and for
+// anyone else the key-taken answer or the envelope this send built (requestSender.answer), with
+// duplicate where it is another request's copy, and its expects_reply the answered envelope's
+// (expectsReplyAnswer). The wake costs the sender one, and so does a copy the keep stored; one the
+// lane already held inside its hour costs nothing (senderCharge). A keep that stored nothing is
+// the bus-unavailable 503, which the sender retries under the same key, and the lane stores that
+// message once (bus.KeptMsgID); a keep whose publish went unacknowledged may have stored the copy,
+// so its 503 says so (writeBusUnavailable, listenerwire.CodeMaybeStored) and it costs the sender
+// as a stored one.
 func keepRoleSend(w http.ResponseWriter, d *listenerDeps, record *requestRecord, charge *senderCharge, item *contracts.Envelope, sender requestSender, target, holder string, expectsReply json.RawMessage) {
 	reportRoleWake(d, d.delivery.logger, item.Role)
 	charge.woke()
