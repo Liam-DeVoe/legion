@@ -184,17 +184,29 @@ func (r Record) abandon(candidate string, until time.Time) Record {
 	return r
 }
 
-// dropRetired is r with each retired name gone reports removed from Retired and Abandoned.
-func (r Record) dropRetired(gone func(name string) bool) Record {
-	r.Retired = slices.DeleteFunc(slices.Clone(r.Retired), gone)
+// DropRetired is r with name, one of its retired names, dropped from Retired and Abandoned
+// together: the one rule Names.Cleanup drops a retired name by, for a reader that deletes retired
+// names itself (the operator's cleanup), so the record it writes stays one the stores read (each
+// abandoned name is also retired). deleted says the caller deleted the consumer, else it read the
+// name absent. An abandoned candidate read absent while now is before its until (Abandoned.Until)
+// can still land, and the consumer it makes must stay named, so it is kept: the answer is then r
+// as it was and false, as it is for a name r does not retire. r itself is never changed.
+func (r Record) DropRetired(name string, deleted bool, now time.Time) (Record, bool) {
+	if !slices.Contains(r.Retired, name) {
+		return r, false
+	}
+	if until, ok := r.abandonedUntil(name); ok && !deleted && now.Before(until) {
+		return r, false
+	}
+	r.Retired = slices.DeleteFunc(slices.Clone(r.Retired), func(retired string) bool { return retired == name })
 	if len(r.Retired) == 0 {
 		r.Retired = nil
 	}
-	r.Abandoned = slices.DeleteFunc(slices.Clone(r.Abandoned), func(a Abandoned) bool { return gone(a.Name) })
+	r.Abandoned = slices.DeleteFunc(slices.Clone(r.Abandoned), func(a Abandoned) bool { return a.Name == name })
 	if len(r.Abandoned) == 0 {
 		r.Abandoned = nil
 	}
-	return r
+	return r, true
 }
 
 // abandonedUntil is the time until which r's retired name can still land, and false for a name

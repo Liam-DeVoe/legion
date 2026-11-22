@@ -722,7 +722,7 @@ func (n *Names) publish(ctx context.Context, sel Selection, info *jetstream.Cons
 	if !slices.Contains(next.Record.Retired, old) {
 		return next, nil
 	}
-	kept := next.Record.clone().dropRetired(func(name string) bool { return name == old })
+	kept, _ := next.Record.DropRetired(old, true, n.cfg.Now())
 	if dropped, err := n.write(ctx, next, kept); err == nil {
 		dropped.Info, dropped.Created = next.Info, next.Created
 		next = dropped
@@ -846,13 +846,15 @@ func (n *Names) Cleanup(ctx context.Context, logical string) (int, error) {
 	if err != nil || len(sel.Record.Retired) == 0 {
 		return 0, err
 	}
-	deleted := 0
-	gone := map[string]bool{}
+	deleted, dropped := 0, false
+	now := n.cfg.Now()
+	record := sel.Record.clone()
 	for _, name := range sel.Record.Retired {
 		if name == sel.Record.Current {
 			continue
 		}
 		_, err := n.info(ctx, logical, name)
+		var gone bool
 		switch {
 		case err == nil:
 			if err := n.cfg.Server.Delete(ctx, name); err != nil {
@@ -861,22 +863,18 @@ func (n *Names) Cleanup(ctx context.Context, logical string) (int, error) {
 			}
 			deleted++
 			n.observe(OperationCleanup, OutcomeOK)
+			record, gone = record.DropRetired(name, true, now)
 		case errors.Is(err, ErrMalformedRecord):
 			n.observe(OperationCleanup, OutcomeRefused)
 			return deleted, err
-		case !errors.Is(err, ErrNotFound):
-			continue
-		default:
-			if until, ok := sel.Record.abandonedUntil(name); ok && n.cfg.Now().Before(until) {
-				continue
-			}
+		case errors.Is(err, ErrNotFound):
+			record, gone = record.DropRetired(name, false, now)
 		}
-		gone[name] = true
+		dropped = dropped || gone
 	}
-	if len(gone) == 0 {
+	if !dropped {
 		return deleted, nil
 	}
-	record := sel.Record.clone().dropRetired(func(name string) bool { return gone[name] })
 	if _, err := n.write(ctx, sel, record); err != nil && !errors.Is(err, ErrConflict) {
 		return deleted, err
 	}

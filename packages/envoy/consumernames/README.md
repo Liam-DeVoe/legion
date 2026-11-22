@@ -60,7 +60,11 @@ revision:
   calls' 10 s. A retirement comes after the reservation, so its `until` is no earlier than the
   create's end. A create the server
   applies later still, past the bound its client waited, is a stated limit: the consumer it leaves
-  is named by no record, and the stream's inactive threshold removes it.
+  is named by no record, and the stream's inactive threshold removes it. A reader that deletes
+  retired names itself (the operator's cleanup) drops each with `Record.DropRetired(name, deleted,
+  now)`, the rule `Cleanup` drops by: it takes the name out of `retired` and `abandoned` together,
+  so the record stays one the stores read, and keeps an abandoned name read absent before its
+  `until`.
 - **Where records live, and their keys.** A store reads and writes only its own family's
   sentinel and records:
   - The session family keeps its records in the KV bucket `envoy_session_consumers`
