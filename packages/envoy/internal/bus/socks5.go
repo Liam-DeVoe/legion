@@ -149,5 +149,5 @@ func socks5Proxy(lookup func(string) (string, bool)) (*socks5Dialer, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", SOCKS5ProxyEnvVar, err)
 	}
-	return &socks5Dialer{address: address, proxy: dialer.(proxy.ContextDialer), timeout: connectTimeout, lastErr: new(atomic.Pointer[error])}, nil
+	return &socks5Dialer{address: address, proxy: dialer.(proxy.ContextDialer), timeout: ConnectTimeout, lastErr: new(atomic.Pointer[error])}, nil
 }

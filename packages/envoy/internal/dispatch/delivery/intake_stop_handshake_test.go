@@ -177,6 +177,17 @@ func watchHandBacks(t *testing.T, uri string) func() int64 {
 	}
 }
 
+// publishBegins has delivery close the channel it returns the first time a hand-back of it reaches
+// its publish, the rule having let it through (beforeHandBackPublish, publishHandBack). A row sets
+// it before the hand-back it waits for is taken.
+func publishBegins(delivery *intakeDelivery) <-chan struct{} {
+	begun := make(chan struct{})
+	var once sync.Once
+	hook := func() { once.Do(func() { close(begun) }) }
+	delivery.beforeHandBackPublish.Store(&hook)
+	return begun
+}
+
 // startGivenUpRow starts a row whose handler does what Intake.deliver does with a message whose
 // handling the stop gave up -- it waits for the give-up and hands the message back (handBack) --
 // and publishes two messages of one pull request, so the first is in its handler and the second
@@ -630,6 +641,8 @@ func TestAHandBackOutsideAStopReachesTheServerWhileAWriteHoldsTheLock(t *testing
 		<-writeHeld
 		delivery.handBack(message.msg)
 	}, true)
+	delivery := row.delivery()
+	publishing := publishBegins(delivery)
 	nakCount := watchHandBacks(t, row.uri)
 	publishPullRequestEnvelope(t, row.client, "acme", "widgets", 7, map[string]string{
 		"kind": "pr", "action": "opened", "repo": "acme/widgets", "number": "7", "author": "octocat",
@@ -641,10 +654,11 @@ func TestAHandBackOutsideAStopReachesTheServerWhileAWriteHoldsTheLock(t *testing
 	}
 	releaseWrite := row.hold.HoldWriteLock(t, row.conn)
 	close(writeHeld)
-	delivery := row.delivery()
-	waitFor(t, 30*time.Second, func() bool { return delivery.handedBack() }, func() string {
-		return "the hand-back was withheld while a write held nats.go's lock: a connected read outside any stop blocked it"
-	})
+	select {
+	case <-publishing:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the hand-back was withheld while a write held nats.go's lock: a connected read outside any stop blocked it")
+	}
 	testnats.RequireLockHeld(t, row.conn)
 	releaseWrite()
 	select {
@@ -745,13 +759,16 @@ func TestACallNATSThatOutlivesItsWaitStillCompletesItsBookkeeping(t *testing.T) 
 	// Registered after startStopRow, so the wait is restored before the row's teardown runs.
 	saved := callNATSWait.Swap(0)
 	t.Cleanup(func() { callNATSWait.Store(saved) })
+	delivery := row.delivery()
+	publishing := publishBegins(delivery)
 	publishPullRequestEnvelope(t, row.client, "acme", "widgets", 7, map[string]string{
 		"kind": "pr", "action": "opened", "repo": "acme/widgets", "number": "7", "author": "octocat",
 	})
-	delivery := row.delivery()
-	waitFor(t, 30*time.Second, func() bool { return delivery.handedBack() }, func() string {
-		return "the hand-back was never published"
-	})
+	select {
+	case <-publishing:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the hand-back was never published")
+	}
 	select {
 	case <-delivery.handBacksLanded():
 	case <-time.After(30 * time.Second):

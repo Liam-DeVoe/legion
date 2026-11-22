@@ -218,7 +218,7 @@ func WithSilentCutDetection() DialOption {
 // connections to, so a restart drops its connection too and every client that comes back before
 // it is refused until it returns. So the cap is short: it bounds each wait at 2 s, whatever the
 // outage's length, and a dial follows each wait; that dial, like one already in flight when the
-// hub returns, takes its own time, up to its 5 s timeout when it hangs (connectTimeout). The
+// hub returns, takes its own time, up to its 5 s timeout when it hangs (ConnectTimeout). The
 // backoff is for a hub that refuses the service's own user, as one whose auth_callout does not
 // list it yet does: redialling within 50 ms each time, a replica connected to it 35 times a second
 // for as long as it refused (1,055 times in 30 s against an in-process nats-server 2.15.1); with

@@ -290,7 +290,7 @@ func options(name string, urls []string, reconnectCB func(*nats.Conn), disconnec
 	opts.Servers = urls
 	opts.Name = name
 	opts.NoRandomize = true
-	opts.Timeout = connectTimeout
+	opts.Timeout = ConnectTimeout
 	opts.MaxReconnect = -1
 	// A publish while reconnecting waits for the reconnect (ensureConnWithContext), so the wait
 	// between attempts is how long it waits after NATS is back.
@@ -391,10 +391,14 @@ func options(name string, urls []string, reconnectCB func(*nats.Conn), disconnec
 	return opts
 }
 
-// connectTimeout bounds each dial of a NATS server and its handshake: nats.go's own for a direct
-// dial (options), the bus's SOCKS5 dialer's for one through a proxy (socks5Proxy). A connect with a
-// deadline cuts either to what remains of it.
-const connectTimeout = 5 * time.Second
+// ConnectTimeout bounds each dial of a NATS server and its handshake: nats.go's own for a direct
+// dial (options, nats.Options.Timeout), the bus's SOCKS5 dialer's for one through a proxy
+// (socks5Proxy). A connect with a deadline cuts either to what remains of it. nats.go v1.55.0
+// holds a connection's lock through each reconnect attempt, from its dial to the end of its
+// handshake, and bounds each of the two by this timeout (doReconnect, createConn,
+// processConnectInit), so a caller that waits for that lock, as Client.Close does, can wait up to
+// twice this behind one attempt (internal/dispatch/delivery's intakeFinalizerConfirmWait).
+const ConnectTimeout = 5 * time.Second
 
 func connect(name string, urls []string, settings nats.Option, dialer *socks5Dialer, reconnectCB func(*nats.Conn), disconnectedCB func(), closedCB func(), asyncErrCB func(*nats.Conn, error), now func() time.Time) (*nats.Conn, error) {
 	return connectWithContext(context.Background(), name, urls, settings, dialer, reconnectCB, disconnectedCB, closedCB, asyncErrCB, now)

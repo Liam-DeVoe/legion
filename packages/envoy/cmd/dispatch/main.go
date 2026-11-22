@@ -1081,10 +1081,12 @@ func main() {
 		// architecture importer the ticker and the routes share, which imports the enabled sources
 		// on that repository and branch at once; a push it hands over once the importer's Close
 		// has begun starts nothing (architecture.Importer.Pushed). Each intake's client writes with
-		// a 5 s deadline (delivery.IntakeWriteDeadline), so a frozen link holds its Close, and the
-		// standby's take-over after it, no longer than that; no other client of the server takes
-		// it, since the publisher and the agent stream relay publish payloads a slow link can take
-		// longer than that to accept.
+		// a 5 s deadline (delivery.IntakeWriteDeadline), so a frozen write holds its Close no longer
+		// than that; a reconnect attempt through a frozen link can hold the Close longer, and the
+		// bounds on the Close and the standby's take-over after it are worked out on delivery's
+		// intakeFinalizerConfirmWait. No other client of the server takes that deadline, since the
+		// publisher and the agent stream relay publish payloads a slow link can take longer than that
+		// to accept.
 		connectIntake := func(name string) (*bus.Client, error) {
 			return bus.Connect(envoyConfig.Envoy.NatsURLs, serverClient(bus.WithEnvironment(env.lookup), bus.WithName(name),
 				bus.WithWriteDeadline(delivery.IntakeWriteDeadline))...)

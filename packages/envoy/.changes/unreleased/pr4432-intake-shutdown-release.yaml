@@ -11,8 +11,14 @@ body: |-
   socket could then reach the durable that the standby had created again, and that message was
   delivered a second time. A hand-back that an intake makes while it runs is confirmed by a flush
   as soon as its publish ends, so a reconnect does not make a later stop leave the hold to lapse.
-  Each intake's NATS client now gives a write 5 s, not nats.go's default of a minute, so a frozen
-  link holds the close of the client for at most 5 s, and the standby takes the durable over at
-  most 22 s after the close began, not up to 77 s.
+  A hand-back that NATS refuses before it sends a byte, as it refuses every publish while the
+  connection reconnects, is not counted, so a clean stop after it releases the hold at once.
+  Each intake's NATS client now gives a write 5 s, not nats.go's default of a minute. The close of
+  the client waits for the connection's lock: at most 5 s behind a frozen write, and at most 10 s
+  behind a reconnect attempt through a frozen link, whose dial and handshake take up to 5 s each.
+  So the standby takes the durable over at most 27 s after the close began, not up to 77 s. An
+  intake's stop that waits out its 5 s for the flush and then releases the hold ends by 26 s after
+  the signal when the close does not wait. A close that waits its full 10 s can reach the 30 s kill,
+  which cuts the release short; the hold then lapses, and the 27 s bound still holds.
 custom:
   Issue: pr4432
