@@ -473,7 +473,7 @@ var levelOneKinds = map[string]specgraph.Kind{
 }
 
 // levelOneStatement is one requirement block of the level document: its id and its text.
-var levelOneStatement = regexp.MustCompile(`(?m)^:::requirement\{#([a-z0-9-]+)\}\n((?s:.*?))\n:::$`)
+var levelOneStatement = regexp.MustCompile(`(?m)^:::requirement\{#([-0-9a-z]+)\}\n((?s:.*?))\n:::$`)
 
 // levelOneNote is what the notes give one statement.
 type levelOneNote struct {
