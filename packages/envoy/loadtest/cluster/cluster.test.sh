@@ -176,7 +176,10 @@
 # giving no exit status, so a whole step command whose runner pod stops answering exec ends
 # non-zero within that bound and its heartbeat renews the lock no more, while a TERM that lands
 # between the disk watcher's failed act and its next nap leaves it without a second act, and one
-# that lands inside the watcher's read of the volume leaves it without acting at all.
+# that lands inside the watcher's read of the volume leaves it without acting at all; (ff) up
+# waits for each daemon it starts until that daemon writes its pidfile, however many naps a
+# loaded machine holds the daemon's start for, and start_daemon ends non-zero, naming the
+# daemon's end, once a daemon has ended without writing it.
 set -euo pipefail
 
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
@@ -984,10 +987,34 @@ EOF
 # The jq stand-in: every jq call of cluster.sh and of the fakes, its arguments recorded in
 # jq-argv.log, one call a line, then the real jq. An argument is what every user of the pod reads
 # (/proc/<pid>/cmdline), so no_credential_in_args reads this log as it reads kubectl.log.
+#
+# FAKE_DAEMON_START_NAPS=N holds a daemon's start, as a loaded machine does: the first jq call of a
+# `cluster.sh _heartbeat` or `_sampler` on its run's state.json, which use_run makes before the
+# daemon writes its pidfile, waits until N more fast naps of 0.1 s (FAKE_FAST_SLEEP=0.1, each a
+# line of sleep.log) have been taken, by the command that started it, as start_daemon naps while
+# it waits. Each held start is a line "NAME RUN_DIR" in daemon-start-holds. The wait is in real
+# 0.01 s naps, and it ends too once FAKE_DIR is gone.
 real_jq=$(PATH=$real_path command -v jq)
 cat >"$bin/jq" <<EOF
 #!/usr/bin/env bash
 [ -z "\${FAKE_DIR:-}" ] || [ ! -d "\$FAKE_DIR" ] || printf '%s\n' "\$*" >>"\$FAKE_DIR/jq-argv.log"
+if [ -n "\${FAKE_DAEMON_START_NAPS:-}" ] && [[ \${!#} == */state.json ]]; then
+  case \$(tr '\0' ' ' <"/proc/\$PPID/cmdline" 2>/dev/null) in
+    *" _heartbeat --namespace "*) held=heartbeat ;;
+    *" _sampler --namespace "*) held=sampler ;;
+    *) held="" ;;
+  esac
+  run_dir=\${!#}
+  run_dir=\${run_dir%/state.json}
+  if [ -n "\$held" ] && [ ! -e "\$run_dir/\$held.pid" ] && ! grep -qxF -- "\$held \$run_dir" "\$FAKE_DIR/daemon-start-holds" 2>/dev/null; then
+    printf '%s %s\n' "\$held" "\$run_dir" >>"\$FAKE_DIR/daemon-start-holds"
+    naps() { grep -cxF 0.1 "\$FAKE_DIR/sleep.log" 2>/dev/null || true; }
+    from=\$(naps)
+    until n=\$(naps); [ "\${n:-0}" -ge \$((\${from:-0} + FAKE_DAEMON_START_NAPS)) ] || [ ! -d "\$FAKE_DIR" ]; do
+      $real_sleep 0.01
+    done
+  fi
+fi
 exec $real_jq "\$@"
 EOF
 chmod +x "$bin"/*
@@ -1001,7 +1028,7 @@ unset FAKE_EXEC_FAIL FAKE_SAMPLE FAKE_PROD_MAJOR FAKE_LOADGEN_FAIL FAKE_APPLY_FA
   FAKE_PG_DF_SEQ FAKE_PG_DF_DELAY FAKE_RC_UNTIL_STOP FAKE_RC_UNTIL_KILL FAKE_HEAP_COPY_FAIL FAKE_HEAP_EXISTS_FAIL FAKE_HEAP_KEEP_REMOVE_FAIL \
   FAKE_LOCK_GET_FAIL FAKE_LOCK_GET_FAIL_TIMES FAKE_LOCK_GET_OK_TIMES FAKE_LOCK_GET_DELAY \
   FAKE_RUNNER_EXEC_FAIL FAKE_RUNNER_EXEC_FAIL_AT_STOP FAKE_RUNNER_EXEC_FAIL_AT_KILL FAKE_SLEEP_GATE \
-  FAKE_IDENTITY_ANSWER FAKE_LISTENER_NO_PRINCIPAL FAKE_MINT_TOKEN FAKE_LOADGEN_NO_MINT
+  FAKE_IDENTITY_ANSWER FAKE_LISTENER_NO_PRINCIPAL FAKE_MINT_TOKEN FAKE_LOADGEN_NO_MINT FAKE_DAEMON_START_NAPS
 export DISPATCH_URL=http://dispatch.invalid DISPATCH_TOKEN_FILE=$fake/token
 # The manifest names no issue: the operator does, and replay-prepare refuses without it.
 export LOADTEST_REPLAY_ISSUE=INFRA-639
@@ -1123,6 +1150,24 @@ reset_fake() {
 run_cluster() {
   set +e
   bash "$cluster" "$@" >"$tmp/out" 2>&1
+  RC=$?
+  set -e
+}
+
+# run_cluster_fake_clock ARGS: run_cluster ARGS with cluster.sh's now() on a fake clock:
+# FAKE_DIR/clock, which starts at clock_start and moves only by the fake sleep's waits. A bound the
+# command reads by now() then costs a test no real second, and a time it measures from now() is
+# the one the test set up, however long a loaded machine takes to run the command.
+readonly clock_start=1800000000
+cat >"$tmp/cluster-fake-clock.sh" <<EOF
+source "$cluster"
+now() { printf %s "\$(<"\$FAKE_DIR/clock")"; }
+main "\$@"
+EOF
+run_cluster_fake_clock() {
+  printf '%s\n' "$clock_start" >"$fake/clock"
+  set +e
+  bash "$tmp/cluster-fake-clock.sh" "$@" >"$tmp/out" 2>&1
   RC=$?
   set -e
 }
@@ -1361,11 +1406,15 @@ write_lock() {
 readonly other_run=lt-20261028t080000-beef
 
 reset_fake
-write_lock "$other_run" "$(date -u -d '-120 seconds' +%Y-%m-%dT%H:%M:%SZ)"
-run_cluster up "${up_args[@]}" --dispatch-commit "$commit_ok"
+# Own the clock: up reads the heartbeat's age by now(), here the fake clock at clock_start, and the
+# heartbeat was written 120 s before clock_start, so the age up reports is exactly 120 s however
+# long a loaded machine takes between this write and up's read of the lock -- the window the
+# wall-clock form left it (120-159 s) was that read's slack.
+write_lock "$other_run" "$(date -u -d "@$((clock_start - 120))" +%Y-%m-%dT%H:%M:%SZ)"
+run_cluster_fake_clock up "${up_args[@]}" --dispatch-commit "$commit_ok"
 ((RC == 2)) || fail "up while the lock exists exited $RC, not 2"
 grep -q 'holder pod other-worker-3' "$tmp/out" || fail "up's lock refusal does not name the holder"
-grep -qE 'last heartbeat [^ ]+, 1[2-5][0-9] s ago' "$tmp/out" || fail "up's lock refusal does not give the heartbeat's age"
+grep -qE 'last heartbeat [^ ]+, 120 s ago' "$tmp/out" || fail "up's lock refusal does not give the heartbeat's age"
 ! grep -q stale "$tmp/out" || fail "up called a 2-minute-old heartbeat stale"
 no_create || fail "up created something while the lock existed"
 [ -z "$(find "$LOADTEST_CLUSTER_ROOT" -maxdepth 1 -name '.checker.*' 2>/dev/null)" ] || fail "up left the checker's scratch directory after the lock refused it"
@@ -2286,25 +2335,10 @@ run_cluster down --namespace "$ns"
 ((RC == 0)) || fail "down after the up with a starting listener exited $RC"
 pass "up sends Dispatch's role-marked send again 3 s after a starting listener's 503, and goes on once it is taken"
 
-# The identity check's rows on a fake clock: cluster.sh's now() reads FAKE_DIR/clock, which starts
-# at clock_start and moves only by the fake sleep's waits, so the check keeps its real 120 s bound
-# (deadline clock_start + 120), costs no real second, and is judged by counts alone.
-# run_cluster_fake_clock ARGS: run_cluster ARGS so. identity_sends_span_the_bound WHAT: the
-# check's sends were 41, at clock_start and after each of 40 waits of 3 s, and none came after
-# its deadline.
-readonly clock_start=1800000000
-cat >"$tmp/cluster-fake-clock.sh" <<EOF
-source "$cluster"
-now() { printf %s "\$(<"\$FAKE_DIR/clock")"; }
-main "\$@"
-EOF
-run_cluster_fake_clock() {
-  printf '%s\n' "$clock_start" >"$fake/clock"
-  set +e
-  bash "$tmp/cluster-fake-clock.sh" "$@" >"$tmp/out" 2>&1
-  RC=$?
-  set -e
-}
+# The identity check's rows on the fake clock (run_cluster_fake_clock): the check keeps its real
+# 120 s bound (deadline clock_start + 120), costs no real second, and is judged by counts alone.
+# identity_sends_span_the_bound WHAT: the check's sends were 41, at clock_start and after each of
+# 40 waits of 3 s, and none came after its deadline.
 identity_sends_span_the_bound() {
   local late probes
   late=$(awk -v d=$((clock_start + 120)) '$1 > d' "$fake/identity-probe-times" 2>/dev/null | tr '\n' ' ')
@@ -3677,8 +3711,8 @@ pass "with the lock naming another run, runner_stop, runner_step_remove and typi
 
 # (z) The daemons' lock read. cmd__heartbeat and cmd__sampler come through use_run any-run,
 # which reads no lock when --run names their run, as the daemons' own --run does; only after
-# that do they write the pidfile that start_daemon waits about 5 s for. So a refused API server
-# connection, or a round trip longer than that wait, would kill both daemons and the command
+# that do they write the pidfile that start_daemon waits for. So a refused API server
+# connection would kill both daemons and the command
 # that started them -- up right after it took the lock, every later command at ensure_daemons --
 # although the parent read the lock already and the heartbeat's own loop was built to outlive
 # exactly these errors (its patch tests the lock's run id, and a lock that names another run
@@ -4372,3 +4406,59 @@ rm -f -- "$unreach_fail"
 run_cluster down --namespace "$ns"
 ((RC == 0)) || fail "down exited $RC: $(cat "$tmp/out")"
 pass "a runner pod that stops answering exec bounds the wait past its deadline, after its TERM, after the SIGKILL it could not send and after the SIGKILL the pod took before it went, each end naming the runner pod and giving no exit status, so the step command ends and its heartbeat stops renewing the lock, while a TERM between the disk watcher's failed act and its next nap leaves it without a second act, and one inside its read of the volume leaves it without acting at all"
+
+# (ff) A daemon's start that a loaded machine holds. start_daemon gave a daemon 50 naps of 0.1 s to
+# write its pidfile and then refused, "the heartbeat daemon did not start", though the daemon was
+# still starting: on a loaded machine the heartbeat's start took longer than that, and the case
+# whose up it was failed for it. Here each of start_daemon's naps is a fast one that sleep.log
+# counts (FAKE_FAST_SLEEP=0.1), and the fake jq holds each daemon before its pidfile until
+# start_daemon has napped FAKE_DAEMON_START_NAPS more times, so a wait that counts its naps refuses
+# the daemon at any count below that, however fast or slow the machine is, and one that waits for
+# the pidfile takes it. A daemon that ends without writing its pidfile -- here one whose run has no
+# state.json, which use_run refuses -- ends that wait, which then names the daemon's end; the guard
+# makes a wait that outlives its daemon this case's failure rather than the suite's hang.
+reset_fake
+export LOADTEST_CLUSTER_ROOT=$tmp/root-slowstart
+rm -f -- "$fake/daemon-start-holds"
+readonly start_naps=100
+# Gated as in (o), and never opened: down below stops both daemons, and until then they stay in
+# their first period.
+FAKE_FAST_SLEEP=0.1 FAKE_DAEMON_START_NAPS=$start_naps FAKE_SLEEP_GATE=$fake/root-slowstart.gate \
+  run_cluster up "${up_args[@]}" --dispatch-commit "$commit_ok"
+((RC == 0)) ||
+  fail "up gave up on a daemon whose start was held for $start_naps of start_daemon's naps, though it was still starting: $(cat "$tmp/out")"
+slow_dir=$LOADTEST_CLUSTER_ROOT/$(jq -r .data.run "$fake/lock.json")
+for daemon in heartbeat sampler; do
+  grep -qxF -- "$daemon $slow_dir" "$fake/daemon-start-holds" 2>/dev/null ||
+    fail "the fake jq held no start of the $daemon daemon of $slow_dir, so this case proved nothing of up's wait for it: $(cat "$fake/daemon-start-holds" 2>/dev/null)"
+  kill -0 "$(cat -- "$slow_dir/$daemon.pid" 2>/dev/null)" 2>/dev/null ||
+    fail "the $daemon daemon up waited for is not running: $(cat "$slow_dir/logs/$daemon.log" 2>/dev/null)"
+done
+start_naps_taken=$(grep -cxF 0.1 "$fake/sleep.log" || true)
+((start_naps_taken >= 2 * start_naps)) ||
+  fail "start_daemon napped $start_naps_taken times for two starts each held for $start_naps of its naps: the holds did not hold"
+run_cluster down --namespace "$ns"
+((RC == 0)) || fail "down exited $RC: $(cat "$tmp/out")"
+# The daemon that ends first.
+readonly dead_run=lt-20261122t000000-dead
+mkdir -p "$LOADTEST_CLUSTER_ROOT/$dead_run/logs"
+(
+  # shellcheck source=packages/envoy/loadtest/cluster/cluster.sh
+  source "$cluster"
+  NS=$ns
+  set_run "$dead_run"
+  start_daemon heartbeat
+) 2>"$tmp/dead-start.err" &
+dead_start=$!
+stop_watchdog 60 "$dead_start"
+dead_rc=0
+wait "$dead_start" || dead_rc=$?
+stop_watchdog_end
+[ ! -f "$fake/stop-late" ] ||
+  fail "start_daemon still waited 60 s after its daemon had ended without writing its pidfile: $(cat "$tmp/dead-start.err")"
+((dead_rc != 0)) || fail "start_daemon returned 0 for a daemon that ended without writing its pidfile"
+grep -qF "the heartbeat daemon ended before this command saw its pidfile name it running" "$tmp/dead-start.err" ||
+  fail "start_daemon's refusal of a daemon that ended does not name its end: $(cat "$tmp/dead-start.err")"
+grep -qF "no $LOADTEST_CLUSTER_ROOT/$dead_run/state.json" "$LOADTEST_CLUSTER_ROOT/$dead_run/logs/heartbeat.log" ||
+  fail "the daemon did not end where this case ends it, at use_run's refusal of a run with no state.json: $(cat "$LOADTEST_CLUSTER_ROOT/$dead_run/logs/heartbeat.log")"
+pass "up waits for each daemon until it writes its pidfile, however many naps its start is held for, and start_daemon ends non-zero, naming the daemon's end, once a daemon has ended without writing it"
