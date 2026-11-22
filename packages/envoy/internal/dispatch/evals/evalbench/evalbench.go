@@ -125,7 +125,7 @@ type Counts map[string]int64
 // last five.
 var countedTables = []string{
 	"projects", "issues", "events", "handoffs", "legion_observations", "legion_settings",
-	"repo_projects", "delivery_pull_requests", "delivery_runs", "delivery_run_jobs",
+	"delivery_pull_requests", "delivery_runs", "delivery_run_jobs",
 	"session_titles", "eval_versions", "eval_series", "eval_readings", "eval_days",
 }
 

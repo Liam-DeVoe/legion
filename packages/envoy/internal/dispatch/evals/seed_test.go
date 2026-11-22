@@ -832,7 +832,7 @@ func TestEverySeriesTheDeliveryDaysWriteIsInTheCatalogue(t *testing.T) {
 	written := map[string]map[string]bool{}
 	days, rows := 0, 0
 	for day := fixture.From; day.Before(fixture.To); day = day.AddDate(0, 0, 1) {
-		read, err := r.registry.readDeliveryDay(ctx, settings, []keptRepo{{name: settings.DeployRepo, deploys: true}}, day, nil, nil)
+		read, err := r.registry.readDeliveryDay(ctx, settings, []keptRepo{{name: settings.DeployRepo, deploys: true}}, day, nil)
 		if err != nil {
 			t.Fatalf("read the delivery day %s: %v", day.Format(time.DateOnly), err)
 		}

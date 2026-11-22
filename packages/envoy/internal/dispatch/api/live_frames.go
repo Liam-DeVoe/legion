@@ -319,8 +319,9 @@ type deliveryLiveClasses struct {
 	unownedP0 bool
 	// evalVersions are the evals whose current version the view's answer reads, by slug: the
 	// targets the timeline's and the measures' KPIs and the Pipeline's lead-time cards are judged
-	// by, and pr-ci's min_n the Pipeline ranks its slowest jobs by, each of the project the deploy
-	// repository is mapped to. A new version of one in any project marks the view (touchedBy).
+	// by, and pr-ci's min_n the Pipeline ranks its slowest jobs by, each of the deploy repository's
+	// project. A new version of one in any project marks the view (touchedBy), and so does a
+	// project write (applyEventLocked), which can move which project that is.
 	evalVersions []string
 	// parse reads a subscribed view's own fields into its spec, or refuses it: what the matching
 	// GET route reads of a query, including the key one view of this kind is held under.

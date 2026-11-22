@@ -51,14 +51,17 @@ import (
 //   - the production rule (production_job_names, production_apply_step_name): it decides which run
 //     is a deploy (ProductionApplies), so containment (the three lead times to production, and the
 //     delivery family, whose shipped_by is containment's and whose deploy runs count for the
-//     projects of the pull requests they ship), deploy-frequency and deploy-run-success. The rule
-//     reads its names as a set (Production.Job), so their order alone moves nothing.
+//     projects of the pull requests they ship), deploy-frequency and deploy-run-success. And each
+//     deploy card either settings make, with the CI family: a push run counts for the projects of
+//     the deploy it is (attribution.pushRuns), which containment names, so the rule moves which
+//     projects count each card's rows and members. The rule reads its names as a set
+//     (Production.Job), so their order alone moves nothing.
 //   - each deploy card (production-deploy, staging-e2e and staging-deploy, cardParts): the job
 //     names it counts a run by and its apply step, and whether the settings make it at all. So the
 //     production rule moves production-deploy, a staging job name its card, and a production job
 //     name a staging card follows that card too (a name two cards follow counts for the first).
-//     The push runs the cards read are every push run on main whatever its jobs, so a card moves
-//     no member.
+//     The push runs the cards read are every push run on main whatever its jobs, so a card's own
+//     parts move no member.
 //   - deploy_repo: none. Every read of a day names it (the deploys, the apply runs, the CI runs),
 //     and containment ships its pull requests alone, but the evals those reads build are kept for
 //     every repository that holds a delivery run, each as if it were the deploy repository, and
@@ -69,13 +72,21 @@ import (
 //     read at read time (the Pipeline's failing jobs, pr-ci's items) and by no day row.
 func settingsMoves(prev, next delivery.DeliverySettings) (slugs, families []string) {
 	moved, family := map[string]bool{}, map[string]bool{}
+	before, after := cardParts(prev), cardParts(next)
 	if partOf(prev.ProductionJobNames, prev.ProductionApplyStepName) != partOf(next.ProductionJobNames, next.ProductionApplyStepName) {
 		for _, slug := range slices.Concat(leadTimeSlugs, []string{SlugDeployFrequency, SlugDeployRunSuccess}) {
 			moved[slug] = true
 		}
+		for card, slug := range cardSlugs {
+			_, was := before[card]
+			_, is := after[card]
+			if was || is {
+				moved[slug] = true
+				family[KindCI] = true
+			}
+		}
 		family[KindDelivery] = true
 	}
-	before, after := cardParts(prev), cardParts(next)
 	for card, slug := range cardSlugs {
 		was, held := before[card]
 		now, holds := after[card]
@@ -388,9 +399,9 @@ func (s *Store) readMembers(ctx context.Context, projects, families, deployRepos
 //     deploy run on main of each repository rewritten with its jobs of the names either rule
 //     judges by and each card the change moves follows under either settings
 //     (delivery.ReadHistoryRows), the walk's first input day (deliveryInputStart, over every kept
-//     repository), each project's first days (firstDays), repo_projects and the running build's
-//     record of its walks (readWalks);
-//   - the projects of the issues the pull requests name (readIssueProjects), and beside that read
+//     repository), each project's first days (firstDays) and the running build's record of its
+//     walks (readWalks);
+//   - the projects of the issues the pull requests name (readAttribution), and beside that read
 //     containment over each repository's history as the deploy repository (historyOf): the new
 //     production rule's verdict on each run (ProductionApplies, which judges a run by its own jobs
 //     alone, and by its jobs of the judged names as by every job), each pull request's first
@@ -405,9 +416,9 @@ func (s *Store) readMembers(ctx context.Context, projects, families, deployRepos
 //     part, and every day after one of them that was a moved eval's first input day and holds no
 //     input of it under the new settings (lostFirstDays); or every day, where the rows may not
 //     stand built under prev: no delivery rows are served yet (eval_days_serving), or the delivery
-//     walk is to begin or has days left (a family's first walk, or a mapping's change, begins it),
-//     and a day it has not reached holds rows of the settings or repository mappings before those
-//     its walk began under, which no comparison of prev with the new settings finds;
+//     walk is to begin or has days left (a family's first walk begins it), and a day it has not
+//     reached holds rows of the settings before those its walk began under, which no comparison of
+//     prev with the new settings finds;
 //   - those days in day order a chunk at a time (rewriteDays), each chunk's days built side by
 //     side, each repository's DeliveryDay as readDeliveryDay builds it from those rows and each
 //     project's rows of the day (deliveryRead.Rows); then, in day order, each project's day as the
@@ -485,7 +496,6 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 
 	var history delivery.HistoryRows
 	var input *time.Time
-	var repos repoProjects
 	var walks map[walkKey]walkState
 	firsts := make(map[string]map[evalKey]time.Time, len(r.projects))
 	if err := store.ReadSideBySide(ctx,
@@ -506,10 +516,6 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 				firsts[project] = first
 			}
 			return nil
-		},
-		func(ctx context.Context) (err error) {
-			repos, err = readRepoProjects(ctx, r.store)
-			return err
 		},
 		func(ctx context.Context) (err error) {
 			walks, err = r.store.readWalks(ctx)
@@ -593,10 +599,10 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 		was = make([]containment, len(rewritten))
 	}
 	// Each containment below reads the history and writes its own slot.
-	var issueProjects map[string]string
+	var attribute attribution
 	if err := store.ReadSideBySide(ctx,
 		func(ctx context.Context) (err error) {
-			issueProjects, err = readIssueProjects(ctx, r.store, issueKeys)
+			attribute, err = readAttribution(ctx, r.store, issueKeys, nil)
 			return err
 		},
 		func(ctx context.Context) error {
@@ -625,7 +631,6 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 	); err != nil {
 		return err
 	}
-	attribute := attribution{issues: issueProjects, repos: repos}
 	var days []time.Time
 	if movedOnly {
 		if sameRule {
@@ -655,7 +660,7 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 				_, reached := h.applied[run.RunID]
 				one.deploys = append(one.deploys, attribute.deploy(run, reached, h.shipped[run.RunID]))
 			}
-			one.pushes, one.pushJobs = attribute.ciRuns(h.pushesByDay[day]), h.jobs
+			one.pushes, one.pushJobs = attribute.pushRuns(h.pushesByDay[day], one.deploys), h.jobs
 			read.days[k] = one
 		}
 		rows := make([]ProjectDay, len(r.projects))
@@ -850,10 +855,9 @@ func MarkSettingsRewrite(ctx context.Context, tx pgx.Tx) error {
 //     up to the old first day (zerosFrom, dropUnshipped), days whose inputs did not move. So for
 //     each eval slugs names and each project that can count a row of it, every day from the
 //     earliest moved day up to the day before the eval's stored first day (firsts), where that is
-//     later, or through today, where it has none. A deploy card's rows count for the project of
-//     the repository alone, which its push runs count for; the other evals' for the projects of
-//     the repository's pull requests, which alone it ships, and of the repository, which a
-//     deploy that ships none counts for.
+//     later, or through today, where it has none. Each of those evals' rows, a deploy card's
+//     included, counts for the projects of the repository's pull requests, which alone its
+//     deploys ship and its push runs, those deploys, count for.
 //
 // Every other day builds the rows it holds: its inputs, its evals' first days and what it reads
 // of the settings are what its rows were built from.
@@ -909,8 +913,7 @@ func movedDeliveryDays(histories []repoHistory, was []containment, prs []deliver
 		if span.first.IsZero() {
 			continue
 		}
-		own := attribute.repos.of(h.repo)
-		counted := map[string]bool{own: true}
+		counted := map[string]bool{}
 		for i := range prs {
 			if prs[i].Repo == h.repo {
 				counted[attribute.of(prs[i]).project] = true
@@ -920,9 +923,8 @@ func movedDeliveryDays(histories []repoHistory, was []containment, prs []deliver
 		// through the latest last day of any, reach (the zero time, before every day, where none).
 		var reach time.Time
 		for _, slug := range slugs {
-			_, card := CardOf(slug)
 			for _, project := range projects {
-				if card && project != own || !card && !counted[project] {
+				if !counted[project] {
 					continue
 				}
 				last := today

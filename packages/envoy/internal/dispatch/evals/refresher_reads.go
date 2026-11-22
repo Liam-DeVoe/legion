@@ -93,9 +93,14 @@ func (s *Store) readRefresherEvents(ctx context.Context, after, safe int64, limi
 
 // deliveryItemDays is each pull request and run where its row stands now: the UTC day of the pull
 // request's merge and of the run's start, by primary key, nil for a pull request not merged and
-// for a row no longer stored.
+// for a row no longer stored. With the pull requests come their PR-checks runs, each with its
+// start day: a PR-checks run counts for the project its pull request counts for (attribution), so
+// a change of the pull request moves which project counts each of its runs, whichever day the run
+// started on. They are read through delivery_runs_pull_request (migration 20261117100020), a probe
+// of the index for each pull request.
 func (s *Store) deliveryItemDays(ctx context.Context, prs map[string]pullRequestRef, runs map[string]runRef) ([]deliveryItem, error) {
 	at := map[string]*time.Time{}
+	checks := map[string]bool{}
 	if len(prs) > 0 {
 		members, repos, numbers := []string{}, []string{}, []int32{}
 		for _, member := range slices.Sorted(maps.Keys(prs)) {
@@ -112,6 +117,25 @@ func (s *Store) deliveryItemDays(ctx context.Context, prs map[string]pullRequest
 		}
 		if err := collectDays(rows, at); err != nil {
 			return nil, fmt.Errorf("read the merges of %d changed pull requests: %w", len(members), err)
+		}
+		rows, err = s.database.Pool.Query(ctx, `
+			select run.repo, run.run_id, run.started_at
+			from unnest($1::text[], $2::int[]) as given(repo, number)
+			join delivery_runs run on run.repo = given.repo and run.pr_number = given.number
+			where run.kind = $3 and run.event = 'pull_request'
+		`, repos, numbers, string(delivery.DeliveryRunKindPRChecks))
+		if err != nil {
+			return nil, fmt.Errorf("read the PR-checks runs of %d changed pull requests: %w", len(members), err)
+		}
+		var repo string
+		var id int64
+		var started time.Time
+		if _, err := pgx.ForEachRow(rows, []any{&repo, &id, &started}, func() error {
+			member, day := RunMember(repo, id), measures.Midnight(started)
+			at[member], checks[member] = &day, true
+			return nil
+		}); err != nil {
+			return nil, fmt.Errorf("read the PR-checks runs of %d changed pull requests: %w", len(members), err)
 		}
 	}
 	if len(runs) > 0 {
@@ -131,7 +155,10 @@ func (s *Store) deliveryItemDays(ctx context.Context, prs map[string]pullRequest
 			return nil, fmt.Errorf("read the starts of %d changed runs: %w", len(members), err)
 		}
 	}
-	members := slices.Concat(slices.Collect(maps.Keys(prs)), slices.Collect(maps.Keys(runs)))
+	for member := range runs {
+		delete(checks, member)
+	}
+	members := slices.Concat(slices.Collect(maps.Keys(prs)), slices.Collect(maps.Keys(runs)), slices.Collect(maps.Keys(checks)))
 	slices.Sort(members)
 	items := make([]deliveryItem, len(members))
 	for i, member := range members {

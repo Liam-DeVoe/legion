@@ -2,7 +2,7 @@ import {
   createProject,
   listProjectEvals,
   mintAgentToken,
-  putRepoProject,
+  putProjectDefaultRepository,
   registerEval,
 } from "./api";
 import {
@@ -639,15 +639,15 @@ test("the measures API gives an agent the numbers the panel shows", async ({ bro
 });
 
 // dispatch://INFRA-2916's R5: the measures panel judges a KPI by the target a person sets on the
-// deploy repository's project's eval, and states that target, not a constant of the code. A
-// target written on deploy-frequency moves the card's caption and its verdict, and a null target
-// turns it off.
+// eval of the deploy repository's project, the one whose default repository it is, and states that
+// target, not a constant of the code. A target written on deploy-frequency moves the card's caption
+// and its verdict, and a null target turns it off.
 test("the measures panel judges deploys a day by the target a person set on the eval", async ({
   browser,
 }) => {
   await seedMeasuresFixture();
   await createProject({ key: "TGT", name: "Targets" });
-  await putRepoProject("acme/widgets", { default: true, project: "TGT" });
+  await putProjectDefaultRepository("TGT", "acme/widgets");
   await expect
     .poll(async () => ((await listProjectEvals("TGT"))?.items ?? []).map((item) => item.id), {
       timeout: 60_000,

@@ -189,8 +189,8 @@ type Target struct {
 }
 
 // Targets are the targets a delivery answer judges its measures by: each the target of the eval
-// that states the measure in the project the deploy repository is mapped to, which a person may
-// set (R5), null where that eval's target is off.
+// that states the measure in the deploy repository's project (evals.Store.DeployRepoEvals), which
+// a person may set (R5), null where that eval's target is off.
 type Targets struct {
 	DeploysPerDay              *Target `json:"deploys_per_day"`                // deploy-frequency's
 	ChangeFailureRate          *Target `json:"change_failure_rate"`            // change-fail-rate's

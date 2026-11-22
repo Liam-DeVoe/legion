@@ -457,7 +457,7 @@ func passPage(ctx context.Context, deps Deps, sched schedule, safe int64, now ti
 		observations: read.observations.position,
 		changes:      delivery.ChangeCursor{Seq: read.changes.position, At: read.changes.at, ReadAt: read.changes.readAt},
 	}
-	changed, err := writePass(ctx, deps.Pool, computed, moved, now, self, read.changes.remapped)
+	changed, err := writePass(ctx, deps.Pool, computed, moved, now, self, read.events.redefaulted)
 	if err != nil {
 		return changed, nextPage{}, err
 	}
@@ -531,9 +531,10 @@ func computeProjectWork(ctx context.Context, pool *store.Pool, project string, w
 // writePass writes every project's rows and filings under the build self runs in, deletes the
 // stale rows and filings inside the sets each project's pass stated (a project whose record names
 // a newer build has its stale rows and filings stamped instead, WriteProject and WriteFilings),
-// resolves every stored row's repository again where remapped says the page read a change of a
-// repository's mapping (reresolveRepos), records the projects it computed whole and moves the
-// three cursors, all in one transaction. It answers the keys whose stored rows changed, the
+// resolves again the repository of every stored row of an issue of each of redefaulted, the
+// projects a project.updated event of the page is of (reresolveRepos), records the projects it
+// computed whole and moves the three cursors, all in one transaction. It answers the keys whose
+// stored rows changed, the
 // deleted and stamped keys among them, because a row that went is a change of the stored facts as
 // much as a row that moved. A failure leaves the cursors and the marks where they were, so the
 // next pass reads the same rows again.
@@ -545,7 +546,7 @@ func computeProjectWork(ctx context.Context, pool *store.Pool, project string, w
 // the next drain of any process moves their changes (delivery.DrainPending states the bound). The
 // drain's notification is also the wake of the other process of a roll, whose build the project's
 // record may name (Deps.Deliveries).
-func writePass(ctx context.Context, pool *store.Pool, computed []projectPass, cursors feedCursors, now time.Time, self process, remapped bool) ([]string, error) {
+func writePass(ctx context.Context, pool *store.Pool, computed []projectPass, cursors feedCursors, now time.Time, self process, redefaulted []string) ([]string, error) {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("open the Legion facts' write: %w", err)
@@ -564,8 +565,8 @@ func writePass(ctx context.Context, pool *store.Pool, computed []projectPass, cu
 			return nil, err
 		}
 	}
-	if remapped {
-		moved, err := reresolveRepos(ctx, tx)
+	if len(redefaulted) > 0 {
+		moved, err := reresolveRepos(ctx, tx, redefaulted)
 		if err != nil {
 			return nil, err
 		}

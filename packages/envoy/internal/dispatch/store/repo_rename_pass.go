@@ -415,6 +415,11 @@ func excludedNamed(r repoRename) string {
 var repoRenameLines = []repoRenameLine{
 	nameLine("issues", "repo"),
 	nameLine("projects", "default_repo"),
+	// The repository each issue's stored Legion facts name (legionfacts.ReadRepos), resolved
+	// from the two lines above when the row was computed. Its trigger logs each row it writes
+	// as an issue_facts change (20261117100002), so the day-row refresher writes that issue's
+	// Legion day rows again, under the new name.
+	nameLine("issue_facts", "repo"),
 	nameLine("check_results", "commit_repo"),
 	{
 		// A URL links one issue (issue_external_links_url), and readers compare a link in lower

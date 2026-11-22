@@ -438,11 +438,11 @@ func TestANewVersionLogsOneEvalVersionsChange(t *testing.T) {
 	}
 }
 
-// TestAMappingSavedAgainByAnotherPersonLogsNoChange: a repository's mapping in repo_projects logs a
-// settings change naming the repository when it is made, when a column the mapping decides moves
-// and when it is deleted, and none when the settings route's upsert saves it again unchanged as
-// another person, which rewrites created_by alone.
-func TestAMappingSavedAgainByAnotherPersonLogsNoChange(t *testing.T) {
+// TestAWriteOfRepoProjectsLogsNoChange: repo_projects is a read-only legacy table (no route writes
+// it, and dispatch://INFRA-4411 drops it), and no rule of the eval day rows reads it, so no trigger
+// logs a change of it: a row made, saved again by another person, made a default and deleted
+// leaves the change log and its outbox as they stood.
+func TestAWriteOfRepoProjectsLogsNoChange(t *testing.T) {
 	ctx := context.Background()
 	store := migratedEvalStore(t)
 	const save = `
@@ -454,26 +454,22 @@ func TestAMappingSavedAgainByAnotherPersonLogsNoChange(t *testing.T) {
 		what      string
 		statement string
 		args      []any
-		changes   int
 	}{
-		{"the mapping made by alice", save, []any{evalProject, `{"kind":"user","id":"alice"}`, false}, 1},
-		{"the same mapping saved by bob", save, []any{evalProject, `{"kind":"user","id":"bob"}`, false}, 0},
-		{"the mapping made the project's default", save, []any{evalProject, `{"kind":"user","id":"bob"}`, true}, 1},
-		{"the mapping deleted", `delete from repo_projects where repo = 'acme/web'`, nil, 1},
+		{"a row made by alice", save, []any{evalProject, `{"kind":"user","id":"alice"}`, false}},
+		{"the same row saved by bob", save, []any{evalProject, `{"kind":"user","id":"bob"}`, false}},
+		{"the row made the project's default", save, []any{evalProject, `{"kind":"user","id":"bob"}`, true}},
+		{"the row deleted", `delete from repo_projects where repo = 'acme/web'`, nil},
 	} {
 		head := changeLogHead(t, store)
 		if _, err := store.Pool.Exec(ctx, write.statement, write.args...); err != nil {
 			t.Fatalf("%s: %v", write.what, err)
 		}
-		changes := changesAfter(t, store, head)
-		t.Logf("%s logged %v", write.what, changes)
-		if len(changes) != write.changes {
-			t.Errorf("%s logged %d changes, want %d", write.what, len(changes), write.changes)
+		var pending int
+		if err := store.Pool.QueryRow(ctx, `select count(*) from delivery_changes_pending`).Scan(&pending); err != nil {
+			t.Fatalf("count the outbox's rows: %v", err)
 		}
-		for _, change := range changes {
-			if change.kind != "settings" || change.repo != "acme/web" {
-				t.Errorf("%s logged %v, want a settings change naming acme/web", write.what, change)
-			}
+		if changes := changesAfter(t, store, head); len(changes) != 0 || pending != 0 {
+			t.Errorf("%s logged %v and left %d rows in the outbox, want no change", write.what, changes, pending)
 		}
 	}
 }

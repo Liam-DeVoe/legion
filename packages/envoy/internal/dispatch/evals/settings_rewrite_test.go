@@ -1261,8 +1261,8 @@ func TestARepositoryThatNeverDeployedHoldsWhatAWholeWalkHoldsOnceItsFirstRunsArr
 }
 
 // TestAnUnmappedRepositorysFirstRunsKeepWhatAWholeWalkKeeps: over a settled history, a repository
-// repo_projects maps to no project gets deploy runs (the deploy repository's, copied), which ship
-// none of its pull requests (it has none) and count for no project, so the change that brings them
+// with no pull request gets deploy runs (the deploy repository's, copied), which ship none of its
+// pull requests (it has none) and count for no project, so the change that brings them
 // writes no day. The passes after them leave the database holding the delivery and CI rows, the
 // members and the stored figures of a second database that held the same runs before its first
 // walk: the members of every project's pull requests under that repository from its start on,
@@ -1434,12 +1434,15 @@ type spanChange struct {
 //   - E: every pull request merged on that first day merged a day later, so the day loses its input;
 //   - C: the deploy repository moved to the history's second repository, which holds pull requests
 //     and no run, and that repository's first deploy runs, the deploy repository's of the history's
-//     first three days, copied; and a repository no project is mapped to given the deploy
+//     first three days, copied; and a repository no project's default is given the deploy
 //     repository's deploy runs.
+//
+// B's pull request is one of the deploy repository that names an issue of the main project, which
+// it counts for through that issue whatever repository is the project's default.
 func spanChanges(deliveries deliverytest.Fixture, first time.Time) []spanChange {
 	var early *delivery.DeliveryPullRequest
 	for i, pr := range deliveries.PullRequests {
-		if early == nil && pr.Repo == deliveries.DeployRepo && pr.IssueKey == nil && pr.MergedAt != nil && pr.CreatedAt != nil && !pr.Partial &&
+		if early == nil && pr.Repo == deliveries.DeployRepo && namesIssueOf(deliveries, pr) && pr.MergedAt != nil && pr.CreatedAt != nil && !pr.Partial &&
 			slices.Contains(deliveries.Settings.PopulationAuthors, pr.Author) {
 			early = &deliveries.PullRequests[i]
 		}
@@ -1452,7 +1455,7 @@ func spanChanges(deliveries deliverytest.Fixture, first time.Time) []spanChange 
 		{name: "B, a pull request merged six days before its project's first day", change: func(t *testing.T, r *refresherRig) {
 			t.Helper()
 			if early == nil {
-				t.Fatal("the history holds no merged pull request of the deploy repository that names no issue")
+				t.Fatal("the history holds no merged pull request of the deploy repository that names an issue of the main project")
 			}
 			r.exec(t, "merge "+PullRequestMember(early.Repo, early.Number)+" six days before the first day", `
 				update delivery_pull_requests set merged_at = $3, created_at = least(created_at, $3::timestamptz - interval '1 hour')
@@ -1479,7 +1482,7 @@ func spanChanges(deliveries deliverytest.Fixture, first time.Time) []spanChange 
 				t.Helper()
 				r.putSettings(t, moved, alice)
 			}},
-		{name: "C, the first runs of a repository no project is mapped to", change: func(t *testing.T, r *refresherRig) {
+		{name: "C, the first runs of a repository that is no project's default", change: func(t *testing.T, r *refresherRig) {
 			t.Helper()
 			r.copyRuns(t, deliveries.DeployRepo, unmapped, delivery.DeliveryRunKindDeploy)
 		}},
@@ -1583,7 +1586,7 @@ func TestARewoundSpanLandsInOneCommitAsAWholeWalkHoldsIt(t *testing.T) {
 					t.Errorf("the pass logged %d eval_days changes of %s, want one", count, evalID)
 				}
 			}
-			// A repository no project is mapped to brings members and no day row, and so no change.
+			// A repository that is no project's default brings members and no day row, and so no change.
 			wroteRows := false
 			for _, tables := range transactions {
 				wroteRows = wroteRows || slices.Contains(tables, "eval_days")
@@ -1652,8 +1655,8 @@ func memberArgBytes(t *testing.T, args []any) int {
 }
 
 // TestARebuiltSpansMembersPastTheBoundGoInSeveralStatements: over a settled history in which 3,000
-// pull requests of the deploy repository merged on the history's last day, a repository no project
-// is mapped to gets its first deploy runs, the deploy repository's of the first three days, copied.
+// pull requests of the deploy repository merged on the history's last day, a repository that is no
+// project's default gets its first deploy runs, the deploy repository's of the first three days, copied.
 // The rows of the evals that read the deploy repository are kept for the new repository from its
 // start on, and so are the members: every pull request of every day from then on, the 3,000 of the
 // last day among them, a day no change of the page names. The one pass after the runs writes those
@@ -1702,20 +1705,28 @@ func TestARebuiltSpansMembersPastTheBoundGoInSeveralStatements(t *testing.T) {
 		unmapped, held, len(writes.sent), total, largest, statementBytes)
 }
 
+// namesIssueOf reports whether pr names an issue of deliveries' main project, which it counts for
+// through that issue whatever repository is the project's default.
+func namesIssueOf(deliveries deliverytest.Fixture, pr delivery.DeliveryPullRequest) bool {
+	return pr.IssueKey != nil && slices.Contains(deliveries.Issues[deliveries.Project], *pr.IssueKey)
+}
+
 // crowdLastDay merges copies more pull requests of the deploy repository on the history's last
-// day, each a copy of one merged that day that names no issue, and answers that one.
+// day, each a copy of one merged that day that names an issue of the main project (namesIssueOf),
+// and answers that one.
 func crowdLastDay(t *testing.T, r *refresherRig, deliveries deliverytest.Fixture, copies int) delivery.DeliveryPullRequest {
 	t.Helper()
 	var template *delivery.DeliveryPullRequest
 	last := deliveries.To.AddDate(0, 0, -1)
 	for i, pr := range deliveries.PullRequests {
-		if pr.Repo == deliveries.DeployRepo && pr.IssueKey == nil && pr.MergedAt != nil && pr.CreatedAt != nil && !pr.Partial &&
+		if pr.Repo == deliveries.DeployRepo && namesIssueOf(deliveries, pr) && pr.MergedAt != nil && pr.CreatedAt != nil && !pr.Partial &&
 			!pr.MergedAt.Before(last) && slices.Contains(deliveries.Settings.PopulationAuthors, pr.Author) {
 			template = &deliveries.PullRequests[i]
 		}
 	}
 	if template == nil {
-		t.Fatalf("the history holds no pull request of the deploy repository merged on its last day, %s", last.Format(time.DateOnly))
+		t.Fatalf("the history holds no pull request of the deploy repository merged on its last day, %s, that names an issue of %s",
+			last.Format(time.DateOnly), deliveries.Project)
 	}
 	r.exec(t, "merge "+strconv.Itoa(copies)+" more pull requests on the last day", `
 		insert into delivery_pull_requests
@@ -2030,18 +2041,19 @@ func (r *refresherRig) earlyDeploys(t *testing.T, deliveries deliverytest.Fixtur
 	return deliveries.From.AddDate(0, 0, -2)
 }
 
-// mergeBeforeHistory merges a population pull request of the deploy repository that names no
-// issue at noon three days before early, the start of the repository's history, and answers the
-// pull request as the history holds it. Merged then, it is an item of no day of the repository,
-// and the first of the repository's deploys to complete ships it.
+// mergeBeforeHistory merges a population pull request of the deploy repository that names an
+// issue of the main project (namesIssueOf) at noon three days before early, the start of the
+// repository's history, and answers the pull request as the history holds it. Merged then, it is
+// an item of no day of the repository, and the first of the repository's deploys to complete
+// ships it, which then counts for the project through that issue.
 func (r *refresherRig) mergeBeforeHistory(t *testing.T, deliveries deliverytest.Fixture, early time.Time) delivery.DeliveryPullRequest {
 	t.Helper()
 	index := slices.IndexFunc(deliveries.PullRequests, func(pr delivery.DeliveryPullRequest) bool {
-		return pr.Repo == deliveries.DeployRepo && pr.IssueKey == nil && pr.MergedAt != nil && pr.CreatedAt != nil && !pr.Partial &&
+		return pr.Repo == deliveries.DeployRepo && namesIssueOf(deliveries, pr) && pr.MergedAt != nil && pr.CreatedAt != nil && !pr.Partial &&
 			slices.Contains(deliveries.Settings.PopulationAuthors, pr.Author)
 	})
 	if index < 0 {
-		t.Fatal("the history holds no merged pull request of the deploy repository that names no issue")
+		t.Fatal("the history holds no merged pull request of the deploy repository that names an issue of the main project")
 	}
 	moved := deliveries.PullRequests[index]
 	r.exec(t, "merge a pull request before the deploy repository's history", `

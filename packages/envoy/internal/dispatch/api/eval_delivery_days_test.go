@@ -552,12 +552,14 @@ func TestTheDeliveryDayRowsFoldToWhatTheDeliveryRoutesAnswer(t *testing.T) {
 }
 
 // TestADeployShippingBothProjectsCountsOnceDeploymentWideAndOnceInEachProject (the architect's
-// condition): in deliverytest's default history, whose pull requests name issues of DELIV and, one
-// in twenty, of DELIVX, the deploys that ship pull requests of both are counted once by
+// condition): in deliverytest's default history, whose pull requests name issues of DELIV, one in
+// twenty of DELIVX, and some none, the deploys that ship pull requests of both are counted once by
 // GET /api/v1/delivery/measures over a window holding one, and once in each project's day rows,
-// so the two projects' folded deploy-frequency deploys exceed the deployment-wide count by exactly
-// the number of such deploys in the window. A delivery route that answered the sum of the
-// projects' rows would count those deploys twice and fail here.
+// and a deploy that ships no pull request of a project is counted by the measures alone: the two
+// projects' folded deploy-frequency deploys, less the deploys that ship both, are the
+// deployment-wide count less the deploys that ship none of a project. A delivery route that
+// answered the sum of the projects' rows would count those deploys twice, and miss those of no
+// project, and fail here.
 func TestADeployShippingBothProjectsCountsOnceDeploymentWideAndOnceInEachProject(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	fixture := deliverytest.Seed(t, database.Pool, deliverytest.Spec{Seed: 2916})
@@ -565,8 +567,7 @@ func TestADeployShippingBothProjectsCountsOnceDeploymentWideAndOnceInEachProject
 	registry := evals.New(database, deps.Docs, deps.Events)
 
 	// The projects each deploy ships, by the attribution rule over the fixture's own containment:
-	// a pull request's issue's project, or the project every repository of the history is mapped
-	// to.
+	// a pull request's issue's project, and none for one that names no issue.
 	issueProject := map[string]string{}
 	for project, keys := range fixture.Issues {
 		for _, key := range keys {
@@ -579,10 +580,10 @@ func TestADeployShippingBothProjectsCountsOnceDeploymentWideAndOnceInEachProject
 		if apply == nil {
 			continue
 		}
-		project := fixture.Project
-		if pr.IssueKey != nil {
-			project = issueProject[*pr.IssueKey]
+		if pr.IssueKey == nil {
+			continue
 		}
+		project := issueProject[*pr.IssueKey]
 		if ships[apply.RunID] == nil {
 			ships[apply.RunID] = map[string]bool{}
 		}
@@ -608,15 +609,14 @@ func TestADeployShippingBothProjectsCountsOnceDeploymentWideAndOnceInEachProject
 		to = fixture.To
 	}
 
-	deploys, both, inFirst, inSecond := 0, 0, 0, 0
+	deploys, both, inFirst, inSecond, none := 0, 0, 0, 0, 0
 	for _, apply := range fixture.Applies {
 		if at := startedAt[apply.RunID]; at.Before(from) || !at.Before(to) {
 			continue
 		}
 		deploys++
 		first, second := ships[apply.RunID][fixture.Project], ships[apply.RunID][fixture.SecondProject]
-		if first || len(ships[apply.RunID]) == 0 {
-			// A deploy that ships none counts for the deploy repository's project.
+		if first {
 			inFirst++
 		}
 		if second {
@@ -624,6 +624,10 @@ func TestADeployShippingBothProjectsCountsOnceDeploymentWideAndOnceInEachProject
 		}
 		if first && second {
 			both++
+		}
+		if !first && !second {
+			// It ships no pull request of a project, so it counts for none.
+			none++
 		}
 	}
 
@@ -653,10 +657,10 @@ func TestADeployShippingBothProjectsCountsOnceDeploymentWideAndOnceInEachProject
 		t.Errorf("the day rows count %d deploys for %s and %d for %s, want %d and %d", folded[fixture.Project], fixture.Project,
 			folded[fixture.SecondProject], fixture.SecondProject, inFirst, inSecond)
 	}
-	if both == 0 || folded[fixture.Project]+folded[fixture.SecondProject]-wide != both {
-		t.Errorf("%s's %d deploys and %s's %d exceed the deployment-wide %d by %d, want by the %d deploys that ship pull requests of both",
-			fixture.Project, folded[fixture.Project], fixture.SecondProject, folded[fixture.SecondProject], wide,
-			folded[fixture.Project]+folded[fixture.SecondProject]-wide, both)
+	if both == 0 || none == 0 || folded[fixture.Project]+folded[fixture.SecondProject]-both != wide-none {
+		t.Errorf("%s's %d deploys and %s's %d, less the %d that ship pull requests of both, are %d, want the deployment-wide %d less the %d that ship none of a project",
+			fixture.Project, folded[fixture.Project], fixture.SecondProject, folded[fixture.SecondProject], both,
+			folded[fixture.Project]+folded[fixture.SecondProject]-both, wide, none)
 	}
 
 	// Run target itself: one item of each project's delivery family, on its start day.
@@ -675,7 +679,7 @@ func TestADeployShippingBothProjectsCountsOnceDeploymentWideAndOnceInEachProject
 	if want := []string{fixture.Project + " " + day, fixture.SecondProject + " " + day}; !slices.Equal(counted, want) {
 		t.Errorf("run %d is counted in %v, want once in each of %v", target, counted, want)
 	}
-	t.Logf("%s..%s: run %d ships pull requests of %s and %s; the route counts %d deploys, %s's day rows %d and %s's %d, %d deploys of the window shipping both",
+	t.Logf("%s..%s: run %d ships pull requests of %s and %s; the route counts %d deploys, %s's day rows %d and %s's %d, %d deploys of the window shipping both and %d none of a project",
 		from.Format(time.DateOnly), to.Format(time.DateOnly), target, fixture.Project, fixture.SecondProject, wide,
-		fixture.Project, folded[fixture.Project], fixture.SecondProject, folded[fixture.SecondProject], both)
+		fixture.Project, folded[fixture.Project], fixture.SecondProject, folded[fixture.SecondProject], both, none)
 }

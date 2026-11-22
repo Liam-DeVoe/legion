@@ -220,29 +220,36 @@ func ReadRepos(ctx context.Context, q Querier, keys []string) (map[string]string
 	return repos, nil
 }
 
-// reresolveRepos resolves the repository of every stored row again by the rule that filled it
-// (ReadRepos) and rewrites the repo of each row whose repository moved, in tx, answering their
-// keys. It is what a change of a repository's mapping owes the stored rows (readChangePage): the
-// rule falls back to the project's default mapping, so a mapping change moves the repository of
-// rows whose issue no feed names. No read shows the stored repo; a pass's write compares it with
-// the repository the pass resolved (upsert), so a later move of the issue's repository is a
-// change of its row, which makes the day-row refresher rebuild the issue's day. A stored repo left
-// behind by a mapping would make a move back to it no change at all. The rows' other columns and
-// their updated_at stand, since nothing they were computed from moved. It reads every stored row
-// and resolves them all in one statement: a mapping is an operator's setting, written rarely
-// beside every other change this loop reads.
-func reresolveRepos(ctx context.Context, tx pgx.Tx) ([]string, error) {
-	rows, err := tx.Query(ctx, `select project_key, issue_key, coalesce(repo, '') from issue_facts order by project_key, issue_key`)
+// reresolveRepos resolves again, by the rule that filled it (ReadRepos), the repository of every
+// stored row of an issue of one of projects, and rewrites the repo of each row whose repository
+// moved, in tx, answering their keys. It is what a write of a project's row owes the stored rows
+// (readEventPage): the rule falls back to the default repository of the issue's own project
+// (projects.default_repo, refs.IssueRepoResolved), so a write of that default moves the repository
+// of rows whose issue no feed names, and of the rows of that project's issues alone. No read shows
+// the stored repo; a pass's write compares it with the repository the pass resolved (upsert), so a
+// later move of the issue's repository is a change of its row, which makes the day-row refresher
+// rebuild the issue's day. A stored repo left behind by a default would make a move back to it no
+// change at all. The rows' other columns and their updated_at stand, since nothing they were
+// computed from moved. It reads those rows and resolves them all in one statement: a default is a
+// project's setting, written rarely beside every other change this loop reads.
+func reresolveRepos(ctx context.Context, tx pgx.Tx, projects []string) ([]string, error) {
+	rows, err := tx.Query(ctx, `
+		select facts.project_key, facts.issue_key, coalesce(facts.repo, '')
+		from issue_facts facts
+		join issues issue on issue.key = facts.issue_key
+		where issue.project_key = any($1)
+		order by facts.project_key, facts.issue_key
+	`, projects)
 	if err != nil {
-		return nil, fmt.Errorf("read the stored rows' repositories: %w", err)
+		return nil, fmt.Errorf("read the stored rows' repositories of %v: %w", projects, err)
 	}
-	var projects, keys, repos []string
+	var owners, keys, repos []string
 	var project, key, repo string
 	if _, err := pgx.ForEachRow(rows, []any{&project, &key, &repo}, func() error {
-		projects, keys, repos = append(projects, project), append(keys, key), append(repos, repo)
+		owners, keys, repos = append(owners, project), append(keys, key), append(repos, repo)
 		return nil
 	}); err != nil {
-		return nil, fmt.Errorf("read the stored rows' repositories: %w", err)
+		return nil, fmt.Errorf("read the stored rows' repositories of %v: %w", projects, err)
 	}
 	resolved, err := ReadRepos(ctx, tx, keys)
 	if err != nil {
@@ -251,7 +258,7 @@ func reresolveRepos(ctx context.Context, tx pgx.Tx) ([]string, error) {
 	var movedProjects, moved, movedRepos []string
 	for i, key := range keys {
 		if resolved[key] != repos[i] {
-			movedProjects, moved, movedRepos = append(movedProjects, projects[i]), append(moved, key), append(movedRepos, resolved[key])
+			movedProjects, moved, movedRepos = append(movedProjects, owners[i]), append(moved, key), append(movedRepos, resolved[key])
 		}
 	}
 	if len(moved) == 0 {

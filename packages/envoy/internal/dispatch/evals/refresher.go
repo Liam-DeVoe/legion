@@ -26,9 +26,10 @@ import (
 // migration 20261117100021):
 //
 //   - delivery_changes, woken by delivery.ChangesChannel. Each change names the days it touches
-//     (refresher_work.go): a pull request's merge day and the start day of the deploy run that
-//     ships it now and of the one that shipped it before; a run's start day and the merge days of
-//     the pull requests it ships now and shipped before; and, through eval_day_members, the day
+//     (refresher_work.go): a pull request's merge day, the start day of the deploy run that ships
+//     it now and of the one that shipped it before, and the start day of each of its PR-checks
+//     runs, which count for its project; a run's start day and the merge days of the pull requests
+//     it ships now and shipped before; and, through eval_day_members, the day
 //     each of those items was counted on before, so an item whose day or project moved rewrites
 //     the day it left as well as the day it joined. A stored Legion fact's change and a filing's
 //     name their days themselves: an issue's close day before and after the change, a filing's
@@ -38,9 +39,7 @@ import (
 //     repository that holds a delivery run and a read chooses among them (deploy_repos.go). A page
 //     whose changes move a series' first input day, or the repositories that hold a delivery run,
 //     writes the days it names and every other day those moves reach in its one commit, and
-//     moves no walk (span.go). A change of a repository's mapping in repo_projects
-//     (20261117100020) begins the delivery walk again, and every project's Legion walk too: a
-//     walk restart, whose days the walk rebuilds a batch each RefresherGap.
+//     moves no walk (span.go).
 //   - the event log up to its safe horizon, woken by the events channel: an issue event that can
 //     move the count of open P0 issues with no owner rewrites that project's unowned-p0 row of
 //     today, and one that moves an issue's repository or parent rewrites the days of the filings of
@@ -537,13 +536,11 @@ func (r *refresh) commitPage(ctx context.Context, cursors feedCursors, restarts 
 		if rebuildWalks, err = r.servedWalks(ctx); err != nil {
 			return err
 		}
-		if !work.mapping {
-			served := map[walkKey]bool{}
-			for _, key := range rebuildWalks {
-				served[key] = true
-			}
-			restarts = slices.DeleteFunc(slices.Clone(restarts), func(key walkKey) bool { return served[key] })
+		served := map[walkKey]bool{}
+		for _, key := range rebuildWalks {
+			served[key] = true
 		}
+		restarts = slices.DeleteFunc(slices.Clone(restarts), func(key walkKey) bool { return served[key] })
 	}
 	began := time.Now()
 	tx, err := r.store.database.Pool.Begin(ctx)
@@ -586,15 +583,8 @@ func (r *refresh) commitPage(ctx context.Context, cursors feedCursors, restarts 
 			return fmt.Errorf("begin %d walks of the day rows again: %w", len(restarts), err)
 		}
 	}
-	switch {
-	case work.rebuild != "":
+	if work.rebuild != "" {
 		if err := replaceRebuild(ctx, tx, work.rebuild, r.build, rebuildWalks); err != nil {
-			return err
-		}
-	case work.mapping:
-		// The rebuild building may have staged what the mapping moved: it begins again, its build's
-		// still, once the walks begun again have rebuilt the families in the open.
-		if err := replaceRebuild(ctx, tx, "", "", nil); err != nil {
 			return err
 		}
 	}

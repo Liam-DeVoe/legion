@@ -57,8 +57,8 @@ func showTargets(targets measures.Targets) string {
 }
 
 // TestTheDeliveryVerdictsAreTheirEvalsVerdicts (R5): the measures answer and the Pipeline judge
-// their figures by the targets of the delivery evals of the project the deploy repository is
-// mapped to, which a person sets, so after register writes that move three targets onto figures of
+// their figures by the targets of the delivery evals of the project whose default repository is
+// the deploy repository, which a person sets, so after register writes that move three targets onto figures of
 // a day-aligned window of seven days, inclusive or not, judge pr-open-to-merge by its p90 alone,
 // and turn deploy-frequency's off, each verdict of the measures answer and of the Pipeline's
 // lead-time cards is the verdict the eval route states for the same window, and each target the
@@ -67,7 +67,7 @@ func showTargets(targets measures.Targets) string {
 // target turned off is null and judges nothing. The Pipeline reads at alone, so it is read at the
 // window's last second, whose seven days are the window's. unowned-p0 is left out of the
 // comparison: its eval reads the project's stored count of each day, where the measures answer
-// counts every project's open P0 issues now. With the deploy repository mapped to no project, both
+// counts every project's open P0 issues now. With the deploy repository no project's default, both
 // answers are judged by the catalogue's targets, main's (catalogueTargets).
 func TestTheDeliveryVerdictsAreTheirEvalsVerdicts(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{})
@@ -174,9 +174,9 @@ func TestTheDeliveryVerdictsAreTheirEvalsVerdicts(t *testing.T) {
 			answer.Targets.DeploysPerDay, showVerdict(answer.Status.DeploysPerDay))
 	}
 
-	// With no project mapped to the deploy repository, the catalogue's targets judge both answers.
-	if _, err := database.Pool.Exec(t.Context(), `delete from repo_projects where project = $1`, project); err != nil {
-		t.Fatalf("unmap %s's repositories: %v", project, err)
+	// With the deploy repository no project's default, the catalogue's targets judge both answers.
+	if _, err := database.Pool.Exec(t.Context(), `update projects set default_repo = null where key = $1`, project); err != nil {
+		t.Fatalf("clear %s's default repository: %v", project, err)
 	}
 	unmapped := getDeliveryMeasures(t, handler, window)
 	unmappedPipeline := evalGet[deliveryPipelineResponse](t, handler, "/api/v1/delivery/pipeline?"+pipelineAt)
@@ -259,8 +259,8 @@ func TestATargetWriteMovesTheLiveDeliveryVerdicts(t *testing.T) {
 	rig := newHubRig(t, nil)
 	seedHubSettings(t, rig.database)
 	createTestProject(t, rig.handler, "HUB")
-	if _, err := rig.database.Pool.Exec(t.Context(), `insert into repo_projects (repo, project, created_by) values ('acme/widgets', 'HUB', '{"kind":"user","id":"alice"}'::jsonb)`); err != nil {
-		t.Fatalf("map acme/widgets to HUB: %v", err)
+	if _, err := rig.database.Pool.Exec(t.Context(), `update projects set default_repo = 'acme/widgets' where key = 'HUB'`); err != nil {
+		t.Fatalf("make acme/widgets HUB's default repository: %v", err)
 	}
 	now := rig.clock.Now()
 	upsertPR(t, rig.database, hubPR(1, now.Add(-3*time.Hour)))

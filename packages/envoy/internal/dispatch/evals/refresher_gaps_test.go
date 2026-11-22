@@ -108,12 +108,12 @@ func TestAFirstDayMovedEarlierLeavesNoDayWithoutARowThoughThePassFails(t *testin
 }
 
 // TestARunAPullRequestLeftIsRewrittenThoughThePassFailsBeforeIt: a pull request of the deploy
-// repository merged a day earlier ships with another deploy run, and the run that shipped it
-// before counts it in its own day's rows until that day is written again. The test fails the first
-// write of that run's day: the pass fails after the write that moved the pull request's member to
-// the new run, and no stored pull request names the old run any more. The pass after it, reading
-// the same change again, still rewrites the old run's day, which the moving write recorded owed;
-// it leaves no day owed.
+// repository that names an issue of the main project, merged a day earlier, ships with another
+// deploy run, and the run that shipped it before counts it in its own day's rows until that day is
+// written again. The test fails the first write of that run's day: the pass fails after the write
+// that moved the pull request's member to the new run, and no stored pull request names the old run
+// any more. The pass after it, reading the same change again, still rewrites the old run's day,
+// which the moving write recorded owed; it leaves no day owed.
 func TestARunAPullRequestLeftIsRewrittenThoughThePassFailsBeforeIt(t *testing.T) {
 	r := newRefresherRig(t)
 	deliveries, _ := r.seedHistories(t)
@@ -123,7 +123,7 @@ func TestARunAPullRequestLeftIsRewrittenThoughThePassFailsBeforeIt(t *testing.T)
 	var picked delivery.DeliveryPullRequest
 	var oldDay, merged time.Time
 	for _, pr := range deliveries.PullRequests {
-		if pr.Repo != deliveries.DeployRepo || pr.MergedAt == nil || picked.Number != 0 {
+		if pr.Repo != deliveries.DeployRepo || pr.MergedAt == nil || !namesIssueOf(deliveries, pr) || picked.Number != 0 {
 			continue
 		}
 		old := delivery.FirstShippingApply(*pr.MergedAt, deliveries.Applies)
@@ -246,7 +246,7 @@ func TestAChangeBeforeTheFirstWalkWritesNoZeroRowOnADayWithInput(t *testing.T) {
 	}
 	var opened *delivery.DeliveryPullRequest
 	for i, pr := range deliveries.PullRequests {
-		counts := pr.IssueKey == nil || projects[*pr.IssueKey] == main
+		counts := pr.IssueKey != nil && projects[*pr.IssueKey] == main
 		if counts && pr.MergedAt != nil && pr.CreatedAt != nil && !pr.Partial && slices.Contains(deliveries.Settings.PopulationAuthors, pr.Author) &&
 			(opened == nil || pr.MergedAt.Before(*opened.MergedAt)) {
 			opened = &deliveries.PullRequests[i]

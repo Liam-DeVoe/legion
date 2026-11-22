@@ -30,7 +30,7 @@ func (r *refresherRig) deliveryDays(t *testing.T) []DeliveryDay {
 	}
 	var days []DeliveryDay
 	for day := refresherToday.AddDate(0, 0, -5); day.Before(refresherToday); day = day.AddDate(0, 0, 1) {
-		read, err := r.registry.readDeliveryDay(t.Context(), settings, []keptRepo{{name: settings.DeployRepo, deploys: true}}, day, nil, nil)
+		read, err := r.registry.readDeliveryDay(t.Context(), settings, []keptRepo{{name: settings.DeployRepo, deploys: true}}, day, nil)
 		if err != nil {
 			t.Fatalf("read the delivery rows of %s: %v", day.Format(time.DateOnly), err)
 		}
@@ -58,9 +58,10 @@ func line(family, project string, day time.Time) string {
 // TestEachDeliveryChangeRewritesExactlyItsDays: over the delivery history, once every day is
 // walked,
 //   - a pull request whose issue moves to the other project rewrites its merge day in both
-//     projects (the day eval_day_members held it under in the first) and the start day of the
+//     projects (the day eval_day_members held it under in the first), the start day of the
 //     deploy run that ships it, in both projects, since the run counts for the projects of its
-//     pull requests;
+//     pull requests, and the start day of each of its PR-checks runs, in both projects, since
+//     each counts for its pull request's project;
 //   - a pull request merged again a day earlier rewrites the day it left and the day it joined,
 //     and the start day of the deploy that ships it now;
 //   - a job of a deploy run that newly reaches production rewrites the run's start day and the
@@ -107,14 +108,12 @@ func TestEachDeliveryChangeRewritesExactlyItsDays(t *testing.T) {
 		}
 		return index
 	}
-	// Every repository of the history is mapped to the main project.
+	// A pull request counts for its issue's project and one with no issue for none.
 	projectOf := func(pr delivery.DeliveryPullRequest) string {
 		if pr.IssueKey != nil {
-			if project, found := issueProjects[*pr.IssueKey]; found {
-				return project
-			}
+			return issueProjects[*pr.IssueKey]
 		}
-		return main
+		return ""
 	}
 	shipper := func(pr delivery.DeliveryPullRequest) *delivery.Apply {
 		if pr.Repo != deliveries.DeployRepo {
@@ -123,12 +122,12 @@ func TestEachDeliveryChangeRewritesExactlyItsDays(t *testing.T) {
 		return delivery.FirstShippingApply(*pr.MergedAt, applies)
 	}
 	// runDayProjects is every project a deploy run's start day counts it for: the projects of the
-	// pull requests it ships, or the deploy repository's where it ships none, and the deploy
-	// repository's for its CI rows.
+	// pull requests it ships, which its CI rows count for too, and none where it ships none of a
+	// project.
 	runDayProjects := func(runID int64) map[string]bool {
-		projects := map[string]bool{main: true}
+		projects := map[string]bool{}
 		for _, pr := range prs {
-			if apply := shipper(pr); apply != nil && apply.RunID == runID {
+			if apply := shipper(pr); apply != nil && apply.RunID == runID && projectOf(pr) != "" {
 				projects[projectOf(pr)] = true
 			}
 		}
@@ -167,7 +166,9 @@ func TestEachDeliveryChangeRewritesExactlyItsDays(t *testing.T) {
 		set := map[string]bool{}
 		for _, some := range projects {
 			for project := range some {
-				set[line(walkDelivery, project, day)] = true
+				if project != "" {
+					set[line(walkDelivery, project, day)] = true
+				}
 			}
 		}
 		return slices.Sorted(maps.Keys(set))
@@ -213,8 +214,19 @@ func TestEachDeliveryChangeRewritesExactlyItsDays(t *testing.T) {
 	movedPR.IssueKey = new(other + "-900")
 	prs[at(moved.member)] = movedPR
 	want := union(lines(movedDay, map[string]bool{main: true, other: true}), lines(runDay(deploy.RunID), deployedBefore, runDayProjects(deploy.RunID)))
-	before = r.expectDays(t, "a pull request moved to "+other, before, want,
-		[]string{line(walkDelivery, main, movedDay), line(walkDelivery, other, movedDay), line(walkDelivery, other, runDay(deploy.RunID))})
+	// Its PR-checks runs count for its project, so each start day of one is written in both.
+	mustMove := []string{line(walkDelivery, main, movedDay), line(walkDelivery, other, movedDay), line(walkDelivery, other, runDay(deploy.RunID))}
+	for _, check := range deliveries.Runs {
+		if check.Kind == delivery.DeliveryRunKindPRChecks && check.Repo == movedPR.Repo && check.PRNumber != nil && *check.PRNumber == movedPR.Number {
+			checkDay := lines(measures.Midnight(check.StartedAt), map[string]bool{main: true, other: true})
+			want = union(want, checkDay)
+			// A run still going adds no result to the rows, which its move leaves as they were.
+			if check.Conclusion != nil && (*check.Conclusion == delivery.DeliveryRunConclusionSuccess || *check.Conclusion == delivery.DeliveryRunConclusionFailure) {
+				mustMove = union(mustMove, checkDay)
+			}
+		}
+	}
+	before = r.expectDays(t, "a pull request moved to "+other, before, want, mustMove)
 
 	// The pull request of the repository's project merged again a day earlier: the deploy that
 	// ships it now is the first apply GitHub created after the new merge, and the one that shipped
@@ -236,6 +248,13 @@ func TestEachDeliveryChangeRewritesExactlyItsDays(t *testing.T) {
 	want = union(lines(redatedDay, map[string]bool{main: true}), lines(measures.Midnight(newMerge), map[string]bool{main: true}),
 		lines(runDay(newDeploy.RunID), deployedThen, runDayProjects(newDeploy.RunID)),
 		lines(runDay(oldDeploy.RunID), shippedThen, runDayProjects(oldDeploy.RunID)))
+	// A change of the pull request names the start day of each of its PR-checks runs too, in its
+	// project, whose rows its merge does not move.
+	for _, check := range deliveries.Runs {
+		if check.Kind == delivery.DeliveryRunKindPRChecks && check.Repo == redatedPR.Repo && check.PRNumber != nil && *check.PRNumber == redatedPR.Number {
+			want = union(want, lines(measures.Midnight(check.StartedAt), map[string]bool{main: true}))
+		}
+	}
 	t.Logf("%s moves from run %d (started %s) to run %d (started %s)", redated.member, oldDeploy.RunID, runDay(oldDeploy.RunID).Format(time.DateOnly),
 		newDeploy.RunID, runDay(newDeploy.RunID).Format(time.DateOnly))
 	before = r.expectDays(t, "a pull request merged a day earlier", before, want,
@@ -258,7 +277,7 @@ func TestEachDeliveryChangeRewritesExactlyItsDays(t *testing.T) {
 			completed := append(slices.Clone(applies), delivery.Apply{RunID: candidate.RunID, CompletedAt: *j.CompletedAt, CreatedAt: candidate.Created()})
 			if slices.ContainsFunc(prs, func(pr delivery.DeliveryPullRequest) bool {
 				apply := delivery.FirstShippingApply(*pr.MergedAt, completed)
-				return pr.Repo == deliveries.DeployRepo && apply != nil && apply.RunID == candidate.RunID
+				return pr.Repo == deliveries.DeployRepo && apply != nil && apply.RunID == candidate.RunID && projectOf(pr) != ""
 			}) {
 				run, job = candidate, j
 			}
@@ -313,9 +332,10 @@ func TestEachDeliveryChangeRewritesExactlyItsDays(t *testing.T) {
 		update delivery_run_jobs set conclusion = 'success' where repo = $1 and run_id = $2 and name = $3
 	`, run.Repo, run.RunID, job.Name)
 	applies = append(applies, delivery.Apply{RunID: run.RunID, CompletedAt: *job.CompletedAt, CreatedAt: run.Created()})
-	want, shipped := runOracle(run.RunID, then, snapshot())
+	after := snapshot()
+	want, shipped := runOracle(run.RunID, then, after)
 	t.Logf("run %d (started %s) now ships %d pull requests", run.RunID, runDay(run.RunID).Format(time.DateOnly), shipped)
-	before = r.expectDays(t, "a deploy run that now reaches production", before, want, []string{line(walkDelivery, main, runDay(run.RunID))})
+	before = r.expectDays(t, "a deploy run that now reaches production", before, want, lines(runDay(run.RunID), after.projects[run.RunID]))
 
 	// A deploy run that reached production and shipped pull requests stops reaching it (its
 	// production job is run again and fails): the pull requests it shipped ship with the next
@@ -323,17 +343,21 @@ func TestEachDeliveryChangeRewritesExactlyItsDays(t *testing.T) {
 	var stopped delivery.Apply
 	var stoppedJob delivery.DeliveryRunJob
 	now := snapshot()
-	for _, apply := range applies {
-		// One that ships a pull request merged on an earlier day than the run started, so that
-		// day is written only because the run shipped it (eval_day_members.shipped_by).
-		if stopped.RunID != 0 || apply.RunID == run.RunID || !slices.ContainsFunc(prs, func(pr delivery.DeliveryPullRequest) bool {
-			return now.by[PullRequestMember(pr.Repo, pr.Number)] == apply.RunID && measures.Midnight(*pr.MergedAt).Before(runDay(apply.RunID))
-		}) {
-			continue
-		}
-		for _, j := range deliveries.Jobs[apply.RunID] {
-			if slices.Contains(deliveries.Settings.ProductionJobNames, j.Name) && j.Conclusion != nil && *j.Conclusion == delivery.DeliveryJobConclusionSuccess {
-				stopped, stoppedJob = apply, j
+	// One that ships a pull request of a project merged on an earlier day than the run started,
+	// so that day is written only because the run shipped it (eval_day_members.shipped_by), where
+	// the history holds one; else one that ships a pull request of a project at all.
+	for _, earlier := range []bool{true, false} {
+		for _, apply := range applies {
+			if stopped.RunID != 0 || apply.RunID == run.RunID || !slices.ContainsFunc(prs, func(pr delivery.DeliveryPullRequest) bool {
+				return now.by[PullRequestMember(pr.Repo, pr.Number)] == apply.RunID && projectOf(pr) != "" &&
+					(!earlier || measures.Midnight(*pr.MergedAt).Before(runDay(apply.RunID)))
+			}) {
+				continue
+			}
+			for _, j := range deliveries.Jobs[apply.RunID] {
+				if slices.Contains(deliveries.Settings.ProductionJobNames, j.Name) && j.Conclusion != nil && *j.Conclusion == delivery.DeliveryJobConclusionSuccess {
+					stopped, stoppedJob = apply, j
+				}
 			}
 		}
 	}
@@ -347,12 +371,12 @@ func TestEachDeliveryChangeRewritesExactlyItsDays(t *testing.T) {
 	want, shipped = runOracle(stopped.RunID, now, snapshot())
 	var mergeDays []string
 	for _, pr := range prs {
-		if now.by[PullRequestMember(pr.Repo, pr.Number)] == stopped.RunID {
+		if now.by[PullRequestMember(pr.Repo, pr.Number)] == stopped.RunID && projectOf(pr) != "" {
 			mergeDays = append(mergeDays, line(walkDelivery, projectOf(pr), measures.Midnight(*pr.MergedAt)))
 		}
 	}
 	t.Logf("run %d (started %s) stops shipping its %d pull requests, merged on %v", stopped.RunID, runDay(stopped.RunID).Format(time.DateOnly), shipped, mergeDays)
-	before = r.expectDays(t, "a deploy run that stops reaching production", before, want, append(mergeDays, line(walkDelivery, main, runDay(stopped.RunID))))
+	before = r.expectDays(t, "a deploy run that stops reaching production", before, want, append(mergeDays, lines(runDay(stopped.RunID), now.projects[stopped.RunID])...))
 
 	for _, kind := range []string{"session_group", "eval_versions", "eval_days"} {
 		r.exec(t, "log a "+kind+" change", `select delivery_change_log($1, null, $2, $3, null, null)`, kind, main, EvalID(main, SlugDeployFrequency))
@@ -394,7 +418,6 @@ func (r *refresherRig) seedLegionEval(t *testing.T) *legionEval {
 	t.Helper()
 	history := &legionEval{rows: map[string]legionfacts.Row{}, d1: legionHistoryDay(2), d2: legionHistoryDay(3),
 		actor: `{"kind":"system","id":"refresher-test"}`, project: "EVAL"}
-	r.exec(t, "map the repositories", `insert into repo_projects (repo, project, created_by, is_default) values ('acme/web', 'EVAL', $1, false), ('acme/api', 'EVAL', $1, false)`, history.actor)
 	for _, issue := range []struct {
 		number   int
 		repo     any
@@ -579,88 +602,90 @@ func TestAMoveOfAnAncestorRewritesTheCloseDaysBelowIt(t *testing.T) {
 	r.expectDays(t, "the repository of EVAL-3's parent moved", before, []string{line(walkLegion, "EVAL", history.d2)}, nil)
 }
 
-// TestARepoProjectsChangeReattributesWithinOnePass: once every day is walked, the deploy
-// repository's mapping moves to the second project and LEGION gains a default repository, and the
-// one pass after both writes moves every row they decide: the CI runs and the pull requests that
-// name no issue count for the second project and no more for the first, which holds no CI row at
-// all, since no day holds CI input of it under the new mapping, as a whole walk under it holds
-// none (the walk takes each series' first input day from the days it builds), and LEGION's Legion
-// rows are cut by the repository its issues now resolve to.
-func TestARepoProjectsChangeReattributesWithinOnePass(t *testing.T) {
+// TestAPullRequestsIssueMoveMovesItsPRChecksRunsWithinOnePass: a PR-checks run counts for the
+// project its pull request counts for, whatever day it started on (attribution.check). Once every
+// day is walked, a pull request of the deploy repository whose issue is the first project's, and
+// one of whose PR-checks runs started on another day than its merge, moves to the second project
+// (a new issue of it): the one pass after the move counts each of its PR-checks runs for the
+// second project and no more for the first, and the database then holds the rows, members and
+// figures a second database holds that made the same move before its first walk. Then a write of
+// repo_projects, which no rule reads, logs no change, and the pass after it rewrites no day.
+func TestAPullRequestsIssueMoveMovesItsPRChecksRunsWithinOnePass(t *testing.T) {
 	r := newRefresherRig(t)
-	deliveries, legion := r.seedHistories(t)
+	deliveries, _ := r.seedHistories(t)
 	r.settle(t)
 	r.pass(t)
 	main, other := deliveries.Project, deliveries.SecondProject
-	checks := `select coalesce(sum(n), 0) from eval_days where project_key = $1 and eval_id = $2 and series = $3 and repo = '' and day < $4`
-	legionRepo := `select count(*) from eval_days where project_key = $1 and eval_id = $2 and repo = 'acme/legion' and n > 0`
-	mainChecks := r.count(t, checks, main, EvalID(main, SlugPRCI), measures.SeriesMinutes, refresherToday)
-	if mainChecks == 0 || r.count(t, checks, other, EvalID(other, SlugPRCI), measures.SeriesMinutes, refresherToday) != 0 ||
-		r.count(t, legionRepo, legion.Project, EvalID(legion.Project, SlugLegionWorkTime)) != 0 {
-		t.Fatalf("before the mapping moved, %s counts %d timed CI results and %s some, or %s holds acme/legion rows", main, mainChecks, other, legion.Project)
-	}
-
-	// A mapping's trigger records its change in the change log's outbox, and every writer of a
-	// mapping moves it into the log right after its commit (delivery.DrainRepoProjectChange): the
-	// two writes below stand for such writers, so the test drains as they would, and first moves
-	// whatever the pass left pending, so the log after seq holds the two writes' changes alone.
-	drain := func(what string) {
-		t.Helper()
-		if _, err := delivery.DrainPending(t.Context(), r.database.Pool); err != nil {
-			t.Fatalf("move %s into the log: %v", what, err)
+	issueProject := map[string]string{}
+	for project, keys := range deliveries.Issues {
+		for _, key := range keys {
+			issueProject[key] = project
 		}
 	}
-	drain("the changes the pass left pending")
+	var moved delivery.DeliveryPullRequest
+	var checks []string
+	for _, pr := range deliveries.PullRequests {
+		if moved.Number != 0 || pr.Repo != deliveries.DeployRepo || pr.IssueKey == nil || issueProject[*pr.IssueKey] != main {
+			continue
+		}
+		var runs []string
+		elsewhere := false
+		for _, run := range deliveries.Runs {
+			if run.Kind == delivery.DeliveryRunKindPRChecks && run.PRNumber != nil && *run.PRNumber == pr.Number {
+				runs = append(runs, RunMember(run.Repo, run.RunID))
+				elsewhere = elsewhere || !measures.Midnight(run.StartedAt).Equal(measures.Midnight(*pr.MergedAt))
+			}
+		}
+		if elsewhere {
+			moved, checks = pr, runs
+		}
+	}
+	if moved.Number == 0 {
+		t.Fatalf("the history holds no pull request of %s whose PR-checks run started on another day than its merge", main)
+	}
+	counted := `select count(*) from eval_day_members where family = $1 and row_key = any($2) and project_key = $3`
+	if got, none := r.count(t, counted, KindCI, checks, main), r.count(t, counted, KindCI, checks, other); got != len(checks) || none != 0 {
+		t.Fatalf("before the move %s counts %d of %s's %d PR-checks runs and %s %d, want every one in %s alone",
+			main, got, PullRequestMember(moved.Repo, moved.Number), len(checks), other, none, main)
+	}
+	move := func(rig *refresherRig) {
+		rig.exec(t, "make an issue of "+other, `
+			insert into issues (key, project_key, number, title, status, rank, created_by)
+			values ($1, $2, 900, 'Work moved here', 'in_progress', '00000900', '{"kind":"user","id":"alice"}')`, other+"-900", other)
+		rig.exec(t, "move the pull request to "+other, `update delivery_pull_requests set issue_key = $3 where repo = $1 and number = $2`,
+			moved.Repo, moved.Number, other+"-900")
+	}
+	move(r)
+	r.pass(t)
+	if got, now := r.count(t, counted, KindCI, checks, main), r.count(t, counted, KindCI, checks, other); got != 0 || now != len(checks) {
+		t.Errorf("after the move %s counts %d of the %d PR-checks runs and %s %d, want every one in %s alone", main, got, len(checks), other, now, other)
+	}
+	walk := newRefresherRig(t)
+	walk.seedHistories(t)
+	move(walk)
+	walk.settle(t)
+	r.expectSameAsWalk(t, "after "+PullRequestMember(moved.Repo, moved.Number)+" moved to "+other, walk)
+
+	if _, err := delivery.DrainPending(t.Context(), r.database.Pool); err != nil {
+		t.Fatalf("move the changes the pass left pending into the log: %v", err)
+	}
 	seq := r.latestSeq(t)
-	r.exec(t, "map the deploy repository to "+other, `update repo_projects set project = $2 where repo = $1`, deliveries.DeployRepo, other)
-	r.exec(t, "give "+legion.Project+" a default repository", `
-		insert into repo_projects (repo, project, created_by, is_default) values ('acme/legion', $1, '{"kind":"user","id":"alice"}', true)`, legion.Project)
-	drain("the mapping writes' changes")
+	r.exec(t, "write a row of repo_projects", `
+		insert into repo_projects (repo, project, created_by, is_default) values ($1, $2, '{"kind":"user","id":"alice"}', true)`, deliveries.DeployRepo, other)
+	if _, err := delivery.DrainPending(t.Context(), r.database.Pool); err != nil {
+		t.Fatalf("move the pending changes into the log: %v", err)
+	}
 	changes, err := delivery.ChangesSince(t.Context(), r.database.Pool, seq, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var logged []string
-	for _, change := range changes {
-		logged = append(logged, change.Kind+" "+change.Repo)
+	if len(changes) != 0 {
+		t.Errorf("the write of repo_projects logged %+v, want no change", changes)
 	}
-	if !slices.Equal(logged, []string{"settings " + deliveries.DeployRepo, "settings acme/legion"}) {
-		t.Errorf("the two mapping writes logged %v, want a settings change naming each repository", logged)
+	if report, _ := r.pass(t); len(report.days) != 0 {
+		t.Errorf("the pass after the write of repo_projects rewrote %d days, want none", len(report.days))
 	}
-
-	r.batch = 100
-	report, _ := r.pass(t)
-	if report.walksLeft {
-		t.Errorf("the pass left a walk with days to build, want the whole history rebuilt in one pass")
-	}
-	if got := r.count(t, checks, other, EvalID(other, SlugPRCI), measures.SeriesMinutes, refresherToday); got != mainChecks {
-		t.Errorf("after the pass %s counts %d timed CI results, want the %d %s counted before", other, got, mainChecks, main)
-	}
-	if got := r.count(t, checks, main, EvalID(main, SlugPRCI), measures.SeriesMinutes, refresherToday); got != 0 {
-		t.Errorf("after the pass %s still counts %d timed CI results of a repository mapped elsewhere", main, got)
-	}
-	// The first project's CI rows had a first input day under the old mapping and have none under
-	// the new one: the walk begun again builds every day from the first input day on, and takes
-	// each series' first input day from the days it builds, so it writes no zero row of pr-ci and
-	// deletes every row the first project held of it, today's zero row among them.
-	firstCheck := r.count(t, `select count(*) from eval_days where project_key = $1 and eval_id = $2`, main, EvalID(main, SlugPRCI))
-	if firstCheck != 0 {
-		t.Errorf("%s holds %d pr-ci rows after no day holds CI input of it, want none, as a whole walk under the new mapping holds", main, firstCheck)
-	}
-	via := r.count(t, `select coalesce(sum(via_repository), 0) from eval_days where project_key = $1 and eval_id = $2 and repo = ''`,
-		other, EvalID(other, SlugMergeToProduction))
-	if via == 0 {
-		t.Errorf("after the pass %s counts no deployed pull request that reached it through the repository", other)
-	}
-	if got := r.count(t, legionRepo, legion.Project, EvalID(legion.Project, SlugLegionWorkTime)); got == 0 {
-		t.Errorf("after the pass %s holds no Legion row cut by acme/legion, the repository its issues resolve to now", legion.Project)
-	}
-	families := map[string]int{}
-	for day := range report.days {
-		families[day.family+" "+day.project]++
-	}
-	t.Logf("one pass rewrote %v; %s now counts %d timed CI results and %d deployed pull requests through the repository, and %s holds %d CI rows",
-		families, other, mainChecks, via, main, firstCheck)
+	t.Logf("%s's %d PR-checks runs moved from %s to %s in one pass", PullRequestMember(moved.Repo, moved.Number), len(checks), main, other)
 }
 
 // mergeDayEarlier merges every pull request of repo merged on day again a day earlier, as

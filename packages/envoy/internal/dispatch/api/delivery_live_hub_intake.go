@@ -239,8 +239,10 @@ func (h *deliveryHub) receive(g *hubGeneration, event model.Event) {
 // applyEventLocked marks the views one event can touch: an issue write or claim the views whose
 // issues or their ancestors hold the issue, and every timeline and measures view when the issue
 // is a P0 before or after it (the unowned P0 count each shows); an architecture import every
-// view; and a session's titled write every view that shows the session under another title than
-// the one it wrote under, while a write carrying no title takes no name away and marks nothing.
+// view; a project write (project.updated, which a write of its default repository appends) every
+// view the delivery evals judge or rank; and a session's titled write every view that shows the
+// session under another title than the one it wrote under, while a write carrying no title takes
+// no name away and marks nothing.
 // Those are every writer of a field the Delivery page shows (Task 0 Step 18: route has one writer,
 // PATCH /api/v1/issues/{key}, whose event is issue.updated or issue.closed). The event is the
 // relay's, shared with every other subscriber, and is only read.
@@ -282,6 +284,15 @@ func (h *deliveryHub) applyEventLocked(g *hubGeneration, event model.Event, now 
 		h.dirtyIssueLocked(g, issueKey, p0, now)
 	case "architecture.synced":
 		h.dirtyAllLocked(g, now)
+	case "project.updated":
+		// A project's default repository names the project whose evals judge the delivery views'
+		// figures (evals.Store.DeployRepoEvals), which a write of it moves, so it marks every view
+		// that reads them; a recompute that reads the same evals sends nothing.
+		for _, view := range g.views {
+			if len(view.spec.classes().evalVersions) > 0 {
+				h.markDirtyLocked(g, view, now, deliveryCauseChange)
+			}
+		}
 	}
 	if event.Actor.Kind == "session" && event.Actor.ID != "" {
 		origin := event.Actor.Origin
@@ -430,8 +441,7 @@ func (h *deliveryHub) markDirtyLocked(g *hubGeneration, view *deliveryView, now 
 // judged name together. The refresher's page that reads the change logs, in the transaction that
 // leaves the rows standing at the settings (its rewrite's, or its own commit where the change
 // moved no row), one eval_days change of no eval (delivery.SettingsApplied), which marks every
-// evals view, at once (markChangesLocked). A change of a repository's mapping begins the delivery
-// walk again, whose eval_days changes mark the views.
+// evals view, at once (markChangesLocked).
 func (view *deliveryView) touchedBy(change delivery.Change, now time.Time) bool {
 	switch change.Kind {
 	case delivery.ChangeKindIssueFacts:
@@ -463,11 +473,11 @@ func (view *deliveryView) touchedBy(change delivery.Change, now time.Time) bool 
 		// marks every view of that kind too, and readings and day rows mark none: the timeline's
 		// and the measures' KPIs and the Pipeline's lead-time cards are judged by the targets of
 		// the delivery evals, and the Pipeline ranks its slowest jobs by the min_n of pr-ci's job
-		// series, each of the project the deploy repository is mapped to
+		// series, each of the project whose default repository is the deploy repository
 		// (evals.Store.DeployRepoEvals), which a register write sets and a project's seed first
-		// writes. Which project that is, is the mapping's, which no view holds, so the version in
-		// any project marks it, and a recompute that reads the same evals sends nothing; a change
-		// of the mapping is a settings change, which marks every delivery view.
+		// writes. Which project that is, no view holds, so the version in any project marks it,
+		// and a recompute that reads the same evals sends nothing; a write of a project's default
+		// repository is an event, which marks every delivery view (applyEventLocked).
 		if view.spec.kind == evalsView {
 			return view.spec.project == change.Repo || delivery.SettingsApplied(change)
 		}

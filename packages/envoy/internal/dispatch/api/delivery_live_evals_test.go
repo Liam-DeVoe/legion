@@ -243,8 +243,8 @@ func TestAPRCIMinNWriteMovesTheLivePipelinesSlowestJobs(t *testing.T) {
 	seedHubSettings(t, rig.database)
 	ctx := t.Context()
 	createTestProject(t, rig.handler, "HUB")
-	if _, err := rig.database.Pool.Exec(ctx, `insert into repo_projects (repo, project, created_by) values ('acme/widgets', 'HUB', '{"kind":"user","id":"alice"}'::jsonb)`); err != nil {
-		t.Fatalf("map acme/widgets to HUB: %v", err)
+	if _, err := rig.database.Pool.Exec(ctx, `update projects set default_repo = 'acme/widgets' where key = 'HUB'`); err != nil {
+		t.Fatalf("make acme/widgets HUB's default repository: %v", err)
 	}
 	now := rig.clock.Now()
 	success, jobSuccess := delivery.DeliveryRunConclusionSuccess, delivery.DeliveryJobConclusionSuccess
@@ -1506,25 +1506,44 @@ func (f *figureScopeReads) TraceQueryStart(ctx context.Context, _ *pgx.Conn, dat
 
 func (f *figureScopeReads) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
 
-// TestAWalkBatchsFoldAfterARecomputeLeavesTheEvalsPageAtTheRoute: the deploy repository is mapped
-// to the second project, which begins the delivery walk again, and the walk rewrites the main
-// project's days a batch a pass, each day a commit of its own, and folds the stored figures of a
-// batch's days in one more commit, after the last of them. Ahead of every fold the hub catches up
-// with the day commits, its clock is moved past their quiet, and the page's view is recomputed: it
-// reads the days as the batch left them and the stored figures as they stood before it. The
-// fold's commit logs a change of each eval whose figures it moved, so the view is marked again,
-// and once the clock has passed that mark's quiet the page holds the route's body. Before, the
-// fold logged nothing, and the page kept the figures of before the last batch.
+// TestAWalkBatchsFoldAfterARecomputeLeavesTheEvalsPageAtTheRoute: the delivery walk begins again
+// over inputs no change names (the main project's pull requests moved to the second project, their
+// changes taken out of the log, and the walk's record set to begin again, as a page's commit sets
+// it), and the walk rewrites the main project's days a batch a pass, each day a commit of its own,
+// and folds the stored figures of a batch's days in one more commit, after the last of them. Ahead
+// of every fold the hub catches up with the day commits, its clock is moved past their quiet, and
+// the page's view is recomputed: it reads the days as the batch left them and the stored figures
+// as they stood before it. The fold's commit logs a change of each eval whose figures it moved, so
+// the view is marked again, and once the clock has passed that mark's quiet the page holds the
+// route's body. Before, the fold logged nothing, and the page kept the figures of before the last
+// batch.
 func TestAWalkBatchsFoldAfterARecomputeLeavesTheEvalsPageAtTheRoute(t *testing.T) {
 	reads := &figureScopeReads{}
 	page := newRefreshedEvalsPage(t, reads, nil)
 	before := page.route(t)
+	ctx := t.Context()
+	pool := page.rig.database.Pool
 	second := page.fixture.SecondProject
-	if _, err := page.rig.database.Pool.Exec(t.Context(), `update repo_projects set project = $2 where repo = $1`, page.fixture.DeployRepo, second); err != nil {
-		t.Fatalf("map %s to %s: %v", page.fixture.DeployRepo, second, err)
+	var head int64
+	if err := pool.QueryRow(ctx, `select coalesce(max(seq), 0) from delivery_changes`).Scan(&head); err != nil {
+		t.Fatalf("read the change log's head: %v", err)
 	}
-	if _, err := delivery.DrainPending(t.Context(), page.rig.database.Pool); err != nil {
-		t.Fatalf("move the mapping's change into the log: %v", err)
+	if _, err := pool.Exec(ctx, `
+		insert into issues (key, project_key, number, title, status, rank, created_by)
+		values ($1, $2, 900, 'Work moved here', 'in_progress', '00000900', '{"kind":"user","id":"alice"}')
+	`, second+"-900", second); err != nil {
+		t.Fatalf("make an issue of %s: %v", second, err)
+	}
+	if _, err := pool.Exec(ctx, `
+		update delivery_pull_requests set issue_key = $2 where repo = $1 and issue_key like $3
+	`, page.fixture.DeployRepo, second+"-900", page.fixture.Project+"-%"); err != nil {
+		t.Fatalf("move %s's pull requests to %s: %v", page.fixture.Project, second, err)
+	}
+	if _, err := pool.Exec(ctx, `delete from delivery_changes where seq > $1`, head); err != nil {
+		t.Fatalf("take the move's changes out of the log: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `update eval_days_walks set next_day = null where family = 'delivery'`); err != nil {
+		t.Fatalf("begin the delivery walk again: %v", err)
 	}
 	folds := 0
 	reads.before = func() {
@@ -1540,7 +1559,7 @@ func TestAWalkBatchsFoldAfterARecomputeLeavesTheEvalsPageAtTheRoute(t *testing.T
 	page.idle(t)
 	deltas := page.take(t, time.Second)
 	if reflect.DeepEqual(liveComparable(t, mustEncodeLive(t, evalsView, before)), liveComparable(t, mustEncodeLive(t, evalsView, page.route(t)))) {
-		t.Fatal("the route answers after the mapping moved what it answered before, and the check needs a walk that moves it")
+		t.Fatal("the route answers after the pull requests moved what it answered before, and the check needs a walk that moves it")
 	}
 	page.requireAtRoute(t, "after the walk's last fold")
 	t.Logf("the walk begun again folded its batches' figures behind %d recomputes of the page's view; the page took %d deltas and holds the route's body", folds, deltas)

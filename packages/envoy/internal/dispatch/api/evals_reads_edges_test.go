@@ -166,7 +166,7 @@ func TestAnItemsLinkKeepsItsRepository(t *testing.T) {
 // TestALegionItemShowsTheRepositoryItIsFilteredBy: a Legion eval's issue row shows the repository
 // its repo filter keeps it by, the one the day rows cut it by: the repository the issue resolves
 // to when the route reads it (legionfacts.ReadRepos). The stored row holds the repository its
-// facts pass resolved, so a move of the project's default mapping that no pass has carried into
+// facts pass resolved, so a move of the project's default repository that no pass has carried into
 // the row yet would show one repository while filtering by another. After the move the row reads
 // the new repository unfiltered, answers the new one's filter showing the new one, and answers
 // the old one's filter with nothing.
@@ -181,7 +181,7 @@ func TestALegionItemShowsTheRepositoryItIsFilteredBy(t *testing.T) {
 		}
 	}
 	actor := `{"kind":"user","id":"alice"}`
-	exec("map EVL's default repository", `insert into repo_projects (repo, project, created_by, is_default) values ('acme/old', 'EVL', $1, true)`, actor)
+	exec("give EVL a default repository", `update projects set default_repo = 'acme/old' where key = 'EVL'`)
 	exec("write the issue", `insert into issues (key, project_key, number, title, status, rank, created_by) values ('EVL-1', 'EVL', 1, 'Shipped', 'done', 'U', $1)`, actor)
 	day := measures.Midnight(time.Now()).AddDate(0, 0, -1)
 	closed := day.Add(12 * time.Hour)
@@ -195,8 +195,7 @@ func TestALegionItemShowsTheRepositoryItIsFilteredBy(t *testing.T) {
 		t.Fatalf("write the facts: %v", err)
 	}
 	// The default moves, and no facts pass runs here to carry it into the stored row.
-	exec("unmap acme/old", `delete from repo_projects where repo = 'acme/old'`)
-	exec("map EVL's new default repository", `insert into repo_projects (repo, project, created_by, is_default) values ('acme/new', 'EVL', $1, true)`, actor)
+	exec("move EVL's default repository", `update projects set default_repo = 'acme/new' where key = 'EVL'`)
 
 	for _, read := range []struct{ filter, want string }{{"", "acme/new"}, {"acme/new", "acme/new"}, {"acme/old", ""}} {
 		query := url.Values{"row_kind": {"issue"}, "from": {day.Format(time.RFC3339)}, "to": {day.AddDate(0, 0, 1).Format(time.RFC3339)}}
@@ -228,8 +227,8 @@ func TestALegionItemsPageIsThatPageOfTheWholeRead(t *testing.T) {
 	createTestProject(t, handler, "EVL")
 	ctx := t.Context()
 	actor := `{"kind":"user","id":"alice"}`
-	if _, err := database.Pool.Exec(ctx, `insert into repo_projects (repo, project, created_by, is_default) values ('acme/web', 'EVL', $1, true)`, actor); err != nil {
-		t.Fatalf("map EVL's default repository: %v", err)
+	if _, err := database.Pool.Exec(ctx, `update projects set default_repo = 'acme/web' where key = 'EVL'`); err != nil {
+		t.Fatalf("give EVL a default repository: %v", err)
 	}
 	day := measures.Midnight(time.Now()).AddDate(0, 0, -1)
 	var rows []legionfacts.Row

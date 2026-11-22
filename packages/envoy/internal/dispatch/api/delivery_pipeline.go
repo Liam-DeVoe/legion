@@ -48,9 +48,9 @@ type deliveryPipelineStatus struct {
 // deliveryPipelinePRChecks is the PR-checks workflow's part of the Pipeline page: its whole runs'
 // timing, its slowest jobs and the jobs that failed in the last 24 hours, both lists never null,
 // and the timed results over the shown days a job needed to be ranked among the slowest: the
-// min_n of pr-ci's job series in the project the deploy repository is mapped to, or
-// measures.SlowestMinResults where it maps to none or that project holds no pr-ci eval yet
-// (evals.PipelineMinN), so the page says what it ranked by.
+// min_n of pr-ci's job series in the deploy repository's project (the one whose default
+// repository it is), or measures.SlowestMinResults where it names none or that project holds no
+// pr-ci eval yet (evals.PipelineMinN), so the page says what it ranked by.
 type deliveryPipelinePRChecks struct {
 	Run               measures.Timing       `json:"run"`
 	SlowestJobs       []measures.JobTiming  `json:"slowest_jobs"`
@@ -116,7 +116,7 @@ func parsePipelineAt(query url.Values, fallback time.Time) (time.Time, error) {
 // pipelinePopulation is every read the Pipeline page's answer for one `at` makes: the PR-checks
 // pull_request runs and the deploy push runs on main started in the shown days, each with its
 // jobs, the population pull requests merged in them (their lead times), and the evals of
-// evals.PipelineSlugs the project the deploy repository is mapped to holds
+// evals.PipelineSlugs the deploy repository's project holds
 // (evals.Store.DeployRepoEvals): the targets the page states and its lead-time cards are judged
 // by, and pr-ci, whose job series' min_n its slowest jobs are ranked by (evals.PipelineMinN).
 type pipelinePopulation struct {

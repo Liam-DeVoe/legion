@@ -13,11 +13,9 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
 	"github.com/sjawhar/envoy/internal/dispatch/evals/evalfixture"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/legiontest"
-	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -353,32 +351,17 @@ func planEvents(spec Spec, history infraHistory) []plannedEvent {
 	return planned
 }
 
-// writeInfra writes INFRA's project, its repositories' mapping, its issues, events, handoffs and
-// observations, and its legion_settings row, and answers the history. The project names alice as
-// its default assignee, the column every project fills (store migration 20261111210103), as the
-// smaller projects' Legion history does; no eval and no count the load prints reads it.
+// writeInfra writes INFRA's project, whose default repository is the first of Repos, its issues,
+// events, handoffs and observations, and its legion_settings row, and answers the history. The
+// project names alice as its default assignee, the column every project fills (store migration
+// 20261111210103), as the smaller projects' Legion history does; no eval and no count the load
+// prints reads it.
 func writeInfra(ctx context.Context, pool *store.Pool, spec Spec) (infraHistory, error) {
 	history := planInfra(spec)
-	if _, err := pool.Exec(ctx, `insert into projects (key, name, default_assignee, next_number) values ($1, 'Infrastructure', 'alice', 1)`, Project); err != nil {
+	if _, err := pool.Exec(ctx, `
+		insert into projects (key, name, default_assignee, next_number, default_repo) values ($1, 'Infrastructure', 'alice', 1, $2)
+	`, Project, Repos[0]); err != nil {
 		return infraHistory{}, fmt.Errorf("write the project %s: %w", Project, err)
-	}
-	mappings := make([]model.RepoProject, len(Repos))
-	for i, repo := range Repos {
-		mappings[i] = model.RepoProject{Repo: repo, Project: Project, Default: i == 0, CreatedBy: actor}
-	}
-	// Under -base the mappings go in by the insert alone, with none of a mapping write's locks
-	// (delivery.LockRepoProjectWrite): the load writes into the base head's schema, which lacks the
-	// owner lock (the owner_lock function) those locks take since #2468, and no other write of a
-	// mapping can run beside it, since job.sh runs no server during the load (run.sh migrate starts
-	// and stops the server before it, and run.sh measure starts one after).
-	var mapped error
-	if spec.Base {
-		mapped = deliverytest.InsertRepoProjects(ctx, pool, mappings...)
-	} else {
-		mapped = deliverytest.WriteRepoProjects(ctx, pool, mappings...)
-	}
-	if mapped != nil {
-		return infraHistory{}, fmt.Errorf("map INFRA's repositories: %w", mapped)
 	}
 	if err := copyIssues(ctx, pool, history); err != nil {
 		return infraHistory{}, err

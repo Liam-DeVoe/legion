@@ -338,7 +338,7 @@ type deliveryPopulation struct {
 	windowShipped map[int64]int
 	unownedP0     []delivery.UnownedIssue
 	// targetEvals is the evals whose targets the measures judge them by (evals.DeliveryTargetSlugs),
-	// as the project the deploy repository is mapped to holds them (evals.Store.DeployRepoEvals),
+	// as the deploy repository's project holds them (evals.Store.DeployRepoEvals),
 	// read with the window's rows, so a narrowed population judges by the targets it was read with.
 	targetEvals map[string]evals.Entry
 	groups      []delivery.SessionGroup

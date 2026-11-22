@@ -27,9 +27,11 @@ import (
 //     pull request merged again or moved to another project rewrites both days; then the start
 //     day of the deploy run that ships it now and of the one that shipped it when it was last
 //     counted (eval_day_members.shipped_by), each of which counts it among the pull requests it
-//     ships and counts for its projects (D1), in the run's projects now and before; and, where
-//     its merge moved from before its repository's history began, where it was an item of no day
-//     of the repository, the start day of the deploy that shipped it there (shippedNeighbours).
+//     ships and counts for its projects (D1), in the run's projects now and before; the start day
+//     of each of its PR-checks runs, each of which counts for its project (delivery_days.go's
+//     attribution), in the run's projects now and before; and, where its merge moved from before
+//     its repository's history began, where it was an item of no day of the repository, the start
+//     day of the deploy that shipped it there (shippedNeighbours).
 //   - run and run_job: the run's start day, its delivery rows (a deploy) and its CI rows (every
 //     run on main of the deploy workflow and every PR-checks run), in each project that day counts
 //     it for and the projects eval_day_members holds it under; then the merge day of each pull
@@ -46,17 +48,16 @@ import (
 //     movedDeliveryDays the days it can move, and the pass finds the change by comparing the
 //     settings it reads with those the rows stand built under, so one that moves no eval
 //     rewrites nothing, a move of the deploy repository among them, whose evals are kept for
-//     every repository that holds a run, deploy_repos.go); a change of repo_projects
-//     (whose change names the repository) begins the delivery walk again, and every project's
-//     Legion walk too, since the mapping decides the project a row counts for and the repository
-//     an issue or a filing with none of its own resolves to (ReadLegionDay).
+//     every repository that holds a run, deploy_repos.go).
 //   - issue_facts: the issue's Legion close day before the change and after it, which the change
 //     names itself (t_old and t_new, migration 20261117100002) and no read is made to find: a
 //     Legion day counts an issue on its close day alone, so an issue closed again on another day
 //     rewrites its old day and its new one, and an open issue whose facts moved touches no day.
 //     eval_day_members is not read for it, since the day it holds the issue under is the close
 //     day before the change, which the change already names: the days rewritten are the days
-//     the change marks, and no other.
+//     the change marks, and no other. A facts row whose repository moved logs, beside its own
+//     change, an issue_filings change for the issue's filing, which the Legion days cut by that
+//     repository on the filing's day (migration 20261117100002).
 //   - issue_filings: the filing's day before and after, in the filing's project.
 //   - eval_readings: no day, since the readings write keeps a logged eval's day rows itself; the
 //     eval's zero rows are filled up to today, which a reading measured before its eval's first
@@ -92,10 +93,9 @@ import (
 //     day, which the walk or a page's span built, or the first it builds itself
 //     (refresh.firstOf).
 //
-// A change of a repository's mapping begins the walks of the delivery and Legion rows again, which
-// rebuild their days in the open, a batch each RefresherGap: a walk restart. A release, a lost
-// change cursor, a database whose rows' settings are not recorded, and a project first seen begin
-// none: they rebuild aside and flip what moved in one commit (rebuild.go).
+// A release, a lost change cursor, a database whose rows' settings are not recorded, and a
+// project first seen begin no walk: they rebuild aside and flip what moved in one commit
+// (rebuild.go).
 
 // refresh is one pass's state: the build and the day it writes as, the projects and the delivery
 // settings it read, the first input day of each project's series it has read (of each deploy
@@ -136,16 +136,13 @@ type refresh struct {
 	// is on a later page, which must read and write the day again. Kept for the whole pass, they
 	// would let that page skip the day while its cursor moved past the change, and the day would
 	// stand stale until another change named it. The walk sets done anew too, since it computes
-	// every day it reaches, a day a page wrote included. repos is the page's one read of
-	// repo_projects, which every delivery day it reads attributes by, and which a page that reads
-	// a change of a mapping (a settings change) reads after loading that change, since it starts
-	// empty; and deployRepos is the page's one read of the repositories whose rows of the evals
-	// that read the deploy repository are kept (readDeployRepos), made after the page has read its
-	// changes, so a repository whose first run is among them has its rows written.
+	// every day it reaches, a day a page wrote included. deployRepos is the page's one read of the
+	// repositories whose rows of the evals that read the deploy repository are kept
+	// (readDeployRepos), made after the page has read its changes, so a repository whose first run
+	// is among them has its rows written.
 	reads       map[time.Time]deliveryRead
 	done        map[builtDay]bool
 	unowned     map[string]bool
-	repos       *repoProjects
 	deployRepos []keptRepo
 	// serving is the page's one read of the serving records (servingNext): what tells a day the
 	// stored rows are whole through from one they are not. settingsApplied is set once the page has
@@ -266,19 +263,17 @@ type pageWork struct {
 	unowned    map[string]bool
 	logged     map[string]map[string]bool
 	// restart names the families whose walks begin again: walkDelivery and walkLegion (every
-	// project's) and walkLogged (every project's); mapping is set where a change of a repository's
-	// mapping asks for it, which begins every one of them again, served or not. rebuild is the
-	// reason of the rebuild of every served family the page's commit begins (replaceRebuild): a
-	// database whose cursors are gone, a lost change cursor, or delivery settings the rows stand
-	// built under that are not recorded; the empty string for none. Where it is set, a walk of a
-	// served family is the rebuild's and does not begin again (commitPage).
+	// project's) and walkLogged (every project's). rebuild is the reason of the rebuild of every
+	// served family the page's commit begins (replaceRebuild): a database whose cursors are gone, a
+	// lost change cursor, or delivery settings the rows stand built under that are not recorded;
+	// the empty string for none. Where it is set, a walk of a served family is the rebuild's and
+	// does not begin again (commitPage).
 	restart  map[string]bool
-	mapping  bool
 	rebuild  string
 	settings bool
-	// settingsRow is set where one of the page's changes is of the delivery settings row itself
-	// (a settings change that names no repository): the page's commit then says that the day rows
-	// stand at the settings (markSettingsApplied), which is what an evals view is recomputed for.
+	// settingsRow is set where one of the page's changes is of the delivery settings row: the
+	// page's commit then says that the day rows stand at the settings (markSettingsApplied), which
+	// is what an evals view is recomputed for.
 	settingsRow bool
 	// built is the delivery settings commitPage records in eval_days_settings with the cursors and
 	// the rebuild the page begins (syncSettings), nil for none.
@@ -342,15 +337,8 @@ func (w *pageWork) addChange(change delivery.Change) {
 			}
 		}
 	case delivery.ChangeKindSettings:
-		// The page reads the settings again and rewrites what they moved (syncSettings). A
-		// repository's mapping moves which project every row of the repository counts for, so it
-		// begins the walks again.
-		w.settings = true
-		if change.Repo != "" {
-			w.restart[walkDelivery], w.restart[walkLegion], w.mapping = true, true, true
-		} else {
-			w.settingsRow = true
-		}
+		// The page reads the settings again and rewrites what they moved (syncSettings).
+		w.settings, w.settingsRow = true, true
 	case delivery.ChangeKindIssueFacts, delivery.ChangeKindIssueFilings:
 		// Each names its Legion days itself, in its project: a facts change the issue's close day
 		// before and after it, a filing change the filing's day before and after it, nil where
@@ -469,8 +457,8 @@ func (r *refresh) page(ctx context.Context, safe int64, limit int) (bool, error)
 		work.addEvents(events)
 	}
 	if work.settings {
-		// The settings or a mapping moved: the first days this pass read before were read under
-		// the old ones, so each is read again.
+		// The settings moved: the first days this pass read before were read under the old ones,
+		// so each is read again.
 		if err := r.loadSettings(ctx); err != nil {
 			return false, err
 		}
@@ -497,12 +485,12 @@ func (r *refresh) page(ctx context.Context, safe int64, limit int) (bool, error)
 	return full, nil
 }
 
-// beginPage starts a page: its delivery reads, the unowned-p0 rows it wrote, its reads of
-// repo_projects, of the repositories whose rows are kept per deploy repository and of the serving
-// records, and whether it has said that the rows stand at the settings begin empty (refresh's rule
-// on why they hold for one page).
+// beginPage starts a page: its delivery reads, the unowned-p0 rows it wrote, its reads of the
+// repositories whose rows are kept per deploy repository and of the serving records, and whether
+// it has said that the rows stand at the settings begin empty (refresh's rule on why they hold for
+// one page).
 func (r *refresh) beginPage() {
-	r.reads, r.done, r.unowned, r.repos = map[time.Time]deliveryRead{}, map[builtDay]bool{}, map[string]bool{}, nil
+	r.reads, r.done, r.unowned = map[time.Time]deliveryRead{}, map[builtDay]bool{}, map[string]bool{}
 	r.deployRepos = nil
 	r.serving, r.settingsApplied = nil, false
 }
@@ -967,24 +955,16 @@ func (r *refresh) keptRepos(ctx context.Context) ([]keptRepo, error) {
 
 // readDelivery is the delivery rows of day (readDeliveryDay) with each kept repository as the
 // deploy repository (keptRepos), read once a page (refresh.reads), each repository's deploy runs
-// taken from applies where it holds them and its repo_projects from the page's one read of them
-// (refresh.repos), made by the first day the page reads.
+// taken from applies where it holds them.
 func (r *refresh) readDelivery(ctx context.Context, day time.Time, applies map[string]*delivery.ApplyRows) (deliveryRead, error) {
 	if read, ok := r.reads[day]; ok {
 		return read, nil
-	}
-	if r.repos == nil {
-		repos, err := readRepoProjects(ctx, r.store)
-		if err != nil {
-			return deliveryRead{}, err
-		}
-		r.repos = &repos
 	}
 	kept, err := r.keptRepos(ctx)
 	if err != nil {
 		return deliveryRead{}, err
 	}
-	read, err := r.store.readDeliveryDay(ctx, *r.settings, kept, day, applies, r.repos)
+	read, err := r.store.readDeliveryDay(ctx, *r.settings, kept, day, applies)
 	if err != nil {
 		return deliveryRead{}, err
 	}

@@ -51,8 +51,8 @@ import (
 //     rebuild whose values do not move stages nothing, so its flip writes no row and logs nothing.
 //     The staged rows are then deleted in short chunks (cleanRebuilds).
 //
-// At most one rebuild is building. A change of a repository's mapping, a rewrite of a settings
-// change and a page that finds a repository's runs gone abandon it and begin it again
+// At most one rebuild is building. A rewrite of a settings change and a page that finds a
+// repository's runs gone abandon it and begin it again
 // (replaceRebuild), since its staged rows may have missed what they moved; a lost cursor does too,
 // as a rebuild of every served family. Only its own build's process walks it: while two builds
 // roll, the build before the release, which served the rows when its process began, begins no
@@ -252,8 +252,8 @@ func served(serving map[walkKey]servingState, key walkKey) bool {
 	return held
 }
 
-// caughtUp reports whether every walk of a served family has built today: no walk begun again (a
-// change of a repository's mapping) is rebuilding them in the open, which a rebuild waits for.
+// caughtUp reports whether every walk of a served family has built today: no walk begun again is
+// rebuilding them in the open, which a rebuild waits for.
 func (r *refresh) caughtUp(walks map[walkKey]walkState, serving map[walkKey]servingState, families ...string) bool {
 	for key := range serving {
 		if len(families) > 0 && !slices.Contains(families, key.family) {

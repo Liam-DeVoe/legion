@@ -356,14 +356,15 @@ func TestGetDeliveryPipelineAnswersEmptyListsAsArrays(t *testing.T) {
 }
 
 // TestThePipelineRanksBy50WhereItsDeployRepositoryMapsToNoProject: the deployment-wide Pipeline
-// ranks its slowest jobs by the min_n of pr-ci's job series in the project its deploy repository
-// is mapped to, states it in slowest_min_results, and ranks by measures.SlowestMinResults (50)
-// where the repository maps to no project, or to a project holding no pr-ci eval yet, whatever
-// min_n another project's pr-ci holds. Over a deliverytest history whose deploy repository is
-// DELIV's, a register write setting DELIV's job min_n to the timed results of the busiest job the
-// Pipeline ranks at 50 moves its table, so the table can tell the two apart; with the mapping
-// deleted the Pipeline answers its table at 50 again, and with the repository mapped to a project
-// made by SQL, which holds no eval, too.
+// ranks its slowest jobs by the min_n of pr-ci's job series in the deploy repository's project,
+// the one whose default repository it is, states it in slowest_min_results, and ranks by
+// measures.SlowestMinResults (50) where no project's default is the repository, or more than one
+// project's is, or its project holds no pr-ci eval yet, whatever min_n another project's pr-ci
+// holds. Over a deliverytest history whose deploy repository is DELIV's default, a register write
+// setting DELIV's job min_n to the timed results of the busiest job the Pipeline ranks at 50 moves
+// its table, so the table can tell the two apart; with DELIV's default cleared the Pipeline
+// answers its table at 50 again; with the repository the default of a project made by SQL, which
+// holds no eval, too; and with it the default of both, too.
 func TestThePipelineRanksBy50WhereItsDeployRepositoryMapsToNoProject(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	ctx := t.Context()
@@ -396,22 +397,27 @@ func TestThePipelineRanksBy50WhereItsDeployRepositoryMapsToNoProject(t *testing.
 			fixture.Project, busiest, moved, minN, at50, busiest)
 	}
 
-	if _, err := database.Pool.Exec(ctx, `delete from repo_projects where repo = $1`, fixture.DeployRepo); err != nil {
-		t.Fatalf("delete the mapping of %s: %v", fixture.DeployRepo, err)
+	setDefault := func(project string, repo *string) {
+		t.Helper()
+		if _, err := database.Pool.Exec(ctx, `update projects set default_repo = $2 where key = $1`, project, repo); err != nil {
+			t.Fatalf("set %s's default repository to %v: %v", project, repo, err)
+		}
 	}
+	setDefault(fixture.Project, nil)
 	if unmapped, _, minN := read(); minN != measures.SlowestMinResults || !slices.Equal(unmapped, at50) {
-		t.Errorf("with %s mapped to no project the Pipeline ranks %v by %d, want %v by %d", fixture.DeployRepo, unmapped, minN, at50, measures.SlowestMinResults)
+		t.Errorf("with %s no project's default the Pipeline ranks %v by %d, want %v by %d", fixture.DeployRepo, unmapped, minN, at50, measures.SlowestMinResults)
 	}
 
-	if _, err := database.Pool.Exec(ctx, `insert into projects (key, name, default_assignee) values ('BARE', 'Made by SQL', 'alice')`); err != nil {
+	if _, err := database.Pool.Exec(ctx, `insert into projects (key, name, default_assignee, default_repo) values ('BARE', 'Made by SQL', 'alice', $1)`, fixture.DeployRepo); err != nil {
 		t.Fatalf("make a project by SQL: %v", err)
 	}
-	if _, err := database.Pool.Exec(ctx, `insert into repo_projects (repo, project, created_by) values ($1, 'BARE', '{"kind":"user","id":"alice"}'::jsonb)`, fixture.DeployRepo); err != nil {
-		t.Fatalf("map %s to BARE: %v", fixture.DeployRepo, err)
-	}
 	if bare, _, minN := read(); minN != measures.SlowestMinResults || !slices.Equal(bare, at50) {
-		t.Errorf("with %s mapped to BARE, which holds no pr-ci eval, the Pipeline ranks %v by %d, want %v by %d", fixture.DeployRepo, bare, minN, at50, measures.SlowestMinResults)
+		t.Errorf("with %s BARE's default, which holds no pr-ci eval, the Pipeline ranks %v by %d, want %v by %d", fixture.DeployRepo, bare, minN, at50, measures.SlowestMinResults)
 	}
-	t.Logf("at 50 the Pipeline ranks %v; at %s's min_n of %d another table; mapped to no project, and to a project with no pr-ci eval, %v again",
+	setDefault(fixture.Project, &fixture.DeployRepo)
+	if both, _, minN := read(); minN != measures.SlowestMinResults || !slices.Equal(both, at50) {
+		t.Errorf("with %s the default of %s and BARE the Pipeline ranks %v by %d, want %v by %d: two projects name no one project", fixture.DeployRepo, fixture.Project, both, minN, at50, measures.SlowestMinResults)
+	}
+	t.Logf("at 50 the Pipeline ranks %v; at %s's min_n of %d another table; with the repository no project's default, a project's with no pr-ci eval, and two projects', %v again",
 		at50, fixture.Project, busiest, at50)
 }

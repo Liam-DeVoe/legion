@@ -21,28 +21,31 @@ import (
 // attributionDay is the day the hand-written delivery history of seedAttribution happens on.
 var attributionDay = time.Date(2026, 11, 3, 0, 0, 0, 0, time.UTC)
 
-// The hand-written history's repositories: ALPHA's (the deploy repository, whose runs Dispatch
-// reads), BETA's, and one repo_projects maps to no project.
+// The hand-written history's repositories: acme/alpha (the deploy repository, whose runs Dispatch
+// reads), acme/beta, and acme/zeta, whose one pull request names no issue.
 const (
-	alphaRepo    = "acme/alpha"
-	betaRepo     = "acme/beta"
-	unmappedRepo = "acme/zeta"
+	alphaRepo = "acme/alpha"
+	betaRepo  = "acme/beta"
+	zetaRepo  = "acme/zeta"
 )
 
 // seedAttribution writes, on attributionDay, the delivery history of the attribution rule over
-// three projects: ALPHA (acme/alpha, the deploy repository), BETA (acme/beta) and GAMMA (no
-// repository, no row).
+// three projects, ALPHA, BETA and GAMMA (no row), with acme/alpha the deploy repository. No
+// repository maps to a project: a row reaches one through an issue alone (evals' attribution).
 //
-//   - acme/alpha#1 names BETA-1, so it counts for BETA although its repository is ALPHA's;
-//   - acme/alpha#2 names no issue, so it counts for ALPHA through its repository;
-//   - acme/beta#1 names ALPHA-1, so it counts for ALPHA although its repository is BETA's;
-//   - acme/zeta#1 names no issue and its repository is mapped to no project, so it counts nowhere;
-//   - deploy run 101, created after both acme/alpha merges, reaches production and ships them: it
-//     counts for BETA (through acme/alpha#1's issue) and for ALPHA (through acme/alpha#2's
-//     repository);
+//   - acme/alpha#1 names BETA-1, so it counts for BETA;
+//   - acme/alpha#2 names no issue, so it counts for no project;
+//   - acme/alpha#3 names ALPHA-1, so it counts for ALPHA;
+//   - acme/beta#1 names ALPHA-1, so it counts for ALPHA although it is no pull request of the
+//     deploy repository;
+//   - acme/zeta#1 names no issue, so it counts for no project;
+//   - deploy run 101, created after the three acme/alpha merges, reaches production and ships
+//     them: it counts once for BETA (acme/alpha#1) and once for ALPHA (acme/alpha#3), and so do its
+//     production job's push run's results; acme/alpha#2 adds no project;
 //   - deploy runs 102 (reaches production, ships nothing) and 103 (its production job fails) ship
-//     none, so they count for ALPHA, the deploy repository's project;
-//   - PR-checks run 201 of acme/alpha counts for ALPHA, its repository's project.
+//     none, so they count for no project;
+//   - PR-checks run 201 of acme/alpha#3 counts for ALPHA, its pull request's project, and so does
+//     its job; PR-checks run 202 of acme/alpha#2 counts for no project.
 func seedAttribution(t *testing.T, r rig) delivery.DeliverySettings {
 	t.Helper()
 	ctx := t.Context()
@@ -58,8 +61,6 @@ func seedAttribution(t *testing.T, r rig) delivery.DeliverySettings {
 	}
 	actor := `{"kind":"system","id":"attribution-test"}`
 	exec("the projects", `insert into projects (key, name, default_assignee, next_number) values ('ALPHA', 'Alpha', 'alice', 2), ('BETA', 'Beta', 'alice', 2), ('GAMMA', 'Gamma', 'alice', 1)`)
-	exec("the repositories", `insert into repo_projects (repo, project, created_by, is_default) values ($1, 'ALPHA', $3, true), ($2, 'BETA', $3, true)`,
-		alphaRepo, betaRepo, actor)
 	exec("the issues", `
 		insert into issues (key, project_key, number, title, status, rank, created_by, created_at)
 		values ('ALPHA-1', 'ALPHA', 1, 'Alpha work', 'in_progress', '00000001', $1, $2),
@@ -82,8 +83,9 @@ func seedAttribution(t *testing.T, r rig) delivery.DeliverySettings {
 	}{
 		{alphaRepo, 1, new("BETA-1"), at(10, 0)},
 		{alphaRepo, 2, nil, at(10, 10)},
+		{alphaRepo, 3, new("ALPHA-1"), at(10, 20)},
 		{betaRepo, 1, new("ALPHA-1"), at(11, 0)},
-		{unmappedRepo, 1, nil, at(11, 30)},
+		{zetaRepo, 1, nil, at(11, 30)},
 	} {
 		created := pr.merged.Add(-time.Hour)
 		if err := delivery.UpsertPullRequest(ctx, pool, delivery.DeliveryPullRequest{
@@ -101,11 +103,13 @@ func seedAttribution(t *testing.T, r rig) delivery.DeliverySettings {
 		conclusion delivery.DeliveryRunConclusion
 		job        string
 		jobResult  delivery.DeliveryJobConclusion
+		pr         int
 	}{
-		{101, delivery.DeliveryRunKindDeploy, at(10, 30), delivery.DeliveryRunConclusionSuccess, production, success},
-		{102, delivery.DeliveryRunKindDeploy, at(12, 0), delivery.DeliveryRunConclusionSuccess, production, success},
-		{103, delivery.DeliveryRunKindDeploy, at(13, 0), delivery.DeliveryRunConclusionFailure, production, failure},
-		{201, delivery.DeliveryRunKindPRChecks, at(9, 0), delivery.DeliveryRunConclusionSuccess, "lint", success},
+		{101, delivery.DeliveryRunKindDeploy, at(10, 30), delivery.DeliveryRunConclusionSuccess, production, success, 0},
+		{102, delivery.DeliveryRunKindDeploy, at(12, 0), delivery.DeliveryRunConclusionSuccess, production, success, 0},
+		{103, delivery.DeliveryRunKindDeploy, at(13, 0), delivery.DeliveryRunConclusionFailure, production, failure, 0},
+		{201, delivery.DeliveryRunKindPRChecks, at(9, 30), delivery.DeliveryRunConclusionSuccess, "lint", success, 3},
+		{202, delivery.DeliveryRunKindPRChecks, at(9, 15), delivery.DeliveryRunConclusionSuccess, "lint", success, 2},
 	} {
 		started, completed := run.created.Add(time.Minute), run.created.Add(20*time.Minute)
 		stored := delivery.DeliveryRun{
@@ -114,7 +118,7 @@ func seedAttribution(t *testing.T, r rig) delivery.DeliverySettings {
 			URL: fmt.Sprintf("https://github.com/%s/actions/runs/%d", alphaRepo, run.id), HeadBranch: new("main"), Event: new("push"),
 		}
 		if run.kind == delivery.DeliveryRunKindPRChecks {
-			stored.PRNumber, stored.HeadBranch, stored.Event = new(2), new("feature/2"), new("pull_request")
+			stored.PRNumber, stored.HeadBranch, stored.Event = new(run.pr), new(fmt.Sprintf("feature/%d", run.pr)), new("pull_request")
 		}
 		if err := delivery.UpsertRun(ctx, pool, stored); err != nil {
 			t.Fatalf("write run %d: %v", run.id, err)
@@ -223,7 +227,9 @@ func dayProjects(read deliveryRead) []string {
 			}
 		}
 		for _, run := range slices.Concat(read.checks, read.pushes) {
-			projects[run.project] = true
+			for _, c := range run.projects {
+				projects[c.project] = true
+			}
 		}
 	}
 	delete(projects, "")
@@ -278,26 +284,27 @@ func (r rig) refreshDays(t *testing.T, legion []string, days ...time.Time) []str
 
 // TestEachDeliveryAndCIRowCountsForTheProjectItIsAttributedTo: over seedAttribution's day, written
 // as the refresher's walk writes it, a pull request counts for its issue's project and one with no
-// issue for its repository's, with via_repository 1; the deploy that ships both counts in both;
-// the deploys that ship none count for the deploy repository's project; the CI run counts for its
-// repository's project; the pull request of an unmapped repository counts nowhere; and GAMMA, with
-// nothing, gets no row. Then the day is written again unchanged (no row rewritten), and once
-// acme/alpha#2 names BETA-1 the day's rewrite moves it, and the deploy that shipped it, out of
-// ALPHA: ALPHA's acme/alpha rows of the pull-request evals, which held it alone, are deleted, as a
-// whole walk over the moved pull request holds none, and so is every lead time of ALPHA, whose one
-// day now ships none of its pull requests; its items of the day that it no longer holds are
-// deleted; written again, the moved day rewrites nothing.
+// issue for none; the deploy that ships pull requests of two projects counts once in each, its
+// production job's push run too, and the deploys that ship none count for none; a PR-checks run
+// counts for its pull request's project, and one of a pull request with no issue for none; every
+// via_repository is 0; and GAMMA, with nothing, gets no row. Then the day is written again
+// unchanged (no row rewritten), and once acme/alpha#3 names BETA-1 the day's rewrite moves it, the
+// deploy that shipped it and its PR-checks run out of ALPHA: ALPHA's acme/alpha rows of the
+// pull-request evals, which held it alone, are deleted, as a whole walk over the moved pull
+// request holds none, and so is every lead time of ALPHA, whose one day now ships none of its pull
+// requests, and every row of a deploy or a CI run; its items of the day that it no longer holds
+// are deleted; written again, the moved day rewrites nothing.
 func TestEachDeliveryAndCIRowCountsForTheProjectItIsAttributedTo(t *testing.T) {
 	r := newRig(t)
 	settings := seedAttribution(t, r)
 	ctx := t.Context()
 
-	read, err := r.registry.readDeliveryDay(ctx, settings, []keptRepo{{name: alphaRepo, deploys: true}}, attributionDay, nil, nil)
+	read, err := r.registry.readDeliveryDay(ctx, settings, []keptRepo{{name: alphaRepo, deploys: true}}, attributionDay, nil)
 	if err != nil {
 		t.Fatalf("read the day: %v", err)
 	}
 	if got := dayProjects(read); !slices.Equal(got, []string{"ALPHA", "BETA"}) {
-		t.Fatalf("the day's rows count for %v, want ALPHA and BETA alone (acme/zeta#1 for none, GAMMA holds nothing)", got)
+		t.Fatalf("the day's rows count for %v, want ALPHA and BETA alone (acme/alpha#2 and acme/zeta#1 for none, GAMMA holds nothing)", got)
 	}
 	t.Logf("wrote %v", r.refreshDays(t, nil, attributionDay))
 
@@ -305,34 +312,33 @@ func TestEachDeliveryAndCIRowCountsForTheProjectItIsAttributedTo(t *testing.T) {
 	// the history runs 17 minutes and every run 19.
 	want := map[string][]string{
 		"ALPHA": {
-			// acme/alpha#2 (through its repository) and acme/beta#1 (through ALPHA-1).
-			"merge-to-production minutes all: n=1 via=1 samples=[39]",
-			"merge-to-production minutes acme/alpha: n=1 via=1 samples=[39]",
+			// acme/alpha#3 and acme/beta#1, both through ALPHA-1.
+			"merge-to-production minutes all: n=1 via=0 samples=[29]",
+			"merge-to-production minutes acme/alpha: n=1 via=0 samples=[29]",
 			"merge-to-production minutes acme/beta: n=0 via=0 samples=[]",
 			// No pull request records a first commit, so first-commit-to-production times none and,
 			// before its first day, holds no row (dropUnshipped).
-			"open-to-production minutes all: n=1 via=1 samples=[99]",
-			"open-to-production minutes acme/alpha: n=1 via=1 samples=[99]",
+			"open-to-production minutes all: n=1 via=0 samples=[89]",
+			"open-to-production minutes acme/alpha: n=1 via=0 samples=[89]",
 			"open-to-production minutes acme/beta: n=0 via=0 samples=[]",
-			"pr-open-to-merge minutes all: n=2 via=1 samples=[60 60]",
-			"pr-open-to-merge minutes acme/alpha: n=1 via=1 samples=[60]",
+			"pr-open-to-merge minutes all: n=2 via=0 samples=[60 60]",
+			"pr-open-to-merge minutes acme/alpha: n=1 via=0 samples=[60]",
 			"pr-open-to-merge minutes acme/beta: n=1 via=0 samples=[60]",
-			"rework-share prs all: n=2 via=1 share=0/2",
-			"rework-share prs acme/alpha: n=1 via=1 share=0/1",
+			"rework-share prs all: n=2 via=0 share=0/2",
+			"rework-share prs acme/alpha: n=1 via=0 share=0/1",
 			"rework-share prs acme/beta: n=1 via=0 share=0/1",
-			// Runs 101 (through acme/alpha#2's repository), 102 and 103 (they ship none); 103 did
-			// not reach production, so it is no deploy and is in deploy-run-success alone.
-			"deploy-frequency deploys all: n=2 via=2 sum=2 with_prs=1",
-			"deploy-frequency deploys acme/alpha: n=2 via=2 sum=2 with_prs=1",
-			"deploy-run-success runs all: n=3 via=3 share=2/3",
-			"deploy-run-success runs acme/alpha: n=3 via=3 share=2/3",
-			// Run 201 and its one job; the deploy push runs' production jobs.
-			"pr-ci minutes all: n=1 via=1 samples=[19]",
-			"pr-ci minutes acme/alpha: n=1 via=1 samples=[19]",
-			"pr-ci job:lint all: n=1 via=1 samples=[17]",
-			"pr-ci job:lint acme/alpha: n=1 via=1 samples=[17]",
-			"production-deploy minutes all: n=3 via=3 samples=[17 17 17]",
-			"production-deploy minutes acme/alpha: n=3 via=3 samples=[17 17 17]",
+			// Run 101, through acme/alpha#3's issue; runs 102 and 103 ship none.
+			"deploy-frequency deploys all: n=1 via=0 sum=1 with_prs=1",
+			"deploy-frequency deploys acme/alpha: n=1 via=0 sum=1 with_prs=1",
+			"deploy-run-success runs all: n=1 via=0 share=1/1",
+			"deploy-run-success runs acme/alpha: n=1 via=0 share=1/1",
+			// Run 201, of acme/alpha#3, and its one job; run 101's production job.
+			"pr-ci minutes all: n=1 via=0 samples=[19]",
+			"pr-ci minutes acme/alpha: n=1 via=0 samples=[19]",
+			"pr-ci job:lint all: n=1 via=0 samples=[17]",
+			"pr-ci job:lint acme/alpha: n=1 via=0 samples=[17]",
+			"production-deploy minutes all: n=1 via=0 samples=[17]",
+			"production-deploy minutes acme/alpha: n=1 via=0 samples=[17]",
 		},
 		"BETA": {
 			// acme/alpha#1, through BETA-1, in its own repository's cut.
@@ -344,11 +350,13 @@ func TestEachDeliveryAndCIRowCountsForTheProjectItIsAttributedTo(t *testing.T) {
 			"pr-open-to-merge minutes acme/alpha: n=1 via=0 samples=[60]",
 			"rework-share prs all: n=1 via=0 share=0/1",
 			"rework-share prs acme/alpha: n=1 via=0 share=0/1",
-			// Run 101, through acme/alpha#1's issue.
+			// Run 101, through acme/alpha#1's issue, and its production job.
 			"deploy-frequency deploys all: n=1 via=0 sum=1 with_prs=1",
 			"deploy-frequency deploys acme/alpha: n=1 via=0 sum=1 with_prs=1",
 			"deploy-run-success runs all: n=1 via=0 share=1/1",
 			"deploy-run-success runs acme/alpha: n=1 via=0 share=1/1",
+			"production-deploy minutes all: n=1 via=0 samples=[17]",
+			"production-deploy minutes acme/alpha: n=1 via=0 samples=[17]",
 		},
 		"GAMMA": nil,
 	}
@@ -366,14 +374,13 @@ func TestEachDeliveryAndCIRowCountsForTheProjectItIsAttributedTo(t *testing.T) {
 	// under none, as pr-open-to-merge and rework-share count them.
 	wantMembers := map[string][]string{
 		"ALPHA": {
-			"ci run:acme/alpha/101 acme/alpha 2026-11-03 as acme/alpha", "ci run:acme/alpha/102 acme/alpha 2026-11-03 as acme/alpha",
-			"ci run:acme/alpha/103 acme/alpha 2026-11-03 as acme/alpha", "ci run:acme/alpha/201 acme/alpha 2026-11-03 as acme/alpha",
-			"delivery pull_request:acme/alpha#2 acme/alpha 2026-11-03", "delivery pull_request:acme/alpha#2 acme/alpha 2026-11-03 as acme/alpha",
+			"ci run:acme/alpha/101 acme/alpha 2026-11-03 as acme/alpha", "ci run:acme/alpha/201 acme/alpha 2026-11-03 as acme/alpha",
+			"delivery pull_request:acme/alpha#3 acme/alpha 2026-11-03", "delivery pull_request:acme/alpha#3 acme/alpha 2026-11-03 as acme/alpha",
 			"delivery pull_request:acme/beta#1 acme/beta 2026-11-03", "delivery pull_request:acme/beta#1 acme/beta 2026-11-03 as acme/alpha",
-			"delivery run:acme/alpha/101 acme/alpha 2026-11-03 as acme/alpha", "delivery run:acme/alpha/102 acme/alpha 2026-11-03 as acme/alpha",
-			"delivery run:acme/alpha/103 acme/alpha 2026-11-03 as acme/alpha",
+			"delivery run:acme/alpha/101 acme/alpha 2026-11-03 as acme/alpha",
 		},
 		"BETA": {
+			"ci run:acme/alpha/101 acme/alpha 2026-11-03 as acme/alpha",
 			"delivery pull_request:acme/alpha#1 acme/alpha 2026-11-03", "delivery pull_request:acme/alpha#1 acme/alpha 2026-11-03 as acme/alpha",
 			"delivery run:acme/alpha/101 acme/alpha 2026-11-03 as acme/alpha",
 		},
@@ -384,8 +391,10 @@ func TestEachDeliveryAndCIRowCountsForTheProjectItIsAttributedTo(t *testing.T) {
 			t.Errorf("the items %s counted: %v, want %v", project, got, wantMembers[project])
 		}
 	}
-	if n := r.count(t, `select count(*) from eval_day_members where row_key like '%acme/zeta%'`); n != 0 {
-		t.Errorf("acme/zeta#1 is counted in %d projects, want none: its repository is mapped to no project", n)
+	for _, none := range []string{"pull_request:acme/zeta#1", "pull_request:acme/alpha#2", "run:acme/alpha/102", "run:acme/alpha/103", "run:acme/alpha/202"} {
+		if n := r.count(t, `select count(*) from eval_day_members where row_key = $1`, none); n != 0 {
+			t.Errorf("%s is counted in %d projects, want none: it reaches no project through an issue", none, n)
+		}
 	}
 
 	// The same day written again holds the same values: no row is rewritten.
@@ -398,15 +407,17 @@ func TestEachDeliveryAndCIRowCountsForTheProjectItIsAttributedTo(t *testing.T) {
 		t.Errorf("writing the unchanged day again rewrote %d rows, want none", rewritten)
 	}
 
-	// acme/alpha#2 now names BETA-1: it and run 101, which shipped it, leave ALPHA's delivery rows.
-	if _, err := r.database.Pool.Exec(ctx, `update delivery_pull_requests set issue_key = 'BETA-1' where repo = $1 and number = 2`, alphaRepo); err != nil {
-		t.Fatalf("move acme/alpha#2 to BETA-1: %v", err)
+	// acme/alpha#3 now names BETA-1: it, run 101, which shipped it, and run 201, its PR-checks
+	// run, leave ALPHA's rows.
+	if _, err := r.database.Pool.Exec(ctx, `update delivery_pull_requests set issue_key = 'BETA-1' where repo = $1 and number = 3`, alphaRepo); err != nil {
+		t.Fatalf("move acme/alpha#3 to BETA-1: %v", err)
 	}
 	r.refreshDays(t, nil, attributionDay)
 	alpha := allFacts(r.stored(t, "ALPHA"))
+	gone := append(slices.Clone(leadTimeSlugs), SlugDeployFrequency, SlugDeployRunSuccess, SlugPRCI, SlugProductionDeploy)
 	for _, fact := range alpha {
-		if strings.HasPrefix(fact, "rework-share prs acme/alpha: ") || slices.ContainsFunc(leadTimeSlugs, func(slug string) bool { return strings.HasPrefix(fact, slug+" ") }) {
-			t.Errorf("ALPHA's rows after acme/alpha's last pull request moved to BETA hold %q, want no row of acme/alpha's pull requests and no lead time, as a whole walk holds none", fact)
+		if strings.HasPrefix(fact, "rework-share prs acme/alpha: ") || slices.ContainsFunc(gone, func(slug string) bool { return strings.HasPrefix(fact, slug+" ") }) {
+			t.Errorf("ALPHA's rows after acme/alpha's last pull request moved to BETA hold %q, want no row of acme/alpha's pull requests, no lead time and no deploy or CI row, as a whole walk holds none", fact)
 		}
 	}
 	if err := r.database.Pool.QueryRow(ctx, `select max(updated_at) from eval_days`).Scan(&newest); err != nil {
@@ -417,25 +428,22 @@ func TestEachDeliveryAndCIRowCountsForTheProjectItIsAttributedTo(t *testing.T) {
 	if rewritten := r.count(t, `select count(*) from eval_days where updated_at > $1`, newest); rewritten != 0 || r.count(t, `select count(*) from eval_days`) != stored {
 		t.Errorf("writing the moved day again rewrote %d rows, or deleted some of its %d, want none", rewritten, stored)
 	}
-	for _, kept := range []string{
-		"deploy-frequency deploys all: n=1 via=1 sum=1 with_prs=0", "rework-share prs all: n=1 via=0 share=0/1",
-		"production-deploy minutes all: n=3 via=3 samples=[17 17 17]",
-	} {
+	for _, kept := range []string{"rework-share prs all: n=1 via=0 share=0/1", "pr-open-to-merge minutes acme/beta: n=1 via=0 samples=[60]"} {
 		if !slices.Contains(alpha, kept) {
 			t.Errorf("ALPHA's rows after the move lack %q:\n%s", kept, strings.Join(alpha, "\n"))
 		}
 	}
-	if got := r.members(t, "ALPHA"); slices.Contains(got, "delivery pull_request:acme/alpha#2 acme/alpha 2026-11-03") ||
-		slices.Contains(got, "delivery pull_request:acme/alpha#2 acme/alpha 2026-11-03 as acme/alpha") ||
-		slices.Contains(got, "delivery run:acme/alpha/101 acme/alpha 2026-11-03 as acme/alpha") ||
-		!slices.Contains(got, "ci run:acme/alpha/101 acme/alpha 2026-11-03 as acme/alpha") {
-		t.Errorf("ALPHA's items after the move: %v, want acme/alpha#2 and run 101 gone from delivery and run 101 kept in ci", got)
+	if got := r.members(t, "ALPHA"); !slices.Equal(got, []string{
+		"delivery pull_request:acme/beta#1 acme/beta 2026-11-03", "delivery pull_request:acme/beta#1 acme/beta 2026-11-03 as acme/alpha",
+	}) {
+		t.Errorf("ALPHA's items after the move: %v, want acme/beta#1's alone", got)
 	}
-	if got := r.members(t, "BETA"); !slices.Contains(got, "delivery pull_request:acme/alpha#2 acme/alpha 2026-11-03") ||
-		!slices.Contains(got, "delivery pull_request:acme/alpha#2 acme/alpha 2026-11-03 as acme/alpha") {
-		t.Errorf("BETA's items after the move: %v, want acme/alpha#2 among them, under no deploy repository and under acme/alpha", got)
+	if got := r.members(t, "BETA"); !slices.Contains(got, "delivery pull_request:acme/alpha#3 acme/alpha 2026-11-03") ||
+		!slices.Contains(got, "delivery pull_request:acme/alpha#3 acme/alpha 2026-11-03 as acme/alpha") ||
+		!slices.Contains(got, "ci run:acme/alpha/201 acme/alpha 2026-11-03 as acme/alpha") {
+		t.Errorf("BETA's items after the move: %v, want acme/alpha#3 among them, under no deploy repository and under acme/alpha, and its PR-checks run 201", got)
 	}
-	t.Logf("compared %d day rows of three projects; after acme/alpha#2 moved to BETA, ALPHA holds %d", compared, len(alpha))
+	t.Logf("compared %d day rows of three projects; after acme/alpha#3 moved to BETA, ALPHA holds %d", compared, len(alpha))
 }
 
 // TestTheZeroDayIsTheBuildersDayWithNoRow: ZeroDeliveryDay holds the all-repositories row of every

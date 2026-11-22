@@ -2,6 +2,7 @@ package evalfixture_test
 
 import (
 	"context"
+	"maps"
 	"os"
 	"slices"
 	"strings"
@@ -34,8 +35,8 @@ func count(t *testing.T, database *store.Store, statement string, args ...any) i
 
 // refresh writes database's day rows as the server's refresher writes them, as of now
 // (evals.Store.RefreshThrough): every project seeded, and every family's rows from its first input
-// day through now's.
-func refresh(t *testing.T, database *store.Store) {
+// day through now's. It answers the registry that wrote them, which reads them as the routes do.
+func refresh(t *testing.T, database *store.Store) *evals.Store {
 	t.Helper()
 	broker := events.NewBroker()
 	// Settlement is an hour away, so no background settlement writes while a test reads.
@@ -50,6 +51,7 @@ func refresh(t *testing.T, database *store.Store) {
 	if err := registry.RefreshThrough(t.Context(), deps, now); err != nil {
 		t.Fatalf("refresh the day rows as of %s: %v", now.Format(time.RFC3339), err)
 	}
+	return registry
 }
 
 // TestTheLegionModeWritesAHistoryObservedFromPartway: -legion writes at least the finished issues
@@ -230,11 +232,16 @@ func TestTheBaseModeWritesTheSameHistoryIntoTheBaseSchema(t *testing.T) {
 	t.Logf("-base wrote the %d tables %v as -legion does, into a database without %v", len(evalfixture.LegionTables), evalfixture.LegionTables, evalfixture.BaseLacks)
 }
 
-// TestTheAttributionModeWritesK15sCase: -attribution writes its three projects, two mapped
-// repositories, two pull requests, two deploys and a CI job, and each row counts, in the day rows
-// the refresher builds from them (evals.Store.RefreshThrough), for the projects the result names
-// and through what it names (D1): pr-open-to-merge counts the pull requests, deploy-frequency the
-// deploys and pr-ci the CI run, and the third project holds no delivery or CI row.
+// TestTheAttributionModeWritesK15sCase: -attribution writes k15's case (verification version 26):
+// three projects, two of them with a default repository, three pull requests, two deploys and two
+// CI jobs, and the read the eval routes fold (evals.Store.DayWindow, over the rows the refresher
+// builds, evals.Store.RefreshThrough) counts each row for exactly the projects the case's R15
+// oracle names and through what it names: pr-open-to-merge counts the pull requests,
+// deploy-frequency the deploys and pr-ci the CI jobs, each day row carries how many of them came
+// through a default repository, a pull request of the repository that is no project's default
+// counts for none, and the third project reads no row of them, "no data". The read records how many
+// rows the case attributes, how many day rows it read and each one's repository count, and fails
+// where the case attributes no row.
 func TestTheAttributionModeWritesK15sCase(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := t.Context()
@@ -243,10 +250,12 @@ func TestTheAttributionModeWritesK15sCase(t *testing.T) {
 		t.Fatalf("write k15's case: %v", err)
 	}
 	day := now.Truncate(24*time.Hour).AddDate(0, 0, -1)
-	refresh(t, database)
+	registry := refresh(t, database)
 	type tally struct{ n, via int }
 	want := map[string]map[string]tally{}
+	attributed := 0
 	for _, row := range written.Rows {
+		t.Logf("%s counts for %v, through a default repository %v", row.Row, row.CountsFor, row.ViaRepository)
 		if row.Day != day.Format(time.DateOnly) {
 			t.Fatalf("%s falls on %s, want every row on %s", row.Row, row.Day, day.Format(time.DateOnly))
 		}
@@ -256,6 +265,9 @@ func TestTheAttributionModeWritesK15sCase(t *testing.T) {
 			eval = evals.SlugPROpenToMerge
 		case strings.HasPrefix(row.Row, "deploy run"):
 			eval = evals.SlugDeployFrequency
+		}
+		if len(row.CountsFor) > 0 {
+			attributed++
 		}
 		for index, project := range row.CountsFor {
 			if want[project] == nil {
@@ -269,31 +281,57 @@ func TestTheAttributionModeWritesK15sCase(t *testing.T) {
 			want[project][eval] = held
 		}
 	}
+	if attributed == 0 {
+		t.Fatal("the case attributes no row to any project")
+	}
+	deployRepo, err := evals.DeployRepoIn(ctx, database.Pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	window := evals.Range{From: day, To: day.AddDate(0, 0, 1)}
 	series := map[string]string{evals.SlugPROpenToMerge: "minutes", evals.SlugDeployFrequency: "deploys", evals.SlugPRCI: "minutes"}
+	read := 0
 	for _, project := range written.Projects {
-		for eval, name := range series {
-			got := tally{}
-			if err := database.Pool.QueryRow(ctx, `
-				select coalesce(sum(n), 0), coalesce(sum(via_repository), 0) from eval_days
-				where project_key = $1 and eval_id = $2 and series = $3 and repo = ''`,
-				project, evals.EvalID(project, eval), name).Scan(&got.n, &got.via); err != nil {
-				t.Fatalf("read %s's %s rows: %v", project, eval, err)
+		page, err := registry.Current(ctx, []string{project}, "", 200, 0)
+		if err != nil {
+			t.Fatalf("read %s's evals: %v", project, err)
+		}
+		var entries []evals.Entry
+		for _, entry := range page.Items {
+			if _, held := series[entry.Definition.Slug]; held {
+				entries = append(entries, entry)
 			}
-			if got != want[project][eval] {
-				t.Errorf("%s's %s.%s counts %d rows, %d through a repository; the case names %d and %d",
-					project, eval, name, got.n, got.via, want[project][eval].n, want[project][eval].via)
+		}
+		if len(entries) != len(series) {
+			t.Fatalf("%s holds %d of the evals %v", project, len(entries), slices.Sorted(maps.Keys(series)))
+		}
+		rows, err := registry.DayWindow(ctx, []string{project}, entries, deployRepo, nil, window, nil)
+		if err != nil {
+			t.Fatalf("read %s's day rows of %s: %v", project, day.Format(time.DateOnly), err)
+		}
+		got, held := map[string]tally{}, 0
+		for _, row := range rows {
+			slug := strings.TrimPrefix(row.EvalID, project+"/")
+			if row.Part.Series != series[slug] {
+				continue
+			}
+			held++
+			t.Logf("%s's day row of %s.%s on %s: n %d, %d through a default repository", project, slug, row.Part.Series,
+				row.Part.Day.Format(time.DateOnly), row.Part.N, row.Part.ViaRepository)
+			got[slug] = tally{n: got[slug].n + row.Part.N, via: got[slug].via + row.Part.ViaRepository}
+		}
+		read += held
+		if project == written.Nothing && held != 0 {
+			t.Errorf("%s, the project with nothing, reads %d day rows of %v, want none: \"no data\"", project, held, slices.Sorted(maps.Keys(series)))
+		}
+		for slug, name := range series {
+			if got[slug] != want[project][slug] {
+				t.Errorf("%s's %s.%s counts %d rows, %d through a default repository; R15 names %d and %d",
+					project, slug, name, got[slug].n, got[slug].via, want[project][slug].n, want[project][slug].via)
 			}
 		}
 	}
-	// Its one row is the unowned-p0 row of today, which every project holds (its count reads
-	// issues alone).
-	if rows := count(t, database, `select count(*) from eval_days where project_key = $1 and eval_id <> $2`,
-		written.Nothing, evals.EvalID(written.Nothing, evals.SlugUnownedP0)); rows != 0 {
-		t.Errorf("%s, the project with nothing, holds %d day rows beside its unowned-p0 row", written.Nothing, rows)
-	}
-	for _, row := range written.Rows {
-		t.Logf("%s counts for %v, through a repository %v", row.Row, row.CountsFor, row.ViaRepository)
-	}
+	t.Logf("the case attributes %d of its %d rows; the read answered %d day rows of those evals", attributed, len(written.Rows), read)
 }
 
 // TestTheDeliveryModeJoinsTheLegionProject: -delivery after -legion into one project writes its

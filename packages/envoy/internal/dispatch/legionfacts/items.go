@@ -98,8 +98,8 @@ type ItemRow struct {
 // The repo column is repos' entry for the issue, "" for none: the repository the issue resolves
 // to now (ReadRepos), which the items route filters by and the Legion day rows cut by
 // (evals.ReadLegionDay). The stored row's repo is the one its facts pass resolved, which a move
-// of a mapping leaves behind until the pass that rewrites it, so a row showing it could stand in
-// one repository's list while naming another.
+// of a project's default repository leaves behind until the pass that rewrites it, so a row
+// showing it could stand in one repository's list while naming another.
 func ItemRows(rows []Row, repos map[string]string) []ItemRow {
 	items := make([]ItemRow, 0, len(rows))
 	for _, row := range rows {

@@ -82,9 +82,8 @@ func TestALegionDayWritesEachEvalInEveryCutAndRepositoryAndRecordsItsIssues(t *t
 		}
 	}
 	actor := `{"kind":"system","id":"legion-day-test"}`
-	// Neither repository is the project's default, so an issue that names none resolves to none.
-	// Each issue's repository is its own, which the day resolves when it is built.
-	exec("the repositories", `insert into repo_projects (repo, project, created_by, is_default) values ('acme/web', 'EVAL', $1, false), ('acme/api', 'EVAL', $1, false)`, actor)
+	// The project has no default repository, so an issue that names none resolves to none. Each
+	// issue's repository is its own, which the day resolves when it is built.
 	for _, issue := range []struct {
 		number int
 		repo   any

@@ -133,20 +133,20 @@ func readFeedHeads(ctx context.Context, q Querier, safe int64, checked time.Time
 }
 
 // feed is what one page of one feed read: where that feed now stands, the issues it named, the
-// filings it read (the events feed alone reads any), whether the page was full, and whether it
-// read a change of a repository's mapping (the changes feed alone reads any, readChangePage). at
-// and readAt are the changes feed's alone, which the change cursor keeps for the lost-cursor rule
+// filings it read (the events feed alone reads any), whether the page was full, and the projects
+// whose row a write moved (redefaulted: the events feed alone reads any, readEventPage). at and
+// readAt are the changes feed's alone, which the change cursor keeps for the lost-cursor rule
 // (delivery.CursorLost): at is when the change at position was recorded, nil where no change holds
 // position, and readAt when a page last read the change log to its end, the page's own reading of
 // the clock where it did and the cursor's earlier one where its page was full.
 type feed struct {
-	position int64
-	at       *time.Time
-	readAt   time.Time
-	touches  []touch
-	filings  []filing
-	full     bool
-	remapped bool
+	position    int64
+	at          *time.Time
+	readAt      time.Time
+	touches     []touch
+	filings     []filing
+	full        bool
+	redefaulted []string
 }
 
 // filing is one issue a session of the page filed whose stored filing the page can have moved
@@ -184,8 +184,9 @@ type touch struct {
 }
 
 // readEventPage is the page of events after the cursor: up to limit events above after and at or
-// below safe, with the issues those events name and the issues the sessions those events name
-// can have moved through their titles (sessionIssues).
+// below safe, with the issues those events name, the issues the sessions those events name can
+// have moved through their titles (sessionIssues), and the projects a project.updated event of the
+// page is of (redefaulted).
 //
 // The page stops at safe because events.id is not commit order. An event draws its id when its
 // write inserts the row, and two writes that wait on nothing commit out of id order, so a cursor
@@ -216,13 +217,20 @@ type touch struct {
 // filing with the filer its newest title names and the project that stores it, and the pass owes
 // it to both projects (passPage), so one pass writes it into the one and takes it out of the
 // other.
+//
+// A project.updated event is a write of the project's row, its default repository among what it
+// can move (api's putProjectDefaultRepository). A stored row's repo is the repository its issue
+// resolves to, which falls back to that default (refs.IssueRepoTerms), so the write moves the repo
+// of rows no feed names: the pass then resolves the stored rows of the project's issues again
+// (reresolveRepos).
 func readEventPage(ctx context.Context, q Querier, after, safe int64, limit int) (feed, error) {
 	rows, err := q.Query(ctx, `
 		select event.id, coalesce(issue.project_key, ''), coalesce(event.issue_key, ''),
 		       coalesce(event.payload -> 'changed' @> '["parent"]', false),
 		       case when event.actor ->> 'kind' = 'session' then coalesce(event.actor ->> 'id', '') else '' end,
 		       case when event.actor ->> 'kind' = 'session'
-		            then coalesce(event.actor -> 'origin' ->> 'session_title', '') else '' end
+		            then coalesce(event.actor -> 'origin' ->> 'session_title', '') else '' end,
+		       case when event.type = 'project.updated' then coalesce(event.project_key, '') else '' end
 		from events event
 		left join issues issue on issue.key = event.issue_key
 		where event.id > $1 and event.id <= $2
@@ -237,10 +245,11 @@ func readEventPage(ctx context.Context, q Querier, after, safe int64, limit int)
 	count := 0
 	sessions := map[string]bool{}
 	titles := map[string]bool{}
+	redefaulted := map[string]bool{}
 	for rows.Next() {
 		var touched touch
-		var session, title string
-		if err := rows.Scan(&page.position, &touched.project, &touched.issue, &touched.moved, &session, &title); err != nil {
+		var session, title, updated string
+		if err := rows.Scan(&page.position, &touched.project, &touched.issue, &touched.moved, &session, &title, &updated); err != nil {
 			return feed{}, fmt.Errorf("read the events after %d: %w", after, err)
 		}
 		count++
@@ -250,6 +259,9 @@ func readEventPage(ctx context.Context, q Querier, after, safe int64, limit int)
 		if title != "" {
 			titles[title] = true
 		}
+		if updated != "" {
+			redefaulted[updated] = true
+		}
 		if touched.project != "" {
 			page.touches = append(page.touches, touched)
 		}
@@ -258,6 +270,7 @@ func readEventPage(ctx context.Context, q Querier, after, safe int64, limit int)
 		return feed{}, fmt.Errorf("read the events after %d: %w", after, err)
 	}
 	page.full = count == limit
+	page.redefaulted = slices.Sorted(maps.Keys(redefaulted))
 	named := slices.Sorted(maps.Keys(sessions))
 	worked, filed, err := sessionIssues(ctx, q, named, slices.Sorted(maps.Keys(titles)))
 	if err != nil {
@@ -532,12 +545,6 @@ func blockMoved(before, after []byte) bool {
 // only where the pull request's merge before the change, the change's t_old, is the stored
 // merge, and no pull request of the issue merged at that moment any more (lostMerges).
 //
-// It also keeps whether the page holds a change of a repository's mapping in repo_projects, a
-// `settings` change that names the repository (migration 20261117100020). A stored row's repo is
-// the repository its issue resolves to, and the rule falls back to the project's default mapping
-// (refs.IssueRepoTerms), so a mapping change moves the repo of rows no feed names: the pass then
-// resolves every stored row's repository again (reresolveRepos).
-//
 // It also answers whether the cursor may have passed over changes it never read, by the change
 // log's one rule (delivery.CursorLost), judged at checked, the page's own reading of the clock: a
 // log holding rows whose newest seq stands below the cursor, its sequence restarted; or the change
@@ -562,9 +569,6 @@ func readChangePage(ctx context.Context, q Querier, after delivery.ChangeCursor,
 	repos, refs := make([]string, 0, len(changes)), make([]string, 0, len(changes))
 	merges := []time.Time{}
 	for _, change := range changes {
-		if change.Kind == delivery.ChangeKindSettings && change.Repo != "" {
-			page.remapped = true
-		}
 		// A pull request's merge time is the one delivery fact an issue's facts read.
 		if change.Kind != delivery.ChangeKindPullRequest {
 			continue

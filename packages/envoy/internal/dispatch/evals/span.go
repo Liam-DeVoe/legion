@@ -51,13 +51,12 @@ import (
 // the span ends at the last day the stored rows are whole through (eval_days_serving), and the walk
 // builds each later day from the first input days of the days before it, the span's among them.
 //
-// What else rebuilds many days is no span. A change of a repository's mapping in repo_projects
-// begins the walks again, which rebuild their days in the open a batch a pass, each day a commit
-// of its own: a walk restart, as a database or a project first seen is walked. A release, a lost
-// change cursor and a database whose rows' settings are not recorded rebuild the served rows aside
-// and flip what moved in one commit (rebuild.go); a page that writes days while one runs keeps
-// their zero rows (servingNext), and the triggers of the day rows queue them, a span's among them,
-// for the rebuild to build again before its flip.
+// What else rebuilds many days is no span. A database or a project first seen is walked, its days
+// built in the open a batch a pass, each day a commit of its own. A release, a lost change cursor
+// and a database whose rows' settings are not recorded rebuild the served rows aside and flip what
+// moved in one commit (rebuild.go); a page that writes days while one runs keeps their zero rows
+// (servingNext), and the triggers of the day rows queue them, a span's among them, for the rebuild
+// to build again before its flip.
 
 // dayFamily is one family of computed day rows a page writes whole days of: the walk that builds
 // its days, the name its rows carry in a refusal, its evals and its families of eval_day_members.
@@ -1000,13 +999,13 @@ func deleteDayRows(ctx context.Context, tx pgx.Tx, rows []DayRow) error {
 // once over the history as the settings rewrite reads it (rewriteSettings): every population pull
 // request and, for each repository a tracked key reads as the deploy repository, every deploy run
 // on main with its jobs of the names the production rule judges by and the deploy cards follow
-// (delivery.ReadHistoryRows), the projects of the issues the pull requests name, repo_projects, and
-// containment over each repository's history (historyOf). A day's rows are each repository's
+// (delivery.ReadHistoryRows), the projects of the issues the pull requests name (readAttribution),
+// and containment over each repository's history (historyOf). A day's rows are each repository's
 // DeliveryDay of it as readDeliveryDay builds it from those rows, and the pull requests' alone
 // where a key no deploy repository moves is active. The PR-checks runs, which the history does
 // not hold, are read of a day only where a pr-ci key is active on it and the repository holds one
 // that day (checkDays, one read of a repository's days), by the read the walk's day makes
-// (delivery.ReadCIRows).
+// (delivery.ReadCIRows), with the projects of their pull requests (readAttribution).
 func (r *refresh) deliverySpanInput(ctx context.Context, tracked map[string]map[evalKey]*trackedKey, reach time.Time) (spanInput, error) {
 	pool := r.store.database.Pool
 	next := *r.settings
@@ -1047,14 +1046,6 @@ func (r *refresh) deliverySpanInput(ctx context.Context, tracked map[string]map[
 			return err
 		},
 		func(ctx context.Context) error {
-			if r.repos != nil {
-				return nil
-			}
-			mapped, err := readRepoProjects(ctx, r.store)
-			r.repos = &mapped
-			return err
-		},
-		func(ctx context.Context) error {
 			for _, repo := range slices.Sorted(maps.Keys(checked)) {
 				days, err := r.store.checkDays(ctx, repo, start, reach.AddDate(0, 0, 1))
 				if err != nil {
@@ -1080,16 +1071,15 @@ func (r *refresh) deliverySpanInput(ctx context.Context, tracked map[string]map[
 			prsByDay[day] = append(prsByDay[day], i)
 		}
 	}
-	issueProjects, err := readIssueProjects(ctx, r.store, issueKeys)
+	attribute, err := readAttribution(ctx, r.store, issueKeys, nil)
 	if err != nil {
 		return spanInput{}, err
 	}
-	attribute := attribution{issues: issueProjects, repos: *r.repos}
 	histories := make(map[string]repoHistory, len(repos))
 	for _, repo := range repos {
 		histories[repo.name] = historyOf(repo, history.Deploys[repo.name], prs, production)
 	}
-	checks := map[string]map[time.Time]delivery.RunsWithJobs{}
+	checks := map[string]map[time.Time]checkDay{}
 	raw := func(ctx context.Context, day time.Time, active map[string]map[evalKey]*trackedKey) (map[string]ProjectDay, error) {
 		alone, as, ci := false, map[string]bool{}, map[string]bool{}
 		for project, keys := range active {
@@ -1130,21 +1120,25 @@ func (r *refresh) deliverySpanInput(ctx context.Context, tracked map[string]map[
 				_, reached := h.applied[run.RunID]
 				one.deploys = append(one.deploys, attribute.deploy(run, reached, h.shipped[run.RunID]))
 			}
-			one.pushes, one.pushJobs = attribute.ciRuns(h.pushesByDay[day]), h.jobs
+			one.pushes, one.pushJobs = attribute.pushRuns(h.pushesByDay[day], one.deploys), h.jobs
 			if ci[name] {
-				rows, read := checks[name][day]
+				held, read := checks[name][day]
 				if !read {
 					ciRows, err := delivery.ReadCIRows(ctx, pool, name, day, day.AddDate(0, 0, 1), cardNames)
 					if err != nil {
 						return nil, fmt.Errorf("read the CI runs of %s on %s: %w", name, day.Format(time.DateOnly), err)
 					}
-					if checks[name] == nil {
-						checks[name] = map[time.Time]delivery.RunsWithJobs{}
+					checkAttribute, err := readAttribution(ctx, r.store, nil, ciRows.Checks.Runs)
+					if err != nil {
+						return nil, err
 					}
-					rows = ciRows.Checks
-					checks[name][day] = rows
+					if checks[name] == nil {
+						checks[name] = map[time.Time]checkDay{}
+					}
+					held = checkDay{runs: checkAttribute.checkRuns(ciRows.Checks.Runs), jobs: ciRows.Checks.Jobs}
+					checks[name][day] = held
 				}
-				one.checks, one.checkJobs = attribute.ciRuns(rows.Runs), rows.Jobs
+				one.checks, one.checkJobs = held.runs, held.jobs
 			}
 			read.repos, read.days = append(read.repos, name), append(read.days, one)
 		}
@@ -1176,6 +1170,13 @@ func (r *refresh) deliverySpanInput(ctx context.Context, tracked map[string]map[
 		return rowsOf(rows, key)
 	}
 	return spanInput{raw: raw, zeros: zeros}, nil
+}
+
+// checkDay is one repository's PR-checks runs of a day a span reads, each attributed to its
+// projects, with every job of each.
+type checkDay struct {
+	runs []dayCIRun
+	jobs map[int64][]delivery.DeliveryRunJob
 }
 
 // checkDays is each UTC day from from up to to on which repo holds a PR-checks run: the days a
