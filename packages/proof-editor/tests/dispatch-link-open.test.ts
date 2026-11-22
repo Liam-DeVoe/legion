@@ -207,32 +207,300 @@ test("a click on a link inside commented text opens the link and names no commen
   );
 });
 
-test("a click that ends a drag across a link opens nothing", async () => {
+/** Where the pointer is for a press, a move, a release or a click, in CSS pixels from the
+ *  window's corner: happy-dom lays nothing out, so a row names the place itself. */
+function pointer(clientX: number, clientY = 10): MouseEventInit {
+  return { clientX, clientY };
+}
+
+/** The pointer at `clientX`, `clientY` with the primary button held, as a drag moves it. */
+function held(clientX: number, clientY = 10): MouseEventInit {
+  return { ...pointer(clientX, clientY), buttons: 1 };
+}
+
+/** A plain click on `link` as a browser sends it, the pointer at `point` from the press to the
+ *  release: the press and the release, which ProseMirror hears too, then the click, offered to
+ *  the editor alone (`offer`), so that one the editor leaves to the browser follows nothing.
+ *  Answers whether the editor took the click. */
+function plainClick(view: EditorView, link: Element, point: MouseEventInit): boolean {
+  dispatch(link, "mousedown", point);
+  dispatch(link, "mouseup", point);
+  return offer(view, link, "click", point).handled;
+}
+
+/** `node`, which a row expects to be a text node of the paragraph. */
+function textOf(node: Node | null): Node {
+  if (node === null || node.nodeType !== 3) throw new Error("no text node there");
+  return node;
+}
+
+/** Selects the page's text from `start` in `from` to `end` in `to`, as a drag over it leaves
+ *  it, or the reader's selection the selection bar's Comment starts from. */
+function selectText(view: EditorView, from: Node, start: number, to: Node, end: number): Selection {
+  const selection = view.dom.ownerDocument.getSelection();
+  if (selection === null) throw new Error("the page has no selection");
+  const range = view.dom.ownerDocument.createRange();
+  range.setStart(from, start);
+  range.setEnd(to, end);
+  selection.removeAllRanges();
+  selection.addRange(range);
+  return selection;
+}
+
+/** Puts the editable editor in a state with `make`, then makes one plain click on "the other
+ *  issue" (`plainClick`), and answers whether the editor took that click and every target the
+ *  host was handed to open, `make`'s own included. */
+async function plainClickAfter(
+  make: (view: EditorView, issue: Element) => void
+): Promise<{ readonly handled: boolean; readonly opened: Array<[string, boolean]> }> {
+  const { openLink, opened } = recordedOpener();
+  let handled = false;
+  await withMarksEditor(
+    LINKS,
+    ({ view }) => {
+      const issue = linkOf(view, "the other issue");
+      make(view, issue);
+      handled = plainClick(view, issue, pointer(60));
+    },
+    { openLink }
+  );
+  return { handled, opened };
+}
+
+// dispatch://INFRA-2160, R1: a plain click opens a link, each time. A click is a primary press
+// and its release on one link with the pointer moved no more than 4 px between them, whatever the
+// page held before the press; a drag is a move between them. With a sentence holding a link
+// selected, the editor read the selection as a drag's end, so one plain click on the link opened
+// nothing and only cleared the selection, and a second click opened it.
+test("a plain click on a link opens it when a selection holds the link", async () => {
+  const clicked = await plainClickAfter((view, issue) => {
+    // "and the other issue today", as the reader selects a sentence to comment on it.
+    const selection = selectText(
+      view,
+      textOf(issue.previousSibling),
+      1,
+      textOf(issue.nextSibling),
+      6
+    );
+    expect(selection.toString()).toBe("and the other issue today");
+  });
+
+  expect(clicked).toEqual({ handled: true, opened: [["dispatch://CORE-2", false]] });
+});
+
+test("a plain click on a link opens it when a selection elsewhere in the document stands", async () => {
+  const clicked = await plainClickAfter((view, issue) => {
+    // "today", after the link.
+    const after = textOf(issue.nextSibling);
+    const selection = selectText(view, after, 1, after, 6);
+    expect(selection.toString()).toBe("today");
+  });
+
+  expect(clicked).toEqual({ handled: true, opened: [["dispatch://CORE-2", false]] });
+});
+
+test("a plain click on a link opens it when the caret is inside the link", async () => {
+  const clicked = await plainClickAfter((view, issue) => {
+    const selection = view.dom.ownerDocument.getSelection();
+    if (selection === null) throw new Error("the page has no selection");
+    selection.collapse(textOf(issue.firstChild), 4);
+    expect(selection.isCollapsed).toBe(true);
+  });
+
+  expect(clicked).toEqual({ handled: true, opened: [["dispatch://CORE-2", false]] });
+});
+
+for (const [key, modifier] of [
+  ["Ctrl", { ctrlKey: true }],
+  ["Cmd", { metaKey: true }],
+] as const) {
+  test(`a plain click on a link opens it after a ${key} click on the link`, async () => {
+    const clicked = await plainClickAfter((view, issue) => {
+      // The modified click as a browser sends it, where the plain click lands after it.
+      const point = { ...pointer(60), ...modifier };
+      dispatch(issue, "mousedown", point);
+      dispatch(issue, "mouseup", point);
+      offer(view, issue, "click", point);
+    });
+
+    expect(clicked).toEqual({
+      handled: true,
+      opened: [
+        ["dispatch://CORE-2", true],
+        ["dispatch://CORE-2", false],
+      ],
+    });
+  });
+}
+
+test("a plain click on a link opens it after a middle click on the link", async () => {
+  const clicked = await plainClickAfter((view, issue) => {
+    const point = { ...pointer(60), button: 1 };
+    dispatch(issue, "mousedown", point);
+    dispatch(issue, "mouseup", point);
+    offer(view, issue, "auxclick", point);
+  });
+
+  expect(clicked).toEqual({
+    handled: true,
+    opened: [
+      ["dispatch://CORE-2", true],
+      ["dispatch://CORE-2", false],
+    ],
+  });
+});
+
+// dispatch://INFRA-2160, R1: a drag on a link selects its words and opens nothing. What the rule
+// reads is the press on the link and how far the pointer moved from it before the click: more
+// than 4 px along either axis at any moment between the press and the release, as ProseMirror
+// reads a drag.
+test("a drag that starts on a link and ends on it opens nothing, and a click whose pointer moved 4 px opens it", async () => {
+  const { openLink, opened } = recordedOpener();
+  await withMarksEditor(
+    LINKS,
+    ({ view }) => {
+      const issue = linkOf(view, "the other issue");
+      const words = textOf(issue.firstChild);
+
+      // The drag over "other": the press, the pointer 5 px on, one past the threshold, the
+      // words it went over selected, and the release and the click there.
+      dispatch(issue, "mousedown", pointer(60));
+      dispatch(issue, "mousemove", held(65));
+      selectText(view, words, 4, words, 9);
+      dispatch(issue, "mouseup", pointer(65));
+      const dragged = offer(view, issue, "click", pointer(65)).handled;
+      // A click no press came before, as a script or assistive technology makes, opens the link:
+      // the drag's click forgot its press.
+      const unpressed = offer(view, issue, "click", pointer(0, 0)).handled;
+
+      // A drag along the link and back: the release is 1 px from the press, and the pointer went
+      // 20 px away between them. The page's selection is back at the press.
+      view.dom.ownerDocument.getSelection()?.collapse(words, 4);
+      dispatch(issue, "mousedown", pointer(60));
+      dispatch(issue, "mousemove", held(80));
+      dispatch(issue, "mousemove", held(61));
+      dispatch(issue, "mouseup", pointer(61));
+      const returned = offer(view, issue, "click", pointer(61)).handled;
+
+      // A press the browser turns into a drag of its own, for which Chromium sends neither a
+      // release nor a click: once the pointer moves with no button held, the press is over, and a
+      // click no press came before opens the link.
+      dispatch(issue, "mousedown", pointer(60));
+      dispatch(issue, "mousemove", held(70));
+      dispatch(issue, "mousemove", pointer(60));
+      const afterNativeDrag = offer(view, issue, "click", pointer(0, 0)).handled;
+
+      // A hand that trembles 4 px along each axis between the press and the release still clicks.
+      dispatch(issue, "mousedown", pointer(60, 10));
+      dispatch(issue, "mousemove", held(64, 14));
+      dispatch(issue, "mouseup", pointer(64, 14));
+      const trembled = offer(view, issue, "click", pointer(64, 14)).handled;
+
+      expect({ afterNativeDrag, dragged, opened, returned, trembled, unpressed }).toEqual({
+        afterNativeDrag: true,
+        dragged: false,
+        opened: [
+          ["dispatch://CORE-2", false],
+          ["dispatch://CORE-2", false],
+          ["dispatch://CORE-2", false],
+        ],
+        returned: false,
+        trembled: true,
+        unpressed: true,
+      });
+    },
+    { openLink }
+  );
+});
+
+// dispatch://INFRA-2160, R1: the editor hears the pointer of a press on a link where ProseMirror
+// hears its own press's, on the page the editor is in, until the release: a drag that leaves the
+// editor and comes back to the press is a drag, as ProseMirror reads it.
+test("a drag that leaves the editor and comes back to the press opens nothing, and the same press and release with no move between them opens the link", async () => {
+  const { openLink, opened } = recordedOpener();
+  await withMarksEditor(
+    LINKS,
+    ({ view }) => {
+      const issue = linkOf(view, "the other issue");
+      const page = view.dom.ownerDocument.body;
+      expect(view.dom.contains(page)).toBe(false);
+
+      // The press, the pointer out of the editor 200 px away, back over the link at the press,
+      // and the release and the click there.
+      dispatch(issue, "mousedown", pointer(60));
+      dispatch(page, "mousemove", held(260));
+      dispatch(issue, "mousemove", held(60));
+      dispatch(issue, "mouseup", pointer(60));
+      const left = offer(view, issue, "click", pointer(60)).handled;
+
+      // The same press and release, the pointer staying where it went down.
+      const stayed = plainClick(view, issue, pointer(60));
+
+      // A drag released outside the editor: the release ends the press, since no click on the
+      // link can follow it, and a click no press came before opens the link.
+      dispatch(issue, "mousedown", pointer(60));
+      dispatch(page, "mousemove", held(260));
+      dispatch(page, "mouseup", pointer(260));
+      const releasedOutside = offer(view, issue, "click", pointer(0, 0)).handled;
+
+      expect({ left, opened, releasedOutside, stayed }).toEqual({
+        left: false,
+        opened: [
+          ["dispatch://CORE-2", false],
+          ["dispatch://CORE-2", false],
+        ],
+        releasedOutside: true,
+        stayed: true,
+      });
+    },
+    { openLink }
+  );
+});
+
+// dispatch://INFRA-2160, R1: a drag from the words before a link onto it selects them and opens
+// nothing. Its press is on the paragraph, not on the link, so no press on the link is noted; its
+// release is on the link, and the browser sends the click to the nearest element holding both,
+// the paragraph, which is no link.
+test("a drag that ends on a link opens nothing, and a Ctrl or a plain click on the link after it opens it", async () => {
   const { openLink, opened } = recordedOpener();
   await withMarksEditor(
     LINKS,
     ({ view }) => {
       const away = linkOf(view, "the plan");
-      const before = away.previousSibling ?? away.parentElement?.firstChild;
-      const inside = away.firstChild;
-      if (before === null || before === undefined || inside === null) throw new Error("no text");
-      const range = view.dom.ownerDocument.createRange();
-      range.setStart(before, 0);
-      range.setEnd(inside, 3);
-      const selection = view.dom.ownerDocument.getSelection();
-      selection?.removeAllRanges();
-      selection?.addRange(range);
+      const paragraph = view.dom.querySelector("p");
+      if (paragraph === null || away.parentElement !== paragraph) {
+        throw new Error("the link is not drawn straight inside its paragraph");
+      }
 
-      expect(offer(view, away, "click").handled).toBe(false);
-      expect(opened).toEqual([]);
-      // A Ctrl click opens the link whatever the selection: the editor takes its press, so the
-      // press starts no drag and leaves the selection across the link as it was.
-      expect(offer(view, away, "click", { ctrlKey: true }).handled).toBe(true);
-      expect(opened).toEqual([["https://example.com/a", true]]);
+      // The press on "Read", the pointer across onto "the", the words between selected, and the
+      // release on the link.
+      dispatch(paragraph, "mousedown", pointer(2));
+      dispatch(paragraph, "mousemove", { ...pointer(30), buttons: 1 });
+      const selection = selectText(
+        view,
+        textOf(away.previousSibling),
+        0,
+        textOf(away.firstChild),
+        3
+      );
+      dispatch(away, "mouseup", pointer(30));
+      const dragged = offer(view, paragraph, "click", pointer(30)).handled;
 
-      // Once the selection collapses, the next click opens it.
-      selection?.collapse(inside, 1);
-      expect(offer(view, away, "click").handled).toBe(true);
+      // A Ctrl click on the link opens it in a new tab, and a plain click in place, the selection
+      // the drag made standing through both: the editor takes the Ctrl click's press, and the
+      // plain click's moves no further than its press.
+      const ctrl = { ...pointer(30), ctrlKey: true };
+      dispatch(away, "mousedown", ctrl);
+      dispatch(away, "mouseup", ctrl);
+      const newTab = offer(view, away, "click", ctrl).handled;
+      const plain = plainClick(view, away, pointer(30));
+
+      expect({ dragged, newTab, plain, selected: selection.toString() }).toEqual({
+        dragged: false,
+        newTab: true,
+        plain: true,
+        selected: "Read the",
+      });
       expect(opened).toEqual([
         ["https://example.com/a", true],
         ["https://example.com/a", false],
@@ -243,9 +511,9 @@ test("a click that ends a drag across a link opens nothing", async () => {
 });
 
 // dispatch://INFRA-2160, R1: ProseMirror reads a primary press with Ctrl (Cmd on a Mac) as
-// selecting the node it lands in, here the paragraph around the link. That selection stood after
-// the Ctrl+click had opened the link in a new tab, and the next plain click on the link read it as
-// the end of a drag across the link and opened nothing.
+// selecting the node it lands in, here the paragraph around the link, which took the place of
+// the reader's caret or selection when the Ctrl+click opened the link in a new tab. The editor
+// takes that press, so the click opens the link and changes nothing in the document's selection.
 test("a Ctrl or Cmd click on a link leaves the selection as it was, and a plain click after it opens the link", async () => {
   for (const modifier of [{ ctrlKey: true }, { metaKey: true }] satisfies MouseEventInit[]) {
     const { openLink, opened } = recordedOpener();
