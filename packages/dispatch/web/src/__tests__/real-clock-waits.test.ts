@@ -51,39 +51,41 @@ import { afterOnFakeClock, onFakeClock } from "./fake-clock";
  * ways alone. One is `afterOnFakeClock` (`fake-clock.ts`), which refuses the real clock itself: a
  * row that stands in for an answer that takes time to come sets its timer there, and the
  * `setTimeout` inside that helper's own body is passed by its file and its function's name. The
- * other is a comment within `REASON_WINDOW` lines above the call that holds the words "stays on
- * the real clock" and after them a reason of at least `REASON_WORDS` words of letters, on that
- * line or on the comment lines that continue it; a comment that only mentions the real clock
- * passes nothing. The file is read by the TypeScript parser, so a call is found however it is
- * spelled or wrapped (inside `act(...)`, across lines),
- * and a comment or a string that spells one is none. A zero-delay timer is a wait of real time
- * too: what has run by its turn - a timer of the product's, a render, a promise of the library's -
- * depends on how loaded the machine is, so a row waits for the condition its step stands for, or
- * moves the fake clock over the product's own zero-delay timer with `tick(0)`. A frame and a turn
- * of the loop are of the same kind (dispatch://INFRA-983, the architect's ruling): a row that
- * awaits a `requestAnimationFrame` or a `setImmediate` waits one turn for a thing to have
- * happened, instead of waiting for the thing. Bun's fake clock holds neither: happy-dom runs a
- * frame as a `setImmediate` of the real loop, and `jest.advanceTimersByTime` runs neither, so a
- * row waits for what the frame or the turn brings, and a wait that has nothing else to wait for
- * says why it stays. The scan reads a test's own calls: a product function the row tests that sets
- * a timer itself is the product's code, not a wait of the row's. The act-rule inputs
- * (`*.fixture.tsx`) are written to break rules and are left out. A file that imports `bun:test` or
- * Testing Library is a test file or a helper whatever its name, and the scan holds itself to
- * reading every such file.
+ * other is a marker, which works as the jest-dom one of `check-fireevent-reasons.sh` does, by the
+ * architect's ruling: the comment block directly above the statement that holds the wait, with no
+ * blank line between, holds the words "stays on the real clock" and after them, anywhere in that
+ * block, a reason of at least `REASON_WORDS` words of letters. The statement is the first one, the
+ * declaration or the class member that starts after the block, as the parser gives it: the wait's
+ * own statement, or a helper whose doc comment holds the marker and whose body holds the wait
+ * (`/** … stays on the real clock … *\/ function nextFrame() {…}`). One marker covers one wait: a
+ * statement that holds two waits or more passes none of them under its marker, so each carries a
+ * marker of its own, and a comment that only mentions the real clock passes nothing. The file is
+ * read by the TypeScript parser, so a call is found however it is spelled or wrapped (inside
+ * `act(...)`, across lines), and a comment or a string that spells one is none. A zero-delay
+ * timer is a wait of real time too: what has run by its turn - a timer of the product's, a render,
+ * a promise of the library's - depends on how loaded the machine is, so a row waits for the
+ * condition its step stands for, or moves the fake clock over the product's own zero-delay timer
+ * with `tick(0)`. A frame and a turn of the loop are of the same kind (dispatch://INFRA-983, the
+ * architect's ruling): a row that awaits a `requestAnimationFrame` or a `setImmediate` waits one
+ * turn for a thing to have happened, instead of waiting for the thing. Bun's fake clock holds
+ * neither: happy-dom runs a frame as a `setImmediate` of the real loop, and
+ * `jest.advanceTimersByTime` runs neither, so a row waits for what the frame or the turn brings,
+ * and a wait that has nothing else to wait for says why it stays. The scan reads a test's own
+ * calls: a product function the row tests that sets a timer itself is the product's code, not a
+ * wait of the row's. The act-rule inputs (`*.fixture.tsx`) are written to break rules and are left
+ * out. A file that imports `bun:test` or Testing Library is a test file or a helper whatever its
+ * name, and the scan holds itself to reading every such file.
  */
 
 const webSource = fileURLToPath(new URL("..", import.meta.url));
 
-/** A comment within this many lines above a wait may carry its reason: the kept waits carry it in
- *  the doc comment of the helper that holds them, a few lines above the timer. */
-const REASON_WINDOW = 12;
-
-/** The words a comment says a wait stays on the real clock in, and how many words of letters, at
+/** The words a marker says a wait stays on the real clock in, and how many words of letters, at
  *  least, the reason after them holds. */
 const MARKER = "stays on the real clock";
 const REASON_WORDS = 3;
 
-const comment = /^\s*(?:\/\/|\/\*|\*|\{\/\*)/;
+/** A blank line: two line ends with nothing but spaces between. */
+const blankLine = /\n[ \t]*\r?\n/;
 
 /** A word of letters: `why`, `can't` and `fake-clock` are one each, `(INFRA-1505)` and `500`
  *  none. */
@@ -575,30 +577,54 @@ function isFakeClockTimer(file: string, wait: ts.Node): boolean {
   );
 }
 
-/** Whether a comment within `REASON_WINDOW` lines above line `index` says the wait there stays on
- *  the real clock and why: a comment line holds `MARKER`, and the rest of that line with the
- *  comment lines that continue it holds `REASON_WORDS` words of letters or more. */
-function saysWhy(lines: readonly string[], index: number): boolean {
-  for (let at = Math.max(0, index - REASON_WINDOW); at < index; at += 1) {
-    const line = lines[at] ?? "";
-    const marker = line.indexOf(MARKER);
-    if (marker === -1 || !comment.test(line)) continue;
-    let reason = line.slice(marker + MARKER.length);
-    for (let next = at + 1; next < index && !reason.includes("*/"); next += 1) {
-      const continued = lines[next] ?? "";
-      if (!comment.test(continued)) break;
-      reason += ` ${continued}`;
-    }
-    if ((reason.match(wordOfLetters) ?? []).length >= REASON_WORDS) return true;
+/** The comment block directly above `statement`: the comments before it, back from the last one,
+ *  while no blank line parts one from the next or the last from the statement. Empty where a
+ *  blank line parts the last comment from it, or no comment stands above it on a line of its own
+ *  (a comment after the statement before is that one's). */
+function commentAbove(text: string, statement: ts.Node, source: ts.SourceFile): string {
+  const block: string[] = [];
+  let end = statement.getStart(source);
+  for (const range of (ts.getLeadingCommentRanges(text, statement.pos) ?? []).reverse()) {
+    if (blankLine.test(text.slice(range.end, end))) break;
+    block.unshift(text.slice(range.pos, range.end));
+    end = range.pos;
+  }
+  return block.join("\n");
+}
+
+/** Whether `block` says why a wait stays on the real clock: it holds `MARKER`, and the rest of the
+ *  block after it holds `REASON_WORDS` words of letters or more. */
+function saysWhy(block: string): boolean {
+  const marker = block.indexOf(MARKER);
+  if (marker === -1) return false;
+  const reason = block.slice(marker + MARKER.length);
+  return (reason.match(wordOfLetters) ?? []).length >= REASON_WORDS;
+}
+
+/** Whether a marker covers `wait`, one of the file's `waits`: a statement, a declaration or a
+ *  class member that holds it - its own, or a helper around it - has a marker directly above it
+ *  (`commentAbove`, `saysWhy`), and holds no other of `waits`. */
+function isMarked(
+  wait: ts.Node,
+  waits: readonly ts.Node[],
+  text: string,
+  source: ts.SourceFile
+): boolean {
+  for (let at: ts.Node | undefined = wait; at !== undefined; at = at.parent) {
+    if (!ts.isStatement(at) && !ts.isClassElement(at)) continue;
+    const statement = at;
+    const held = waits.filter((each) => each.pos >= statement.pos && each.end <= statement.end);
+    if (held.length === 1 && saysWhy(commentAbove(text, statement, source))) return true;
   }
   return false;
 }
 
-/** The waits of real time `text` starts, each with whether a comment above it says why it stays
- *  on the real clock: every call of a wait, and every reference to a wait that the file hands on
- *  out of the scan's view (`placeOf`), which whatever it reaches may start. A reference to what
- *  holds waits - `Bun`, a timers module, a scheduler - is found where the file exports it, since
- *  the file that imports it calls its waits under a name the scan does not know. */
+/** The waits of real time `text` starts, each with whether a marker directly above it says why it
+ *  stays on the real clock (`isMarked`): every call of a wait, and every reference to a wait that
+ *  the file hands on out of the scan's view (`placeOf`), which whatever it reaches may start. A
+ *  reference to what holds waits - `Bun`, a timers module, a scheduler - is found where the file
+ *  exports it, since the file that imports it calls its waits under a name the scan does not
+ *  know. */
 export function realWaits(file: string, text: string): RealWait[] {
   const source = ts.createSourceFile(
     file,
@@ -609,9 +635,8 @@ export function realWaits(file: string, text: string): RealWait[] {
   );
   const names = waitNames(source);
   const lines = text.split("\n");
-  const found: RealWait[] = [];
+  const waits: ts.Node[] = [];
   const visit = (node: ts.Node): void => {
-    const waits: ts.Node[] = [];
     if (ts.isCallExpression(node) && startsWait(node.expression, names)) waits.push(node);
     if (ts.isExportDeclaration(node)) {
       waits.push(...exportedWaits(node, names));
@@ -620,18 +645,17 @@ export function realWaits(file: string, text: string): RealWait[] {
       const place = stands.length === 0 ? "kept" : placeOf(node);
       if (stands.includes("wait") ? place !== "kept" : place === "exported") waits.push(node);
     }
-    for (const wait of waits) {
-      if (isFakeClockTimer(file, wait)) continue;
-      const index = source.getLineAndCharacterOfPosition(wait.getStart(source)).line;
-      found.push({
-        reasoned: saysWhy(lines, index),
-        site: `${file}:${index + 1}: ${(lines[index] ?? "").trim()}`,
-      });
-    }
     ts.forEachChild(node, visit);
   };
   visit(source);
-  return found;
+  const real = waits.filter((wait) => !isFakeClockTimer(file, wait));
+  return real.map((wait) => {
+    const index = source.getLineAndCharacterOfPosition(wait.getStart(source)).line;
+    return {
+      reasoned: isMarked(wait, real, text, source),
+      site: `${file}:${index + 1}: ${(lines[index] ?? "").trim()}`,
+    };
+  });
 }
 
 const sources = sourceFiles(webSource);
@@ -818,7 +842,7 @@ test("a frame and a turn are found, global or a member, and the setImmediate of 
   expect(
     refused.map((text) => realWaits("refused.test.tsx", text).map((wait) => wait.reasoned))
   ).toEqual(refused.map(() => [false]));
-  const kept = [MARKED, "requestAnimationFrame(run);", "setImmediate(run);"].join("\n");
+  const kept = [MARKED, "requestAnimationFrame(run);", MARKED, "setImmediate(run);"].join("\n");
   expect(realWaits("kept.test.tsx", kept).map((wait) => wait.reasoned)).toEqual([true, true]);
   const none = [
     'const frame = spyOn(window, "requestAnimationFrame").mockImplementation(() => 0);',
@@ -830,15 +854,17 @@ test("a frame and a turn are found, global or a member, and the setImmediate of 
 });
 
 /** Expects each of `texts` to start one wait, refused without a reason, and to pass under
- *  `MARKED`. */
+ *  `MARKED` put on a line of its own directly above the line that wait starts on. */
 function refusedAndKept(texts: readonly string[]): void {
+  const bare = texts.map((text) => realWaits("alias.test.tsx", text));
+  expect(bare.map((found) => found.map((wait) => wait.reasoned))).toEqual(texts.map(() => [false]));
+  const marked = texts.map((text, at) => {
+    const line = Number(/^[^:]+:(\d+):/.exec(bare[at]?.[0]?.site ?? "")?.[1]) - 1;
+    const lines = text.split("\n");
+    return [...lines.slice(0, line), MARKED, ...lines.slice(line)].join("\n");
+  });
   expect(
-    texts.map((text) => realWaits("alias.test.tsx", text).map((wait) => wait.reasoned))
-  ).toEqual(texts.map(() => [false]));
-  expect(
-    texts.map((text) =>
-      realWaits("alias.test.tsx", `${MARKED}\n${text}`).map((wait) => wait.reasoned)
-    )
+    marked.map((text) => realWaits("alias.test.tsx", text).map((wait) => wait.reasoned))
   ).toEqual(texts.map(() => [true]));
 }
 
@@ -1031,20 +1057,21 @@ test("a wait read, compared, written to, bound or named in a type hands nothing 
   expect(none.map((text) => realWaits("none.test.tsx", text).length)).toEqual(none.map(() => 0));
 });
 
-// A call passes when a comment within `REASON_WINDOW` lines above it holds the words "stays on the
-// real clock" and after them a reason of `REASON_WORDS` words of letters or more, on that line or
-// on the comment lines that continue it. Nothing less passes: a comment that only mentions the
-// real clock, the marker words with no reason or a one-word one, a reason in a comment of its own
-// below a line that is none, the words in a string, or a marker the wait stands too far below.
+// A wait passes when the comment block directly above the statement that holds it, with no blank
+// line between, holds the words "stays on the real clock" and after them, anywhere in the block, a
+// reason of `REASON_WORDS` words of letters or more: one comment, the comment lines that continue
+// it, a doc comment, or a block of several comments. Nothing less passes: a comment that only
+// mentions the real clock, the marker words with no reason or a one-word one, a reason in a
+// comment of its own below a blank line, the words in a string, a marker a blank line parts from
+// the statement, and a marker over a statement before the wait's.
 test("a wait passes under the marker words and a reason after them, and under nothing less", () => {
   const reasoned = (above: string): boolean[] =>
     realWaits("marked.test.ts", `${above}\nsetTimeout(run, 50);`).map((wait) => wait.reasoned);
-  const lines = (count: number): string => Array.from({ length: count }, () => "run();").join("\n");
   const marked = [
     MARKED,
     "// This one stays on the real clock (INFRA-1505)\n// for a long task that no fake clock models.",
     "/** This one stays on the real clock\n *  (INFRA-1505): the margin corrects a card in a frame. */",
-    `${MARKED}\n${lines(REASON_WINDOW - 1)}`,
+    "// The editor is reached on the next frame.\n// This one stays on the real clock (INFRA-983): the row reads\n// what no state marks but the frame.",
   ];
   const unmarked = [
     "// This waits on the real clock for the long task to end.",
@@ -1053,10 +1080,44 @@ test("a wait passes under the marker words and a reason after them, and under no
     "// This one stays on the real clock (INFRA-1505): why.",
     "// This one stays on the real clock (INFRA-1505).\n\n// A real long task that no fake clock can stand in for.",
     'const note = "This one stays on the real clock: a real long task no fake clock stands in for.";',
-    `${MARKED}\n${lines(REASON_WINDOW)}`,
+    `${MARKED}\n`,
+    `${MARKED}\nrun();`,
   ];
   expect(marked.map(reasoned)).toEqual(marked.map(() => [true]));
   expect(unmarked.map(reasoned)).toEqual(unmarked.map(() => [false]));
+});
+
+// The architect ruled that the marker works as the jest-dom one does: one marker covers one wait.
+// It covers the statement directly below it, or the helper whose doc comment holds it, and passes
+// the one wait that statement holds; a statement that holds two passes neither, and each carries a
+// marker of its own, on the statement that holds it. A marker over the statement before the
+// wait's, or one a blank line parts from it, covers nothing.
+test("one marker covers one wait: its own statement's, or the one wait of the helper it documents", () => {
+  const reasoned = (text: string): boolean[] =>
+    realWaits("one.test.ts", text).map((wait) => wait.reasoned);
+  const doc =
+    "/** Lets a frame pass. This one stays on the real clock (INFRA-983): the rows read what the frame did not do. */";
+  const frame = "  await new Promise((done) => requestAnimationFrame(done));";
+  const turn = "  await new Promise((done) => setImmediate(done));";
+  expect(reasoned(`${MARKED}\nsetTimeout(run, 50);`)).toEqual([true]);
+  expect(reasoned(`${doc}\nasync function nextFrame() {\n  run();\n${frame}\n}`)).toEqual([true]);
+  expect(
+    reasoned(`async function settle() {\n  ${MARKED}\n${frame}\n  ${MARKED}\n${turn}\n}`)
+  ).toEqual([true, true]);
+  expect(reasoned(`${MARKED}\nawait Promise.all([Bun.sleep(50), Bun.sleep(50)]);`)).toEqual([
+    false,
+    false,
+  ]);
+  expect(reasoned(`${doc}\nasync function settle() {\n${frame}\n${turn}\n}`)).toEqual([
+    false,
+    false,
+  ]);
+  expect(
+    reasoned(
+      `${MARKED}\nconst { promise, resolve } = Promise.withResolvers<void>();\nsetImmediate(resolve);`
+    )
+  ).toEqual([false]);
+  expect(reasoned(`${MARKED}\n\nsetTimeout(run, 50);`)).toEqual([false]);
 });
 
 // A row that stands in for an answer sets its timer with `afterOnFakeClock`, which refuses the real

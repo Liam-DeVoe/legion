@@ -327,9 +327,13 @@ The clock of a unit test:
   file hands on: an argument, a value it stores, returns or exports.
   A call, or a reference handed on, passes in two ways alone.
   One is `afterOnFakeClock` from `web/src/__tests__/fake-clock.ts`, which refuses the real clock.
-  The other is a comment within 12 lines above it that holds the words "stays on the real
-  clock" and, after them on that line or on the comment lines that continue it, a reason of at
-  least three words of letters, which an issue key or a number is not.
+  The other is the marker comment directly above the statement holding the wait, with no blank
+  line between (a doc comment of a helper counts for the one wait inside it), which holds the words
+  "stays on the real clock" and, after them in that comment block, a reason of at least three words
+  of letters, which an issue key or a number is not.
+  One marker covers one wait: a statement or a helper holding two waits or more passes none of them
+  under one marker, so each wait carries a marker of its own, directly above the statement that
+  holds it.
   A comment that only mentions the real clock passes nothing.
   A comment or a string that spells such a call is no call, since the scan reads the parsed file.
   The scan reads a test's own calls: a product function that the row tests, and that sets a timer
