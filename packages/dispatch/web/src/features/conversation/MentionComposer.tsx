@@ -1242,8 +1242,12 @@ export function MentionComposer({
   const statementLook = outline?.statements;
   const statementGone = (away: AwayDraft): boolean =>
     away.statement !== undefined && statementLook?.drawn(away.statement) === false;
-  const goneStatements = keptAway.filter(statementGone);
-  const keptWithLine = keptAway.filter((away) => !statementGone(away));
+  const goneStatements: AwayDraft[] = [];
+  const keptWithLine: AwayDraft[] = [];
+  for (const away of keptAway) {
+    if (statementGone(away)) goneStatements.push(away);
+    else keptWithLine.push(away);
+  }
   const goneStatementOffers =
     statementLook === undefined
       ? null

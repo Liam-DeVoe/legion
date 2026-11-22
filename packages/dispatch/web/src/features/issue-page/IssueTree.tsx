@@ -298,6 +298,10 @@ export function IssueTree({
   );
   const noteEdit = useCallback(
     (row: string) => {
+      // A row key names one node (`rowKeyOf`), so a note already held for this row on the drawn
+      // tree holds that row's node.
+      const noted = ownAct.current;
+      if (noted?.root === drawnRoot.current && noted.row === row) return;
       const id = body.current?.querySelector<HTMLElement>(rowSelectorOf(row))?.dataset.nodeId;
       if (id !== undefined) noteAct((node) => node.id === id, row);
     },
@@ -1085,10 +1089,9 @@ export function IssueTree({
   // node changed keeps the note too, moved to that tree and that node: a save lands between two of
   // their keys, so the read that draws the first edit comes before the one that drops the row.
   // Once the editing has ended, the first tree that draws the node changed or not at all ends the
-  // note. A drop of the node's row uses the note up. A count of every write that landed told
-  // nothing of this tree: the page's store of writes is the app's one store (`write-store.ts`), so
-  // a pin, or a write on another issue, made the next read by another session that dropped the
-  // focused row read as the reader's. The loss is theirs too
+  // note. A drop of the node's row uses the note up. A write's landing alone tells nothing of
+  // this tree: the page's store of writes is the app's one store (`write-store.ts`), and a pin or
+  // a write on another issue lands there too. The loss is theirs too
   // where a write of theirs from the line at the foot put the focus on the row with its landing,
   // with no key or press of theirs since (`landedOn`, `READER_PRESSES`): the write's read is sent
   // once the write lands (`held-sends.ts`'s `refreshAfter`), so the render that drops the row

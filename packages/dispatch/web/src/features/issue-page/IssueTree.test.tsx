@@ -11394,23 +11394,12 @@ async function expectReadersPlace(container: HTMLElement, id: string): Promise<v
   );
 }
 
-// A key or a press of the reader's that draws nothing - Shift, or a touch that only goes down, as
-// a scroll's does on a phone - takes no row out, so the read after it is still another session's.
-test.each([
-  ["with no act of the reader's since", undefined],
-  [
-    "after a key of the reader's that draws nothing (Shift)",
-    (user: UserEvent) => user.keyboard("{Shift}"),
-  ],
-  [
-    "after a touch of the reader's that draws nothing (a pointerdown alone)",
-    async (user: UserEvent) => {
-      const row = rowsFor(document.body, "second")[0];
-      if (row === undefined) throw new Error("the focused comment's row is not drawn");
-      await user.pointer({ keys: "[TouchA>]", target: row });
-    },
-  ],
-] as const)("a read that drops the focused row %s leaves the focus on the page's body and scrolls nothing", async (when, readerAct) => {
+/** A read by another session that drops the focused comment's row, `when` the reader did what
+ *  `readerAct` does, if anything, leaves the focus on the page's body and scrolls nothing. */
+async function expectDropLeavesBody(
+  when: string,
+  readerAct?: (user: UserEvent, client: QueryClient) => Promise<void>
+): Promise<void> {
   setViewport(1440);
   const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
   const scrolls = [
@@ -11420,8 +11409,8 @@ test.each([
   ];
   try {
     let scrolledTo = Number.NaN;
-    const { unmount } = await dropFocusedComment("j", "second", async (user) => {
-      await readerAct?.(user);
+    const { unmount } = await dropFocusedComment("j", "second", async (user, client) => {
+      await readerAct?.(user, client);
       for (const spy of scrolls) spy.mockClear();
       scrolledTo = window.scrollY;
     });
@@ -11443,6 +11432,26 @@ test.each([
     names.mockRestore();
     for (const spy of scrolls) spy.mockRestore();
   }
+}
+
+// A key or a press of the reader's that draws nothing - Shift, or a touch that only goes down, as
+// a scroll's does on a phone - takes no row out, so the read after it is still another session's.
+test.each([
+  ["with no act of the reader's since", undefined],
+  [
+    "after a key of the reader's that draws nothing (Shift)",
+    (user: UserEvent) => user.keyboard("{Shift}"),
+  ],
+  [
+    "after a touch of the reader's that draws nothing (a pointerdown alone)",
+    async (user: UserEvent) => {
+      const row = rowsFor(document.body, "second")[0];
+      if (row === undefined) throw new Error("the focused comment's row is not drawn");
+      await user.pointer({ keys: "[TouchA>]", target: row });
+    },
+  ],
+] as const)("a read that drops the focused row %s leaves the focus on the page's body and scrolls nothing", async (when, readerAct) => {
+  await expectDropLeavesBody(when, readerAct);
 });
 
 // The app holds one store of writes (`write-store.ts`), and a write of the reader's that draws
@@ -11450,8 +11459,6 @@ test.each([
 // state of that issue alone. A read by another session that then drops the focused row is still
 // none of the reader's doing, so the focus stays on the page's body and nothing scrolls.
 test("a read that drops the focused row after a pin of another issue landed leaves the focus on the page's body and scrolls nothing", async () => {
-  setViewport(1440);
-  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
   const states = spyOn(api, "getMyState").mockResolvedValue({});
   const pinned = spyOn(api, "putIssueState").mockResolvedValue({
     dismissed: [],
@@ -11459,14 +11466,8 @@ test("a read that drops the focused row after a pin of another issue landed leav
     pinned: false,
     seq: 1,
   });
-  const scrolls = [
-    spyOn(window, "scrollBy").mockImplementation(() => {}),
-    spyOn(window, "scrollTo").mockImplementation(() => {}),
-    spyOn(Element.prototype, "scrollIntoView").mockImplementation(() => {}),
-  ];
   try {
-    let scrolledTo = Number.NaN;
-    const { unmount } = await dropFocusedComment("j", "second", async (_user, client) => {
+    await expectDropLeavesBody("after a pin of another issue landed", async (_user, client) => {
       const landed = Promise.withResolvers<void>();
       const heard = writesOf(client).onOutcome((outcome) => {
         if (outcome.kind === "landed") landed.resolve();
@@ -11480,26 +11481,10 @@ test("a read that drops the focused row after a pin of another issue landed leav
         heard();
       }
       expect(pinned, "the pin of the other issue was not written").toHaveBeenCalled();
-      for (const spy of scrolls) spy.mockClear();
-      scrolledTo = window.scrollY;
     });
-    // A frame a move of the focus asked for comes.
-    await nextFrame();
-    expect(
-      document.body,
-      "a read by another session that dropped the focused row after a pin of another issue took the focus off the page's body"
-    ).toHaveFocus();
-    expect(window.scrollY, "the read after the pin scrolled the page").toBe(scrolledTo);
-    expect(
-      scrolls.map((spy) => spy.mock.calls.length),
-      "the read after the pin scrolled the page or a box"
-    ).toEqual([0, 0, 0]);
-    unmount();
   } finally {
-    names.mockRestore();
     states.mockRestore();
     pinned.mockRestore();
-    for (const spy of scrolls) spy.mockRestore();
   }
 });
 
@@ -11627,66 +11612,25 @@ test("a read that drops the focused row a write of the reader's landed on hands 
 // waits for their review, under an answered question that the frontier alone unfolded for it,
 // settles the decision, and the question's branch folds shut over the decision's row as the
 // decisions' read draws it kept. The tree the rows come from is another one, as after any read,
-// but the reader's write landed since the tree last drew the row, so the question's row, now in
-// the decision's place, takes the focus.
-test("Keep on a decision only the frontier unfolded drops its row and hands the focus to the row now in its place", async () => {
-  setViewport(1440);
-  const user = userEvent.setup();
-  const kept = spyOn(api, "keepDecision").mockResolvedValue({
-    ...decision,
-    waiting_review: false,
-  } as never);
-  const issue = (waiting: boolean) =>
-    node({
-      children: [
-        node({
-          children: [
-            node({ id: "decisions#b-d1", reference: decision.ref, type: "decision", waiting }),
-          ],
-          held: 1,
-          id: "ask-1",
-          text: "Which flag?",
-          type: "ask",
-        }),
-      ],
-      id: KEY,
-      type: "issue",
-    });
-  const view = renderTree(issue(true), {
-    artifacts: [decisionsDocument],
-    decisions: { decisions: [decision], document: null, open_questions: [] },
-  });
-  try {
-    await waitFor(() => expect(focusedRow(view.container)).toBe("ask-1"));
-    await user.keyboard("j");
-    await waitFor(() => expect(focusedRow(view.container)).toBe("decisions#b-d1"));
-    await view.findByRole("button", { name: "Keep" });
-
-    await user.keyboard("{Shift>}K{/Shift}");
-    await waitFor(() => expect(view.queryByRole("button", { name: "Keep" })).toBeNull());
-    // The decisions' read draws the decision kept.
-    await act(async () => view.reread(issue(false)));
-    expect(
-      rowsFor(view.container, "decisions#b-d1"),
-      "the question's branch did not fold over the kept decision"
-    ).toEqual([]);
-    expect(
-      focusedRow(view.container),
-      "Keep that dropped the decision's row left the focus on no row of the tree, or not on the row now in its place"
-    ).toBe("ask-1");
-    await expectReadersPlace(view.container, "ask-1");
-    view.unmount();
-  } finally {
-    kept.mockRestore();
-  }
-});
-
-// The Keep is noted on its decision's node until a read draws that node otherwise. A read by
-// another session that lands between the Keep and the decisions' read - a reply someone else wrote
-// under the decision - draws the decision as it was, what it holds aside, and keeps the note: the
-// decisions' read that then folds the question's branch over the decision is still the Keep's,
-// and the question's row, now in the decision's place, takes the focus.
-test("Keep's own read that drops the decision's row after another session's read hands the focus to the row now in its place", async () => {
+// but Keep noted the decision's node as its write landed (`own-act.ts`), so the question's row,
+// now in the decision's place, takes the focus. The note holds until a read draws that node
+// otherwise. The first row has no read between the Keep and the decisions' read. In the second,
+// a read by another session lands between them - a reply someone else wrote under the decision -
+// and draws the decision as it was, what it holds aside: the focus stays on the decision's row,
+// the note is kept, and the decisions' read that then folds the question's branch over the
+// decision is still the Keep's.
+test.each([
+  [
+    "with no read between",
+    false,
+    "Keep that dropped the decision's row left the focus on no row of the tree, or not on the row now in its place",
+  ],
+  [
+    "after another session's read",
+    true,
+    "Keep's own read, after another session's, left the focus on no row of the tree, or not on the row now in its place",
+  ],
+] as const)("Keep on a decision only the frontier unfolded drops its row %s and hands the focus to the row now in its place", async (_when, readBetween, lost) => {
   setViewport(1440);
   const user = userEvent.setup();
   const kept = spyOn(api, "keepDecision").mockResolvedValue({
@@ -11734,22 +11678,21 @@ test("Keep's own read that drops the decision's row after another session's read
 
     await user.keyboard("{Shift>}K{/Shift}");
     await waitFor(() => expect(view.queryByRole("button", { name: "Keep" })).toBeNull());
-    // Another session's read draws the tree again first, the decision as it was.
-    await act(async () => view.reread(issue(true, [reply])));
-    expect(
-      focusedRow(view.container),
-      "another session's read that drew the decision as it was took the focus off its row"
-    ).toBe("decisions#b-d1");
+    if (readBetween) {
+      // Another session's read draws the tree again first, the decision as it was.
+      await act(async () => view.reread(issue(true, [reply])));
+      expect(
+        focusedRow(view.container),
+        "another session's read that drew the decision as it was took the focus off its row"
+      ).toBe("decisions#b-d1");
+    }
     // The decisions' read draws the decision kept.
-    await act(async () => view.reread(issue(false, [reply])));
+    await act(async () => view.reread(issue(false, readBetween ? [reply] : [])));
     expect(
       rowsFor(view.container, "decisions#b-d1"),
       "the question's branch did not fold over the kept decision"
     ).toEqual([]);
-    expect(
-      focusedRow(view.container),
-      "Keep's own read, after another session's, left the focus on no row of the tree, or not on the row now in its place"
-    ).toBe("ask-1");
+    expect(focusedRow(view.container), lost).toBe("ask-1");
     await expectReadersPlace(view.container, "ask-1");
     view.unmount();
   } finally {

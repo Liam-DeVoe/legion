@@ -643,8 +643,9 @@ export const STATE_LINES = freeze({
 /** The words of two controls the box at the foot of the outline names as the way back to a draft
  *  it keeps (`ANSWER_LINES.kept_on_issue`, `kept_on_statement`): a row's Reply, and the box's
  *  control that writes on the issue instead. They stand here, ahead of `ANSWER_LINES`, because
- *  `CONTROL_LABELS` comes after it. `CONTROL_LABELS.reply` and `write_on_issue` are `main`'s
- *  lines, which this part keeps unchanged, so they repeat these words as literals. */
+ *  `CONTROL_LABELS` comes after it. `CONTROL_LABELS.reply` and `write_on_issue` repeat these
+ *  words as literals; `IssueComposer.test.tsx` holds each kept line to the words its control
+ *  draws. */
 const REPLY_WORD = "Reply";
 const WRITE_ON_ISSUE_WORDS = "Write on the issue instead";
 

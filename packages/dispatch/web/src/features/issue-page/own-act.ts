@@ -9,8 +9,9 @@ import type { TreeNode } from "./issue-tree";
  * node's own `dispatch://` address (`TreeNode.reference`, which is the decision's `ref`). The tree
  * notes that node, and a read that then drops its row is the reader's own doing, so the focus
  * goes on to the nearest row rather than to the page's body (`IssueTree.tsx`'s `ownAct`). Outside
- * a tree nothing hears it. It is a file of its own because the tree imports the row's writes
- * (`DecisionActions.tsx`), so it cannot live in either file.
+ * a tree nothing hears it. It is a file of its own: the tree imports the row's writes
+ * (`DecisionActions.tsx`), so it cannot live in the tree's file, and the tree, not any one row,
+ * is what gives it.
  */
 export const NoteOwnAct = createContext<(reference: string) => void>(() => {});
 
