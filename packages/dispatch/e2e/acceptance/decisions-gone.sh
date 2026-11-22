@@ -31,16 +31,23 @@
 # of a search that cannot find a production line.
 #
 # The third sweep is R11's: `git grep -n` for the word decisions in double quotes over
-# packages/contracts/src, packages/dispatch/web/src and packages/dispatch/e2e. It admits only the
-# Decisions view, its tab, its dispatch://KEY/decisions route and its query key; GATED_STEPS and
-# DocumentRoleSchema, which keep the value for one release; the generated step types, since the
-# gated-steps write still admits it; and test material that must still exercise the old step (a
-# unit test, and the base release's gated steps seed-decisions.sh publishes). It prints each
-# admitted line with what it serves, and fails on any other: gated-steps.ts, or a step list of
-# gated-step-approvals.e2e.ts, among them. Before it reads the checkout it reads a planted
-# instance through the same search and the same admission, as the first sweep does: a scratch git
-# repository under the run's own directory holding a copy of gated-steps.ts with one line sending
-# the step, printed as `planted hit …`, which must be reported as a hit. It then reads the daemon's
+# packages/contracts/src, packages/dispatch/web/src and packages/dispatch/e2e. It admits a line by
+# its text, never a whole file, and only a line that serves what R11 keeps: the Decisions view, its
+# tab, its dispatch://KEY/decisions route and its query key; GATED_STEPS and DocumentRoleSchema,
+# which keep the value for one release as a value they read; and the generated step types, since
+# the gated-steps write still admits it. A line that is the word alone, in a list or a union, is
+# admitted by the declaration it stands in as well (PRESET_ORDER, PLAIN_ISSUE_TABS and IssueTab,
+# and a test's TreeRead and TREE_READS). A test's line is admitted only where it exercises one of
+# those, or feeds the client a stored step or a document role GATED_STEPS or DocumentRoleSchema
+# still reads, and so is the base release's gated steps seed-decisions.sh publishes, which must
+# still hold the step. It prints each admitted line with what it serves, and fails on any other:
+# gated-steps.ts, or a step list of gated-step-approvals.e2e.ts, among them. Before it reads the
+# checkout it reads a planted instance through the same search and the same admission, as the first
+# sweep does: a scratch git repository under the run's own directory holding a copy of
+# gated-steps.ts, of each file it admits lines of the view, its tab or its route from
+# (DecisionsPanel.tsx, issue-tab-list.ts, IssuePage.tsx, page-words.ts and routes.ts) and of a web
+# test (gated-steps.test.ts), each with one line sending the step added, printed as
+# `planted hit …`, each of which must be reported as a hit. It then reads the daemon's
 # contract, which narrows now: legionDesignStep in packages/contracts/src/legion-api.ts (through
 # the two schemas that export it, LegionGateRegisterRequest's step and
 # LegionControllerSecretResponse's designGateSteps, which bun parses) and the `register_gate` step
@@ -66,14 +73,18 @@
 # that flags nothing fails rather than passes.
 #
 # Last it builds `legion` from packages/daemon/cmd/legion into a directory of its own under
-# TMPDIR (LEGION_BINARY names a build to run in its place, which a negative control's scratch copy
-# makes), never the /opt/legion/bin/legion on PATH, and runs `legion config check` three
-# times: over a legion.yaml it accepts as written (`gates.design: [spec]`), printing that
-# acceptance; over a copy whose gates.design holds decisions, criteria and spec, which must be
-# refused, the refusal naming gates.design and the steps that remain (criteria and spec), since
-# readDesignSteps in packages/daemon/internal/config/stage3.go holds that list to
-# record.DesignSteps; and over one holding the remaining steps, which must be accepted. A copy
-# holding decisions that is accepted fails printing the accepted line.
+# TMPDIR, linked with the commit this checkout stands on (`-X main.revision`, which `legion
+# version` prints, as the worker image and the release link theirs); LEGION_BINARY names a build to
+# run in its place, which a negative control's scratch copy makes and links the same way. The
+# legion it runs must report, in `legion version`, the commit `git rev-parse HEAD` reads in this
+# checkout, and must not be /opt/legion/bin/legion or the legion PATH finds, or the run fails. It
+# runs `legion config check` three times: over a legion.yaml it accepts as written
+# (`gates.design: [spec]`), printing that acceptance; over a copy whose gates.design holds
+# decisions, criteria and spec, which must be refused, the refusal naming gates.design and the
+# steps that remain (criteria and spec), since readDesignSteps in
+# packages/daemon/internal/config/stage3.go holds that list to record.DesignSteps; and over one
+# holding the remaining steps, which must be accepted. A copy holding decisions that is accepted
+# fails printing the accepted line.
 #
 # Each passing check prints `PASS: <section> <what>`. A sweep prints every line it found, and then
 # the first failing check prints `FAIL: <section> <what>: <observed>` on stderr and the run exits
@@ -87,7 +98,9 @@ usage() {
   cat >&2 <<'USAGE'
 Usage: [LEGION_BINARY=<a legion build>] bash e2e/acceptance/decisions-gone.sh
        (run from packages/dispatch; it reads the checkout this file is part of and builds that
-       checkout's packages/daemon/cmd/legion under TMPDIR unless LEGION_BINARY names a build)
+       checkout's packages/daemon/cmd/legion under TMPDIR unless LEGION_BINARY names a build,
+       which must report the checkout's HEAD in `legion version`: build it with
+       go build -ldflags "-X main.revision=$(git rev-parse HEAD)" ./cmd/legion)
 USAGE
 }
 
@@ -291,9 +304,24 @@ pass literal "no production file spells decisions.md, decisions-md, ArtifactRole
 # ---------------------------------------------------------------------------------------------
 # The third sweep: R11's, over the contracts, the web app and the e2e tree.
 # ---------------------------------------------------------------------------------------------
-# step_admission PATH TEXT: what R11 keeps the line for, or nothing.
+# enclosing_declaration PATH NUMBER: the name of the declaration that line NUMBER of PATH, under
+# sweep_root, stands in: the nearest line at or above it that opens one at the left margin (`const`,
+# `let`, `type`, `interface`, `function` or `enum`, exported or not), or nothing. A line that is the
+# word alone, in a list or a union, says nothing of what it serves; the declaration it is part of
+# does.
+enclosing_declaration() {
+  sed -n "1,${2}p" "$sweep_root/$1" |
+    sed -nE 's/^(export )?(declare )?(const|let|type|interface|function|enum) ([A-Za-z_$][A-Za-z0-9_$]*).*/\4/p' |
+    tail -n 1
+}
+
+# step_admission PATH NUMBER TEXT: what R11 keeps line NUMBER of PATH, whose text is TEXT, for, or
+# nothing. Each line is admitted by its text, and a line that is the word alone by the declaration
+# it stands in too, never by its file: any other line of the same file that spells the word is a
+# hit. A test's line is admitted only where it exercises a thing R11 keeps, or feeds the client a
+# value GATED_STEPS or DocumentRoleSchema still reads.
 step_admission() {
-  local path="$1" text="$2"
+  local path="$1" number="$2" text="$3" bare declaration=""
   case "$path" in
     packages/dispatch/web/src/features/issue/gated-steps.ts | */gated-step-approvals.e2e.ts) return 0 ;;
   esac
@@ -301,11 +329,25 @@ step_admission() {
     printf 'the query key of the Decisions view'
     return 0
   fi
+  # The line without its indentation and its trailing spaces, for a line that is the word alone.
+  bare="${text#"${text%%[![:space:]]*}"}"
+  bare="${bare%"${bare##*[![:space:]]}"}"
+  if [[ "$bare" == "${quoted_word}," || "$bare" == "| ${quoted_word}" ]]; then
+    declaration="$(enclosing_declaration "$path" "$number")"
+  fi
   case "$path" in
-    packages/dispatch/web/src/features/issue/DecisionsPanel.tsx) printf 'the Decisions view' ;;
-    packages/dispatch/web/src/features/issue/issue-tab-list.ts | packages/dispatch/web/src/features/issue/IssuePage.tsx)
-      printf 'the Decisions tab' ;;
-    packages/dispatch/web/src/features/issue-page/page-words.ts) printf 'the Decisions tab of the filter row' ;;
+    packages/dispatch/web/src/features/issue/issue-tab-list.ts)
+      [[ "$text" != *"{ id: ${quoted_word}, label: ${dq}Decisions${dq} }"* ]] || printf 'the Decisions tab' ;;
+    packages/dispatch/web/src/components/Tabs.test.tsx)
+      [[ "$text" != *"{ id: ${quoted_word}, label: ${dq}Decisions${dq} }"* ]] || printf 'test material: the Decisions tab' ;;
+    packages/dispatch/web/src/features/issue/IssuePage.tsx)
+      [[ "$text" != *"activeTab === ${quoted_word}"* && "$text" != *"activeTab !== ${quoted_word}"* &&
+        "$text" != *"label: ${dq}Decisions tab${dq}, tab: ${quoted_word} }"* ]] || printf 'the Decisions tab' ;;
+    packages/dispatch/web/src/features/issue-page/page-words.ts)
+      if [[ "$bare" == "${quoted_word}," && "$declaration" == PRESET_ORDER ]]; then
+        printf 'the Decisions tab of the filter row (PRESET_ORDER)'
+      fi
+      ;;
     # Main's new issue page model (#4196): its Decisions filter and the decisions read's query
     # key. Each is admitted by its text, so any other line of these files that spells the word is
     # still a hit.
@@ -336,7 +378,48 @@ step_admission() {
         "$text" != *"[${dq}d${dq}, ${quoted_word}]"* &&
         "$text" != *"[${dq}spec${dq}, ${dq}verification${dq}, ${dq}plan${dq}, ${quoted_word}]"* ]] ||
         printf 'test material: the Decisions tab of the issue page' ;;
-    packages/dispatch/web/src/features/refs/routes.ts) printf 'the dispatch://KEY/decisions route' ;;
+    packages/dispatch/web/src/features/refs/routes.ts)
+      if [[ "$text" == *"| { key: string; kind: ${quoted_word} }"* ]]; then
+        printf 'the dispatch://KEY/decisions route (IssueRoute)'
+      elif [[ "$bare" == "| ${quoted_word}" && "$declaration" == IssueTab ]]; then
+        printf 'the Decisions tab the dispatch://KEY/decisions route opens (IssueTab)'
+      elif [[ "$bare" == "${quoted_word}," && "$declaration" == PLAIN_ISSUE_TABS ]]; then
+        printf 'the dispatch://KEY/decisions route (PLAIN_ISSUE_TABS)'
+      fi
+      ;;
+    packages/dispatch/web/src/features/refs/routes.test.ts)
+      [[ "$text" != *"kind: ${quoted_word} as const"* && "$text" != *"issueTabForRoute(route, undefined)).toBe(${quoted_word})"* ]] ||
+        printf 'test material: the dispatch://KEY/decisions route' ;;
+    packages/dispatch/web/src/features/issue/DecisionsPanel.test.tsx)
+      [[ "$text" != *"DecisionsRead[${quoted_word}]"* ]] ||
+        printf 'test material: the old decisions member of the Decisions view'"'"'s read, kept for one release (compat-objects)' ;;
+    packages/dispatch/web/src/__tests__/event-feed.test.ts)
+      [[ "$text" != *"decisions: { key: [${quoted_word}, "* && "$text" != *"spares: [${quoted_word}],"* ]] ||
+        printf 'test material: the query key of the Decisions view' ;;
+    packages/dispatch/web/src/features/issue-page/IssuePresets.test.tsx)
+      [[ ! "$bare" =~ ^\[${dq}\{[A-Za-z]+\}${dq},\ ${dq}decisions${dq}\],$ ]] ||
+        printf 'test material: the Decisions tab of the filter row' ;;
+    packages/dispatch/web/src/features/issue-page/presets.test.ts | packages/dispatch/web/src/features/issue-page/decisions-filter/decisions-parts.test.ts)
+      [[ ! "$text" =~ presetView\(.*,\ ${dq}decisions${dq}, && "$text" != *"drawn(root, ${quoted_word})"* ]] ||
+        printf 'test material: the Decisions filter of the issue page' ;;
+    packages/dispatch/web/src/features/issue-page/issue-address.test.ts)
+      [[ "$text" != *"presetPath(${dq}CORE-1${dq}, ${quoted_word})"* &&
+        "$text" != *"[${dq}spec${dq}, ${dq}verification${dq}, ${dq}plan${dq}, ${quoted_word}]"* ]] ||
+        printf 'test material: the Decisions filter of the issue page'"'"'s address' ;;
+    packages/dispatch/web/src/features/issue-page/useIssueTree.test.tsx)
+      if [[ ("$bare" == "| ${quoted_word}" && "$declaration" == TreeRead) ||
+        ("$bare" == "${quoted_word}," && "$declaration" == TREE_READS) || "$text" == *"answered(${quoted_word});"* ]]; then
+        printf 'test material: the Decisions read the issue tree waits on'
+      elif [[ "$text" == *"{ role: ${quoted_word} }"* ]]; then
+        printf 'test material: a decisions document an earlier release stored, whose role DocumentRoleSchema still reads (contract-read-side)'
+      fi
+      ;;
+    packages/dispatch/web/src/features/issue-page/issue-tree.test.ts)
+      [[ "$bare" != "role: ${quoted_word}," ]] ||
+        printf 'test material: a decisions document an earlier release stored, whose role DocumentRoleSchema still reads (contract-read-side)' ;;
+    packages/dispatch/web/src/features/issue/gated-steps.test.ts)
+      [[ "$text" != *"gatedStepEntries(gating(${quoted_word}, "* ]] ||
+        printf 'test material: a stored step list holding the retired step, which GATED_STEPS still reads (contract-read-side)' ;;
     packages/contracts/src/legion-roles.ts)
       [[ "$text" != *"GATED_STEPS ="* ]] || printf 'GATED_STEPS, kept for one release (contract-read-side)' ;;
     packages/contracts/src/dispatch-api-documents.ts)
@@ -344,8 +427,6 @@ step_admission() {
     packages/contracts/src/dispatch-api.generated.ts)
       [[ ! "$text" =~ steps?:\ (null\ \|\ \()?${dq}decisions${dq} ]] ||
         printf 'the generated step types, since the gated-steps write still admits the step (steps-write-admits)' ;;
-    packages/dispatch/web/src/*.test.ts | packages/dispatch/web/src/*.test.tsx)
-      printf 'test material that must still exercise the old step' ;;
     packages/dispatch/e2e/acceptance/seed-decisions.sh)
       [[ "$text" != *steps* ]] || printf 'test material: the base release'"'"'s gated steps, which must still hold the old step' ;;
   esac
@@ -363,7 +444,7 @@ step_sweep() {
     rest="${hit#*:}"
     number="${rest%%:*}"
     text="${rest#*:}"
-    serves="$(step_admission "$path" "$text")"
+    serves="$(step_admission "$path" "$number" "$text")"
     if [[ -n "$serves" ]]; then
       printf 'admitted %s:%s serves %s\n' "$path" "$number" "$serves"
       step_admitted=$((step_admitted + 1))
@@ -374,31 +455,47 @@ step_sweep() {
 }
 
 # The planted instance, read first and by the same sweep: a scratch git repository of its own under
-# $work holding a copy of gated-steps.ts, a caller R11 names, with one line added that sends the
-# step. The line is spelled here apart from quoted_word, so a misspelt pattern does not plant its
-# own misspelling. The sweep must report that line as a hit before its zero over the checkout is
-# read.
-readonly planted_step_path=packages/dispatch/web/src/features/issue/gated-steps.ts
-[[ -f "$root/$planted_step_path" ]] ||
-  fail step "read $planted_step_path to plant the step in" "the checkout holds no such file"
-mkdir -p "$work/planted-step/$(dirname -- "$planted_step_path")"
-cp -- "$root/$planted_step_path" "$work/planted-step/$planted_step_path"
-printf '\nexport const plantedStep = %sdecisions%s;\n' "$dq" "$dq" >>"$work/planted-step/$planted_step_path"
-planted_step_line="$(wc -l <"$work/planted-step/$planted_step_path")"
+# $work holding a copy of gated-steps.ts, a caller R11 names, and of each file the sweep admits
+# lines of the view, its tab or its route from - and of a web test - each with one line added that
+# sends the step. The line is spelled here apart from quoted_word, so a misspelt pattern does not
+# plant its own misspelling. The sweep must report each of those lines as a hit before its zero over
+# the checkout is read: a sweep that admitted a whole file, or every web test, would admit them.
+readonly -a planted_step_paths=(
+  packages/dispatch/web/src/features/issue/gated-steps.ts
+  packages/dispatch/web/src/features/issue/DecisionsPanel.tsx
+  packages/dispatch/web/src/features/issue/issue-tab-list.ts
+  packages/dispatch/web/src/features/issue/IssuePage.tsx
+  packages/dispatch/web/src/features/issue-page/page-words.ts
+  packages/dispatch/web/src/features/refs/routes.ts
+  packages/dispatch/web/src/features/issue/gated-steps.test.ts
+)
+declare -A planted_step_line=()
+for planted_step_path in "${planted_step_paths[@]}"; do
+  [[ -f "$root/$planted_step_path" ]] ||
+    fail step "read $planted_step_path to plant the step in" "the checkout holds no such file"
+  mkdir -p "$work/planted-step/$(dirname -- "$planted_step_path")"
+  cp -- "$root/$planted_step_path" "$work/planted-step/$planted_step_path"
+  printf '\nexport const plantedStep = %sdecisions%s;\n' "$dq" "$dq" >>"$work/planted-step/$planted_step_path"
+  planted_step_line["$planted_step_path"]="$(wc -l <"$work/planted-step/$planted_step_path")"
+done
 git -C "$work/planted-step" init -q ||
   fail step "make the planted instance's scratch repository" "git init failed in $work/planted-step"
 sweep_root="$work/planted-step"
 step_sweep
 sweep_root="$root"
-planted_found=0
 for hit in "${step_hits[@]}"; do
   printf 'planted hit %s\n' "$hit"
-  [[ "$hit" != "$planted_step_path:$planted_step_line: "* ]] || planted_found=1
 done
-[[ "$planted_found" == 1 ]] ||
-  fail step "the sweep reports the planted line $planted_step_path:$planted_step_line as a hit" \
-    "it reported ${#step_hits[@]} hits there and $step_admitted admitted lines: the search is broken"
-pass step "the sweep reports the planted line $planted_step_path:$planted_step_line, a copy under $work/planted-step, as a hit"
+for planted_step_path in "${planted_step_paths[@]}"; do
+  planted_found=0
+  for hit in "${step_hits[@]}"; do
+    [[ "$hit" != "$planted_step_path:${planted_step_line[$planted_step_path]}: "* ]] || planted_found=1
+  done
+  [[ "$planted_found" == 1 ]] ||
+    fail step "the sweep reports the planted line $planted_step_path:${planted_step_line[$planted_step_path]} as a hit" \
+      "it reported ${#step_hits[@]} hits there and $step_admitted admitted lines: a line of that file is admitted whatever it says"
+  pass step "the sweep reports the planted line $planted_step_path:${planted_step_line[$planted_step_path]}, a copy under $work/planted-step, as a hit"
+done
 
 # The real search, over the checkout.
 step_sweep
@@ -560,6 +657,11 @@ pass words "$page_path calls the view no reading of the decisions document"
 # ---------------------------------------------------------------------------------------------
 # The daemon refuses the step: this branch's `legion config check`.
 # ---------------------------------------------------------------------------------------------
+# The commit this checkout stands on, which the legion this run executes must report.
+head_sha="$(git -C "$root" rev-parse --verify --quiet HEAD)" ||
+  fail config "read the commit this checkout stands on" "git rev-parse HEAD failed in $root"
+readonly head_sha
+readonly installed_legion=/opt/legion/bin/legion
 if [[ -n "${LEGION_BINARY:-}" ]]; then
   [[ -f "$LEGION_BINARY" && -x "$LEGION_BINARY" ]] ||
     fail config "run the legion build LEGION_BINARY names" "$LEGION_BINARY is not an executable file"
@@ -567,12 +669,31 @@ if [[ -n "${LEGION_BINARY:-}" ]]; then
   printf 'legion build: %s (LEGION_BINARY)\n' "$legion"
 else
   legion="$work/legion"
-  go -C "$root/packages/daemon" build -o "$legion" ./cmd/legion >"$work/build" 2>&1 ||
+  # Linked with the commit it is built from, as the worker image and the release link theirs
+  # (main.revision, which `legion version` prints).
+  go -C "$root/packages/daemon" build -ldflags "-X main.revision=$head_sha" -o "$legion" ./cmd/legion >"$work/build" 2>&1 ||
     fail config "build legion from packages/daemon/cmd/legion" "$(tail -n 20 "$work/build")"
   printf 'legion build: %s, from %s/packages/daemon/cmd/legion\n' "$legion" "$root"
 fi
 readonly legion
-pass config "this branch's legion is built into TMPDIR, not /opt/legion/bin/legion"
+# It is not the installed legion: neither /opt/legion/bin/legion nor the legion PATH finds, under
+# any name that reaches the same file.
+on_path="$(command -v legion || true)"
+for installed in "$installed_legion" "$on_path"; do
+  if [[ -n "$installed" && "$legion" -ef "$installed" ]]; then
+    fail config "the legion this run executes is not the installed one" "$legion is the same file as $installed"
+  fi
+done
+# It reports the commit this checkout stands on, so a build of another commit never stands in for
+# this branch's.
+"$legion" version >"$work/legion-version" 2>&1 ||
+  fail config "read the commit $legion reports" "legion version exited non-zero: $(<"$work/legion-version")"
+printf 'legion version: %s\n' "$(head -n 1 "$work/legion-version")"
+reported="$(sed -nE '1s/^legion [^ ]+ commit ([0-9a-f]{40})$/\1/p' "$work/legion-version")"
+[[ "$reported" == "$head_sha" ]] ||
+  fail config "the legion this run executes reports the commit this checkout stands on" \
+    "it reports '${reported:-no commit}' ($(head -n 1 "$work/legion-version")), and the checkout stands on $head_sha"
+pass config "the legion this run executes, $legion, reports commit $reported, the commit this checkout stands on, and is not the installed $installed_legion${on_path:+ nor the $on_path PATH finds}"
 
 mkdir "$work/config" "$work/state"
 printf 'operator\n' >"$work/config/operator-token"

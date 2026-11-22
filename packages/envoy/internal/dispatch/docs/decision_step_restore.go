@@ -15,10 +15,14 @@ import (
 // ErrAnotherBuildLive refuses the decisions step's third phase while processes.Live lists a
 // process of a commit other than the caller's (DecisionStep.anotherBuildLive): any other build can
 // write a row without its node, so the phase waits until the fleet is one build.
+//
+// kept for one release: decisions-step
 var ErrAnotherBuildLive = errors.New("docs: a process of another build is live, so the decisions step's third phase waits")
 
 // DecisionIssueFailure is an issue the third phase could not restore or convert: its transaction
 // rolled back, nothing of it was written, and the next pass tries it again.
+//
+// kept for one release: decisions-step
 type DecisionIssueFailure struct {
 	Issue string
 	Err   error
@@ -35,6 +39,8 @@ type DecisionIssueFailure struct {
 // it and rolls each transaction back. It answers each issue it touched and each issue that failed,
 // whose transaction rolled back and which the next pass tries again; its error is one that stops
 // the whole phase. It writes through the document service the step was given (UseDocuments).
+//
+// kept for one release: decisions-step
 func (s *DecisionStep) RestoreAndConvert(ctx context.Context, project string, convert, dryRun bool) ([]DecisionIssue, []DecisionIssueFailure, error) {
 	if s.documents == nil {
 		return nil, nil, errors.New("docs: the decisions step's third phase has no document service to write through")
@@ -64,6 +70,7 @@ func (s *DecisionStep) RestoreAndConvert(ctx context.Context, project string, co
 		byIssue[ask.Issue] = append(byIssue[ask.Issue], ask)
 	}
 	if convert {
+		// kept for one release: decisions-documents-fn
 		rows, err := s.database.Pool.Query(ctx, `select distinct issue_key from decisions_documents()`)
 		if err != nil {
 			return nil, nil, fmt.Errorf("list the decisions documents: %w", err)
@@ -129,6 +136,8 @@ func (s *DecisionStep) RestoreAndConvert(ctx context.Context, project string, co
 // the same transaction: the ask rows it pointed at the spec, the versions it wrote before the
 // events that name them, the nodes it stated. It logs how long the transaction stood open, from
 // its begin to its commit, or to its rollback, which bounds how long it held a transaction id.
+//
+// kept for one release: decisions-step
 func (s *DecisionStep) restoreIssue(ctx context.Context, issue string, work []graphcensus.RestoreWork, convert, dryRun bool) (DecisionIssue, error) {
 	began := time.Now()
 	tx, err := s.database.Pool.Begin(ctx)
@@ -153,6 +162,8 @@ func (s *DecisionStep) restoreIssue(ctx context.Context, issue string, work []gr
 // for project or every project, in code rather than by a migration (F6): a list of `decisions`
 // alone becomes `[spec]`, so no project is left ungated, and every other list keeps its other
 // steps. dryRun rolls it back.
+//
+// kept for one release: decisions-step
 func (s *DecisionStep) rewriteGatedSteps(ctx context.Context, project string, dryRun bool) error {
 	tx, err := s.database.Pool.Begin(ctx)
 	if err != nil {
@@ -177,6 +188,8 @@ func (s *DecisionStep) rewriteGatedSteps(ctx context.Context, project string, dr
 // ErrDryRunOwesBackfill refuses a dry run of the decisions step (RunByHand) over a database whose
 // rows the step's first phase has still to state (graphcensus.AsksOwed): that phase commits what it
 // states, and a dry run writes nothing.
+//
+// kept for one release: decisions-step
 var ErrDryRunOwesBackfill = errors.New("docs: the decisions step's first phase owes rows the release before wrote, " +
 	"which it commits, and a dry run writes nothing; run the step without the dry run, or boot a server of this build, first")
 
@@ -193,6 +206,8 @@ var ErrDryRunOwesBackfill = errors.New("docs: the decisions step's first phase o
 // each of its transactions rolled back. A dry run's phase 3 reads an answer another build wrote
 // since the last catch-up as the node holds it, as a tick's would before its catch-up. Its context
 // is marked for the pool's nested-acquire guard, as Boot's and Tick's are.
+//
+// kept for one release: decisions-step
 func (s *DecisionStep) RunByHand(ctx context.Context, project string, convert, dryRun bool) ([]DecisionIssue, []DecisionIssueFailure, error) {
 	ctx = store.WithTransactionTracking(ctx)
 	conn, err := s.acquireStepConn(ctx)
@@ -215,6 +230,7 @@ func (s *DecisionStep) RunByHand(ctx context.Context, project string, convert, d
 			return nil, nil, err
 		}
 	}
+	// kept for one release: catch-up
 	if !dryRun {
 		if failed, err := s.catchUp(ctx); err != nil {
 			return nil, nil, err

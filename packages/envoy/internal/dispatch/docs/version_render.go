@@ -1,9 +1,11 @@
 package docs
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -43,41 +45,30 @@ type Rendering struct {
 	Source   RenderSource
 }
 
-// RenderAt renders the document artifactID from the tree's tuples as of at: the head where at is
-// now, and a version as of the time its version_renders row records (RenderVersion). It walks the
-// tree that holds the document - its issue's (WalkIssueTree), or for a document no issue holds the
-// document's own node and what stands under it - at a cut that reads, of each node, the newest text
-// value, part_of and rank dated at or before at, with every retraction dated before it applied
-// (refs.TreeCut's Dated), and takes the walk's nodes whose in_document names the document then
-// (refs.TreeMembers), in the walk's order. It prints the text value of each node it takes, but a
-// node placed by the text it stands in (its placement is not refs.PlacementAuthored) whose parent
-// it takes too: the parent's text already holds its bytes. Each node's text is its whole slice of
-// the markdown the version was written from, its children's included, so every byte prints once.
-// The top-level renderings are joined by one blank line and the last line ends; a document that
-// takes no node renders as no bytes at all.
+// RenderAt renders the document artifactID from the tree's tuples as of at, in the text order its
+// author wrote: the head where at is now, and a version as of the time
+// its version_renders row records (RenderVersion). It reads the document's members, each block
+// whose newest in_document dated at or before at names the document (refs.TreeMembers), and of
+// each its newest text value, state, text_parent and text_rank dated at or before at, with every
+// retraction dated before it applied (refs.TreeFactsOf at a render's cut, refs.TreeCut's Dated). It
+// leaves out a member whose state then is gone, and one that holds no text value, no text_parent or
+// no text_rank then. It prints the document's text children, the members whose text_parent names
+// the document's node, in increasing text_rank, compared byte for byte (a tie, which no pass
+// writes, by the lower address), each by its text value: its whole slice of the markdown the
+// version was written from, the bytes of its own text children included, so every member prints
+// once, and two members of one text each print at their own place. It reads no part_of tuple and
+// no rank value, so a node's parent and its place among its siblings change no byte of it. The
+// text children's renderings are joined by one blank line and the last line ends; a document that
+// holds no text child renders as no bytes at all.
 //
 // who is the reader the render answers; the render leaves out no node for a reader, so every
 // reader reads one rendering.
 func RenderAt(ctx context.Context, q Queryer, who model.Actor, artifactID string, at time.Time) (Rendering, error) {
 	var refKey string
-	var issue *string
-	if err := q.QueryRow(ctx, `select ref_key, issue_key from artifacts where id = $1`, artifactID).Scan(&refKey, &issue); err != nil {
+	if err := q.QueryRow(ctx, `select ref_key from artifacts where id = $1`, artifactID).Scan(&refKey); err != nil {
 		return Rendering{}, fmt.Errorf("read the document %s to render: %w", artifactID, err)
 	}
 	cut := refs.TreeCut{At: at, Dated: true}
-	var walked []TreeNode
-	if issue != nil {
-		tree, err := WalkIssueTree(ctx, q, *issue, cut)
-		if err != nil {
-			return Rendering{}, err
-		}
-		walked = tree.Nodes
-	} else {
-		var err error
-		if walked, err = walkDocumentTree(ctx, q, refKey, cut); err != nil {
-			return Rendering{}, err
-		}
-	}
 	members, err := refs.TreeMembers(ctx, q, refKey, cut)
 	if err != nil {
 		return Rendering{}, err
@@ -86,26 +77,41 @@ func RenderAt(ctx context.Context, q Queryer, who model.Actor, artifactID string
 	if err != nil {
 		return Rendering{}, fmt.Errorf("read the blocks of %s to render: %w", refKey, err)
 	}
-	taken := make(map[refs.Target]bool, len(members))
+	type textChild struct{ rank, address, text string }
+	children := make([]textChild, 0, len(members))
 	for _, member := range members {
-		taken[member] = true
-	}
-	var renderings []string
-	for _, node := range walked {
-		if !taken[node.target()] {
-			continue
-		}
-		held := facts[node.target()]
+		held := facts[member]
 		text, written := held.Values[graphstore.AttributeText]
-		if !written || held.Values[refs.AttributePlacement] != refs.PlacementAuthored && taken[node.Parent] {
+		rank, ranked := held.Values[refs.AttributeTextRank]
+		if !written || !ranked || held.Values[graphstore.AttributeState] == graphstore.StateGone {
 			continue
 		}
-		renderings = append(renderings, text)
+		if slices.ContainsFunc(held.Relations, func(relation refs.TreeRelation) bool {
+			return relation.Kind == refs.TupleTextParent && relation.To.Kind == graphstore.KindArtifact && relation.To.ID == refKey
+		}) {
+			children = append(children, textChild{rank: rank, address: member.ID, text: text})
+		}
 	}
-	if len(renderings) == 0 {
+	if len(children) == 0 {
 		return Rendering{Source: RenderedFromTree}, nil
 	}
-	return Rendering{Markdown: strings.Join(renderings, "\n\n") + "\n", Source: RenderedFromTree}, nil
+	slices.SortFunc(children, func(a, b textChild) int {
+		return cmp.Or(strings.Compare(a.rank, b.rank), strings.Compare(a.address, b.address))
+	})
+	length := 2*len(children) - 1
+	for _, child := range children {
+		length += len(child.text)
+	}
+	var rendered strings.Builder
+	rendered.Grow(length)
+	for index, child := range children {
+		if index > 0 {
+			rendered.WriteString("\n\n")
+		}
+		rendered.WriteString(child.text)
+	}
+	rendered.WriteByte('\n')
+	return Rendering{Markdown: rendered.String(), Source: RenderedFromTree}, nil
 }
 
 // versionRenderStatement is what a read of version $2 of document $1 needs: the time its

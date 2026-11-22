@@ -768,11 +768,13 @@ type blockFarEnd struct{ kind, id string }
 // where a block hangs under one (ends, nil for every other block, and nil as a whole where there
 // is none): a reading in an answered ask, under the ask's node, and an authored node under a
 // conversation node, a block of another document, or an issue that is not the document's top
-// (placeAuthored).
+// (placeAuthored). textParents is, beside each, the index among the version's unique blocks of the
+// block whose text holds it, -1 for one no block of the version that is a node holds: the parent
+// the text gives it (placeBlocks), which placeAuthored and an answered ask leave as it is.
 type blockPlacement struct {
-	ids             []string
-	placed, parents []int
-	ends            []*blockFarEnd
+	ids                          []string
+	placed, parents, textParents []int
+	ends                         []*blockFarEnd
 }
 
 // end sets the far end the block at index hangs under, making ends where there is none yet.
@@ -905,7 +907,16 @@ func (b *BlockIndexing) planBlockParents(
 	if standing == nil {
 		standing = make(map[string]blockFarEnd, len(placed))
 	}
-	placement := blockPlacement{ids: make([]string, len(placed)), placed: placed, parents: parents}
+	placement := blockPlacement{ids: make([]string, len(placed)), placed: placed, parents: parents, textParents: parents}
+	// The parent the text gives each block is its text parent (planBlockValues), whatever
+	// placeAuthored then makes of an authored node's: a copy of the parents is kept only where the
+	// placement holds an authored node, the one block placeAuthored moves.
+	for _, block := range placed {
+		if authoredType(nodes[block].Type) {
+			placement.textParents = slices.Clone(parents)
+			break
+		}
+	}
 	blockIDs := placement.ids
 	parentIDs := make([]*string, len(placed))
 	for index, block := range placed {
@@ -1784,6 +1795,23 @@ const (
 	PlacementAuthored  = "authored"
 )
 
+// A block's place in its document's text, which no rank holds: a rank orders a block only among
+// the children of its tree parent (rankBlocks), and an authored node's tree parent is the one its
+// author names, not the block whose text holds it. So every block that is a node also carries two
+// dated facts of the text. TupleTextParent is a tuple to the member of
+// its document whose text holds it: the tightest block of the version that holds it and is a node
+// (placeBlocks, before placeAuthored), or, for a block no such block holds, the node of the
+// document its in_document names. AttributeTextRank is its place among the blocks that share its
+// text parent, in the version's text order, a rank string of its document's band kept and given
+// as a rank is (childRanker.rank). Neither is a part_of or a placement: no walk of the tree reads
+// either, and a version of a document renders from them (docs' RenderAt). graph_edges renders no
+// text_parent, since its tuple arm answers a tuple out of a block other than part_of only where a
+// block_refs row of that node, kind and far end stands.
+const (
+	TupleTextParent   = "text_parent"
+	AttributeTextRank = "text_rank"
+)
+
 // AttributePlanSize is the value a plan node says how big it is by: the plan_task attribute
 // `size`, a duration in days as its author wrote it, a value of the node since it points at
 // nothing, and absent where its author wrote none. An artifact's `size` (graphstore.AttributeSize)
@@ -1821,16 +1849,20 @@ func WrittenSizeSQL(alias string) string {
 
 // heldBlockValue is what the store holds now of one block the values pass reads: its current
 // rank, "" where it holds none, whether it holds a current text value, its current placement, ""
-// where it holds none, and its current size, "" where it holds none.
+// where it holds none, its current size, "" where it holds none, its current text_rank, "" where
+// it holds none, and the far end of its current text_parent, the zero far end where it states
+// none.
 type heldBlockValue struct {
-	rank, placement, size string
-	text                  bool
+	rank, placement, size, textRank string
+	text                            bool
+	textParent                      blockFarEnd
 }
 
-// planBlockValues plans the rank, the text, the placement and, for a plan node, the size of every
-// block placement placed, dated at the pass's own time (IndexedVersion.At). It answers the values
-// it states, which PlanBlocks appends with the pass's other facts, and what the blocks hold once
-// the indexing is written, for a later indexing of the document in the same transaction (Held).
+// planBlockValues plans the rank, the text, the placement, the place in the text (a text_parent
+// and a text_rank) and, for a plan node, the size of every block placement placed, dated at the
+// pass's own time (IndexedVersion.At). It answers the values it states, which PlanBlocks appends
+// with the pass's other facts, and what the blocks hold once the indexing is written, for a later
+// indexing of the document in the same transaction (Held).
 //
 // It reads what the store holds of every one of those blocks in one statement (heldBlockValues),
 // in the plan's read phase, and states a value only where it moves: a rank where the block's place
@@ -1838,17 +1870,21 @@ type heldBlockValue struct {
 // whose document_blocks row the pass writes, so the text value and the document_block_texts row
 // move together - or where the block holds no current text yet, and a placement where the block
 // holds none or another: PlacementAuthored for an authored node (placeAuthored), PlacementText for
-// every other block. A size is stated where the block's opening line writes one the node does not
-// hold (blockSize), and the size the node holds is retracted where the line writes none - its
-// author took it out, or the block is no plan node any more - so a block that holds no size and
-// writes none states nothing. So a block a version only moved takes its new parent and its new
-// rank here although the pass writes no row of it, a re-index of a document nothing moved states
+// every other block. A text_parent is stated where the block's text parent (placement.textParents,
+// textParentHeld) is not the one it holds, with the retraction of the one it holds where it holds
+// one, and a text_rank where its place among the blocks sharing its text parent moved
+// (textRankBlocks); neither moves a changed_version or a document_block_texts row. A size is
+// stated where the block's opening line writes one the node does not hold (blockSize), and the
+// size the node holds is retracted where the line writes none - its author took it out, or the
+// block is no plan node any more - so a block that holds no size and writes none states nothing. So
+// a block a version only moved takes its new parent, its new rank and its new place in the text
+// here although the pass writes no row of it, a re-index of a document nothing moved states
 // nothing, and the first index of a document, or the first pass to reach a block an earlier build
-// indexed, gives every block its rank, its text, its placement and any size it writes. A block the
-// version dropped is no block the pass places: it keeps the values it held, and its node, stated
-// gone, says it is no part of the version. A block an earlier indexing of this transaction placed
-// (BlockIndex.values) is compared with what that indexing stated of it, which the store holds only
-// once the write phase has run.
+// indexed, gives every block its rank, its text, its placement, its text_parent, its text_rank and
+// any size it writes. A block the version dropped is no block the pass places: it keeps the values
+// it held, and its node, stated gone, says it is no part of the version. A block an earlier
+// indexing of this transaction placed (BlockIndex.values) is compared with what that indexing
+// stated of it, which the store holds only once the write phase has run.
 //
 // stale is the BlockIndex's stale stand: another release indexed the document after the store
 // last stated its blocks, and rewrote the rows and the document_block_texts of each block whose
@@ -1894,13 +1930,22 @@ func planBlockValues(
 	if standing == nil {
 		standing = make(map[string]heldBlockValue, len(placement.ids))
 	}
-	ranks := rankBlocks(blockBands(document, nodes, fragments), placement, held)
+	bands := blockBands(document, nodes, fragments)
+	ranks := rankBlocks(bands, placement, held)
+	textRanks := textRankBlocks(bands, document, nodes, placement, fragments, held)
 	var tuples []graphstore.UncausedTuple
 	value := func(id, attribute, to string) {
 		tuples = append(tuples, graphstore.UncausedTuple{Tuple: graphstore.Tuple{
 			FromKind: BlockNodeKind, FromID: blockNodeAddress(document.RefKey, id), Kind: attribute,
 			ToKind: graphstore.KindValue, ToID: to,
 			At: document.At, Who: document.Writer, Asserted: true,
+		}})
+	}
+	textParent := func(id string, far blockFarEnd, asserted bool) {
+		tuples = append(tuples, graphstore.UncausedTuple{Tuple: graphstore.Tuple{
+			FromKind: BlockNodeKind, FromID: blockNodeAddress(document.RefKey, id), Kind: TupleTextParent,
+			ToKind: far.kind, ToID: far.id,
+			At: document.At, Who: document.Writer, Asserted: asserted,
 		}})
 	}
 	for index, id := range placement.ids {
@@ -1918,6 +1963,26 @@ func planBlockValues(
 		if held[index].placement != placed {
 			value(id, AttributePlacement, placed)
 		}
+		// The text parent the block holds stands where it is the one the text gives it, which is
+		// read without building its address; only one that moved builds the address it states.
+		holder, inDocument := "", document.inDocument(block, fragments)
+		if parent := placement.textParents[index]; parent >= 0 {
+			holder = nodes[parent].ID
+		}
+		standsUnder := held[index].textParent
+		if !textParentHeld(standsUnder, document.RefKey, holder, inDocument) {
+			if standsUnder.kind != "" {
+				textParent(id, standsUnder, false)
+			}
+			standsUnder = blockFarEnd{kind: graphstore.KindArtifact, id: inDocument}
+			if holder != "" {
+				standsUnder = blockFarEnd{kind: BlockNodeKind, id: blockNodeAddress(document.RefKey, holder)}
+			}
+			textParent(id, standsUnder, true)
+		}
+		if textRanks[index] != held[index].textRank {
+			value(id, AttributeTextRank, textRanks[index])
+		}
 		size := blockSize(block)
 		switch {
 		case size == held[index].size:
@@ -1930,15 +1995,31 @@ func planBlockValues(
 				At: document.At, Who: document.Writer, Asserted: false,
 			}})
 		}
-		standing[id] = heldBlockValue{rank: ranks[index], placement: placed, size: size, text: true}
+		standing[id] = heldBlockValue{
+			rank: ranks[index], placement: placed, size: size, textRank: textRanks[index], text: true, textParent: standsUnder,
+		}
 	}
 	return tuples, standing, nil
 }
 
-// heldBlockValues reads, in one statement, the current rank, text, placement and size of each
-// block of ids, as graphstore.CurrentValue reads one value - the newest tuple under the
-// attribute's name, kept while it asserts - through graph_tuples_values, one probe a value. Each
-// lateral writes to_kind = 'value' into its text rather than binding it, as CurrentValue does,
+// textParentHeld says far, the text parent a block holds, is the one the text gives it: the block
+// holder of the version, by its address under refKey, or, where holder is "", the node of the
+// document inDocument, the ref_key its in_document names. The address is compared piece by piece,
+// so a pass over a document of thousands of blocks builds none for a block that did not move.
+func textParentHeld(far blockFarEnd, refKey, holder, inDocument string) bool {
+	if holder == "" {
+		return far.kind == graphstore.KindArtifact && far.id == inDocument
+	}
+	return far.kind == BlockNodeKind && len(far.id) == len(refKey)+1+len(holder) &&
+		strings.HasPrefix(far.id, refKey) && far.id[len(refKey)] == '#' && strings.HasSuffix(far.id, holder)
+}
+
+// heldBlockValues reads, in one statement, the current rank, text, placement, size and text_rank
+// of each block of ids, as graphstore.CurrentValue reads one value - the newest tuple under the
+// attribute's name, kept while it asserts - through graph_tuples_values, one probe a value, and
+// its current text_parent as heldAuthoredBlocks reads a part_of, the newest tuple per far end kept
+// while it asserts (graphstore.CurrentTupleRead), through graph_tuples_current. Each lateral of a
+// value writes to_kind = 'value' into its text rather than binding it, as CurrentValue does,
 // because graph_tuples_values is partial on that predicate: a bound kind is a parameter the
 // planner of a generic plan cannot match the index's predicate against. Of a block's text it reads
 // whether one is held and not the text itself, which no comparison here needs. It answers the
@@ -1946,7 +2027,8 @@ func planBlockValues(
 // statement of the pass does.
 func heldBlockValues(ctx context.Context, q Queryer, refKey string, ids []string) ([]heldBlockValue, error) {
 	rows, err := q.Query(ctx, `
-		select coalesce(rank.held, ''), coalesce(text.held, false), coalesce(placement.held, ''), coalesce(size.held, '')
+		select coalesce(rank.held, ''), coalesce(text.held, false), coalesce(placement.held, ''), coalesce(size.held, ''),
+		       coalesce(text_rank.held, ''), coalesce(text_parent.to_kind, ''), coalesce(text_parent.to_id, '')
 		from unnest($1::text[]) with ordinality as block (id, position)
 		left join lateral (
 			select case when t.asserted then t.to_id end as held from graph_tuples t
@@ -1972,8 +2054,24 @@ func heldBlockValues(ctx context.Context, q Queryer, refKey string, ids []string
 			  and t.to_kind = '`+graphstore.KindValue+`'
 			order by t.seq desc limit 1
 		) size on true
+		left join lateral (
+			select case when t.asserted then t.to_id end as held from graph_tuples t
+			where t.from_kind = $2 and t.from_id = $3 || '#' || block.id and t.kind = $8
+			  and t.to_kind = '`+graphstore.KindValue+`'
+			order by t.seq desc limit 1
+		) text_rank on true
+		left join lateral (
+			select held.to_kind, held.to_id from (
+				`+graphstore.CurrentTupleRead(`t.to_kind, t.to_id`, `t.to_kind, t.to_id, t.asserted, t.seq`,
+		`t.from_kind = $2 and t.from_id = $3 || '#' || block.id and t.kind = $9
+				  and t.to_kind <> '`+graphstore.KindValue+`'`)+`
+			) held
+			where held.asserted
+			order by held.seq desc limit 1
+		) text_parent on true
 		order by block.position
-	`, ids, BlockNodeKind, refKey, AttributeRank, graphstore.AttributeText, AttributePlacement, AttributePlanSize)
+	`, ids, BlockNodeKind, refKey, AttributeRank, graphstore.AttributeText, AttributePlacement, AttributePlanSize,
+		AttributeTextRank, TupleTextParent)
 	if err != nil {
 		return nil, err
 	}
@@ -1981,7 +2079,8 @@ func heldBlockValues(ctx context.Context, q Queryer, refKey string, ids []string
 	held := make([]heldBlockValue, 0, len(ids))
 	for rows.Next() {
 		var value heldBlockValue
-		if err := rows.Scan(&value.rank, &value.text, &value.placement, &value.size); err != nil {
+		if err := rows.Scan(&value.rank, &value.text, &value.placement, &value.size,
+			&value.textRank, &value.textParent.kind, &value.textParent.id); err != nil {
 			return nil, err
 		}
 		held = append(held, value)
@@ -2011,11 +2110,8 @@ func heldBlockValues(ctx context.Context, q Queryer, refKey string, ids []string
 // band in the room's order, and each run is ranked inside its own band.
 func rankBlocks(bands []byte, placement blockPlacement, held []heldBlockValue) []string {
 	nodes := len(bands)
-	ranks := make([]string, len(placement.ids))
-	// Each parent's children as a list in document order, threaded through next: a parent is
-	// the index of the block holding the child plus one, 0 for the document's top, or past
-	// nodes+1 for a node that is no block of the version, so no map of slices is built for a
-	// document of thousands of blocks.
+	// A parent is the index of the block holding the child plus one, 0 for the document's top,
+	// or past nodes+1 for a node that is no block of the version.
 	parents := nodes + 1
 	var ends map[blockFarEnd]int
 	parentOf := make([]int, len(placement.ids))
@@ -2034,8 +2130,51 @@ func rankBlocks(bands []byte, placement blockPlacement, held []heldBlockValue) [
 		}
 	}
 	parents += len(ends)
+	return rankChildren(bands, placement.placed, parentOf, parents, func(child int) string { return held[child].rank })
+}
+
+// textRankBlocks is the text_rank each block placement placed stands at once the pass has run,
+// beside it in placement's order: its place among the blocks that share its text parent
+// (placement.textParents), in document order, ranked inside its document's band as rankBlocks ranks
+// one parent's children (rankChildren), so a text_rank is kept where it already stands in order
+// and takes rank.Between its kept neighbours elsewhere. held is what the store holds of each
+// (heldBlockValues). The blocks no block of the version holds share the node of the document their
+// in_document names (IndexedVersion.inDocument), so an issue room's top level is ranked fragment by
+// fragment, each among its own document's blocks.
+func textRankBlocks(bands []byte, document IndexedVersion, nodes []model.ArtifactBlock, placement blockPlacement, fragments map[string]fragmentDocument, held []heldBlockValue) []string {
+	// A text parent is the index of the block holding the child plus one, or past len(nodes)
+	// for a document's node, one for each document whose top level the version holds.
+	var documents map[string]int
+	parentOf := make([]int, len(placement.ids))
+	for index, parent := range placement.textParents {
+		if parent >= 0 {
+			parentOf[index] = parent + 1
+			continue
+		}
+		in := document.inDocument(nodes[placement.placed[index]], fragments)
+		top, seen := documents[in]
+		if !seen {
+			if documents == nil {
+				documents = map[string]int{}
+			}
+			top = len(nodes) + 1 + len(documents)
+			documents[in] = top
+		}
+		parentOf[index] = top
+	}
+	return rankChildren(bands, placement.placed, parentOf, len(nodes)+1+len(documents), func(child int) string { return held[child].textRank })
+}
+
+// rankChildren is the rank of each child of parentOf, beside it: each one's parent, of parents
+// counted from 0, in document order. placed is each child's index among the version's unique
+// blocks, whose band bands holds, and held the rank each child holds now. Each parent's children
+// are ranked on their own, and only among themselves (childRanker.rank), each run of children of
+// one band inside that band. Each parent's children are a list threaded through next, so no map of
+// slices is built for a document of thousands of blocks.
+func rankChildren(bands []byte, placed, parentOf []int, parents int, held func(child int) string) []string {
+	ranks := make([]string, len(parentOf))
 	first, last := make([]int, parents), make([]int, parents)
-	next := make([]int, len(placement.ids))
+	next := make([]int, len(parentOf))
 	for parent := range first {
 		first[parent], last[parent] = -1, -1
 	}
@@ -2056,11 +2195,11 @@ func rankBlocks(bands []byte, placement blockPlacement, held []heldBlockValue) [
 		ranker.children = ranker.children[:0]
 		band := byte(0)
 		for child := first[parent]; child >= 0; child = next[child] {
-			if childBand := bands[placement.placed[child]]; childBand != band && len(ranker.children) > 0 {
+			if childBand := bands[placed[child]]; childBand != band && len(ranker.children) > 0 {
 				ranker.rank(band, held, ranks)
 				ranker.children = ranker.children[:0]
 			}
-			band = bands[placement.placed[child]]
+			band = bands[placed[child]]
 			ranker.children = append(ranker.children, child)
 		}
 		ranker.rank(band, held, ranks)
@@ -2333,23 +2472,25 @@ type childRanker struct {
 	kept                      []bool
 }
 
-// rank writes into ranks the rank of each of the children: the longest run of the ranks they hold
-// that stand in the band and already increase in document order, compared byte for byte, keeps
-// its ranks (increasingRun), and every other child takes rank.Between the kept ranks on either
-// side of it, or the band's own bounds where it has none, its first character band and the next.
-// So a block moved under another parent, or among its siblings, takes a new rank and its siblings
-// keep theirs; a block that holds a rank of another band - one moved into this document from
-// another's fragment - takes one of this band; two siblings holding one rank cannot both be kept,
-// so the later is given a new one; and no rank.Between is ever asked for bounds out of order. A
-// run of children with no rank to keep, as at a document's first index, is spread evenly between
-// its bounds (spreadRanks), so the ranks of a list of thousands of items stay a few bytes long.
-func (r *childRanker) rank(band byte, held []heldBlockValue, ranks []string) {
+// rank writes into ranks the rank of each of the children, held being the rank each child holds
+// now: the longest run of the ranks they hold that stand in the band and already increase in
+// document order, compared byte for byte, keeps its ranks (increasingRun), and every other child
+// takes rank.Between the kept ranks on either side of it, or the band's own bounds where it has
+// none, its first character band and the next. So a block moved under another parent, or among its
+// siblings, takes a new rank and its siblings keep theirs; a block that holds a rank of another
+// band - one moved into this document from another's fragment - takes one of this band; two
+// siblings holding one rank cannot both be kept, so the later is given a new one; and no
+// rank.Between is ever asked for bounds out of order. A run of children with no rank to keep, as
+// at a document's first index, is spread evenly between its bounds (spreadRanks), so the ranks of
+// a list of thousands of items stay a few bytes long. A text_rank is ranked the same way, over the
+// blocks that share a text parent (textRankBlocks).
+func (r *childRanker) rank(band byte, held func(child int) string, ranks []string) {
 	count := len(r.children)
 	r.standing = slices.Grow(r.standing[:0], count)[:count]
 	for index, child := range r.children {
 		r.standing[index] = ""
-		if standsInBand(held[child].rank, band) {
-			r.standing[index] = held[child].rank
+		if standing := held(child); standsInBand(standing, band) {
+			r.standing[index] = standing
 		}
 	}
 	r.increasingRun()

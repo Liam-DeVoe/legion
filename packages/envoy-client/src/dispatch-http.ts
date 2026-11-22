@@ -56,7 +56,7 @@ import type {
   IssuePriority,
   IssueProposed,
   IssueRead,
-  IssueReferences,
+  IssueReferencesAnswer,
   IssueRouteStatus,
   IssueSteps,
   IssueSummary,
@@ -2102,7 +2102,7 @@ export class DispatchClient {
     return this.#json("GET", ["api", "v1", "projects", project, "plans"], undefined, window);
   }
 
-  async getIssueReferences(issue: string): Promise<IssueReferences> {
+  async getIssueReferences(issue: string): Promise<IssueReferencesAnswer> {
     return this.#json(
       "GET",
       ["api", "v1", "issues", await this.#resolveIssue(issue), "references"],
