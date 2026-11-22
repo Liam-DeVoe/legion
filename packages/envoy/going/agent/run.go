@@ -87,7 +87,7 @@ const finishContentFilter = "content-filter"
 
 // worker is one claimed run of the agent's: the run, its level, what it has spent, its history,
 // and its own context, which a stop, a lease the run no longer holds, the watchdog and the
-// agent's end each cancel.
+// agent's end each cancel, and which ends as the run's turn ends (work).
 type worker struct {
 	agent *agent
 	run   *agentwire.ClaimedRun
@@ -170,8 +170,13 @@ func (w *worker) endGrant(reason string) {
 // fails, or stops being the agent's to work. A plan proposed in Auto-review is reviewed before the
 // turn ends (review), and the rows the server approved with the plan run at once, which ends the
 // turn (runApproved): the create of a new-issue run. A new-issue run whose create ran ends there.
-// A run whose saved steps name a tool this build does not know fails at once (unknownTool).
+// A run whose saved steps name a tool this build does not know fails at once (unknownTool). The
+// run's context ends as work returns, however the turn ended: a context left live stays among the
+// children of the agent's, with all made from it, until the agent's process exits. Nothing of the
+// run outlives work but the failed end agent.work makes after a panic, which end makes on the
+// run's context without its cancel.
 func (w *worker) work() {
+	defer w.cancel()
 	level, known := Levels[w.run.Level]
 	switch {
 	case w.agent.config.Model.ID == "":
