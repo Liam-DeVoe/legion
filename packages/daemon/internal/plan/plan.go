@@ -217,11 +217,16 @@ func StepsOf(t Task, defaults []Step) []Step {
 }
 
 // Line is the phases a task walks: the phase each step runs as (RunsAs), in the steps' order, then
-// Legion's own retro and merge, which no plan names and no plan leaves out.
-func Line(steps []Step) []phase.Phase {
+// Legion's own retro and merge where the task merges, which no plan names. The work of an issue
+// merges once, at the end of the one task no task needs (Sinks), so that task alone has a retro
+// and a merge, and a task another task needs is done at its last step.
+func Line(steps []Step, merges bool) []phase.Phase {
 	line := make([]phase.Phase, 0, len(steps)+2)
 	for _, step := range steps {
 		line = append(line, RunsAs(step.Role))
+	}
+	if !merges {
+		return line
 	}
 	return append(line, phase.Retro, phase.Merging)
 }

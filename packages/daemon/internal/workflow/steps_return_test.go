@@ -533,42 +533,59 @@ func TestALateFailNamingAStepOnALineThatLostItsPhaseIsRefused(t *testing.T) {
 	}
 }
 
-// The walk takes the task a run is on by the store's one rule (record.StoredPlan.Task): the plan's
-// one task. A plan of two tasks, which no plan of this release writes, is no walk, and the error
-// is the rule's own, naming the plan and its count of tasks. The control is the same issue with
-// its plan of one task, which walks it. Each walk is read in a transaction of its own and with no
-// boot pass, which would read the same walk first.
-func TestTheWalkTakesItsTaskByTheStoresOneRule(t *testing.T) {
+// The walk takes the task its read names: the task a copy read for one task names
+// (record.Issue.ViewTask), and for a read that names none the plan's one task. A plan of two tasks
+// read for none is no walk, and the error names the plan's count of tasks; read for one of them it
+// is that task's walk, whose line holds Legion's retro and merge only where the task is the one
+// that no task needs (Walk.Merges). A read for a task the plan does not hold is no walk either. The
+// control is the same issue with its plan of one task, which walks it, retro and merge after its
+// steps. Each walk is read in a transaction of its own and with no boot pass, which would read the
+// same walk first.
+func TestTheWalkTakesTheTaskItsReadNames(t *testing.T) {
 	pool := migratedPool(t)
 	engine := returnEngine()
 	root := stepRoot(t, pool, phase.Admitted)
 	seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "reviewer")
-	walkOf := func() (Walk, error) {
+	walkOf := func(task string) (Walk, error) {
 		var w Walk
 		var walked error
+		read := root
+		read.ViewTask = task
 		seedRecord(t, pool, func(tx pgx.Tx) error {
-			w, walked = engine.walk(t.Context(), tx, root)
+			w, walked = engine.walk(t.Context(), tx, read)
 			return nil
 		})
 		return w, walked
 	}
-	if w, err := walkOf(); err != nil || !w.Stored || w.Task != "a" {
-		t.Fatalf("the walk of a plan of one task = %+v, %v, want task a", w, err)
+	ownLine := []phase.Phase{phase.Implementing, phase.Reviewing, phase.Retro, phase.Merging}
+	if w, err := walkOf(""); err != nil || !w.Stored || w.Task != "a" || !w.Merges || !reflect.DeepEqual(w.Line, ownLine) {
+		t.Fatalf("the walk of a plan of one task = %+v, %v, want task a on %v, the task that merges", w, err, ownLine)
 	}
 
 	first := record.PlanTask{Issue: root.Key, Generation: root.Generation, Task: "a", PlanVersion: 3, BlockText: "Build the widget.", State: record.TaskWaiting}
-	second := record.PlanTask{Issue: root.Key, Generation: root.Generation, Task: "b", PlanVersion: 3, BlockText: "Document the widget.", State: record.TaskWaiting}
+	second := record.PlanTask{Issue: root.Key, Generation: root.Generation, Task: "b", PlanVersion: 3, BlockText: "Document the widget.", State: record.TaskWaiting,
+		Needs: []string{"a"}}
 	seedRecord(t, pool, func(tx pgx.Tx) error {
 		v := record.PlanVersion{Issue: root.Key, Generation: root.Generation, Version: 3, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner,
 			GivenBy: claim.Token(treeRoleToken(t, root.Key, claim.RoleArchitect)), GivenAt: stepClock}
 		steps := []record.PlanStep{
 			{Issue: root.Key, Generation: root.Generation, Task: "a", Position: 1, Role: "implementer", Type: plan.TypeImplementation},
-			{Issue: root.Key, Generation: root.Generation, Task: "b", Position: 1, Role: "implementer", Type: plan.TypeImplementation},
+			{Issue: root.Key, Generation: root.Generation, Task: "b", Position: 1, Role: "implementer", Type: plan.TypeImplementation, Agent: "implementer-2"},
 		}
 		return record.NewStore().PutPlan(t.Context(), tx, v, []record.PlanTask{first, second}, steps)
 	})
-	_, err := walkOf()
-	if want := "walk LEGION-208: the plan of LEGION-208 at generation 1 holds 2 tasks, and this release walks one"; err == nil || err.Error() != want {
-		t.Fatalf("the walk of a plan of two tasks = %v, want the error %q", err, want)
+	_, err := walkOf("")
+	if want := "walk LEGION-208 at generation 1: its plan holds 2 tasks, and this read names none of them"; err == nil || err.Error() != want {
+		t.Fatalf("the walk of a plan of two tasks read for none = %v, want the error %q", err, want)
+	}
+	if w, err := walkOf("a"); err != nil || !w.Stored || w.Task != "a" || w.Merges || !reflect.DeepEqual(w.Line, []phase.Phase{phase.Implementing}) {
+		t.Fatalf("the walk of task a, which task b needs = %+v, %v, want task a on its one step, with no retro and no merge", w, err)
+	}
+	if w, err := walkOf("b"); err != nil || !w.Stored || w.Task != "b" || !w.Merges || !reflect.DeepEqual(w.Needs, []string{"a"}) ||
+		!reflect.DeepEqual(w.Line, []phase.Phase{phase.Implementing, phase.Retro, phase.Merging}) {
+		t.Fatalf("the walk of task b, which no task needs = %+v, %v, want task b on its step, then the retro and the merge", w, err)
+	}
+	if _, err := walkOf("c"); err == nil || err.Error() != "walk LEGION-208 at generation 1: its plan holds no task c" {
+		t.Fatalf("the walk of task c, which the plan does not hold = %v, want an error naming c", err)
 	}
 }

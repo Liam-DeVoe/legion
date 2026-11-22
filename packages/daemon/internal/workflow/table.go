@@ -105,17 +105,19 @@ var stepRows = []struct {
 }
 
 // TableOf is the complete transition table of an issue whose task walks line: the phases of its
-// steps in the task's order, which holds implementing, then retro and merging (plan.Line of a plan
-// plan.Validate took). Rows, not switch-case scheduling, define every phase change. Its rows, in
-// this order: the gate's opening, out of admitted into the first phase of the line; each phase's
-// rows on its role's trigger (stepRows), at each position of the line that phase stands at; the
-// merge, out of merging into done; and a backward row from each position of the line to each
-// position before it (backwardRows). A head that conflicts with its base moves no phase
-// (merge_forward.go). A return goes back to implementing where implementing stands before the step
-// that fails, and a step with no implementing before it has none. Each row carries the places of
-// its two positions (placeAt), so a line that holds a phase at two places, two steps of roles the
-// deployment defines, has a row for each. A row into accepting starts nobody, because accepting's
-// role is the tree's architect; every other row into a phase of the line starts its role. No row
+// steps in the task's order, which holds implementing, then retro and merging where the task
+// merges (plan.Line of a plan plan.Validate took). Rows, not switch-case scheduling, define every
+// phase change. Its rows, in this order: the gate's opening, out of admitted into the first phase
+// of the line; each phase's rows on its role's trigger (stepRows), at each position of the line
+// that phase stands at, the last step of a line with no retro moving to done at its own place,
+// since its task is done there; the merge, out of merging into done, where the line holds it; and
+// a backward row from each position of the line to each position before it (backwardRows). A head
+// that conflicts with its base moves no phase (merge_forward.go). A return goes back to
+// implementing where implementing stands before the step that fails, and a step with no
+// implementing before it has none. Each row carries the places of its two positions (placeAt), so
+// a line that holds a phase at two places, two steps of roles the deployment defines, has a row for
+// each. A row into accepting starts nobody, because accepting's role is the tree's architect; every
+// other row into a phase of the line starts its role, and a row into done starts nobody. No row
 // carries a status of its own: every status a row writes is its target phase's, which PhaseStatus
 // holds.
 func TableOf(line []phase.Phase) []Row {
@@ -132,6 +134,13 @@ func TableOf(line []phase.Phase) []Row {
 					continue
 				}
 			}
+			if next == len(line) {
+				// The last step of a task that does not merge (plan.Line): its pass leaves the
+				// task done at that step's place.
+				rows = append(rows, Row{From: from, Trigger: step.trigger, Guard: step.guard, To: phase.Done, FromPlace: placeAt(line, at),
+					ToPlace: placeAt(line, at), Effects: []EffectKind{EffectNotice}})
+				continue
+			}
 			to := line[next]
 			rows = append(rows, Row{From: from, Trigger: step.trigger, Guard: step.guard, To: to, FromPlace: placeAt(line, at),
 				ToPlace: placeAt(line, next), Effects: effectsInto(to)})
@@ -140,9 +149,11 @@ func TableOf(line []phase.Phase) []Row {
 	// The merger merges, and the merge is what ends merging: the daemon submits none and reads
 	// GitHub's merge of the pull request as the phase's own terminating fact. The task stays at its
 	// merge, done.
-	merge := record.TaskPlace{Kind: record.PlaceMerge}
-	rows = append(rows, Row{From: phase.Merging, Trigger: TriggerPullRequestMerged, Guard: allow, To: phase.Done,
-		FromPlace: merge, ToPlace: merge, Effects: []EffectKind{EffectSuspend, EffectNotice, EffectLinger}})
+	if slices.Contains(line, phase.Merging) {
+		merge := record.TaskPlace{Kind: record.PlaceMerge}
+		rows = append(rows, Row{From: phase.Merging, Trigger: TriggerPullRequestMerged, Guard: allow, To: phase.Done,
+			FromPlace: merge, ToPlace: merge, Effects: []EffectKind{EffectSuspend, EffectNotice, EffectLinger}})
+	}
 	return append(rows, backwardRows(line)...)
 }
 

@@ -88,13 +88,27 @@ func TestStepsOfOneKeyHaveOneAgent(t *testing.T) {
 // The default steps walk today's line: the five steps' phases in order, then Legion's own retro
 // and merge.
 func TestLineOfTheDefaultStepsIsTodaysOrder(t *testing.T) {
-	if got := Line(defaultSteps(t)); !reflect.DeepEqual(got, phase.Order) {
+	if got := Line(defaultSteps(t), true); !reflect.DeepEqual(got, phase.Order) {
 		t.Fatalf("Line(default steps) = %v, want %v", got, phase.Order)
 	}
 	steps, _ := ParseSteps("implementer reviewer")
 	want := []phase.Phase{phase.Implementing, phase.Reviewing, phase.Retro, phase.Merging}
-	if got := Line(steps); !reflect.DeepEqual(got, want) {
+	if got := Line(steps, true); !reflect.DeepEqual(got, want) {
 		t.Fatalf("Line(implementer reviewer) = %v, want %v", got, want)
+	}
+}
+
+// The work of an issue merges once, at the end of the task no task needs, so only the task that
+// merges walks Legion's retro and merge after its steps: a task another task needs ends at its
+// last step. The fault it catches is a task that does not merge running a retro and a merge of its
+// own (its control: Line appending them whatever merges says).
+func TestALineOfATaskThatDoesNotMergeEndsAtItsLastStep(t *testing.T) {
+	steps, _ := ParseSteps("implementer reviewer")
+	if got, want := Line(steps, false), []phase.Phase{phase.Implementing, phase.Reviewing}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("Line(implementer reviewer, does not merge) = %v, want %v", got, want)
+	}
+	if got, want := Line(steps, true), []phase.Phase{phase.Implementing, phase.Reviewing, phase.Retro, phase.Merging}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("Line(implementer reviewer, merges) = %v, want %v", got, want)
 	}
 }
 
@@ -132,7 +146,7 @@ func TestHowAStepRunsIsItsRolesAndNeverItsType(t *testing.T) {
 	}
 	steps, _ := ParseSteps("implementer checker linter")
 	want := []phase.Phase{phase.Implementing, phase.Step, phase.Step, phase.Retro, phase.Merging}
-	if got := Line(steps); !reflect.DeepEqual(got, want) {
+	if got := Line(steps, true); !reflect.DeepEqual(got, want) {
 		t.Fatalf("Line(implementer checker linter) = %v, want %v", got, want)
 	}
 }

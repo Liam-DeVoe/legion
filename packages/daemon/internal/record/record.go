@@ -291,6 +291,12 @@ type Issue struct {
 	// rows (pods.RunningColumn, read as RunningOf reads it), in task id order. It is read only:
 	// PutIssue writes nothing of it, and workflow's moveTask reads it again on the issue it moves.
 	Running []RunningStep
+	// ViewTask is the task of the issue's plan this copy of the issue is read for, "" for the
+	// issue itself: a copy read for one task of a plan that holds several stands in that task's
+	// phase and hold, not the issue's (workflow's view). It has no column, and PutIssue refuses a
+	// copy that names one, which the workflow writes as the issue, in the phase each of its tasks
+	// derives (workflow's putIssue).
+	ViewTask string
 }
 
 // Repository is the repository the record names (Repo) in the spelling the record keeps: what
@@ -1924,6 +1930,8 @@ type Store interface {
 	// would give a recorded issue another of any of them. This release's rename pass writes a
 	// configured rename's new name on a recorded issue through RenameIssueRepository instead, the
 	// one writer that changes a recorded repository, which dispatch://INFRA-3532's own change removes.
+	// It refuses a copy read for one task of the issue's plan (Issue.ViewTask), whose phase is that
+	// task's: the workflow writes such a copy as the issue (workflow's putIssue).
 	PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error
 	// MarkIssueMoved records at as when the daemon last saw key move (Issue.MovedAt), the one
 	// writer of that column: the write sites hand it the fact's own moment, and PutIssue names the

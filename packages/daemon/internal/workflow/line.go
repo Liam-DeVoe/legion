@@ -14,21 +14,22 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// Walk is the line of phases an issue's run walks, and where its task stands on it. A run with
-// plan rows (record.Store.Plan at the issue's generation) walks the line of its one task's steps
-// (plan.Line): each step runs as the phase of its role, then Legion's own retro and merge. A run
-// with none, which is every issue that ran before plan rows existed, walks today's line,
-// phase.Order, as the steps of the task default (todaysSteps), with Stored false, and its table is
-// Table, row for row. Every behaviour that differs from today reads Stored and nothing else; the
-// steps of both are read the same way (placeOnWalk).
+// Walk is the line of phases one task of an issue's run walks, and where that task stands on it. A
+// run with plan rows (record.Store.Plan at the issue's generation) walks the line of each of its
+// tasks' steps (plan.Line): each step runs as the phase of its role, then Legion's own retro and
+// merge where the task is the one that merges (Merges). A run with none, which is every issue that
+// ran before plan rows existed, walks today's line, phase.Order, as the steps of the task default
+// (todaysSteps), with Stored false, and its table is Table, row for row. Every behaviour that
+// differs from today reads Stored and nothing else; the steps of both are read the same way
+// (placeOnWalk).
 //
 // Line and Steps are read only: an unstored walk's Line is phase.Order itself, and its Steps are
 // todaysSteps itself.
 type Walk struct {
 	// Stored says whether the run has plan rows.
 	Stored bool
-	// Task is the id of the run's one task: the plan's, or defaultTask where the run has none,
-	// which is the task its steps are recorded under (StepID).
+	// Task is the id of the walk's task: a task of the plan, or defaultTask where the run has
+	// none, which is the task its steps are recorded under (StepID).
 	Task string
 	// Branch is the GitHub branch the task works on (record.PlanTask.BranchOf), whose working copy
 	// a start of the task names (taskWorkingCopy); "" where the run has no plan rows.
@@ -41,8 +42,14 @@ type Walk struct {
 	// Needs are the tasks the task needs, each by its id (record.PlanTask.Needs), which the run's
 	// plan node carries (planNode); nil where it needs none or the run has no plan rows.
 	Needs []string
-	// Line is the phases the task walks: one for each step, then retro and merging.
+	// Line is the phases the task walks: one for each step, then retro and merging where the task
+	// merges.
 	Line []phase.Phase
+	// Merges says whether the task is the one task of the plan in force that no task needs
+	// (plan.Sinks over the tasks' needs), whose work is the issue's that merges, so its line ends
+	// with Legion's retro and merge; a task another task needs is done at its last step. It is
+	// true for a run with no plan rows and for a plan of one task.
+	Merges bool
 	// State and Place are where the task stands (record.PlanTask); zero where the run has no
 	// plan rows, whose place is the issue's phase alone.
 	State record.TaskState
@@ -50,6 +57,9 @@ type Walk struct {
 	// StoppedReason is why a stopped task was stopped (record.PlanTask.StoppedReason), by its owner
 	// or by a failed step; "" for a task that is not stopped.
 	StoppedReason string
+	// HoldReason is why a held task is held (record.PlanTask.HoldReason): "" for a failed claim,
+	// record.HoldEscalated or record.HoldForChildren; "" for a task that is not held.
+	HoldReason record.HoldReason
 	// Version is the version of the plan in force (record.StoredPlan.Version): where the plan came
 	// from, its document and its number, which the run's plan node names (planNode); zero where
 	// the run has no plan rows.
@@ -65,26 +75,91 @@ type Walk struct {
 var todaysSteps = planSteps(plan.Deployment{Roles: plan.BuiltinRoles()}, "", 0, defaultTask, config.Project{}.RunsByDefault())
 
 // todaysWalk is the walk of a run with no plan rows: the task default walking todaysSteps on
-// today's line, phase.Order, with Stored false.
-func todaysWalk() Walk { return Walk{Task: defaultTask, Steps: todaysSteps, Line: phase.Order} }
+// today's line, phase.Order, which merges, with Stored false.
+func todaysWalk() Walk {
+	return Walk{Task: defaultTask, Steps: todaysSteps, Line: phase.Order, Merges: true}
+}
 
-// walk is the walk of issue's run: its plan rows, or today's line with Stored false
-// (todaysWalk). Each step runs as the phase of its role (plan.RunsAs). A run whose rows hold no
-// task or more than one (record.StoredPlan.Task, the one rule for the task a run is on) is an
-// error: no plan this release takes writes one (plan.Validate, plan.Supported).
+// walk is the walk of the task issue is read for (record.Issue.ViewTask) on its run's plan rows,
+// or today's line with Stored false (todaysWalk). A read that names no task walks the plan's one
+// task (record.StoredPlan.Task); a plan of several tasks read for none has no one walk, and is an
+// error, as is a plan of no task and a read for a task the plan does not hold. Each step runs as
+// the phase of its role (plan.RunsAs).
 func (e *Engine) walk(ctx context.Context, tx pgx.Tx, issue record.Issue) (Walk, error) {
 	stored, err := e.store.Plan(ctx, tx, issue.Key, issue.Generation)
 	if err != nil || stored == nil {
 		return todaysWalk(), err
 	}
-	task, err := stored.Task()
-	if err != nil {
+	return walkIn(issue, stored)
+}
+
+// walkIn is walk on stored, the plan of issue's run, which the caller read.
+func walkIn(issue record.Issue, stored *record.StoredPlan) (Walk, error) {
+	switch {
+	case issue.ViewTask != "":
+		at := slices.IndexFunc(stored.Tasks, func(task record.PlanTask) bool { return task.Task == issue.ViewTask })
+		if at < 0 {
+			return Walk{}, fmt.Errorf("walk %s at generation %d: its plan holds no task %s", issue.Key, issue.Generation, issue.ViewTask)
+		}
+		return walkOfTask(issue.Key, stored, at, mergingTask(stored)), nil
+	case len(stored.Tasks) > 1:
+		return Walk{}, fmt.Errorf("walk %s at generation %d: its plan holds %d tasks, and this read names none of them",
+			issue.Key, issue.Generation, len(stored.Tasks))
+	}
+	if _, err := stored.Task(); err != nil {
 		return Walk{}, fmt.Errorf("walk %s: %w", issue.Key, err)
 	}
-	steps := stored.Steps[task.Task]
-	return Walk{Stored: true, Task: task.Task, Branch: task.BranchOf(issue.Key), Text: task.BlockText, Steps: steps, Needs: task.Needs,
-		Line: plan.Line(namedSteps(steps)), State: task.State, Place: task.Place, StoppedReason: task.StoppedReason,
-		Version: stored.Version}, nil
+	return walkOfTask(issue.Key, stored, 0, stored.Tasks[0].Task), nil
+}
+
+// walks is the walk of each task of issue's run, in task id order (record.StoredPlan.Tasks), read
+// once: today's walk alone for a run with no plan rows (todaysWalk).
+func (e *Engine) walks(ctx context.Context, tx pgx.Tx, issue record.Issue) ([]Walk, error) {
+	stored, err := e.store.Plan(ctx, tx, issue.Key, issue.Generation)
+	if err != nil {
+		return nil, err
+	}
+	return walksOf(issue.Key, stored), nil
+}
+
+// walksOf is walks on stored, the plan of the run of the issue keyed key, nil for none.
+func walksOf(key string, stored *record.StoredPlan) []Walk {
+	if stored == nil {
+		return []Walk{todaysWalk()}
+	}
+	merging := mergingTask(stored)
+	walks := make([]Walk, len(stored.Tasks))
+	for at := range stored.Tasks {
+		walks[at] = walkOfTask(key, stored, at, merging)
+	}
+	return walks
+}
+
+// walkOfTask is the walk of stored.Tasks[at], a task of the plan of the issue keyed key, whose
+// task that merges is merging (mergingTask).
+func walkOfTask(key string, stored *record.StoredPlan, at int, merging string) Walk {
+	task := stored.Tasks[at]
+	steps, merges := stored.Steps[task.Task], task.Task == merging
+	return Walk{Stored: true, Task: task.Task, Branch: task.BranchOf(key), Text: task.BlockText, Steps: steps, Needs: task.Needs,
+		Line: plan.Line(namedSteps(steps), merges), Merges: merges, State: task.State, Place: task.Place, StoppedReason: task.StoppedReason,
+		HoldReason: task.HoldReason, Version: stored.Version}
+}
+
+// mergingTask is the id of the task of stored whose work is the issue's that merges: the plan's
+// one task, or, of a plan of several, the one task no task needs (plan.Sinks), and none where
+// several are such tasks, which plan.Supported refuses.
+func mergingTask(stored *record.StoredPlan) string {
+	if len(stored.Tasks) == 1 {
+		return stored.Tasks[0].Task
+	}
+	tasks := make([]plan.Task, len(stored.Tasks))
+	for i, task := range stored.Tasks {
+		tasks[i] = plan.Task{ID: task.Task, Needs: task.Needs}
+	}
+	if sinks := plan.Sinks(tasks); len(sinks) == 1 {
+		return sinks[0]
+	}
+	return ""
 }
 
 // namedSteps is steps as a plan names them (plan.Step), each its role and the key of the agent it
@@ -104,9 +179,13 @@ func namedSteps(steps []record.PlanStep) []plan.Step {
 // placeIn, and PlaceOf serves a phase that stands once in its line.
 func (w Walk) PlaceOf(p phase.Phase) (record.TaskPlace, bool) {
 	switch p {
-	case phase.Retro:
-		return record.TaskPlace{Kind: record.PlaceRetro}, true
-	case phase.Merging:
+	case phase.Retro, phase.Merging:
+		if !slices.Contains(w.Line, p) {
+			return record.TaskPlace{}, false
+		}
+		if p == phase.Retro {
+			return record.TaskPlace{Kind: record.PlaceRetro}, true
+		}
 		return record.TaskPlace{Kind: record.PlaceMerge}, true
 	}
 	if at := slices.Index(w.steps(), p); at >= 0 {
@@ -156,12 +235,13 @@ func (w Walk) placeIn(p phase.Phase) (record.TaskPlace, bool) {
 	return w.Place, true
 }
 
-// steps is the part of the line each step runs: all of it but the retro and the merge.
+// steps is the part of the line each step runs: all of it but the retro and the merge that end
+// the line of a task that merges.
 func (w Walk) steps() []phase.Phase {
-	if len(w.Line) < 2 {
-		return nil
+	if n := len(w.Line); n >= 2 && w.Line[n-2] == phase.Retro && w.Line[n-1] == phase.Merging {
+		return w.Line[:n-2]
 	}
-	return w.Line[:len(w.Line)-2]
+	return w.Line
 }
 
 // MovesBack says whether row moves w's task back by the task's own order. A stored walk compares
@@ -178,12 +258,13 @@ func (w Walk) MovesBack(row Row) bool {
 	return row.ToPlace.Kind != "" && placeRank(row.ToPlace) < placeRank(row.FromPlace)
 }
 
-// issuePhaseOf is the phase an issue whose one task stands at place in state stands in: done
-// for a task that is done or left the workflow before it was done (record.TaskLeft), whatever its
-// place, which is the phase of an issue out of the workflow; the phase of the step at place, retro
-// or merging at the task's retro or merge; and admitted for a task at no act, which has not
-// started. A task stopped or held keeps its place, and the hold overlays this phase
-// (record.Hold.From). A step place the line does not hold derives no phase.
+// issuePhaseOf is the phase w's task derives at place in state, which an issue of that one task
+// stands in: done for a task that is done or left the workflow before it was done
+// (record.TaskLeft), whatever its place, which is the phase of an issue out of the workflow; the
+// phase of the step at place, retro or merging at the task's retro or merge; and admitted for a
+// task at no act, which has not started. A task stopped or held keeps its place, and the hold
+// overlays this phase (record.Hold.From, taskStanding). A step place the line does not hold
+// derives no phase. The phase of an issue of several tasks is issuePhaseOfTasks's, over each.
 func issuePhaseOf(w Walk, place record.TaskPlace, state record.TaskState) phase.Phase {
 	if state == record.TaskDone || state == record.TaskLeft {
 		return phase.Done
@@ -200,6 +281,81 @@ func issuePhaseOf(w Walk, place record.TaskPlace, state record.TaskState) phase.
 		return ""
 	}
 	return phase.Admitted
+}
+
+// taskStanding is where an issue stands for w's task alone: the phase its place derives
+// (issuePhaseOf), and for a held task held from that phase for the hold's reason (Walk.HoldReason),
+// or for a stopped task held from it for its stop (record.HoldTaskStopped). It is the phase and the
+// hold of a copy of the issue read for that task (view), and the one reading of each task that
+// issuePhaseOfTasks ranks.
+func taskStanding(w Walk) (phase.Phase, *record.Hold) {
+	at := issuePhaseOf(w, w.Place, w.State)
+	switch w.State {
+	case record.TaskHeld:
+		return phase.Held, &record.Hold{From: at, Reason: w.HoldReason}
+	case record.TaskStopped:
+		return phase.Held, &record.Hold{From: at, Reason: record.HoldTaskStopped}
+	}
+	return at, nil
+}
+
+// issuePhaseOfTasks is the one function that derives where an issue whose run has plan rows stands
+// from tasks, the walk of each of its tasks in task id order: issues.phase and the issue's hold. In
+// this order:
+//
+//  1. Each task is done or left: done, with no hold.
+//  2. A task runs: the phase of the running task whose phase comes first in today's order
+//     (phase.Order), a step of a role the deployment defines at the place of implementing, with
+//     no hold. The slot (record.KeepsSlot), the Dispatch status (PhaseStatus) and the issue's work
+//     (record.AtWork) each read the issue's phase as one value, and each reads the least finished
+//     work: one task implementing and one in review keeps the slot and shows in_progress.
+//  3. No task runs, and a task is held or stopped: held, from the phase of the first such task in
+//     that order, for its hold's reason, task-stopped for a stopped task (taskStanding).
+//  4. Else each task that is not done waits: admitted.
+//
+// Of two tasks at one phase the first in task id order is taken. For one task it is where that
+// task stands (taskStanding). issues.phase so names the phase of no step but one: a reader that
+// asks which steps run reads the issue's running steps (record.Issue.Running).
+func issuePhaseOfTasks(tasks []Walk) (phase.Phase, *record.Hold) {
+	running, holding := -1, -1
+	var runs phase.Phase
+	var hold *record.Hold
+	open := false
+	for _, w := range tasks {
+		at, held := taskStanding(w)
+		switch w.State {
+		case record.TaskDone, record.TaskLeft:
+			continue
+		case record.TaskRunning:
+			if rank := orderRank(at); running < 0 || rank < running {
+				running, runs = rank, at
+			}
+		case record.TaskHeld, record.TaskStopped:
+			if rank := orderRank(held.From); holding < 0 || rank < holding {
+				holding, hold = rank, held
+			}
+		}
+		open = true
+	}
+	switch {
+	case !open:
+		return phase.Done, nil
+	case running >= 0:
+		return runs, nil
+	case holding >= 0:
+		return phase.Held, hold
+	}
+	return phase.Admitted, nil
+}
+
+// orderRank is where p stands in today's order (phase.Order), from 1, for issuePhaseOfTasks's rule:
+// a step of a role the deployment defines at the place of implementing, and 0 for a phase before
+// that order, the admitted of a task at no act.
+func orderRank(p phase.Phase) int {
+	if p == phase.Step {
+		p = phase.Implementing
+	}
+	return slices.Index(phase.Order, p) + 1
 }
 
 // moveTask is the one writer of where a task stands: it moves w's task to place in state

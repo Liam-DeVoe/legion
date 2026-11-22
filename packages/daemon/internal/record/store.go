@@ -210,6 +210,8 @@ func (s *Postgres) SlottedIssues(ctx context.Context, tx pgx.Tx, project string)
 
 func (s *Postgres) PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error {
 	switch {
+	case issue.ViewTask != "":
+		return fmt.Errorf("put issue %s: a copy read for task %s is written by the workflow's putIssue, which derives the issue's phase", issue.Key, issue.ViewTask)
 	case issue.Repo == "":
 		return fmt.Errorf("record issue %s: repository is required", issue.Key)
 	case issue.DefaultBranch == "":

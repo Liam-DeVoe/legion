@@ -83,6 +83,50 @@ func TestAWalkWithNoPlanRowsMovesByTodaysTable(t *testing.T) {
 	}
 }
 
+// The table of a line that ends at its last step, the line of a task another task needs
+// (plan.Line of a task that does not merge), moves that step's pass to done, the task keeping the
+// place of its last step, and holds no row out of a retro or a merging it does not walk. A line
+// that merges keeps its retro's move into merging and its merge's move to done.
+//
+// The fault it catches is a task that does not merge and stands at its last step for ever, or a
+// table built past the end of its line (its control: TableOf moving the last step on to the next
+// phase of the line, which there is none of).
+func TestTheLastStepOfALineThatDoesNotMergeMovesToDone(t *testing.T) {
+	for _, tc := range []struct {
+		line    []phase.Phase
+		trigger TriggerKind
+	}{
+		{[]phase.Phase{phase.Implementing, phase.Reviewing}, TriggerReviewApproved},
+		{[]phase.Phase{phase.Implementing}, TriggerImplementationReady},
+		{[]phase.Phase{phase.Implementing, phase.Step}, TriggerStepPassed},
+	} {
+		last := len(tc.line)
+		place := record.TaskPlace{Kind: record.PlaceStep, Position: last}
+		var done []Row
+		for _, row := range TableOf(tc.line) {
+			if row.From == phase.Retro || row.From == phase.Merging {
+				t.Fatalf("the table of %v holds the row %s/%s -> %s, out of a phase the line does not walk", tc.line, row.From, row.Trigger, row.To)
+			}
+			if row.To == phase.Done {
+				done = append(done, row)
+			}
+		}
+		if len(done) != 1 || done[0].From != tc.line[last-1] || done[0].Trigger != tc.trigger || done[0].FromPlace != place || done[0].ToPlace != place {
+			t.Fatalf("the rows of %v into done = %+v, want the one pass of its last step at %+v, keeping that place", tc.line, done, place)
+		}
+	}
+	merges := TableOf([]phase.Phase{phase.Implementing, phase.Retro, phase.Merging})
+	var into []phase.Phase
+	for _, row := range merges {
+		if row.Trigger == TriggerRetroCompleted || row.Trigger == TriggerPullRequestMerged {
+			into = append(into, row.To)
+		}
+	}
+	if !slices.Equal(into, []phase.Phase{phase.Merging, phase.Done}) {
+		t.Fatalf("the retro's and the merge's rows of a line that merges move into %v, want merging then done", into)
+	}
+}
+
 func TestEveryLineHasARowForEachPhaseAndTrigger(t *testing.T) {
 	for _, line := range testLines {
 		if err := validateTable(line, TableOf(line)); err != nil {
