@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // parkRig is a mention sender whose sends to one recipient, session:parked, wait for an earlier
@@ -264,14 +265,26 @@ func TestAParkedLaneHoldsNoGoroutineAndKeepsTheLanesBounds(t *testing.T) {
 		}
 		// A send is in the rig's list before its goroutine lets it go (claimedDuring) and leaves
 		// its lane (next), so the ten are done only once the sender holds the two parked sends
-		// alone and no goroutine serves a lane.
-		waitUntil(t, "the other recipients' sends", func() bool {
+		// alone and no goroutine serves a lane. The wait is bounded on the bubble's clock
+		// (parkLiveness), as awaitPark's is, which costs no real time. waitUntil's bound is the
+		// test binary's deadline, a time on the machine's clock, which the bubble's clock, starting
+		// in 2000, never reaches, and the sender's claim refresh keeps the bubble from deadlocking,
+		// so a send that never goes would hold the row until go test's alarm.
+		othersDone := func() bool {
 			rig.mu.Lock()
 			sent := len(rig.sent)
 			rig.mu.Unlock()
 			serving, _, _, queued := rig.state()
 			return sent == 10 && queued == 2 && serving == 0
-		})
+		}
+		if !testwait.Holds(parkLiveness(), testwait.Poll, othersDone) {
+			rig.mu.Lock()
+			sent := append([]string(nil), rig.sent...)
+			rig.mu.Unlock()
+			serving, _, _, queued := rig.state()
+			t.Fatalf("the other recipients' sends were not done within %v of the bubble's clock: sent %v, %d sends queued (want the 2 parked), %d goroutines serving (want none)",
+				parkLiveness(), sent, queued, serving)
+		}
 
 		// The parked send's tries until it has made parkedTries, the lane read after each park.
 		for {

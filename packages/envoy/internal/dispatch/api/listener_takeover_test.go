@@ -278,15 +278,15 @@ func TestAListenerTakeOverIsWaitedOutAndARefusalSettlesAtOnce(t *testing.T) {
 	}
 }
 
-// With no listener configured there is no take-over to wait out: the send settles failed on its
-// one try, with the failure no take-over ends (retryableDeliveryFailure), and the sender never
+// With no listener configured there is no take-over to wait out: the send settles on its first
+// try, failed with the failure no take-over ends (retryableDeliveryFailure), and the sender never
 // waits out a backoff of the production window the server runs. A sender tries again only after
 // such a backoff, and only once it has renewed its claim of the attempt (takeoverRetry.retry,
 // renewMessageDeliveryClaim), so the claims written on the attempt are its tries: one, the claim
-// it took before its first try, with no renewal. It holds no clock: the product records the
-// attempt's times but states no bound on how soon an attempt with no listener settles, so a delay
-// before the first try is not this test's to see.
-func TestASendWithNoListenerConfiguredSettlesAtOnce(t *testing.T) {
+// it took before its first try, with no renewal. It says nothing of how soon that try runs: the
+// product records the attempt's times but states no bound on how soon an attempt with no listener
+// settles, so a delay before the first try is not this test's to see.
+func TestASendWithNoListenerConfiguredSettlesOnItsFirstTry(t *testing.T) {
 	handler, database, _ := newTestServer(t, testServerOptions{takeoverWindow: listenerTakeoverWindow})
 	claims := countAttemptClaims(t, database)
 	response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/agents/s1/messages",

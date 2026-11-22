@@ -315,7 +315,7 @@ func TestInboxReadRefusesWhatItCannotMark(t *testing.T) {
 	}{
 		"no mark":          {map[string]any{}, "INVALID_STATE"},
 		"unreadable mark":  {map[string]any{"read_through": "yesterday"}, "INVALID_STATE"},
-		"mark ahead":       {map[string]any{"read_through": time.Now().Add(agentStateCutoffSkew + pastTheRun).UTC().Format(time.RFC3339Nano)}, "INVALID_STATE"},
+		"mark ahead":       {map[string]any{"read_through": time.Now().Add(agentStateCutoffSkew + runLeft(t)).UTC().Format(time.RFC3339Nano)}, "INVALID_STATE"},
 		"both owners":      {map[string]any{"read_through": now, "issue": issue.Key, "artifact": "7c9e6679-7425-40de-944b-e07fc1f90ae7"}, "INVALID_QUERY"},
 		"unknown kind":     {map[string]any{"read_through": now, "kind": []string{"ask"}}, "INVALID_QUERY"},
 		"empty kind":       {map[string]any{"read_through": now, "kind": []string{""}}, "INVALID_QUERY"},

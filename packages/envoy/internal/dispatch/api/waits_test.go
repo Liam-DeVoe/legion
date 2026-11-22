@@ -50,6 +50,18 @@ func awaitStill(t *testing.T, what string, still time.Duration, count func() int
 // ends the test.
 const pastTheRun = 24 * time.Hour
 
+// runLeft is what is left of the test binary's run: the time until its deadline, or pastTheRun
+// when it runs with none (-timeout 0). A mark set past a product's allowance by runLeft is still
+// past it when the server reads it, however late in the run that is, and past it by no more than
+// the run itself, so the row still tests the allowance and not a day beyond it.
+func runLeft(t *testing.T) time.Duration {
+	t.Helper()
+	if deadline, ok := t.Deadline(); ok {
+		return time.Until(deadline)
+	}
+	return pastTheRun
+}
+
 // queuedWaiters is what releaseOnceQueued last read: the backends queued behind the held lock, or
 // the error that ended the reading.
 type queuedWaiters struct {

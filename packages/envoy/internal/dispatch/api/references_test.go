@@ -298,12 +298,14 @@ func TestIssueReferencesRejectUnauthenticatedRequest(t *testing.T) {
 //     setStatementBudget rounds down: the statement it cuts was given what was left of the bound,
 //     and the budget is spent (errClosureBudgetSpent) only with less than a millisecond left. A
 //     loaded machine only lengthens that clock, so it cannot fail a read that keeps its bound.
-//   - From above, on the server's own statements on the read's connection (requestSpan): from its
-//     first budget statement, which must give no more than the bound, to the rollback
-//     boundedClosure sends once the read has ended, no longer than the bound and the second
-//     boundedClosure's context adds. Every budget statement comes after the read starts, so the
-//     span is no longer than the read itself, and the test's own setup and scheduling count for
-//     nothing.
+//   - On the server's own statements on the read's connection (requireReadEndedAtItsBudget): its
+//     first budget statement gives no more than the bound; from its last budget statement to the
+//     rollback boundedClosure sends once the read has ended, the read runs at least the budget
+//     that statement gave, less a millisecond; from its first budget statement to that rollback,
+//     no longer than the bound and the second boundedClosure's context adds; and it ends on
+//     Postgres's statement timeout, which the budget sets, not on the context. Every budget
+//     statement comes after the read starts, so the span is no longer than the read itself, and
+//     the test's own setup and scheduling count for nothing.
 //
 // A read ended sooner or later than its bound fails. The control is the first read, before the
 // lock: the same request answers 200.
@@ -339,20 +341,7 @@ func TestIssueReferencesRefuseAtTheClosureBound(t *testing.T) {
 	if lower := referencesClosureBound - time.Millisecond; got.took < lower {
 		t.Errorf("references past the bound answered %s after the request began, before %s, its %s bound less the millisecond its budget rounds down", got.took, lower, referencesClosureBound)
 	}
-	budget, ran, ended, err := span.read()
-	switch {
-	case budget == "":
-		t.Errorf("references past the bound gave its read no statement_timeout budget on the server's pool (setStatementBudget): the read is not bounded in the database")
-	case !ended:
-		t.Errorf("references past the bound never rolled back its read's transaction on the read's connection")
-	default:
-		if ms, parseErr := strconv.ParseInt(strings.TrimSuffix(budget, "ms"), 10, 64); parseErr != nil || ms > referencesClosureBound.Milliseconds() {
-			t.Errorf("the read's first statement was given a statement_timeout of %q, want at most its %s bound", budget, referencesClosureBound)
-		}
-		if upper := referencesClosureBound + time.Second; ran > upper {
-			t.Errorf("references past the bound ended its read (%v) %s after its first budget statement, past %s, its %s bound and the second its context adds", err, ran, upper, referencesClosureBound)
-		}
-	}
+	requireReadEndedAtItsBudget(t, span, "references past the bound")
 	testwait.UntilPolling(t, 50*time.Millisecond, fmt.Sprintf("the walk to give its connection back: the pool's acquired connections down to the %d it held before the request", acquired), func() (int32, bool) {
 		conns := database.Pool.Stat().AcquiredConns()
 		return conns, conns <= acquired
@@ -364,20 +353,26 @@ func TestIssueReferencesRefuseAtTheClosureBound(t *testing.T) {
 // from the start of the read's first budget statement after arm (setStatementBudget, which
 // closureBudget sends before each statement of the read, starting it with refs.ClosureTag) to the
 // start of the rollback boundedClosure sends on that same connection once the read has ended. It
-// keeps the first budget the read gave, and the error of the first statement to fail on that
-// connection, the one the bound cut. Statements of other connections, the server's background work
-// among them, count for nothing.
+// keeps the first budget the read gave and the last, each with when its statement started, and
+// the error of the first statement to fail on that connection, the one the bound cut. Statements
+// of other connections, the server's background work among them, count for nothing.
 type requestSpan struct {
 	mu    sync.Mutex
 	armed bool
-	// conn is the read's connection, budget the statement_timeout its first budget statement gave
-	// ("1998ms"), began when that statement started, ended when the rollback started, and err the
-	// first error a statement on conn answered.
-	conn   *pgx.Conn
-	budget string
-	began  time.Time
-	ended  time.Time
-	err    error
+	// conn is the read's connection; first and last are its first and its latest budget
+	// statements; ended is when the rollback started, and err the first error a statement on conn
+	// answered.
+	conn        *pgx.Conn
+	first, last spanBudget
+	ended       time.Time
+	err         error
+}
+
+// spanBudget is one budget statement of the read: the statement_timeout it gave, as set_config
+// takes it ("1998ms"), and when it started.
+type spanBudget struct {
+	gave    string
+	started time.Time
 }
 
 // arm starts the span at the next budget statement the server's pool starts.
@@ -390,12 +385,17 @@ func (s *requestSpan) arm() {
 func (s *requestSpan) TraceQueryStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	budget := strings.HasPrefix(data.SQL, refs.ClosureTag) && strings.Contains(data.SQL, "set_config('statement_timeout'")
 	switch {
-	case s.armed && s.conn == nil && strings.HasPrefix(data.SQL, refs.ClosureTag) && strings.Contains(data.SQL, "set_config('statement_timeout'"):
-		s.conn, s.began = conn, time.Now()
+	case budget && s.armed && (s.conn == nil || conn == s.conn) && s.ended.IsZero():
+		statement := spanBudget{started: time.Now()}
 		if len(data.Args) == 1 {
-			s.budget, _ = data.Args[0].(string)
+			statement.gave, _ = data.Args[0].(string)
 		}
+		if s.conn == nil {
+			s.conn, s.first = conn, statement
+		}
+		s.last = statement
 	case s.conn != nil && conn == s.conn && s.ended.IsZero() && data.SQL == "rollback":
 		s.ended = time.Now()
 	}
@@ -410,13 +410,54 @@ func (s *requestSpan) TraceQueryEnd(_ context.Context, conn *pgx.Conn, data pgx.
 	}
 }
 
-// read answers the statement_timeout the read's first budget statement gave ("" when none ran),
-// how long the read ran from that statement to its transaction's rollback, whether the rollback
-// ran, and the first error a statement of the read answered.
-func (s *requestSpan) read() (string, time.Duration, bool, error) {
+// spanReading is what requestSpan read of the read: its first and last budget statements, when
+// its rollback started (zero when none did), and the first error a statement of it answered.
+type spanReading struct {
+	first, last spanBudget
+	ended       time.Time
+	err         error
+}
+
+func (s *requestSpan) read() spanReading {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.budget, s.ended.Sub(s.began), !s.ended.IsZero(), s.err
+	return spanReading{first: s.first, last: s.last, ended: s.ended, err: s.err}
+}
+
+// requireReadEndedAtItsBudget requires the bounded closure read span timed, which what names, to
+// have kept its budget, on the server's own statements on the read's connection: its first budget
+// statement gave no more than referencesClosureBound; from its last budget statement to its
+// rollback it ran at least the budget that statement gave, less a millisecond, since the statement
+// that budget was for starts after it; from its first budget statement to its rollback it ran no
+// longer than the bound and the second boundedClosure's context adds; and it ended on Postgres's
+// statement timeout (57014), which the budget sets. Under pgx's default context handler a
+// statement the context ends answers an error of pgx's own, so a read the context ended fails
+// here.
+func requireReadEndedAtItsBudget(t *testing.T, span *requestSpan, what string) {
+	t.Helper()
+	read := span.read()
+	switch {
+	case read.first.gave == "":
+		t.Errorf("%s gave its read no statement_timeout budget on the server's pool (setStatementBudget): the read is not bounded in the database", what)
+		return
+	case read.ended.IsZero():
+		t.Errorf("%s never rolled back its read's transaction on the read's connection", what)
+		return
+	}
+	if ms, err := strconv.ParseInt(strings.TrimSuffix(read.first.gave, "ms"), 10, 64); err != nil || ms > referencesClosureBound.Milliseconds() {
+		t.Errorf("%s gave the read's first statement a statement_timeout of %q, want at most its %s bound", what, read.first.gave, referencesClosureBound)
+	}
+	ms, err := strconv.ParseInt(strings.TrimSuffix(read.last.gave, "ms"), 10, 64)
+	if kept := time.Duration(ms)*time.Millisecond - time.Millisecond; err != nil || read.ended.Sub(read.last.started) < kept {
+		t.Errorf("%s ended its read (%v) %s after its last budget statement, which gave %q: it did not keep that budget, less a millisecond", what, read.err, read.ended.Sub(read.last.started), read.last.gave)
+	}
+	if ran, upper := read.ended.Sub(read.first.started), referencesClosureBound+time.Second; ran > upper {
+		t.Errorf("%s ended its read (%v) %s after its first budget statement, past %s, its %s bound and the second its context adds", what, read.err, ran, upper, referencesClosureBound)
+	}
+	var timeout *pgconn.PgError
+	if !errors.As(read.err, &timeout) || timeout.Code != "57014" || !strings.Contains(timeout.Message, "statement timeout") {
+		t.Errorf("%s ended its read with %v, want Postgres's statement timeout (57014) that its budget sets, not its context", what, read.err)
+	}
 }
 
 // The statements of an issue's references read share the one budget of referencesClosureBound
@@ -425,14 +466,19 @@ func (s *requestSpan) read() (string, time.Duration, bool, error) {
 // they run after the out and in statements. events is locked, and refs is locked for 1.5 s, from
 // other connections: the out statement waits out the lock on refs, and a loader then waits on
 // events. A read that gave each statement the whole bound would wait 1.5 s and then 2 s more, and
-// the context's 3 s would end it; with one budget the loader's statement ends at 2 s and the route
-// answers 503 REFERENCES_TIMEOUT then. The read gives its connection back: the pool then holds
-// exactly the connections it held with events locked, the lock's own among them. The control is
-// the first read, before the locks: the same request answers 200.
+// the context's 3 s would end it; with one budget the loader's statement ends at 2 s, on the
+// statement timeout the budget set, and the route answers 503 REFERENCES_TIMEOUT then
+// (requireReadEndedAtItsBudget reads which ended it, on the server's own statements). The 1.5 s
+// is a hold the test releases: load only delays the release, and a release after the budget is
+// spent makes the out statement the one the bound cuts, on the same statement timeout, which a
+// correct read still answers. The read gives its connection back: the pool then holds exactly the
+// connections it held with events locked, the lock's own among them. The control is the first
+// read, before the locks: the same request answers 200.
 func TestIssueReferencesRefuseWhenALaterStatementReachesTheBound(t *testing.T) {
 	// No document settles during the test, so no write of the server's own waits on events with a
-	// connection of the pool.
-	handler, database := blockIndexHandler(t)
+	// connection of the pool (blockIndexHandler's server, here with requestSpan on its pool).
+	span := &requestSpan{}
+	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour, tracer: span})
 	createReferenceAPIProject(t, handler, "CORE")
 	issue := createReferenceAPIIssue(t, handler, "CORE")
 	linked := requireCreatedIssue(t, createIssueRequest(t, handler, map[string]any{
@@ -455,28 +501,28 @@ func TestIssueReferencesRefuseWhenALaterStatementReachesTheBound(t *testing.T) {
 		releaseRefs()
 	}()
 	// Cleanups run last first, so this wait ends before holdLock's own release of refs runs.
-	t.Cleanup(func() { <-refsReleased })
+	t.Cleanup(func() { testwait.Receive(t, "the release of refs", refsReleased) })
+	span.arm()
 	started := time.Now()
 	response := issueReferencesRequest(t, handler, issue.Key, "")
 	took := time.Since(started)
-	<-refsReleased
+	testwait.Receive(t, "the release of refs, 1.5 s after the read began", refsReleased)
 	if response.Code != http.StatusServiceUnavailable {
 		t.Fatalf("references with events locked: status=%d after %s body=%s, want 503 after %s", response.Code, took, response.Body.String(), referencesClosureBound)
 	}
 	if refusal := decodeBody[apiErrorBody](t, response); refusal.Code != "REFERENCES_TIMEOUT" || !strings.Contains(refusal.Error, referencesClosureBound.String()) {
 		t.Errorf("references with events locked answered %s, want REFERENCES_TIMEOUT naming the %s bound", response.Body.String(), referencesClosureBound)
 	}
-	if limit := referencesClosureBound + 500*time.Millisecond; took < referencesClosureBound || took >= limit {
-		t.Errorf("references with events locked answered after %s, want at least its %s bound and less than %s", took, referencesClosureBound, limit)
+	// From below on the test's own clock, which load only lengthens; the rest on the server's own
+	// statements.
+	if lower := referencesClosureBound - time.Millisecond; took < lower {
+		t.Errorf("references with events locked answered after %s, before %s, its %s bound less the millisecond its budget rounds down", took, lower, referencesClosureBound)
 	}
-	var conns int32
-	testwait.Holds(2*time.Second, 50*time.Millisecond, func() bool {
-		conns = database.Pool.Stat().AcquiredConns()
-		return conns == acquired
+	requireReadEndedAtItsBudget(t, span, "references with events locked")
+	testwait.UntilPolling(t, 50*time.Millisecond, fmt.Sprintf("the read to give its connection back: the pool's acquired connections back to the %d it held with events locked", acquired), func() (int32, bool) {
+		conns := database.Pool.Stat().AcquiredConns()
+		return conns, conns == acquired
 	})
-	if conns != acquired {
-		t.Errorf("the pool holds %d acquired connections after the answer, want the %d it held with events locked", conns, acquired)
-	}
 }
 
 // recordingTx is a transaction that records each statement sent through it before sending it.

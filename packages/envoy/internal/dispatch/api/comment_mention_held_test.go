@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/metrics"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // scrape answers registry's /metrics body.
@@ -42,8 +43,8 @@ func scrape(t *testing.T, registry *metrics.Registry) string {
 // The send was decided held on a read of the rule: at least one, for this send, is sent between
 // the comment and the first WARN, and none for any other send. Once the topic family is captured
 // again the send lands, the gauges read none and no second WARN comes. The controls are the scrape
-// before the comment and the one after the send landed. The test's waits for the lane are its
-// liveness alone (heldLiveness), never the bound under test.
+// before the comment and the one after the send landed. Each of the test's waits for the lane ends
+// on what it waits for, bounded only by the test binary's deadline, never by the bound under test.
 //
 // The test sees what the test store's own connections send, and a connection the server opened
 // from a copy of their configuration; a read on a connection the code opens itself from a
@@ -249,27 +250,12 @@ func warningLine(logged, marker string) string {
 	return ""
 }
 
-// heldLiveness is how long the held-send test waits for the next thing its parked lane does: a
-// park, the first held WARN, the send landing. It is liveness alone, never the bound under test,
-// so it grows with the sender's own waits (mentionOrderRetryFirst, mentionOrderRetryMax): a
-// schedule of longer waits reads the rule less, which the cost requirement allows, and must not
-// time the test out.
-func heldLiveness() time.Duration {
-	return 30*time.Second + 2*(mentionOrderRetryFirst+mentionOrderRetryMax)
-}
-
 // nextPark waits for the sender's next park and answers its timer's run, which the test makes.
-// Its bound is the test's liveness alone (heldLiveness): a try takes milliseconds, and a park the
-// sender started before the test held the timers waits at most its own delay.
+// A try takes milliseconds, and a park the sender started before the test held the timers waits
+// at most its own delay; the wait's one bound is the test binary's deadline (testwait.Receive).
 func nextPark(t *testing.T, parked <-chan func()) func() {
 	t.Helper()
-	select {
-	case unpark := <-parked:
-		return unpark
-	case <-time.After(heldLiveness()):
-		t.Fatalf("the held send did not park again within %v", heldLiveness())
-		return nil
-	}
+	return testwait.Receive(t, "the held send's next park", parked)
 }
 
 // firstChars is statement's first n characters, its runs of white space each one space.
