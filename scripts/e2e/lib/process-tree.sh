@@ -828,10 +828,11 @@ exit 2'
   empties=$err/empty err=$err/said
   # `|| exit "$?"` keeps xargs's status for the wait below, and keeps a caller's ERR trap (`set -E`)
   # from firing inside the substitution for an entry whose process ended during the walk. The status
-  # is passed out by value: a bare `exit` in a subshell a trap forked exits with the status from
-  # before the trap, so inside a teardown's EXIT trap a failed xargs read 0 after a run that passed
-  # (the walk took a batch it lost for one that matched nothing) and 1 after one that failed (the
-  # teardown failed on a benign 123: Tester4784-3's `xargs exited 1 … xargs printed nothing`).
+  # is passed out by value: a bare `exit` in a process or command substitution that a trap runs exits
+  # with the status from before the trap (bash 5.2; a `( … )` subshell keeps its own), so inside a
+  # teardown's EXIT trap a failed xargs read 0 after a run that passed (the walk took a batch it lost
+  # for one that matched nothing) and 1 after one that failed (the teardown failed on a benign 123:
+  # Tester4784-3's `xargs exited 1 … xargs printed nothing`).
   # The C locale keeps grep's complaints in the words proc_walk_complaint reads.
   mapfile -t naming_files < <(printf '%s\0' "${entries[@]}" |
     NAMING_SNAP=$walk_snap NAMING_MOVED=$moved LC_ALL=C xargs -0 sh -c "$batch" procs_naming "${naming_patterns[@]}" 3>&1 2>"$err" 4>"$empties" || exit "$?")

@@ -481,7 +481,8 @@ test.skipIf(skip)(
   "a walk inside a teardown's EXIT trap answers by its own xargs's status, after a run that passed and after one that failed: a grep that failed is no answer, and a grep that met only unreadable or ended entries still answers",
   async () => {
     // The walk passed xargs's status out of its substitution with a bare `exit`, and a bare `exit` in
-    // a subshell a trap forked exits with the status from before the trap: inside a teardown's EXIT
+    // a process or command substitution that a trap runs exits with the status from before the trap
+    // (bash 5.2; a `( … )` subshell keeps its own): inside a teardown's EXIT
     // trap a grep that failed read 0 after a run that passed, so the walk took the batch it lost for
     // one with no match, and a grep that met only an ended entry read 1 after a run that failed, so
     // the teardown failed (Tester4784-3: `xargs exited 1 … xargs printed nothing`, 1 of 104 real
