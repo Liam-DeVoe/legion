@@ -65,16 +65,38 @@ func (r *run) createBucket(ctx context.Context) error {
 }
 
 // createBucketReplicas is the selection bucket's copies: --replicas, else the deployment's
-// ENVOY_NATS_REPLICAS (bus.ParseNATSReplicas, as every program reads it), else 1.
-func (r *run) createBucketReplicas() (int, error) {
+// ENVOY_NATS_REPLICAS (bus.ParseNATSReplicas, as every program reads it), else, on a clustered hub,
+// as many copies as the hub declares servers (writerhold.Discover, the StatefulSet's pods), at most
+// 5, and on a lone server 1. An operator's shell seldom carries ENVOY_NATS_REPLICAS, and a bucket
+// of one copy on a cluster is lost with one server: so the hub the hold restarted decides, rather
+// than a default of 1 or a refusal that leaves the operator to guess the count.
+func (r *run) createBucketReplicas(ctx context.Context) (int, error) {
 	if r.o.replicas > 0 {
 		return r.o.replicas, nil
 	}
-	replicas, err := bus.ParseNATSReplicas(os.Getenv(bus.ReplicasEnvVar))
-	if err != nil {
-		return 0, fmt.Errorf("%s: %w", bus.ReplicasEnvVar, err)
+	if os.Getenv(bus.ReplicasEnvVar) != "" {
+		replicas, err := bus.ParseNATSReplicas(os.Getenv(bus.ReplicasEnvVar))
+		if err != nil {
+			return 0, fmt.Errorf("%s: %w", bus.ReplicasEnvVar, err)
+		}
+		return replicas, nil
 	}
-	return replicas, nil
+	nc, _, err := r.conn(ctx)
+	if err != nil {
+		return 0, err
+	}
+	if nc.ConnectedClusterName() == "" {
+		return 1, nil
+	}
+	op, err := r.operatorHub(ctx)
+	if err != nil {
+		return 0, unknownf(err, "the hub's servers, whose count is the selection bucket's copies with no --replicas and no %s", bus.ReplicasEnvVar)
+	}
+	declared, err := writerhold.Discover(ctx, op.Hub)
+	if err != nil {
+		return 0, hubError(err, "the hub's declared servers, whose count is the selection bucket's copies with no --replicas and no "+bus.ReplicasEnvVar)
+	}
+	return min(max(len(declared), 1), 5), nil
 }
 
 // createBucketCutover creates the selection bucket and its sentinel with B, the cohort's boundary,
@@ -90,7 +112,7 @@ func (r *run) createBucketCutover(ctx context.Context) error {
 	if _, err := r.requirePhase(ctx, natsgrant.OperatorPhaseHeld); err != nil {
 		return err
 	}
-	replicas, err := r.createBucketReplicas()
+	replicas, err := r.createBucketReplicas(ctx)
 	if err != nil {
 		return err
 	}
@@ -516,7 +538,7 @@ func (r *run) createBucketAfterLoss(ctx context.Context) error {
 	if _, err := r.requirePhase(ctx, natsgrant.OperatorPhaseHeld); err != nil {
 		return err
 	}
-	replicas, err := r.createBucketReplicas()
+	replicas, err := r.createBucketReplicas(ctx)
 	if err != nil {
 		return err
 	}

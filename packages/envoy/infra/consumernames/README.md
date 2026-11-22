@@ -455,9 +455,11 @@ hold still in `prepare` deletes the cohort record.
 `create-bucket --hold ID [--replicas N] <hold flags>`, in a `cutover` hold. It refuses before its
 intent when the hold has no cohort record (`consumer-names prepare writes it, with the boundary B
 the bucket's sentinel holds`). Its copies are `--replicas` (1 to 5), else `ENVOY_NATS_REPLICAS`,
-else 1. With the bucket missing, it creates `envoy_session_consumers` (one value a key, kept for
-good, on file storage) and writes its sentinel with B and the hold's id, and prints `created
-envoy_session_consumers at N copies, its sentinel with boundary B`. A bucket it finds present, on
+else, on a clustered hub, as many as the hub declares servers (at most 5), and on a lone server 1;
+`create-bucket --after-loss` takes the same. With the bucket missing, it creates
+`envoy_session_consumers` (one value a key, kept for good, on file storage) and writes its sentinel
+with B and the hold's id, and prints `created envoy_session_consumers at N copies, its sentinel
+with boundary B`. A bucket it finds present, on
 its first run or a rerun, it adopts only when the bucket's stream has the configuration
 `create-bucket` sends and the bucket holds no key but hold barrier keys, this hold's or another's
 (it writes the sentinel: `adopted envoy_session_consumers, which held no key: ...`), or only its

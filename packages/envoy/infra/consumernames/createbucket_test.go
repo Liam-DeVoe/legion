@@ -269,7 +269,7 @@ func TestCreateBucketWritesItsIntentTheBucketAndItsSentinelWithB(t *testing.T) {
 	require.False(t, present, "control: a refused create-bucket made the bucket")
 
 	createBucketCohort(t, h.records(), id, 7)
-	code, _, stderr = h.run("create-bucket", "--hold", id)
+	code, _, stderr = h.run("create-bucket", "--hold", id, "--replicas", "1")
 	require.Equal(t, 0, code, stderr)
 	d := h.journal(id)
 	require.Equal(t, []string{"intent", "done"}, createBucketEntries(d, createBucketCommand))
@@ -328,6 +328,49 @@ func TestCreateBucketOnThreeCopiesWritesItsSentinel(t *testing.T) {
 	require.Equal(t, []string{"intent", "done"}, createBucketEntries(h.journal(id), createBucketCommand))
 }
 
+// With neither --replicas nor ENVOY_NATS_REPLICAS, create-bucket on a clustered hub creates the
+// bucket at as many copies as the hub declares servers (writerhold.Discover), here the stack's
+// three, and create-bucket --after-loss with no backup does the same: a hub's selection bucket is
+// never left at one copy on a cluster by default. --replicas still decides when given. Control:
+// acf229f5a0's create-bucket, which defaulted to one copy.
+func TestCreateBucketDefaultsToTheHubsServersOnACluster(t *testing.T) {
+	t.Setenv(bus.ReplicasEnvVar, "")
+	t.Run("create-bucket", func(t *testing.T) {
+		h := newStack(t)
+		createBucketNotifications(t, h, 0)
+		id := h.prepared(holdrecord.WorkflowCutover)
+		createBucketCohort(t, h.records(), id, 2)
+		h.held(id)
+		code, stdout, stderr := h.run("create-bucket", "--hold", id)
+		require.Equal(t, 0, code, stderr)
+		require.Contains(t, stdout, "at 3 copies")
+		info, present, _, _ := createBucketState(h)
+		require.True(t, present)
+		require.Equal(t, 3, info.Config.Replicas, "the bucket's copies on the stack's three servers")
+	})
+	t.Run("create-bucket --after-loss", func(t *testing.T) {
+		h := newStack(t)
+		createBucketNotifications(t, h, 0)
+		id := h.heldHold(holdrecord.WorkflowSelectionRecovery)
+		code, _, stderr := h.run("create-bucket", "--hold", id, "--after-loss")
+		require.Equal(t, 0, code, stderr)
+		info, present, _, _ := createBucketState(h)
+		require.True(t, present)
+		require.Equal(t, 3, info.Config.Replicas, "the recovered bucket's copies on the stack's three servers")
+	})
+	t.Run("--replicas decides when given", func(t *testing.T) {
+		h := newStack(t)
+		createBucketNotifications(t, h, 0)
+		id := h.prepared(holdrecord.WorkflowCutover)
+		createBucketCohort(t, h.records(), id, 2)
+		h.held(id)
+		code, _, stderr := h.run("create-bucket", "--hold", id, "--replicas", "1")
+		require.Equal(t, 0, code, stderr)
+		info, _, _, _ := createBucketState(h)
+		require.Equal(t, 1, info.Config.Replicas)
+	})
+}
+
 // A rerun of create-bucket, admitted because its latest entry is its intent, adopts the bucket it
 // finds only when its stream has the configuration create-bucket sends and it holds no key (the
 // crash fell between the create and the sentinel: the sentinel is written with B), or only its
@@ -375,7 +418,7 @@ func TestCreateBucketsRerunAdoptsOnlyItsOwnBucket(t *testing.T) {
 		} {
 			control.make(h.operator())
 			before, _, _, _ := createBucketState(h)
-			code, _, stderr := h.run("create-bucket", "--hold", id)
+			code, _, stderr := h.run("create-bucket", "--hold", id, "--replicas", "1")
 			require.Equal(t, 2, code, "control %s\n%s", control.name, stderr)
 			require.Contains(t, stderr, "UNKNOWN selection bucket "+selection.SessionBucket+" exists", control.name)
 			require.Contains(t, stderr, control.want, control.name)
@@ -399,7 +442,7 @@ func TestCreateBucketsRerunAdoptsOnlyItsOwnBucket(t *testing.T) {
 		nc, _ := h.operator()
 		createBucketMakeBucket(t, nc, mine)
 		_, _, before, _ := createBucketState(h)
-		code, stdout, stderr := h.run("create-bucket", "--hold", id)
+		code, stdout, stderr := h.run("create-bucket", "--hold", id, "--replicas", "1")
 		require.Equal(t, 0, code, stderr)
 		require.Contains(t, stdout, "whose sentinel already holds this hold's boundary 5")
 		_, _, after, _ := createBucketState(h)
@@ -414,7 +457,7 @@ func TestCreateBucketsRerunAdoptsOnlyItsOwnBucket(t *testing.T) {
 		_, js := h.operator()
 		_, err := js.CreateKeyValue(ctx, selection.SessionBucketConfig(1))
 		require.NoError(t, err)
-		code, stdout, stderr := h.run("create-bucket", "--hold", id)
+		code, stdout, stderr := h.run("create-bucket", "--hold", id, "--replicas", "1")
 		require.Equal(t, 0, code, stderr)
 		require.Contains(t, stdout, "which held no key: its sentinel written with boundary 5")
 		_, _, sentinel, found := createBucketState(h)
@@ -919,7 +962,7 @@ func TestACreateBucketStopCountsTheBarrierKeyAnEarlierRunPut(t *testing.T) {
 	nc, _ := h.operator()
 	createBucketMakeBucket(t, nc, selection.StoreState{Boundary: 3, Hold: "another-hold"})
 
-	code, _, stderr := h.run("create-bucket", "--hold", id)
+	code, _, stderr := h.run("create-bucket", "--hold", id, "--replicas", "1")
 	require.Equal(t, 2, code, stderr)
 	require.Contains(t, stderr, "exists and is not this hold's")
 	require.Contains(t, h.lastEntry(id, createBucketCommand).Outputs["left"], barrierLeft, "run 1's stop names the key it put")
@@ -1057,12 +1100,12 @@ func TestCreateBucketTakesABucketHoldingAnotherHoldsBarrier(t *testing.T) {
 		leftover(t, h)
 
 		everyBarrier(t, false)
-		code, _, stderr := h.run("create-bucket", "--hold", id)
+		code, _, stderr := h.run("create-bucket", "--hold", id, "--replicas", "1")
 		require.Equal(t, 2, code, "control: the earlier rule: %s", stderr)
 		require.Contains(t, stderr, "exists and is not this hold's: it holds 1 keys (hold.barrier."+other+"), no sentinel")
 
 		everyBarrier(t, true)
-		code, stdout, stderr := h.run("create-bucket", "--hold", id)
+		code, stdout, stderr := h.run("create-bucket", "--hold", id, "--replicas", "1")
 		require.Equal(t, 0, code, stderr)
 		require.Contains(t, stdout, "which held no key: its sentinel written with boundary 4")
 		info, _, sentinel, found := createBucketState(h)

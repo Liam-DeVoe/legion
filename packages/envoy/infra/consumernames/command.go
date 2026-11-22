@@ -181,7 +181,7 @@ func parse(args []string, stderr io.Writer) (options, int) {
 	flags.StringVar(&o.holdID, "hold", "", "the hold's id")
 	flags.StringVar(&o.dispatchDatabaseFile, "dispatch-database-file", "", "a file holding Dispatch's database URL")
 	flags.Var(&o.daemonDatabases, "daemon-database", "a Legion daemon's project key and a file holding its database URL, <project>=<file>")
-	flags.IntVar(&o.replicas, "replicas", 0, "the selection bucket's copies (default ENVOY_NATS_REPLICAS, else 1)")
+	flags.IntVar(&o.replicas, "replicas", 0, "the selection bucket's copies (default ENVOY_NATS_REPLICAS, else the hub's declared servers on a cluster, else 1)")
 	flags.BoolVar(&o.afterLoss, "after-loss", false, "create the selection bucket again after it was lost")
 	flags.Uint64Var(&o.replayFrom, "replay-from", 0, "where a key with no record starts after a loss (default the stream's first sequence)")
 	flags.StringVar(&o.backup, "backup", "", "a directory holding a backup of "+selectionStreamName+" to restore first")
