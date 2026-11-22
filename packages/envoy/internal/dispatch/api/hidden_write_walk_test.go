@@ -537,10 +537,8 @@ func seedHiddenWrites(t *testing.T) hiddenWriteSeed {
 	asCarol(http.MethodPut, "/api/v1/access-groups/"+group, map[string]any{"members": []string{seedCarol}})
 	asCarol(http.MethodPut, "/api/v1/projects/"+seedPrivate+"/access/groups/"+group, nil)
 	priority := createdID(t, asCarol(http.MethodPost, "/api/v1/priorities", map[string]any{"title": "A priority PRIV's people steer"}))
-	// A repository PRIV maps, which an issue's external reference names; and one PUB maps, an
-	// issue of which PRIV's issue links (privateHeldURL). No route writes a mapping now, so each
-	// is stored as the last release left it.
-	storeRepoMapping(t, seed.database, "acme/p_x", seedPrivate, false)
+	// A repository PUB maps, an issue of which PRIV's issue links (privateHeldURL). No route
+	// writes a mapping now, so it is stored as the last release left it.
 	storeRepoMapping(t, seed.database, "acme/w_pub", seedPublic, false)
 	asCarol(http.MethodPatch, "/api/v1/issues/"+issue, map[string]any{"external_links": []map[string]string{{"url": privateHeldURL}}})
 	// s1, live at the walk's listener, holds PRIV's issue.
@@ -628,8 +626,6 @@ func seedHiddenWrites(t *testing.T) hiddenWriteSeed {
 		probeSignin:            nobody(uuid.NewString()),
 		// A run no record holds: the step write reads its issue first, which the key decides.
 		probeStep: same(uuid.NewString()),
-		// No mapping holds acme/p.x.
-		probeMappedRepository: {hidden: "p_x", missing: "p.x"},
 	}}
 	rows, err := seed.database.Pool.Query(context.Background(), `
 		select format('%I.%I', schemaname, tablename) from pg_tables

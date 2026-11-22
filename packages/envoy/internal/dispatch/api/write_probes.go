@@ -30,10 +30,6 @@ const (
 	probeMachineLogin      probeObject = "machine-login"      // a machine login's id at the secrets broker
 	probeSignin            probeObject = "signin"             // a sign-in's id at the secrets broker
 	probeStep              probeObject = "step"               // a step record's id: the uuid the Legion daemon derives for a run
-	// probeMappedRepository is the name of a repository a project's mapping holds, which an
-	// issue's external reference names (bodyReferences). Its missing side is a name no mapping
-	// holds.
-	probeMappedRepository probeObject = "mapped-repository"
 )
 
 // Probes the write rows share, beside the read rows' (byIssue, byProject, byDocument, bySession).
