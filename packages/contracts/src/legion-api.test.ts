@@ -2829,12 +2829,14 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   // aside: the mark names the contract the caller is served at, 199, the recorded contract below
   // the 201 the caller states (`recordedContractAtOrBelow`), INFRA-4605's, which moved no answer's
   // shape, and the lowest plugin contract reports the claims of the snapshot the route projected
-  // the body from, a pod at 201, which `state.json`'s own fixture does not hold. Three bands stand
+  // the body from, a pod at 201, which `state.json`'s own fixture does not hold. Four bands stand
   // above 199: the repositories block's, the roles of a deployment's (contract 221), which serves
   // the state golden's issues at step and its claims of a role of the deployment as a caller below
-  // 221 reads them (`belowDeploymentRoles`), and the stranded claims' token's (contract 222), which
-  // serves each claim nothing will wake without its `token` (`withoutStrandedTokens`). So the
-  // narrowing changes this one block and, beside it, only what those two bands change.
+  // 221 reads them (`belowDeploymentRoles`), the stranded claims' token's (contract 222), which
+  // serves each claim nothing will wake without its `token` (`withoutStrandedTokens`), and the
+  // place role's (contract 227), which serves each issue without its `placeRole`
+  // (`withoutPlaceRole`). So the narrowing changes this one block and, beside it, only what those
+  // three bands change.
   const { daemonApiVersion } = z
     .object({ daemonApiVersion: z.number() })
     .parse(fixture("version.json"));
@@ -2852,9 +2854,17 @@ test("a reader at contract 152 parses the repositories block served below 202", 
     ...rest
   } = fixtureBody("state.json");
   const below = belowDeploymentRoles(rest) as Record<string, unknown>;
+  const issues = below.issues as Record<string, Record<string, unknown>> | undefined;
   const stranded = below.strandedClaims as Record<string, unknown>[] | undefined;
   expect(narrowedRest).toEqual({
     ...below,
+    ...(issues === undefined
+      ? {}
+      : {
+          issues: Object.fromEntries(
+            Object.entries(issues).map(([key, { placeRole: _placeRole, ...kept }]) => [key, kept])
+          ),
+        }),
     ...(stranded === undefined
       ? {}
       : { strandedClaims: stranded.map(({ token: _token, ...kept }) => kept) }),
