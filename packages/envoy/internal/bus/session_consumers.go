@@ -167,7 +167,7 @@ type SessionConsumers struct {
 	// logger is the logger the connection was opened with (ConnectSessionConsumers),
 	// slog.Default() where that was nil: where create and recordResumeFloorAt write their lines.
 	logger *slog.Logger
-	// pendingMu guards pending and createFault.
+	// pendingMu guards pending, createFault, deleteAnswerFault and infoFault.
 	pendingMu sync.Mutex
 	// pending holds, by consumer name, the start of each consumer a restart (RestartAtFloor) read
 	// the floor of and may have deleted, until a create at that start is confirmed: the position
@@ -176,13 +176,20 @@ type SessionConsumers struct {
 	// createFault, when not nil, runs before each consumer create is sent, and an error it returns
 	// fails the create unsent. It is nil outside tests (SetCreateFault).
 	createFault func(consumer string) error
+	// deleteAnswerFault, when not nil, runs after each consumer delete the server answered, and an
+	// error it returns replaces that answer, as a request whose answer was lost after the server
+	// applied it returns one. infoFault, when not nil, runs before each consumer info read is sent,
+	// and an error it returns fails the read unsent. Both are nil outside tests
+	// (SetDeleteAnswerFault, SetInfoFault).
+	deleteAnswerFault func(consumer string) error
+	infoFault         func(consumer string) error
 	// narrowed, when not nil, hears each change of a consumer's filter that drops a subject the
 	// new filter does not contain while the stream holds messages on it from the consumer's
 	// position on (SetNarrowed), with the count of them read on each such subject just before the
 	// change: an observation, which a message stored on the subject or delivered from it between
 	// the read and the change makes differ from the real loss by one. It is set before the handle
 	// is used, and read without a lock.
-	narrowed func(sessionID string, passedOver map[string]uint64)
+	narrowed func(sessionID string, passedOver map[string]uint64, confirmed bool)
 
 	// streamMu guards streamNext and streamReading (streamState).
 	streamMu sync.Mutex
@@ -261,6 +268,25 @@ func (s *SessionConsumers) SetCreateFault(fault func(consumer string) error) {
 	s.pendingMu.Lock()
 	defer s.pendingMu.Unlock()
 	s.createFault = fault
+}
+
+// SetDeleteAnswerFault makes every consumer delete the server answered call fault(consumer name)
+// and, when it returns an error, return that error in place of the answer, as a delete whose
+// answer was lost after the server applied it does; nil removes it. SetInfoFault makes every
+// consumer info read call fault(consumer name) first and fail, unsent, with the error it returns;
+// nil removes it. They are seams for tests, which lose a restart's delete answer and fail the read
+// back of it; nothing else sets them.
+func (s *SessionConsumers) SetDeleteAnswerFault(fault func(consumer string) error) {
+	s.pendingMu.Lock()
+	defer s.pendingMu.Unlock()
+	s.deleteAnswerFault = fault
+}
+
+// SetInfoFault: see SetDeleteAnswerFault.
+func (s *SessionConsumers) SetInfoFault(fault func(consumer string) error) {
+	s.pendingMu.Lock()
+	defer s.pendingMu.Unlock()
+	s.infoFault = fault
 }
 
 // Drain drains the connection, letting acks already sent reach the server, within timeout.
@@ -500,6 +526,12 @@ func (s *SessionConsumers) RestartAtFloor(ctx context.Context, sessionID string,
 		passedOver = s.passedOverBy(ctx, name, info, filters, startSeq)
 		s.setPendingStart(name, startSeq)
 		if err := s.delete(ctx, name); err != nil {
+			// A delete with no answer may have landed: it is read back, and the loss reported
+			// as for a landed delete when it did (reportUnansweredDelete). An answer the server
+			// sent, a refusal included, is definite, and nothing was deleted.
+			if errors.Is(err, errDeleteUnanswered) {
+				s.reportUnansweredDelete(ctx, sessionID, name, passedOver)
+			}
 			return SessionConsumerStart{}, err
 		}
 		s.reportNarrowed(sessionID, passedOver)
@@ -1033,7 +1065,9 @@ func (s *SessionConsumers) update(ctx context.Context, sessionID, name string, i
 // delivered to it. passedOver holds, for each such subject, how many messages the stream held on it
 // from that position on (passedOverBy): an observation read just before the change, so a message
 // stored on the subject, or delivered from it, between that read and the change makes the real
-// loss differ from it by one each. Call it before the handle is used.
+// loss differ from it by one each. confirmed is false only for a restart whose delete went
+// unanswered and whose read back of the consumer failed too (reportUnansweredDelete): the loss is
+// then reported as the delete may have made it, unconfirmed. Call it before the handle is used.
 //
 // A create where no consumer stands counts nothing, since nothing records the filter the consumer
 // it replaces carried: the resume record of a deleted consumer holds its floor and the stream's
@@ -1044,14 +1078,48 @@ func (s *SessionConsumers) update(ctx context.Context, sessionID, name string, i
 // resume floor plus one, the pending start, or the start its caller gave) to the stream's last
 // sequence at the create; for a restart's retry, only on the subjects its filter drops beyond those
 // the restart's own count read.
-func (s *SessionConsumers) SetNarrowed(narrowed func(sessionID string, passedOver map[string]uint64)) {
+func (s *SessionConsumers) SetNarrowed(narrowed func(sessionID string, passedOver map[string]uint64, confirmed bool)) {
 	s.narrowed = narrowed
 }
 
-// reportNarrowed calls the narrowed hook with passedOver, when it holds any subject.
+// reportNarrowed calls the narrowed hook with passedOver, confirmed, when it holds any subject.
 func (s *SessionConsumers) reportNarrowed(sessionID string, passedOver map[string]uint64) {
+	s.reportNarrowedAs(sessionID, passedOver, true)
+}
+
+// reportNarrowedAs calls the narrowed hook with passedOver and confirmed, when it holds any
+// subject.
+func (s *SessionConsumers) reportNarrowedAs(sessionID string, passedOver map[string]uint64, confirmed bool) {
 	if s.narrowed != nil && len(passedOver) > 0 {
-		s.narrowed(sessionID, passedOver)
+		s.narrowed(sessionID, passedOver, confirmed)
+	}
+}
+
+// deleteReadBackTimeout bounds the read of a consumer whose delete went unanswered
+// (reportUnansweredDelete). It runs on a context of its own, since the caller's may have ended
+// with the delete: the read decides whether a loss is named, and costs that bound only on that
+// error.
+const deleteReadBackTimeout = 2 * time.Second
+
+// reportUnansweredDelete reports the loss passedOver counted for a restart of consumer name whose
+// delete went unanswered (errDeleteUnanswered), the server having applied it or not. It reads the
+// consumer back: one the stream no longer holds was deleted, and the loss is reported as for a
+// delete that answered; one still there was not, and nothing is reported, since the next restart
+// counts it again from its own floor; and a read that fails too reports the loss unconfirmed, as
+// the delete may have made it, rather than leave it silent, since the next call that finds the
+// consumer missing creates it at the pending start and counts nothing.
+func (s *SessionConsumers) reportUnansweredDelete(ctx context.Context, sessionID, name string, passedOver map[string]uint64) {
+	if s.narrowed == nil || len(passedOver) == 0 {
+		return
+	}
+	readCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), deleteReadBackTimeout)
+	defer cancel()
+	_, err := s.info(readCtx, name)
+	switch {
+	case errors.Is(err, ErrSessionConsumerNotFound):
+		s.reportNarrowedAs(sessionID, passedOver, true)
+	case err != nil:
+		s.reportNarrowedAs(sessionID, passedOver, false)
 	}
 }
 
@@ -1314,6 +1382,14 @@ func (s *SessionConsumers) upsert(ctx context.Context, name string, config jetst
 
 // info reads consumer name, or returns ErrSessionConsumerNotFound.
 func (s *SessionConsumers) info(ctx context.Context, name string) (*jetstream.ConsumerInfo, error) {
+	s.pendingMu.Lock()
+	fault := s.infoFault
+	s.pendingMu.Unlock()
+	if fault != nil {
+		if err := fault(name); err != nil {
+			return nil, err
+		}
+	}
 	var response consumerResponse
 	if err := s.consumerRequest(ctx, consumerAPI("INFO", name), nil, &response); err != nil {
 		return nil, err
@@ -1327,13 +1403,32 @@ func (s *SessionConsumers) info(ctx context.Context, name string) (*jetstream.Co
 	return &response.ConsumerInfo, nil
 }
 
-// delete deletes consumer name; one the stream does not hold is no error.
+// errDeleteUnanswered wraps the error of a consumer delete that brought no answer from the server
+// (delete): a request that timed out, a connection lost, an answer that does not decode. The server
+// may have applied such a delete; an answer it sent, its refusal under the grant included, is
+// definite.
+var errDeleteUnanswered = errors.New("bus: the delete of a session consumer brought no answer")
+
+// delete deletes consumer name; one the stream does not hold is no error. An error with no answer
+// from the server wraps errDeleteUnanswered.
 func (s *SessionConsumers) delete(ctx context.Context, name string) error {
 	var response struct {
 		Error *jetstream.APIError `json:"error"`
 	}
-	if err := s.consumerRequest(ctx, consumerAPI("DELETE", name), nil, &response); err != nil {
+	err := s.consumerRequest(ctx, consumerAPI("DELETE", name), nil, &response)
+	if err == nil {
+		s.pendingMu.Lock()
+		fault := s.deleteAnswerFault
+		s.pendingMu.Unlock()
+		if fault != nil {
+			err = fault(name)
+		}
+	}
+	if errors.Is(err, ErrConsumerNotGranted) {
 		return err
+	}
+	if err != nil {
+		return fmt.Errorf("%w: %s: %w", errDeleteUnanswered, name, err)
 	}
 	if response.Error != nil && response.Error.ErrorCode != jetstream.JSErrCodeConsumerNotFound {
 		return fmt.Errorf("bus: delete session consumer %s: %w", name, response.Error)

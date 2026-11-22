@@ -22,9 +22,11 @@ body: |-
   while the stream holds messages on it that the consumer has not delivered passes them over, and
   the same WARN line names that, with how many messages were waiting on each dropped topic, read
   just before the change; a restart writes it once it deleted the consumer, also when creating it
-  again fails. A filter that replaces a topic with one that contains it passes nothing over and
-  logs nothing. A consumer created where none stands, after the listener or the server removed
-  the one before it, is not counted, since nothing records that consumer's filter.
+  again fails, and when the delete's answer was lost it reads the consumer back first, writing the
+  line when the consumer is gone, or with `delete_confirmed` false when it cannot tell. A filter
+  that replaces a topic with one that contains it passes nothing over and logs nothing. A consumer
+  created where none stands, after the listener or the server removed the one before it, is not
+  counted, since nothing records that consumer's filter.
 time: 2026-11-22T07:14:00Z
 custom:
     Issue: pr4973

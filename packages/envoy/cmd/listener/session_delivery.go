@@ -285,17 +285,22 @@ func connectSessionDelivery(urls []string, inactiveThreshold time.Duration, stre
 	// create: the dropped subjects (topics), the messages on each (pending_by_topic), and their sum
 	// (pending_passed_over). Each count is read on its subject just before the change, an
 	// observation that a message stored on the subject or delivered from it between the read and
-	// the change makes differ from the real loss by one. A create where no consumer stands counts
-	// nothing, since nothing records the filter of the one it replaces (SetNarrowed states the
-	// bound).
-	consumers.SetNarrowed(func(sessionID string, passedOver map[string]uint64) {
+	// the change makes differ from the real loss by one. A restart whose delete went unanswered
+	// and whose read back of the consumer failed too reports the loss with delete_confirmed false:
+	// the delete may or may not have made it. A create where no consumer stands counts nothing,
+	// since nothing records the filter of the one it replaces (SetNarrowed states the bound).
+	consumers.SetNarrowed(func(sessionID string, passedOver map[string]uint64, confirmed bool) {
 		topics := slices.Sorted(maps.Keys(passedOver))
 		var sum uint64
 		for _, pending := range passedOver {
 			sum += pending
 		}
-		logger.Warn(filterLeftOutLine, slog.String("session_id", sessionID), slog.Any("topics", topics),
-			slog.String("from", leftOutByNarrowing), slog.Any("pending_by_topic", passedOver), slog.Uint64("pending_passed_over", sum))
+		attrs := []slog.Attr{slog.String("session_id", sessionID), slog.Any("topics", topics),
+			slog.String("from", leftOutByNarrowing), slog.Any("pending_by_topic", passedOver), slog.Uint64("pending_passed_over", sum)}
+		if !confirmed {
+			attrs = append(attrs, slog.Bool("delete_confirmed", false))
+		}
+		logger.Warn(filterLeftOutLine, attrs...)
 	})
 	// Logged here rather than where it was derived: this is where the first consumer that
 	// carries it becomes possible, so a listener that reaches this line has consumers to carry

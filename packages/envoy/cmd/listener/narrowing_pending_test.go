@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -32,8 +33,10 @@ import (
 //
 // A restart writes its line once its delete lands, before its create, so a create that fails
 // still leaves the loss named; its retry, which creates the consumer at the pending start and
-// reads no deleted consumer, writes none. An update counts from the consumer's next sequence, past
-// the messages it delivered before the update and awaits acks for.
+// reads no deleted consumer, writes none. A delete whose answer is lost after the server applied
+// it is read back: a consumer gone gives the line as a landed delete does, and a read back that
+// fails too gives it with delete_confirmed false. An update counts from the consumer's next
+// sequence, past the messages it delivered before the update and awaits acks for.
 func TestANarrowingFilterNamesTheMessagesItPassesOver(t *testing.T) {
 	const (
 		newer    = "notifications.envoy.exceptions.*.*"
@@ -159,21 +162,13 @@ func TestANarrowingFilterNamesTheMessagesItPassesOver(t *testing.T) {
 		)
 		filteringOn(t, session, pairFoo, kept)
 		store(t, stored, "narrowing-restart-1", "narrowing-restart-2")
+		// One message is delivered and left unacked, so the restart deletes the consumer and
+		// creates it again rather than keeping it (RestartAtFloor).
+		deliverUnacked(t, session, 1)
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		// One message is pulled and left unacked, so the restart deletes the consumer and creates
-		// it again rather than keeping it (RestartAtFloor).
-		pull, err := rig.consumers.Pull(ctx, session)
-		if err != nil {
-			t.Fatalf("pull the consumer of %s: %v", session, err)
-		}
-		held, err := pull.Next(ctx)
-		if err != nil {
-			t.Fatalf("pull a message of %s: %v", session, err)
-		}
-		pull.Stop()
-		if info, err := rig.consumers.Info(ctx, session); err != nil || info.NumAckPending == 0 {
-			t.Fatalf("the consumer of %s awaits %v acks (%v) after %s, want one: the restart would keep it", session, info, err, held.Subject)
+		if info, err := rig.consumers.Info(ctx, session); err != nil || info.NumAckPending != 1 {
+			t.Fatalf("the consumer of %s awaits %v acks (%v), want one: the restart would keep it", session, info, err)
 		}
 		before := rig.harness.logs.Len()
 		if _, err := rig.deps.consumers.consumers.RestartAtFloor(ctx, session, sessionConsumerFilter(session, []string{pairFoo, pairBar, kept})); err != nil {
@@ -232,6 +227,68 @@ func TestANarrowingFilterNamesTheMessagesItPassesOver(t *testing.T) {
 			t.Errorf("the retry logged %v, want no second narrowing line: the restart's own named the loss", lines)
 		}
 	})
+
+	// A restart whose delete answer is lost after the server applied it: the delete brings no
+	// answer, so the restart reads the consumer back, and names the loss as for a landed delete
+	// when the consumer is gone, or with delete_confirmed false when that read fails too.
+	for _, tc := range []struct {
+		name, session string
+		// readBackFails fails every info read once the delete's answer was lost.
+		readBackFails bool
+	}{
+		{name: "a restart whose delete answer is lost after the server applied it", session: "ses_narrowing_lost_answer"},
+		{name: "a restart whose delete answer is lost and whose read back fails", session: "ses_narrowing_lost_unread", readBackFails: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			kept := "notifications.team.narrowing-kept-" + tc.session
+			filteringOn(t, tc.session, pairFoo, kept)
+			store(t, stored, tc.session+"-1", tc.session+"-2")
+			deliverUnacked(t, tc.session, 1)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if info, err := rig.consumers.Info(ctx, tc.session); err != nil || info.NumAckPending != 1 {
+				t.Fatalf("the consumer of %s awaits %v acks (%v), want one: the restart would keep it", tc.session, info, err)
+			}
+			name, _ := bus.SessionConsumerName(tc.session)
+			consumers := rig.deps.consumers.consumers
+			var lost atomic.Bool
+			consumers.SetDeleteAnswerFault(func(consumer string) error {
+				if consumer == name {
+					lost.Store(true)
+					return context.DeadlineExceeded
+				}
+				return nil
+			})
+			consumers.SetInfoFault(func(consumer string) error {
+				if tc.readBackFails && consumer == name && lost.Load() {
+					return errors.New("the read back faulted")
+				}
+				return nil
+			})
+			t.Cleanup(func() { consumers.SetDeleteAnswerFault(nil); consumers.SetInfoFault(nil) })
+			before := rig.harness.logs.Len()
+			if _, err := consumers.RestartAtFloor(ctx, tc.session, sessionConsumerFilter(tc.session, []string{pairFoo, pairBar, kept})); err == nil {
+				t.Fatalf("the restart of %s whose delete answer was lost reported no error", tc.session)
+			}
+			consumers.SetDeleteAnswerFault(nil)
+			consumers.SetInfoFault(nil)
+			if _, err := rig.consumers.Info(ctx, tc.session); !errors.Is(err, bus.ErrSessionConsumerNotFound) {
+				t.Fatalf("the consumer of %s reads %v after the delete whose answer was lost, want it deleted", tc.session, err)
+			}
+			logs := rig.harness.logs.String()[before:]
+			// The server applied the delete, so both messages on pairFoo above the ack floor are
+			// passed over.
+			narrowed(t, logs, tc.session, 2)
+			line := linesIn(logs, leftLine, map[string]any{"session_id": tc.session, "from": "narrowing"})[0]
+			want := any(nil)
+			if tc.readBackFails {
+				want = false
+			}
+			if line["delete_confirmed"] != want {
+				t.Errorf("the narrowing line has delete_confirmed %v, want %v", line["delete_confirmed"], want)
+			}
+		})
+	}
 
 	t.Run("an update of a consumer that awaits acks for messages it delivered", func(t *testing.T) {
 		const (
