@@ -101,7 +101,11 @@ func (e *Engine) planFirstStep(ctx context.Context, tx pgx.Tx, issue record.Issu
 func (e *Engine) takeFirstPlan(ctx context.Context, tx pgx.Tx, issue record.Issue, stored *record.StoredPlan, earlier []record.PlanVersion) error {
 	switch {
 	case stored == nil:
-		version, tasks, steps := e.defaultRows(issue)
+		sessions, err := e.keySessions(ctx, tx, issue)
+		if err != nil {
+			return err
+		}
+		version, tasks, steps := e.defaultRows(issue, sessions)
 		if err := e.store.PutPlan(ctx, tx, version, tasks, steps); err != nil {
 			return err
 		}
@@ -116,12 +120,14 @@ func (e *Engine) takeFirstPlan(ctx context.Context, tx pgx.Tx, issue record.Issu
 
 // defaultRows is the plan of issue's run whose owner gave none: version 0 of the source
 // default, given now, with no document and no giver, and one task, default, whose block names no
-// steps and so runs the project's default steps (Config.DefaultSteps), waiting at no act.
-func (e *Engine) defaultRows(issue record.Issue) (record.PlanVersion, []record.PlanTask, []record.PlanStep) {
+// steps and so runs the project's default steps (Config.DefaultSteps), waiting at no act. Its
+// agents are named from their own steps and sessions, the names whose claims hold a key's session
+// (keySessions), so no agent of the default steps takes the claim of a key an earlier plan gave.
+func (e *Engine) defaultRows(issue record.Issue, sessions record.KeySessions) (record.PlanVersion, []record.PlanTask, []record.PlanStep) {
 	version := record.PlanVersion{Issue: issue.Key, Generation: issue.Generation, Source: record.PlanSourceDefault, GivenAt: e.now()}
 	task := record.PlanTask{Issue: issue.Key, Generation: issue.Generation, Task: defaultTask, BlockText: "The project's default steps.",
 		StepsByDefault: true, State: record.TaskWaiting}
-	return version, []record.PlanTask{task}, record.NameAgents(nil, planSteps(e.cfg.Deployment, issue.Key, issue.Generation, defaultTask, e.cfg.DefaultSteps))
+	return version, []record.PlanTask{task}, record.NameAgents(nil, sessions, planSteps(e.cfg.Deployment, issue.Key, issue.Generation, defaultTask, e.cfg.DefaultSteps))
 }
 
 // planSteps is steps as the rows of the steps of task of issue's plan at generation: each at its

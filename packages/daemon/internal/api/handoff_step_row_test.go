@@ -29,7 +29,7 @@ func seedTwoTesterSteps(t *testing.T, h *harness, key string, place int) {
 				{Issue: key, Generation: 1, Task: "a", Position: 2, Role: "tester", AgentKey: "a", Type: plan.TypeTesting},
 				{Issue: key, Generation: 1, Task: "a", Position: 3, Role: "reviewer", Type: plan.TypeReview},
 				{Issue: key, Generation: 1, Task: "a", Position: 4, Role: "tester", AgentKey: "a", Type: plan.TypeTesting}}
-			if err := records.PutPlan(ctx, tx, v, []record.PlanTask{task}, record.NameAgents(nil, steps)); err != nil {
+			if err := records.PutPlan(ctx, tx, v, []record.PlanTask{task}, record.NameAgents(nil, nil, steps)); err != nil {
 				return err
 			}
 		}

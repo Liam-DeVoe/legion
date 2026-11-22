@@ -3428,31 +3428,33 @@ func (s *Postgres) RetryOutbox(ctx context.Context, tx pgx.Tx, id int64, leaseTo
 	return nil
 }
 
-// IssueClaim is one stored claim of an issue: its token, which names its agent, and its stored
-// role, the role of the step its agent runs or ran last.
+// IssueClaim is one stored claim of an issue: its token, which names its agent, its stored role,
+// the role of the step its agent runs or ran last, and the agent whose session it holds
+// (supervise.Claim.SessionAgent, plan.Agent.ID), "" where it records none.
 type IssueClaim struct {
-	Token claim.Token
-	Role  claim.Role
+	Token        claim.Token
+	Role         claim.Role
+	SessionAgent string
 }
 
 // IssueClaims is every stored claim of issue in project, the claims' project token as
-// claims.project holds it, in any state, with its stored role, ordered by token. Two claims of an
-// issue can hold one role — a keyed agent on a step of another role, beside that role's own claim
-// from an earlier version of the plan — so a walk over every claim of an issue reads them here
-// rather than one claim for each role.
+// claims.project holds it, in any state, with its stored role and the agent of its session,
+// ordered by token. Two claims of an issue can hold one role — a keyed agent on a step of another
+// role, beside that role's own claim from an earlier version of the plan — so a walk over every
+// claim of an issue reads them here rather than one claim for each role.
 func (s *Postgres) IssueClaims(ctx context.Context, tx pgx.Tx, project, issue string) ([]IssueClaim, error) {
-	rows, err := tx.Query(ctx, `select token, role from claims where project = $1 and issue = $2 order by token`, project, issue)
+	rows, err := tx.Query(ctx, `select token, role, session_agent from claims where project = $1 and issue = $2 order by token`, project, issue)
 	if err != nil {
 		return nil, fmt.Errorf("read the claims of %s: %w", issue, err)
 	}
 	defer rows.Close()
 	var claims []IssueClaim
 	for rows.Next() {
-		var token, role string
-		if err := rows.Scan(&token, &role); err != nil {
+		var token, role, sessionAgent string
+		if err := rows.Scan(&token, &role, &sessionAgent); err != nil {
 			return nil, fmt.Errorf("read the claims of %s: %w", issue, err)
 		}
-		claims = append(claims, IssueClaim{Token: claim.Token(token), Role: claim.Role(role)})
+		claims = append(claims, IssueClaim{Token: claim.Token(token), Role: claim.Role(role), SessionAgent: sessionAgent})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("read the claims of %s: %w", issue, err)

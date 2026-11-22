@@ -77,6 +77,13 @@ func (a Agent) ID() string {
 	return "step:" + strconv.Itoa(a.Place) + ":" + a.Task
 }
 
+// KeyOfID is the key of the agent whose identity is id (ID), and false for the agent of a step
+// with no key and for "", which names no agent.
+func KeyOfID(id string) (string, bool) {
+	key, ok := strings.CutPrefix(id, "key:")
+	return key, ok && key != ""
+}
+
 // StoredAgentName is the name of the agent of step place of task, whose step is s and whose stored
 // name is stored: the last part of that agent's claim token, the one rule every reader of a stored
 // step names its agent by (the record's PlanStep.AgentName, and the store's read of a plan's
