@@ -507,10 +507,10 @@ function shortAddressesIn(node: DisplayTree, inCode: boolean): DisplayTree {
  * A chip that opens each document of the issue a node's own words cite (R3): a document is no
  * node of the outline, so a block that names one carries a chip of its own for it, which opens
  * the document at its own address in place of the outline (`NodeRow.tsx`'s `Chip`). The words
- * read are the draft's text: a node of the tree read is drafted with its words as that read
- * answers them, a block's its stored source (`tree-read/tree-nodes.ts`' `draftOf`), and a
- * decision of the decisions read with its block's words (`addDecisions`). The chip is named by
- * the page's word for the document, as every chip naming a whole document is (`documentWord`):
+ * read are the draft's text: every node is a node of the tree read, drafted with its words as
+ * that read answers them, a block's its stored source and a decision's its block's words
+ * (`tree-read/tree-nodes.ts`' `draftOf`). The chip is named by the page's word for the
+ * document, as every chip naming a whole document is (`documentWord`):
  * the filter's name for the spec and for the plan and Verification documents, and "document"
  * for any other, never the file name the issue's own read carries. It addresses the document as
  * `artifact/<slug>` - the spec too, whose `spec` reference is the Spec filter's address. A
