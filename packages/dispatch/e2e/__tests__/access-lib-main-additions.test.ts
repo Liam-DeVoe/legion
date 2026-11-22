@@ -23,7 +23,8 @@ import { rowLimit, runBounded } from "./bounded-subprocess";
 const library = fileURLToPath(new URL("../acceptance/access-lib.sh", import.meta.url));
 const scratch = temporaryDirectories("access-lib-main-additions");
 
-/** The one entry the driver names, as it writes it, for a commit the row chooses. */
+/** An entry as the driver writes one, for a commit the row chooses: the member main's b537812fb5
+ *  (#3995) gave each design gate, which the driver named while its base was older than that commit. */
 const holdsEntry = (commit: string) =>
   `${commit}\tGET /api/v1/issues/{key}\t.design_gates[].holds\tnull`;
 const holds = holdsEntry("b537812fb53d1e42b5cfe629404aeeb38a708218");
@@ -402,4 +403,60 @@ test(
     }
   },
   rowLimit("short", "short", "short", "short", "short")
+);
+
+test(
+  "an empty list puts nothing in force, admits no answer and fails nothing",
+  async () => {
+    const { directory, root } = repository();
+    const work = scratch();
+    mkdirSync(join(work, "answers"));
+    writeFileSync(join(work, "route-index-head"), `${routeIndex.join("\n")}\n`);
+    writeFileSync(
+      join(work, "headers"),
+      ["HTTP/1.1 200 OK", "Content-Type: application/json", "", ""].join("\r\n")
+    );
+    const script = `
+      set -euo pipefail
+      fail() { echo "FAIL: $*" >&2; exit 1; }
+      note() { echo "   $*"; }
+      work=$3
+      run_epoch=$(date +%s)
+      source "$2"
+      : >"$work/ids-main.tsv"
+      readonly main_additions=()
+      main_additions_in_force "$1" "$4"
+      status=200
+      printf '%s' "$5" >"$work/body"
+      keep_answer base main
+      printf '%s' "$6" >"$work/body"
+      keep_answer head main
+      same_answers "the row" base head '' '' "GET /api/v1/issues/PUB-1"
+      main_additions_report
+      main_additions_used
+      echo "live \${#main_additions_live[@]} differed $differed"
+    `;
+    const run = await runBounded({
+      argv: [
+        "bash",
+        "-c",
+        script,
+        "main-additions",
+        directory,
+        library,
+        work,
+        root,
+        issue(gate),
+        issue(gateHolding("null")),
+      ],
+      bound: "short",
+      cwd: directory,
+      from: import.meta.url,
+    });
+    expect(run.stderr).toBe("");
+    expect(run.code).toBe(0);
+    expect(run.stdout).not.toContain("main addition");
+    expect(run.stdout).toContain("live 0 differed 1");
+  },
+  rowLimit("short")
 );
