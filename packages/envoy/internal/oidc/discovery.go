@@ -182,19 +182,38 @@ func (d *discovery[T]) logFailure(err error) {
 // down. Until the discovery document has been read, Verify fails with ErrIssuerUnavailable.
 type LazyVerifier struct {
 	discovery *discovery[*Verifier]
+	// arm is the arm the verifier was given (WithWaitArm), nil for the product's bounds.
+	arm WaitArm
 }
 
 // NewLazyVerifier returns a verifier for tokens issuer issues to audience, and reads nothing: the
 // discovery document is read by Discover, by Run, or by the first Verify. Of opts, WithWaitArm
-// arms each read of the discovery document.
+// arms each read of the discovery document, each read of the key set, and each caller's wait its
+// caller bounds through WaitWithin.
 func NewLazyVerifier(issuer, audience string, opts ...Option) *LazyVerifier {
-	verifier := &LazyVerifier{discovery: newDiscovery(issuer, func(ctx context.Context) (*Verifier, error) {
-		return New(ctx, issuer, audience)
+	arm := collectOptions(opts).waitArm
+	verifier := &LazyVerifier{arm: arm, discovery: newDiscovery(issuer, func(ctx context.Context) (*Verifier, error) {
+		keys, err := NewKeys(ctx, issuer)
+		if err != nil {
+			return nil, err
+		}
+		keys.armFetch = arm
+		return NewWithKeys(issuer, audience, keys), nil
 	})}
-	if arm := collectOptions(opts).waitArm; arm != nil {
+	if arm != nil {
 		verifier.discovery.armWith(arm)
 	}
 	return verifier
+}
+
+// WaitWithin is ctx bounded for a caller's wait on the verifier's issuer that its caller bounds by
+// bound (the listener's identityBudget): bound from now, or what the verifier's arm gives for bound
+// (WithWaitArm).
+func (v *LazyVerifier) WaitWithin(ctx context.Context, bound time.Duration) (context.Context, context.CancelFunc) {
+	if v.arm != nil {
+		return v.arm(ctx, bound)
+	}
+	return context.WithTimeout(ctx, bound)
 }
 
 // Verify is Verifier.Verify once the issuer is discovered, discovering it first when it is not

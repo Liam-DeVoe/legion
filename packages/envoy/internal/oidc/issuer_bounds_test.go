@@ -9,6 +9,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
 
 // A read of the discovery document runs under discoveryAttemptTimeout from its start, or under the
@@ -185,5 +187,57 @@ func TestALazyVerifiersReadRunsUnderItsBoundOrItsArm(t *testing.T) {
 	calls := arms.recorded()
 	if len(calls) != 1 || calls[0].bound != discoveryAttemptTimeout || !readBounded || !readEnd.Equal(calls[0].deadline) {
 		t.Fatalf("the arm was given %+v and the read ends at %v (bounded %t), want one call with discoveryAttemptTimeout and the read at its deadline", calls, readEnd, readBounded)
+	}
+}
+
+// A lazy verifier given an arm (WithWaitArm) reads its key set within what the arm gives for
+// Keys.FetchTimeout, and its own Verify proves it: the arm is given discoveryAttemptTimeout for the
+// discovery read, then DefaultKeysFetchTimeout for the key-set read, and the verification passes.
+// Keys no verifier armed bound a read by FetchTimeout from its start.
+func TestALazyVerifiersKeyReadRunsUnderItsBoundOrItsArm(t *testing.T) {
+	unarmed := &Keys{FetchTimeout: DefaultKeysFetchTimeout}
+	before := time.Now()
+	ctx, cancel := unarmed.fetchContext(context.Background())
+	after := time.Now()
+	deadline, bounded := ctx.Deadline()
+	cancel()
+	if !bounded || deadline.Before(before.Add(DefaultKeysFetchTimeout)) || deadline.After(after.Add(DefaultKeysFetchTimeout)) {
+		t.Fatalf("keys no verifier armed: a read's deadline %v (bounded %t), want FetchTimeout (%s) from its start", deadline, bounded, DefaultKeysFetchTimeout)
+	}
+
+	issuer := oidctest.New(t)
+	signing := issuer.PublishKey(t, "signing-key")
+	var arms recordingArm
+	verifier := NewLazyVerifier(issuer.URL(), testAudience, WithWaitArm(arms.arm))
+	claims, err := verifier.Verify(context.Background(), issuer.Mint(t, signing, issuer.Claims(testSubject, testAudience)))
+	if err != nil || claims.Subject != testSubject {
+		t.Fatalf("Verify: %+v, %v; want %s", claims, err, testSubject)
+	}
+	calls := arms.recorded()
+	if len(calls) != 2 || calls[0].bound != discoveryAttemptTimeout || calls[1].bound != DefaultKeysFetchTimeout {
+		t.Fatalf("the arm was given %+v, want discoveryAttemptTimeout for the discovery read, then DefaultKeysFetchTimeout for the key-set read", calls)
+	}
+}
+
+// A caller's wait on a lazy verifier's issuer that the caller bounds (WaitWithin, the listener's
+// identityBudget) is that bound from now, or what the verifier's arm gives for it.
+func TestALazyVerifiersCallerWaitsWithinItsBoundOrTheArm(t *testing.T) {
+	const bound = 4 * time.Second
+	before := time.Now()
+	ctx, cancel := NewLazyVerifier("https://issuer.example", testAudience).WaitWithin(context.Background(), bound)
+	after := time.Now()
+	deadline, bounded := ctx.Deadline()
+	cancel()
+	if !bounded || deadline.Before(before.Add(bound)) || deadline.After(after.Add(bound)) {
+		t.Fatalf("an unarmed verifier's wait ends at %v (bounded %t), want %s from the call", deadline, bounded, bound)
+	}
+
+	var arms recordingArm
+	ctx, cancel = NewLazyVerifier("https://issuer.example", testAudience, WithWaitArm(arms.arm)).WaitWithin(context.Background(), bound)
+	deadline, bounded = ctx.Deadline()
+	cancel()
+	calls := arms.recorded()
+	if len(calls) != 1 || calls[0].bound != bound || !bounded || !deadline.Equal(calls[0].deadline) {
+		t.Fatalf("an armed verifier's wait: the arm was given %+v and the wait ends at %v (bounded %t), want one call with %s and the wait at its deadline", calls, deadline, bounded, bound)
 	}
 }

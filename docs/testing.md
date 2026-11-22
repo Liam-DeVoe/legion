@@ -483,15 +483,18 @@ A `runtime.AddCleanup` or `runtime.SetFinalizer` added in another package comes 
 ## A product bound a test does not measure
 
 Some product code bounds a call to a remote by a fixed span, for a remote that accepts the call and
-never answers: the CI store gives up a record after 4 s (`recordWait`), and a sign-in code flow or a
-lazy verifier gives up a read of its issuer, or a call to its token endpoint, after 10 s. A test
+never answers: the CI store gives up a record after 4 s (`recordWait`); a sign-in code flow or a
+lazy verifier gives up a read of its issuer's discovery document, its key set or its token endpoint
+after 10 s; and the listener answers an identity token 503 once its check has waited 4 s
+(`identityBudget`). A test
 whose own remote answers in the machine's time, a test NATS or a test issuer, does not measure that
 bound, and on a loaded machine its call can take longer: the row then fails on the bound, not on
 what it tests.
 
 - Such a test hands the product an arm in place of the bound: `cistore.WithWaitArm` on `Open` and
   `OpenWriter`, `oidc.WithWaitArm` on `NewCodeFlow` and `NewLazyVerifier`, each given
-  `testwait.BoundArm(t)`.
+  `testwait.BoundArm(t)`. A lazy verifier's arm also bounds the listener's identity check of its
+  tokens (`LazyVerifier.WaitWithin`).
 - The arm ends each wait at `testwait.BoundEndAt`: 30 s before the test binary's deadline, never
   sooner than the product's own bound after the wait began, and never past the deadline. So under a
   short `-timeout` a wait still has the time the product gave it.

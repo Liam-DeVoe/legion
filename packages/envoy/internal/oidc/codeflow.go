@@ -127,9 +127,11 @@ func collectOptions(opts []Option) options {
 type WaitArm func(ctx context.Context, bound time.Duration) (context.Context, context.CancelFunc)
 
 // WithWaitArm arms each read of the issuer's discovery document with arm, given
-// discoveryAttemptTimeout, and, for a code flow, each call to the token or revocation endpoint with
-// arm, given TokenTimeout, in place of those bounds themselves. No deployment passes it: the bounds
-// are for an issuer that accepts a call and never answers. A test's own issuer answers in the
+// discoveryAttemptTimeout; for a code flow, each call to the token or revocation endpoint, given
+// TokenTimeout; and for a lazy verifier, each read of the key set, given Keys.FetchTimeout, and
+// each wait a caller bounds through WaitWithin, given its bound; in place of those bounds
+// themselves. No deployment passes it: the bounds are for an issuer that accepts a call and never
+// answers. A test's own issuer answers in the
 // machine's time, which on a loaded machine can be longer, and a test of how a call fails would
 // read the bound's timeout as the issuer's answer, so it passes testwait.BoundArm. A nil arm leaves
 // the bounds.

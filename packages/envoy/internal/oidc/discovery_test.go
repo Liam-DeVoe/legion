@@ -195,7 +195,7 @@ func TestLazyVerifierVerifiesOnceItsIssuerIsDiscovered(t *testing.T) {
 	issuer := oidctest.New(t)
 	signing := issuer.PublishKey(t, "signing-key")
 	issuer.FailDiscovery(http.StatusServiceUnavailable)
-	verifier := NewLazyVerifier(issuer.URL(), testAudience)
+	verifier := NewLazyVerifier(issuer.URL(), testAudience, WithWaitArm(testwait.BoundArm(t)))
 	clock := newTestClock()
 	verifier.discovery.now = clock.Now
 	token := issuer.Mint(t, signing, issuer.Claims(testSubject, testAudience))
@@ -258,7 +258,7 @@ func TestALazyVerifierVerifiesAGoogleIdentityOnceItsIssuerIsDiscovered(t *testin
 	issuer := oidctest.New(t)
 	signing := issuer.PublishKey(t, "signing-key")
 	issuer.FailDiscovery(http.StatusServiceUnavailable)
-	verifier := NewLazyVerifier(issuer.URL(), testAudience)
+	verifier := NewLazyVerifier(issuer.URL(), testAudience, WithWaitArm(testwait.BoundArm(t)))
 	clock := newTestClock()
 	verifier.discovery.now = clock.Now
 	claims := issuer.Claims(testSubject, testAudience)

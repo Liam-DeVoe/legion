@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 const (
@@ -49,7 +50,7 @@ func newGoogleStandIn(t *testing.T, accounts ...string) googleStandIn {
 	t.Helper()
 	issuer := oidctest.New(t)
 	key := issuer.PublishKey(t, "google-signing-key")
-	verifier := oidc.NewLazyVerifier(issuer.URL(), listenerGoogleAudience)
+	verifier := oidc.NewLazyVerifier(issuer.URL(), listenerGoogleAudience, oidc.WithWaitArm(testwait.BoundArm(t)))
 	return googleStandIn{issuer: issuer, key: key, identities: &googleIdentities{audience: listenerGoogleAudience, verifier: verifier, accounts: accounts}}
 }
 
@@ -78,7 +79,7 @@ func newClusterIssuer(t *testing.T) clusterIssuer {
 	t.Helper()
 	issuer := oidctest.New(t)
 	key := issuer.PublishKey(t, "listener-test-key")
-	return clusterIssuer{issuer: issuer, key: key, verifier: oidc.NewLazyVerifier(issuer.URL(), listenerTestAudience)}
+	return clusterIssuer{issuer: issuer, key: key, verifier: oidc.NewLazyVerifier(issuer.URL(), listenerTestAudience, oidc.WithWaitArm(testwait.BoundArm(t)))}
 }
 
 func (c clusterIssuer) token(t *testing.T, subject string) string {
