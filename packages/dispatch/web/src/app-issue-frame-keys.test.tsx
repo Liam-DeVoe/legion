@@ -83,6 +83,12 @@ async function renderIssue(page: IssuePageChoice): Promise<void> {
     spyOn(api, "getIssueDecisions").mockRejectedValue(unread),
     spyOn(api, "getIssueResults").mockRejectedValue(unread),
     spyOn(api, "getReferenceTargets").mockRejectedValue(unread),
+    // Details, which Shift+M opens in the frame, draws the issue's properties: the Repository
+    // row reads the repositories mapped to the project, Components the project's architecture
+    // sources, and Blocks and Referenced by what references the issue.
+    spyOn(api, "listRepoProjects").mockRejectedValue(unread),
+    spyOn(api, "listProjectArchitectureSources").mockRejectedValue(unread),
+    spyOn(api, "getReferences").mockRejectedValue(unread),
   ];
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = render(
