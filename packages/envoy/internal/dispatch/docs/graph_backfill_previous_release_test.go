@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -355,9 +356,12 @@ func TestEveryMarkingStatementKeepsOrRaisesTheRuleAsR13States(t *testing.T) {
 // markingStatementDigests is, for each value refs.BlockIndexMarkingRule has held, the digest of the
 // statements that decide what a build of that rule marks (markingStatements), as TestGoldenDigest
 // (internal/broker/policy/load_test.go) pins its digest. A change to those statements is a change
-// of what a pass owes, which raises the rule and records the new digest here beside the old.
+// of what a pass owes, which raises the rule and records the new digest here beside the old. The
+// digest is taken over each statement's words joined by single spaces, so a statement's layout -
+// its line breaks and indentation, which the text it splices in from another place gives it -
+// moves no digest, and a change of any word does.
 var markingStatementDigests = map[int]string{
-	1: "97bd4060ef80efd44ce39779a06e81b9a4707dae2c55ee8374ea0d11109ea81a",
+	1: "127c62eb231428cab90c580dacb6d4ceda4f8137e4ac91b2924e982e7e5357ea",
 }
 
 // The marking rule is held to the statements whose results decide which documents a build marks
@@ -368,7 +372,7 @@ var markingStatementDigests = map[int]string{
 func TestTheMarkingRuleNamesTheStatementsItMarksWith(t *testing.T) {
 	digest := sha256.New()
 	for _, statement := range markingStatements(t) {
-		fmt.Fprintf(digest, "%s\x00%s\x00", statement.name, statement.sql)
+		fmt.Fprintf(digest, "%s\x00%s\x00", statement.name, strings.Join(strings.Fields(statement.sql), " "))
 	}
 	got := hex.EncodeToString(digest.Sum(nil))
 	if want := markingStatementDigests[refs.BlockIndexMarkingRule]; got != want {
@@ -386,10 +390,13 @@ type namedStatement struct{ name, sql string }
 // write's statements (refs.CommentWrite.Queue), the backfill's block selection
 // (graphcensus.BlockRowsStatement) and its read of a batch's rows again under the locks
 // (graphcensus.HeldBlockRowsStatement), the backfill's marks (graphcensus.BlockBatchMarkStatement,
-// graphcensus.StaleDocumentsStatement, graphcensus.StaleBatchMarkStatement), and the two marks of
-// a debt (oweDocumentIndexStatement, refs.RebuildMarkStatement). The two refs functions are run
-// against a stand-in that records what they send and answers nothing, so no copy of their text is
-// read.
+// graphcensus.StaleDocumentsStatement, graphcensus.StaleBatchMarkStatement), the two marks of
+// a debt (oweDocumentIndexStatement, refs.RebuildMarkStatement), the condition under which a build
+// lists a marked document as owed (refs.OwedMarkListed), which the owed listing, its re-read under
+// the owner's lock and the backlog all read, and the revision fence that decides whether a pass
+// wins and clears a mark (refs.RevisionFenceStatement). The two refs functions that send
+// statements are run against a stand-in that records what they send and answers nothing, so no
+// copy of their text is read.
 func markingStatements(t *testing.T) []namedStatement {
 	t.Helper()
 	ctx := context.Background()
@@ -434,6 +441,8 @@ func markingStatements(t *testing.T) []namedStatement {
 		namedStatement{"graphcensus.StaleBatchMarkStatement", graphcensus.StaleBatchMarkStatement},
 		namedStatement{"docs.oweDocumentIndexStatement", oweDocumentIndexStatement},
 		namedStatement{"refs.RebuildMarkStatement", refs.RebuildMarkStatement},
+		namedStatement{"refs.OwedMarkListed", refs.OwedMarkListed("b", "$1::integer")},
+		namedStatement{"refs.RevisionFenceStatement", refs.RevisionFenceStatement},
 	)
 }
 

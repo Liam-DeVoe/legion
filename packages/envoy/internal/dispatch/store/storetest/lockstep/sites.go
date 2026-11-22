@@ -74,10 +74,6 @@ var storeWriteCallSites = map[string]string{
 	"refs/comment_nodes.go#Queue":                           "graphcensus#TestEveryBackfillBatchTakesTheStoreLockOrder",
 	"graphcensus/backfill_roles.go#writeRoleBatch":          "graphcensus#TestEveryBackfillBatchTakesTheStoreLockOrder",
 	"graphcensus/backfill_sessions.go#writeSessionBatch":    "graphcensus#TestEveryBackfillBatchTakesTheStoreLockOrder",
-	// The erase, the one writer that deletes from the store, through EraseNode: the tuples on both
-	// sides of the node, then the node's row. It takes the owner locks it writes under before that
-	// row, and its projection rows after it.
-	"grapherase/erase.go#apply": "grapherase#TestTheEraseTakesTheStoreLockOrder",
 	// graphstore's own writers that run another of them. QueueAuthored and QueueSessionRecorded
 	// are arms of one statement, and QueueReached is QueueSessionRecorded for an attempt that was
 	// sent. Write and Caused run QueueWrite and QueueCaused as a batch of their own, and

@@ -325,11 +325,11 @@ const (
 
 // TestTheBlockBatchTakesEveryOwnerRowBeforeAnyFenceRow holds writeBlockBatch over two documents of
 // two issues to the order lockBlockDocuments takes their locks in: both owner locks first, in
-// ascending owner key, the order the erase takes several owner locks in, and only then each
-// document's document_block_versions row, in document id order. The documents' ids sort the other
-// way round from their issues' keys, so a batch that took one document's owner lock and fence row
-// before the next document's owner lock, in document id order, would take issue CORE-1's lock
-// first and its document's fence row before issue ACME-1's lock.
+// ascending owner key, the order events.Broker.LockOwners takes several owner locks in, and only
+// then each document's document_block_versions row, in document id order. The documents' ids sort
+// the other way round from their issues' keys, so a batch that took one document's owner lock and
+// fence row before the next document's owner lock, in document id order, would take issue
+// CORE-1's lock first and its document's fence row before issue ACME-1's lock.
 //
 // Each of the four rows is held in a transaction of its own while the real Backfill runs
 // (followTheBackfill), and the order the run queues behind them in is held to the invariants

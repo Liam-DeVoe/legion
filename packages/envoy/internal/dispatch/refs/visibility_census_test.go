@@ -166,7 +166,6 @@ var readsWithoutAViewer = map[string]string{
 	"BlockTextAt":          nodeDetail,
 	"BlockTexts": "it reads the text of each block GET /api/v1/reference-targets has already named through TargetNames, " +
 		"which binds each block's predicate, as CurrentBlockText and CurrentItemBlockText read one, and answers nothing of any other node",
-	"CanonicalRepo":        noNode,
 	"CountedChanges":       serverWork + " - a write records what its own text cites, as the addresses that text already spells",
 	"CurrentBlockText":     nodeDetail,
 	"CurrentItemBlockText": nodeDetail,
@@ -358,7 +357,7 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 		return err
 	})
 	record("Closure", "Closure of CORE-1", func() error {
-		_, _, err := Closure(ctx, recorder, who, "CORE-1")
+		_, err := Closure(ctx, recorder, who, "CORE-1")
 		return err
 	})
 	record("Outgoing", "Outgoing of a document", func() error {

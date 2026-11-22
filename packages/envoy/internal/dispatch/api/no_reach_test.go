@@ -726,6 +726,7 @@ var routesNoSeedAnswers = map[string]string{
 	"GET /api/v1/credential-grants":                                      "the agent-secrets broker",
 	"GET /api/v1/machine-logins":                                         "the agent-secrets broker",
 	"GET /api/v1/signins":                                                "the agent-secrets broker",
+	"GET /api/v1/artifacts/{id}/changes":                                 "two stored versions of one document",
 }
 
 // routeProbeQueries are the queries the reads that require one are sent, each naming the
