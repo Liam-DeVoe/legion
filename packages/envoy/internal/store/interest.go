@@ -112,6 +112,9 @@ func MergedTopics(sessionID string, roles []string, cur []string, topics []strin
 // subject (dropPrivateStreamTopics). Registry.PlanInterest reads the roles once and merges once;
 // the listener's registration route builds the filter from the plan and hands the same plan back
 // to Registry.UpsertPlanned, so no second read can decide the row differently from the filter.
+// Withheld is the topics of the stored row a caller's rule of its own takes out of the row
+// (cmd/listener's edge hold): they are out of Topics, and the write takes them out of the row it
+// reads before it merges Topics in (mergeForUpsert).
 //
 // Revision is the bucket revision of the row the plan merged its topics into, 0 for a session
 // with no row: Registry.UpsertPlanned writes at that revision and refuses the write when another
@@ -120,8 +123,9 @@ func MergedTopics(sessionID string, roles []string, cur []string, topics []strin
 // plan and writes that, so an unsubscribe that landed in the seconds between a plan and its
 // write is not undone and the filter is never left standing for a plan the row does not hold.
 type InterestPlan struct {
-	Roles  []string
-	Topics []string
+	Roles    []string
+	Topics   []string
+	Withheld []string
 	// LeftOut is topics the plan keeps out of the row although the merge holds them. The
 	// listener's registration route lists there each topic the session's consumer filter leaves
 	// out as no topic it can follow, one that does not begin with the literal notifications. and
