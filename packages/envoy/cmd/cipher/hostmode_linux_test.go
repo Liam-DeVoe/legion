@@ -13,6 +13,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"net"
 	"net/http"
@@ -26,6 +27,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
 	"github.com/sjawhar/envoy/internal/cipher/helper"
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // peerRequest is one connection fakeHelperWithPids answered: the pid the kernel names for its
@@ -98,12 +100,14 @@ func TestRegisterExecStillPinsTheReplacedProcess(t *testing.T) {
 }
 
 // realHelper serves a real helper.Server — the daemon's own registry, pidfd pinning and sign op —
-// on a socket, with a broker that can never enroll anyone (no launcher credential, nothing
-// listening), so every session it registers stays unenrolled.
-func realHelper(t *testing.T) string {
+// on a socket, with a broker that can never enroll anyone (no launcher credential, and a port
+// this test holds that refuses each dial), so every session it registers stays unenrolled. It
+// answers the socket and that broker's address, which the helper signs launcher calls for.
+func realHelper(t *testing.T) (sock, broker string) {
 	t.Helper()
-	_, sock := serveRealHelper(t, "http://127.0.0.1:1", "ada@example.com")
-	return sock
+	broker = "http://" + testport.Refused(t)
+	_, sock = serveRealHelper(t, broker, "ada@example.com")
+	return sock, broker
 }
 
 // serveRealHelper is serveRealHelperWith sending the helper's broker calls through
@@ -129,7 +133,7 @@ func helperSessions(t *testing.T, sock string) []helper.SessionInfo {
 // registered session.
 func TestIdentityAsksARealHelperWithoutRegistering(t *testing.T) {
 	binary := buildAgentSecrets(t)
-	sock := realHelper(t)
+	sock, _ := realHelper(t)
 	env := append(os.Environ(), "AGENT_SECRETS_HELPER_SOCK="+sock, "AGENT_SECRETS_KEY_DIR=", "XDG_RUNTIME_DIR="+t.TempDir(), "HOME="+t.TempDir())
 
 	before := helperSessions(t, sock)
@@ -279,7 +283,7 @@ func TestRegisterSessionIDInsideAnUnregisteredOmpAttachesTheOmpTree(t *testing.T
 // reach the helper: the name, which the verification's check k1 runs, now means no registration.
 func TestRegisterWithoutAnOmpAncestorRefusesAndSendsNothing(t *testing.T) {
 	binary := buildAgentSecrets(t)
-	sock := realHelper(t)
+	sock, _ := realHelper(t)
 	code, stdout, stderr := runWithNoLauncherAbove(t, binary,
 		[]string{"AGENT_SECRETS_HELPER_SOCK=" + sock, "AGENT_SECRETS_KEY_DIR=", "HOME=" + t.TempDir(), "XDG_RUNTIME_DIR=" + t.TempDir()},
 		"register", "--session-id", "s-3890", "--wait", "5")
@@ -426,23 +430,6 @@ func ancestorNamed(t *testing.T, pid int, name string) (int, bool) {
 	return 0, false
 }
 
-// parentPID is pid's parent as /proc names it, read here rather than through the code under
-// test so it can contradict it.
-func parentPID(t *testing.T, pid int) int {
-	t.Helper()
-	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
-	if err != nil {
-		t.Fatal(err)
-	}
-	stat := string(data)
-	fields := strings.Fields(stat[strings.LastIndexByte(stat, ')')+2:])
-	parent, err := strconv.Atoi(fields[1])
-	if err != nil {
-		t.Fatalf("/proc/%d/stat names the parent %q: %v", pid, fields[1], err)
-	}
-	return parent
-}
-
 // stubLauncher makes nearestLauncher answer pid and err for this test: every register without
 // --exec asks it which ancestor to name, and a test process is not started by a session
 // launcher.
@@ -559,20 +546,73 @@ func TestRegisterWithNoLauncherStillAsksTheHelper(t *testing.T) {
 // TestRegisterAcceptsARootAboveTheLauncher: inside a registered session whose root is not the
 // nearest `omp` — an `omp` run under a shell the docs register with `--exec -- bash` — the
 // helper answers that session, rooted above the launcher this command named. A root that is an
-// ancestor of this process is this session's, so the command prints it and exits 0.
+// ancestor of this process is this session's, so the command prints it and exits 0. The test
+// owns the whole process tree: this test process is the root, its child is the launcher (this
+// test binary through a symlink named `omp`, TestRegisterBelowALauncherHelper), and register runs
+// as the launcher's child, so no process above this test decides the row.
 func TestRegisterAcceptsARootAboveTheLauncher(t *testing.T) {
-	launcher := fixedLauncher(t)
-	above := parentPID(t, launcher)
-	if above <= 1 {
-		t.Fatalf("the test process's parent %d has no parent above init (%d), so this test cannot name a root above it", launcher, above)
+	binary := buildAgentSecrets(t)
+	root := os.Getpid()
+	sock, reqs := fakeHelper(t, helper.Response{OK: true, RuntimeID: "session-s", EnrollmentID: "enr-h", State: "enrolled", RootPID: root})
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
 	}
-	sock, _ := fakeHelper(t, helper.Response{OK: true, RuntimeID: "session-s", EnrollmentID: "enr-h", State: "enrolled", RootPID: above})
-	t.Setenv("AGENT_SECRETS_HELPER_SOCK", sock)
-	var stdout, stderr bytes.Buffer
-	code := cmdRegister([]string{"--session-id", "s"}, &stdout, &stderr)
-	if code != 0 || stdout.String() != "session-s\tenr-h\tenrolled\n" {
-		t.Fatalf("register answered a root above its launcher: exit %d, stdout %q, stderr %q; want 0 and the session's line", code, stdout.String(), stderr.String())
+	omp := filepath.Join(t.TempDir(), "omp")
+	if err := os.Symlink(self, omp); err != nil {
+		t.Fatal(err)
 	}
+	launcher := exec.Command(omp, "-test.run=^TestRegisterBelowALauncherHelper$", "--", "register", "--session-id", "s")
+	launcher.Env = append(os.Environ(), "AGENT_SECRETS_BELOW_LAUNCHER_BINARY="+binary, "AGENT_SECRETS_HELPER_SOCK="+sock)
+	out, err := launcher.Output()
+	if err != nil {
+		t.Fatalf("the launcher: %v, stdout %q", err, out)
+	}
+	var report launcherReport
+	for _, line := range strings.Split(string(out), "\n") {
+		if json.Unmarshal([]byte(line), &report) == nil && report.PID != 0 {
+			break
+		}
+	}
+	if report.PID != launcher.Process.Pid {
+		t.Fatalf("the launcher reported pid %d, want its own pid %d, a child of this test: stdout %q", report.PID, launcher.Process.Pid, out)
+	}
+	if report.RegisterCode != 0 || report.RegisterOut != "session-s\tenr-h\tenrolled\n" {
+		t.Fatalf("register answered a root above its launcher: exit %d, stdout %q, stderr %q; want 0 and the session's line", report.RegisterCode, report.RegisterOut, report.RegisterErr)
+	}
+	// The command named the launcher, a child of this test, as the root it asks for, so the root
+	// the helper answered (this test) is above that launcher.
+	select {
+	case req := <-reqs:
+		if req.Op != "register" || !req.Attach || req.RootPID != report.PID {
+			t.Fatalf("the request the helper saw: %+v; want register, attach, root_pid %d (the launcher)", req, report.PID)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the fake helper saw no request")
+	}
+}
+
+// TestRegisterBelowALauncherHelper is the session launcher of
+// TestRegisterAcceptsARootAboveTheLauncher: this test binary, started through a symlink named
+// `omp`, so its comm is `omp` as a real launcher's is. It runs the agent-secrets binary with the
+// arguments after "--" as its own child, prints one launcherReport line with its own pid and what
+// that command answered, and exits.
+func TestRegisterBelowALauncherHelper(t *testing.T) {
+	binary := os.Getenv("AGENT_SECRETS_BELOW_LAUNCHER_BINARY")
+	if binary == "" {
+		t.Skip("subprocess helper")
+	}
+	cmd := exec.Command(binary, flag.Args()...)
+	var out, errOut strings.Builder
+	cmd.Stdout, cmd.Stderr = &out, &errOut
+	if err := cmd.Run(); cmd.ProcessState == nil {
+		t.Fatalf("run %s: %v", binary, err)
+	}
+	line, err := json.Marshal(launcherReport{PID: os.Getpid(), RegisterCode: cmd.ProcessState.ExitCode(), RegisterOut: out.String(), RegisterErr: errOut.String()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fmt.Println(string(line))
 }
 
 // TestRegisterRefusesAHelperThatNamesNoRoot: a helper from before this change pins the caller,

@@ -1,7 +1,8 @@
 // packages/envoy/cmd/cipher/resolver_test.go
 //
-// The test's resolver: a row owns the answer for each host name its requests look up, so no row
-// takes its result from the machine's resolver. useResolver sets it in this process, and
+// The test's resolver: a row owns the answer for each host name its requests look up, and for each
+// address it names where nothing must answer, so no row takes its result from the machine's
+// resolver or from what listens on the machine. useResolver sets it in this process, and
 // runResolved runs agent-secrets as a child process with it.
 package main
 
@@ -14,6 +15,7 @@ import (
 	"net/http"
 	"net/netip"
 	"os"
+	"syscall"
 	"testing"
 )
 
@@ -21,17 +23,25 @@ import (
 // as the dialer fails when its lookup finds no such host, and nothing asks the network.
 const noSuchHost = ""
 
+// connectionRefused is the answer of the test's resolver for an address ip:port where nothing
+// listens: the dial fails as a connect to a closed port fails (syscall.ECONNREFUSED), and nothing
+// asks the network.
+const connectionRefused = "connection refused"
+
 // resolvedHostsVar holds, as JSON, the hosts that a child process of runResolved looks up its
 // names in (TestAgentSecretsResolvedHelper).
 const resolvedHostsVar = "AGENT_SECRETS_TEST_RESOLVED_HOSTS"
 
 // useResolver makes hosts the resolver of every request that this process sends through
 // http.DefaultTransport for the rest of t. Every broker call goes through it, because the client
-// of newClient sets no transport of its own. A name in hosts dials the address that it maps to,
-// or fails as a name with no such host where it maps to noSuchHost. A name that is not in hosts
-// fails with an error that names it, and an IP address dials as it is. No name goes to the
-// machine's resolver, and no request goes through a proxy that the environment names, because the
-// proxy would look up the name in place of hosts.
+// of newClient sets no transport of its own. A key of hosts is a host name or an address ip:port.
+// An address in hosts is answered first: by connectionRefused, or by an address ip:port to dial in
+// its place. A name in hosts dials the address that it maps to (with the port of the request
+// where the address names none), or fails as a name with no such host where it maps to
+// noSuchHost. A name that is not in hosts fails with an error that names it, and an IP address
+// that is not in hosts dials as it is. No name goes to the machine's resolver, and no request goes
+// through a proxy that the environment names, because the proxy would look up the name in place
+// of hosts.
 func useResolver(t *testing.T, hosts map[string]string) {
 	t.Helper()
 	base, ok := http.DefaultTransport.(*http.Transport)
@@ -46,15 +56,27 @@ func useResolver(t *testing.T, hosts map[string]string) {
 		if err != nil {
 			return nil, err
 		}
-		if _, err := netip.ParseAddr(host); err == nil {
-			return dial(ctx, network, address)
+		to, owned := hosts[address]
+		if !owned {
+			if _, err := netip.ParseAddr(host); err == nil {
+				return dial(ctx, network, address)
+			}
+			to, owned = hosts[host]
 		}
-		to, owned := hosts[host]
 		switch {
 		case !owned:
 			return nil, fmt.Errorf("the test's resolver has no answer for %s", host)
 		case to == noSuchHost:
 			return nil, &net.OpError{Op: "dial", Net: network, Err: &net.DNSError{Err: "no such host", Name: host, IsNotFound: true}}
+		case to == connectionRefused:
+			refused := &net.OpError{Op: "dial", Net: network, Err: os.NewSyscallError("connect", syscall.ECONNREFUSED)}
+			if at, err := netip.ParseAddrPort(address); err == nil {
+				refused.Addr = net.TCPAddrFromAddrPort(at)
+			}
+			return nil, refused
+		}
+		if _, err := netip.ParseAddrPort(to); err == nil {
+			return dial(ctx, network, to)
 		}
 		return dial(ctx, network, net.JoinHostPort(to, port))
 	}

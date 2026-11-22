@@ -18,6 +18,7 @@ import (
 
 	"github.com/sjawhar/envoy/cipheraddr"
 	"github.com/sjawhar/envoy/internal/goroutinetest"
+	"github.com/sjawhar/envoy/internal/testport"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -572,8 +573,9 @@ func TestASecondRestartBeforeTheLoginStillRevokesThePriorEnrollment(t *testing.T
 	state := filepath.Join(t.TempDir(), "sessions.json")
 	pid := recordPrior(t, state, "enr-prior")
 
-	// The first restart: Recover re-pins and saves, and the helper exits before any login.
-	first := &Server{Registry: NewRegistry(state), Broker: &Broker{URL: cipheraddr.New("http://127.0.0.1:1"), OperatorFile: operatorFile(t, "ada@example.com")},
+	// The first restart: Recover re-pins and saves, and the helper exits before any login. Its
+	// broker is a port this test holds that refuses each dial.
+	first := &Server{Registry: NewRegistry(state), Broker: &Broker{URL: cipheraddr.New("http://" + testport.Refused(t)), OperatorFile: operatorFile(t, "ada@example.com")},
 		Hostname: "testhost", PeerOf: PeerOf, Log: slog.New(slog.NewTextHandler(os.Stderr, nil)), MinRenew: time.Second}
 	ctx, cancel := context.WithCancel(context.Background())
 	first.Recover(ctx)
