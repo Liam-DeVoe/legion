@@ -1948,8 +1948,10 @@ standin="$work/standin-goroot"
 shim="$work/python3-shim"
 mkdir -p "$standin/bin" "$shim" "$work/caller-config/go"
 printf '#!/bin/sh\necho "the stand-in go ran" >&2\nexit 3\n' > "$standin/bin/go"
-# shellcheck disable=SC2016 # $PATH and "$@" are the shim's own, written into it unexpanded
-printf '#!/bin/sh\ntouch "%s"\nGOROOT="%s" PATH="%s:$PATH" exec "%s" "$@"\n' \
+# Each path goes in quoted for the shell that reads it (%q under bash), so a TMPDIR holding a space
+# or a quote names the same files. $PATH and "$@" are the shim's own, written into it unexpanded.
+# shellcheck disable=SC2016
+printf '#!/usr/bin/env bash\ntouch %q\nGOROOT=%q PATH=%q:"$PATH" exec %q "$@"\n' \
   "$shim/started" "$standin" "$standin/bin" "$python" > "$shim/python3"
 chmod +x "$standin/bin/go" "$shim/python3"
 printf 'GOFLAGS=-tags=polluted\n' > "$work/caller-config/go/env"
@@ -1987,9 +1989,11 @@ printf 'package lib\n\nimport _ "example.com/m/other"\n' > "$root/mod/lib/lib_ar
 printf '//go:build !cgo\n\npackage lib\n\nimport _ "example.com/m/other"\n' > "$root/mod/lib/nocgo.go"
 host="$work/darwin-host-goroot"
 mkdir -p "$host/bin"
-# shellcheck disable=SC2016 # $#, $1, $2, $@ and the defaults are the stand-in's own, written unexpanded
-printf '#!/bin/sh\nif [ "$#" = 2 ] && [ "$1 $2" = "env GOROOT" ]; then echo "%s"; exit 0; fi\nif [ "$1" = list ]; then touch "%s/listed"; fi\nGOOS=${GOOS:-darwin} GOARCH=${GOARCH:-arm64} CGO_ENABLED=${CGO_ENABLED:-0} exec "%s" "$@"\n' \
-  "$host" "$host" "$go_bin/go" > "$host/bin/go"
+# $#, $1, $2, $@ and the defaults are the stand-in's own, written unexpanded; each path goes in
+# quoted (%q under bash), as the shim's above.
+# shellcheck disable=SC2016
+printf '#!/usr/bin/env bash\nif [ "$#" = 2 ] && [ "$1 $2" = "env GOROOT" ]; then echo %q; exit 0; fi\nif [ "$1" = list ]; then touch %q; fi\nGOOS=${GOOS:-darwin} GOARCH=${GOARCH:-arm64} CGO_ENABLED=${CGO_ENABLED:-0} exec %q "$@"\n' \
+  "$host" "$host/listed" "$go_bin/go" > "$host/bin/go"
 chmod +x "$host/bin/go"
 check "the stand-in's go defaults to darwin/arm64 with cgo off" \
   "$(is "$(cd "$work" && env -u GOOS -u GOARCH -u CGO_ENABLED "$host/bin/go" env GOOS GOARCH CGO_ENABLED | tr '\n' ' ')" "darwin arm64 0 ")"

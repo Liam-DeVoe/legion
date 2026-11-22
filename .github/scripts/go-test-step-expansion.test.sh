@@ -149,15 +149,17 @@ trap 'rm -rf "$work"' EXIT
 printf '#!/bin/sh\nenv\n' > "$work/go"
 chmod +x "$work/go"
 # go_seen <go|shell> <directory> <command> [argument ...]: the go command's variables, sorted, that
-# the command sees when go() or shell() runs it in the directory.
+# the command sees when go() or shell() runs it in the directory. shell() takes a line, so each
+# word goes into it quoted (shlex.join): the stand-in's path is under TMPDIR, which can hold a space
+# or a quote.
 go_seen() {
-  py 'import re
+  py 'import re, shlex
 from pathlib import Path
 how, directory, *command = sys.argv[1:]
 if how == "go":
     out = ex.go(command, Path(directory), "the stand-in go")
 else:
-    out = ex.shell(" ".join(command), Path(directory), "the stand-in go")
+    out = ex.shell(shlex.join(command), Path(directory), "the stand-in go")
 names = re.compile(r"(C?GO[A-Z0-9_]*|CC|CXX|AR|FC|GCCGO|PKG_CONFIG)=")
 print("\n".join(sorted(line for line in out.splitlines() if names.match(line))))' "$@"
 }
