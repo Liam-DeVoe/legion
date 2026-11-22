@@ -15,13 +15,12 @@ import (
 )
 
 // standIn serves PRIV, whose issues resolve to acme/pub and acme/two, and EMPTY, whose issues
-// resolve to none. Each also has a mapped list of its own, which the membership answer carries and
-// the repository answer must not: a client that read it would answer acme/mapped.
+// resolve to none.
 func standIn(t *testing.T) *projectaccesstest.Server {
 	t.Helper()
 	return projectaccesstest.NewServer(t, map[string]projectaccesstest.Row{
-		"PRIV":  {Visibility: "private", Repositories: []string{"acme/mapped"}, Resolved: []string{"acme/pub", "acme/two"}},
-		"EMPTY": {Visibility: "private", Repositories: []string{"acme/mapped"}},
+		"PRIV":  {Visibility: "private", Resolved: []string{"acme/pub", "acme/two"}},
+		"EMPTY": {Visibility: "private"},
 	}, nil)
 }
 
@@ -177,21 +176,21 @@ func TestProjectRepositoriesClientCallsARefusedTokenTheBrokersOwn(t *testing.T) 
 	}
 }
 
-// TestTheRepositoryAnswerIsTheIssuesListNotTheMappedOne: one Dispatch, read by both of the broker's
-// clients with one account as cmd/cipherd wires them, keeps two lists of a project's repositories
-// apart. The repository client answers the list the project's issues resolve to, and never the
-// list Dispatch maps to the project, which the membership client is answered on the same Dispatch;
-// a project none of whose issues resolves to a repository is [], whatever is mapped to it.
-func TestTheRepositoryAnswerIsTheIssuesListNotTheMappedOne(t *testing.T) {
+// TestTheRepositoryAnswerIsTheIssuesList: one Dispatch, read by both of the broker's clients with
+// one account as cmd/cipherd wires them. The repository client answers the list the project's
+// issues resolve to, [] for a project none of whose issues resolves to a repository, and the
+// membership client is answered about the same project on the same Dispatch; its answer carries
+// no repositories.
+func TestTheRepositoryAnswerIsTheIssuesList(t *testing.T) {
 	server := standIn(t)
 	for project, want := range map[string][]string{"PRIV": {"acme/pub", "acme/two"}, "EMPTY": {}} {
 		got, err := clientOf(server).Repositories(t.Context(), project)
 		if err != nil || !reflect.DeepEqual(got, want) {
-			t.Fatalf("Repositories(%s) = %q, %v; want the issues' list %q, not the mapped one", project, got, err, want)
+			t.Fatalf("Repositories(%s) = %q, %v; want the issues' list %q", project, got, err, want)
 		}
 		answer, err := projectaccess.New(server.URL, server.Account, nil).Access(t.Context(), project, "")
-		if err != nil || !reflect.DeepEqual(answer.Repositories, []string{"acme/mapped"}) {
-			t.Fatalf("Access(%s) from the same Dispatch with the same account = %q, %v; want its mapped list acme/mapped", project, answer.Repositories, err)
+		if err != nil || answer.Project != project {
+			t.Fatalf("Access(%s) from the same Dispatch with the same account = %+v, %v; want its answer about %s", project, answer, err, project)
 		}
 	}
 }

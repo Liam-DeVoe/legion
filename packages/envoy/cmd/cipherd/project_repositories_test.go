@@ -137,9 +137,7 @@ func newEdgeRig(t *testing.T) edgeRig {
 	cluster := oidctest.New(t)
 	rig := edgeRig{
 		dispatch: projectaccesstest.NewServer(t, map[string]projectaccesstest.Row{
-			// The mapped list is the membership answer's alone: a broker that relayed it would
-			// answer acme/mapped.
-			"PRIV": {Visibility: "private", Repositories: []string{"acme/mapped"}, Resolved: []string{"acme/pub", "acme/two"}},
+			"PRIV": {Visibility: "private", Resolved: []string{"acme/pub", "acme/two"}},
 		}, nil),
 		cluster: cluster,
 		key:     cluster.PublishKey(t, "signing-key"),

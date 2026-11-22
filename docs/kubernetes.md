@@ -1415,6 +1415,7 @@ How long the proxy outlives the moment the generation is told to end, in a pod, 
 - **A child that exits on its own** and leaves processes behind:
   in the controller's pod, where the launcher is not namespaced, the leftovers get up to `--stop-grace` more, SIGTERM then SIGKILL (`cleanExitedGeneration`, `internal/launcher/process.go`), with the proxy still serving them, so at most one grace after the child's exit.
   In an issue pod the role's own init is what signals them: SIGTERM over the role's namespace, then `roleNamespaceDrain`, two seconds, for them to go before the SIGKILL that ends the namespace (`runRoleShim`, `internal/launcher/roleinit_linux.go`), so at most two seconds after the child's exit.
+  The role's output then says how that wait ended, with its span by role-init's own clock: `role-init: the role's namespace emptied <span> after its SIGTERM` when the processes left, or `role-init: the role's processes still ran <span> after its SIGTERM, the drain's bound of 2s: killing them` when the bound came first, which is where a git or a jj the role left can leave its lock in the issue's clone.
 
 When the proxy is closed, it lets connections still open finish for up to one second (`sessionDrain`, `launcher.go`;
 `Config.Drain`, `sessionproxy.go`), then closes both ends of those left.
@@ -2534,6 +2535,39 @@ A rating row left in place is not harmless in the same way: the release that rec
 
 The kind check keeps the name after the rollback, and the rollback needs no statement for it: an earlier release never writes the kind, so the check refuses nothing that release writes.
 
+#### Rolling back the release that lets the owning architect's status stand
+
+This release takes the owning architect's `done`, `backlog`, `icebox` or `triage` on a child as it takes a person's move.
+A set-back is the status row that writes the daemon's status back over a status that the daemon does not take (`record.ReassertStatusWrite`).
+The daemon queues a set-back in these cases.
+A session with a claim in the issue's tree writes a status, other than the owning architect's move of a child out of the workflow.
+A session with no claim in the tree writes a status on a root that runs or that waits on a person.
+The daemon's own hand-over `todo` on a child of a closed tree arrives stale, for example after the root of that tree came back.
+In this release each set-back carries `observedSeq`, the Dispatch sequence of the write it undoes.
+Before each write, the daemon reads the issue's events after that sequence.
+When a later event changed the status and the daemon did not write that event, the row ends and writes nothing.
+So a set-back never writes over a move that came after the write it undoes.
+Its migration `20261120012547_set_back_observed_seq` changes no table and runs no statement.
+
+**The key `observedSeq` must go before the earlier image is pinned.**
+The earlier release decodes an outbox payload strictly (`DisallowUnknownFields` in `record/outbox.go`).
+A set-back that carries `observedSeq` fails that decode at every attempt, and the earlier release retries it on its backoff until the roll forward.
+Run this with the daemon of the project that rolls back stopped, before its earlier image is pinned, with `<PROJECT>` replaced by the project's key: `project` in its `legion.yaml`, the part of each of its issue keys before the hyphen, such as `LEGION`:
+
+```sql
+-- The Dispatch sequence that each set-back of one project carries.
+update outbox set payload = payload - 'observedSeq' where kind = 'dispatch_status' and payload ? 'observedSeq' and split_part(issue, '-', 1) = '<PROJECT>';
+```
+
+The header of `20261120012547_set_back_observed_seq.up.sql` carries this same block.
+The statement removes the key and keeps every other field of the row, its attempts and its time to run.
+The earlier release then decodes and runs each set-back of the project.
+It writes the daemon's status as that release writes it, with no read of the events after the write it undoes.
+
+**Each project rolls back on its own.**
+Several projects' daemons can share one database ([Daemon-launched controller](#daemon-launched-controller), step 3), and the outbox is one table for all of them, but each daemon runs only its own project's rows (`DueRows` in `record/store.go`).
+So one project can roll back while another stays on this release, and the statement names the project: a daemon left on this release keeps the check on its own set-backs.
+
 #### Rolling back the release whose update round ends at its bound
 
 This release's migration `20261113110610_drop_claim_update_answer_marks` takes two columns off `claims`: `update_answered_by_turn_end` and `update_reasked_for_push_check`, which the two `alter` statements below add back.
@@ -3204,6 +3238,7 @@ The migrations recorded above this one are these.
 20261117112334_pull_request_statuses, of cybermonklabs/legion#4299, adds `pull_requests.statuses` at its default, the empty list, and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement; the way back in its own header drops the column.
 20261117200337_update_ask_marks_at_delivery, of cybermonklabs/legion#4337, clears `claims.update_tasked_at` on each claim whose update ask of the round it records still waits in the outbox, and touches none of the six either, so the block holds over it; it alters no table and has no down file, so it leaves nothing for the block to reverse.
 20261119003157_conflict_reads_and_merge_forward, of cybermonklabs/legion#4464, writes the outbox's kind check again with `conflict_confirm` and `merge_forward` added to the plan record's list, deletes the queued `phase_ended` rows and adds `pull_requests.conflict_read` and `pull_requests.merge_forward`, and touches none of the six, so the block holds over it, and a rollback to a release before it takes the steps of its own section, [Rolling back the release that merges a conflicting head forward in its phase](#rolling-back-the-release-that-merges-a-conflicting-head-forward-in-its-phase).
+20261120012547_set_back_observed_seq, of dispatch://INFRA-3178, changes no table, runs no statement and touches none of the six, so the block holds over it, and a rollback to a release before it takes the steps of its own section, [Rolling back the release that lets the owning architect's status stand](#rolling-back-the-release-that-lets-the-owning-architects-status-stand).
 20261120042902_claim_agent_resume_generation, of dispatch://INFRA-4108, adds `claims.agent_resume_generation` at its default, 0, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header first, which deletes the queued `session-forgotten` notices no earlier release decodes, drops the column and deletes its version row.
 20261120055717_dispatch_issue_value_sequences, of dispatch://INFRA-4729, adds seven columns of `dispatch_issues`, an index on `dispatch_issues.parent` and the table `dispatch_issue_refills`, and touches none of the six, so the block holds over it and leaves all of them standing, which the earlier release names in no statement, and a rollback to a release before it runs the statement of its own section, [Rolling back the release that fences each value of the copy of Dispatch's issues](#rolling-back-the-release-that-fences-each-value-of-the-copy-of-dispatchs-issues), before the earlier image is pinned.
 20261121001600_intake_consumers creates the table `intake_consumers`, empty, which only a daemon whose `legion.yaml` sets `consumer_names: fresh` writes and a daemon on the fixed names reads one row of at its boot and after each reconnect, and touches none of the six, so the block holds over it and leaves the table standing, which the earlier release names in no statement; it has no down file.
@@ -3942,14 +3977,15 @@ The daemon/pane split limits what a leaked pane seed can do, not what a pane pro
 the process boundary holds only when the daemon runs apart from its agents, as a user or in a pod of its own (the Kubernetes runtime).
 Every command the daemon itself starts (git and jj in a managed repository's checkout, `mise where`, a key command) runs without `NATS_NKEY_SEED` and `NATS_DAEMON_NKEY_SEED`, so a seed passed by value never reaches a repository's tooling;
 still, prefer the file forms (`nats_nkey_seed_file`, `nats_daemon_nkey_seed_file`, or the `_FILE` variables), since a value stays in the daemon's own process environment.
-At boot the daemon logs, once, `legion daemon connects to NATS` with `user=U…` (the public key, never the seed), `paneUser=true|false`, and `seed=daemon|pane|none`.
-`legion config check` reads it as boot does and adds `nats-daemon-nkey-user=U…` to its OK line.
+At boot the daemon logs, once, `legion daemon connects to NATS` with `user=U…` (the public key, never the seed, or, for the service token below, the account the token names), `paneUser=true|false`, and `seed=service-token|daemon|pane|none`.
+`legion config check` reads it as boot does and adds `nats-daemon-nkey-user=U…` to its OK line, or, for the service token below, `nats-daemon-service-account=` and the account the token names, never the token.
 Every permission the server refuses the daemon's connection, a subscription or a publish (its JetStream consumers' API requests included), is logged at error as `NATS refused the daemon a permission: its NATS user lacks that grant` with its `operation` and `subject`;
 the server reports a refusal asynchronously, and nats.go's default handler would only write it to stderr, outside the daemon's log.
+Every refusal of the connection's credential on a reconnect (an authorization violation, for a seed or the service token below) is logged at warn as `NATS refused the connection's credential` with its `error`.
 Every other asynchronous error is logged at warn with the `subject` of the subscription it names, a dropped connection at warn as `NATS connection lost` with its `error`, the reconnect at info as `NATS connection restored` with its `server`, and a terminal close (a fatal server `-ERR`) at error, once, as `NATS
 connection closed` with its `error`.
 Reconnects never run out: the connection never drops a server from its pool for having failed too many times, so an outage mid-run shows as `NATS
-connection lost` and then, once NATS answers again, `NATS connection restored` — never a close — at nats.go's own default 2 s reconnect wait.
+connection lost` and then, once NATS answers again, `NATS connection restored` — never a close — at nats.go's own default 2 s reconnect wait (the service token's connection, below, waits on its own schedule).
 A server that keeps refusing to reconnect for any reason short of the two shapes that do close it
 — an unrecognized server `-ERR`, or the same authorization error twice in a row (nats.go's own terminal-close rules)
 — never closes the connection and so never logs either of those two lines again:
@@ -3982,10 +4018,27 @@ The fill of a record that lacks its repository columns does not wait out GitHub'
 A stop during a wait ends the boot at once.
 
 A malformed seed refuses the boot immediately at startup, before any network connection is attempted.
-A NATS authorization violation at connect time is the same: the server said no synchronously, and the boot refuses it at once.
+A NATS authorization violation at connect time is the same, for a seed or no credential: the server said no synchronously, and the boot refuses it at once (the service token below waits it out).
 An EOF during the NATS handshake also refuses at once
 — the connection simply closed, and nats.go returns that synchronously too
 — though no crash in the audited journal took this shape, so refusing rather than waiting here is a judgment call.
+
+Behind the NATS auth service in the secrets broker, the daemon's own connection may present a platform identity token instead of a seed:
+`nats_daemon_service_token_file` (relative to `legion.yaml`'s directory) names a projected ServiceAccount token for the broker's `BROKER_NATS_K8S_AUDIENCE`, whose account the broker's `BROKER_NATS_SERVICES` lists as a `daemon` entry.
+The daemon reads the file afresh at each connect, connects as user `service` with the token as its password, takes its account's own reply prefix (`_INBOX_envoy.` and the account, each byte outside `[A-Za-z0-9-]` escaped), and moves to a later token ten minutes before the one it presented lapses.
+List the daemon's entry with `*`, the daemon's whole grant (with its own reply prefix).
+Do not list it with `-` yet: `-` holds the grant to the projects the account's exchange entry lists (`docs/site/src/content/docs/broker/operate.md`, the NATS auth service), and that grant names the consumers a daemon opens only once it opens its consumers per project, and drops the stream reads today's daemon makes, so today's daemon would be refused at boot.
+`-` is for daemon entries once every reading of the release gate holds for such a daemon: `daemon-release-gate.sh`'s listener and daemon legs (each with `--deployment <owner/repo>`, which the script requires), the stored-wake read, the running-daemon read and the consumer-filter read.
+The running-daemon read is `daemon-running-gate.sh`, which comes with the daemon that opens its consumers per project, printing that every running daemon is at or after that release; the release gate's legs read the repository alone, not the daemons running.
+The consumer-filter read finds each daemon durable on its own kind's filter.
+The held grant names a daemon's consumers, not their filters, so a daemon pod still on today's build can keep a wide durable that a held daemon would read whole.
+The change that lists daemon entries with `-` waits on all of these.
+A daemon seed beside the token file refuses boot naming both, and so does a token file that cannot be read, is empty, or names no account.
+The auth service refuses a token while it is away, or, for a daemon held to its exchange projects (`-`), while Dispatch has not yet answered about one of those projects, so the token's connection waits a refusal out, at boot and while running alike, on one schedule (one second, doubling, capped at a minute):
+at boot each refused attempt is logged as the `connect Envoy NATS` probe's retry with its `detail` (`nats: Authorization Violation`), and the daemon serves nothing, its `/readyz` answering nothing, until the token is admitted;
+while running each refused reconnect is logged at warn as `NATS refused the connection's credential` with its `error`.
+A seed's refusal, or a refusal of a connection with no credential, still refuses boot, and a seed's connection the server refuses twice with the same error still closes.
+NATS tells the daemon only that it was refused, never why: the reason is in the secrets broker's log, on its `natscallout: refused NATS connections` line, which it writes at most once a minute: each refusal's label with its count (for example `service_not_listed`, `project_access_unknown`, `project_not_visible`), and, as `<label>_first`, that label's first refusal's reason (for example `project not visible to the account's person: <KEY>`); `broker_nats_callout_decisions_total` counts each label as its `reason`.
 
 A NATS permission violation on a JetStream call (a refused consumer or stream grant) is reported asynchronously:
 the server tells the connection of it well before the blocked call's own attempt bound runs out, but the blocked call itself does not return early on that report
@@ -8704,6 +8757,8 @@ A Dispatch that answers 401 or 403 to the broker's own account token does not li
 A 404 is Dispatch holding no such project only with the code `PROJECT_NOT_FOUND`; any other 404 is a failure to ask.
 A `named` token naming a project fails until every broker replica, Dispatch and listener run the release that carries the list: this release's readers refuse an older broker's `project` answer, the broker also stores a named token's one project under `project` so an older replica answers it that way, and an older Dispatch refuses this release's named answers.
 The grant issues no refresh token, so each renewal is a fresh trade that Dispatch is asked about again.
+A restricted member's token reaches Envoy and Dispatch and no secret: with `BROKER_PROJECT_ACCESS_URL` set, an enrollment under a machine login or a pod login whose person Dispatch calls a restricted member is refused `403 RESTRICTED_MEMBER_ENROLLS_NOTHING`, and a session such a person already had is denied every secret `restricted-member` (`packages/envoy/internal/cipher/enroll`, `packages/envoy/internal/cipher/requests`).
+While Dispatch cannot say what kind of member a person is, every enrollment under that person's login and every secret request and release of their sessions is refused `503 MEMBER_KIND_UNCHECKABLE`, and nothing is released.
 
 A session name belongs to one principal — the service account, the workflow, the Google account, or the person
 — and the broker refuses `invalid_grant` to another principal that names it (`claimSession`, `packages/envoy/internal/cipher/oauth/exchange.go`), but for a service account `BROKER_SESSION_ACCOUNT_PAIRS` pairs with a holding service account:

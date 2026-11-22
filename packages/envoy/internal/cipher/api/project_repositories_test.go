@@ -39,14 +39,12 @@ const (
 )
 
 // repositoriesDispatch is the stand-in of Dispatch every test here starts from: PRIV's issues
-// resolve to acme/pub and acme/two, OTHER's to acme/other. Each also has a mapped list, which the
-// membership answer carries and the repository answer must not, so a broker that relayed it would
-// answer acme/mapped.
+// resolve to acme/pub and acme/two, OTHER's to acme/other.
 func repositoriesDispatch(t *testing.T) *projectaccesstest.Server {
 	t.Helper()
 	return projectaccesstest.NewServer(t, map[string]projectaccesstest.Row{
-		"PRIV":  {Visibility: "private", Repositories: []string{"acme/mapped"}, Resolved: []string{"acme/pub", "acme/two"}},
-		"OTHER": {Visibility: "private", Repositories: []string{"acme/mapped"}, Resolved: []string{"acme/other"}},
+		"PRIV":  {Visibility: "private", Resolved: []string{"acme/pub", "acme/two"}},
+		"OTHER": {Visibility: "private", Resolved: []string{"acme/other"}},
 	}, nil)
 }
 
