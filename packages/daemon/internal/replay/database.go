@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -99,7 +100,7 @@ func openReplayDatabase(ctx context.Context, dsn string) (replayDatabase, *store
 		if _, err := tx.Exec(ctx, "alter database "+pgx.Identifier{name}.Sanitize()+" set synchronous_commit = off"); err != nil {
 			return err
 		}
-		for _, table := range replayTables {
+		for _, table := range slices.Concat(replayTables, scopeTriggers()) {
 			if _, err := tx.Exec(ctx, table); err != nil {
 				return err
 			}

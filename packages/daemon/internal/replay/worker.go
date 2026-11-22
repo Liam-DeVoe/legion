@@ -228,8 +228,12 @@ func (d *driver) waitHolds(row record.OutboxRow) (bool, error) {
 // wake queues the stub's next run at the earliest next_at of the project's rows that come due
 // after now, as a lane sleeps until its next row is due (record.Postgres.NextDue): a linger's
 // close, a start backing off; at its millisecond, which the slack reads it due at (dueSlack).
-// Nothing is queued where a wake at that moment or earlier already is.
+// Nothing is queued where a wake at that moment or earlier already is. The tries no change of
+// state can end are skipped first (skipWaits), so the wake is at the first try that one can.
 func (d *driver) wake() error {
+	if err := d.skipWaits(); err != nil {
+		return err
+	}
 	var next *time.Time
 	now := d.dueNow()
 	if err := d.st.Tx(d.ctx, func(tx pgx.Tx) error {
@@ -333,6 +337,13 @@ func (d *driver) retry(row record.OutboxRow, why error) error {
 		return err
 	}
 	d.counters.Retried++
+	d.triesRun++
+	waiting, err := d.scopesOf(row.Issue)
+	if err != nil {
+		return err
+	}
+	waiting.next = next
+	d.waiting[row.ID] = waiting
 	return nil
 }
 
