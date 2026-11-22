@@ -14,10 +14,15 @@
 # The rule: a call's budget is at most half of the timeout it runs under, the smaller of its job's
 # timeout-minutes and its step's own timeout-minutes. The other half is the margin, for every step
 # that runs before the call and for the error line. The steps before the six calls of this tree took
-# at most 81 s (dispatch-ui, of 900 s) in the pull request run that measured them.
+# at most 81 s (dispatch-ui, of 900 s) in the pull request run that measured them. A job that holds
+# more than one call is held to the same half for their sum, in each matrix row it runs: two calls
+# that each fit could together spend the whole timeout, and the job would be cancelled before the
+# second one's error printed. A call a step's `if:` keeps out of a row is not counted in that row.
 #
 # Fails, naming the workflow, the job and the step, on:
 #   * a call whose budget is more than half the timeout it runs under, naming both;
+#   * a job, or one of its matrix rows, whose calls' budgets add up to more than half of its
+#     timeout-minutes, naming each step and the sum;
 #   * a call that names no --budget <seconds> right after the script;
 #   * a job that holds such a call and carries no timeout-minutes, or one this check cannot
 #     read: a literal number of minutes is read, and `${{ matrix.<key> }}` over the job's own
@@ -25,7 +30,9 @@
 #     proof job (select-e2e-proofs.sh emits them, each row's `apt` list joined by spaces), the
 #     rows narrowed by a step `if:` of the form matrix.<key> == '<value>' or matrix.<key> != '',
 #     and the smallest timeout of the rows left taken; anything else is refused, not guessed;
-#   * a `run:` that calls apt or apt-get itself (update, install, upgrade): no budget bounds it;
+#   * a `run:` that calls apt or apt-get itself (update, install, upgrade): no budget bounds it.
+#     The command may be named by a path (`/usr/bin/apt-get`) and take options before its verb,
+#     with or without a value (`-y`, `-o Acquire::Retries=3`, `--option=...`, `-c <file>`);
 #   * a composite action under .github/actions that runs either script or apt: an action's step
 #     has no job timeout of its own to hold a budget to;
 #   * no call of either script found at all, which would make every rule above pass over nothing.
@@ -47,7 +54,14 @@ import yaml
 SCRIPTS = ("apt-install.sh", "changed-files.sh")
 CALL = re.compile(r"\.github/scripts/(apt-install\.sh|changed-files\.sh)\b([^\n]*)")
 BUDGET = re.compile(r"^\s+--budget\s+(\d+)(?:\s|$)")
-APT = re.compile(r"(?:^|[\s;&|(`])apt(?:-get)?\s+(?:-\S+\s+)*(?:update|install|upgrade|dist-upgrade|full-upgrade)\b")
+# apt or apt-get, after a separator or a path's `/`, then any options - those that take a value as
+# their next word (-o, -c, -t and their long forms) first, then any other word starting with `-` -
+# then the verb.
+APT = re.compile(
+    r"(?:^|[\s;&|(`/])apt(?:-get)?\s+"
+    r"(?:(?:-[oct]|--option|--config-file|--target-release)\s+\S+\s+|-\S+\s+)*"
+    r"(?:update|install|upgrade|dist-upgrade|full-upgrade)\b"
+)
 MATRIX = re.compile(r"^\$\{\{\s*matrix\.([A-Za-z0-9_-]+)\s*\}\}$")
 IF_EQUALS = re.compile(r"^(?:\$\{\{\s*)?matrix\.([A-Za-z0-9_-]+)\s*==\s*'([^']*)'(?:\s*\}\})?$")
 IF_NOT_EMPTY = re.compile(r"^(?:\$\{\{\s*)?matrix\.([A-Za-z0-9_-]+)\s*!=\s*''(?:\s*\}\})?$")
@@ -115,10 +129,13 @@ def minutes(value, rows, what):
     return values, None
 
 
-def check_step(path, job_id, job, step, index):
+def check_step(path, job_id, job, rows, step, index):
+    """Holds the step's calls to their timeout; returns (where, budget, rows admitted or None for a
+    job with no matrix) for each call that fits, for the job's total."""
+    fitted = []
     run = step.get("run")
     if not isinstance(run, str):
-        return
+        return fitted
     where = f"job {job_id}, step {step.get('name') or step.get('id') or index + 1}"
     if APT.search(run):
         problem(path, where, "runs apt itself, which no budget bounds; run .github/scripts/apt-install.sh --budget <seconds> <package>... instead")
@@ -130,7 +147,6 @@ def check_step(path, job_id, job, step, index):
             problem(path, where, f"calls {name} with no --budget <seconds> right after it")
             continue
         budget = int(budget.group(1))
-        rows = matrix_rows(path, job_id, job)
         admitted = narrowed(rows, step.get("if")) if rows is not None else None
         if rows is not None and admitted is None:
             problem(path, where, f"its if: {step.get('if')!r} names the matrix in a form this check cannot read")
@@ -157,6 +173,30 @@ def check_step(path, job_id, job, step, index):
             problem(path, where, f"calls {name} with a {budget} s budget, more than half of {bound_by} ({seconds} s), so a call that spends its budget can be cancelled with the job before its error prints; give it at most {seconds // 2} s")
         else:
             reports.append(f"report: {path} {where}: {name} --budget {budget}, at most half of {bound_by} ({seconds} s)")
+            fitted.append((where, budget, admitted))
+    return fitted
+
+
+def check_job_total(path, job_id, job, rows, fitted):
+    """Holds the sum of a job's call budgets, in each matrix row, to half its timeout-minutes."""
+    if len(fitted) < 2:
+        return
+    for number, row in enumerate(rows if rows is not None else [None]):
+        here = [(where, budget) for where, budget, admitted in fitted if row is None or row in admitted]
+        if len(here) < 2:
+            continue
+        job_minutes, refusal = minutes(job["timeout-minutes"], [row] if row is not None else None, "job's timeout-minutes")
+        if refusal:
+            problem(path, f"job {job_id}", refusal)
+            continue
+        seconds = job_minutes[0] * 60
+        total = sum(budget for _, budget in here)
+        steps = ", ".join(f"{where.split(', ', 1)[1]} ({budget} s)" for where, budget in here)
+        scope = f"job {job_id}" if row is None else f"job {job_id}, matrix row {number + 1} {json.dumps(row, sort_keys=True)}"
+        if total * 2 > seconds:
+            problem(path, scope, f"its calls' budgets add up to {total} s ({steps}), more than half of its job's timeout-minutes of {job_minutes[0]} ({seconds} s), so calls that each spend their budget can have the job cancelled before the last one's error prints; give them at most {seconds // 2} s together")
+        else:
+            reports.append(f"report: {path} {scope}: its calls' budgets add up to {total} s ({steps}), at most half of its job's timeout-minutes of {job_minutes[0]} ({seconds} s)")
 
 
 workflows = sorted(p for p in Path(".github/workflows").iterdir() if p.suffix in {".yml", ".yaml"})
@@ -165,9 +205,12 @@ for path in workflows:
     for job_id, job in (document.get("jobs") or {}).items():
         if not isinstance(job, dict):
             continue
+        rows = matrix_rows(path, job_id, job)
+        fitted = []
         for index, step in enumerate(job.get("steps") or []):
             if isinstance(step, dict):
-                check_step(path, job_id, job, step, index)
+                fitted += check_step(path, job_id, job, rows, step, index)
+        check_job_total(path, job_id, job, rows, fitted)
 
 for path in sorted(Path(".github/actions").glob("*/action.y*ml")):
     document = yaml.safe_load(path.read_text()) or {}

@@ -2542,7 +2542,7 @@ SCRIPT_TEST_GATES = [
     harness("changed_files_test", "Test the changes job's file list (a stand-in gh, a stand-in git)",
             f"{SCRIPTS}/changed-files.test.sh", [
         (f"{SCRIPTS}/changed-files.sh", "the script under test"),
-        (f"{SCRIPTS}/gh-read.sh", "changed-files.sh:123 sources it in the child shell its read runs in, for the retry ladder whose attempts the harness counts"),
+        (f"{SCRIPTS}/gh-read.sh", "changed-files.sh:128 sources it in the child shell its read runs in, for the retry ladder whose attempts the harness counts"),
     ]),
     harness("apt_install_test", "Test the bounded apt install (a stand-in apt-get)",
             f"{SCRIPTS}/apt-install.test.sh", [

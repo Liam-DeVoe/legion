@@ -196,6 +196,80 @@ check "naming the apt-get step" "$(contains "$out" '^::error file=.github/workfl
 check "naming the apt step" "$(contains "$out" "^::error file=.github/workflows/ci.yaml::job changes, step List the change's files: runs apt itself")"
 check "counting two problems" "$(contains "$out" '^2 problem(s) with the budgets of bounded retries$')"
 
+# Each form apt takes in a step: options with a value before the verb, a long option, and the
+# command by its absolute path. Each is a fixture of its own, so each must be found by itself.
+for form in 'sudo apt-get -o Acquire::Retries=3 install -y zsh' \
+  'sudo apt-get --option Acquire::Retries=3 update' \
+  'sudo /usr/bin/apt-get install -y zsh' \
+  'sudo apt-get -y -o Dpkg::Options::=--force-confold -c /etc/apt/apt.conf install zsh'; do
+  echo "case: a step that runs: $form"
+  root=$(fixture "raw-apt-$(printf '%s' "$form" | tr -c '[:alnum:]' -)")
+  replace "$root/.github/workflows/ci-job-pi-envoy.yaml" 'run: bun run test' "run: $form"
+  run_check "$root"
+  check "it fails" "$(is "$status" 1)"
+  check "naming the step" "$(contains "$out" '^::error file=.github/workflows/ci-job-pi-envoy.yaml::job pi-envoy, step Test: runs apt itself, which no budget bounds')"
+done
+
+echo "control: words that name apt but run no apt verb pass"
+root=$(fixture apt-words)
+replace "$root/.github/workflows/ci-job-pi-envoy.yaml" 'run: bun run test' 'run: echo apt-install.sh /usr/share/apt-get.d && bun run test'
+run_check "$root"
+check "it passes" "$(is "$status" 0)"
+
+echo "case: two calls in one job whose budgets add up to more than half its timeout"
+# Each 300 s fits half of the 10 minutes alone; together they spend all of them.
+root=$(fixture job-total)
+replace "$root/.github/workflows/ci-job-pi-envoy.yaml" "      - name: Test
+" "      - name: Install zsh
+        run: .github/scripts/apt-install.sh --budget 300 zsh
+      - name: Test
+"
+run_check "$root"
+check "it fails" "$(is "$status" 1)"
+check "naming the job, each step and the sum" \
+  "$(contains "$out" "^::error file=.github/workflows/ci-job-pi-envoy.yaml::job pi-envoy: its calls' budgets add up to 600 s (step Install tmux (300 s), step Install zsh (300 s)), more than half of its job's timeout-minutes of 10 (600 s), so calls that each spend their budget can have the job cancelled before the last one's error prints; give them at most 300 s together\$")"
+check "each call alone still fits" "$(is "$(grep -c 'calls apt-install.sh with a' <<<"$out" || true)" 0)"
+
+echo "control: the same two calls at 150 s each"
+root=$(fixture job-total-fits)
+replace "$root/.github/workflows/ci-job-pi-envoy.yaml" '--budget 300 tmux' '--budget 150 tmux'
+replace "$root/.github/workflows/ci-job-pi-envoy.yaml" "      - name: Test
+" "      - name: Install zsh
+        run: .github/scripts/apt-install.sh --budget 150 zsh
+      - name: Test
+"
+run_check "$root"
+check "it passes" "$(is "$status" 0)"
+check "reporting the job's sum" \
+  "$(contains "$out" "^report: .github/workflows/ci-job-pi-envoy.yaml job pi-envoy: its calls' budgets add up to 300 s (step Install tmux (150 s), step Install zsh (150 s)), at most half of its job's timeout-minutes of 10 (600 s)\$")"
+
+echo "case: a matrix row whose calls add up to more than half its timeout"
+# The harness row (33 minutes, 990 s for its calls) runs both installs, 1,200 s; each fits alone.
+root=$(fixture matrix-total)
+cat >> "$root/.github/workflows/repeat.yaml" <<'YAML'
+      - name: Install tmux
+        if: matrix.lane == 'harness'
+        run: .github/scripts/apt-install.sh --budget 300 tmux
+YAML
+run_check "$root"
+check "it fails" "$(is "$status" 1)"
+check "naming the harness row and its sum" \
+  "$(contains "$out" "^::error file=.github/workflows/repeat.yaml::job repeat, matrix row 3 {\"job_minutes\": 33, \"lane\": \"harness\"}: its calls' budgets add up to 1200 s (step Install zsh (900 s), step Install tmux (300 s)), more than half of its job's timeout-minutes of 33 (1980 s)")"
+
+echo "control: two calls of one matrix job in different rows are not added up"
+# The web row (17 minutes, 510 s for its calls) runs only the 400 s install, the harness row only
+# the 900 s one: each row holds one call, which fits it. Added up over the job, 1,300 s would pass
+# half of no row.
+root=$(fixture matrix-rows-apart)
+cat >> "$root/.github/workflows/repeat.yaml" <<'YAML'
+      - name: Install tmux
+        if: matrix.lane == 'web'
+        run: .github/scripts/apt-install.sh --budget 400 tmux
+YAML
+run_check "$root"
+check "it passes" "$(is "$status" 0)"
+check "reporting no row's sum, as no row holds two calls" "$(is "$(grep -c 'add up to' <<<"$out" || true)" 0)"
+
 echo "case: a job with no timeout-minutes"
 root=$(fixture no-timeout)
 replace "$root/.github/workflows/ci-job-pi-envoy.yaml" '    timeout-minutes: 10

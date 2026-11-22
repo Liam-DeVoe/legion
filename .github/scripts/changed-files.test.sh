@@ -153,7 +153,7 @@ list_files() {
   rm -f "$work/gh-calls" "$work/rate-limit-calls" "$work/git-fetches"
   case_marker="changed-files-case-$$-$dest"
   set +e
-  out=$(env -u JOB_TIMEOUT_MINUTES -u STEP_TIMEOUT_MINUTES CHANGED_FILES_CASE="$case_marker" PATH="$work/bin:$PATH" \
+  out=$(env -u JOB_TIMEOUT_MINUTES -u STEP_TIMEOUT_MINUTES -u GITHUB_SHA CHANGED_FILES_CASE="$case_marker" PATH="$work/bin:$PATH" \
     GITHUB_EVENT_NAME="$event_name" GITHUB_EVENT_PATH="$work/event.json" "$@" \
     timeout "${CASE_SECONDS:-$((BUDGET + 15))}" "$script_dir/changed-files.sh" --budget "$BUDGET" "$dest" 2> "$work/err")
   status=$?
@@ -186,7 +186,7 @@ under_worker() {
   job_started=$(date +%s)
   set +e
   # shellcheck disable=SC2016 # the worker's own shell expands "$1", "$2", "$@" and "$?", not this one
-  out=$(env -u JOB_TIMEOUT_MINUTES -u STEP_TIMEOUT_MINUTES CHANGED_FILES_CASE="$case_marker" PATH="$work/bin:$PATH" \
+  out=$(env -u JOB_TIMEOUT_MINUTES -u STEP_TIMEOUT_MINUTES -u GITHUB_SHA CHANGED_FILES_CASE="$case_marker" PATH="$work/bin:$PATH" \
     GITHUB_EVENT_NAME=pull_request GITHUB_EVENT_PATH="$work/event.json" "$@" \
     "$worker" -c 'sleep "$1" && date +%s > "$2" && shift 2 && "$@"; exit "$?"' worker "$JOB_LEAD" "$work/step-started" \
     timeout "$((BUDGET + 5))" "$script_dir/changed-files.sh" --budget "$BUDGET" "$dest" 2> "$work/err")
@@ -288,12 +288,14 @@ check "naming the read and the count" \
   "$(contains "$err" "^::error::the changes job could not read the files of pull request #7: .*short of the 13 files the event counts")"
 check "it writes no repository" "$(is "$(test -e "$work/pr-short-down" && echo yes || echo no)" no)"
 
-echo "case: a pull request of more files than the API lists"
+echo "case: a pull request of more files than the API lists, in a checkout that is not its merge commit"
+# Above 3,000 files the script reads the merge commit's diff instead of the API (the merge group
+# section below holds the case where it can); here GITHUB_SHA names no commit of the checkout.
 pr_event 3500
-list_files pull_request "$work/pr-huge"
+list_files pull_request "$work/pr-huge" GITHUB_SHA=0000000000000000000000000000000000000001
 check "it fails" "$(is "$status" 1)"
-check "naming the count and the cap" \
-  "$(contains "$err" "^::error::pull request #7 changes 3500 files, and GET repos/o/r/pulls/7/files lists at most 3000")"
+check "naming the count, the cap, the merge commit it wants and what to do" \
+  "$(contains "$err" "^::error::pull request #7 changes 3500 files, more than the 3000 GET repos/o/r/pulls/7/files lists, and the checkout's HEAD (.*) is not its merge commit GITHUB_SHA (0000000000000000000000000000000000000001) with two parents, whose diff against its first parent would name them all; split it into pull requests of at most 3000 files each, which the API lists whole\$")"
 check "having read nothing" "$(is "$gh_calls" "")"
 
 echo "case: a payload with no changed_files"
@@ -608,6 +610,52 @@ list_files merge_group "$work/group-other"
 check "it fails" "$(is "$status" 1)"
 check "naming both commits" "$(contains "$err" "^::error::the checkout's HEAD is [0-9a-f]*, not the merge group's head $head_sha")"
 check "having fetched nothing" "$(is "$fetches" "")"
+cd "$work"
+
+# A pull request past the 3,000 files the API lists: the checkout is its merge commit, as
+# actions/checkout makes refs/pull/<n>/merge, whose first parent is a base newer than the one the
+# pull request branched from (it adds other/base-only.txt), and whose second is the pull request's
+# head. The merge's diff against its first parent is the pull request's change, base..head, and not
+# the newer base's own file.
+commit_env=(env GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@localhost GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@localhost)
+base_only=$(printf 'base only\n' | "$real_git" -C "$origin" hash-object -w --stdin)
+tree_with_base_only() { # tree_with_base_only <commit>: that commit's tree with other/base-only.txt added
+  GIT_INDEX_FILE="$work/merge-index" "$real_git" -C "$origin" read-tree "$1"
+  GIT_INDEX_FILE="$work/merge-index" "$real_git" -C "$origin" update-index --add --cacheinfo "100644,$base_only,other/base-only.txt"
+  GIT_INDEX_FILE="$work/merge-index" "$real_git" -C "$origin" write-tree
+}
+newer_base=$("${commit_env[@]}" "$real_git" -C "$origin" commit-tree "$(tree_with_base_only "$base_sha")" -p "$base_sha" -m "newer base")
+merge_sha=$("${commit_env[@]}" "$real_git" -C "$origin" commit-tree "$(tree_with_base_only "$head_sha")" -p "$newer_base" -p "$head_sha" -m "merge")
+"$real_git" -C "$origin" update-ref refs/pull/7/merge "$merge_sha"
+pr_event 3500
+
+echo "case: a pull request of 3500 files, in the changes job's checkout of its merge commit"
+# As actions/checkout fetches it: blob:none, at the job's fetch-depth 2, the .github cone.
+"$real_git" init -q "$work/merge-checkout"
+"$real_git" -C "$work/merge-checkout" remote add origin "file://$origin"
+"$real_git" -C "$work/merge-checkout" -c protocol.version=2 fetch -q --no-tags --prune --no-recurse-submodules \
+  --filter=blob:none --depth=2 origin "+$merge_sha:refs/remotes/pull/7/merge"
+"$real_git" -C "$work/merge-checkout" sparse-checkout set .github
+"$real_git" -C "$work/merge-checkout" checkout -q --force refs/remotes/pull/7/merge
+cd "$work/merge-checkout"
+list_files pull_request "$work/pr-merge" GITHUB_SHA="$merge_sha"
+check "it answers" "$(is "$status" 0)"
+check "it read no API" "$(is "$gh_calls" "")"
+check "and fetched nothing" "$(is "$fetches" "")"
+check "the repository's diff names exactly the pull request's paths, base..head" \
+  "$(is "$(diff_paths "$work/pr-merge")" "$group_paths")"
+check "  and not the newer base's own file" "$(is "$(diff_status "$work/pr-merge" other/base-only.txt)" "")"
+check "it says where it read them" \
+  "$(is "$out" "9 path(s) changed: pull request #7, 3500 files past the 3000 the API lists, read with git diff of its merge commit $merge_sha against its first parent $newer_base")"
+
+echo "control: the same pull request in a checkout of its head, a commit with one parent"
+cd "$work/sparse-2"
+list_files pull_request "$work/pr-merge-head" GITHUB_SHA="$head_sha"
+check "it fails" "$(is "$status" 1)"
+check "naming the checkout's HEAD, which has no second parent, and what to do" \
+  "$(contains "$err" "^::error::pull request #7 changes 3500 files, more than the 3000 GET repos/o/r/pulls/7/files lists, and the checkout's HEAD ($head_sha) is not its merge commit GITHUB_SHA ($head_sha) with two parents, .*; split it into pull requests of at most 3000 files each")"
+check "having read nothing" "$(is "$gh_calls" "")"
+check "it writes no repository" "$(is "$(test -e "$work/pr-merge-head" && echo yes || echo no)" no)"
 cd "$work"
 
 echo "case: an event that carries no change is refused"

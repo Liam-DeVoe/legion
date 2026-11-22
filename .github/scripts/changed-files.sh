@@ -43,9 +43,14 @@
 #                 whose JSON is cut off fails the attempt like a 5xx does, and the attempt fails
 #                 too unless it lists exactly the files the event's .pull_request.changed_files
 #                 counts, so a short list - a page lost, a list read before GitHub had all of it -
-#                 is retried and never filtered. The API lists at most 3,000 files, so a pull
-#                 request that changes more is refused by name before any read: paths-filter read
-#                 the first 3,000 and selected from part of the change.
+#                 is retried and never filtered. The API lists at most 3,000 files, and
+#                 paths-filter selected from the first 3,000 of a larger change. Above 3,000 the
+#                 script reads no API: the checkout is the pull request's merge commit
+#                 (refs/pull/<number>/merge, GITHUB_SHA; HEAD must be it) at `fetch-depth: 2`, so its
+#                 first parent, the base it merges onto, is in it, and `git diff --no-renames
+#                 --name-status -z <first parent> HEAD` names every path the merge changes, with
+#                 GIT_NO_LAZY_FETCH=1 as for a merge group. A checkout whose HEAD is not that merge
+#                 commit, or has not two parents, is refused by name: split the pull request.
 #   merge_group   `git diff --no-renames --name-status -z <base_sha>..<head_sha>` in the checkout,
 #                 the diff paths-filter runs for a merge group (src/git.ts, getChanges). The
 #                 checkout is the group's head (HEAD must be head_sha) at `fetch-depth: 2`, so the
@@ -149,44 +154,57 @@ case $event_name in
       exit 1
     fi
     if [ "$expected" -gt "$LISTED_AT_MOST" ]; then
-      echo "::error::pull request #$number changes $expected files, and GET $route lists at most $LISTED_AT_MOST, so the changes job would select its jobs from part of the change; it refuses instead" >&2
-      exit 1
-    fi
-    # read_files: one attempt. gh parses every page, and the attempt fails on a parse error, a
-    # refusal, a hang past its bound, or a list that is not the event's count of files.
-    read_files() {
-      local listed rows
-      listed=$(timeout -k "$KILL_SECONDS" "$attempt_seconds" gh api --paginate "$route?per_page=100" --jq '.[]') || return 1
-      rows=$(jq -s length <<<"$listed") || return 1
-      if [ "$rows" -ne "$expected" ]; then
-        echo "GET $route listed $rows file(s), and the event says pull request #$number changes $expected" >&2
-        return 1
+      merge=${GITHUB_SHA:-}
+      export GIT_NO_LAZY_FETCH=1
+      checked_out=$(git rev-parse HEAD 2> /dev/null || true)
+      read -r _ first second extra <<<"$(git rev-list --parents -n 1 HEAD 2> /dev/null || true)"
+      split="split it into pull requests of at most $LISTED_AT_MOST files each, which the API lists whole"
+      if [ -z "$merge" ] || [ "$checked_out" != "$merge" ] || [ -z "${second:-}" ] || [ -n "${extra:-}" ]; then
+        echo "::error::pull request #$number changes $expected files, more than the $LISTED_AT_MOST GET $route lists, and the checkout's HEAD (${checked_out:-none}) is not its merge commit GITHUB_SHA (${merge:-unset}) with two parents, whose diff against its first parent would name them all; $split" >&2
+        exit 1
       fi
-      printf '%s\n' "$listed"
-    }
-    # The child shell that within_budget starts runs read_files, so it gets the function and what
-    # it reads.
-    export -f read_files
-    export route expected number attempt_seconds KILL_SECONDS
-    status=0
-    within_budget read_files > "$work/files.json" || status=$?
-    if [ "$status" -eq 124 ] || [ "$status" -eq 137 ]; then
-      echo "::error::the changes job could not read the files of pull request #$number: GET $route $overran" >&2
-      exit 1
-    elif [ "$status" -eq 75 ]; then
-      echo "::error::the changes job could not read the files of pull request #$number: GitHub refused GET $route for its rate limit, and gh-read.sh's error line above says why it did not wait and when to re-run ($ladder)" >&2
-      exit 1
-    elif [ "$status" -ne 0 ]; then
-      echo "::error::the changes job could not read the files of pull request #$number: GET $route failed $ladder, each refused, cut off, hung or short of the $expected files the event counts (the log above holds each attempt's answer)" >&2
-      exit 1
+      if ! git diff --no-renames --name-status -z "$first" HEAD > "$records"; then
+        echo "::error::pull request #$number changes $expected files, more than the $LISTED_AT_MOST GET $route lists, and the changes job could not diff its merge commit $merge against its first parent $first in the checkout (the log above holds git's answer); $split" >&2
+        exit 1
+      fi
+      source_line="pull request #$number, $expected files past the $LISTED_AT_MOST the API lists, read with git diff of its merge commit $merge against its first parent $first"
+    else
+      # read_files: one attempt. gh parses every page, and the attempt fails on a parse error, a
+      # refusal, a hang past its bound, or a list that is not the event's count of files.
+      read_files() {
+        local listed rows
+        listed=$(timeout -k "$KILL_SECONDS" "$attempt_seconds" gh api --paginate "$route?per_page=100" --jq '.[]') || return 1
+        rows=$(jq -s length <<<"$listed") || return 1
+        if [ "$rows" -ne "$expected" ]; then
+          echo "GET $route listed $rows file(s), and the event says pull request #$number changes $expected" >&2
+          return 1
+        fi
+        printf '%s\n' "$listed"
+      }
+      # The child shell that within_budget starts runs read_files, so it gets the function and
+      # what it reads.
+      export -f read_files
+      export route expected number attempt_seconds KILL_SECONDS
+      status=0
+      within_budget read_files > "$work/files.json" || status=$?
+      if [ "$status" -eq 124 ] || [ "$status" -eq 137 ]; then
+        echo "::error::the changes job could not read the files of pull request #$number: GET $route $overran" >&2
+        exit 1
+      elif [ "$status" -eq 75 ]; then
+        echo "::error::the changes job could not read the files of pull request #$number: GitHub refused GET $route for its rate limit, and gh-read.sh's error line above says why it did not wait and when to re-run ($ladder)" >&2
+        exit 1
+      elif [ "$status" -ne 0 ]; then
+        echo "::error::the changes job could not read the files of pull request #$number: GET $route failed $ladder, each refused, cut off, hung or short of the $expected files the event counts (the log above holds each attempt's answer)" >&2
+        exit 1
+      fi
+      # One JSON object a row, as gh's --jq '.[]' prints them.
+      jq -j 'if .status == "renamed" then ["D", .previous_filename], ["A", .filename]
+          elif .status == "removed" then ["D", .filename]
+          elif .status == "added" or .status == "copied" then ["A", .filename]
+          else ["M", .filename] end
+        | .[0] + "\u0000" + .[1] + "\u0000"' "$work/files.json" > "$records"
+      source_line="pull request #$number, read from GET $route"
     fi
-    # One JSON object a row, as gh's --jq '.[]' prints them.
-    jq -j 'if .status == "renamed" then ["D", .previous_filename], ["A", .filename]
-        elif .status == "removed" then ["D", .filename]
-        elif .status == "added" or .status == "copied" then ["A", .filename]
-        else ["M", .filename] end
-      | .[0] + "\u0000" + .[1] + "\u0000"' "$work/files.json" > "$records"
-    source_line="pull request #$number, read from GET $route"
     ;;
   merge_group)
     base=$(jq -r '.merge_group.base_sha' "$event")
