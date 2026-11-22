@@ -283,7 +283,8 @@ func TestPluginManifestPathRefusesAProfileOhMyPiRefuses(t *testing.T) {
 // missing or mismatched pi-envoy, whatever the release's own number is, on purpose: the gate
 // compares the number pi-legion speaks with the one pi-envoy publishes, never either with a
 // release. A step that hangs adds a line to `hung` just before it hangs, once it has counted its
-// attempt and said all it says, and gateUnder's gate cuts it off there (endWhenHung).
+// attempt and said all it says, and gateUnder's gate cuts it off there (endWhenHung); it sleeps
+// hangFor, past every budget, so it ends only when its attempt is cut off.
 type fakeOmp struct {
 	dir, path, prefix string
 }
@@ -331,8 +332,8 @@ no) echo LEGION_PLUGIN_LOADED=no >&2; exit 0 ;;
 silent) exit 0 ;;
 denied) echo "secrets: ANTHROPIC_API_KEY was denied" >&2; exit 3 ;;
 denied-then-killed) echo "secrets: ANTHROPIC_API_KEY was denied" >&2; kill -KILL $$ ;;
-hang) echo "$n" >>"$dir/hung"; exec sleep 30 ;;
-no-then-hang) echo LEGION_PLUGIN_LOADED=no >&2; echo "$n" >>"$dir/hung"; exec sleep 30 ;;
+hang) echo "$n" >>"$dir/hung"; exec sleep ` + hangSeconds + ` ;;
+no-then-hang) echo LEGION_PLUGIN_LOADED=no >&2; echo "$n" >>"$dir/hung"; exec sleep ` + hangSeconds + ` ;;
 esac
 `
 	path := filepath.Join(dir, "omp")
@@ -410,6 +411,17 @@ func gateUnder(t *testing.T, f fakeOmp, legion string) (pluginGate, *bytes.Buffe
 // and a fake that hangs is cut off where it hangs (endWhenHung), as the budget cuts off a hung Oh
 // My Pi, so no test waits the budget out.
 const fakeBudget = time.Minute
+
+// hangFor is how long a fake's step that hangs sleeps: longer than every budget a gate in these
+// tests applies to one — fakeBudget, and the 300 s slow_command_timeout_seconds of the gates that
+// run(...) builds from testConfig — so a hung step ends only when its attempt is cut off, by
+// endWhenHung, a budget or the daemon's stop, and never by an exit of its own, which the gate would
+// read as an answer: a "not loaded" or "missing" said before the hang would then pass as a plain
+// answer, and the row that holds a probe to that answer after a cut-off would test nothing.
+// hangSeconds is hangFor as sleep takes it.
+const hangFor = 10 * time.Minute
+
+var hangSeconds = strconv.Itoa(int(hangFor / time.Second))
 
 // endWhenHung is the expire of a gate over a fake Oh My Pi whose directory is dir: it cuts each
 // attempt off once the fake has added a line to dir/hung, which a step that hangs adds once it has

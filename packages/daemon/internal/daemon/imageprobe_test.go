@@ -62,7 +62,7 @@ agents:available) echo LEGION_OMP_AGENTS=available >&2; exit 0 ;;
 agents:missing) echo LEGION_OMP_AGENTS=missing >&2; exit 0 ;;
 agents:silent) exit 0 ;;
 agents:available-then-die) echo LEGION_OMP_AGENTS=available >&2; echo "database is locked" >&2; exit 1 ;;
-agents:missing-then-hang) echo LEGION_OMP_AGENTS=missing >&2; echo "$n" >>"$dir/hung"; exec sleep 30 ;;
+agents:missing-then-hang) echo LEGION_OMP_AGENTS=missing >&2; echo "$n" >>"$dir/hung"; exec sleep ` + hangSeconds + ` ;;
 load:yes) printf "$legion$with_envoy" >&2; exit 0 ;;
 load:no) echo LEGION_PLUGIN_LOADED=no >&2; exit 0 ;;
 load:elsewhere) printf "LEGION_PLUGIN_LOADED=yes\nLEGION_PLUGIN_LOADED_FROM=file://$dir/elsewhere/pi-legion/dist/legion.js\nLEGION_PLUGIN_ENVOY_INTERFACE=1\n$with_envoy" >&2; exit 0 ;;
@@ -79,8 +79,8 @@ session:dies) echo "database is locked" >&2; exit 1 ;;
 session:killed) echo "database is locked" >&2; kill -KILL $$ ;;
 *:denied) echo "secrets: ANTHROPIC_API_KEY was denied" >&2; exit 3 ;;
 # A step that hangs adds a line to hung just before it hangs, and imageGateUnder's gate cuts it off
-# there (endWhenHung).
-*:hang) echo "$n" >>"$dir/hung"; exec sleep 30 ;;
+# there (endWhenHung); it sleeps past every budget (hangFor), so only a cut-off ends it.
+*:hang) echo "$n" >>"$dir/hung"; exec sleep ` + hangSeconds + ` ;;
 esac
 echo "fake omp: no step $step for $kind" >&2; exit 65
 `
