@@ -17,10 +17,10 @@ import {
 
 /** One line the outline draws over the tree (`FailedReadLine`), with a Retry. A read the rows
  *  come from has one while it stands failed (`standsFailed`), and its Retry asks that read alone
- *  again. The names reads have one line between them, which stands while their count of failures
- *  is above 0 (`IssueTreeView.namesFailure`): while a read under a new set of addresses is out as
- *  well, though no names read stands failed then. Its Retry asks again every names read that
- *  holds no answer under its set, a first read of a new set included. */
+ *  again. The names read has one line, which stands while its count of failures is above 0
+ *  (`IssueTreeView.namesFailure`): while its read under a new set of addresses is out as well,
+ *  though it does not stand failed then. Its Retry asks the names read again while it holds no
+ *  answer under its set, a first read of a new set included. */
 export interface FailedRead {
   /** Whether the questions come from the read, as of the reads here they come from the asks':
    *  the issue's own read brings its open asks too (`tree-read/tree-nodes.ts`'s `asksOf`), so a
@@ -43,12 +43,12 @@ export interface FailedRead {
    *  goes to the first such line, the questions' before it (`bringsQuestions`), where one
    *  stands failed (`IssueTree`'s opening), and the names place no row. */
   readonly placesRows: boolean;
-  /** Asks that read alone again; the names line's asks again every names read that holds no
+  /** Asks that read alone again; the names line's asks the names read again while it holds no
    *  answer under its set of addresses (`NamesFailure.retry`). */
   readonly retry: () => void;
   /** Whether the read runs again (TanStack Query's `isFetching`); for the names line, whether
-   *  one of the names reads that hold no answer under their set runs, again or as a first read
-   *  of a new set (`NamesFailure.retrying`). */
+   *  the names read runs while it holds no answer under its set, again or as a first read of a
+   *  new set (`NamesFailure.retrying`). */
   readonly retrying: boolean;
 }
 

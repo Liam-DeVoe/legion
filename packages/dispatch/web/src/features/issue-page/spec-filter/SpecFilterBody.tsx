@@ -151,10 +151,10 @@ export function SpecFilterBody({
    *  (`slots/view-spec.tsx`). */
   holdsEscape: boolean;
   issue: IssueDetails;
-  /** The names reads' line while they stand failed (`IssueTreeView.namesFailure`), which the
-   *  slot passes from the page's tree: those reads are the tree's own, and the view draws from
-   *  them too - the three sentences, and the name of every reference a plain line cites. None
-   *  while they do not stand failed. */
+  /** The names read's line while it stands failed (`IssueTreeView.namesFailure`), which the
+   *  slot passes from the page's tree: that read is the tree's own, and the view draws from it
+   *  too - the name of every reference the three sentences and a plain line cite. None while it
+   *  does not stand failed. */
   namesFailure?: NamesFailure;
   /** Who is reading, so a decision of theirs reads as their own words (R34). */
   reader: string | undefined;
@@ -237,7 +237,7 @@ export function SpecFilterBody({
   // Each read of a line is paired with its key's hash (`lineRead`), and each line carries how
   // many times its reads have been refused since it last stood (`useLineRefusals`), which keys
   // its alert.
-  // The names reads' line (`namesFailure`) comes after all of these, as the outline draws it
+  // The names read's line (`namesFailure`) comes after all of these, as the outline draws it
   // last (`outline-reads.ts`): the tree reads the names last, once no read it is built from is
   // still out, and gives that line's state itself.
   const lines = [
@@ -526,8 +526,8 @@ export function SpecFilterBody({
       ))}
       {namesFailure === undefined ? null : (
         <FailedReadLine
-          // The names reads' count of failures (`NamesFailure.failure`), which changes only with
-          // a new failure, and their Retry, which asks again each of them that holds no answer.
+          // The names read's count of failures (`NamesFailure.failure`), which changes only with
+          // a new failure, and its Retry, which asks it again while it holds no answer.
           failure={namesFailure.failure}
           key="names"
           message={STATE_LINES.names_unreadable}
