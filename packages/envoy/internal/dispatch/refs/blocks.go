@@ -82,10 +82,11 @@ type BlockIndexing struct {
 	// it records, nil for a deleted block.
 	deleted, ids, types, sums, excerpts, textIDs []string
 	texts                                        []*string
-	// candidates are the top-level blocks among ids whose changed version another renderer
-	// version stored or none stamped (topLevelCandidates), which KeepRespelled reads and decides;
-	// respelledIDs, respelledSums and respelledExcerpts are those it keeps the changed version
-	// of, with their text's sha256 and excerpt at this version, which Queue writes.
+	// candidates are the blocks among ids that no block encloses or only typed blocks enclose
+	// (aloneCandidates) whose changed version another renderer version stored or none stamped,
+	// which KeepRespelled reads and decides; respelledIDs, respelledSums and respelledExcerpts
+	// are those it keeps the changed version of, with their text's sha256 and excerpt at this
+	// version, which Queue writes.
 	candidates                                     []respellCandidate
 	respelledIDs, respelledSums, respelledExcerpts []string
 	pairs                                          []blockPair
@@ -127,27 +128,27 @@ type BlockIndexing struct {
 // the block's mention of a target is kept only while the block itself holds more references to it
 // than its pointers do (a string attribute citing it too, say).
 //
-// A block whose text moved keeps its changed version and time as well when it is a top-level
-// block, enclosed by no other block of this version (topLevelCandidates), another renderer
-// version stored that version, or none stamped it (pmdoc.OtherRenderer), and the text recorded
-// for the block there occurs in that version's stored markdown, only at line starts, and reads
-// as its text here, both alone (pmdoc.FragmentReadsAs): the same tree in that renderer's spelling.
-// The plan names such blocks its candidates, and reads nothing for them: KeepRespelled, which
-// the caller runs in its read phase right after the plan, reads their recorded texts and stored
-// versions and decides. Each block it keeps has its row take this text's sha256 and excerpt, and
-// no text is recorded for it at this version: a pin to an earlier version still reads unchanged,
-// and the block's recorded text keeps the earlier spelling until its text next changes. Such a
-// block counts as unchanged in Moved and Cited. Every block inside a list item, a quote or a
-// footnote definition takes this version when its text moved, and so does a top-level block that
-// stood inside one at its changed version: a block's text read alone loses its container's prefix,
-// so two trees can read as one (the inner list of `- a\n  - b\n  - c` is `- b\n  - c`, which
-// reads alone as c under b, as the inner list of `- a\n  - b\n    - c` does). Every block inside a
-// typed block takes this version too when its text moved, since only a top-level block is a
-// candidate. A top-level block that stood inside a top-level typed block at its changed version
-// can keep it: a typed block writes its blocks with no prefix, so the text recorded for such a
-// block reads alone as it stood. A block whose recorded text or text here holds `[^` takes this
-// version too, since that text reads as a footnote reference or as text by the labels the rest of
-// its document defines.
+// A block whose text moved keeps its changed version and time as well when no block of this
+// version encloses it or only typed blocks do (aloneCandidates), another renderer version stored
+// that version, or none stamped it (pmdoc.OtherRenderer), and the text recorded for the block
+// there occurs in that version's stored markdown, only at line starts, and reads as its text here,
+// both alone (pmdoc.FragmentReadsAs): the same tree in that renderer's spelling. A typed block
+// writes the blocks it holds from a line's start with no prefix, so a block inside one stands in
+// the document as its text reads alone, as a top-level block does. The plan names such blocks its
+// candidates, and reads nothing for them: KeepRespelled, which the caller runs in its read phase
+// right after the plan, reads their recorded texts and stored versions and decides. Each block it
+// keeps has its row take this text's sha256 and excerpt, and no text is recorded for it at this
+// version: a pin to an earlier version still reads unchanged, and the block's recorded text keeps
+// the earlier spelling until its text next changes. Such a block counts as unchanged in Moved and
+// Cited. Every block inside a list item, a quote or a footnote definition, however deep, a typed
+// block inside one included, takes this version when its text moved, and so does a block that
+// stood inside one at its changed version: a block's text read alone loses its container's
+// prefix, so two trees can read as one (the inner list of `- a\n  - b\n  - c` is `- b\n  - c`,
+// which reads alone as c under b, as the inner list of `- a\n  - b\n    - c` does). A block that
+// stood at the top level or inside typed blocks alone at its changed version can keep it, since
+// the text recorded for it there reads alone as it stood. A block whose recorded text or text
+// here holds `[^` takes this version too, since that text reads as a footnote reference or as
+// text by the labels the rest of its document defines.
 func PlanBlocks(
 	index BlockIndex,
 	artifactID string,
@@ -192,7 +193,7 @@ func PlanBlocks(
 		indexing.excerpts = append(indexing.excerpts, excerpt)
 		indexing.textIDs, indexing.texts = append(indexing.textIDs, block.ID), append(indexing.texts, &body)
 	}
-	indexing.candidates = topLevelCandidates(blocks, candidates)
+	indexing.candidates = aloneCandidates(blocks, candidates)
 	indexing.deleted = make([]string, 0, len(stored))
 	for id := range stored {
 		indexing.deleted = append(indexing.deleted, id)
@@ -251,8 +252,8 @@ func (b *BlockIndexing) moveChangedBlockLinks() {
 // holds it as respellable still (Held). It is the read half of the plan, run in the caller's read
 // phase right after PlanBlocks and before every other use of the indexing (Moved, Cited, Held,
 // Queue), so the parse and render it makes (pmdoc.FragmentReadsAs) hold no transaction id. It
-// reads nothing when the plan named no candidate: a version that moves no top-level block of
-// another renderer version's index pays nothing for it.
+// reads nothing when the plan named no candidate: a version that moves, of another renderer
+// version's index, no top-level block and no block only typed blocks enclose pays nothing for it.
 func (b *BlockIndexing) KeepRespelled(ctx context.Context, q Queryer) error {
 	kept, err := respelledBlocks(ctx, q, b.artifactID, b.candidates)
 	b.candidates = nil

@@ -386,6 +386,68 @@ func indexVersionTwo(t *testing.T, tx pgx.Tx, artifact, markdown string, blocks 
 	return versionTwoAt, moved
 }
 
+// checkKeptAcrossRenderers stores document as version 1 of a document artifact named slug, as
+// another renderer version stored it, its blocks cut by cuts (indexOtherRendererVersionOne), and
+// its tree with the closing paragraph reworded as version 2, as this build writes it
+// (indexVersionTwo). The test needs this build to write every block but a paragraph otherwise
+// than version 1 recorded it, and each block markers names with its marker at its start. It
+// checks that each block takesVersionTwo names takes changed version 2 and its time, with its
+// text recorded at version 2, and every other block keeps changed version 1 and its time with no
+// text recorded at version 2, each with the sum of its text now. markers and takesVersionTwo name
+// blocks by their index in version 1's blocks.
+func checkKeptAcrossRenderers(t *testing.T, slug, document string, cuts []struct{ nodeType, text string }, markers map[int]string, takesVersionTwo ...int) {
+	t.Helper()
+	tx := windowFixture(t)
+	artifact, _ := createReferenceArtifact(t, tx, "WIND-1", "WIND", slug)
+	tree, stored := indexOtherRendererVersionOne(t, tx, artifact, document, cuts)
+	recorded := make(map[string]string, len(stored))
+	for _, block := range stored {
+		recorded[block.ID] = document[block.From:block.To]
+	}
+	markerOf := make(map[string]string, len(markers))
+	for index, marker := range markers {
+		markerOf[stored[index].ID] = marker
+	}
+	versionTwo := make(map[string]bool, len(takesVersionTwo))
+	for _, index := range takesVersionTwo {
+		versionTwo[stored[index].ID] = true
+	}
+
+	pmdoc.Walk(tree, func(node *pmdoc.Node) bool {
+		if node.Type == "text" && node.Text == "Closing paragraph." {
+			node.Text = "Closing paragraph, reworded."
+		}
+		return true
+	})
+	markdown, blocks := renderedBlocks(t, tree)
+	for _, block := range blocks {
+		body := markdown[block.From:block.To]
+		if block.Type != "paragraph" && body == recorded[block.ID] {
+			t.Fatalf("this build writes %s %s as version 1 recorded it, %q; the test needs another spelling", block.Type, block.ID, body)
+		}
+		if marker, named := markerOf[block.ID]; named && !strings.HasPrefix(body, marker) {
+			t.Fatalf("this build writes %s %s as %q; the test needs it written with %q", block.Type, block.ID, body, marker)
+		}
+	}
+	versionTwoAt, _ := indexVersionTwo(t, tx, artifact, markdown, blocks)
+
+	for _, block := range blocks {
+		body := markdown[block.From:block.To]
+		wantVersion, wantAt, wantTexts := 1, versionOneAt, []string{}
+		if versionTwo[block.ID] {
+			wantVersion, wantAt, wantTexts = 2, versionTwoAt, []string{body}
+		}
+		changedVersion, changedAt, sum, texts := indexedChange(t, tx, artifact, block.ID, 2)
+		if changedVersion != wantVersion || !changedAt.Equal(wantAt) || sum != BlockTextSum(body) {
+			t.Errorf("block %s, a %s written %q and recorded at version 1 as %q, changed at version %d (%s) with the sum %s, want version %d (%s) with the sum of its text",
+				block.ID, block.Type, body, recorded[block.ID], changedVersion, changedAt.UTC(), sum, wantVersion, wantAt)
+		}
+		if !slices.Equal(texts, wantTexts) {
+			t.Errorf("version 2 records block %s as %q, want %q", block.ID, texts, wantTexts)
+		}
+	}
+}
+
 // A version another renderer version stored spells its tree otherwise than this build does, so
 // the next version moves the sum of a block whose tree did not change. That version, which
 // rewords the closing paragraph, keeps the changed version and time of each top-level block whose
@@ -514,53 +576,48 @@ var otherMarkerDocumentBlocks = []struct{ nodeType, text string }{
 // text read alone renders with `-` or `N.` while its text now keeps the other marker, since its
 // text now read alone renders so too. The reworded paragraph takes version 2.
 func TestAListWrittenWithTheOtherMarkerKeepsItsChangedVersion(t *testing.T) {
-	tx := windowFixture(t)
-	artifact, _ := createReferenceArtifact(t, tx, "WIND-1", "WIND", "other-marker-md")
-	tree, stored := indexOtherRendererVersionOne(t, tx, artifact, otherMarkerDocument, otherMarkerDocumentBlocks)
-	recorded := make(map[string]string, len(stored))
-	for _, block := range stored {
-		recorded[block.ID] = otherMarkerDocument[block.From:block.To]
-	}
-	// The second list of each pair, and the marker this build writes it with.
-	otherMarker := map[string]string{stored[3].ID: "* ", stored[9].ID: "1) "}
-	closing := stored[12].ID
+	// Blocks 3 and 9 are the second list of each pair, with the marker this build writes each
+	// with; block 12 is the reworded paragraph.
+	checkKeptAcrossRenderers(t, "other-marker-md", otherMarkerDocument, otherMarkerDocumentBlocks, map[int]string{3: "* ", 9: "1) "}, 12)
+}
 
-	pmdoc.Walk(tree, func(node *pmdoc.Node) bool {
-		if node.Type == "text" && node.Text == "Closing paragraph." {
-			node.Text = "Closing paragraph, reworded."
-		}
-		return true
-	})
-	markdown, blocks := renderedBlocks(t, tree)
-	for _, block := range blocks {
-		body := markdown[block.From:block.To]
-		if block.Type != "paragraph" && body == recorded[block.ID] {
-			t.Fatalf("this build writes list %s as version 1 recorded it, %q; the test needs another spelling", block.ID, body)
-		}
-		if marker, other := otherMarker[block.ID]; other && !strings.HasPrefix(body, marker) {
-			t.Fatalf("this build writes list %s as %q; the test needs it written with %q", block.ID, body, marker)
-		}
-	}
-	versionTwoAt, _ := indexVersionTwo(t, tx, artifact, markdown, blocks)
+// typedDocument is version 1 of a document as another renderer version stored it: a callout
+// holding a bullet list and a second one that the renderer writes with the other marker, `*`, then
+// a quote holding a bullet list, and a closing paragraph. Each list is loose in renderer version
+// 1's spelling, two blank lines between its items, the quote's two written as its marker alone,
+// where this build writes one. typedDocumentBlocks is each of its blocks in document order, with
+// its type and its slice of the document as that renderer's build indexed it.
+const typedDocument = ":::callout{#t1 kind=\"note\" title=\"T\"}\n- one\n\n\n- two\n\n* three\n\n\n* four\n:::\n\n" +
+	"> - alpha\n>\n>\n> - bravo\n\nClosing paragraph.\n"
 
-	// The reworded paragraph takes version 2, and its text is recorded there. Every other block
-	// keeps version 1 with no text recorded at version 2: the four lists, whose texts recorded at
-	// version 1 and texts now read alone as one tree, and the blocks whose texts did not move.
-	for _, block := range blocks {
-		body := markdown[block.From:block.To]
-		wantVersion, wantAt, wantTexts := 1, versionOneAt, []string{}
-		if block.ID == closing {
-			wantVersion, wantAt, wantTexts = 2, versionTwoAt, []string{body}
-		}
-		changedVersion, changedAt, sum, texts := indexedChange(t, tx, artifact, block.ID, 2)
-		if changedVersion != wantVersion || !changedAt.Equal(wantAt) || sum != BlockTextSum(body) {
-			t.Errorf("block %s, a %s written %q and recorded at version 1 as %q, changed at version %d (%s) with the sum %s, want version %d (%s) with the sum of its text",
-				block.ID, block.Type, body, recorded[block.ID], changedVersion, changedAt.UTC(), sum, wantVersion, wantAt)
-		}
-		if !slices.Equal(texts, wantTexts) {
-			t.Errorf("version 2 records block %s as %q, want %q", block.ID, texts, wantTexts)
-		}
-	}
+var typedDocumentBlocks = []struct{ nodeType, text string }{
+	{"callout", ":::callout{#t1 kind=\"note\" title=\"T\"}\n- one\n\n\n- two\n\n* three\n\n\n* four\n:::"},
+	{"bullet_list", "- one\n\n\n- two"},
+	{"paragraph", "one"},
+	{"paragraph", "two"},
+	{"bullet_list", "* three\n\n\n* four"},
+	{"paragraph", "three"},
+	{"paragraph", "four"},
+	{"blockquote", "> - alpha\n>\n>\n> - bravo"},
+	{"bullet_list", "- alpha\n>\n>\n> - bravo"},
+	{"paragraph", "alpha"},
+	{"paragraph", "bravo"},
+	{"paragraph", "Closing paragraph."},
+}
+
+// A typed block writes the blocks it holds from a line's start with no prefix, so a block inside
+// one reads alone as it stands there, as a top-level block does. Version 1, which another renderer
+// version stored, holds a callout holding two lists and a quote holding one, in that renderer's
+// spelling (typedDocument); version 2 rewords the closing paragraph. The callout and both lists
+// inside it keep changed version 1 and its time, and take the new text's sum with no text recorded
+// at version 2: each list's text recorded at version 1 started a line there, and reads alone as its
+// text now, the second list's too, which this build writes with the other marker. The quote keeps
+// version 1 as well, but the list inside it, whose text read alone loses the quote's prefix, takes
+// version 2, as does the reworded paragraph, and each has its text recorded at version 2.
+func TestABlockInsideATypedBlockKeepsItsChangedVersion(t *testing.T) {
+	// Block 4 is the second list in the callout, with the marker this build writes it with; block 8
+	// is the list inside the quote, and block 11 the reworded paragraph.
+	checkKeptAcrossRenderers(t, "typed-md", typedDocument, typedDocumentBlocks, map[int]string{4: "* "}, 8, 11)
 }
 
 // footnotedDocument is version 1 of a document that defines the footnote 1, as another renderer
@@ -675,7 +732,8 @@ func TestAListInsideAListItemTakesTheNewVersionThoughItsTextReadsAloneAsBefore(t
 	itemB.Children = itemB.Children[:1]
 	innerList.Children = append(innerList.Children, itemC)
 	markdown, blocks := renderedBlocks(t, tree)
-	// The two slices read alone as one tree, which is the case the top-level rule refuses.
+	// The two slices read alone as one tree, which is why a block inside a list item is no
+	// candidate (aloneCandidates).
 	if markdown != versionTwo || len(blocks) < 3 || blocks[2].ID != inner || markdown[blocks[2].From:blocks[2].To] != "- b\n  - c" {
 		t.Fatalf("version 2 = %q with blocks %+v; the test needs %q with list %s written %q", markdown, blocks, versionTwo, inner, "- b\n  - c")
 	}
@@ -747,6 +805,66 @@ func TestInnermostBlocksPicksTheTightestRangeHoldingEachStart(t *testing.T) {
 	want := []int{0, 1, 0, 0, 2, 0, -1, 3, -1}
 	if !slices.Equal(got, want) {
 		t.Fatalf("innermostBlocks = %v, want %v", got, want)
+	}
+}
+
+// A candidate is kept when no block encloses it or only typed blocks do: a block encloses each
+// block that starts after it and at or before its end, so an empty block at the end of its
+// container is inside it. A block a quote, a list or a footnote definition encloses is dropped,
+// however deep, a typed block inside one and the blocks that typed block holds included. Each case
+// makes every block a candidate, and then its last block alone.
+func TestAloneCandidatesKeepsTheBlocksOnlyTypedBlocksEnclose(t *testing.T) {
+	block := func(id, nodeType string, from, to int) model.ArtifactBlock {
+		return model.ArtifactBlock{ID: id, Type: nodeType, From: from, To: to}
+	}
+	for _, test := range []struct {
+		name   string
+		blocks []model.ArtifactBlock
+		kept   []string
+	}{
+		{"a top-level block", []model.ArtifactBlock{block("p", "paragraph", 0, 10)}, []string{"p"}},
+		{"a block inside a callout",
+			[]model.ArtifactBlock{block("c", "callout", 0, 40), block("p", "paragraph", 30, 36)}, []string{"c", "p"}},
+		{"a block inside a callout inside a callout",
+			[]model.ArtifactBlock{block("c1", "callout", 0, 90), block("c2", "callout", 30, 80), block("p", "paragraph", 60, 66)},
+			[]string{"c1", "c2", "p"}},
+		{"a block inside a callout inside a blockquote",
+			[]model.ArtifactBlock{block("q", "blockquote", 0, 70), block("c", "callout", 2, 70), block("p", "paragraph", 34, 40)},
+			[]string{"q"}},
+		{"a block inside a bullet_list inside a callout",
+			[]model.ArtifactBlock{block("c", "callout", 0, 60), block("l", "bullet_list", 30, 50), block("p", "paragraph", 32, 50)},
+			[]string{"c", "l"}},
+		{"an empty block whose From is its callout's To",
+			[]model.ArtifactBlock{block("c", "callout", 0, 40), block("p", "paragraph", 40, 40)}, []string{"c", "p"}},
+		{"an empty block whose From is its bullet_list's To",
+			[]model.ArtifactBlock{block("l", "bullet_list", 0, 10), block("p", "paragraph", 10, 10)}, []string{"l"}},
+		{"a top-level block after a callout's end",
+			[]model.ArtifactBlock{block("c", "callout", 0, 40), block("p1", "paragraph", 30, 36), block("p2", "paragraph", 42, 50)},
+			[]string{"c", "p1", "p2"}},
+		{"a top-level block after a blockquote's end",
+			[]model.ArtifactBlock{block("q", "blockquote", 0, 20), block("p1", "paragraph", 2, 20), block("p2", "paragraph", 22, 30)},
+			[]string{"q", "p2"}},
+		{"a block inside a footnote_definition",
+			[]model.ArtifactBlock{block("f", "footnote_definition", 0, 20), block("p", "paragraph", 6, 20)}, []string{"f"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			every := make([]respellCandidate, len(test.blocks))
+			for index, block := range test.blocks {
+				every[index] = respellCandidate{block: block}
+			}
+			var kept []string
+			for _, candidate := range aloneCandidates(test.blocks, every) {
+				kept = append(kept, candidate.block.ID)
+			}
+			if !slices.Equal(kept, test.kept) {
+				t.Errorf("aloneCandidates of every block of %+v keeps %v, want %v", test.blocks, kept, test.kept)
+			}
+			last := test.blocks[len(test.blocks)-1]
+			alone := aloneCandidates(test.blocks, []respellCandidate{{block: last}})
+			if want := slices.Contains(test.kept, last.ID); (len(alone) == 1) != want {
+				t.Errorf("aloneCandidates of block %s alone of %+v keeps %d candidates, want it kept: %t", last.ID, test.blocks, len(alone), want)
+			}
+		})
 	}
 }
 

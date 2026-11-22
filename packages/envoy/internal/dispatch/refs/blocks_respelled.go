@@ -19,44 +19,52 @@ type respellCandidate struct {
 	storedAt           int
 }
 
-// topLevelCandidates keeps, of candidates, each block that no block of blocks encloses: a
-// top-level block of the version, since only a top-level block is a candidate. A block inside a
-// list item, a quote or a footnote definition starts after its container's marker, and its later
-// lines carry the container's prefix, which its text read alone loses (pmdoc.FragmentReadsAs); a
-// block inside a typed block is not top-level either, so each such block takes the version whose
-// sum moved. blocks are the version's rendered blocks in document order, each parent before its
-// children, and candidates are in that order too. The renderer writes a blank line between two
-// top-level blocks, so a block that starts at or before the end of the last top-level block before
-// it is inside that block: an empty block at the end of its container starts where the container
-// ends. It filters candidates in place.
-func topLevelCandidates(blocks []model.ArtifactBlock, candidates []respellCandidate) []respellCandidate {
+// aloneCandidates keeps, of candidates, each block whose text stands in the version as it reads
+// alone: a top-level block, which no block of blocks encloses, and a block that only typed blocks
+// enclose (pmdoc.IsTypedBlock). A typed block writes the blocks it holds from a line's start with
+// no prefix, so a block that only typed blocks enclose, however many, starts a line and carries no
+// prefix on its later lines. A block inside a list item, a quote or a footnote definition starts
+// after its container's marker, and its later lines carry the container's prefix, which its text
+// read alone loses (pmdoc.FragmentReadsAs), so it takes the version whose sum moved; so does every
+// block such a container encloses, however deep, a typed block inside it included, since the
+// container's prefix stands on that block's lines too.
+//
+// blocks are the version's rendered blocks in document order, each parent before its children,
+// and candidates are in that order too. A block encloses the blocks that start after it and at or
+// before its end: an empty block at the end of its container starts where the container ends. So
+// a block that is not typed encloses a candidate exactly when it starts before the candidate and
+// ends at or after the candidate's start, and one pass over blocks keeps the furthest end of the
+// blocks not typed that start before each candidate: the candidate is kept when it starts after
+// that end. It filters candidates in place.
+func aloneCandidates(blocks []model.ArtifactBlock, candidates []respellCandidate) []respellCandidate {
 	kept := candidates[:0]
-	end, next := -1, 0
+	untypedEnd, next := -1, 0
 	for _, candidate := range candidates {
 		for ; next < len(blocks) && blocks[next].From < candidate.block.From; next++ {
-			if blocks[next].From > end {
-				end = blocks[next].To
+			if blocks[next].To > untypedEnd && !pmdoc.IsTypedBlock(blocks[next].Type) {
+				untypedEnd = blocks[next].To
 			}
 		}
-		if candidate.block.From > end {
+		if candidate.block.From > untypedEnd {
 			kept = append(kept, candidate)
 		}
 	}
 	return kept
 }
 
-// respelledBlocks keeps, of candidates, which are top-level blocks of the version
-// (topLevelCandidates), each block that holds the same tree as the text recorded for it at its
-// storedAt (document_block_texts), spelled by another renderer version: that text stood in no
-// container with a prefix there, and reads as its text now, both alone (pmdoc.FragmentReadsAs). A
-// block that stood inside a list item, a quote or a footnote definition at storedAt was recorded
-// after that container's marker, with its prefix on each later line, which its text read alone
-// loses. So a block is kept only when its recorded text occurs in storedAt's stored markdown and
-// every occurrence starts a line (startsLinesOnly): such a nested block starts after its
-// container's prefix or marker (`  `, `> `, `- `, `[^f]: `). A block that stood inside a top-level
-// typed block starts a line and passes: a typed block writes its blocks with no prefix, so its
-// recorded text reads alone as it stood there. A text that does not occur there, and a version
-// that holds no markdown, keep nothing.
+// respelledBlocks keeps, of candidates, which are blocks of the version that no block encloses or
+// only typed blocks enclose (aloneCandidates), each block that holds the same tree as the text
+// recorded for it at its storedAt (document_block_texts), spelled by another renderer version:
+// that text stood in no container with a prefix there, and reads as its text now, both alone
+// (pmdoc.FragmentReadsAs). A block that stood inside a list item, a quote or a footnote definition
+// at storedAt was recorded after that container's marker, with its prefix on each later line,
+// which its text read alone loses. So a block is kept only when its recorded text occurs in
+// storedAt's stored markdown and every occurrence starts a line (startsLinesOnly): such a nested
+// block starts after its container's prefix or marker (`  `, `> `, `- `, `[^f]: `), and so does a
+// block inside a typed block such a container holds. A block that stood at the top level or
+// inside typed blocks alone starts a line and passes: a typed block writes its blocks with no
+// prefix, so its recorded text reads alone as it stood there. A text that does not occur there,
+// and a version that holds no markdown, keep nothing.
 //
 // It returns the candidates it keeps, and writes nothing: each such block's row takes the new
 // text's sha256 and excerpt and keeps its changed version and time in the write phase

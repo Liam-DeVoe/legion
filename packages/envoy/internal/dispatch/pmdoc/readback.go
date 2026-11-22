@@ -124,7 +124,8 @@ func readsAsRendering(stored, rendering string) bool {
 // cut away from.
 //
 // It does not give a fragment back the container it was cut from, and a caller reads alone only a
-// fragment that stands in none: a top-level block, or a decision no typed block holds. A block
+// fragment that stands in no container with a prefix: a block or a decision at the top level, or
+// one that typed blocks alone hold, since a typed block writes its blocks with no prefix. A block
 // inside a list item, a quote or a footnote definition starts after its container's marker, and
 // its later lines carry the container's prefix, which its text read alone loses, so two trees can
 // read as one. The inner list of `- a\n  - b\n  - c` is `- b\n  - c`: c stands beside b, but the
