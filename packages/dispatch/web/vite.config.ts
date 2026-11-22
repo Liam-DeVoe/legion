@@ -143,6 +143,9 @@ export default defineConfig({
       "@legion/contracts/dispatch-api-constants": fileURLToPath(
         new URL("../../contracts/src/dispatch-api-constants.ts", import.meta.url)
       ),
+      "@legion/contracts/dispatch-api-graph": fileURLToPath(
+        new URL("../../contracts/src/dispatch-api-graph.ts", import.meta.url)
+      ),
       "@legion/contracts/dispatch-block-ref": fileURLToPath(
         new URL("../../contracts/src/dispatch-block-ref.ts", import.meta.url)
       ),
