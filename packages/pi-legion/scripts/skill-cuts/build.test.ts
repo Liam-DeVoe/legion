@@ -812,6 +812,9 @@ if (query.includes("omp_session_files_parts pt") && place) {
   process.stderr.write("psql: error: not a query of the runner\\n");
   process.exit(3);
 }
+// A row that needs a pull to take a while (two runs of one --out) sets this delay.
+const delay = Number(process.env.SKILL_CUTS_STANDIN_PULL_DELAY_MS ?? 0);
+if (kind === "pull" && delay > 0) await Bun.sleep(delay);
 appendFileSync(${JSON.stringify(logFile)}, JSON.stringify({ db, kind, rows: rows.length, after, first: rows[0] && [rows[0].o, rows[0].k], limit64: kind !== "pull" || query.includes("LIMIT 64") }) + "\\n");
 process.stdout.write(" value \\n-------\\n" + rows.map((row) => " " + JSON.stringify(row) + "\\n").join("") + "(" + rows.length + (rows.length === 1 ? " row" : " rows") + ")\\n\\n");
 `;
@@ -2594,6 +2597,11 @@ describe("build-cases over every made-up session", () => {
     expect(evidence["session repository acme/proj"]).toBe(
       "the session's working directory /legion/workspaces/acme/proj/K-1/ is a Legion workspace of it: /legion/workspaces/<owner>/<name>/"
     );
+    // context.ts reads the session's absolute working directory from this item's source by this
+    // phrase: the two must not drift.
+    expect(
+      /\bworking directory (\/[^\s,;]+)/.exec(evidence["session repository acme/proj"] ?? "")?.[1]
+    ).toBe("/legion/workspaces/acme/proj/K-1/");
     expect(evidence["skill kappa (acme/proj .claude/skills/kappa)"]).toBe(
       `project skill of acme/proj at ${SHA}: Oh My Pi lists each <name>/SKILL.md under .claude/skills/ of the working directory and of each parent up to the repository's root, the nearest first (discovery/claude.ts, loadSkills, lines 205-224)`
     );
@@ -6103,6 +6111,52 @@ test("a context session no subagent of which records a skill listing is read at 
   expect(measure.kind).toBe("not measurable");
   expect(measure.why).toEndWith(asked);
 }, 120_000);
+
+// Catches: a second build-cases of one --out emptying the spool under a run still pulling into it
+// (the first run's session file vanishes mid-read: ENOENT), and a lock left by a run that ended
+// blocking the next. The first run builds two sessions at --concurrency 2 with each pull delayed,
+// so it is pulling when the second starts: a whole build, hence the explicit timeout.
+test("a second build-cases of an --out another run holds is refused (exit 2), naming that run, and the first run's sessions keep their spool files; a lock whose process runs no more is taken over, and said so", async () => {
+  const out = path.join(scratch, "spool-lock", "cases.jsonl");
+  const sessions = sessionsFile("spool-lock.jsonl", ["good", "legion"]);
+  const args = buildArgs(sessions, out, "2", "--concurrency", "2");
+  const lock = `${out}.spool/run.lock`;
+  process.env.SKILL_CUTS_STANDIN_PULL_DELAY_MS = "150";
+  try {
+    const first: string[] = [];
+    const running = main(args, io(first));
+    // The run makes its spool directory and its lock in one step, before its first pull.
+    while (!existsSync(`${out}.spool`)) await Bun.sleep(5);
+    const second: string[] = [];
+    expect(await main(args, io(second))).toBe(EXIT.refused);
+    expect(second.join("\n")).toContain(
+      `${out}.spool is in use: the run of process ${process.pid} holds its lock ${lock}`
+    );
+    expect({ code: await running, said: first.join("") }).toEqual({
+      code: EXIT.ok,
+      said: expect.not.stringContaining("ENOENT"),
+    });
+    // No session lost its spool file: each gave its case.
+    expect(summaryOf(out).sessions.map((each) => each.outcome)).toEqual([
+      expect.stringMatching(/^case /),
+      expect.stringMatching(/^case /),
+    ]);
+    expect(existsSync(`${out}.spool`)).toBe(false);
+  } finally {
+    delete process.env.SKILL_CUTS_STANDIN_PULL_DELAY_MS;
+  }
+  // A lock of a process that runs no more (a killed build): the next run takes it over. This run
+  // goes on from the first's summary, so it pulls nothing.
+  const dead = Bun.spawnSync(["true"]).pid;
+  mkdirSync(`${out}.spool`, { recursive: true });
+  writeFileSync(lock, `${dead} a-killed-run\n`);
+  const lines: string[] = [];
+  expect(await main(args, io(lines))).toBe(EXIT.ok);
+  expect(lines).toContain(
+    `the lock ${lock} ("${dead} a-killed-run") is of process ${dead}, which runs no more: this run takes it over`
+  );
+  expect(existsSync(`${out}.spool`)).toBe(false);
+}, 60_000);
 
 describe("GithubReads", () => {
   const COMMIT = "1111111111111111111111111111111111111111";

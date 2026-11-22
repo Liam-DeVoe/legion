@@ -240,3 +240,52 @@ export class GhRetries {
     return record;
   }
 }
+
+/** Runs at most `limit` tasks at once: each task past the limit waits until one ends, the first to
+ *  wait starting first. */
+export class Limiter {
+  #running = 0;
+  readonly #waiting: (() => void)[] = [];
+
+  constructor(readonly limit: number) {
+    if (!Number.isInteger(limit) || limit < 1) {
+      throw new Error(`a limit of ${limit} tasks at once is not a whole number of 1 or more`);
+    }
+  }
+
+  /** `task`'s result, once a place is free and the task has run. */
+  async run<T>(task: () => Promise<T>): Promise<T> {
+    if (this.#running < this.limit) this.#running += 1;
+    else await new Promise<void>((resolve) => this.#waiting.push(resolve));
+    try {
+      return await task();
+    } finally {
+      // The place passes to the first task that waits, or is freed.
+      const next = this.#waiting.shift();
+      if (next === undefined) this.#running -= 1;
+      else next();
+    }
+  }
+}
+
+/** The environment variable that bounds the gh processes the runner has at once. */
+export const GH_CONCURRENCY_ENV = "SKILL_CUTS_GH_CONCURRENCY";
+/** The gh processes the runner has at once when GH_CONCURRENCY_ENV is unset: a pod's gh is a
+ *  wrapper of about 145 MiB a call (a binary and a leak check), so the bound keeps the runner's
+ *  processes near 600 MiB however many reads one profile starts. */
+export const GH_CONCURRENCY = 4;
+let ghLimit: Limiter | undefined;
+
+/** The one bound on concurrent gh processes of the whole runner: every gh spawn runs inside
+ *  `ghLimiter().run(...)`. Its limit is GH_CONCURRENCY_ENV's value (a whole number of 1 or more),
+ *  else GH_CONCURRENCY; throws on another value. */
+export function ghLimiter(): Limiter {
+  if (ghLimit === undefined) {
+    const given = process.env[GH_CONCURRENCY_ENV];
+    if (given !== undefined && !/^[1-9]\d*$/.test(given)) {
+      throw new Error(`${GH_CONCURRENCY_ENV}=${given} is not a whole number of 1 or more`);
+    }
+    ghLimit = new Limiter(given === undefined ? GH_CONCURRENCY : Number(given));
+  }
+  return ghLimit;
+}

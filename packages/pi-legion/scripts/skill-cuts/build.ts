@@ -427,7 +427,7 @@
  * Exit status: 0 written; 1 failed; 2 refused before any store read or model call; 3 stopped at
  * `--budget-usd`, with the cases built so far written; 4 stopped by the stop rule, the same.
  */
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   appendFileSync,
   closeSync,
@@ -757,14 +757,79 @@ export interface BuildIo {
   readonly npm?: NpmTarball;
 }
 
-/** The directory a build pulls transcripts into, `<out>.spool`, made empty: one file for each
- *  session open, removed once the session is decided, and the directory once the build ends. A
- *  build that is killed leaves it for the next run of the same `--out`, which empties it. */
-function spoolDir(out: string): string {
+/** The file in a spool directory (`spoolDir`) that says which run holds it: `<pid> <token>`. */
+const SPOOL_LOCK = "run.lock";
+/** The spool locks each `main` call holds (by its io), `<lock file>\0<its text>`, which `main`
+ *  gives up as the call ends. */
+const spoolLocks = new WeakMap<BuildIo, string[]>();
+
+/** Whether the process `pid` runs: a signal 0 reaches it, or the system refuses to send one. */
+function processLives(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return isObject(error) && error.code === "EPERM";
+  }
+}
+
+/**
+ * The directory a build pulls transcripts into, `<out>.spool`, held by this run and made empty: one
+ * file for each session open, removed once the session is decided, and the directory once the
+ * build ends. The run holds it by its lock file (SPOOL_LOCK, made with O_EXCL, holding its pid), so
+ * no two runs of one `--out` share a spool, and none empties or removes the files of another:
+ * while the lock's process runs, the directory is refused (exit 2), naming it. A lock whose process
+ * runs no more (a build that was killed) is taken over, and `io.err` says so. `main` gives the lock
+ * up as the command ends, with the directory when nothing else is left in it.
+ */
+function spoolDir(out: string, io: BuildIo): string {
   const dir = `${out}.spool`;
-  rmSync(dir, { recursive: true, force: true });
   mkdirSync(dir, { recursive: true });
+  const lock = path.join(dir, SPOOL_LOCK);
+  const text = `${process.pid} ${randomUUID()}`;
+  for (let tries = 0; ; tries += 1) {
+    try {
+      const fd = openSync(lock, "wx");
+      try {
+        writeSync(fd, `${text}\n`);
+      } finally {
+        closeSync(fd);
+      }
+      break;
+    } catch (error) {
+      if (!isObject(error) || error.code !== "EEXIST" || tries > 0) throw error;
+    }
+    const held = readFileSync(lock, "utf8").trim();
+    const pid = Number(held.split(" ")[0]);
+    if (Number.isInteger(pid) && pid > 0 && processLives(pid)) {
+      throw new Refused(
+        `${dir} is in use: the run of process ${pid} holds its lock ${lock} ("${held}"), so this run would empty the spool under it; wait for that run to end, or give another --out`
+      );
+    }
+    io.err(
+      `the lock ${lock} ("${held}") is of process ${Number.isInteger(pid) ? pid : "unknown"}, which runs no more: this run takes it over`
+    );
+    rmSync(lock, { force: true });
+  }
+  for (const entry of readdirSync(dir)) {
+    if (entry !== SPOOL_LOCK) rmSync(path.join(dir, entry), { recursive: true, force: true });
+  }
+  spoolLocks.set(io, [...(spoolLocks.get(io) ?? []), `${lock}\0${text}`]);
   return dir;
+}
+
+/** Gives up each spool lock the `main` call of `io` holds (`spoolDir`): its lock file, when it is
+ *  still this run's, and its directory, when nothing else is left in it. */
+function releaseSpools(io: BuildIo): void {
+  for (const held of spoolLocks.get(io) ?? []) {
+    const [lock = "", text = ""] = held.split("\0");
+    if (existsSync(lock) && readFileSync(lock, "utf8").trim() === text)
+      rmSync(lock, { force: true });
+    const dir = path.dirname(lock);
+    if (existsSync(dir) && readdirSync(dir).length === 0)
+      rmSync(dir, { recursive: true, force: true });
+  }
+  spoolLocks.delete(io);
 }
 
 /** Refuses a build's `--out` inside a git or jj checkout (production-dispatch.ts's
@@ -5885,6 +5950,9 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
       )
     ),
   };
+  // The spool, held before anything at --out is read or written: a second run of this --out is
+  // refused while this one runs.
+  const spools = spoolDir(given.out, io);
   const prior = priorBuild(given.out, summaryFile, inputs);
   const decided: ReadonlyMap<string, DecidedSession> = prior?.decided ?? new Map();
   const priorSpend = prior?.spend ?? NO_SPEND;
@@ -5962,7 +6030,6 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
   let decidedSessions = 0;
   let stopped: string | undefined;
   let ruleStop: RuleStop | undefined;
-  const spools = spoolDir(given.out);
   const write = () => {
     const drops: Partial<Record<DropReason, number>> = {};
     let pulls = 0;
@@ -6126,98 +6193,105 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
       sessions.push(each.record);
     }
   };
-  for (const [position, candidate] of order.entries()) {
-    if (casesBuilt >= max) break;
-    const kept = decided.get(keyOf(candidate));
-    if (kept !== undefined) {
-      sessions.push(kept.record);
-      decidedSessions += 1;
-      if (kept.caseRecord !== undefined) {
-        caseRecords.push(kept.caseRecord);
-        casesBuilt += 1;
+  // A throw from the loop (a write that fails, an io that ends the run) closes and awaits every
+  // open session first, so none goes on pulling into the spool after the build has given it up.
+  try {
+    for (const [position, candidate] of order.entries()) {
+      if (casesBuilt >= max) break;
+      const kept = decided.get(keyOf(candidate));
+      if (kept !== undefined) {
+        sessions.push(kept.record);
+        decidedSessions += 1;
+        if (kept.caseRecord !== undefined) {
+          caseRecords.push(kept.caseRecord);
+          casesBuilt += 1;
+        }
+        continue;
       }
-      continue;
-    }
-    // The stop rule, before the build reads on: after each session decided, and, in a run that
-    // goes on, on those the earlier runs decided (`stopAtOnce`).
-    ruleStop =
-      stopAtOnce ??
-      stopBy(
-        stopRule,
-        {
-          sessions: decidedSessions,
-          cases: casesBuilt,
-          spentUsd: addSpend(priorSpend, run.gateway.spend()).usd,
-        },
-        max
-      );
-    if (ruleStop !== undefined) break;
-    fill();
-    const session = open.get(position);
-    if (session === undefined) throw new Error(`session ${position + 1} was not opened`);
-    const worked = await session.worked;
-    open.delete(position);
-    const { record } = session;
-    const store = record.store;
-    if ("error" in worked || "notNeeded" in worked) {
-      await closeOpen("not-needed");
-      rmSync(spools, { recursive: true, force: true });
-      // The session whose turn it is was never told to stop.
-      throw "error" in worked ? worked.error : new Error(`session ${position + 1} was stopped`);
-    }
-    if ("budget" in worked) {
-      const spent = addSpend(priorSpend, run.gateway.spend()).usd;
-      stopped = `the readers' spend reached --budget-usd ${budget}: $${spent.toFixed(4)} at list price, so no new reader call starts`;
-      record.outcome = "stopped before its case was built: the budget is spent";
+      // The stop rule, before the build reads on: after each session decided, and, in a run that
+      // goes on, on those the earlier runs decided (`stopAtOnce`).
+      ruleStop =
+        stopAtOnce ??
+        stopBy(
+          stopRule,
+          {
+            sessions: decidedSessions,
+            cases: casesBuilt,
+            spentUsd: addSpend(priorSpend, run.gateway.spend()).usd,
+          },
+          max
+        );
+      if (ruleStop !== undefined) break;
+      fill();
+      const session = open.get(position);
+      if (session === undefined) throw new Error(`session ${position + 1} was not opened`);
+      const worked = await session.worked;
+      open.delete(position);
+      const { record } = session;
+      const store = record.store;
+      if ("error" in worked || "notNeeded" in worked) {
+        await closeOpen("not-needed");
+        rmSync(spools, { recursive: true, force: true });
+        // The session whose turn it is was never told to stop.
+        throw "error" in worked ? worked.error : new Error(`session ${position + 1} was stopped`);
+      }
+      if ("budget" in worked) {
+        const spent = addSpend(priorSpend, run.gateway.spend()).usd;
+        stopped = `the readers' spend reached --budget-usd ${budget}: $${spent.toFixed(4)} at list price, so no new reader call starts`;
+        record.outcome = "stopped before its case was built: the budget is spent";
+        sessions.push(record);
+        await closeOpen(record.outcome);
+        write();
+        break;
+      }
+      const { outcome } = worked;
       sessions.push(record);
-      await closeOpen(record.outcome);
+      decidedSessions += 1;
+      if ("drop" in outcome) {
+        record.outcome = "dropped";
+        record.reason = outcome.drop;
+        record.detail = outcome.detail;
+        io.out(
+          `build-cases: ${position + 1}/${order.length} ${store} ${candidate.hash}: dropped (${outcome.drop}) ${outcome.detail}\n`
+        );
+      } else {
+        const built = outcome.case;
+        record.outcome = `case ${built.id}`;
+        // A case line is appended whole before the summary records it; a run that goes on from a
+        // kill between the two leaves out a line its summary does not record.
+        appendFileSync(given.out, `${JSON.stringify(built)}\n`);
+        casesBuilt += 1;
+        caseRecords.push({
+          id: built.id,
+          pathHash: built.source.pathHash,
+          store: built.source.store,
+          model: built.model,
+          thinking: built.thinking,
+          context: built.context,
+          step: outcome.step,
+          recordedPrompt: built.profile.systemPrompt !== undefined,
+          listing: measureIn(built.evidence) ?? null,
+          windows: record.windows,
+          messages: built.messages.length,
+          skillReads: built.skillReads,
+          baseFile: built.baseFile,
+          line: built.line,
+          secretsRemoved: built.secretsRemoved,
+          profile: {
+            skills: built.profile.skills.length,
+            plugins: built.profile.plugins.map((plugin) => plugin.name),
+            contextFiles: built.profile.contextFiles.map((file) => `${file.repo} ${file.path}`),
+          },
+        });
+        io.out(
+          `build-cases: ${position + 1}/${order.length} ${store} ${candidate.hash}: case ${built.id} (step ${outcome.step}, ${built.model}, ${built.context})\n`
+        );
+      }
       write();
-      break;
     }
-    const { outcome } = worked;
-    sessions.push(record);
-    decidedSessions += 1;
-    if ("drop" in outcome) {
-      record.outcome = "dropped";
-      record.reason = outcome.drop;
-      record.detail = outcome.detail;
-      io.out(
-        `build-cases: ${position + 1}/${order.length} ${store} ${candidate.hash}: dropped (${outcome.drop}) ${outcome.detail}\n`
-      );
-    } else {
-      const built = outcome.case;
-      record.outcome = `case ${built.id}`;
-      // A case line is appended whole before the summary records it; a run that goes on from a
-      // kill between the two leaves out a line its summary does not record.
-      appendFileSync(given.out, `${JSON.stringify(built)}\n`);
-      casesBuilt += 1;
-      caseRecords.push({
-        id: built.id,
-        pathHash: built.source.pathHash,
-        store: built.source.store,
-        model: built.model,
-        thinking: built.thinking,
-        context: built.context,
-        step: outcome.step,
-        recordedPrompt: built.profile.systemPrompt !== undefined,
-        listing: measureIn(built.evidence) ?? null,
-        windows: record.windows,
-        messages: built.messages.length,
-        skillReads: built.skillReads,
-        baseFile: built.baseFile,
-        line: built.line,
-        secretsRemoved: built.secretsRemoved,
-        profile: {
-          skills: built.profile.skills.length,
-          plugins: built.profile.plugins.map((plugin) => plugin.name),
-          contextFiles: built.profile.contextFiles.map((file) => `${file.repo} ${file.path}`),
-        },
-      });
-      io.out(
-        `build-cases: ${position + 1}/${order.length} ${store} ${candidate.hash}: case ${built.id} (step ${outcome.step}, ${built.model}, ${built.context})\n`
-      );
-    }
-    write();
+  } catch (error) {
+    await closeOpen("not-needed");
+    throw error;
   }
   const left = open.size > 0;
   if (left) await closeOpen("not-needed");
@@ -7317,7 +7391,7 @@ async function reprofileTasks(
     placer: placing,
   };
 
-  const spools = spoolDir(dir);
+  const spools = spoolDir(dir, io);
   const spool = path.join(spools, "profile.jsonl");
   let sessionQueries = 0;
   let context: ContextProfile | undefined;
@@ -7630,7 +7704,7 @@ async function buildTasks(argv: readonly string[], io: BuildIo): Promise<number>
   writeWhole(foundFile, found.map((row) => `${JSON.stringify(row)}\n`).join(""));
   // The profile written tasks take, rebuilt before any reader call: a session that gives none
   // stops the build here. With --model or --profiles-out each candidate session is pulled too.
-  const spools = plan === undefined && model === undefined ? undefined : spoolDir(given.out);
+  const spools = plan === undefined && model === undefined ? undefined : spoolDir(given.out, io);
   const spool = spools === undefined ? "" : path.join(spools, "profile.jsonl");
   const context = plan === undefined ? undefined : await contextProfile(plan, spool, skill.name);
   const gateway = readerGateway(config, given["key-file"]);
@@ -8047,7 +8121,7 @@ async function buildControlTasks(
 
   // Each session is pulled into one spool file, read from there, and the file is pulled over by
   // the next session.
-  const spools = spoolDir(given.out);
+  const spools = spoolDir(given.out, io);
   const spool = path.join(spools, "session.jsonl");
   const gateway = readerGateway(config, given["key-file"]);
   const spend = () => addSpend(priorSpend, gateway.spend());
@@ -8347,6 +8421,8 @@ export async function main(argv: readonly string[], io: BuildIo): Promise<number
     }
     io.err(`${command}: ${messageFor(error)}`);
     return EXIT.failed;
+  } finally {
+    releaseSpools(io);
   }
 }
 

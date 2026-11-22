@@ -204,6 +204,7 @@ import { mapLimit } from "../skill-scenarios/production-dispatch";
 import {
   firstLine,
   GhRetries,
+  ghLimiter,
   MAX_RATE_RETRIES,
   RATE_LIMITED,
   schemaFaults,
@@ -225,16 +226,25 @@ export interface GhResult {
 /** Runs gh with `args`; the test injects a stand-in. */
 export type Gh = (args: readonly string[]) => Promise<GhResult>;
 
-/** The pod's own gh, with the environment this process has. */
-export const spawnGh: Gh = async (args) => {
-  const child = Bun.spawn(["gh", ...args], { stdin: "ignore", stdout: "pipe", stderr: "pipe" });
-  const [stdout, stderr, code] = await Promise.all([
-    new Response(child.stdout).text(),
-    new Response(child.stderr).text(),
-    child.exited,
-  ]);
-  return { code, stdout, stderr };
-};
+/** The pod's own gh, with the environment this process has, at most `ghLimiter().limit` at once
+ *  across the runner (common.ts). */
+export const spawnGh: Gh = (args) =>
+  ghLimiter().run(async () => {
+    // `env` given, so gh is found on the PATH this process has now (Bun.spawn's own default reads
+    // the PATH of the process's start).
+    const child = Bun.spawn(["gh", ...args], {
+      env: process.env,
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [stdout, stderr, code] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited,
+    ]);
+    return { code, stdout, stderr };
+  });
 
 /** What `main` uses of the world. */
 export interface CopiesIo {
