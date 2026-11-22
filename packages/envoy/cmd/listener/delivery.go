@@ -128,9 +128,10 @@ type listenerDeliveryHandlerConfig struct {
 	// loop of the lease holder alone (holderLoops), and on no other: the claim route's passes run
 	// on whichever pod serves the claim, with no term to end them.
 	takeoverTerm func(context.Context) (context.Context, context.CancelFunc, bool)
-	// keepPublish is the stored publish a keep makes (keepRoleMessage): main.go sets it to
+	// keepPublish is the stored publish a keep (keepRoleMessage) and a takeover's copy
+	// (keepTakenRoleFrame) make onto a role's kept lane: main.go sets it to
 	// client.PublishStoredAck, and so does every test that builds a config, while a test that
-	// answers a keep's publish itself replaces it on its copy.
+	// answers that publish itself replaces it on its copy.
 	keepPublish keptRolePublish
 	// publishDeadLetter stores a dead letter, item, on subject - the agent subject of the session
 	// whose kept copy a walk dropped - under the Nats-Msg-Id msgID, and returns the stream's
