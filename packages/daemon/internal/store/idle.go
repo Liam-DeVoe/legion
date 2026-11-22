@@ -732,6 +732,25 @@ func readIdleView(ctx context.Context, tx pgx.Tx, project, issue string) (pods.I
 	if err := claims.Err(); err != nil {
 		return pods.IdleView{}, fmt.Errorf("read the claims of %s for its idle view: %w", issue, err)
 	}
+	workers, err := tx.Query(ctx, `select role, claim from phases where issue = $1 and step_task <> '' and claim <> ''`, issue)
+	if err != nil {
+		return pods.IdleView{}, fmt.Errorf("read the step workers of %s for its idle view: %w", issue, err)
+	}
+	for workers.Next() {
+		var role, token string
+		if err := workers.Scan(&role, &token); err != nil {
+			workers.Close()
+			return pods.IdleView{}, fmt.Errorf("read the step workers of %s for its idle view: %w", issue, err)
+		}
+		if view.Workers == nil {
+			view.Workers = map[claim.Role]claim.Token{}
+		}
+		view.Workers[claim.Role(role)] = claim.Token(token)
+	}
+	workers.Close()
+	if err := workers.Err(); err != nil {
+		return pods.IdleView{}, fmt.Errorf("read the step workers of %s for its idle view: %w", issue, err)
+	}
 
 	if err := tx.QueryRow(ctx, fmt.Sprintf(`select exists (
 		select 1 from outbox where issue = $1 and kind = any($2) and not %s)`, fmt.Sprintf(startWaitsForPodRow, "$3")),

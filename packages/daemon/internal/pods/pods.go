@@ -160,6 +160,13 @@ type IdleView struct {
 	LingerUntil *time.Time
 	Root        IdleRoot
 	Claims      []IdleClaim
+	// Workers is the claim each role's phases row names on the step it runs (record.WorkerClaim),
+	// for the roles whose row runs one: two claims of one issue can hold one role — the agent of a
+	// key on a step of another role, beside that role's own claim of an earlier version of the
+	// plan — and only the one the row names works the role's phase (workflow's idlePhaseOpen). A
+	// role with no entry here works its phase in each claim of its role, as before plans named a
+	// claim.
+	Workers map[claim.Role]claim.Token
 	// Waiting is whether a task, notice, message or start of the issue waits for delivery to a
 	// role of its pod. The rule reads only whether there is one, so the store reads only that. A
 	// start that waits because the pod lacks the slot of its claim or the role of its step

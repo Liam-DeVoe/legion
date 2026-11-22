@@ -80,3 +80,29 @@ func TestTheIdleViewAndTheIssueReadOneRunningRole(t *testing.T) {
 		}
 	}
 }
+
+// The idle view names the claim each role's phases row names on the step it runs
+// (pods.IdleView.Workers), and no claim for a row that runs no step or names none: here the
+// tester's row names key a's agent on step 2, and the implementer's names its claim with no step.
+func TestTheIdleViewNamesEachStepsWorker(t *testing.T) {
+	st := migratedStore(t)
+	ctx := context.Background()
+	records := record.NewStore()
+	const keyed = claim.Token("legion-legion-legion-208-implementer")
+	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+		if err := records.PutIssue(ctx, tx, record.Issue{Key: "LEGION-208", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Testing,
+			Generation: 1, Status: "testing", Rank: "A", LastDispatchSeq: 1, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"}); err != nil {
+			return err
+		}
+		if err := records.PutPhase(ctx, tx, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleTester, Claim: keyed, StepTask: "a", StepPlace: 2, Entry: 1}); err != nil {
+			return err
+		}
+		return records.PutPhase(ctx, tx, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: keyed})
+	}); err != nil {
+		t.Fatalf("seed the issue and its rows: %v", err)
+	}
+	view := idleViewOf(t, st, "LEGION-208")
+	if want := map[claim.Role]claim.Token{claim.RoleTester: keyed}; !view.Found || len(view.Workers) != 1 || view.Workers[claim.RoleTester] != keyed {
+		t.Fatalf("the idle view names the step workers %v, want %v", view.Workers, want)
+	}
+}
