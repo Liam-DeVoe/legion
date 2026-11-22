@@ -6353,19 +6353,45 @@ describe("build-cases --reprofile of a Legion pane whose project file names its 
 
 // Catches: a SKILL.md read GitHub refused for its primary rate limit ("API rate limit exceeded
 // for installation ID ...", no transient reason) left out of the profile as a fault, in silence:
-// one rebuild went from 40 skills to 19 while the limit was spent.
+// one rebuild went from 40 skills to 19 while the limit was spent. And a wait until the reset
+// `gh api rate_limit` gives, which names no owner, so the pod's gh answers it from another
+// installation than the one that refused the read: where that reset comes sooner, every wait ends
+// before the read can be sent, and the profile fails.
 describe("build-cases --reprofile of a case whose SKILL.md reads GitHub refuses for its rate limit", () => {
   const PRIMARY = "gh: API rate limit exceeded for installation ID 12345. (HTTP 403)";
   /** The blob of beta's SKILL.md, which the good case's profile installs from acme/skills. */
   const BETA_BLOB = blobId(REPOSITORIES["acme/skills"]?.["skills/beta/SKILL.md"] ?? "");
+  type Resets = { readonly core: number; readonly graphql: number };
+  /** The answer of acme's installation to a read of its reset (`gh api -i`), as GitHub gives it:
+   *  the reset `resets` gives its limit (seconds since the epoch), in the X-RateLimit-Reset
+   *  header and, for a GraphQL query, in its `rateLimit.resetAt`. A read routed by another owner
+   *  is not found. */
+  const resetAnswer = (args: readonly string[], resets: Resets): GhResult => {
+    const graphql = args[2] === "graphql";
+    const acme = graphql
+      ? args.includes("owner=acme") && args.includes("name=skills")
+      : args.at(-1) === "repos/acme/skills";
+    if (!acme) return { code: 1, stdout: "", stderr: "gh: Not Found (HTTP 404)\n" };
+    const reset = graphql ? resets.graphql : resets.core;
+    const body = graphql
+      ? { data: { rateLimit: { resetAt: new Date(reset * 1000).toISOString() } } }
+      : {};
+    return {
+      code: 0,
+      stdout: `HTTP/2.0 200 OK\r\nX-Ratelimit-Reset: ${reset}\r\n\r\n${JSON.stringify(body)}`,
+      stderr: "",
+    };
+  };
   /** The good case built again: each gh call that reads beta's SKILL.md (a GraphQL batch that
    *  holds its blob, or the blob alone) refused for the primary rate limit while `refusing` says
-   *  so of the waits made so far, `gh api rate_limit` answering the resets `resets` (seconds since
-   *  the epoch), and each wait kept in `waits`. */
+   *  so of the waits made so far; a read of acme's reset answering `resets` (`resetAnswer`), and
+   *  `gh api rate_limit`, which names no owner, answering the sooner resets `elsewhere` of another
+   *  installation; each wait kept in `waits`, and each read of a reset in `resetReads`. */
   const reprofiled = async (
     name: string,
     refusing: (waits: readonly number[]) => boolean,
-    resets: { readonly core: number; readonly graphql: number }
+    resets: Resets,
+    elsewhere: Resets
   ) => {
     const good = (await profileCases()).find(
       (c) => c.source.pathHash === pathHash(sessionPath("good"))
@@ -6377,9 +6403,10 @@ describe("build-cases --reprofile of a case whose SKILL.md reads GitHub refuses 
     const fresh = path.join(dir, "reprofiled.jsonl");
     const lines: string[] = [];
     const waits: number[] = [];
+    const resetReads: string[][] = [];
     const standin = io(lines);
     const limits = JSON.stringify({
-      resources: { core: { reset: resets.core }, graphql: { reset: resets.graphql } },
+      resources: { core: { reset: elsewhere.core }, graphql: { reset: elsewhere.graphql } },
     });
     const code = await main(
       [
@@ -6392,6 +6419,11 @@ describe("build-cases --reprofile of a case whose SKILL.md reads GitHub refuses 
           if (args.includes("rate_limit")) {
             ghCalls.push([...args]);
             return { code: 0, stdout: limits, stderr: "" };
+          }
+          if (args[1] === "-i") {
+            ghCalls.push([...args]);
+            resetReads.push([...args]);
+            return resetAnswer(args, resets);
           }
           if (refusing(waits) && args.some((arg) => arg.includes(BETA_BLOB))) {
             ghCalls.push([...args]);
@@ -6407,6 +6439,7 @@ describe("build-cases --reprofile of a case whose SKILL.md reads GitHub refuses 
       code,
       lines,
       waits,
+      resetReads,
       cases: existsSync(fresh) ? loadCases(fresh, old) : [],
       summary: JSON.parse(readFileSync(`${fresh}.summary.json`, "utf8")) as {
         casesWritten: number;
@@ -6422,10 +6455,13 @@ describe("build-cases --reprofile of a case whose SKILL.md reads GitHub refuses 
   ];
   const now = () => Math.floor(Date.now() / 1000);
 
-  test("a SKILL.md batch refused until the reset `gh api rate_limit` gives for GraphQL waits until then, is sent again, and the case is written with the skill in its profile and no fault of its SKILL.md in its evidence", async () => {
+  test("a SKILL.md batch refused until the reset of acme's GraphQL limit, read with a rateLimit query routed by acme's owner and name fields, waits until then and not until the sooner reset `gh api rate_limit` gives, is sent again, and the case is written with the skill in its profile and no fault of its SKILL.md in its evidence", async () => {
     const resets = { core: now() + 600, graphql: now() + 90 };
     const before = Date.now();
-    const built = await reprofiled("once", (waits) => waits.length === 0, resets);
+    const built = await reprofiled("once", (waits) => waits.length === 0, resets, {
+      core: now() + 60,
+      graphql: now() + 30,
+    });
     const after = Date.now();
     expect(built.code).toBe(EXIT.ok);
     expect(built.cases.map((c) => c.id)).toEqual([built.good.id]);
@@ -6450,12 +6486,25 @@ describe("build-cases --reprofile of a case whose SKILL.md reads GitHub refuses 
         )
       )
     ).toHaveLength(1);
+    expect(built.resetReads.map((args) => args.slice(0, 7))).toEqual([
+      ["api", "-i", "graphql", "-f", "owner=acme", "-f", "name=skills"],
+    ]);
+    expect(
+      built.lines.filter((line) =>
+        /^build-cases: acme's GraphQL rate limit resets at \S+; waiting \d+ s, until \S+$/.test(
+          line
+        )
+      )
+    ).toHaveLength(1);
   }, 60_000);
 
   test("a SKILL.md read still refused after MAX_RATE_RETRIES waits, as a batch and alone, fails the command (exit 1) as any read that fails for a transient reason on every try does: the case is left out of the re-profile, naming the read and the limit, and no profile that lacks the skill is written", async () => {
     const resets = { core: now() + 600, graphql: now() + 90 };
     const before = Date.now();
-    const built = await reprofiled("always", () => true, resets);
+    const built = await reprofiled("always", () => true, resets, {
+      core: now() + 60,
+      graphql: now() + 30,
+    });
     const after = Date.now();
     expect(built.code).toBe(EXIT.failed);
     expect(built.lines).toContain(`build-cases: failed: 1 cases left out: ${built.good.id}`);
@@ -6467,7 +6516,8 @@ describe("build-cases --reprofile of a case whose SKILL.md reads GitHub refuses 
     expect(left?.why).toStartWith(
       `a GitHub read the profile needs failed: gh api repos/acme/skills/git/blobs/${BETA_BLOB} failed: ${MAX_RATE_RETRIES + 1} tries: try 1: ${PRIMARY}`
     );
-    // The batch's waits run to GraphQL's reset, the blob's to the REST limit's.
+    // The batch's waits run to the reset of acme's GraphQL limit, the blob's to its REST limit's,
+    // each read from acme's installation.
     expect(built.waits).toHaveLength(2 * MAX_RATE_RETRIES);
     const [graphqlLeast = 0, graphqlMost = 0] = untilReset(resets.graphql, before, after);
     const [coreLeast = 0, coreMost = 0] = untilReset(resets.core, before, after);
@@ -6475,6 +6525,10 @@ describe("build-cases --reprofile of a case whose SKILL.md reads GitHub refuses 
       expect(wait).toBeGreaterThanOrEqual(n < MAX_RATE_RETRIES ? graphqlLeast : coreLeast);
       expect(wait).toBeLessThanOrEqual(n < MAX_RATE_RETRIES ? graphqlMost : coreMost);
     }
+    expect(built.resetReads.map((args) => args.slice(0, 7).join(" "))).toEqual([
+      ...Array<string>(MAX_RATE_RETRIES).fill("api -i graphql -f owner=acme -f name=skills"),
+      ...Array<string>(MAX_RATE_RETRIES).fill("api -i --method GET repos/acme/skills"),
+    ]);
   }, 60_000);
 });
 
@@ -7568,7 +7622,8 @@ describe("GithubReads", () => {
           `build-cases: a gh call was refused for its rate limit (${SECONDARY}); waiting ${(n * SECONDARY_WAIT_MS) / 1000} s, until <time>, before sending it again, refusal ${n} of ${MAX_RATE_RETRIES}`
       )
     );
-    expect(asked.some((args) => args.includes("rate_limit"))).toBe(false);
+    // No reset is read: neither `gh api rate_limit` nor an installation's (`gh api -i`).
+    expect(asked.some((args) => args.includes("rate_limit") || args.includes("-i"))).toBe(false);
     expect(calls.filter((call) => call.endsWith(`/git/blobs/${BLOB}`))).toHaveLength(3);
   });
 });

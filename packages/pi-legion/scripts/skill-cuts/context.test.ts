@@ -823,6 +823,65 @@ test("a gh read that fails for good, such as a 404, is NoSuchFile at once: one c
   expect(source.reads?.().retries).toEqual({});
 }, 120_000);
 
+// Catches: a read refused for the primary rate limit waited out to the reset `gh api rate_limit`
+// gives, which names no owner, so the pod's gh answers it from another installation than the one
+// that refused the read: where that reset comes sooner, each try is refused again.
+test("a gh read refused for the primary rate limit waits until the reset of its repository's installation, read with gh api -i, not the sooner one gh api rate_limit gives, and answers", async () => {
+  const root = path.join(dir, "gh-rate-limited");
+  const log = path.join(root, "log");
+  const count = path.join(root, "count");
+  const reset = Math.floor(Date.now() / 1000) + 600;
+  const sooner = Math.floor(Date.now() / 1000) + 60;
+  writeTree(root, {
+    gh: `#!/bin/sh
+echo "$*" >> ${JSON.stringify(log)}
+case "$*" in
+  "api -i --method GET repos/acme/project")
+    printf 'HTTP/2.0 200 OK\\r\\nX-Ratelimit-Reset: ${reset}\\r\\n\\r\\n{}'
+    exit 0 ;;
+  *rate_limit*)
+    printf '{"resources":{"core":{"reset":${sooner}},"graphql":{"reset":${sooner}}}}'
+    exit 0 ;;
+esac
+n=$(cat ${JSON.stringify(count)} 2>/dev/null || echo 0)
+n=$((n + 1))
+echo "$n" > ${JSON.stringify(count)}
+if [ "$n" -le 1 ]; then
+  echo 'gh: API rate limit exceeded for installation ID 1. (HTTP 403)' >&2
+  exit 1
+fi
+printf '%s' '# Project'
+`,
+  });
+  chmodSync(path.join(root, "gh"), 0o755);
+  const waits: number[] = [];
+  const said: string[] = [];
+  const source = ghSource(path.join(root, "gh"), {
+    sleep: async (ms) => void waits.push(ms),
+    err: (line) => void said.push(line),
+  });
+  const before = Date.now();
+  const bytes = await source.file("acme/project", COMMIT, "AGENTS.md");
+  const after = Date.now();
+  expect(new TextDecoder().decode(bytes)).toBe("# Project");
+  expect(readFileSync(count, "utf8").trim()).toBe("2");
+  // The one read of a reset is a GET of the repository, which the pod's gh sends with its owner's
+  // installation.
+  expect(
+    readFileSync(log, "utf8")
+      .split("\n")
+      .filter((line) => line !== "" && !line.includes("contents/AGENTS.md"))
+  ).toEqual(["api -i --method GET repos/acme/project"]);
+  expect(waits).toHaveLength(1);
+  expect(waits[0]).toBeGreaterThanOrEqual(reset * 1000 + 1_000 - after);
+  expect(waits[0]).toBeLessThanOrEqual(reset * 1000 + 1_000 - before);
+  expect(
+    said.filter((line) =>
+      /^context: acme's REST rate limit resets at \S+; waiting \d+ s, until \S+$/.test(line)
+    )
+  ).toHaveLength(1);
+}, 60_000);
+
 // Catches: a read of prompts.go that failed taken as a repository that holds none.
 test("a Legion context's role prompt: a plugin repository that holds no prompts.go is passed over, and a read of it that failed stops the context, naming why", async () => {
   const root = path.join(dir, "prompts-read");

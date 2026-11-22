@@ -292,8 +292,9 @@
  *   a batch of more than one blob that GitHub answers as a batch too large is not sent again, and
  *   its blobs are read alone), and a read that failed so on every try is not kept, so the next
  *   case reads it again. A read GitHub refuses for its rate limit is sent again after a wait
- *   (`GithubReads.send` with common.ts's `rateLimitWait`: a primary limit waited out to
- *   the reset `gh api rate_limit` gives, at most 15 minutes; a secondary one SECONDARY_WAIT_MS,
+ *   (`GithubReads.send` with common.ts's `rateLimitWait`: a primary limit waited out to the
+ *   reset of the installation that refused it, the one of the owner the read names, at most 15
+ *   minutes (`untilInstallationReset`); a secondary one SECONDARY_WAIT_MS,
  *   doubled at each refusal), at most MAX_RATE_RETRIES times; one still refused after them is a
  *   transient failure (`ghAnswer`), so it fails the profile as a read that fails so on every try
  *   does, and no SKILL.md it held is left out of the profile as a fault. The npm registry's
@@ -552,6 +553,7 @@ import {
   textOf,
   timeLimit,
   transientReason,
+  untilInstallationReset,
   writeWhole,
 } from "./common";
 import { type SkillCutsConfig, storeNamed } from "./config";
@@ -2528,7 +2530,7 @@ export class GithubReads {
     const key = args.join("\0");
     const held = this.made.get(key);
     if (held !== undefined) return held;
-    const made = this.send(args, "core");
+    const made = this.send(args);
     this.made.set(key, made);
     const drop = () => {
       if (this.made.get(key) === made) this.made.delete(key);
@@ -2544,30 +2546,21 @@ export class GithubReads {
     return made;
   }
 
-  /** gh's answer to `args`, a read of the REST (`core`) or the GraphQL `resource`, sent again as
-   *  `retries` says: after a transient failure, and, while GitHub refuses it for its rate limit,
-   *  after the wait common.ts's `rateLimitWait` gives (a primary limit waited out to `resource`'s
-   *  reset, `untilReset`), as copies.ts's and context.ts's reads are. */
-  private send(args: readonly string[], resource: "core" | "graphql", splits = false) {
+  /** gh's answer to `args`, sent again as `retries` says: after a transient failure, and, while
+   *  GitHub refuses it for its rate limit, after the wait common.ts's `rateLimitWait` gives (a
+   *  primary limit waited out to the reset of the installation that refused it,
+   *  `untilInstallationReset`), as copies.ts's and context.ts's reads are. */
+  private send(args: readonly string[], splits = false) {
     return this.retries.send(() => this.gh(args), {
       splits,
       rateWait: (stderr, refused) =>
-        rateLimitWait(stderr, refused, () => this.untilReset(resource)),
+        rateLimitWait(stderr, refused, () =>
+          untilInstallationReset(args, {
+            gh: (read) => this.gh(read),
+            say: (line) => this.retries.say(line),
+          })
+        ),
     });
-  }
-
-  /** The milliseconds to the reset `gh api rate_limit` gives for `resource`, at most 15 minutes
-   *  (context.ts's GH_MAX_RATE_WAIT_MS); a minute when it gives none or one already past. */
-  private async untilReset(resource: "core" | "graphql"): Promise<number> {
-    const ran = await this.gh(["api", "--method", "GET", "rate_limit"]);
-    let reset: unknown;
-    try {
-      reset = ran.code === 0 ? JSON.parse(ran.stdout)?.resources?.[resource]?.reset : undefined;
-    } catch {
-      reset = undefined;
-    }
-    const until = typeof reset === "number" ? reset * 1000 + 1_000 - Date.now() : 0;
-    return until > 0 ? Math.min(until, 15 * 60_000) : 60_000;
   }
 
   private async ok(args: readonly string[]): Promise<string> {
@@ -2659,7 +2652,7 @@ export class GithubReads {
     recursive: boolean
   ): Promise<{ entries: TreeEntry[]; truncated: boolean }> {
     const args = ["api", `repos/${repo}/git/trees/${sha}${recursive ? "?recursive=1" : ""}`];
-    const stdout = ghAnswer(args, await this.send(args, "core"));
+    const stdout = ghAnswer(args, await this.send(args));
     const tree = GitTree.safeParse(parseJson(stdout));
     if (!tree.success) throw new Error(`gh ${args.join(" ")} gave no git tree`);
     return { entries: tree.data.tree, truncated: tree.data.truncated === true };
@@ -2718,11 +2711,7 @@ export class GithubReads {
       }
     }
     for (const batch of blobBatches([...wanted.values()], BLOB_BATCH, BLOB_BATCH_BYTES)) {
-      const result = await this.send(
-        graphqlArgs(repo, blobQuery(batch)),
-        "graphql",
-        batch.length > 1
-      );
+      const result = await this.send(graphqlArgs(repo, blobQuery(batch)), batch.length > 1);
       const parsed = BlobBatch.safeParse(result.code === 0 ? parseJson(result.stdout) : undefined);
       if (!parsed.success) continue;
       for (const [index, entry] of batch.entries()) {

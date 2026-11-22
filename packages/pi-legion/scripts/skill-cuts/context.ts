@@ -115,6 +115,7 @@ import {
   rateLimitWait,
   textOf,
   timeLimit,
+  untilInstallationReset,
 } from "./common";
 import {
   BlobBatch,
@@ -569,8 +570,6 @@ function writeBlob(file: string, mode: string, bytes: Uint8Array): void {
 /** The most blobs, and the most bytes, one GraphQL read of blobs asks for. */
 const BLOB_BATCH = 50;
 const BLOB_BATCH_BYTES = 4_000_000;
-/** The longest wait for a rate limit's reset. */
-const GH_MAX_RATE_WAIT_MS = 15 * 60_000;
 /** The longest one `gh` read may run: an API read, and a tarball. A read ended at its limit is sent
  *  again, as common.ts's `GhRetries` sends a read that failed for a transient reason. */
 const GH_READ_TIMEOUT_MS = 120_000;
@@ -658,39 +657,30 @@ export function ghSource(
   // `ghLimiter`) before it starts, so the wait is not counted as a call running.
   const ghRun = (argv: readonly string[]) =>
     ghLimiter().run(() => counted(() => run(argv, { timeoutMs: GH_READ_TIMEOUT_MS })));
-  // When the rate limit of `resource` (`core`, REST's, or `graphql`) resets, in seconds since the
-  // epoch, or undefined when it cannot be read.
-  const rateReset = async (resource: "core" | "graphql"): Promise<number | undefined> => {
-    const ran = await ghRun([gh, "api", "--method", "GET", "rate_limit"]);
-    try {
-      const reset: unknown = JSON.parse(new TextDecoder().decode(ran.stdout))?.resources?.[resource]
-        ?.reset;
-      return ran.code === 0 && typeof reset === "number" ? reset : undefined;
-    } catch {
-      return undefined;
-    }
+  // A rate limit's reset is read with the gh of these reads, as common.ts's
+  // `untilInstallationReset` reads it.
+  const resetIo = {
+    gh: async (args: readonly string[]) => {
+      const ran = await ghRun([gh, ...args]);
+      return { code: ran.code, stdout: new TextDecoder().decode(ran.stdout) };
+    },
+    say: (line: string) => retries.say(line),
   };
-  // The milliseconds to the reset of the rate limit of `resource` (gh prints no `retry-after`
-  // header on stderr), at most GH_MAX_RATE_WAIT_MS; a minute when the reset cannot be read or is
-  // past. A refusal for the secondary limit, which has no reset, does not wait for it
-  // (common.ts's `rateLimitWait`).
-  const untilReset = async (resource: "core" | "graphql"): Promise<number> => {
-    const reset = await rateReset(resource);
-    const until = reset === undefined ? 0 : reset * 1000 + 1_000 - Date.now();
-    return until > 0 ? Math.min(until, GH_MAX_RATE_WAIT_MS) : 60_000;
-  };
-  // The first try of `attempt`, one try of the gh call `command`, that exits 0, the call sent
-  // again as `GhRetries.send` says (`splits`: a GraphQL batch of more than one blob); throws
-  // naming `command` and each try's error when none does.
+  // The first try of `attempt`, one try of the gh call `args` (said as `command`), that exits 0,
+  // the call sent again as `GhRetries.send` says (`splits`: a GraphQL batch of more than one
+  // blob); throws naming `command` and each try's error when none does. A refusal for the primary
+  // rate limit waits for the reset of the installation that refused the call, the one of the
+  // owner it names (common.ts's `rateLimitWait` and `untilInstallationReset`).
   const retried = async <T extends { readonly code: number; readonly stderr: string }>(
     command: string,
+    args: readonly string[],
     attempt: () => Promise<T>,
-    resource: "core" | "graphql",
     splits = false
   ): Promise<T> => {
     const ran = await retries.send(attempt, {
       splits,
-      rateWait: (stderr, refused) => rateLimitWait(stderr, refused, () => untilReset(resource)),
+      rateWait: (stderr, refused) =>
+        rateLimitWait(stderr, refused, () => untilInstallationReset(args, resetIo)),
     });
     if (ran.code !== 0) {
       throw new Error(`\`${command}\` failed: ${firstLine(ran.stderr) || `gh exited ${ran.code}`}`);
@@ -699,36 +689,35 @@ export function ghSource(
   };
   const api = async (route: string, raw: boolean): Promise<Uint8Array> => {
     const accept = raw ? ["-H", "Accept: application/vnd.github.raw"] : [];
-    const argv = [gh, "api", "--method", "GET", ...accept, route];
-    return (await retried(argv.join(" "), () => ghRun(argv), "core")).stdout;
+    const args = ["api", "--method", "GET", ...accept, route];
+    const argv = [gh, ...args];
+    return (await retried(argv.join(" "), args, () => ghRun(argv))).stdout;
   };
   const tarball = async (repo: string, commit: string, dest: string): Promise<void> => {
     mkdirSync(dest, { recursive: true });
     const archive = `${dest}.tar.gz`;
     try {
-      const argv = [gh, "api", "--method", "GET", `repos/${repo}/tarball/${commit}`];
-      await retried(
-        argv.join(" "),
-        () =>
-          ghLimiter().run(() =>
-            counted(async () => {
-              const child = Bun.spawn(argv, {
-                stdin: "ignore",
-                stdout: Bun.file(archive),
-                stderr: "pipe",
-              });
-              const limit = timeLimit(child, GH_TARBALL_TIMEOUT_MS);
-              const [stderr, code] = await Promise.all([textOf(child.stderr, limit), child.exited]);
-              limit.clear();
-              return {
-                code,
-                stderr: limit.timedOut()
-                  ? `${stderr}\ntimed out after ${GH_TARBALL_TIMEOUT_MS} ms`
-                  : stderr,
-              };
-            })
-          ),
-        "core"
+      const args = ["api", "--method", "GET", `repos/${repo}/tarball/${commit}`];
+      const argv = [gh, ...args];
+      await retried(argv.join(" "), args, () =>
+        ghLimiter().run(() =>
+          counted(async () => {
+            const child = Bun.spawn(argv, {
+              stdin: "ignore",
+              stdout: Bun.file(archive),
+              stderr: "pipe",
+            });
+            const limit = timeLimit(child, GH_TARBALL_TIMEOUT_MS);
+            const [stderr, code] = await Promise.all([textOf(child.stderr, limit), child.exited]);
+            limit.clear();
+            return {
+              code,
+              stderr: limit.timedOut()
+                ? `${stderr}\ntimed out after ${GH_TARBALL_TIMEOUT_MS} ms`
+                : stderr,
+            };
+          })
+        )
       );
       await mustRun(["tar", "-xzf", archive, "-C", dest, "--strip-components=1"]);
     } finally {
@@ -925,8 +914,8 @@ export function ghSource(
         try {
           const ran = await retried(
             `${[gh, ...args.slice(0, -2)].join(" ")} -f query=<${batch.length} blobs>`,
+            args,
             () => ghRun([gh, ...args]),
-            "graphql",
             batch.length > 1
           );
           answer = parseJson(new TextDecoder().decode(ran.stdout));

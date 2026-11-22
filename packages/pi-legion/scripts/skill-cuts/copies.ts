@@ -66,10 +66,11 @@
  *    and dropped. A tree GitHub answers `truncated` is walked a level at a time, each level's
  *    subtrees in GraphQL batches of up to 50 (`readTree`), with REST where GitHub refuses a batch
  *    (but for its rate limit: a batch, of subtrees, blobs or files, refused for the GraphQL rate
- *    limit is sent again after its reset, or for the secondary rate limit after a minute, doubled
- *    at each refusal, `Github.rateWait`); the walk holds only the kept entries and the subtrees
- *    of its next level. A listing, commit or tree read that fails names its repository with gh's
- *    error. Forks and archived repositories stay, marked (a fork with its parent).
+ *    limit is sent again after the reset of the installation that refused it, or for the
+ *    secondary rate limit after a minute, doubled at each refusal, `Github.withRetries`); the walk
+ *    holds only the kept entries and the subtrees of its next level. A listing, commit or tree
+ *    read that fails names its repository with gh's error. Forks and archived repositories stay,
+ *    marked (a fork with its parent).
  *    Then each repository an installer of the repositories read pins (`installerPins`: a
  *    `github:<owner>/<name>#<ref>` dependency of an Oh My Pi plugins package.json, a
  *    `ensure_vendor <url> <name> <ref>` line of an installer script) is read at that ref, as the
@@ -127,13 +128,15 @@
  *    owner's one at a time (GitHub asks for one client's requests to be serial) and paced by its
  *    own limit: at most `x-ratelimit-limit` (10 when absent) calls started in any 60 seconds, a
  *    wait for `x-ratelimit-reset` when `x-ratelimit-remaining` is 0, and a call refused for its
- *    rate limit run again after its `retry-after`, else its reset, else the reset `gh api
- *    rate_limit` gives. The searches start once the listing and the `users/<owner>` calls are
- *    done, beside the tree reads: each name is queued for every scope as the repository step that
- *    first gives it ends, and the reruns once every tree is read (`SearchQueues`). The records are
- *    written in one order (the names sorted, each in scope order, then each owner's reruns), and
- *    a record depends only on its query, so the output is the same as searching after the trees,
- *    unless `--max-search-calls` stops the searches (the queries it leaves not run may differ).
+ *    rate limit run again after its `retry-after`, else its reset, else 15 minutes (a search
+ *    names no repository whose installation's reset another call could read, common.ts's
+ *    `untilInstallationReset`). The searches start once the listing and the `users/<owner>`
+ *    calls are done, beside the tree reads: each name is queued for every scope as the repository
+ *    step that first gives it ends, and the reruns once every tree is read (`SearchQueues`). The
+ *    records are written in one order (the names sorted, each in scope order, then each owner's
+ *    reruns), and a record depends only on its query, so the output is the same as searching after
+ *    the trees, unless `--max-search-calls` stops the searches (the queries it leaves not run may
+ *    differ).
  *    `--max-search-calls <n>` stops searching after n calls; every query it leaves out is in
  *    `queries.jsonl` as not run. A query whose hits GitHub counts past its 1,000-result cap (or the
  *    budget cut short) keeps how many it left unread (`unread`), and skill-copies.md lists it.
@@ -212,11 +215,14 @@ import {
   ghLimiter,
   MAX_RATE_RETRIES,
   RATE_LIMITED,
+  type ResetIo,
   rateLimitWait,
   schemaFaults,
+  splitIncluded,
   textOf,
   timeLimit,
   triesError,
+  untilInstallationReset,
 } from "./common";
 import { type Clone, loadConfig, type SkillCutsConfig } from "./config";
 import { procPeakRssBytes, startPeakRssSampling } from "./memory";
@@ -313,11 +319,11 @@ export const REPOSITORY_JOBS = 6;
  *  resident in the pod whatever it reads (measured 2026-11-20), so the caps are what the run costs
  *  the pod beside its own memory. The code searches run beside the tree reads (`SearchQueues`),
  *  so each takes a slot too, keyed by its owner (one search of an owner at a time): the reads and
- *  searches in flight stay at most READ_CALLS however they overlap (the `rate_limit` read of a
- *  wait after a refusal, `waitForReset`, takes no slot, so one gh process more can run then). A
- *  search, whose key holds no slot while it waits, takes a freed slot as a read does: the slot
- *  goes to the waiting call whose key holds the fewest (`ReadSlots`). No call holds a slot while
- *  it waits to be sent again, after a rate limit or a transient failure. */
+ *  searches in flight stay at most READ_CALLS however they overlap (the read of a reset in a wait
+ *  after a refusal, common.ts's `untilInstallationReset`, takes no slot, so one gh process more
+ *  can run then). A search, whose key holds no slot while it waits, takes a freed slot as a read
+ *  does: the slot goes to the waiting call whose key holds the fewest (`ReadSlots`). No call holds
+ *  a slot while it waits to be sent again, after a rate limit or a transient failure. */
 export const READ_CALLS = 8;
 export const READ_CALLS_PER_REPOSITORY = 4;
 /** The most subtrees one GraphQL tree read asks for. */
@@ -369,9 +375,6 @@ const SearchAnswer = z.looseObject({
   items: z.array(
     z.looseObject({ path: z.string(), repository: z.looseObject({ full_name: z.string() }) })
   ),
-});
-const RateLimit = z.looseObject({
-  resources: z.record(z.string(), z.looseObject({ reset: z.number() })),
 });
 const GithubUser = z.looseObject({ type: z.string() });
 /** GitHub's answer to a GraphQL read of blobs by id (`blobQuery`): field `b<n>` the n-th blob,
@@ -653,8 +656,8 @@ export class ReadSlots {
 }
 
 /** gh's reads, each sent again after a transient failure and after the wait a rate limit asks for
- *  (`rateWait`), as common.ts's `GhRetries` says, the run's memory limit checked before each call.
- *  It keeps no blob text: each read is handed to its caller. */
+ *  (`withRetries`), as common.ts's `GhRetries` says, the run's memory limit checked before each
+ *  call. It keeps no blob text: each read is handed to its caller. */
 class Github {
   private readonly slots = new ReadSlots(READ_CALLS, READ_CALLS_PER_REPOSITORY);
   /** The largest peak resident memory read so far, in bytes. */
@@ -668,6 +671,14 @@ class Github {
   ) {
     this.retries = new GhRetries(io, "copies");
   }
+
+  /** What a rate wait reads the reset of the installation that refused a call with (common.ts's
+   *  `untilInstallationReset`): this run's gh, outside any read slot, and its clock. */
+  readonly resetIo: ResetIo = {
+    gh: (args) => this.call(args),
+    say: (line) => this.retries.say(line),
+    now: () => this.io.now(),
+  };
 
   /** The peak resident memory so far, in bytes, read again now. */
   readPeak(): number {
@@ -692,60 +703,46 @@ class Github {
     return this.slots.run(repository, read);
   }
 
-  /** gh's answer to the call `send` makes, a read of the REST (`core`) or the GraphQL `resource`,
-   *  sent again as `GhRetries.send` says: while GitHub refuses it for that rate limit, after the
-   *  wait `rateWait` gives (a GraphQL batch halved, or read alone over REST, would spend the limit
-   *  faster), and after a transient failure (`splits` when it is a GraphQL batch of more than one
-   *  item, which its caller splits). `send` takes its read slot itself, so no wait holds one. Any
-   *  other failure, or the last try's, is its caller's to handle; its error names each try's when
-   *  there were several. */
+  /** gh's answer to the call `args`, each try made by `send`, sent again as `GhRetries.send` says:
+   *  while GitHub refuses it for its rate limit, after the wait common.ts's `rateLimitWait` gives,
+   *  a primary limit waited out to the reset of the installation that refused it
+   *  (`untilInstallationReset`: a GraphQL batch halved, or read alone over REST, would spend the
+   *  limit faster), and after a transient failure (`splits` when it is a GraphQL batch of more
+   *  than one item, which its caller splits). `send` takes its read slot itself, so no wait holds
+   *  one. Any other failure, or the last try's, is its caller's to handle; its error names each
+   *  try's when there were several. */
   withRetries(
+    args: readonly string[],
     send: () => Promise<GhResult>,
-    resource: "core" | "graphql",
     splits = false
   ): Promise<GhResult> {
     return this.retries.send(send, {
       splits,
-      rateWait: (stderr, refused) => this.rateWait(stderr, refused, resource),
+      rateWait: (stderr, refused) =>
+        rateLimitWait(stderr, refused, () => untilInstallationReset(args, this.resetIo)),
     });
   }
 
-  /** The milliseconds to wait before a call GitHub refused for its rate limit is sent again, at
-   *  its `attempt`-th refusal (from 0), whose error is `stderr`: common.ts's `rateLimitWait`, a
-   *  primary limit waited out to `resource`'s reset (`waitForReset`). GhRetries says each wait. */
-  private rateWait(stderr: string, attempt: number, resource: "core" | "graphql"): Promise<number> {
-    return rateLimitWait(stderr, attempt, () => this.waitForReset(resource));
-  }
-
-  /** gh's standard output for `args`, a read of the REST (`core`) or the GraphQL `resource`, each
-   *  try in one of the read slots of `slot` when it is given (`inSlot`) and counted by `tried`
-   *  when it is given, sent again as `withRetries` says; throws gh's first error line, or each
-   *  try's when there were several. */
+  /** gh's standard output for `args`, each try in one of the read slots of `slot` when it is given
+   *  (`inSlot`) and counted by `tried` when it is given, sent again as `withRetries` says; throws
+   *  gh's first error line, or each try's when there were several. */
   async text(
     args: readonly string[],
     slot?: string,
-    {
-      resource = "core",
-      tried,
-    }: { readonly resource?: "core" | "graphql"; readonly tried?: () => void } = {}
+    { tried }: { readonly tried?: () => void } = {}
   ): Promise<string> {
-    const result = await this.withRetries(() => {
+    const result = await this.withRetries(args, () => {
       tried?.();
       return slot === undefined ? this.call(args) : this.inSlot(slot, () => this.call(args));
-    }, resource);
+    });
     if (result.code === 0) return result.stdout;
     throw new Error(firstLine(result.stderr) || `gh exited ${result.code}`);
   }
 
-  /** gh's answer to `args` (`text`, a read of `resource`, each try in a read slot of `slot` when
-   *  it is given), parsed by `schema`; throws as `text` does, or the faults. */
-  async json<T>(
-    args: readonly string[],
-    schema: z.ZodType<T>,
-    slot?: string,
-    resource: "core" | "graphql" = "core"
-  ): Promise<T> {
-    const parsed = schema.safeParse(parseJson(await this.text(args, slot, { resource })));
+  /** gh's answer to `args` (`text`, each try in a read slot of `slot` when it is given), parsed by
+   *  `schema`; throws as `text` does, or the faults. */
+  async json<T>(args: readonly string[], schema: z.ZodType<T>, slot?: string): Promise<T> {
+    const parsed = schema.safeParse(parseJson(await this.text(args, slot)));
     if (!parsed.success)
       throw new Error(`gh's answer is not of its shape: ${schemaFaults(parsed.error)}`);
     return parsed.data;
@@ -753,18 +750,6 @@ class Github {
 
   api<T>(endpoint: string, schema: z.ZodType<T>, slot?: string): Promise<T> {
     return this.json(["api", endpoint], schema, slot);
-  }
-
-  /** The milliseconds to the reset `gh api rate_limit` gives for `resource`, at most an hour; a
-   *  minute when it gives none or one already past. */
-  async waitForReset(resource: "core" | "code_search" | "graphql"): Promise<number> {
-    const result = await this.call(["api", "rate_limit"]);
-    const parsed = RateLimit.safeParse(result.code === 0 ? parseJson(result.stdout) : undefined);
-    const reset = parsed.success ? parsed.data.resources[resource]?.reset : undefined;
-    const until = reset === undefined ? 0 : reset * 1000 + 1000;
-    const wait = until > this.io.now() ? Math.min(until - this.io.now(), 3_600_000) : 60_000;
-    this.io.err(`copies: the ${resource} rate limit is spent; waiting ${Math.ceil(wait / 1000)} s`);
-    return wait;
   }
 
   /** The text of the blob `sha` of `repository`, read alone over REST and kept nowhere. */
@@ -795,9 +780,10 @@ class Github {
       let given: z.infer<typeof BlobBatch>["data"]["repository"] | undefined;
       // A blob id that is not 40 hex characters goes in no query: its batch is read alone.
       if (batch.every((entry) => /^[0-9a-f]{40}$/.test(entry.sha))) {
+        const args = graphqlArgs(repository, blobQuery(batch));
         const result = await this.withRetries(
-          () => this.inSlot(repository, () => this.call(graphqlArgs(repository, blobQuery(batch)))),
-          "graphql",
+          args,
+          () => this.inSlot(repository, () => this.call(args)),
           batch.length > 1
         );
         const parsed = BlobBatch.safeParse(
@@ -851,11 +837,8 @@ class Github {
       )
       .join(" ");
     const query = `query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { ${fields} } }`;
-    const result = await this.withRetries(
-      () => this.call(graphqlArgs(repository, query)),
-      "graphql",
-      paths.length > 1
-    );
+    const args = graphqlArgs(repository, query);
+    const result = await this.withRetries(args, () => this.call(args), paths.length > 1);
     const parsed = FileBatch.safeParse(result.code === 0 ? parseJson(result.stdout) : undefined);
     if (!parsed.success) {
       const why = firstLine(result.stderr) || "an answer not of its shape";
@@ -1175,12 +1158,13 @@ export async function readTree(
       )
       .join(" ");
     const query = `query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { ${fields} } }`;
+    const args = graphqlArgs(repository, query);
     const result = await github.withRetries(
+      args,
       () => {
         reads++;
-        return github.inSlot(repository, () => github.call(graphqlArgs(repository, query)));
+        return github.inSlot(repository, () => github.call(args));
       },
-      "graphql",
       trees.length > 1
     );
     const parsed = TreeBatch.safeParse(result.code === 0 ? parseJson(result.stdout) : undefined);
@@ -4255,29 +4239,6 @@ interface SearchPage {
   readonly items: z.infer<typeof SearchAnswer>["items"];
 }
 
-/** HTTP status, headers and body of a `gh api -i` answer. */
-function splitIncluded(text: string): {
-  status: number;
-  headers: Map<string, string>;
-  body: string;
-} {
-  const gap = /\r?\n\r?\n/.exec(text);
-  if (!text.startsWith("HTTP/") || gap === null)
-    return { status: 0, headers: new Map(), body: text };
-  const head = text.slice(0, gap.index).split(/\r?\n/);
-  const headers = new Map<string, string>();
-  for (const line of head.slice(1)) {
-    const colon = line.indexOf(":");
-    if (colon > 0)
-      headers.set(line.slice(0, colon).trim().toLowerCase(), line.slice(colon + 1).trim());
-  }
-  return {
-    status: Number(/^HTTP\/\S+\s+(\d+)/.exec(head[0] ?? "")?.[1] ?? 0),
-    headers,
-    body: text.slice(gap.index + gap[0].length),
-  };
-}
-
 /** One owner's code-search pacing: the start times of its calls in the last minute, its limit a
  *  minute, and when its spent limit resets. */
 interface OwnerPace {
@@ -4352,21 +4313,22 @@ class CodeSearch {
       record.calls++;
       // A search takes a read slot as a tree read does (READ_CALLS), keyed by its owner, whose
       // searches run one at a time; it starts, for its pace, once it holds the slot.
+      const args = [
+        "api",
+        "-i",
+        "-X",
+        "GET",
+        "search/code",
+        "-f",
+        `q=${q}`,
+        "-f",
+        "per_page=100",
+        "-f",
+        `page=${page}`,
+      ];
       const result = await this.github.inSlot(`search ${job.owner}`, () => {
         pace.starts.push(io.now());
-        return this.github.call([
-          "api",
-          "-i",
-          "-X",
-          "GET",
-          "search/code",
-          "-f",
-          `q=${q}`,
-          "-f",
-          "per_page=100",
-          "-f",
-          `page=${page}`,
-        ]);
+        return this.github.call(args);
       });
       const answer = splitIncluded(result.stdout);
       const header = (name: string) => {
@@ -4396,10 +4358,12 @@ class CodeSearch {
       ) {
         record.rate_limit_retries++;
         const retryAfter = header("retry-after");
+        // A search names no repository, so with neither a `retry-after` nor a reset it waits the
+        // longest rate wait (`untilInstallationReset`).
         pace.blockedUntil =
           retryAfter !== undefined
             ? io.now() + retryAfter * 1000
-            : (resetMs ?? io.now() + (await this.github.waitForReset("code_search")));
+            : (resetMs ?? io.now() + (await untilInstallationReset(args, this.github.resetIo)));
         continue;
       }
       // The answer's status line gives the HTTP status that gh's error may not name.
@@ -5461,8 +5425,7 @@ async function prepackVersions(
       answer = await github.json(
         graphqlArgs(repo.repository, query),
         PrepackHistory,
-        repo.repository,
-        "graphql"
+        repo.repository
       );
     } catch (error) {
       rethrowStop(error);
@@ -5543,10 +5506,7 @@ async function readAll(
             "--json",
             "nameWithOwner,isFork,isArchived,defaultBranchRef,parent",
           ],
-          Listing,
-          undefined,
-          // `gh repo list` reads the GraphQL API, so a refusal waits for its limit's reset.
-          "graphql"
+          Listing
         ));
       cache.put("listing", owner, listed);
       for (const entry of listed) {

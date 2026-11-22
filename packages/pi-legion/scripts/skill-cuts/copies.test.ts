@@ -399,8 +399,13 @@ class World {
   /** When set, called with each call's arguments: an error line it gives is gh's answer to that
    *  call, as when GitHub refuses it for a rate limit. */
   refuse: ((args: readonly string[]) => string | undefined) | undefined = undefined;
-  /** The seconds from now to each limit's reset that `gh api rate_limit` gives. */
+  /** The seconds from now to each limit's reset that `gh api rate_limit` gives: it names no
+   *  owner, so the pod's gh answers it from another installation than the one a call names, and
+   *  the runner does not read it. */
   rateLimitResetIn = 45;
+  /** The seconds from now to the reset a read of an installation's limit gives (`gh api -i`, as
+   *  common.ts's `untilInstallationReset` reads it), for any owner. */
+  installationResetIn = 300;
   /** When set, each tree read of a repository waits for what this gives it before it is answered,
    *  `key` the read's key in `trees`. */
   treeGate: ((repository: string, key: string) => Promise<void>) | undefined = undefined;
@@ -481,6 +486,21 @@ class World {
     const fail = (line: string): GhResult => ({ code: 1, stdout: "", stderr: `${line}\n` });
     const refusal = this.refuse?.(args);
     if (refusal !== undefined) return fail(refusal);
+    // A read of the reset of the installation that refused a call, answered as GitHub answers it
+    // with `-i`: the reset in the X-RateLimit-Reset header and, for a GraphQL query, in its
+    // `rateLimit`.
+    if (args[0] === "api" && args[1] === "-i" && !args.includes("search/code")) {
+      const reset = Math.floor(this.clock / 1000) + this.installationResetIn;
+      const body =
+        args[2] === "graphql"
+          ? { data: { rateLimit: { resetAt: new Date(reset * 1000).toISOString() } } }
+          : {};
+      return {
+        code: 0,
+        stdout: `HTTP/2.0 200 OK\r\nX-Ratelimit-Reset: ${reset}\r\n\r\n${JSON.stringify(body)}`,
+        stderr: "",
+      };
+    }
     const answer = (value: unknown) => (typeof value === "string" ? fail(value) : ok(value));
     if (args[0] === "repo" && args[1] === "list") {
       const listing = this.listings.get(args[2] ?? "");
@@ -2946,8 +2966,20 @@ describe("a truncated tree", () => {
     expect(outputs(again)).toEqual(outputs(whole));
   }, 60_000);
 
-  // Catches: a refused `gh repo list`, a GraphQL call, waited out to the REST limit's reset.
-  test("an owner's listing refused for the GraphQL rate limit waits for that limit's reset", async () => {
+  /** Each read of a rate limit's reset `w` took: `gh api rate_limit`, or a read of an
+   *  installation's (`gh api -i`, but a code search's), its first five arguments. */
+  const resetReads = (w: World) =>
+    w.calls
+      .filter(
+        (call) => call[1] === "rate_limit" || (call[1] === "-i" && !call.includes("search/code"))
+      )
+      .map((call) => call.slice(0, 5));
+  const iso = (ms: number) => new Date(ms).toISOString();
+
+  // Catches: a refused `gh repo list`, a GraphQL call, waited out to the REST limit's reset; and
+  // to the reset `gh api rate_limit` gives, which names no owner, so the pod's gh answers it from
+  // another installation than the listed owner's.
+  test("an owner's listing refused for the GraphQL rate limit waits for the reset of that owner's installation's GraphQL limit", async () => {
     const w = world();
     let left = 1;
     w.refuse = (args) =>
@@ -2956,12 +2988,36 @@ describe("a truncated tree", () => {
         : undefined;
     const r = await run(w, LEGION_ONLY);
     expect(r.code).toBe(0);
-    expect(r.errors.filter((line) => line.includes("rate limit is spent"))).toEqual([
-      "copies: the graphql rate limit is spent; waiting 46 s",
-    ]);
+    // The reset is read with a GraphQL query routed by the listed owner (300 s away), not with
+    // `gh api rate_limit` (45 s away).
+    expect(resetReads(w)).toEqual([["api", "-i", "graphql", "-f", "owner=cybermonklabs"]]);
+    expect(w.sleeps).toEqual([301_000]);
+    expect(r.errors).toContain(
+      `copies: cybermonklabs's GraphQL rate limit resets at ${iso(CLOCK_START + 300_000)}; waiting 301 s, until ${iso(CLOCK_START + 301_000)}`
+    );
     expect(r.table("repositories.tsv").map((row) => row.repository)).toEqual([
       "cybermonklabs/legion",
     ]);
+  }, 60_000);
+
+  // Catches: a REST read waited out to the reset `gh api rate_limit` gives, which is another
+  // installation's: where it comes sooner, each try is refused again.
+  test("a REST read refused for the primary rate limit waits for the reset of its repository's installation, read from gh api -i, not the sooner one gh api rate_limit gives", async () => {
+    const calm = await run(world(), LEGION_ONLY);
+    const w = world();
+    let left = 1;
+    w.refuse = (args) =>
+      /\/commits\?/.test(args[1] ?? "") && left-- > 0
+        ? "gh: API rate limit exceeded for installation ID 1001. (HTTP 403)"
+        : undefined;
+    const r = await run(w, LEGION_ONLY);
+    expect(r.code).toBe(0);
+    expect(resetReads(w)).toEqual([["api", "-i", "--method", "GET", "repos/cybermonklabs/legion"]]);
+    expect(w.sleeps).toEqual([301_000]);
+    expect(r.errors).toContain(
+      `copies: cybermonklabs's REST rate limit resets at ${iso(CLOCK_START + 300_000)}; waiting 301 s, until ${iso(CLOCK_START + 301_000)}`
+    );
+    expect(outputs(r)).toEqual(outputs(calm));
   }, 60_000);
 
   test("a batch refused for the GraphQL rate limit is sent again after the reset, not halved", async () => {
@@ -2989,11 +3045,17 @@ describe("a truncated tree", () => {
       expect(refused).toBeDefined();
       expect(again).toEqual(refused);
     }
+    // Each waited for the reset of the GraphQL limit of the installation its owner field names.
     expect(
-      limited.r.errors.filter(
-        (line) => line === "copies: the graphql rate limit is spent; waiting 46 s"
+      limited.r.errors.filter((line) =>
+        /^copies: cybermonklabs's GraphQL rate limit resets at \S+; waiting 301 s, until \S+$/.test(
+          line
+        )
       )
     ).toHaveLength(3);
+    expect(resetReads(limited.w)).toEqual(
+      Array.from({ length: 3 }, () => ["api", "-i", "graphql", "-f", "owner=cybermonklabs"])
+    );
     // None was halved or read alone: the batches answered, and the REST reads, are those of a run
     // GitHub refused nothing.
     expect(limited.r.errors.filter((line) => line.includes("each is read alone"))).toEqual([]);
@@ -3046,7 +3108,7 @@ describe("a truncated tree", () => {
             ?.slice(1, 2) ?? []
       )
     ).toEqual(["60", "60", "120"]);
-    expect(w.calls.some((call) => call[1] === "rate_limit")).toBe(false);
+    expect(resetReads(w)).toEqual([]);
     // The same calls were sent again, and the output is that of a run GitHub refused nothing.
     const commits = w.calls.filter((call) => /\/commits\?/.test(call[1] ?? ""));
     expect(commits).toEqual([commits[0], commits[0]]);
@@ -3985,6 +4047,33 @@ describe("code search pacing and the call budget", () => {
     expect(r.text("skill-copies.md")).toContain("4 code search calls (budget 4)");
   });
 });
+
+// Catches: a refused search whose answer gives no reset waited out to the reset `gh api
+// rate_limit` gives, which names no owner, so the pod's gh answers it from another installation.
+test("a code search refused with neither a retry-after nor a reset waits the 15-minute cap, with no read of gh api rate_limit", async () => {
+  const w = world();
+  w.search = (_q, _page, call) =>
+    call === 1
+      ? {
+          status: 403,
+          stderr: "gh: API rate limit exceeded for installation. (HTTP 403)\n",
+          headers: { "X-Ratelimit-Remaining": "0", "X-Ratelimit-Reset": "" },
+          body: { message: "API rate limit exceeded for installation." },
+        }
+      : { body: EMPTY_SEARCH };
+  const r = await run(w, ["--only", "cybermonklabs/legion", "--max-search-calls", "2"]);
+  expect(r.code).toBe(0);
+  expect(w.sleeps).toEqual([900_000]);
+  expect(w.calls.some((call) => call[1] === "rate_limit")).toBe(false);
+  expect(
+    r.errors.filter((line) =>
+      /^copies: the refused call names no owner in its endpoint or its owner field, so no installation's reset is read; waiting 900 s, the longest rate wait, until \S+$/.test(
+        line
+      )
+    )
+  ).toHaveLength(1);
+  expect(r.queries()[0]).toMatchObject({ status: "ok", rate_limit_retries: 1, calls: 2 });
+}, 60_000);
 
 describe("the owners' searches at once, each paced by its own limit", () => {
   // Each owner's first search is held until both owners have one in flight: searching the owners
