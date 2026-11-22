@@ -61,6 +61,7 @@ import (
 	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/listenfd"
+	"github.com/sjawhar/envoy/natsurl"
 )
 
 const (
@@ -1360,6 +1361,28 @@ func dispatchStreamOptions(boot bootConfig, env settingValues) []bus.ConnectOpti
 	}
 }
 
+// agentSecretsURLRefusal is why raw, DISPATCH_AGENT_SECRETS_URL's value, is no broker URL, or nil:
+// one with a user name or a password, an "@" after its host (natsurl.UserinfoPastHost: where a
+// credential holding a "/", "?" or "#" written as the user lands), a query or a fragment, as the
+// daemon refuses them in agent_secrets.url, each named by the setting alone; and one that is no
+// absolute http(s) URL with no path, named through redact.URL. Dispatch's introspection and its
+// broker client build every request on this URL, and net/http masks a password but not a user name
+// in the errors it returns, which reach Dispatch's log.
+func agentSecretsURLRefusal(raw string) error {
+	parsed, err := url.Parse(raw)
+	switch {
+	case err == nil && parsed.User != nil:
+		return errors.New("DISPATCH_AGENT_SECRETS_URL cannot be read: it holds a user name or a password, which the broker's URL has none of")
+	case err == nil && natsurl.UserinfoPastHost(parsed):
+		return errors.New("DISPATCH_AGENT_SECRETS_URL cannot be read: " + natsurl.UserinfoPastHostReason)
+	case err == nil && (parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" || strings.Contains(raw, "#")):
+		return errors.New("DISPATCH_AGENT_SECRETS_URL cannot be read: it holds a query or a fragment, which the broker's URL has none of")
+	case err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.Path != "":
+		return fmt.Errorf("DISPATCH_AGENT_SECRETS_URL=%q (expected an absolute http(s) URL with no path)", redact.URL(raw))
+	}
+	return nil
+}
+
 // resolveBootConfig is the server's configuration from what the settings table read (env),
 // checked before anything connects. It holds the settings main hands on as values; three groups
 // reach their readers from env instead, through the table's lookup: the GitHub App credentials
@@ -1545,9 +1568,8 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 
 	agentSecretsURL := strings.TrimSuffix(strings.TrimSpace(env.get("DISPATCH_AGENT_SECRETS_URL")), "/")
 	if agentSecretsURL != "" {
-		parsed, err := url.Parse(agentSecretsURL)
-		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.Path != "" {
-			return bootConfig{}, fmt.Errorf("DISPATCH_AGENT_SECRETS_URL=%q (expected an absolute http(s) URL with no path)", redact.URL(agentSecretsURL))
+		if err := agentSecretsURLRefusal(agentSecretsURL); err != nil {
+			return bootConfig{}, err
 		}
 		boot.AgentSecretsURL = agentSecretsURL
 		boot.AgentSecretsTokenFile = strings.TrimSpace(env.get("DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE"))

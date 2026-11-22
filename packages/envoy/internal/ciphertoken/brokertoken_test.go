@@ -786,6 +786,30 @@ func TestABrokerThatCannotBeReachedIsTheUnreachableOutcome(t *testing.T) {
 	}
 }
 
+// A broker URL holding a made-up token, as the user name or in the query, that cannot be reached:
+// the unreachable outcome holds no part of the token, though net/http's error quotes the request's
+// URL with only a password masked. Boot refuses such a DISPATCH_AGENT_SECRETS_URL; the verifier
+// prints none of it all the same.
+func TestAnUnreachableBrokerURLWithACredentialPrintsNoneOfIt(t *testing.T) {
+	const token = "madeUpBrokerToken0123"
+	refused := testport.Refused(t)
+	for name, brokerURL := range map[string]string{
+		"a token as the user name": "http://" + token + "@" + refused,
+		"a token in the query":     "http://" + refused + "?token=" + token,
+	} {
+		t.Run(name, func(t *testing.T) {
+			rig := newRig(t, func(o *ciphertoken.Options) { o.BrokerURL = brokerURL })
+			_, err := rig.verifier.Verify(t.Context(), newSigner(t).at(resourcePath, "a-token-nobody-can-be-asked-about"))
+			if !errors.Is(err, ciphertoken.ErrBrokerUnreachable) {
+				t.Fatalf("Verify = %v, want ErrBrokerUnreachable", err)
+			}
+			if strings.Contains(err.Error(), token[:10]) {
+				t.Errorf("Verify = %v, which holds part of the broker URL's token", err)
+			}
+		})
+	}
+}
+
 // TestAnAccountTokenDispatchCannotReadAsksTheBrokerNothing: Dispatch's own missing credential is
 // its deployment's failure, so it is the unreachable outcome and the error says why it could not
 // be read, never the path, which here is a made-up token, as one pasted where the path goes is.

@@ -534,7 +534,8 @@ func TestResolveBootConfigRejectsAgentSecretsURLWithPathOrBadScheme(t *testing.T
 
 // Both DISPATCH_AGENT_SECRETS_URL refusals - a shape refusal (a path, or a value that does not
 // parse) and the dev sign-in's refusal of a remote broker - name a clean URL as it is and any
-// other value as redact.NotPrinted: user info, a query, escapes, a control byte.
+// other value as redact.NotPrinted: escapes, a control byte. User info, an "@" past the host and a
+// query are refused before either, by the setting alone (agentSecretsURLRefusal).
 func TestResolveBootConfigRefusesAgentSecretsURLWithoutNamingItsCredential(t *testing.T) {
 	shape := func(brokerURL string) settingValues {
 		return envGetter(map[string]string{
@@ -558,10 +559,10 @@ func TestResolveBootConfigRefusesAgentSecretsURLWithoutNamingItsCredential(t *te
 	}{
 		"a clean path":                     {shape("https://broker.example.com/v1"), `DISPATCH_AGENT_SECRETS_URL="https://broker.example.com/v1"`},
 		"a clean remote broker":            {remote("https://broker.example.com"), `DISPATCH_AGENT_SECRETS_URL="https://broker.example.com"`},
-		"a path":                           {shape("https://tokuser9f3:hunter2pw@broker.example.com/v1?token=qtok77"), `DISPATCH_AGENT_SECRETS_URL="` + redact.NotPrinted + `"`},
-		"a remote broker":                  {remote("https://tokuser9f3:hunter2pw@broker.example.com?token=qtok77"), `DISPATCH_AGENT_SECRETS_URL="` + redact.NotPrinted + `"`},
-		"an '@' in a query value":          {shape("https://broker.example.com/?password=hunter@2pwSECRET"), `DISPATCH_AGENT_SECRETS_URL="` + redact.NotPrinted + `"`},
-		"a remote broker, '@' in a query":  {remote("https://broker.example.com?a=1&token=qtok@77SECRET&b=2"), `DISPATCH_AGENT_SECRETS_URL="` + redact.NotPrinted + `"`},
+		"a path":                           {shape("https://tokuser9f3:hunter2pw@broker.example.com/v1?token=qtok77"), "DISPATCH_AGENT_SECRETS_URL cannot be read: it holds a user name or a password"},
+		"a remote broker":                  {remote("https://tokuser9f3:hunter2pw@broker.example.com?token=qtok77"), "DISPATCH_AGENT_SECRETS_URL cannot be read: it holds a user name or a password"},
+		"an '@' in a query value":          {shape("https://broker.example.com/?password=hunter@2pwSECRET"), `DISPATCH_AGENT_SECRETS_URL cannot be read: an "@" stands after its host`},
+		"a remote broker, '@' in a query":  {remote("https://broker.example.com?a=1&token=qtok@77SECRET&b=2"), `DISPATCH_AGENT_SECRETS_URL cannot be read: an "@" stands after its host`},
 		"a literal '@' and an escaped one": {shape("https://ada@corp.example:hunter2pw%40127.0.0.1:1"), `DISPATCH_AGENT_SECRETS_URL="` + redact.NotPrinted + `"`},
 		"a double-escaped '@'":             {shape("https://tokuser9f3:hunter2pw%2540broker.example.com"), `DISPATCH_AGENT_SECRETS_URL="` + redact.NotPrinted + `"`},
 		"a newline forging a line":         {shape("https://broker.example.com\nFORGED"), `DISPATCH_AGENT_SECRETS_URL="` + redact.NotPrinted + `"`},
@@ -576,6 +577,38 @@ func TestResolveBootConfigRefusesAgentSecretsURLWithoutNamingItsCredential(t *te
 				t.Errorf("%s: refusal %q names %q", name, err, secret)
 			}
 		}
+	}
+}
+
+// A DISPATCH_AGENT_SECRETS_URL with no path that carries a credential booted, and Dispatch logged
+// it in every failed introspection, since net/http masks a password but not a user name or a
+// query: a made-up token as the user name, as a password, in the query, after an "@" past the host,
+// and in the fragment. Each is refused now by the setting alone, before anything connects.
+func TestResolveBootConfigRefusesACredentialInAgentSecretsURLByTheSettingAlone(t *testing.T) {
+	const token = "madeUpBrokerToken0123"
+	for name, row := range map[string]struct{ brokerURL, want string }{
+		"a token as the user name": {"http://" + token + "@127.0.0.1:1", "DISPATCH_AGENT_SECRETS_URL cannot be read: it holds a user name or a password, which the broker's URL has none of"},
+		"a token as the password":  {"http://dispatch:" + token + "@127.0.0.1:1", "DISPATCH_AGENT_SECRETS_URL cannot be read: it holds a user name or a password, which the broker's URL has none of"},
+		"a token in the query":     {"http://127.0.0.1:1?token=" + token, "DISPATCH_AGENT_SECRETS_URL cannot be read: it holds a query or a fragment, which the broker's URL has none of"},
+		"an @ past the host":       {"http://127.0.0.1:1?" + token + "@broker.invalid", `DISPATCH_AGENT_SECRETS_URL cannot be read: an "@" stands after its host`},
+		"a token in the fragment":  {"http://127.0.0.1:1#" + token, "DISPATCH_AGENT_SECRETS_URL cannot be read: it holds a query or a fragment, which the broker's URL has none of"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := resolveBootConfig(envGetter(map[string]string{
+				"DATABASE_URL":                              "postgres://dispatch",
+				"DISPATCH_AGENT_TOKEN":                      "agent-token",
+				"DISPATCH_IDENTITY":                         "header:X-Dispatch-User",
+				"DISPATCH_IDENTITY_HEADER_TRUSTED":          "1",
+				"DISPATCH_AGENT_SECRETS_URL":                row.brokerURL,
+				"DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE": "/var/run/secrets/broker/token",
+			}))
+			if err == nil || !strings.HasPrefix(err.Error(), row.want) {
+				t.Fatalf("resolveBootConfig = %v, want %q", err, row.want)
+			}
+			if strings.Contains(err.Error(), token[:10]) {
+				t.Errorf("the refusal %q holds part of the token", err)
+			}
+		})
 	}
 }
 
