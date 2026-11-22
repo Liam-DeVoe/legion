@@ -448,24 +448,43 @@ func (s *server) recordPendingMessageDelivery(
 		}
 		return pending, nil
 	}
+	// The pending attempt this send would resume, if there is one, and the number an attempt this
+	// send opens would take, with the transaction's now() its node is made at, are read in one
+	// statement, so the claim's xid window, which the message row's lock opens, holds no read of the
+	// number of its own (insertMessageDeliveryAttempt). The number rides here and not on the lock: a
+	// lock statement that waited for an earlier holder reads under a snapshot taken before that
+	// holder committed, so it would miss the attempt that holder opened. This statement starts once
+	// the lock is held, so it sees every attempt an earlier holder opened, and no other is opened
+	// until this transaction ends. The row comes back with no attempt pending too: its pending
+	// columns are then zero and lapsed is false.
 	var stranded model.MessageDelivery
 	var strandedUrgency *string
 	var lapsed bool
+	var nextAttempt int
+	var at time.Time
 	err = tx.QueryRow(ctx, `
-		select attempt, delivery, session_id, urgency, `+model.ConnectedOnlySQL+`, `+model.DeliveryClaimFreeSQL+`
-		from message_deliveries
-		where message_id = $1 and state = 'pending'
-		order by attempt
-		limit 1
-		for update
+		select coalesce(pending.attempt, 0), coalesce(pending.delivery, ''), coalesce(pending.session_id, ''),
+		       pending.urgency, coalesce(pending.connected_only, false), coalesce(pending.free, false),
+		       highest.attempt + 1, now()
+		from (select coalesce(max(attempt), 0) as attempt from message_deliveries where message_id = $1) highest
+		left join (
+			select attempt, delivery, session_id, urgency, `+model.ConnectedOnlySQL+` as connected_only,
+			       `+model.DeliveryClaimFreeSQL+` as free
+			from message_deliveries
+			where message_id = $1 and state = 'pending'
+			order by attempt
+			limit 1
+			for update
+		) pending on true
 	`, message.ID).Scan(
 		&stranded.Attempt, &stranded.Delivery, &stranded.SessionID, &strandedUrgency, &pending.connectedOnly, &lapsed,
+		&nextAttempt, &at,
 	)
 	var superseded *model.Event
 	switch {
-	case err != nil && !errors.Is(err, pgx.ErrNoRows):
+	case err != nil:
 		return pendingMessageDelivery{}, err
-	case err == nil && lapsed:
+	case lapsed:
 		// Nobody holds this attempt, or whoever claimed it never came back. It keeps the
 		// recipient its row names; only an attempt stranded before anything was resolved,
 		// whose row names none, goes to the message's target. Either way the resolution has
@@ -505,7 +524,9 @@ func (s *server) recordPendingMessageDelivery(
 				return pendingMessageDelivery{}, err
 			}
 			superseded = &receipt
-			if err := s.insertMessageDeliveryAttempt(ctx, tx, message, actor, resolved, &pending); err != nil {
+			// The settle above updates the stranded row and adds none, so the number read with
+			// it is still the next one.
+			if err := s.insertMessageDeliveryAttempt(ctx, tx, message, actor, resolved, nextAttempt, at, &pending); err != nil {
 				return pendingMessageDelivery{}, err
 			}
 			break
@@ -529,11 +550,12 @@ func (s *server) recordPendingMessageDelivery(
 	default:
 		// No attempt is pending, or a live sender holds the one that is, so this send opens an
 		// attempt of its own rather than two senders driving the same one. The message row is
-		// locked, so the highest attempt cannot move between reading it and inserting beside it.
+		// locked, so the highest attempt cannot move between reading it with the pending attempt
+		// above and inserting beside it.
 		if target != resolved.Target {
 			return pendingMessageDelivery{}, errStaleResolution
 		}
-		if err := s.insertMessageDeliveryAttempt(ctx, tx, message, actor, resolved, &pending); err != nil {
+		if err := s.insertMessageDeliveryAttempt(ctx, tx, message, actor, resolved, nextAttempt, at, &pending); err != nil {
 			return pendingMessageDelivery{}, err
 		}
 	}
@@ -569,10 +591,13 @@ func (s *server) openFirstMessageDeliveryAttempt(
 	if resumeAttempt != 1 {
 		return pendingMessageDelivery{}, errAttemptNotPending
 	}
+	// The check reads the transaction's now() beside it, which the attempt's node is made at: a
+	// message with no attempt, under the lock tx holds, gets none but the one this opens, attempt 1.
 	var attempted bool
+	var at time.Time
 	if err := tx.QueryRow(ctx,
-		`select exists (select 1 from message_deliveries where message_id = $1)`, message.ID,
-	).Scan(&attempted); err != nil {
+		`select exists (select 1 from message_deliveries where message_id = $1), now()`, message.ID,
+	).Scan(&attempted, &at); err != nil {
 		return pendingMessageDelivery{}, err
 	}
 	if attempted {
@@ -582,7 +607,7 @@ func (s *server) openFirstMessageDeliveryAttempt(
 		return pendingMessageDelivery{}, errStaleResolution
 	}
 	pending := pendingMessageDelivery{resolved: resolved}
-	if err := s.insertMessageDeliveryAttempt(ctx, tx, message, actor, resolved, &pending); err != nil {
+	if err := s.insertMessageDeliveryAttempt(ctx, tx, message, actor, resolved, 1, at, &pending); err != nil {
 		return pendingMessageDelivery{}, err
 	}
 	if err := finishPendingMessageDelivery(ctx, tx, s, message, replyThread, &pending); err != nil {
@@ -655,12 +680,16 @@ func finishPendingMessageDelivery(
 // delivery, and this attempt's own fate was never learned.
 const supersededByModeChangeText = "superseded by a retry in another mode; it may already have been delivered"
 
-// insertMessageDeliveryAttempt opens an attempt of this send's own, under the recipient the
-// resolution was taken for, recording requestedBy - the actor this send carries - as who asked
-// for it. The message row is locked by the caller, so the highest attempt cannot move between
-// reading it and inserting beside it: the number is read first, with the transaction's now(),
-// because the attempt's node is addressed by it and goes in before the row that names it
-// (graphstore.AttemptOpened). The node, the row and what the row holds go in one batch.
+// insertMessageDeliveryAttempt opens attempt number attempt, of this send's own, under the
+// recipient the resolution was taken for, recording requestedBy - the actor this send carries - as
+// who asked for it. The message row is locked by the caller, so the highest attempt cannot move
+// between its caller's read of it and the insert beside it: attempt is that read's next number,
+// and at the transaction's now() read beside it, because the attempt's node is addressed by the
+// number and goes in before the row that names it (graphstore.AttemptOpened). The caller reads
+// both in a statement its claim makes anyway - the read of the pending attempt it would resume
+// (recordPendingMessageDelivery), or the check that the message has no attempt, which makes this
+// attempt 1 (openFirstMessageDeliveryAttempt) - so the claim's xid window holds no read of its
+// own for them. The node, the row and what the row holds go in one batch.
 //
 // connected_only is attempt 1's, never this send's request's: the request that stored the message
 // is the only one that says whether it asks for a session running now (createStoredMessage), so a
@@ -673,21 +702,16 @@ const supersededByModeChangeText = "superseded by a retry in another mode; it ma
 // (openFirstMessageDeliveryAttempt).
 func (s *server) insertMessageDeliveryAttempt(
 	ctx context.Context, tx pgx.Tx, message model.Message, requestedBy model.Actor, resolved ResolvedMention,
-	pending *pendingMessageDelivery,
+	attempt int, at time.Time, pending *pendingMessageDelivery,
 ) error {
 	requester, err := json.Marshal(requestedBy)
 	if err != nil {
 		return err
 	}
-	var at time.Time
-	if err := tx.QueryRow(ctx, `
-		select coalesce(max(attempt), 0) + 1, now() from message_deliveries where message_id = $1
-	`, message.ID).Scan(&pending.attempt, &at); err != nil {
-		return err
-	}
+	pending.attempt = attempt
 	// A send's claim opens the attempt and records no event of its own, so the node and what the
 	// row holds are the delivery machinery's, at the sentinel (graphstore.AttemptWriter).
-	key := graphstore.MessageAttempt(message.ID, pending.attempt)
+	key := graphstore.MessageAttempt(message.ID, attempt)
 	nodeKind, nodeAddress, opened := graphstore.AttemptOpened(key, graphstore.AttemptWriter, at)
 	return store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
 		graphstore.QueueNodes(b, opened)
@@ -700,7 +724,7 @@ func (s *server) insertMessageDeliveryAttempt(
 				$6, $7
 			)
 			returning claimed_at, `+model.ConnectedOnlySQL+`
-		`, message.ID, pending.attempt, resolved.Delivery, resolved.attemptSessionID, requester, nodeKind, nodeAddress,
+		`, message.ID, attempt, resolved.Delivery, resolved.attemptSessionID, requester, nodeKind, nodeAddress,
 		).QueryRow(func(row pgx.Row) error { return row.Scan(&pending.claimedAt, &pending.connectedOnly) })
 		graphstore.QueueCaused(b, opened, graphstore.NoEvent)
 		graphstore.QueueAttempted(b, graphstore.AttemptWriter, graphstore.NoEvent, key)
