@@ -273,8 +273,9 @@ func readOwedHolders(ctx context.Context, tx pgx.Tx, records record.Store, claim
 // under) and it holds no task its worker has not taken yet (holdsUntakenTask, the reconcile's other
 // guard). A claim the start reaches that holds such a task gets no start until a turn takes it, so
 // its news waits for that turn (workflow.NewsWaitsForTask). Otherwise by the next start of its
-// phase: a claim behind its phase's current entry, owed that entry's start, no claim at all, or one
-// that retired, failed, or an operator suspended, since the start that revives it carries the news.
+// phase: a claim behind its phase's current entry, owed that entry's start, no claim at all, one
+// that retired or failed, or one a suspension that holds (the operator's, the controller's or an
+// architect's) is over, since the start that brings its agent back carries the news.
 func holderTold(run record.RoleRun, entry int64) workflow.NewsState {
 	switch {
 	case !recordedClaimTakesNews(run.Claim, entry):

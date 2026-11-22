@@ -3847,13 +3847,14 @@ func (r *outbox) designGateClosed(ctx context.Context, issue record.Issue) (bool
 //
 //  1. A start queued for news alone (record.SuperviseRequest.News) reaches only a claim such a
 //     start may reach as the claim stands now (newsOnlyRefusal): one that exists and was given the
-//     entry its role's phases row names, has not ended, and that no operator suspended. A root's
-//     architect is read so too, since it holds a phases row that states the work it is owed, as a
-//     phase worker does (dispatch://INFRA-2614): an architect behind its row's entry is owed that
-//     entry's start, which carries its summary. It never creates a claim, revives one or resumes an
-//     operator's, and one it may not reach finishes it, since the start that brings that claim back
-//     carries the news. The generation, the phase, the workflow and the linger have fenced it before
-//     this, as they fence any start.
+//     entry its role's phases row names, has not ended, and that no suspension that holds (the
+//     operator's, the controller's or an architect's) is over. A root's architect is read so too,
+//     since it holds a phases row that states the work it is owed, as a phase worker does
+//     (dispatch://INFRA-2614): an architect behind its row's entry is owed that entry's start,
+//     which carries its summary. It never creates a claim, revives one or resumes an agent such a
+//     suspension holds, and one it may not reach finishes it, since the start that brings that
+//     agent back carries the news. The generation, the phase, the workflow and the linger have
+//     fenced it before this, as they fence any start.
 //  2. A merger's start waits while its tree's design gate is closed or its news is not recorded
 //     (mergerWaitsForTheDesignGate), after the refusal, so a news-only start that reaches no claim
 //     finishes rather than waits.
@@ -3908,9 +3909,9 @@ func (r *outbox) startNewsOf(ctx context.Context, row record.OutboxRow, issue re
 // unavailable, and a review history it cannot read is recorded unread (designChangesAttempts), and
 // the start then carries the news (newsForStart).
 //
-// Every held message to a released merger (deliverHeld: a merge-queue removal, and a merge
-// forward's hold and landed) reads this same rule before it wakes it, so no such message brings
-// back a merger that its own start would hold.
+// Every held message to a released merger (deliverHeld: a merge-queue removal, a merge forward's
+// hold and landed, and a merge-holds change) reads this same rule before it wakes it, so no such
+// message brings back a merger that its own start would hold.
 func (r *outbox) mergerWaitsForTheDesignGate(ctx context.Context, issue record.Issue, role claim.Role) error {
 	if role != claim.RoleMerger {
 		return nil

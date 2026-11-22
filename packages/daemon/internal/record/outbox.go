@@ -1828,8 +1828,10 @@ func MergeHoldsChangedReason(project string) string {
 // was released or not. The row names no role: the merger is the one role it is ever for.
 //
 // The row is held as a merge-queue removal is held (MergeQueueRemoval): it wakes a released merger
-// and waits until the merger's session holds its role, and while the root's design gate is closed
-// it neither wakes nor tells a released merger. It ends undelivered when the issue has left
+// and waits until the merger's session holds its role, and while the rule that holds the merger's
+// start holds it (the daemon's mergerWaitsForTheDesignGate: the root's design gate is closed, or
+// the news of the approved design the merger is owed is not yet recorded) it neither wakes nor
+// tells a released merger. It ends undelivered when the issue has left
 // merging (its phase is not merging, it is out of the workflow, its tree lingers, or its pull
 // request has merged), and when the merger's claim is failed or retired.
 type MergeHoldsChanged struct {

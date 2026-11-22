@@ -2465,7 +2465,7 @@ It prints `UPDATE <n>`, and a rerun prints `UPDATE 0`.
 Each agent whose suspension moved then stays suspended until the operator resumes it with `legion claims resume`, or the controller starts it in a new session with `fresh_session`: the earlier release gives the controller no `resume_agent`, and the architects no action on an agent.
 Leave the statement out, and the earlier release treats each such agent as one the daemon suspended, which its rules start again.
 The two checks keep the new names after the rollback, and the rollback needs no statement for them: an earlier release never writes them, so the checks refuse nothing that release writes.
-The kind check also keeps every kind of the list of `20261119003157_conflict_reads_and_merge_forward`, `conflict_confirm`, `merge_forward` and `phase_ended` among them, so it refuses no row the earlier release writes either.
+The kind check also keeps every kind of the list of `20261119203047_design_news`, `conflict_confirm`, `merge_forward`, `design_changes` and `phase_ended` among them, so it refuses no row the earlier release writes either.
 
 **`runtime.kubernetes.pod.controller_service_account` must go before the earlier image is pinned.**
 This release adds that key, and an earlier release's key table has no row for it, so its loader refuses the file by name (`unknown key runtime.kubernetes.pod.controller_service_account`) and its daemon does not start while the key stands.
