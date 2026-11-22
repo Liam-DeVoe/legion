@@ -381,7 +381,8 @@ func TestARetryOfADeploymentStepRestartsItsRole(t *testing.T) {
 	})
 }
 
-// The start of a step of a role the deployment defines names that role's claim as its agent.
+// The start of a step of a role the deployment defines names the claim of its agent, here the agent
+// named for that role, as its agent.
 func TestTheStartOfADeploymentStepNamesItsAgent(t *testing.T) {
 	pool := migratedPool(t)
 	engine := deploymentEngine()
@@ -554,10 +555,12 @@ func wantEachRole(t *testing.T, rows map[string]int, key string, skip claim.Role
 	}
 }
 
-// A close reaches every claim its issue may hold, the claim of a role the deployment defines
-// among them, read from the roles the issue's phases rows name: a merged child's close retires the
-// checker's claim with the six (and leaves out the tester that works a production check); a child
-// moved to backlog suspends it; and a root's close suspends it as its tree lingers.
+// A close reaches every claim its issue may hold, the claim of a role the deployment defines among
+// them: one row for each stored claim of the issue, and one by role for each role the issue can
+// hold, the roles its phases rows name among them, whose worker claim is none of those
+// (claimTargets). A merged child's close retires the checker's claim with the six (and leaves out
+// the tester that works a production check); a child moved to backlog suspends it; and a root's
+// close suspends it as its tree lingers.
 func TestAClosedIssueReachesItsDeploymentRolesClaim(t *testing.T) {
 	merged := intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 43, MergeSHA: "merge-43"}
 	t.Run("a merged child", func(t *testing.T) {
