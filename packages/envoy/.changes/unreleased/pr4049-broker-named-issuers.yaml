@@ -11,9 +11,11 @@ body: |-
   the read of that key set it waits on fails, and at once less than 5 seconds after one failed. It
   reads such a key set again at most once in 5 seconds. At its start it logs
   `broker: kubernetes issuer` for each issuer, with `read=true` or `read=false`. It logs
-  `broker: kubernetes issuer can be read again` once when an issuer its start could not read can
-  be read, written by whichever comes first: a token of that issuer that verifies, or the
-  background read of it. Before, it refused to
+  `broker: kubernetes issuer cannot be read` once when it starts to answer the tokens of an issuer
+  it has read so. It logs
+  `broker: kubernetes issuer can be read again` once when an issuer it could not read, at its start
+  or since, can be read, written by whichever comes first: a token of that issuer that verifies,
+  or, for an issuer its start could not read, the background read of it. Before, it refused to
   start when it could not read its one issuer, and it answered a token whose key it could not read
   as unverified: `403 POD_IDENTITY_MISMATCH`, `401 TOKEN_INVALID`, `401 ACCOUNT_TOKEN_INVALID`,
   `401 POD_TOKEN_INVALID`, or `invalid_request` on the token exchange.

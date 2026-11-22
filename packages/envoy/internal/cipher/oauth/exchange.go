@@ -331,7 +331,7 @@ func (c ExchangeConfig) tokenTypes() map[string]oauth2.RFC8693TokenType {
 				// pod is the pod binding the decision requires.
 				ValidateJTI:                false,
 				JWTLifetimeToleranceWindow: kubernetesTolerance,
-				ValidateFunc:               kubernetesKeyFunc(c.Kubernetes),
+				ValidateFunc:               kubernetesKeyFunc(c.Kubernetes, kubernetesTolerance),
 			},
 		}
 	}
@@ -344,7 +344,7 @@ func (c ExchangeConfig) tokenTypes() map[string]oauth2.RFC8693TokenType {
 				// token needs and a leaked one cannot be replayed.
 				ValidateJTI:                true,
 				JWTLifetimeToleranceWindow: githubTolerance,
-				ValidateFunc:               keyFunc(c.GitHub.Keys),
+				ValidateFunc:               keyFunc(c.GitHub.Keys, c.GitHub.Issuer, githubTolerance),
 			},
 		}
 	}
@@ -360,7 +360,7 @@ func (c ExchangeConfig) tokenTypes() map[string]oauth2.RFC8693TokenType {
 				// copied it is the DPoP key the minted token is bound to.
 				ValidateJTI:                false,
 				JWTLifetimeToleranceWindow: googleTolerance,
-				ValidateFunc:               keyFunc(c.Google.Keys),
+				ValidateFunc:               keyFunc(c.Google.Keys, c.Google.Issuer, googleTolerance),
 			},
 		}
 	}
@@ -383,7 +383,7 @@ func (c ExchangeConfig) tokenTypes() map[string]oauth2.RFC8693TokenType {
 					// being spendable is the box key the sign-in is recorded against.
 					ValidateJTI:                false,
 					JWTLifetimeToleranceWindow: googleTolerance,
-					ValidateFunc:               keyFunc(c.Google.Keys),
+					ValidateFunc:               keyFunc(c.Google.Keys, c.Google.Issuer, googleTolerance),
 				},
 			}
 		}
@@ -434,18 +434,71 @@ func clusterIssuer(issuers []IssuerConfig, iss string) (IssuerConfig, bool) {
 // token. The cluster issuers' source (oidc.LazyVerifier.Key) says so itself; the plain key sets
 // Google's and GitHub's tokens are checked against (*oidc.Keys) answer ErrKeySet alone, which
 // the library would otherwise refuse as a token it could not parse, a 400 its clients take as
-// final.
-func keyFunc(keys oidc.KeySource) jwt.Keyfunc {
+// final. The one exception is a token the library refuses once its signature checks whatever key
+// signed it (refusedWithoutKey): it is refused here, 400 invalid_request, as the library refuses
+// it once the key set answers, since no wait makes it valid and a 503 would only have its client
+// try again until the same 400. issuer is the type's JWTType.Issuer, and window its
+// JWTLifetimeToleranceWindow.
+func keyFunc(keys oidc.KeySource, issuer string, window time.Duration) jwt.Keyfunc {
 	return func(token *jwt.Token) (any, error) {
 		if !slices.Contains(subjectTokenAlgorithms, token.SignatureAlgorithm) {
 			return nil, fmt.Errorf("oauth: a subject token signed with %q is refused: its issuer signs with a published key", token.SignatureAlgorithm)
 		}
 		key, err := keys.Key(context.Background(), token.KeyID, string(token.SignatureAlgorithm))
-		if errors.Is(err, oidc.ErrKeySet) && !errors.Is(err, oidc.ErrIssuerUnavailable) {
+		if !errors.Is(err, oidc.ErrKeySet) && !errors.Is(err, oidc.ErrIssuerUnavailable) {
+			return key, err
+		}
+		if fault := refusedWithoutKey(token.Claims, issuer, window, time.Now()); fault != nil {
+			// The key's error is named and not wrapped: wrapped, it would answer 503.
+			return nil, fmt.Errorf("%w (and the issuer's keys could not be read: %v)", fault, err)
+		}
+		if !errors.Is(err, oidc.ErrIssuerUnavailable) {
 			return nil, fmt.Errorf("%w: %w", oidc.ErrIssuerUnavailable, err)
 		}
-		return key, err
+		return nil, err
 	}
+}
+
+// errRefusedWithoutKey is the class of refusedWithoutKey's answers.
+var errRefusedWithoutKey = errors.New("oauth: the subject token is refused whatever key signed it")
+
+// refusedWithoutKey is the fault authelia.com/provider/oauth2 v0.3.3 refuses claims for once a
+// token's signature checks, whatever key signed it, and nil for claims it would go on to judge:
+//   - an exp that is no number, or past, which the parse's own claim check refuses with no leeway
+//     (an exp of 0 or null it does not hold expired, and neither does this);
+//   - no exp claim at all, which rfc8693's validate refuses ("Claim 'exp' from token is missing");
+//   - an exp later than window from now, which validate refuses ("too far in the future"), window
+//     being the type's JWTLifetimeToleranceWindow, an hour where it is zero as validate reads it;
+//   - an iss that is not issuer, where issuer names one, which validate refuses ("must match"):
+//     no client of the broker lists issuers of its own, so the type's issuer is the one compared.
+//
+// It checks those and no others, so it never refuses a token the library would admit. The
+// library's other checks that need no key (an iat or nbf in the future, an iat older than
+// window) are left to it.
+func refusedWithoutKey(claims jwt.Claims, issuer string, window time.Duration, now time.Time) error {
+	if window == 0 {
+		window = time.Hour
+	}
+	if _, present := claims.ToMapClaims()["exp"]; !present {
+		return fmt.Errorf("%w: it carries no exp", errRefusedWithoutKey)
+	}
+	exp, err := claims.GetExpirationTime()
+	switch {
+	case err != nil:
+		return fmt.Errorf("%w: its exp is not a time: %v", errRefusedWithoutKey, err)
+	case exp == nil:
+		// An exp of 0 or null: the library holds it neither past nor too far ahead.
+	case now.Unix() > exp.Int64():
+		return fmt.Errorf("%w: it expired at %s", errRefusedWithoutKey, time.Unix(exp.Int64(), 0).UTC().Format(time.RFC3339))
+	case now.Add(window).Before(time.Unix(exp.Int64(), 0)):
+		return fmt.Errorf("%w: its exp is more than %s away", errRefusedWithoutKey, window)
+	}
+	if issuer != "" {
+		if iss, _ := claims.ToMapClaims()["iss"].(string); iss != issuer {
+			return fmt.Errorf("%w: its iss is not %s", errRefusedWithoutKey, issuer)
+		}
+	}
+	return nil
 }
 
 // errIssuerNotTaken is kubernetesKeyFunc's refusal of a token whose `iss` names none of the
@@ -457,8 +510,10 @@ var errIssuerNotTaken = errors.New("oauth: the subject token's iss names no issu
 // token's `iss`, and answers keyFunc's key from the keys of the one of issuers that `iss` names,
 // so the library checks the token's signature against that issuer's keys alone. A token whose
 // `iss` names none of them, or whose `iss` is no string, is errIssuerNotTaken, with the claim's
-// own fault where it has one, and reads no issuer's keys.
-func kubernetesKeyFunc(issuers []IssuerConfig) jwt.Keyfunc {
+// own fault where it has one, and reads no issuer's keys. window is the type's
+// JWTLifetimeToleranceWindow, so an expired token is refused 400 while its issuer's keys cannot be
+// read, as keyFunc refuses one of another type.
+func kubernetesKeyFunc(issuers []IssuerConfig, window time.Duration) jwt.Keyfunc {
 	return func(token *jwt.Token) (any, error) {
 		iss, err := token.Claims.GetIssuer()
 		if err != nil {
@@ -468,7 +523,7 @@ func kubernetesKeyFunc(issuers []IssuerConfig) jwt.Keyfunc {
 		if !taken {
 			return nil, errIssuerNotTaken
 		}
-		return keyFunc(issuer.Keys)(token)
+		return keyFunc(issuer.Keys, issuer.Issuer, window)(token)
 	}
 }
 
