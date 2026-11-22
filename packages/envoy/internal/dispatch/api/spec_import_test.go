@@ -932,3 +932,65 @@ func TestImportLevelOne(t *testing.T) {
 		}
 	})
 }
+
+// TestImportLevelTakesNoStatementFromACodeExample: the import reads the statements of the approved
+// level from the blocks of the parsed document, so a requirement directive that a code example of
+// the level shows is no statement: with notes the person approved or without, it is neither
+// written into the approved spec nor held, and no repair issue is opened for it. The same directive
+// written as a block is written with the approved notes, and held for its kind without them, in one
+// repair issue (D9).
+func TestImportLevelTakesNoStatementFromACodeExample(t *testing.T) {
+	const id = "an-example-is-not-a-statement"
+	const directive = ":::requirement{#" + id + "}\nA bill is sent.\n:::\n"
+	const notes = "# Notes\n\n### " + id + "\n\n- Kind: behavior\n- About: none\n- Supports: none\n"
+	for _, c := range []struct {
+		name                  string
+		fenced, approvedNotes bool
+	}{
+		{name: "a directive, notes the person approved", approvedNotes: true},
+		{name: "a directive, notes no approval names"},
+		{name: "a code example, notes the person approved", fenced: true, approvedNotes: true},
+		{name: "a code example, notes no approval names", fenced: true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			text := "# Level\n\n## Statements\n\n" + directive
+			if c.fenced {
+				text = "# Level\n\n## Examples\n\n```markdown\n" + directive + "```\n"
+			}
+			rig := newLevelRig(t, "A level and an example", text)
+			uploaded := rig.upload(t, "notes.md", notes)
+			rig.approveLevel(t)
+			if c.approvedNotes {
+				rig.approveDocument(t, uploaded.ID)
+			}
+			imported := rig.imported(t, "notes.md")
+			written, held := slices.Contains(imported.Written, id), imported.lacks()
+			switch {
+			case c.fenced:
+				if len(imported.Written) != 0 || len(imported.Held) != 0 || imported.RepairIssue != nil {
+					t.Errorf("the import of a level whose one directive is a code example writes %v, holds %v and names the repair issue %v, want nothing",
+						imported.Written, held, imported.RepairIssue)
+				}
+				rig.requireAbsent(t, specRepo, id)
+				if children := rig.children(t); len(children) != 0 {
+					t.Errorf("%s has the child issues %v, want none: nothing is held", rig.level.Key, children)
+				}
+			case c.approvedNotes:
+				if !written || len(imported.Held) != 0 || imported.RepairIssue != nil {
+					t.Errorf("the import writes %v, holds %v and names the repair issue %v, want %s written and nothing held",
+						imported.Written, held, imported.RepairIssue, id)
+				}
+				if node := rig.requireVersions(t, specRepo, id, `kind="behavior"`); !strings.Contains(node.Versions[0].Block, "\nA bill is sent.\n") {
+					t.Errorf("%s is written as %q, want the block's text %q", id, node.Versions[0].Block, "A bill is sent.")
+				}
+			default:
+				if written || !reflect.DeepEqual(held, map[string][]string{id: {"kind"}}) || imported.RepairIssue == nil {
+					t.Errorf("the import writes %v, holds %v and names the repair issue %v, want %s held for its kind in one repair issue",
+						imported.Written, held, imported.RepairIssue, id)
+				}
+				rig.requireAbsent(t, specRepo, id)
+				rig.requireOneRepairChild(t, []string{id})
+			}
+		})
+	}
+}
