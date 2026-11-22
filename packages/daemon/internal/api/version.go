@@ -3060,10 +3060,9 @@ package api
 // process of 193 or later states its contract in `Legion-Plugin-Contract` and is served by it,
 // and an older one is placed by the lowest contract its pod records. Those are the callers the
 // strip serves.
-// A renumber moves `cachesSourceContract` in shaping.go with it, and that one constant alone: it
-// is the arrival answers.go's `capabilitySources` records for `caches`, and it is the last number
-// of answers.go's SupportedContracts, which names the constant rather than its number for that
-// reason.
+// A renumber moves `cachesSourceContract` in shaping.go with it, and that one constant alone: it is
+// the arrival answers.go's `capabilitySources` records for `caches`, and it is a number of
+// answers.go's SupportedContracts, which names the constant rather than its number for that reason.
 // (This entry first took 197, the lowest number above main's 189 that no open pull request
 // declared when the merge of 2026-11-20 brought main in at f21107b285, and took 201 at the merge
 // that brought main in at 193 (8a9540682d, #3659 having declared 193): a reading of `const
@@ -3157,7 +3156,7 @@ package api
 // #4930, 221 by #3993, #4049, #4392, #4432 and #4771, 222 by #4661, 223 by #4805, 224 by #4960,
 // 225 by #3712 and #4580, 226 by #4175, 227 by #4065 and 228 by #4590, and nothing at 229, so 229
 // is the lowest number above main's 213 that neither main nor any other open pull request declares.
-// main held 213 at the forward merge that last read this number, main's 51d1a21f; read main's own
+// main held 213 at the forward merge that last read this number, main's f19175da; read main's own
 // number and every open pull request's again at the next merge rather than from this line. A
 // renumber moves `questionsForControllerContract` in shaping.go with it, the last number of
 // answers.go's SupportedContracts.)
