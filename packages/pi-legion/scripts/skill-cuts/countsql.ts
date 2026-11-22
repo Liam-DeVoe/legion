@@ -4,10 +4,12 @@
  * pull.sql (a transcript, by path), tasks.sql (first user messages that hold some terms),
  * sessions.sql (the paths of the files a count row names by hash), session-head.sql (the head
  * of each session a case or a load task names by its path's SHA-256) and session-paths.sql (the
- * path of each session a load task names by its path's SHA-256). Each placeholder is the
- * name of a value inside double braces, and each is filled with one whole SQL value: a number, or
- * a string literal with its quotes (`sqlString`), so no value can end the literal it is in. The
- * filled text goes into the store's read command unchanged.
+ * path of each session a load task names by its path's SHA-256). Each placeholder is the name of
+ * a value inside double braces, and each is filled with one whole SQL value: a number, a string
+ * literal with its quotes (`sqlString`), or a text array of such literals (`sqlTextArray`:
+ * tasks.sql's terms, and the hashes of sessions.sql, session-head.sql and session-paths.sql), so
+ * no value can end the literal it is in. The filled text goes into the store's read command
+ * unchanged.
  *
  *   bun scripts/skill-cuts/countsql.ts --config <skill-cuts.json> --store <db> --day <YYYY-MM-DD>
  *     [--hour <0-23>] [--query count|models]

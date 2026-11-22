@@ -67,3 +67,32 @@ test("a bot's no-reply address is checked: the allowed one passes and another is
     "other.txt: email address: other-…",
   ]);
 });
+
+// Catches: an IP address passed over when a full stop follows it, as at the end of a sentence.
+test("an IP address a full stop follows is a hit, and a dotted number of five parts is no address", () => {
+  const { code, out } = scan("addresses", {
+    "a.txt": "The host was 10.1.2.3.\n",
+    "b.txt": "The build is 1.2.3.4.5, on Bun 1.4.4.\n",
+  });
+  expect(code).toBe(1);
+  expect(out.filter((line) => line.includes("IP address"))).toEqual(["a.txt: IP address: 10.1.2…"]);
+});
+
+// Catches: a file under the directory that cannot be read ending the scan with exit 1, the status
+// of a hit, where it is a refusal.
+test("a file under the directory that the scan cannot read is a refusal, exit 2, naming the file", () => {
+  const dir = path.join(scratch, "unreadable");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(path.join(dir, "a.txt"), "Plain text.\n");
+  // A socket: its stat is no directory's, and no read can open it.
+  const socket = Bun.listen({ unix: path.join(dir, "b.sock"), socket: { data() {} } });
+  try {
+    const { code, out } = scan("unreadable", {});
+    expect(code).toBe(2);
+    expect(out.filter((line) => line.startsWith("fixturescan: "))).toEqual([
+      expect.stringMatching(/^fixturescan: b\.sock: /),
+    ]);
+  } finally {
+    socket.stop(true);
+  }
+});

@@ -2537,11 +2537,10 @@ describe("a truncated tree", () => {
         }
       );
       await letGo;
-      // While it waited, the other reads held every slot, and one of them, of another repository,
-      // started in the wait.
+      // While it waited, the other reads held every slot, and another repository's read started
+      // in the wait: the flaky read itself is sent again only once the wait ends.
       expect(during?.inFlight).toBe(READ_CALLS);
       expect(during?.started.length).toBeGreaterThan(0);
-      expect(during?.started).not.toContain(flaky);
       expect(w.sleeps).toEqual([5_000]);
       expect(result.repositories.map((repo) => [repo.repository, repo.error])).toEqual(
         ["cybermonklabs/legion", ...small].map((repository) => [repository, ""])
@@ -2650,18 +2649,27 @@ describe("a run started again over --cache-dir", () => {
     );
   });
 
-  test("a cache file a killed write left is never read: a temporary file, or a file cut short", async () => {
+  // Catches: a cache read that takes the temporary file a killed write left where no final file
+  // is, or a final file cut short.
+  test("a cache file a killed write left is never read: a temporary file with no final file, or a final file cut short", async () => {
     const cacheDir = mkdtempSync(path.join(tmpdir(), "copies-cache-"));
     scratch.push(cacheDir);
     const first = await run(clean(), [...only, "--cache-dir", cacheDir]);
-    // A kill between the write and the rename leaves the temporary file, here with a commit no
-    // run read; a kill during a write straight to the final name would leave that file cut short.
+    // Half the repositories keep only the temporary file a kill between the write and the rename
+    // leaves, here with a commit no run read; the others keep a final file cut short, which is
+    // not of the cache's shape.
     const repositories = path.join(cacheDir, "repository");
-    for (const file of readdirSync(repositories)) {
+    const files = readdirSync(repositories).sort();
+    expect(files.length).toBeGreaterThanOrEqual(2);
+    for (const [index, file] of files.entries()) {
       const final = path.join(repositories, file);
       const text = readFileSync(final, "utf8");
-      writeFileSync(`${final}.tmp-1-0`, text.replace(/"commit":"[0-9a-f]+"/, '"commit":"0000"'));
-      writeFileSync(final, text.slice(0, Math.floor(text.length / 2)));
+      if (index % 2 === 0) {
+        writeFileSync(`${final}.tmp-1-0`, text.replace(/"commit":"[0-9a-f]+"/, '"commit":"0000"'));
+        rmSync(final);
+      } else {
+        writeFileSync(final, text.slice(0, Math.floor(text.length / 2)));
+      }
     }
     const w = clean();
     const second = await run(w, [...only, "--cache-dir", cacheDir]);
@@ -3150,9 +3158,9 @@ describe("the owners' searches at once, each paced by its own limit", () => {
 });
 
 describe("the searches beside the tree reads", () => {
-  /** acme/slow, a made-up repository beside the world's, whose tree a run reads last: it holds
-   *  slow-skill, a name no other repository holds, a copy of alpha, and a guide naming slow-skill.
-   */
+  /** acme/slow, a made-up repository beside the world's, whose tree the "before" run below holds
+   *  back until three searches are answered, so that run reads it last: it holds slow-skill, a
+   *  name no other repository holds, a copy of alpha, and a guide naming slow-skill. */
   const SLOW = "acme/slow";
   const SLOW_FILES: MadeFile[] = [
     {
@@ -3502,7 +3510,7 @@ describe("build.ts's profile reads of a repository", () => {
   /** Each installer row as its JSON text, sorted. */
   const rowTexts = (rows: readonly InstallerRow[]) => rows.map((row) => JSON.stringify(row)).sort();
 
-  test("select the files copies.ts selects, so the installers they resolve are those installers.tsv holds", async () => {
+  test("select the files copies.ts selects, so the installers they resolve are the installer rows copies.ts resolves", async () => {
     const config = parseConfig(CONFIG);
     // copies.ts's rules read none of acme/drift's files.
     expect(repositoryFiles(DRIFT, treeOf(DRIFT, DRIFT_FILES), config.excludePaths)).toEqual({

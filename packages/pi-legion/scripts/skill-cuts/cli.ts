@@ -7,7 +7,8 @@
  * `behaviour` and `load` read skill texts from directories, cases or tasks from a file, and the
  * key from a file; the repositories a context needs come from `--repos <dir>` (a tree of
  * `<owner>/<name>/<commit>/` directories, context.ts's `localSource`), or else from GitHub
- * through `gh` (context.ts's `ghSource`). So they need no GitHub token only with `--repos`.
+ * through `gh` (context.ts's `ghSource`). So they read GitHub, with its token, only to make a
+ * capture with no `--repos`: a command whose captures are all saved reads no repository.
  *
  *   bun scripts/skill-cuts/cli.ts behaviour <screen|confirm|control|report> --config <file>
  *       --key-file <file> --out <dir> --old <dir> --new <dir> --cases <file>
@@ -497,7 +498,7 @@ function requiredOmp(given: string | undefined): string {
 // `read`.
 
 const READ_USAGE =
-  "usage: cli.ts read --config <skill-cuts.json> --key-file <file> --prompt <name> --in <input.json> --out <answer.json> [--request-log <file>] [--budget-usd <n>]";
+  "usage: cli.ts read --config <skill-cuts.json> --key-file <file> --prompt <name> --in <input.json> --out <answer.json> [--request-log <file>] [--budget-usd <n>] [--concurrency <n>]";
 
 /** `skill-cuts read`. */
 async function readCommand(argv: readonly string[], io: CliIo): Promise<number> {
@@ -567,7 +568,7 @@ async function readCommand(argv: readonly string[], io: CliIo): Promise<number> 
 // `control`.
 
 const CONTROL_USAGE = [
-  "usage: cli.ts control <kind> --config <skill-cuts.json> --key-file <file> --in <input.json> --out <result.json> [--request-log <file>] [--budget-usd <n>], where <kind> and what it plants is one of:",
+  "usage: cli.ts control <kind> --config <skill-cuts.json> --key-file <file> --in <input.json> --out <result.json> [--request-log <file>] [--budget-usd <n>] [--concurrency <n>], where <kind> and what it plants is one of:",
   "  map --delete-line <a line of the cut text that the base text holds too>",
   "  attack [--plant-line <line>]",
   "  same-job --planted <file holding one skill entry {id, repo, name, description}> --copy-of <id>",

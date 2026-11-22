@@ -27,7 +27,8 @@
  * value, a JSONL file and a psql capture (`.txt`) line by line, an SSE file by its `data:` lines;
  * a string value that holds JSON, or JSON lines, is read the same way. Prints each hit, then how
  * many runs of each known kind it accounted for. Exit 0 when nothing is found, 1 on any hit, 2 on
- * a refusal before the scan (the usage, or a key, terms or directory it cannot read).
+ * a refusal: the usage, or a key, terms or directory it cannot read (before the scan), or a file
+ * under the directory it cannot read (the scan stops there, naming the file).
  */
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
@@ -41,7 +42,7 @@ const SHAPES: readonly (readonly [string, RegExp])[] = [
   ["private key block", /-----BEGIN/g],
   ["Bearer credential", /Bearer [A-Za-z0-9._~+/-]{8,}/g],
   ["key header", /x-api-key/gi],
-  ["IP address", /(?<![\d.])\d{1,3}(?:\.\d{1,3}){3}(?![\d.])/g],
+  ["IP address", /(?<![\d.])\d{1,3}(?:\.\d{1,3}){3}(?!\.?\d)/g],
   [
     "email address",
     /[A-Za-z0-9._%+-]+(?:\[bot\])?@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/g,
@@ -92,8 +93,8 @@ function walk(value: unknown, key: string, out: Value[]): void {
   }
 }
 
-/** `text` read as one JSON value, or else as JSON lines; a line that is not JSON is kept as text
- *  under `key`. */
+/** `text` read as one JSON value, or else as JSON lines: a line that starts with `{` or `[` and
+ *  does not parse is kept as text under `key`, and any other line is passed over. */
 function readJson(text: string, key: string, out: Value[]): void {
   try {
     walk(JSON.parse(text), key, out);
@@ -198,7 +199,12 @@ export function main(
 
   for (const file of files) {
     const name = path.relative(root, file);
-    const raw = readFileSync(file, "utf8");
+    let raw: string;
+    try {
+      raw = readFileSync(file, "utf8");
+    } catch (error) {
+      return refuse(`${name}: ${(error as Error).message}`);
+    }
     const texts = [raw];
     const found: Value[] = [];
     try {

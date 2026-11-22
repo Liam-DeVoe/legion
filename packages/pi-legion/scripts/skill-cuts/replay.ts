@@ -32,13 +32,14 @@
  * cache), so a Responses body goes as it is, with no `cache_control`; its reads are counted as
  * `cacheRead`.
  *
- * Each run goes with a session id of its own (gateway.ts's `freshIdentity`: `metadata.user_id`,
- * or a Responses body's `prompt_cache_key`, drawn again in its own form), the same in every round
- * of the run, and no other byte of the body changes: a captured body holds the id of the one Oh
- * My Pi run that made it, and a gateway that routes or caches by it made it a factor of a whole
- * arm (one body with two fixed ids and with a fresh one per send, interleaved on one deployment:
- * 8, 26 and 18 of 30 runs read the skill's reference). `replayInterleaved` sends the runs of all
- * the arms of a round in one seeded order (`sendOrder`), never one arm's batch after another's.
+ * Each run of a body that names a session id goes with one of its own (gateway.ts's
+ * `freshIdentity`: `metadata.user_id`, or a Responses body's `prompt_cache_key`, drawn again in
+ * its own form; a body that names none goes with none), the same in every round of the run, and
+ * no other byte of the body changes: a captured body holds the id of the one Oh My Pi run that
+ * made it, and a gateway that routes or caches by it made it a factor of a whole arm (one body
+ * with two fixed ids and with a fresh one per send, interleaved on one deployment: 8, 26 and 18 of
+ * 30 runs read the skill's reference). `replayInterleaved` sends the runs of all the arms of a
+ * round in one seeded order (`sendOrder`), never one arm's batch after another's.
  */
 import { createHash } from "node:crypto";
 import { statSync } from "node:fs";
@@ -245,8 +246,9 @@ async function replaySent(
   }
 }
 
-/** Sends `body` for `arm` with a session id of its own, answers its skill reads, and returns the
- *  judged step. Rejects when a send does (the gateway's `BudgetSpent` among them). */
+/** Sends `body` for `arm` with a session id of its own when it names one (`freshIdentity`),
+ *  answers its skill reads, and returns the judged step. Rejects when a send does (the gateway's
+ *  `BudgetSpent` among them). */
 export function replayOnce(
   body: RequestBody,
   arm: Arm,
@@ -307,14 +309,14 @@ export interface InterleavedRun extends Slot {
 /**
  * The runs of every arm of a round, sent in one order, `sendOrder` under `seed`, never one arm's
  * batch after another's: a gateway's state (its deployment, its cache, its load) then falls on
- * every arm alike. Each run is `replayOnce`'s, with a session id of its own. The runs start in
- * that order, all at once but for one wait (the gateway bounds how many are in flight, and gives
- * its places in the order asked): the first run of each arm in the order goes alone among its
- * arm's, the next run in the order starting only once its first send has its reply, so that the
- * prefix its reply wrote to the cache serves its arm's later runs. Those waits change no place of
- * the order. Each arm's body to send is made once for all its runs, each run's a copy of its top
- * level with its own id. Each run's outcome is kept, whether it was a step or a failure, in the
- * order sent.
+ * every arm alike. Each run is `replayOnce`'s, with a session id of its own when its body names
+ * one. The runs start in that order, all at once but for one wait (the gateway bounds how many are
+ * in flight, and gives its places in the order asked): the first run of each arm in the order goes
+ * alone among its arm's, the next run in the order starting only once its first send has its
+ * reply or has failed, so that the prefix its reply wrote to the cache serves its arm's later
+ * runs. Those waits change no place of the order. Each arm's body to send is made once for all
+ * its runs, each run's a copy of its top level with its own id (the body itself, when it names no
+ * id). Each run's outcome is kept, whether it was a step or a failure, in the order sent.
  */
 export async function replayInterleaved(
   arms: readonly ArmRuns[],

@@ -268,10 +268,12 @@ export const REPOSITORY_JOBS = 6;
  *  repository's walk does not hold every slot. Each call is a gh process of its own, about 110 MB
  *  resident in the pod whatever it reads (measured 2026-11-20), so the caps are what the run costs
  *  the pod beside its own memory. The code searches run beside the tree reads (`SearchQueues`),
- *  so each takes a slot too, keyed by its owner (one search of an owner at a time): the gh calls
- *  in flight stay at most READ_CALLS however the searches and the reads overlap, and a search,
- *  whose key holds no slot while it waits, takes the next slot a read frees (`ReadSlots`). No call
- *  holds a slot while it waits to be sent again, after a rate limit or a transient failure. */
+ *  so each takes a slot too, keyed by its owner (one search of an owner at a time): the reads and
+ *  searches in flight stay at most READ_CALLS however they overlap (the `rate_limit` read of a
+ *  wait after a refusal, `waitForReset`, takes no slot, so one gh process more can run then). A
+ *  search, whose key holds no slot while it waits, takes a freed slot as a read does: the slot
+ *  goes to the waiting call whose key holds the fewest (`ReadSlots`). No call holds a slot while
+ *  it waits to be sent again, after a rate limit or a transient failure. */
 export const READ_CALLS = 8;
 export const READ_CALLS_PER_REPOSITORY = 4;
 /** The most subtrees one GraphQL tree read asks for. */
@@ -3451,7 +3453,7 @@ class CodeSearch {
             : (resetMs ?? io.now() + (await this.github.waitForReset("code_search")));
         continue;
       }
-      // gh's error names a 502, 503 or 504, and so does the answer's status line.
+      // The answer's status line gives the HTTP status that gh's error may not name.
       if (
         await this.github.retries.waitToRetry(`${result.stderr}\nHTTP ${answer.status}`, retried)
       ) {
@@ -3819,8 +3821,8 @@ function insideSkill<T extends Pick<SkillCopy, "path" | "file">>(
   );
 }
 
-/** The skills list for the same-job and follow-the-code readers: each copy with its whole
- *  description. It is written to skills.jsonl; no command reads it, and no model is called here. */
+/** The skills list skills.jsonl holds: each copy with its whole description. No command reads
+ *  it, and no model is called here. */
 export interface ReaderSkill {
   readonly repository: string;
   readonly path: string;

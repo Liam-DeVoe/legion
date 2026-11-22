@@ -17,9 +17,10 @@
  * listener alone), and a Legion pane's run gets both and a stand-in daemon. The hook's `context`
  * handler gives the model the arm's messages and its `tool_call` handler blocks every call. The
  * recorder keeps the turn's request and answers it with a fixed end-of-turn reply, so no tool runs
- * and the turn's request never reaches the gateway. One capture per case and arm: the body, as Oh
- * My Pi sent it byte for byte, and its record are saved under `outDir`, and a capture already
- * saved there is read back rather than made again.
+ * and the turn's request never reaches the gateway. One capture per case and arm: the body, as
+ * the harness-string rule below leaves it, and its record are saved under `outDir`, with the body
+ * as Oh My Pi sent it byte for byte beside them (`rawBodyFile`), and a capture already saved there
+ * is read back rather than made again.
  *
  * **The two routes.** A case's model is served on the gateway's Anthropic Messages route (a
  * provider of `api: anthropic-messages` in `--models`) or on its OpenAI Responses route (Oh My
@@ -80,9 +81,8 @@
  * prompt it builds, the workstation's `- OS:` line of the pod. Such a string is a factor of the
  * measure: on one case of a behaviour screen, a working directory that named the skill had its
  * reference read in 12 and 33 of 40 runs, and one that named no skill in 0 and 1 of 40. So every
- * string of a body
- * that comes from the capture and not from the session is replaced, before the body is saved, by
- * the session's recorded value, or by a neutral one where the store holds none
+ * string of a body that comes from the capture and not from the session is replaced, before the
+ * body is saved, by the session's recorded value, or by a neutral one where the store holds none
  * (`options.session`, `sessionFacts`): the working directory is the session header's `cwd` (or
  * the one its journaled reminder names), else NEUTRAL_CWD; the reminder is the one Oh My Pi
  * journaled for the turn the capture's reminder goes on (a `date-cwd-reminder` entry of the
@@ -94,13 +94,14 @@
  * NEUTRAL_CLAUDE_CONFIG_DIR; a built prompt's `- OS:` line shows NEUTRAL_OS, the same for every
  * arm (a recorded prompt is sent as recorded, its workstation lines the session's own). Any other
  * mention of the capture's working directory, or of its checkout, names the session's. The
- * stand-in daemons answer
- * with that working directory and made-up ids. A body that still holds the case's scratch
- * directory or the capture's `scratchDir` after this is refused. The session's head comes from
- * its store (`sessionHeads`, session-head.sql, saved as `<out>/sessions/<store>-<pathHash>.json`),
- * and the record says what each value is and where it came from (`harness`), and keeps the body as
- * Oh My Pi sent it beside the saved one (`rawBodyFile`). A saved capture whose record holds no
- * such record was made before this rule, and is refused (`savedCapture`).
+ * stand-in daemons answer with that working directory, made-up ids, and the session id each
+ * request to the Envoy listener names. A body that still holds the case's scratch directory or the
+ * capture's `scratchDir` after this is refused. The session's head comes from its store
+ * (`sessionHeads`, session-head.sql, saved as `<store>-<pathHash>.json` in the directory its
+ * caller gives: `<out>/sessions/` for `behaviour` and `load`, `<out>.sessions/` for `build-cases
+ * --reprofile`), and the record says what each value is and where it came from (`harness`), and
+ * keeps the body as Oh My Pi sent it beside the saved one (`rawBodyFile`). A saved capture whose
+ * record holds no such record was made before this rule, and is refused (`savedCapture`).
  */
 import { Database } from "bun:sqlite";
 import { randomBytes } from "node:crypto";
@@ -141,8 +142,9 @@ const RECORDER_CREDENTIAL = "placeholder-the-recorder-reads-none";
 const CAPTURE_TREE = "WORK-1";
 const CAPTURE_ISSUE = "WORK-2";
 const CAPTURE_TRIES = 3;
-/** The made-up session, machine and stream ids the stand-in daemons answer with: no name of the
- *  runner's, as no answer holds a path of the capture's. */
+/** The made-up session, machine and stream ids the stand-in daemons answer with (the Envoy
+ *  listener answers the session id a request names, and STAND_IN_SESSION only when it names
+ *  none): no name of the runner's, as no answer holds a path of the capture's. */
 const STAND_IN_SESSION = "session-1";
 const STAND_IN_MACHINE = "machine-1";
 const STAND_IN_STREAM = "stream-1";
@@ -633,12 +635,12 @@ export function renderReminder(date: string, cwd: string): string {
 const REMINDER_CWD = /current working directory: '([^']*)'\. Do not repeat/;
 
 /** A session's head as session-head.sql reads it from its store and the runner saves it
- *  (`<out>/sessions/<store>-<pathHash>.json`): whether the store holds a file of the hash; the
+ *  (`<store>-<pathHash>.json`, `sessionHeadFile`): whether the store holds a file of the hash; the
  *  header's `cwd` and `timestamp` (`start`); the first user message's `timestamp` and
  *  `attribution`; each `date-cwd-reminder` entry Oh My Pi journaled, in file order, its `turn` the
- *  key of the turn it went on (`user:<timestamp>:<attribution>`); the bytes read (the file's first
- *  256 KiB at most) and the lines of them that did not parse (the last, cut where the head ends);
- *  and when it was read. */
+ *  key of the turn it went on (`user:<timestamp>:<attribution>`); the bytes read (of the file's
+ *  first 262144 characters at most) and the lines of them that did not parse (the last, cut where
+ *  the head ends); and when it was read. */
 export const SessionHead = z.strictObject({
   store: z.string().min(1),
   pathHash: z.string().regex(/^[0-9a-f]{64}$/),
@@ -1358,8 +1360,9 @@ export async function captureBody(
     // role claim with that interest. The consumer is
     // `@legion/envoy-client/test/subscribe-answer`'s, the one every stand-in listener of this
     // repository answers, so it never drifts from what the client accepts. Its answers name the
-    // session's working directory and made-up ids, no path or name of the capture's, so they hold
-    // no harness string. Every other Envoy route is refused.
+    // session's working directory, the session id the request names (the capture run's own, else
+    // STAND_IN_SESSION) and made-up machine and stream ids, no path or name of the capture's, so
+    // they hold no harness string. Every other Envoy route is refused.
     if (
       envoyVariables.length > 0 &&
       request.method === "POST" &&

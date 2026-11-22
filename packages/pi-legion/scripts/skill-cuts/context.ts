@@ -95,7 +95,9 @@ import {
 /** Where the Legion daemon's role prompt composer is, in the repository that holds it. */
 export const PROMPTS_GO = "packages/daemon/internal/prompts/prompts.go";
 /** The names of a repository's context files (build.ts lists the session repository's), which a
- *  context writes in its checkout: every other context file goes in the appended system prompt. */
+ *  context writes in its checkout. A profile's user-level file (`user: true`) goes to the scratch
+ *  Claude Code config directory whatever its name, and every other context file goes in the
+ *  appended system prompt. */
 const REPOSITORY_CONTEXT_FILES: Readonly<Record<string, true>> = {
   "AGENTS.md": true,
   "CLAUDE.md": true,

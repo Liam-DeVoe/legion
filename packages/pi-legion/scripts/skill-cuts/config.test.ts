@@ -8,7 +8,8 @@ import { loadConfig, parseConfig, SkillCutsConfig, storeNamed } from "./config";
 // key is refused by name. Every value here is made up; testdata/F7-skill-cuts.json is the made-up
 // configuration F7's capture used.
 
-/** A configuration with every key, each a made-up value. */
+/** A configuration with every required key, each a made-up value; it leaves out
+ *  devboxClaudeConfigDir, the one optional key. */
 function valid(): Record<string, unknown> {
   return {
     owners: ["acme", "acme-labs"],
@@ -37,7 +38,7 @@ function refusal(value: unknown): string {
   throw new Error("the configuration was not refused");
 }
 
-test("a configuration with every key loads", () => {
+test("a configuration with every required key loads", () => {
   const config = parseConfig(valid());
   expect(config.stores.map((store) => store.name)).toEqual(["store_a", "store_b"]);
   expect(config.windowEnd).toBe("2026-11-20T00:00:00Z");

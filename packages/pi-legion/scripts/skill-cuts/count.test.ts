@@ -43,9 +43,11 @@ import { PULL_START, PullRow, psqlRows } from "./psql-rows";
 // its first line, so that its model_change line is in its second part; in the fifth a file made
 // here, F4 with a long line before its first assistant message, whose head models.sql cuts at 256
 // Ki; and in the sixth, for pull.sql and tasks.sql, the made-up sessions the pull tests describe.
-// Each query's rows must equal those of its F7 capture (psql-rows.test.ts gives the capture
-// commands of count.sql's and pull.sql's), so a change to the SQL that changes a result fails here
-// until F7 is captured again.
+// The rows of count.sql, models.sql and the pull, tasks and sessions queries on the fixture
+// databases must equal those of their F7 captures (psql-rows.test.ts and this header give the
+// capture commands), so a change to one of those queries that changes such a result fails here
+// until F7 is captured again. The other rows (the made-up files', session-head.sql's and
+// session-paths.sql's) are checked against values the test computes from its inputs.
 //
 // F1c, F1d and models.sql's captures, from packages/pi-legion/scripts/skill-cuts, in the shell
 // that ran psql-rows.test.ts's capture commands (its N, SERVER, FIRST, F1 and store()):
@@ -639,7 +641,7 @@ describe.skipIf(serverDsn === undefined)(
         return [o, k, Buffer.byteLength(c)];
       });
 
-    test("a file row of over 1 MiB comes as slices of at most 1 MiB, each cut at a character's first byte, and its parts follow at its byte length", () => {
+    test("a file row of over 1 MiB comes as slices cut at each MiB, each cut moved back to the first byte of its character, and its parts follow at its byte length", () => {
       const row = Buffer.from(importedRow);
       // The cuts at 1 MiB and 2 MiB each fall on the second byte of a euro sign.
       expect([row[MIB], row[2 * MIB]].map((byte) => ((byte ?? 0) & 0xc0) === 0x80)).toEqual([
@@ -754,7 +756,7 @@ describe.skipIf(serverDsn === undefined)(
           [fileHash(storedPath(F1_SESSION)), sonnet, "model_change"],
         ],
         // Each file is whole in its head: its every part starts below 262144.
-        summary: expect.objectContaining({ files: 3, with_model: 3, bytes: 185790, bad_lines: 0 }),
+        summary: expect.objectContaining({ files: 3, with_model: 3, bytes: 185787, bad_lines: 0 }),
       });
     });
 
@@ -853,7 +855,6 @@ describe.skipIf(serverDsn === undefined)(
       const missing = createHash("sha256").update("made-up/missing.jsonl").digest("hex");
       const rows = run(names.first, sessionPathsSql([...files.map((each) => each.hash), missing]));
       expect(rows).toEqual(files.toSorted((a, b) => (a.path < b.path ? -1 : 1)));
-      expect(rows).toHaveLength(3);
       expect(run(names.first, sessionPathsSql([missing]))).toEqual([]);
     });
   }

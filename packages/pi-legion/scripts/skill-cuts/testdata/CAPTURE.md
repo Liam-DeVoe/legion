@@ -63,6 +63,8 @@ mv "testdata/F4/projects/-legion-scratch-tmp-$KEY-t1-runs-f3-work" \
 rg -l --null "$KEY" testdata -g '!CAPTURE.md' | xargs -0 sed -i "s/$KEY/acme-1/g"
 ```
 
+Claude Code had cut F4's three `lastPrompt` values (lines 19, 30 and 39) short inside that name,
+so the `sed` did not match them; each was rewritten by hand to end in `/legion/scratch/tmp/acme…`.
 Then every F7 file was captured again with the commands its section names, since F4's path hash,
 the files' byte counts and the pull's second offset follow from the replaced bytes. The values
 computed from the bytes before the replacement are kept as recorded: F1's `system-prompt-digest`,
@@ -480,10 +482,10 @@ file; and on any run of 32 or more hex digits, or of 16 or more characters mixin
 letters and digits, that is not the value of a JSON key of a known kind (an id, a git object id in
 a GitHub URL, a thinking signature, a Responses reasoning item's encrypted content, Claude Code's
 `metadata.user_id` with its random device id, or a Claude Code request digest or blob hash), nor a
-run another file here holds as the value of such a key (a git object id a GitHub answer gives as a
-`sha`, or an id in a pull row's piece of a line cut in the middle). JSON files are read value by
-value, JSONL and the psql captures line by line, SSE by its data lines. A hit of a private name
-gives the terms file's line, never the name.
+run that a file here, that file too, holds as the value of such a key (a git object id a GitHub
+answer gives as a `sha`, or an id in a pull row's piece of a line cut in the middle). JSON files
+are read value by value, JSONL and the psql captures line by line, SSE by its data lines. A hit of
+a private name gives the terms file's line, never the name.
 
 The terms file is the operator's, one regular expression per line, matched in any case, and stays
 outside the repository, since the names it lists are private: the session stores' names, the

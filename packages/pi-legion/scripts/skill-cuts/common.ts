@@ -77,7 +77,8 @@ export function configFrom(file: string): SkillCutsConfig {
   }
 }
 
-/** The first line of `text`, trimmed; "" when it has none. */
+/** The first line of `text` once the whole text is trimmed: its leading white space goes, and so
+ *  does its trailing white space when it is the last line; "" when it has none. */
 export function firstLine(text: string): string {
   return text.trim().split("\n")[0] ?? "";
 }

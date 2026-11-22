@@ -1422,7 +1422,8 @@ describe("skill-cuts load sends a profile's tasks' runs in one order, each with 
   test("the runs of every task of a profile go in the seeded order, each with a session id no other run carries", async () => {
     answer = () => TEXT;
     const before = recorder.requests.length;
-    const ran = await cli(args);
+    // One call at a time, so the stand-in takes the runs in the order they were sent.
+    const ran = await cli([...args, "--concurrency", "1"]);
     expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
     const sent = recorder.requests.slice(before).map((request) => JSON.parse(request.body));
     expect(sent).toHaveLength(9);
@@ -1455,6 +1456,12 @@ describe("skill-cuts load sends a profile's tasks' runs in one order, each with 
           .toSorted((a, b) => a - b)
       ).toEqual(order.flatMap((each, place) => (each.key === id ? [place] : [])));
     }
+    // The stand-in took the runs in the seed's order, the tasks' runs interleaved as it says. The
+    // seed is drawn fresh each run, and 6 of the 1,680 orders of three tasks' three runs (0.36%)
+    // send each task's runs one after another: under such a seed, code that sends each task's runs
+    // as a batch of their own, in that order of the tasks, passes this check.
+    const taskOf = new Map(runs.map((run) => [run.userId, run.task]));
+    expect(userIds.map((id) => taskOf.get(id))).toEqual(order.map((each) => each.key));
     expect(new Set(runs.map((run) => run.userId))).toEqual(new Set(userIds));
     // The request log names each run's id, when it was sent and the calls in flight then.
     const logged = readFileSync(path.join(out, "requests.jsonl"), "utf8")
@@ -1663,9 +1670,10 @@ test("Claude Code's harness rules name a session checkout at the file system's r
   expect(text).toContain("The root is /.");
 });
 
-/** Made-up repositories (skills alpha, beta and gamma), the tested skill's `tested` files (alpha's
- *  unless given) and the tasks `lines` (one need task unless given) for a real host's run, under
- *  `dir`, with the stand-in's configuration. */
+/** A made-up acme/skills (the skills alpha, beta and gamma, and Claude Code's user memory at
+ *  .claude/CLAUDE.md), the tested skill's `tested` files (alpha's unless given) and the tasks
+ *  `lines` (one need task unless given) for a real host's run, under `dir`, with the stand-in's
+ *  configuration. */
 function hostInputs(
   dir: string,
   lines: readonly object[] = [{ id: "need-1", text: NEED, label: "need", source: "written" }],

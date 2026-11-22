@@ -27,7 +27,8 @@
  *   fallbacks and retries the gateway made, and the provider's request id.
  * - `send` changes no byte of a body. `freshIdentity(body)` is how a caller gives a body a fresh
  *   session id (`metadata.user_id`, or a Responses body's `prompt_cache_key`) in that id's own
- *   form: the runner sends each run, and each judge call, with one of its own.
+ *   form: the runner sends each run whose captured body names such an id with one of its own (a
+ *   body that names none goes with none), and each judge call with one of its own.
  * - A body that sets `stream` gets a streamed (SSE) reply, read whole before it counts
  *   (`streamedMessage`; `streamedResponse` for a Responses reply, F9); any other gets one JSON
  *   message. A Responses reply comes back in ReplyMessage's frame (`responseMessage`): its output
@@ -40,9 +41,9 @@
  *   `message_start` had sent its input tokens: the gateway can bill such a try and this count
  *   leaves it out, so the spend can fall short of the bill by the tries that failed mid-stream.
  * - Once the dollars reach `budgetUsd`, no new call starts: `send` rejects with `BudgetSpent`,
- *   which
- *   says so. A call already in flight finishes and is counted, so the spend can pass the budget by
- *   at most the calls in flight, and the bill by those and the tries that failed mid-stream.
+ *   which says so. A call already in flight finishes and is counted, so the spend can pass the
+ *   budget by at most the calls in flight, and the bill by those and the tries that failed
+ *   mid-stream.
  */
 import { randomBytes, randomUUID } from "node:crypto";
 import { holdSecret, scrubError } from "@legion/contracts/held-secrets";
@@ -421,10 +422,11 @@ export const GATEWAY_HEADERS = [
   "request-id",
 ] as const;
 
-/** One model call's answer: the reply message, the gateway's request id when it sent one, how long
- *  the call took from its start (its retries included), and what it used. `gatewayHeaders` holds
- *  each of GATEWAY_HEADERS the reply came with; `providerRequestId` is the first of the provider's
- *  ids among them (the two `llm_provider-` ones, then `request-id`), or null. `sentAt` is when the
+/** One model call's answer: the reply message, the reply's `request-id` header when it came with
+ *  one (the provider's request id, as the gateway forwards it), how long the call took from its
+ *  start (its retries included), and what it used. `gatewayHeaders` holds each of
+ *  GATEWAY_HEADERS the reply came with; `providerRequestId` is the first of the provider's ids
+ *  among them (the two `llm_provider-` ones, then `request-id`), or null. `sentAt` is when the
  *  call got its place among the calls in flight and was sent, and `inFlight` how many were in
  *  flight then, this one among them. */
 export interface Reply {

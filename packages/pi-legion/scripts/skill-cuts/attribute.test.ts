@@ -1243,7 +1243,7 @@ test("the command writes the count, its report, each cut's ranking and the model
   const report = readFileSync(path.join(out, "skill-read-count.md"), "utf8");
   for (const line of [
     "End time 2026-11-22T00:00:00Z. The window is [2026-11-20T00:00:00Z, 2026-11-22T00:00:00Z), 2 days.",
-    "| store_a | devbox | 2026-11-20T02:00:00Z | 3 | 2026-11-20 | 4 | 2 | 4 | 205506 | 0 | 0 |",
+    "| store_a | devbox | 2026-11-20T02:00:00Z | 3 | 2026-11-20 | 4 | 2 | 4 | 205503 | 0 | 0 |",
     "- store_a starts after the window's start: its records span 2026-11-20T02:00:00Z to the end time, 1.9 of the window's 2 days.",
     '- The transcript store is not read: the cluster store that a pod reads holds no Claude Code transcript until the Claude Code transcripts are moved into it, so this count holds no Claude Code session. "Claude Code" below lists the skills that leaves out.',
     "None: each query of the window has its output, and the run log lists no failure.",
@@ -1257,7 +1257,7 @@ test("the command writes the count, its report, each cut's ranking and the model
     "| acme/skills | 0123456789abcdef0123456789abcdef01234567 | 2 | 9 | 40 | 49 |",
     "- skills-1 (acme/skills): 3 changed skills, in `skills-1/ranking.json`, with each one's reading sessions in `skills-1/sessions/<skill>.jsonl`; first: alpha (3), beta (0), gone (0). The copies output holds no copy at `skills/gone`: ranked with 0 sessions.",
     "### Skills read that no copy in the copies output has",
-    "A skill that code, an agent definition or an installer loads into a session. The diagnosis of unread skills leaves these out.",
+    "A skill that code, an agent definition or an installer loads into a session: its text reaches the session with no read, so its read count leaves out each session that loads it so.",
     "The models queries read 4 files; the head of 4 of them names a model. The 3 read sessions of the copies: with a model 3; whose file's head names none 0; in no models query's rows 0. Sessions two queries give two models for (the first day's is kept): 0.",
     "The gateway serves a model when its id is the id of one of the configuration's `servedModels`: anthropic/claude-sonnet-5-5, openai/gpt-6.1-sol.",
     `| ${sonnet} | yes | yes | 2 |`,

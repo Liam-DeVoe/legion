@@ -579,7 +579,7 @@ const TASK_ROWS = [
 ];
 
 /** The stand-in store command: it answers pull.sql, sessions.sql, tasks.sql, session-head.sql and
- *  session-paths.sql from STORE. */
+ *  session-paths.sql from the store file `storeFile`, and appends each call to `logFile`. */
 const STANDIN_PSQL = (storeFile: string, logFile: string) => `
 import { appendFileSync, readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
@@ -1024,10 +1024,10 @@ function treeLevel(repo: string, id: string): Record<string, unknown>[] | undefi
 /** The gh calls the stand-in took. */
 const ghCalls: string[][] = [];
 
-/** The stand-in gh: GET reads of commits, default branches, two files, each file of a made-up
- *  repository at SHA, the tree of each made-up repository at SHA (whole, cut short for
- *  TRUNCATED's, or one directory a read by its tree id) and its blobs; and GraphQL reads of blobs
- *  in a batch. The clock is the real one. */
+/** The stand-in gh: GET reads of commits, default branches, acme/infra's
+ *  legion/projects/10-ACME.yaml, each file of a made-up repository at SHA, the tree of each made-up
+ *  repository at SHA (whole, cut short for TRUNCATED's, or one directory a read by its tree id) and
+ *  its blobs; and GraphQL reads of blobs in a batch. The clock is the real one. */
 const io = (lines: string[]): BuildIo => ({
   out: (text) => lines.push(text),
   err: (line) => lines.push(line),
@@ -1816,8 +1816,8 @@ describe("build-cases over every made-up session", () => {
       expect(c.evidence?.map((each) => each.item)).toEqual(
         built.evidence?.map((each) => each.item)
       );
-      // The working directory is not in a case; the session repository is, in the old evidence,
-      // and no other source names the working directory, so every source is the old one.
+      // The session's head gives the working directory the builder read from the transcript's
+      // header, so every source, each that names that directory among them, is the builder's.
       const differing = (c.evidence ?? []).filter(
         (each, at) => each.source !== built.evidence?.[at]?.source
       );
@@ -1848,13 +1848,16 @@ describe("build-cases over every made-up session", () => {
     const devbox = byName("proj-devbox") as Case;
     const legion = byName("proj-legion") as Case;
     // Each as a builder wrote it before the session repository: no project skill, no context file
-    // of acme/proj, and no item naming the session repository.
+    // of acme/proj, no session repository or working directory in its profile, and no item naming
+    // the session repository.
     const before = (c: Case): Case => ({
       ...c,
       profile: {
         ...c.profile,
         skills: c.profile.skills.filter((skill) => skill.repo !== "acme/proj"),
         contextFiles: c.profile.contextFiles.filter((file) => file.repo !== "acme/proj"),
+        sessionRepository: undefined,
+        workingDirectory: undefined,
       },
       evidence: (c.evidence ?? []).filter((each) => !each.item.startsWith("session repository ")),
     });
@@ -2046,6 +2049,7 @@ describe("build-cases over every made-up session", () => {
   test("a Legion pane in a workspace lists the .claude/skills and .omp/skills of the workspace's repository at its commit, each as a project skill, and its profile names that repository at that commit", () => {
     const c = byName("proj-legion");
     expect(c?.context).toBe("legion:ACME:tester");
+    // The working directory is the checkout's root, so no skill below it is listed.
     expect(c?.profile.skills).toEqual([
       { repo: "acme/skills", commit: SHA, path: "skills/alpha", name: "alpha" },
       { repo: "acme/skills", commit: SHA, path: "skills/beta", name: "beta" },
@@ -2064,8 +2068,6 @@ describe("build-cases over every made-up session", () => {
     expect(evidence["skill lambda (acme/proj .omp/skills/lambda)"]).toBe(
       `project skill of acme/proj at ${SHA}: Oh My Pi lists each <name>/SKILL.md that has a description under .omp/skills/ of the working directory and of each parent up to the repository's root, the nearest first (discovery/builtin.ts, loadSkills, lines 314-327, over getProjectAncestorDirs, lines 81-109)`
     );
-    // The working directory is the checkout's root, so no skill below it is listed.
-    expect(c?.profile.skills.some((skill) => skill.path.startsWith("agents/"))).toBe(false);
     // The repository is read at the session's commit, one directory a read where Oh My Pi reads a
     // project (from its root), and never whole: a session repository's whole tree can be more
     // than GitHub gives in one answer.
@@ -2172,6 +2174,7 @@ describe("build-cases over every made-up session", () => {
 
   test("a dev-box working directory below its checkout's root lists the .omp/skills and .claude/skills of that directory and of each parent up to the root, the nearer first, and of no other directory", () => {
     const c = byName("proj-subdir");
+    // other/ is no level of the working directory, so its xi is not listed.
     expect(c?.profile.skills).toEqual([
       { repo: "acme/skills", commit: SHA, path: "skills/alpha", name: "alpha" },
       { repo: "acme/skills", commit: SHA, path: "skills/beta", name: "beta" },
@@ -2189,8 +2192,6 @@ describe("build-cases over every made-up session", () => {
     expect(evidence["left out: skill kappa from acme/proj .claude/skills/kappa"]).toStartWith(
       "project skill of acme/proj too; Oh My Pi gives the session the copy of acme/proj agents/.claude/skills/kappa under that name (project skill of acme/proj): Oh My Pi 18.18.6 keeps under a name the first skill it admits"
     );
-    // other/ is no level of the working directory.
-    expect(c?.profile.skills.some((skill) => skill.name === "xi")).toBe(false);
     expect(c?.profile.workingDirectory).toBe("agents/agentvm");
     expect(c?.profile.sessionRepository).toEqual({ repo: "acme/proj", commit: SHA });
   });
@@ -2625,6 +2626,7 @@ test("build-cases refuses an --out inside a git or jj checkout, its own and --re
   const from = recorder.requests.length;
   const logLength = () => (existsSync(psqlLog) ? readFileSync(psqlLog, "utf8").length : 0);
   const logged = logLength();
+  const calls = ghCalls.length;
   const sessions = sessionsFile("checkout.jsonl", ["good"]);
   for (const marker of [".git", ".jj"]) {
     const checkout = path.join(scratch, `checkout${marker}`);
@@ -2655,6 +2657,7 @@ test("build-cases refuses an --out inside a git or jj checkout, its own and --re
   }
   expect(recorder.requests.length).toBe(from);
   expect(logLength()).toBe(logged);
+  expect(ghCalls.length).toBe(calls);
 });
 
 test("build-tasks proposes terms, reads first user messages per store and day, and writes labelled tasks", async () => {
@@ -4102,7 +4105,7 @@ test("build-tasks refuses a bound that is no number, a bound with no candidate s
   expect(existsSync(out)).toBe(false);
 });
 
-test("build-tasks with no bound writes byte for byte what it wrote before the bounds: the tasks, the summary, the profiles and the printed lines of a run with --model and of one with --profiles-out", async () => {
+test("build-tasks with no bound writes the pinned bytes: the tasks, the summary, the profiles and the printed lines of a run with --model and of one with --profiles-out", async () => {
   /** The SHA-256 of `text`, the suite's scratch directory in it written `<scratch>`. */
   const digest = (text: string) =>
     createHash("sha256").update(text.replaceAll(scratch, "<scratch>")).digest("hex");
@@ -4124,25 +4127,8 @@ test("build-tasks with no bound writes byte for byte what it wrote before the bo
     );
     if (profiles.length > 0) digests[`${name} profiles`] = digest(profiles.join(""));
   }
-  // The digests of the files and printed lines a run of the code before the bounds gave on the
-  // same input. A change to what build-tasks writes changes them. The profiles summary's is that
-  // run's with the session repository's evidence added to each profile's evidence (each
-  // `session repository <repo>` or `no session repository` item, the session repository's tree
-  // read, and its AGENTS.md said to be the session repository's by Oh My Pi's context file
-  // ranking): those undone, it is the digest the code before the bounds gave,
-  // fa41da9e62a9f60d1a7f75f4b2f29bf7a79251643e4348ada6e11d2899b0e28e. The profiles' is that run's
-  // with each dev box's user-level context file marked `user: true`: that undone, it is
-  // c749ba1f82683dc6045da91d28a90b0238a5d74211f3ef2244d3df0e2af7fbfd. Since the session repository
-  // is read one directory a call, the source of the summary's item `the skills of acme/widgets at
-  // <commit>` names those reads in place of the whole tree (`gh api repos/acme/widgets/git/trees/
-  // <commit>?recursive=1: its 0 SKILL.md files, …`); with that one source put back, the summary's
-  // digest is f1931fe933e679585811234810766cb48799160f457f820a133829a181c75d5f, and the profiles'
-  // digest has not changed. The profiles' is then that run's with `sessionRepository` (its
-  // repository and commit) in each of the 8 profiles whose session was in a checkout of one:
-  // that field taken out, it is 040bb4d5142a96ae518e1aabacb19f8557f5647e03d32edc88afbc0757b8b367.
-  // The profiles summary's is then that run's with `githubRetries: {}` (no GitHub read was sent
-  // again) last in its `profiles`: that line taken out, it is
-  // 548690d45d15c1ac9f85f4bf3f27fcbe8fa1cd233003c83ece74e7aa0f21c7bc.
+  // The digests of a run with no bound on this input; a change to what build-tasks writes
+  // changes them.
   expect(digests).toEqual({
     "model tasks": "ffa3d7637184a555b27e1b14afee9b1dd58e697112f82f98d3819afda80652d9",
     "model summary": "fd2cf470c0eaa72f67f8a326ecfaeafd58a63ed82764f9aae296cfffc84bff8b",
@@ -4325,8 +4311,9 @@ test.each([
 );
 
 /** The tasks file a build-tasks run with --profiles-out wrote on the suite's store (t1 from the
- *  session /sessions/task-4.jsonl and t2 from another session, each F1 as the good session has
- *  it; eight written tasks in the legion session's context), built once. */
+ *  session /sessions/task-4.jsonl, F1 as the good session has it, and t2 from
+ *  /sessions/task-3.jsonl, F1 as the openai session has it; eight written tasks in the legion
+ *  session's context), built once. */
 async function profiledTasks(): Promise<string> {
   const out = path.join(scratch, "reprofile-from", "tasks.jsonl");
   if (!existsSync(out)) {

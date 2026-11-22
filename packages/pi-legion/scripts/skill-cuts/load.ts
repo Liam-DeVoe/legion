@@ -205,7 +205,7 @@ export const LOAD_THINKING: Readonly<Record<Host, ThinkingLevel>> = { omp: "off"
  *  verdict, with a note that says so. */
 const MIN_TASKS_PER_LABEL = 5;
 
-/** The longest one Claude Code run may take, by default. */
+/** The longest one Claude Code run may take: one still running then is killed. */
 const RUN_TIMEOUT_MS = 600_000;
 /** What a Claude Code run is given as its provider credential: the recorder reads none, and no
  *  gateway ever gets this one. */
@@ -939,7 +939,8 @@ interface LoadOptions {
   readonly claude: string;
   /** The request log, named in the summary. */
   readonly requestLog: string;
-  /** The most the peak resident memory may reach: a task that ends above it stops the test. */
+  /** The most the peak resident memory may reach: once a profile's tasks are captured and their
+   *  runs sent and saved, a peak above it stops the test after those tasks. */
   readonly memoryLimitBytes: number;
   /** The store command (config.ts's `psqlCommand`) and the stores it may read: a capture reads
    *  the head of its task's session through it (capture.ts's `sessionHeads`). */
@@ -1558,12 +1559,13 @@ class LoadTest {
   /**
    * The runs the tasks of `ready` (one profile's) lack, sent in one order, replay.ts's
    * `sendOrder` under a fresh seed, never one task's batch after another's; each run with a
-   * session id of its own (gateway.ts's `freshIdentity`), its body otherwise its capture's. The
-   * runs start in that order, all at once but for one wait: the first run of each task in the
-   * order goes alone among its task's, the next send in the order starting only once it has its
-   * reply, so that the prefix it wrote to the cache serves its task's later runs; the waits change
-   * no place of the order. Gives each task's runs, its saved ones first and the new ones in the
-   * order sent, each run that failed, whether the budget refused one, the seed and the time.
+   * session id of its own when its capture's body names one (gateway.ts's `freshIdentity`), its
+   * body otherwise its capture's. The runs start in that order, all at once but for one wait: the
+   * first run of each task in the order goes alone among its task's, the next send in the order
+   * starting only once it has its reply or has failed, so that the prefix it wrote to the cache
+   * serves its task's later runs; the waits change no place of the order. Gives each task's runs,
+   * its saved ones first and the new ones in the order sent, each run that failed, whether the
+   * budget refused one, the seed and the time.
    */
   async sendRuns(ready: readonly ReadyTask[]): Promise<{
     readonly runs: ReadonlyMap<string, LoadRun[]>;
@@ -1783,8 +1785,8 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
   const outcomeOf = (task: Task): TaskOutcome =>
     taskOutcome(task.label, runsOf.get(task.id) ?? [], o.runs);
   let peak = 0;
-  // Each task's hint dollars, from its capture's record: read at the start, and again when the
-  // task has run, since its capture may have been made then.
+  // Each task's hint dollars, from its capture's record: read at the start, and again after the
+  // task's capture step, since its capture may have been made then.
   const hintDollars = new Map<string, number>();
   const readHintDollars = (task: Task): void => {
     if (o.host !== "omp") return;

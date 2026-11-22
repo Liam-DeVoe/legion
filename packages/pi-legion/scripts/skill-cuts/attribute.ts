@@ -1835,7 +1835,7 @@ export function readCountMarkdown(report: Report): string {
     "",
     "1. The prefix table (prefix-table.tsv): a read goes to the copy that every row whose prefix matches its copy path maps to, when they map to one copy.",
     "2. A checkout: a read whose path ends with a copy's skill directory in its repository (with a path boundary before it) is a read of that copy in a checkout of its repository; the longest such directory wins. Copies of several repositories at that directory are told apart by the path before it: the one whose owner and name are two directories of it in a row, else the one whose name a directory holds (`.dotfiles` holds `dotfiles`); a tie left is unattributed. A skill directory of one segment (a skill at its repository's root) counts only when the path names its repository.",
-    "3. The store's context: the units (packages, plugins, a host's user skills) that the store's own reads of step 1 come from are the units its context installs. Their copies are their installer rows' copies and the copies of their prefix rows. When those hold exactly one copy of the read's skill name, the read goes to that copy.",
+    "3. The store's context: the units (packages, plugins, a host's user skills) that the store's own reads of step 1 come from are the units its context installs. Their copies are the copies their installers.tsv rows ship, stage, install, link or enable, and the copies of their prefix rows. When those hold exactly one copy of the read's skill name, the read goes to that copy.",
     "4. Otherwise the read is unattributed for its skill name.",
     "",
     "Two copies of one name are a tie when their sessions differ by at most that name's unattributed sessions.",
@@ -1916,7 +1916,7 @@ export function readCountMarkdown(report: Report): string {
     "",
     "## Loaded skills",
     "",
-    "A skill that code, an agent definition or an installer loads into a session. The diagnosis of unread skills leaves these out.",
+    "A skill that code, an agent definition or an installer loads into a session: its text reaches the session with no read, so its read count leaves out each session that loads it so.",
     ""
   );
   const loaded = attribution.copies.filter((copy) => copy.loadedBy.length > 0);

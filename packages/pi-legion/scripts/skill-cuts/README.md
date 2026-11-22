@@ -147,21 +147,25 @@ from the session is replaced (`capture.ts`, "The harness strings"):
   directory and the UTC date of the turn it stands for: a case's step, or a load task's first user
   turn.
 - The working directory is the session header's `cwd`, else the one its journaled reminder names,
-  else `/work`. Every context file's `<file path="…">` names it, and every other mention of the
-  capture's working directory does too.
+  else `/work`. A context file's `<file path="…">` under the capture's working directory names it,
+  and every other mention of the capture's working directory does too. When the profile's
+  `workingDirectory` is below the checkout's root, a parent level's context file, and every other
+  mention of the capture's checkout, names the session's checkout: that working directory less the
+  `workingDirectory`.
 - A devbox context's user-level `CLAUDE.md` is shown at `<devboxClaudeConfigDir>/CLAUDE.md`, the
   configuration's value of the dev box's CLAUDE_CONFIG_DIR, else at `/work/.claude/CLAUDE.md`.
 - A prompt Oh My Pi builds shows `- OS: linux` in its workstation lines, the same in every arm. A
   subagent's recorded prompt is sent as recorded, its workstation lines and `<file path>` blocks
   the session's own.
-- The stand-in daemons answer with that working directory and made-up ids.
+- The stand-in daemons answer with that working directory, made-up ids, and the session id each
+  request to the Envoy listener names.
 - A Claude Code capture (`load`) shows the session's working directory, its memory directory
   under the config directory above, the session's date in `Today's date is`, and `OS Version:
   Linux`.
 
 A body that still holds the case's scratch directory after this is refused. The session's head is
 read once from its store, through the configuration's `psqlCommand` (`session-head.sql`: the
-file of the path hash, its first 256 KiB only), and saved as
+file of the path hash, its first 256 Ki characters only), and saved as
 `<out>/sessions/<store>-<path hash>.json` (a head an earlier run saved as `<path hash>.json` is
 read back too); a read that fails stops that capture, with why. Each capture's record says each
 value it shows and where the value came from (`harness`: the store, the configuration, or
@@ -204,7 +208,7 @@ bun scripts/skill-cuts/cli.ts count-sql --config <skill-cuts.json> --store <db> 
 
 Prints `count.sql` filled for one store and one UTC day (or hour), the same as
 `bun scripts/skill-cuts/countsql.ts`. `--query models` prints `models.sql` instead: each session
-file's model, read from the first 256 KiB of the file, as one row per file hash.
+file's model, read from the first 256 Ki characters of the file, as one row per file hash.
 
 ### `load`
 
@@ -246,8 +250,9 @@ other line stay), and nothing else that names the skill changes.
 Per task, the host's first request is captured once against a recorder, in the context of the
 task's own profile (Oh My Pi through `capture.ts`, which lists the skill under the hint Oh My Pi
 has a model write, with the plugins' stand-ins, and sends a subagent's recorded prompt with only
-the skill's listing line changed; Claude Code with a scratch `CLAUDE_CONFIG_DIR` per profile that
-installs the other skills as local plugins), then sent `--runs` times. The plugins' stand-ins of
+the skill's listing line changed; Claude Code with a scratch `CLAUDE_CONFIG_DIR` per profile, into
+which a local marketplace installs the profile's skills and the tested skill, each in its plugin,
+while a project skill goes in the checkout), then sent `--runs` times. The plugins' stand-ins of
 an Oh My Pi capture listen on 127.0.0.1. A Legion role's run gets a stand-in Legion daemon, a
 stand-in Envoy listener and a sink for the NATS server the Envoy plugin dials. The run of every
 other profile that installs the Envoy plugin, whatever its context (a devbox one included), gets

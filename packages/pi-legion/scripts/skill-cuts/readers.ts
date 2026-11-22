@@ -375,8 +375,9 @@ const WrittenStep = z
   .refine((step) => step.text.trim() !== "" || step.toolCalls.length > 0, {
     message: "holds no text and no tool call",
   });
-/** The messages before the step that state the line's instruction in other words, each with the
- *  words quoted from it: the case reader's and the restatement reader's answer. */
+/** The messages before the step that state the line's instruction in any wording, a quote of it
+ *  among them, each with the words quoted from it: the case reader's and the restatement reader's
+ *  answer. */
 const Restatements = z.array(
   z.strictObject({ messageIndex: z.int().nonnegative(), quote: z.string().min(1) })
 );

@@ -35,7 +35,9 @@ import {
 
 // The case context (context.ts) built from made-up repositories, read from local
 // directories in place of `gh`: `acme/skills` (the skills alpha and beta), `acme/project` (an
-// AGENTS.md), `acme/infra` (a project's instructions file) and `acme/legion`, which holds a
+// AGENTS.md and a CLAUDE.md at its root, Claude Code's user memory at .claude/CLAUDE.md, and the
+// AGENTS.md, .claude/CLAUDE.md and .github/copilot-instructions.md of its directory agents/vm),
+// `acme/infra` (a project's instructions file) and `acme/legion`, which holds a
 // made-up daemon whose role prompt composer has the API of packages/daemon/internal/prompts
 // (`New(stateDir)`, `Compose(role, isRoot)`, the `roles/` parts snapshotted under
 // prompts/shared and the `go/` parts under prompts/go) and two made-up plugins. The Legion row
@@ -659,7 +661,8 @@ test("a gh read that fails for good, such as a 404, is NoSuchFile at once: one c
   expect(readFileSync(count, "utf8")).toBe("x\n");
   expect(waits).toEqual([]);
   expect(said).toEqual([]);
-  expect(source.reads?.()).toMatchObject({ calls: 1, retries: {} });
+  expect(source.reads?.().calls).toBe(1);
+  expect(source.reads?.().retries).toEqual({});
 });
 
 // Catches: a read of prompts.go that failed taken as a repository that holds none.

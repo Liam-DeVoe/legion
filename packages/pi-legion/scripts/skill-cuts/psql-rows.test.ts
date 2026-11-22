@@ -141,7 +141,7 @@ test("the first database's count: alpha read and referenced once, the missing sk
     mtime_to: Date.parse("2026-11-21T00:00:00Z"),
     files: 3,
     parts: 6,
-    bytes: 185790,
+    bytes: 185787,
     lines_parsed: 15,
     bad_lines: 0,
     shared_call_ids: 0,

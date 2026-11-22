@@ -23,8 +23,11 @@ SET LOCAL statement_timeout = '15min';
 -- holds one; those fragments share a group, the running count of newline-holding pieces of the
 -- file, and are joined in offset order. So no file is joined whole: the memory a file takes is
 -- its largest piece, which is copied whole (below), and the lines it joins (those that cross a
--- piece and those that hold a target), not the whole file. A file row that holds a whole older
--- file is one piece of up to hundreds of MB.
+-- piece and those that hold a target), not the whole file; a piece that may hold a target (below)
+-- takes more, a second copy of nearly all of it (its whole lines, `substr`), every line of which
+-- `string_to_table` puts in a table before the targets are kept (in memory up to work_mem, then
+-- in temporary space). A file row that holds a whole older file is one piece of up to hundreds of
+-- MB.
 --
 -- Passes: one over the day's files, one file at a time, and over each file's parts. The parts of
 -- a file come in the primary key's order, so no sort moves their text, and each piece is
@@ -209,7 +212,9 @@ events AS MATERIALIZED (
           OR strpos(g.line, '"tool_use"') > 0 OR strpos(g.line, '"tool_result"') > 0
           OR strpos(g.line, '"sourceToolUseID"') > 0))
   ) fl
-  -- The line parsed, once: null when it is not one JSON value, and for a totals row.
+  -- The line as jsonb: `pg_input_is_valid` reads it, then `::jsonb` reads it again, once per line
+  -- (the OFFSET 0 fence keeps every use below to that one result); null when it is not one JSON
+  -- value, and for a totals row.
   CROSS JOIN LATERAL (
     SELECT CASE WHEN pg_input_is_valid(fl.line, 'jsonb') THEN fl.line::jsonb END AS j
     OFFSET 0

@@ -523,12 +523,14 @@ describe.skipIf(skip)("capture on the pinned Oh My Pi", () => {
         texts(each.capture.body.messages).some((text) => text.includes("It names the new text."));
       expect(named(fresh)).toBe(true);
       expect(named(old)).toBe(false);
-      // The context file reached the system prompt, and the session's digest is recorded.
+      // The context file reached the system prompt; the session's digest is recorded, and the
+      // capture's own is the digest of the body it saved, after the harness-string rule.
       const body = old.capture.body;
       expect(texts(body.system).some((text) => text.includes("Keep each answer short."))).toBe(
         true
       );
       expect(old.capture.record.sessionDigest).toBe("46874d907e557998");
+      expect(old.capture.record.captureDigest).toBe(promptDigest(body));
       // The turn's and the hints' `anthropic-*` headers go with them, for a replay to send.
       expect(old.capture.record.requestHeaders["anthropic-version"]).toBe("2023-06-01");
       expect(
@@ -600,9 +602,6 @@ describe.skipIf(skip)("capture on the pinned Oh My Pi", () => {
           (match) => match[1]
         );
         expect(shown).toEqual([SESSION_CWD]);
-        for (const name of ["alpha", "acme-skills-1", "old", "new", "none", "scratch"]) {
-          expect(shown[0]).not.toContain(name);
-        }
         // The body as Oh My Pi sent it held the capture's working directory, which names the
         // capture's scratch: the rule replaced it.
         const raw = readFileSync(record.harness.rawBody, "utf8");
@@ -1128,6 +1127,7 @@ describe.skipIf(skip)("capture on the pinned Oh My Pi", () => {
       const listing = skillListing(body);
       expect([...listing.keys()].sort()).toEqual(["alpha", "beta"]);
       for (const { skill, hint } of record.hints) expect(listing.get(skill)).toBe(hint);
+      expect(record.captureDigest).toBe(promptDigest(body));
 
       // A recorded prompt goes as its blocks joined, a blank line between, into the instructions.
       const sub: Case = {
@@ -1498,8 +1498,8 @@ test("sessionFacts: the journaled reminder byte for byte, else one rendered from
   });
 });
 
-// Catches: a rule that misses a harness string, touches a recorded prompt, reads a `$` of the
-// session's text as a pattern, or lets a body through that still names the scratch.
+// Catches: a rule that misses a harness string, touches a recorded prompt, reads a `$` of a
+// session's value as a replacement pattern, or lets a body through that still names the scratch.
 test("the harness rules replace the capture's reminder, context-file paths, OS line and working directory, and leave a recorded prompt as recorded", () => {
   const work = "/scratch/run-1/legion-retro/captures/abc/work";
   const config = "/scratch/run-1/legion-retro/captures/abc/claude-config";
@@ -1568,6 +1568,20 @@ test("the harness rules replace the capture's reminder, context-file paths, OS l
   expect(recorded.replaced.map((rule) => rule.what)).not.toContain("the workstation's OS line");
   // The body given is never changed.
   expect(body.messages[0]?.content[0]?.text).toBe(captured);
+  // A `$` in a value the rules write is written as it is: `$&` and `$1` there are no patterns.
+  const dollar = "/srv/acme/$&$1";
+  const dollarFacts = sessionFacts(
+    { ...SESSION_HEAD, head: { ...SESSION_HEAD.head, cwd: dollar, reminders: [] } },
+    { turn: FIRST_TURN, date: STEP_DATE, devbox: true, devboxClaudeConfigDir: DEVBOX_CLAUDE }
+  );
+  const dollared = rewriteBody(body, ompHarnessRules(work, config, dollarFacts, true), [
+    "/scratch/run-1",
+  ]);
+  expect(dollared.faults).toEqual([]);
+  const dollaredText = JSON.stringify(dollared.body);
+  expect(dollaredText).toContain(`<file path=\\"${dollar}/AGENTS.md\\">`);
+  expect(dollaredText).toContain(`I am in ${dollar}/src.`);
+  expect(dollaredText).toContain(`current working directory: '${dollar}'`);
 });
 
 // Catches: a parent's context file, or another mention of the capture's checkout, left naming the
@@ -1612,12 +1626,11 @@ test("the harness rules of a capture whose working directory is below its checko
     count: 1,
   });
   expect(built.replaced).toContainEqual({ what: "another mention of the checkout", count: 1 });
-  // The session's checkout is its working directory less that path; a neutral working directory,
-  // which does not end with it, has its checkout as many levels above it.
+  // The session's checkout is its working directory less that path; a working directory that
+  // does not end with it (a neutral one) has its checkout as many levels above it as the path
+  // has parts.
   expect(sessionCheckout(`${cwd}/`, "agents/vm")).toBe(SESSION_CWD);
-  expect(sessionCheckout(NEUTRAL_CWD, "agents/vm")).toBe(
-    path.posix.resolve(NEUTRAL_CWD, "..", "..")
-  );
+  expect(sessionCheckout("/srv/acme/other", "agents/vm")).toBe("/srv");
 });
 
 // Catches: a session checkout at the file system's root joined to a path as `//`.

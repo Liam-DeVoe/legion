@@ -623,8 +623,7 @@ test("the batch probe: a fixed session id sets its batch's count, and the runner
   }
 });
 
-// Catches: a body made again for each run, or a run whose bytes differ from replayOnce's in more
-// than its own session id.
+// Catches: a run whose bytes differ from replayOnce's in more than its own session id.
 test("each run sends its arm's body as replayOnce sends it, but for a session id of its own", async () => {
   const arm = armWith("old", { "SKILL.md": SKILL_MD, "references/x.md": X_MD });
   /** A gateway whose fake fetch answers `answer` and keeps each body's text as sent. */

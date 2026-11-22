@@ -68,19 +68,19 @@
  * moment; a case line the summary does not record (a kill between the two) is left out when the
  * build goes on, and its session is read again. For each session:
  *
- * 1. Its transcript is pulled by path with pull.sql, PULL_PAGE slices of at most 1 MiB a call,
- *    paging by place, into a file of its own (`<out>.spool/`, removed once the session is
- *    decided), each slice written as its row comes, read by psql-rows.ts's `PsqlTable` and
- *    checked by its `PullCheck`; so one row is held at a time, however long the file. It is read
- *    from there line by line (`readTranscript`), each line parsed as transcript.ts's entry; the
- *    text after the last newline, a line still being written, is left out when it does not
- *    parse. Only the entries the builder reads whole are held whole (`heldWhole`: the header, a
- *    `session_init`, model and thinking changes, context resets, a system prompt's digest, Envoy
- *    role claims); every other entry is held light, with where its line is, a message with its
- *    roles, tool calls and `[Skill file: …]` line, and is read whole again only where a check or a
- *    reader needs it (the reader's windows, the reads it offers, the case's messages, the
- *    compaction before the step). So a session holds its entries' light forms and what its case
- *    and windows need, not its file.
+ * 1. Its transcript is pulled by path with pull.sql, PULL_PAGE slices a call (each 1 MiB and at
+ *    most 3 bytes more), paging by place, into a file of its own (`<out>.spool/`, removed once
+ *    the session is decided), each slice written as its row comes, read by psql-rows.ts's
+ *    `PsqlTable` and checked by its `PullCheck`; so one row is held at a time, however long the
+ *    file. It is read from there line by line (`readTranscript`), each line parsed as
+ *    transcript.ts's entry; the text after the last newline, a line still being written, is left
+ *    out when it does not parse. Only the entries the builder reads whole are held whole
+ *    (`heldWhole`: the header, a `session_init`, model and thinking changes, context resets, a
+ *    system prompt's digest, Envoy role claims); every other entry is held light, with where its
+ *    line is, a message with its roles, tool calls and `[Skill file: …]` line, and is read whole
+ *    again only where a check or a reader needs it (the reader's windows, the reads it offers, the
+ *    case's messages, the compaction before the step). So a session holds its entries' light
+ *    forms and what its case and windows need, not its file.
  * 2. The session's messages are those of its current branch (the parent chain of its last entry),
  *    in order, as Oh My Pi 18.18.6 gives them to the model: each `message` (less an assistant
  *    message it leaves out: one marked `retryRecovery`, or an error with no content), each
@@ -105,28 +105,27 @@
  *    reads before it) need the reader's answer, so they run after it and before the restatement
  *    check's and the audit's readers.
  * 4. The case reader (`skill-cuts read --prompt case`) is offered only the lines of the skill's
- *    base
- *    text (`--old`) that a case may name: those of each file that the session's own successful
- *    reads of that file hold whole (the text after its `[Skill file: …]` line, each line trimmed,
- *    among the messages the reader reads), each with its number in the base file. A file the
- *    session did not read is not offered, and a session whose reads hold no line of the base text
- *    is dropped before any reader call (`no-common-line`), since the skill's text may have changed
- *    after the session read it. It reads them and the session's messages window by window, one
- *    call a window, from the read's call on: each window at most READER_MESSAGES messages and
- *    READER_CHARS characters, and before it, nearest first, at most READER_EARLIER_MESSAGES
- *    messages and READER_EARLIER_CHARS characters of those after the last compaction or context
- *    reset before the window. The next window starts after the last message of the one before,
- *    until the reader proposes a step, READER_WINDOWS windows are read (at most READER_WINDOWS ×
- *    READER_MESSAGES messages after the read), or the messages end. No window reads past the
- *    first compaction or context reset after the skill's read: a step after it would follow a
- *    compaction that follows the read, which drops it, so a session whose windows reach it with no
- *    step is dropped for that (`read-before-compaction`). Each message is cut to MESSAGE_CHARS
- *    (its start and its end kept), and each read result of the skill's files is left out with a
- *    note. The reader proposes the first step the skill governs, its message index, the line it
- *    exercises (one of those offered), the criterion, a violating step (a plausible next
- *    step that breaks the line and otherwise looks valid), and each message before the step that
- *    states the line's instruction in any wording; or no step. The session's record in the summary
- *    says how many windows the reader read (`windows`).
+ *    base text (`--old`) that a case may name: those of each file that the session's own
+ *    successful reads of that file hold whole (the text after its `[Skill file: …]` line, each
+ *    line trimmed, among the messages the reader reads), each with its number in the base file.
+ *    A file the session did not read is not offered, and a session whose reads hold no line of
+ *    the base text is dropped before any reader call (`no-common-line`), since the skill's text
+ *    may have changed after the session read it. It reads them and the session's messages window
+ *    by window, one call a window, from the read's call on: each window at most READER_MESSAGES
+ *    messages and READER_CHARS characters, and before it, nearest first, at most
+ *    READER_EARLIER_MESSAGES messages and READER_EARLIER_CHARS characters of those after the last
+ *    compaction or context reset before the window. The next window starts after the last
+ *    message of the one before, until the reader proposes a step, READER_WINDOWS windows are read
+ *    (at most READER_WINDOWS × READER_MESSAGES messages after the read), or the messages end. No
+ *    window reads past the first compaction or context reset after the skill's read: a step after
+ *    it would follow a compaction that follows the read, which drops it, so a session whose
+ *    windows reach it with no step is dropped for that (`read-before-compaction`). Each message is
+ *    cut to MESSAGE_CHARS (its start and its end kept), and each read result of the skill's files
+ *    is left out with a note. The reader proposes the first step the skill governs, its message
+ *    index, the line it exercises (one of those offered), the criterion, a violating step (a
+ *    plausible next step that breaks the line and otherwise looks valid), and each message before
+ *    the step that states the line's instruction in any wording; or no step. The session's record
+ *    in the summary says how many windows the reader read (`windows`).
  * 5. The case: `messages` the model's messages before the step, `realStep` the real assistant
  *    message at it, `violatingStep` the reader's violating step as an assistant message (its text,
  *    then each tool call), `skillReads` the index of each read result of a `skill://<skill>` file
@@ -242,16 +241,15 @@
  *   ships at the later commit the copies output read. Each repository of a unit (its manifest's,
  *   and those of the copies installers.tsv lists for it) is read at its commit as copies.ts reads
  *   one: its tree, each `SKILL.md` outside the configuration's `excludePaths`, and each manifest
- *   file by
- *   its path; copies.ts's `resolveInstallers` then gives each unit's skills (the prepack script's
- *   list for a package, a plugin's `skills/`, an installer's linked directory), by name. Two units
- *   that ship copies of one name install the one the session read (its first read of that name,
- *   placed by attribute.ts's rules: the host gave the session that copy) when a unit ships it
- *   then, else the first unit's. So every skill of a profile is in its repository at the commit
- *   the profile names; the evidence names each skill installers.tsv lists that the unit did not
- *   ship then, and each it shipped then that installers.tsv does not list. Plugins: an Oh My Pi
- *   package's directory (the `omp-package` manifest's, at that commit), or a Claude Code plugin's
- *   directory (its skills' parent), named by its last part.
+ *   file by its path; copies.ts's `resolveInstallers` then gives each unit's skills (the prepack
+ *   script's list for a package, a plugin's `skills/`, an installer's linked directory), by name.
+ *   Two units that ship copies of one name install the one the session read (its first read of
+ *   that name, placed by attribute.ts's rules: the host gave the session that copy) when a unit
+ *   ships it then, else the first unit's. So every skill of a profile is in its repository at the
+ *   commit the profile names; the evidence names each skill installers.tsv lists that the unit did
+ *   not ship then, and each it shipped then that installers.tsv does not list. Plugins: an Oh My
+ *   Pi package's directory (the `omp-package` manifest's, at that commit), or a Claude Code
+ *   plugin's directory (its skills' parent), named by its last part.
  * - The session repository, the repository the session's working directory is a checkout of
  *   (`sessionRepository`), and the working directory's path inside that checkout: for a Legion
  *   context, the repository of its workspace (`/legion/workspaces/<owner>/<name>/<workspace>/…`);
@@ -275,25 +273,25 @@
  * - Context files: the session repository's, one at each level from the working directory up to
  *   the checkout's root, the one Oh My Pi 18.18.6 keeps in that level's slot (CONTEXT_FILES, in
  *   its providers' order: `.omp/AGENTS.md` at the nearest level whose `.omp/` holds anything,
- *   `.claude/CLAUDE.md` at the working directory, `.agent/AGENTS.md`, `.agents/AGENTS.md`,
- *   `.gemini/GEMINI.md` and `.github/copilot-instructions.md` at the working directory, then
- *   `AGENTS.md` and `CLAUDE.md`), listed the farthest level first, each at its path in the
- *   repository; the profile's `workingDirectory` names the working directory's path in the
- *   checkout (context.ts writes the files in its checkout and runs the capture there). For a
- *   Legion context, the project's instructions file too, named by its project file (a
- *   `legion-project` manifest of manifests.tsv, `instructions:` read at that commit, under
- *   `<dir>/instructions/`). A devbox session has the user-level context file Oh My Pi 18.18.6
- *   reads (discovery/claude.ts), marked `user: true`: one file at user level, CLAUDE.md in Claude
- *   Code's config directory, which a dev box's CLAUDE_CONFIG_DIR names, the `.claude/` of the
- *   repository that installs its units. That is the one repository of the profile's units that
- *   holds Claude Code's settings there (`.claude/settings.json`, copies.ts's claude-settings
- *   manifest) at the session's start, and its `.claude/CLAUDE.md` at that commit (context.ts
- *   writes it as `CLAUDE.md` in a scratch Claude Code config directory that the capture names in
- *   CLAUDE_CONFIG_DIR, where Oh My Pi reads it as its user-level file; load.ts gives Claude Code
- *   it as user memory). Each one the copies output or the session does not name is listed as left
- *   out: for a devbox, when no repository or more than one of its units holds those settings, or
- *   that one has no CLAUDE.md then. A subagent's case has none: its recorded prompt holds them.
- *   Its units and skills are read as its store's context's are.
+ *   `.claude/CLAUDE.md` at the working directory, `.agent/AGENTS.md` and `.agents/AGENTS.md` at
+ *   each level, `.gemini/GEMINI.md` and `.github/copilot-instructions.md` at the working
+ *   directory, then `AGENTS.md` and `CLAUDE.md` at each level), listed the farthest level first,
+ *   each at its path in the repository; the profile's `workingDirectory` names the working
+ *   directory's path in the checkout (context.ts writes the files in its checkout and runs the
+ *   capture there). For a Legion context, the project's instructions file too, named by its
+ *   project file (a `legion-project` manifest of manifests.tsv, `instructions:` read at that
+ *   commit, under `<dir>/instructions/`). A devbox session has the user-level context file Oh My
+ *   Pi 18.18.6 reads (discovery/claude.ts), marked `user: true`: one file at user level,
+ *   CLAUDE.md in Claude Code's config directory, which a dev box's CLAUDE_CONFIG_DIR names, the
+ *   `.claude/` of the repository that installs its units. That is the one repository of the
+ *   profile's units that holds Claude Code's settings there (`.claude/settings.json`, copies.ts's
+ *   claude-settings manifest) at the session's start, and its `.claude/CLAUDE.md` at that commit
+ *   (context.ts writes it as `CLAUDE.md` in a scratch Claude Code config directory that the
+ *   capture names in CLAUDE_CONFIG_DIR, where Oh My Pi reads it as its user-level file; load.ts
+ *   gives Claude Code it as user memory). Each one the copies output or the session does not name
+ *   is listed as left out: for a devbox, when no repository or more than one of its units holds
+ *   those settings, or that one has no CLAUDE.md then. A subagent's case has none: its recorded
+ *   prompt holds them. Its units and skills are read as its store's context's are.
  *
  * Output: the case file `--out` (one JSON line per case, written whole after each case and checked
  * with cases.ts's `loadCases` against `--old` at the end) and `<out>.summary.json`: the seed and
@@ -330,30 +328,30 @@
  * keeps it with the reader's reason (`dropped`). The tasks file holds one JSON line per task,
  * labelled before any run: `{"id", "text", "label", "source": "session", "store", "pathHash"}` or
  * `{"id", "text", "label", "source": "written"}`. `<out>.summary.json` holds the terms, each
- * query's
- * row count (or its error), the messages offered, each task's reason, and the spend. Its queries,
- * one per store and day, take most of its time (an hour and more on the real stores), so it goes
- * on as build-cases does: the summary records the inputs (SKILL.md's SHA-256, the stores and the
- * window), the terms and each query as it ends, and `<out>.found.jsonl` the messages each found
- * (path hashes and texts, appended whole before the summary records the query). A run of the same
- * inputs goes on from them with no terms call and no query already recorded; a finished build is
- * left as it is; other inputs are refused. The found file is removed once the tasks are written.
+ * query's row count (or its error), the messages offered, each task's reason, and the spend. Its
+ * queries, one per store and day, take most of its time (an hour and more on the real stores), so
+ * it goes on as build-cases does: the summary records the inputs (SKILL.md's SHA-256, the stores
+ * and the window), the terms and each query as it ends, and `<out>.found.jsonl` the messages each
+ * found (path hashes and texts, appended whole before the summary records the query). A run of the
+ * same inputs goes on from them with no terms call and no query already recorded; a finished
+ * build is left as it is; other inputs are refused. The found file is removed once the tasks are
+ * written.
  *
  * **build-tasks --first-read** (the load test's positive control) writes the control's need
  * tasks from the sessions file of the skill, unchosen: see `buildControlTasks`.
  *
  * **--profiles-out** (both modes): each task runs in the rebuilt context of the session it came
- * from. For each task from a session, the session
- * is pulled again and its profile rebuilt as build-cases rebuilds a case's at the session's start
- * (`sessionProfile`: the context, `caseProfile` from every read of its branch with `--copies` and
- * `--count`, a subagent's recorded system prompt and tools), less the tested skill, and written
- * to `<dir>/<task id>.json` (load.ts's LoadProfile); the task line's `profile` is its path. A
- * written task takes the profile of `--context-session <store>:<hash>` (required in the reader's
- * mode; rebuilt before any reader call, and a session that gives none fails the build). The
- * summary's `profiles` records the context session, each task's profile and its evidence, why a
- * task has none, and the GitHub reads sent again after a transient failure by reason
- * (`githubRetries`). A finished build gets no profiles from `--profiles-out` afterwards;
- * `--reprofile` (below) builds them again from its tasks file.
+ * from. For each task from a session, the session is pulled again and its profile rebuilt as
+ * build-cases rebuilds a case's at the session's start (`sessionProfile`: the context,
+ * `caseProfile` from every read of its branch with `--copies` and `--count`, a subagent's
+ * recorded system prompt and tools), less the tested skill, and written to `<dir>/<task id>.json`
+ * (load.ts's LoadProfile); the task line's `profile` is its path. A written task takes the
+ * profile of `--context-session <store>:<hash>` (required in the reader's mode; rebuilt before any
+ * reader call, and a session that gives none fails the build). The summary's `profiles` records
+ * the context session, each task's profile and its evidence, why a task has none, and the GitHub
+ * reads sent again after a transient failure by reason (`githubRetries`). A finished build gets no
+ * profiles from `--profiles-out` afterwards; `--reprofile` (below) builds them again from its
+ * tasks file.
  * A task whose context does not list the tested skill tests nothing (`listsSkill`: a subagent's
  * recorded listing lacks its line, or another context's profile does not install it), so with
  * `--profiles-out` such a session is dropped (`skill-not-listed`) and counted: in the reader's
@@ -837,8 +835,8 @@ async function eachStoreRow(
 
 /** Pulls the file `filePath` of the store `db` into the file `spool`, PULL_PAGE rows a call, each
  *  row checked by psql-rows.ts's `PullCheck` and its bytes written as it comes (`eachStoreRow`),
- *  so one row of at most 1 MiB is held at a time however long the file. Returns the bytes it
- *  wrote and the calls it took. */
+ *  so one row (a slice of 1 MiB and at most 3 bytes more) is held at a time however long the
+ *  file. Returns the bytes it wrote and the calls it took. */
 export async function pullTranscript(
   command: string,
   db: string,
@@ -1976,9 +1974,9 @@ export class GithubReads {
    *  BLOB_BATCH blobs and BLOB_BATCH_BYTES bytes (copies.ts's `blobBatches` and `blobQuery`), one
    *  call a batch where each blob alone would take one, with the owner and name as the fields
    *  `owner` and `name` (`graphqlArgs`), by which the pod's gh picks the owner's token. A blob a
-   *  batch does not give whole (binary, cut short, missing, or in a batch that fails, a 502 or
-   *  504 on a batch of more than one blob among them, which is not sent again) is left to `blob`,
-   *  which reads it alone. */
+   *  batch does not give whole (binary, cut short, missing, or in a batch that fails: a batch of
+   *  more than one blob that GitHub answers as a batch too large, a 502, a 504 or its refusal of a
+   *  query too costly, is not sent again) is left to `blob`, which reads it alone. */
   private async prefetch(repo: string, entries: readonly TreeEntry[]): Promise<void> {
     const wanted = new Map<string, TreeEntry>();
     for (const entry of entries) {
@@ -4094,7 +4092,7 @@ const CasesInputs = z.strictObject({
 });
 type CasesInputs = z.infer<typeof CasesInputs>;
 
-/** The files of the copies output that build-cases reads (readCopies, and attribute.ts's
+/** The files of the copies output that build-cases reads (readCopiesAndPlacer, and attribute.ts's
  *  readR4). */
 const COPIES_READ = [
   "installers.tsv",

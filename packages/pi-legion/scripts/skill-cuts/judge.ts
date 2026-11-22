@@ -297,7 +297,9 @@ export async function judgeControls(
   return { ...judged, failed, hold: failed.length === 0 };
 }
 
-/** A fresh seed for `blindOrder`, to be recorded with the judgements. */
+/** A fresh seed, to be recorded beside what it orders: `blindOrder`'s order of the judgements and
+ *  replay.ts's `sendOrder` of the runs (cli.ts seeds a round's sends and judgements with one;
+ *  load.ts seeds a profile's sends with one). */
 export function newSeed(): string {
   return randomBytes(16).toString("hex");
 }
