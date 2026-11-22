@@ -318,4 +318,4 @@ require (
 // replica has decoded the commit and before ygo's persistence observer, so no grant is held while
 // that observer waits on the room's queue of updates to store or on its worker's exit. The tag is
 // on 7768e28e, the head of release/v1.55.1/2026-11-21.2.
-replace github.com/reearth/ygo => github.com/theorem-labs/ygo v1.55.1-theorem.15
+replace github.com/reearth/ygo => github.com/cybermonklabs/ygo v1.55.1-legion.1
