@@ -12,6 +12,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"sync"
@@ -649,11 +650,11 @@ func everyInterruptionOfAFreshTakeOverIsFinishedByTheNextHolder(t *testing.T, to
 	}
 }
 
-// Dispatch's durable creator names as the family table does: its Config's prefix and fixed name
-// are the table's for Dispatch's store (consumernames.FamilyNaming of DispatchFamily), both the
-// durable's own name, and on these cases its own fence (Names.Check) and consumernames.CheckFamily
-// give the same answer, the one each case pins. The control, run with a fault and seen failing: a
-// creator whose prefix is not the table's fails the naming check.
+// Dispatch's durable creator names as the family table does: its Config's prefix, fixed name and
+// metadata are the table's for Dispatch's store (consumernames.FamilyNaming of DispatchFamily), the
+// first two the durable's own name, and consumernames.CheckFamily, the one public fence, gives the
+// answer each case pins. The control, run with a fault and seen failing: a creator whose prefix is
+// not the table's fails the naming check.
 func TestTheDispatchDurableCreatorNamesAsTheFamilyTable(t *testing.T) {
 	for i, kind := range durableKinds {
 		other := durableKinds[len(durableKinds)-1-i].logical
@@ -673,8 +674,11 @@ func TestTheDispatchDurableCreatorNamesAsTheFamilyTable(t *testing.T) {
 			if got, want := creator.Prefix(kind.logical), table.Prefix(kind.logical); got != want || got != kind.logical {
 				t.Errorf("the creator's prefix of %s is %q, the table's %q; want both %q", kind.logical, got, want, kind.logical)
 			}
-			if got := creator.Fixed(kind.logical); got != kind.logical {
-				t.Errorf("the creator's fixed name of %s is %q, want the durable's own", kind.logical, got)
+			if got := creator.Fixed(kind.logical); got != table.Fixed(kind.logical) || got != kind.logical {
+				t.Errorf("the creator's fixed name of %s is %q, the table's %q; want both the durable's own", kind.logical, got, table.Fixed(kind.logical))
+			}
+			if got, want := creator.Metadata(kind.logical), table.Metadata(kind.logical); !maps.Equal(got, want) {
+				t.Errorf("the creator's metadata of %s is %v, the table's %v", kind.logical, got, want)
 			}
 			reserved := time.Unix(1_700_000_000, 0)
 			for _, c := range []struct {
@@ -688,10 +692,8 @@ func TestTheDispatchDurableCreatorNamesAsTheFamilyTable(t *testing.T) {
 				{"the other durable's current", consumernames.Record{Current: other + "~A", Start: 3}, false},
 				{"the other durable's old name", consumernames.Record{Start: 3, Op: &consumernames.Op{Kind: consumernames.OpReplace, Old: other, Candidate: kind.logical + "~B", ReservedAt: reserved}}, false},
 			} {
-				own := names.Check(kind.logical, c.record)
-				family := consumernames.CheckFamily(consumernames.DispatchFamily, kind.logical, c.record)
-				if (own == nil) != c.served || (family == nil) != c.served {
-					t.Errorf("%s: the creator's fence = %v, CheckFamily = %v; want both served %t", c.name, own, family, c.served)
+				if err := consumernames.CheckFamily(consumernames.DispatchFamily, kind.logical, c.record); (err == nil) != c.served {
+					t.Errorf("%s: CheckFamily = %v, want served %t", c.name, err, c.served)
 				}
 			}
 		})

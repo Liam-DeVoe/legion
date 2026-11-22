@@ -2,7 +2,10 @@ package consumernames
 
 import (
 	"errors"
+	"strings"
 	"testing"
+
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // familyCase is a record of logical in the store of family, and whether its family's creator
@@ -83,5 +86,93 @@ func TestCheckDurableKeyTakesOnlyAKeyDurableKeyMade(t *testing.T) {
 		if got, ok := durableOfKey(key); !ok || got != durable {
 			t.Errorf("control: durableOfKey(DurableKey(%q)) = %q, %t", durable, got, ok)
 		}
+	}
+}
+
+// Every family's naming carries its fixed name, so a reader in another module reads it from the
+// table and never calls a nil func or copies a default: the session's is s-<id>, a durable's and
+// Dispatch's and a daemon's the logical name, the names their creators use. Before, Fixed was nil
+// for the durable, Dispatch and daemon families, and only Names.fixed knew that nil meant the
+// prefix.
+func TestEveryFamilysNamingCarriesItsFixedName(t *testing.T) {
+	durable := DurableKey("listener-m a")
+	for _, c := range []struct{ family, logical, fixed string }{
+		{SessionFamily, "ses-A", "s-ses-A"},
+		{SessionFamily, durable, "listener-m a"},
+		{DispatchFamily, "delivery-events", "delivery-events"},
+		{"daemon/p", "legion-go-p-wake", "legion-go-p-wake"},
+	} {
+		naming, err := FamilyNaming(c.family, c.logical)
+		switch {
+		case err != nil:
+			t.Errorf("FamilyNaming(%s, %s) = %v", c.family, c.logical, err)
+		case naming.Fixed == nil:
+			t.Errorf("FamilyNaming(%s, %s).Fixed is nil; want %q", c.family, c.logical, c.fixed)
+		case naming.Fixed(c.logical) != c.fixed:
+			t.Errorf("FamilyNaming(%s, %s).Fixed = %q, want %q", c.family, c.logical, naming.Fixed(c.logical), c.fixed)
+		}
+	}
+}
+
+// OwnsFamily is the owner check of a consumer a record of logical names, by the family's own naming
+// (FamilyNaming), for a reader with no creator's Config: for each family it serves the key's own
+// consumer (its metadata names the key) and the key's fixed consumer, which carries no metadata,
+// and refuses a consumer of another key and an unmarked fresh one, as ErrMalformedRecord. The
+// control is a Config built by hand with another prefix and fixed name, and the same metadata: it
+// differs from OwnsFamily on the fixed consumer, which it refuses.
+func TestOwnsFamilyServesOnlyTheKeysOwnConsumers(t *testing.T) {
+	consumer := func(name string, metadata map[string]string) *jetstream.ConsumerInfo {
+		return &jetstream.ConsumerInfo{Name: name, Config: jetstream.ConsumerConfig{Durable: name, Metadata: metadata}}
+	}
+	durable := DurableKey("listener-m a")
+	families := []struct {
+		family, logical, fixed, fresh string
+		own, foreign                  map[string]string
+	}{
+		{SessionFamily, "ses-A", "s-ses-A", "session~A",
+			map[string]string{LogicalMetadataKey: "ses-A", SessionIDMetadataKey: "ses-A"},
+			map[string]string{LogicalMetadataKey: "ses-B", SessionIDMetadataKey: "ses-B"}},
+		{SessionFamily, durable, "listener-m a", "listener-m a~A",
+			map[string]string{LogicalMetadataKey: "listener-m a"},
+			map[string]string{LogicalMetadataKey: "listener-other"}},
+		{DispatchFamily, "delivery-events", "delivery-events", "delivery-events~A",
+			map[string]string{LogicalMetadataKey: "delivery-events"},
+			map[string]string{LogicalMetadataKey: "delivery-jobs"}},
+		{"daemon/p", "legion-go-p-wake", "legion-go-p-wake", "legion-go-p-wake~A",
+			map[string]string{LogicalMetadataKey: "legion-go-p-wake"},
+			map[string]string{LogicalMetadataKey: "legion-go-q-wake"}},
+	}
+	var controlDiffers []string
+	for _, f := range families {
+		naming, err := FamilyNaming(f.family, f.logical)
+		if err != nil {
+			t.Fatal(err)
+		}
+		hand := New(Config{
+			Prefix:   func(string) string { return "other" },
+			Fixed:    func(string) string { return "other" },
+			Metadata: naming.Metadata,
+		})
+		for _, c := range []struct {
+			name  string
+			info  *jetstream.ConsumerInfo
+			owned bool
+		}{
+			{"its own consumer", consumer(f.fresh, f.own), true},
+			{"its fixed consumer, unmarked", consumer(f.fixed, nil), true},
+			{"another key's consumer", consumer(f.fresh, f.foreign), false},
+			{"an unmarked fresh consumer", consumer(f.fresh, nil), false},
+		} {
+			err := OwnsFamily(f.family, f.logical, c.info)
+			if c.owned && err != nil || !c.owned && !errors.Is(err, ErrMalformedRecord) {
+				t.Errorf("%s %s: OwnsFamily = %v; want owned %t", f.family, c.name, err, c.owned)
+			}
+			if (hand.Owns(f.logical, c.info) == nil) != (err == nil) {
+				controlDiffers = append(controlDiffers, f.logical+" "+c.name)
+			}
+		}
+	}
+	if got := strings.Join(controlDiffers, "; "); !strings.Contains(got, "fixed consumer") {
+		t.Errorf("control: the hand-built Config differs from OwnsFamily on %q; want it to on the fixed consumers", got)
 	}
 }

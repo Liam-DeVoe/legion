@@ -280,7 +280,9 @@ func (h *harness) names(owner string) *Names {
 		Store:  h.store,
 		Server: h.server,
 		Prefix: func(string) string { return "session" },
-		Floor:  func(info *jetstream.ConsumerInfo) uint64 { return info.AckFloor.Stream },
+		// The fixed name as a Config with no Fixed named it before Fixed was required: the prefix.
+		Fixed: func(string) string { return "session" },
+		Floor: func(info *jetstream.ConsumerInfo) uint64 { return info.AckFloor.Stream },
 		StreamID: func(context.Context) (string, error) {
 			return "stream-1", nil
 		},
