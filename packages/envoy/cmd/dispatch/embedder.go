@@ -164,6 +164,9 @@ func resolveAzureEmbedder(env settingValues) (embedderConfig, error) {
 	if endpoint == "" {
 		return embedderConfig{}, errors.New("DISPATCH_AZURE_EMBED_ENDPOINT is required when DISPATCH_EMBEDDER is azure")
 	}
+	if err := credentialURLRefusal("DISPATCH_AZURE_EMBED_ENDPOINT", "an endpoint's URL", endpoint); err != nil {
+		return embedderConfig{}, err
+	}
 	parsed, err := url.Parse(endpoint)
 	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || strings.ContainsAny(endpoint, "?#") {
 		return embedderConfig{}, fmt.Errorf("DISPATCH_AZURE_EMBED_ENDPOINT=%q (expected an absolute https URL with a host and no query or fragment, the base URL the embeddings route is appended to)", redact.URL(endpoint))

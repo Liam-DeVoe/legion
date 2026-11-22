@@ -1362,23 +1362,39 @@ func dispatchStreamOptions(boot bootConfig, env settingValues) []bus.ConnectOpti
 	}
 }
 
-// agentSecretsURLRefusal is why raw, DISPATCH_AGENT_SECRETS_URL's value, is no broker URL, or nil:
-// one with a user name or a password, an "@" after its host (natsurl.UserinfoPastHost: where a
-// credential holding a "/", "?" or "#" written as the user lands), a query or a fragment, as the
-// daemon refuses them in agent_secrets.url, each named by the setting alone; and one that is no
-// absolute http(s) URL with no path, named through redact.URL. Dispatch's introspection and its
-// broker client build every request on this URL, and net/http masks a password but not a user name
-// in the errors it returns, which reach Dispatch's log.
-func agentSecretsURLRefusal(raw string) error {
+// credentialURLRefusal is why raw, the value of the setting named setting, is refused as a URL
+// that can carry a credential, or nil: one with a user name or a password, an "@" after its host
+// (natsurl.UserinfoPastHost: where a credential holding a "/", "?" or "#" written as the user
+// lands), a query or a fragment, each named by the setting alone, as the daemon refuses them in
+// agent_secrets.url. what names the URL the setting holds, which has none of them. A value that
+// does not parse is nil here: the caller's shape check names it through redact.URL. Dispatch
+// builds every request to such a URL on it, and net/http masks a password but not a user name or
+// a query in the errors it returns, which reach Dispatch's log and, from the Envoy listener's
+// client, its API's answers.
+func credentialURLRefusal(setting, what, raw string) error {
 	parsed, err := url.Parse(raw)
 	switch {
-	case err == nil && parsed.User != nil:
-		return errors.New("DISPATCH_AGENT_SECRETS_URL cannot be read: it holds a user name or a password, which the broker's URL has none of")
-	case err == nil && natsurl.UserinfoPastHost(parsed):
-		return errors.New("DISPATCH_AGENT_SECRETS_URL cannot be read: " + natsurl.UserinfoPastHostReason)
-	case err == nil && (parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" || strings.Contains(raw, "#")):
-		return errors.New("DISPATCH_AGENT_SECRETS_URL cannot be read: it holds a query or a fragment, which the broker's URL has none of")
-	case err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.Path != "":
+	case err != nil:
+		return nil
+	case parsed.User != nil:
+		return fmt.Errorf("%s cannot be read: it holds a user name or a password, which %s has none of", setting, what)
+	case natsurl.UserinfoPastHost(parsed):
+		return errors.New(setting + " cannot be read: " + natsurl.UserinfoPastHostReason)
+	case parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" || strings.Contains(raw, "#"):
+		return fmt.Errorf("%s cannot be read: it holds a query or a fragment, which %s has none of", setting, what)
+	}
+	return nil
+}
+
+// agentSecretsURLRefusal is why raw, DISPATCH_AGENT_SECRETS_URL's value, is no broker URL, or nil:
+// one credentialURLRefusal refuses, and one that is no absolute http(s) URL with no path, named
+// through redact.URL. Dispatch's introspection and its broker client build every request on it.
+func agentSecretsURLRefusal(raw string) error {
+	if err := credentialURLRefusal("DISPATCH_AGENT_SECRETS_URL", "the broker's URL", raw); err != nil {
+		return err
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.Path != "" {
 		return fmt.Errorf("DISPATCH_AGENT_SECRETS_URL=%q (expected an absolute http(s) URL with no path)", redact.URL(raw))
 	}
 	return nil
@@ -1556,6 +1572,9 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 	envoyURL := strings.TrimSpace(env.get("ENVOY_URL"))
 	if envoyURL == "" {
 		envoyURL = defaultEnvoyURL
+	}
+	if err := credentialURLRefusal("ENVOY_URL", "the Envoy listener's URL", envoyURL); err != nil {
+		return bootConfig{}, err
 	}
 	parsed, err := url.Parse(envoyURL)
 	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {

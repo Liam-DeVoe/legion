@@ -46,6 +46,7 @@ import (
 	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/natsurl"
 )
 
 // signInEnvironment is a cookie-identity boot environment with all four sign-in settings.
@@ -612,10 +613,10 @@ func TestResolveBootConfigRefusesACredentialInAgentSecretsURLByTheSettingAlone(t
 	}
 }
 
-// Dispatch's refusals of a URL setting print the value through redact.URL, so a credential written
-// into one prints in none: ENVOY_URL with no http scheme and a made-up password, a remote ENVOY_URL
-// with one under the dev sign-in, and the embeddings and chat endpoints refused for a made-up key in
-// the query. Each still names its setting.
+// Dispatch's shape refusals of a URL setting print the value through redact.URL, so a credential
+// in a value no credential refusal can read (one with no http scheme, written <name>:<secret>@<host>,
+// where net/url finds an opaque part and no user) prints in none: ENVOY_URL and the embeddings and
+// chat endpoints. Each still names its setting.
 func TestDispatchsURLRefusalsPrintNoCredential(t *testing.T) {
 	const secret = "madeUpEndpointSecret0123"
 	at := "@"
@@ -626,16 +627,59 @@ func TestDispatchsURLRefusalsPrintNoCredential(t *testing.T) {
 		"DISPATCH_IDENTITY_HEADER_TRUSTED": "1",
 		"ENVOY_URL":                        "dispatch:" + secret + at + "envoy.invalid:9020",
 	}))
-	_, devErr := resolveBootConfig(devSignInEnvironment(map[string]string{"ENVOY_URL": "http://dispatch:" + secret + at + "envoy.example:9020"}))
-	_, embedErr := resolveAzureEmbedder(envGetter(map[string]string{"DISPATCH_AZURE_EMBED_ENDPOINT": "https://resource.openai.azure.com/?api-key=" + secret}))
-	_, chatErr := chatEndpoint(envGetter(map[string]string{"DISPATCH_CHAT_ENDPOINT": "https://chat.example/v1?key=" + secret}), "DISPATCH_CHAT_ENDPOINT", "endpoint")
-	for setting, err := range map[string]error{"ENVOY_URL=": envoyErr, "ENVOY_URL=\"": devErr, "DISPATCH_AZURE_EMBED_ENDPOINT=": embedErr, "DISPATCH_CHAT_ENDPOINT=": chatErr} {
+	_, embedErr := resolveAzureEmbedder(envGetter(map[string]string{"DISPATCH_AZURE_EMBED_ENDPOINT": "embed:" + secret + at + "resource.openai.azure.com/models"}))
+	_, chatErr := chatEndpoint(envGetter(map[string]string{"DISPATCH_CHAT_ENDPOINT": "chat:" + secret + at + "chat.example/v1"}), "DISPATCH_CHAT_ENDPOINT", "endpoint")
+	for setting, err := range map[string]error{"ENVOY_URL=": envoyErr, "DISPATCH_AZURE_EMBED_ENDPOINT=": embedErr, "DISPATCH_CHAT_ENDPOINT=": chatErr} {
 		if err == nil || !strings.Contains(err.Error(), setting) {
 			t.Errorf("the refusal = %v, want one naming %s", err, setting)
 			continue
 		}
 		if strings.Contains(err.Error(), secret[:10]) {
 			t.Errorf("the refusal %q holds part of the secret", err)
+		}
+	}
+}
+
+// ENVOY_URL and the three model endpoints refuse a user name, a password, an "@" past the host, a
+// query and a fragment, each by the setting alone, as DISPATCH_AGENT_SECRETS_URL does
+// (credentialURLRefusal): each URL booted with any of them, and Dispatch's clients printed it in
+// their transport errors, which net/http quotes with only a password masked, and which reach the
+// API's 503 and 502 answers from the Envoy listener's client. A made-up token stands in each.
+func TestDispatchsURLSettingsRefuseACredentialByTheSettingAlone(t *testing.T) {
+	const token = "madeUpURLToken0123"
+	at := "@"
+	shapes := map[string]struct{ value, refusal string }{
+		"a token as the user name": {"https://" + token + at + "host.example/v1", "it holds a user name or a password"},
+		"a token as the password":  {"https://dispatch:" + token + at + "host.example/v1", "it holds a user name or a password"},
+		"an @ past the host":       {"https://host.example/" + token + at + "other.example/v1", natsurl.UserinfoPastHostReason},
+		"a token in the query":     {"https://host.example/v1?key=" + token, "it holds a query or a fragment"},
+		"a token in the fragment":  {"https://host.example/v1#" + token, "it holds a query or a fragment"},
+	}
+	settings := map[string]func(value string) map[string]string{
+		"ENVOY_URL": func(value string) map[string]string {
+			return signInEnvironment(map[string]string{"ENVOY_URL": value})
+		},
+		"DISPATCH_AZURE_EMBED_ENDPOINT": func(value string) map[string]string {
+			return azureEmbedEnvironment(map[string]string{"DISPATCH_AZURE_EMBED_ENDPOINT": value})
+		},
+		"DISPATCH_AZURE_CHAT_ENDPOINT": func(value string) map[string]string {
+			return azureChatEnvironment(map[string]string{"DISPATCH_AZURE_CHAT_ENDPOINT": value})
+		},
+		"DISPATCH_CHAT_ENDPOINT": func(value string) map[string]string {
+			return endpointChatEnvironment(map[string]string{"DISPATCH_CHAT_ENDPOINT": value})
+		},
+	}
+	for setting, environment := range settings {
+		for shape, row := range shapes {
+			t.Run(setting+"/"+shape, func(t *testing.T) {
+				_, err := resolveBootConfig(envGetter(environment(row.value)))
+				if err == nil || !strings.HasPrefix(err.Error(), setting+" cannot be read: "+row.refusal) {
+					t.Fatalf("resolveBootConfig = %v, want a refusal by %s: %s", err, setting, row.refusal)
+				}
+				if strings.Contains(err.Error(), token[:10]) {
+					t.Errorf("the refusal %q holds part of the token", err)
+				}
+			})
 		}
 	}
 }

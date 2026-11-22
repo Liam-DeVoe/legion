@@ -1034,3 +1034,49 @@ func TestOnlyATakeOverIsUnreachable(t *testing.T) {
 		listener.Close()
 	}
 }
+
+// A listener URL that carries a made-up token as its user name or in its query, with nothing
+// listening: no call's error holds any part of the token, though net/http's error quotes the
+// request URL with only a password masked, and each is still ErrUnavailable and ErrUnreachable.
+// Boot refuses such an ENVOY_URL; the client prints none of it all the same, since the API answers
+// a listener failure with this error's text (503 ENVOY_UNAVAILABLE, 502 ENVOY_UNSUBSCRIBE_FAILED).
+func TestNoListenerCallPrintsATokenInTheListenersURL(t *testing.T) {
+	const token = "madeUpEnvoyToken0123"
+	refused := testport.Refused(t)
+	calls := map[string]func(*Client) error{
+		"sessions": func(client *Client) error {
+			_, err := client.Sessions(context.Background())
+			return err
+		},
+		"session": func(client *Client) error {
+			_, err := client.Session(context.Background(), "s1")
+			return err
+		},
+		"interests": func(client *Client) error {
+			_, err := client.ListInterests(context.Background())
+			return err
+		},
+		"unsubscribe": func(client *Client) error {
+			_, err := client.Unsubscribe(context.Background(), "s1", []string{"notifications.issue.x"})
+			return err
+		},
+		"send": func(client *Client) error {
+			_, err := client.Send(context.Background(), SendInput{TargetSession: "s1", Message: "m", IdempotencyKey: "k"})
+			return err
+		},
+	}
+	for form, listenerURL := range map[string]string{
+		"a token as the user name": "http://" + token + "@" + refused,
+		"a token in the query":     "http://" + refused + "?token=" + token,
+	} {
+		for name, call := range calls {
+			err := call(New(listenerURL))
+			if !errors.Is(err, ErrUnavailable) || !errors.Is(err, ErrUnreachable) {
+				t.Fatalf("%s, %s: err = %v, want ErrUnavailable and ErrUnreachable", form, name, err)
+			}
+			if strings.Contains(err.Error(), token[:10]) {
+				t.Errorf("%s, %s: err = %q, which holds part of the token", form, name, err)
+			}
+		}
+	}
+}

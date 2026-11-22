@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/redirects"
 )
 
@@ -74,6 +75,9 @@ type AzureConfig struct {
 // AzureClient calls Cohere Embed v4 deployed on Azure AI Foundry, over plain net/http: one POST
 // per batch does not need the Azure SDK.
 type AzureClient struct {
+	// endpoint is the configured endpoint, which a transport failure is printed through
+	// (redact.Cause); url is the route the client posts to.
+	endpoint   string
 	url        string
 	identity   string
 	deployment string
@@ -112,6 +116,7 @@ func NewAzure(cfg AzureConfig) (*AzureClient, error) {
 	target.RawPath = ""
 	target.RawQuery = url.Values{"api-version": {azureAPIVersion}}.Encode()
 	return &AzureClient{
+		endpoint:   cfg.Endpoint,
 		url:        target.String(),
 		identity:   azureIdentityPrefix + strings.ToLower(endpoint.Host) + "/" + cfg.Deployment,
 		deployment: cfg.Deployment,
@@ -215,7 +220,9 @@ func (c *AzureClient) Embed(ctx context.Context, texts []string, inputType Input
 	}
 	response, err := c.http.Do(request)
 	if err != nil {
-		return nil, fmt.Errorf("embed: azure embeddings: %w", err)
+		// net/http's error quotes the request URL with only a password masked; Cause prints the
+		// failure without that quote, or its class when the endpoint is no plain http(s) URL.
+		return nil, fmt.Errorf("embed: azure embeddings: %w", redact.Cause(err, c.endpoint))
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode > 299 {

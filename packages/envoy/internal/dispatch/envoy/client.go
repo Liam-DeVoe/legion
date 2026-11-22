@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/listenerwire"
 	"github.com/sjawhar/envoy/roleholder"
 )
@@ -354,7 +355,13 @@ func New(baseURL string, options ...Option) *Client {
 // do makes one listener call, the request build makes, and returns the listener's answer or the
 // error that kept it from answering: build's own, an identity token that could not be presented
 // (ErrAccountToken), or a failure of the transport, which transport classifies (each caller's
-// ErrUnavailable, and ErrUnreachable where nothing answered).
+// ErrUnavailable, and ErrUnreachable where nothing answered). That failure reaches transport
+// through redact.Cause over the base URL: its text, without net/http's quote of the request URL,
+// when the base is a plain http(s) URL and the route a plain path, and its class otherwise, so a
+// user name or a query in ENVOY_URL, which net/http's quote keeps, never reaches Dispatch's log or
+// the API answers that carry this error (a 503 ENVOY_UNAVAILABLE, a 502 ENVOY_UNSUBSCRIBE_FAILED).
+// Each caller names the route itself. It still unwraps to the failure, so errors.Is and errors.As
+// classify it as before.
 //
 // A client that presents Dispatch's identity (WithAccountTokenFile or WithGoogleIdentity) makes
 // the call on its identity token. A try whose token could not be presented, or that the listener
@@ -380,7 +387,7 @@ func (c *Client) do(route string, marked bool, build func() (*http.Request, erro
 		}
 		response, err := c.httpClient.Do(request)
 		if err != nil {
-			return nil, transport(err)
+			return nil, transport(redact.Cause(err, c.baseURL))
 		}
 		return response, nil
 	}

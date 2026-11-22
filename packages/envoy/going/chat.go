@@ -16,6 +16,7 @@ import (
 	"strings"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/redirects"
 )
 
@@ -142,6 +143,9 @@ type HTTPConfig struct {
 // POST per turn does not need a vendor SDK, and reading the stream frame by frame is what lets
 // the answer reach the reader while the model is still writing it.
 type HTTPClient struct {
+	// endpoint is the configured endpoint, which a transport failure is printed through
+	// (redact.Cause); url is the route the client posts to.
+	endpoint string
 	url      string
 	identity string
 	model    string
@@ -179,6 +183,7 @@ func NewHTTPClient(cfg HTTPConfig) (*HTTPClient, error) {
 		target.RawQuery = url.Values{"api-version": {cfg.APIVersion}}.Encode()
 	}
 	return &HTTPClient{
+		endpoint: cfg.Endpoint,
 		url:      target.String(),
 		identity: cfg.Place + ":" + strings.ToLower(endpoint.Host) + "/" + cfg.Model,
 		model:    cfg.Model,
@@ -316,7 +321,9 @@ func (c *HTTPClient) Chat(ctx context.Context, request ChatRequest, onText func(
 	httpRequest.Header.Set("Authorization", "Bearer "+token)
 	response, err := c.http.Do(httpRequest)
 	if err != nil {
-		return nil, fmt.Errorf("going: chat completions: %w", err)
+		// net/http's error quotes the request URL with only a password masked; Cause prints the
+		// failure without that quote, or its class when the endpoint is no plain http(s) URL.
+		return nil, fmt.Errorf("going: chat completions: %w", redact.Cause(err, c.endpoint))
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode > 299 {
