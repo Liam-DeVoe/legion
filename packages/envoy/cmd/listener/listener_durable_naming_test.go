@@ -4,14 +4,16 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nats-io/nats.go/jetstream"
+
 	"github.com/sjawhar/envoy/consumernames"
 )
 
 // The listener's durable creator names as the family table does: its Config's prefix and fixed
 // name are the table's for a durable's key (consumernames.DurableNaming), both the durable's own
-// name, and on the round-6 cases its own fence (the Check its read applies) and
-// consumernames.CheckFamily give the same answer, the one each case pins. The control, run with a
-// fault and seen failing: a creator whose prefix is not the table's fails the naming row.
+// name, so its fence is the one consumernames.CheckFamily applies for that key, which gives the
+// answer each round-6 case pins. The control, run with a fault and seen failing: a creator whose
+// prefix is not the table's fails the naming row.
 func TestTheDurableCreatorNamesAsTheFamilyTable(t *testing.T) {
 	r := newDurableRig(t, consumernames.ModeFresh)
 	names := durableNames(r.client, r.durable)
@@ -20,8 +22,8 @@ func TestTheDurableCreatorNamesAsTheFamilyTable(t *testing.T) {
 	if got, want := creator.Prefix(key), table.Prefix(key); got != want || got != r.durable {
 		t.Errorf("the durable creator's prefix of %s is %q, the table's %q; want both %q", key, got, want, r.durable)
 	}
-	if got, want := creator.Fixed(key), r.durable; got != want {
-		t.Errorf("the durable creator's fixed name of %s is %q, want the durable's own %q", key, got, want)
+	if got, want := creator.Fixed(key), table.Fixed(key); got != want || got != r.durable {
+		t.Errorf("the durable creator's fixed name of %s is %q, the table's %q; want both the durable's own %q", key, got, want, r.durable)
 	}
 	reserved := time.Unix(1_700_000_000, 0)
 	for _, c := range []struct {
@@ -34,10 +36,28 @@ func TestTheDurableCreatorNamesAsTheFamilyTable(t *testing.T) {
 		{"a current of the session prefix", consumernames.Record{Current: "session~A", Start: 3}, false},
 		{"another durable's old name", consumernames.Record{Start: 3, Op: &consumernames.Op{Kind: consumernames.OpReplace, Old: "listener-other", Candidate: r.durable + "~B", ReservedAt: reserved}}, false},
 	} {
-		own := names.Check(key, c.record)
-		family := consumernames.CheckFamily(consumernames.SessionFamily, key, c.record)
-		if (own == nil) != c.served || (family == nil) != c.served {
-			t.Errorf("%s: the durable creator's fence = %v, CheckFamily = %v; want both served %t", c.name, own, family, c.served)
+		if err := consumernames.CheckFamily(consumernames.SessionFamily, key, c.record); (err == nil) != c.served {
+			t.Errorf("%s: CheckFamily for the durable's key = %v; want served %t", c.name, err, c.served)
+		}
+	}
+	// Its owner check is OwnsFamily's for its key: one implementation, alike on its own consumer, its
+	// fixed one, another durable's and an unmarked one.
+	consumer := func(name string, metadata map[string]string) *jetstream.ConsumerInfo {
+		return &jetstream.ConsumerInfo{Name: name, Config: jetstream.ConsumerConfig{Durable: name, Metadata: metadata}}
+	}
+	for _, c := range []struct {
+		name  string
+		info  *jetstream.ConsumerInfo
+		owned bool
+	}{
+		{"its own consumer", consumer(r.durable+"~A", durableMetadata(r.durable)), true},
+		{"its fixed consumer, unmarked", consumer(r.durable, nil), true},
+		{"another durable's consumer", consumer(r.durable+"~A", durableMetadata("listener-other")), false},
+		{"an unmarked consumer", consumer(r.durable+"~A", nil), false},
+	} {
+		own, family := names.Owns(key, c.info), consumernames.OwnsFamily(consumernames.SessionFamily, key, c.info)
+		if (own == nil) != c.owned || (family == nil) != c.owned {
+			t.Errorf("%s: the durable creator's Owns = %v, OwnsFamily = %v; want both owned %t", c.name, own, family, c.owned)
 		}
 	}
 }

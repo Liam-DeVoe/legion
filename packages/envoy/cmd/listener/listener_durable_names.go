@@ -61,9 +61,10 @@ func protocolInfo(info *nats.ConsumerInfo) *jetstream.ConsumerInfo {
 	return out
 }
 
-// durableNames is the protocol over the listener's durable named durable, on client. Its naming is
-// the family table's for a durable's key (consumernames.DurableNaming), the one an operator's reader
-// judges the record by (consumernames.CheckFamily): Prefix(DurableKey(durable)) is durable.
+// durableNames is the protocol over the listener's durable named durable, on client. Its naming and
+// metadata are the family table's for a durable's key (consumernames.DurableNaming), the ones an
+// operator's reader judges the record and the consumer by (consumernames.CheckFamily,
+// consumernames.OwnsFamily): Prefix(DurableKey(durable)) is durable.
 func durableNames(client *bus.Client, durable string) *consumernames.Names {
 	host, _ := os.Hostname()
 	naming := consumernames.DurableNaming()
@@ -81,7 +82,7 @@ func durableNames(client *bus.Client, durable string) *consumernames.Names {
 			return info.Config.Metadata[bus.StreamIDMetadataKey], nil
 		},
 		CheckKey: consumernames.CheckDurableKey,
-		Metadata: func(string) map[string]string { return durableMetadata(durable) },
+		Metadata: naming.Metadata,
 		Owner:    fmt.Sprintf("%s/%s/%d", durable, host, os.Getpid()),
 		// The candidate as the server answers it, against the whole configuration the durable's
 		// create gives (durableCreateConfig, bus.Client.ConsumerAdoptable): one that differs in a
@@ -106,10 +107,11 @@ func durableNames(client *bus.Client, durable string) *consumernames.Names {
 }
 
 // durableMetadata is the metadata every fresh-mode consumer of the listener's durable named durable
-// carries, which its create writes (durableCreateConfig) and the owner check requires
-// (consumernames.Config.Metadata): both read it here, so a key added to one is in the other.
+// carries, which its create writes (durableCreateConfig): the family table's for its key
+// (consumernames.DurableNaming), the one the owner check requires, so a key added to one is in the
+// other.
 func durableMetadata(durable string) map[string]string {
-	return map[string]string{consumernames.LogicalMetadataKey: durable}
+	return consumernames.DurableNaming().Metadata(consumernames.DurableKey(durable))
 }
 
 // durableCreateConfig is the whole configuration the fresh mode creates consumer name of the

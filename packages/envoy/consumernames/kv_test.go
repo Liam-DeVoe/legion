@@ -121,6 +121,7 @@ func (l *liveStore) names(owner string) *Names {
 		Store:    l.store,
 		Server:   l.family,
 		Prefix:   func(string) string { return "session" },
+		Fixed:    func(string) string { return "session" },
 		Floor:    func(info *jetstream.ConsumerInfo) uint64 { return info.AckFloor.Stream },
 		StreamID: func(context.Context) (string, error) { return "names-stream", nil },
 		Owner:    owner,
@@ -366,7 +367,7 @@ func TestNoConsumerNameIsCreatedTwice(t *testing.T) {
 	if _, err := names.Replace(ctx, sel, 1, func(context.Context, string, Start) (*jetstream.ConsumerInfo, error) { return nil, killed }); !errors.Is(err, killed) {
 		t.Fatalf("the killed replace = %v", err)
 	}
-	recovery := New(Config{Store: live.store, Server: live.family, Prefix: func(string) string { return "session" },
+	recovery := New(Config{Store: live.store, Server: live.family, Prefix: func(string) string { return "session" }, Fixed: func(string) string { return "session" },
 		Floor: func(info *jetstream.ConsumerInfo) uint64 { return info.AckFloor.Stream }, StreamID: func(context.Context) (string, error) { return "names-stream", nil },
 		Owner: "p2", SettleAge: time.Millisecond})
 	if _, err := recovery.Select(ctx, "ses-1", create); err != nil {

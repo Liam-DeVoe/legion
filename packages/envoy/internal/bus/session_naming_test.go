@@ -4,30 +4,27 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nats-io/nats.go/jetstream"
+
 	"github.com/sjawhar/envoy/consumernames"
 )
 
 // The session creator names as the family table does: its Config's prefix and fixed name are the
-// table's for the session family (consumernames.SessionNaming), and on the round-6 cases its own
-// fence (the Check its read applies) and consumernames.CheckFamily give the same answer, which is
-// the one each case pins: a convert's open replace of s-ses-A served, a retired fixed name, another
-// session's fixed name and another family's current refused. The controls, each run with a fault
-// and seen failing: a creator whose prefix is not the table's fails the naming row, and a table with
-// no fixed rule fails the convert's case.
+// table's for the session family (consumernames.SessionNaming), so its fence is the one
+// consumernames.CheckFamily applies for the session family, which gives the answer each round-6
+// case pins: a convert's open replace of s-ses-A served, a retired fixed name, another session's
+// fixed name and another family's current refused. The controls, each run with a fault and seen
+// failing: a creator whose prefix is not the table's fails the naming row, and a table with no
+// fixed rule fails the convert's case.
 func TestTheSessionCreatorNamesAsTheFamilyTable(t *testing.T) {
 	_, consumers, _ := freshSessionConsumersOnStream(t)
 	names := consumers.fresh.names
 	creator, table := names.Naming(), consumernames.SessionNaming()
-	// A table entry with no fixed rule names the prefix as the fixed name (Config.Fixed's default).
-	tableFixed := table.Fixed
-	if tableFixed == nil {
-		tableFixed = table.Prefix
-	}
 	for _, id := range []string{"ses-A", "ses_x9"} {
 		if got, want := creator.Prefix(id), table.Prefix(id); got != want {
 			t.Errorf("the session creator's prefix of %s is %q, the table's %q", id, got, want)
 		}
-		if got, want := creator.Fixed(id), tableFixed(id); got != want {
+		if got, want := creator.Fixed(id), table.Fixed(id); got != want {
 			t.Errorf("the session creator's fixed name of %s is %q, the table's %q", id, got, want)
 		}
 	}
@@ -43,10 +40,28 @@ func TestTheSessionCreatorNamesAsTheFamilyTable(t *testing.T) {
 		{"a retired fixed name", consumernames.Record{Current: "session~A", Start: 3, Retired: []string{"s-ses-A"}}, false},
 		{"a current of the listener's durable", consumernames.Record{Current: "listener-m~A", Start: 3}, false},
 	} {
-		own := names.Check("ses-A", c.record)
-		family := consumernames.CheckFamily(consumernames.SessionFamily, "ses-A", c.record)
-		if (own == nil) != c.served || (family == nil) != c.served {
-			t.Errorf("%s: the session creator's fence = %v, CheckFamily = %v; want both served %t", c.name, own, family, c.served)
+		if err := consumernames.CheckFamily(consumernames.SessionFamily, "ses-A", c.record); (err == nil) != c.served {
+			t.Errorf("%s: CheckFamily for the session family = %v; want served %t", c.name, err, c.served)
+		}
+	}
+	// Its owner check is OwnsFamily's for the session family: one implementation, alike on its own
+	// consumer, its fixed one, another session's and an unmarked one.
+	consumer := func(name string, metadata map[string]string) *jetstream.ConsumerInfo {
+		return &jetstream.ConsumerInfo{Name: name, Config: jetstream.ConsumerConfig{Durable: name, Metadata: metadata}}
+	}
+	for _, c := range []struct {
+		name  string
+		info  *jetstream.ConsumerInfo
+		owned bool
+	}{
+		{"its own consumer", consumer("session~A", sessionConsumerMetadata("ses-A")), true},
+		{"its fixed consumer, unmarked", consumer("s-ses-A", nil), true},
+		{"another session's consumer", consumer("session~A", sessionConsumerMetadata("ses-B")), false},
+		{"an unmarked consumer", consumer("session~A", nil), false},
+	} {
+		own, family := names.Owns("ses-A", c.info), consumernames.OwnsFamily(consumernames.SessionFamily, "ses-A", c.info)
+		if (own == nil) != c.owned || (family == nil) != c.owned {
+			t.Errorf("%s: the session creator's Owns = %v, OwnsFamily = %v; want both owned %t", c.name, own, family, c.owned)
 		}
 	}
 }

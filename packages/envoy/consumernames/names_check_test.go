@@ -7,11 +7,11 @@ import (
 	"time"
 )
 
-// Names.Check is the creator's own family fence: every record the creator's read refuses as naming a
-// consumer outside its key's family, Check refuses with the same class of error, naming the field
-// that holds the name, and every record the creator serves, Check passes. The rows are the ones
+// check is the creator's own family fence: every record the creator's read refuses as naming a
+// consumer outside its key's family, check refuses with the same class of error, naming the field
+// that holds the name, and every record the creator serves, check passes. The rows are the ones
 // TestARecordNamesOnlyItsOwnFamilysConsumers runs through the creator, and a retired name that is
-// the key's fixed name. The control is a copy of Check that skips the prefix test and asks only
+// the key's fixed name. The control is a copy of check that skips the prefix test and asks only
 // for a ~<nuid> name: it passes another family's names, so it disagrees with the creator.
 func TestNamesCheckIsTheCreatorsFence(t *testing.T) {
 	const key = "ses-1"
@@ -33,7 +33,7 @@ func TestNamesCheckIsTheCreatorsFence(t *testing.T) {
 		{"an old name that is the key's fixed name", "session", "", Record{Current: "session~A", Start: 3, Op: &Op{Kind: OpDelete, Old: "s-ses-1", ReservedAt: testEpoch}}},
 		{"a durable's own current", "listener-m", "", Record{Current: "listener-m~A", Start: 3}},
 	}
-	// skipPrefix is the control: Check with no prefix test, asking each name only for '~' and a
+	// skipPrefix is the control: check with no prefix test, asking each name only for '~' and a
 	// NUID's characters after it.
 	skipPrefix := func(_ *Names, logical string, record Record) error {
 		fresh := func(name string) bool {
@@ -53,7 +53,7 @@ func TestNamesCheckIsTheCreatorsFence(t *testing.T) {
 		}
 		return nil
 	}
-	check := func(n *Names, logical string, record Record) error { return n.Check(logical, record) }
+	check := func(n *Names, logical string, record Record) error { return n.check(logical, record) }
 	disagreements := map[string][]string{}
 	for _, row := range rows {
 		t.Run(row.name, func(t *testing.T) {
@@ -87,10 +87,10 @@ func TestNamesCheckIsTheCreatorsFence(t *testing.T) {
 		})
 	}
 	if got := disagreements["Check"]; len(got) > 0 {
-		t.Errorf("Names.Check disagrees with the creator's read on %d rows: %v", len(got), got)
+		t.Errorf("check disagrees with the creator's read on %d rows: %v", len(got), got)
 	}
 	control := strings.Join(disagreements["control"], "; ")
 	if !strings.Contains(control, "a current of the daemon's durable") || !strings.Contains(control, "a candidate of another family") {
-		t.Errorf("control: the Check that skips the prefix test disagrees with the creator on %q; want it to on another family's current and candidate", control)
+		t.Errorf("control: the check that skips the prefix test disagrees with the creator on %q; want it to on another family's current and candidate", control)
 	}
 }
