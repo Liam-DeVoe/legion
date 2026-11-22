@@ -5,13 +5,11 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
-	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 )
 
 // namedBase64 is one line of base64 that holds, as any signature's bytes can by chance, a run the
@@ -83,57 +81,6 @@ func heldRepo(t *testing.T) (fixturegit.Runner, string, string) {
 	fixture.Run(repo, "git", "remote", "add", "origin", remote)
 	fixture.Run(repo, "git", "push", "--quiet", "origin", "main")
 	return fixture, repo, held
-}
-
-// pushOf is guard's answer to a push of update from repo to a public destination.
-func pushOf(t *testing.T, guard *Guard, repo string, update Update) error {
-	t.Helper()
-	return guard.Push(bound(t), PushRequest{
-		Dir:     repo,
-		Remote:  "origin",
-		URL:     "https://github.com/invented-org/invented-repo.git",
-		Updates: []Update{update},
-	})
-}
-
-// passingGuard is a guard whose shared check passes everything and whose destinations are public,
-// so that its rules are the whole of what refuses a push.
-func passingGuard(t *testing.T) *Guard {
-	t.Helper()
-	return guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
-}
-
-// pushCase is one push a test makes and the report it wants: build makes what the push moves and
-// answers the update and the report, nil where the push passes.
-type pushCase struct {
-	name  string
-	build func(t *testing.T) (Update, []string)
-}
-
-// runPushCases pushes each case's update from repo through a passing guard, as a subtest of its
-// own, and holds the answer to the case's report.
-func runPushCases(t *testing.T, repo string, cases []pushCase) {
-	t.Helper()
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			update, want := tc.build(t)
-			err := pushOf(t, passingGuard(t), repo, update)
-			if want == nil {
-				if err != nil {
-					t.Fatalf("a push that names nothing: %v", err)
-				}
-				return
-			}
-			if refused := refusal(t, err); !slices.Equal(refused.Lines, want) {
-				t.Errorf("the report is %q, want %q", refused.Lines, want)
-			}
-		})
-	}
-}
-
-// newRef is the update of a push that creates ref at sha.
-func newRef(ref, sha string) Update {
-	return Update{LocalRef: ref, LocalSHA: sha, RemoteRef: ref, RemoteSHA: noSHA}
 }
 
 // A pushed annotated tag is read: its message, its tagger and the name it was made with, which the
@@ -230,6 +177,15 @@ func TestAPushedAnnotatedTagIsRead(t *testing.T) {
 				sha := madeTag(t, "armoured", "a message of no interest\n-----BEGIN PGP MESSAGE-----\n\n"+namedBase64+
 					"\n-----END PGP MESSAGE-----\n"+signature("Rk9vYmFy"))
 				return newRef("refs/tags/armoured", sha), []string{"tag " + short(sha) + " message: " + repositoryClass}
+			},
+		},
+		{
+			// git counts a line after the signature's end in the signature, and git show prints
+			// it. Built out of two pieces for the reason theHost is.
+			name: "a line after the signature's end, of base64's characters, names the repository",
+			build: func(t *testing.T) (Update, []string) {
+				sha := madeTag(t, "after-end", "a message of no interest\n"+signature("Rk9vYmFy")+"notes/agen"+"tc/today\n")
+				return newRef("refs/tags/after-end", sha), []string{"tag " + short(sha) + " message: " + repositoryClass}
 			},
 		},
 		{
@@ -406,12 +362,50 @@ func TestACommitsWholeHeaderIsRead(t *testing.T) {
 		},
 		{
 			// The no-break space is Latin-1's byte, which is no character of UTF-8: the stored
-			// bytes do not name the repository to the rules, and the text git shows does. Built
-			// out of two pieces for the reason theHost is.
+			// bytes name the repository to the rules read as Windows-1252, and the text git shows
+			// does as UTF-8. Built out of two pieces for the reason theHost is.
 			name: "a message in another encoding names the repository",
 			build: func(t *testing.T) (Update, []string) {
 				head := madeOn(t, heldTree, "encoding ISO-8859-1\n", "the run moved to agen"+"t\xa0c today\n")
-				return refused(head, "message in UTF-8", repositoryClass)
+				return onMain(head), []string{"commit " + short(head) + " message: " + repositoryClass, "commit " + short(head) + " message in UTF-8: " + repositoryClass}
+			},
+		},
+		{
+			// An encoding git cannot convert from leaves the stored bytes, a Latin-1 byte among
+			// them, as what git shows too: the name on the same line is ASCII, and read.
+			name: "a message in an encoding git cannot convert, a name beside a byte that is not UTF-8",
+			build: func(t *testing.T) (Update, []string) {
+				head := madeOn(t, heldTree, "encoding X-NO-SUCH\n", "the run moved to "+theHost+" \xe9t\xe9\n")
+				return onMain(head), []string{"commit " + short(head) + " message: " + theClass, "commit " + short(head) + " message in UTF-8: " + theClass}
+			},
+		},
+		{
+			name: "a field of a commit in an encoding git cannot convert, a name beside a byte that is not UTF-8",
+			build: func(t *testing.T) (Update, []string) {
+				return refused(made(t, "encoding X-NO-SUCH\nx-note the run moved to "+theHost+" \xe9t\xe9\n"), "header", theClass)
+			},
+		},
+		{
+			// The rules know a no-break space as a separator; Latin-1 writes it as one byte, which
+			// read as UTF-8 is no character, so the text is read as Windows-1252 too. Built out of
+			// two pieces for the reason theHost is.
+			name: "a message in an encoding git cannot convert, a name joined by a Latin-1 no-break space",
+			build: func(t *testing.T) (Update, []string) {
+				head := madeOn(t, heldTree, "encoding X-NO-SUCH\n", "the run moved to agen"+"t\xa0c today\n")
+				return onMain(head), []string{"commit " + short(head) + " message: " + repositoryClass, "commit " + short(head) + " message in UTF-8: " + repositoryClass}
+			},
+		},
+		{
+			// Windows-1252 writes an en dash, a separator the rules know, as the one byte 0x96.
+			name: "an added line of a Windows-1252 file, a name joined by an en dash",
+			build: func(t *testing.T) (Update, []string) {
+				return onMain(committed(t, "cp1252-line", held, "the run moved to agen"+"t\x96c today\n")), []string{"cp1252-line.md: " + repositoryClass}
+			},
+		},
+		{
+			name: "an added line that names a host beside a byte that is not UTF-8",
+			build: func(t *testing.T) (Update, []string) {
+				return onMain(committed(t, "latin1-line", held, "the runner answers at "+theHost+" \xe9t\xe9\n")), []string{"latin1-line.md: " + theClass}
 			},
 		},
 		{
@@ -420,7 +414,7 @@ func TestACommitsWholeHeaderIsRead(t *testing.T) {
 			name: "a message in another encoding, with a second encoding field that names UTF-8",
 			build: func(t *testing.T) (Update, []string) {
 				head := madeOn(t, heldTree, "encoding ISO-8859-1\nencoding UTF-8\n", "the run moved to agen"+"t\xa0c today\n")
-				return refused(head, "message in UTF-8", repositoryClass)
+				return onMain(head), []string{"commit " + short(head) + " message: " + repositoryClass, "commit " + short(head) + " message in UTF-8: " + repositoryClass}
 			},
 		},
 	})

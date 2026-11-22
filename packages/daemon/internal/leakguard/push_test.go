@@ -432,3 +432,48 @@ func TestAFailedGitReadQuotesItsCappedStandardErrorAlone(t *testing.T) {
 		}
 	})
 }
+
+// pushOf is guard's answer to a push of update from repo to a public destination.
+func pushOf(t *testing.T, guard *Guard, repo string, update Update) error {
+	t.Helper()
+	return guard.Push(bound(t), PushRequest{
+		Dir:     repo,
+		Remote:  "origin",
+		URL:     "https://github.com/invented-org/invented-repo.git",
+		Updates: []Update{update},
+	})
+}
+
+// pushCase is one push a test makes and the report it wants: build makes what the push moves and
+// answers the update and the report, nil where the push passes.
+type pushCase struct {
+	name  string
+	build func(t *testing.T) (Update, []string)
+}
+
+// runPushCases pushes each case's update from repo, as a subtest of its own, through a guard whose
+// shared check passes everything and whose destinations are public, so that its rules are the
+// whole of what refuses the push, and holds the answer to the case's report.
+func runPushCases(t *testing.T, repo string, cases []pushCase) {
+	t.Helper()
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			update, want := tc.build(t)
+			err := pushOf(t, guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public), repo, update)
+			if want == nil {
+				if err != nil {
+					t.Fatalf("a push that names nothing: %v", err)
+				}
+				return
+			}
+			if refused := refusal(t, err); !slices.Equal(refused.Lines, want) {
+				t.Errorf("the report is %q, want %q", refused.Lines, want)
+			}
+		})
+	}
+}
+
+// newRef is the update of a push that creates ref at sha.
+func newRef(ref, sha string) Update {
+	return Update{LocalRef: ref, LocalSHA: sha, RemoteRef: ref, RemoteSHA: noSHA}
+}

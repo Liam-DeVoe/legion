@@ -493,7 +493,7 @@ func (g *Guard) exitDelay() time.Duration {
 
 // stopped is the *stoppedError of c, started at started, which the end of ctx stopped. The bound
 // is the deadline less started, for a child that started and for one the end of ctx kept from
-// starting alike. A deadline already past at started is a bound of 0 s (pastDeadline).
+// starting alike, and 0 s where the deadline had passed by started.
 func stopped(ctx context.Context, c child, started time.Time) *stoppedError {
 	stop := &stoppedError{
 		program:   filepath.Base(c.argv[0]),
@@ -501,10 +501,8 @@ func stopped(ctx context.Context, c child, started time.Time) *stoppedError {
 		cancelled: errors.Is(ctx.Err(), context.Canceled),
 	}
 	if deadline, ok := ctx.Deadline(); ok {
-		stop.bound = deadline.Sub(started)
-		if stop.bound <= 0 {
-			stop.bound, stop.pastDeadline = 0, true
-		}
+		stop.hasDeadline = true
+		stop.bound = max(deadline.Sub(started), 0)
 	}
 	return stop
 }
@@ -518,13 +516,12 @@ type stoppedError struct {
 	program string
 	// ran is how long the child ran before the stop.
 	ran time.Duration
-	// bound is how long the context's deadline gave the child from its start, and zero where the
-	// context has no deadline or where its deadline had passed before the child's run began.
+	// bound is how long the context's deadline gave the child from its start: 0 s where the
+	// deadline had passed before the child's run began, and where the context has no deadline.
 	bound time.Duration
-	// pastDeadline is whether the context's deadline had already passed when the child's run
-	// began, the one case where a bound of zero is a bound and not the absence of a deadline: the
-	// guard's own work before the child took the caller's whole bound.
-	pastDeadline bool
+	// hasDeadline is whether the context had a deadline, so that a bound of 0 s is told from no
+	// bound at all.
+	hasDeadline bool
 	// cancelled is whether a cancel stopped the child rather than its deadline.
 	cancelled bool
 }
@@ -538,7 +535,7 @@ func (s *stoppedError) Error() string {
 // child and the setup failure of the shared check say the same thing. A context with no deadline
 // can end only by a cancel, so it is said as one.
 func (s *stoppedError) said(name string) string {
-	if s.cancelled || (s.bound == 0 && !s.pastDeadline) {
+	if s.cancelled || !s.hasDeadline {
 		return fmt.Sprintf("%s ran %d s and was stopped by a cancel", name, wholeSeconds(s.ran))
 	}
 	return fmt.Sprintf("%s ran %d s and was stopped by its bound of %d s", name, wholeSeconds(s.ran), wholeSeconds(s.bound))

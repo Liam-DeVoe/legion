@@ -470,12 +470,9 @@ func says(t *testing.T, failed *SetupFailure, wants ...string) {
 // less the bound, and the moment of the stop is that start plus the run. The start must come no
 // earlier than called, when the test made the call, and before the deadline, since the bound is
 // what was left of it; the stop no earlier than the deadline, which is what ended program, and no
-// later than now, after the call answered. So the bound is more than 0 and no more than the
-// caller's, and the run no shorter than the bound. The one exception is a deadline that had passed
-// before the guard began to run program (pastDeadline): on a loaded machine the guard's own work
-// first can take the whole bound, and that stop is said as a bound of 0 s, which puts its start at
-// the deadline. No comparison rounds to a second, so however long the guard took before it started
-// program, the verdict is the same.
+// later than now, after the call answered. So the bound is no more than the caller's, and the run
+// no shorter than the bound. No comparison rounds to a second, so however long the guard took
+// before it started program, the verdict is the same.
 func stopSaid(t *testing.T, ctx context.Context, err error, program string, called time.Time) string {
 	t.Helper()
 	answered := time.Now()
@@ -492,8 +489,8 @@ func stopSaid(t *testing.T, ctx context.Context, err error, program string, call
 	}
 	began := deadline.Add(-stopped.bound)
 	ended := began.Add(stopped.ran)
-	if stopped.program != program || stopped.cancelled || began.Before(called) ||
-		(!began.Before(deadline) && !stopped.pastDeadline) || ended.Before(deadline) || ended.After(answered) {
+	if stopped.program != program || stopped.cancelled || began.Before(called) || began.After(deadline) ||
+		ended.Before(deadline) || ended.After(answered) {
 		t.Fatalf("the stop beneath %q is of %s (by a cancel: %v), begun %s after the call and %s before the deadline, "+
 			"ended %s after the deadline and %s before the call answered; want a stop of %s by the deadline, begun after the "+
 			"call and before the deadline, ended at or after the deadline and before the call answered",

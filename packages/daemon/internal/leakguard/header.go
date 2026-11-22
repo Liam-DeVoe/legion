@@ -221,11 +221,14 @@ var signatureStarts = []string{
 }
 
 // unsigned is text without the bytes of its signature. The signature is what git reads as one:
-// from the last line that starts one (signatureStarts) to the end of text. Within it, that first
-// line, each line that starts "-----END " and each line of base64 alone, a blank one included, are
-// left out; any other line of it (an armour header such as "Comment: …", or text a hand-made
-// object put there) is kept and read, as is everything before it, an earlier block of the same
-// shape included. Text with no signature comes back as it was, uncopied.
+// from the last line that starts one (signatureStarts) to the end of text. Up to the last line of
+// it that starts "-----END ", that first line, each line that starts "-----END " and each line of
+// base64 alone, a blank one included, are left out; any other line there (an armour header such
+// as "Comment: …", or text a hand-made object put there) is kept and read. Every line after that
+// last "-----END " line is read whole, whatever its characters: git counts it in the signature,
+// but `git show` prints it, and no signature's base64 stands after its end. Everything before the
+// signature is read too, an earlier block of the same shape included. Text with no signature
+// comes back as it was, uncopied.
 func unsigned(text string) string {
 	start := -1
 	for at := 0; at < len(text); {
@@ -241,11 +244,21 @@ func unsigned(text string) string {
 	if start < 0 {
 		return text
 	}
+	lines := strings.Split(text[start:], "\n")
+	end := -1
+	for k, line := range lines {
+		if strings.HasPrefix(line, "-----END ") {
+			end = k
+		}
+	}
 	var kept strings.Builder
 	kept.WriteString(text[:start])
-	for line := range strings.SplitSeq(text[start:], "\n") {
-		if startsSignature(line) || strings.HasPrefix(line, "-----END ") || base64Line(line) {
+	for k, line := range lines {
+		if k <= end && (startsSignature(line) || strings.HasPrefix(line, "-----END ") || base64Line(line)) {
 			continue
+		}
+		if k == len(lines)-1 && line == "" {
+			break
 		}
 		kept.WriteString(line)
 		kept.WriteByte('\n')

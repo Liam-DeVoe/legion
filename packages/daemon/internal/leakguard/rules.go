@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"github.com/spf13/viper"
 	"github.com/zricethezav/gitleaks/v8/config"
@@ -97,14 +98,26 @@ func compile() (built *rules, err error) {
 // The record is scanned on its own, with Detect of a fragment rather than DetectSource of a
 // source: the detector accumulates the findings of a source, and a scan of several records
 // through it would report the first record's finding against every record after it.
+//
+// A record whose text is not UTF-8 is scanned a second time read as Windows-1252 (windows1252):
+// a commit in an encoding git cannot convert, or a file of a single-byte encoding, holds a
+// separator the rules know (a no-break space, an en or em dash) as one byte, which read as UTF-8
+// is no character at all, so a name joined by it would pass. Its findings join the record's own,
+// one line per class as ever.
 func (r *rules) scan(ctx context.Context, record Record, rep *report) error {
 	var of []string
 	seen := map[string]bool{}
-	for _, finding := range r.detector.DetectContext(ctx, detect.Fragment{Raw: record.Text, FilePath: record.Label}) {
-		line := r.mask(record.Label) + ": " + finding.Description
-		if !seen[line] {
-			seen[line] = true
-			of = append(of, line)
+	texts := []string{record.Text}
+	if !utf8.ValidString(record.Text) {
+		texts = append(texts, windows1252(record.Text))
+	}
+	for _, text := range texts {
+		for _, finding := range r.detector.DetectContext(ctx, detect.Fragment{Raw: text, FilePath: record.Label}) {
+			line := r.mask(record.Label) + ": " + finding.Description
+			if !seen[line] {
+				seen[line] = true
+				of = append(of, line)
+			}
 		}
 	}
 	slices.Sort(of)
@@ -115,6 +128,37 @@ func (r *rules) scan(ctx context.Context, record Record, rep *report) error {
 	// findings, which would read as a record that holds nothing. A bound that ran out is a setup
 	// failure instead, so the write is refused rather than passed.
 	return ctx.Err()
+}
+
+// windows1252 is text read byte by byte as Windows-1252, the superset of Latin-1 that most text
+// of a single-byte encoding is written in: a byte below 0x80 is itself, one of 0x80 to 0x9F the
+// character Windows-1252 gives it (cp1252High; the C1 control of its value where it gives none),
+// and one from 0xA0 the Latin-1 character of its value. Every byte is a character, so it answers
+// for any text, and the copy is at most three times text's size.
+func windows1252(text string) string {
+	var read strings.Builder
+	read.Grow(len(text) * 2)
+	for i := range len(text) {
+		c := text[i]
+		switch {
+		case c < 0x80:
+			read.WriteByte(c)
+		case c < 0xA0 && cp1252High[c-0x80] != 0:
+			read.WriteRune(cp1252High[c-0x80])
+		default:
+			read.WriteRune(rune(c))
+		}
+	}
+	return read.String()
+}
+
+// cp1252High is what Windows-1252 gives the bytes 0x80 to 0x9F, and 0 for the five it leaves
+// undefined (0x81, 0x8D, 0x8F, 0x90, 0x9D).
+var cp1252High = [32]rune{
+	0x20AC, 0, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021,
+	0x02C6, 0x2030, 0x0160, 0x2039, 0x0152, 0, 0x017D, 0,
+	0, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014,
+	0x02DC, 0x2122, 0x0161, 0x203A, 0x0153, 0, 0x017E, 0x0178,
 }
 
 // pass is one rule pass over records that arrive one at a time, as a push's diff is read: it
