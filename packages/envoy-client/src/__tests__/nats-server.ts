@@ -40,8 +40,12 @@ export interface NatsServer {
    * address after the container is gone, and Docker can publish another test's server on the same
    * port, which the stray client then reaches. Every client a test opens is closed before its
    * server stops.
+   *
+   * `leftOpen` names clients the caller left open on purpose, as the leak check's control does: the
+   * read then ends the moment the server's clients are exactly those, since a client left open never
+   * leaves, and the stop still throws naming them. With none named, the read ends when none is left.
    */
-  stop(deadline: number): Promise<void>;
+  stop(deadline: number, leftOpen?: readonly string[]): Promise<void>;
 }
 
 /** Runs `docker args…` and returns its stdout and stderr, trimmed. It throws on a non-zero exit,
@@ -147,20 +151,38 @@ export const NATS_STOP_HOOK_MS = NATS_CLIENTS_READ_MS + NATS_REMOVAL_MS + HOOK_R
 
 /**
  * The names of the clients still connected to the server whose monitor is at `monitor`
- * (`host:port`), read from its /connz once none is left or once `until` (a `performance.now()`
- * reading) has passed. A client's close is asynchronous, so one closed a moment ago can still be
- * counted: the read polls the server's own count, which no fake clock advances, until it is empty
- * or the bound passes. A client with no name is named by its connection id.
+ * (`host:port`), read from its /connz once they are exactly `leftOpen` (none, unless a caller left
+ * clients open on purpose) or once `until` (a `performance.now()` reading) has passed. A client's
+ * close is asynchronous, so one closed a moment ago can still be counted: the read polls the
+ * server's own count, which no fake clock advances, until it is what the caller left or the bound
+ * passes. A client with no name is named by its connection id.
+ *
+ * Each poll's request is cut at `until`. A poll the bound cuts after an earlier poll answered gives
+ * that earlier answer, so a client left open is named rather than lost to "could not be read"; a
+ * first poll that fails throws.
  */
-async function connectedClients(monitor: string, until: number): Promise<string[]> {
+async function connectedClients(
+  monitor: string,
+  until: number,
+  leftOpen: readonly string[]
+): Promise<string[]> {
+  const expected = [...leftOpen].sort().join("\n");
+  let last: string[] | undefined;
   for (;;) {
-    const response = await fetch(`http://${monitor}/connz`, {
-      signal: AbortSignal.timeout(Math.max(1, Math.ceil(until - performance.now()))),
-    });
-    if (!response.ok) throw new Error(`http://${monitor}/connz answered ${response.status}`);
-    const connz = (await response.json()) as { connections?: { cid: number; name?: string }[] };
-    const open = (connz.connections ?? []).map((c) => c.name || `connection ${c.cid}`);
-    if (open.length === 0 || performance.now() >= until) return open;
+    let open: string[];
+    try {
+      const response = await fetch(`http://${monitor}/connz`, {
+        signal: AbortSignal.timeout(Math.max(1, Math.ceil(until - performance.now()))),
+      });
+      if (!response.ok) throw new Error(`http://${monitor}/connz answered ${response.status}`);
+      const connz = (await response.json()) as { connections?: { cid: number; name?: string }[] };
+      open = (connz.connections ?? []).map((c) => c.name || `connection ${c.cid}`);
+    } catch (error) {
+      if (last !== undefined && performance.now() >= until) return last;
+      throw error;
+    }
+    if ([...open].sort().join("\n") === expected || performance.now() >= until) return open;
+    last = open;
     await Bun.sleep(100);
   }
 }
@@ -257,12 +279,12 @@ export function natsServerWithConfig(directory: string, configuration: string): 
         })
       ).stdout.split("\n")[0];
     },
-    async stop(deadline) {
+    async stop(deadline, leftOpen = []) {
       // The read ends before the removal's own bound, and the removal runs whatever the read gave.
       const clients =
         monitor === undefined
           ? []
-          : await connectedClients(monitor, deadline - NATS_REMOVAL_MS).catch(
+          : await connectedClients(monitor, deadline - NATS_REMOVAL_MS, leftOpen).catch(
               (error: unknown) => new Error(`its clients could not be read: ${reason(error)}`)
             );
       try {

@@ -102,9 +102,9 @@ describe.skipIf(process.env.LEGION_E2E !== "1")("natsAuthOptions against a real 
   });
 
   // The leak check's control: a client left connected, as a test that forgets to close one leaves
-  // it, reconnecting forever, fails its server's stop, which names it once the stop's read of the
-  // server's clients has run to its bound. A row that fails before the stop removes the container
-  // all the same.
+  // it, reconnecting forever, fails its server's stop, which names it. The stop is told the client
+  // was left open on purpose, so its read ends the moment the server's clients are that one, not
+  // at the read's 30 s bound. A row that fails before the stop removes the container all the same.
   test(
     "stopping a server a client is still connected to fails, naming the client",
     async () => {
@@ -118,9 +118,9 @@ describe.skipIf(process.env.LEGION_E2E !== "1")("natsAuthOptions against a real 
           reconnectTimeWait: 50,
         });
         try {
-          await expect(server.stop(natsHookDeadline(NATS_STOP_HOOK_MS))).rejects.toThrow(
-            /still had 1 client\(s\) connected .*leftover-client/
-          );
+          await expect(
+            server.stop(natsHookDeadline(NATS_STOP_HOOK_MS), ["leftover-client"])
+          ).rejects.toThrow(/still had 1 client\(s\) connected .*leftover-client/);
         } finally {
           await leftover.close();
         }

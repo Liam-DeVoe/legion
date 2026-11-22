@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"fmt"
-	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -17,7 +16,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testport"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // natsdArgsEnv, when set, makes the test binary natsd itself: TestMain runs run on these arguments,
@@ -61,7 +62,12 @@ func startNatsd(t *testing.T, args ...string) (*exec.Cmd, string) {
 	return startNatsdWith(t, nil, args...)
 }
 
-// startNatsdWith is startNatsd with env added to natsd's environment.
+// startNatsdWith is startNatsd with env added to natsd's environment. It keeps everything natsd
+// writes, and the wait for its address ends on one of two facts: the line names an address, or
+// natsd's output ends (natsd has exited). The second fails at once with natsd's own output and its
+// exit status, so a natsd that refuses to start (a claims directory it refuses, say) is named by
+// its own message. The wait has no span of its own: testwait.Receive bounds it by the binary's
+// deadline.
 func startNatsdWith(t *testing.T, env []string, args ...string) (*exec.Cmd, string) {
 	t.Helper()
 	cmd := exec.Command(os.Args[0])
@@ -75,24 +81,28 @@ func startNatsdWith(t *testing.T, env []string, args ...string) (*exec.Cmd, stri
 		_ = cmd.Wait()
 	})
 	listening := regexp.MustCompile(`Listening for client connections on (\S+:\d+)$`)
+	output := &logtest.Buffer{}
+	// One value: the address natsd names, or "" once its output has ended with none named.
 	found := make(chan string, 1)
 	go func() {
+		named := false
 		scanner := bufio.NewScanner(out)
 		for scanner.Scan() {
-			if match := listening.FindStringSubmatch(scanner.Text()); match != nil {
+			_, _ = output.Write(append(scanner.Bytes(), '\n'))
+			if match := listening.FindStringSubmatch(scanner.Text()); match != nil && !named {
+				named = true
 				found <- match[1]
-				break
 			}
 		}
-		_, _ = io.Copy(io.Discard, out)
+		if !named {
+			found <- ""
+		}
 	}()
-	select {
-	case address := <-found:
-		return cmd, address
-	case <-time.After(30 * time.Second):
-		t.Fatalf("natsd %q logged no client address within 30s", args)
-		return nil, ""
+	address := testwait.Receive(t, fmt.Sprintf("natsd %q to name its client address", args), found)
+	if address == "" {
+		t.Fatalf("natsd %q exited before it named a client address (%v); its output:\n%s", args, cmd.Wait(), output.String())
 	}
+	return cmd, address
 }
 
 // natsInfo reports whether a NATS server answers at address with its INFO line.
