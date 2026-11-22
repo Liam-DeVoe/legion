@@ -7015,7 +7015,9 @@ This release runs the third act below and no other: it deletes the pod, the disk
 Where the Sandbox owns a kept volume, it deletes the pod and the seven Secrets that the Sandbox owns, and keeps the Sandbox, `Suspended`, with its volume ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)).
 It reads no workspace and it changes no claim, so each claim keeps its state, its phase, its budgets and its pending task.
 The daemon cannot read that workspace: it reads a workspace only over a role process, and a pod with no live claim runs none.
-It reads the decline of the issue's idle release instead: where the last read that could read the workspace found a commit or a change that origin does not hold, and the pod is the one that read was made in, the rule keeps the pod (`unowned_unpushed_work`), since its disk holds that work. A start row into that same pod does not end the hold; where the runtime cannot say which pod it holds, a start row after the decline does.
+It reads the decline of the issue's idle release instead:
+where the last read that could read the workspace found a commit or a change that origin does not hold, and the pod is the one that read was made in, the rule keeps the pod (`unowned_unpushed_work`), since its disk holds that work.
+A start row into that same pod does not end the hold; where the runtime cannot say which pod it holds, a start row after the decline does.
 A start inside the idle period therefore finds the workspace as the stopped roles left it, in the pod that is still there, and a start after the release provisions the workspace afresh from the issue's pushed branch, except on a kept volume, where it finds the workspace as the stopped roles left it.
 
 Of the reasons that hold such a pod past the idle period, the daemon writes four to its hold records, each under a name of its own:
@@ -7035,14 +7037,20 @@ An operator's suspension holds the pod because it is the one suspension the daem
 The operator ends that pod by resuming the claim, which starts the role in the pod that is still there, or by stopping it, which retires the claim and leaves the issue to this rule.
 
 The daemon also closes the pod of a child that has left the workflow while its tree runs on, which neither release takes.
-The child's park or close is its one close: it suspends or closes each claim of the child and deletes the child's Sandbox, and nothing of its running tree closes it again.
+The child's park or close is its one close:
+it suspends or closes each claim of the child and deletes the child's Sandbox, and nothing of its running tree closes it again.
 An operator's resume, task or retry and the controller's fresh session start a claim without reading the standing of its issue, so a claim of such a child can run again after that close, in a pod built again for it.
-Once that pod has had no turn in progress, no delivery waiting for a role of it and no background work reported for the idle period, the idle pass finishes the close (`workflow.LeftPodClose`): it suspends each live claim for the daemon, which keeps the claim's session, and suspends the issue's Sandbox, which deletes it with the pod and the disk.
-Where a live claim stands, the pass first queues the workspace check alone, through that role's shim, as the idle release reads it: a read that finds nothing origin does not hold queues the stops and the suspension, and a read that finds work, or fails, records a decline and keeps the pod under `unpushed_work` or `workspace_unread`, with the role told once, as below.
+Once that pod has had no turn in progress, no delivery waiting for a role of it and no background work reported for the idle period, the idle pass finishes the close (`workflow.LeftPodClose`):
+it suspends each live claim for the daemon, which keeps the claim's session, and suspends the issue's Sandbox, which deletes it with the pod and the disk.
+Where a live claim stands, the pass first queues the workspace check alone, through that role's shim, as the idle release reads it:
+a read that finds nothing origin does not hold queues the stops and the suspension, and a read that finds work, or fails, records a decline and keeps the pod under `unpushed_work` or `workspace_unread`, with the role told once, as below.
 While that check waits on the lane the pass holds the pod as its own act under way (`releasing`), which no record counts.
-The pass over the pods no claim owns does the same for such a pod whose claims have all stopped, with no read, since no role runs to read through, which no pass decided before; it keeps such a pod where a decline says its disk holds work that origin does not hold, as the release of a pod no claim owns keeps one (`unowned_unpushed_work`). A child whose Sandbox the runtime does not hold, which is nearly every such child, is passed over with no line and no record.
+The pass over the pods no claim owns does the same for such a pod whose claims have all stopped, with no read, since no role runs to read through, which no pass decided before;
+it keeps such a pod where a decline says its disk holds work that origin does not hold, as the release of a pod no claim owns keeps one (`unowned_unpushed_work`).
+A child whose Sandbox the runtime does not hold, which is nearly every such child, is passed over with no line and no record.
 A pause keeps the pod (`paused`, `pause_held`), and so do a stopped claim that still records a process (`unowned_claim_process`) and an operator's suspension (`unowned_operator_suspended`).
-Every other pod of an issue that has left the workflow, or whose tree lingers, is held as `tree_not_live` while its close is still to come or still running: a lingering tree is closed when its linger ends, a root that has left the workflow has had its tree's close already or belongs to the operator, an open look of the issue's production check ends with a close of its own, and a role stop or a Sandbox suspension of the issue that is still queued is that close at work.
+Every other pod of an issue that has left the workflow, or whose tree lingers, is held as `tree_not_live` while its close is still to come or still running:
+a lingering tree is closed when its linger ends, a root that has left the workflow has had its tree's close already or belongs to the operator, an open look of the issue's production check ends with a close of its own, and a role stop or a Sandbox suspension of the issue that is still queued is that close at work.
 
 A release is three acts, in this order, and the daemon gives it an id (`issue_releases.id`) that its mark carries:
 
@@ -7130,22 +7138,37 @@ A start the daemon queues for a child's own architect does as the first does too
 Such a release arms no backstop, and it leaves the issue's wake marks and the open backstops of an earlier release as it found them.
 
 What the read counts is every commit under a working copy or a local bookmark that no remote branch or tag reaches, and a change in the working copy (`workspaceWorkRevset`, `internal/shim/workspace_work.go`).
-A commit with no change and no description counts for nothing, and so does a commit that a remote branch or tag reaches: it is on GitHub, and the next pod's workspace fetch brings it back.
+A commit with no change and no description counts for nothing, and so does a commit that a remote branch or tag reaches:
+it is on GitHub, and the next pod's workspace fetch brings it back.
 So the heads of branches the remote deleted after their merge, which Legion's clones keep visible (`git.abandon-unreachable-commits = false`), and `main`'s commits newer than the issue's branch read as nothing unpushed.
-The one work the read does not count is a commit that no working copy and no local bookmark reaches, such as a side head a role left with `jj new <base>` over its own change, so a release can take such a commit; counting every visible head would count the deleted branches above.
+The one work the read does not count is a commit that no working copy and no local bookmark reaches, such as a side head a role left with `jj new <base>` over its own change, so a release can take such a commit;
+counting every visible head would count the deleted branches above.
 The wake task of a release and the plugin's recreated-workspace notice say so in the same words (`internal/workflow/workspace-after-release.txt`).
-The read's answer names the working-copy commit and the commits it found, and the daemon takes an answer only where each is 40 lowercase hexadecimal digits: the ids come from the pod's jj, and the daemon writes them into the hold record and the role's message.
-A read that finds work declines the release: the daemon cancels it before any role stops, so the pod stays as it was with the work in it, and the role the release read through — the worker of the issue's open phase where it is live, else the first live role — gets one Envoy message on its role topic naming the commits and the change and saying that the release waits for its push.
+The read's answer names the working-copy commit and the commits it found, and the daemon takes an answer only where each is 40 lowercase hexadecimal digits:
+the ids come from the pod's jj, and the daemon writes them into the hold record and the role's message.
+A read that finds work declines the release:
+the daemon cancels it before any role stops, so the pod stays as it was with the work in it, and the role the release read through
+— the worker of the issue's open phase where it is live, else the first live role
+— gets one Envoy message on its role topic naming the commits and the change and saying that the release waits for its push.
 The daemon pushes nothing on a role's behalf and keeps no copy of the workspace.
 A read that fails declines the release too, since it cannot show the workspace holds nothing, and tells nobody.
 The decline is recorded in `idle_release_declines` in the cancel's own transaction, with the hold `unpushed_work` or `workspace_unread`, the work the read found and the pod it read.
 While it stands, every idle pass holds the pod under that reason and marks no release, writes no outbox row, asks no shim and sends no second message.
-It ends when a role of the issue starts a turn after the last read began (`claims.last_turn_start` against `checked_at`, so a turn that starts while the read runs counts), when a role process is started again, or when the runtime holds another pod for the issue than the one the read was made in (a relaunch that rebuilt the pod); a `workspace_unread` decline also ends an hour after the last read. A read that finds nothing origin does not hold deletes the decline, so no rule keeps the pod for work that read found gone.
+It ends when a role of the issue starts a turn after the last read began (`claims.last_turn_start` against `checked_at`, so a turn that starts while the read runs counts), when a role process is started again, or when the runtime holds another pod for the issue than the one the read was made in (a relaunch that rebuilt the pod);
+a `workspace_unread` decline also ends an hour after the last read.
+A read that finds nothing origin does not hold deletes the decline, so no rule keeps the pod for work that read found gone.
 The next pass after its end that finds the pod idle again reads the workspace once more.
-A read that finds the same work as the decline on record, through the same role (the same working-copy commit, count of commits and change), keeps the decline's moment, `declined_at`, and tells nobody: the role was told already, and the turn its message starts is the turn that allowed this read, so the message, the turn and the read do not come back every idle period. A role that takes over, such as the next phase's worker, is told once. A read that fails keeps the work the read before it found, and the role it told.
-A whole turn that starts after the release's mark cancels the release at its workspace check, at a role stop or at the teardown: the mark records the newest turn of the pod's claims (`issue_releases.turn_start`), and a later one is the pod given work since. The close of a left pod likewise stops no role after a clean read where a claim started a turn after that read began.
-Before this release, the daemon saved the workspace's unpushed work as a git bundle in its database and restored it into the next pod; nothing reads or writes such a bundle now ([Rolling back the release that keeps no saved workspace](#rolling-back-the-release-that-keeps-no-saved-workspace)).
-On an ephemeral disk nothing else is kept: `$TMPDIR` and its contents, every ignored file, every file jj does not snapshot (above its `snapshot.max-new-file-size`), each role's home with the Oh My Pi state and `local://` files under it, a test Postgres with its databases, and the workspace's CodeGraph index all go with the pod.
+A read that finds the same work as the decline on record, through the same role (the same working-copy commit, count of commits and change), keeps the decline's moment, `declined_at`, and tells nobody:
+the role was told already, and the turn its message starts is the turn that allowed this read, so the message, the turn and the read do not come back every idle period.
+A role that takes over, such as the next phase's worker, is told once.
+A read that fails keeps the work the read before it found, and the role it told.
+A whole turn that starts after the release's mark cancels the release at its workspace check, at a role stop or at the teardown:
+the mark records the newest turn of the pod's claims (`issue_releases.turn_start`), and a later one is the pod given work since.
+The close of a left pod likewise stops no role after a clean read where a claim started a turn after that read began.
+Before this release, the daemon saved the workspace's unpushed work as a git bundle in its database and restored it into the next pod;
+nothing reads or writes such a bundle now ([Rolling back the release that keeps no saved workspace](#rolling-back-the-release-that-keeps-no-saved-workspace)).
+On an ephemeral disk nothing else is kept:
+`$TMPDIR` and its contents, every ignored file, every file jj does not snapshot (above its `snapshot.max-new-file-size`), each role's home with the Oh My Pi state and `local://` files under it, a test Postgres with its databases, and the workspace's CodeGraph index all go with the pod.
 A kept volume keeps the parts of that list that are on the volume: `$TMPDIR`, the ignored files, the files jj does not snapshot and the CodeGraph index.
 Each role's home and a test Postgres are not on the volume, so they go with the pod there too.
 
