@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
 	"github.com/sjawhar/envoy/internal/cipher/helper"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // TestLoginStatusFollowsTheCredentialTheHelperHolds: an approved machine login, then a re-login
@@ -169,10 +170,10 @@ func machineLoginThen(t *testing.T, rig *ciphertest.Rig, binary, sock, action st
 
 	select {
 	case <-waited:
-	case <-time.After(promptJobWait):
+	case <-time.After(testwait.Bounded(t, 24*time.Hour, promptJobMargin)):
 		_ = cmd.Process.Kill()
 		<-waited
-		t.Fatalf("machine login never read the %s decision within promptJobWait (%s); stderr %q", action, promptJobWait, errOut.String())
+		t.Fatalf("machine login never read the %s decision, %s before the test binary's deadline; stderr %q", action, promptJobMargin, errOut.String())
 	}
 	var exitErr *exec.ExitError
 	if waitErr != nil && !errors.As(waitErr, &exitErr) {

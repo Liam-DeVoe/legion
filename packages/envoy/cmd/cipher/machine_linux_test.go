@@ -43,7 +43,8 @@ func tableRows(t *testing.T, stdout string) (header []string, rows [][]string) {
 
 // loggedInElsewhere logs another machine of the rig's operator in, with a key of its own, and
 // returns its helper.Broker and the launcher credential its approval minted. It waits for the
-// login to be issued at promptJobWait, the bound machineLoginThen gives the same event.
+// login to be issued until promptJobMargin before the test binary's deadline (waitsGaveUp), the
+// bound machineLoginThen gives the same event.
 func loggedInElsewhere(t *testing.T, rig *ciphertest.Rig, host string) (*helper.Broker, string) {
 	t.Helper()
 	b := &helper.Broker{URL: cipheraddr.New(rig.URL), OperatorFile: rig.OperatorFile, MachineFile: filepath.Join(t.TempDir(), "machine.json"), HTTP: http.DefaultClient}
@@ -53,10 +54,9 @@ func loggedInElsewhere(t *testing.T, rig *ciphertest.Rig, host string) (*helper.
 		t.Fatalf("log %s in: %v", host, err)
 	}
 	id := rig.DecideMachineLogin(t, code, true)
-	deadline := time.Now().Add(promptJobWait)
 	for !b.HasCredential() {
-		if time.Now().After(deadline) {
-			t.Fatalf("%s's login never issued within promptJobWait (%s): %+v", host, promptJobWait, b.LoginStatus())
+		if waitsGaveUp(t) {
+			t.Fatalf("%s's login never issued, %s before the test binary's deadline: %+v", host, promptJobMargin, b.LoginStatus())
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
@@ -346,7 +346,6 @@ func (s *grantSession) run(args ...string) grantSessionResult {
 		s.t.Fatalf("sending %v to the session: %v", args, err)
 	}
 	s.seen++
-	deadline := time.Now().Add(promptJobWait)
 	for {
 		data, _ := os.ReadFile(s.resultsPath)
 		if len(data) > 0 {
@@ -359,8 +358,8 @@ func (s *grantSession) run(args ...string) grantSessionResult {
 				return res
 			}
 		}
-		if time.Now().After(deadline) {
-			s.t.Fatalf("the session never reported a result for %v within promptJobWait (%s)", args, promptJobWait)
+		if waitsGaveUp(s.t) {
+			s.t.Fatalf("the session never reported a result for %v, %s before the test binary's deadline", args, promptJobMargin)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}

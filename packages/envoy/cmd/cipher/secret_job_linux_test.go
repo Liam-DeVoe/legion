@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/testwait"
 	"golang.org/x/sys/unix"
 )
 
@@ -55,8 +56,8 @@ func TestPromptJobStopBeforeTheLabelKeepsTheEntry(t *testing.T) {
 	s.start(false, true)
 	// Go leaves SIGTSTP at its default action until the prompt's watcher asks
 	// for it, so a stop sent once the watcher catches it is the prompt's to handle.
-	for budget := newWaitBudget(t); !catches(t, s.pid, syscall.SIGTSTP); time.Sleep(time.Millisecond) {
-		if budget.spent() {
+	for ; !catches(t, s.pid, syscall.SIGTSTP); time.Sleep(time.Millisecond) {
+		if waitsGaveUp(t) {
 			t.Fatal("the prompt never caught SIGTSTP")
 		}
 	}
@@ -123,13 +124,13 @@ func TestPromptJobSignalInTheBackgroundEndsItWithoutFg(t *testing.T) {
 			s.reset()
 			s.send("kill -" + tc.signal + " %1\r")
 			// bash reaps a job that ends; one a restore stopped stays in /proc in state T.
-			for budget := newWaitBudget(t); ; time.Sleep(time.Millisecond) {
+			for ; ; time.Sleep(time.Millisecond) {
 				stat, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", s.pid))
 				if os.IsNotExist(err) {
 					break
 				}
-				if budget.spent() {
-					t.Fatalf("the prompt was still there after SIG%s in the background, past this wait's bound of %s: %q; terminal: %q", tc.signal, promptJobWait, stat, s.out.String())
+				if waitsGaveUp(t) {
+					t.Fatalf("the prompt was still there after SIG%s in the background, %s before the test binary's deadline: %q; terminal: %q", tc.signal, promptJobMargin, stat, s.out.String())
 				}
 			}
 			s.pid = 0
@@ -188,8 +189,8 @@ func TestPromptJobFastForegroundDoesNotRestopOrExposeValue(t *testing.T) {
 			s.send("\x1a")
 			// Queue fg at the first stopped thread, without waiting for all of the
 			// job's threads or bash to reclaim the terminal.
-			for budget := newWaitBudget(t); processState(t, s.pid) != "T"; time.Sleep(time.Millisecond) {
-				if budget.spent() {
+			for ; processState(t, s.pid) != "T"; time.Sleep(time.Millisecond) {
+				if waitsGaveUp(t) {
 					t.Fatal("prompt did not stop")
 				}
 			}
@@ -841,16 +842,17 @@ func TestPromptHangupRestoresAndAbortCannotDumpTheValue(t *testing.T) {
 					}
 				}
 			}()
-			// promptJobWait bounds the wait for the process's end, as it bounds every wait of
-			// these tests for a fact they expect. It covers SIGABRT too: Go's GOTRACEBACK=crash
-			// relays SIGQUIT between threads, and a SIGQUIT subscriber can make that relay wait
-			// for its 10s watchdog before the runtime raises the fatal SIGABRT.
+			// The wait for the process's end gives up promptJobMargin before the test binary's
+			// deadline, as every wait of these tests for a fact they expect does (waitsGaveUp). That
+			// covers SIGABRT too: Go's GOTRACEBACK=crash relays SIGQUIT between threads, and a
+			// SIGQUIT subscriber can make that relay wait for its 10s watchdog before the runtime
+			// raises the fatal SIGABRT.
 			select {
 			case <-done:
-			case <-time.After(promptJobWait):
+			case <-time.After(testwait.Bounded(t, 24*time.Hour, promptJobMargin)):
 				_ = controller.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
 				state, _ := os.ReadFile(fmt.Sprintf("/proc/%d/status", cmd.Process.Pid))
-				t.Fatalf("signal did not end the prompt; process: %s; terminal: %q", state, <-output)
+				t.Fatalf("signal did not end the prompt, %s before the test binary's deadline; process: %s; terminal: %q", promptJobMargin, state, <-output)
 			}
 			if err := controller.SetReadDeadline(time.Now().Add(300 * time.Millisecond)); err != nil {
 				t.Fatal(err)
