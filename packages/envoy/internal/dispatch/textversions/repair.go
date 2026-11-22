@@ -119,10 +119,12 @@ type repairResult struct {
 // it rebuilt. It is idempotent: a version it rebuilt holds blocks, which takes it out of the index,
 // and a cut version it does not rebuild stays where the next walk reads it and leaves it again.
 //
-// The fill's runner walks it each time it takes the hold, before its first pass, and again before
+// The fill's runner walks it each time it takes the hold, after its first pass, and again after
 // each later pass until a walk succeeds (runner.fillUnder): a version the repair concerns is
 // written only by a fill of the release before this one, which writes only while it holds the
-// hold, so this build takes the hold after it.
+// hold, so this build takes the hold after it. The walk follows the pass so the pass reads the
+// event log's horizon as soon as the hold is taken, never behind a repair batch's wait at the
+// cursor row (runner.fillUnder says why).
 func (f *filler) repairCutFirstBodies(ctx context.Context) (int, error) {
 	key := repairKey{seq: math.MinInt32}
 	rebuilt := 0

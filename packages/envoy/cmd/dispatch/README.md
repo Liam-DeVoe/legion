@@ -1665,12 +1665,13 @@ No route reads the table yet (Search, below), so search answers alike with the f
   `idle_in_transaction_session_timeout` is 10 s, which ends the transaction of a holder frozen inside a batch and frees the cursor row.
   After each batch the holder rests for as long as the batch ran, so the fill takes at most half of the time of one backend.
 
-- Each time it takes the hold, before its first pass, the fill walks its first-body repair once, the keyword table's second writer of an existing row beside the erase (`textversions`' `repairCutFirstBodies`).
+- Each time it takes the hold, after its first pass, the fill walks its first-body repair once, the keyword table's second writer of an existing row beside the erase (`textversions`' `repairCutFirstBodies`).
+  The walk follows the pass, so the pass reads the event log's horizon as soon as the hold is taken: a repair batch waiting at the cursor row ahead of it would put that read after every transaction that began while it waited, and the horizon waits each one out.
   A fill of the release before this one decides a long comment's `comment.created` by its own reader of revision 1, which takes a block as the comment's own only where the block's row holds the event's `created_at`; this release dates that row by the comment's own moment, so that fill, holding the hold during a roll or after a rollback, keeps the event's cut text of a long comment this release wrote and an edit changed before that fill reached it.
   The repair reads only the comment versions marked cut, through the partial index `search_text_versions_cut_comments`, in `(id, event_seq)` order, at most 1,000 a batch, so a hold over a table that holds none costs one read of an empty index; each batch is one transaction under the fill's locks: the cursor row `for update`, the hold's check, and the log's check against the cursor, a reset ending the walk with nothing written.
   Of each `comment.created` version marked cut in the window it decides the first body again by this release's reader, and where revision 1 holds a text in every block and proves, block by block, the comment's own transaction (`comment_block_texts.transaction_started_at`, or the block row's `created_at` for a text row written before that column), it writes revision 1's body, `body_from` `blocks`, and that body's vector; a version no source holds fails the same test and stays cut.
   A batch ends early once it has rebuilt 2 MB of bodies, and the holder pauses before each batch and rests after it as after a pass's.
-  The walk is idempotent, logs each version it rebuilds, and a walk that fails is walked again before the next pass, which runs all the same.
+  The walk is idempotent, logs each version it rebuilds, and a walk that fails is walked again after the next pass, which runs all the same.
   `envoy-dispatch census --store` prints `keyword_cut_first_bodies`, the versions the repair rebuilds, which reads 0 once it has run.
 
 - The fill logs when it takes, loses or releases its hold, when it pauses and continues, when it finds a reset log, and when it keeps a cut body.
