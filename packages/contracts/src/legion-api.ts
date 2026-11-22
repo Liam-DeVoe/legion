@@ -2066,6 +2066,7 @@ export const LEGION_REVIEWER_VERDICTS = ["approve", "changes"] as const;
  * (`VERDICT_HEAD_NOT_CURRENT`); it answers an empty object. */
 export const LegionReviewVerdictRequest = z.strictObject({
   grantId: nonEmptyString,
+  issue: nonEmptyString.optional(),
   verdict: z.enum(LEGION_REVIEWER_VERDICTS),
   commit: nonEmptyString,
   testedCommit: nonEmptyString.optional(),
