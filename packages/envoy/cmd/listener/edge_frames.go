@@ -72,7 +72,7 @@ func frameAnswerUnknownVerdict() frameVerdict {
 //     answer_unknown, and one whose envelope names a topic that is no GitHub event's is withheld;
 //   - a message on an agent subject passes only on the session's own (ownFrameAgentSubject): a
 //     role message - a role-lane forward or a role-marked send - passes only for the project its
-//     role's claim works for (contracts.ParseRoleClaimKey), judged by the role and not by the
+//     role's claim works for (roleOfProjects), judged by the role and not by the
 //     subject it is stored on, since a forged role claim or a kept or taken copy can store
 //     another project's role's message on the session's own subject; any other frame passes by
 //     the topic its envelope names: the session's own agent subject is a message to the session,
@@ -101,7 +101,7 @@ func edgeFrameVerdict(repositories *edgeRepositories, sessionID string, projects
 		}
 		// A role message - a role-lane forward, whose topic names the lane, or a role-marked
 		// send, whose role mark names the role (roleOfMessage.role) - is judged by the project
-		// its role's claim works for (contracts.ParseRoleClaimKey of the claim key), not by the
+		// its role's claim works for (roleOfProjects), not by the
 		// subject the frame is stored on. A forged role claim can name the session for another
 		// project's role and have Dispatch send that role's message on the session's own subject,
 		// and a kept or a taken copy of the session's own project's role keeps the previous
@@ -109,7 +109,7 @@ func edgeFrameVerdict(repositories *edgeRepositories, sessionID string, projects
 		// the role is how the role lane, the relay and a takeover read one, and it holds a role
 		// lane to the project edgeTopicRule does (contracts.RoleClaimOf).
 		if role, _, isRole := decodeRoleMark(data); isRole {
-			if project, _ := contracts.ParseRoleClaimKey(role); slices.Contains(projects, project) {
+			if roleOfProjects(role, projects) {
 				return framePasses()
 			}
 			return frameDrops(withheldProjectNotHeld)
