@@ -1221,6 +1221,63 @@ test("with the bar, the banner and Pending changes shown, the table's last row s
   }
 });
 
+// End room that moves nothing a float lies over (`web/src/hooks/useFootInset.ts`). From the xl
+// width up, Pending changes sits at the window's lower right, over the issue page's Review margin,
+// a box of the screen's height whose content does not overflow it. End room in the document's
+// own scroller lets none of that content scroll clear, and only lengthens the page past the
+// shell: at the end of its scroll, the shell's Navigation, sticky at the top, slides up off the
+// screen and leaves an empty band at the foot. So with a refused change pending, an issue page
+// scrolled to its end must keep the Navigation's top on the screen.
+test("with a refused change pending, an issue page scrolled to its end keeps the shell's Navigation on the screen", async ({
+  browser,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const epic = await createIssue({ project: "CORE", title: "Parser rollout" });
+  await patchIssue(epic.key, { labels: ["epic"] });
+  const refused = await createIssue({ project: "CORE", parent: epic.key, title: "Refused move" });
+  const other = await createIssue({ project: "CORE", title: "Ship the parser" });
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    await page.setViewportSize({ width: 1600, height: 1000 });
+    await page.route(`**/api/v1/issues/${refused.key}`, async (route) => {
+      if (route.request().method() === "PATCH")
+        await route.fulfill({ status: 403, json: { error: "Move refused" } });
+      else await route.continue();
+    });
+    await page.goto("/projects/CORE/issues");
+    await page.getByRole("checkbox", { name: `Select ${refused.key}`, exact: true }).check();
+    await page.getByRole("toolbar").getByRole("button", { name: "Take out of epic" }).click();
+    const pending = pendingWrites(page);
+    await expect(pending).toContainText(refused.key);
+    await navigateInApp(page, `/issues/${other.key}`);
+    await expect(page.getByRole("heading", { name: "Ship the parser" })).toBeVisible();
+    await expect(pending).toContainText(refused.key);
+    const navigation = page.getByRole("complementary", { name: "Navigation" });
+    for (const size of [
+      { width: 1600, height: 1000 },
+      { width: 1920, height: 1080 },
+      { width: 1280, height: 800 },
+    ]) {
+      await page.setViewportSize(size);
+      await expect
+        .poll(
+          async () => {
+            await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+            await nextFrames(page);
+            return (await navigation.boundingBox())?.y ?? Number.NaN;
+          },
+          {
+            message: `the Navigation's top at the end of the page at ${size.width}x${size.height}`,
+          }
+        )
+        .toBeGreaterThanOrEqual(0);
+    }
+  } finally {
+    await context.close();
+  }
+});
+
 test("a live insertion above a vertically and horizontally scrolled reader keeps their row in place", async ({
   browser,
 }) => {
