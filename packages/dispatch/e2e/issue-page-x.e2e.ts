@@ -378,8 +378,10 @@ async function expectOvertakenFold(page: Page, read: ProposedPage): Promise<void
   const { answer, key, plain, seeded, treeId, wide } = read;
   const { ids } = seeded;
   await gotoIssue(page, plain);
-  await unfoldEveryBranch(page);
-  await openEveryDeeperBranch(page);
+  // The load draws the outline once its tree read answers, after the page itself: read the rows
+  // only once statement 7's is drawn, which opens every branch on the way (`drawnRowId`). Read
+  // at once, the rows were none.
+  await drawnRowId(page, ids.statement7, "statement 7");
   let items = await treeItemsDrawn(page);
   expect(
     items.some((item) => item.readId === ids.statement8),
