@@ -33,9 +33,18 @@ import (
 const testMainEnv = "LEGION_CMD_TEST_MAIN"
 
 // testCurlEnv names, to this package's test binary run as `legion` (TestMain), the stand-in curl
-// the leak guard's curl reads run (leakguardCurl), so a test of `legion gh` in a process of its
-// own reaches no network.
+// the leak guard's curl reads run (leakguardCurl). A run that names none has testNoCurl.
 const testCurlEnv = "LEGION_CMD_TEST_CURL"
+
+// testNoCurl is the curl of every leak guard this test binary builds, in its own process and in
+// each run of it as `legion`, unless a test names a stand-in (testCurlEnv, or leakguardCurl in
+// this process): a path with no file. So no guard here reads through curl: it takes the read as
+// one it cannot make (leakguard's errNoCurlRead, which names this path), runs no curl, and goes
+// on as a guard with no curl does. Without it a guard here would run the system's /usr/bin/curl,
+// as the legion binary does: a `legion gh` whose stand-in gh a loaded machine held past the guard's
+// bound on its REST read went on to read api.github.com with a token of the test's bundle, and
+// GitHub's 401 then decided the row (INFRA-3904).
+const testNoCurl = "/nonexistent/legion-cmd-test-names-no-curl"
 
 func TestMain(m *testing.M) {
 	// An operator's NATS nkey seed, or either seed's _FILE pointer, reaches no test here and no
@@ -45,6 +54,9 @@ func TestMain(m *testing.M) {
 	for _, name := range []string{"NATS_NKEY_SEED", "NATS_NKEY_SEED_FILE", "NATS_DAEMON_NKEY_SEED", "NATS_DAEMON_NKEY_SEED_FILE"} {
 		os.Unsetenv(name)
 	}
+	// No guard of this binary reads through the system's curl (testNoCurl); a run as `legion`
+	// whose test names a stand-in takes it below.
+	leakguardCurl = testNoCurl
 	if os.Getenv(testMainEnv) == "1" {
 		// A test's stand-in shared check is no copy of the pinned one, so the test names the
 		// public_leak_check.py its stand-in carries as the one the read rule was proven against
