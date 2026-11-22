@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   errorClass,
+  failureCode,
   isCleanUrl,
   isHttpUrl,
   requestForText,
@@ -122,5 +123,28 @@ describe("errorClass", () => {
     const odd = Object.assign(new Error(canary), { name: `Error ${canary}`, code: `${canary} x` });
     expect(errorClass(odd)).toBe("Error (message withheld)");
     expect(errorClass(canary)).toBe("a thrown string (message withheld)");
+  });
+});
+
+// The code a client keeps on its own error, which keeps no cause, of a request that got no answer:
+// one upper-case word, never a message, which repeats the host or the URL it was handed.
+describe("failureCode", () => {
+  test("a failure is named by the runtime's code, and a deadline as ETIMEDOUT", () => {
+    const unresolved = Object.assign(new Error("getaddrinfo ENOTFOUND edge.invalid"), {
+      code: "ENOTFOUND",
+      syscall: "getaddrinfo",
+    });
+    expect(failureCode(unresolved)).toBe("ENOTFOUND");
+    expect(failureCode(new DOMException("The operation timed out.", "TimeoutError"))).toBe(
+      "ETIMEDOUT"
+    );
+  });
+
+  test("an error with no code of the runtime's shape, or no error, has none", () => {
+    expect(failureCode(new TypeError("fetch failed"))).toBeUndefined();
+    // A code a peer wrote, lower case or holding a space, is no runtime's.
+    expect(failureCode(Object.assign(new Error("x"), { code: "invalid_grant" }))).toBeUndefined();
+    expect(failureCode(Object.assign(new Error("x"), { code: "E CONN" }))).toBeUndefined();
+    expect(failureCode("ECONNREFUSED")).toBeUndefined();
   });
 });

@@ -180,12 +180,17 @@ export class RegistrationPendingError extends Error {
  * (`TRADE_ATTEMPT_MS`), no connection, a 5xx, the broker's 429 or a DPoP refusal, or a trade that
  * could not be made.
  * The loop goes on, so it is not final ({@link isFinalRefusal}). Its message is the loop's own
- * line for that failure (`Retried.said`), which names nothing a peer wrote.
+ * line for that failure (`Retried.said`), which names nothing a peer wrote. `code` is the
+ * failure's code where the broker gave no answer at all, as {@link BrokerTradeFailedError.code}
+ * says (ETIMEDOUT for a trade not answered within its time), and undefined where it answered.
  */
 export class TradeRetryingError extends Error {
-  constructor(said: string) {
+  readonly code: string | undefined;
+
+  constructor(said: string, code?: string) {
     super(`${said}, and the trade is being retried in the background`);
     this.name = "TradeRetryingError";
+    this.code = code;
   }
 }
 
@@ -194,9 +199,12 @@ export class TradeRetryingError extends Error {
  * token was still out, so no trade had ended yet to say what it came to: a broker that does not
  * answer, named as that rather than as the signal's bare "The operation timed out.". The trade
  * goes on, so it is not final ({@link isFinalRefusal}). Its message names the identity traded and
- * nothing a peer wrote.
+ * nothing a peer wrote, and its `code` is ETIMEDOUT, as a request's that got no answer in its time
+ * (`failureCode` of `@legion/contracts/log-text`).
  */
 export class TradeUnansweredError extends Error {
+  readonly code = "ETIMEDOUT";
+
   constructor(identity: string) {
     super(
       `the secrets broker has not yet answered the trade of ${identity}, and the trade goes on in the background`
@@ -209,12 +217,19 @@ export class TradeUnansweredError extends Error {
  * A trade that ended other than in a refusal: the broker gave no answer, a 5xx, or an answer
  * that is not this grant's. Its message names the identity traded, the broker as `urlForText`
  * names it and the failure by its class (`errorClass`), and nothing a peer wrote, so a caller
- * prints it whole; it keeps no cause, since the library's error can hold the answer it read.
+ * prints it whole; it keeps no cause, since the library's error can hold the answer it read. So
+ * `code` carries what a caller needs of that cause: the failure's code where the broker gave no
+ * answer at all (`failureCode` of `@legion/contracts/log-text`: ECONNREFUSED, ENOTFOUND,
+ * ETIMEDOUT for a request its deadline ended, …), which tells a broker that answered nothing from
+ * one that answered; undefined where it answered, or where the failure has no such code.
  */
 export class BrokerTradeFailedError extends Error {
-  constructor(message: string) {
+  readonly code: string | undefined;
+
+  constructor(message: string, code?: string) {
     super(message);
     this.name = "BrokerTradeFailedError";
+    this.code = code;
   }
 }
 

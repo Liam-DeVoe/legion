@@ -47,9 +47,11 @@
 // it, so only a registration the listener accepted ends it. Each open is followed by one, the
 // start's or the one a `reconnect` (`status`) sets off. A caller that waits for a socket to open
 // and whose bound ends first is answered `RelayNotOpenedError`, which names why the last open
-// failed and carries the code the runtime gave that open's socket where it had one: ECONNREFUSED
-// for a listener whose port nothing took, ENOTFOUND for a name that did not resolve, ETIMEDOUT for
-// an upgrade not answered within 20 s.
+// failed and carries the code that failure had where it got no answer: the runtime's code for the
+// open's socket (ECONNREFUSED for a listener whose port nothing took, ENOTFOUND for a name that
+// did not resolve), ETIMEDOUT for an upgrade not answered within 20 s, the trade's own code for a
+// trade the broker did not answer (`failureCode`: ETIMEDOUT, ECONNREFUSED, …), and ETIMEDOUT where
+// no open had failed yet and one was still waiting for its token or its upgrade's answer.
 //
 // The connection is an `InboundConnection` (`./inbound-connection.ts`), the shape of the NATS
 // connection a session plugin holds, so a plugin's delivery runs on either: its subscriptions, a
@@ -57,11 +59,12 @@
 // after it handled every frame the socket sent before it, every `sub` included), the status events
 // `disconnect` and `reconnect`, a drain and a close.
 
+import { failureCode } from "@legion/contracts/log-text";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import type { RequestCredential } from "./bearer";
 import { type BrokerSessionName, sessionName } from "./broker-credential";
 import type { InboundUnavailable, RelayHeaders } from "./consumer-delivery";
-import { failureCode, LoggableError, messageFor } from "./errors";
+import { LoggableError, messageFor } from "./errors";
 import type {
   InboundConnection,
   InboundMessage,
@@ -362,12 +365,16 @@ export interface ListenerRelayOptions {
 /**
  * The relay socket did not open within its caller's bound (`connectListenerRelay`,
  * `ListenerRelay.opened`, `ListenerRelay.follow`). Its message names why the last open failed, and
- * `code` is the code the runtime gave that open's socket (`failureCode`: ECONNREFUSED, ENOTFOUND,
- * ECONNRESET, …), or ETIMEDOUT for an upgrade not answered within 20 s: what tells a listener that
- * answered nothing from one that answered. It is undefined where the listener answered (it refused
- * the upgrade), where the open failed before it made a socket (a trade that failed), and where no
- * open had failed yet. A `LoggableError`, so it keeps no cause: the runtime's error would repeat
- * the socket's URL, and the code is all of it a caller reads.
+ * `code` is that failure's code where the far end gave no answer: the code the runtime gave that
+ * open's socket (`failureCode`: ECONNREFUSED, ENOTFOUND, ECONNRESET, …), ETIMEDOUT for an upgrade
+ * not answered within 20 s, and the code of a trade the broker did not answer (ETIMEDOUT,
+ * ECONNREFUSED, ENOTFOUND, …, as the broker client keeps it). Where no open had failed yet and one
+ * was still waiting for its token or its upgrade's answer when the bound ended, it is ETIMEDOUT,
+ * and the message says so. That is what tells a far end that answered nothing from one that
+ * answered: `code` is undefined where the listener or the broker answered (a refused upgrade, a
+ * refused trade) and where a socket that opened was closed by the listener. A `LoggableError`, so
+ * it keeps no cause: the runtime's error would repeat the socket's URL, and the code is all of it
+ * a caller reads.
  */
 export class RelayNotOpenedError extends LoggableError {
   override readonly name = "RelayNotOpenedError";
@@ -434,6 +441,9 @@ export class ListenerRelay implements InboundConnection {
    *  runtime gave its socket, which that caller reads (`RelayNotOpenedError`). */
   #lastFailure = "";
   #lastFailureCode: string | undefined;
+  /** Whether an open is under way: its trade, or its socket's upgrade, not yet answered. False
+   *  once it opened or failed, and while the next open waits its turn after a close. */
+  #openUnderWay = false;
   /** The failure the last line logged, so a run of the same one is logged once (`#failed`). */
   #loggedFailure = "";
   readonly #subs = new Map<number, RelaySubscription>();
@@ -564,9 +574,8 @@ export class ListenerRelay implements InboundConnection {
     const bound = AbortSignal.timeout(boundMs);
     await this.#openSocket(bound).catch((error: unknown) => {
       if (!bound.aborted) throw error;
-      throw new RelayNotOpenedError(
-        `the listener's relay socket did not open as the session ${session} within ${Math.round(boundMs / 1000)} s${this.#failureSuffix()}`,
-        this.#lastFailureCode
+      throw this.#notOpened(
+        `the listener's relay socket did not open as the session ${session} within ${Math.round(boundMs / 1000)} s`
       );
     });
   }
@@ -576,15 +585,24 @@ export class ListenerRelay implements InboundConnection {
   async opened(signal?: AbortSignal): Promise<void> {
     await this.#openSocket(signal).catch((error: unknown) => {
       if (signal?.aborted !== true) throw error;
-      throw new RelayNotOpenedError(
-        `the listener's relay socket for ${this.#socketSession} did not open${this.#failureSuffix()}`,
-        this.#lastFailureCode
-      );
+      throw this.#notOpened(`the listener's relay socket for ${this.#socketSession} did not open`);
     });
   }
 
-  #failureSuffix(): string {
-    return this.#lastFailure === "" ? "" : `: ${this.#lastFailure}`;
+  /** What a caller whose bound ended before a socket opened is told: `said`, then why the last
+   *  open failed, with that failure's code; or, where none had failed and an open was still under
+   *  way, that it was still waiting, ETIMEDOUT: its trade or its upgrade got no answer in time. */
+  #notOpened(said: string): RelayNotOpenedError {
+    if (this.#lastFailure === "" && this.#openUnderWay) {
+      return new RelayNotOpenedError(
+        `${said}: its open was still waiting for its token or its upgrade's answer when the bound ended`,
+        "ETIMEDOUT"
+      );
+    }
+    return new RelayNotOpenedError(
+      this.#lastFailure === "" ? said : `${said}: ${this.#lastFailure}`,
+      this.#lastFailureCode
+    );
   }
 
   /** The open socket, once there is one; rejects once the connection is closed for good, and
@@ -673,6 +691,7 @@ export class ListenerRelay implements InboundConnection {
     if (this.#closedForGood) return;
     clearTimeout(this.#reopenTimer);
     this.#reopenTimer = undefined;
+    this.#openUnderWay = true;
     this.#generation += 1;
     const generation = this.#generation;
     const previous = this.#socket;
@@ -693,17 +712,18 @@ export class ListenerRelay implements InboundConnection {
       if ("failed" in upgrade) {
         this.#outage.refused(upgrade.error);
         const delay = this.#reopenAfter({ refused: undefined, after: this.#closedWith });
-        this.#failed(session, upgrade.failed, delay);
+        // A trade the broker did not answer carries its code (`failureCode`), a refusal none.
+        this.#failed(session, upgrade.failed, delay, failureCode(upgrade.error));
         return;
       }
       this.#connect(generation, session, upgrade.headers);
     });
   }
 
-  /** Records why an open failed, and the code the runtime gave its socket, which a caller waiting
-   *  for one is told, and logs it, with the wait before the next, when it is not what the last
-   *  failure logged said: a listener or a broker away for an hour costs one line, not one per
-   *  attempt. A socket that opens ends the run. */
+  /** Records why an open failed, and the code its failure had where it got no answer (its
+   *  socket's, or its trade's), which a caller waiting for one is told, and logs it, with the wait
+   *  before the next, when it is not what the last failure logged said: a listener or a broker
+   *  away for an hour costs one line, not one per attempt. A socket that opens ends the run. */
   #failed(session: string, failure: string, delay: number, code?: string): void {
     this.#lastFailure = failure;
     this.#lastFailureCode = code;
@@ -810,6 +830,7 @@ export class ListenerRelay implements InboundConnection {
   #opened(generation: number, session: string, socket: Bun.WebSocket): void {
     const reopened = this.#everOpened;
     this.#everOpened = true;
+    this.#openUnderWay = false;
     this.#lastFailure = "";
     this.#lastFailureCode = undefined;
     this.#loggedFailure = "";
@@ -977,6 +998,8 @@ export class ListenerRelay implements InboundConnection {
   /** Opens again once `end`'s wait is over, counting `end` in its run (`relayRun`); answers the
    *  wait. */
   #reopenAfter(end: RelayEnd): number {
+    // Every failed open and every close of an open socket waits here: none is under way now.
+    this.#openUnderWay = false;
     const run = relayRun(end);
     const streak = this.#streaks.get(run) ?? 0;
     this.#streaks.set(run, streak + 1);

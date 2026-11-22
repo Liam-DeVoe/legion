@@ -1,0 +1,11 @@
+kind: Changed
+body: |-
+  `failureCode(error)` moved from `@legion/envoy-client/errors` to `@legion/contracts/log-text`:
+  the code of a request or a socket that got no answer, as one word a text may carry (the runtime's
+  `ECONNREFUSED`, `ENOTFOUND`, `ECONNRESET`, …, and `ETIMEDOUT` for a deadline that ended it), never
+  its message. The Envoy client's call and relay socket and the broker client's request and trade
+  keep it as their error's `code`, since none of them keeps a cause, so a caller tells a far end
+  that answered nothing from one that answered.
+time: 2026-11-22T09:10:42.361523190Z
+custom:
+    Issue: pr4673

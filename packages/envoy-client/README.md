@@ -357,12 +357,16 @@ reports `reconnect`, so the host registers a new epoch and the listener redelive
 acknowledged. `follow()` opens the socket again for the session the name reads now, which a host
 runs when it moves to another session. A wait for an open (`connectListenerRelay`'s `signal`,
 `opened`, `follow`) that its bound ends throws `RelayNotOpenedError`, which names why the last open
-failed and keeps no cause, the runtime's error repeating the socket's URL; its `code` is the code
-the runtime gave that open's socket (`failureCode`: `ECONNREFUSED` for a port nothing took,
+failed and keeps no cause, the runtime's error repeating the socket's URL; its `code` is that
+failure's where the far end gave no answer: the code the runtime gave that open's socket
+(`failureCode` of `@legion/contracts/log-text`: `ECONNREFUSED` for a port nothing took,
 `ENOTFOUND` for a name that did not resolve, …), `ETIMEDOUT` for an upgrade not answered within
-20 s, and undefined where the listener answered (a refused upgrade) or the open failed at its trade.
-A call of the HTTP transport (below) that got no answer does the same: its error keeps no cause
-and carries the failure's `code`, `ETIMEDOUT` for the call's deadline.
+20 s, and the code of a trade the broker did not answer, as the broker client keeps it
+(`ETIMEDOUT` for one still unanswered, `ECONNREFUSED`, …). Where no open had failed yet and one
+was still waiting for its token or its upgrade's answer when the bound ended, it is `ETIMEDOUT`,
+and the message says so. It is undefined where the listener or the broker answered (a refused
+upgrade, a refused trade). A call of the HTTP transport (below) that got no answer does the same:
+its error keeps no cause and carries the failure's `code`, `ETIMEDOUT` for the call's deadline.
 
 ## HTTP transport
 
@@ -1015,7 +1019,10 @@ schedule however many callers ask. This is gRPC's connection backoff (grpc/grpc,
 length and all of it, around a per-trade timeout of 30 s. A caller is one of gRPC's two kinds. A
 fail-fast caller, the default, is told at once, with `TradeRetryingError`, where the loop's last
 trade failed in a way it trades again on and no live token is in hand: every Dispatch and Envoy
-call, and a NATS connection's keeper. A wait-for-ready caller waits through the loop's retries:
+call, and a NATS connection's keeper. Its `code`, like `TradeUnansweredError`'s and
+`BrokerTradeFailedError`'s, is the failure's where the broker gave no answer at all (`ETIMEDOUT`
+for a trade past its time, the runtime's code for one that reached no broker), and undefined
+where the broker answered. A wait-for-ready caller waits through the loop's retries:
 the startup paths, which have nothing to do until they hold a token: a Claude Code channel
 server's start (`ready({ life })`), for its life, and an Oh My Pi session's start
 (`ready({ waitForReady: true })`) and a switch's follow, each for 20 s. Every caller waits

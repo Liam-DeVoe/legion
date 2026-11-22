@@ -1,12 +1,16 @@
 kind: Fixed
 body: |-
   A relay socket that did not open within its caller's bound now throws `RelayNotOpenedError`
-  (`@legion/envoy-client/listener-relay`), whose `code` is the code the runtime gave the last
-  open's socket: `ECONNREFUSED` for a listener whose port nothing took, `ENOTFOUND` for a name that
-  did not resolve, `ETIMEDOUT` for an upgrade not answered within 20 s, and none where the listener
-  answered. A call of `createEnvoyClient` that got no answer carries its failure's `code` the same
-  way. Neither keeps a cause, since the runtime's error repeats the URL, so before this a caller
-  could not tell a listener that answered nothing from one that refused.
+  (`@legion/envoy-client/listener-relay`), whose `code` is the code of the last open's failure
+  where the far end gave no answer: `ECONNREFUSED` for a listener whose port nothing took,
+  `ENOTFOUND` for a name that did not resolve, `ETIMEDOUT` for an upgrade not answered within
+  20 s, the trade's own code for a trade of the session's token the broker did not answer, and
+  `ETIMEDOUT` where no open had failed yet and one still waited for its token or its upgrade's
+  answer; none where the listener or the broker answered. A call of `createEnvoyClient` that got no
+  answer carries its failure's `code` the same way. Neither keeps a cause, since the runtime's
+  error repeats the URL, so before this a caller could not tell a listener that answered nothing
+  from one that refused. `failureCode` moved from `@legion/envoy-client/errors` to
+  `@legion/contracts/log-text`, where the broker client reads it too.
 time: 2026-11-22T06:30:20.014428172Z
 custom:
     Issue: pr4673

@@ -17,12 +17,17 @@
  *    short: no Create button, no sign-in, a refusal, no passkey, a landing on another origin, no
  *    cookie, no person, a page or a read with no answer; and a project list that is no answer
  *    fails `projects`;
- *  - step 2 is FAIL or UNKNOWN for each way a device login falls short: no broker, a refusal, a
- *    page on another origin, no code box, a box that takes no typing, no answer to the look-up, a
- *    refused code or approval, no approval shown, no credential named, a denied poll; and
- *    `approve` reads a page it cannot drive UNKNOWN, exit 2;
- *  - step 3, after a device login that passed and a token the stand-in traded, is UNKNOWN, never
- *    FAIL, for a listener nothing answers: a socket refused its connection;
+ *  - step 2 is FAIL or UNKNOWN for each way a device login falls short: no broker, a broker that
+ *    takes the connection and never answers, a broker name that does not resolve (each UNKNOWN), a
+ *    refusal, a page on another origin, no code box, a box that takes no typing, no answer to the
+ *    look-up, a refused code or approval, no approval shown, no credential named, a denied poll;
+ *    and `approve` reads a page it cannot drive UNKNOWN, exit 2;
+ *  - step 3, after a device login that passed, is UNKNOWN, never FAIL, for each far end that gave
+ *    no answer: a listener that refused the socket's connection, a trade for the session's token
+ *    the broker never answered, and a listener that never answered an upgrade still waiting at the
+ *    driver's 30 s;
+ *  - an error of the driver's own in a step, a device login or a session the listener took that
+ *    it cannot keep in OUTSIDE_EDGE_STATE, is UNKNOWN, exit 2, never FAIL;
  *  - Chromium's processes hold none of the driver's OUTSIDE_* inputs;
  *  - the link's token reaches no row, stdout, stderr, TSV or state file, also where the page did
  *    not load or names the link itself;
@@ -67,6 +72,9 @@ import {
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { legacyAgentSubject } from "@legion/contracts";
+import { startRelaySocketStandIn } from "@legion/envoy-client/test/relay-socket-stand-in";
+import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer";
 import { chromium } from "@playwright/test";
 import {
   type BoundName,
@@ -76,9 +84,11 @@ import {
   rowLimit,
   runBounded,
 } from "./bounded-subprocess";
+import { sessionRefusal, topicRefusal, tradeRefusal } from "./outside-edge-credentials";
 import {
   type OriginBehaviour,
   type OriginStandIn,
+  standInCredential,
   standInPerson,
   startOriginStandIn,
   unreachedAlert,
@@ -753,12 +763,14 @@ describe("the controls, against an outside origin stand-in", () => {
 
   /** A run of the driver against an origin stand-in that answers `behaviour`: its link that
    *  stand-in's, its broker that stand-in unless `broker` names another, and its listener a port
-   *  nothing answers on. Answers the stand-in at once, the run's state directory, and the run. */
+   *  nothing answers on unless `listener` names another. Answers the stand-in at once, the run's
+   *  state directory, and the run. */
   const startRun = (
     name: string,
     behaviour: OriginBehaviour,
     bound: BoundName,
-    broker?: string
+    broker?: string,
+    listener?: string
   ): { origin: OriginStandIn; state: string; ran: Promise<DriverRun> } => {
     const origin = startOriginStandIn(behaviour);
     const state = join(scratch, name);
@@ -773,7 +785,7 @@ describe("the controls, against an outside origin stand-in", () => {
         OUTSIDE_PROJECT: "OWN",
         OUTSIDE_PEER_SESSION: peer,
         OUTSIDE_BROKER_URL: broker ?? origin.url,
-        OUTSIDE_LISTENER_URL: "http://127.0.0.1:9",
+        OUTSIDE_LISTENER_URL: listener ?? "http://127.0.0.1:9",
         OUTSIDE_EDGE_LIMITS: limits,
         OUTSIDE_EDGE_STATE: state,
       },
@@ -785,12 +797,12 @@ describe("the controls, against an outside origin stand-in", () => {
   };
   /** Each case's run, its rows and its stand-in, all started at once and awaited together. */
   const runCases = async (
-    cases: readonly (readonly [string, OriginBehaviour, string?])[],
+    cases: readonly (readonly [string, OriginBehaviour, string?, string?])[],
     bound: BoundName
   ) => {
-    const started = cases.map(([name, behaviour, broker]) => ({
+    const started = cases.map(([name, behaviour, broker, listener]) => ({
       name,
-      ...startRun(name, behaviour, bound, broker),
+      ...startRun(name, behaviour, bound, broker, listener),
     }));
     try {
       return await Promise.all(
@@ -929,7 +941,7 @@ describe("the controls, against an outside origin stand-in", () => {
   );
 
   browserRow(
-    "the device login step: a refusal, another origin's page, a refused code or approval and a denied poll are FAIL; no broker, or a page that cannot be driven, is UNKNOWN",
+    "the device login step: a refusal, another origin's page, a refused code or approval and a denied poll are FAIL; no broker, a broker name that does not resolve, or a page that cannot be driven, is UNKNOWN",
     async () => {
       const signsIn = { enroll: "signs-in" } as const;
       const ran = await runCases(
@@ -940,6 +952,8 @@ describe("the controls, against an outside origin stand-in", () => {
           ["login-refuses-approval", { ...signsIn, machine: "refuses-approval" }],
           ["login-denied", { ...signsIn, broker: "denies" }],
           ["login-projects-500", { ...signsIn, projects: 500 }, "http://127.0.0.1:9"],
+          // A name under `.invalid`, which no resolver answers (RFC 6761).
+          ["login-broker-unresolved", signsIn, "https://edge.invalid"],
           ["login-untypable", { ...signsIn, machine: "untypable" }],
         ],
         "outsideEdgeBrowser"
@@ -959,9 +973,15 @@ describe("the controls, against an outside origin stand-in", () => {
           /^approved on the page, then the poll: this machine's device login was denied/,
           "FAIL",
         ],
-        // A broker address nothing answers on: the cipher-client names the failure by its class.
+        // A broker address nothing answers on: the cipher-client keeps the failure's code, which
+        // the driver reads, and names it by its class in the text.
         "login-projects-500": [
           /^ask for a code for this machine's device login at .*: (ECONNREFUSED|ConnectionRefused)$/,
+          "UNKNOWN",
+        ],
+        // EAI_AGAIN where the resolver gives no answer at all, as on a box with no DNS.
+        "login-broker-unresolved": [
+          /^ask for a code for this machine's device login at https:\/\/edge\.invalid\/v1\/oauth\/device_authorization: getaddrinfo (ENOTFOUND|EAI_AGAIN)$/,
           "UNKNOWN",
         ],
         "login-untypable": [/^the machine-login page could not be driven: /, "UNKNOWN"],
@@ -1006,37 +1026,56 @@ describe("the controls, against an outside origin stand-in", () => {
         "outsideEdgeBrowser",
         "outsideEdgeBrowser",
         "outsideEdgeBrowser",
+        "outsideEdgeBrowser",
       ],
     })
   );
 
   browserRow(
-    "the device login step that waits out its bound: no code box, no answer to the look-up, no approval shown, no credential named, each FAIL",
+    "the device login step that waits out its bound: no code box, no answer to the look-up, no approval shown, no credential named, each FAIL; a broker that takes the connection and never answers is UNKNOWN",
     async () => {
       const signsIn = { enroll: "signs-in" } as const;
-      const ran = await runCases(
-        [
-          ["login-no-box", { ...signsIn, machine: "no-box" }],
-          ["login-no-answer", { ...signsIn, machine: "no-answer" }],
-          ["login-never-approved", { ...signsIn, machine: "never-approved" }],
-          // The page reads the credential's line for its 30 s before it says there is none.
-          ["login-no-credential", { ...signsIn, machine: "no-credential" }],
-        ],
-        "outsideEdgePageWait"
-      );
-      const wants: Record<string, string> = {
-        "login-no-box": "the machine-login page shows no code box",
-        "login-no-answer": "the page showed neither Approve nor a refusal for the code",
-        "login-never-approved": "the page did not say the code was approved",
-        "login-no-credential": "the page approved the code and named no credential",
-      };
-      for (const one of ran) {
-        expect(rowOf(one, "device-login"), `${one.name}: ${one.run.stdout}`).toMatchObject({
-          got: wants[one.name] ?? "",
-          verdict: "FAIL",
-        });
-        expect(verdictLine(one.run), one.name).toStartWith("FAIL: device-login");
-        expect(one.run.code, one.name).toBe(1);
+      // A broker that takes the connection and never answers a byte: the device authorization
+      // waits out the broker client's own 15 s, which openid-client names OAUTH_TIMEOUT and the
+      // broker client keeps as the code ETIMEDOUT.
+      const silent = Bun.listen({
+        hostname: "127.0.0.1",
+        port: 0,
+        socket: { data: () => undefined },
+      });
+      try {
+        const ran = await runCases(
+          [
+            ["login-no-box", { ...signsIn, machine: "no-box" }],
+            ["login-no-answer", { ...signsIn, machine: "no-answer" }],
+            ["login-never-approved", { ...signsIn, machine: "never-approved" }],
+            // The page reads the credential's line for its 30 s before it says there is none.
+            ["login-no-credential", { ...signsIn, machine: "no-credential" }],
+            ["login-broker-silent", signsIn, `http://127.0.0.1:${silent.port}`],
+          ],
+          "outsideEdgePageWait"
+        );
+        const wants: Record<string, readonly [string, string]> = {
+          "login-no-box": ["the machine-login page shows no code box", "FAIL"],
+          "login-no-answer": ["the page showed neither Approve nor a refusal for the code", "FAIL"],
+          "login-never-approved": ["the page did not say the code was approved", "FAIL"],
+          "login-no-credential": ["the page approved the code and named no credential", "FAIL"],
+          "login-broker-silent": [
+            `ask for a code for this machine's device login at http://127.0.0.1:${silent.port}/v1/oauth/device_authorization: OAUTH_TIMEOUT`,
+            "UNKNOWN",
+          ],
+        };
+        for (const one of ran) {
+          const [got, verdict] = wants[one.name] ?? ["", ""];
+          expect(rowOf(one, "device-login"), `${one.name}: ${one.run.stdout}`).toMatchObject({
+            got,
+            verdict,
+          });
+          expect(verdictLine(one.run), one.name).toStartWith(`${verdict}: device-login`);
+          expect(one.run.code, one.name).toBe(verdict === "FAIL" ? 1 : 2);
+        }
+      } finally {
+        silent.stop(true);
       }
     },
     rowLimit({
@@ -1045,34 +1084,188 @@ describe("the controls, against an outside origin stand-in", () => {
         "outsideEdgePageWait",
         "outsideEdgePageWait",
         "outsideEdgePageWait",
+        "outsideEdgePageWait",
       ],
     })
   );
 
   browserRow(
-    "the relay step after a device login that passed: a listener nothing answers is UNKNOWN, never FAIL",
+    "the relay step after a device login that passed: a listener nothing answers, a trade the broker never answers and an open still waiting at the bound are UNKNOWN, never FAIL",
     async () => {
-      // The stand-in signs in, lists OWN, passes the device login and trades the session's token;
-      // the listener is a port nothing takes, so the relay socket never opens and its row waits out
-      // the driver's 30 s for it. The relay client keeps the refused connection's code
-      // (`RelayNotOpenedError`), which is what the row reads. A trade that failed would name its
-      // token instead ("its token could not be had"), so the text below also says the trade passed.
-      const [one] = await runCases(
-        [["relay-unanswered", { enroll: "signs-in" }]],
-        "outsideEdgePageWait"
-      );
-      if (one === undefined) throw new Error("no relay case ran");
-      for (const row of ["sign-in", "projects", "device-login"]) {
-        expect(rowOf(one, row).verdict, `${row}: ${one.run.stdout}`).toBe("PASS");
+      // The stand-in signs in, lists OWN and passes the device login. Each case's relay socket
+      // then waits out the driver's 30 s: at a port nothing takes, after a token the stand-in
+      // traded at once; at a stand-in whose trade for the session's token is never answered; and
+      // at a listener that takes the connection and never answers, after a trade answered 12 s
+      // late, so that at 30 s the upgrade still waits on its own 20 s and no open has failed. The
+      // relay client keeps a code for each (`RelayNotOpenedError`): the refused connection's, the
+      // trade's ETIMEDOUT, and ETIMEDOUT for the open still waiting, which is what the row reads.
+      const silent = Bun.listen({
+        hostname: "127.0.0.1",
+        port: 0,
+        socket: { data: () => undefined },
+      });
+      try {
+        const signsIn = { enroll: "signs-in" } as const;
+        const ran = await runCases(
+          [
+            ["relay-unanswered", signsIn],
+            ["relay-trade-silent", { ...signsIn, exchange: "silent" }],
+            [
+              "relay-open-waits",
+              { ...signsIn, exchange: 12_000 },
+              undefined,
+              `http://127.0.0.1:${silent.port}`,
+            ],
+          ],
+          "outsideEdgePageWait"
+        );
+        const socket =
+          "the relay socket did not open: the listener's relay socket for outside-e2e-[0-9a-f]{12} did not open";
+        const wants: Record<string, RegExp> = {
+          // A trade that failed would name its token instead ("its token could not be had"), so
+          // this text also says the trade passed.
+          "relay-unanswered": new RegExp(
+            `^${socket}: the socket closed before it opened \\(1006: Failed to connect\\)$`
+          ),
+          // The relay asks for the token again 1 s after its 20 s wait ended; by the bound the
+          // token client either still waits on the trade or has ended it at its own 30 s.
+          "relay-trade-silent": new RegExp(
+            `^${socket}: its token could not be had \\(the secrets broker (has not yet answered|did not answer) the trade of `
+          ),
+          "relay-open-waits": new RegExp(
+            `^${socket}: its open was still waiting for its token or its upgrade's answer when the bound ended$`
+          ),
+        };
+        for (const one of ran) {
+          for (const row of ["sign-in", "projects", "device-login"]) {
+            expect(rowOf(one, row).verdict, `${one.name} ${row}: ${one.run.stdout}`).toBe("PASS");
+          }
+          expect(rowOf(one, "relay").got, one.name).toMatch(wants[one.name] ?? /^$/);
+          expect(rowOf(one, "relay").verdict, `${one.name}: ${one.run.stdout}`).toBe("UNKNOWN");
+          expect(verdictLine(one.run), one.name).toStartWith("UNKNOWN: relay");
+          expect(one.run.code, one.name).toBe(2);
+        }
+      } finally {
+        silent.stop(true);
       }
-      expect(rowOf(one, "relay").got).toMatch(
-        /^the relay socket did not open: the listener's relay socket for outside-e2e-[0-9a-f]{12} did not open: the socket closed before it opened \(1006: Failed to connect\)$/
-      );
-      expect(rowOf(one, "relay").verdict, one.run.stdout).toBe("UNKNOWN");
-      expect(verdictLine(one.run)).toStartWith("UNKNOWN: relay");
-      expect(one.run.code).toBe(2);
     },
-    rowLimit("outsideEdgePageWait")
+    rowLimit({ atOnce: ["outsideEdgePageWait", "outsideEdgePageWait", "outsideEdgePageWait"] })
+  );
+
+  browserRow(
+    "an error of the driver's own in step 2 or 3, a login or a session it cannot keep in OUTSIDE_EDGE_STATE, is UNKNOWN, exit 2, never FAIL",
+    async () => {
+      // Step 2: the state directory holds a directory where the device login is kept, so the
+      // broker client's save of the login the page approved fails after the broker answered.
+      const loginUnkept = "own-login-unkept";
+      mkdirSync(join(scratch, loginUnkept, "device-login.json"), { recursive: true, mode: 0o700 });
+      // Step 3: a broker and listener (the relay socket stand-in) that pass the device login and
+      // take the session, whose registration is answered only once the row has made `session` a
+      // directory, so the driver's write of the session the listener took fails.
+      let page = "";
+      let registered: string | undefined;
+      const answer = Promise.withResolvers<void>();
+      const unregisters: string[] = [];
+      const issued = new Set<string>();
+      const edge = startRelaySocketStandIn({
+        routes: async (request, standIn) => {
+          const { pathname } = new URL(request.url);
+          if (request.method === "POST" && pathname === "/v1/oauth/device_authorization") {
+            return Response.json({
+              device_code: `own-device-${randomBytes(8).toString("hex")}`,
+              user_code: "OWNS-CODE",
+              verification_uri: `${page}/credentials/machine`,
+              expires_in: 600,
+              interval: 1,
+            });
+          }
+          if (request.method === "POST" && pathname === "/v1/oauth/token") {
+            const form = new URLSearchParams(await request.text());
+            if (form.get("grant_type") !== "urn:ietf:params:oauth:grant-type:device_code") {
+              // The exchange: the stand-in's own trade mints the session's token, for a subject
+              // token the device grant issued.
+              return tradeRefusal(form, issued);
+            }
+            const accessToken = `own-login-${randomBytes(16).toString("hex")}`;
+            issued.add(accessToken);
+            return Response.json({
+              access_token: accessToken,
+              token_type: "DPoP",
+              expires_in: 900,
+              refresh_token: `own-refresh-${randomBytes(16).toString("hex")}`,
+              scope: "machine",
+              credential_id: standInCredential,
+              credential_expires_at: new Date(Date.now() + 86_400_000)
+                .toISOString()
+                .replace(/\.\d{3}Z$/, "Z"),
+            });
+          }
+          if (request.method === "POST" && pathname === "/v1/interests/subscribe") {
+            const body: unknown = await request.json();
+            const field = (name: string) =>
+              typeof body === "object" && body !== null ? Reflect.get(body, name) : undefined;
+            const session = String(field("session_id"));
+            const refusal =
+              (await sessionRefusal(request, standIn, session)) ??
+              topicRefusal(session, field("topics"));
+            if (refusal !== undefined) return refusal;
+            registered = session;
+            await answer.promise;
+            return Response.json({
+              session_id: session,
+              machine_id: "outside-edge-own-stand-in",
+              dir: "/outside-edge-e2e",
+              topics: [legacyAgentSubject(session)],
+              delivery: consumerDelivery(session),
+            });
+          }
+          const ended = /^\/v1\/sessions\/([^/]+)$/.exec(pathname);
+          if (request.method === "DELETE" && ended !== null) {
+            unregisters.push(decodeURIComponent(ended[1] ?? ""));
+            return Response.json({ deleted: true });
+          }
+          return undefined;
+        },
+      });
+      const signsIn = { enroll: "signs-in" } as const;
+      const login = startRun(loginUnkept, signsIn, "outsideEdgeBrowser");
+      const session = startRun("own-session-unkept", signsIn, "short", edge.url, edge.url);
+      page = session.origin.page;
+      try {
+        await eventually("the registration at the listener", () => registered !== undefined);
+        const took = registered ?? "";
+        mkdirSync(join(session.state, "session", "kept-elsewhere"), { recursive: true });
+        answer.resolve();
+        const [loginRun, sessionRun] = await Promise.all([login.ran, session.ran]);
+        const loginRows = rowsOf(loginRun);
+        expect(loginRows.get("device-login")?.verdict, loginRun.stdout).toBe("UNKNOWN");
+        expect(loginRows.get("device-login")?.got).toStartWith(
+          `approved on the page as credential ${standInCredential}, and the poll answered, but the driver could not keep the login, an error of its own: `
+        );
+        expect(loginRows.get("relay")).toMatchObject({
+          got: "not run: the device login did not pass",
+          verdict: "UNKNOWN",
+        });
+        expect(verdictLine(loginRun)).toStartWith("UNKNOWN: device-login");
+        expect(loginRun.code).toBe(2);
+        const sessionRows = rowsOf(sessionRun);
+        expect(sessionRows.get("device-login")?.verdict, sessionRun.stdout).toBe("PASS");
+        expect(sessionRows.get("relay")).toMatchObject({
+          got: `the listener took ${took}, and the driver could not keep it, an error of its own: open EISDIR on OUTSIDE_EDGE_STATE's session`,
+          verdict: "UNKNOWN",
+        });
+        expect(verdictLine(sessionRun)).toStartWith("UNKNOWN: relay");
+        expect(sessionRun.code).toBe(2);
+        // The session the listener took is ended, as at every end of the step.
+        expect(unregisters).toEqual([took]);
+      } finally {
+        answer.resolve();
+        login.origin.stop();
+        session.origin.stop();
+        edge.stop();
+      }
+    },
+    rowLimit({ atOnce: ["outsideEdgeBrowser", "short"] })
   );
 
   browserRow(

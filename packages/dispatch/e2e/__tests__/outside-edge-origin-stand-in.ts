@@ -22,7 +22,8 @@
  *    broker's device login on this origin (`broker`), approved once the machine-login page
  *    approved its code; the token exchange of `POST /v1/oauth/token` mints a session's token for a
  *    subject token one of those logins carried, and refuses any other (`tradeRefusal`), so a run
- *    whose device login passed opens its relay socket at the listener it names.
+ *    whose device login passed opens its relay socket at the listener it names. With `exchange`,
+ *    the exchange is never answered (`silent`), or answered only after that many milliseconds.
  *  - `GET /credentials/machine` is the machine-login page `machine` names (`MachinePage`): by
  *    default one that looks a typed code up, approves it and names its credential; or one that
  *    misses one part of that.
@@ -93,6 +94,9 @@ export interface OriginBehaviour {
   readonly broker?: DeviceBroker;
   /** The machine-login page; `approves` where unset. */
   readonly machine?: MachinePage;
+  /** The token exchange: `silent`, never answered; a number, answered after that many
+   *  milliseconds; answered at once where unset. */
+  readonly exchange?: "silent" | number;
 }
 
 export interface OriginStandIn {
@@ -352,6 +356,8 @@ export function startOriginStandIn(behaviour: OriginBehaviour = {}): OriginStand
       if (request.method === "POST" && pathname === "/v1/oauth/token") {
         const form = new URLSearchParams(await request.text());
         if (form.get("grant_type") === TOKEN_EXCHANGE) {
+          if (behaviour.exchange === "silent") return never();
+          if (behaviour.exchange !== undefined) await Bun.sleep(behaviour.exchange);
           return (
             tradeRefusal(form, issued) ??
             Response.json({

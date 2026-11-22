@@ -997,20 +997,26 @@ step before it failed is `UNKNOWN`, never run on nothing:
 2. The broker client (`@legion/cipher-client/device-login`) asks the broker for a device login of
    this machine, and the browser approves its code on the outside origin's machine-login page,
    with `OUTSIDE_TAILNET_USER_CODE` beside it when set (`APPROVED <code>`). A broker nothing
-   answers, at the start or in every poll until the 5-minute deadline, is `UNKNOWN`; a refusal,
-   an expired code or a denial the broker answered is `FAIL`.
+   answers, at the start or in every poll until the 5-minute deadline, is `UNKNOWN`, read by the
+   code the broker client keeps of a request that got no answer (a refused connection, a name that
+   did not resolve, its 15 s passed); a refusal, an expired code or a denial the broker answered
+   is `FAIL`; and a login the page approved that the driver could not keep in
+   `OUTSIDE_EDGE_STATE` is `UNKNOWN`, an error of its own.
 3. The device login's broker credential opens the session's relay socket at the listener
    (`@legion/envoy-client/listener-relay`), the session registers
    (`@legion/envoy-client/relay-registration`), naming the machine `outside-edge-e2e` and never
    this one, and is kept in `OUTSIDE_EDGE_STATE`'s `session` once the listener took it, sends
    `outside-e2e ping <nonce> at <ms>` to the peer, and the peer's `outside-e2e pong <nonce> …`
    must come back on the socket within `OUTSIDE_EDGE_REPLY_SECONDS` (30), else the row names the
-   peer. The session's unregister is printed with its answer. A listener nothing answers, a socket
-   that did not open within 30 s or a call that got no answer (refused, unresolved or unanswered
-   in time, by the code the relay client's `RelayNotOpenedError` and the Envoy client keep of the
-   failure), is `UNKNOWN`; an answer short of the pong, a refused upgrade or registration among
-   them, is `FAIL`, and so is a socket the listener opened and then dropped before the session's
-   flush was answered: the listener answered that socket, so the step proved something.
+   peer. The session's unregister is printed with its answer. A listener nothing answers, a trade
+   for the session's token the broker did not answer, a socket that did not open within 30 s, its
+   open still waiting then, or a call that got no answer (refused, unresolved or unanswered in
+   time, by the code the relay client's `RelayNotOpenedError`, the broker client and the Envoy
+   client keep of the failure), is `UNKNOWN`, and so is a session the listener took that the driver
+   could not keep, an error of its own; an answer short of the pong, a refused upgrade, trade or
+   registration among them, is `FAIL`, and so is a socket the listener opened and then dropped
+   before the session's flush was answered: the listener answered that socket, so the step proved
+   something.
 4. Every request of the run, the browser's and the process's, is judged against the rate rules
    of `OUTSIDE_EDGE_LIMITS`, `priority host match path count seconds` lines
    (`e2e/acceptance/outside-edge-limits.ts` says how a request finds its rule): a row per
@@ -1050,7 +1056,9 @@ socket (4401, its token lapsed, which an edge relay token does within 300 s; 101
 stops) it registers the session again on the socket the relay client opens. At its end it closes
 the socket, unregisters the session, writes `released` and prints `RELEASED <session>`;
 `released` says `unregistered`, exit 0, only where the session stayed registered to the end and
-the listener answered the unregister, and a failed unregister is exit 2. A registration or a relay
+the listener answered the unregister, and a failed unregister is exit 2. Each registration goes
+out through a client whose requests stop with the hold, so one on the wire at the end gets no
+second attempt after it. A registration or a relay
 subject the listener refused is `UNKNOWN` with no `held`, as is a flush before it that got no
 answer within 10 s, which sends none. While held, any other close, a socket not open again within
 30 s of a routine close, and a renewal or registration the listener refused each end the hold
@@ -1076,10 +1084,13 @@ another code), `revoke` against a revoke that ends nothing and a list that gives
 or after the revoke, the run against a link whose page does not load or names the link, step 1
 against each way a sign-in falls short after its page loaded (no Create button, no sign-in, a
 refusal, no passkey, another origin, no cookie, no person, no answer), step 2 against each way a
-device login falls short (no broker, a refusal, another origin's page, no code box, a box that
-takes no typing, no answer, a refused code or approval, no credential, a denied poll), `approve`
+device login falls short (no broker, a broker that takes the connection and never answers, a
+broker name that does not resolve, a refusal, another origin's page, no code box, a box that takes
+no typing, no answer, a refused code or approval, no credential, a denied poll), `approve`
 against a page it cannot drive, step 3 after a device login that passed against a listener
-nothing answers (`UNKNOWN`), Chromium's environment, which holds none of the driver's
+nothing answers, a trade the broker never answers and an upgrade still unanswered at the 30 s
+(`UNKNOWN`), steps 2 and 3 against a login and a session the driver cannot keep (`UNKNOWN`, exit
+2), Chromium's environment, which holds none of the driver's
 inputs, and the request counter against the relay client's socket. Those that start Chromium
 skip where Playwright's Chromium is not installed. A row reads the fake broker's revoke of a
 machine login. The rows of `outside-edge-hold.test.ts` run `hold` and `release` against
@@ -1090,11 +1101,14 @@ renewal time out of range; a refused registration or relay subject; a held socke
 failed unregister; nothing to release; files an earlier hold left; a state the hold cannot write,
 before it registers and once the listener took the session; a holder that ignores
 SIGTERM; a held pid whose process started at another time, which is not signalled; a flush the
-listener never answers; a SIGTERM while the socket opens, while the flush waits and while the
+listener never answers; a SIGTERM while the socket opens, which ends the hold well inside the
+open's 30 s, while the flush waits and while the
 listener answers the registration; a release before `held`; tokens that last 3 s, closed 4401 at
 each lapse, and the listener's stop (1012), registered again on each new socket; a registration
-that lapses after 5 s unrenewed, held past it; a refused renewal; and a SIGTERM while a closed
-socket opens again, which sends no registration after it. They skip where there is no `/proc`,
+that lapses after 5 s unrenewed, held past it; a refused renewal; a SIGTERM while a closed
+socket opens again, which sends no registration after it; and a SIGTERM while a renewal the
+listener does not answer is on the wire, which sends no second attempt of it. They skip where
+there is no `/proc`,
 and the rows that wait out real time skip under `DISPATCH_UNIT_REPEAT`, which
 `bun run test:repeat` sets. The stack rows start one stack of the harness under
 `DISPATCH_E2E_SIGNIN=google` (`e2e/__tests__/outside-edge-stack.ts`), with an edge stand-in that

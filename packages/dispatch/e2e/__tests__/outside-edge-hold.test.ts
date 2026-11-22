@@ -17,10 +17,12 @@
  *  at each lapse, and one whose registrations lapse after 5 s unrenewed, as the real listener's
  *  last at most 300 s and 5 minutes: two token lapses and the listener's own stop (1012), each
  *  registered again on the new socket, and a hold renewed past the lapse; a renewal the listener
- *  refuses ends it, and a SIGTERM while a closed socket opens again sends no registration after
- *  it. So is each way a hold ends before it holds anything: a flush the listener never answers,
- *  which fails at its bound; a SIGTERM while the socket opens, while the flush waits, and while
- *  the listener answers the registration, after which no registration stands; a `release` that
+ *  refuses ends it, a SIGTERM while a closed socket opens again sends no registration after it,
+ *  and a SIGTERM while a renewal the listener does not answer is on the wire sends no second
+ *  attempt of it. So is each way a hold ends before it holds anything: a flush the listener never
+ *  answers, which fails at its bound; a SIGTERM while the socket opens, which ends the hold well
+ *  inside the open's 30 s, while the flush waits, and while the listener answers the
+ *  registration, after which no registration stands; a `release` that
  *  comes before `held`; and files an earlier hold left, which a refused hold must not leave for
  *  `release` to read. So is an OUTSIDE_EDGE_STATE the hold cannot write, before it registers and
  *  once the listener took the session, which is UNKNOWN, exit 2, and leaves no session
@@ -30,7 +32,8 @@
  *  none.
  *
  *  The rows that wait out a span of real time - the 60 s hold, the 15 s release, the 10 s flush,
- *  and the rows on short tokens and a short lapse, each some seconds - skip under
+ *  a renewal's 5 s attempt, and the rows on short tokens and a short lapse, each some seconds -
+ *  skip under
  *  DISPATCH_UNIT_REPEAT, which `bun run test:repeat` (`e2e/tools/unit-repeat.ts`) sets: its
  *  harness lane runs this directory 20 times under a 30-minute step, and these rows would spend
  *  minutes of it each run waiting, finding no fault a single run does not. Each `hold` is a
@@ -104,13 +107,15 @@ interface HoldEdge {
  *  (`outside-edge-credentials.ts`), and the exchange only a subject token the device grant
  *  issued. `registration` and `unregister` are the statuses those two answer, 200 where unset;
  *  with `refuseAfter`, every registration after that many is refused 403; with `answerAfter`,
- *  the registration is answered only once that settles. */
+ *  the registration is answered only once that settles; with `stallAfter`, every registration
+ *  after that many is never answered at all, so its attempt runs out its deadline. */
 function startHoldEdge(
   answers: {
     registration?: number;
     refuseAfter?: number;
     unregister?: number;
     answerAfter?: Promise<unknown>;
+    stallAfter?: number;
   } = {}
 ): HoldEdge {
   const registrations: string[] = [];
@@ -169,6 +174,9 @@ function startHoldEdge(
           (await refused("a registration", topicRefusal(session, field("topics"))));
         if (refusal !== undefined) return refusal;
         registrations.push(session);
+        if (answers.stallAfter !== undefined && registrations.length > answers.stallAfter) {
+          return await new Promise<Response>(() => undefined);
+        }
         await answers.answerAfter;
         const status =
           answers.refuseAfter !== undefined && registrations.length > answers.refuseAfter
@@ -979,8 +987,18 @@ describe.skipIf(!existsSync("/proc/self/stat"))(
             "the relay socket's upgrade at the listener",
             () => mute.requests.length > 0
           );
+          const terminatedAt = performance.now();
           process.kill(holding.pid, "SIGTERM");
           const code = await holding.ended();
+          // The SIGTERM cuts the open short. A hold that waited out the open's own 30 s after it
+          // prints the same line, so the row holds its end well inside that bound: 10 s, a third of
+          // it, and not less, since the hold's exit took 1 s unloaded and a box at a load average
+          // of 700 or more stretches a process's exit by seconds.
+          const took = Math.round(performance.now() - terminatedAt);
+          expect(
+            took,
+            `the hold ended ${took} ms after its SIGTERM, not inside 10000 ms`
+          ).toBeLessThan(10_000);
           expect(holding.stdout(), holding.stderr()).toBe(
             `UNKNOWN: no session held: SIGTERM came before ${session} was registered, and no registration was sent\n`
           );
@@ -1252,6 +1270,36 @@ describe.skipIf(!existsSync("/proc/self/stat"))(
         }
       },
       rowLimit("short", "short", "outsideEdgeHold")
+    );
+
+    realTimeRow(
+      "a renewal on the wire at a SIGTERM is not sent again after it, and the hold ends RELEASED",
+      async () => {
+        // The first registration is taken, and every one after it is never answered: the renewal
+        // that comes 1 s later waits out its attempt's 5 s, after which the Envoy client sends a
+        // second attempt of a call that got no answer, unless the hold has ended by then.
+        const edge = startHoldEdge({ stallAfter: 1 });
+        const { state, session } = await keptState(edge);
+        const holding = driveHold(edge.relay.url, edge.relay.url, state, {
+          OUTSIDE_EDGE_RENEW_SECONDS: "1",
+        });
+        try {
+          await eventually("the renewal at the listener", () => edge.registrations.length >= 2);
+          const asked = edge.registrations.length;
+          process.kill(holding.pid, "SIGTERM");
+          const code = await holding.ended();
+          expect(holding.stdout(), holding.stderr()).toBe(`HELD ${session}\nRELEASED ${session}\n`);
+          expect(code).toBe(0);
+          // No attempt of the renewal, nor any registration, reached the listener after it.
+          expect(edge.registrations, holding.stderr()).toHaveLength(asked);
+          expect(edge.unregisters).toEqual([session]);
+        } finally {
+          holding.kill();
+          edge.relay.stop();
+          rmSync(state, { force: true, recursive: true });
+        }
+      },
+      rowLimit("short", "outsideEdgeHold")
     );
   }
 );

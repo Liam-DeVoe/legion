@@ -27,10 +27,11 @@
 // gave it never writes with no identity, nor with one that has been ended.
 
 import { holdSecret, holdUrlUserinfo, scrub } from "@legion/contracts/held-secrets";
-import { errorClass, isHttpUrl, urlForText } from "@legion/contracts/log-text";
+import { errorClass, failureCode, isHttpUrl, urlForText } from "@legion/contracts/log-text";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import {
   allowInsecureRequests,
+  ClientError,
   Configuration,
   type CustomFetchOptions,
   customFetch,
@@ -150,12 +151,23 @@ export function sleep(ms: number, signal?: AbortSignal, holdsProcess = false): P
  * says what it was (`#failure`): `pending`, a pod session the broker holds no registration for
  * yet; `busy`, the broker's 429, a DPoP refusal or a person Dispatch holds (`membership_held`,
  * which the person's next Dispatch sign-in ends); `unanswered`, no answer within the attempt's
- * time, no connection, a 5xx, or an answer that is not this grant's; `unsent`, a trade that
- * failed before it reached the broker, its identity's source unreadable this once.
+ * time, no connection, a 5xx, or an answer that is not this grant's, with `code` where the broker
+ * gave no answer at all (ETIMEDOUT for the attempt's time, else `BrokerTradeFailedError.code`),
+ * which `TradeRetryingError` carries on; `unsent`, a trade that failed before it reached the
+ * broker, its identity's source unreadable this once.
  */
 type Retried =
   | { readonly kind: "pending"; readonly said: string; readonly refusal: BrokerRefusedError }
-  | { readonly kind: "busy" | "unanswered" | "unsent"; readonly said: string };
+  | { readonly kind: "unanswered"; readonly said: string; readonly code: string | undefined }
+  | { readonly kind: "busy" | "unsent"; readonly said: string };
+
+/** The error a caller is told for `failure`, a failed trade the loop trades again on. */
+function retrying(failure: Exclude<Retried, { readonly kind: "pending" }>): TradeRetryingError {
+  return new TradeRetryingError(
+    failure.said,
+    failure.kind === "unanswered" ? failure.code : undefined
+  );
+}
 
 /** One caller waiting on a client's retry loop: how to tell it the loop's answer, and whether it
  *  waits through the loop's retries or is told the first failure ({@link TokenCallOptions}). */
@@ -263,6 +275,23 @@ export function statusOf(error: unknown): number {
   return 0;
 }
 
+/** The code openid-client gives a request its own deadline ended (its `timeout`, the runtime's
+ *  `TimeoutError` under it). */
+const OAUTH_TIMEOUT = "OAUTH_TIMEOUT";
+
+/**
+ * The code of `error`, a request to the broker that got no HTTP answer, where it got none at all:
+ * the runtime's code for a request that reached no broker (`failureCode`: ECONNREFUSED,
+ * ENOTFOUND, ECONNRESET, …), and ETIMEDOUT for one its deadline ended, which openid-client names
+ * OAUTH_TIMEOUT. Undefined for any other error of openid-client's own (`ClientError`), each of
+ * which it makes of an answer it read and refused (`OAUTH_PARSE_ERROR`, `OAUTH_INVALID_RESPONSE`,
+ * …).
+ */
+function unansweredCode(error: unknown): string | undefined {
+  if (error instanceof ClientError) return error.code === OAUTH_TIMEOUT ? "ETIMEDOUT" : undefined;
+  return failureCode(error);
+}
+
 /**
  * What a failed request to the broker's `endpoint` is, the one way every client of this package
  * words it: a trade, and a device login's code request, poll and refresh. An OAuth error the
@@ -272,7 +301,9 @@ export function statusOf(error: unknown): number {
  * grant's) is a failure of `doing` it (`BrokerTradeFailedError`), named by the status where there
  * is one and by the error's class, never by its message, which can repeat the URL it was handed,
  * and with no `cause`: an answer the library refused hangs off its error (oauth4webapi's `cause`
- * is the body it read), and that answer can hold a minted token, which no log may carry.
+ * is the body it read), and that answer can hold a minted token, which no log may carry. Where
+ * the broker gave no answer at all, the failure carries its code (`unansweredCode`), so a caller
+ * tells a broker that answered nothing from one that answered without reading the text.
  * `context` is what the request sent that a known refusal may name.
  */
 export function brokerRefusal(
@@ -297,7 +328,8 @@ export function brokerRefusal(
   const status = statusOf(error);
   const said = status === 0 ? errorClass(error) : `HTTP ${status}: ${errorClass(error)}`;
   return new BrokerTradeFailedError(
-    `${doing} ${refused} at ${urlForText(endpoint, BROKER_URL_SETTING)}: ${said}`
+    `${doing} ${refused} at ${urlForText(endpoint, BROKER_URL_SETTING)}: ${said}`,
+    status === 0 ? unansweredCode(error) : undefined
   );
 }
 
@@ -491,7 +523,7 @@ export class BrokerTokenClient {
     const last = this.#last;
     // Only while a loop is trading again: a last failure no loop is retrying is no retry under way.
     if (!waitForReady && this.#loop !== null && last !== null && last.kind !== "pending") {
-      throw new TradeRetryingError(last.said);
+      throw retrying(last);
     }
     if (this.#loop === null) {
       if (this.#refused !== null && now < this.#nextAt) throw this.#refused;
@@ -517,7 +549,7 @@ export class BrokerTokenClient {
       return this.#loop === null ? reason : new TradeUnansweredError(this.describe());
     return last.kind === "pending"
       ? new RegistrationPendingError(this.#session, last.refusal)
-      : new TradeRetryingError(last.said);
+      : retrying(last);
   }
 
   /**
@@ -714,7 +746,7 @@ export class BrokerTokenClient {
       // A fail-fast caller is told this failure now; a wait-for-ready caller waits on. Each kind
       // waits out a pending registration within its own signal.
       if (failure.kind !== "pending") {
-        const told = new TradeRetryingError(failure.said);
+        const told = retrying(failure);
         this.#tell(
           (waiter) => waiter.reject(told),
           (waiter) => !waiter.waitForReady
@@ -766,9 +798,12 @@ export class BrokerTokenClient {
       return {
         kind: "unanswered",
         said: `the secrets broker did not answer the trade of ${this.describe()} within ${this.#attemptMs / 1000} s`,
+        code: "ETIMEDOUT",
       };
     }
-    if (error instanceof BrokerTradeFailedError) return { kind: "unanswered", said: error.message };
+    if (error instanceof BrokerTradeFailedError) {
+      return { kind: "unanswered", said: error.message, code: error.code };
+    }
     return {
       kind: "unsent",
       said: `the trade of ${this.describe()} could not be made: ${scrub(messageOf(error))}`,

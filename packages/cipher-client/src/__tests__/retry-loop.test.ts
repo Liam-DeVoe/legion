@@ -345,6 +345,8 @@ const ROWS: [string, Row][] = [
         expect((unanswered as Error).message).toBe(
           "the secrets broker has not yet answered the trade of a pod's projected service-account token, and the trade goes on in the background"
         );
+        // Its code says the broker gave no answer, as a request past its deadline's does.
+        expect(unanswered).toMatchObject({ code: "ETIMEDOUT" });
         // A fail-fast caller with no deadline of its own is told when the trade's time runs out:
         // a trade that never returns ends, and so does the wait on it.
         const fast = client.token().catch((error: unknown) => error);
@@ -355,10 +357,12 @@ const ROWS: [string, Row][] = [
         const told = await settledWith(fast, "the fail-fast caller told");
         expect(told).toBeInstanceOf(TradeRetryingError);
         expect((told as Error).message).toContain("did not answer");
+        expect(told).toMatchObject({ code: "ETIMEDOUT" });
         late.abort();
         const named = await settledWith(waiting, "the waiting caller told at its deadline");
         expect(named).toBeInstanceOf(TradeRetryingError);
         expect((named as Error).message).toContain("did not answer");
+        expect(named).toMatchObject({ code: "ETIMEDOUT" });
         client.close();
       },
     },

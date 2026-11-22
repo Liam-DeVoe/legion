@@ -10,11 +10,11 @@ import {
   MINTED_DEDUPE_KEY_PATTERN,
 } from "@legion/contracts";
 import { holdUrlUserinfo } from "@legion/contracts/held-secrets";
-import { errorClass, requestForText } from "@legion/contracts/log-text";
+import { errorClass, failureCode, requestForText } from "@legion/contracts/log-text";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import { z } from "zod";
 import { credentialDeadline, type RequestCredential } from "./bearer";
-import { failureCode, messageFor, reachedNothing } from "./errors";
+import { messageFor, reachedNothing } from "./errors";
 import { bodyForText, redirectOrigin, SentTokens, type Tokens } from "./excerpt";
 import { machineID } from "./machine";
 import { streamDeliversNothing } from "./stream-topics";

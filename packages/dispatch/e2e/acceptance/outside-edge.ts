@@ -14,8 +14,11 @@
  *                 whose page must be on the outside origin; the browser types the code on that
  *                 page and approves it, and the poll must answer a DPoP-bound pair (row
  *                 `device-login`): a broker nothing answers, at the start or at every poll until
- *                 the 5-minute deadline, is UNKNOWN; a refusal, expiry or denial it answered is
- *                 FAIL. With OUTSIDE_TAILNET_USER_CODE set, the same page then
+ *                 the 5-minute deadline, is UNKNOWN, read by the code the broker client keeps of a
+ *                 request that got no answer (refused, a name that did not resolve, its deadline
+ *                 passed); a refusal, expiry or denial it answered is FAIL; and an approved login
+ *                 the driver could not keep in OUTSIDE_EDGE_STATE is UNKNOWN, an error of its
+ *                 own. With OUTSIDE_TAILNET_USER_CODE set, the same page then
  *                 approves that code too, in the same browser session, and prints
  *                 `APPROVED <code>` (row `tailnet-code`), else fails naming the code.
  *    3. relay     the device login is traded for the session's broker credential, the session
@@ -25,12 +28,15 @@
  *                 `outside-e2e ping <nonce> at <Unix ms>` to OUTSIDE_PEER_SESSION; the peer's
  *                 reply, `outside-e2e pong <nonce> at <Unix ms>`, must reach the session on the
  *                 socket within OUTSIDE_EDGE_REPLY_SECONDS (row `relay`), else the row fails
- *                 naming the peer. A listener nothing answers, a socket that did not open within
- *                 30 s or a call that got no answer, refused, unresolved or unanswered in time
- *                 (the code the relay client and the Envoy client keep of the failure), is
- *                 UNKNOWN; an answer short of the pong, a refused upgrade or registration among
- *                 them, is FAIL, and so is a socket the listener opened and then dropped before
- *                 its flush was answered, since the listener did answer it. The peer's
+ *                 naming the peer. A listener nothing answers, a trade for the session's token
+ *                 the broker did not answer, a socket that did not open within 30 s, its open
+ *                 still waiting then, or a call that got no answer, refused, unresolved or
+ *                 unanswered in time (the code the relay client, the broker client and the Envoy
+ *                 client keep of the failure), is UNKNOWN, and so is a session the listener took
+ *                 that the driver could not keep in OUTSIDE_EDGE_STATE, an error of its own; an
+ *                 answer short of the pong, a refused upgrade, trade or registration among them,
+ *                 is FAIL, and so is a socket the listener opened and then dropped before its
+ *                 flush was answered, since the listener did answer it. The peer's
  *                 `outside-e2e hello <nonce> …` that follows is
  *                 answered `outside-e2e reply <nonce> at <Unix ms>`, so the peer does not wait.
  *                 The session's unregister at the end is printed with its answer
@@ -156,12 +162,12 @@ import {
 import { basename, dirname, join, resolve as resolvePath } from "node:path";
 import {
   type DeviceAuthorization,
+  DeviceLoginNotKeptError,
   deviceLoginHost,
   finishDeviceLogin,
   type KeptDeviceLogin,
   startDeviceLogin,
 } from "@legion/cipher-client/device-login";
-import { BrokerTradeFailedError } from "@legion/cipher-client/token-errors";
 import { EnvelopeSchema, legacyAgentSubject, SESSION_LIVE_WINDOW_MS } from "@legion/contracts";
 import { errorClass } from "@legion/contracts/log-text";
 import type { RequestCredential } from "@legion/envoy-client/bearer";
@@ -176,7 +182,14 @@ import { DEFAULT_HEARTBEAT_MS } from "@legion/envoy-client/envoy-settings";
 import { connectListenerRelay, type ListenerRelay } from "@legion/envoy-client/listener-relay";
 import { registerWithRelay } from "@legion/envoy-client/relay-registration";
 import { createEnvoyClient, type EnvoyClient } from "@legion/envoy-client/transport";
-import { type Browser, type BrowserContext, chromium, type Page } from "@playwright/test";
+import {
+  type Browser,
+  type BrowserContext,
+  chromium,
+  type Locator,
+  type Page,
+} from "@playwright/test";
+import { settledState } from "../settled";
 import { addVirtualPasskey } from "../virtual-passkey";
 import { count, counted } from "./outside-edge-count";
 import {
@@ -260,12 +273,13 @@ class Rows {
   }
 }
 
-/** The names the runtime gives a request that reached nobody: no connection, no route, no name, a
- *  reset or a timeout, as an error's `name` or `code` holds them, and as `errorClass`
- *  (`@legion/contracts/log-text`) writes them into a cipher-client error's text. The relay
- *  client's socket that did not open (`RelayNotOpenedError`) and the Envoy client's call that got
- *  no answer carry the runtime's code as their own `code` (`failureCode` of
- *  `@legion/envoy-client/errors`), and ETIMEDOUT for an upgrade or a call that went unanswered. */
+/** The names and codes of a request the far end gave no answer at all: no connection, no route,
+ *  no name, a reset or a deadline, as an error's `name` or `code` holds them. Each client keeps the
+ *  code of such a failure on its own error, which keeps no cause (`failureCode` of
+ *  `@legion/contracts/log-text`): the broker client's request and trade (`BrokerTradeFailedError`,
+ *  `TradeRetryingError`, `TradeUnansweredError`, ETIMEDOUT for one its deadline ended), the relay
+ *  client's socket that did not open (`RelayNotOpenedError`, ETIMEDOUT for an upgrade, a trade or
+ *  an open still unanswered at its bound) and the Envoy client's call that got no answer. */
 const UNREACHED: Readonly<Record<string, true>> = {
   TimeoutError: true,
   ECONNREFUSED: true,
@@ -279,19 +293,14 @@ const UNREACHED: Readonly<Record<string, true>> = {
   FailedToOpenSocket: true,
 };
 
-/** Whether `error`, or an error it was caused by, is a request that reached nobody. Such a step
- *  proved nothing, so it is UNKNOWN; any answer at all is evidence, so every other error is a
- *  FAIL. */
+/** Whether `error`, or an error it was caused by, is a request the far end gave no answer, by the
+ *  name or the code the client kept, never by its text. Such a step proved nothing, so it is
+ *  UNKNOWN; any answer at all is evidence, so every other error is a FAIL. */
 function unreached(error: unknown): boolean {
   for (let at: unknown = error; at instanceof Error; at = at.cause) {
     const code = "code" in at ? at.code : undefined;
     if (Object.hasOwn(UNREACHED, at.name)) return true;
     if (typeof code === "string" && Object.hasOwn(UNREACHED, code)) return true;
-    // The cipher-client's failed request to the broker keeps no cause and no code, since the
-    // library's error can hold an answer that carries a token (`brokerRefusal`), and ends its
-    // text with the failure's class instead (`…: ECONNREFUSED`, `…: TimeoutError`): read there.
-    const said = at instanceof BrokerTradeFailedError ? /: ([A-Za-z]+)$/.exec(at.message) : null;
-    if (said?.[1] !== undefined && Object.hasOwn(UNREACHED, said[1])) return true;
   }
   return false;
 }
@@ -485,6 +494,21 @@ async function approveOnPage(page: Page, origin: string, code: string): Promise<
   }
 }
 
+/** Which of `states` the page settled on within `ms` (`settledState` of `e2e/settled.ts`, which
+ *  reads them again until one shows, the first that does winning), or undefined where none showed
+ *  by then: a page step branches on what the page settled on, never on one instant's answer. */
+async function settledWithin<Name extends string>(
+  what: string,
+  states: readonly (readonly [Name, Locator])[],
+  ms: number
+): Promise<Name | undefined> {
+  try {
+    return await settledState(what, states, ms);
+  } catch {
+    return undefined;
+  }
+}
+
 async function approveSteps(page: Page, origin: string, code: string): Promise<Approval> {
   try {
     await page.goto(`${origin}/credentials/machine`, { timeout: PAGE_MS });
@@ -500,28 +524,39 @@ async function approveSteps(page: Page, origin: string, code: string): Promise<A
   await box.fill(code, { timeout: PAGE_MS });
   await page.getByRole("button", { name: "Look up" }).click({ timeout: PAGE_MS });
   const approve = page.getByRole("button", { name: "Approve" });
-  const alert = page.getByRole("alert");
-  try {
-    await approve.or(alert).first().waitFor({ timeout: PAGE_MS });
-  } catch {
+  const alert = page.getByRole("alert").first();
+  const looked = await settledWithin(
+    "the machine-login page after Look up",
+    [
+      ["approve", approve],
+      ["refused", alert],
+    ],
+    PAGE_MS
+  );
+  if (looked === undefined) {
     return { refused: "the page showed neither Approve nor a refusal for the code", unread: false };
   }
-  if (!(await approve.isVisible())) {
+  if (looked === "refused") {
     return {
-      refused: `the page refused the code: ${(await alert.first().innerText()).trim()}`,
+      refused: `the page refused the code: ${(await alert.innerText()).trim()}`,
       unread: false,
     };
   }
   await approve.click({ timeout: PAGE_MS });
-  const approved = page.getByText(/^Approved\. /);
-  try {
-    await approved.or(alert).first().waitFor({ timeout: PAGE_MS });
-  } catch {
+  const decided = await settledWithin(
+    "the machine-login page after Approve",
+    [
+      ["approved", page.getByText(/^Approved\. /).first()],
+      ["refused", alert],
+    ],
+    PAGE_MS
+  );
+  if (decided === undefined) {
     return { refused: "the page did not say the code was approved", unread: false };
   }
-  if (!(await approved.isVisible())) {
+  if (decided === "refused") {
     return {
-      refused: `the approval was refused: ${(await alert.first().innerText()).trim()}`,
+      refused: `the approval was refused: ${(await alert.innerText()).trim()}`,
       unread: false,
     };
   }
@@ -560,10 +595,16 @@ async function signIn(page: Page, context: BrowserContext, inputs: RunInputs, ro
     return undefined;
   }
   const create = page.getByRole("button", { name: "Create a passkey" });
-  const alert = page.getByRole("alert");
-  try {
-    await create.or(alert).first().waitFor({ timeout: PAGE_MS });
-  } catch {
+  const alert = page.getByRole("alert").first();
+  const enrollment = await settledWithin(
+    "the enrollment page",
+    [
+      ["create", create],
+      ["refused", alert],
+    ],
+    PAGE_MS
+  );
+  if (enrollment === undefined) {
     rows.add({
       row: "sign-in",
       want,
@@ -572,20 +613,25 @@ async function signIn(page: Page, context: BrowserContext, inputs: RunInputs, ro
     });
     return undefined;
   }
-  if (!(await create.isVisible())) {
+  if (enrollment === "refused") {
     rows.add({
       row: "sign-in",
       want,
-      got: `the page refused the link: ${(await alert.first().innerText()).trim()}`,
+      got: `the page refused the link: ${(await alert.innerText()).trim()}`,
       verdict: "FAIL",
     });
     return undefined;
   }
   await create.click({ timeout: PAGE_MS });
-  const signedIn = page.getByText(/^Signed in as /);
-  try {
-    await signedIn.or(alert).first().waitFor({ timeout: PAGE_MS });
-  } catch {
+  const enrolled = await settledWithin(
+    "the enrollment after Create a passkey",
+    [
+      ["signed-in", page.getByText(/^Signed in as /).first()],
+      ["refused", alert],
+    ],
+    PAGE_MS
+  );
+  if (enrolled === undefined) {
     rows.add({
       row: "sign-in",
       want,
@@ -594,11 +640,11 @@ async function signIn(page: Page, context: BrowserContext, inputs: RunInputs, ro
     });
     return undefined;
   }
-  if (!(await signedIn.isVisible())) {
+  if (enrolled === "refused") {
     rows.add({
       row: "sign-in",
       want,
-      got: `the enrollment was refused: ${(await alert.first().innerText()).trim()}`,
+      got: `the enrollment was refused: ${(await alert.innerText()).trim()}`,
       verdict: "FAIL",
     });
     return undefined;
@@ -629,6 +675,8 @@ async function signIn(page: Page, context: BrowserContext, inputs: RunInputs, ro
     return undefined;
   }
   keep(inputs.state, "passkey.json", JSON.stringify(credentials[0]));
+  // One read is the measurement here, not a sample: `pageRead` awaits the request's own answer,
+  // or its absence, for PAGE_MS at most, and the page's drawing decides nothing of it.
   const whoami = await pageRead(page, "/auth/whoami");
   if ("unanswered" in whoami) {
     rows.add({
@@ -670,6 +718,8 @@ async function signIn(page: Page, context: BrowserContext, inputs: RunInputs, ro
     verdict: "PASS",
   });
 
+  // One read is the measurement here, as for whoami above: the answer of the request itself,
+  // awaited for PAGE_MS at most, which no later moment of the page would change.
   const projects = await pageRead(page, "/api/v1/projects");
   const wantProjects = `GET /api/v1/projects lists exactly [${inputs.project}]`;
   const keys =
@@ -766,8 +816,9 @@ async function deviceLogin(
   const late = new Error("the poll got no approval within 5 minutes");
   const deadline = setTimeout(() => stop.abort(late), LOGIN_MS);
   // Whether the broker answered any poll, and how the last poll it did not answer failed: the
-  // poll asks again on every request that reached nobody (`finishDeviceLogin`), so a deadline that
-  // came with no answer at all is a broker nobody reached, UNKNOWN, not a refusal.
+  // poll is sent again after every request that got no answer (`finishDeviceLogin`), so a
+  // deadline that came with no answer at all is a broker the run never reached, UNKNOWN, not a
+  // refusal.
   let brokerAnswered = false;
   let lastUnanswered = "no poll was sent";
   const pollFetch = Object.assign(
@@ -807,6 +858,18 @@ async function deviceLogin(
   try {
     login = await polled;
   } catch (error) {
+    if (error instanceof DeviceLoginNotKeptError) {
+      // The broker answered the approval, and this machine could not keep the login in
+      // OUTSIDE_EDGE_STATE: an error of the driver's own, which judged nothing of the edge. The
+      // save's own words name the file by its setting and the failure by its code.
+      rows.add({
+        row: "device-login",
+        want,
+        got: `approved on the page as credential ${approval.credential}, and the poll answered, but the driver could not keep the login, an error of its own: ${messageOf(error.cause)}`,
+        verdict: "UNKNOWN",
+      });
+      return undefined;
+    }
     const unanswered = error === late && !brokerAnswered;
     rows.add({
       row: "device-login",
@@ -1115,22 +1178,36 @@ async function relay(inputs: RunInputs, rows: Rows): Promise<void> {
     }
     frame.done();
   });
+  // Set while the session the listener took is written to OUTSIDE_EDGE_STATE: a write that fails
+  // is an error of the driver's own, which judged nothing of the edge, so it is UNKNOWN.
+  let keeping = false;
   try {
     await registerOnSocket(session, socket, client, delivery, holdRelaySubject(socket, delivery));
     // The session the listener took, for a later step that acts as this person's session.
+    keeping = true;
     keep(inputs.state, "session", session);
+    keeping = false;
     await client.send({
       sourceSessionID: session,
       targetSessionID: inputs.peer,
       message: `outside-e2e ping ${nonce} at ${Date.now()}`,
     });
   } catch (error) {
-    rows.add({
-      row: "relay",
-      want,
-      got: `the session could not register or send: ${messageOf(error)}`,
-      verdict: unreached(error) ? "UNKNOWN" : "FAIL",
-    });
+    rows.add(
+      keeping
+        ? {
+            row: "relay",
+            want,
+            got: `the listener took ${session}, and the driver could not keep it, an error of its own: ${ownError(error, inputs.state)}`,
+            verdict: "UNKNOWN",
+          }
+        : {
+            row: "relay",
+            want,
+            got: `the session could not register or send: ${messageOf(error)}`,
+            verdict: unreached(error) ? "UNKNOWN" : "FAIL",
+          }
+    );
     await leave(delivery, socket, client, session);
     return;
   }
@@ -1608,57 +1685,71 @@ async function t5(env: NodeJS.ProcessEnv): Promise<number> {
     const button = page.getByRole("button", { name: "Sign in with a passkey" });
     await button.waitFor({ timeout: bound() });
     await button.click();
-    const signedIn = page.getByText(/^Signed in as /);
-    const alert = page.getByRole("alert");
-    await signedIn.or(alert).first().waitFor({ timeout: bound() });
+    const alert = page.getByRole("alert").first();
+    const waited = bound();
+    const shown = await settledWithin(
+      "the sign-in with the restored passkey",
+      [
+        ["signed-in", page.getByText(/^Signed in as /).first()],
+        ["refused", alert],
+      ],
+      waited
+    );
     const at = seconds();
-    const said = (await signedIn.isVisible())
-      ? undefined
-      : (await alert.first().innerText()).trim();
     const answer = (await Promise.all(finishes)).at(-1);
     const answered =
       answer === undefined
         ? ""
         : `POST ${PASSKEY_FINISH} answered ${answer.status} ${typeof answer.code === "string" ? answer.code : "with no code"}`;
-    if (said === undefined) {
+    if (shown === undefined) {
+      rows.add({
+        row: "T5-passkey",
+        want: wantPasskey,
+        got: `the sign-in showed neither a sign-in nor a refusal within ${Math.round(waited / 1000)} s`,
+        verdict: "UNKNOWN",
+      });
+    } else if (shown === "signed-in") {
       rows.add({
         row: "T5-passkey",
         want: wantPasskey,
         got: `the passkey signed the person in again at=${at}, after the cookie's 401`,
         verdict: "FAIL",
       });
-    } else if (answer === undefined) {
-      rows.add({
-        row: "T5-passkey",
-        want: wantPasskey,
-        got: `no answer to POST ${PASSKEY_FINISH} at=${at}, so no refusal of the passkey was read; the page said: ${said}`,
-        verdict: "UNKNOWN",
-      });
-    } else if (answer.status >= 200 && answer.status < 300) {
-      rows.add({
-        row: "T5-passkey",
-        want: wantPasskey,
-        got: `${answered} at=${at}, a sign-in after the cookie's 401; the page said: ${said}`,
-        verdict: "FAIL",
-      });
-    } else if (
-      typeof answer.code === "string" &&
-      Object.hasOwn(PASSKEY_REFUSED, answer.code) &&
-      PASSKEY_REFUSED[answer.code] === answer.status
-    ) {
-      rows.add({
-        row: "T5-passkey",
-        want: wantPasskey,
-        got: `refused at=${at}: ${answered}; the page said: ${said}`,
-        verdict: "PASS",
-      });
     } else {
-      rows.add({
-        row: "T5-passkey",
-        want: wantPasskey,
-        got: `${answered} at=${at}, which is no refusal of the passkey itself; the page said: ${said}`,
-        verdict: "UNKNOWN",
-      });
+      const said = (await alert.innerText()).trim();
+      if (answer === undefined) {
+        rows.add({
+          row: "T5-passkey",
+          want: wantPasskey,
+          got: `no answer to POST ${PASSKEY_FINISH} at=${at}, so no refusal of the passkey was read; the page said: ${said}`,
+          verdict: "UNKNOWN",
+        });
+      } else if (answer.status >= 200 && answer.status < 300) {
+        rows.add({
+          row: "T5-passkey",
+          want: wantPasskey,
+          got: `${answered} at=${at}, a sign-in after the cookie's 401; the page said: ${said}`,
+          verdict: "FAIL",
+        });
+      } else if (
+        typeof answer.code === "string" &&
+        Object.hasOwn(PASSKEY_REFUSED, answer.code) &&
+        PASSKEY_REFUSED[answer.code] === answer.status
+      ) {
+        rows.add({
+          row: "T5-passkey",
+          want: wantPasskey,
+          got: `refused at=${at}: ${answered}; the page said: ${said}`,
+          verdict: "PASS",
+        });
+      } else {
+        rows.add({
+          row: "T5-passkey",
+          want: wantPasskey,
+          got: `${answered} at=${at}, which is no refusal of the passkey itself; the page said: ${said}`,
+          verdict: "UNKNOWN",
+        });
+      }
     }
   } catch (error) {
     rows.add({
@@ -1782,7 +1873,8 @@ type HoldEnd =
  *
  * At SIGTERM, or once OUTSIDE_EDGE_HOLD_SECONDS have passed, it closes the socket first, so the
  * relay client opens none again and no registration follows, waits for a registration already on
- * the wire, unregisters the session (at most UNREGISTER_MS), writes `released`, and prints
+ * the wire, which gets no second attempt after the end (its client's requests stop with the
+ * hold), unregisters the session (at most UNREGISTER_MS), writes `released`, and prints
  * `RELEASED <session>`. `released` says `unregistered` only where the session was held registered
  * to the end, its last registration the listener took within the listener's window
  * (SESSION_LIVE_WINDOW_MS), and the listener answered the unregister: exit 0. A failed unregister
@@ -1885,13 +1977,28 @@ async function hold(env: NodeJS.ProcessEnv): Promise<number> {
       fetch: globalThis.fetch,
       credential,
     });
+    // Every registration goes through a client of its own whose requests stop with the hold: one
+    // on the wire when the hold ends is answered or not, and no attempt of it is sent after the end,
+    // the transport's second attempt of one that got no answer among them. The unregister, which
+    // the end sends, goes through `client`.
+    const registrar = createEnvoyClient({
+      baseUrl: inputs.listener,
+      fetch: Object.assign(
+        (input: string | URL | Request, init?: RequestInit) =>
+          stop.signal.aborted
+            ? Promise.reject(new Error("the hold is ending, so no registration is sent"))
+            : fetch(input, init),
+        { preconnect: fetch.preconnect }
+      ),
+      credential,
+    });
     // The held session reads nothing itself: each frame is taken, so none waits on it.
     const delivery = sessionDelivery(session, socket, (frame) => frame.done());
     const subject = holdRelaySubject(socket, delivery);
     // When the registration the listener last took was sent.
     let registeredAt = Date.now();
     try {
-      await registerOnSocket(session, socket, client, delivery, subject, stop.signal);
+      await registerOnSocket(session, socket, registrar, delivery, subject, stop.signal);
     } catch (error) {
       if (error instanceof NothingSent) {
         // Nothing was sent, so there is nothing to unregister.
@@ -1902,8 +2009,12 @@ async function hold(env: NodeJS.ProcessEnv): Promise<number> {
         );
       }
       const unregistered = await close(delivery, socket, client, session);
+      // A SIGTERM while the registration was before the listener holds nothing, whatever came of
+      // the registration: an attempt it would have sent after the SIGTERM was not sent.
       return unheld(
-        `the listener did not register ${session}: ${messageOf(error)}; ${unregistered}`
+        end === undefined
+          ? `the listener did not register ${session}: ${messageOf(error)}; ${unregistered}`
+          : `no session held: SIGTERM came while the listener answered the registration of ${session}; ${unregistered}`
       );
     }
     const refusedSubject = subject.failure();
@@ -1934,9 +2045,9 @@ async function hold(env: NodeJS.ProcessEnv): Promise<number> {
         const sent = Date.now();
         try {
           if (onSocket) {
-            await registerOnSocket(session, socket, client, delivery, subject, stop.signal);
+            await registerOnSocket(session, socket, registrar, delivery, subject, stop.signal);
           } else {
-            await sendRegistration(session, client, delivery, stop.signal);
+            await sendRegistration(session, registrar, delivery, stop.signal);
           }
         } catch (error) {
           // A hold that is ending says why itself; a routine close that came while this one

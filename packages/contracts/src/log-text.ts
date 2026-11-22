@@ -137,3 +137,25 @@ export function errorClass(error: unknown): string {
     return typeof syscall === "string" && SYSCALL.test(syscall) ? `${syscall} ${code}` : code;
   return `${ERROR_NAME.test(error.name) ? error.name : "Error"} (message withheld)`;
 }
+
+/** A code as the runtime sets one on a request it could not complete: one upper-case word, never
+ *  text taken from a setting. A code of any other shape is no runtime's, and is not kept. */
+const RUNTIME_CODE = /^[A-Z][A-Z0-9_]{0,63}$/;
+
+/**
+ * The code of `error`, the failure of a request or a socket that got no answer, as one word a
+ * text may carry: the runtime's code (`ECONNREFUSED`, `ENOTFOUND`, `ECONNRESET`, …, which Bun
+ * 1.4.4 sets on a fetch's failure and on a WebSocket `error` event's `error` alike, measured), and
+ * `ETIMEDOUT` for a deadline that ended it (`AbortSignal.timeout`'s `TimeoutError`); undefined for
+ * any other. Never its message, which repeats the URL or the host it was handed: an error of a
+ * client that keeps no cause carries its failure by this code instead (the Envoy client's call
+ * that got no answer and its relay socket that did not open, the broker client's request and
+ * trade that got none), so its caller can tell a far end that answered nothing from one that
+ * answered.
+ */
+export function failureCode(error: unknown): string | undefined {
+  if (!(error instanceof Error)) return undefined;
+  if (error.name === "TimeoutError") return "ETIMEDOUT";
+  const { code } = error as { code?: unknown };
+  return typeof code === "string" && RUNTIME_CODE.test(code) ? code : undefined;
+}
