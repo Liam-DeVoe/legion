@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -16,9 +17,54 @@ import (
 	"github.com/sjawhar/envoy/consumernames"
 )
 
-// serverMaxWaiting is the max waiting nats-server gives a pull consumer created with none
-// (JSWaitQueueDefaultMax, setConsumerConfigDefaults), as every session consumer is.
-const serverMaxWaiting = 512
+// The defaults nats-server v2.15.1 gives a consumer's create where it leaves a setting unset
+// (setConsumerConfigDefaults, consumer.go :611-726) that hold for every server: a pull
+// consumer's max waiting (JSWaitQueueDefaultMax), an explicit or all ack's ack wait
+// (JsAckWaitDefault), and a pinned priority policy's timeout (JsDefaultPinnedTTL).
+const (
+	serverMaxWaiting = 512
+	serverAckWait    = 30 * time.Second
+	serverPinnedTTL  = 2 * time.Minute
+)
+
+// serverDefaulted is create as nats-server stores it (setConsumerConfigDefaults, consumer.go
+// :611-726), in every setting whose default holds whatever the stream and the server's limits:
+// max deliver 0 or below -1 is -1; max ack pending below -1 is -1; a negative max waiting, max
+// batch, max expires, max bytes, heartbeat, inactive threshold or priority timeout is 0; a pull
+// consumer with no max waiting has 512; an explicit or all ack with no ack wait has 30 s; a
+// backoff's first step is the ack wait; and a pinned priority policy with no timeout has 2 m. Not
+// here, since the stream's consumer limits or the server's and the account's limits decide them:
+// max ack pending 0, inactive threshold 0, and a pull consumer's max batch 0 (consumer.go
+// :684-713). Every family's create sets the first two, and the deployment sets no max batch limit
+// (consumernames README, stated limits).
+func serverDefaulted(create jetstream.ConsumerConfig) jetstream.ConsumerConfig {
+	if create.MaxDeliver == 0 || create.MaxDeliver < -1 {
+		create.MaxDeliver = -1
+	}
+	if create.MaxAckPending < -1 {
+		create.MaxAckPending = -1
+	}
+	create.MaxWaiting = max(create.MaxWaiting, 0)
+	create.MaxRequestBatch = max(create.MaxRequestBatch, 0)
+	create.MaxRequestExpires = max(create.MaxRequestExpires, 0)
+	create.MaxRequestMaxBytes = max(create.MaxRequestMaxBytes, 0)
+	create.IdleHeartbeat = max(create.IdleHeartbeat, 0)
+	create.InactiveThreshold = max(create.InactiveThreshold, 0)
+	create.PinnedTTL = max(create.PinnedTTL, 0)
+	if create.DeliverSubject == "" && create.MaxWaiting == 0 {
+		create.MaxWaiting = serverMaxWaiting
+	}
+	if create.AckWait == 0 && (create.AckPolicy == jetstream.AckExplicitPolicy || create.AckPolicy == jetstream.AckAllPolicy) {
+		create.AckWait = serverAckWait
+	}
+	if len(create.BackOff) > 0 {
+		create.AckWait = create.BackOff[0]
+	}
+	if create.PriorityPolicy == jetstream.PriorityPolicyPinned && create.PinnedTTL == 0 {
+		create.PinnedTTL = serverPinnedTTL
+	}
+	return create
+}
 
 // serverMetadataPrefix begins every metadata key nats-server sets on a consumer itself
 // (JSRequiredLevelMetadataKey, JSServerVersionMetadataKey, JSServerLevelMetadataKey): it sets them
@@ -130,17 +176,14 @@ func (c *Client) ConsumerAdoptable(ctx context.Context, name string, create jets
 }
 
 // adoptionRefusals names each setting of held, a consumer's configuration as the server answers
-// it, that refuses its adoption against create, the configuration its family's create sends, with
-// the server's default for what create leaves unset in a setting no update changes (a pull
-// consumer's max waiting): a setting the server answers that consumerSettings does not name, and
-// a setting no update changes (settingFixed) whose value is not create's. A setting absent from
-// one side reads as its zero value, as the server and nats.go leave a zero value out. A deliver
-// subject is compared by its kind, since the create gives a fresh reply inbox each time: none for
-// a pull consumer, and a reply inbox (replyInbox) for a push one.
+// it, that refuses its adoption against create, the configuration its family's create sends, as
+// the server stores it (serverDefaulted): a setting the server answers that consumerSettings does
+// not name, and a setting no update changes (settingFixed) whose value is not create's. A setting
+// absent from one side reads as its zero value, as the server and nats.go leave a zero value out.
+// A deliver subject is compared by its kind, since the create gives a fresh reply inbox each time:
+// none for a pull consumer, and a reply inbox (replyInbox) for a push one.
 func adoptionRefusals(held map[string]json.RawMessage, create jetstream.ConsumerConfig) ([]string, error) {
-	if create.DeliverSubject == "" && create.MaxWaiting == 0 {
-		create.MaxWaiting = serverMaxWaiting
-	}
+	create = serverDefaulted(create)
 	data, err := json.Marshal(create)
 	if err != nil {
 		return nil, err
@@ -232,16 +275,16 @@ func shown(raw json.RawMessage) string {
 }
 
 // CorrectedConfig is the update that brings current, a consumer's configuration as the server
-// answers it, to create, the configuration its family's create sends, in every setting an update
-// changes (settingCorrected), and whether it changes anything: create's whole configuration, with
-// current's name, start and every setting no update changes (which the server would refuse to
-// change, and which the adoption check found as create gives them, or which the server defaulted
-// from create's unset value), and with the metadata the server sets itself (serverMetadataPrefix)
-// kept. So a candidate's max batch, headers only, filters and every other setting an update
-// changes go back to its family's value, and a consumer already as its family creates it is
-// unchanged.
+// answers it, to create, the configuration its family's create sends, as the server stores it
+// (serverDefaulted), in every setting an update changes (settingCorrected), and whether it changes
+// anything: create's whole configuration, with current's name, start and every setting no update
+// changes (which the server would refuse to change, and which the adoption check found as create
+// gives them), and with the metadata the server sets itself (serverMetadataPrefix) kept. So a
+// candidate's max batch, headers only, filters and every other setting an update changes go back to
+// its family's value, a setting the create leaves to the server's default reads as the server
+// stores it, and a consumer already as its family creates it is unchanged.
 func CorrectedConfig(current, create jetstream.ConsumerConfig) (jetstream.ConsumerConfig, bool) {
-	next := create
+	next := serverDefaulted(create)
 	next.Name, next.Durable = current.Name, current.Durable
 	next.DeliverPolicy, next.OptStartSeq = current.DeliverPolicy, current.OptStartSeq
 	next.OptStartTime, next.AckPolicy, next.ReplayPolicy = current.OptStartTime, current.AckPolicy, current.ReplayPolicy

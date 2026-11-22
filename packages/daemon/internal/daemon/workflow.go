@@ -1061,7 +1061,7 @@ func (w *workflowRuntime) connect(ctx context.Context, cfg config.Config, nc nat
 		PrepareRepository: w.prepareRepository, PrepareArtifact: w.prepareArtifact,
 		Names: cfg.ConsumerNames,
 		Connect: func(_ context.Context, name string) (*nats.Conn, error) {
-			return natsauth.Connect(cfg.NatsURLs, nc.seed, name, natsauth.LogEvents(w.log), natsauth.ReconnectForever())
+			return w.dial(cfg, nc, name)
 		},
 	})
 	if err != nil {
@@ -1075,6 +1075,15 @@ func (w *workflowRuntime) connect(ctx context.Context, cfg config.Config, nc nat
 	}
 	w.bootID = fmt.Sprintf("%d", time.Now().UnixNano())
 	return nil
+}
+
+// dial opens a NATS connection named name as nc, the user readBoot chose. It is the daemon's one
+// dial: its own connection (connect) and each fresh generation's (intake.ConsumerSpec.Connect) go
+// through it alone, so every credential and option the daemon's connection carries, each
+// generation's carries too. A credential the daemon learns to present, the NATS auth service's
+// service token among them, is added here, never at one call.
+func (w *workflowRuntime) dial(cfg config.Config, nc natsConnection, name string) (*nats.Conn, error) {
+	return natsauth.Connect(cfg.NatsURLs, nc.seed, name, natsauth.LogEvents(w.log), natsauth.ReconnectForever())
 }
 
 // phaseHolds answers supervise's Deps.PhaseHolds from the issue record: a task carries the phase

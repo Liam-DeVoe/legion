@@ -194,6 +194,83 @@ func (c *Cluster) AwaitReady(t testing.TB) {
 	}
 }
 
+// MetaLeader is the index of the running member that leads the JetStream meta group, or -1 while
+// none does.
+func (c *Cluster) MetaLeader() int {
+	for i, server := range c.Servers {
+		if srv := server.natsServer(); srv != nil && srv.JetStreamIsLeader() {
+			return i
+		}
+	}
+	return -1
+}
+
+// AwaitStreamApplied waits, for as long as the test may run (testDeadline), until every running
+// member has applied the JetStream meta group's entries up to the meta leader's commit index as read
+// once a leader answers, and one running member leads stream of account. A test calls it after a
+// create of stream has answered, before another client sends stream its first request.
+//
+// A create is answered by the new stream's leader, which members that applied its assignment
+// elected, so the meta leader can apply that assignment after the create answered. Until it does, it
+// answers any request for the stream "stream not found" (10059: nats-server's jetstream_api.go, a
+// meta leader with no assignment of the stream), and that answer races the stream leader's, so the
+// first reply a client takes can be the refusal. An answer of the stream (AwaitBucket's lookups) is
+// no such wait: it can come from the stream's leader while the meta leader still refuses. The
+// assignment was committed before the create answered, so it is at or below the commit index read
+// after, whichever member leads the meta group by then, and a member's applied index moves past an
+// entry only once that member has applied it.
+func (c *Cluster) AwaitStreamApplied(t testing.TB, account, stream string) {
+	t.Helper()
+	bound := boundOf(t)
+	var commit uint64
+	for {
+		err := c.streamApplied(account, stream, &commit)
+		if err == nil {
+			return
+		}
+		if bound.over() {
+			t.Fatalf("stream %s was not applied by every running member and led by %s, short of the test's deadline: %v", stream, bound, err)
+		}
+		bound.pause()
+	}
+}
+
+// streamApplied reports why the running members have not all applied the meta group to *commit,
+// the meta leader's commit index, which it reads first while *commit is 0, or why no running member
+// leads stream of account; nil once both hold.
+func (c *Cluster) streamApplied(account, stream string, commit *uint64) error {
+	if *commit == 0 {
+		leader := c.MetaLeader()
+		if leader < 0 {
+			return errors.New("no running member leads the meta group")
+		}
+		group := metaGroup(c.Servers[leader].natsServer())
+		if group == nil || group.Committed == 0 {
+			return fmt.Errorf("the meta leader %s reports no commit index", c.Name(leader))
+		}
+		*commit = group.Committed
+	}
+	led := false
+	for i, server := range c.Servers {
+		srv := server.natsServer()
+		if srv == nil {
+			continue
+		}
+		if group := metaGroup(srv); group == nil || group.Applied < *commit {
+			applied := uint64(0)
+			if group != nil {
+				applied = group.Applied
+			}
+			return fmt.Errorf("member %s has applied the meta group to %d, short of the leader's commit %d", c.Name(i), applied, *commit)
+		}
+		led = led || srv.JetStreamIsStreamLeader(account, stream)
+	}
+	if !led {
+		return fmt.Errorf("no running member leads stream %s", stream)
+	}
+	return nil
+}
+
 const (
 	// muteAfter is how long AwaitReady listens for a running member before it restarts it. A
 	// working member is heard sooner whether or not the meta group has a leader: a leader hears

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -9,11 +10,12 @@ import (
 	"github.com/sjawhar/envoy/consumernames"
 )
 
-// The listener's durable creator names as the family table does: its Config's prefix and fixed
-// name are the table's for a durable's key (consumernames.DurableNaming), both the durable's own
-// name, so its fence is the one consumernames.CheckFamily applies for that key, which gives the
-// answer each round-6 case pins. The control, run with a fault and seen failing: a creator whose
-// prefix is not the table's fails the naming row.
+// The listener's durable creator names as the family table does: its Config's prefix, fixed name
+// and key rule are the table's for a durable's key (consumernames.DurableNaming), the prefix and
+// fixed name both the durable's own name, so its fence is the one consumernames.CheckFamily applies
+// for that key, which gives the answer each round-6 case pins. The controls, each run with a fault
+// and seen failing: a creator whose prefix is not the table's fails the naming row, and so does a
+// creator whose key rule is the session's (CheckKey), on its own key.
 func TestTheDurableCreatorNamesAsTheFamilyTable(t *testing.T) {
 	r := newDurableRig(t, consumernames.ModeFresh)
 	names := durableNames(r.client, r.durable)
@@ -24,6 +26,16 @@ func TestTheDurableCreatorNamesAsTheFamilyTable(t *testing.T) {
 	}
 	if got, want := creator.Fixed(key), table.Fixed(key); got != want || got != r.durable {
 		t.Errorf("the durable creator's fixed name of %s is %q, the table's %q; want both the durable's own %q", key, got, want, r.durable)
+	}
+	if creator.CheckKey == nil {
+		t.Errorf("the durable creator's key rule is nil; want the table's")
+	} else {
+		for _, k := range []string{key, r.durable, "durable.a=zz", "ses-A", ""} {
+			got, want := creator.CheckKey(k), table.CheckKey(k)
+			if (got == nil) != (want == nil) || errors.Is(got, consumernames.ErrInvalidKey) != errors.Is(want, consumernames.ErrInvalidKey) {
+				t.Errorf("the durable creator's key rule of %q is %v, the table's %v", k, got, want)
+			}
+		}
 	}
 	reserved := time.Unix(1_700_000_000, 0)
 	for _, c := range []struct {

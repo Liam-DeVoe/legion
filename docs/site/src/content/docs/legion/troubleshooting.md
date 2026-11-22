@@ -1949,10 +1949,11 @@ notice comes once per handoff commit, from whichever read finds it first.
   narrows a later restart, stops the boot. The same line from a later step does not stop the
   daemon: a repositories change is tried again, the state route's lag says the consumer is
   unavailable, and the poll of a held release reads again. The `error` says why:
-  - `consumer names: the cutover has not run`: the database's sentinel row (`envoy.sentinel`) does
-    not say `done`, or says `rolled_back`. The operator's `envoy-infra consumer-names convert`
-    writes it in the maintenance window; until then run the daemon with the fixed names
-    (`consumer_names: fixed`, the default).
+  - `consumer names: the cutover has not run`: the project's sentinel row
+    (`envoy.sentinel/daemon/<project>`) does not say `done`, or says `rolled_back`. Each project's
+    daemon reads only its own sentinel, so another project's cutover changes nothing here. The
+    operator's `envoy-infra consumer-names convert` writes it in the maintenance window; until
+    then run the daemon with the fixed names (`consumer_names: fixed`, the default).
   - `the selection store is missing` or `the selection store's sentinel is missing`: the table or
     its sentinel row is gone. The daemon never falls back to the fixed names; the operator restores
     the row.
@@ -1969,9 +1970,10 @@ notice comes once per handoff commit, from whichever read finds it first.
     The daemon never creates it by time or at the next message; the operator's `replay` gives it
     a start.
   - `connect <logical>/<id>: …`: every call on a consumer of fresh name `<logical>~<id>` goes on
-    a NATS connection of its own named `<logical>/<id>`, which the hub's auth service grants that
-    one consumer, and that connection was not admitted. Nothing was deleted, and the next boot
-    settles the step it left.
+    a NATS connection of its own named `<logical>/<id>`, dialled with the daemon's own credential,
+    and that connection was not admitted. A hub's static configuration grants the daemon's user
+    every fresh name of its consumers; the NATS auth service grants such a connection that one
+    consumer. Nothing was deleted, and the next boot settles the step it left.
 
   A name the daemon retired after a create nobody answered stays on the server, since the daemon's
   grant has no consumer delete: `envoy-infra consumer-names status` lists it and `cleanup` deletes
