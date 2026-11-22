@@ -2,10 +2,15 @@ package api
 
 import (
 	"context"
+	"slices"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
+
+// everyCheckWhen is the `when` answerIssueChecks is given by a caller that reads every check of
+// the document, whatever its `when`: the results route.
+const everyCheckWhen = ""
 
 // answerIssueChecks computes the body GET /api/v1/issues/{key}/results answers for issueKey: the
 // checks of the issue's Verification document as the block index holds them, each with its
@@ -25,7 +30,17 @@ import (
 // head, so each is a subject whose state the settler publishes there. A result a former head's run
 // derives counts at that head alone (deriveCIResults), so at an open head every state is computed
 // from the results the route computes it from, and is the one the route answers.
-func (s *server) answerIssueChecks(ctx context.Context, issueKey, at string, trees *displayTreeReader, former []delivery.AttributedHead) (issueCheckResults, bool, error) {
+//
+// when is the `when` of the checks the caller reads, everyCheckWhen for every check. The settler
+// reads its `before_merge` checks alone, the only ones it publishes a state of. A check compared
+// with branches would have the settler ask GitHub where each of its result commits stands and
+// store the answer (delivery.Branches.CommitOnBranch) on every settle, a read whose answer it
+// throws away and that nobody asked for, and the stored answer then decides what the route
+// answers while the repository cannot be read. Nothing a `before_merge` check is computed from is
+// read through a check of another `when` (learn, collectChangeBranches and deriveCIResults read
+// `before_merge` checks alone, and comparedWith keeps the bases of each `when` apart), so its state
+// is the one the route answers.
+func (s *server) answerIssueChecks(ctx context.Context, issueKey, at string, trees *displayTreeReader, former []delivery.AttributedHead, when string) (issueCheckResults, bool, error) {
 	artifact, held, err := s.verificationDocument(ctx, s.deps.Store.Pool, issueKey, "")
 	if err != nil {
 		return issueCheckResults{}, false, err
@@ -35,6 +50,12 @@ func (s *server) answerIssueChecks(ctx context.Context, issueKey, at string, tre
 		return body, false, nil
 	}
 	checks, err := s.checkBlocksOf(ctx, s.deps.Store.Pool, artifact, trees)
+	if err != nil {
+		return issueCheckResults{}, false, err
+	}
+	if when != everyCheckWhen {
+		checks = slices.DeleteFunc(checks, func(check model.CheckBlock) bool { return check.When != when })
+	}
 	if err != nil {
 		return issueCheckResults{}, false, err
 	}
