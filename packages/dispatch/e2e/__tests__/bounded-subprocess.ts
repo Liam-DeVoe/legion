@@ -87,7 +87,9 @@
  * - `outsideEdgePageWait`, against 35.29 s: the largest of the runs of `outside-edge.test.ts` that
  *   wait out one of the driver's own 30 s bounds, a page or a read that never answers (the
  *   sign-in that never loads, 35.29 s; the rest 32.08 s to 34.80 s), on that developer box at a
- *   load average of 720 to 840 on 2026-11-22, four at once. 35.29 s x 3 = 105.86 s, so 110 s.
+ *   load average of 720 to 840 on 2026-11-22, four at once. 35.29 s x 3 = 105.86 s, so 110 s. The
+ *   run whose relay socket never opens, after a sign-in and a device login that passed, waits out
+ *   the socket's 30 s: 33.70 s, alone, at a load average of about 845 on 2026-11-22.
  * - `outsideEdgeHold`, against 68.73 s: the hold of `outside-edge-hold.test.ts` that ends at its
  *   own 60 s, the longest of that file's holds in two runs on that developer box at a load average
  *   of about 380 on 2026-11-21 (61.36 s in the other); the holds ended by release or refused took
@@ -162,7 +164,8 @@ export const bounds = Object.freeze({
    *  else: no stack, no Go build. */
   outsideEdgeBrowser: 75_000,
   /** One run of the outside driver against a stand-in origin that waits out one of the driver's
-   *  own 30 s bounds on a page or a read, Chromium's or its own, before it ends. */
+   *  own 30 s bounds on a page, a read or the relay socket's open, Chromium's or its own, before
+   *  it ends. */
   outsideEdgePageWait: 110_000,
   /** One `hold` of the outside driver against a stand-in edge, which ends at its own 60 s at the
    *  longest: no browser, no stack. */

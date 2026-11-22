@@ -22,7 +22,9 @@
  *  which fails at its bound; a SIGTERM while the socket opens, while the flush waits, and while
  *  the listener answers the registration, after which no registration stands; a `release` that
  *  comes before `held`; and files an earlier hold left, which a refused hold must not leave for
- *  `release` to read. For the flush rows a mute listener (`startMuteListener`) takes the socket
+ *  `release` to read. So is an OUTSIDE_EDGE_STATE the hold cannot write, before it registers and
+ *  once the listener took the session, which is UNKNOWN, exit 2, and leaves no session
+ *  registered. For the flush rows a mute listener (`startMuteListener`) takes the socket
  *  and answers nothing on it. The rows start no browser and no stack, so they run wherever
  *  `e2e/__tests__` runs; they read `/proc`, as `hold` and `release` do, and skip where there is
  *  none.
@@ -36,7 +38,17 @@
 
 import { describe, expect, test } from "bun:test";
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { createServer, type Socket } from "node:net";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -785,6 +797,77 @@ describe.skipIf(!existsSync("/proc/self/stat"))(
         }
       },
       rowLimit("outsideEdgeHold", "short")
+    );
+
+    // An error of the hold's own judged nothing of the edge, so it is UNKNOWN, exit 2, never 1,
+    // which is a FAIL. These two make the error as root too, which a directory's mode does not
+    // stop: a `holder` that is a directory with a file in it, which the hold's start cannot remove,
+    // and a `held` made a directory while the listener answers the registration, so the hold
+    // cannot write it once the listener took the session, and must unregister it.
+    test(
+      "a hold that cannot write OUTSIDE_EDGE_STATE is UNKNOWN, exit 2, naming the file, and leaves no session registered",
+      async () => {
+        const answer = Promise.withResolvers<void>();
+        const edge = startHoldEdge({ answerAfter: answer.promise });
+        const { state, session } = await keptState(edge);
+        const blocked = mkdtempSync(join(tmpdir(), "outside-edge-hold-"));
+        writeFileSync(join(blocked, "session"), session, { mode: 0o600 });
+        copyFileSync(join(state, "device-login.json"), join(blocked, "device-login.json"));
+        mkdirSync(join(blocked, "holder"));
+        writeFileSync(join(blocked, "holder", "kept"), "");
+        const holding = driveHold(edge.relay.url, edge.relay.url, state);
+        try {
+          const before = await hold(edge, blocked);
+          expect(before.stdout, before.stderr).toBe(
+            "UNKNOWN: the hold failed on an error of its own: rm ERR_FS_EISDIR on OUTSIDE_EDGE_STATE's holder\n"
+          );
+          expect(before.code).toBe(2);
+          // It sent nothing: the one registration below is the other hold's.
+          await eventually("the registration at the listener", () => edge.registrations.length > 0);
+          expect(edge.registrations).toEqual([session]);
+          mkdirSync(join(state, "held"));
+          answer.resolve();
+          const code = await holding.ended();
+          expect(holding.stdout(), holding.stderr()).toBe(
+            "UNKNOWN: the hold failed on an error of its own: open EISDIR on OUTSIDE_EDGE_STATE's held; unregistered\n"
+          );
+          expect(code).toBe(2);
+          expect(edge.registrations).toEqual([session]);
+          expect(edge.unregisters).toEqual([session]);
+        } finally {
+          answer.resolve();
+          holding.kill();
+          edge.relay.stop();
+          rmSync(state, { force: true, recursive: true });
+          rmSync(blocked, { force: true, recursive: true });
+        }
+      },
+      rowLimit("outsideEdgeHold", "outsideEdgeHold")
+    );
+
+    // The brief's own case, a state directory no write reaches: its mode stops every user but root,
+    // which writes through it, so this row runs as any other user, and says it skipped as root.
+    test.skipIf(process.getuid?.() === 0)(
+      "a state directory of mode 0500 is UNKNOWN, exit 2, naming the holder it could not write, and registers nothing",
+      async () => {
+        const edge = startHoldEdge();
+        const { state } = await keptState(edge);
+        chmodSync(state, 0o500);
+        try {
+          const ran = await hold(edge, state);
+          expect(ran.stdout, ran.stderr).toBe(
+            "UNKNOWN: the hold failed on an error of its own: open EACCES on OUTSIDE_EDGE_STATE's holder\n"
+          );
+          expect(ran.code).toBe(2);
+          expect(edge.relay.upgrades).toEqual([]);
+          expect(edge.registrations).toEqual([]);
+        } finally {
+          chmodSync(state, 0o700);
+          edge.relay.stop();
+          rmSync(state, { force: true, recursive: true });
+        }
+      },
+      rowLimit("outsideEdgeHold")
     );
 
     realTimeRow(

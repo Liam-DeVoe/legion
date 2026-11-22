@@ -360,7 +360,7 @@ jobs:
         working-directory: packages/dispatch
       - name: Drive the outside driver through a stand-in edge
         # why: .github/ci-notes/dispatch-browser.md#what-the-outside-drivers-step-runs-and-its-budget
-        # The stack row's own limit, 780 s, and the file's other rows, about 188 s -> 17 min, and one
+        # The stack row's own limit, 780 s, and the file's other rows, about 222 s -> 17 min, and one
         # more, so a stuck stack fails by its name.
         timeout-minutes: 18
         run: |

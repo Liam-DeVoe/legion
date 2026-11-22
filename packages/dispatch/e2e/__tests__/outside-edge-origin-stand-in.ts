@@ -20,7 +20,9 @@
  *  - `GET /api/v1/projects` lists OWN, or answers `projects`'s status.
  *  - `POST /v1/oauth/device_authorization` and the device grant of `POST /v1/oauth/token` are a
  *    broker's device login on this origin (`broker`), approved once the machine-login page
- *    approved its code.
+ *    approved its code; the token exchange of `POST /v1/oauth/token` mints a session's token for a
+ *    subject token one of those logins carried, and refuses any other (`tradeRefusal`), so a run
+ *    whose device login passed opens its relay socket at the listener it names.
  *  - `GET /credentials/machine` is the machine-login page `machine` names (`MachinePage`): by
  *    default one that looks a typed code up, approves it and names its credential; or one that
  *    misses one part of that.
@@ -30,6 +32,8 @@
  *    answers nothing once a revoke was answered.
  *  Every path asked is kept in `asked`, in order.
  */
+
+import { tradeRefusal } from "./outside-edge-credentials";
 
 /** The enrollment page's kinds: `refuses`, an alert naming the whole link; `signs-in`, Create a
  *  passkey makes one, the stand-in sets its cookie and the page says "Signed in as …"; and the
@@ -122,6 +126,10 @@ const sayScript = `function say(text, role) {
   line.textContent = text;
   document.querySelector("main").append(line);
 }`;
+
+/** The grant type of the broker's token exchange (RFC 8693), which trades a device login for a
+ *  session's token. */
+const TOKEN_EXCHANGE = "urn:ietf:params:oauth:grant-type:token-exchange";
 
 function signInPage(finish: OriginBehaviour["finish"]): string {
   const click =
@@ -244,6 +252,8 @@ export function startOriginStandIn(behaviour: OriginBehaviour = {}): OriginStand
   const sessions = new Set<string>();
   let approved = false;
   let revokeAnswered = false;
+  // Every access token a device login was answered, which alone the exchange takes as a subject.
+  const issued = new Set<string>();
   const htmlHeaders = { "Content-Type": "text/html; charset=utf-8" };
   const never = () => new Promise<Response>(() => undefined);
   const signedIn = (request: Request) =>
@@ -340,14 +350,28 @@ export function startOriginStandIn(behaviour: OriginBehaviour = {}): OriginStand
         });
       }
       if (request.method === "POST" && pathname === "/v1/oauth/token") {
+        const form = new URLSearchParams(await request.text());
+        if (form.get("grant_type") === TOKEN_EXCHANGE) {
+          return (
+            tradeRefusal(form, issued) ??
+            Response.json({
+              access_token: `stand-in-session-${crypto.randomUUID()}`,
+              issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
+              token_type: "DPoP",
+              expires_in: 900,
+            })
+          );
+        }
         if (!approved) {
           return Response.json({ error: "authorization_pending" }, { status: 400 });
         }
         if (behaviour.broker === "denies") {
           return Response.json({ error: "access_denied" }, { status: 400 });
         }
+        const accessToken = `stand-in-login-${crypto.randomUUID()}`;
+        issued.add(accessToken);
         return Response.json({
-          access_token: `stand-in-login-${crypto.randomUUID()}`,
+          access_token: accessToken,
           token_type: "DPoP",
           expires_in: 900,
           refresh_token: `stand-in-refresh-${crypto.randomUUID()}`,

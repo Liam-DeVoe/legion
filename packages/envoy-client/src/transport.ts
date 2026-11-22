@@ -14,7 +14,7 @@ import { errorClass, requestForText } from "@legion/contracts/log-text";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import { z } from "zod";
 import { credentialDeadline, type RequestCredential } from "./bearer";
-import { messageFor, reachedNothing } from "./errors";
+import { failureCode, messageFor, reachedNothing } from "./errors";
 import { bodyForText, redirectOrigin, SentTokens, type Tokens } from "./excerpt";
 import { machineID } from "./machine";
 import { streamDeliversNothing } from "./stream-topics";
@@ -986,9 +986,16 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
 
   /** A call that got no answer, as our own error: the runtime's own error repeats the host it
    *  dialed, which an unclean base names (`https://user:p@ssword` dials `ssword`), so it is named
-   *  by its class and kept as no cause. */
-  const noAnswer = (method: string | undefined, url: string, error: unknown): Error =>
-    new Error(`${method ?? "GET"} ${shown(url)} got no answer: ${errorClass(error)}`);
+   *  by its class and kept as no cause. Its `code` is the failure's (`failureCode`: ECONNREFUSED,
+   *  ENOTFOUND, ETIMEDOUT for the attempt's deadline, …), where it has one, so a caller tells a
+   *  listener that answered nothing from one that answered. */
+  const noAnswer = (method: string | undefined, url: string, error: unknown): Error => {
+    const failed = new Error(
+      `${method ?? "GET"} ${shown(url)} got no answer: ${errorClass(error)}`
+    );
+    const code = failureCode(error);
+    return code === undefined ? failed : Object.assign(failed, { code });
+  };
 
   const attemptOnce = async (
     url: string,

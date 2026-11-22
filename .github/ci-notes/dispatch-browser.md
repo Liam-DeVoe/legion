@@ -916,9 +916,10 @@ the stack child at three times its largest reading, 750 s, and the rows wait 780
 6-minute step would kill a stuck stack before the bound names it. The file's other rows run one
 after another beside that row: the input rows and the control rows took 188 s together at a load
 average of 720 to 840 on 2026-11-22 (about 100 s before the sign-in and device-login control rows
-were added), and the longest control row's own limit is 200 s (a short wait, four page waits at
-once and 30 s), less than the stack's 780 s. 780 s and 188 s -> 17 min, and one more for the
-step's own start: 18 min.
+were added), and the relay control row added after them, which waits out the relay socket's 30 s,
+took 33.70 s more alone at a load average of about 845 the same day: 222 s. The longest control
+row's own limit is 200 s (a short wait, four page waits at once and 30 s), less than the stack's
+780 s. 780 s and 222 s -> 17 min, and one more for the step's own start: 18 min.
 It costs nothing on a green run, which ends in the minutes its readings take.
 
 ## Why the two-process job's upload runs on failure alone

@@ -355,7 +355,14 @@ one follows every open. A repeated
 failure is logged once until its words change. Each reopen takes every live subscription again and
 reports `reconnect`, so the host registers a new epoch and the listener redelivers what it never
 acknowledged. `follow()` opens the socket again for the session the name reads now, which a host
-runs when it moves to another session.
+runs when it moves to another session. A wait for an open (`connectListenerRelay`'s `signal`,
+`opened`, `follow`) that its bound ends throws `RelayNotOpenedError`, which names why the last open
+failed and keeps no cause, the runtime's error repeating the socket's URL; its `code` is the code
+the runtime gave that open's socket (`failureCode`: `ECONNREFUSED` for a port nothing took,
+`ENOTFOUND` for a name that did not resolve, …), `ETIMEDOUT` for an upgrade not answered within
+20 s, and undefined where the listener answered (a refused upgrade) or the open failed at its trade.
+A call of the HTTP transport (below) that got no answer does the same: its error keeps no cause
+and carries the failure's `code`, `ETIMEDOUT` for the call's deadline.
 
 ## HTTP transport
 

@@ -19,6 +19,8 @@
  *    page on another origin, no code box, a box that takes no typing, no answer to the look-up, a
  *    refused code or approval, no approval shown, no credential named, a denied poll; and
  *    `approve` reads a page it cannot drive UNKNOWN, exit 2;
+ *  - step 3, after a device login that passed and a token the stand-in traded, is UNKNOWN, never
+ *    FAIL, for a listener nothing answers: a socket refused its connection;
  *  - Chromium's processes hold none of the driver's OUTSIDE_* inputs;
  *  - the link's token reaches no row, stdout, stderr, TSV or state file, also where the page did
  *    not load or names the link itself;
@@ -985,6 +987,32 @@ describe("the controls, against an outside origin stand-in", () => {
         "outsideEdgePageWait",
       ],
     })
+  );
+
+  browserRow(
+    "the relay step after a device login that passed: a listener nothing answers is UNKNOWN, never FAIL",
+    async () => {
+      // The stand-in signs in, lists OWN, passes the device login and trades the session's token;
+      // the listener is a port nothing takes, so the relay socket never opens and its row waits out
+      // the driver's 30 s for it. The relay client keeps the refused connection's code
+      // (`RelayNotOpenedError`), which is what the row reads. A trade that failed would name its
+      // token instead ("its token could not be had"), so the text below also says the trade passed.
+      const [one] = await runCases(
+        [["relay-unanswered", { enroll: "signs-in" }]],
+        "outsideEdgePageWait"
+      );
+      if (one === undefined) throw new Error("no relay case ran");
+      for (const row of ["sign-in", "projects", "device-login"]) {
+        expect(rowOf(one, row).verdict, `${row}: ${one.run.stdout}`).toBe("PASS");
+      }
+      expect(rowOf(one, "relay").got).toMatch(
+        /^the relay socket did not open: the listener's relay socket for outside-e2e-[0-9a-f]{12} did not open: the socket closed before it opened \(1006: Failed to connect\)$/
+      );
+      expect(rowOf(one, "relay").verdict, one.run.stdout).toBe("UNKNOWN");
+      expect(verdictLine(one.run)).toStartWith("UNKNOWN: relay");
+      expect(one.run.code).toBe(2);
+    },
+    rowLimit("outsideEdgePageWait")
   );
 
   browserRow(

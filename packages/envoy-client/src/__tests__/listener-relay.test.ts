@@ -27,7 +27,14 @@ import {
 } from "../../test/relay-socket-fixtures";
 import { standInDeliverSubject } from "../../test/relay-socket-stand-in";
 import { createConsumerDelivery, inboundUnavailable } from "../consumer-delivery";
-import { ListenerRelay, type RelayEnd, relayReopenDelay, relayRun } from "../listener-relay";
+import {
+  connectListenerRelay,
+  ListenerRelay,
+  type RelayEnd,
+  RelayNotOpenedError,
+  relayReopenDelay,
+  relayRun,
+} from "../listener-relay";
 
 const { started, standIn, opened } = relaySocketFixtures("listener-relay");
 
@@ -785,6 +792,73 @@ describe("a relay socket", () => {
       "the listener's relay socket for ses_a closed (1006); it opens again in 0 ms",
     ]);
   }, 60_000);
+
+  // A caller whose bound ends before a socket opened is told why the last open failed, and the
+  // code the runtime gave its socket, which is what tells a listener that answered nothing from
+  // one that answered: the relay keeps no cause, since the runtime's error repeats the socket's
+  // URL. Each listener here is this row's own: a port nothing takes (the loopback's port 1), one
+  // that takes the connection and never answers the upgrade, and one that answers it 403.
+  test("a socket that did not open in its bound carries the runtime's code, ETIMEDOUT for an upgrade never answered, and none where the listener answered", async () => {
+    const token = fixtureSecret("relay");
+    const openAt = (url: string, boundMs: number) =>
+      connectListenerRelay(
+        {
+          url,
+          session: "ses_a",
+          credential: {
+            scheme: "DPoP",
+            headers: async () => ({ Authorization: `DPoP ${token}`, DPoP: "a-proof" }),
+            secret: () => token,
+          },
+          outage: { refused: () => undefined },
+          log: () => undefined,
+        },
+        AbortSignal.timeout(boundMs)
+      ).then(
+        async (relay) => {
+          await relay.close();
+          return "it opened";
+        },
+        (error: unknown) => error
+      );
+    const silent = Bun.listen({
+      hostname: "127.0.0.1",
+      port: 0,
+      socket: { data: () => undefined },
+    });
+    started.push(() => silent.stop(true));
+    const refusing = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: () => new Response("not this token", { status: 403 }),
+    });
+    started.push(() => refusing.stop(true));
+    const [refused, unanswered, answered] = await Promise.all([
+      openAt("http://127.0.0.1:1", 1_500),
+      openAt(`http://127.0.0.1:${silent.port}`, 22_000),
+      openAt(`http://127.0.0.1:${refusing.port}`, 1_500),
+    ]);
+    expect(refused).toBeInstanceOf(RelayNotOpenedError);
+    expect(refused).toMatchObject({
+      message:
+        "the listener's relay socket for ses_a did not open: the socket closed before it opened (1006: Failed to connect)",
+      code: "ECONNREFUSED",
+    });
+    expect(refused).not.toHaveProperty("cause");
+    expect(unanswered).toBeInstanceOf(RelayNotOpenedError);
+    expect(unanswered).toMatchObject({
+      message:
+        "the listener's relay socket for ses_a did not open: the upgrade was not answered within 20 s",
+      code: "ETIMEDOUT",
+    });
+    // Control: the listener answered, so the open failed on its answer and carries no code.
+    expect(answered).toBeInstanceOf(RelayNotOpenedError);
+    expect(answered).toMatchObject({
+      message:
+        "the listener's relay socket for ses_a did not open: the listener refused the upgrade with HTTP 403",
+      code: undefined,
+    });
+  }, 30_000);
 
   test("a frame that is no JSON, and a msg whose headers are no map of lists, are dropped and logged once; later frames go on", async () => {
     const server = standIn();

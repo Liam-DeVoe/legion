@@ -1005,7 +1005,11 @@ step before it failed is `UNKNOWN`, never run on nothing:
    this one, and is kept in `OUTSIDE_EDGE_STATE`'s `session` once the listener took it, sends
    `outside-e2e ping <nonce> at <ms>` to the peer, and the peer's `outside-e2e pong <nonce> …`
    must come back on the socket within `OUTSIDE_EDGE_REPLY_SECONDS` (30), else the row names the
-   peer. The session's unregister is printed with its answer.
+   peer. The session's unregister is printed with its answer. A listener nothing answers, a socket
+   that did not open within 30 s or a call that got no answer (refused, unresolved or unanswered
+   in time, by the code the relay client's `RelayNotOpenedError` and the Envoy client keep of the
+   failure), is `UNKNOWN`; an answer short of the pong, a refused upgrade or registration among
+   them, is `FAIL`.
 4. Every request of the run, the browser's and the process's, is judged against the rate rules
    of `OUTSIDE_EDGE_LIMITS`, `priority host match path count seconds` lines
    (`e2e/acceptance/outside-edge-limits.ts` says how a request finds its rule): a row per
@@ -1054,7 +1058,10 @@ process `holder` names SIGTERM, held yet or not, waits up to 15 s, and prints `R
 only when `released` says `unregistered`; a holder still running then is sent SIGKILL, exit 2. A
 pid whose process did not start when `holder` says is not signalled:
 `UNKNOWN: the held process is gone`, exit 2. A hold refused at its inputs removes the files an
-earlier hold left.
+earlier hold left. An error of the hold's own, an `OUTSIDE_EDGE_STATE` it cannot write among
+them, judged nothing of the edge: it is `UNKNOWN: the hold failed on an error of its own: …`,
+exit 2 and never 1, naming the error's class and the state's file, with a session the listener
+took by then unregistered.
 
 `bun run test:harness e2e/__tests__/outside-edge.test.ts e2e/__tests__/outside-edge-limits.test.ts
 e2e/__tests__/outside-edge-hold.test.ts` drives it. The input rows run anywhere. The control rows
@@ -1066,7 +1073,8 @@ against each way a sign-in falls short after its page loaded (no Create button, 
 refusal, no passkey, another origin, no cookie, no person, no answer), step 2 against each way a
 device login falls short (no broker, a refusal, another origin's page, no code box, a box that
 takes no typing, no answer, a refused code or approval, no credential, a denied poll), `approve`
-against a page it cannot drive, Chromium's environment, which holds none of the driver's
+against a page it cannot drive, step 3 after a device login that passed against a listener
+nothing answers (`UNKNOWN`), Chromium's environment, which holds none of the driver's
 inputs, and the request counter against the relay client's socket. Those that start Chromium
 skip where Playwright's Chromium is not installed. A row reads the fake broker's revoke of a
 machine login. The rows of `outside-edge-hold.test.ts` run `hold` and `release` against
@@ -1074,7 +1082,8 @@ envoy-client's relay socket stand-in, whose listener routes take only the sessio
 topic (`e2e/__tests__/outside-edge-credentials.ts`), with a device login the real broker client
 made: held then released, naming the machine `outside-edge-e2e`; held until its 60 s; a hold or
 renewal time out of range; a refused registration or relay subject; a held socket closed 4403; a
-failed unregister; nothing to release; files an earlier hold left; a holder that ignores
+failed unregister; nothing to release; files an earlier hold left; a state the hold cannot write,
+before it registers and once the listener took the session; a holder that ignores
 SIGTERM; a held pid whose process started at another time, which is not signalled; a flush the
 listener never answers; a SIGTERM while the socket opens, while the flush waits and while the
 listener answers the registration; a release before `held`; tokens that last 3 s, closed 4401 at

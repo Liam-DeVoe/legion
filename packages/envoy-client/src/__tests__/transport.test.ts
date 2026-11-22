@@ -1768,6 +1768,70 @@ describe("EnvoyClient", () => {
     );
   });
 
+  // A call that got no answer keeps no cause, since the runtime's error repeats the host it
+  // dialed, so it carries the failure's code as its own: what tells a listener that answered
+  // nothing from one that answered. The refused connection is the runtime's own, on the loopback,
+  // where no name is looked up; the deadline is the client's own `AbortSignal.timeout`.
+  test("a call that got no answer carries its failure's code, and one the listener answered none", async () => {
+    const codeOf = (error: unknown) =>
+      error instanceof Error && "code" in error ? error.code : "no code at all";
+    const refused = await createEnvoyClient({
+      baseUrl: "http://127.0.0.1:1",
+      fetch: globalThis.fetch,
+      retry: false,
+    })
+      .getInterest("ses_sender")
+      .catch((error: unknown) => error);
+    expect((refused as Error).message).toBe(
+      "GET http://127.0.0.1:1/v1/interests/ses_sender got no answer: ECONNREFUSED"
+    );
+    expect(codeOf(refused)).toBe("ECONNREFUSED");
+    expect(refused).not.toHaveProperty("cause");
+
+    const unanswered = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const signal = init?.signal;
+      if (signal === undefined || signal === null) throw new Error("no deadline was set");
+      const aborted = Promise.withResolvers<never>();
+      signal.addEventListener("abort", () => aborted.reject(signal.reason), { once: true });
+      return aborted.promise;
+    }) as unknown as typeof fetch;
+    const timedOut = await createEnvoyClient({
+      baseUrl: "http://listener",
+      timeoutMs: 50,
+      retry: false,
+      fetch: unanswered,
+    })
+      .getInterest("ses_sender")
+      .catch((error: unknown) => error);
+    expect((timedOut as Error).message).toBe(
+      "GET http://listener/v1/interests/ses_sender got no answer: TimeoutError (message withheld)"
+    );
+    expect(codeOf(timedOut)).toBe("ETIMEDOUT");
+    // A send that may have arrived keeps the last attempt's error as its cause, code and all.
+    const unconfirmed = await createEnvoyClient({
+      baseUrl: "http://listener",
+      timeoutMs: 50,
+      retry: false,
+      fetch: unanswered,
+    })
+      .send({ sourceSessionID: "ses_sender", targetSessionID: "ses_target", message: "hello" })
+      .catch((error: unknown) => error);
+    expect(unconfirmed).toBeInstanceOf(EnvoySendUnconfirmedError);
+    expect(codeOf((unconfirmed as Error).cause)).toBe("ETIMEDOUT");
+
+    // Control: a listener that answered, here 503 with no code of its own, is an `EnvoyApiError`
+    // whose code is the listener's (none), never a runtime's.
+    const answered = await createEnvoyClient({
+      baseUrl: "http://listener",
+      retry: false,
+      fetch: recordFetch([new Response("unavailable", { status: 503 })]).fetch,
+    })
+      .getInterest("ses_sender")
+      .catch((error: unknown) => error);
+    expect(answered).toBeInstanceOf(EnvoyApiError);
+    expect(codeOf(answered)).toBeUndefined();
+  }, 5_000);
+
   test("a send whose 2xx answer does not parse is not confirmed delivered", async () => {
     const recorded = recordFetch([new Response("{", { status: 200 })]);
     const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });

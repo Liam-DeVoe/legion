@@ -25,7 +25,11 @@
  *                 `outside-e2e ping <nonce> at <Unix ms>` to OUTSIDE_PEER_SESSION; the peer's
  *                 reply, `outside-e2e pong <nonce> at <Unix ms>`, must reach the session on the
  *                 socket within OUTSIDE_EDGE_REPLY_SECONDS (row `relay`), else the row fails
- *                 naming the peer. The peer's `outside-e2e hello <nonce> …` that follows is
+ *                 naming the peer. A listener nothing answers, a socket that did not open within
+ *                 30 s or a call that got no answer, refused, unresolved or unanswered in time
+ *                 (the code the relay client and the Envoy client keep of the failure), is
+ *                 UNKNOWN; an answer short of the pong, a refused upgrade or registration among
+ *                 them, is FAIL. The peer's `outside-e2e hello <nonce> …` that follows is
  *                 answered `outside-e2e reply <nonce> at <Unix ms>`, so the peer does not wait.
  *                 The session's unregister at the end is printed with its answer
  *                 (`outside-edge: session <session>: unregistered`, or why not).
@@ -109,7 +113,11 @@
  *  with the session unregistered and registered no more. A SIGTERM before `held` is written
  *  holds nothing: before the registration is sent, none is sent; while the listener answers it,
  *  the session is unregistered once answered; either way `UNKNOWN: no session held: …` (2). Every
- *  end after `holder` is written writes `released` naming it.
+ *  end after `holder` is written writes `released` naming it, but an error of the hold's own (an
+ *  OUTSIDE_EDGE_STATE it cannot write among them), which judged nothing of the edge: that is
+ *  `UNKNOWN: the hold failed on an error of its own: <its class>` (2), naming the state's file
+ *  where the error names one, never exit 1, a FAIL, and a session it registered is unregistered
+ *  first.
  *
  *  `release` ends that hold, reading OUTSIDE_EDGE_STATE alone, whether or not it holds yet:
  *  SIGTERM to the pid `holder` names, up to 15 s for it to end, then `RELEASED <session>` (0)
@@ -140,7 +148,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import {
   type DeviceAuthorization,
   deviceLoginHost,
@@ -150,6 +158,7 @@ import {
 } from "@legion/cipher-client/device-login";
 import { BrokerTradeFailedError } from "@legion/cipher-client/token-errors";
 import { EnvelopeSchema, legacyAgentSubject, SESSION_LIVE_WINDOW_MS } from "@legion/contracts";
+import { errorClass } from "@legion/contracts/log-text";
 import type { RequestCredential } from "@legion/envoy-client/bearer";
 import { brokerCredential } from "@legion/envoy-client/broker-credential";
 import {
@@ -246,14 +255,20 @@ class Rows {
   }
 }
 
-/** The names the runtime gives a request that reached nobody: no connection, no name, a reset
- *  or a timeout, as an error's `name` or `code` holds them, and as `errorClass`
- *  (`@legion/contracts/log-text`) writes them into a cipher-client error's text. */
+/** The names the runtime gives a request that reached nobody: no connection, no route, no name, a
+ *  reset or a timeout, as an error's `name` or `code` holds them, and as `errorClass`
+ *  (`@legion/contracts/log-text`) writes them into a cipher-client error's text. The relay
+ *  client's socket that did not open (`RelayNotOpenedError`) and the Envoy client's call that got
+ *  no answer carry the runtime's code as their own `code` (`failureCode` of
+ *  `@legion/envoy-client/errors`), and ETIMEDOUT for an upgrade or a call that went unanswered. */
 const UNREACHED: Readonly<Record<string, true>> = {
   TimeoutError: true,
   ECONNREFUSED: true,
   ConnectionRefused: true,
   ENOTFOUND: true,
+  EAI_AGAIN: true,
+  EHOSTUNREACH: true,
+  ENETUNREACH: true,
   ECONNRESET: true,
   ETIMEDOUT: true,
   FailedToOpenSocket: true,
@@ -1773,6 +1788,11 @@ type HoldEnd =
  * registration and exits 2 at once; while the listener answers one, the hold waits for that
  * answer (the client's bound), unregisters the session (UNREGISTER_MS) and exits 2. Neither
  * writes `held`; each writes `released` naming why.
+ *
+ * An error of the hold's own, not an answer of the listener's (an OUTSIDE_EDGE_STATE it cannot
+ * write, say), ends it `UNKNOWN: the hold failed on an error of its own: …` and exit 2, as every
+ * end that judged nothing of the edge does, never 1, a FAIL (`ownError` names it); a session the
+ * listener took by then is unregistered first.
  */
 async function hold(env: NodeJS.ProcessEnv): Promise<number> {
   // Taken from the start: a SIGTERM before the session is held stops the hold before it sends a
@@ -1792,10 +1812,13 @@ async function hold(env: NodeJS.ProcessEnv): Promise<number> {
     finish({ by: "SIGTERM" });
   };
   process.on("SIGTERM", terminated);
+  const named = (env.OUTSIDE_EDGE_STATE ?? "").trim();
+  // What an error of the hold's own must end before the hold exits: the registration the listener
+  // took, from then until the hold's end unregisters it, which would otherwise outlive the hold.
+  let leaveOnError: (() => Promise<string>) | undefined;
   try {
     // A hold before this one wrote these, and they say nothing of this one: gone before any other
     // input is read, so a hold refused below leaves none that `release` would read as its own.
-    const named = (env.OUTSIDE_EDGE_STATE ?? "").trim();
     if (named !== "") {
       for (const file of [HOLDER, HELD, RELEASED]) rmSync(join(named, file), { force: true });
     }
@@ -1891,6 +1914,7 @@ async function hold(env: NodeJS.ProcessEnv): Promise<number> {
           : `the listener refused the relay subject of ${session} after it took the registration: ${messageOf(refusedSubject)}; ${unregistered}`
       );
     }
+    leaveOnError = () => close(delivery, socket, client, session);
     keep(state, HELD, `${process.pid} ${holder}`);
     console.log(`HELD ${session}`);
 
@@ -1975,6 +1999,7 @@ async function hold(env: NodeJS.ProcessEnv): Promise<number> {
     // would otherwise write back; `stop` keeps any other from being sent.
     await registering;
     const unregistered = await unregister(client, session);
+    leaveOnError = undefined;
     if (how.by === "close") {
       keep(state, RELEASED, `the listener closed the held socket (${how.why}); ${unregistered}`);
       console.log(
@@ -2003,9 +2028,27 @@ async function hold(env: NodeJS.ProcessEnv): Promise<number> {
     keep(state, RELEASED, unregistered);
     console.log(`RELEASED ${session}`);
     return unregistered === "unregistered" ? 0 : 2;
+  } catch (error) {
+    // An error of the hold's own, not an answer of the listener's (an OUTSIDE_EDGE_STATE it cannot
+    // write, say): the hold judged nothing of the edge, so it is UNKNOWN, exit 2, never a FAIL,
+    // and a session it registered is unregistered first.
+    const left = leaveOnError === undefined ? "" : `; ${await leaveOnError()}`;
+    console.log(
+      `UNKNOWN: the hold failed on an error of its own: ${ownError(error, named)}${left}`
+    );
+    return 2;
   } finally {
     process.off("SIGTERM", terminated);
   }
+}
+
+/** What an error the hold met of its own says, as its output may print it: its class
+ *  (`errorClass`: the syscall and the code of a file's), and the file of OUTSIDE_EDGE_STATE
+ *  (`state`) it names, never its message, which repeats the whole path. */
+function ownError(error: unknown, state: string): string {
+  const path = error instanceof Error && "path" in error ? error.path : undefined;
+  const inState = typeof path === "string" && state !== "" && join(state, basename(path)) === path;
+  return `${errorClass(error)}${inState ? ` on OUTSIDE_EDGE_STATE's ${basename(path)}` : ""}`;
 }
 
 /** What `/proc/<pid>/stat` says of process `pid`: its state (field 3) and its start, in clock
