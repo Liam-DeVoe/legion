@@ -1004,23 +1004,26 @@ project's document, while the same probe admits them to a document of their own,
 event feed, open for the whole of `SWEEP_LIVE_SECONDS` (60 by default), is sent no event of the
 project while the full member comments on `SWEEP_WRITE_ISSUE` and sends the project's session a
 direct message that names no issue, both of which the full member's own feed must be sent; and
-the member's feed must be sent the direct message the member sends their own session,
-`SWEEP_MEMBER_SESSION`, in the window, which they then read by `GET /api/v1/messages/{id}`. A
-member who holds no session, a browser's person alone, takes `SWEEP_MEMBER_ISSUE` in its place:
-an issue of a project whose access list names the member, never of `SWEEP_PROJECT`, on which the
-member writes a comment and a message in the window, each a body alone. Their feed must be sent
-both, and they read the message by `GET /api/v1/messages/{id}`; a run takes one of the two. A
-subscription the server ends or refuses on an open socket covers no window. The comment, the
-direct messages and the question are the writes it makes. Its inputs are `SWEEP_ORIGIN`
+the member's feed must be sent the member's own writes of the window, the control of their feed,
+which takes one of two forms, exactly one given: with `SWEEP_MEMBER_SESSION`, the direct message
+the member sends their own session; with `SWEEP_MEMBER_ISSUE`, for a member who holds no session
+(a browser's person alone), a comment and then a message, each a body alone, on that issue of a
+project whose access list names the member, never of `SWEEP_PROJECT`. Their feed must be sent
+each, and they read the message by `GET /api/v1/messages/{id}`. A subscription the server ends or
+refuses on an open socket covers no window. The writes it makes are the full member's comment,
+direct messages and question, and the member's own direct message, or comment and message. Its
+inputs are `SWEEP_ORIGIN`
 (`https://`, or `http://` to a loopback host), `SWEEP_PROJECT`, `SWEEP_FULL_TOKEN`,
 `SWEEP_RESTRICTED_COOKIE` (the `Cookie` header's `<name>=<value>`), `SWEEP_MEMBER_SESSION` or
 `SWEEP_MEMBER_ISSUE`, `SWEEP_WRITE_ISSUE` and `SWEEP_CONVERSATION_FILE` (`<session id>/<slug>`,
 a file in the
 conversation of a session that worked in the project alone), and `SWEEP_FULL_COOKIE`, the full
-member's session cookie: the GitHub proxy and the agent view read as the browser's person and never
-as a token, and a direct message is a person's write, so without it the proxy reads cannot fail,
-and the run is `UNKNOWN`, naming them. It needs bash 3.2 or later, curl 7.55 or later, jq 1.6 or
-later, and bun with this checkout's dependencies installed (`bun install`), which runs the socket
+member's session cookie, for the GitHub proxy reads alone: the proxy reads the browser's person and
+never a token, so without it no proxy read can fail, and each is `UNKNOWN`, naming it, while every
+other row still runs. The direct messages and the agent view are made as `SWEEP_FULL_TOKEN`, which
+needs the `person` scope there (a full member's personal token). It needs bash 3.2 or later, curl
+7.55 or later, jq 1.6 or later, and bun with this checkout's dependencies installed
+(`bun install`), which runs the socket
 probe `e2e/acceptance/socket-access.ts`. No token or cookie reaches a command line or the output.
 
 ```bash
@@ -1041,8 +1044,9 @@ time of each of the member's own projects (`deployment`), which tell one deploym
 and read the same at its private origin and its public one; fills mode and a runner each refuse a
 list of projects that gives no creation time of each of them. A row that can fail is a
 `can_fail<TAB><row>` line, each proxy read, the agent view and the app-installation row among
-them, and every row it judged has a `full_status` line. Fills mode needs `SWEEP_FULL_COOKIE` too,
-since a proxy read it cannot make fail leaves no file, and writes none that lacks a fill. It takes
+them, and every row it judged has a `full_status` line. With `SWEEP_FULL_COOKIE`, a proxy read it
+cannot make fail leaves no file; without it, each proxy read is kept with no `can_fail` line, which
+a runner reads `UNKNOWN`. Fills mode writes no file that lacks a fill. It takes
 the member's login in `SWEEP_MEMBER`, and reads the member's own projects as the ones whose access
 lists name it. A runner, any run with `SWEEP_FILLS_FILE` and no `SWEEP_MODE`, does the member's
 half with the member's cookie alone, refuses a full member's credential, and refuses fills of
@@ -1079,7 +1083,7 @@ SWEEP_MODE=fills SWEEP_ORIGIN=... SWEEP_PROJECT=PRIV SWEEP_MEMBER=<login> SWEEP_
   SWEEP_FULL_COOKIE=... SWEEP_CONVERSATION_FILE=<session id>/<slug> SWEEP_FILLS_FILE=fills.tsv \
   bash e2e/acceptance/restricted-sweep.sh
 SWEEP_MODE=writer SWEEP_ORIGIN=... SWEEP_PROJECT=PRIV SWEEP_WRITE_ISSUE=PRIV-12 SWEEP_FULL_TOKEN=... \
-  SWEEP_FULL_COOKIE=... SWEEP_FILLS_FILE=fills.tsv bash e2e/acceptance/restricted-sweep.sh &
+  SWEEP_FILLS_FILE=fills.tsv bash e2e/acceptance/restricted-sweep.sh &
 SWEEP_ORIGIN=... SWEEP_PROJECT=PRIV SWEEP_FILLS_FILE=fills.tsv SWEEP_RESTRICTED_COOKIE=... \
   SWEEP_MEMBER_SESSION=<session id> bash e2e/acceptance/restricted-sweep.sh
 # Or, for a member who holds no session, their own comment and message on an issue of theirs:

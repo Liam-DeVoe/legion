@@ -152,7 +152,10 @@ export interface FeedShape {
  *  on, which both callers may see; `full` plants answers for the full member's requests;
  *  `createdAt` is when OWN was created, which GET /api/v1/projects answers either caller, so
  *  fills made at one fake and a runner at another whose OWN was created otherwise stand for two
- *  deployments; null lists OWN with no creation time. */
+ *  deployments; null lists OWN with no creation time. `tokenScope` answers the full member's
+ *  token, never their cookie, at the direct message and the agent view as the server answers a
+ *  token without the person scope (`none`: 403 OAUTH_SCOPE_REQUIRED, an `error` frame) or a
+ *  restricted member's (`restricted`: 404 SESSION_NOT_FOUND, no one answers). */
 export interface FakeShape {
   readonly omit?: ReadonlySet<string>;
   readonly issues?: number;
@@ -164,6 +167,7 @@ export interface FakeShape {
   readonly full?: readonly Leak[];
   readonly feed?: FeedShape;
   readonly createdAt?: string | null;
+  readonly tokenScope?: "none" | "restricted";
   /** The GET patterns of the route index a run reads, which the fake's own index (GET /api/v1)
    *  lists too, as a deployment's lists the routes its route table holds; the whole index when
    *  unset. */
@@ -272,10 +276,11 @@ function admitted(room: string): Uint8Array {
   return toUint8Array(frame);
 }
 
-/** What a socket of the fake is: the member's or the full member's, and, for the document
- *  socket, the room. */
+/** What a socket of the fake is: the member's or the full member's, whether its upgrade carried
+ *  the full member's token, and, for the document socket, the room. */
 interface SocketData {
   readonly member: boolean;
+  readonly bearer?: boolean;
   readonly room?: string;
 }
 
@@ -310,6 +315,8 @@ function fakeDispatch(leaks: readonly Leak[], fake: FakeShape) {
   const directMessages = new Map<string, { readonly member: boolean; readonly session: string }>();
   // Every message the member wrote on an issue of OWN, by id: the issue it is on.
   const issueMessages = new Map<string, string>();
+  // The credential of each direct message the full member wrote: `token` or `cookie`.
+  const directBy: string[] = [];
   let events = 0;
   const publish = (feeds: readonly Feed[], event: Record<string, unknown>) => {
     for (const { socket, sub } of feeds) {
@@ -324,14 +331,15 @@ function fakeDispatch(leaks: readonly Leak[], fake: FakeShape) {
       const target = decodeURIComponent(url.pathname + url.search);
       const member = request.headers.get("cookie") === memberCookie;
       const fullBrowser = request.headers.get("cookie") === fullCookie;
-      const full = fullBrowser || request.headers.get("authorization") === `Bearer ${fullToken}`;
+      const bearer = request.headers.get("authorization") === `Bearer ${fullToken}`;
+      const full = fullBrowser || bearer;
       if (full) fullRequests += 1;
       if (request.headers.get("upgrade") !== null) {
         if (member && feed.memberRefusal !== undefined && url.pathname === "/ws/live") {
           return Response.json(feed.memberRefusal, { status: 404 });
         }
         if (feed.live === true && url.pathname === "/ws/live" && (member || full)) {
-          if (served.upgrade(request, { data: { member } })) return undefined;
+          if (served.upgrade(request, { data: { member, bearer } })) return undefined;
         }
         if (feed.doc === true && member && url.pathname === `/ws/doc/${ownDocument}`) {
           if (served.upgrade(request, { data: { member, room: ownDocument } })) return undefined;
@@ -361,6 +369,22 @@ function fakeDispatch(leaks: readonly Leak[], fake: FakeShape) {
       const direct = /^\/api\/v1\/agents\/([^/]+)\/messages$/.exec(url.pathname);
       const read = /^\/api\/v1\/messages\/([^/]+)(\/blocks)?$/.exec(url.pathname);
       if (request.method === "POST" && direct !== null) {
+        if (full) directBy.push(bearer ? "token" : "cookie");
+        if (bearer && fake.tokenScope === "none") {
+          return Response.json(
+            {
+              code: "OAUTH_SCOPE_REQUIRED",
+              error: "this request's credential does not hold the person scope",
+            },
+            { status: 403 }
+          );
+        }
+        if (bearer && fake.tokenScope === "restricted") {
+          return Response.json(
+            { code: "SESSION_NOT_FOUND", error: `no session ${direct[1]}` },
+            { status: 404 }
+          );
+        }
         events += 1;
         const id = crypto.randomUUID();
         const session = direct[1] ?? "";
@@ -495,6 +519,21 @@ function fakeDispatch(leaks: readonly Leak[], fake: FakeShape) {
         if (frame.view?.kind === "agent") {
           const agent = (event: string, data: unknown) =>
             socket.send(JSON.stringify({ type: "agent", sub, event, data }));
+          if (socket.data.bearer === true && fake.tokenScope === "none") {
+            socket.send(
+              JSON.stringify({
+                type: "error",
+                sub,
+                code: "OAUTH_SCOPE_REQUIRED",
+                message: "no person scope",
+              })
+            );
+            return;
+          }
+          if (socket.data.bearer === true && fake.tokenScope === "restricted") {
+            agent("responder", { v: 1, responding: false });
+            return;
+          }
           if (frame.view.session_id !== tgt.session) {
             agent("responder", { v: 1, responding: false });
             return;
@@ -522,6 +561,7 @@ function fakeDispatch(leaks: readonly Leak[], fake: FakeShape) {
   return {
     memberPaths,
     memberWrites,
+    directBy,
     fullRequests: () => fullRequests,
     origin: `http://127.0.0.1:${server.port}`,
     server,
@@ -553,13 +593,15 @@ export interface RunShape extends FakeShape {
 }
 
 /** What one run of the sweep answered, the paths of every request the member sent, every write
- *  the member made (`POST <path>`), how many requests the full member's credential made, and the
- *  fake's origin. */
+ *  the member made (`POST <path>`), the credential of each direct message the full member wrote
+ *  (`token` or `cookie`), how many requests the full member's credential made, and the fake's
+ *  origin. */
 export interface SweptRun {
   readonly code: number;
   readonly stdout: string;
   readonly memberPaths: readonly string[];
   readonly memberWrites: readonly string[];
+  readonly directBy: readonly string[];
   readonly fullRequests: number;
   readonly origin: string;
 }
@@ -603,6 +645,7 @@ export async function sweep(leaks: readonly Leak[], shape: RunShape = {}): Promi
     fullRequests: fake.fullRequests(),
     memberPaths: fake.memberPaths,
     memberWrites: fake.memberWrites,
+    directBy: fake.directBy,
     origin: fake.origin,
     stdout: run.stdout,
   };

@@ -128,7 +128,9 @@
 # project's repository, a person of it, a file of its conversation), one `can_fail<TAB><row>` a
 # row whose full-member half can fail, and one `full_status<TAB><status> <row>` a row. Fills mode
 # refuses to write one above 40 KiB, one that lacks a fill, or where a row it can tell cannot fail
-# must (a GitHub proxy read, a route held to a missing object's answer). A runner refuses fills
+# must (a GitHub proxy read made with SWEEP_FULL_COOKIE, a route held to a missing object's
+# answer); without SWEEP_FULL_COOKIE it keeps each proxy read as one that cannot fail, which a
+# runner reads UNKNOWN. A runner refuses fills
 # that are absent, empty, of another version or project, made from another route index than its
 # own, older than 55 minutes (the question's run is kept an hour and read only by its asker),
 # that lack a fill whole fills hold, that name their origin by no SHA-256, or that were made at
@@ -143,7 +145,11 @@
 #                            to 127.0.0.1, localhost or [::1], for a local stack.
 #   SWEEP_PROJECT            [all] the key of the project the member's access list must not name.
 #   SWEEP_FULL_TOKEN         [one run, fills, writer] a bearer token of a full member who sees that
-#                            project; any bearer Dispatch accepts, a broker-traded one included.
+#                            project; any bearer Dispatch accepts, a broker-traded one included. As
+#                            it the run also writes the direct messages and watches the live
+#                            socket's agent view, which need its person scope: a full member's
+#                            personal token holding `person`, as the box's operator gives it. A
+#                            token without that scope is answered 403 there, and the run is UNKNOWN.
 #   SWEEP_RESTRICTED_COOKIE  [one run, runner] the restricted member's session cookie, as the
 #                            `Cookie` header carries it (`<name>=<value>`).
 #   SWEEP_MEMBER_SESSION     [one run, runner] the member's own session, which the member's direct
@@ -158,13 +164,12 @@
 #   SWEEP_MEMBER             [fills] the restricted member's login. The member's own projects are
 #                            the ones whose access lists name it, which a runner checks against
 #                            the projects the member is listed.
-#   SWEEP_FULL_COOKIE        [one run, fills, writer] the full member's session cookie, alike. The
-#                            GitHub proxy and the live socket's agent view read as the browser's
-#                            person and never as a token, and a direct message is a person's
-#                            write, so only with it are the proxy reads and the agent view made as
-#                            the full member too and able to fail, and the direct messages written;
-#                            without it the proxy reads cannot fail, and the run is UNKNOWN, naming
-#                            them, and fills mode writes no file.
+#   SWEEP_FULL_COOKIE        [one run, fills] the full member's session cookie, alike, for the
+#                            GitHub proxy reads alone: the proxy reads the browser's person and
+#                            never a token, so only with it are those reads made as the full member
+#                            and able to fail. Without it each proxy read is UNKNOWN, never PASS (in
+#                            fills mode it is kept with no `can_fail` line, which a runner reads
+#                            UNKNOWN), and every other row still runs.
 #   SWEEP_WRITE_ISSUE        [one run, writer] the issue of SWEEP_PROJECT the full member comments
 #                            on while the feeds are open. A comment, a direct message and the
 #                            question are the full member's writes, and the member's own direct
@@ -238,7 +243,7 @@
 #     SWEEP_FULL_COOKIE=... SWEEP_CONVERSATION_FILE=<session id>/<slug> SWEEP_FILLS_FILE=fills.tsv \
 #     bash e2e/acceptance/restricted-sweep.sh
 #   SWEEP_MODE=writer SWEEP_ORIGIN=... SWEEP_PROJECT=PRIV SWEEP_WRITE_ISSUE=PRIV-12 SWEEP_FULL_TOKEN=... \
-#     SWEEP_FULL_COOKIE=... SWEEP_FILLS_FILE=fills.tsv bash e2e/acceptance/restricted-sweep.sh &
+#     SWEEP_FILLS_FILE=fills.tsv bash e2e/acceptance/restricted-sweep.sh &
 #   SWEEP_ORIGIN=... SWEEP_PROJECT=PRIV SWEEP_FILLS_FILE=fills.tsv SWEEP_RESTRICTED_COOKIE=... \
 #     SWEEP_MEMBER_SESSION=<session id> bash e2e/acceptance/restricted-sweep.sh
 #   # A runner whose member holds no session: their own comment and message on an issue of theirs.
@@ -503,9 +508,9 @@ fi
 if [ "$mode" = one ] || [ "$mode" = runner ]; then
   printf 'Cookie: %s\n' "$cookie" >"$work/restricted.h" || unknown 'could not write the restricted member header'
 fi
-# The full member as the browser's person, for the GitHub proxy, the agent view and a direct
-# message, which read no token.
-full_browser=full
+# The full member as the browser's person, for the GitHub proxy alone, which reads no token; the
+# direct messages and the agent view are the token's. Without the cookie no proxy read is made.
+full_browser=''
 if [ -n "$full_cookie" ]; then
   printf 'Cookie: %s\n' "$full_cookie" >"$work/full-browser.h" || unknown 'could not write the full member cookie header'
   full_browser=full-browser
