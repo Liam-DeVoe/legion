@@ -44,10 +44,14 @@ package daemon
 // P before its agent registers (named); and a wake that comes up in P before its agent registers
 // (named). The last two are not passed over any more, and no agent of them registered in P: their
 // first launch after the release put the pod it went into, or was refused for, in their set
-// (supervise's Machine.addRestoringPod). Two more rows hold the passed-over case to an agent that
-// ran somewhere: a released member whose session is forgotten during the round, whose set still
-// holds P0, is named where the pod goes; and a member refused for P with no session, which never
-// registered anywhere and which the daemon suspends during the round, is named at no end.
+// (supervise's Machine.addRestoringPod), since an idle release suspended them and an agent of
+// them had run. Two more rows hold the passed-over case to an agent that ran somewhere: a
+// released member whose session is forgotten during the round, whose set still holds P0, is named
+// where the pod goes; and a member refused for P with no session, which never registered anywhere
+// and which the daemon suspends during the round, is named at no end. And the tester's order
+// (2026-11-22T20:32Z): a member refused for P with no session, whose retry a project's pause stops
+// as released, and whose resume by rule after the pause is refused for P again, is named at no
+// end, since a pause keeps the pod and saves no bundle, and no agent of it ever ran.
 //
 // The pairs the table has no row for are of two sorts. These cannot occur, each for the reason
 // given:
@@ -83,9 +87,11 @@ package daemon
 // replaces P through the tester's process past a member that lost its session; its passed-over
 // case read for every claim the round passes over fails the rows of the member that never ran,
 // and read only for a claim with a session fails the rows of the released member whose session
-// was forgotten; and addRestoringPod adding nothing fails every row of a woken member.
+// was forgotten; addRestoringPod adding nothing fails every row of a woken member; and
 // podupdate.go, machine.go and table.go as they stood at 692d89cb88 fail every row of a member an
-// idle release suspended.
+// idle release suspended. machine.go, suspend.go and table.go as they stood at ede7678607, whose
+// first launch after any released suspension grew the set, fail the rows of the member a pause
+// stopped.
 
 import (
 	"context"
@@ -93,6 +99,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -100,7 +107,18 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
+
+// orderPause is the project's pause flag as the order table drives it (supervise.Deps.Paused):
+// the open pause's id, 0 while the project runs.
+type orderPause struct{ id atomic.Int64 }
+
+// Paused is the flag as a machine reads it.
+func (p *orderPause) Paused() (int64, bool) {
+	id := p.id.Load()
+	return id, id != 0
+}
 
 // roundPodEnd is how the round over podUpdatePod ends in the order table.
 type roundPodEnd int
@@ -156,6 +174,7 @@ const (
 	restartRegistered
 	restartUnknown
 	restartEmpty
+	pausedNeverRun
 	releasedRestored
 	releasedChain
 	releasedKeptVolume
@@ -176,6 +195,7 @@ func (k memberKind) String() string {
 		"after a restart over a stored claim whose registered agent runs in the pod, read as unknown",
 		"after a restart over a stored claim that shows an abandoned session",
 		"after a restart over a stored claim that shows no session",
+		"it was refused for the pod with no session, stopped by a pause, and refused again after a resume",
 		"an idle release suspended it in an earlier pod, whose bundle the pod restored",
 		"an idle release suspended it in an earlier pod, and it stayed suspended through a second release",
 		"an idle release suspended it in an earlier pod of the kept volume the pod mounts",
@@ -274,6 +294,12 @@ func TestPodUpdateNamesWhatTheRoundsPodTookAtEachEndOfEachMember(t *testing.T) {
 		{endRecreated, neverRunSuspended, ""},
 		{endRecreatedRefusing, neverRunSuspended, ""},
 		{endAtALaunch, neverRunSuspended, ""},
+		{endBySweep, pausedNeverRun, ""},
+		{endThroughAProcess, pausedNeverRun, ""},
+		{endPodGone, pausedNeverRun, ""},
+		{endRecreated, pausedNeverRun, ""},
+		{endRecreatedRefusing, pausedNeverRun, ""},
+		{endAtALaunch, pausedNeverRun, ""},
 	} {
 		t.Run(row.end.String()+": "+row.kind.String(), func(t *testing.T) {
 			rig := orderedTo(t, row.end, row.kind)
@@ -288,7 +314,8 @@ func TestPodUpdateNamesWhatTheRoundsPodTookAtEachEndOfEachMember(t *testing.T) {
 // of it registers in from then on (supervise.Claim.RegisteredPods); where end is
 // endThroughAProcess, the tester runs in P beside it, registered, and answers the round. The
 // restart rows restart the daemon (podUpdateRig.restart) and go on with the rig it answers. A
-// member the daemon suspended before the round's end is brought to its end by suspendedTo.
+// member the daemon suspended before the round's end is brought to its end by suspendedTo. The
+// rig of the member a pause stopped reads a pause flag of its own (podUpdateRigOptions.paused).
 func orderedTo(t *testing.T, end roundPodEnd, kind memberKind) *podUpdateRig {
 	t.Helper()
 	if kind.suspended() {
@@ -299,7 +326,12 @@ func orderedTo(t *testing.T, end roundPodEnd, kind memberKind) *podUpdateRig {
 	if end == endThroughAProcess {
 		roles = append(roles, readyWorker(tester))
 	}
-	rig := newPodUpdateRig(t, roles...)
+	var opts podUpdateRigOptions
+	pause := &orderPause{}
+	if kind == pausedNeverRun {
+		opts.paused = pause.Paused
+	}
+	rig := newPodUpdateRigWith(t, opts, roles...)
 	rig.rt.ScriptWorkspaceWork(podUpdateIssue, runtime.WorkspaceWork{Head: passedOverHead, Commits: []string{passedOverCommit}, Count: 1})
 	rig.drifts(podUpdateExchangeDrift)
 	refusals := rig.refuseLaunches()
@@ -311,6 +343,28 @@ func orderedTo(t *testing.T, end roundPodEnd, kind memberKind) *podUpdateRig {
 	case neverInPod, registeredElsewhere, restartEmpty:
 		refusals.refuse(implementer, podUpdatePod)
 		rig.refusedFirstLaunch(implementer)
+	case pausedNeverRun:
+		// The tester's order (dispatch://INFRA-4425/artifact/tester-pausestop-test-md): refused for
+		// P with no session, the implementer's retry meets a project's pause, whose gate stops it as
+		// released (supervise's pauseGate, pauseStopDue). The pause ends, and a resume by rule
+		// launches it again, which is refused for P again. A pause keeps the pod and saves no
+		// bundle, and no agent of the implementer ever ran, so its set stays empty.
+		refusals.refuse(implementer, podUpdatePod)
+		rig.refusedFirstLaunch(implementer)
+		pause.id.Store(7)
+		rig.retryLaunch()
+		testwait.Eventually(t, "the pause's gate to stop the implementer as released", func() bool {
+			rig.clock.fire(0)
+			return rig.claimOf(implementer).Released()
+		})
+		pause.id.Store(0)
+		if err := rig.machineOf(implementer).Handle(rig.ctx, supervise.RequestRuleResume{Claim: rig.tokens[implementer], Reason: "the pause ended"}); !errors.Is(err, runtime.ErrAwaitingPodRound) {
+			t.Fatalf("the implementer's resume after the pause answered %v, want its launch refused for the pod's round", err)
+		}
+		if c := rig.claimOf(implementer); c.Session != "" || c.Locator != nil || podOf(c.AwaitsPod) != podUpdatePod {
+			t.Fatalf("the resumed implementer has session %q and process %+v, waiting on %+v; want no session, no process and the wait on pod %s",
+				c.Session, c.Locator, c.AwaitsPod, podUpdatePod)
+		}
 	case restartUnknown:
 		// An agent of it registers in P, an operator suspends it and forgets its session, and the
 		// daemon restarts before any round: the stored claim shows the abandoned session and no

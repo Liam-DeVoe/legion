@@ -88,16 +88,23 @@ func TestARegistrationAddsItsPodToTheSetAndNothingTakesItOut(t *testing.T) {
 	h.wantRegistered(RegisteredPods{Pods: []string{refusedPod, replacedPod}}, "once the claim lost its session and started fresh in a third pod,")
 }
 
-// The one pod that goes in the set with no registration is the pod of a claim's first launch
-// after an idle release (addRestoringPod): the release saved the unpushed work of the issue's
-// workspace and took the pod, and the issue's next pod restored that work before any role
-// started, so the claim's work is on that pod's disk before its agent registers there. A wake's
-// resume (resumeByRule) that comes up in the next pod puts that pod in the set while the claim is
-// still launching; the claim's later launches add their pods only once an agent registers, as
-// every launch does. A wake's resume that the runtime refuses for the next pod puts the pod the
-// refusal names in the set, and the retry that later comes up in another pod adds nothing before
-// its agent registers. A claim the daemon suspended for its own rule, which no release saved the
-// work of, puts no pod in the set at its resume.
+// The one pod that goes in the set with no registration is the pod of the first launch of a role
+// an idle release suspended, an agent of which had run (addRestoringPod): the release saved the
+// unpushed work of the issue's workspace and took the pod, and the issue's next pod restored that
+// work before any role started, so the claim's work is on that pod's disk before its agent
+// registers there. A wake's resume (resumeByRule) that comes up in the next pod puts that pod in
+// the set while the claim is still launching; the claim's later launches add their pods only once
+// an agent registers, as every launch does. A wake's resume that the runtime refuses for the next
+// pod puts the pod the refusal names in the set, and the retry that later comes up in another pod
+// adds nothing before its agent registers. A wake whose launch an open pause's gate stops before
+// it reaches any pod leaves the claim the release's (suspended): the release's bundle is still
+// unrestored, so the launch after the pause puts its pod in the set.
+//
+// The cases after them put no pod in the set at the resume (markRestoringLaunch). A claim the
+// daemon suspended for its own rule was saved by no release. A project pause's stop suspends as
+// released too, but the pause keeps the pod and saves no bundle, whether or not an agent of the
+// claim ran. And a claim that never ran an agent anywhere, queued with no session and refused for
+// a pod, has no work of its own in any bundle, whether a release or a pause's gate stopped it.
 func TestTheFirstLaunchAfterAnIdleReleaseAddsItsPodToTheSet(t *testing.T) {
 	released := func(t *testing.T) *harness {
 		t.Helper()
@@ -154,6 +161,30 @@ func TestTheFirstLaunchAfterAnIdleReleaseAddsItsPodToTheSet(t *testing.T) {
 		h.wantRegistered(RegisteredPods{Pods: []string{refusedPod, replacedPod}}, "once the retry came up in another pod, before its agent registered,")
 	})
 
+	t.Run("a wake whose launch a pause stops before any pod, then a resume after the pause", func(t *testing.T) {
+		h, flag, _ := pauseHarness(t, queuedClaim())
+		h.inPod(refusedPod)
+		h.must(RequestSuspend{Claim: h.token, Reason: "the idle pod was released", By: SuspendedByReleased})
+		h.wantRegistered(RegisteredPods{Pods: []string{refusedPod}}, "once released,")
+		flag.set(7)
+		if err := h.handle(RequestRuleResume{Claim: h.token, Reason: "a wake for a delivery"}); err != nil {
+			t.Fatalf("the wake's resume under the open pause answered %v, want its launch held by the pause's gate", err)
+		}
+		h.advance(0)
+		if c := h.claim(); !c.Released() || c.Locator != nil {
+			t.Fatalf("the woken claim is %s by %q at %+v, want it stopped by the pause's gate as released before any pod", c.State, c.SuspendedBy, c.Locator)
+		}
+		h.wantCalls("Resume", 0)
+		h.wantRegistered(RegisteredPods{Pods: []string{refusedPod}}, "once the pause's gate stopped its launch,")
+		flag.set(0)
+		h.rt.ScriptResume(fake.SpawnResult{Locator: podProcess(replacedPod, 2)})
+		h.must(RequestRuleResume{Claim: h.token, Reason: "the pause ended"})
+		if c := h.claim(); c.State != StateLaunching || locatorPod(c.Locator) != replacedPod {
+			t.Fatalf("the resumed claim is %s at %+v, want it launching in pod %s", c.State, c.Locator, replacedPod)
+		}
+		h.wantRegistered(RegisteredPods{Pods: []string{refusedPod, replacedPod}}, "once its resume after the pause came up in the next pod, before its agent registered,")
+	})
+
 	t.Run("a resume of a claim the daemon suspended", func(t *testing.T) {
 		h := newHarness(t)
 		h.inPod(refusedPod)
@@ -164,6 +195,72 @@ func TestTheFirstLaunchAfterAnIdleReleaseAddsItsPodToTheSet(t *testing.T) {
 			t.Fatalf("the resumed claim is %s at %+v, want it launching in pod %s", c.State, c.Locator, replacedPod)
 		}
 		h.wantRegistered(RegisteredPods{Pods: []string{refusedPod}}, "once its resume came up in another pod, before its agent registered,")
+	})
+
+	t.Run("a resume after a pause's stop of a claim that ran", func(t *testing.T) {
+		h, flag, _ := pauseHarness(t, queuedClaim())
+		h.inPod(refusedPod)
+		flag.set(7)
+		h.must(pauseStop(h.token, 7))
+		if c := h.claim(); !c.Released() {
+			t.Fatalf("the claim is %s by %q, want it stopped by the pause as released", c.State, c.SuspendedBy)
+		}
+		h.wantRegistered(RegisteredPods{Pods: []string{refusedPod}}, "once the pause stopped it,")
+		flag.set(0)
+		h.rt.ScriptResume(fake.SpawnResult{Locator: podProcess(replacedPod, 2)})
+		h.must(RequestRuleResume{Claim: h.token, Reason: "the pause ended"})
+		if c := h.claim(); c.State != StateLaunching || locatorPod(c.Locator) != replacedPod {
+			t.Fatalf("the resumed claim is %s at %+v, want it launching in pod %s", c.State, c.Locator, replacedPod)
+		}
+		h.wantRegistered(RegisteredPods{Pods: []string{refusedPod}}, "once its resume after the pause came up in another pod, before its agent registered,")
+	})
+
+	// The tester's order (dispatch://INFRA-4425/artifact/tester-pausestop-test-md): the pause's
+	// gate stops the never-run claim's retry, and its resume by rule is refused for the pod again.
+	t.Run("a resume after a pause's stop of a claim that never ran", func(t *testing.T) {
+		h, flag, _ := pauseHarness(t, queuedClaim())
+		h.rt.OnSpawn = refusedFor(refusedPod)
+		if err := h.handle(RequestSpawn{Claim: h.token}); !errors.Is(err, runtime.ErrAwaitingPodRound) {
+			t.Fatalf("the first launch answered %v, want the runtime's wait for the pod's round", err)
+		}
+		flag.set(7)
+		h.advance(podRoundRetry)
+		h.advance(0)
+		if c := h.claim(); !c.Released() || c.Session != "" {
+			t.Fatalf("the claim is %s by %q with session %q, want it stopped by the pause's gate as released with no session", c.State, c.SuspendedBy, c.Session)
+		}
+		h.wantRegistered(RegisteredPods{}, "once the pause stopped it,")
+		flag.set(0)
+		if err := h.handle(RequestRuleResume{Claim: h.token, Reason: "the pause ended"}); err != nil && !errors.Is(err, runtime.ErrAwaitingPodRound) {
+			t.Fatalf("the resume answered %v, want nil or the runtime's wait for the pod's round", err)
+		}
+		if c := h.claim(); c.Locator != nil || locatorPod(c.AwaitsPod) != refusedPod {
+			t.Fatalf("the resumed claim records %+v and waits on %+v, want no process and the wait on pod %s", c.Locator, c.AwaitsPod, refusedPod)
+		}
+		h.wantRegistered(RegisteredPods{}, "once its launch after the pause was refused for the pod again,")
+	})
+
+	t.Run("a resume after an idle release of a claim that never ran", func(t *testing.T) {
+		h := newHarness(t)
+		h.rt.OnSpawn = refusedFor(refusedPod)
+		if err := h.handle(RequestSpawn{Claim: h.token}); !errors.Is(err, runtime.ErrAwaitingPodRound) {
+			t.Fatalf("the first launch answered %v, want the runtime's wait for the pod's round", err)
+		}
+		if err := h.handle(RequestSuspend{Claim: h.token, Reason: "the idle pod was released", By: SuspendedByReleased}); err != nil && !errors.Is(err, ErrSuspendHeld) {
+			t.Fatalf("the release's suspension answered %v, want nil or held for the waiting launch", err)
+		}
+		h.advance(podRoundRetry)
+		if c := h.claim(); !c.Released() || c.Session != "" {
+			t.Fatalf("the claim is %s by %q with session %q, want it released with no session", c.State, c.SuspendedBy, c.Session)
+		}
+		h.wantRegistered(RegisteredPods{}, "once released,")
+		if err := h.handle(RequestRuleResume{Claim: h.token, Reason: "a wake for a delivery"}); err != nil && !errors.Is(err, runtime.ErrAwaitingPodRound) {
+			t.Fatalf("the wake's resume answered %v, want nil or the runtime's wait for the pod's round", err)
+		}
+		if c := h.claim(); c.Locator != nil || locatorPod(c.AwaitsPod) != refusedPod {
+			t.Fatalf("the woken claim records %+v and waits on %+v, want no process and the wait on pod %s", c.Locator, c.AwaitsPod, refusedPod)
+		}
+		h.wantRegistered(RegisteredPods{}, "once its wake's launch was refused for the pod again,")
 	})
 }
 

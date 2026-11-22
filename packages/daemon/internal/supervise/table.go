@@ -2647,9 +2647,9 @@ func reready(m *Machine, ctx context.Context, _ Event) error {
 	return finishReady(m, ctx)
 }
 
-// resume is the operator's resume of a suspended claim: its recorded session relaunched. A claim
-// an idle release suspended marks that launch as its first since the release
-// (markRestoringLaunch), as resumeByRule and deliverResuming mark theirs.
+// resume is the operator's resume of a suspended claim: its recorded session relaunched. Where it
+// is the first launch of a role an idle release suspended, an agent of which had run, it marks
+// that launch (markRestoringLaunch), as resumeByRule and deliverResuming mark theirs.
 func resume(m *Machine, ctx context.Context, ev Event) error {
 	if err := m.resumeRefusal(ctx, "resume"); err != nil {
 		return err

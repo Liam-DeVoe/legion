@@ -15,9 +15,13 @@ body: |-
   role starts, or a kept volume holds it, so such a role is named although no agent of it
   registered in that pod, also after a chain of releases. A role the round passes over with no
   session and no pod in its set, as one refused for the pod with no session and suspended since,
-  never ran an agent, and no end names it. The first launch of a released role puts the pod it
-  goes into, or the pod it is refused for, in that set, so a released
-  role woken into the round's pod is named before its agent registers there. That addition is in
+  never ran an agent, and no end names it. The first launch of a role an idle release suspended,
+  an agent of which had run, puts the pod it goes into, or the pod it is refused for, in that
+  set, so such a role woken into the round's pod is named before its agent registers there. A
+  project pause's stop, which keeps the pod and saves no bundle, adds no pod, and neither does the
+  first launch of a role that never ran an agent, whatever woke it. A pause's stop of that first
+  launch before it reached any pod is the exception: the bundle is still unrestored, so the first
+  launch after the pause adds its pod. That addition is in
   memory as well: after a daemon restart between the wake and the end, the role's set is unknown,
   and the end names it where it had not answered. And after a daemon restart, a role whose stored
   claim shows a session it held, now or abandoned, is named for every pod, so the daemon errs

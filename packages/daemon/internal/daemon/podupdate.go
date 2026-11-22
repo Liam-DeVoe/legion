@@ -3589,11 +3589,13 @@ func unansweredMembers(group []supervise.Claim, round string) []supervise.Claim 
 //     the end says nothing of it: a claim refused for the pod with no session that started in the
 //     pod in its place and registered there has a session and never ran in the round's pod, and
 //     one that registered in the pod and lost its session, as a fresh start after a resume that
-//     found no session does, has none and ran there. The set also holds the pod that c's first
-//     launch after an idle release went into or was refused for (supervise's
-//     Machine.addRestoringPod): that pod restored the release's bundle before any role started,
-//     or mounts the kept volume that holds the work, so c's work is on its disk before an agent
-//     of c registers there.
+//     found no session does, has none and ran there. The set also holds the pod that the first
+//     launch of a role an idle release suspended, an agent of which had run, went into or was
+//     refused for (supervise's Machine.addRestoringPod): that pod restored the release's bundle
+//     before any role started, or mounts the kept volume that holds the work, so c's work is on
+//     its disk before an agent of c registers there. A project pause's stop, which keeps the pod
+//     and saves no bundle, puts no pod in the set, unless it stopped that first launch before it
+//     reached any pod, and neither does a claim that never ran an agent.
 //   - The round passes over c (supervise's Claim.PassedOverByRound), and an agent of c ran
 //     somewhere: c has a session, or its set holds a pod. An idle release saved the unpushed work
 //     of the workspace every role shares as a bundle, and the issue's next pod restored it before

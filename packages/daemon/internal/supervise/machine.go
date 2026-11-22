@@ -470,10 +470,10 @@ type Claim struct {
 	// nothing. Nothing takes a pod out of it, not a session lost or forgotten, a let-go, or a
 	// relaunch into another pod, since an agent that registered in a pod had a worker there, and
 	// what that worker did not push was on that pod's disk. One pod goes in with no registration:
-	// the pod that the claim's first launch after an idle release went into or was refused for
-	// (addRestoringPod), whose disk holds the release's saved work before any agent of the claim
-	// registers there. The daemon's update round reads the set to name a member that lost work
-	// (internal/daemon's workOnRoundPod).
+	// the pod that the first launch of a role an idle release suspended, an agent of which had run,
+	// went into or was refused for (addRestoringPod), whose disk holds the release's saved work
+	// before any agent of the claim registers there. The daemon's update round reads the set to
+	// name a member that lost work (internal/daemon's workOnRoundPod).
 	//
 	// A machine built over a stored claim does not know where the claim registered before it was
 	// built, so it reads the set off the stored claim (bootRegisteredPods). It is memory only, as
@@ -1663,16 +1663,35 @@ type Machine struct {
 	awaitsPod *runtime.Locator
 	// registeredPods is the set of pods an agent of the claim registered a session in: what
 	// Claim.RegisteredPods reports (current). NewMachine reads it off the claim it is built over
-	// (bootRegisteredPods), register adds to it, and so does the first launch after an idle
-	// release (addRestoringPod); nothing else writes it, so neither letGo nor a launch takes a pod
-	// out of it. Memory only, as awaitsPod is.
+	// (bootRegisteredPods), register adds to it, and so does the first launch of a role an idle
+	// release suspended, an agent of which had run (addRestoringPod); nothing else writes it, so
+	// neither letGo nor a launch takes a pod out of it. Memory only, as awaitsPod is.
 	registeredPods RegisteredPods
-	// restoringLaunch is whether the claim's next launch is its first since an idle release
-	// suspended it (Claim.Released): resume, resumeByRule and deliverResuming set it as they relaunch
-	// a released claim (markRestoringLaunch), and the pod that launch goes into or is refused for
-	// takes it off again (addRestoringPod). Memory only, as registeredPods is: a restarted daemon
-	// reads the set of a claim that shows a session as unknown (bootRegisteredPods), so the update
-	// round names such a claim for any pod.
+	// idleReleased is whether the claim's current suspension is an idle release's: a suspension
+	// by SuspendedByReleased that no project pause asked for (RequestSuspend.Pause is 0). The
+	// suspension that stands writes it (suspended). A pause's stop suspends as released too, but
+	// it keeps the pod and saves no bundle, so it writes false, as every other source does, and so
+	// does a held idle release that a pause's stop took over before the hold ran (holdSuspension,
+	// holdSuspendUntilReady), since the hold then runs as the pause's. The one pause's stop that
+	// writes true is a stop of the first launch of a role an idle release suspended, an agent of
+	// which had run (restoringLaunch), before that launch reached any pod: the release's bundle is
+	// still unrestored, so the claim stays the release's. A daemon's or an operator's
+	// suspension that takes a released claim over clears it (suspendedAgain), and the claim's next
+	// launch clears it as the claim leaves the suspension (launchNow); it is read only while the
+	// claim stands released (markRestoringLaunch), and every suspension writes it anew. A pause's
+	// stop that reaches a claim an idle release has already suspended takes nothing over
+	// (suspendedAgain), so the idle release's suspension still stands, and so does this. It
+	// decides, with whether an agent of the claim had run, whether the claim's first launch after
+	// the suspension grows its set (markRestoringLaunch). Memory only: a restarted daemon reads it
+	// false, so such a claim gains no pod, and its stored session reads its set Unknown in any case
+	// (bootRegisteredPods).
+	idleReleased bool
+	// restoringLaunch is whether the claim's next launch is the first launch of a role an idle
+	// release suspended, an agent of which had run: resume, resumeByRule and deliverResuming set
+	// it as they relaunch such a claim (markRestoringLaunch), every suspension takes it off
+	// (suspended), a pause's stop of that launch handing it on as the release's (idleReleased),
+	// and so does the pod that launch goes into or is refused for (addRestoringPod).
+	// Memory only, as registeredPods is.
 	restoringLaunch bool
 	// wake is the launch the wake pacing holds until its turn (reserveWake), run when TimerWake
 	// fires (wakeNow); nil for none. It lives as long as that timer, which letGo disarms with it,
@@ -2993,6 +3012,9 @@ func (m *Machine) launchNow(ctx context.Context, charged, exempt bool, cause str
 		m.claim.BootTokenHash = HashBootToken(token)
 
 		m.claim.State = StateLaunching
+		// The claim leaves any suspension it stood in, so the record of an idle release's
+		// suspension goes with it (idleReleased).
+		m.idleReleased = false
 		// The pod end goes with the failure: a claim being launched again carries nothing of the
 		// end that stopped the process before it (Claim.PodEnd).
 		m.claim.Failure, m.claim.FailureCause, m.claim.FailedAt, m.claim.PodEnd = "", "", time.Time{}, ""
@@ -3039,8 +3061,9 @@ func (m *Machine) launchNow(ctx context.Context, charged, exempt bool, cause str
 			// it names, so a claim that records that process always records the mark with it.
 			m.claim.Locator = &loc
 			m.leftPodRoundAt(loc)
-			// The claim's first launch since an idle release came up in the pod that holds the
-			// release's work, before any agent of it registers there (addRestoringPod).
+			// The first launch of a role an idle release suspended, an agent of which had run, came
+			// up in the pod that holds the release's work, before any agent of it registers there
+			// (addRestoringPod).
 			m.addRestoringPod(locatorPod(&loc))
 			m.armBoot()
 			m.log.Info("supervise: launched", "generation", m.claim.Generation, "incarnation", loc.Incarnation,
@@ -3221,8 +3244,8 @@ const podRoundWaitLine = "supervise: this start waits for its pod's update round
 // the pod the refusal names (awaitsPod, Claim.AwaitsPod): that is what the daemon's update round
 // opens over and replaces the pod through, where no claim records a process in it. Without it no
 // round would come, and this wait would never end. The write below publishes it, before the
-// retry is due. A refusal of the claim's first launch since an idle release puts that pod in the
-// claim's set (addRestoringPod).
+// retry is due. A refusal of the first launch of a role an idle release suspended, an agent of
+// which had run, puts that pod in the claim's set (addRestoringPod).
 func (m *Machine) startWaitsForPodRound(ctx context.Context, cause error, charged, exempt, waiting bool) error {
 	err := errors.Join(cause, m.stopPrevious(ctx))
 	if !waiting {
@@ -3243,9 +3266,9 @@ func (m *Machine) startWaitsForPodRound(ctx context.Context, cause error, charge
 // RegisteredPods is the set of pods in which an agent of a claim registered a session, as its
 // machine knows it (Claim.RegisteredPods).
 type RegisteredPods struct {
-	// Pods is the uid of each pod an agent of the claim registered a session in, and of the pod its
-	// first launch after an idle release went into or was refused for (addRestoringPod), each once,
-	// in the order each went in.
+	// Pods is the uid of each pod an agent of the claim registered a session in, and of the pod
+	// that the first launch of a role an idle release suspended, an agent of which had run, went
+	// into or was refused for (addRestoringPod), each once, in the order each went in.
 	Pods []string
 	// Unknown is whether an agent of the claim may have registered in a pod that Pods does not
 	// name: a machine built over a stored claim that shows a session it held cannot say where
@@ -3289,24 +3312,29 @@ func bootRegisteredPods(c Claim) RegisteredPods {
 }
 
 // markRestoringLaunch marks the launch that resume, resumeByRule or deliverResuming is about to
-// raise as the claim's first since an idle release suspended it (restoringLaunch), where the
-// claim is released (Claim.Released). A claim suspended any other way is left unmarked.
+// raise where it is the first launch of a role an idle release suspended, an agent of which had
+// run (restoringLaunch): the claim is released (Claim.Released), its suspension is an idle
+// release's (idleReleased), and it has a session or a pod in its set. Every other launch is left
+// unmarked. A project pause's stop suspends as released too, but the pause keeps the pod and saves
+// no bundle, so no work is restored onto the claim's next pod; the one exception is a pause's stop
+// of the first launch after an idle release before it reached any pod, which leaves the claim the
+// release's (suspended), so the launch after the pause is marked. And a claim that never ran an
+// agent anywhere, as one refused for a pod with no session, has no work of its own in the bundle
+// or on the volume, whatever suspended it and whatever wakes it.
 func (m *Machine) markRestoringLaunch() {
-	if m.claim.Released() {
-		m.restoringLaunch = true
-	}
+	m.restoringLaunch = m.claim.Released() && m.idleReleased && (m.claim.Session != "" || len(m.registeredPods.Pods) > 0)
 }
 
 // addRestoringPod puts pod in the claim's set (registeredPods) where the launch that went into pod,
-// or was refused for it, is the claim's first since an idle release suspended it
-// (restoringLaunch), and takes that mark off. The release saved the unpushed work of the
-// workspace every role of the issue shares as a bundle and took the pod, and the issue's next pod
-// restored that bundle before any role started in it, or mounts the kept volume that the work was
-// taken off. So the claim's work is on the disk of the pod its next launch goes into, or waits on,
-// before any agent of it registers there, and the daemon's update round names the claim for that
-// pod as it names one whose agent registered there (internal/daemon's workOnRoundPod). The pods
-// later launches go into wait for a registration, as every other pod does. pod is "" for a process
-// in no pod, which adds nothing.
+// or was refused for it, is the first launch of a role an idle release suspended, an agent of
+// which had run (restoringLaunch), and takes that mark off. The release saved the unpushed work of
+// the workspace every role of the issue shares as a bundle and took the pod, and the issue's next
+// pod restored that bundle before any role started in it, or mounts the kept volume that the work
+// was taken off. So the claim's work is on the disk of the pod its next launch goes into, or waits
+// on, before any agent of it registers there, and the daemon's update round names the claim for
+// that pod as it names one whose agent registered there (internal/daemon's workOnRoundPod). The
+// pods later launches go into wait for a registration, as every other pod does. pod is "" for a
+// process in no pod, which adds nothing.
 func (m *Machine) addRestoringPod(pod string) {
 	if !m.restoringLaunch {
 		return
