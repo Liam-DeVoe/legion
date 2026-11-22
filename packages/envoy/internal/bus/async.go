@@ -676,10 +676,8 @@ func (w *window) Probe(timeout time.Duration) error {
 	if err := w.pin(timeout); err != nil {
 		return err
 	}
-	clocked, cancel := w.client.windowTime().WithTimeout(context.Background(), timeout)
+	flush, cancel := clock.WithShownTimeout(w.client.windowTime(), context.Background(), timeout)
 	defer cancel()
-	flush, cancelShown := clock.WithShownDeadline(clocked)
-	defer cancelShown()
 	if err := w.conn.FlushWithContext(flush); err != nil {
 		return fmt.Errorf("bus: %w: the flush probe failed: %w", ErrUnavailable, err)
 	}

@@ -168,17 +168,25 @@ func stopWithAHeldHandBack(t *testing.T) heldHandBack {
 	// was waiting behind it, and the hook holds the write before that publish. The hook runs on a
 	// goroutine the holder's Run waits for -- the stop's own, or a handler's the stop gave up, whose
 	// deferred answer hands its message back -- so a hand-back reaches the hook before Run returns,
-	// and a Run that returned with held still open made none.
+	// and a Run that returned with held still open made none: the row fails then, at once. held is
+	// read again once stopped is, as both can be closed by the time the select runs.
 	holder.release()
 	waitFor(t, func() bool {
 		select {
 		case <-held:
 			return true
+		case <-row.stopped:
+			select {
+			case <-held:
+				return true
+			default:
+				t.Fatal("control: the holder's stop returned with no hand-back having reached its publish: it withheld them: " + consumerState(publisher))
+			}
 		default:
-			return false
 		}
+		return false
 	}, func() string {
-		return "control: the stop's hand-back never reached its publish: the stop withheld it, as it does when its drain has not answered: " + consumerState(publisher)
+		return "the holder's stop neither published a hand-back nor returned: " + consumerState(publisher)
 	})
 	write := testwait.Receive(t, "the hook's take of the held write, sent before held closed", taken)
 	if write.err != nil {

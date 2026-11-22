@@ -118,3 +118,22 @@ func WithShownDeadline(ctx context.Context) (context.Context, context.CancelFunc
 	}
 	return context.WithDeadline(ctx, time.Now().Add(unreported))
 }
+
+// Timeouts is the part of a Clock that WithShownTimeout reads. Real, a clocktest.Fake and every
+// package's narrowing of Clock that keeps WithTimeout fit it.
+type Timeouts interface {
+	WithTimeout(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc)
+}
+
+// WithShownTimeout is c's WithTimeout of ctx and d as WithShownDeadline shows it: a context that
+// ends once d has passed on c and reports a deadline a call such as nats.go's can read, with one
+// function that releases both. On the real clock it is c's own context, which reports its
+// deadline; on a clocktest.Fake it ends only where the test moves the fake past d.
+func WithShownTimeout(c Timeouts, ctx context.Context, d time.Duration) (context.Context, context.CancelFunc) {
+	clocked, cancel := c.WithTimeout(ctx, d)
+	shown, cancelShown := WithShownDeadline(clocked)
+	return shown, func() {
+		cancelShown()
+		cancel()
+	}
+}

@@ -42,3 +42,27 @@ func TestWithShownDeadlineShowsADeadlineOnlyWhereTheContextReportsNone(t *testin
 		t.Fatalf("the shown context ended with %v, want the fake's context.DeadlineExceeded", err)
 	}
 }
+
+// WithShownTimeout's one cancel releases the clock's own deadline as well as the shown one: on a
+// fake, the context is shown a deadline and the fake holds the timeout's, and once the cancel has
+// run the context has ended and the fake holds nothing armed.
+func TestWithShownTimeoutsCancelReleasesTheClocksDeadline(t *testing.T) {
+	epoch := time.Date(2026, 11, 22, 9, 0, 0, 0, time.UTC)
+	fake := clocktest.New(epoch)
+	shown, cancel := clock.WithShownTimeout(fake, context.Background(), time.Minute)
+	if _, has := shown.Deadline(); !has {
+		cancel()
+		t.Fatal("the fake's timeout was shown no deadline; want one shown")
+	}
+	if armed, want := fake.Armed(), epoch.Add(time.Minute); len(armed) != 1 || !armed[0].Equal(want) {
+		cancel()
+		t.Fatalf("the fake holds %v armed, want only the timeout's deadline %v", armed, want)
+	}
+	cancel()
+	if err := shown.Err(); !errors.Is(err, context.Canceled) {
+		t.Fatalf("the shown context ended with %v once its cancel ran, want context.Canceled", err)
+	}
+	if armed := fake.Armed(); len(armed) != 0 {
+		t.Fatalf("the fake still holds %v armed once the cancel ran, want nothing: the cancel left the clock's own deadline", armed)
+	}
+}

@@ -458,12 +458,17 @@ func (c *concurrentJobClock) AfterFunc(d time.Duration, f func()) clock.Timer {
 }
 
 // fireAll moves the fake past every timer armed, starting each one's function on a goroutine of
-// its own, and returns the group they run in.
-func (c *concurrentJobClock) fireAll() *sync.WaitGroup {
+// its own, and returns join, which waits on the test goroutine for every function it started to
+// return (testwait.Returns), naming that wait. Each call of join waits again, so a row may join in
+// its body and again in a cleanup that runs when the body ended before its join.
+func (c *concurrentJobClock) fireAll() (join func(t testing.TB)) {
 	if armed := c.Armed(); len(armed) > 0 {
 		c.Advance(max(armed[len(armed)-1].Sub(c.Now()), 0))
 	}
-	return &c.fired
+	return func(t testing.TB) {
+		t.Helper()
+		testwait.Returns(t, "every run's jobs read the fake clock fired to return once its listing was released", c.fired.Wait)
+	}
 }
 
 // TestTheJobIntakeReadsAtMostABoundedNumberOfRunsAtOnce: when many tracked runs' bursts end
@@ -507,11 +512,11 @@ func TestTheJobIntakeReadsAtMostABoundedNumberOfRunsAtOnce(t *testing.T) {
 	for id := int64(600); id < 600+runs; id++ {
 		jobs.schedule(runKey{repo: "acme/widgets", runID: id}, Production{})
 	}
-	fired := clock.fireAll()
+	joinReads := clock.fireAll()
 	// Runs before the pool's and the fake's cleanups, so no read outlives the test into them.
 	t.Cleanup(func() {
 		releaseOnce()
-		testwait.Returns(t, "every run's jobs read the fake clock fired to return once its listing was released", fired.Wait)
+		joinReads(t)
 	})
 	waitFor(t, func() bool { return inFlight.Load() >= reconcilePartialConcurrency }, func() string {
 		return fmt.Sprintf("%d jobs reads in flight, want %d", inFlight.Load(), reconcilePartialConcurrency)
@@ -524,7 +529,7 @@ func TestTheJobIntakeReadsAtMostABoundedNumberOfRunsAtOnce(t *testing.T) {
 	}
 
 	releaseOnce()
-	testwait.Returns(t, "every run's jobs read the fake clock fired to return once its listing was released", fired.Wait)
+	joinReads(t)
 	if got := reads.Load(); got != runs {
 		t.Fatalf("jobs reads = %d, want one for each of the %d runs", got, runs)
 	}
@@ -590,11 +595,11 @@ func TestAQueuedJobReadsDeadlineStartsOnceItHoldsItsSlot(t *testing.T) {
 	for id := int64(700); id < 700+runs; id++ {
 		jobs.schedule(runKey{repo: "acme/widgets", runID: id}, Production{})
 	}
-	fired := clock.fireAll()
+	joinReads := clock.fireAll()
 	t.Cleanup(func() {
 		releaseHeld()
 		releaseWaited()
-		testwait.Returns(t, "every run's jobs read the fake clock fired to return once its listing was released", fired.Wait)
+		joinReads(t)
 	})
 
 	// Every slot is held by a read whose listing waits at GitHub; the run left over waits for a slot.
@@ -625,11 +630,17 @@ func TestAQueuedJobReadsDeadlineStartsOnceItHoldsItsSlot(t *testing.T) {
 	tookSlot := clock.Now()
 	releaseHeld()
 
-	// The run that waited takes a slot and reads, unless its deadline had already passed.
-	if failure := testwait.Until(t, fmt.Sprintf("run %s's listing to reach GitHub, or its read to fail", waiter), func() (map[string]any, bool) {
-		failure := failedRead(waiter)
-		return failure, failure != nil || reachedGitHub()[waiter]
-	}); failure != nil {
+	// The run that waited takes a slot and reads, unless its deadline had already passed. A try
+	// that finds neither reads the runs whose listings reached GitHub.
+	var failure map[string]any
+	testwait.Until(t, fmt.Sprintf("run %s's listing to reach GitHub, or its read to fail", waiter), func() (string, bool) {
+		reached := reachedGitHub()
+		if failure = failedRead(waiter); failure != nil || reached[waiter] {
+			return fmt.Sprintf("run %s's listing reached GitHub (%t) or its read failed (%v)", waiter, reached[waiter], failure), true
+		}
+		return fmt.Sprintf("run %s's read logged no failure; the listings that reached GitHub are runs %v", waiter, slices.Sorted(maps.Keys(reached))), false
+	})
+	if failure != nil {
 		t.Fatalf("run %s's read failed once it held a slot, the clock having moved %s past the moment its burst ended while it waited for one: %v", waiter, intakeMessageTimeout, failure)
 	}
 	armed := clock.AwaitArmed(t, fmt.Sprintf("run %s's read deadline, armed as it took a slot", waiter), 1)
@@ -637,14 +648,19 @@ func TestAQueuedJobReadsDeadlineStartsOnceItHoldsItsSlot(t *testing.T) {
 		t.Fatalf("with run %s reading, the clock holds the deadlines %v, want only %v: %s past %v, when it took its slot", waiter, armed, want, intakeMessageTimeout, tookSlot)
 	}
 	releaseWaited()
-	if failure := testwait.Until(t, fmt.Sprintf("run %s's jobs to be stored, or its read to fail", waiter), func() (map[string]any, bool) {
+	// A try that finds neither reads whether the run's jobs are stored and the runs whose listings
+	// reached GitHub.
+	testwait.Until(t, fmt.Sprintf("run %s's jobs to be stored, or its read to fail", waiter), func() (string, bool) {
 		var stored bool
 		if err := pool.QueryRow(ctx, `select exists (select from delivery_run_jobs where repo = 'acme/widgets' and run_id = $1)`, waiter).Scan(&stored); err != nil {
 			t.Fatalf("read run %s's stored jobs: %v", waiter, err)
 		}
-		failure := failedRead(waiter)
-		return failure, stored || failure != nil
-	}); failure != nil {
+		if failure = failedRead(waiter); stored || failure != nil {
+			return fmt.Sprintf("run %s's jobs stored (%t) or its read failed (%v)", waiter, stored, failure), true
+		}
+		return fmt.Sprintf("run %s's jobs stored: %t; its read logged no failure; the listings that reached GitHub are runs %v", waiter, stored, slices.Sorted(maps.Keys(reachedGitHub()))), false
+	})
+	if failure != nil {
 		t.Fatalf("run %s's read failed once it was released: %v", waiter, failure)
 	}
 	if failure := failedRead(waiter); failure != nil {

@@ -383,11 +383,9 @@ func (d *heldDurable) attempt(ctx context.Context) {
 // lookupDurable reads the durable's state from the server, bounded by intakeHoldRenew on the hold's
 // clock (heldDurable.holdClock), the clock the try or the check that reads it runs on.
 func (d *heldDurable) lookupDurable(ctx context.Context) (*natsgo.ConsumerInfo, error) {
-	clocked, cancel := d.holdClock.WithTimeout(ctx, intakeHoldRenew)
+	// nats.go is shown a deadline it can read: a fake's is its own (clock.WithShownTimeout).
+	lookup, cancel := clock.WithShownTimeout(d.holdClock, ctx, intakeHoldRenew)
 	defer cancel()
-	// nats.go is shown a deadline it can read: a fake's is its own (clock.WithShownDeadline).
-	lookup, cancelShown := clock.WithShownDeadline(clocked)
-	defer cancelShown()
 	return d.nats.JS().ConsumerInfo(bus.Stream, d.name, natsgo.Context(lookup))
 }
 
@@ -592,11 +590,9 @@ const (
 // (TestATakeOverWhoseCreateFailsCreatesTheDurableBeforeAPreviousBuildReconciles).
 func (d *heldDurable) finishTakeOver(create natsgo.ConsumerConfig, deleteFirst bool) {
 	js := d.nats.JS()
-	clocked, cancel := d.holdClock.WithTimeout(context.Background(), takeOverFinishWithin)
+	// nats.go is shown a deadline it can read: a fake's is its own (clock.WithShownTimeout).
+	finish, cancel := clock.WithShownTimeout(d.holdClock, context.Background(), takeOverFinishWithin)
 	defer cancel()
-	// nats.go is shown a deadline it can read: a fake's is its own (clock.WithShownDeadline).
-	finish, cancelShown := clock.WithShownDeadline(clocked)
-	defer cancelShown()
 	if deleteFirst {
 		if d.retryHeld(finish, "delete NATS consumer to take it over", func(call context.Context) error {
 			if err := js.DeleteConsumer(bus.Stream, d.name, natsgo.Context(call)); err != nil && !errors.Is(err, natsgo.ErrConsumerNotFound) {
@@ -809,9 +805,11 @@ const intakeHoldFinalizing = "dispatch delivery: a hand-back has not reached NAT
 // closes its socket, so a hand-back waiting then is either sent at close or dropped with the
 // connection; only then is it safe to release the hold. It runs on a goroutine of its own that
 // nothing in Run waits for, so it waits for nats.go's lock with no bound and makes one flush at a
-// time. StartIntakes waits for it after it closes that client and before it returns to a caller
-// that can close the database pool. A lost hold ends it: another holder may then act, as after any
-// loss of the hold.
+// time. Each flush is nats.go's FlushTimeout of intakeFlushWait, whose span on the wall clock
+// starts only once the flush holds that lock: a reconnect's handshake or a slow write that holds
+// the lock for a second or more delays the flush rather than failing it. StartIntakes waits for it
+// after it closes that client and before it returns to a caller that can close the database pool.
+// A lost hold ends it: another holder may then act, as after any loss of the hold.
 func (d *heldDurable) finalizeHandBacks(delivery *intakeDelivery, hold *duty.Hold, lapse bool) {
 	select {
 	case <-delivery.handBacksLanded():
@@ -821,10 +819,7 @@ func (d *heldDurable) finalizeHandBacks(delivery *intakeDelivery, hold *duty.Hol
 	retry := time.NewTicker(intakeFlushWait)
 	defer retry.Stop()
 	for {
-		settling, cancel := context.WithTimeout(context.Background(), intakeFlushWait)
-		settled := d.handBacksSettled(settling)
-		cancel()
-		if settled {
+		if d.handBacksSettled(func(conn *natsgo.Conn) error { return conn.FlushTimeout(intakeFlushWait) }) {
 			if before := finalizerBeforeRelease.Load(); before != nil {
 				(*before)()
 			}
@@ -894,26 +889,34 @@ func (d *heldDurable) handBacksReached(ctx context.Context, delivery *intakeDeli
 // flushHandBacks is handBacksSettled within intakeFlushWait on the stop's clock
 // (heldDurable.clock), on a bound of its own as the release that follows it is: both are part of
 // what follows the stop's deadline (intakeStopBudget), and a healthy link answers the flush in a
-// round trip. A flush that has not answered by then is false.
+// round trip. The bound starts before the flush waits for nats.go's connection lock and covers that
+// wait too, and the stop goes on at the bound whether or not the flush has answered (bus.Bounded).
+// A flush that has not answered by then is false.
 func (d *heldDurable) flushHandBacks() bool {
-	clocked, cancel := d.clock.WithTimeout(context.Background(), intakeFlushWait)
+	// nats.go is shown a deadline it can read: a fake's is its own (clock.WithShownTimeout).
+	flushing, cancel := clock.WithShownTimeout(d.clock, context.Background(), intakeFlushWait)
 	defer cancel()
-	// nats.go is shown a deadline it can read: a fake's is its own (clock.WithShownDeadline).
-	flushing, cancelShown := clock.WithShownDeadline(clocked)
-	defer cancelShown()
-	settled, _, _ := bus.Bounded(flushing, func() (bool, error) { return d.handBacksSettled(flushing), nil })
+	settled, _, _ := bus.Bounded(flushing, func() (bool, error) {
+		return d.handBacksSettled(func(conn *natsgo.Conn) error { return conn.FlushWithContext(flushing) }), nil
+	})
 	return settled
 }
 
 // handBacksSettled reports whether no hand-back nats.go had queued can reach the server later: a
-// flush of the intake client's connection answered before ctx ended, so each has reached it, or
-// the connection has closed, which sent its outbound buffer or dropped it with the connection.
-func (d *heldDurable) handBacksSettled(ctx context.Context) bool {
+// flush of the intake client's connection answered, so each has reached it, or the connection has
+// closed, which sent its outbound buffer or dropped it with the connection. flush is the caller's
+// flush of that connection, under the caller's bound: the stop's, on its clock from before the
+// wait for nats.go's lock (flushHandBacks), or a finalizer's, on the wall clock from once the flush
+// holds that lock (finalizeHandBacks).
+func (d *heldDurable) handBacksSettled(flush func(*natsgo.Conn) error) bool {
 	conn := d.nats.Connection()
-	return conn == nil || conn.IsClosed() || conn.FlushWithContext(ctx) == nil
+	return conn == nil || conn.IsClosed() || flush(conn) == nil
 }
 
 // intakeFlushWait bounds each flush that confirms a stop's hand-backs reached the server before its
-// hold is released (handBacksSettled): on the stop's clock in the stop itself (flushHandBacks), and
-// on the wall clock in a finalizer, which also waits it between flushes (finalizeHandBacks).
+// hold is released (handBacksSettled). In the stop itself it is a bound on the stop's clock that
+// starts before the flush waits for nats.go's connection lock (flushHandBacks). In a finalizer it
+// is nats.go's own span on the wall clock, which starts once the flush holds that lock
+// (natsgo.Conn.FlushTimeout), and the finalizer waits it between two flushes too
+// (finalizeHandBacks).
 const intakeFlushWait = time.Second
