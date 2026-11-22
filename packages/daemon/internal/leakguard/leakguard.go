@@ -27,8 +27,12 @@
 // scans each record as it arrives (pass), and a refusal names at most 1000 lines, counting the
 // rest (refusalLines). So the pass holds one line of git's output, the record in hand, the
 // detector's cost of scanning it, and one commit's author, committer and message, whatever the
-// size of the push's files; what grows with the push is the list of its commits, about one line
-// of a commit's id each.
+// number and size of the push's files; what grows with the push is the list of its commits, about
+// one line of a commit's id each. One line is held whole, a few times over (the reader's buffer,
+// the record's text, the detector's lower-cased copy), however long it is: a line is neither
+// split, since a match could cross the split and pass unread, nor refused for its length, which
+// would refuse pushes the rules pass. A push of a 73 MB line took 369 MiB; a hook the kernel
+// stops for its memory refuses the push.
 //
 // The guard sets neither PUBLIC_LEAK_CHECK_REPO_NAMES nor PUBLIC_LEAK_CHECK_INTERNAL for the
 // shared check. That is a decision of this issue's approved spec, not an omission: with those two
@@ -108,6 +112,10 @@ type Guard struct {
 	// as exec's WaitDelay and as the wait readOutput gives a child's output after it exits
 	// (Guard.exitDelay). This package's own tests set it, to tell one such wait from two.
 	waitDelay time.Duration
+	// onWait, where it is not nil, is handed the argv of each child whose output the guard reads as
+	// it is written (Guard.readOutput) and what that child's Wait answered. This package's own
+	// tests set it, to see which error a child's exit gave the read's end (readEndDelay).
+	onWait func(argv []string, waitErr error)
 }
 
 // New is a guard with opts' seams. It resolves no check: the shared check publishes often, and a

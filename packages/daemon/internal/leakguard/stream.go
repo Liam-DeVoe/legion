@@ -55,18 +55,8 @@ func (g *Guard) readOutput(ctx context.Context, c child, read func(io.Reader) er
 	reader := &pipeReader{ctx: ctx, file: out}
 	stop := context.AfterFunc(ctx, func() { _ = out.SetReadDeadline(time.Now()) })
 	finished := make(chan struct{})
-	// Where Wait answers an error, the read ends at once rather than exitDelay after it. One kind
-	// is a wait for the standard error a process the child started still held, which began at
-	// the child's exit, so the output's own has run out too: exec.ErrWaitDelay for a child that
-	// exited 0, and the *exec.ExitError a child that exited otherwise answers whether or not exec
-	// waited. The rest are a child that failed, whose output cannot change the answer: the one
-	// caller, Guard.gitWith, refuses any status but 0. Either way the read still takes everything
-	// the child left in the pipe (pipeReader.drain).
 	go reader.endAfterExit(waited, finished, func() time.Duration {
-		if waitErr != nil {
-			return 0
-		}
-		return g.exitDelay()
+		return readEndDelay(waitErr, g.exitDelay())
 	})
 	readErr := read(reader)
 	close(finished)
@@ -75,6 +65,9 @@ func (g *Guard) readOutput(ctx context.Context, c child, read func(io.Reader) er
 	// next write fails and it ends, rather than holding up the wait below.
 	_ = out.Close()
 	<-waited
+	if g.onWait != nil {
+		g.onWait(c.argv, waitErr)
+	}
 	switch {
 	// A read the context's end stopped is a stop like the group's: the child may have exited
 	// before the context ended, and exec then runs no Cancel, so killed alone would not see it.
@@ -88,6 +81,26 @@ func (g *Guard) readOutput(ctx context.Context, c child, read func(io.Reader) er
 	}
 	return cmd.ProcessState.ExitCode(), nil
 }
+
+// readEndDelay is how long after Wait returns the read of a child's standard output ends, where
+// Wait answered waitErr: exitDelay where it answered nil, and 0 where it answered an error. One kind
+// of error is a wait for the standard error a process the child started still held, which began
+// at the child's exit, so the output's own wait has run out too: exec.ErrWaitDelay for a child
+// that exited 0, and the *exec.ExitError a child that exited otherwise answers whether or not exec
+// waited. The rest are a child that failed, whose output cannot change the answer: the one caller,
+// Guard.gitWith, refuses any status but 0. Either way the read still takes everything the child
+// left in the pipe (pipeReader.drain).
+func readEndDelay(waitErr error, exitDelay time.Duration) time.Duration {
+	if waitErr != nil {
+		return 0
+	}
+	return exitDelay
+}
+
+// errShortPipe is a pipe that held fewer bytes after the child's exit than it counted: the read
+// would end with bytes the child wrote unread, so it fails, and the push is refused, rather than
+// passing what it did not read. One reader of the pipe cannot cause it.
+var errShortPipe = errors.New("the pipe held fewer bytes than it counted after the child exited")
 
 // pipeReader is a child's standard output as readOutput hands it to its reader: the pipe, read as
 // it is written, until the pipe's end, ctx's end, or the child's exit and the wait after it
@@ -121,9 +134,9 @@ func (r *pipeReader) Read(p []byte) (int, error) {
 }
 
 // drain is one read of what is left of the bytes the pipe's buffer held at the first read after
-// the wait ran out, without waiting: io.EOF once they are all read, or where the buffer is empty,
-// and os.ErrDeadlineExceeded once ctx has ended, which is what a read ctx's deadline stopped
-// answers. The count is the buffer's own (FIONREAD), read once, by the one goroutine that reads
+// the wait ran out, without waiting: io.EOF once they are all read, errShortPipe where the buffer
+// is empty or at its end before then, and os.ErrDeadlineExceeded once ctx has ended, which is what
+// a read ctx's deadline stopped answers. The count is the buffer's own (FIONREAD), read once, by the one goroutine that reads
 // the pipe, so a byte read before it is not counted and every byte in the buffer then is. The
 // deadline endAfterExit set is cleared before each read, since a read past its deadline reads
 // nothing at all; one set again after the clear is cleared again.
@@ -167,7 +180,7 @@ func (r *pipeReader) drain(p []byte) (int, error) {
 		case err != nil:
 			return 0, err
 		case errors.Is(readErr, syscall.EAGAIN), readErr == nil && n == 0:
-			return 0, io.EOF
+			return 0, errShortPipe
 		case readErr != nil:
 			return 0, readErr
 		}
