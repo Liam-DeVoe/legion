@@ -19,16 +19,18 @@ export interface HeldNatsTimers {
  * answer completes before its timer, and a dial the row abandons is still on the address it was
  * on. Every other timer is the process's. A timer is nats.js's by the timer record's own rule
  * (`placeArming`), and a hold set before the record (`recordTimers`) leaves the record reading
- * each arming and each run.
+ * each arming and each run. `holds` narrows the hold to the timers armed at the places it accepts
+ * (`file:line`, as the record names an arming), so a row can hold its handshake timers alone and
+ * leave nats.js's reconnect waits to run.
  */
-export function holdNatsTimers(): HeldNatsTimers {
+export function holdNatsTimers(holds: (from: string) => boolean = () => true): HeldNatsTimers {
   const real = { setTimeout: globalThis.setTimeout, clearTimeout: globalThis.clearTimeout };
   const held = new Map<object, () => void>();
   const ownFrame = (line: string) => line.includes(import.meta.path);
   globalThis.setTimeout = ((handler: TimerHandler, delay?: number, ...args: unknown[]) => {
     const stack = (new Error().stack ?? "").split("\n").filter((line) => !ownFrame(line));
     const place = placeArming(stack.join("\n"), [`${NATS_ROOT}/`]);
-    if (typeof handler !== "function" || typeof place !== "object") {
+    if (typeof handler !== "function" || typeof place !== "object" || !holds(place.from)) {
       return real.setTimeout(handler, delay, ...args);
     }
     const handle = {};

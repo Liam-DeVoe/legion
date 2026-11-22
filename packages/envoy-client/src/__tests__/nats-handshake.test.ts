@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -197,8 +197,20 @@ function connectResolving(lookup: () => Promise<string[]>) {
 }
 
 describe("a NATS dial that the server closes during the handshake", () => {
+  // Every row here holds nats.js's handshake timers (`holdNatsTimers`), and only those: its
+  // reconnect waits still run. A process the machine leaves off its CPU for the rest of a
+  // handshake's 10 s wakes to that timer and to the server's answer at once, and Bun runs the
+  // timer first, so the dial failed on its own timeout with no defect in the code (a block of
+  // 10.5 s inside a dial does it every time, INFRA-3904). Held, the timer runs only when a row runs
+  // it, which none does: a dial that waited for its timer never settles, and the row fails at its
+  // deadline naming the wait.
+  beforeEach(() => {
+    nats = holdNatsTimers((from) => from === HANDSHAKE_TIMER);
+  });
+
   // "At once" is held to nats.js's own timers: what ran out between the dial and its failure
-  // stays under 1 s, where a dial that waited out its handshake's timeout would show its 10 s.
+  // stays under 1 s, and the handshake's own timer, held, never runs: a dial that waited for it
+  // would never settle.
   test("fails at once with the server's authentication timeout", async () => {
     const server = fake(() => "refuse");
     const record = recordTimed();
@@ -248,7 +260,7 @@ describe("a NATS dial that the server closes during the handshake", () => {
   });
 
   // Between the drop and the reconnect nats.js waits its reconnect wait twice, 200 ms at most each
-  // (it counts each from the dial before), and its refused handshake's timer does not run out.
+  // (it counts each from the dial before), and its refused handshake's timer, held, does not run.
   test("fails at once on a reconnect: one refused handshake, then exactly one reconnect", async () => {
     const server = fake((n) => (n === 1 ? "refuse" : "serve"));
     const nc = await connect({
@@ -277,7 +289,7 @@ describe("a NATS dial that the server closes during the handshake", () => {
   });
 
   // The close settles with no timer of nats.js's running out on the way: one that waited for the
-  // held handshake would wait out that handshake's 10 s timeout, armed before the close.
+  // held handshake would wait for that handshake's timer, which is held here and never runs.
   test("keeps a close during a reconnect's handshake final", async () => {
     const server = fake((n) => (n === 0 ? "serve" : "hold"));
     const nc = await connect({
