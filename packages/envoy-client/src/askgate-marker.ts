@@ -103,20 +103,23 @@ const ALWAYS_GATED: Record<string, true> = {
 const MARKDOWN_PATH = /\.(md|markdown)$/i;
 
 /**
- * Whether an upload's arguments make a markdown document: inline text, or a file the CLI sends as
- * `text/markdown`, which its name decides as `uploadTypeFrom` reads it (trimmed as Dispatch trims
- * it, its trailing extensions of digits alone dropped). A name whose extension is .md or .markdown
- * makes one whatever the path (`x.markdown` sent from x.txt), a name with any other extension
- * makes a file whatever the path (`cases.txt` sent from cases.md), and a name with no extension
- * (`Plan v1.2`) makes one when the path, whose type Bun then reads, ends in .md or .markdown. With
- * no name, the path alone decides.
+ * Whether an upload's arguments make a markdown document with text: inline text, or a file the CLI
+ * sends as `text/markdown`, which its name decides as `uploadTypeFrom` reads it (trimmed as
+ * Dispatch trims it, from the extension that decides, uploadExtensionOf). A name whose extension
+ * is .md or .markdown makes one whatever the path (`x.markdown` sent from x.txt), a name with any
+ * other extension makes a file whatever the path (`cases.txt` sent from cases.md), and a name
+ * with no extension (`Plan v1.2`, `notes.md/`) makes one when the path, whose type Bun then reads,
+ * ends in .md or .markdown. With no name, the path alone decides. A call with neither text nor a
+ * path makes an empty document from its name alone, which writes no text, so it is none: pi's
+ * gate, which reviews no upload without `--path`, reads it the same way.
  */
 export function uploadIsDocument(args: Readonly<Record<string, unknown>>): boolean {
   const { content, name, path } = args;
   if (typeof content === "string") return true;
+  if (typeof path !== "string") return false;
   const from = typeof name === "string" ? uploadTypeFrom(name) : "path";
   if (from !== "path") return from === "markdown";
-  return typeof path === "string" && MARKDOWN_PATH.test(path);
+  return MARKDOWN_PATH.test(path);
 }
 
 /**

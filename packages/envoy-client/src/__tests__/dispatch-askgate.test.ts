@@ -43,8 +43,13 @@ const server = Bun.serve({
     const record = (sent?: unknown) =>
       posts.push({ method: request.method, path: pathname, ledger: ledgerText, sent });
     if (request.method === "POST" && pathname === ARTIFACTS) {
-      const file = (await request.formData()).get("file");
-      record(file instanceof Blob ? await file.text() : undefined);
+      // A create that stores nothing posts its name as JSON; every other upload posts a form.
+      if (request.headers.get("content-type")?.startsWith("application/json") === true) {
+        record(await request.json());
+      } else {
+        const file = (await request.formData()).get("file");
+        record(file instanceof Blob ? await file.text() : undefined);
+      }
       return Response.json({
         artifact: { id: "artifact-1", issue_key: "DSP-1", name: "brief.md", slug: "brief-md" },
         version: { number: 1 },
@@ -600,21 +605,46 @@ describe("AskGate at the dispatch CLI", () => {
 
   // An upload is a document when its name says so whatever the path (x.markdown sent from x.txt),
   // or when its name has no extension and the path ends in .md or .markdown: Plan v1.2's last part
-  // is digits alone, which is no extension (uploadTypeFrom).
+  // is digits alone, and notes.md/'s holds a `/`, neither of which is an extension
+  // (uploadExtensionOf), so each one's .md path makes it a document.
   test("an issue with a spec and a markdown upload are gated", async () => {
+    writeFileSync(join(stateDir, "notes.md"), "# Notes\n");
     writeRecord();
-    for (const [argv, command] of [
+    const rows = [
       [["issue", "--project", "DSP", "--title", "t", "--spec", "# Spec"], "issue"],
       [["artifact", "--issue", "DSP-1", "--name", "brief.md", "--content", "# Brief"], "artifact"],
       [["artifact", "--issue", "DSP-1", "--name", "notes", "--path", "notes.markdown"], "artifact"],
       [["artifact", "--issue", "DSP-1", "--name", "x.markdown", "--path", "x.txt"], "artifact"],
       [["artifact", "--issue", "DSP-1", "--name", "Plan v1.2", "--path", "plan.md"], "artifact"],
-    ] as const) {
+      [["artifact", "--issue", "DSP-1", "--name", "notes.md/", "--path", "notes.md"], "artifact"],
+      [["artifact", "--issue", "DSP-1", "--name", "Notes.MD/", "--path", "notes.md"], "artifact"],
+      [
+        ["artifact", "--issue", "DSP-1", "--name", "a/b.markdown/", "--path", "notes.md"],
+        "artifact",
+      ],
+    ] as const;
+    // Every row's answer, so a row the gate lets through is named whichever row it is.
+    const answers: Array<[string, number, boolean]> = [];
+    for (const [argv, command] of rows) {
       const { code, stdout } = await run(argv);
-      expect(code).toBe(1);
-      expect(stdout).toStartWith(`dispatch ${command} was not called: AskGate is on`);
+      answers.push([
+        argv.join(" "),
+        code,
+        stdout.startsWith(`dispatch ${command} was not called: AskGate is on`),
+      ]);
     }
+    expect(answers).toEqual(rows.map(([argv]) => [argv.join(" "), 1, true]));
     expect(posts).toHaveLength(0);
+  });
+
+  // A name alone makes an empty document, which writes no text, so it is no gated write: the CLI
+  // posts it with no marker, as pi's gate, which reviews no upload without --path, lets it run.
+  test("a name-only upload under a live record posts with no marker", async () => {
+    writeRecord();
+    const { code, stdout } = await run(["artifact", "--issue", "DSP-1", "--name", "x.markdown"]);
+    expect(code).toBe(0);
+    expect(stdout).not.toContain("AskGate");
+    expect(postsTo(ARTIFACTS).map((p) => p.sent)).toMatchObject([{ name: "x.markdown" }]);
   });
 
   test("a record that cannot be read, or that names a missing store, is a refusal naming the cause", async () => {

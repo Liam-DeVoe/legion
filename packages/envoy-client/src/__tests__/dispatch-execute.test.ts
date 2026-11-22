@@ -11667,6 +11667,44 @@ describe("executeDispatchTool", () => {
             "(kind doc; artifact slug plan-v1-2; dispatch://DSP-42/artifact/plan-v1-2)",
         });
       });
+
+      // INFRA-4071 R15, review 6011588028: the type comes from the extension that decides
+      // (uploadExtensionOf), never from the whole name, so notes.txt.1 goes up as .txt's type.
+      test(`a name past a trailing extension of digits alone goes up as the type of the extension that decides, ${read}`, async () => {
+        const notes = text("one\ntwo\n");
+        const data = text('{"row_id": 1}\n');
+        expect([
+          await upload("notes.txt.1", "notes.txt", notes, gated),
+          await upload("data.json.1", "data.json", data, gated),
+        ]).toEqual([
+          {
+            declared: ["text/plain;charset=utf-8"],
+            sent: [sha256(notes)],
+            text:
+              "Uploaded notes.txt.1 as version 1, a file " +
+              "(kind file; artifact slug notes-txt-1; dispatch://DSP-42/artifact/notes-txt-1)",
+          },
+          {
+            declared: ["application/json;charset=utf-8"],
+            sent: [sha256(data)],
+            text:
+              "Uploaded data.json.1 as version 1, a file " +
+              "(kind file; artifact slug data-json-1; dispatch://DSP-42/artifact/data-json-1)",
+          },
+        ]);
+      });
+
+      // A name longer than a path the OS takes is still a name: its type comes from its
+      // extension, so the upload reaches Dispatch, which judges the name's length itself.
+      test(`a name of 4,096 characters reaches the upload route, ${read}`, async () => {
+        const name = `${"a".repeat(4092)}.txt`;
+        const notes = text("one\n");
+        const { declared, sent } = await upload(name, "notes.txt", notes, gated);
+        expect({ declared, sent }).toEqual({
+          declared: ["text/plain;charset=utf-8"],
+          sent: [sha256(notes)],
+        });
+      });
     }
   });
 

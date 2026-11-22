@@ -165,30 +165,41 @@ export const ARTIFACT_NAME_EXISTS_RULE =
  */
 export const ARTIFACT_STORED_TEXT_RULE = `content and content-file hold text Dispatch stores as Markdown, and a text the store would write under another spelling is refused. The refusal prints the text Dispatch stores: send that text. A name without the extension .md or .markdown has a second way out, which keeps the text as it was written: send it as a file with ${PATH_KEEPS_BYTES}.`;
 
-/** A name's extension, or undefined for a name with none: what follows its last dot when that
- *  holds no blank. uploadTypeFrom reads it in the name withoutTrailingDigitExtensions returns. */
-const NAME_EXTENSION = /\.([^\s.]+)$/u;
+/** What an extension holds: Unicode letters, marks and digits, `_`, `-` and `+`, at most 32 of
+ *  them. One class, anchored at both ends, so it reads a part without backtracking. */
+const EXTENSION = /^[\p{L}\p{M}\p{N}_+-]{1,32}$/u;
 
-/** The name trimmed, with its trailing extensions of ASCII digits alone cut off, a version or a
- *  date rather than a type: "rows.jsonl.1" reads as rows.jsonl, and a title such as "Plan v1.2"
- *  as Plan v1, which has no extension. It reads the name in time linear in its length, because
- *  the name is the writer's own argument and AskGate reads it on the session's thread. */
-function withoutTrailingDigitExtensions(name: string): string {
+/**
+ * The extension that decides the type `dispatch artifact` sends an upload as, or undefined for a
+ * name with none, read once from the end of the name trimmed as Dispatch trims it, in time linear
+ * in its length, because the name is the writer's own argument and AskGate reads it on the
+ * session's thread. A last part of ASCII digits alone is a version or a date rather than a type,
+ * so it is cut and the part before it read: `rows.jsonl.1` reads as `jsonl`, `x.md.1` as `md`,
+ * and `Plan v1.2` as none. Any other last part is the extension when it holds only Unicode
+ * letters, marks and digits, `_`, `-` and `+` (`gz` in x.tar.gz, `jsonl_`, `данные`), and at most
+ * 32 of them; else the name has none: `x.`, `notes.md/`, `Dr. Smith's notes`, `notes v2. draft`.
+ * The bound is there because a longer tail is no type, and the type lookup (`x.<extension>`,
+ * packages/envoy-client/src/dispatch-commands/documents.ts) must never get a path the OS refuses.
+ */
+export function uploadExtensionOf(name: string): string | undefined {
   const trimmed = name.trim();
   let end = trimmed.length;
   while (end > 0) {
     const dot = trimmed.lastIndexOf(".", end - 1);
-    if (dot < 0 || dot + 1 === end) break;
+    if (dot < 0 || dot + 1 === end) return undefined;
     let at = dot + 1;
     while (at < end) {
       const code = trimmed.charCodeAt(at);
       if (code < 48 || code > 57) break;
       at++;
     }
-    if (at < end) break;
+    if (at < end) {
+      const part = trimmed.slice(dot + 1, end);
+      return EXTENSION.test(part) ? part : undefined;
+    }
     end = dot;
   }
-  return trimmed.slice(0, end);
+  return undefined;
 }
 
 const MARKDOWN_EXTENSION = /^(md|markdown)$/i;
@@ -239,20 +250,31 @@ function uploadPreconditionArgument<E extends SchemaNode<E>>(z: SchemaApi<E>): E
 }
 
 /**
- * What decides the type `dispatch artifact --path` sends a file under, from the name it is sent
- * as, trimmed and with its trailing extensions of digits alone dropped (`rows.jsonl.1` reads as
- * `rows.jsonl`, `Plan v1.2` as `Plan v1`): `markdown` for a name whose extension is then .md or
+ * What decides the type `dispatch artifact --path` sends a file under, from the extension that
+ * decides in the name it is sent as (uploadExtensionOf: `rows.jsonl.1` reads as `jsonl`,
+ * `Plan v1.2` and `notes.md/` as none): `markdown` for a name whose extension is .md or
  * .markdown, sent as `text/markdown` whatever the path; `name` for a name with any other
- * extension, sent as the type Bun reads from the whole name (`application/octet-stream` for an
- * extension it does not know, as `.1` in app.log.1) whatever the path; and `path` for a name with
- * no extension left, sent as the path's type. Dispatch stores a `text/markdown` upload as a
- * document and any other as its bytes, so the name says the kind wherever it has an extension:
- * `--name cases.txt --path cases.md` stores a file (INFRA-4071 R15). Inline content goes only
- * under a `markdown` or a `path` name (artifactProblem), and AskGate reviews an upload by the same
- * reading (`uploadIsDocument`, packages/envoy-client/src/askgate-marker.ts).
+ * extension, sent as the type Bun gives that extension (`text/plain` for notes.txt.1, and
+ * `application/octet-stream` for one Bun gives none, as .jsonl in rows.jsonl.1) whatever the
+ * path; and `path` for a name with no extension, sent as the path's type. Dispatch stores a
+ * `text/markdown` upload as a document and any other as its bytes, so the name says the kind
+ * wherever it has an extension: `--name cases.txt --path cases.md` stores a file (INFRA-4071
+ * R15). Inline content goes only under a `markdown` or a `path` name (artifactProblem), and
+ * AskGate reviews an upload by the same reading (`uploadIsDocument`,
+ * packages/envoy-client/src/askgate-marker.ts).
  */
 export function uploadTypeFrom(name: string): "markdown" | "name" | "path" {
-  const extension = NAME_EXTENSION.exec(withoutTrailingDigitExtensions(name))?.[1];
+  return uploadTypeOf(uploadExtensionOf(name));
+}
+
+/**
+ * What the extension that decides (uploadExtensionOf) makes an upload, as uploadTypeFrom reads
+ * it: `markdown` for .md or .markdown in any case, `name` for any other extension, and `path` for
+ * none. A caller that holds the extension already classifies it here rather than reading the name
+ * again: `dispatch artifact` declares that extension's own type (uploadedFile,
+ * packages/envoy-client/src/dispatch-commands/documents.ts).
+ */
+export function uploadTypeOf(extension: string | undefined): "markdown" | "name" | "path" {
   if (extension === undefined) return "path";
   return MARKDOWN_EXTENSION.test(extension) ? "markdown" : "name";
 }

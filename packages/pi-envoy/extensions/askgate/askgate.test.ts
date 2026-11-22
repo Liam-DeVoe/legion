@@ -4494,6 +4494,18 @@ console.log(JSON.stringify({ argv, consumed: consumeMarker([process.env.ASKGATE_
       expect(g.entries.map((e) => [e.tool, e.outcome])).toEqual([["dispatch_artifact", "verdict"]]);
       expect(markersIn(g.store)).toMatchObject([{ outcome: "verdict" }]);
     });
+    // INFRA-4071 R15, review 6011588028: notes.md/'s last part holds a `/`, so it is no extension
+    // (uploadExtensionOf) and its .md path makes the upload a document, which the CLI sends as
+    // text/markdown and gates. The gate read it as a .md/ name, a file, and let it run unread.
+    test("(o) notes.md/ sent from notes.md is reviewed and marked, as the CLI gates it", async () => {
+      fs.writeFileSync(path.join(work, "notes.md"), BRIEF);
+      const g = bind({ env: STUB, cwd: work });
+      await g.bash("o1", "dispatch artifact --issue DSP-1 --name notes.md/ --path notes.md");
+      expect(g.calls).toHaveLength(1);
+      expect(g.calls[0].user).toContain(uploadRule);
+      expect(g.entries.map((e) => [e.tool, e.outcome])).toEqual([["dispatch_artifact", "verdict"]]);
+      expect(markersIn(g.store)).toMatchObject([{ outcome: "verdict" }]);
+    });
     test("other writes keep the full rules and do not get the upload instruction", async () => {
       const g = bind({ env: STUB, cwd: work });
       await g.bash("u8", ASK);

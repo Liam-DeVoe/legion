@@ -6,5 +6,6 @@ body: |-
   document, and under a name with any other extension as a file of its bytes, whatever the path,
   and names the kind Dispatch stored. A trailing extension of digits alone does not count
   (`rows.jsonl.1` is stored as a file, `Plan v1.2` takes `--content`), and AskGate reviews an upload
-  by the same reading. A write of it that may have reached Dispatch says so and tells the caller to
+  by the same reading. AskGate reviews `--name notes.md/ --path notes.md` as the Markdown upload it
+  is. A write of it that may have reached Dispatch says so and tells the caller to
   check before retrying, while a refusal does not.

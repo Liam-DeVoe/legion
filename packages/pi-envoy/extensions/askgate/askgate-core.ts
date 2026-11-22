@@ -1367,8 +1367,9 @@ const flagName = (flag: Word) => flag.value.split("=", 1)[0];
  * `uploadTypeFrom` does, trimmed as Dispatch trims it). Only literal words that predicate answers
  * no to are not one: a name with an extension other than .md or .markdown, whatever the path
  * (`--name cases.txt --path cases.md`), or a name with no extension and a path that does not end
- * in .md or .markdown. An upload with no `--name` or no `--path` and no inline text is one the CLI
- * refuses before it sends.
+ * in .md or .markdown. An upload with no `--name` is one the CLI refuses before it sends, and one
+ * with a name but no `--path` and no inline text makes an empty document, which writes no text and
+ * which the CLI's predicate does not gate either.
  */
 function uploadMayBeDocument(flags: readonly Word[]): boolean {
   if (flags.some((flag) => [...INLINE_FLAGS, ...INDIRECT_FLAGS].includes(flagName(flag))))

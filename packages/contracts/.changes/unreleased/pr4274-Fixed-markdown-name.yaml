@@ -9,3 +9,6 @@ body: |-
   `uploadTypeFrom` says which of the three a name is. It skips a name's trailing extensions of
   digits alone (`rows.jsonl.1` is a `.jsonl` name, `Plan v1.2` has none), and the inline-content
   rule reads a name the same way.
+  `uploadExtensionOf` gives the extension that decides, which `uploadTypeOf` classifies as
+  `uploadTypeFrom` does: an extension holds letters, marks, digits, `_`, `-` and `+`, up to 32
+  characters, so `notes.md/` has none.

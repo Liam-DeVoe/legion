@@ -13,6 +13,7 @@ import {
   PROJECT_KEY_RULE,
   pathKeepsBytesOf,
   SEARCH_QUERY_MAX,
+  uploadExtensionOf,
   uploadTypeFrom,
 } from "./dispatch-tools";
 import { type SchemaApi, type SchemaNode, zodSchemaApi } from "./tool-schema";
@@ -1330,6 +1331,33 @@ describe("dispatchToolSpecs", () => {
       ["Design notes", "path"],
     ];
     expect(rows.map(([name]) => [name, uploadTypeFrom(name)])).toEqual(rows);
+  });
+
+  // INFRA-4071 R15, review 6011588028: the name is read once, from its end, and its last part is
+  // an extension only when an extension can hold it. `notes.md/` has none, so its path decides,
+  // for the type the command sends and for AskGate alike; a tail longer than 32 is no type.
+  test("reads the extension that decides an upload's type, once, from the name's end", () => {
+    const rows: Array<[string, string | undefined]> = [
+      ["notes.md/", undefined],
+      ["Notes.MD/", undefined],
+      ["a/b.markdown/", undefined],
+      ["notes.md//", undefined],
+      ["notes.txt.1", "txt"],
+      ["data.json.1", "json"],
+      ["x.md.1", "md"],
+      ["Plan v1.2", undefined],
+      ["x.MARKDOWN", "MARKDOWN"],
+      ["x.tar.gz", "gz"],
+      ["rows.jsonl_", "jsonl_"],
+      ["отчёт.данные", "данные"],
+      ["Dr. Smith's notes", undefined],
+      ["notes v2. draft", undefined],
+      ["x.", undefined],
+      ["x.t\u0000xt", undefined],
+      [`x.${"a".repeat(32)}`, "a".repeat(32)],
+      [`x.${"a".repeat(33)}`, undefined],
+    ];
+    expect(rows.map(([name]) => [name, uploadExtensionOf(name)])).toEqual(rows);
   });
 
   // A name is the writer's own argument, and AskGate's gate reads it on the session's own thread
