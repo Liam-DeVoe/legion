@@ -230,7 +230,7 @@ var FactSources = map[string]FactSource{
 	"GateRegistered":    {Way: FactInjected, From: "each recorded `workflow: design gate registered`, with what register_gate reads of the document rebuilt from the shadow, at its offset in the architect's segment"},
 	"ClaimFailed":       {Way: FactInjected, From: "each recorded `supervise: claim failed`, at its offset in the segment of the failed claim's issue"},
 	"ProjectResumed":    {Way: FactInjected, From: "each recorded `pause: the project is resumed`, after the replay's own resume of its pause"},
-	"PullRequestMerged": {Way: FactInjected, From: "a recorded move by pull_request_merged, at the end of its merging segment, on the replay's own pull request record of the issue"},
+	"PullRequestMerged": {Way: FactInjected, From: "a recorded move by pull_request_merged, at the end of its merging segment, or, where the close waited for the issues beneath it, the visit's first recorded `workflow: a merged issue's close waits for the issues beneath it`, at the end of its merging segment, which ends there; on the replay's own pull request record of the issue"},
 
 	// The daemon's own producers, made by the replay as the daemon makes them.
 	"ControllerTick":           {Way: FactProduced, From: "the replay's ticks, a minute after each boot and every tick interval, observing from the shadow the keys blockers.WaitedOn selects"},

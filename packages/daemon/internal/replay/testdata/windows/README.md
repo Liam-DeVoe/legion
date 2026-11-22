@@ -109,6 +109,9 @@ reconstruction error the tool reports; these windows hold the exact one.
   that turn's end, where the replay applies `intake.SignOff`, which the engine refuses while the
   member is in the workflow, and again at each `workflow: issue left the workflow` of a member
   beneath (design section 10, item 3). `every-trigger` holds one.
+- A merge the record shows in `workflow: a merged issue's close waits for the issues beneath it`, its move to `done` coming only at the last such issue's leave, is a held merge: the merger's segment ends at the first such line of the visit, where the replay applies `intake.PullRequestMerged`.
+  The engine leaves the issue in merging while an issue beneath it is in the workflow, which the replay counts (`heldMerges`) and never refuses, and closes it at the last one's leave with no move of the replay's.
+  No window here holds one.
 
 ## Starts and slots
 
@@ -168,6 +171,7 @@ reconstruction error the tool reports; these windows hold the exact one.
   testing to the move that ends the visit (its merge, a conflict, or another move back). M is the
   number of first-parent commits of the base branch (`merges/`) strictly after the stretch's start
   and strictly before its end; a stretch is a conflict where a recorded `conflict` move ended it.
+  A held merge ends its stretch at the merge's own line, not at the later move to `done`.
 - The chance of a conflict is `1 / (1 + exp(−(b0 + b1 × log2(1 + M))))`, b0 and b1 fitted by maximum
   likelihood on the window's own recorded stretches; `Merges = zero` sets b1 to 0. A window that
   records no conflict fits a chance of 0 for every stretch, and no conflict is drawn in it.

@@ -35,11 +35,10 @@ func readsReadyMarks(rule record.SlotRule) bool {
 // phase entry it was made at, so a mark of an earlier visit to merging reads nothing once the issue
 // has left it and come back (record.LineFacts.Ready). Under a rule whose start may take a cover, an
 // issue standing in accepting whose sign-off the workflow held at its generation and its
-// architect's entry (HeldSignOff), and an issue standing in merging whose pull request of its
-// generation merged (the replay's own pull request record, merged by the recorded merge), wait on
-// the issues beneath them still in the workflow, the set both of the workflow's holds read
-// (record.OpenBeneath; record.LineFacts.BeneathWaits). The covers are the table's whole
-// (record.LineFacts.Covers): a replay runs one project.
+// architect's entry (HeldSignOff), and an issue standing in merging whose pull request record is
+// merged (readMerged), wait on the issues beneath them still in the workflow, the set both of the
+// workflow's holds read (record.OpenBeneath; record.LineFacts.BeneathWaits). The covers are the
+// table's whole (record.LineFacts.Covers): a replay runs one project.
 func (ruleTables) ReadRuleFacts(ctx context.Context, tx pgx.Tx, issues []record.Issue, facts *record.LineFacts) error {
 	rule := facts.Rule.OrMain()
 	if readsReadyMarks(rule) {
@@ -65,8 +64,7 @@ func (ruleTables) ReadRuleFacts(ctx context.Context, tx pgx.Tx, issues []record.
 	if err != nil {
 		return fmt.Errorf("read the held sign-offs: %w", err)
 	}
-	merged, err := readMarks(ctx, tx, `select issue, generation from pull_requests where issue = any($1) and state = $2`,
-		standingIn(issues, phase.Merging), string(record.PullRequestMerged))
+	merged, err := readMerged(ctx, tx, slices.Sorted(maps.Keys(standingIn(issues, phase.Merging))))
 	if err != nil {
 		return fmt.Errorf("read the merged pull requests: %w", err)
 	}
@@ -107,6 +105,30 @@ func standingIn(issues []record.Issue, at phase.Phase) map[string]uint64 {
 		}
 	}
 	return generations
+}
+
+// readMerged is the issues of keys, the issues standing in merging, whose pull request record is
+// merged: the merge the close of each waits on, read as the engine reads it (workflow's awaitsMerge
+// and closeAwaitingMerge), by the issue alone. The record's generation is the generation of its CI
+// settlement (record.PullRequest.Generation), no generation of the issue's, so it is not compared.
+func readMerged(ctx context.Context, tx pgx.Tx, keys []string) (map[string]struct{}, error) {
+	merged := make(map[string]struct{})
+	if len(keys) == 0 {
+		return merged, nil
+	}
+	rows, err := tx.Query(ctx, `select issue from pull_requests where issue = any($1) and state = $2`, keys, string(record.PullRequestMerged))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			return nil, err
+		}
+		merged[key] = struct{}{}
+	}
+	return merged, rows.Err()
 }
 
 // readMarks is the issues of generations that query, given their keys and arg, answers at the

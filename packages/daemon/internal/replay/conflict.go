@@ -139,7 +139,9 @@ func ownPullRequest(iss *IssueTrace) int {
 // recordedStretches is every ended stretch of the issues of t's project as the record shows it,
 // by issue and then time, with its M counted from merges. A stretch the record shows open at the
 // window's end, or cut by its issue's leave, has no outcome, and one whose start lies before the
-// inputs reach (Visit.Before) has no known M; neither is an observation of the model.
+// inputs reach (Visit.Before) has no known M; neither is an observation of the model. A merge whose
+// close waited for the issues beneath it ends its stretch at the merge (Visit.Merge), not at the
+// close's later move to done, nor open where that move falls after the window's end.
 func recordedStretches(t Trace, merges baseMerges) []Stretch {
 	var stretches []Stretch
 	for _, key := range sortedKeys(t.Issues) {
@@ -157,14 +159,18 @@ func recordedStretches(t Trace, merges baseMerges) []Stretch {
 				}
 				open, known = visit.Enter, !visit.Before
 			}
+			out := visit.Out
+			if visit.Merge != nil {
+				out = visit.Merge
+			}
 			switch {
-			case !stretchPhase(visit.Phase) && visit.Phase != phase.Held, visit.Out == nil:
+			case !stretchPhase(visit.Phase) && visit.Phase != phase.Held, out == nil:
 				open = time.Time{}
-			case endsStretch(visit.Out):
+			case endsStretch(out):
 				if known {
-					count, unknown := merges.between(iss.Repo, own, open, visit.Out.At)
-					stretches = append(stretches, Stretch{Issue: key, Start: open, End: visit.Out.At, Merges: count,
-						Conflict: visit.Out.Trigger == workflow.TriggerConflict, OwnMergeUnknown: unknown})
+					count, unknown := merges.between(iss.Repo, own, open, out.At)
+					stretches = append(stretches, Stretch{Issue: key, Start: open, End: out.At, Merges: count,
+						Conflict: out.Trigger == workflow.TriggerConflict, OwnMergeUnknown: unknown})
 				}
 				open = time.Time{}
 			}
@@ -461,7 +467,7 @@ func recordedLoops(s script) []conflictLoop {
 	for _, key := range slices.Sorted(maps.Keys(s.pieces)) {
 		pieces := s.pieces[key]
 		for _, p := range pieces {
-			if p.ends != endMove || p.visit == nil || p.visit.Out == nil || p.visit.Out.Trigger != workflow.TriggerConflict {
+			if move := p.move(); p.ends != endMove || move == nil || move.Trigger != workflow.TriggerConflict {
 				continue
 			}
 			loop := conflictLoop{issue: key}
@@ -480,10 +486,10 @@ func recordedLoops(s script) []conflictLoop {
 }
 
 // drawsAtEnd says whether p's end is the end of a stretch that draws whether its head conflicts:
-// a piece in a stretch phase whose recorded move ends the stretch (endsStretch), the stretch not
-// having drawn already (piece.stretchDrawn).
+// a piece in a stretch phase whose recorded move (piece.move) ends the stretch (endsStretch), the
+// stretch not having drawn already (piece.stretchDrawn).
 func (d *driver) drawsAtEnd(p *piece) bool {
-	return !p.stretchDrawn && p.visit != nil && stretchPhase(p.phase) && endsStretch(p.visit.Out)
+	return !p.stretchDrawn && p.visit != nil && stretchPhase(p.phase) && endsStretch(p.move())
 }
 
 // drawConflict draws, at the replay's end of the stretch p ends, whether its head conflicts with
@@ -642,7 +648,7 @@ func (d *driver) mergedForward(forward *piece) error {
 		}
 	}
 	drew := forward.drew
-	if drew.visit.Out.Source.Way == MoveDraw {
+	if drew.move().Source.Way == MoveDraw {
 		return d.stretchEnds(drew)
 	}
 	return d.enterRecorded(drew)
@@ -657,7 +663,7 @@ func (d *driver) mergedForward(forward *piece) error {
 func (d *driver) drawLoop(p *piece) {
 	pieces := d.script.pieces[p.issue]
 	own, back := []*piece(nil), p.index+1
-	recordedConflict := p.visit.Out.Source.Way == MoveDraw
+	recordedConflict := p.move().Source.Way == MoveDraw
 	if recordedConflict {
 		own, back = loopAfter(pieces, p)
 	}

@@ -305,12 +305,12 @@ func (d *driver) generationAt(key string, at time.Time) uint64 {
 	return 1
 }
 
-// enterMove enters the recorded move that ends p's visit. Where the move ends a stretch in which
-// a head can conflict (spec R2, assumption 3), the stretch first draws whether its head conflicts
-// (drawConflict), and a drawn conflict the daemon acts on takes the move's place; otherwise the
-// move enters as recorded (enterRecorded).
+// enterMove enters the recorded move that ends p's visit, or the merge at which its segment ended
+// (piece.move). Where the move ends a stretch in which a head can conflict (spec R2, assumption 3),
+// the stretch first draws whether its head conflicts (drawConflict), and a drawn conflict the
+// daemon acts on takes the move's place; otherwise the move enters as recorded (enterRecorded).
 func (d *driver) enterMove(p *piece) error {
-	if p.visit == nil || p.visit.Out == nil {
+	if p.move() == nil {
 		return nil
 	}
 	if d.drawsAtEnd(p) {
@@ -322,13 +322,14 @@ func (d *driver) enterMove(p *piece) error {
 	return d.enterRecorded(p)
 }
 
-// enterRecorded enters the recorded move that ends p's visit, by its source (MoveSources):
-// through the engine's ReplayTransition, or through the daemon's own handler of the fact the API
-// or GitHub applies. A move whose source is the conflict draw is no move this replay enters: the
-// stretch it ended drew no conflict, and goes on past the loop the record ran for it
-// (stretchEnds). Every move the daemon's code refuses is counted with its reason.
+// enterRecorded enters the recorded move that ends p's visit (piece.move), by its source
+// (MoveSources): through the engine's ReplayTransition, or through the daemon's own handler of the
+// fact the API or GitHub applies. A move whose source is the conflict draw is no move this replay
+// enters: the stretch it ended drew no conflict, and goes on past the loop the record ran for it
+// (stretchEnds). Every move the daemon's code refuses is counted with its reason, and a merge
+// whose close waits for the issues beneath it is counted as held (merged).
 func (d *driver) enterRecorded(p *piece) error {
-	move := p.visit.Out
+	move := p.move()
 	if move.Source.Way == MoveDraw {
 		return d.stretchEnds(p)
 	}
@@ -376,7 +377,7 @@ func (d *driver) enterRecorded(p *piece) error {
 				MergeSHA: fmt.Sprintf("replay-merge-%s-%d", p.issue, pr.Number), HeadSHA: pr.HeadSHA}); err != nil {
 				return err
 			}
-			return d.refusedUnlessMoved(p.issue, move, to, refuse, phase.Merging)
+			return d.merged(p.issue, move, to, refuse)
 		case workflow.TriggerBackward:
 			if move.Drop != "" {
 				d.drops[p.issue] = move.Drop
@@ -395,18 +396,32 @@ func (d *driver) enterRecorded(p *piece) error {
 	return nil
 }
 
-// refusedUnlessMoved counts move refused where key does not stand in its target to after it, nor
-// waits in waiting for the issues beneath it (a merge's close, which the engine makes at the last
-// one's leave).
-func (d *driver) refusedUnlessMoved(key string, move *Move, to phase.Phase, refuse func(string), waiting phase.Phase) error {
-	issue, err := d.recorded(key)
-	if err != nil {
+// merged counts the merge of key's pull request the replay applied by move: one that left key
+// standing in merging while issues beneath it are in the workflow (record.OpenBeneath) is a held
+// merge (Divergence.HeldMerges), whose close the engine makes at the last one's leave, as the
+// daemon's does, and for which the replay enters no move of its own; one that left key anywhere
+// else but to is refused.
+func (d *driver) merged(key string, move *Move, to phase.Phase, refuse func(string)) error {
+	var issue *record.Issue
+	var open []string
+	if err := pgx.BeginTxFunc(d.ctx, d.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+		var err error
+		if issue, err = d.records.Issue(d.ctx, tx, key); err != nil || issue == nil {
+			return err
+		}
+		members, err := d.records.TreeIssues(d.ctx, tx, issue.Tree)
+		open = record.OpenBeneath(*issue, members)
+		return err
+	}); err != nil {
 		return err
 	}
 	switch {
 	case issue == nil:
 		refuse(fmt.Sprintf("%s is not recorded", key))
-	case issue.Phase != to && issue.Phase != waiting:
+	case issue.Phase == to:
+	case record.StandsAt(*issue) == phase.Merging && len(open) > 0:
+		d.counters.HeldMerges++
+	default:
 		refuse(fmt.Sprintf("the %s of %s left it in %s, not %s", move.Trigger, key, issue.Phase, to))
 	}
 	return nil

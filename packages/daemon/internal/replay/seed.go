@@ -670,7 +670,10 @@ func (s *seeder) owedStarts() error {
 // pullRequests writes a synthetic open pull request for each placed issue in the workflow the trace
 // has seen one of before the start, on the issue's own branch against its default branch, numbered
 // as a line named it or by the issue's own number, its head arrived when the trace first saw the
-// pull request: the record the daemon's guards read (review Q2, item 1).
+// pull request: the record the daemon's guards read (review Q2, item 1). An issue that stands at
+// the start in a visit to merging whose merge came before it, its close waiting for the issues
+// beneath it (Visit.Merge), holds its pull request merged, as the replay's own merge leaves it, so
+// the engine closes it at the last one's leave as it closed it in the record.
 func (s *seeder) pullRequests() error {
 	for _, key := range s.placedKeys() {
 		issue, iss := s.placed[key], s.t.Issues[key]
@@ -684,6 +687,10 @@ func (s *seeder) pullRequests() error {
 		}
 		pr := record.PullRequest{Issue: key, Repo: issue.Repo, Number: number, Branch: claim.IssueBranch(key), Base: issue.DefaultBranch,
 			HeadUpdatedAt: iss.PullRequest, State: record.PullRequestOpen}
+		_, visits := s.run(iss)
+		if visit := s.visitAt(visits); visit != nil && visit.Merge != nil && visit.Merge.At.Before(s.at) {
+			pr.State, pr.MergeSHA = record.PullRequestMerged, fmt.Sprintf("replay-merge-%s-%d", key, number)
+		}
 		if err := s.records.PutPullRequest(s.ctx, s.tx, pr); err != nil {
 			return fmt.Errorf("replay: seed the pull request of %s: %w", key, err)
 		}

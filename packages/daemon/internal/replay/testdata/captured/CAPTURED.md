@@ -4,8 +4,8 @@ Real daemon log lines, Dispatch events and one GitHub commits page, read once an
 They live in `packages/daemon/internal/replay/testdata/captured/`, and every path below is relative to it: `log/<slug>.json` holds the daemon's lines, `events/<type-slug>.json` Dispatch's events and `github/commits.json` GitHub's page.
 The daemon's lines sit under `log/` rather than `logs/` because the repository's `.gitignore` ignores every directory named `logs`.
 `TestTheTraceReadsEveryCapturedShape` (`packages/daemon/internal/replay/trace_test.go`) reads every file here with the trace's readers (`ParseLogLine`, `ParseDispatchEvent` and `ParseMerges` in `trace.go`) and holds each to the fields read by hand from the file, so a file added here needs its row in that test.
-Every issue key is `ACME-<n>` under one map across all files but the eleven log files of the log table's last eleven rows, which were neutralized in a run of their own, so their keys and uuids are under a map of their own: a key or a uuid of theirs and the same one in another file may name two different things.
-Both maps are kept outside the repository.
+Every issue key is `ACME-<n>` under one map across all files but the log files of the log table's last fourteen rows, which were neutralized in runs of their own (its eleven rows captured on 2026-11-21 in one, its two merge forward rows in another and its merged close's row in a third), so the keys and uuids of each such run are under a map of its own: a key or a uuid of theirs and the same one in another file may name two different things.
+Every map is kept outside the repository.
 
 Placeholders in the commands below:
 
@@ -23,7 +23,7 @@ Shape: each log file is a one-entry array of `{timestamp, jsonPayload}`, each ev
 
 ## Neutralizing
 
-The log lines and the events were neutralized by `legion replay neutralize`, in one run over one window assembled from the raw samples, and the log files of the log table's last eleven rows in a second run over a window assembled from their samples alone:
+The log lines and the events were neutralized by `legion replay neutralize`, in one run over one window assembled from the raw samples, and the log files of the log table's last fourteen rows in runs of their own, each over a window assembled from its samples alone: its eleven rows captured on 2026-11-21 in a second run, its two merge forward rows in a third and its merged close's row in a fourth, the last two at commit 45098cee:
 
 ```sh
 go -C packages/daemon run ./cmd/legion replay neutralize --in <window> --out <neutral window> --map <map file> --project ACME --deny <organization>
@@ -94,6 +94,9 @@ A clause that holds `'` is written `'\''` inside the command's single quotes.
 | `log/admission-reconcile-holding.json` | `jsonPayload.msg="admission reconcile: holding roots for the Dispatch consumer to reach a stream position"` | 2026-11-21T01:58:06.102610914Z | 2026-11-21 | nothing |
 | `log/admission-consumer-caught-up.json` | `jsonPayload.msg="admission: the Dispatch consumer has caught up; releasing held roots"` | 2026-11-21T02:04:04.400616413Z | 2026-11-21 | nothing |
 | `log/root-joined-live-tree.json` | `jsonPayload.msg="workflow: a queued root joined a live tree"` | 2026-11-17T09:11:21.164402764Z | 2026-11-21 | `issue`, `tree` |
+| `log/workflow-merge-forward-asked.json` | `jsonPayload.msg="workflow: merge forward asked"` | 2026-11-21T19:27:15.063647973Z | 2026-11-22 | `issue`, `tree` |
+| `log/workflow-merge-forward-landed.json` | `jsonPayload.msg="workflow: the merge forward landed"` | 2026-11-21T19:34:32.405520633Z | 2026-11-22 | `issue`, `tree` |
+| `log/workflow-merged-close-waits.json` | `jsonPayload.msg="workflow: a merged issue's close waits for the issues beneath it"` | 2026-11-21T19:26:26.873672861Z | 2026-11-22 | `issue`, `tree`, `waitingFor` |
 
 Two extra files hold the first lines of the deployed release's last daemon process, which writes neither of the lines today's daemon starts a process with, the leak check line and `daemon: opening the store; …` (see "Kinds with no line in 30 days"):
 
@@ -165,3 +168,4 @@ Three more kinds the trace reads had no line either: read with `--freshness=30d`
 - `supervise: claim failed` is logged at `ERROR` with `cause`, `why` and the four budgets `launchFailures`, `deaths`, `promptFailures`, `promptRetires`; `log/supervise-claim-failed-no-cause.json`, of an older release, carries no `cause`.
 - `workflow: design gate registered` has three shapes: `log/design-gate-registered.json` carries `changes_requested`, `step` and `gated_steps`, `log/design-gate-registered-one-step.json` carries `changes_requested` and neither of the other two, and `log/design-gate-registered-before-steps.json` none of the three; the two older ones carry `policy`.
 - `handoff.recorded` carries `payload.phase`, `payload.version` and `payload.handoff_id` only.
+- `workflow: a merged issue's close waits for the issues beneath it` carries `waitingFor` as one string of keys joined by `, `, not an array, and `pullRequest` as a number; the daemon writes it at the merge and again at each later read of the wait, so the trace takes the first one of a visit to merging as the merge's moment.

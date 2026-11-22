@@ -90,7 +90,8 @@ const (
 	// which ends none. Either is of a turn that ended at the fact's own moment.
 	UnplacedTurn UnplacedKind = "turn"
 	// UnplacedMove is a fact of a phase move: a move out of a phase the trace does not hold the
-	// issue in, a move whose trigger has no source in MoveSources, or a move back with no cause.
+	// issue in, a move whose trigger has no source in MoveSources, a move back with no cause, or a
+	// merge whose close waited (MergedCloseWaits) of an issue the trace holds in no visit to merging.
 	UnplacedMove UnplacedKind = "move"
 	// UnplacedEntry is a fact of an issue's entry into the workflow: a move of an issue none of
 	// whose Dispatch events entered it, or an issue in the workflow the window holds no Dispatch
@@ -209,6 +210,22 @@ type Visit struct {
 	Segment *WorkSegment
 	// Ready is the merger's ready mark inside the visit to merging, zero for none.
 	Ready time.Time
+	// Merge is the merge of the issue's pull request inside a visit to merging whose close waited
+	// for the issues beneath it (MergedCloseWaits, the first line of the visit's): the move the
+	// merge would have made, from merging to done by pull_request_merged at the line's time, which
+	// a replay applies at the end of the visit's work segment (SegmentEndHeldMerge); the engine
+	// closes the issue as the last of them leaves, the visit's Out. Nil where no close waited.
+	Merge *Move
+}
+
+// workEnd is the recorded move the end of the visit's work segment enters: its merge where the
+// segment ended at it (SegmentEndHeldMerge), and otherwise the move that ended the visit; nil for
+// neither.
+func (v *Visit) workEnd() *Move {
+	if v.Segment != nil && v.Segment.EndedBy == SegmentEndHeldMerge {
+		return v.Merge
+	}
+	return v.Out
 }
 
 // Move is one recorded phase move (`workflow: phase changed`): its moment, its phases on today's
@@ -248,6 +265,10 @@ const (
 	// while a member beneath was in the workflow: the work ended with the architect's last turn, and
 	// the sign-off moved the issue at the member's leave (the windows' README, "Work segments").
 	SegmentEndHeldSignOff SegmentEnd = "held_sign_off"
+	// SegmentEndHeldMerge is a merger's segment in merging whose merge left the issue there, its
+	// close waiting for the issues beneath it still in the workflow (Visit.Merge): the work ended at
+	// the merge, and the engine closed the issue at the last one's leave, the visit's recorded move.
+	SegmentEndHeldMerge SegmentEnd = "held_merge"
 )
 
 // WorkSegment is one visit's work: from its worker start to its end (zero while open), with each
@@ -1000,6 +1021,8 @@ func (b *traceBuilder) onLine(line LogLine) {
 		if n := len(iss.MergeForwards); n > 0 && iss.MergeForwards[n-1].End.IsZero() {
 			iss.MergeForwards[n-1].End = at
 		}
+	case MergedCloseWaits:
+		b.mergeWaits(l)
 	case ProcessStop:
 		if boot := &b.t.Boots[len(b.t.Boots)-1]; boot.Stopped.IsZero() {
 			boot.Stopped = at
@@ -1159,6 +1182,28 @@ func (b *traceBuilder) queueLeft(key string, at time.Time, msg string, number in
 	iss := b.issue(key)
 	iss.QueueDrops = append(iss.QueueDrops, QueueDrop{At: at, Line: msg, PullRequest: number})
 	b.pullRequestSeen(iss, at, number)
+}
+
+// mergeWaits reads a line of a merged issue's close waiting for the issues beneath it
+// (MergedCloseWaits): the first of the visit to merging the issue stands in is the moment its pull
+// request merged, the visit's Merge, and a later one, which the daemon writes as it reads the wait
+// again, changes nothing. A line of an issue the trace holds in no visit to merging is one it
+// cannot place.
+func (b *traceBuilder) mergeWaits(l MergedCloseWaits) {
+	at := l.Time
+	iss := b.issue(l.Issue)
+	b.pullRequestSeen(iss, at, l.PullRequest)
+	visit := iss.openVisit()
+	if visit == nil || visit.Phase != phase.Merging {
+		b.unplaced(UnplacedMove, l.Issue, at, "%s at %s holds the close of %s's merge, and the trace holds it in no visit to merging",
+			l.Msg, stamp(at), l.Issue)
+		return
+	}
+	if visit.Merge == nil {
+		visit.Merge = &Move{At: at, From: phase.Merging, To: phase.Done, RecordedFrom: phase.Merging, RecordedTo: phase.Done,
+			Trigger: workflow.TriggerPullRequestMerged, Status: workflow.PhaseStatus(phase.Done),
+			Source: MoveSources[workflow.TriggerPullRequestMerged]}
+	}
 }
 
 // slotMoved reads one per-slot line. Where the window holds the record line, the move waits for
@@ -1839,7 +1884,9 @@ func (t Trace) ruleAt(at time.Time) record.SlotRule {
 	return rule
 }
 
-// segments sets each of iss's visits' worker start and work segment.
+// segments sets each of iss's visits' worker start and work segment. A visit to merging whose
+// close waited for the issues beneath it ends its work at the merge (Visit.Merge), where its worker
+// started by then, however much later the close's move to done came, or none at all in the window.
 func (b *traceBuilder) segments(iss *IssueTrace) {
 	for i := range iss.Visits {
 		visit := &iss.Visits[i]
@@ -1849,6 +1896,8 @@ func (b *traceBuilder) segments(iss *IssueTrace) {
 		}
 		segment := &WorkSegment{Start: visit.WorkerStart, EndedBy: SegmentOpen}
 		switch {
+		case visit.Merge != nil && !visit.Merge.At.Before(visit.WorkerStart):
+			segment.End, segment.EndedBy = visit.Merge.At, SegmentEndHeldMerge
 		case visit.Out != nil && visit.Out.Trigger == workflow.TriggerSignOff && b.memberLeftAt(iss, visit.Out.At):
 			segment.End, segment.EndedBy = visit.Out.At, SegmentEndMove
 			if end := lastTurnEnd(iss, visit.WorkerStart, visit.Exit); !end.IsZero() && end.Before(visit.Out.At) {

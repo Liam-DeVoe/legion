@@ -53,7 +53,9 @@ type pieceEnd int
 
 const (
 	// endMove is a piece the recorded move of its visit ends, which the replay enters at its end
-	// (MoveSources).
+	// (MoveSources): the move that ended the visit, or the merge at which the segment of a visit
+	// to merging ended where the issue's close waited for the issues beneath it
+	// (SegmentEndHeldMerge, piece.move).
 	endMove pieceEnd = iota
 	// endHeldSignOff is an accepting piece whose sign-off the engine held behind a member beneath
 	// (SegmentEndHeldSignOff): the sign-off is entered at its end, and again at each leave of a
@@ -141,6 +143,16 @@ func (p *piece) recorded() time.Duration {
 		return 0
 	}
 	return p.end.Sub(p.start)
+}
+
+// move is the recorded move p's end enters where it ends by one (endMove): its visit's work end
+// (Visit.workEnd), the merge where its segment ended at it, and otherwise the move that ended its
+// visit; nil for none.
+func (p *piece) move() *Move {
+	if p.visit == nil {
+		return nil
+	}
+	return p.visit.workEnd()
 }
 
 // worked is the length of the piece's work in a replay before the slowdown: its recorded length
@@ -364,7 +376,7 @@ func issuePieces(t Trace, iss *IssueTrace) []*piece {
 			last.hold = holds[len(holds)-1]
 		}
 		switch segment.EndedBy {
-		case SegmentEndMove:
+		case SegmentEndMove, SegmentEndHeldMerge:
 			last.ends = endMove
 		case SegmentEndHeldSignOff:
 			last.ends = endHeldSignOff

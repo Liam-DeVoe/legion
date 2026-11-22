@@ -45,12 +45,13 @@ type capturedEntry struct {
 // readers — ParseLogLine for a daemon line, ParseDispatchEvent for an event, ParseMerges for a
 // commit page — and the reading is held to the one written out by hand from the file: a line's
 // type, msg and time, its issue, tree, phases and trigger, the slots in use and the cap, the issue
-// and role a supervise: line's claim token names, and the issues an issue waits on; an event's
-// type, actor and time, and the status, blocked_by, parent and rank it shows; each merge's commit
-// and time. It fails for a file a reader refuses, drops (a line read as no kind the trace reads, an
-// event read without its type's part) or misreads, for a captured file this test holds no reading
-// of, and for a reading of a file that is not there. Window two's ready line moves an issue into
-// awaiting_merge, a phase today's workflow lacks, and is read as written, for the trace to fold.
+// and role a supervise: line's claim token names, the issues an issue waits on, and the pull
+// request and the issues a merged issue's close waits for; an event's type, actor and time, and
+// the status, blocked_by, parent and rank it shows; each merge's commit and time. It fails for a
+// file a reader refuses, drops (a line read as no kind the trace reads, an event read without its
+// type's part) or misreads, for a captured file this test holds no reading of, and for a reading of
+// a file that is not there. Window two's ready line moves an issue into awaiting_merge, a phase
+// today's workflow lacks, and is read as written, for the trace to fold.
 // A line of an older shape holds, for each member it lacks, the value ParseLogLine gives it: the
 // spec as the step, no changes request and no gated steps for the older gate registrations, and
 // the unrecorded cause for the failed claim with no cause.
@@ -234,6 +235,12 @@ func capturedLineReadings(t *testing.T) map[string]LogLine {
 			Issue: "ACME-49", PullRequest: 5367, HeadSHA: "aa593efa160f8338f94e0b8dfc358aeabefd2e3c", Why: "the issue stands in done, not merging"},
 		"merge-queue-left-read-once.json": QueueLeftReadOnce{LineHead: head("workflow: a pull request in merging left the merge queue; the daemon reads it from GitHub once", "2026-11-21T03:19:56.094165169Z"),
 			Issue: "ACME-38", PullRequest: 4547, HeadSHA: "c3b2e84ddc994f14b179f99243a9490806e2df1b"},
+		"workflow-merge-forward-asked.json": MergeForwardAsked{LineHead: head("workflow: merge forward asked", "2026-11-21T19:27:15.063200483Z"),
+			Issue: "ACME-2", Phase: phase.Implementing},
+		"workflow-merge-forward-landed.json": MergeForwardLanded{LineHead: head("workflow: the merge forward landed", "2026-11-21T19:34:32.405321293Z"),
+			Issue: "ACME-1"},
+		"workflow-merged-close-waits.json": MergedCloseWaits{LineHead: head("workflow: a merged issue's close waits for the issues beneath it", "2026-11-21T19:26:26.873257581Z"),
+			Issue: "ACME-1", Tree: "ACME-1", PullRequest: 2377, WaitingFor: []string{"ACME-2"}},
 	}
 }
 

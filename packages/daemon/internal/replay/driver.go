@@ -238,6 +238,10 @@ type Divergence struct {
 	// HeldSignOffs is how many sign-offs the engine held behind a member beneath, each applied
 	// again at the member's leave.
 	HeldSignOffs int `json:"heldSignOffs"`
+	// HeldMerges is how many merges left their issue in merging, its close waiting for the issues
+	// beneath it still in the workflow (record.OpenBeneath), which the engine makes at the last
+	// one's leave as the daemon does.
+	HeldMerges int `json:"heldMerges"`
 	// Reassertions is how many starts re-sent a claim the entry it had already been given
 	// (admission's repair of a role behind its entry), which opened no segment.
 	Reassertions int `json:"reassertions"`

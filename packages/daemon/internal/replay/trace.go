@@ -45,7 +45,9 @@ const (
 	// MoveFact is a move made at the end of its recorded work segment through the daemon's own
 	// handler of a fact (MoveSource.Fact), so the guards that handler keeps — a sign-off refused
 	// while a child is in the workflow, a merge that waits for the issues beneath it — hold in a
-	// replay as they held in the record.
+	// replay as they held in the record. A merge whose close waited for the issues beneath it ended
+	// its segment at the merge itself, which the record holds in a line of its own
+	// (MergedCloseWaits, Visit.Merge), not at the recorded move to done the close made later.
 	MoveFact MoveWay = "fact"
 	// MovePass is a move the daemon's own admission pass makes from the state a replay reaches,
 	// as gate_opened is the promotion of an issue whose first phase the line lets start. A replay
@@ -100,8 +102,10 @@ type MoveSource struct {
 // handoff or a review settles go through the engine's ReplayTransition at the end of their
 // segment, and so does the release at 9542c6fb's checks_red, which moved an issue back to
 // implementing from any phase. A sign-off, a merge and a backward move go through the daemon's
-// handler of the fact the API or GitHub applies, so the guards that handler keeps hold. A conflict
-// is drawn at the rate the window's recorded conflicts fit, so its recorded moves are not
+// handler of the fact the API or GitHub applies, so the guards that handler keeps hold; a merge
+// whose close waited for the issues beneath it is applied at the moment of the merge, read from
+// its own line (MergedCloseWaits), and the move to done its close made later is the engine's. A
+// conflict is drawn at the rate the window's recorded conflicts fit, so its recorded moves are not
 // injected. The release at 9542c6fb's ready move is a mark inside merging, the phase its
 // awaiting_merge is read as.
 var MoveSources = map[workflow.TriggerKind]MoveSource{
@@ -164,6 +168,12 @@ const (
 	mergeForwardAskedLine  = "workflow: merge forward asked"
 	mergeForwardLandedLine = "workflow: the merge forward landed"
 )
+
+// mergedCloseWaitsLine is the msg of the line a merge writes where the issue's close waits for the
+// issues beneath it still in the workflow (workflow's closeMerged, MergedCloseWaits): the moment
+// the issue's pull request merged, where the recorded move to done comes only at the last one's
+// leave.
+const mergedCloseWaitsLine = "workflow: a merged issue's close waits for the issues beneath it"
 
 // LineHead is what every daemon log line the trace reads carries whatever its kind: the msg the
 // daemon wrote it under and the time the daemon wrote it, the line's own time attribute. A Cloud
@@ -526,6 +536,20 @@ type MergeForwardLanded struct {
 	Issue string
 }
 
+// MergedCloseWaits is a `workflow: a merged issue's close waits for the issues beneath it` line
+// (workflow's closeMerged): the pull request PullRequest of Issue, of Tree, merged while the issues
+// WaitingFor beneath it were still in the workflow, so the issue stands in merging until the last
+// of them leaves, when the engine closes it. The daemon writes the line at the merge, and again at
+// each later read of the wait that finds one still there (a departure beneath the issue, a boot's
+// sweep), so the first one of a visit to merging is the moment the pull request merged. WaitingFor
+// is the keys the line names, which the daemon writes as one string joined by ", ".
+type MergedCloseWaits struct {
+	LineHead
+	Issue, Tree string
+	PullRequest int
+	WaitingFor  []string
+}
+
 // PassMovedSlots is an `admission: a pass moved slots` line (admit's logPassMoves), the record of
 // one admission pass that gave out or took back at least one slot, written once its fact
 // committed: the slots in use after the pass, the cap it ran with, each slot it took back with
@@ -844,6 +868,10 @@ var lineReaders = map[string]func(LineHead, *lineAttrs) LogLine{
 	},
 	mergeForwardLandedLine: func(h LineHead, a *lineAttrs) LogLine {
 		return MergeForwardLanded{LineHead: h, Issue: a.str("issue")}
+	},
+	mergedCloseWaitsLine: func(h LineHead, a *lineAttrs) LogLine {
+		return MergedCloseWaits{LineHead: h, Issue: a.str("issue"), Tree: a.str("tree"), PullRequest: a.count("pullRequest"),
+			WaitingFor: strings.Split(a.str("waitingFor"), ", ")}
 	},
 }
 
