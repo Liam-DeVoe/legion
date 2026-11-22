@@ -38,6 +38,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/leasetime"
 	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/redirects"
+	"github.com/sjawhar/envoy/internal/serverwait"
 )
 
 type client struct {
@@ -113,25 +114,11 @@ type apiError struct {
 	// withheld is whether the answer came from an address that is not clean, so that none of
 	// its text prints: the decision doStatus made, read by Error and podRefusal.
 	withheld bool
-	// RetryAfter is the wait the answer's Retry-After header names (retryAfter), and zero where
-	// it names none: what enroll --pod waits before it asks again after a 503 (untilAvailable).
+	// RetryAfter is the wait the answer names in Retry-After, read by the module's one rule for
+	// it (serverwait.Read: seconds or an HTTP date, at most an hour), and zero where it names
+	// none: what enroll --pod waits before it asks again after a 503 (untilAvailable), which
+	// waits its own backoff for a zero.
 	RetryAfter time.Duration
-}
-
-// maxRetryAfter is the most of a Retry-After header retryAfter reads, a day: past it, the wait
-// is only the broker saying not to come back soon, and the bound keeps a huge figure from
-// overflowing a time.Duration.
-const maxRetryAfter = 24 * time.Hour
-
-// retryAfter is the wait a Retry-After header names in whole seconds (RFC 9110 section 10.2.3),
-// at most maxRetryAfter, and zero for a header that is absent, names no positive number of
-// seconds, or names a date, which no broker answer carries.
-func retryAfter(header string) time.Duration {
-	seconds, err := strconv.ParseInt(strings.TrimSpace(header), 10, 64)
-	if err != nil || seconds <= 0 {
-		return 0
-	}
-	return time.Duration(min(seconds, int64(maxRetryAfter/time.Second))) * time.Second
 }
 
 // Error is the broker's message and code, and the answer id to quote when it named one; where
@@ -256,10 +243,16 @@ func (c *client) doStatus(ctx context.Context, method, url string, body []byte, 
 			AnswerID:   c.baseURL.Words(envelope.AnswerID),
 			said:       &envelope.Error,
 			withheld:   !c.baseURL.Clean(),
-			RetryAfter: retryAfter(resp.Header.Get("Retry-After")),
+			RetryAfter: retryAfterOf(resp.Header),
 		}
 	}
 	return resp.StatusCode, data, nil
+}
+
+// retryAfterOf is the wait header names (serverwait.Read), and zero where it names none.
+func retryAfterOf(header http.Header) time.Duration {
+	wait, _ := serverwait.Read(header, time.Now())
+	return wait
 }
 
 // answerIDHeader is the header every answer the broker itself writes names its answer id in

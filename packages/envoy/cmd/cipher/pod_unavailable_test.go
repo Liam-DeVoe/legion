@@ -10,7 +10,9 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -20,7 +22,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/cipheraddr"
 	"github.com/sjawhar/envoy/internal/cipher/record"
+	"github.com/sjawhar/envoy/internal/serverwait"
 )
 
 // recordPodWaits replaces podRetryWait for the test with a timer that fires at once and records
@@ -209,15 +213,40 @@ func TestARefusedPodLoginIsNotMadeAgain(t *testing.T) {
 	}
 }
 
-// TestRetryAfterReadsWholeSeconds: retryAfter reads a Retry-After of whole seconds, at most a day,
-// and nothing from a header that is absent, not a positive number of seconds, or a date.
-func TestRetryAfterReadsWholeSeconds(t *testing.T) {
-	for header, want := range map[string]time.Duration{
-		"1": time.Second, " 30 ": 30 * time.Second, "86400": maxRetryAfter, "9223372036854775807": maxRetryAfter,
-		"": 0, "0": 0, "-5": 0, "1.5": 0, "soon": 0, "Wed, 21 Oct 2015 07:28:00 GMT": 0,
+// TestARefusalsRetryAfterIsReadAsServerwaitReadsIt: the client reads a refusal's Retry-After by
+// the module's one rule (serverwait.Read), not a rule of its own: whole seconds as themselves, a
+// count past serverwait.MaxWait as MaxWait, an HTTP date as the time until it, and a header that
+// names no wait as none.
+func TestARefusalsRetryAfterIsReadAsServerwaitReadsIt(t *testing.T) {
+	inTwentyMinutes := time.Now().Add(20 * time.Minute).UTC().Format(http.TimeFormat)
+	for _, row := range []struct {
+		name, header string
+		least, most  time.Duration
+	}{
+		{"whole seconds", "1", time.Second, time.Second},
+		{"a count past serverwait's bound", "86400", serverwait.MaxWait, serverwait.MaxWait},
+		{"an HTTP date", inTwentyMinutes, 19 * time.Minute, 20 * time.Minute},
+		{"no number and no date", "soon", 0, 0},
+		{"no header", "", 0, 0},
 	} {
-		if got := retryAfter(header); got != want {
-			t.Errorf("retryAfter(%q) = %v, want %v", header, got, want)
-		}
+		t.Run(row.name, func(t *testing.T) {
+			broker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				if row.header != "" {
+					w.Header().Set("Retry-After", row.header)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusServiceUnavailable)
+				_ = json.NewEncoder(w).Encode(map[string]string{"code": "OIDC_ISSUER_UNAVAILABLE", "error": "the service-account token issuer cannot be reached; try again after Retry-After"})
+			}))
+			t.Cleanup(broker.Close)
+			_, err := newClient(cipheraddr.New(broker.URL)).do(context.Background(), http.MethodGet, broker.URL+"/v1/self", nil, nil)
+			var refused *apiError
+			if !errors.As(err, &refused) {
+				t.Fatalf("the 503 read as %v, want an *apiError", err)
+			}
+			if refused.RetryAfter < row.least || refused.RetryAfter > row.most {
+				t.Fatalf("Retry-After %q read as %s, want between %s and %s, as serverwait.Read reads it", row.header, refused.RetryAfter, row.least, row.most)
+			}
+		})
 	}
 }
