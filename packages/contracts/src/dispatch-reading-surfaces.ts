@@ -657,7 +657,7 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     files: ["packages/dispatch/web/src/features/issue-page/IssuePins.tsx"],
     proof: {
       file: "packages/dispatch/web/src/features/issue-page/IssueMargin.test.tsx",
-      test: "a pin's line reads a reference as its target's name",
+      test: "a pin's line reads an issue reference as its key alone",
     },
     reach: "/issues/<ISSUE> with the new issue page on, Details' Pinned section",
     reason: `A pin names its record on one line, its first line cut by R1's rule. ${PLAIN_WORDS_REASON}`,
