@@ -21,10 +21,15 @@ body: |-
   `401 POD_TOKEN_INVALID`, or `invalid_request` on the token exchange.
   An entry of `BROKER_API_ACCOUNTS` or `BROKER_SERVICE_LOGINS` may end with
   `=<issuer name>[,<issuer name>…]`, the issuers its account's token is taken from. An entry that
-  names none takes the first issuer of the list alone, so an existing entry keeps its meaning. A
-  listed account's token from another issuer is `403 ACCOUNT_NOT_LISTED`. A token login's
-  credential records the issuer whose token made it (migration 0041), and it stops working once
-  the account's entry no longer names that issuer.
+  names none takes the first issuer of the list alone, so an existing entry keeps its meaning while
+  the cluster the broker trusted before stays first in the list. A listed account's token from
+  another issuer is `403 ACCOUNT_NOT_LISTED`. A token login's credential records the issuer whose
+  token made it (migration 0041), and it stops working once the account's entry no longer names
+  that issuer.
+  When you change `BROKER_K8S_OIDC_ISSUER` from one URL to named entries, list the cluster the
+  broker trusted before first: an entry that names no issuer takes the first issuer, and a token
+  login's credential or a pod's enrollment recorded before migration 0041 reads as the first
+  issuer's.
   A `BROKER_POD_OPERATORS` entry names an account and no issuer: the pod of a mapped account logs
   in only with a token of an issuer its `BROKER_SERVICE_LOGINS` entry names, and its token of
   another issuer is `403 ACCOUNT_NOT_LISTED`. The broker refuses to start on a mapped account that
@@ -50,9 +55,10 @@ body: |-
   An entry of `BROKER_EXCHANGE_ACCOUNTS` may name its issuers as
   `<service account>=<project>=<person>=[<session>]=<issuer name>[,<issuer name>…]`, and the
   exchange takes that account's token only from those issuers. An entry that names none takes the
-  first issuer of the list alone, so an existing entry keeps its meaning. An entry names its
-  issuers in a fifth `=`-separated field, after its session field (empty for none), and the broker
-  reads that field after the entry's last `=`. So from this release on, an entry written as four
+  first issuer of the list alone, so an existing entry keeps its meaning while the cluster the
+  broker trusted before stays first. An entry names its issuers in a fifth `=`-separated field,
+  after its session field (empty for none), and the broker reads that field after the entry's
+  last `=`. So from this release on, an entry written as four
   fields whose session holds `=` is read as five: the session's text after its last `=` is read as
   issuer names. Beside one bare issuer URL, as every deployment before this release has, every
   issuer name and an empty issuer field are refused, so the broker refuses to start on such an
@@ -72,9 +78,10 @@ body: |-
   A read entry of `BROKER_EXCHANGE_READ_ACCOUNTS` names its issuers the same way, in a fourth
   `=`-separated field after its session, `<service account>=<service>=<session>=first,second`, and
   the exchange mints its account's read-only token only for a token of those issuers. A read entry
-  that names none takes the first issuer of the list alone, so an existing entry keeps its meaning,
-  and a token of an issuer the entry does not name is `400 invalid_request`. The broker reads that
-  field after the entry's last `=`, so a read entry written as three fields whose session holds `=`
+  that names none takes the first issuer of the list alone, so an existing entry keeps its meaning
+  while the cluster the broker trusted before stays first, and a token of an issuer the entry does
+  not name is `400 invalid_request`. The broker reads that field after the entry's last `=`, so a
+  read entry written as three fields whose session holds `=`
   is read as four: beside one bare issuer URL the broker refuses to start on it, and the session is
   kept by naming the issuers in `BROKER_K8S_OIDC_ISSUER` and writing `=<name>` after it, as for an
   exchange entry. The broker refuses to start, naming `BROKER_EXCHANGE_READ_ACCOUNTS`, the entry

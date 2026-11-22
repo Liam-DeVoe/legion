@@ -1285,10 +1285,11 @@ const legionReleasedClaim = z.object({
 
 /** `api.ProjectReleaseRequest`, the body of `POST /legion/v1/operator/project/release`: the bound
  * as a Go duration (`30m`; absent for the daemon's `pod_update_grace_minutes`), and whether this
- * is a dry run, which reads each pod's workspace and asks, stops and saves nothing. While the
- * project is paused, or a pod a pause stopped is still held, the route answers 409
- * `PROJECT_PAUSED` (`LegionPauseFailureResponse`, with `heldPods`), a dry run's included, and
- * records, stops and deletes nothing. */
+ * is a dry run, which reads each pod's workspace and asks, stops and saves nothing. Once this
+ * daemon process has run a release, the route answers that release, which starts nothing, whatever
+ * the pause. Before that, while the project is paused, or a pod a pause stopped is still held, the
+ * route answers 409 `PROJECT_PAUSED` (`LegionPauseFailureResponse`, with `heldPods`), a dry run's
+ * included, and records, stops and deletes nothing. */
 export const LegionProjectReleaseRequest = z.strictObject({
   bound: nonEmptyString.optional(),
   dryRun: z.boolean().optional(),

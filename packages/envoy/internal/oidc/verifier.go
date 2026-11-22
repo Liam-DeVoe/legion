@@ -198,8 +198,9 @@ func newVerifier(provider *gooidc.Provider, issuer, audience string) *Verifier {
 // UnverifiedIssuer is raw's iss claim, read without verifying anything, from raw with every space
 // removed (stripSpaces) as Verify reads it. A raw that is not three dot-separated segments whose
 // middle one is a base64url claim set answers an empty iss and the reason. A caller that trusts
-// several issuers picks with it the one verifier a token is for, as LazyVerifier.Issues and
-// IssuerSet do; no claim anyone is admitted on comes from it.
+// several issuers picks with it the one verifier a token is for, as LazyVerifier.Issues,
+// IssuerSet, the broker's NATS audiences and natscallout's PlatformTokens do; no claim anyone is
+// admitted on comes from it.
 func UnverifiedIssuer(raw string) (string, error) {
 	claims, err := decodeUnverifiedClaims(stripSpaces(raw))
 	if err != nil {

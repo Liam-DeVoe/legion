@@ -48,10 +48,8 @@ func (r *projectReleaser) readAll(ctx context.Context, run *releaseRun, pods []*
 // read reads issue's workspace through one running role's shim, the first by token, with what
 // the shim tells the issue's own commits by (unpushedRead). A pod where no role process runs now
 // is unread; a shim that refused, a read that failed, and a read the daemon could not make are a
-// refusal, which asks the pod's roles, whose text is the error's as the store keeps a far side's
-// error text (storetext.FarSideError): a runtime's error names the request's URL, with its query.
-// Where that cuts the text to its start, the whole text goes to the log, in parts that name the
-// issue and the role read (storetext.LogWhole, projectReleaseErrorInFull), at each read refused;
+// refusal, which asks the pod's roles, whose text keeps the start of the error's, and the log the
+// whole of it, in parts that name the issue and the role read (keepWhole), at each read refused;
 // the parts name no release, since a dry run's reads have none.
 func (r *projectReleaser) read(ctx context.Context, issue string) releaseRead {
 	running := runningClaims(r.issueViews(issue))
@@ -65,9 +63,7 @@ func (r *projectReleaser) read(ctx context.Context, issue string) releaseRead {
 		work, err = r.pods.ReadUnpushed(ctx, request, role)
 	}
 	if err != nil {
-		refused := err.Error()
-		storetext.LogWhole(r.log, projectReleaseErrorInFull, refused, "issue", issue, "role", role)
-		return releaseRead{read: true, refusal: storetext.FarSideError(refused)}
+		return releaseRead{read: true, refusal: r.keepWhole(err.Error(), "issue", issue, "role", role)}
 	}
 	return releaseRead{read: true, work: work}
 }
@@ -561,11 +557,9 @@ func deletedOutcome(read releaseRead) api.ReleaseOutcome {
 // refusal of one is written on that claim's line. The line gives why as its first reason, and after
 // it each round the release could not end. Why can carry a far side's error text — a delete the
 // runtime refused, an ask the store did not take, a stop a machine refused — so the line, the
-// hold's reason and the log line keep its start, as the store keeps such a text
-// (storetext.FarSideError), and the whole text follows that log line, in parts
-// (storetext.LogWhole, projectReleaseErrorInFull).
+// hold's reason and the log line keep its start, and the log the whole of it (keepWhole).
 func (r *projectReleaser) leave(ctx context.Context, run *releaseRun, pod *releasePod, why string) {
-	kept := storetext.FarSideError(why)
+	kept := r.keepWhole(why, "release", run.id, "sandbox", pod.sandbox.Name)
 	held := releaseStopTokens(pod.stop)
 	var others []claim.Token
 	for _, v := range r.issueViews(pod.sandbox.Issue) {
@@ -580,7 +574,6 @@ func (r *projectReleaser) leave(ctx context.Context, run *releaseRun, pod *relea
 	line.Outcome, line.Reason = api.ReleaseLeft, reason
 	run.mu.Unlock()
 	r.log.Warn("project release: left an issue pod and its disk", "release", run.id, "sandbox", pod.sandbox.Name, "reason", reason)
-	storetext.LogWhole(r.log, projectReleaseErrorInFull, why, "release", run.id, "sandbox", pod.sandbox.Name)
 	r.record(ctx, run)
 }
 

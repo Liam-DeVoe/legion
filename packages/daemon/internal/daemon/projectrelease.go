@@ -85,10 +85,9 @@ const releaseNoMachine = "the daemon supervises no machine for it"
 // them (api.ReleasedSandbox): leave and takeOthers join what they build.
 const reasonSeparator = "; "
 
-// projectReleaseErrorInFull is the message of the lines that carry the whole error of a Sandbox
-// the release left, of a shim's refusal of an issue pod's workspace read, or of the release's
-// failure, in parts (takeOthers, leave, read, fail, storetext.LogWhole), where the result and
-// every other line about it keep only its start.
+// projectReleaseErrorInFull is the message of the lines that carry, in parts, the whole of a far
+// side's error text the release cut (keepWhole), where the result and every other line about it
+// keep only its start.
 const projectReleaseErrorInFull = "project release: an error in full; the result and the lines about it keep its start"
 
 // projectReleaseStore is what the project release reads and writes of the daemon's store: whether
@@ -128,9 +127,9 @@ func (s releasingStore) PullRequestMerged(ctx context.Context, issue string) (bo
 // `legion project release` starts it through the API (api.ProjectRelease), and it runs as one
 // goroutine of this process, since R7 ends a release at the next boot and never resumes one, so
 // nothing of its acts needs a durable retry. Its record is durable; its acts are not. One release
-// runs per process: a second start answers the first. A pause that holds the project refuses every
-// start, a dry run's included, before anything of the release acts (R13,
-// store.ProjectPausedError).
+// runs per process: a second start, a dry run's included, answers the first, whether or not a pause
+// holds the project. A pause that holds the project refuses every other start, a dry run's
+// included, before anything of the release acts (R13, store.ProjectPausedError).
 //
 // The release does its acts in this order. It sets the daemon-wide mark and records itself
 // (Start), from when on the daemon starts nothing of the project (R7). Its goroutine arms the
@@ -300,21 +299,25 @@ func (r *projectReleaser) Start(ctx context.Context, bound time.Duration, dryRun
 	if bound <= 0 {
 		bound = r.defaultBound
 	}
-	// A pause that holds the project refuses the release, its dry run included, before the mark,
-	// a list, a read or a record (dispatch://INFRA-3583 R13): the project paused, or a pod a pause
-	// stopped still held, which the release would delete unread. It is asked before the release
-	// this process ran is answered, so a pause taken once that release finished refuses the
-	// command too. StartProjectRelease asks it again in the release's own transaction, which a
-	// pause cannot commit across, and refuses a pause that committed between the two reads; the
-	// mark is then cleared below.
-	if err := r.store.PauseRefusesProjectRelease(ctx, r.project); err != nil {
-		return api.ProjectReleaseResponse{}, false, err
-	}
 	r.mu.Lock()
 	if r.run != nil {
 		r.mu.Unlock()
 		view, _, err := r.Read(ctx)
 		return view, false, err
+	}
+	// A pause that holds the project refuses a new release and a dry run, before the mark, a list,
+	// a read or a record (dispatch://INFRA-3583 R13): the project paused, or a pod a pause stopped
+	// still held, which the release would delete unread. The release this process ran, running or
+	// finished, is answered before it, since that answer starts nothing: no pause commits while
+	// that release runs (store.ProjectReleasingError), so a pause that holds the project then was
+	// taken once it finished, and a refusal would say that nothing was stopped or deleted of a
+	// release that did both. The read is made under r.mu, as the record below is, so no release of
+	// this process starts between it and the answer. StartProjectRelease asks it again in the
+	// release's own transaction, which a pause cannot commit across, and refuses a pause that
+	// committed between the two reads; the mark is then cleared below.
+	if err := r.store.PauseRefusesProjectRelease(ctx, r.project); err != nil {
+		r.mu.Unlock()
+		return api.ProjectReleaseResponse{}, false, err
 	}
 	if dryRun {
 		r.mu.Unlock()
@@ -741,10 +744,8 @@ func byViewToken(a, b supervise.ClaimView) int {
 // Sandbox of a kind the release does not know. A controller's pod left — its claim not stored
 // suspended in time, or its delete refused — has the controller's claim held for an operator, as a
 // left issue pod's claims are (hold), so no boot starts the controller while its pod stands. A
-// left Sandbox's reason, the hold's and the log line's, is the start of the error's text as the
-// store keeps a far side's (storetext.FarSideError): a runtime's error names the request's URL,
-// with its query. The whole text follows that line in the log, in parts (storetext.LogWhole,
-// projectReleaseErrorInFull).
+// left Sandbox's reason, the hold's and the log line's, keeps the start of the error's text, and
+// the log the whole of it (keepWhole).
 func (r *projectReleaser) takeOthers(ctx context.Context, run *releaseRun, others []int) {
 	var controllers []claim.Token
 	for _, c := range run.stop {
@@ -771,30 +772,25 @@ func (r *projectReleaser) takeOthers(ctx context.Context, run *releaseRun, other
 		default:
 			err = errors.New(releaseUnknownKind)
 		}
-		var text, reason string
-		if err != nil {
-			text = err.Error()
-			reason = storetext.FarSideError(text)
-			if line.Kind == runtime.ProjectSandboxController {
-				if unended := r.hold(ctx, run, controllers, nil, "the project release leaves the controller's pod: "+reason); len(unended) > 0 {
-					reason = strings.Join(append([]string{reason}, unended...), reasonSeparator)
-				}
+		if err == nil {
+			run.mu.Lock()
+			run.result.Sandboxes[i].Outcome = api.ReleaseDeleted
+			run.mu.Unlock()
+			r.log.Info("project release: deleted a Sandbox", "release", run.id, "sandbox", line.Name, "kind", line.Kind)
+			r.record(ctx, run)
+			continue
+		}
+		reason := r.keepWhole(err.Error(), "release", run.id, "sandbox", line.Name, "kind", line.Kind)
+		if line.Kind == runtime.ProjectSandboxController {
+			if unended := r.hold(ctx, run, controllers, nil, "the project release leaves the controller's pod: "+reason); len(unended) > 0 {
+				reason = strings.Join(append([]string{reason}, unended...), reasonSeparator)
 			}
 		}
 		run.mu.Lock()
 		at := &run.result.Sandboxes[i]
-		if err != nil {
-			at.Outcome, at.Reason = api.ReleaseLeft, reason
-		} else {
-			at.Outcome = api.ReleaseDeleted
-		}
+		at.Outcome, at.Reason = api.ReleaseLeft, reason
 		run.mu.Unlock()
-		if err != nil {
-			r.log.Warn("project release: left a Sandbox", "release", run.id, "sandbox", line.Name, "kind", line.Kind, "reason", reason)
-			storetext.LogWhole(r.log, projectReleaseErrorInFull, text, "release", run.id, "sandbox", line.Name, "kind", line.Kind)
-		} else {
-			r.log.Info("project release: deleted a Sandbox", "release", run.id, "sandbox", line.Name, "kind", line.Kind)
-		}
+		r.log.Warn("project release: left a Sandbox", "release", run.id, "sandbox", line.Name, "kind", line.Kind, "reason", reason)
 		r.record(ctx, run)
 	}
 }
@@ -866,17 +862,25 @@ func (r *projectReleaser) writeFinish(ctx context.Context, run *releaseRun, resu
 // fail records a release that could not go on with what stopped it, and finishes it: nothing more
 // of it acts, and the boot ends it as it ends any release. Why can carry a far side's error text,
 // such as a list of the project's Sandboxes the API server refused, so the result and the line
-// that logs it keep its start, as the store keeps such a text (storetext.FarSideError), and the
-// whole text follows that line in the log, in parts (storetext.LogWhole,
-// projectReleaseErrorInFull).
+// that logs it keep its start, and the log the whole of it (keepWhole).
 func (r *projectReleaser) fail(ctx context.Context, run *releaseRun, why string) {
-	kept := storetext.FarSideError(why)
+	kept := r.keepWhole(why, "release", run.id)
 	r.log.Error("project release: stopped short of its acts", "release", run.id, "reason", kept)
-	storetext.LogWhole(r.log, projectReleaseErrorInFull, why, "release", run.id)
 	run.mu.Lock()
 	run.result.Failure = kept
 	run.mu.Unlock()
 	r.finish(ctx, run)
+}
+
+// keepWhole is text, a far side's error text, as the release keeps it in its result, in a hold's
+// reason and in its lines: its start, as the store keeps such a text (storetext.FarSideError),
+// since a runtime's error names the request's URL, with its query, and a relayed command's can
+// carry its whole output. Where that cuts the text, keepWhole first logs the whole of it, in parts
+// under projectReleaseErrorInFull with args (storetext.LogWhole), so the parts come before the
+// line that keeps the start.
+func (r *projectReleaser) keepWhole(text string, args ...any) string {
+	storetext.LogWhole(r.log, projectReleaseErrorInFull, text, args...)
+	return storetext.FarSideError(text)
 }
 
 // record writes the result as it stands on the release's record. A write that fails is logged;

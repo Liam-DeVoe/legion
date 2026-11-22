@@ -145,17 +145,18 @@ type Config struct {
 	// ServiceAccount token the broker takes is, and is looked up by the token's sub; so a
 	// Kubernetes entry needs that pair. Its token is taken only from the issuers its entry names,
 	// by their names in BROKER_K8S_OIDC_ISSUER, and an entry that names none takes the first
-	// issuer of that list alone, so an entry written for one cluster keeps its meaning; a listed
-	// account's token from another issuer is 403 ACCOUNT_NOT_LISTED, as an account no entry
-	// lists is. An entry naming an issuer the list does not hold or naming one twice, any issuer
-	// name while BROKER_K8S_OIDC_ISSUER is one bare URL, and an issuer name on a google: entry
-	// refuse the boot. A Google caller presents its machine's own Google identity token, for
-	// BROKER_GOOGLE_OIDC_AUDIENCE — the audience every machine of the deployment already holds
-	// one for — verified against BROKER_GOOGLE_OIDC_ISSUER, and is looked up by the token's
-	// email; so a Google entry needs BROKER_GOOGLE_OIDC_AUDIENCE. Either token is refused if it
-	// lives longer than an hour from its issue, as a service's login token is. A project's
-	// default Google accounts and Google-managed service agents are refused here as they are in
-	// BROKER_VM_SERVICES, since a token from one proves nothing about which machine is asking.
+	// issuer of that list alone, so an entry written for one cluster keeps its meaning while that
+	// cluster stays first in the list; a listed account's token from another issuer is 403
+	// ACCOUNT_NOT_LISTED, as an account no entry lists is. An entry naming an issuer the list does
+	// not hold or naming one twice, any issuer name while BROKER_K8S_OIDC_ISSUER is one bare URL,
+	// and an issuer name on a google: entry refuse the boot. A Google caller presents its machine's
+	// own Google identity token, for BROKER_GOOGLE_OIDC_AUDIENCE — the audience every machine of
+	// the deployment already holds one for — verified against BROKER_GOOGLE_OIDC_ISSUER, and is
+	// looked up by the token's email; so a Google entry needs BROKER_GOOGLE_OIDC_AUDIENCE. Either
+	// token is refused if it lives longer than an hour from its issue, as a service's login token
+	// is. A project's default Google accounts and Google-managed service agents are refused here as
+	// they are in BROKER_VM_SERVICES, since a token from one proves nothing about which machine is
+	// asking.
 	//
 	// The caller's name decides what the account may do, and the broker
 	// knows three: dispatch reaches every one of those routes, the ten Dispatch's server relays
@@ -563,20 +564,20 @@ type Config struct {
 	// logs in as the one service its entry names and is given once; one service may have several
 	// accounts, one per machine. Its token is taken only from the issuers its entry names, by their
 	// names in BROKER_K8S_OIDC_ISSUER, and an entry that names none takes the first issuer of that
-	// list alone, so an entry written for one cluster keeps its meaning. A namespace's default
-	// account is refused, since every pod there that names no account runs as it. An account
-	// BROKER_SERVICES binds for a service's pods may be listed here as well, which is a pod of
-	// that account enrolling itself: every such pod holds a token for the account, so each of them
-	// logs the service in, and what keeps one of them from enrolling another is
-	// enroll.Service.podUnderTokenLogin, which gives such a login the one pod whose token made it
-	// and answers ErrPodSelfEnrollOnly for any other pod UID. Keyed by account, each answering its
-	// service and the names of its issuers. A token whose subject is not listed, or is listed and
-	// comes from an issuer its entry does not name, is refused (403 ACCOUNT_NOT_LISTED), and a
-	// credential an account's login issued stops authenticating once its entry is gone or no
-	// longer names the issuer of the token that made it. An entry naming an issuer the list does
-	// not hold or naming one twice, and any issuer name while BROKER_K8S_OIDC_ISSUER is one bare
-	// URL, refuse the boot. Needs BROKER_K8S_OIDC_ISSUER, whose tokens it trusts. Unset, no
-	// service logs in with a token.
+	// list alone, so an entry written for one cluster keeps its meaning while that cluster stays
+	// first in the list. A namespace's default account is refused, since every pod there that names
+	// no account runs as it. An account BROKER_SERVICES binds for a service's pods may be listed
+	// here as well, which is a pod of that account enrolling itself: every such pod holds a token
+	// for the account, so each of them logs the service in, and what keeps one of them from
+	// enrolling another is enroll.Service.podUnderTokenLogin, which gives such a login the one pod
+	// whose token made it and answers ErrPodSelfEnrollOnly for any other pod UID. Keyed by account,
+	// each answering its service and the names of its issuers. A token whose subject is not listed,
+	// or is listed and comes from an issuer its entry does not name, is refused (403
+	// ACCOUNT_NOT_LISTED), and a credential an account's login issued stops authenticating once its
+	// entry is gone or no longer names the issuer of the token that made it. An entry naming an
+	// issuer the list does not hold or naming one twice, and any issuer name while
+	// BROKER_K8S_OIDC_ISSUER is one bare URL, refuse the boot. Needs BROKER_K8S_OIDC_ISSUER, whose
+	// tokens it trusts. Unset, no service logs in with a token.
 	//
 	// A login of an account that BROKER_POD_OPERATORS maps to a person acts for that person, when
 	// the login token is bound to a pod of the account. No other login of this setting acts for a
@@ -840,18 +841,18 @@ type Config struct {
 	// only where BROKER_K8S_OIDC_ISSUER names its issuers, with the issuer field written after it.
 	// An entry of three fields fixes no session. The exchange takes the account's token only from
 	// the issuers its entry names, and an entry that names none takes the first issuer of
-	// BROKER_K8S_OIDC_ISSUER alone, so an entry written for one cluster keeps its meaning. A token
-	// of an issuer its entry does not name is refused with 400 invalid_request. A namespace's
-	// default account is refused, as is an account listed twice. The broker refuses to boot,
-	// naming this setting and BROKER_EXCHANGE_K8S_ISSUER, for an entry that names an issuer
-	// BROKER_EXCHANGE_K8S_ISSUER does not name, names one issuer twice, or names none while
-	// BROKER_EXCHANGE_K8S_ISSUER leaves out the list's first issuer; naming this setting and
-	// BROKER_K8S_OIDC_ISSUER, for any issuer name while BROKER_K8S_OIDC_ISSUER is one bare URL;
-	// and, naming this setting, for an entry that gives no issuer field and whose session is only
-	// names of BROKER_K8S_OIDC_ISSUER's issuers, separated by commas, since the entry reads that
-	// text as its session: its issuers go in the fifth field, after an empty session,
-	// <service account>=<project>=<person>==<issuer names>. Needs BROKER_K8S_OIDC_ISSUER and
-	// BROKER_EXCHANGE_K8S_AUDIENCE, whose tokens its pods present. Unset, no account exchanges.
+	// BROKER_K8S_OIDC_ISSUER alone, so an entry written for one cluster keeps its meaning while
+	// that cluster stays first in the list. A token of an issuer its entry does not name is refused
+	// with 400 invalid_request. A namespace's default account is refused, as is an account listed
+	// twice. The broker refuses to boot, naming this setting and BROKER_EXCHANGE_K8S_ISSUER, for an
+	// entry that names an issuer BROKER_EXCHANGE_K8S_ISSUER does not name, names one issuer twice,
+	// or names none while BROKER_EXCHANGE_K8S_ISSUER leaves out the list's first issuer; naming
+	// this setting and BROKER_K8S_OIDC_ISSUER, for any issuer name while BROKER_K8S_OIDC_ISSUER is
+	// one bare URL; and, naming this setting, for an entry that gives no issuer field and whose
+	// session is only names of BROKER_K8S_OIDC_ISSUER's issuers, separated by commas, since the
+	// entry reads that text as its session: its issuers go in the fifth field, after an empty
+	// session, <service account>=<project>=<person>==<issuer names>. Needs BROKER_K8S_OIDC_ISSUER
+	// and BROKER_EXCHANGE_K8S_AUDIENCE, whose tokens its pods present. Unset, no account exchanges.
 	ExchangeAccounts []exchange.AccountEntry
 	// BROKER_EXCHANGE_READ_ACCOUNTS: the Kubernetes service accounts whose pods exchange their
 	// projected token for one that only reads, whitespace-separated
@@ -874,19 +875,19 @@ type Config struct {
 	// names its issuers, with the issuer field written after it. The exchange mints the account's
 	// read-only token only for a token of an issuer its entry names, and an entry that names none
 	// takes the first issuer of BROKER_K8S_OIDC_ISSUER alone, as a BROKER_EXCHANGE_ACCOUNTS entry
-	// that names none does, so an entry written for one cluster keeps its meaning. The same
-	// account name in another cluster is another ServiceAccount, so a token of an issuer its entry
-	// does not name is refused with 400 invalid_request. A namespace's default account is refused,
-	// as is a service that is not lowercase letters, digits and hyphens, at most 64, or is shared,
-	// an account listed twice, and an account BROKER_EXCHANGE_ACCOUNTS lists too. The broker
-	// refuses to boot, naming this setting, the entry and BROKER_EXCHANGE_K8S_ISSUER, for an entry
-	// that names an issuer BROKER_EXCHANGE_K8S_ISSUER does not name, names one issuer twice, or
-	// names none while BROKER_EXCHANGE_K8S_ISSUER leaves out the list's first issuer; and, naming
-	// this setting, the entry and BROKER_K8S_OIDC_ISSUER, for any issuer name while
-	// BROKER_K8S_OIDC_ISSUER is one bare URL. Needs BROKER_K8S_OIDC_ISSUER and
-	// BROKER_EXCHANGE_K8S_AUDIENCE, whose tokens its pods present. A broker of a build older than
-	// this setting does not read it, so it mints those accounts no token at all. Unset, no account
-	// exchanges for a read-only token.
+	// that names none does, so an entry written for one cluster keeps its meaning while that
+	// cluster stays first in the list. The same account name in another cluster is another
+	// ServiceAccount, so a token of an issuer its entry does not name is refused with 400
+	// invalid_request. A namespace's default account is refused, as is a service that is not
+	// lowercase letters, digits and hyphens, at most 64, or is shared, an account listed twice, and
+	// an account BROKER_EXCHANGE_ACCOUNTS lists too. The broker refuses to boot, naming this
+	// setting, the entry and BROKER_EXCHANGE_K8S_ISSUER, for an entry that names an issuer
+	// BROKER_EXCHANGE_K8S_ISSUER does not name, names one issuer twice, or names none while
+	// BROKER_EXCHANGE_K8S_ISSUER leaves out the list's first issuer; and, naming this setting, the
+	// entry and BROKER_K8S_OIDC_ISSUER, for any issuer name while BROKER_K8S_OIDC_ISSUER is one
+	// bare URL. Needs BROKER_K8S_OIDC_ISSUER and BROKER_EXCHANGE_K8S_AUDIENCE, whose tokens its
+	// pods present. A broker of a build older than this setting does not read it, so it mints those
+	// accounts no token at all. Unset, no account exchanges for a read-only token.
 	ExchangeReadAccounts []exchange.ReadEntry
 	// BROKER_EXCHANGE_WORKFLOWS: the GitHub workflows whose runs exchange their token,
 	// whitespace-separated <repository>=<workflow path>=<ref>=<project>=<person>[=<session>]
@@ -1323,11 +1324,11 @@ func CutIssuerNames(text string) (head string, names []string, ok bool) {
 
 // AccountIssuers answers the names of the issuers an account entry's token is taken from: names,
 // the entry's own, or, where it names none, the first of issuers alone, so an entry written for a
-// broker of one cluster keeps its meaning when the list names a second. A Google entry (google)
-// has none. It refuses, naming setting and the entry's text: an issuer name on a Google entry,
-// whose token Google issues; any name while issuers is one bare URL, which has no name to give; a
-// name given twice in the entry; and a name issuers does not hold. With no issuers it answers
-// none, and Load refuses the entry for the issuer it needs.
+// broker of one cluster keeps its meaning when the list names a second, while that cluster stays
+// first in it. A Google entry (google) has none. It refuses, naming setting and the entry's text:
+// an issuer name on a Google entry, whose token Google issues; any name while issuers is one bare
+// URL, which has no name to give; a name given twice in the entry; and a name issuers does not
+// hold. With no issuers it answers none, and Load refuses the entry for the issuer it needs.
 func AccountIssuers(setting, text string, names []string, google bool, issuers []oidc.NamedIssuer) ([]string, error) {
 	switch {
 	case google && names != nil:

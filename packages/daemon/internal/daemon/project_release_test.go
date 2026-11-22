@@ -816,8 +816,8 @@ var releaseFarSideLong = releaseFarSideError + "\n" +
 // release's failure when the project's Sandboxes could not be listed (fail). A text longer than
 // the store keeps leaves only its start in the result, and leave, takeOthers, read and fail log
 // the whole of it, in parts under projectReleaseErrorInFull, which join to the text whose start
-// the result keeps: leave, takeOthers and fail after their own line, and read at each read the
-// shim refused; writeClaims logs the failed read's error on its own line.
+// the result keeps (keepWhole): leave, takeOthers and fail before their own line, and read at each
+// read the shim refused; writeClaims logs the failed read's error on its own line.
 func TestProjectReleaseKeepsAFarSidesErrorTextAsTheStoreKeepsIt(t *testing.T) {
 	for _, tc := range []struct {
 		name string

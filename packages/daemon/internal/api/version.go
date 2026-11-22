@@ -3146,13 +3146,14 @@ package api
 // fresh session and compaction, answer 409 with the code `PROJECT_RELEASED` and the sentence
 // api.ProjectReleaseHeldSentence, the Failure body alone. The release and 178's project pause
 // refuse each other: while the project is paused, or a pod a pause stopped is still held after the
-// resume, `POST /legion/v1/operator/project/release`, a dry run's included, answers 409
-// `PROJECT_PAUSED` with api.PauseFailure, which gains `heldPods`, each such pod's `issue`,
-// `pause`, `heldAt` and `claims` (api.PauseHeldPodView), beside the `pause` that stands where one
-// does, and records, stops and deletes nothing; the refusal's row of shapeAnswer serves a caller
-// below 221 a PauseFailure without `heldPods`. While a release runs (its record neither finished
-// nor ended by a boot, store.ProjectRelease.Runs), both doors' pause answer 409
-// `PROJECT_RELEASING`, the Failure body alone, and pause nothing. The records under
+// resume, `POST /legion/v1/operator/project/release` to a daemon process that has run no release,
+// a dry run's included, answers 409 `PROJECT_PAUSED` with api.PauseFailure, which gains
+// `heldPods`, each such pod's `issue`, `pause`, `heldAt` and `claims` (api.PauseHeldPodView),
+// beside the `pause` that stands where one does, and records, stops and deletes nothing; the
+// refusal's row of shapeAnswer serves a caller below 221 a PauseFailure without `heldPods`. A
+// process that has run one answers it, 200, whatever the pause, as above. While a release runs
+// (its record neither finished nor ended by a boot, store.ProjectRelease.Runs), both doors' pause
+// answer 409 `PROJECT_RELEASING`, the Failure body alone, and pause nothing. The records under
 // `packages/contracts/fixtures/daemon-api/contract-shapes.json` gain 221's, which are 213's with
 // the key paths of `projectRelease` on the state's and of `heldPods` on the refusal's, and every
 // record below 221 gains the empty domain of each of the six fields, which no contract below 221

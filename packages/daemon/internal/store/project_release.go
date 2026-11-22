@@ -139,10 +139,8 @@ func (s *Store) StartProjectRelease(ctx context.Context, project string, started
 		if err := treelifecycle.Serialize(ctx, tx); err != nil {
 			return err
 		}
-		if refused, err := releasePauseRefusal(ctx, tx, project); err != nil {
+		if err := releasePauseRefusal(ctx, tx, project); err != nil {
 			return err
-		} else if refused != nil {
-			return refused
 		}
 		var err error
 		release, err = scanProjectRelease(tx.QueryRow(ctx, `insert into project_releases (project, started_at, bound_at)
@@ -212,14 +210,7 @@ func (e *ProjectPausedError) Error() string {
 // mark, and a dry run before it reads anything; StartProjectRelease asks the same again inside its
 // own transaction, across which no pause commits.
 func (s *Store) PauseRefusesProjectRelease(ctx context.Context, project string) error {
-	refused, err := releasePauseRefusal(ctx, s.pool, project)
-	if err != nil {
-		return err
-	}
-	if refused != nil {
-		return refused
-	}
-	return nil
+	return releasePauseRefusal(ctx, s.pool, project)
 }
 
 // pauseReader is the part of a pool and of a transaction a read of the project's pause goes
@@ -232,30 +223,31 @@ type pauseReader interface {
 // releasePauseRefusal reads through db what of the project's pause refuses a project release of
 // project, the claim token's spelling: the open pause (readOpenPauseByToken), and each pod hold
 // that stands (openPausePodHolds), with the claims of its issue stored suspended by `released`
-// (heldPausePods). It answers nil while neither stands.
-func releasePauseRefusal(ctx context.Context, db pauseReader, project string) (*ProjectPausedError, error) {
+// (heldPausePods). It answers the *ProjectPausedError that refuses the release, a read that
+// failed, or nil while neither the pause nor a pod hold stands.
+func releasePauseRefusal(ctx context.Context, db pauseReader, project string) error {
 	open, paused, err := readOpenPauseByToken(ctx, db, project, "")
 	if err != nil {
-		return nil, err
+		return err
 	}
 	holds, err := openPausePodHolds(ctx, db, project)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if !paused && len(holds) == 0 {
-		return nil, nil
+		return nil
 	}
 	held, err := heldPausePods(ctx, db, project, holds)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	return &ProjectPausedError{Project: project, Pause: open, Paused: paused, Held: held}, nil
+	return &ProjectPausedError{Project: project, Pause: open, Paused: paused, Held: held}
 }
 
 // heldPausePods is each of holds as a refused release names it, in the order of holds: its issue,
 // its pause and since when, and the claims of project, the claim token's spelling, on its issue
-// stored suspended by `released` (supervise.SuspendedByReleased), read through q in token order
-// and never nil. It reads nothing where holds is empty, and answers nil.
+// stored suspended by `released` (supervise.SuspendedByReleased), read through q in token order,
+// nil where the issue has none. It reads nothing where holds is empty, and answers nil.
 func heldPausePods(ctx context.Context, q rowsQuerier, project string, holds []PausePodHold) ([]HeldPausePod, error) {
 	if len(holds) == 0 {
 		return nil, nil
@@ -284,11 +276,7 @@ func heldPausePods(ctx context.Context, q rowsQuerier, project string, holds []P
 	}
 	held := make([]HeldPausePod, len(holds))
 	for i, hold := range holds {
-		claims := released[hold.Issue]
-		if claims == nil {
-			claims = []claim.Token{}
-		}
-		held[i] = HeldPausePod{Issue: hold.Issue, Pause: hold.Pause, HeldAt: hold.HeldAt, Claims: claims}
+		held[i] = HeldPausePod{Issue: hold.Issue, Pause: hold.Pause, HeldAt: hold.HeldAt, Claims: released[hold.Issue]}
 	}
 	return held, nil
 }
