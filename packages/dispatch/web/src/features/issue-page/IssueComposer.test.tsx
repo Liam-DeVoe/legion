@@ -8,7 +8,7 @@ import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { displayTree } from "../../__tests__/display-trees";
 import { jump, realClock } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
-import { searchResponse } from "../../__tests__/search-fixture";
+import { plannerAgent, searchResponse } from "../../__tests__/search-fixture";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
 import type { Actor, CommentWithTrees, IssueAskRow, SearchResult } from "../../api/types";
@@ -1236,6 +1236,43 @@ test("the look keeps the hint and the targets off screen, and a picker row has n
   expect(parties.querySelectorAll("[title]")).toHaveLength(0);
   expect(session).toHaveAccessibleDescription(PLANNER.id);
   expect(within(parties).getByText(PLANNER.id)).toHaveClass("sr-only");
+});
+
+// R7, and the root spec's R6 (no tooltip on the page) and R19 (nothing lost): today's composers
+// show a session's full id as its picker row's tooltip, and the box draws none, so a sighted
+// reader tells two sessions apart only by what the row draws on screen. Two live sessions the
+// registry lists under one title and one directory, seen at the same moment, are two rows of the
+// box's picker, and an off-screen line is no part of what a sighted reader reads (the tester's
+// red test, round 12).
+test("two sessions that share a title draw words on screen in the box's picker that tell them apart", async () => {
+  const user = userEvent.setup();
+  const seen = Date.now();
+  const at = { last_activity: new Date(seen).toISOString(), last_seen: seen };
+  const twins = [plannerAgent(at), plannerAgent({ ...at, session_id: "planner-session-2" })];
+  // The case's reads answer the agent list with the planner alone (`answerBoxReads`).
+  (api.listAgents as unknown as Mock<typeof api.listAgents>).mockResolvedValue(twins);
+  const { client } = renderPage();
+  act(() => client.setQueryData(["agents"], twins));
+  await user.click(writeField());
+  await user.keyboard("@Plan");
+  const parties = await within(composerBox()).findByRole("listbox", { name: "References" });
+  const rows = await within(parties).findAllByRole("option", { name: /^Planner/ });
+  expect(rows).toHaveLength(2);
+  // What the row draws on screen, and a line that describes it where that line is drawn too.
+  const drawnWords = (element: Element): string => {
+    const drawn = element.cloneNode(true) as Element;
+    for (const hidden of drawn.querySelectorAll(".sr-only")) hidden.remove();
+    return (drawn.textContent ?? "").replace(/\s+/g, " ").trim();
+  };
+  const onScreen = rows.map((row) => {
+    const line = document.getElementById(row.getAttribute("aria-describedby") ?? "");
+    const described = line === null || line.classList.contains("sr-only") ? "" : drawnWords(line);
+    return `${drawnWords(row)} ${described}`.trim();
+  });
+  expect(
+    onScreen[0],
+    "the two sessions' rows draw the same words on screen, so a sighted reader cannot tell which session each is"
+  ).not.toBe(onScreen[1]);
 });
 
 // The Design's "focused row": the box publishes how far up from the screen's foot it reaches
