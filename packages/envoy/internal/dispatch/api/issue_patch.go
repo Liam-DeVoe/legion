@@ -51,6 +51,10 @@ type updateIssueInput struct {
 	Components       json.RawMessage `json:"components"`
 	Repo             json.RawMessage `json:"repo"`
 	Actor            *model.Actor    `json:"actor"`
+	// RefuseOpenForeignChildren asks, beside a status of retro or done, that the write be refused
+	// while a child of another project is open (refuseOpenForeignChildren). The Legion daemon's
+	// sign_off and close_root send it; a person's status write does not, and is taken as before.
+	RefuseOpenForeignChildren bool `json:"refuse_open_foreign_children"`
 }
 
 // patchIssue is PATCH /api/v1/issues/{key}: it decodes the body, resolves who writes it, and
@@ -241,6 +245,9 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 			return issueWriteResult{}, errorf(http.StatusBadRequest, "INVALID_STATUS", "status is not in the Legion lifecycle")
 		}
 	}
+	if input.RefuseOpenForeignChildren && status != "retro" && status != "done" {
+		return issueWriteResult{}, errorf(http.StatusBadRequest, "INVALID_ISSUE", "refuse_open_foreign_children goes only with status retro or done")
+	}
 	if input.Route != nil && *input.Route != "" {
 		if _, err := model.ParseRoute(*input.Route); err != nil {
 			return issueWriteResult{}, errorf(http.StatusBadRequest, "ROUTE_INVALID", "invalid route")
@@ -308,7 +315,10 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	documentCtx, ledger := s.deps.Docs.Join(ctx, tx)
 	defer ledger.Discard()
 
-	dependencyWrite := input.BlockedBy != nil || parentProvided
+	// A write that asks for the open-child check of an acceptance is a dependency write too: the
+	// check and the status it guards run under the deployment dependency lock that every create
+	// with a parent and every reparent takes, so no child is filed between the two.
+	dependencyWrite := input.BlockedBy != nil || parentProvided || input.RefuseOpenForeignChildren
 	if dependencyWrite || input.Rank != nil {
 		var project string
 		if err := tx.QueryRow(ctx, `select project_key from issues where key = $1`, key).Scan(&project); err != nil {
@@ -457,6 +467,13 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 		}
 		if conflict != nil {
 			return issueWriteResult{}, conflict
+		}
+	}
+	if input.RefuseOpenForeignChildren {
+		// An open child of another project refuses the acceptance with 409 FOREIGN_CHILD_OPEN,
+		// which writeHandlerError answers with the children it names.
+		if err := refuseOpenForeignChildren(ctx, tx, key, before.Project); err != nil {
+			return issueWriteResult{}, err
 		}
 	}
 	// The `advances` revision rule is decided here, beside the other refusals of this handler

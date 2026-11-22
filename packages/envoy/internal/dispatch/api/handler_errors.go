@@ -139,6 +139,13 @@ func (s *server) writeHandlerError(w http.ResponseWriter, err error) {
 		WriteJSON(w, http.StatusConflict, conflict.body())
 		return
 	}
+	// An acceptance write refused for an open child of another project names each such child
+	// (refuseOpenForeignChildren in issue_parent.go).
+	var open openForeignChildrenError
+	if errors.As(err, &open) {
+		WriteJSON(w, http.StatusConflict, open.body())
+		return
+	}
 	documentCode := documentErrorCode(err)
 	switch documentCode {
 	case codeDocServiceUnavailable:
