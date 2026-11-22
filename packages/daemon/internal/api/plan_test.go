@@ -149,7 +149,7 @@ func TestRegisterPlanTakesAPlanAndRefusesWithReasons(t *testing.T) {
 	assertProcessedEvent(t, h, "plan:LEGION-208:1:"+planDoc+":4")
 }
 
-// The reader of 211 takes every field of register_plan's answer as optional, since no plugin code
+// The reader of 219 takes every field of register_plan's answer as optional, since no plugin code
 // reads one (legion-api.ts's LEGION_ANSWER_READS: a field that set does not name is optional). So
 // the reader takes a task written without `steps`, and the daemon holds what it does not check:
 // every task of the answer, as shapeAnswer writes it to a caller at OwnerPlanContract, carries

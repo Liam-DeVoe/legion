@@ -28,8 +28,7 @@ Read, against the goal, every check and every requirement:
 
 - A `catch-up` whose `reason` names an issue waiting for your acceptance is its wake: the `phase-finished` may never have reached you.
 
-- `SIGNOFF_CHILD_IN_WORKFLOW` names each issue beneath still in the workflow: run each to done, or park it under the rule, and sign off again.
-  Ask the person about one that can do neither, and hold the acceptance until they answer.
+- `SIGNOFF_CHILD_IN_WORKFLOW` names each issue beneath still in the workflow: run each to done, and sign off again.
 
 - A finding ask holds the acceptance: one a worker sent you, or one `dispatch read` lists under `Open asks:` whose question opens `Finding from ` or `Clear defect from `.
   Follow it (`dispatch follow --ask <id> --action follow`) and publish its reference to the controller topic.
@@ -47,8 +46,7 @@ a `default_branch` check needs the default branch.
 A criterion proven on a deployed system is proven after that child's deploy, as the repository's deploy skill says.
 A child's result proves no check of the parent: a child carrying part of a parent's requirement proves it with a check of its own whose `serves` names it.
 Nothing builds on the parent's merge, which comes last.
-Until those children close, leave the issue in `accepting`; that wait is no reason to park a child.
-Before you park a child, move its criterion to the parent's own pull request or a released, open child; never downgrade it.
+Until those children close, leave the issue in `accepting`.
 Then, in one turn:
 
 1. Where the task has a tester step, `envoy_publish` to its tester's role topic:
@@ -107,15 +105,10 @@ The merger does not complete while it is open.
 ## The close
 
 The merge closes the issue (`done`).
-One whose merge lands while an issue beneath it is still in the workflow stays in `merging` until the last of them is done or parked;
-one `pr-merged` notice names what it waits for.
 The production check after the close is not yours.
 A root's close lingers the tree for `linger_hours`.
 
 ## Hand-over at a root's linger
 
-A root a person closed that stays `done` through its linger hands each child still in the workflow, a child that never started included, to Legion as a root of its own;
-only a finished, parked or never-released child stays.
 Ask the person whether a child's work must end with the root.
-A parked root hands over only a child in `merging` whose pull request is open.
 Your role prompt says what a `handed_over` catch-up asks of you.

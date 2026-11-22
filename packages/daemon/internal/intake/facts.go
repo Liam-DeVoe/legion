@@ -1927,8 +1927,16 @@ func stoppedSentence(issue, task, reason string) string {
 // a parent whose plan has no acceptance step, waits before its retro for the issues beneath it,
 // beneath (record.HoldForChildren): the last of them to leave starts the retro.
 func RetryOfHeldParent(issue string, beneath []string) *Refusal {
-	return &Refusal{Status: 409, Code: "HELD_FOR_CHILDREN", Message: fmt.Sprintf(
-		"%s waits before its retro for these issues beneath it: %s. Legion starts the retro when the last one leaves. This retry changed nothing.", issue, strings.Join(beneath, ", "))}
+	return &Refusal{Status: 409, Code: "HELD_FOR_CHILDREN", Message: HeldParentWaitsForChildren(issue, beneath) + " This retry changed nothing."}
+}
+
+// HeldParentWaitsForChildren says why issue, a parent held before its retro for the issues beneath
+// it (record.HoldForChildren), still waits: beneath, the issues beneath it still open, the last of
+// which to leave starts the retro. It says what is true of the issue for whoever reads it, a
+// person beside a set-back todo included, and carries none of the architect's rules for ending a
+// child, which the architect's own retro-held notice gives.
+func HeldParentWaitsForChildren(issue string, beneath []string) string {
+	return fmt.Sprintf("%s waits before its retro for these issues beneath it: %s. Legion starts the retro when the last one leaves.", issue, strings.Join(beneath, ", "))
 }
 
 // RetryOfHeldParentUntilTreeRuns is the 409 HELD_FOR_CHILDREN refusal of a release of issue's hold
