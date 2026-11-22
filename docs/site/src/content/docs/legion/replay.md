@@ -309,6 +309,10 @@ Under a rule whose conflicting head moves back, an issue whose stretch draws a c
 Where the window records no loop from that phase, the replay draws among the loops that left a later phase, and cuts the drawn loop at its first work segment in that phase or a later one, so the issue returns to the phase that its conflict left.
 Where the window records only loops that left an earlier phase, the replay draws among those, and after the loop the issue goes back to the phase that its conflict left through copies of its own last work segments in each phase between.
 Where the issue's own work holds no segment in the phase that such a loop returns to, the issue runs no drawn loop and goes on with its own recorded work.
+The replay draws only among the loops whose work, as the drawn conflict takes it, the record shows ending.
+A loop whose issue the record shows still in it at `--to`, or leaving the workflow inside it, has no known length, and an issue given it would stand in its last work segment to the window's end and never run its own work after the loop.
+A loop that left a later phase counts where the record shows it reaching the phase that the drawn conflict left.
+A stretch whose recorded conflict loop runs to `--to`, with no return to the phase that the conflict left, does not draw: it keeps that conflict, and the issue runs its own loop (assumption 35).
 `run` asks nothing outside: no Dispatch, no GitHub and no NATS.
 
 | Flag | What it gives |
@@ -324,7 +328,7 @@ Where the issue's own work holds no segment in the phase that such a loop return
 | `--trace-segments` | Write each work segment's issue, phase, start, n, m, recorded length and replayed length to `segments.jsonl`. |
 
 `run` prints the window, the rule, the branch, the seed, f and the database.
-It prints each move that the daemon's code refused, with the reason, and counts what the replay could not enter as recorded.
+It prints each move that the daemon's code refused, with the reason, and counts what the replay could not enter as recorded and the recorded conflicts that it kept for a loop that runs to `--to`.
 It prints the scenario of the work of an issue that never started, the conflict model with the window that it was fitted on and its intervals, and the widest gap between the run's two scorecards.
 Last, it prints each assumption that the run rests on, with the number of outbox rows that it finished under each.
 
@@ -742,7 +746,7 @@ A replay measures from the same states, so a reading of production and a replay 
 
 A replay under a rule other than the one that made the record rests on assumptions about what the window would show under that rule.
 Each run names the assumptions that it used.
-Numbers 1 to 18 are the list of the tool's design, 19 to 25 come from its plan, and 26 to 34 are the tool's own.
+Numbers 1 to 18 are the list of the tool's design, 19 to 25 come from its plan, and 26 to 35 are the tool's own.
 Each section below gives the assumption as the tool states it, and its verdict.
 It then gives the evidence in a recorded window, the direction in which the assumption moves each measure if it is wrong, and the reading of a window that would test it.
 
@@ -763,7 +767,7 @@ Under the rule that made the record, `validate` measures how far a replay stands
 A first replay, a prototype outside this repository, replayed one deployment's record under eight rules.
 A review of it by a model of another family named the faults that the tool fixes.
 For assumptions 1 to 18, sound, doubtful and wrong are that review's verdicts.
-For assumptions 19 to 34, a verdict is the tool's own.
+For assumptions 19 to 35, a verdict is the tool's own.
 Numbers from the design's record come from that deployment's daemon log over four days, in which every slot was in use for 99.95% of the time.
 That record is not in this repository.
 
@@ -1456,7 +1460,7 @@ A merge forward shorter than a conflict's implementing round makes the conflict 
 **Evidence in a recorded window.** _The recorded conflict loops._
 A window of a release whose conflicting head moves back holds each conflict loop: the move back by `conflict`, and the implementing round after it.
 Under `main`, a drawn conflict keeps its phase, and the replay adds a merge-forward segment, with the implementer in a turn.
-The replay draws the length of that segment from the implementing rounds of the recorded conflict loops that left the same phase.
+The replay draws the length of that segment from the implementing rounds of the recorded conflict loops that left the same phase, among the loops whose work the record shows ending.
 Where the window records no loop from that phase, the replay draws from the loops that left a later phase, and where it records none of those either, from the loops that left an earlier phase.
 The fixture window `conflict-from-fitted-rate` replays one under `main` and `legion-v20.42.5`.
 
@@ -1808,3 +1812,39 @@ A holder that the inference misses moves each measure the other way.
 Compare the slots in use that the slot line at the window's start gives with the slots that the trace holds right after that line.
 A difference of zero, with no inferred holder, means that the window does not rest on this assumption.
 A longer `--before` moves the reach back, which can make the difference smaller where the lines exist.
+
+### Assumption 35: A stretch whose recorded conflict loop runs to the window's end keeps that conflict, and its issue runs its own loop
+
+The tool's own.
+Doubtful, and the direction is unknown.
+A stretch ends in a recorded conflict whose loop runs to `--to` when the record shows the issue moved back by `conflict` and never back in the phase that the conflict left.
+The record then holds no work of the issue after the stretch but that loop.
+Drawn as any other stretch, a draw of no conflict would take the issue past a loop after which the record shows nothing, and a drawn conflict would give it another loop in place of its own, after which it has nothing either: either way the issue would stand idle, with no worker, to the window's end.
+So the replay does not draw such a stretch.
+It keeps the conflict and makes it through the daemon's own path, as it makes a drawn one.
+Under a rule whose conflicting head moves back, the issue then runs its own loop as recorded.
+Under `main`, the merge-forward segment lasts as long as that loop's implementing round, and has no end where the round has none.
+Every other stretch is drawn.
+
+**Evidence in a recorded window.** _Stretches that a recorded conflict loop runs past `--to`._
+In a replay of one deployment's recorded window of four days under the rule that its daemon ran, with such stretches drawn as any other, six issues stood with no worker, in accepting, merging or reviewing, from the end of the stretch to the window's end, where the record shows each one working in its loop.
+`run` prints the number of conflicts that it kept, and `run.json` counts them as `divergence.keptOpenLoops`.
+
+**If it is wrong.**
+If such a stretch would not have conflicted under the rule, the replay moves the measures so.
+
+- Issues finished: Down, because the issue runs its loop to `--to`, where without the conflict it might have finished.
+
+- Started work that waits for a slot: Up where the loop goes back to a phase that keeps a slot, because the issue takes or waits for a slot that it would not have needed.
+
+- Priority taken by holders: Unknown.
+  The kept loop changes which issues hold slots, not their rank.
+
+- Other delays: Up, because each kept conflict counts as a round of `conflict`, its hours running to `--to`.
+
+- Slots: Up for the slot-hours in a turn, because the loop's workers are in their turns to `--to`.
+
+**The reading that would test it.** _A later end of the same lines._
+Replay a window that ends later on the same lines.
+For each conflict that the first window kept, read whether its loop came back, and how long it ran.
+Compare the share of those stretches that the later window's model gives a conflict with the share that the first window kept.

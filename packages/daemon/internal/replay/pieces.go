@@ -308,12 +308,17 @@ func (d *driver) generationAt(key string, at time.Time) uint64 {
 }
 
 // enterMove enters the recorded move that ends p's visit, or the merge at which its segment ended
-// (piece.move). Where the move ends a stretch in which a head can conflict (spec R2, assumption 3),
-// the stretch first draws whether its head conflicts (drawConflict), and a drawn conflict the
-// daemon acts on takes the move's place; otherwise the move enters as recorded (enterRecorded).
+// (piece.move). Where the move is a recorded conflict whose loop runs to the window's end, the
+// conflict is kept and not drawn (keepConflict, assumption 35). Otherwise, where the move ends a
+// stretch in which a head can conflict (spec R2, assumption 3), the stretch first draws whether its
+// head conflicts (drawConflict), and a drawn conflict the daemon acts on takes the move's place;
+// otherwise the move enters as recorded (enterRecorded).
 func (d *driver) enterMove(p *piece) error {
 	if p.move() == nil {
 		return nil
+	}
+	if d.keepsOpenLoop(p) {
+		return d.keepConflict(p)
 	}
 	if d.drawsAtEnd(p) {
 		conflicted, err := d.drawConflict(p)

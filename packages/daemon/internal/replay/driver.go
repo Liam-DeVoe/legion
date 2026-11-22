@@ -236,6 +236,9 @@ type Divergence struct {
 	// Refused is each recorded move the replay entered and the daemon's code refused, with the
 	// reason; the segment after it never opens.
 	Refused []RefusedMove `json:"refused"`
+	// KeptOpenLoops is how many stretches kept their recorded conflict, its loop running to the
+	// window's end in the record, rather than draw (keepConflict, assumption 35).
+	KeptOpenLoops int `json:"keptOpenLoops"`
 	// HeldSignOffs is how many sign-offs the engine held behind a member beneath, each applied
 	// again at the member's leave.
 	HeldSignOffs int `json:"heldSignOffs"`

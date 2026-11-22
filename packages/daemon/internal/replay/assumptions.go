@@ -21,9 +21,10 @@ type Assumption struct {
 // the seven the plan added, from the mapping of the release at 9542c6fb onto today's workflow (19
 // to 22), the conflict path of the rule main (23), a daemon's downtime (24) and its reading of
 // outside blockers (25), then the tool's own: each a reason a fact is left out of a replay or an
-// outbox row is finished without acting (26 to 33: FactSources, OutboxHandling), and the trace's
-// inference of a slot an issue held from before the window's reach (34: SlotSpan.Inferred). A run
-// names the ones its measures rest on by these numbers.
+// outbox row is finished without acting (26 to 33: FactSources, OutboxHandling), the trace's
+// inference of a slot an issue held from before the window's reach (34: SlotSpan.Inferred), and
+// the recorded conflict a stretch keeps whose loop runs to the window's end (35: keepConflict). A
+// run names the ones its measures rest on by these numbers.
 var Assumptions = []Assumption{
 	{Number: 1,
 		Text:      "A work segment takes its recorded time at any start and at any number in flight.",
@@ -127,6 +128,9 @@ var Assumptions = []Assumption{
 	{Number: assumeSlotFromBeforeTheReach,
 		Text:      "An issue the record first shows in a phase that keeps a slot, whose first slot line gives a slot back or which no slot line names, held a slot from before the window's reach, until that line or, with none, until the rule gives the slot back; and an issue that stands at the window's start in a worker's phase that keeps a slot, with no slot line holding it there and no wait that gives the slot back, whose worker started in that run of phases after its last slot went back, held one from its last entry into that run until the rule gives it back.",
 		Direction: "Doubtful where the reach begins with slots in use and no line names them, or a slot is taken again by a way that writes no slot line: the slot is read from the phase, and at the window's start from the worker's start, alone. If such an issue held no slot, the slots held, with no worker in a turn above all, are overstated by its span; started work that waits for a slot is understated, its time read as held; in a replay its slot keeps another issue from starting until it goes back, which delays that issue and understates the issues finished; the priority taken by holders is overstated where it ranks below an issue that waits; and of the other delays, a link wait it opens counts from its slot, which lengthens the waits, the loops being read from their own lines. A holder the inference misses moves each the other way. The reading that would test it is the slots in use the slot line at the window's start carries, the first at or after it, against the slots the trace holds right after that line: the start state reports the difference and the inferred holders it wrote, and the run carries both in its divergence."},
+	{Number: assumeKeptOpenLoop,
+		Text:      "A stretch whose recorded conflict loop runs to the window's end keeps that conflict, and its issue runs its own loop.",
+		Direction: "Doubtful, and the direction is unknown: the record holds no work of the issue after such a stretch but its loop, so a draw of no conflict, or of another loop, would leave the issue idle to the window's end; kept, the stretch conflicts in every replay, more often than the fitted rate gives, which overstates the conflicts of every rule alike. The tool counts the conflicts it keeps."},
 }
 
 // assumeSlotFromBeforeTheReach is the assumption the trace's own inference rests on, that an issue
@@ -135,3 +139,8 @@ var Assumptions = []Assumption{
 // slot, whose worker started there with no slot line holding it, held one (inferStartSlots), each
 // a SlotSpan.Inferred, which the start state and a run name where they rest on it.
 const assumeSlotFromBeforeTheReach = 34
+
+// assumeKeptOpenLoop is the assumption a stretch that keeps its recorded conflict rests on, its loop
+// running to the window's end in the record (driver.keepsOpenLoop), which a run names where it
+// keeps one (Divergence.KeptOpenLoops).
+const assumeKeptOpenLoop = 35

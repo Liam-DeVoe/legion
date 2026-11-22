@@ -96,14 +96,15 @@ type RunResult struct {
 	// Unplaced is each issue the start state could not place at the window's start.
 	Unplaced []Unplaced
 	// Divergence is what the replay counted of where it left the record's course: refused moves
-	// with their reasons, reassertion starts, events a sequence fence dropped, the outbox rows
-	// finished under each assumption, the recorded turns it wrote no claim of, and what its start
-	// state counted of the slots the trace inferred and of the record's own count (design 10.9).
+	// with their reasons, the recorded conflicts it kept for a loop open at the window's end,
+	// reassertion starts, events a sequence fence dropped, the outbox rows finished under each
+	// assumption, the recorded turns it wrote no claim of, and what its start state counted of the
+	// slots the trace inferred and of the record's own count (design 10.9).
 	Divergence Divergence
 	// Assumptions is every assumption the run rests on, by number: the spec's and the plan's,
 	// which the scorecard names too, and the tool's own (26 on), under which it left a fact or a
-	// turn out, finished an outbox row without acting or seeded a slot the trace inferred, which
-	// run.json names beside them.
+	// turn out, finished an outbox row without acting, seeded a slot the trace inferred or kept a
+	// recorded conflict, which run.json names beside them.
 	Assumptions []int
 	// Conflicts is the conflict model the run drew each stretch's conflict by (spec R2): fitted on
 	// the recorded stretches inside the window (windowConflicts) with each coefficient's interval,

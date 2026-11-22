@@ -55,7 +55,9 @@ const (
 	// record's.
 	MovePass MoveWay = "pass"
 	// MoveDraw is a move a replay's conflict draw makes, at the rate fitted to the window. The
-	// recorded moves of the trigger are not injected, or each conflict would count twice.
+	// recorded moves of the trigger are not injected, or each conflict would count twice; a recorded
+	// conflict whose loop runs to the window's end is kept, not drawn, and made through the same
+	// path as a drawn one (assumption 35).
 	MoveDraw MoveWay = "draw"
 	// MoveMark is a move that moves no phase in today's workflow: a fact of the replay's own
 	// (MoveSource.Fact) writes a mark inside the phase the issue stands in, which a rule may read.

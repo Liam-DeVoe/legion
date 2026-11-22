@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
@@ -388,8 +389,8 @@ var backInTesting = []fixtureMove{
 
 // checkACME1Moves replays window under legion-v20.42.5, the rule it ran, on the main branch at
 // seed, and fails where ACME-1's moves in the replay or their moments differ from want and at, or
-// where the replay refused a move.
-func checkACME1Moves(t *testing.T, window Window, seed int64, want []fixtureMove, at []time.Time) {
+// where the replay refused a move. It answers the replay's log.
+func checkACME1Moves(t *testing.T, window Window, seed int64, want []fixtureMove, at []time.Time) []replayLine {
 	t.Helper()
 	out := t.TempDir()
 	result, err := Run(context.Background(), RunConfig{Window: window, Rule: replayedRule(t, "legion-v20.42.5"), Branch: MainBranch, Seed: seed,
@@ -401,7 +402,8 @@ func checkACME1Moves(t *testing.T, window Window, seed int64, want []fixtureMove
 	if err != nil {
 		t.Fatal(err)
 	}
-	moments := linesAt(replayLog(t, out), func(line replayLine) bool { return line.Msg == phaseChangedLine && line.Issue == "ACME-1" })
+	log := replayLog(t, out)
+	moments := linesAt(log, func(line replayLine) bool { return line.Msg == phaseChangedLine && line.Issue == "ACME-1" })
 	if !slices.Equal(moved["ACME-1"], want) || !slices.EqualFunc(moments, at, time.Time.Equal) {
 		t.Errorf("at seed %d ACME-1 moved %s at %s, want %s at %s", seed, describeMoves(moved["ACME-1"]), describeTimes(moments),
 			describeMoves(want), describeTimes(at))
@@ -409,6 +411,7 @@ func checkACME1Moves(t *testing.T, window Window, seed int64, want []fixtureMove
 	if refused := result.Divergence.Refused; len(refused) > 0 {
 		t.Errorf("at seed %d the replay refused %+v", seed, refused)
 	}
+	return log
 }
 
 // A drawn conflict's loop is drawn among the recorded loops whose conflict left the same phase
@@ -428,6 +431,207 @@ func TestADrawnConflictIsGivenALoopLeftFromItsPhase(t *testing.T) {
 			checkACME1Moves(t, window, seed, backInTesting, []time.Time{clock(9, 30), clock(9, 55), clock(10, 35)})
 		})
 	}
+}
+
+// unendedLoopWindow is a window from 09:00 to 13:00 recorded under legion-v20.42.5, its inputs
+// reaching back to the daemon's boot at 07:00, whose recorded conflict loops left reviewing and
+// testing, one of those from testing still under way at the window's end. ACME-1 and ACME-2 are
+// phaseLoopsWindow's: ACME-1 stands in testing at the window's start, its tester fails it at
+// 09:30, and it works in implementing to the window's end; ACME-2's loop leaves reviewing at 10:45
+// and is back there at 11:15. ACME-3, a root promoted at 11:00, works 15 minutes in each phase to
+// testing at 11:45, and a conflict moves it back at 12:00; its loop is 25 minutes in implementing,
+// in two turns of its implementer: one from 12:00 that ends at 12:10 with no move, and one from
+// 12:15 that ends at 12:25 with the move back to testing, where it stands to the window's end.
+// ACME-4, a root promoted at 11:05, works 15 minutes in each phase to testing at 11:55, and a
+// conflict moves it back at 12:15; the record shows no return: it is in implementing to the
+// window's end, its implementer in a turn from 12:15. The base branch took a commit inside
+// ACME-1's stretch, at 09:10, and one inside each stretch that ends in a conflict, at 10:40, 11:50
+// and 12:05: the stretches inside the window separate, so the chance fitted at M = 1 is 1 and at
+// M = 0 is 0, and ACME-1's, which began in the reach and is no part of the fit, draws a conflict at
+// 09:30 under any seed.
+func unendedLoopWindow(t *testing.T) Window {
+	b := newWindowBuilder(t, clock(9, 0), clock(13, 0))
+	b.window.Parts[0].Rule = "legion-v20.42.5"
+	b.reaches(2 * time.Hour)
+	b.capped(4)
+	b.boot(clock(7, 0))
+	move := func(hour, minute int, to phase.Phase, trigger workflow.TriggerKind) builtMove {
+		return builtMove{clock(hour, minute), to, trigger}
+	}
+	rootThrough(b, "ACME-1", "a1", clock(7, 5), clock(7, 20), move(7, 35, phase.Implementing, workflow.TriggerPlannerCompleted),
+		move(8, 50, phase.Testing, workflow.TriggerImplementationReady), move(9, 30, phase.Implementing, workflow.TriggerTesterFailed))
+	rootThrough(b, "ACME-2", "a2", clock(9, 0), clock(9, 15), move(9, 30, phase.Implementing, workflow.TriggerPlannerCompleted),
+		move(9, 45, phase.Testing, workflow.TriggerImplementationReady), move(10, 0, phase.Implementing, workflow.TriggerTesterFailed),
+		move(10, 15, phase.Testing, workflow.TriggerImplementationReady), move(10, 30, phase.Reviewing, workflow.TriggerTesterPassed),
+		move(10, 45, phase.Implementing, workflow.TriggerConflict), move(11, 0, phase.Testing, workflow.TriggerImplementationReady),
+		move(11, 15, phase.Reviewing, workflow.TriggerTesterPassed))
+	rootThrough(b, "ACME-3", "a3", clock(11, 0), clock(11, 15), move(11, 30, phase.Implementing, workflow.TriggerPlannerCompleted),
+		move(11, 45, phase.Testing, workflow.TriggerImplementationReady), move(12, 0, phase.Implementing, workflow.TriggerConflict))
+	b.turnEnds(clock(12, 10), "ACME-3", claim.RoleImplementer)
+	b.turnStarts(clock(12, 15), "ACME-3", claim.RoleImplementer)
+	b.segmentEnds(clock(12, 25), "ACME-3", phase.Implementing, phase.Testing, workflow.TriggerImplementationReady)
+	rootThrough(b, "ACME-4", "a4", clock(11, 5), clock(11, 20), move(11, 35, phase.Implementing, workflow.TriggerPlannerCompleted),
+		move(11, 55, phase.Testing, workflow.TriggerImplementationReady), move(12, 15, phase.Implementing, workflow.TriggerConflict))
+	window := b.build()
+	window.Merges = map[string][]Merge{builtRepository: {
+		{SHA: "3e9a7c1b5d2f4068a1b2c3d4e5f60718293a4b5c", At: clock(9, 10), Branch: "main"},
+		{SHA: "7c4d2e9f1a3b5067b1c2d3e4f5a6b7c8d9e0f1a2", At: clock(10, 40), Branch: "main"},
+		{SHA: "9f2b6d4a8c1e3057c2d3e4f5a6b7c8d9e0f1a2b3", At: clock(11, 50), Branch: "main"},
+		{SHA: "c4e8a2f6b0d14079d3e4f5a6b7c8d9e0f1a2b3c4", At: clock(12, 5), Branch: "main"},
+	}}
+	return window
+}
+
+// A drawn conflict's loop is drawn among the recorded loops whose work the record shows ending
+// (spec R2): a loop still under way at the window's end has no known length, and an issue given it
+// would stand in its last segment to the window's end, its worker in the turn the record leaves
+// open there, and never run its own work after the loop. The test replays unendedLoopWindow under
+// legion-v20.42.5, the rule it ran, at the seeds 1 to 8. At each, ACME-1's stretch draws a
+// conflict at 09:30 and is given ACME-3's loop, not ACME-4's: ACME-1 moves back to implementing by
+// conflict at 09:30; its implementer works the loop's two turns, from 09:30 to 09:40, which ends
+// with no move, and from 09:45 to 09:55, which ends with the move to testing; and it runs its own
+// recorded testing, 40 minutes, to its tester's failure at 10:35. The test fails for a seed whose
+// replay moves ACME-1 otherwise or at other moments, starts or ends its implementer's turns from
+// 09:30 to 10:00 otherwise, or refuses a move.
+func TestADrawnConflictIsGivenNoLoopTheRecordShowsUnended(t *testing.T) {
+	replayDSN(t)
+	window := unendedLoopWindow(t)
+	const implementer = "legion-acme-acme-1-implementer"
+	for seed := int64(1); seed <= 8; seed++ {
+		t.Run(fmt.Sprintf("seed-%d", seed), func(t *testing.T) {
+			log := checkACME1Moves(t, window, seed, backInTesting, []time.Time{clock(9, 30), clock(9, 55), clock(10, 35)})
+			inLoop := func(line replayLine, msg string) bool {
+				return line.Msg == msg && line.Claim == implementer && !line.Time.Before(clock(9, 30)) && line.Time.Before(clock(10, 0))
+			}
+			started := linesAt(log, func(line replayLine) bool { return inLoop(line, "supervise: a turn started") })
+			ended := linesAt(log, func(line replayLine) bool { return inLoop(line, "supervise: a turn ended") })
+			wantStarted, wantEnded := []time.Time{clock(9, 30), clock(9, 45)}, []time.Time{clock(9, 40), clock(9, 55)}
+			if !slices.EqualFunc(started, wantStarted, time.Time.Equal) || !slices.EqualFunc(ended, wantEnded, time.Time.Equal) {
+				t.Errorf("at seed %d ACME-1's implementer started turns at %s and ended turns at %s from 09:30 to 10:00, want started at %s and ended at %s",
+					seed, describeTimes(started), describeTimes(ended), describeTimes(wantStarted), describeTimes(wantEnded))
+			}
+		})
+	}
+}
+
+// openLoopWindow is a window from 09:00 to 13:00 recorded under legion-v20.42.5, its inputs
+// reaching back to the daemon's boot at 07:00, with two stretches that began in the reach, hold no
+// commit of the base branch and end in a conflict inside the window. ACME-1, a root promoted at
+// 07:05, moves to testing at 08:50, and a conflict moves it back at 09:30; the record shows no
+// return: it is in implementing to the window's end, its implementer's turn from 09:30 ending at
+// 09:40 with no move and its next, from 09:45, under way at 13:00. ACME-2, a root promoted at
+// 07:10, moves to testing at 08:40, and a conflict moves it back at 09:20; its loop is 30 minutes
+// in implementing, it is back in testing at 09:50, its tester passes it at 10:20, and it is in
+// reviewing to the window's end. ACME-3, a root promoted at 09:00, works 15 minutes in each phase:
+// its tester fails it at 10:00, and at 10:45 a conflict moves it back from reviewing, its stretch
+// holding the base branch's one commit, at 10:40; its loop is 15 minutes in implementing and 15 in
+// testing, and it is back in reviewing at 11:15 to the window's end. ACME-3's two stretches, the
+// window's only ones in the fit, separate, so the chance fitted at M = 0 is 0 and at M = 1 is 1,
+// and ACME-1's and ACME-2's stretches, with M = 0, draw no conflict under any seed.
+func openLoopWindow(t *testing.T) Window {
+	b := newWindowBuilder(t, clock(9, 0), clock(13, 0))
+	b.window.Parts[0].Rule = "legion-v20.42.5"
+	b.reaches(2 * time.Hour)
+	b.capped(3)
+	b.boot(clock(7, 0))
+	move := func(hour, minute int, to phase.Phase, trigger workflow.TriggerKind) builtMove {
+		return builtMove{clock(hour, minute), to, trigger}
+	}
+	rootThrough(b, "ACME-1", "a1", clock(7, 5), clock(7, 20), move(7, 35, phase.Implementing, workflow.TriggerPlannerCompleted),
+		move(8, 50, phase.Testing, workflow.TriggerImplementationReady), move(9, 30, phase.Implementing, workflow.TriggerConflict))
+	b.turnEnds(clock(9, 40), "ACME-1", claim.RoleImplementer)
+	b.turnStarts(clock(9, 45), "ACME-1", claim.RoleImplementer)
+	rootThrough(b, "ACME-2", "a2", clock(7, 10), clock(7, 25), move(7, 40, phase.Implementing, workflow.TriggerPlannerCompleted),
+		move(8, 40, phase.Testing, workflow.TriggerImplementationReady), move(9, 20, phase.Implementing, workflow.TriggerConflict),
+		move(9, 50, phase.Testing, workflow.TriggerImplementationReady), move(10, 20, phase.Reviewing, workflow.TriggerTesterPassed))
+	rootThrough(b, "ACME-3", "a3", clock(9, 0), clock(9, 15), move(9, 30, phase.Implementing, workflow.TriggerPlannerCompleted),
+		move(9, 45, phase.Testing, workflow.TriggerImplementationReady), move(10, 0, phase.Implementing, workflow.TriggerTesterFailed),
+		move(10, 15, phase.Testing, workflow.TriggerImplementationReady), move(10, 30, phase.Reviewing, workflow.TriggerTesterPassed),
+		move(10, 45, phase.Implementing, workflow.TriggerConflict), move(11, 0, phase.Testing, workflow.TriggerImplementationReady),
+		move(11, 15, phase.Reviewing, workflow.TriggerTesterPassed))
+	window := b.build()
+	window.Merges = map[string][]Merge{builtRepository: {
+		{SHA: "7c4d2e9f1a3b5067b1c2d3e4f5a6b7c8d9e0f1a2", At: clock(10, 40), Branch: "main"},
+	}}
+	return window
+}
+
+// A stretch whose recorded conflict loop runs to the window's end keeps that conflict, whatever the
+// draw would say, and its issue runs its own loop (assumption 35); a stretch whose loop returns is
+// drawn as before. The test replays openLoopWindow, where neither ACME-1's stretch nor ACME-2's
+// would draw a conflict. Under legion-v20.42.5, the rule it ran, at the seeds 1 to 5: ACME-1 keeps
+// its conflict, moving back to implementing by conflict at 09:30, and its implementer works its own
+// loop's turns, from 09:30 to 09:40 and from 09:45 on; ACME-2's stretch draws no conflict and goes
+// on past its loop, running its testing after the loop, 30 minutes, to its tester's pass at 09:50;
+// and the run counts one conflict kept and names assumption 35. Under main at seed 1, ACME-1 keeps
+// its conflict as a merge forward asked at 09:30, which lasts as its own loop's implementing round,
+// unended, and never lands. The test fails for a replay that moves either issue otherwise or at
+// other moments, starts or ends ACME-1's implementer's turns from 09:30 to 10:00 otherwise, counts
+// other than one conflict kept or does not name assumption 35, and for a replay under main that
+// asks ACME-1's merge forward at another moment or lands it.
+func TestAStretchWhoseLoopRunsToTheWindowsEndKeepsItsConflict(t *testing.T) {
+	dsn := replayDSN(t)
+	window := openLoopWindow(t)
+	replay := func(t *testing.T, rule string, seed int64) (RunResult, []replayLine, map[string][]fixtureMove) {
+		t.Helper()
+		out := t.TempDir()
+		result, err := Run(context.Background(), RunConfig{Window: window, Rule: replayedRule(t, rule), Branch: MainBranch, Seed: seed,
+			Slowdown: 1, PGDSN: dsn, Out: out})
+		if err != nil {
+			t.Fatalf("replay the window under %s at seed %d: %v", rule, seed, err)
+		}
+		if result.Divergence.KeptOpenLoops != 1 || !slices.Contains(result.Assumptions, assumeKeptOpenLoop) {
+			t.Errorf("under %s at seed %d the run kept %d conflicts and named the assumptions %v, want one kept and assumption %d named",
+				rule, seed, result.Divergence.KeptOpenLoops, result.Assumptions, assumeKeptOpenLoop)
+		}
+		moved, err := replayedMoves(filepath.Join(out, logFile))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return result, replayLog(t, out), moved
+	}
+	const implementer = "legion-acme-acme-1-implementer"
+	for seed := int64(1); seed <= 5; seed++ {
+		t.Run(fmt.Sprintf("legion-v20.42.5/seed-%d", seed), func(t *testing.T) {
+			result, log, moved := replay(t, "legion-v20.42.5", seed)
+			for _, want := range []struct {
+				key   string
+				moves []fixtureMove
+				at    []time.Time
+			}{
+				{"ACME-1", []fixtureMove{{From: phase.Testing, To: phase.Implementing, Trigger: workflow.TriggerConflict}}, []time.Time{clock(9, 30)}},
+				{"ACME-2", []fixtureMove{{From: phase.Testing, To: phase.Reviewing, Trigger: workflow.TriggerTesterPassed}}, []time.Time{clock(9, 50)}},
+			} {
+				at := linesAt(log, func(line replayLine) bool { return line.Msg == phaseChangedLine && line.Issue == want.key })
+				if !slices.Equal(moved[want.key], want.moves) || !slices.EqualFunc(at, want.at, time.Time.Equal) {
+					t.Errorf("at seed %d %s moved %s at %s, want %s at %s", seed, want.key, describeMoves(moved[want.key]), describeTimes(at),
+						describeMoves(want.moves), describeTimes(want.at))
+				}
+			}
+			inLoop := func(line replayLine, msg string) bool {
+				return line.Msg == msg && line.Claim == implementer && !line.Time.Before(clock(9, 30)) && line.Time.Before(clock(10, 0))
+			}
+			started := linesAt(log, func(line replayLine) bool { return inLoop(line, "supervise: a turn started") })
+			ended := linesAt(log, func(line replayLine) bool { return inLoop(line, "supervise: a turn ended") })
+			wantStarted, wantEnded := []time.Time{clock(9, 30), clock(9, 45)}, []time.Time{clock(9, 40)}
+			if !slices.EqualFunc(started, wantStarted, time.Time.Equal) || !slices.EqualFunc(ended, wantEnded, time.Time.Equal) {
+				t.Errorf("at seed %d ACME-1's implementer started turns at %s and ended turns at %s from 09:30 to 10:00, want started at %s and ended at %s",
+					seed, describeTimes(started), describeTimes(ended), describeTimes(wantStarted), describeTimes(wantEnded))
+			}
+			if refused := result.Divergence.Refused; len(refused) > 0 {
+				t.Errorf("at seed %d the replay refused %+v", seed, refused)
+			}
+		})
+	}
+	t.Run("main", func(t *testing.T) {
+		_, log, _ := replay(t, "main", 1)
+		asked := linesAt(log, func(line replayLine) bool { return line.Msg == mergeForwardAskedLine && line.Issue == "ACME-1" })
+		landed := linesAt(log, func(line replayLine) bool { return line.Msg == mergeForwardLandedLine && line.Issue == "ACME-1" })
+		if !slices.EqualFunc(asked, []time.Time{clock(9, 30)}, time.Time.Equal) || len(landed) > 0 {
+			t.Errorf("under main the merge forward of ACME-1 was asked at %s and landed at %s, want asked at 09:30 and never landed",
+				describeTimes(asked), describeTimes(landed))
+		}
+	})
 }
 
 // Where the window records no loop left from the phase of a drawn conflict, the loop is drawn
