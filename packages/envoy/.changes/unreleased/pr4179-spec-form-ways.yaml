@@ -14,9 +14,11 @@ body: |-
   only. The code font of a name that ends its sentence puts the stops that end it, and the closing
   marks after them, after the code font, and a way out that moves where its sentence ends is
   refused. A way out is judged in the sentence as the text holds it, two spaces and all, and also in
-  each sentence where its words stand and its finding does not. Each reading of a sentence is
-  charged to that sentence, and a judgment reads one sentence at most 126 times, so its work stays
-  in proportion to the text; a finding whose way out would read a sentence past that gets no way
+  each sentence where its words stand and its finding does not. A judgment names each sentence by
+  a number and reads its words only through a count of the readings of that sentence, which lets
+  one sentence be read at most 104 times; a way out reads only the pieces of ste-lint that it
+  changes and the verbs of the footnotes as one set for each group, so the work of a judgment stays
+  in proportion to the text. A finding whose way out would read a sentence past that gets no way
   out and says so.
 time: 2026-11-21T08:59:19Z
 custom:
