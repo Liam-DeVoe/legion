@@ -81,18 +81,6 @@ func StoredAgentName(task string, place int, s Step, stored string) string {
 	return s.Role
 }
 
-// FirstRoles is the role each agent of t starts with (AgentOf): the role of its first step.
-func FirstRoles(t Task) map[Agent]string {
-	first := map[Agent]string{}
-	for i, step := range t.Steps {
-		agent := AgentOf(t.ID, i+1, step)
-		if _, seen := first[agent]; !seen {
-			first[agent] = step.Role
-		}
-	}
-	return first
-}
-
 // DefaultTask is the id of the one task of an issue whose owner gives no plan, which runs the
 // project's default steps.
 const DefaultTask = "default"
