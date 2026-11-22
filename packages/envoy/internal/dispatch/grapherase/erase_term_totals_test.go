@@ -22,11 +22,15 @@ import (
 const termTotalsTakeStatement = "insert into search_term_totals (project_key, items, refreshed_at) values ($1, 0, now())"
 
 // erasedTermTotalsRefusal is how long TestTheEraseIsRefusedWhenAPassHoldsTheStatisticsOfAProjectOutsideItsOwners
-// gives the confirmed erase to answer: its search for the rows it leaves, its locks and the read
-// under them, and then the 100 ms api.ForgetErasedTermsTx waits at most for the totals row of a
-// project the erase did not take before its owner locks. An erase that waited for the pass instead
-// would wait for as long as the test holds the row.
-const erasedTermTotalsRefusal = 10 * time.Second
+// gives the confirmed erase to answer: its search for the rows it leaves, which reads every text
+// column of the database, its locks and the read under them, and then the 100 ms
+// api.ForgetErasedTermsTx waits at most for the totals row of a project the erase did not take
+// before its owner locks. The bound only ends a run that hangs: an erase that waited for the pass
+// instead would wait for as long as the test holds the row, which it holds until the erase has
+// answered, and the refusal itself is proved by its lock_not_available (55P03), not by when it
+// came. So the bound is far above the run's own time, which on a pod running other packages'
+// tests beside it was measured past 10 s.
+const erasedTermTotalsRefusal = 2 * time.Minute
 
 // holdTermTotals holds project's term statistics totals row `for update` in a transaction of its
 // own, as a refresh pass running holds it for its whole transaction (api's searchTermTotalsMode).
