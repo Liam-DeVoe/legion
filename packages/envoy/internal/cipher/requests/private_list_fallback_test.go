@@ -186,7 +186,8 @@ func publicRows() map[string]projectaccesstest.Row {
 // today's answer (R9); over a store holding PRIV with C1 it carries Excluded [C1] and is read again
 // within a minute, on a fresh pod too; over a held row of unknown channels, or a store the broker
 // cannot read, it is ExcludedUnread. Outside the airlock the token is released as today over an
-// empty store and denied over one holding C1. A fresh read keeps the list, and a later release that
+// empty store and denied over one holding C1, with no airlock entry and with an entry that binds no
+// host alike. A fresh read keeps the list, and a later release that
 // reads it from the client's cache inside CacheTTL writes nothing. With every project public, a
 // held row is the R9 exception's window alone: a refused switch's record until its forget, a
 // formerly private project until its forget, each fencing its own channel, and nothing once
@@ -278,6 +279,26 @@ func TestAFailedPrivateListReadFencesByTheStoredList(t *testing.T) {
 		holding.dispatch.SetPrivateProjectsDown(true)
 		request, err := holding.create(t)
 		deniedFor(t, "(h) "+slackToken+" outside the airlock over a store holding "+privChannel+" with the list route down", request, err, slackToken, policy.ReasonProjectChannelsNeedAirlock)
+	})
+
+	t.Run("(h2) an airlock entry that binds no host is outside the airlock: released over an empty store, denied over one holding C1", func(t *testing.T) {
+		// An entry with a judge or guidance alone has a digest, yet the release hands its value
+		// over as it does a name with no entry (proxyrules.Rules.Bound), so the fence's rules for a
+		// secret outside the airlock hold for it too (policy.Secret.AirlockBound).
+		hostless := proxyrules.Rules{Secrets: []proxyrules.SecretRule{{Name: slackToken, Guidance: "grant it for posting release notes"}}}
+		if hostless.Digest(slackToken) == "" || hostless.Bound(slackToken) != nil {
+			t.Fatalf("(h2) the rules give %s the digest %q and the bound entry %+v; this row needs an entry with a digest that binds no host", slackToken, hostless.Digest(slackToken), hostless.Bound(slackToken))
+		}
+		empty := newOutsideBrokerOf(t, hostless, privRows())
+		empty.dispatch.SetPrivateProjectsDown(true)
+		if request, err := empty.create(t); err != nil || request.GrantID == nil {
+			t.Fatalf("(h2) %s, whose airlock entry binds no host, over an empty store with the list route down = %+v, %v; want granted, as today", slackToken, request, err)
+		}
+		holding := newOutsideBrokerOf(t, hostless, privRows())
+		storeList(t, holding.m.Store, store.KnownPrivateProject{Key: privProject, SlackChannels: []string{privChannel}})
+		holding.dispatch.SetPrivateProjectsDown(true)
+		request, err := holding.create(t)
+		deniedFor(t, "(h2) "+slackToken+", whose airlock entry binds no host, over a store holding "+privChannel+" with the list route down", request, err, slackToken, policy.ReasonProjectChannelsNeedAirlock)
 	})
 
 	t.Run("(i) a fresh read keeps the list, and a cached one writes nothing", func(t *testing.T) {
