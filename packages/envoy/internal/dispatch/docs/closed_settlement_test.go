@@ -588,7 +588,7 @@ func settleAfterItsStoreWriteIsRefused(t *testing.T) {
 		case <-watch.failedNow:
 			return "failed", true
 		default:
-			return "", false
+			return "no refusal has parked the room's close and the room has not failed; " + f.settlementState(), false
 		}
 	})
 	if parked == "failed" {

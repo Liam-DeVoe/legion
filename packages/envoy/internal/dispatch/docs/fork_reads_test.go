@@ -528,8 +528,8 @@ type forkStep struct {
 }
 
 // runForkSteps runs steps as one committed transaction in mode, asserting each step's fork reads
-// and checkRendering sites, then that the commit's publish checked the rendering once, and that no
-// check found a rendering its fork disagrees with.
+// and checkRendering sites, then that the commit checked the rendering once (checkRendering's
+// "commit"), and that no check found a rendering its fork disagrees with.
 func runForkSteps(t *testing.T, service *Service, artifactID string, checks *renderingChecks, mode forkReadsMode, steps ...forkStep) {
 	t.Helper()
 	mode.prepare(t, service, artifactID)
@@ -566,7 +566,7 @@ func runForkSteps(t *testing.T, service *Service, artifactID string, checks *ren
 }
 
 // Every rendering a write hands on - to a margin write (applyMargin), to a read joined to its
-// transaction (docTree), to a version (capture), and at each fork read and its publish - is a
+// transaction (docTree), to a version (capture), and at each fork read and at its commit - is a
 // fresh read and render of its fork, in each transaction the API runs: an anchored comment, a
 // suggestion, an edit and its version, an accept, and a transaction a browser commits under,
 // whose fork stands where its one read left it, so every rendering after that commit is still

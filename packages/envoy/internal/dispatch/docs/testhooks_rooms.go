@@ -69,16 +69,21 @@ type RoomCounters struct {
 	// NotifiedHead is the highest version of the document this process's room held every update
 	// through (roomCursor.heldThrough) after a catch-up that another process's notification asked
 	// for (roomCatchUps.headNotified, changed) brought the room to the stored head or found it
-	// there - that catch-up itself, its retry after a try that reached no verdict, or the catch-up
-	// asked again in its place after a replaced history the locked read did not confirm
-	// (closeReplaced), and that one's retries; 0 before any. A room instance's start (schedule)
-	// and its retries raise neither this nor SweptHead.
+	// there - that catch-up itself, its look again for a room still loading, its retry after a try
+	// that reached no verdict, the catch-up asked again in its place after a replaced history the
+	// locked read did not confirm (closeReplaced) and that one's retries, a catch-up that answered
+	// for the room while one of those retries waited (roomCatchUps.settled), or, where it found no
+	// room while ygo was loading one, the catch-up that room's instance schedules
+	// (roomCatchUps.keepForLoadingRoom); 0 before any. A room instance's start (schedule) and its
+	// retries raise neither this nor SweptHead, except where one of them answers for such a retry
+	// or takes on such a catch-up's causes.
 	NotifiedHead int64 `json:"notified_head"`
 	// SweptHead is NotifiedHead for the sweep each LISTEN that stands runs (roomCatchUps.sweep):
 	// what carries a change whose notification was sent while this process's listener had no
 	// connection, and so reached nobody here. A catch-up that carries both causes - a sweep's
-	// asked again and a notification's it absorbed while queued (roomCatchUps.request) - raises
-	// both.
+	// asked again and a notification's it absorbed while queued (roomCatchUps.request), or a
+	// sweep's that answered for the room while a notified catch-up's retry waited
+	// (roomCatchUps.settled) - raises both.
 	SweptHead int64 `json:"swept_head"`
 	// ListenStands counts the LISTENs this process's listener has stood up, each followed by the
 	// sweep (roomSync.connected): the first as room sync starts, and one more for each redial. It
