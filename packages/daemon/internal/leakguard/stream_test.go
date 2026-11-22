@@ -431,15 +431,16 @@ func TestReadOutputEndsAtOnceAfterAFailedChildThoughAProcessHoldsItsOutput(t *te
 // context's end (newPipeReader) is the only end left, and readOutput answers it as the stop it is.
 // The child writes its own process id and exits; the reader reads that line, waits until the
 // process is gone, which is once Wait has reaped it, and only then ends the context. The wait for
-// the reap ends a minute before the test binary's deadline, so a child not reaped fails with its
-// own message before answered gives up on the read 30 s before that deadline.
+// the reap lasts at most a minute, and ends 5 s before answered gives up on the read 30 s before
+// the test binary's deadline (testwait.Remaining), or after 2 s where less is left, so a child not
+// reaped fails with its own message.
 func TestReadOutputEndsWhenItsContextEndsAfterTheChildExited(t *testing.T) {
 	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
 	guard.waitDelay = time.Hour
 	argv := []string{"sh", "-c", "(" + holdUntilEnd(t) + ") 2>/dev/null &\necho $$"}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	reap := testwait.Bounded(t, time.Minute, time.Minute)
+	reap := max(min(time.Minute, testwait.Remaining(t)-5*time.Second), 2*time.Second)
 	var err error
 	answered(t, "the read whose child has exited and whose context then ended", func() {
 		_, err = guard.readOutput(ctx, child{argv: argv}, func(r io.Reader) error {
