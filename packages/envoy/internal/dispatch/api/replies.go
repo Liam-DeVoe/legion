@@ -79,12 +79,16 @@ const myRepliesOwner = `
 // each constant below reads its own index. A prepared statement reaches a generic plan after five
 // executions, so the parameter would cost every Inbox read a scan of every row of the caller's.
 //
-// "Dismissed" is exactly `dismissed_at is not null`: user_threads_record clears the mark when
-// somebody else writes again (migration 20261105093501), so no read compares the two marks.
+// "Dismissed" is `dismissed_at is not null` over the threads the Inbox state could draw, the ones
+// the person replied in: user_threads_record clears the mark when somebody else writes again
+// (migration 20261105093501), so no read compares the two marks. A person's own answer or review
+// dismisses its thread for them (inboxwrite.Record, dispatch://INFRA-4948 R1) even where they
+// never replied in it, such as an approval request they review, and that thread was never a row
+// of their Inbox, so it is no row of their Dismissed view either.
 const (
 	myRepliesUnread    = myRepliesOwner + ` and u.unread`
 	myRepliesInbox     = myRepliesOwner + ` and u.replied_at is not null and u.dismissed_at is null`
-	myRepliesDismissed = myRepliesOwner + ` and u.dismissed_at is not null`
+	myRepliesDismissed = myRepliesOwner + ` and u.replied_at is not null and u.dismissed_at is not null`
 )
 
 // myRepliesDismissedCursor resumes a Dismissed page where the last one ended ($5 the dismissal
