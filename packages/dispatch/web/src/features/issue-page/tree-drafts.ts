@@ -21,6 +21,7 @@ import type { ReferenceNameReading } from "../refs/reference-names";
 import { referenceSpans } from "../refs/reference-spans";
 import { buildDispatchReference, parseNodeReference } from "../refs/routes";
 import { type TextSource, textSourceOf } from "../refs/text-references";
+import { firstWordedBlock } from "../refs/tree-fragment";
 import { agentsOnlyIds } from "./agents-only";
 import { checkFacts, resultFacts } from "./check-facts";
 import {
@@ -250,32 +251,32 @@ export function coverageStatements(
 }
 
 /**
- * The reads as every builder reads them. `lineOf` is the block of the server's reading of a
- * block's words that names it: `buildIssueTree` and `targetNaming` hand in the first block of it
- * that holds any words (`issue-tree.ts`'s `firstWordedBlock`), which this module cannot import,
- * since `issue-tree.ts` imports it. Every caller hands one in, so no chip names a block by
- * anything but the block its caller chose: a default would name it by its whole reading.
+ * The reads as every builder reads them: the tree's (`buildIssueTree`) and the page's published
+ * names (`targetNaming`) both, so a chip and a link name one target by one rule and cannot drift
+ * apart.
  *
  * A chip carries how its target is named (`NodeChip.reading`), and never the words: the page
  * publishes each reading and the shared reader projects it (`refs/reference-names.tsx`), as a
  * title drawn over one record, so no word of a name is written by a reader of this page's own,
- * and markup is never a word of one (R21). The name is whole, as every surface reads the target
- * by it (R8), and a chip cuts it where it draws it (`issue-tree.ts`'s `chipName`).
+ * and markup is never a word of one (R21). The name is the one a link to the target reads (R8),
+ * and a chip cuts it again where it draws it (`issue-tree.ts`'s `chipName`).
  *
  * - **A target nothing answers to now** by nothing, which the chip draws as gone. A short
  *   reference two or more targets carry the id of is such a target, which the read answers
  *   `ambiguous` as well, and its chip carries `ambiguous` so it can draw the reference as
  *   written rather than as a target deleted.
- * - **A block** - the reference names one, or the read answers that its target is one - by
- *   `lineOf` of the server's reading of it (`ReferenceTarget.text_tree`). Where the read
- *   answered and sent no reading, or one that holds no words, a block of this issue whose
- *   document the tree read is named by the page's word for its kind (`NODE_TYPE_NAMES`), never
- *   by its id (R22), and so is one whose block projects to no words; another issue's block,
- *   whose kind no read of this page gives, by nothing, and a surface reads it itself. A block the
- *   read has not answered for yet has no name either, which the chip draws as not yet named
- *   (`NodeChip.answered`). The read's `name` for a block is its stored excerpt, which is the
- *   block's source: a typed block's directive and the markdown its words are written in are
- *   markup and no word of it (R21).
+ * - **A block** - the reference names one, or the read answers that its target is one - by the
+ *   server's reading of its whole text (`ReferenceTarget.text_tree`), as a link to it titles it
+ *   (R8); a chip names it by the first block of that reading that holds any words instead, so a
+ *   decision's chip is its own heading (`refs/reference-names.tsx`'s `blockLineReading`). Where
+ *   the read answered and sent no reading, or one that holds no words, a block of this issue
+ *   whose document the tree read is named by the page's word for its kind (`NODE_TYPE_NAMES`),
+ *   never by its id (R22), and so is one whose words project to none (`fallback`); another
+ *   issue's block, whose kind no read of this page gives, by nothing, and a surface reads it
+ *   itself. A block the read has not answered for yet has no name either, which the chip draws
+ *   as not yet named (`NodeChip.answered`). The read's `name` for a block is its stored excerpt,
+ *   which is the block's source: a typed block's directive and the markdown its words are
+ *   written in are markup and no word of it (R21).
  * - **A whole document** - a `spec` or an `artifact` reference naming no block - by the page's
  *   word for it (`documentWord`), and never by its file name.
  * - **An issue** - the read answers that its target is one - by its title, which is no markdown,
@@ -292,10 +293,7 @@ export function coverageStatements(
  *   with is no word of it. A component's name is a title, which is no markdown, and is drawn as
  *   the read gives it.
  */
-export function treeContext(
-  reads: IssueTreeReads,
-  lineOf: (reading: DisplayTree) => DisplayTree | undefined
-): TreeContext {
+export function treeContext(reads: IssueTreeReads): TreeContext {
   const key = reads.issue.key;
   const artifacts = reads.issue.artifacts ?? [];
   const slugs = new Map(artifacts.map((artifact) => [artifact.id, artifact.slug]));
@@ -337,9 +335,11 @@ export function treeContext(
       if (target === undefined) return undefined;
       const kind = kinds.get(nodeIdOfReference(reference) ?? "");
       const word = kind === undefined ? undefined : NODE_TYPE_NAMES[kind];
-      const named = target.text_tree === undefined ? undefined : lineOf(target.text_tree);
-      if (named === undefined) return word === undefined ? undefined : { words: word };
-      return word === undefined ? { tree: named } : { fallback: word, tree: named };
+      const whole = target.text_tree;
+      if (whole === undefined || firstWordedBlock(whole) === undefined) {
+        return word === undefined ? undefined : { words: word };
+      }
+      return word === undefined ? { tree: whole } : { fallback: word, tree: whole };
     }
     // Another issue's document is named by no role of this issue's.
     if (route?.kind === "spec") {

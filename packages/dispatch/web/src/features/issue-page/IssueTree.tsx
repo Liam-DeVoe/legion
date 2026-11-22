@@ -14,26 +14,25 @@ import { whoAmIQuery } from "../../api/queries";
 import type { Artifact } from "../../api/types";
 import { textMutedOnCanvas } from "../../theme/classes";
 import { isViewer } from "../refs/actor";
+import { PublishedReferenceNames, type PublishedReferences } from "../refs/reference-names";
 import { buildIssuePath } from "../refs/routes";
-import { wordsOf } from "../refs/tree-fragment";
 import { focusOnDocument } from "../shell/roving";
 import { useMediaQuery } from "../shell/useDialog";
 import { ChangeDraftsProvider } from "./DecisionActions";
 import { type FocusedNode, useSetFocusedNode } from "./focused-node";
 import { bringOnScreen, FOOT_HEIGHT_PROPERTY, IDENTITY_HEIGHT_PROPERTY } from "./identity-block";
 import { pathToTarget } from "./issue-address";
-import { firstLineOf, firstWordedBlock, lineReading, type TreeNode } from "./issue-tree";
+import type { TreeNode } from "./issue-tree";
 import { DETAILS_ATTRIBUTE } from "./margin-slot";
-import { CrumbLine } from "./NodeRow";
+import { lineOrKindWord, useNodeLine } from "./node-line";
 import { type FailedRead, NO_FAILED_READS } from "./outline-reads";
 import { useFocusBranch, useTakeOutlineRequest } from "./outline-request";
 import { threadMarks } from "./outline-thread-read";
 import { conversationItem, useOutlineWriter } from "./outline-writer";
 import { authorText, pageChrome } from "./page-structure";
-import { CONTROL_LABELS, NODE_TYPE_NAMES, nodeStateWord } from "./page-words";
+import { CONTROL_LABELS, nodeStateWord } from "./page-words";
 import { type Press, trackPress, usePressFocus } from "./press-focus";
 import { FAILED_READ_RETRY, FailedReadLine } from "./slots/failed-read-line";
-import { storedReading } from "./stored-reading";
 import { CYCLE_STATES, EVERYTHING, TreeRows } from "./TreeRows";
 import { focusIsLoose, nodeRowSelectorOf, rowSelectorOf } from "./tree-focus";
 import {
@@ -104,6 +103,7 @@ export function IssueTree({
   isClosed,
   landingReport,
   onEditing,
+  published,
   readsHeld = true,
   readsSettled = true,
   request,
@@ -162,6 +162,13 @@ export function IssueTree({
    *  editor rather than leaving the row with nothing to put a caret in, and hands that editor to
    *  the row; `undefined` whenever the reader is editing nothing. */
   onEditing: OnEditing;
+  /** What the page publishes of its one batched read (`useIssueTree.ts`'s `published`), which
+   *  the tree hands every row and crumb it draws in the render that draws it
+   *  (`PublishedReferenceNames`): a reference the page is asking for waits on the page's answer
+   *  from a row's first render, rather than being read again by the row (R8). The page publishes
+   *  it to the names store as well, which names each target. Every caller hands it, so no tree
+   *  draws a row that reads what its page asks for. */
+  published: PublishedReferences;
   /** Whether each read the tree's nodes come from holds an answer, which a failed read never
    *  does: the six reads - the coverage, the decisions, the results, the asks, the comments and
    *  the messages - and each document's blocks (`outline-reads.ts`'s `readsHeld`). Until then a
@@ -1122,7 +1129,7 @@ export function IssueTree({
     };
   }, [landing]);
 
-  return (
+  const outline = (
     <div className="mb-3 flex min-w-0 flex-col">
       {/* Over the tree and never in it: an alert inside the tree would break its structure of
           rows (`FailedReadLine`). */}
@@ -1171,9 +1178,8 @@ export function IssueTree({
               // zoom draws 96 px where it was 112. Its display is left to the floor's
               // `inline-flex`: the line is a flex box, which makes each crumb a block box
               // whatever its display, and `inline-block`, `inline` and `block` drew the same box.
-              // It draws one line for a node, so it is the node's first line, drawn as every one
-              // line of a node is (`NodeRow.tsx`'s `CrumbLine`, through the shared plain-text
-              // projection), and it wraps rather than being cut again mid-word by its box; the
+              // It draws one line for a node, as every place that names a node by one does
+              // (`CrumbName`), and it wraps rather than being cut again mid-word by its box; the
               // issue is named by its key, since the header above draws its title, and a node
               // with no words by its kind's word, never its id, which is no name a reader reads.
               className="dispatch-inline-link min-h-0! min-w-0! max-w-full py-1 text-left underline [overflow-wrap:anywhere]"
@@ -1207,7 +1213,7 @@ export function IssueTree({
               type="button"
               {...authorText}
             >
-              {above.id === root.id ? above.id : <CrumbLine node={above} />}
+              {above.id === root.id ? above.id : <CrumbName node={above} />}
             </button>
           ))}
           <span {...pageChrome}>/</span>
@@ -1263,6 +1269,7 @@ export function IssueTree({
       ) : null}
     </div>
   );
+  return <PublishedReferenceNames published={published}>{outline}</PublishedReferenceNames>;
 }
 
 /** How long a write's landing waits for the read that draws it before it takes the reader to
@@ -1278,20 +1285,18 @@ function withoutIds(ids: ReadonlySet<string>, drop: readonly string[]): Readonly
   return new Set([...ids].filter((id) => !drop.includes(id)));
 }
 
-/**
- * The words a node's one line is cut from where no hook reaches - the panel's title, which the
- * focus's move sets (`focusedNodeOf`): what every one line of a node is projected from
- * (`lineReading`), and for a node whose read sent no reading, the first block of its stored
- * text's reading that holds any words (`storedReading`, `firstWordedBlock`), read to words by
- * the walk the tree reads a reading's words by (`wordsOf`). A reference in them reads as its
- * author wrote it, as a drawn line reads one until it resolves (R8).
- */
-function lineWordsOf(node: TreeNode): string {
-  const reading = lineReading(node);
-  if ("none" in reading) return "";
-  const block =
-    "tree" in reading ? reading.tree : firstWordedBlock(storedReading(reading.markdown, node));
-  return block === undefined ? "" : wordsOf(block);
+/** What a crumb above a zoom says of a node other than the issue, which is named by its key:
+ *  its one line, as every place that names a node by one draws it (`useNodeLine`) - each
+ *  reference in it read as its target's current name (R8) - and its kind's word where its words
+ *  hold none (`lineOrKindWord`). */
+function CrumbName({ node }: { node: TreeNode }): ReactNode {
+  const { line, reads } = useNodeLine(node, { surface: "outline-crumb" });
+  return (
+    <>
+      {reads}
+      {lineOrKindWord(line, node.type)}
+    </>
+  );
 }
 
 /**
@@ -1426,21 +1431,20 @@ function landingParent(
   return under === undefined ? root : pathToTarget(root, { id: under.id, kind: "item" })?.at(-1);
 }
 
-/** The facts of `node` the panel draws while its row has the focus: who wrote it, the
- *  item it is, its own address and its state, and its own first line as its title, cut from the
- *  words a node's one line is cut from (`lineWordsOf`). A node with no words is named by the
- *  page's word for its kind (`NODE_TYPE_NAMES`), never by its id, which is no name a reader
- *  reads. */
+/** The facts of `node` the panel draws while its row has the focus: who wrote it, the item it
+ *  is, its own address and its state, and its own words, which the panel names it by as every
+ *  place that names a node by its one line does (`FocusedNode.text`). */
 export function focusedNodeOf(node: TreeNode): FocusedNode {
   const item = conversationItem(node);
-  const line = firstLineOf(lineWordsOf(node)).line;
   return {
     ...(node.author === undefined ? {} : { author: node.author }),
     id: node.id,
     ...(item === undefined ? {} : { item }),
     ...(node.reference === undefined ? {} : { reference: node.reference }),
+    ...(node.source === undefined ? {} : { source: node.source }),
     ...(node.state === undefined ? {} : { state: nodeStateWord(node.state) }),
-    title: line === "" ? NODE_TYPE_NAMES[node.type] : line,
+    text: node.text,
+    ...(node.tree === undefined ? {} : { tree: node.tree }),
     type: node.type,
   };
 }

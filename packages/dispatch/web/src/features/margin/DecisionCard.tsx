@@ -1,4 +1,4 @@
-import { type ReactNode, useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useCallback, useMemo } from "react";
 import { Link } from "react-router-dom";
 
 import type { DecisionEntry, DisplayTree } from "../../api/types";
@@ -19,7 +19,7 @@ import { MarkdownPreview } from "../refs/MarkdownPreview";
 import { usePlainHeadline } from "../refs/plain-text";
 import { parseDispatchReference, referenceHref } from "../refs/routes";
 import { textSourceOf } from "../refs/text-references";
-import { regionOrigin } from "./ThreadList";
+import { useCardStack } from "./card-stack";
 import type { DecisionMarginItem, MarkPlacement } from "./useMarginItems";
 
 /** The name a card gives an entry: an ask's question, else the decision's name as the server and
@@ -138,9 +138,13 @@ export function DecisionCard({
   );
 }
 
+/** A decision card's key in its region's stack (`useCardStack`). */
+const decisionKey = (item: DecisionMarginItem): string => item.id;
+
 /**
  * The decision cards, each beside the spec block it shaped: placed at that block's height in the
- * document, below the card before it where two would overlap, as the anchored comments are.
+ * document, below the card before it where two would overlap, as the anchored comments are
+ * (`useCardStack`).
  */
 export function DecisionList({
   blockPlacements,
@@ -155,65 +159,30 @@ export function DecisionList({
   onSelect(id: string, blockId: string): void;
   selectedItemId: string | undefined;
 }): ReactNode {
-  const region = useRef<HTMLElement>(null);
-  const cardRefs = useRef(new Map<string, HTMLDivElement>());
-  const [tops, setTops] = useState<ReadonlyMap<string, number>>(() => new Map());
-  const measure = useCallback(() => {
-    const origin = region.current === null ? undefined : regionOrigin(region.current);
-    const next = new Map<string, number>();
-    let previousBottom = 0;
-    for (const item of decisions) {
+  // A card wants its block's height in the document; one whose block has no placement yet
+  // stacks below the card before it.
+  const wantedTop = useCallback(
+    (item: DecisionMarginItem, origin: number) => {
       const placement = blockPlacements.get(item.blockId);
+      if (placement === undefined) return undefined;
       const block = document.querySelector<HTMLElement>(
         `[data-block-id="${CSS.escape(item.blockId)}"]`
       );
-      const wanted =
-        placement === undefined
-          ? previousBottom
-          : block === null || origin === undefined
-            ? placement.top
-            : block.getBoundingClientRect().top - origin;
-      const top = Math.max(wanted, previousBottom);
-      next.set(item.id, top);
-      previousBottom = top + (cardRefs.current.get(item.id)?.offsetHeight ?? 0) + 8;
-    }
-    setTops((current) =>
-      current.size === next.size && [...next].every(([id, top]) => current.get(id) === top)
-        ? current
-        : next
-    );
-  }, [blockPlacements, decisions]);
-  useLayoutEffect(() => {
-    measure();
-  }, [measure]);
-  useLayoutEffect(() => {
-    const observer = new ResizeObserver(measure);
-    for (const element of cardRefs.current.values()) {
-      observer.observe(element);
-    }
-    return () => observer.disconnect();
-  }, [measure]);
+      return block === null ? placement.top : block.getBoundingClientRect().top - origin;
+    },
+    [blockPlacements]
+  );
+  const { cardRef, height, region, topOf } = useCardStack(decisions, decisionKey, wantedTop);
   if (decisions.length === 0) {
     return null;
   }
-  const bottom = Math.max(
-    ...decisions.map(
-      (item) => (tops.get(item.id) ?? 0) + (cardRefs.current.get(item.id)?.offsetHeight ?? 0) + 8
-    )
-  );
   return (
-    <section aria-label="Decisions" className="relative" ref={region} style={{ minHeight: bottom }}>
+    <section aria-label="Decisions" className="relative" ref={region} style={{ minHeight: height }}>
       {decisions.map((item) => (
         <div
           key={item.id}
-          ref={(element) => {
-            if (element === null) {
-              cardRefs.current.delete(item.id);
-            } else {
-              cardRefs.current.set(item.id, element);
-            }
-          }}
-          style={{ left: 0, position: "absolute", right: 0, top: tops.get(item.id) ?? 0 }}
+          ref={cardRef(item.id)}
+          style={{ left: 0, position: "absolute", right: 0, top: topOf(item.id) }}
         >
           <DecisionCard
             hovered={hoveredItemId === item.id}

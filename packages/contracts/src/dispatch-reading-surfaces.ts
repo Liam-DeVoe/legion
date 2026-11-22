@@ -114,6 +114,8 @@ export type DispatchReadingSurface =
   | "node-row-first-line"
   | "node-row-parent-line"
   | "node-row-chip"
+  | "outline-crumb"
+  | "issue-pin"
   | "document-page-title"
   | "agent-artifact-page-title"
   | "write-label"
@@ -550,12 +552,13 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     rendered: false,
     surface: "node-row-child-title",
   },
-  // The new issue page's one line of a node, drawn as plain words: a folded branch's line, and
-  // the line a filter's row names a node's parent by, each projected from the node's own words
-  // and cut by R1's first-line rule; and a chip, which names a tie's target.
+  // The new issue page's one line of a node, drawn as plain words: a folded branch's line, the
+  // line a filter's row names a node's parent by, a crumb above a zoom and a pin in Details, each
+  // projected from the node's own words and cut by R1's first-line rule; and a chip, which names
+  // a tie's target.
   {
     cannotCarry: NODE_LINE_NO_QUESTION_ID,
-    files: ["packages/dispatch/web/src/features/issue-page/NodeRow.tsx"],
+    files: ["packages/dispatch/web/src/features/issue-page/node-line.tsx"],
     proof: {
       file: "packages/dispatch/web/src/features/issue-page/NodeRow.drawn.test.tsx",
       test: "a folded branch's line reads a reference as its target's name, and as its author's words until it resolves",
@@ -568,7 +571,7 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
   },
   {
     cannotCarry: NODE_LINE_NO_QUESTION_ID,
-    files: ["packages/dispatch/web/src/features/issue-page/NodeRow.tsx"],
+    files: ["packages/dispatch/web/src/features/issue-page/node-line.tsx"],
     proof: {
       file: "packages/dispatch/web/src/features/issue-page/NodeRow.drawn.test.tsx",
       test: "a parent line is its parent's projected first line, a reference in it read by its target's name",
@@ -587,10 +590,37 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
       test: "a numbered step keeps its number in a chip and in a folded line",
     },
     reach: "/issues/<ISSUE> with the new issue page on, a plan task's needs chip",
-    reason: `A chip is a link to a tie's target, worded with the target's name cut to a chip's room: the chip's address as the projection reads it standing alone, which names its target by the name the page published from its batched read (\`refs/reference-names.tsx\`), itself projected from the target's own words as a title over one record. The address is no record a \`#id\` could name a question of. ${PLAIN_WORDS_REASON}`,
+    reason: `A chip is a link to a tie's target, worded with the target's name cut to a chip's room: the chip's address as the projection reads it standing alone, which names its target by the name the page published from its batched read (\`refs/reference-names.tsx\`), itself projected from the target's own words as a title over one record, and a block by the line the store projects beside that name, the first block of its words (\`KnownReferences.lines\`). The address is no record a \`#id\` could name a question of. ${PLAIN_WORDS_REASON}`,
     record: false,
     rendered: false,
     surface: "node-row-chip",
+  },
+  {
+    cannotCarry: NODE_LINE_NO_QUESTION_ID,
+    files: ["packages/dispatch/web/src/features/issue-page/IssueTree.tsx"],
+    proof: {
+      file: "packages/dispatch/web/src/features/issue-page/IssueTree.test.tsx",
+      test: "a crumb reads a reference in its node's line as its target's name, and as its author's words until it resolves",
+    },
+    reach:
+      "/issues/<ISSUE> with the new issue page on, below 1024 px, the crumb line above a node zoomed into",
+    reason: `A crumb above a zoom names a node on one line, as a button: its first line cut by R1's first-line rule with its ellipsis, and its kind's word where its words hold none. ${PLAIN_WORDS_REASON}`,
+    record: true,
+    rendered: false,
+    surface: "outline-crumb",
+  },
+  {
+    cannotCarry: NODE_LINE_NO_QUESTION_ID,
+    files: ["packages/dispatch/web/src/features/issue-page/IssuePins.tsx"],
+    proof: {
+      file: "packages/dispatch/web/src/features/issue-page/IssueMargin.test.tsx",
+      test: "a pin's line reads a reference as its target's name",
+    },
+    reach: "/issues/<ISSUE> with the new issue page on, Details' Pinned section",
+    reason: `A pin names its record on one line, its first line cut by R1's rule. ${PLAIN_WORDS_REASON}`,
+    record: true,
+    rendered: false,
+    surface: "issue-pin",
   },
   // The reason a reviewer asked for changes: in a document's Reviews dialog, and on the line
   // under the design gate's steps in a root issue's header.

@@ -16,11 +16,12 @@ import type {
 } from "../../api/types";
 import type { PublishedReferences, ReferenceNameReading } from "../refs/reference-names";
 import type { DispatchReferenceRoute } from "../refs/routes";
+import { referenceTargetKind } from "../refs/target-id";
 import type { TextSource } from "../refs/text-references";
-import { wordsOf } from "../refs/tree-fragment";
+import { firstWordedBlock, wordsOf } from "../refs/tree-fragment";
 import { chipWords } from "./node-row-chip";
 import type { GapKind, NodeState, NodeType } from "./page-words";
-import { type Draft, type TreeContext, titleReading, treeContext, treeDrafts } from "./tree-drafts";
+import { type Draft, titleReading, treeContext, treeDrafts } from "./tree-drafts";
 
 /**
  * The issue's node tree, built from the page's reads and nothing else.
@@ -99,15 +100,16 @@ export interface NodeChip {
   readonly label?: string;
   /** How the target is named, by the batched reference read and the issue's own documents
    *  (`treeContext`): the reading the page publishes for it, which the shared reader projects
-   *  into the name every surface reads the target by, whole (`refs/reference-names.tsx`), and
-   *  which a chip cuts where it draws it (`chipName`). A block by the first block of the server's
-   *  reading of its words that holds any (`firstWordedBlock`); where the read answered with no
-   *  reading or one that holds no words, the page's word for the block's kind
+   *  into the name every surface reads the target by, as a link to it reads it
+   *  (`refs/reference-names.tsx`), and which a chip cuts again where it draws it (`chipName`). A
+   *  block by the server's reading of its whole text, as a link to it titles it, which a chip
+   *  names by its first block that holds any words (`blockLineReading`); where the read answered
+   *  with no reading or one that holds no words, the page's word for the block's kind
    *  (`NODE_TYPE_NAMES`) for a block of this issue whose document the tree read; a whole
-   *  document by the page's word for one, never `spec.md`; an ask's, a comment's and a
-   *  message's stored text; an issue's title; and anything else's name as that read answers it.
-   *  Absent for a block and for anything else until the read answers, for another issue's block
-   *  the read sent no words for, and for a target that is gone. */
+   *  document by the page's word for one, never `spec.md`; an ask's, a comment's and a message's
+   *  stored text; an issue's title; and anything else's name as that read answers it. Absent for
+   *  a block and for anything else until the read answers, for another issue's block the read
+   *  sent no words for, and for a target that is gone. */
   readonly reading?: ReferenceNameReading;
   /** The target's own `dispatch://` address. */
   readonly ref: string;
@@ -261,11 +263,12 @@ export interface TreeNode {
    *  every other node, a `requirement` block of any other document among them. */
   readonly statement?: true;
   /** The node's words as the read that carried them holds them, which is not the same for every
-   *  kind: the issue's key and title; a child issue's title; an ask's question, a comment's and a
-   *  message's body, and a decision's own words, its `decision` block's content (its entry's
-   *  `text` with the lines that open and close the block left out), each as stored; a result's
-   *  `observed`, as recorded; a statement's the coverage read's plain words of its block, and a
-   *  check's the results read's, each block's text runs joined by single spaces with
+   *  kind: the issue's title, its key being its id (`assemble`); a child issue's title; an ask's
+   *  question, a comment's and a message's body, and a decision's own words, its `decision`
+   *  block's content (its entry's `text` with the lines that open and close the block left out),
+   *  each as stored; a result's `observed`, as recorded; a statement's the coverage read's plain
+   *  words of its block, and a check's the results read's, each block's text runs joined by
+   *  single spaces with
    *  the words of every link and every `dispatch://` reference left out (`blockWords`,
    *  `packages/envoy/internal/dispatch/api/results.go`); and every other block's - a statement's
    *  and a check's too until their read answers - the batched reference read's stored excerpt of
@@ -386,25 +389,33 @@ export const LEADING_LABEL = /^(?=\S*\d)\S{0,4}\.(?=\s|$)/u;
  * comes first, cut at a word wherever the limit falls near one. A leading label - a first word
  * of at most five characters that ends in `.` and holds a digit, as `R1.`, `12.` or `1.2.` - is
  * part of the line and no sentence end, so a statement's line runs on to the first sentence end
- * after its label. A line held to the limit that holds no space past its label -
- * one unbroken token, a URL or an identifier - is cut at the limit itself, because there is no
- * word boundary to cut at and the limit is the row's whole budget, and one unit short of it
- * where the limit falls inside a surrogate pair, as `textHead` cuts. `cut` says whether the
- * text carries on past the line, and `sentence` whether the line ends at a sentence end, the
- * first one after any label: the two are what the row draws its ellipsis by (`drawnLine`). A
- * line the limit cut, at a word or at the limit itself, ends at none, whatever its last
- * character: a token cut at the limit may end on a `.`, `!` or `?` of its own, as `x.yyyy` cut
- * after its dot does.
+ * after its label. `lead` is the page's own word the line opens with, before the node's own
+ * words `text` and none of them - the issue's key before its title (`lineReading`) - which is
+ * written before them here and counts towards the limit, and the label is read at the start of
+ * `text`: `CORE-1 1. Migrate the table` keeps its `1.`. A line held to the limit that holds no
+ * space past its label - one unbroken token, a URL or an identifier - is cut at the limit
+ * itself, because there is no word boundary to cut at and the limit is the row's whole budget,
+ * and one unit short of it where the limit falls inside a surrogate pair, as `textHead` cuts.
+ * `cut` says whether the text carries on past the line, and `sentence` whether the line ends at
+ * a sentence end, the first one after any label: the two are what the row draws its ellipsis by
+ * (`drawnLine`). A line the limit cut, at a word or at the limit itself, ends at none, whatever
+ * its last character: a token cut at the limit may end on a `.`, `!` or `?` of its own, as
+ * `x.yyyy` cut after its dot does.
  */
-export function firstLineOf(text: string): {
+export function firstLineOf(
+  text: string,
+  lead = ""
+): {
   readonly cut: boolean;
   readonly line: string;
   readonly sentence: boolean;
 } {
-  const whole = text.replace(/\s+/gu, " ").trim();
-  const label = LEADING_LABEL.exec(whole)?.[0] ?? "";
-  const rest = /^.*?[.!?](?=\s|$)/u.exec(whole.slice(label.length))?.[0];
-  const first = rest === undefined ? undefined : `${label}${rest}`;
+  const own = text.replace(/\s+/gu, " ").trim();
+  const opening = lead === "" ? "" : `${lead} `;
+  const whole = `${opening}${own}`.trimEnd();
+  const head = `${opening}${LEADING_LABEL.exec(own)?.[0] ?? ""}`;
+  const rest = /^.*?[.!?](?=\s|$)/u.exec(whole.slice(head.length))?.[0];
+  const first = rest === undefined ? undefined : `${head}${rest}`;
   if (first !== undefined && first.length <= FIRST_LINE_LIMIT) {
     return { cut: first.length < whole.length, line: first, sentence: true };
   }
@@ -413,7 +424,7 @@ export function firstLineOf(text: string): {
   }
   const window = whole.slice(0, FIRST_LINE_LIMIT + 1);
   const lastSpace = window.lastIndexOf(" ");
-  if (lastSpace > label.length) {
+  if (lastSpace > head.length) {
     return { cut: true, line: window.slice(0, lastSpace), sentence: false };
   }
   const last = whole.charCodeAt(FIRST_LINE_LIMIT - 1);
@@ -445,42 +456,39 @@ export function drawnLine({
 }
 
 /** The node's own words as a reader reads them: the words of the server's reading of its text
- *  where its read sent one (`tree`), and its text as stored otherwise. A bare address stays in
+ *  where its read sent one (`tree`), and its text as stored otherwise; the issue's, its key and
+ *  then its title, as Dispatch names an issue everywhere (`assemble`). A bare address stays in
  *  them as written: nothing draws these words - the body draws the reading itself - and they
  *  are what the words filter matches (`presets.ts`) and what the citations the batched reference
  *  read is asked to name are read from (`useIssueTree.ts`), which a name in an address's place
  *  would drop. */
 export function nodeWords(node: TreeNode): string {
+  if (node.type === "issue") {
+    // The issue's title, joined to its key for the words alone (`surface-lists.test.ts`'s list
+    // of what holds no draw).
+    const title = node.text;
+    return `${node.id} ${title}`;
+  }
   return node.tree === undefined ? node.text : wordsOf(node.tree);
 }
 
-/** `reading` holding the first of its top-level blocks that holds any words and nothing else;
- *  undefined for a reading none of whose blocks holds a word. The words only choose the block:
- *  what it says is the projection's to read. */
-export function firstWordedBlock(reading: DisplayTree): DisplayTree | undefined {
-  const content = reading.content;
-  const block = (Array.isArray(content) ? (content as DisplayTree[]) : []).find(
-    (child) => wordsOf(child).trim() !== ""
-  );
-  return block === undefined ? undefined : { ...reading, content: [block] };
-}
-
-/** What a node's one line is projected from (`lineReading`): a reading; the stored text, which
- *  the projection parses and reads the first line of (`usePlainHeadline`'s `firstLine`), where
- *  the node carries no reading; or nothing, for a reading none of whose blocks holds a word. */
+/** What a node's one line is projected from (`lineReading`): a reading, with the issue's key
+ *  the page writes before the words it projects to (`key`); the stored text, which the
+ *  projection parses and reads the first line of (`usePlainHeadline`'s `firstLine`), where the
+ *  node carries no reading; or nothing, for a reading none of whose blocks holds a word. */
 export type LineReading =
-  | { readonly tree: DisplayTree }
+  | { readonly key?: string; readonly tree: DisplayTree }
   | { readonly markdown: string }
   | { readonly none: true };
 
 /**
  * What a node's one line is projected from by the shared plain-text projection, which R1's
  * first-line rule (`firstLineOf`) then cuts and `drawnLine` draws: every place that draws one line
- * for a node draws it from here - a folded branch's line and a parent's line under a filter
- * (`NodeRow.tsx`). The projection reads every reference in it as a rendered body does: as its
- * target's current name, and as the words its author wrote until it resolves (R8, INFRA-1196
- * decision 350); and it reads no list or block marker as a word, but for an ordered list's
- * number (decisions 66 and 88).
+ * for a node draws it from here - a folded branch's line, a parent's line under a filter and a
+ * crumb above a zoom (`node-line.tsx`). The projection reads every reference in it as a rendered
+ * body does: as its target's current name, and as the words its author wrote until it resolves
+ * (R8, INFRA-1196 decision 350); and it reads no list or block marker as a word, but for an
+ * ordered list's number (decisions 66 and 88).
  *
  * - **A node with a reading** by the first top-level block of it that holds any words, a heading
  *   or a paragraph (`firstWordedBlock`). A heading so ends at its own line and its marker is no
@@ -489,56 +497,61 @@ export type LineReading =
  *   the node has words, and a reading none of whose blocks holds a word reads as none (`none`).
  *   A decision's content opens with its own heading where it has one, and a line cut from the
  *   whole reading ran the heading into its body: "Keep it Keep the model pure.".
- * - **The issue and a child issue** by its `text`, its key and title or its title, which is no
- *   markdown and carries no reading: read as one text run (`titleReading`), so nothing in it is
- *   parsed and `1. Migrate the table` keeps its label, ``Add `x` flag`` its backticks and
- *   `Fix <script> handling` its tag.
+ * - **The issue and a child issue** by its title, which is no markdown and carries no reading:
+ *   read as one text run (`titleReading`), so nothing in it is parsed and `1. Migrate the table`
+ *   keeps its label, ``Add `x` flag`` its backticks and `Fix <script> handling` its tag. The
+ *   issue's own node holds its title as its text and its key as its id (`assemble`); its key is
+ *   the page's word for it and none of the title's words, so the title alone is projected and the
+ *   key is written before its line (`key`), where R1's rule reads a label after it
+ *   (`firstLineOf`'s `lead`) and no name of the issue takes its place.
  * - **A node whose read sent no reading** - a result from a server of the build before - by its
  *   stored text, which the projection parses, reading its first line.
  */
 export function lineReading(node: {
+  readonly id: string;
   readonly text: string;
   readonly tree?: DisplayTree | undefined;
   readonly type: NodeType;
 }): LineReading {
-  if (node.type === "issue" || node.type === "child_issue") {
-    return { tree: titleReading(node.text) };
-  }
+  if (node.type === "issue") return { key: node.id, tree: titleReading(node.text) };
+  if (node.type === "child_issue") return { tree: titleReading(node.text) };
   if (node.tree === undefined) return { markdown: node.text };
   const block = firstWordedBlock(node.tree);
   return block === undefined ? { none: true } : { tree: block };
 }
 
 /** The words a chip draws for a target `name` names (ruling 5): a block's first line, as a row
- *  draws one (R1, `firstLineOf`, `drawnLine`), and any other target's name whole, each cut to a
- *  chip's room (`chipWords`). The page publishes every name whole (R8), so a tie's chip
- *  (`NodeRow.tsx`) and a block or a document drawn as a chip in a node's words
- *  (`row-references.ts`) each cut it here, where they draw it, and draw one target alike. */
+ *  draws one (R1, `firstLineOf`, `drawnLine`), and any other target's name, each cut to a
+ *  chip's room (`chipWords`). The page publishes every name as a link to its target reads it
+ *  (R8), so a tie's chip (`NodeRow.tsx`) and a block or a document drawn as a chip in a node's
+ *  words (`row-references.ts`) each cut it again here, where they draw it, and draw one target
+ *  alike. */
 export function chipName(route: DispatchReferenceRoute | undefined, name: string): string {
-  const block = route !== undefined && "block" in route && route.block !== undefined;
+  const block = route !== undefined && referenceTargetKind(route) === "block";
   return chipWords(block ? drawnLine(firstLineOf(name)) : name);
-}
-
-/** The reads as the tree and the page's published names both read them (`treeContext`), with a
- *  block named by the first block of its reading that holds any words (`firstWordedBlock`): the
- *  one call both make, so a chip and a link name one target by one rule and cannot drift
- *  apart. */
-function namingContext(reads: IssueTreeReads): TreeContext {
-  return treeContext(reads, firstWordedBlock);
 }
 
 /** The issue's whole tree, from the reads it was given. */
 export function buildIssueTree(reads: IssueTreeReads): TreeNode {
-  const context = namingContext(reads);
+  const context = treeContext(reads);
   return assemble(reads.issue, [...treeDrafts(reads, context).values()], context.chipOf);
 }
 
 /**
  * What the page publishes from the targets of the batched reference read (`reads.targets`) for
  * every surface beside the tree to name them by (`refs/reference-names.tsx`), each read by the
- * rule a chip naming the target is named by (`namingContext`), so a link and a chip naming one
- * target never disagree. All four are read from one context in one walk over the targets, so
- * they cannot disagree either.
+ * rule a chip naming the target is named by (`treeContext`), so a link and a chip naming one
+ * target never disagree: the chip of each answered target, named by `chipNaming`.
+ */
+export function targetNaming(reads: IssueTreeReads): Omit<PublishedReferences, "asked"> {
+  const context = treeContext(reads);
+  return chipNaming((reads.targets ?? []).map((target) => context.chipOf(target.ref)));
+}
+
+/**
+ * How the page names each target the batched reference read answered, by the chip naming it
+ * (`targetNaming`), under the chip's own reference (`NodeChip.ref`). Each reference is in one of
+ * the four, read from its chip in one walk, so the four cannot disagree.
  *
  * - **`readings`**: how each target that something answers to now is named, by its address: the
  *   reading of a chip naming it (`NodeChip.reading`), which the store projects.
@@ -551,18 +564,16 @@ export function buildIssueTree(reads: IssueTreeReads): TreeNode {
  *   issue's block it sent no words for - which a surface reads for itself, as a link to the
  *   target does (R8).
  */
-export function targetNaming(reads: IssueTreeReads): Omit<PublishedReferences, "asked"> {
-  const context = namingContext(reads);
+export function chipNaming(chips: Iterable<NodeChip>): Omit<PublishedReferences, "asked"> {
   const ambiguous = new Set<string>();
   const gone = new Set<string>();
   const unnamed = new Set<string>();
   const readings = new Map<string, ReferenceNameReading>();
-  for (const target of reads.targets ?? []) {
-    const chip = context.chipOf(target.ref);
-    if (chip.ambiguous === true) ambiguous.add(target.ref);
-    else if (chip.gone) gone.add(target.ref);
-    else if (chip.reading === undefined) unnamed.add(target.ref);
-    else readings.set(target.ref, chip.reading);
+  for (const chip of chips) {
+    if (chip.ambiguous === true) ambiguous.add(chip.ref);
+    else if (chip.gone) gone.add(chip.ref);
+    else if (chip.reading === undefined) unnamed.add(chip.ref);
+    else readings.set(chip.ref, chip.reading);
   }
   return { ambiguous, gone, readings, unnamed };
 }
@@ -670,10 +681,12 @@ function assemble(
     id: key,
     question: false,
     replaced: false,
-    // How Dispatch names an issue everywhere: its key and then its title. The outline draws no
-    // row of it - the header is the issue - and a line that names the issue, the breadcrumb's
-    // first crumb, names it by its key alone.
-    text: `${key} ${issue.title}`,
+    // How Dispatch names an issue everywhere: its key and then its title, which the node holds
+    // apart - its key as its id and its title as its text - so its words write the key before the
+    // title (`nodeWords`) and its one line reads a label after the key (`lineReading`). The
+    // outline draws no row of it - the header is the issue - and a line that names the issue,
+    // the breadcrumb's first crumb, names it by its key alone.
+    text: issue.title,
     transcluded: false,
     type: "issue",
     waiting: false,

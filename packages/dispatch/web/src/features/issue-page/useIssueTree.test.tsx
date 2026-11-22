@@ -22,8 +22,7 @@ import {
   type PublishedReferences,
   type ReferenceNameReading,
   ReferenceNamesProvider,
-  useKnownAmbiguousReferences,
-  useKnownReferenceNames,
+  useKnownReferences,
   usePublishReferenceNames,
 } from "../refs/reference-names";
 import type { TreeNode } from "./issue-tree";
@@ -34,7 +33,7 @@ import { useIssueTree } from "./useIssueTree";
 /** The name the page published for `reference`, as a surface under the store reads it, or
  *  `undefined` where it published none. */
 function useKnownReferenceName(reference: string): string | undefined {
-  return useKnownReferenceNames().get(reference);
+  return useKnownReferences().names.get(reference);
 }
 
 // The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
@@ -533,7 +532,7 @@ test("the page publishes an ambiguous reference a comment cites as ambiguous, a 
       () => {
         useIssueTree(issue);
         return {
-          ambiguous: useKnownAmbiguousReferences(),
+          ambiguous: useKnownReferences().ambiguous,
           names: [useKnownReferenceName(ambiguous), useKnownReferenceName(gone)],
           task: useKnownReferenceName(TASK_REF),
         };
@@ -582,8 +581,9 @@ function Publisher({ published }: { readonly published: Published }): ReactNode 
 
 /** A link under the provider, which writes what it reads into `seen` on every render. */
 function Reader({ seen }: { readonly seen: Seen }): ReactNode {
-  seen.ambiguous = useKnownAmbiguousReferences();
-  seen.names = useKnownReferenceNames();
+  const known = useKnownReferences();
+  seen.ambiguous = known.ambiguous;
+  seen.names = known.names;
   return null;
 }
 
@@ -651,8 +651,8 @@ test("one publisher leaving keeps the names and ambiguous references another pub
 
 // R21: the batched read names an ask by its question as stored, which is markdown, and every
 // surface that reads the page's published names draws the name as it is, so the page publishes
-// the projection of the question's reading, whole (R8), from which a chip naming the ask cuts
-// its own words (`targetNaming`, `chipName`).
+// the projection of the question's reading, as a link to the ask reads it (R8), from which a
+// chip naming the ask cuts its own words (`targetNaming`, `chipName`).
 test("a published name of an ask is its question's plain words, never its markdown", async () => {
   const cited = `dispatch://${KEY}/ask/ask-9`;
   const stubs = stubTreeReads(

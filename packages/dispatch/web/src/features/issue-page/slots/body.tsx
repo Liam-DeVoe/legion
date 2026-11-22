@@ -18,7 +18,6 @@ import {
 } from "../../../theme/classes";
 import { ItemMatchList } from "../../issue/ItemMatchList";
 import type { ItemLanding, ItemRoute } from "../../issue/useItemLanding";
-import { PublishedReferenceNames } from "../../refs/reference-names";
 import { buildIssuePath } from "../../refs/routes";
 import {
   type AddressFallback,
@@ -60,8 +59,8 @@ export function BodySlot({ issue, route }: SlotProps): ReactNode {
   // names as well (`namesHeld`): a plan task's or a callout's words come from them alone, so
   // before they are held such a node matches nothing, and the outline draws nothing in the
   // line's place. With no filter on the line reads no words, and does not wait on the names.
-  // The outline's rows are handed what the page publishes of its batched read in the render
-  // that draws them (`published`, `PublishedReferenceNames`).
+  // What the page publishes of its batched names read the tree hands its rows and crumbs in the
+  // render that draws them (`published`), so none of them reads a reference the page asks for.
   const { failed, namesHeld, published, reads, readsHeld, readsSettled, root } =
     useOutlineReads(issue);
   const key = issue.key;
@@ -144,35 +143,34 @@ export function BodySlot({ issue, route }: SlotProps): ReactNode {
             takesFocus={takesFocus}
           />
         ) : (
-          <PublishedReferenceNames published={published}>
-            <IssueTree
-              addressActs={acts}
-              addressKey={locationKey}
-              artifacts={artifacts}
-              context={view.context}
-              emptyLine={
-                address.filter === ""
-                  ? EMPTY_STATE_LINES.conversation
-                  : namesHeld
-                    ? EMPTY_STATE_LINES.no_match
-                    : undefined
-              }
-              failedReads={failed}
-              filtering={view.filtering}
-              focusReveal
-              // The words filter's Escape comes before the outline is left.
-              holdsEscape={address.filter !== ""}
-              isClosed={isClosed}
-              {...(ancestor === undefined ? {} : { landingReport: KEY_REPORTS.agents_thread })}
-              onEditing={onEditing}
-              readsHeld={readsHeld}
-              readsSettled={readsSettled}
-              {...(request === undefined ? {} : { request })}
-              reveal={ancestor ?? addressed.reveal}
-              root={view.root}
-              rootRow={view.rootRow}
-            />
-          </PublishedReferenceNames>
+          <IssueTree
+            addressActs={acts}
+            addressKey={locationKey}
+            artifacts={artifacts}
+            context={view.context}
+            emptyLine={
+              address.filter === ""
+                ? EMPTY_STATE_LINES.conversation
+                : namesHeld
+                  ? EMPTY_STATE_LINES.no_match
+                  : undefined
+            }
+            failedReads={failed}
+            filtering={view.filtering}
+            focusReveal
+            // The words filter's Escape comes before the outline is left.
+            holdsEscape={address.filter !== ""}
+            isClosed={isClosed}
+            {...(ancestor === undefined ? {} : { landingReport: KEY_REPORTS.agents_thread })}
+            onEditing={onEditing}
+            published={published}
+            readsHeld={readsHeld}
+            readsSettled={readsSettled}
+            {...(request === undefined ? {} : { request })}
+            reveal={ancestor ?? addressed.reveal}
+            root={view.root}
+            rootRow={view.rootRow}
+          />
         )}
       </div>
       {panels}
