@@ -993,16 +993,17 @@ func TestTheListenerStartEndsAtTheCredentialBound(t *testing.T) {
 	t.Run("a port where nothing listens ends the start after main's ten tries", func(t *testing.T) {
 		run := newListenerStartRun(t)
 		start := newNATSStart(listenerCredentialWait)
-		run.begin(config.Service{MachineID: "start-refused-port", NATSURLs: []string{"nats://" + testport.Refused(t)}, NATSReplicas: 1}, nil, start)
+		cfg := config.Service{MachineID: "start-refused-port", NATSURLs: []string{"nats://" + testport.Refused(t)}, NATSReplicas: 1}
+		mains := mainsConnect(cfg.NATSURLs)
+		run.begin(cfg, nil, start)
 		got := run.await(t, watchdog)
 		took := got.at.Sub(run.began)
 		if got.err == nil {
 			t.Fatalf("the listener's start connected to a port where nothing listens, %s after its first try", took)
 		}
-		// Ten tries, one second apart: nine waits.
-		if took < 9*time.Second || took >= 20*time.Second {
-			t.Fatalf("the listener's start ended %s after its first try with %v, want after main's ten tries, in under 20 s", took, got.err)
-		}
+		// Ten tries, each followed by main's wait of a second, the tenth too, ending where main's
+		// connect beside it ends (connectTrying): no sooner, and no later than mainsEndMargin past it.
+		requireMainsEnd(t, "the listener's start", took, mains)
 		if refusal := start.refusal.Load(); refusal != nil {
 			t.Fatalf("the start reported a refused dial as a refusal of its credential: %s", *refusal)
 		}

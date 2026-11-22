@@ -47,8 +47,8 @@ type scriptedTry struct {
 // the clock wakes it from past the bound ends the start, except that the try at the bound, the one
 // the wait cut to the bound leads to, may begin up to startTryLateness late. A refusal of the
 // stream's ensure counts as one of the connect. Any other error counts toward main's ten tries in
-// a row, one second apart, whatever the bound, so no start ends sooner than main's would; a refusal
-// ends such a row.
+// a row, each followed by main's wait of a second, the tenth too, whatever the bound, so no start
+// ends sooner than main's would; a refusal ends such a row.
 func TestACredentialWaitWaitsOutRefusalsUpToItsBound(t *testing.T) {
 	refusal := fmt.Errorf("dial: %w", nats.ErrAuthorization)
 	denied := fmt.Errorf("ensure stream: %w: nats: Permissions Violation for Publish to \"$JS.API.STREAM.INFO.ENVOY_NOTIFICATIONS\"", ErrPublishDenied)
@@ -97,10 +97,11 @@ func TestACredentialWaitWaitsOutRefusalsUpToItsBound(t *testing.T) {
 			wantRefused: 2,
 		},
 		{
-			name:      "other errors end the start after ten in a row",
-			bound:     180 * time.Second,
-			tries:     []scriptedTry{{err: other}},
-			wantSlept: slices.Repeat([]time.Duration{second}, 9),
+			name:  "other errors end the start after ten in a row",
+			bound: 180 * time.Second,
+			tries: []scriptedTry{{err: other}},
+			// Main's second after each of the ten, the tenth too.
+			wantSlept: slices.Repeat([]time.Duration{second}, 10),
 			wantTries: 10,
 			wantErr:   other,
 		},
@@ -118,9 +119,10 @@ func TestACredentialWaitWaitsOutRefusalsUpToItsBound(t *testing.T) {
 			name:  "other errors after a refusal still make main's ten tries past the bound",
 			bound: 5 * time.Second,
 			tries: []scriptedTry{{err: refusal}, {err: other}},
-			// One wait of a second after the refusal, then main's second after each of the first
-			// nine other errors: tries at 0 to 10 s, the last five past the bound.
-			wantSlept:   slices.Repeat([]time.Duration{second}, 10),
+			// One wait of a second after the refusal, then main's second after each of the ten
+			// other errors, the tenth too: tries at 0 to 10 s, the last five past the bound, and the
+			// start ends at 11 s.
+			wantSlept:   slices.Repeat([]time.Duration{second}, 11),
 			wantTries:   11,
 			wantErr:     other,
 			wantRefused: 1,
@@ -129,7 +131,7 @@ func TestACredentialWaitWaitsOutRefusalsUpToItsBound(t *testing.T) {
 			name:      "a start begun with half a second of its bound left still makes main's ten tries",
 			bound:     500 * time.Millisecond,
 			tries:     []scriptedTry{{err: other}},
-			wantSlept: slices.Repeat([]time.Duration{second}, 9),
+			wantSlept: slices.Repeat([]time.Duration{second}, 10),
 			wantTries: 10,
 			wantErr:   other,
 		},

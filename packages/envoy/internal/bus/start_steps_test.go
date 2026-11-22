@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -76,8 +77,9 @@ func TestAnEnsureThatFailsForAnotherReasonEndsTheStartAtItsFirstTry(t *testing.T
 }
 
 // A start that met no refusal of its credential ends after main's ten tries in a row, whatever its
-// bound, with its last try's own error, naming the step that failed, and not with words of the
-// credential wait it never needed.
+// bound, and where main's connect ends, a second after the tenth (connectTrying), with its last
+// try's own error, naming the step that failed, and not with words of the credential wait it never
+// needed.
 func TestACredentialWaitThatMetNoRefusalEndsWithItsLastTrysOwnError(t *testing.T) {
 	other := errors.New("nats: no servers available for connection")
 	clock := &fakeStartClock{at: time.Date(2026, 11, 22, 0, 3, 50, 0, time.UTC)}
@@ -88,6 +90,9 @@ func TestACredentialWaitThatMetNoRefusalEndsWithItsLastTrysOwnError(t *testing.T
 	})
 	if tries != connectTries {
 		t.Errorf("the start made %d tries, want main's %d, a second apart, its bound of 3 s notwithstanding", tries, connectTries)
+	}
+	if want := slices.Repeat([]time.Duration{connectRetryWait}, connectTries); !slices.Equal(clock.slept, want) {
+		t.Errorf("the start waited %v, want main's %v, a wait after each try, the tenth too", clock.slept, want)
 	}
 	if !errors.Is(err, other) {
 		t.Fatalf("the start ended with %v, want its last try's error", err)

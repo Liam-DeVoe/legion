@@ -269,11 +269,12 @@ func WithStreamMessageReads() ConnectOption {
 // its next try and doubles each wait up to ten seconds, the last cut to end at bound; a try in
 // progress at the bound may finish, and its success counts, and no try begins after the bound on a
 // refusal (startTryLateness says what a late wake from the last wait may still begin). A dial that
-// fails for any other reason counts toward the ten tries in a row, a second apart, that a start
-// without the option makes, whatever the bound, so no start ends on such dials sooner than one
-// without the option would; a refusal ends such a row. The start ends with an error at the first of
-// the two limits, naming the last refusal when it met one, and with the failed step's own error
-// when it met none (waitOutCredentialRefusals, credentialWaitEnded, withLastRefusal).
+// fails for any other reason counts toward the ten tries in a row, each followed by a wait of a
+// second, the tenth too, that a start without the option makes, whatever the bound, so no start
+// ends on such dials sooner than one without the option would; a refusal ends such a row. The
+// start ends with an error at the first of the two limits, naming the last refusal when it met
+// one, and with the failed step's own error when it met none (waitOutCredentialRefusals,
+// credentialWaitEnded, withLastRefusal).
 //
 // refused, when not nil, is handed each refusal as it comes, on the constructor's goroutine, so the
 // caller can report that its start is waiting (cmd/listener's /healthz answers 503 naming it).

@@ -809,7 +809,8 @@ times, a second apart, as before. A dial that fails for any other reason, whenev
 the start only after ten tries a second apart, as before, so a connect begun near the 180 seconds
 still makes them. A reconcile that fails for any other reason, such as `ENVOY_NATS_REPLICAS` above
 `1` on a single server, ends the start at once, and so does a step after a connect that got in, such
-as the role lane's subscribe; such a line names the step that failed, not the credential. An edge
+as the role lane's subscribe; such a line names the step that failed, and the credential only when a
+server refused it. An edge
 listener (`ENVOY_EDGE_PROJECTS`) only reads the stream and opens no role lane, and its start waits
 out a refused credential at the connect, and a grant that refuses that read, the same way. A stream
 the server does not hold, a read that times out, or any other failure of the read ends its start at

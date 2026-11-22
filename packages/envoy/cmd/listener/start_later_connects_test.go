@@ -25,11 +25,70 @@ import (
 // laterStepWatchdog bounds each wait of the tests below on a connect of the start.
 const laterStepWatchdog = time.Minute
 
+// mainsTenTries is when main's connect ends on ten dials that all fail for another reason than a
+// refusal: each dial is followed by a wait of a second, the tenth too (connectTrying), and a sleep
+// never ends before its wait, so no such connect ends sooner.
+const mainsTenTries = 10 * time.Second
+
+// mainsEndMargin is how much later than main's own connect, run beside it against the same port,
+// a start of ten such failed dials may end. Both make ten dials to a refused loopback port, which
+// take milliseconds each, and ten waits of a second; all that differs is when the scheduler wakes
+// each one's timers and goroutines, which on this box's runs came to under a tenth of a second
+// (nine waits measured 9.02 to 9.09 s). Half a second is five times that, and stays under the one
+// second an eleventh wait, or any other hang of a second or more after the tenth dial, adds.
+const mainsEndMargin = 500 * time.Millisecond
+
+// mainsConnect runs main's connect, bus.Connect with no credential wait, against urls on a
+// goroutine of its own, beside a start of the test's, and answers a channel that carries how it
+// ended and how long it took (requireMainsEnd reads it).
+func mainsConnect(urls []string) <-chan mainsOutcome {
+	ended := make(chan mainsOutcome, 1)
+	began := time.Now()
+	go func() {
+		client, err := bus.Connect(urls, bus.WithName("mains-connect"))
+		ended <- mainsOutcome{client: client, err: err, took: time.Since(began)}
+	}()
+	return ended
+}
+
+// mainsOutcome is how main's connect (mainsConnect) ended.
+type mainsOutcome struct {
+	client *bus.Client
+	err    error
+	took   time.Duration
+}
+
+// requireMainsEnd fails the test unless took, how long a start of ten dials that failed for another
+// reason than a refusal ran, is no shorter than mainsTenTries and no longer than main's own connect
+// beside it (mainsConnect, read from mains) took plus mainsEndMargin.
+func requireMainsEnd(t *testing.T, what string, took time.Duration, mains <-chan mainsOutcome) {
+	t.Helper()
+	var got mainsOutcome
+	select {
+	case got = <-mains:
+	case <-time.After(laterStepWatchdog):
+		t.Fatalf("watchdog: main's connect beside %s had not returned %s after %s ended", what, laterStepWatchdog, what)
+	}
+	if got.err == nil {
+		got.client.Close()
+		t.Fatalf("main's connect beside %s connected to a port where nothing listens", what)
+	}
+	t.Logf("%s ended %s after it began; main's connect beside it, %s", what, took, got.took)
+	if took < mainsTenTries {
+		t.Errorf("%s ended %s after it began, sooner than main's ten tries a second apart, the tenth followed by its wait too, end, at %s", what, took, mainsTenTries)
+	}
+	if most := got.took + mainsEndMargin; took > most {
+		t.Errorf("%s ended %s after it began, later than main's connect beside it (%s) and %s of margin, %s", what, took, got.took, mainsEndMargin, most)
+	}
+}
+
 // TestALaterConnectBegunNearTheCredentialBoundKeepsMainsTenTries: a connect of the start begun
 // with half a second of the start's 180 s left, as the role lane is when the main client took
 // 179.5 s to get in, still makes main's ten tries a second apart on a dial that fails for another
-// reason than a refusal, here a port where nothing listens: no start ends sooner than main's
-// would. A connect that ended at the bound would end after two tries, half a second apart.
+// reason than a refusal, here a port where nothing listens, and ends where main's connect beside
+// it ends, a second after its tenth dial: no sooner, so no start ends sooner than main's would,
+// and no later than mainsEndMargin past it, so the wait after the tenth dial hides no hang. A
+// connect that ended at the bound would end after two tries, half a second apart.
 func TestALaterConnectBegunNearTheCredentialBoundKeepsMainsTenTries(t *testing.T) {
 	start := newNATSStart(listenerCredentialWait)
 	start.once.Do(func() { start.began = time.Now().Add(-listenerCredentialWait + 500*time.Millisecond) })
@@ -40,6 +99,7 @@ func TestALaterConnectBegunNearTheCredentialBoundKeepsMainsTenTries(t *testing.T
 		at   time.Time
 	}
 	began := time.Now()
+	mains := mainsConnect(cfg.NATSURLs)
 	returned := make(chan outcome, 1)
 	go func() {
 		lane, err := startRoleLane(cfg, nil, func(*nats.Msg) {}, nil, metrics.New(), logging.NewWithWriter("test", io.Discard), start)
@@ -57,11 +117,8 @@ func TestALaterConnectBegunNearTheCredentialBoundKeepsMainsTenTries(t *testing.T
 		got.lane.client.Close()
 		t.Fatalf("the role lane connected to a port where nothing listens, %s after it began", took)
 	}
-	t.Logf("the role lane's connect ended %s after it began: %v", took, got.err)
-	// Ten tries, one second apart: nine waits.
-	if took < 9*time.Second || took >= 20*time.Second {
-		t.Fatalf("the role lane's connect, begun with half a second of the start's bound left, ended %s after it began with %v, want after main's ten tries a second apart, in under 20 s", took, got.err)
-	}
+	t.Logf("the role lane's connect ended: %v", got.err)
+	requireMainsEnd(t, "the role lane's connect, begun with half a second of the start's bound left,", took, mains)
 	if refusal := start.refusal.Load(); refusal != nil {
 		t.Fatalf("the start reported a refused dial as a refusal of its credential: %s", *refusal)
 	}

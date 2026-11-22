@@ -68,12 +68,13 @@ const startTryLateness = time.Second
 // leads to, which the clock may wake it for up to startTryLateness late.
 //
 // After any other error, a dial's that no wait for the credential repairs, it waits
-// connectRetryWait, the wait between the tries of a start without the wait, and such errors count
-// toward connectTries in a row whatever the bound, so no start ends on them sooner than one
-// without the wait would: a connect begun with little of its bound left, as a later connect of the
-// listener's start can be, still makes those ten tries. A refusal ends such a row. The start ends
-// with the error of its last try at the first of the two limits, naming the last refusal
-// (credentialWaitEnded, withLastRefusal), and at once on an error that no wait repairs
+// connectRetryWait, the wait after each failed dial of a start without the wait, the tenth too
+// (connectTrying), and such errors count toward connectTries in a row whatever the bound, so no
+// start ends on them sooner than one without the wait would: it ends where that start ends, a
+// second after its tenth failed dial, and a connect begun with little of its bound left, as a later
+// connect of the listener's start can be, still makes those ten tries. A refusal ends such a row.
+// The start ends with the error of its last try at the first of the two limits, naming the last
+// refusal (credentialWaitEnded, withLastRefusal), and at once on an error that no wait repairs
 // (endsStart), with the error it carries, naming the last refusal too.
 //
 // refused, when not nil, is told of each refusal as it comes, with the wait before the next try is
@@ -94,10 +95,11 @@ func waitOutCredentialRefusals(bound time.Duration, refused func(err error, next
 			return nil, withLastRefusal(final.err, lastRefusal)
 		}
 		if !credentialRefusal(err) {
-			if others++; others == connectTries {
+			others++
+			clock.sleep(connectRetryWait)
+			if others == connectTries {
 				return nil, withLastRefusal(err, lastRefusal)
 			}
-			clock.sleep(connectRetryWait)
 			continue
 		}
 		lastRefusal, others = err, 0
