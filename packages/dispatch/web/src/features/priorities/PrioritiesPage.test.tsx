@@ -213,9 +213,15 @@ test("the page draws the priorities table above both fault lists, each heading w
   const faults = await screen.findByRole("table", {
     name: "Issues active under no priority table",
   });
-  const parked = await screen.findByRole("table", { name: "Parked priority issues table" });
+  const parked = await screen.findByRole("table", {
+    name: "Priority issues in backlog or icebox table",
+  });
   const headings = screen.getAllByRole("heading").map((heading) => heading.textContent);
-  expect(headings).toEqual(["Priorities", "Active under no priority 2", "Parked priority work 1"]);
+  expect(headings).toEqual([
+    "Priorities",
+    "Active under no priority 2",
+    "Priority work in backlog or icebox 1",
+  ]);
   // The page's name stands alone, with no subtitle under it.
   const title = screen.getByRole("heading", { level: 1, name: "Priorities" });
   expect(title.nextElementSibling).toBe(screen.getByRole("region", { name: "Priorities" }));
@@ -223,7 +229,7 @@ test("the page draws the priorities table above both fault lists, each heading w
   // Each heading carries its one count, and the issue table follows it with nothing between.
   for (const [region, count, list] of [
     ["Active under no priority", "2", "Issues active under no priority"],
-    ["Parked priority work", "1", "Parked priority issues"],
+    ["Priority work in backlog or icebox", "1", "Priority issues in backlog or icebox"],
   ] as const) {
     const section = screen.getByRole("region", { name: region });
     const heading = within(section).getByRole("heading", { level: 2 });
@@ -264,7 +270,9 @@ test("each fault table asks the issue listing for its statuses, and the parked o
   const faults = await screen.findByRole("table", {
     name: "Issues active under no priority table",
   });
-  const parked = await screen.findByRole("table", { name: "Parked priority issues table" });
+  const parked = await screen.findByRole("table", {
+    name: "Priority issues in backlog or icebox table",
+  });
   // The narrowing is the server's: the no-priority list names the statuses work is done in, and
   // the parked list backlog and icebox with the move into them. Neither reads a closed issue.
   expect(listing).toHaveBeenCalledWith({
@@ -660,7 +668,7 @@ test("every table's pager draws no total", async () => {
   const pagers: [HTMLElement, string][] = [
     [screen.getByTestId("priorities-table-pager"), "Rows 1–2"],
     [pagerOf("Issues active under no priority"), "Rows 1–2"],
-    [pagerOf("Parked priority issues"), "Rows 1–2"],
+    [pagerOf("Priority issues in backlog or icebox"), "Rows 1–2"],
     [within(work).getByTestId("issues-table-pager"), "Rows 1–3"],
   ];
   for (const [pager, range] of pagers) {
@@ -678,7 +686,11 @@ test("every table names its display menu Group by, draws no view tab, and its so
   everyTableTwice();
   await screen.findByRole("row", { name: "CORE-2 Work CORE-2" });
   await screen.findByRole("row", { name: "CORE-9 Work CORE-9" });
-  for (const region of ["Priorities", "Active under no priority", "Parked priority work"]) {
+  for (const region of [
+    "Priorities",
+    "Active under no priority",
+    "Priority work in backlog or icebox",
+  ]) {
     const menu = within(screen.getByRole("region", { name: region })).getByRole("button", {
       name: "Group by",
     });
@@ -723,7 +735,7 @@ test("each issue table's Open asks filter picks With open asks or No open asks",
   const work = await openFirst(user);
   for (const table of [
     screen.getByRole("table", { name: "Issues active under no priority table" }),
-    screen.getByRole("table", { name: "Parked priority issues table" }),
+    screen.getByRole("table", { name: "Priority issues in backlog or icebox table" }),
     within(work).getByRole("table"),
   ]) {
     await user.click(within(table).getByRole("button", { name: "Filter Open asks" }));

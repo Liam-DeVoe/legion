@@ -32,7 +32,7 @@ const PRIORITIES_PATH = "/priorities";
  *  `PrioritiesPage.tsx` passes, which `features/project/IssuesTable.tsx` names its table by with
  *  " table" after it. */
 const NO_PRIORITY_TABLE = "Issues active under no priority table";
-const PARKED_TABLE = "Parked priority issues table";
+const PARKED_TABLE = "Priority issues in backlog or icebox table";
 
 /** What the server says of a deployment with no live priority, in its own words
  *  (`priorityNoneWritten`, `internal/dispatch/api/priority_queries.go`): the empty page draws the
@@ -256,9 +256,9 @@ test("the priorities page draws the order first and the two fault lists under it
     await expect(firstRow.getByRole("cell").nth(4)).toHaveText("1");
 
     // The agreed picture (dispatch://INFRA-2947/artifact/priorities-round10-png): the
-    // priorities, then the work active under none, then the priority work parked.
+    // priorities, then the work active under none, then the priority work in backlog or icebox.
     const unplaced = section(page, "Active under no priority");
-    const parked = section(page, "Parked priority work");
+    const parked = section(page, "Priority work in backlog or icebox");
     const tops = await Promise.all([topOf(priorities), topOf(unplaced), topOf(parked)]);
     expect(tops[0]).toBeLessThan(tops[1]);
     expect(tops[1]).toBeLessThan(tops[2]);
@@ -267,7 +267,9 @@ test("the priorities page draws the order first and the two fault lists under it
     await expect(unplaced.getByRole("heading", { level: 2 })).toHaveText(
       "Active under no priority 4"
     );
-    await expect(parked.getByRole("heading", { level: 2 })).toHaveText("Parked priority work 1");
+    await expect(parked.getByRole("heading", { level: 2 })).toHaveText(
+      "Priority work in backlog or icebox 1"
+    );
 
     // Each fault list is the application's one Issues table over its own issue listing, which
     // is a read of its own beside the priorities read: its rows are waited for, not assumed
@@ -607,8 +609,8 @@ test("another person's rename and delete of a priority redraw an open page with 
     await expectRowOrder(priorities, [`P1 ${seed.titles[0]}`, `P2 ${seed.titles[1]}`]);
     await expectRowNames(parkedTable, []);
     await expect(
-      section(reader, "Parked priority work").getByRole("heading", { level: 2 })
-    ).toHaveText("Parked priority work 0");
+      section(reader, "Priority work in backlog or icebox").getByRole("heading", { level: 2 })
+    ).toHaveText("Priority work in backlog or icebox 0");
     await expect(badge).toHaveText("4");
 
     expect(await reader.evaluate(() => document.documentElement.dataset.heldOpen)).toBe("yes");
@@ -1077,6 +1079,23 @@ const BASE_GROUP_BY = [
 ];
 const BASE_PRIORITIES_GROUP_BY = ["Nothing", "Owner", "Newest event"];
 
+/** Every text the page's main content draws that holds the word parked, which no text of the
+ *  priority pages uses (dispatch://INFRA-2947/ask/3cdc235c-aadd-402d-ad50-73bde8950d2a): its
+ *  visible text, and the names and hints its elements carry (`aria-label`, `title`,
+ *  `placeholder`), each read once the page is drawn. */
+async function parkedTexts(page: Page): Promise<string[]> {
+  return page.getByTestId("main-content").evaluate((main) => {
+    const found: string[] = [];
+    if (/parked/i.test(main.innerText)) found.push(`text: ${main.innerText.match(/.*parked.*/i)}`);
+    for (const element of main.querySelectorAll("*"))
+      for (const name of ["aria-label", "title", "placeholder"]) {
+        const value = element.getAttribute(name);
+        if (value !== null && /parked/i.test(value)) found.push(`${name}: ${value}`);
+      }
+    return found;
+  });
+}
+
 /** One table of the page as k17 reads it. */
 interface TableRead {
   readonly label: string;
@@ -1268,21 +1287,21 @@ test("on /priorities at 1280 and 390 px each heading reads its name and one coun
         `${where}: a subtitle`
       ).toBe(0);
       const unplaced = section(page, "Active under no priority");
-      const parked = section(page, "Parked priority work");
+      const parked = section(page, "Priority work in backlog or icebox");
       await expect(unplaced.getByRole("heading", { level: 2 })).toHaveText(
         "Active under no priority 4"
       );
-      await expect(parked.getByRole("heading", { level: 2 })).toHaveText("Parked priority work 1");
+      await expect(parked.getByRole("heading", { level: 2 })).toHaveText(
+        "Priority work in backlog or icebox 1"
+      );
       for (const part of [unplaced, parked])
         expect(await part.locator(":scope > p").count(), `${where}: a line under a heading`).toBe(
           0
         );
-      await expect(
-        page.locator('section[aria-label="Priority work in backlog or icebox"]')
-      ).toHaveCount(0);
       await expect(page.locator('section[aria-label="In flight under no priority"]')).toHaveCount(
         0
       );
+      expect(await parkedTexts(page), `${where}: a text that says parked`).toEqual([]);
 
       // The priorities table: its headers, at most 16 characters, its widths, the counts under
       // Active and Triage, Todo, and its grouping control.
@@ -1403,6 +1422,7 @@ test("a priority's own page at 1280 and 390 px has no line of counts or of order
       await expect(table.locator("tr[data-issue-row]").first()).toBeVisible();
       const header = page.getByTestId("main-content").locator("header").first();
       await expect(header).not.toContainText(/dragged|·|In flight|waiting/);
+      expect(await parkedTexts(page), `${where}: a text that says parked`).toEqual([]);
       await expect(page.getByRole("link", { name: "Open in WEB" })).toBeVisible();
       await expect(page.getByText(/Leave this scope/)).toHaveCount(0);
       // The row wait above drew the one table of this page, which draws all of its rows at once.

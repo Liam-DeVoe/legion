@@ -114,10 +114,13 @@ export function PrioritiesPage(): ReactNode {
         />
       </section>
 
-      <section aria-label="Parked priority work" className="space-y-2">
-        <CountedHeading count={body.priority_work_parked.count} title="Parked priority work" />
+      <section aria-label="Priority work in backlog or icebox" className="space-y-2">
+        <CountedHeading
+          count={body.priority_work_parked.count}
+          title="Priority work in backlog or icebox"
+        />
         <IssuesTable
-          label="Parked priority issues"
+          label="Priority issues in backlog or icebox"
           layout={PARKED_LAYOUT}
           listing={PARKED}
           moveFrom="row"
