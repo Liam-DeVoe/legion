@@ -289,20 +289,30 @@ else
     while IFS= read -r tag; do
       # A tag can exist before its release does, and a draft is no release: either is skipped.
       # A 404 is GitHub's answer that the release does not exist, not a refusal to retry, so the
-      # shell retry_fetch runs exits 0 on gh's own status line for a 404, `gh: … (HTTP 404)` as the
-      # whole line: that tag costs one call, and a read that got no answer (a 5xx, a reset, a
-      # timeout) is retried as every read here is. gh puts the API's message in front of its
-      # `(HTTP <code>)`, so a 504 whose message quotes `(HTTP 404)` ends its line with `(HTTP 504)`
-      # and is no 404 (dispatch://INFRA-1545, round 51). Each attempt rewrites gh-error, so the
-      # last one's message is what UNKNOWN names.
-      # shellcheck disable=SC2016 # the shell retry_fetch runs expands $1, $2 and $status
+      # shell retry_fetch runs exits 0 on a 404: that tag costs one call, and a read that got no
+      # answer (a 5xx, a reset, a timeout) is retried as every read here is. The code is the
+      # response's own status line, the first line `gh api -i` writes on standard output
+      # (`HTTP/2.0 404 Not Found`), which no body can write; gh's standard error is not read for
+      # it, since gh puts the API's message in front of its `(HTTP <code>)` there, and a message
+      # holding a newline after `(HTTP 404)` ends a line with it (dispatch://INFRA-1545, round
+      # 52). The body follows the headers' blank line. Each attempt rewrites gh-error, so the last
+      # one's message is what UNKNOWN names.
+      # shellcheck disable=SC2016 # the shell retry_fetch runs expands $1, $2, $response and the rest
       if ! retry_fetch "the release of $tag" 30 -- bash -c \
-        'gh api "$1" 2> "$2" || { status=$?; grep -qE "^gh: .*[(]HTTP 404[)]\$" "$2" && exit 0; exit "$status"; }' \
-        release-read "repos/$repository/releases/tags/$tag" "$work/gh-error" > "$work/release"; then
+        'response=$(gh api "$1" -i 2> "$2"); status=$?; printf "%s\n" "$response"
+         read -r proto code _ <<< "$response"
+         [ "$status" -eq 0 ] || { [[ $proto == HTTP/* ]] && [ "$code" = 404 ]; } || exit "$status"' \
+        release-read "repos/$repository/releases/tags/$tag" "$work/gh-error" > "$work/response"; then
         unknown "GitHub did not answer for the release of $tag ($(head -n 1 "$work/gh-error"))"
         break
       fi
-      if grep -qE '^gh: .*[(]HTTP 404[)]$' "$work/gh-error"; then continue; fi
+      read -r release_proto release_code _ < "$work/response"
+      if [[ $release_proto == HTTP/* ]] && [ "$release_code" = 404 ]; then continue; fi
+      if ! [[ $release_proto == HTTP/* && $release_code == 200 ]]; then
+        unknown "GitHub answered the release of $tag with no 200 status line ($(head -n 1 "$work/response"))"
+        break
+      fi
+      sed '1,/^\r\{0,1\}$/d' "$work/response" > "$work/release"
       published=$(jq -r 'select(.draft == false) | .published_at // empty' "$work/release")
       [ -n "$published" ] || continue
       if [ -z "$first_tag" ]; then

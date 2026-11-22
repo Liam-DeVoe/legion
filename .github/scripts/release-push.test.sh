@@ -500,14 +500,14 @@ change "$work/v/c" packages/pkg/index.js "fix: a bug"
 NPM_TEST_VERSION=2.3.4 version_run "$work/v/c" pkg-v --first-npm @example/pkg -- packages/pkg/
 check "no tag, --first-npm: exits 0" "$(is "$rc" 0)"
 check "no tag, --first-npm: bumps npm's version over the whole history" "$(is "$out" "$(outputs 2.3.5 pkg-v2.3.5 false)")"
-check "no tag, --first-npm: asked npm for the package's version" "$(is "$npm_calls" '[view][@example/pkg][version]')"
+check "no tag, --first-npm: asked npm for the package's version" "$(is "$npm_calls" '[view][@example/pkg][version][--json]')"
 check "no tag, --first-npm: logs the bump from npm's version" "$(contains "$err" '^Bumping v2\.3\.4 -> pkg-v2\.3\.5$')"
 NPM_TEST_FAIL=E404 version_run "$work/v/c" pkg-v --first-npm @example/pkg -- packages/pkg/
 check "no tag, npm has no such package: starts from 0.0.0" "$(is "$rc $out" "0 $(outputs 0.0.1 pkg-v0.0.1 false)")"
 # An E404 is the registry's answer, a first release, and no fault: it is read
 # once, never retried, and reported in one line of its own rather than as an
 # ::error:: or npm's own error text.
-check "no tag, npm has no such package: asked npm once, with no retry" "$(is "$npm_calls" '[view][@example/pkg][version]')"
+check "no tag, npm has no such package: asked npm once, with no retry" "$(is "$npm_calls" '[view][@example/pkg][version][--json]')"
 check "no tag, npm has no such package: no ::error::" "$(is "$(contains "$err" '::error::')" false)"
 check "no tag, npm has no such package: one line says so, and npm's own error text is not printed" \
   "$(is "$(contains "$err" '^npm-published-version\.sh: npm has no package @example/pkg (E404), so its published version is 0\.0\.0$')|$(contains "$err" '^npm error')" 'true|false')"
@@ -524,7 +524,7 @@ check "no tag, npm 504 on every attempt: the error names the npm read" "$(contai
 check "no tag, npm 504 on every attempt: starts from no 0.0.0" "$(is "$(contains "$err" 'v0\.0\.0')" false)"
 check "no tag, npm 504 on every attempt: exits 1" "$(is "$rc" 1)"
 check "no tag, npm 504 on every attempt: asked npm five times, retry_fetch's attempts" \
-  "$(is "$npm_calls" "$(for _ in 1 2 3 4 5; do echo '[view][@example/pkg][version]'; done)")"
+  "$(is "$npm_calls" "$(for _ in 1 2 3 4 5; do echo '[view][@example/pkg][version][--json]'; done)")"
 check "no tag, npm 504 on every attempt: release-push.sh's error names the package" \
   "$(contains "$err" '^::error::release-push\.sh version: npm did not give the published version of @example/pkg, ')"
 check "no tag, npm 504 on every attempt: npm's own error reaches the log" "$(contains "$err" '^npm error code E504$')"
@@ -592,7 +592,7 @@ NPM_TEST_VERSION=0.0.0 version_run "$work/v/c" pkg-v --first-npm @example/pkg --
 check "no tag, npm's 0.0.0 placeholder: exits 0" "$(is "$rc" 0)"
 check "no tag, npm's 0.0.0 placeholder: the first release reads the whole history" \
   "$(is "$out" "$(outputs 0.1.0 pkg-v0.1.0 false)")"
-check "no tag, npm's 0.0.0 placeholder: asked npm for the package's version" "$(is "$npm_calls" '[view][@example/pkg][version]')"
+check "no tag, npm's 0.0.0 placeholder: asked npm for the package's version" "$(is "$npm_calls" '[view][@example/pkg][version][--json]')"
 check "no tag, npm's 0.0.0 placeholder: logs the bump from the placeholder" "$(contains "$err" '^Bumping v0\.0\.0 -> pkg-v0\.1\.0$')"
 version_run "$work/v/c" pkg-v -- packages/pkg/
 check "no tag, no --first-npm: exits 1 printing nothing" "$(is "$rc|$out" "1|")"
