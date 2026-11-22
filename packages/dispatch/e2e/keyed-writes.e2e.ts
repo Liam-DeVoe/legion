@@ -502,9 +502,9 @@ test("a comment Dispatch takes 20 s to make lands once from the page, every repe
   await createProject({ key: "KW", name: "Keyed writes" });
   const issue = await createIssue({ project: "KW", title: "A slow comment" });
   const path = `/api/v1/issues/${issue.key}/comments`;
-  await slowWrites("POST", path, 4_000);
   const alice = await asUser(browser, "alice");
   try {
+    await slowWrites("POST", path, 4_000);
     const page = await alice.newPage();
     const posts = watchWrites(page, "POST", path);
     const answers = watchAnswers(page, "POST", path);
@@ -664,7 +664,6 @@ test("a 20 MB upload repeated while its first request runs is answered 409 KEY_I
   const issue = await createIssue({ project: "KW", title: "A repeated upload" });
   const path = `/api/v1/issues/${issue.key}/artifacts`;
   const bytes = 20 * 1024 * 1024;
-  await slowWrites("POST", path, 5_000);
   // The body's file. Its name is the one the test id and the SQL below read, and its type is
   // whatever the browser takes `.bin` for, which is no `text/markdown`, so the page uploads it as
   // the file it was before. It is 20 MB in the row's output directory, which the shard jobs
@@ -672,6 +671,7 @@ test("a 20 MB upload repeated while its first request runs is answered 409 KEY_I
   const upload = test.info().outputPath("in-flight.bin");
   const alice = await asUser(browser, "alice");
   try {
+    await slowWrites("POST", path, 5_000);
     const page = await alice.newPage();
     const attempts = await recordUploadAttempts(page, path);
     await page.clock.install();

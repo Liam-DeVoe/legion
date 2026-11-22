@@ -317,9 +317,8 @@ test("the frame draws an icon rail, Details over the page and the Contents pane 
       .toBe(240);
     // At 1440 px Spec's own address loads with no pane, and the stage has the column's 1328 px.
     // A load and not a resize from 1240 px, which is across the pane's 260 px width at 1241 px
-    // and the view row's five controls at 1280 px (`resizeTo`).
-    await page.setViewportSize(viewportAt(1440));
-    await gotoIssue(page, presetPath(key, "spec"));
+    // and the view row's five controls at 1280 px (`ISSUE_PAGE_BREAKPOINTS`).
+    await openAt(page, viewportAt(1440), presetPath(key, "spec"), true);
     await expect(contentsPane(page), "a view draws the pane").toHaveCount(0);
     expect(await stageWidth(page), "the stage under a view is not 1328 px").toBe(1328);
 
@@ -727,11 +726,10 @@ test("the five controls are toggles with an address each, one line at every widt
     await page.keyboard.press("Escape");
     await expect(openMenu(page)).toHaveCount(0);
     // Each width by a load, since each is across a breakpoint of the frame from the width before
-    // it (`resizeTo`): 390 px and 1023 px lie either side of the header's 761 px and the rail's
-    // 768 px.
+    // it (`ISSUE_PAGE_BREAKPOINTS`): 390 px and 1023 px lie either side of the header's 761 px and
+    // the rail's 768 px.
     for (const width of [1023, 390]) {
-      await page.setViewportSize(viewportAt(width));
-      await gotoIssue(page, `/issues/${key}`);
+      await openAt(page, viewportAt(width), `/issues/${key}`, true);
       await expect(outlineControl(page), `no Outline control at ${width} px`).toHaveCount(1);
     }
 

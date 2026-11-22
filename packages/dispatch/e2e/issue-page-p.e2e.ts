@@ -16,7 +16,7 @@ import {
   reviewArtifact,
   setGatedSteps,
 } from "./api";
-import { openAt, resizeTo } from "./frames";
+import { acrossABreakpoint, openAt, resizeTo } from "./frames";
 import { closeDetails, gotoIssue, phase } from "./issue-page";
 import { expectOpeningLanded, focusThePage } from "./issue-page-g";
 import { withIssuePage } from "./issue-page-option";
@@ -245,13 +245,20 @@ test("the header holds its list and its limits at every width @phone", async ({ 
     ];
 
     let drawnAtDesktop: number | undefined;
-    // Loaded at 1440 px, the first page the request shows on, and at each narrower width but
-    // 1280 px, which is on the same side of every breakpoint of the header and the frame as
-    // 1440 px (`openAt`) and so is reached by a resize: each width ends with Details and the
-    // menus closed, scrolls the page to its top below, and takes the line's narrowing off before
-    // the labels are read again.
-    for (const width of desktopProject ? [1440, 1280, 1024, 390] : [390]) {
-      await openAt(page, viewportAt(width), `/issues/${seeded.key}`, width !== 1280);
+    // Loaded at 1440 px, the first page the request shows on, and at each narrower width across
+    // a breakpoint of the header and the frame from the width before it (`acrossABreakpoint`);
+    // 1280 px is on the same side of every one as 1440 px, and so is reached by a resize: each
+    // width ends with Details and the menus closed, scrolls the page to its top below, and takes
+    // the line's narrowing off before the labels are read again.
+    const widths = desktopProject ? [1440, 1280, 1024, 390] : [390];
+    for (const [index, width] of widths.entries()) {
+      const previous = widths[index - 1];
+      await openAt(
+        page,
+        viewportAt(width),
+        `/issues/${seeded.key}`,
+        previous === undefined || acrossABreakpoint(previous, width)
+      );
       await expectHeaderDrawn(page);
       await expect(issueHeader(page)).toContainText(MEASURED_TITLE);
       await page.evaluate(() => window.scrollTo(0, 0));
@@ -878,11 +885,18 @@ test("the header holds its limits when the typeface does not load @phone", async
         }
         // In the fallback each pass loads at 390 px, the phone's width the `@phone` tag is for,
         // resizes to 320 px, on the same side of every breakpoint as 390 px, and loads at 1024
-        // and 1440 px, each across one from the width before it (`openAt`). A face whose request
-        // failed stays failed for the document and a resize asks for no file; each load asks for
-        // it again, and the route refuses it again.
-        for (const width of [IPHONE_13.width, 320, 1024, DESKTOP.width]) {
-          await openAt(without, viewportAt(width), `/issues/${seeded.key}`, width !== 320);
+        // and 1440 px, each across one from the width before it (`acrossABreakpoint`). A face
+        // whose request failed stays failed for the document and a resize asks for no file; each
+        // load asks for it again, and the route refuses it again.
+        const fallbackWidths = [IPHONE_13.width, 320, 1024, DESKTOP.width];
+        for (const [index, width] of fallbackWidths.entries()) {
+          const previous = fallbackWidths[index - 1];
+          await openAt(
+            without,
+            viewportAt(width),
+            `/issues/${seeded.key}`,
+            previous === undefined || acrossABreakpoint(previous, width)
+          );
           await expectHeaderDrawn(without);
           await expect(issueHeader(without)).toContainText(MEASURED_TITLE);
           await expect

@@ -16,6 +16,7 @@ import { recordClipboard } from "./clipboard";
 import { needsYouCards } from "./editor";
 import { nextFrames } from "./frames";
 import { clearIssueCreator, resetDatabase } from "./seed";
+import { holdAssetUntilReleased } from "./shell";
 import { expect, type Locator, test } from "./test";
 import { assertPageFits, assertWhole } from "./unclipped";
 import { asUser } from "./users";
@@ -1415,13 +1416,7 @@ test("a landing on an issue tab draws the shell and the tab strip while the tab'
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
-    const chunkUrl = Promise.withResolvers<string>();
-    const release = Promise.withResolvers<void>();
-    await page.route(/\/assets\/PlanTab-[\w-]{8}\.js$/u, async (route) => {
-      chunkUrl.resolve(route.request().url());
-      await release.promise;
-      await route.continue();
-    });
+    const plan = await holdAssetUntilReleased(page, /\/assets\/PlanTab-[\w-]{8}\.js$/u);
     // `install()` leaves the clock running at real speed, and `pauseAt` stops it, a second
     // ahead of the run's clock, since the page's clock refuses to move backwards and the two can
     // differ a little. It is paused before the load, so no page timer is armed for it to fire.
@@ -1449,10 +1444,10 @@ test("a landing on an issue tab draws the shell and the tab strip while the tab'
       )
       .toEqual([1, 1, 1]);
 
-    release.resolve();
+    plan.release();
     // An import of the chunk's own address settles once its module has run, and with it the
     // panel's download, which is the same module.
-    await page.evaluate((url) => import(url).then(() => undefined), await chunkUrl.promise);
+    await page.evaluate((url) => import(url).then(() => undefined), await plan.url);
     let spent = 0;
     await expect
       .poll(

@@ -72,15 +72,18 @@ export interface Viewport {
  *   drawer (`ONE_CONTROL_QUERY`, `IssuePresets.tsx`; `IssueActionsMenu.tsx`;
  *   `COMPACT_VIEWPORT_QUERY`, `shell/useDialog.ts`).
  *
- * A row loads at each width across one of them from the width before it (`acrossABreakpoint`,
- * `openAt`), and resizes only between widths on the same side of every one: a chunk the page
- * loads decides part of the layout, and what a load at a width draws is not always what a resize
- * to that width draws. While the margin's chunk was on its way after a load, the shell held a
- * column for it that narrowed the page (381b29ad), which a resize, with the chunk long in, never
- * showed.
+ * A walk of widths through `openAt` loads at each width across one of them from the width before
+ * it (`acrossABreakpoint`), and resizes (`resizeTo`) only between widths on the same side of
+ * every one: a chunk the page loads decides part of the layout, and what a load at a width draws
+ * is not always what a resize to that width draws. While the margin's chunk was on its way after
+ * a load, the shell held a column for it that narrowed the page (381b29ad), which a resize, with
+ * the chunk long in, never showed. The rule is the walks' alone: rows that set the viewport
+ * themselves (`page.setViewportSize`) resize across a breakpoint too, in `issue-page-d.e2e.ts`,
+ * `issue-page-g.e2e.ts`, `issue-page-k.e2e.ts` and `issue-page-p.e2e.ts` itself, and are not
+ * listed here.
  *
- * Three rows of `issue-page-p.e2e.ts` cross one by a resize, each where nothing it reads after
- * the resize turns on how the page reached the width:
+ * Three walks, all in `issue-page-p.e2e.ts`, cross one by a resize, each where nothing it reads
+ * after the resize turns on how the page reached the width:
  *
  * - "the header holds its list and its limits at every width", whose first pass loads at 390 px
  *   and resizes to 1440 px on a desktop project. What that pass reads at 1440 px - the header's

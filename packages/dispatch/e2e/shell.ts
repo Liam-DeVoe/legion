@@ -2,10 +2,11 @@
  *  deployment that never built one of them, the tab's record of the reloads it has spent, and
  *  what each load of the tab did with a chunk failure.
  *
- *  Two spec files share this. `shell.stub.e2e.ts` holds the rows that need nothing but the
- *  page and its own routes; `shell.e2e.ts` holds the rows whose failed asset must be the
- *  server's own 404, which the stubbed layer's file server does not give (it answers an
- *  unknown path with `index.html`, as the SPA fallback).
+ *  The two shell spec files share this: `shell.stub.e2e.ts` holds the rows that need nothing but
+ *  the page and its own routes; `shell.e2e.ts` holds the rows whose failed asset must be the
+ *  server's own 404, which the stubbed layer's file server does not give (it answers an unknown
+ *  path with `index.html`, as the SPA fallback). Rows of other files take from it too, to hold,
+ *  fail or wait for one of the page's chunks, or to answer the page's landing without a part.
  */
 import { expect, type Page } from "@playwright/test";
 
@@ -216,12 +217,7 @@ export const MARGIN_CHUNK = /\/assets\/Margin-[^/]+\.js$/u;
 /** Holds the margin's chunk on the wire until the row calls the release this answers: the moment
  *  between the page's first draw and the margin, which a row measures the page in. */
 export async function holdMarginChunk(page: Page): Promise<() => void> {
-  const held = Promise.withResolvers<void>();
-  await page.route(MARGIN_CHUNK, async (route) => {
-    await held.promise;
-    await route.continue();
-  });
-  return () => held.resolve();
+  return (await holdAssetUntilReleased(page, MARGIN_CHUNK)).release;
 }
 
 /** The path of the reference-preview layer's chunk (`web/src/features/refs/RefPreviewLayer.tsx`),
@@ -257,8 +253,9 @@ export const EDITOR_LIBRARY_CHUNK = /\/assets\/lib-[\w-]{8}\.js$/u;
  *  can show that it came down. It reads the page's own resource timing, which keeps the
  *  document's fetches, so a fetch that ended before the wait began is found as well as one still
  *  to come. That buffer holds 250 entries unless the page sets another size, which this one does
- *  not, and records no fetch past them, so an absent entry can also mean a full buffer; both
- *  callers read early in a fresh document. How that fetch ended is the caller's to hold it to. */
+ *  not, and records no fetch past them, so an absent entry can also mean a full buffer; every
+ *  caller reads it soon after a load or reload of its own, early in that document. How that fetch
+ *  ended is the caller's to hold it to. */
 export async function fetchedChunk(page: Page, chunk: RegExp): Promise<void> {
   await expect
     .poll(
@@ -360,7 +357,7 @@ function shellLoad(page: Page) {
     // renders the margin, behind `lazy`, only once its import has settled, and the preview
     // layer, drawn through `chunkComponent`, only once that component's own `then` on the import
     // has set its state. The count drops in a `.finally` chained after a `.catch` of that import
-    // (`web/src/features/shell/chunk-loads.ts:66-70`), which runs after React's own `then` on it,
+    // (`web/src/features/shell/chunk-loads.ts:69-73`), which runs after React's own `then` on it,
     // or `chunkComponent`'s; but neither `then` renders anything. A settled import wakes its
     // boundary through `pingSuspendedRoot` or `retryTimedOutBoundary`, a state set outside React
     // schedules its update, and each ends in `ensureRootIsScheduled`, which schedules the render
@@ -420,6 +417,27 @@ export async function shellLoads(page: Page): Promise<() => ShellLoad> {
  *  download that is out and never answers. */
 export async function holdAsset(page: Page, pattern: RegExp): Promise<void> {
   await page.route(pattern, () => undefined);
+}
+
+/** A download a row holds on the wire until it lets it land (`holdAssetUntilReleased`). */
+export interface HeldAsset {
+  /** Lets every request held so far, and every later one, through to the server. */
+  readonly release: () => void;
+  /** The address of the first request held, once the page has asked for the asset. */
+  readonly url: Promise<string>;
+}
+
+/** Holds every request for the asset at `pattern` on the wire until the row calls `release`: a
+ *  download that is still out when the reader acts, which the row then lets land. */
+export async function holdAssetUntilReleased(page: Page, pattern: RegExp): Promise<HeldAsset> {
+  const held = Promise.withResolvers<void>();
+  const url = Promise.withResolvers<string>();
+  await page.route(pattern, async (route) => {
+    url.resolve(route.request().url());
+    await held.promise;
+    await route.continue();
+  });
+  return { release: () => held.resolve(), url: url.promise };
 }
 
 /** Fails every request for the asset at `pattern`, each once `ready` has settled for the load it

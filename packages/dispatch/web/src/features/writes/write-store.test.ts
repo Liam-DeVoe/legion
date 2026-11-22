@@ -486,11 +486,12 @@ test("a write pressed before the take-up of a reload's writes waits for it, then
 });
 
 // The take-up ends once the kinds of write are in, whichever load brought them: its own ask can
-// fail with no reload to follow - the page being left, the reader staying at the leave prompt a
-// write pressed meanwhile opens, or the tab's recovery reloads spent - and another load of the
-// same chunk then brings them in (the writes host's prefetch), which `kinds.ts` reports once its
-// imports have defined every kind (`kindsRegistered`). The write pressed meanwhile then goes out
-// behind the kept one, as it does after a take-up's own load.
+// fail with no reload to follow - the page being left, the reader staying at the leave prompt
+// that the writes the reload kept (`WriteStorage.load`) or a write pressed meanwhile open, or the
+// tab's recovery reloads spent - and another load of the same chunk then brings them in (the
+// writes host's prefetch), which `kinds.ts` reports once its imports have defined every kind
+// (`kindsRegistered`). The write pressed meanwhile then goes out behind the kept one, as it does
+// after a take-up's own load.
 test("a take-up whose own ask for the kinds of write failed ends once another load registers them, and the write pressed meanwhile goes out behind the kept one", async () => {
   await onFakeClock(async () => {
     const tab = keptTab();
@@ -539,11 +540,11 @@ test("a take-up whose own ask for the kinds of write failed ends once another lo
 });
 
 // A take-up's own ask for the kinds of write can fail and leave the page where it is - the page
-// being left, the reader staying at the leave prompt a write pressed meanwhile opens, or the tab's
-// recovery reloads spent - and then the next write pressed asks for them again (`Writes.run`),
-// since a reader now waits on them. That load brings them in and ends the take-up: the kept write
-// goes out, and the one pressed behind it. Without that ask both would wait for a load nothing on
-// the page had started.
+// being left, the reader staying at the leave prompt that the writes the reload kept
+// (`WriteStorage.load`) or a write pressed meanwhile open, or the tab's recovery reloads spent -
+// and then the next write pressed asks for them again (`Writes.run`), since a reader now waits
+// on them. That load brings them in and ends the take-up: the kept write goes out, and the one
+// pressed behind it. Without that ask both would wait for a load nothing on the page had started.
 test("a write pressed after the take-up's ask for the kinds of write failed asks for them again, and both writes go out once they are in", async () => {
   await onFakeClock(async () => {
     const tab = keptTab();
@@ -613,35 +614,44 @@ async function pressedWhileTakingUp(
   const kept = keyMinted(Date.now());
   keepWrite(tab, kept, { target: "issue:CORE-1" });
   const send = spyOn(api, "send").mockResolvedValue(null as never);
-  const writes = new Writes(signedIn("alice"), tab.page(), memoryFiles());
-  writes.signedIn("alice");
   const kinds = Promise.withResolvers<void>();
-  let asked = 0;
-  writes.resume("alice", () => {
-    asked += 1;
-    return kinds.promise;
-  });
-  const pressed = press(writes).catch((error: unknown) => error);
-  await settle();
-  const [held] = writes.rows();
-  if (held === undefined) throw new Error("the store holds no write pressed meanwhile");
-  expect(held.status).toBe("queued");
-  expect(tab.kept(held.key)).toMatchObject({ login: "alice" });
-  return {
-    end: async () => {
-      kinds.resolve();
-      await settle();
-      send.mockRestore();
-      tab.close();
-    },
-    held,
-    kept,
-    kinds: { asked: () => asked, resolve: kinds.resolve },
-    pressed,
-    sent: () => send.mock.calls.map(([, bounds]) => bounds?.key),
-    tab,
-    writes,
+  const end = async () => {
+    kinds.resolve();
+    await settle();
+    send.mockRestore();
+    tab.close();
   };
+  try {
+    const writes = new Writes(signedIn("alice"), tab.page(), memoryFiles());
+    writes.signedIn("alice");
+    let asked = 0;
+    writes.resume("alice", () => {
+      asked += 1;
+      return kinds.promise;
+    });
+    const pressed = press(writes).catch((error: unknown) => error);
+    await settle();
+    const [held] = writes.rows();
+    if (held === undefined) throw new Error("the store holds no write pressed meanwhile");
+    expect(held.status).toBe("queued");
+    expect(tab.kept(held.key)).toMatchObject({ login: "alice" });
+    return {
+      end,
+      held,
+      kept,
+      kinds: { asked: () => asked, resolve: kinds.resolve },
+      pressed,
+      sent: () => send.mock.calls.map(([, bounds]) => bounds?.key),
+      tab,
+      writes,
+    };
+  } catch (error) {
+    // A step above that throws hands the row no `end` for its `finally`, so it runs here: the spy
+    // on `api.send`, the tab's pages and the take-up still waiting would otherwise outlive this
+    // row, and a later row's `kindsRegistered` would end that take-up through its own `api.send`.
+    await end();
+    throw error;
+  }
 }
 
 /** That nothing of alice's two writes is left, under `name`: none went out, under anyone's name,

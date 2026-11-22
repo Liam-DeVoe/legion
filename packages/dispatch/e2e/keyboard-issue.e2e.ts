@@ -1,10 +1,11 @@
 import { baseUrl, createAsk, createIssue, createProject, getIssue } from "./api";
 import { barAction, selectEditorText } from "./editor";
+import { nextFrames } from "./frames";
 import { focusThePage } from "./issue-page-g";
 import { onBody, openIssue } from "./keyboard-issue";
 import { keptWrites } from "./keyed-writes";
 import { navigateInApp } from "./sends";
-import { fetchedChunk, holdAsset, pageAssetPath } from "./shell";
+import { fetchedChunk, holdAsset, holdAssetUntilReleased, pageAssetPath } from "./shell";
 import { expect, type Page, type Request, test } from "./test";
 import { asUser } from "./users";
 
@@ -467,34 +468,19 @@ async function chunkIn(page: Page, name: string): Promise<void> {
   await page.evaluate((path) => import(path).then(() => undefined), `/assets/${file}`);
 }
 
-/** Holds every request for the chunk named `name` on the wire until the row calls the release
- *  this answers: a download that is still out when the reader presses the key. */
-async function holdChunk(page: Page, name: string): Promise<() => void> {
-  const held = Promise.withResolvers<void>();
-  await page.route(chunkFile(name), async (route) => {
-    await held.promise;
-    await route.continue();
-  });
-  return held.resolve;
-}
-
 /** How long React holds back the content of a `Suspense` boundary that has shown its fallback: no
  *  sooner than 300 ms after that fallback (`FALLBACK_THROTTLE_MS` in react-dom). A surface drawn
  *  behind `lazy` could still open that long after the press that showed its fallback. */
 const SUSPENSE_REVEAL_HOLD_MS = 300;
 
 /** The window a surface whose chunk has landed would still open in, and then two frames of the
- *  page: React wakes with a render it schedules as a task of its own, which runs inside the frame
- *  it was scheduled in, so a surface the landing would draw is on the page by the end. React's
- *  hold is a timer of the page's, so the page's clock spends it (the row installs the clock before
- *  its first load), and no real time is waited for it. */
+ *  page (`nextFrames`): React wakes with a render it schedules as a task of its own, which runs
+ *  inside the frame it was scheduled in, so a surface the landing would draw is on the page by
+ *  the end. React's hold is a timer of the page's, so the page's clock spends it (the row installs
+ *  the clock before its first load), and no real time is waited for it. */
 async function lateOpenWindow(page: Page): Promise<void> {
   await page.clock.runFor(SUSPENSE_REVEAL_HOLD_MS);
-  await page.evaluate(() => {
-    const frame = Promise.withResolvers<void>();
-    requestAnimationFrame(() => requestAnimationFrame(() => frame.resolve()));
-    return frame.promise;
-  });
+  await nextFrames(page);
 }
 
 /** Waits until the page itself has fetched the chunk at `pattern` and run it: its resource timing
@@ -715,7 +701,7 @@ test.describe("keys typed straight after a key that opens a surface", () => {
     try {
       const page = await context.newPage();
       await page.setViewportSize({ width: 1280, height: 900 });
-      const release = await holdChunk(page, "CreateIssueDialog");
+      const { release } = await holdAssetUntilReleased(page, chunkFile("CreateIssueDialog"));
       const patched = await patchesOf(page, issue.key);
       await openIssue(page, issue.key, "Held dialog");
 
@@ -753,7 +739,7 @@ test.describe("keys typed straight after a key that opens a surface", () => {
       const page = await context.newPage();
       await page.setViewportSize({ width: 1280, height: 900 });
       await page.clock.install();
-      const release = await holdChunk(page, "CreateIssueDialog");
+      const { release } = await holdAssetUntilReleased(page, chunkFile("CreateIssueDialog"));
       await page.goto("/");
       await expect(page.getByRole("heading", { name: "Inbox" })).toBeVisible();
       await navigateInApp(page, `/issues/${issue.key}`);
@@ -785,7 +771,7 @@ test.describe("keys typed straight after a key that opens a surface", () => {
       const page = await context.newPage();
       await page.setViewportSize({ width: 1280, height: 900 });
       await page.clock.install();
-      const release = await holdChunk(page, "CreateIssueDialog");
+      const { release } = await holdAssetUntilReleased(page, chunkFile("CreateIssueDialog"));
       await openIssue(page, issue.key, "Called off");
 
       await page.keyboard.press("c");

@@ -418,9 +418,9 @@ test("a comment the page gives up on while Dispatch still writes it is answered 
   const issueKey = await seedAgents();
   const path = `/api/v1/issues/${issueKey}/comments`;
   const WRITE_HOLD_MS = 5_000;
-  await slowWrites("POST", path, WRITE_HOLD_MS);
   const alice = await asUser(browser, "alice");
   try {
+    await slowWrites("POST", path, WRITE_HOLD_MS);
     const page = await alice.newPage();
     const posts = watchWrites(page, "POST", path);
     const sentAt = watchSendTimes(page, "POST", path);
