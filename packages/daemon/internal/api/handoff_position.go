@@ -14,19 +14,23 @@ import (
 // snapshot: the issue record, its tree's generation (the root's) and whether the tree lingers, the
 // task the issue runs (record.StoredPlan.Task; "" for an issue with no plan rows at its
 // generation, which walks today's line), its pass — that task's count of returns to an earlier
-// step, which an issue with no plan rows keeps on its implementer's row
+// step, which an issue with no plan rows keeps on its implementer's phases row
 // (record.ImplementerCounts), which tells each implementing, testing, and reviewing pass from the
-// last — the handoff record the implementer last named for a file-backed phase
+// last — the place of the completing role's step where the task names the role at two places (0
+// otherwise), the handoff record the implementer last named for a file-backed phase
 // (record.PhaseRow.LastHandoff), the phase entry the completing role's current phase is on
 // (record.PhaseRow.Entry, 0 on a row no start has stamped) and whether the start that raised it
 // moved the issue back (record.PhaseRow.EntryMovedBack), its pull request record, nil while none
-// is recorded, and its production check, nil while none was ever opened.
+// is recorded, and its production check, nil while none was ever opened. Each role's row is the
+// row of its step where the task stands (record.PhaseRowAt), as the workflow reads it, so a role
+// that stands at two steps is held to the entry of the step it completes.
 type completionPosition struct {
 	issue          *record.Issue
 	treeGeneration uint64
 	lingers        bool
 	task           string
 	pass           int
+	place          int
 	entry          int64
 	entryMovedBack bool
 	lastHandoff    string
@@ -60,19 +64,25 @@ func (s *server) handoffPosition(ctx context.Context, key string, role claim.Rol
 	if err != nil {
 		return completionPosition{}, err
 	}
-	completing := record.PhaseRowOf(rows, role)
 	stored, err := s.records.Plan(ctx, tx, key, issue.Generation)
 	if err != nil {
 		return completionPosition{}, err
 	}
 	var task string
+	var at record.TaskPlace
+	var steps []record.PlanStep
 	counts := record.ImplementerCounts(rows)
 	if stored != nil {
 		running, err := stored.Task()
 		if err != nil {
 			return completionPosition{}, err
 		}
-		task, counts = running.Task, running.Counts
+		task, counts, at, steps = running.Task, running.Counts, running.Place, stored.Steps[running.Task]
+	}
+	completing := record.PhaseRowAt(rows, role, task, at, steps)
+	place := 0
+	if record.StandsTwice(role, steps) {
+		place = record.RolePlace(role, at, steps)
 	}
 	pr, err := s.records.PullRequest(ctx, tx, key)
 	if err != nil {
@@ -82,7 +92,7 @@ func (s *server) handoffPosition(ctx context.Context, key string, role claim.Rol
 	if err != nil {
 		return completionPosition{}, err
 	}
-	return completionPosition{issue: issue, treeGeneration: root.Generation, lingers: root.Lingers(), task: task, pass: counts.Pass,
-		lastHandoff: record.PhaseRowOf(rows, claim.RoleImplementer).LastHandoff, entry: completing.Entry, entryMovedBack: completing.EntryMovedBack,
+	return completionPosition{issue: issue, treeGeneration: root.Generation, lingers: root.Lingers(), task: task, pass: counts.Pass, place: place,
+		lastHandoff: record.PhaseRowAt(rows, claim.RoleImplementer, task, at, steps).LastHandoff, entry: completing.Entry, entryMovedBack: completing.EntryMovedBack,
 		pullRequest: pr, check: check}, tx.Commit(ctx)
 }

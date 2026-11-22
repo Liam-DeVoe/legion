@@ -2790,7 +2790,7 @@ func PhaseRowAt(rows []PhaseRow, role claim.Role, task string, at TaskPlace, ste
 	if task == "" {
 		return PhaseRowOf(rows, role)
 	}
-	place := rolePlace(role, at, steps)
+	place := RolePlace(role, at, steps)
 	var noStep *PhaseRow
 	for i, row := range rows {
 		switch {
@@ -2807,10 +2807,11 @@ func PhaseRowAt(rows []PhaseRow, role claim.Role, task string, at TaskPlace, ste
 	return PhaseRow{Role: role, StepTask: task, StepPlace: place}
 }
 
-// rolePlace is the place (PhaseRow.StepPlace) of the row of role PhaseRowAt reads at at, on a
+// RolePlace is the place (PhaseRow.StepPlace) of the row of role PhaseRowAt reads at at, on a
 // task whose steps are steps: from 1 for a step, 0 for the retro, the merge and a role the task
-// gives no place.
-func rolePlace(role claim.Role, at TaskPlace, steps []PlanStep) int {
+// gives no place. It is also the place a completion's key names where the role stands at two
+// steps (StandsTwice; api's completion route).
+func RolePlace(role claim.Role, at TaskPlace, steps []PlanStep) int {
 	// Each place of role, by its rank on the task's line: a step's place from 1, then the retro,
 	// then the merge.
 	type stand struct{ rank, place int }
@@ -2846,6 +2847,18 @@ func rolePlace(role claim.Role, at TaskPlace, steps []PlanStep) int {
 		}
 	}
 	return chosen.place
+}
+
+// StandsTwice says whether steps name role at two places or more: a role that stands at two steps
+// of one task, whose runs keep a row each.
+func StandsTwice(role claim.Role, steps []PlanStep) bool {
+	places := 0
+	for _, step := range steps {
+		if claim.Role(step.Role) == role {
+			places++
+		}
+	}
+	return places >= 2
 }
 
 // WorkerClaim is the claim of the agent that works role's step of issue now, read from the record:

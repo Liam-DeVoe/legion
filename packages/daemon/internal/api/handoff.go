@@ -410,6 +410,12 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	// issue used. An issue with no plan rows keeps today's key, so a completion retried across the
 	// upgrade keeps its key.
 	//
+	// Where the task names the role at two places, the key ends with the place of the step the
+	// completion is of (`:p<place>`, completionPosition.place): the role's two steps run in one
+	// pass, so the completion of the second can report what the first did, one commit or one
+	// record and one verdict, and must still be a fact of its own, which the workflow judges. A
+	// role at one place keeps the key it had.
+	//
 	// The step a fail names its task's return to (returnTo) ends the key when the completion
 	// names one, for the reason the verdict is in it: the workflow commits its refusal of a step it
 	// may not name (RETURN_REFUSED) as processed, so the same fail naming another step must be a
@@ -423,6 +429,9 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 		counted = position.task + ":" + counted
 	}
 	eventID := fmt.Sprintf("handoff:%s:%d:%d:%d:%s:%s:%s:%s:%s", grant.Issue, treeGeneration, issue.Generation, serving, grant.Role, issue.Phase, counted, reported, req.Verdict)
+	if position.place > 0 {
+		eventID += fmt.Sprintf(":p%d", position.place)
+	}
 	returnTo := 0
 	if req.ReturnTo != nil {
 		returnTo = *req.ReturnTo
