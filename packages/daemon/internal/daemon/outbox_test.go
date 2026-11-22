@@ -2383,7 +2383,7 @@ func TestAResidentWorkerIsHandedItsNewPhaseNotATaskLeftPendingFromTheLast(t *tes
 				}); err != nil {
 					t.Fatalf("read the run of accepting: %v", err)
 				}
-				apply("signoff", intake.SignOff{Issue: issue.Key, By: architect, Generation: issue.Generation, Entry: entry})
+				apply("signoff", intake.SignOff{Issue: issue.Key, By: architect, Generation: issue.Generation, Entry: entry, Commit: head})
 			}
 			implementerLaunches := func() int {
 				n := 0

@@ -93,7 +93,7 @@ func TestAnArchitectsRequestOnARunWithNoPlanRowsIsJudgedOnTheRecordItsFactReads(
 					t.Fatalf("premise: the route read %s in %s at generation %d with plan rows %v, want %s at generation 1 with none",
 						read.Key, read.Phase, read.Generation, rows, request.at)
 				}
-				fact := request.fact(by, read, readEntry)
+				fact := request.fact(by, read, readEntry, ownersHead(t, pool, read.Key))
 				if window.between != nil {
 					window.between(t, pool, engine)
 				}

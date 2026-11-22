@@ -542,7 +542,7 @@ test("posts every Stage 3 workflow request through its matching route", async ()
     [
       "signOff",
       "/legion/v1/signoff",
-      { grantId: "grant-208", issue: "LEGION-208" },
+      { grantId: "grant-208", issue: "LEGION-208", commit: "c0ffee" },
       "signoff.json",
     ],
     [
@@ -878,7 +878,7 @@ test("a refusal of a stale request is shown with its code and sentence after one
       operation: "signOff",
       retriedAs: "sign_off",
       route: "/legion/v1/signoff",
-      body: { grantId: "grant-208", issue: "LEGION-208" },
+      body: { grantId: "grant-208", issue: "LEGION-208", commit: "c0ffee" },
       sentence:
         "the sign-off was asked for generation 1 of LEGION-208, and LEGION-208 is on generation 2 now. Read the issue again before you sign it off. This sign-off changed nothing.",
     },
@@ -887,7 +887,7 @@ test("a refusal of a stale request is shown with its code and sentence after one
       operation: "signOff",
       retriedAs: "sign_off",
       route: "/legion/v1/signoff",
-      body: { grantId: "grant-208", issue: "LEGION-208" },
+      body: { grantId: "grant-208", issue: "LEGION-208", commit: "c0ffee" },
       sentence:
         "the sign-off was asked of run 1 of the step at place 2 of task a of LEGION-208, and LEGION-208 stands at run 2 of the step at place 2 of task a now. Read the evidence of the run that stands before you sign it off. This sign-off changed nothing.",
     },
@@ -900,6 +900,7 @@ test("a refusal of a stale request is shown with its code and sentence after one
         issue: "LEGION-208",
         to: "implementing",
         reason: "the review found no test of the refusal",
+        commit: "c0ffee",
       },
       sentence:
         "the backward move was asked for generation 1 of LEGION-208, and LEGION-208 is on generation 2 now. Read the issue again before you move it back. This move changed nothing.",
@@ -913,6 +914,7 @@ test("a refusal of a stale request is shown with its code and sentence after one
         issue: "LEGION-208",
         to: "implementing",
         reason: "the review found no test of the refusal",
+        commit: "c0ffee",
       },
       sentence:
         "the backward move was asked of run 1 of the step at place 2 of task a of LEGION-208, and LEGION-208 stands at no run of a step now. Read the run that stands before you move it back. This move changed nothing.",

@@ -98,12 +98,15 @@ type HeldChild = record.BlockedIssue
 // PhaseBackwardRequest asks a phase worker to return its own issue to an earlier phase, or an
 // architect to return an issue it owns from accepting. An architect may own more issues than its
 // own, so it names the issue; a phase worker's grant names its own, so issue may be left out and,
-// when given, must be the grant's.
+// when given, must be the grant's. Commit is the head the architect sends back, which its move out
+// of accepting must name: the workflow takes the move only at the pull request's current head and
+// records it there as the owner's acceptance's changes. A phase worker names none.
 type PhaseBackwardRequest struct {
 	GrantID string      `json:"grantId"`
 	To      phase.Phase `json:"to"`
 	Reason  string      `json:"reason"`
 	Issue   string      `json:"issue,omitempty"`
+	Commit  string      `json:"commit,omitempty"`
 }
 
 // PhaseBackwardResponse confirms the phase-backward fact committed.
@@ -125,10 +128,13 @@ type PhaseRetryRequest struct {
 // PhaseRetryResponse confirms the retry-or-escalate fact committed.
 type PhaseRetryResponse struct{}
 
-// SignOffRequest records the owning architect's acceptance of an issue in accepting.
+// SignOffRequest records the owning architect's acceptance of an issue in accepting at Commit, the
+// head it accepts: the workflow takes it only at the pull request's current head and records it
+// there as the owner's acceptance's approve.
 type SignOffRequest struct {
 	GrantID string `json:"grantId"`
 	Issue   string `json:"issue"`
+	Commit  string `json:"commit"`
 }
 
 // SignOffResponse confirms the sign-off fact committed.
@@ -1371,11 +1377,13 @@ func recordedOutside(tree string, children []releasedChild) []intake.AdoptedChil
 
 // phaseBackward applies a backward move: a phase worker's on its own issue (the grant's), or an
 // architect's on an issue it owns (architectOwns, as sign_off), named by the request, from
-// accepting. The workflow decides whether the requester runs the phase (BACKWARD_REFUSED), and
-// refuses the tester's move out of testing alike, since a testing step ends by its checks'
-// states (workflow's backwardRefusal), so a move it applies ends the requester's own step — the
-// worker's phase, or accepting, the owning architect's — which apply waits for the requester's
-// stream before.
+// accepting, at the commit it sends back, which it must name (MISSING_FIELD): the workflow takes it
+// only at the pull request's current head (VERDICT_HEAD_NOT_CURRENT) and records it there as the
+// owner's acceptance's changes. The workflow decides whether the requester runs the phase
+// (BACKWARD_REFUSED), and refuses the tester's move out of testing alike, since a testing step ends
+// by its checks' states (workflow's backwardRefusal), so a move it applies ends the requester's own
+// step — the worker's phase, or accepting, the owning architect's — which apply waits for the
+// requester's stream before.
 func (s *server) phaseBackward(w http.ResponseWriter, r *http.Request) {
 	var req PhaseBackwardRequest
 	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !s.requireFailureFields(w, r,
@@ -1398,7 +1406,7 @@ func (s *server) phaseBackward(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !grant.Controller && grant.Role == claim.RoleArchitect {
-		if !s.requireFailureFields(w, r, field{"issue", req.Issue}) {
+		if !s.requireFailureFields(w, r, field{"issue", req.Issue}, field{"commit", req.Commit}) {
 			return
 		}
 		architect, recorded, ok := s.architectForIssue(w, r, req.GrantID, req.Issue)
@@ -1411,7 +1419,7 @@ func (s *server) phaseBackward(w http.ResponseWriter, r *http.Request) {
 		}
 		s.applyFact(w, r, requestFactID("phase/backward"),
 			intake.BackwardMove{Issue: req.Issue, Requester: claim.RoleArchitect, To: req.To, Reason: req.Reason,
-				By: architect.Claim, Generation: recorded.Generation, Entry: entry}, PhaseBackwardResponse{})
+				By: architect.Claim, Generation: recorded.Generation, Entry: entry, Commit: req.Commit}, PhaseBackwardResponse{})
 		return
 	}
 	grant, ok = s.phaseWorkerGrant(w, r, req.GrantID)
@@ -1451,9 +1459,12 @@ func (s *server) phaseRetry(w http.ResponseWriter, r *http.Request) {
 		intake.RetryOrEscalate{Issue: req.Issue, Decision: req.Decision, Reason: req.Reason, By: grant.Claim, Generation: recorded.Generation}, PhaseRetryResponse{})
 }
 
+// signOff applies the owning architect's acceptance of an issue at the commit it names, which it
+// must name (MISSING_FIELD): the workflow takes it only at the pull request's current head
+// (VERDICT_HEAD_NOT_CURRENT) and records it there as the owner's acceptance's approve.
 func (s *server) signOff(w http.ResponseWriter, r *http.Request) {
 	var req SignOffRequest
-	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !s.requireFailureFields(w, r, field{"grantId", req.GrantID}, field{"issue", req.Issue}) {
+	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !s.requireFailureFields(w, r, field{"grantId", req.GrantID}, field{"issue", req.Issue}, field{"commit", req.Commit}) {
 		return
 	}
 	if !claim.IsIssueKey(req.Issue) {
@@ -1468,7 +1479,7 @@ func (s *server) signOff(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	s.applyFact(w, r, requestFactID("signoff"), intake.SignOff{Issue: req.Issue, By: grant.Claim, Generation: recorded.Generation, Entry: entry}, SignOffResponse{})
+	s.applyFact(w, r, requestFactID("signoff"), intake.SignOff{Issue: req.Issue, By: grant.Claim, Generation: recorded.Generation, Entry: entry, Commit: req.Commit}, SignOffResponse{})
 }
 
 // closeRoot ends the architect's tree while its root has started no phase — admitted, or waiting

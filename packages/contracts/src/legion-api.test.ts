@@ -1813,13 +1813,26 @@ test("the state says which contract it was built at", () => {
   expect(LegionStateResponse.parse(wrong).contract).toEqual({ caller: daemonApiVersion });
 });
 
-// An architect's backward move names the issue it moves from accepting; a phase worker's may
-// leave it out, since its grant names its own.
-test("a backward move may name its issue", () => {
+// An architect's backward move names the issue it moves from accepting and the head it sends back;
+// a phase worker's may leave both out, since its grant names its own issue and its move is no
+// verdict.
+test("a backward move may name its issue and its head", () => {
   const move = { grantId: "grant-208", to: "testing", reason: "the proof is thin" };
   expect(LegionPhaseBackwardRequest.safeParse(move).success).toBeTrue();
   expect(LegionPhaseBackwardRequest.safeParse({ ...move, issue: "LEGION-209" }).success).toBeTrue();
   expect(LegionPhaseBackwardRequest.safeParse({ ...move, issue: "" }).success).toBeFalse();
+  expect(
+    LegionPhaseBackwardRequest.safeParse({ ...move, issue: "LEGION-209", commit: "c0ffee" }).success
+  ).toBeTrue();
+  expect(LegionPhaseBackwardRequest.safeParse({ ...move, commit: "" }).success).toBeFalse();
+});
+
+// The owner's sign-off is its approve at the head it names (contract 225), so it names one.
+test("a sign-off names the head it accepts", () => {
+  const signOff = { grantId: "grant-208", issue: "LEGION-208" };
+  expect(LegionSignOffRequest.safeParse({ ...signOff, commit: "c0ffee" }).success).toBeTrue();
+  expect(LegionSignOffRequest.safeParse(signOff).success).toBeFalse();
+  expect(LegionSignOffRequest.safeParse({ ...signOff, commit: "" }).success).toBeFalse();
 });
 
 // Check c4: every schema the module exports whose name does not end in `Response` is a body the
@@ -1935,7 +1948,11 @@ test("every request the plugin sends parses and names its required fields", () =
       LegionEscalateRequest,
       { grantId: "grant-208", issue: "LEGION-208", reason: "needs controller triage" },
     ],
-    ["signoff", LegionSignOffRequest, { grantId: "grant-208", issue: "LEGION-208" }],
+    [
+      "signoff",
+      LegionSignOffRequest,
+      { grantId: "grant-208", issue: "LEGION-208", commit: "c0ffee" },
+    ],
     [
       "root close",
       LegionRootCloseRequest,

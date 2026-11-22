@@ -455,7 +455,7 @@ func TestAChildsAcceptanceRecordNamesItsOwningArchitect(t *testing.T) {
 		architect.send(shimwire.AgentStart{})
 		architect.waitState(supervise.StateWorking)
 		if status, body := r.heldRequest(architect, "stand-in/child-architect-second", "/legion/v1/signoff", map[string]any{
-			"grantId": architect.grant(), "issue": child,
+			"grantId": architect.grant(), "issue": child, "commit": r.headOf(child),
 		}); status != http.StatusOK {
 			t.Fatalf("the sign-off of %s by its own architect = %d %s, want 200", child, status, body)
 		}
@@ -549,7 +549,7 @@ func TestAnArchitectsMoveBackOutOfAcceptingNamesTheModelThatAnsweredLast(t *test
 	architect.waitState(supervise.StateWorking)
 	grant := architect.grant()
 	if status, body := r.heldRequest(architect, "stand-in/architect-second", "/legion/v1/phase/backward", map[string]any{
-		"grantId": grant, "issue": child, "to": "implementing", "reason": "the acceptance found a gap",
+		"grantId": grant, "issue": child, "to": "implementing", "reason": "the acceptance found a gap", "commit": r.headOf(child),
 	}); status != http.StatusOK {
 		t.Fatalf("the tree architect's move back of %s = %d %s, want 200", child, status, body)
 	}

@@ -503,7 +503,7 @@ func TestArchitectAndPhaseRoutesApplyTheRequiredFacts(t *testing.T) {
 
 	signoffGrant := architect.grant(t)
 	signoff := h.request(http.MethodPost, "/legion/v1/signoff", map[string]any{
-		"grantId": signoffGrant, "issue": "LEGION-208",
+		"grantId": signoffGrant, "issue": "LEGION-208", "commit": headSHA,
 	}, nil)
 	if signoff.Code != http.StatusOK {
 		t.Fatalf("signoff = %d: %s", signoff.Code, signoff.Body)
@@ -565,7 +565,7 @@ func TestArchitectRoutesRefuseWrongRoleAndForeignTree(t *testing.T) {
 
 	foreign := newLiveClaim(t, h, "LEGION-999", claim.RoleArchitect)
 	refused(t, h.request(http.MethodPost, "/legion/v1/signoff", map[string]any{
-		"grantId": foreign.grant(t), "issue": "LEGION-209",
+		"grantId": foreign.grant(t), "issue": "LEGION-209", "commit": headSHA,
 	}, nil), http.StatusForbidden, "ISSUE_OUTSIDE_TREE")
 
 	architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
@@ -592,7 +592,7 @@ func TestSignOffAndRetryAreTheOwningArchitects(t *testing.T) {
 	for n, route := range []struct {
 		path, op string
 		extra    map[string]any
-	}{{"/legion/v1/signoff", "sign_off", nil}, {"/legion/v1/phase/retry", "retry_or_escalate", map[string]any{"decision": "retry"}}} {
+	}{{"/legion/v1/signoff", "sign_off", map[string]any{"commit": headSHA}}, {"/legion/v1/phase/retry", "retry_or_escalate", map[string]any{"decision": "retry"}}} {
 		body := func(grant, issue string) map[string]any {
 			request := map[string]any{"grantId": grant, "issue": issue}
 			for key, value := range route.extra {
@@ -635,7 +635,7 @@ func TestTheArchitectsBackwardMoveNamesItsIssue(t *testing.T) {
 	root := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
 	subArchitect := newLiveClaimIn(t, h, "LEGION-208", "LEGION-209", claim.RoleArchitect)
 	body := func(grant, issue string) map[string]any {
-		return map[string]any{"grantId": grant, "to": "implementing", "reason": "the evidence does not cover the migration", "issue": issue}
+		return map[string]any{"grantId": grant, "to": "implementing", "reason": "the evidence does not cover the migration", "issue": issue, "commit": headSHA}
 	}
 	for _, issue := range []string{"LEGION-208", "LEGION-210"} {
 		refusal := h.request(http.MethodPost, "/legion/v1/phase/backward", body(subArchitect.grant(t), issue), nil)
@@ -675,6 +675,76 @@ func TestTheArchitectsBackwardMoveNamesItsIssue(t *testing.T) {
 	}
 }
 
+// The owner's acceptance is its review step's verdict at the head it names (spec R5): sign_off
+// names the commit the architect accepts, and the architect's move back out of accepting names the
+// commit it sends back. A call that names none is refused MISSING_FIELD and applies nothing; a call
+// that names one hands it to the workflow, which takes it only at the pull request's current head.
+// A phase worker's own backward move names no commit.
+func TestTheOwnersCallNamesTheHeadItAccepts(t *testing.T) {
+	h, facts, _ := newArchitectHarness(t, nil, nil)
+	seedTree(t, h, "LEGION-208")
+	architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
+	backward := func(grant string, commit string) map[string]any {
+		body := map[string]any{"grantId": grant, "to": "implementing", "reason": "the evidence does not cover the migration", "issue": "LEGION-208"}
+		if commit != "" {
+			body["commit"] = commit
+		}
+		return body
+	}
+	signOff := func(grant string, commit string) map[string]any {
+		body := map[string]any{"grantId": grant, "issue": "LEGION-208"}
+		if commit != "" {
+			body["commit"] = commit
+		}
+		return body
+	}
+	for _, missing := range []struct {
+		path string
+		body map[string]any
+	}{
+		{"/legion/v1/signoff", signOff(architect.grant(t), "")},
+		{"/legion/v1/phase/backward", backward(architect.grant(t), "")},
+	} {
+		if message := refused(t, h.request(http.MethodPost, missing.path, missing.body, nil), http.StatusBadRequest, "MISSING_FIELD"); message != "commit is required" {
+			t.Fatalf("%s naming no commit was refused with %q, want the field named", missing.path, message)
+		}
+	}
+	if got := facts.recorded(); len(got) != 0 {
+		t.Fatalf("the refused calls applied facts %#v", got)
+	}
+
+	for _, call := range []struct {
+		path string
+		body map[string]any
+	}{
+		{"/legion/v1/signoff", signOff(architect.grant(t), headSHA)},
+		{"/legion/v1/phase/backward", backward(architect.grant(t), headSHA)},
+	} {
+		if got := h.request(http.MethodPost, call.path, call.body, nil); got.Code != http.StatusOK {
+			t.Fatalf("%s naming %s = %d: %s", call.path, headSHA, got.Code, got.Body)
+		}
+	}
+	worker := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
+	if got := h.request(http.MethodPost, "/legion/v1/phase/backward", map[string]any{
+		"grantId": worker.grant(t), "to": "planning", "reason": "the plan names the wrong table",
+	}, nil); got.Code != http.StatusOK {
+		t.Fatalf("the implementer's own backward move naming no commit = %d: %s", got.Code, got.Body)
+	}
+	got := facts.recorded()
+	if len(got) != 3 {
+		t.Fatalf("facts = %#v, want three", got)
+	}
+	if fact, ok := got[0].(intake.SignOff); !ok || fact.Issue != "LEGION-208" || fact.Commit != headSHA {
+		t.Fatalf("the sign-off fact = %#v, want LEGION-208's at %s", got[0], headSHA)
+	}
+	if fact, ok := got[1].(intake.BackwardMove); !ok || fact.Requester != claim.RoleArchitect || fact.Commit != headSHA {
+		t.Fatalf("the architect's move back = %#v, want it at %s", got[1], headSHA)
+	}
+	if fact, ok := got[2].(intake.BackwardMove); !ok || fact.Requester != claim.RoleImplementer || fact.Commit != "" {
+		t.Fatalf("the implementer's move back = %#v, want it naming no commit", got[2])
+	}
+}
+
 // A child whose parent chain leaves the tree before reaching an architect's issue - no parent, or a
 // parent not recorded, as one human re-parent in Dispatch leaves it - is the tree root's, as the
 // notice router decides (record.OwningArchitect): the root architect the reviewer's phase-finished
@@ -703,7 +773,7 @@ func TestABrokenParentChainIsTheTreeRootArchitects(t *testing.T) {
 		for _, route := range []struct {
 			path  string
 			extra map[string]any
-		}{{"/legion/v1/signoff", nil}, {"/legion/v1/phase/retry", map[string]any{"decision": "retry"}}} {
+		}{{"/legion/v1/signoff", map[string]any{"commit": headSHA}}, {"/legion/v1/phase/retry", map[string]any{"decision": "retry"}}} {
 			request := func(grant string) map[string]any {
 				body := map[string]any{"grantId": grant, "issue": issue}
 				for key, value := range route.extra {
@@ -732,22 +802,22 @@ func TestArchitectureRouteRefusalsExposeTheFactResultAndGrantState(t *testing.T)
 	grant := architect.grant(t)
 	now = now.Add(time.Minute)
 	refused(t, h.request(http.MethodPost, "/legion/v1/signoff", map[string]any{
-		"grantId": grant, "issue": "LEGION-208",
+		"grantId": grant, "issue": "LEGION-208", "commit": headSHA,
 	}, nil), http.StatusForbidden, "GRANT_EXPIRED")
 
 	now = now.Add(-time.Minute)
 	grant = architect.grant(t)
 	refused(t, h.request(http.MethodPost, "/legion/v1/signoff", map[string]any{
-		"grantId": grant, "issue": "LEGION-208",
+		"grantId": grant, "issue": "LEGION-208", "commit": headSHA,
 	}, nil), http.StatusConflict, "PHASE_HELD")
 	// The grant still authenticates a repeated call, and the repeated fact is refused again rather
 	// than answered as though it had applied.
 	refused(t, h.request(http.MethodPost, "/legion/v1/signoff", map[string]any{
-		"grantId": grant, "issue": "LEGION-208",
+		"grantId": grant, "issue": "LEGION-208", "commit": headSHA,
 	}, nil), http.StatusConflict, "PHASE_HELD")
 	architect.replaceRegistration(t)
 	refused(t, h.request(http.MethodPost, "/legion/v1/signoff", map[string]any{
-		"grantId": grant, "issue": "LEGION-208",
+		"grantId": grant, "issue": "LEGION-208", "commit": headSHA,
 	}, nil), http.StatusForbidden, "GRANT_REVOKED")
 
 	invalid := architect.grant(t)

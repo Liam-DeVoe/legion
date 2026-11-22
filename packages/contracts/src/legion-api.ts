@@ -2165,12 +2165,16 @@ export const LegionWaveReleaseRequest = z.strictObject({
  * on its own issue, or an architect's on an issue it owns, from `accepting`. An architect may own
  * more issues than its own, so its request names `issue` (required for that grant); a phase
  * worker's grant names its own issue, so `issue` may be left out and, when given, must be the
- * grant's (`ISSUE_NOT_GRANTS`). */
+ * grant's (`ISSUE_NOT_GRANTS`). `commit` is the head the architect sends back, required for that
+ * grant (contract 225): the daemon takes the move only where it is the pull request's current head
+ * (`VERDICT_HEAD_NOT_CURRENT` otherwise, changing nothing) and records it there as the owner's
+ * acceptance's `changes`. A phase worker names none. */
 export const LegionPhaseBackwardRequest = z.strictObject({
   grantId: nonEmptyString,
   to: z.enum(LEGION_PHASE_BACKWARD_TARGETS),
   reason: nonEmptyString,
   issue: nonEmptyString.optional(),
+  commit: nonEmptyString.optional(),
 });
 
 /** `api.PhaseRetryRequest`, the retry-or-escalate decision of the architect that owns a held issue.
@@ -2193,19 +2197,22 @@ export const LegionEscalateRequest = z.strictObject({
   reason: nonEmptyString,
 });
 
-/** `api.SignOffRequest`, the owning architect's acceptance of an issue in `accepting`, which moves
- * it to `retro`; the daemon refuses it in every other phase (`SIGNOFF_OUTSIDE_ACCEPTING`). From
- * contract 219 the daemon judges it again when it applies it, and refuses it, changing nothing,
- * where the architect no longer owns the issue (`ISSUE_NOT_OWNED`, or `ISSUE_OUTSIDE_TREE` once
- * the issue left its tree), where the run of the issue it read has ended
- * (`SIGNOFF_STALE_GENERATION`), and where the run of `accepting` it read has ended
- * (`SIGNOFF_STALE_ENTRY`). Since
- * contract 51 it is also refused while an issue beneath that one is still in the workflow
- * (`SIGNOFF_CHILD_IN_WORKFLOW`, naming them): children are accepted and merged before their
- * parent, whose own head proves their merged work (dispatch://INFRA-980). */
+/** `api.SignOffRequest`, the owning architect's acceptance of an issue in `accepting` at `commit`,
+ * the head it accepts, which moves it to `retro`; the daemon refuses it in every other phase
+ * (`SIGNOFF_OUTSIDE_ACCEPTING`). From contract 225 it names that head, and the daemon takes it only
+ * where it is the pull request's current head (`VERDICT_HEAD_NOT_CURRENT` otherwise, changing
+ * nothing) and records it there as the owner's acceptance's `approve`. From contract 219 the daemon
+ * judges it again when it applies it, and refuses it, changing nothing, where the architect no
+ * longer owns the issue (`ISSUE_NOT_OWNED`, or `ISSUE_OUTSIDE_TREE` once the issue left its tree),
+ * where the run of the issue it read has ended (`SIGNOFF_STALE_GENERATION`), and where the run of
+ * `accepting` it read has ended (`SIGNOFF_STALE_ENTRY`). Since contract 51 it is also refused while
+ * an issue beneath that one is still in the workflow (`SIGNOFF_CHILD_IN_WORKFLOW`, naming them):
+ * children are accepted and merged before their parent, whose own head proves their merged work
+ * (dispatch://INFRA-980). */
 export const LegionSignOffRequest = z.strictObject({
   grantId: nonEmptyString,
   issue: nonEmptyString,
+  commit: nonEmptyString,
 });
 
 /** `api.RootCloseRequest`, a root architect's close of its tree before the tree's first phase starts,

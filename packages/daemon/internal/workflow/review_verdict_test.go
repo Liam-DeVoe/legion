@@ -144,6 +144,87 @@ func TestReviewStepVerdictFromItsOwnClaim(t *testing.T) {
 	}
 }
 
+// seedAcceptingAfterAMergeForward is seedAccepting with pull request #42 first at headOne and a
+// merge forward asked of it, which then lands at headTwo: the head the owner may have read is not
+// the head the pull request stands at now.
+func seedAcceptingAfterAMergeForward(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	seedAccepting(t, pool)
+	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "sjawhar/legion", Number: 42,
+		Branch: "legion/LEGION-208", Base: "main", HeadSHA: headOne, Failing: []string{},
+		MergeForward: &record.MergeForward{Head: headOne, Base: "main", Phase: phase.Accepting, Why: record.ConflictMergeNext,
+			AskedAt: time.Date(2026, 9, 22, 23, 40, 0, 0, time.UTC)}})
+	applyRefusingNothing(t, pool, testEngine(config.DesignGateRootIssues, nil), intake.PullRequestSynchronized{Repo: "sjawhar/legion", Number: 42,
+		Branch: "legion/LEGION-208", Base: "main", Before: headOne, HeadSHA: headTwo})
+	if pr := recordedPR(t, pool, "LEGION-208"); pr.HeadSHA != headTwo || pr.MergeForward == nil || pr.MergeForward.Landed != headTwo {
+		t.Fatalf("the pull request = %+v, want the merge forward landed at %s: this test proves nothing without it", pr, headTwo)
+	}
+}
+
+// R5: the owner's acceptance is its approve, or its changes, at the head it names. sign_off and the
+// architect's move back out of accepting name a commit, and the daemon takes either only where that
+// commit is the pull request's current head, where it records the acceptance step's verdict. One
+// that names an older head, as an owner that read the pull request before a merge forward landed
+// would, is refused VERDICT_HEAD_NOT_CURRENT: the issue stays in accepting and no verdict of the
+// acceptance is recorded at either head.
+func TestTheOwnersAcceptanceIsAtTheHeadItNames(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		call  func(t *testing.T, pool *pgxpool.Pool, engine *Engine, commit string) intake.Fact
+		word  store.VerdictWord
+		after phase.Phase
+	}{
+		{name: "sign_off", word: store.VerdictApprove, after: phase.Retro,
+			call: func(t *testing.T, pool *pgxpool.Pool, engine *Engine, commit string) intake.Fact {
+				fact := rootsSignOff(t, pool, engine, "LEGION-208")
+				fact.Commit = commit
+				return fact
+			}},
+		{name: "the move back", word: store.VerdictChanges, after: phase.Implementing,
+			call: func(t *testing.T, pool *pgxpool.Pool, engine *Engine, commit string) intake.Fact {
+				fact := rootsMoveBack(t, pool, engine, "LEGION-208", phase.Implementing, "the evidence does not cover the migration")
+				fact.Commit = commit
+				return fact
+			}},
+	} {
+		t.Run(tc.name+" at the current head records its verdict there", func(t *testing.T) {
+			pool := migratedPool(t)
+			seedAcceptingAfterAMergeForward(t, pool)
+			engine := testEngine(config.DesignGateRootIssues, nil)
+			applyRefusingNothing(t, pool, engine, tc.call(t, pool, engine, headTwo))
+			if got := issuePhase(t, pool); got != tc.after {
+				t.Fatalf("after the owner's %s at %s the issue is in %s, want %s", tc.name, headTwo, got, tc.after)
+			}
+			given, found := stepVerdictOf(t, pool, headTwo, acceptanceStep)
+			if !found || given.Verdict != tc.word || given.Session != string(architectClaim) {
+				t.Fatalf("the acceptance's verdict at %s = %+v (found %t), want the architect's %s", headTwo, given, found, tc.word)
+			}
+		})
+		t.Run(tc.name+" naming an older head after a merge forward is refused", func(t *testing.T) {
+			pool := migratedPool(t)
+			seedAcceptingAfterAMergeForward(t, pool)
+			engine := testEngine(config.DesignGateRootIssues, nil)
+			result := applyFacts(t, pool, engine)("stale-"+tc.name, tc.call(t, pool, engine, headOne))
+			if result.Refusal == nil || result.Refusal.Code != "VERDICT_HEAD_NOT_CURRENT" || result.Refusal.Status != 409 {
+				t.Fatalf("the owner's %s naming %s = %+v, want 409 VERDICT_HEAD_NOT_CURRENT", tc.name, headOne, result.Refusal)
+			}
+			for _, want := range []string{headOne, headTwo, "nothing was recorded"} {
+				if !strings.Contains(result.Refusal.Message, want) {
+					t.Fatalf("the refusal says %q, want it to say %q", result.Refusal.Message, want)
+				}
+			}
+			if got := issuePhase(t, pool); got != phase.Accepting {
+				t.Fatalf("after the refused %s the issue is in %s, want accepting", tc.name, got)
+			}
+			for _, head := range []string{headOne, headTwo} {
+				if given, found := stepVerdictOf(t, pool, head, acceptanceStep); found {
+					t.Fatalf("after the refused %s the acceptance holds the verdict %+v at %s, want none", tc.name, given, head)
+				}
+			}
+		})
+	}
+}
+
 // reviewerVerdict is LEGION-208's reviewer completing its round with verdict at commit, as the
 // completion route queues it (api/handoff.go).
 func reviewerVerdict(verdict, commit string) intake.HandoffComplete {

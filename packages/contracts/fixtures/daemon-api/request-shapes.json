@@ -1555,6 +1555,7 @@
     "contract": 225,
     "route": "POST /legion/v1/phase/backward",
     "fieldPaths": [
+      "commit",
       "grantId",
       "issue",
       "reason",
@@ -1643,6 +1644,7 @@
     "contract": 225,
     "route": "POST /legion/v1/signoff",
     "fieldPaths": [
+      "commit",
       "grantId",
       "issue"
     ]

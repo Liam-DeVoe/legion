@@ -169,7 +169,7 @@ func TestEveryAgentRouteWaitsForItsStreamWhereTheRecordNamesItTheAgentOfARun(t *
 				seedIssueAt(t, r.h, "LEGION-208", phase.Accepting)
 				r.runs(t, "LEGION-208", acceptingPlace, architect.token)
 				return r.h.request(http.MethodPost, "/legion/v1/phase/backward", map[string]any{
-					"grantId": architect.grant(t), "issue": "LEGION-208", "to": "implementing", "reason": "the acceptance found a gap"}, nil)
+					"grantId": architect.grant(t), "issue": "LEGION-208", "to": "implementing", "reason": "the acceptance found a gap", "commit": headSHA}, nil)
 			}}}
 		}},
 		"POST /legion/v1/signoff": {waits: func(t *testing.T, r *awaitRig) []agentRequest {
@@ -177,7 +177,7 @@ func TestEveryAgentRouteWaitsForItsStreamWhereTheRecordNamesItTheAgentOfARun(t *
 			architect := newLiveClaim(t, r.h, "LEGION-208", claim.RoleArchitect)
 			r.runs(t, "LEGION-208", acceptingPlace, architect.token)
 			return []agentRequest{{architect.token, func() *httptest.ResponseRecorder {
-				return r.h.request(http.MethodPost, "/legion/v1/signoff", map[string]any{"grantId": architect.grant(t), "issue": "LEGION-208"}, nil)
+				return r.h.request(http.MethodPost, "/legion/v1/signoff", map[string]any{"grantId": architect.grant(t), "issue": "LEGION-208", "commit": headSHA}, nil)
 			}}}
 		}},
 		"POST /legion/v1/children/park": {none: "a removed route's refusal; " + noFact},
@@ -323,7 +323,7 @@ func TestAFactNoAgentRequestedWaitsForNothing(t *testing.T) {
 	r.runs(t, "LEGION-301", acceptingPlace, architect.token)
 	r.runs(t, "LEGION-302", implementingPlace, implementer)
 	if back := r.h.request(http.MethodPost, "/legion/v1/phase/backward", map[string]any{
-		"grantId": architect.grant(t), "issue": "LEGION-302", "to": "planning", "reason": "the plan needs another look",
+		"grantId": architect.grant(t), "issue": "LEGION-302", "to": "planning", "reason": "the plan needs another look", "commit": headSHA,
 	}, nil); back.Code != http.StatusOK {
 		t.Fatalf("the architect's move back of LEGION-302 = %d: %s", back.Code, back.Body)
 	}
@@ -337,7 +337,7 @@ func TestAFactNoAgentRequestedWaitsForNothing(t *testing.T) {
 	seedIssueAt(t, r.h, "LEGION-400", phase.Implementing)
 	other := newLiveClaim(t, r.h, "LEGION-400", claim.RoleArchitect)
 	refused(t, r.h.request(http.MethodPost, "/legion/v1/phase/backward", map[string]any{
-		"grantId": other.grant(t), "issue": "LEGION-301", "to": "implementing", "reason": "not this architect's tree",
+		"grantId": other.grant(t), "issue": "LEGION-301", "to": "implementing", "reason": "not this architect's tree", "commit": headSHA,
 	}, nil), http.StatusForbidden, "ISSUE_OUTSIDE_TREE")
 
 	if made := r.made(); len(made) != 0 {
