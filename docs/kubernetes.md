@@ -2786,7 +2786,10 @@ The migration fills the column on every row of a document whose own registration
 Every other row holds null: a row of a document whose registering root's rows a re-admission cleared, or whose registering root was itself carried in with its gate.
 The architect's `architect-start` task and `catch-up` (`gates[].document`) name the document of the issue that a row names, so a carried root's texts name the old root's document, which a person approves.
 For a row that names no issue, both read the store's rows on its document when they are built, by the rule of the migration.
-Where the store names no issue, the daemon asks Dispatch which issue holds the document when it sends the text, and where Dispatch does not answer, the text gives the document's bare artifact reference, `/api/v1/artifacts/<artifact id>`.
+Where the store names no issue, the daemon asks Dispatch which issue holds the document when its outbox runs the text's row: the architect's start row, which queues the task on the architect's claim, and the catch-up's row, which publishes the catch-up.
+Where Dispatch does not answer then, the text gives the document's bare artifact reference, `/api/v1/artifacts/<artifact id>`.
+The daemon does not ask Dispatch again when the claim sends the task it queued, so the reference reaches the architect as it was queued.
+The one exception is a task that the claim writes again at its send because a decision that the task named has left the tree: that rewrite asks Dispatch at the send.
 Neither text reads `issues.handed_over_from` for it.
 The `gate-moved` message (`document`) names the document of the issue that the row names, and each write of a carried row that can send that message names the issue first.
 An earlier image names the column in none of its reads or writes, so it reads every gate and ignores the column.
@@ -2802,7 +2805,7 @@ update design_gates g set document_issue = null
 where not exists (select 1 from design_gates old where old.issue = g.document_issue and old.artifact_id = g.artifact_id);
 ```
 
-The statement also clears a carried row whose named issue no longer holds a row on that document, and that costs one thing: until an approval of its document fills the column again, the daemon names such a row's document as it names that of every row that names no issue, from the store's rows on the document, else from Dispatch at each send, else by the bare artifact reference.
+The statement also clears a carried row whose named issue no longer holds a row on that document, and that costs one thing: until an approval of its document fills the column again, the daemon names such a row's document as it names that of every row that names no issue, from the store's rows on the document, else from Dispatch when the outbox runs the text's row, else by the bare artifact reference.
 This migration adds no key to an outbox payload.
 
 **The earlier release refuses the outbox rows that this release writes.**
@@ -2834,11 +2837,13 @@ This release adds fields to the payloads that its outbox queues:
   A catch-up notice whose `relaunch` names no report of the process's last turn carries `relaunch.process_background_work`, which says that every subagent and background job of that process is gone, where the process was in no turn or the turn cut off names no work that stopped.
 
 - An update-stalled notice names who suspended each suspended claim that it lists (`update.waiting[].suspended_by`), `pause` for a claim that a project's pause stopped, whether or not that pause still owes the claim a launch, and whether a claim that it lists left the round's pod (`update.waiting[].left_round`).
+  A claim that the pause stopped owing it no launch is named `pause` until the claim is ready again or a release of the pod suspends the claim's role (`pod_releases.roles` names it); a release that suspended other roles alone leaves it `pause`.
 
 - A `check_wake` row of the retry of a look nobody reported carries `retry`, and the look it starts names a retry (`woken_by: retry`).
   A `check_wake` row with no `retry` that this release queued starts a look that names the checking role's own wake (`woken_by: named`) with the row's reason in its summary block, whatever words that reason opens with.
   A `check_wake` row that an earlier release queued has no `retry`.
-  Where its reason is word for word that release's sentence of a retry (`the retry of a look nobody reported: ` and then `look bound`, `operator hold` or `claim failed`) and its check holds no time of a pending report (`production_checks.reported_at`), the look that it starts names a retry, with `retry_of`.
+  Where its reason is word for word that release's sentence of a retry (`the retry of a look nobody reported: ` and then `look bound`, `operator hold` or `claim failed`), the look that it starts names a retry, with `retry_of`, unless it is the wake of the pending report whose time its check holds (`production_checks.reported_at`).
+  Such a report's own row comes due at the check's `wake_at`, so such a row that comes due before it, or on a check with no `wake_at`, is the earlier release's retry of the look that the report came late for.
   Any other such row starts the checking role's own wake.
   Where such a retry waits again because its issue is back in the workflow, the daemon queues it again with `retry`.
 
@@ -2850,7 +2855,7 @@ This release adds fields to the payloads that its outbox queues:
 
 - An update ask carries `images`, `settings`, `reasons` and `endsAt`.
 
-- Each kept decision that a start task or a catch-up names (`record.DecisionMark`) carries the person's words in `options`, `answer`, `answer_at` and `more`.
+- Each kept decision that a start task or a catch-up names (`record.DecisionMark`) carries the person's words in `options`, `answer`, `answer_at` and `more`, and the count of what a notice cut off them in `rest`.
 
 The earlier release knows none of these fields.
 So each such row that is still queued at the rollback fails and is retried on its backoff for ever.
@@ -7666,14 +7671,15 @@ A stop that the claim decided before the flag was cleared, and that ends after t
 Each held row runs, and the first row to run for a role launches it with a token from the wake pacing (`worker_wakes_per_minute`, 8 by default, and `worker_wake_burst`, 1 by default).
 The role's other held rows find it launching or live and are delivered to it.
 A held role message launches nothing itself: its row publishes the message, and the Envoy listener's report of that publish is the role's wake (`wakeReleased`, `internal/workflow/wake.go`), whose `start` row launches the role through the same pacing.
-The daemon's own role message to a role whose claim is released finishes undelivered and wakes nothing (`outbox.roleMessage`, above), but not a row that a pause held for a role that a pause stopped: one with a stop that ended `stopped` after the issue's newest pod release (`StoppedByAPause`, `internal/store/pause.go`, read by `heldMessageOwed`, `internal/daemon/outbox.go`).
+The daemon's own role message to a role whose claim is released finishes undelivered and wakes nothing (`outbox.roleMessage`, above), but not a row that a pause held for a role that a pause stopped: one with a stop that ended `stopped` after every release of the issue's pod that suspended the role, which `pod_releases.roles` names (`StoppedByAPause`, `internal/store/pause.go`, read by `heldMessageOwed`, `internal/daemon/outbox.go`).
 Such a row waits until the role is back and its session holds the role's topic: at its launch's turn where the pacing holds that launch, and through the moment between the woken agent's ready and its plugin's claim of the role, when the listener still answers that the role has no live holder.
 Then it reaches the role's session, once.
 A second pause that begins before the role is back holds the row again, and the row still reaches the role once it is back.
 A later stop of the role that is still open, or that ended cancelled, taken over or failed, changes nothing.
-A later stop that stops the role carries the debt itself: the row is then owed under that stop's pause, and the pod release that ends it is one recorded after that stop.
+A later stop that stops the role carries the debt itself: the row is then owed under that stop's pause, and the pod release that ends it is one recorded after that stop that suspended the role.
 A role message that a pause held for a role that no pause stopped, such as one that an idle release had released before the pause, finishes undelivered and wakes nothing, as on main.
-A row that a pause held for a role that a pause stopped ends undelivered on these events alone: a pod release of the issue recorded after that stop, any suspension of the role but a release (a park, a close, a linger, an operator's suspension or a root's own exit), a failure, a retirement, and the issue leaving the workflow or its tree lingering while the role is released.
+A row that a pause held for a role that a pause stopped ends undelivered on these events alone: a release of the issue's pod recorded after that stop that suspended the role, any suspension of the role but a release (a park, a close, a linger, an operator's suspension or a root's own exit), a failure, a retirement, and the issue leaving the workflow or its tree lingering while the role is released.
+A release that suspended the pod's other roles alone ends nothing, so the resume still launches the role for its held text, a low one included.
 An operator's spawn, a claim of an issue the daemon keeps no record of, has no `start` row to carry the launch it is owed, because the `start` row needs the issue's record.
 The resume launches such a claim itself, with the daemon's resume by rule, which takes a token from the same pacing, and a stop of one that ends after the resume launches it the same way.
 So a resume launches each session that the pause held something for once, and never all of them at once.
@@ -7691,13 +7697,15 @@ Its took-nothing arm counts nothing while the architect's launch waits in the pa
 The stalled-tree notice and the entry sweep's gate say nothing while the project is paused, because the admission pass promotes nothing then and the gate answers no (`promoteHolds` and `OwesEntryWork`, `internal/admit/admit.go`).
 After a pause a tree is told it has stopped only once `stalled_tree_notice_hours` has passed since the pause ended, and the notice still names how long the tree has been quiet (`tellStalledTrees`, `internal/admit/stalled.go`).
 A wake that a pause held is marked with its pause (`pod_resumes.pause_id`).
-One rule says which pause holds a wake, and every wake but the stop's owed launch reads it (`PauseOfWake`, `internal/store/wake.go`): the project's open pause, else the pause that held the outbox row the wake is taken for, else the pause whose stop of the role is the role's newest stop and newer than both the issue's newest release and the role's last ready (`StoppingPauseTx`, `internal/store/pause.go`).
+One rule says which pause holds a wake, and every wake but the stop's owed launch reads it (`PauseOfWake`, `internal/store/wake.go`): the project's open pause, else the pause that held the outbox row the wake is taken for, else the pause whose stop of the role is the role's newest stop and newer than both the role's last ready and every release of the issue's pod that suspended the role, which `pod_releases.roles` names (`StoppingPauseTx`, `internal/store/pause.go`).
 The launch that a stop owes a role is a wake of the pause that made the stop, which the stop transaction takes with that pause (`pods.WakePause`).
 So a wake taken while the project is paused is the open pause's, the wake of a row that a lane took before the pause and ran while it stood among them.
 The resume marks each row that its pause holds with the pause, whatever the row's due time (`outbox.held_by_pause`, `MarkPauseHeldRows`, `internal/record/store.go`), and the wake that a notice, a hook's prompt, a merge-queue removal or a merge forward's message takes for such a row after the resume reads that mark (`Store.TakePodWake`, `internal/store/wake.go`, read by `wakeForDelivery`, `internal/daemon/wake.go`).
 A listener's wake, a CI settlement's wake and a backstop's wake are taken for no row, so they read the open pause and the pause that stopped the role alone (`wakeReleased`, `internal/workflow/wake.go`).
 A role message takes no wake for its row: after the resume, the outbox publishes a role message that the pause held for a role that a pause stopped, and the listener's report of that publish wakes the role.
-After the resume, the wake of a role that the pause stopped is that pause's whichever path takes it, a delivery written after the resume and the listener's report of a role message that the pause held or of a message that another session sends included, until the role's agent is ready again or a release of its pod is recorded.
+After the resume, the wake of a role that the pause stopped is that pause's whichever path takes it, a delivery written after the resume and the listener's report of a role message that the pause held or of a message that another session sends included, until the role's agent is ready again or a release of its pod that suspends the role is recorded.
+A release that suspends the pod's other roles alone, such as the idle release of a role that ran in the pod after the resume, takes the pod and leaves the stopped role's wake the pause's: that wake brings the session back in a new pod, and its task still says that the pause stopped the session.
+The update-stalled notice reads the same statement (`StoppingPause`), so it names such a claim `suspended_by: pause`.
 The task of such a wake that a listener's report, a CI settlement or a backstop takes says that the pause stopped the session (`WakeTask`, `internal/workflow/wake.go`); a delivery's wake resumes the role with no task, as on main, and the delivery itself is what the role reads.
 A ready after the pause's stop is the agent of a launch since, so a wake that follows a later stop of the role, such as an idle release's, which suspends the role before its teardown records the release, is not the pause's.
 `read_release_records` counts a held wake as `heldByPause` and leaves it out of its wake-to-first-turn seconds, because its wait measures the pause.

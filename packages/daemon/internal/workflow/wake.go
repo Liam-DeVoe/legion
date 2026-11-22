@@ -62,7 +62,8 @@ type Pods interface {
 	// rule of it (store's PodRecords.PauseOfWake), and which pause stopped the claim. mark is the
 	// pause that held the outbox row the wake is taken for, which a wake of this package, taken
 	// for no row, passes as 0. The wake is a held wake of held (decision 15), and the session it
-	// brings back is one stopping stopped in a pod it kept (decision 16).
+	// brings back is one stopping stopped (decision 16), in a pod that pause kept unless a later
+	// release of the pod that did not stop the session took it.
 	PauseOfWake(ctx context.Context, tx pgx.Tx, issue string, token claim.Token, mark int64) (held, stopping int64, err error)
 	// ClosePodGoneResume closes the open resume of issue's role when the pod it was waiting for
 	// has gone away: a release of the issue recorded since that wake was taken. It answers the
@@ -126,7 +127,9 @@ const (
 	// brings back as a fresh pod with the workspace the release saved.
 	StoppedByRelease WakeStop = iota
 	// StoppedByPause: a project's pause stopped the session and kept its pod, its workspace and
-	// its unpushed work as they were (decision 16 of dispatch://INFRA-3759).
+	// its unpushed work as they were (decision 16 of dispatch://INFRA-3759), unless a later release
+	// of the pod that did not stop the session, one that suspended other roles alone or none, took
+	// the pod, which the wake then brings back as a fresh pod.
 	StoppedByPause
 )
 
@@ -160,7 +163,8 @@ const roleMessageKeep = time.Hour
 //
 // What stopped the session (stopped_by) is the wake's to name once it has read it
 // (wakeReleased, decision 16 of dispatch://INFRA-3759): an idle release, which took the pod, or a
-// project's pause, which kept it. The record PodWake builds leaves it for that.
+// project's pause, which kept it unless a later release of the pod that did not stop the session
+// took it. The record PodWake builds leaves it for that.
 //
 // The wake's task is never the phase's work, and for the reviewer it still ends with the daemon's
 // two sentences of the review round (reviewround.Ending), which the queue appends to it as to

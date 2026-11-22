@@ -1375,9 +1375,11 @@ func (m MergeState) Mergeable() bool {
 // row where the wake falls before the bound), and the look that wake starts names it as the time
 // of the report's summary (workflow.CheckLook). A look nobody reported clears it, since the wake
 // its end names is a retry no report named (workflow.endLook), and it is nil on a check an
-// earlier release recorded, whose named look names no time. Only where it is nil can an unmarked
-// check_wake row be read as the retry an earlier release queued (workflow.queuedRetry). Last
-// marks the bound's look, after which no look starts. A closed check has ClosedAt and its Outcome.
+// earlier release recorded, whose named look names no time. An unmarked check_wake row whose
+// reason is an earlier release's sentence of a retry is read as that retry only where it is not
+// the wake of the report ReportedAt times: where ReportedAt is nil, where WakeAt is, or where the
+// row comes due before WakeAt (workflow.queuedRetry). Last marks the bound's look, after which no
+// look starts. A closed check has ClosedAt and its Outcome.
 type ProductionCheck struct {
 	Issue   string
 	Project string
@@ -1566,8 +1568,10 @@ type DesignGate struct {
 	// "" on such a row and on a row an older daemon wrote, where the migration that added the
 	// column did not fill it (20261122040952_design_gate_document_issue.up.sql). A text names the
 	// document of such a row from the store's rows on its artifact where they say its issue,
-	// else from Dispatch where the text is sent, else by the bare artifact reference (workflow's
-	// stepDocuments, texts.ArtifactReference).
+	// else from Dispatch, asked when the outbox runs the start row and queues the task (and when
+	// the daemon's rootTask writes a queued task again at its send) and when it publishes the
+	// catch-up, else by the bare artifact reference (workflow's stepDocuments,
+	// texts.ArtifactReference).
 	DocumentIssue string
 }
 
@@ -2230,8 +2234,9 @@ type Store interface {
 	// issue that is no root a hand-over created with its gate at the generation the issue stands
 	// at (HandedOverRoot), since register_gate refuses another issue's document and only that
 	// hand-over writes a copy. An artifact whose rows say none, or say more than one issue, has no
-	// entry: the daemon asks Dispatch for it where it sends the text (workflow's
-	// NameStartDocuments and NameCatchUpDocuments).
+	// entry: the daemon asks Dispatch for it when the outbox runs the start row and queues the
+	// task (and when its rootTask writes a queued task again at its send) and when the outbox
+	// publishes the catch-up (workflow's NameStartDocuments and NameCatchUpDocuments).
 	DocumentIssues(ctx context.Context, tx pgx.Tx, artifacts []string) (map[string]string, error)
 	// PutGate writes one gate row, keyed by its issue and its step. A gate built with no step is
 	// written as DesignStepSpec (Postgres.PutGate).

@@ -193,8 +193,9 @@ func (u UpdateRound) MarshalJSON() ([]byte, error) {
 // since the pause stopped it, and before the round's bound the round asks such a claim once its
 // agent is ready and waits for it while it has not answered (podHolds.owes). In the second the
 // pause stopped the claim while it held no task and met no launch, owing it none, and neither a
-// release of the pod nor a ready of the claim came after that stop (the daemon's
-// stoppedByAPause, store.StoppingPauseTx). The notice is told only past the bound, where no
+// release of the pod that suspended the claim's role nor a ready of the claim came after that stop
+// (the daemon's stoppedByAPause, store.StoppingPause): a release that suspended other roles alone
+// left the claim as the stop left it. The notice is told only past the bound, where no
 // answer holds the round, so the word names who suspended the claim and nothing the round waits
 // for. The claim's own source is released (supervise.SuspendedByReleased), as an idle release's
 // is, so this word is the notice's, read from the pause's hold of the pod and its record of the

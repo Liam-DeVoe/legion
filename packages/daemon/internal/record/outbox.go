@@ -1688,8 +1688,9 @@ func (IssueBranch) OutboxKind() OutboxKind { return OutboxKindIssueBranch }
 // endLook): the look it starts names it as a retry (woken_by: retry). A row with no mark that this
 // release queued is the agent's own wake, whose reason is the agent's summary whatever words it
 // opens with. A row an earlier release queued marked none: one whose reason is word for word that
-// release's sentence of a retry, on a check that holds no time of a pending report, is a retry
-// too, and any other is the agent's own wake (workflow's queuedRetry).
+// release's sentence of a retry is a retry too where it is not the wake of the pending report whose
+// time the check holds (it comes due before the check's WakeAt, or the check holds no such time),
+// and any other is the agent's own wake (workflow's queuedRetry).
 type CheckWakeDue struct {
 	Look     int       `json:"look"`
 	OpenedAt time.Time `json:"openedAt,omitzero"`

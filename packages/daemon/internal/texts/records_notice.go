@@ -247,7 +247,8 @@ const BeforeFirstPhase = "before_first_phase"
 // whose words are the architect's. Of such a body the record gives the daemon's sentence as a
 // field, RefusedMove (the move, "<from>-<to>") or RefusedClose (BeforeFirstPhase), and the first
 // line of the other author's words alone in Begins: those words begin at their first line that
-// holds a character, since the line endings they open with, as those they end with, are no words.
+// holds a character other than white space, since the lines of white space alone they open with,
+// as the line endings they end with, are no words.
 // Every other first line, such a sentence with no words after it among them, is the daemon's own,
 // and Begins gives it whole. A first line that is empty gives no Begins: FirstLineEmpty says so,
 // as main's notice said the body begins "". Begins is a words field, which the words object names
@@ -257,9 +258,10 @@ const BeforeFirstPhase = "before_first_phase"
 // those words after Begins, the lines after the first among them, so the count is 0 only where
 // Begins holds the words whole. The line endings the words end with are no words, and the count
 // leaves them out. Begins holds the first line's head and nothing else, cut where it parts no
-// extended grapheme cluster of Unicode's UAX #29 (a letter and the combining marks after it, an
-// emoji and its skin-tone modifier, the jamo of one Hangul syllable), unless the line's first
-// cluster alone runs past the bound.
+// character as its writer wrote it (the daemon's wholeCharacters: a letter and the combining marks
+// after it, by Go's own Unicode tables, an emoji and its skin-tone modifier, the characters a zero
+// width joiner joins, the two regional indicators of a flag, the jamo of one Hangul syllable),
+// unless the line's first character alone runs past the bound.
 type MessageRefusedRecord struct {
 	NoticeHead
 	Refused        string               `json:"refused"`
@@ -487,8 +489,8 @@ type CatchUpFacts struct {
 // CatchUpGate is one design-gate step as a catch-up states it (the shape of record.CatchUpGate):
 // the step, whether a person must approve its document, and the document as a dispatch:// link,
 // or as the bare artifact reference (ArtifactReference) where neither the daemon's record nor
-// Dispatch named the issue that holds it, with the artifact it is registered as, its latest
-// version and the version approved.
+// Dispatch, asked when the daemon published the catch-up, named the issue that holds it, with the
+// artifact it is registered as, its latest version and the version approved.
 type CatchUpGate struct {
 	Step         string `json:"step"`
 	Gated        bool   `json:"gated"`

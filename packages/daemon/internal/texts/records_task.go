@@ -300,8 +300,9 @@ const (
 
 // ArchitectGate is one step of a root's design gate in a start task: the step, its document as a
 // dispatch:// link, or as the bare artifact reference (ArtifactReference) where neither the
-// daemon's record nor Dispatch named the issue that holds it, the version registered (0 where the
-// step is not registered), and its state (one of the Gate words).
+// daemon's record nor Dispatch, asked when the daemon queued the task or wrote it again at its
+// send, named the issue that holds it, the version registered (0 where the step is not
+// registered), and its state (one of the Gate words).
 type ArchitectGate struct {
 	Step     string `json:"step"`
 	Document string `json:"document"`
@@ -423,7 +424,8 @@ type KeptDecision struct {
 // PodWakeRecord is the task of a role whose released pod a wake brought back (workflow's
 // WakeTask). Wake is the wake's word (pods.WakeChecks and the others), and StoppedBy what stopped
 // the session the wake brings back: an idle release, which took the pod, or a project's pause,
-// which kept the pod, its workspace and the work not pushed (StoppedByRelease, StoppedByPause).
+// which kept the pod, its workspace and the work not pushed, unless a later release of the pod that
+// did not stop the session took the pod (StoppedByRelease, StoppedByPause).
 //
 // A CI settlement names the pull request, the head, the issue's phase, the checks and the commit
 // statuses that did not pass, the checks GitHub skipped (skipped) with the field that says once

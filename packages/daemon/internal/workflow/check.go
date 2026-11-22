@@ -148,25 +148,32 @@ const retryOfLook = "the retry of a look nobody reported: "
 // name a look's bound, an operator's hold on its start and its role's failed claim.
 var earlierRetryCauses = []string{"look bound", "operator hold", "claim failed"}
 
-// queuedRetry is whether the check_wake row fact, due on check, is the retry of a look nobody
-// reported: a row this release queued says so by its mark (record.CheckWakeDue.Retry), since its
-// endLook marks every retry it queues. A row an earlier release queued has no mark, and it is a
-// retry where its reason is word for word the sentence that release's endLook wrote, retryOfLook and
-// one of earlierRetryCauses, and the check holds no time of a pending report
-// (record.ProductionCheck.ReportedAt). That time is what keeps every pending summary this release
-// recorded from being read so, whatever words it opens with: checkReported sets it in the
-// transaction that queues the report's unmarked row, and only endLook clears it, which ends a look
-// that row would start, so that row is spent by then. An earlier release never wrote the time, so
-// every check it recorded holds none, and the words alone tell its rows apart, as the checking
-// role's prompt of that release told them apart: its retry's reason was that sentence, and its
-// pending's the role's own summary, which is read as a retry only where the role wrote that
-// sentence word for word as its whole summary.
-func queuedRetry(check record.ProductionCheck, fact intake.CheckWakeDue) bool {
+// queuedRetry is whether the check_wake row fact, due on check and applied at now, is the retry of
+// a look nobody reported: a row this release queued says so by its mark (record.CheckWakeDue.Retry),
+// since its endLook marks every retry it queues. A row an earlier release queued has no mark, and
+// it is a retry where its reason is word for word the sentence that release's endLook wrote,
+// retryOfLook and one of earlierRetryCauses, and the row is not the wake of the pending report the
+// check holds the time of (record.ProductionCheck.ReportedAt). checkReported queues that report's
+// row, unmarked, at the WakeAt it writes beside that time, and the outbox runs a row at or after
+// its due time, so a row applied before the check's WakeAt, or on a check that names none, is not
+// that report's row: it is the retry an earlier release queued for the look the report came late
+// for (a look its bound, an operator's hold or its role's failed claim ended first), which the
+// report left queued beside its own row. Where something moved the WakeAt while that report's row
+// stands (a later report of the same look, a row deferred while the issue runs again), that row is
+// read as a retry only where its summary is the sentence word for word. An earlier release never
+// wrote the time of a report, so every check it recorded holds none, and the words alone tell its
+// rows apart, as the checking role's prompt of that release told them apart: its retry's reason was
+// that sentence, and its pending's the role's own summary, which is read as a retry only where the
+// role wrote that sentence word for word as its whole summary.
+func queuedRetry(check record.ProductionCheck, fact intake.CheckWakeDue, now time.Time) bool {
 	if fact.Retry {
 		return true
 	}
 	cause, found := strings.CutPrefix(fact.Reason, retryOfLook)
-	return found && check.ReportedAt == nil && slices.Contains(earlierRetryCauses, cause)
+	if !found || !slices.Contains(earlierRetryCauses, cause) {
+		return false
+	}
+	return check.ReportedAt == nil || check.WakeAt == nil || now.Before(*check.WakeAt)
 }
 
 // CheckLook is what the check's role is told at a look of the closed issue's production check, as
@@ -558,7 +565,7 @@ func (e *Engine) checkWakeDue(ctx context.Context, tx pgx.Tx, fact intake.CheckW
 			"reason", fact.Reason, "why", why)
 		return intake.Result{}, nil
 	}
-	retry := queuedRetry(*check, fact)
+	retry := queuedRetry(*check, fact, e.now())
 	issue, _, err := e.checkIssue(ctx, tx, *check)
 	if err != nil {
 		return intake.Result{}, err

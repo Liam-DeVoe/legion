@@ -325,7 +325,7 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.Cla
 // document (stepDocuments, the start task's reading of the same rows: a dispatch:// link on the
 // issue whose document the step's row is bound to, the old root's for a row a carried gate
 // brought, or the bare artifact reference where the record does not say that issue, which the
-// outbox names from Dispatch when it sends the catch-up, NameCatchUpDocuments) and
+// outbox names from Dispatch when it publishes the catch-up, NameCatchUpDocuments) and
 // how it stands. A child's architect owns the child and every issue whose recorded parent chain
 // reaches it (record.Beneath), at the child's own generation: a child registers no gate and no
 // hand-over creates one, so its catch-up states no step and is neither handed over nor carried.
@@ -419,9 +419,11 @@ func treeCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []rec
 // neither says, a carried copy whose old root's rows are gone (a re-admission of that root
 // cleared them) or were a copy themselves, names the bare artifact reference
 // (texts.ArtifactReference) rather than a document that may be another issue's, and the daemon
-// names it from Dispatch where it sends the text (NameStartDocuments, NameCatchUpDocuments). The
-// architect-start task (ArchitectStartOf) and the catch-up (treeCatchUp) both read it, so the two
-// name one document for one row whatever daemon wrote the row.
+// names it from Dispatch when the outbox runs the start row and queues the task (and when rootTask
+// writes a queued task again at its send), and when the outbox publishes the catch-up
+// (NameStartDocuments, NameCatchUpDocuments). The architect-start task (ArchitectStartOf) and the
+// catch-up (treeCatchUp) both read it, so the two name one document for one row whatever daemon
+// wrote the row.
 func stepDocuments(ctx context.Context, tx pgx.Tx, store record.Store, rows map[record.DesignStep]record.DesignGate) (map[record.DesignStep]string, error) {
 	var unnamed []string
 	for _, row := range rows {
@@ -454,8 +456,8 @@ func stepDocuments(ctx context.Context, tx pgx.Tx, store record.Store, rows map[
 // NameCatchUpDocuments names, in catchUp, a catch-up as QueueCatchUp queued it, each gate step's
 // document that it gives as the bare artifact reference (stepDocuments) as the step's document of
 // the issue issueOf answers holds the artifact, where it answers one, as NameStartDocuments names
-// the start task's. issueOf is the outbox's read of Dispatch when it sends the catch-up, outside
-// any transaction; a step it answers nothing for keeps the bare reference.
+// the start task's. issueOf is the outbox's read of Dispatch when it publishes the catch-up,
+// outside any transaction; a step it answers nothing for keeps the bare reference.
 func NameCatchUpDocuments(catchUp *record.CatchUp, issueOf func(artifact string) (string, bool)) {
 	for i, gate := range catchUp.Gates {
 		artifact, bare := texts.ArtifactOfReference(gate.Document)

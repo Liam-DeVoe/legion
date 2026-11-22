@@ -96,10 +96,12 @@ type ArchitectStart struct {
 	Gate record.TreeGate
 	// Documents is the document each step's row of Gate is bound to (stepDocuments), as the
 	// reader read it, by step: a dispatch:// link on the issue whose document the row's artifact
-	// is, or the bare artifact reference where the record does not say that issue, which the send
-	// names from Dispatch (NameStartDocuments). It is the catch-up's reading of the same rows
-	// (treeCatchUp), so the two name one document for one row. A start built without the reader
-	// holds none, and its rows name their documents as they record them (gateSteps).
+	// is, or the bare artifact reference where the record does not say that issue, which the
+	// outbox names from Dispatch when it runs the start row and queues the task, and the daemon's
+	// rootTask when it writes a queued task again at its send (NameStartDocuments). It is the
+	// catch-up's reading of the same rows (treeCatchUp), so the two name one document for one row.
+	// A start built without the reader holds none, and its rows name their documents as they
+	// record them (gateSteps).
 	Documents map[record.DesignStep]string
 	// Served is the issue generation of the last confirmed task the tree's architect claim retired
 	// that carried one (record.Store.ArchitectServed), zero where that tree has no architect claim
@@ -490,10 +492,12 @@ func gateSteps(start ArchitectStart) []texts.ArchitectGate {
 // wrote it, with each gate step's document that the task gives as the bare artifact reference
 // (stepDocuments: a row the record does not say the document's issue of) named instead as the
 // step's document of the issue issueOf answers holds the artifact, where it answers one
-// (texts.NameStartDocuments). issueOf is the daemon's read of Dispatch where it sends the task
-// (the outbox's start, the daemon's rootTask), outside any transaction, so the workflow itself
-// asks Dispatch nothing; a step it answers nothing for keeps the bare reference, and so does every
-// step of a task that names none.
+// (texts.NameStartDocuments). issueOf is the daemon's read of Dispatch when the outbox runs the
+// start row and queues the task on the architect's claim, and when the daemon's rootTask writes a
+// queued task again at its send because a decision it named left the tree; the claim's send of a
+// task it queued asks Dispatch nothing again otherwise. Each read is made outside any
+// transaction, so the workflow itself asks Dispatch nothing; a step it answers nothing for keeps
+// the bare reference, and so does every step of a task that names none.
 func NameStartDocuments(task string, issueOf func(artifact string) (string, bool)) string {
 	return texts.NameStartDocuments(task, func(step, artifact string) (string, bool) {
 		issue, ok := issueOf(artifact)

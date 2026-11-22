@@ -11,9 +11,10 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/rivo/uniseg"
 
 	"github.com/sjawhar/envoy/steprecord"
 
@@ -643,15 +644,16 @@ func messagePostRefused(issue string, payload record.MessagePost, cause error) t
 // since the writer's own stop, which it drops, ends the body) and the close's lead with
 // intake.CloseRootLead, and becomes a field (refused_move: <from>-<to>, refused_close:
 // before_first_phase), so the block holds the first line of the other author's words alone, under
-// that author's name. Those words begin at their first line that holds a character: the line
-// endings they open with, such as those of a close's reason that opens with a line break, are no
-// words, as those they end with are not (withoutLeadingLineEnds), so the block quotes the author's
-// words and not the daemon's sentence before them. Every other body, among them such a sentence
-// with no words after it, is the daemon's own, by texts.ByDaemon, and the block holds its first
-// line whole: every other body the outbox posts is a message the workflow or the supervision
-// writes of its own facts. A line ends at a line feed, or at a carriage return and a line feed,
-// neither of which is part of the line (leadLine). A line past messageRefusedPreview is cut with
-// nothing added to it. A body whose first line is empty quotes nothing and says so
+// that author's name. Those words begin at their first line that holds a character other than
+// white space: the lines they open with that hold white space alone (unicode.IsSpace), such as the
+// empty line of a close's reason that opens with a line break or a first line of one space, are no
+// words, as the line endings they end with are not (withoutLeadingBlankLines), so the block quotes
+// the author's words and not the daemon's sentence before them. Every other body, among them such
+// a sentence with no words after it, is the daemon's own, by texts.ByDaemon, and the block holds
+// its first line whole: every other body the outbox posts is a message the workflow or the
+// supervision writes of its own facts. A line ends at a line feed, or at a carriage return and a
+// line feed, neither of which is part of the line (leadLine). A line past messageRefusedPreview is
+// cut with nothing added to it. A body whose first line is empty quotes nothing and says so
 // (first_line_empty), as main's notice said such a body begins "". The words object counts the
 // rest of the words the block quotes (rest): every unit of them after the block's head, the lines
 // after the first among them, so a reason of two lines is never read as one the block holds
@@ -661,11 +663,11 @@ func quoteRefused(refused *texts.MessageRefusedRecord, body string) {
 	refused.Length = texts.Units(body)
 	quoted, by := body, texts.ByDaemon
 	if move, asked := workflow.BackwardMoveOf(body); asked {
-		if words := withoutLeadingLineEnds(move.Words); leadLine(words) != "" {
+		if words := withoutLeadingBlankLines(move.Words); words != "" {
 			refused.RefusedMove, quoted, by = phase.Pair(move.From, move.To), words, string(move.Asker)
 		}
 	} else if reason, closed := strings.CutPrefix(body, intake.CloseRootLead); closed {
-		if words := withoutLeadingLineEnds(reason); leadLine(words) != "" {
+		if words := withoutLeadingBlankLines(reason); words != "" {
 			refused.RefusedClose, quoted, by = texts.BeforeFirstPhase, words, string(claim.RoleArchitect)
 		}
 	}
@@ -681,14 +683,14 @@ func quoteRefused(refused *texts.MessageRefusedRecord, body string) {
 // refusedPreview is the first line of words a notice quotes (leadLine), as the notice carries it:
 // bounded to messageRefusedPreview by texts.Bound, which adds nothing to the head it keeps, and
 // backed off where the bound would cut inside a character as its writer wrote it
-// (wholeGraphemes), with the count of the rest of the words: every unit after that head, the lines
+// (wholeCharacters), with the count of the rest of the words: every unit after that head, the lines
 // after the first among them, up to the line endings the words end with. A line feed that ends the
 // words, with the carriage return before it and any empty lines before those, is no words left
 // out. The head is empty only where the first line is.
 func refusedPreview(words string) texts.Words {
 	line := leadLine(words)
 	head, _ := texts.Bound(line, messageRefusedPreview)
-	head = wholeGraphemes(line, head)
+	head = wholeCharacters(line, head)
 	return texts.Words{Text: head, Rest: texts.Units(withoutFinalLineEnds(words)) - texts.Units(head)}
 }
 
@@ -717,46 +719,152 @@ func withoutFinalLineEnds(text string) string {
 	}
 }
 
-// withoutLeadingLineEnds is text less the line endings it opens with (leadLine's: a line feed, or a
-// carriage return and a line feed), each one in a row, so a text that opens with empty lines opens
-// with the first line that holds a character. A carriage return no line feed follows is part of
-// its line, and stays.
-func withoutLeadingLineEnds(text string) string {
+// withoutLeadingBlankLines is text less the lines it opens with that hold no character but white
+// space (unicode.IsSpace, as strings.TrimSpace reads it), each with its line ending (leadLine's: a
+// line feed, or a carriage return and a line feed), so a text that opens with such lines opens
+// with the first line that holds something else, and a text of such lines alone is nothing.
+func withoutLeadingBlankLines(text string) string {
 	for {
-		if after, ended := strings.CutPrefix(text, "\n"); ended {
-			text = after
-			continue
+		line, rest, ended := strings.Cut(text, "\n")
+		if strings.TrimSpace(line) != "" {
+			return text
 		}
-		if after, ended := strings.CutPrefix(text, "\r\n"); ended {
-			text = after
-			continue
+		if !ended {
+			return ""
 		}
-		return text
+		text = rest
 	}
 }
 
-// wholeGraphemes is head, a head of line that a bound cut, backed off to the end of the last
-// extended grapheme cluster of line it holds whole (Unicode's UAX #29, as uniseg segments it): a
-// letter with the combining marks after it, an emoji with the skin-tone modifier after it, or the
-// jamo of one Hangul syllable, so a quote never holds part of a character as its writer wrote it.
-// Where the first cluster of line runs past the bound, as one letter's marks alone can, backing
-// off would quote nothing of a line that holds something, so the head stays as the bound cut it.
-func wholeGraphemes(line, head string) string {
+// wholeCharacters is head, a head of line that a bound cut, backed off to the last place in it
+// that parts no character as its writer wrote it (joined), so a quote never holds part of one.
+// Where every place in head falls inside its first character, as where one letter's marks alone
+// run past the bound, backing off would quote nothing of a line that holds something, so the head
+// stays as the bound cut it.
+func wholeCharacters(line, head string) string {
 	if len(head) == len(line) {
 		return head
 	}
-	whole := 0
-	for clusters := uniseg.NewGraphemes(line); clusters.Next(); {
-		_, end := clusters.Positions()
-		if end > len(head) {
+	for at := len(head); at > 0; {
+		if !joined(line, at) {
+			return head[:at]
+		}
+		_, size := utf8.DecodeLastRuneInString(head[:at])
+		at -= size
+	}
+	return head
+}
+
+// joined is whether the place at in line, between two of its characters, falls inside one
+// character as its writer wrote it: an extended grapheme cluster of Unicode's UAX #29, by the rules
+// of it that this cut keeps, read on Go's own unicode tables (unicode.Version: 17.0.0 in Go
+// 1.27.3) where they hold the property and on the fixed ranges UAX #29 names where they do not.
+// A place is inside a character
+//
+//   - before a character that extends the one before it (extends);
+//   - after a zero width joiner, which joins the characters on both sides of it, as the emoji of
+//     one ZWJ sequence: UAX #29 keeps the character after it only where both are pictographs, or
+//     in a conjunct of an Indic script, so a joiner between two letters of another kind backs the
+//     cut off by one character more than UAX #29 would;
+//   - between the jamo of one Hangul syllable (hangulJoined);
+//   - between the two regional indicators of one flag, the second of a pair counted from the
+//     first of the run of them before it.
+//
+// Two of UAX #29's rules that keep a cluster whole this cut does not keep: a character UAX #29
+// counts as Prepend (a prepended concatenation mark, a reph) with what follows it (GB9b), and a
+// conjunct of an Indic script's consonants with no joiner between them (GB9c). Besides the place
+// after a joiner, it keeps whole two places UAX #29 parts: before a mark that follows a control
+// character (GB4), and before one of the 31 spacing marks of Myanmar, Tai Tham and Ahom that UAX
+// #29 does not count as such.
+func joined(line string, at int) bool {
+	before, _ := utf8.DecodeLastRuneInString(line[:at])
+	after, _ := utf8.DecodeRuneInString(line[at:])
+	switch {
+	case extends(after), before == zeroWidthJoiner:
+		return true
+	case unicode.Is(unicode.Regional_Indicator, before) && unicode.Is(unicode.Regional_Indicator, after):
+		return regionalIndicatorsEnding(line[:at])%2 == 1
+	default:
+		return hangulJoined(hangulOf(before), hangulOf(after))
+	}
+}
+
+// zeroWidthJoiner is U+200D ZERO WIDTH JOINER, which joins the characters on both sides of it.
+const zeroWidthJoiner = '\u200D'
+
+// extends is whether r extends the character before it: each character UAX #29 counts as Extend,
+// SpacingMark or ZWJ, and the 31 spacing marks joined above besides. That is a combining mark
+// (unicode.IsMark: nonspacing, spacing and enclosing marks, the variation selectors among them),
+// any other character of Grapheme_Extend (unicode.Other_Grapheme_Extend: the zero width non-joiner
+// and the tags of a subdivision's flag among them), an emoji's skin-tone modifier (U+1F3FB to
+// U+1F3FF), the zero width joiner, and the Thai and Lao vowel signs am (U+0E33, U+0EB3), letters
+// that UAX #29 counts as spacing marks.
+func extends(r rune) bool {
+	return unicode.IsMark(r) || unicode.Is(unicode.Other_Grapheme_Extend, r) || r == zeroWidthJoiner ||
+		(r >= 0x1F3FB && r <= 0x1F3FF) || r == 0x0E33 || r == 0x0EB3
+}
+
+// regionalIndicatorsEnding is how many regional indicators text ends with, one after another.
+func regionalIndicatorsEnding(text string) int {
+	count := 0
+	for text != "" {
+		r, size := utf8.DecodeLastRuneInString(text)
+		if !unicode.Is(unicode.Regional_Indicator, r) {
 			break
 		}
-		whole = end
+		count++
+		text = text[:len(text)-size]
 	}
-	if whole == 0 {
-		return head
+	return count
+}
+
+// hangulKind is a character's Hangul_Syllable_Type, which UAX #29's rules GB6 to GB8 read: a
+// leading, vowel or trailing jamo, a syllable of a leading and a vowel jamo (LV), or one with a
+// trailing jamo too (LVT). Go's unicode package holds no table of it; its ranges are Unicode's
+// HangulSyllableType.txt, unchanged since Unicode 5.2.
+type hangulKind int
+
+const (
+	notHangul hangulKind = iota
+	hangulLeading
+	hangulVowel
+	hangulTrailing
+	hangulLV
+	hangulLVT
+)
+
+// hangulOf is r's hangulKind.
+func hangulOf(r rune) hangulKind {
+	switch {
+	case r >= 0x1100 && r <= 0x115F, r >= 0xA960 && r <= 0xA97C:
+		return hangulLeading
+	case r >= 0x1160 && r <= 0x11A7, r >= 0xD7B0 && r <= 0xD7C6:
+		return hangulVowel
+	case r >= 0x11A8 && r <= 0x11FF, r >= 0xD7CB && r <= 0xD7FB:
+		return hangulTrailing
+	case r >= 0xAC00 && r <= 0xD7A3:
+		if (r-0xAC00)%28 == 0 {
+			return hangulLV
+		}
+		return hangulLVT
 	}
-	return head[:whole]
+	return notHangul
+}
+
+// hangulJoined is whether a character of kind before and one of kind after belong to one Hangul
+// syllable (UAX #29's GB6 to GB8): a leading jamo goes on with a leading or vowel jamo or a
+// syllable, a vowel jamo or an LV syllable with a vowel or trailing jamo, and a trailing jamo or an
+// LVT syllable with a trailing jamo.
+func hangulJoined(before, after hangulKind) bool {
+	switch before {
+	case hangulLeading:
+		return after == hangulLeading || after == hangulVowel || after == hangulLV || after == hangulLVT
+	case hangulVowel, hangulLV:
+		return after == hangulVowel || after == hangulTrailing
+	case hangulTrailing, hangulLVT:
+		return after == hangulTrailing
+	}
+	return false
 }
 
 // refusedNoticeRow is the outbox row of a message-refused notice (messagePostRefused,
@@ -2284,7 +2392,8 @@ func (r *outbox) roleMessage(ctx context.Context, row record.OutboxRow, payload 
 // stays owed until the role holds its topic and the row's publish reaches it. The debt ends
 // undelivered on these events alone:
 //
-//  1. a pod release of the issue recorded after that stop (store.StoppedByAPause);
+//  1. a release of the issue's pod recorded after that stop that suspended the role
+//     (store.StoppedByAPause): a release that suspended the pod's other roles alone ends nothing;
 //  2. a takeover suspension: the claim suspended by any source but the release, an operator's,
 //     the daemon's and a root's own exit among them;
 //  3. a failure;
@@ -3965,14 +4074,16 @@ func (r *outbox) provisionIn(ctx context.Context, key string, repo ghrepo.Reposi
 }
 
 // dispatchDocumentIssue is the daemon's read of which issue holds a gate step's document, for a text
-// it sends that names that document by the bare artifact reference (workflow.NameStartDocuments
-// and NameCatchUpDocuments, of issue's text): Dispatch's read of the artifact
+// that names that document by the bare artifact reference (workflow.NameStartDocuments and
+// NameCatchUpDocuments, of issue's text): Dispatch's read of the artifact
 // (dispatch.Client.Approval, the read the gate seed and the boot catch-up make of a gate's
-// document), which names the issue that holds it. It is made where the text is sent, outside any
-// transaction, one read for each such document. A read that fails or names no issue, or a daemon
-// with no Dispatch client, answers none, and the text keeps the bare reference, which its reader
-// can follow: the text is sent rather than held on Dispatch, and names no document that may be
-// another issue's.
+// document), which names the issue that holds it. It is made when the outbox runs an architect's
+// start row, which queues the task on the claim, when the daemon's rootTask writes such a queued
+// task again at its send, and when the outbox publishes a catch-up, outside any transaction, one
+// read for each such document; the claim's send of a task it queued reads nothing again otherwise.
+// A read that fails or names no issue, or a daemon with no Dispatch client, answers none, and the
+// text keeps the bare reference, which its reader can follow: the text is sent rather than held
+// on Dispatch, and names no document that may be another issue's.
 func dispatchDocumentIssue(ctx context.Context, client dispatch.Client, log *slog.Logger, issue string) func(artifact string) (string, bool) {
 	return func(artifact string) (string, bool) {
 		if client == nil {
