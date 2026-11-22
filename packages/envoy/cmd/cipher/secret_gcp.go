@@ -497,10 +497,13 @@ var onGcloudStep = func(step string) {}
 // gcloud that exits by itself can leave a child holding its output, which gcloudWaitDelay stops
 // the wait for and does not kill. The group is gcloud's own, so nothing else is in it, and while
 // a process is left in it its id names no other group.
-// It runs on one OS thread from before cmd starts until cmd has been waited for: where gcloud's
-// parent-death signal is set (gcloudProcAttr), the kernel sends it when the thread that started
-// gcloud ends, not this process, and the Go runtime ends a thread only when a goroutine locked to
-// it returns locked.
+// It runs on one OS thread from before cmd starts until cmd has been waited for. The process cmd
+// starts carries a parent-death signal (gcloudProcAttr: gcloud's supervisor, or gcloud where there
+// is none), which the kernel sends when the thread that started it ends, not when this process
+// does; the Go runtime ends a thread when a goroutine locked to it returns locked. Unheld, this
+// goroutine could move to another thread after the start, and a goroutine of any package that
+// locks its thread and returns could then run on the starting thread and end it, killing gcloud
+// mid-call (TestGcloudLivesWhileOtherThreadsEndDuringItsCall).
 func runRecorded(cmd *exec.Cmd) error {
 	stop := watchSignalsWhileGcloudRuns()
 	defer stop()

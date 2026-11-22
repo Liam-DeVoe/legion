@@ -644,6 +644,122 @@ func requireGcloudEndsWithAgentSecrets(t *testing.T, launcher string) {
 	}
 }
 
+// TestGcloudLivesWhileOtherThreadsEndDuringItsCall: a gcloud call lives on while other threads of
+// this process end, even one the scheduler would otherwise put on the thread that started it. The
+// kernel sends the parent-death signal of the process runRecorded starts (gcloudProcAttr) when the
+// thread that started it ends, not when this process does, and the Go runtime ends a thread when
+// a goroutine locked to it returns locked. runRecorded holds the thread from the start until the
+// wait, so no other goroutine runs there meanwhile. The row parks runRecorded right after the start
+// (onGcloudStep), with one processor so the scheduler hands the starting thread to whatever runs
+// next, then ends threads (goroutines that lock their thread and return) until each is gone, and
+// only then lets the call go on: without that hold the first such goroutine runs on the starting
+// thread, its end sends the signal, and gcloud is killed before it can answer. A start on the
+// process's main thread, which the runtime parks instead of ending, could not show this, so the row
+// starts the call again until it starts elsewhere.
+func TestGcloudLivesWhileOtherThreadsEndDuringItsCall(t *testing.T) {
+	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(1))
+	restore := onGcloudStep
+	t.Cleanup(func() { onGcloudStep = restore })
+	for attempt := 1; ; attempt++ {
+		if gcloudLivedWhileThreadsEnded(t) {
+			return
+		}
+		if attempt == 5 {
+			t.Fatal("each of 5 calls started gcloud from the process's main thread, so none could show the hold")
+		}
+	}
+}
+
+// gcloudLivedWhileThreadsEnded runs one call of TestGcloudLivesWhileOtherThreadsEndDuringItsCall.
+// It answers false, having let the call end, where the call started on the main thread.
+func gcloudLivedWhileThreadsEnded(t *testing.T) bool {
+	t.Helper()
+	dir := t.TempDir()
+	goAhead, answered := filepath.Join(dir, "go"), filepath.Join(dir, "answered")
+	// A stub with no child: where gcloud is killed before it answers, nothing of it is left. It
+	// waits for the go-ahead, and gives up when this test's process is gone.
+	stub := filepath.Join(dir, "gcloud")
+	script := "#!/bin/sh\nwhile [ ! -e " + shellWord(goAhead) + " ]; do kill -0 " + strconv.Itoa(os.Getpid()) + " 2>/dev/null || exit 1; sleep 0.01; done\n" +
+		"echo yes >" + shellWord(answered) + "\nexit 0\n"
+	if err := os.WriteFile(stub, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gcloud := gcloudCommand{path: stub}
+	startedOn, release := make(chan int, 1), make(chan struct{})
+	onGcloudStep = func(step string) {
+		if step == gcloudStarted {
+			startedOn <- unix.Gettid()
+			<-release
+		}
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := runGcloud(context.Background(), gcloud, "auth", "list")
+		done <- err
+	}()
+	letItEnd := func() error {
+		close(release)
+		if err := os.WriteFile(goAhead, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		err, ok := received(t, done)
+		if !ok {
+			t.Fatalf("the gcloud call had not ended after its go-ahead, %s before the test binary's deadline", waitMargin)
+		}
+		return err
+	}
+	starter, ok := received(t, startedOn)
+	if !ok {
+		t.Fatalf("the gcloud call never started, %s before the test binary's deadline", waitMargin)
+	}
+	if starter == os.Getpid() {
+		_ = letItEnd()
+		return false
+	}
+	ended := endThreads(t, 8)
+	err := letItEnd()
+	if _, statErr := os.Stat(answered); statErr != nil {
+		t.Fatalf("gcloud was killed before it could answer (%v; the call answered %v): the thread that started it, %d, was among the threads that ended while the call waited (%v), and the parent-death signal went with it", statErr, err, starter, slices.Contains(ended, starter))
+	}
+	return true
+}
+
+// endThreads ends n threads of this process, one after another: each is a goroutine that locks its
+// thread and returns locked, which the runtime ends the thread for. It answers their thread ids,
+// once /proc no longer lists any of them (heldBeforeGiveUp). One that lands on the process's main
+// thread unlocks it before it returns: the runtime would park that thread rather than end it, and
+// lose it for the rest of the test binary's run.
+func endThreads(t *testing.T, n int) []int {
+	t.Helper()
+	ids := make([]int, 0, n)
+	for range n {
+		id := make(chan int)
+		go func() {
+			runtime.LockOSThread()
+			tid := unix.Gettid()
+			if tid == os.Getpid() {
+				runtime.UnlockOSThread()
+				tid = 0
+			}
+			id <- tid
+		}()
+		if tid := <-id; tid != 0 {
+			ids = append(ids, tid)
+		}
+	}
+	if !heldBeforeGiveUp(t, func() bool {
+		for _, tid := range ids {
+			if _, err := os.Stat(fmt.Sprintf("/proc/self/task/%d", tid)); err == nil {
+				return false
+			}
+		}
+		return true
+	}) {
+		t.Fatalf("the threads %v had not all ended, %s before the test binary's deadline", ids, waitMargin)
+	}
+	return ids
+}
+
 // TestGcloudSignInSignalledAtGcloudsStartOrEndKillsGcloudsChild: an interrupt that comes at
 // either edge of a gcloud call still ends agent-secrets by SIGINT and kills gcloud's group, the
 // child that holds gcloud's output among them: the moment gcloud has started, before
