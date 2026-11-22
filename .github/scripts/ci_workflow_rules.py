@@ -213,8 +213,8 @@ def path_lines(value) -> list:
     return [line.strip() for line in str(value).splitlines() if line.strip()]
 
 
-# A `${{ env.NAME }}` in a cache key, which GitHub fills in from the env of the step's job, else
-# from the env of its workflow.
+# A `${{ env.NAME }}` in a cache key, which GitHub fills in from the env of the key's own step,
+# else from the env of its job, else from the env of its workflow.
 ENV_REFERENCE = re.compile(r"\$\{\{\s*env\.([A-Za-z_][A-Za-z0-9_]*)\s*\}\}")
 
 
@@ -231,19 +231,21 @@ def resolved_key(key: str, *envs) -> str:
 
 
 def job_cache_steps(job: dict, action: str) -> list:
-    """Every actions/cache/<action> step of one job, as (its family, its with:)."""
-    return [(cache_family(str((step.get("with") or {}).get("key", ""))), step.get("with") or {})
+    """Every actions/cache/<action> step of one job, as (its family, its with:, its own env:)."""
+    return [(cache_family(str((step.get("with") or {}).get("key", ""))), step.get("with") or {},
+             step.get("env"))
             for step in ((job or {}).get("steps") or [])
             if str((step or {}).get("uses", "")).split("@")[0] == f"actions/cache/{action}"]
 
 
 def cache_steps(document: dict, action: str) -> list:
     """Every actions/cache/<action> step of a workflow, as (its job, its family, its with:, its
-    key with each env reference resolved against the job's env, else the workflow's)."""
-    return [(job_id, family, given, resolved_key(str(given.get("key", "")).rstrip(),
+    key with each env reference resolved against the step's own env, else the job's, else the
+    workflow's)."""
+    return [(job_id, family, given, resolved_key(str(given.get("key", "")).rstrip(), step_env,
                                                  (job or {}).get("env"), document.get("env")))
             for job_id, job in (document.get("jobs") or {}).items()
-            for family, given in job_cache_steps(job or {}, action)]
+            for family, given, step_env in job_cache_steps(job or {}, action)]
 
 
 def restores_of(documents: dict) -> dict:
@@ -270,12 +272,12 @@ def check_cache_round_trip(documents: dict, problems: list) -> None:
     every restore miss, and nothing fails - each job just rebuilds from nothing what the fill
     already built. A family is the key's text up to its first expression, and it is what
     pairs a save with the restores to hold it to; the keys are compared as text once each
-    `${{ env.NAME }}` in them is read as the value the env of its step's job, else of its
-    workflow, sets for NAME, in the save's document and in the restore's (a reference neither
-    sets stays as text), and the paths as the ordered lists of lines they name. Read as text
-    alone, two keys that both say `${{ env.FIRST_ROLLOUT_COMMIT }}` would agree while
-    ci-caches.yaml's dispatch-builds job and ci-job-dispatch-two-builds.yaml set two copies of
-    that pin apart, and every restore would miss. A family ci.yaml restores that this workflow
+    `${{ env.NAME }}` in them is read as the value the env of its own step, else of its step's
+    job, else of its workflow, sets for NAME, in the save's document and in the restore's (a
+    reference none of them sets stays as text), and the paths as the ordered lists of lines they
+    name. Read as text alone, two keys that both say `${{ env.FIRST_ROLLOUT_COMMIT }}` would agree
+    while ci-caches.yaml's dispatch-builds job and ci-job-dispatch-two-builds.yaml set two copies
+    of that pin apart, and every restore would miss. A family ci.yaml restores that this workflow
     does not save is no fault: docs-pages.yaml saves go-docs. The other way round is one, a
     family nothing restores being a fill nobody reads. Each restore here is a lookup, which must be
     `lookup-only: true` with no restore-keys: the question it asks is whether that exact key is
@@ -314,7 +316,7 @@ def check_cache_round_trip(documents: dict, problems: list) -> None:
                 problems.append(error(CACHE_WORKFLOW, f"job {job_id} saves family {family} under key "
                                                       f"`{key}`, but {restore_where} restores it under "
                                                       f"`{restored_key}` (each `${{{{ env.NAME }}}}` read as the value "
-                                                      f"its job's env, else its workflow's, sets): a restore whose key is not the save's "
+                                                      f"its step's env, else its job's, else its workflow's, sets): a restore whose key is not the save's "
                                                       f"misses every time, and nothing fails - the job rebuilds from nothing instead"))
             if paths != restored_paths:
                 problems.append(error(CACHE_WORKFLOW, f"job {job_id} saves family {family} from "

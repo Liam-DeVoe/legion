@@ -284,9 +284,10 @@ jobs:
     # 130805958692); and release-push.test.sh's two npm reads that a 504 fails (round 49), which
     # wait out retry_fetch's sleeps for real: the one that fails once waits the first sleep, 10 s,
     # and the one that fails on every attempt waits all of them, 150 s, 151 s measured in an issue
-    # pod. Its third such read, a 504 whose message carries an E404's text (round 50), waits
-    # nothing: its run has a stub sleep that returns at once. 2177 + 10 + 151 = 2338 s, the
-    # unretried term. To it the budget adds its slowest retried step alone: setup-bun's two
+    # pod. Its four other npm reads that fail on every attempt wait nothing, each run with a stub
+    # sleep that returns at once: three 504s whose body carries an E404's text (rounds 50 and 53)
+    # and a 200 that names no version (round 53). 2177 + 10 + 151 = 2338 s, the unretried term.
+    # To it the budget adds its slowest retried step alone: setup-bun's two
     # `ci_tools_fetch` calls at 3416 s, above the changelog render, whose run of release-push.sh
     # carries that script's retried calls, 2700 s as .github/scripts/check-download-retry.sh's
     # rule 8 sums them, install-changie's one at 1708 s, the workspace install's and the Go

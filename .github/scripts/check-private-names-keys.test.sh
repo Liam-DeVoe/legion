@@ -241,6 +241,19 @@ for answer in 'HTTP 504 with a 404 line' 'HTTP 504 with a fake 404 line'; do
     "$(contains "$out" '^::error::UNKNOWN: GitHub did not answer for the release of legion-v9\.0\.0 ')"
   check "$answer: takes no later release as the cutoff" "$(is "$(contains "$out" 'active since legion-v9\.1\.0')" false)"
 done
+# A read gh answers with exit 0 and a status that is no 200: gh 2.98.0 exited 0 for a local
+# server's 204, printing `HTTP/1.1 204 No Content` first (dispatch://INFRA-1545, round 53). That
+# is no release body to read and no 404 to skip, so it is UNKNOWN, naming the status line it got.
+write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
+marker_on_main
+echo 'HTTP 204 No Content' > "$work/release.legion-v9.0.0"
+release legion-v9.1.0 2026-11-20T06:00:00Z
+key_run
+check "a 204, gh's exit 0 with no 200 status line: exits 2" "$(is "$status" 2)"
+check "a 204, gh's exit 0 with no 200 status line: is UNKNOWN naming that status line" \
+  "$(contains "$out" '^::error::UNKNOWN: GitHub answered the release of legion-v9\.0\.0 with no 200 status line (HTTP/2\.0 204 No Content)')"
+check "a 204, gh's exit 0 with no 200 status line: takes no later release as the cutoff" \
+  "$(is "$(contains "$out" 'active since legion-v9\.1\.0')" false)"
 write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
 key_rule_on
 mv "$work/remote" "$work/remote.held"

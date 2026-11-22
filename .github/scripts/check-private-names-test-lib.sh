@@ -187,7 +187,9 @@ GREP
 # message carries `(HTTP 404)`, as gh 2.98.0 prints one: the body's message, then the status;
 # and a file holding `HTTP 504 with a 404 line` or `HTTP 504 with a fake 404 line` a 504 whose
 # message holds a newline, so that a whole line of gh's error reads as a 404's, as gh 2.98.0
-# printed them against a local server in round 53 of dispatch://INFRA-1545);
+# printed them against a local server in round 53 of dispatch://INFRA-1545; and a file holding
+# `HTTP 204 No Content` a 2xx that is no 200, which gh 2.98.0 exited 0 on for a local server,
+# printing its status line first, in that round);
 # one commit's files (`$work/commit.<sha>`, else a refusal); and the
 # pull request's files (`$work/pr-files`, one JSON list a page as `gh api --paginate` prints
 # them, else a refusal; read without --paginate, also a refusal). The repository's history and
@@ -243,6 +245,10 @@ case "$1 $2" in
       failed 504 "Gateway Timeout" $'upstream said (HTTP 404)\nretry later'
     grep -q -x 'HTTP 504 with a fake 404 line' "$file" &&
       failed 504 "Gateway Timeout" $'upstream\ngh: Not Found (HTTP 404)\nretry later'
+    if grep -q -x 'HTTP 204 No Content' "$file"; then
+      $include && printf 'HTTP/2.0 204 No Content\nContent-Length: 0\r\n\r\n'
+      exit 0
+    fi
     if $include; then
       printf 'HTTP/2.0 200 OK\n'
       printf 'Content-Type: application/json; charset=utf-8\r\n\r\n'

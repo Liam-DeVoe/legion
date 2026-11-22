@@ -193,9 +193,9 @@
 #      .github/workflows that restores it (the release builds, the nightly browser re-record,
 #      ci-caches.yaml's own lookups), since a drift there misses as silently (the keys compared as
 #      text, trailing whitespace aside, once each `${{ env.NAME }}` in them is read as the value
-#      the env of its step's job, else of its workflow, sets for NAME, a reference neither sets
-#      staying text; the paths as ordered lists of stripped lines), naming the file
-#      the restore is in, or that none of ci.yaml's files
+#      the env of its own step, else of its step's job, else of its workflow, sets for NAME, a
+#      reference none of them sets staying text; the paths as ordered lists of stripped lines),
+#      naming the file the restore is in, or that none of ci.yaml's files
 #      restores, and an actions/cache/restore of ci-caches.yaml that is not
 #      `lookup-only: true` or that carries restore-keys. ci-caches.yaml fills the entries ci.yaml
 #      restores, and a key or a path that drifts apart makes every restore miss silently: nothing

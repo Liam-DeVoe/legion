@@ -295,18 +295,20 @@ else
       # (`HTTP/2.0 404 Not Found`), which no body can write; gh's standard error is not read for
       # it, since gh puts the API's message in front of its `(HTTP <code>)` there, and a message
       # holding a newline after `(HTTP 404)` ends a line with it (dispatch://INFRA-1545, round
-      # 52). The body follows the headers' blank line. Each attempt rewrites gh-error, so the last
-      # one's message is what UNKNOWN names.
+      # 52). The body follows the headers' blank line. A read that got no response prints nothing,
+      # which the status-line read below takes as no status line.
+      # Each attempt rewrites gh-error, so the last one's message is what UNKNOWN names, by its
+      # last line, which gh ends with its own `(HTTP <code>)` on an HTTP error.
       # shellcheck disable=SC2016 # the shell retry_fetch runs expands $1, $2, $response and the rest
       if ! retry_fetch "the release of $tag" 30 -- bash -c \
-        'response=$(gh api "$1" -i 2> "$2"); status=$?; printf "%s\n" "$response"
+        'response=$(gh api "$1" -i 2> "$2"); status=$?; [ -z "$response" ] || printf "%s\n" "$response"
          read -r proto code _ <<< "$response"
          [ "$status" -eq 0 ] || { [[ $proto == HTTP/* ]] && [ "$code" = 404 ]; } || exit "$status"' \
         release-read "repos/$repository/releases/tags/$tag" "$work/gh-error" > "$work/response"; then
-        unknown "GitHub did not answer for the release of $tag ($(head -n 1 "$work/gh-error"))"
+        unknown "GitHub did not answer for the release of $tag ($(tail -n 1 "$work/gh-error"))"
         break
       fi
-      read -r release_proto release_code _ < "$work/response"
+      read -r release_proto release_code _ < "$work/response" || true
       if [[ $release_proto == HTTP/* ]] && [ "$release_code" = 404 ]; then continue; fi
       if ! [[ $release_proto == HTTP/* && $release_code == 200 ]]; then
         unknown "GitHub answered the release of $tag with no 200 status line ($(head -n 1 "$work/response"))"

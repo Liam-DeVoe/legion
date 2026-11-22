@@ -2540,8 +2540,8 @@ check "names the family and both keys" \
 # A key may read a pin from the env: the dispatch-builds job of ci-caches.yaml and
 # ci-job-dispatch-two-builds.yaml both key the first-rollout build on
 # `${{ env.FIRST_ROLLOUT_COMMIT }}`, and each of the two jobs holds its own copy of the commit. The
-# rule reads each reference as the value its job's env, else its workflow's, sets, so two keys
-# that say the same text and name two values are a drift.
+# rule reads each reference as the value its step's own env, else its job's, else its workflow's,
+# sets, so two keys that say the same text and name two values are a drift.
 #
 # env_keys <root> <value>: cache_workflow's three go-app keys read that pin in place of the
 # runner's OS; ci-caches.yaml's fill job sets it to edb69e0d in its own env, and ci.yaml sets it
@@ -2571,6 +2571,23 @@ run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "names both keys, each with the value its env sets" \
   "$(contains "$out" 'job fill saves family go-app under key `go-app-edb69e0d`, but job app of .github/workflows/ci.yaml restores it under `go-app-67659e61`')"
+
+# GitHub reads a step's own env: before its job's: the save step here sets the pin to 67659e61
+# over its job's edb69e0d, so it saves under go-app-67659e61, while ci.yaml restores under the
+# edb69e0d its workflow sets. Everything else is the case above whose two envs agree and that
+# passes, so this refusal holds only when the step's env comes first: a rule that read the job's
+# env first would resolve the save to go-app-edb69e0d and pass it.
+echo "case: a save whose own step env sets the key's env name over its job's, against a restore of the job's value"
+root=$(fixture cache-env-step-first)
+cache_workflow "$root"
+env_keys "$root" edb69e0d
+replace "$root/.github/workflows/ci-caches.yaml" \
+  $'        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0\n' \
+  $'        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0\n        env:\n          FIRST_ROLLOUT_COMMIT: 67659e61\n'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the save's key with its step's value and the restore's with the workflow's" \
+  "$(contains "$out" 'job fill saves family go-app under key `go-app-67659e61`, but job app of .github/workflows/ci.yaml restores it under `go-app-edb69e0d`')"
 
 echo "case: a restore path the save of that family does not name"
 root=$(fixture cache-path-drift)

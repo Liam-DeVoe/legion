@@ -39,9 +39,11 @@
 # read goes through retry_fetch: npm's E404 starts from 0.0.0 with one call,
 # and a 504 is retried, once or on every attempt, which wait out the helper's
 # sleeps for real: its first, 10 s, and all of them, 150 s, which
-# ci-job-test.yaml's `test` job key carries. A 504 whose message carries a
-# registry body's `npm error code E404` is retried too, and waits nothing: its
-# run has a stub sleep of its own that returns at once.
+# ci-job-test.yaml's `test` job key carries. Four more reads fail on every
+# attempt and wait nothing, each run with a stub sleep of its own that returns
+# at once: three 504s whose body carries an E404's text (`npm error code E404`
+# in npm's message, npm's E404 status line on a line of its own, and that line
+# with a whole fake 404 answer after it), and a 200 npm answers with no version.
 # The `tag` cases run it with $GITHUB_SHA naming the clone's HEAD and check
 # that the tag names that commit and nothing else moves: no commit is added,
 # the manifests and the lockfile keep their blobs, the work tree stays clean
@@ -500,14 +502,14 @@ change "$work/v/c" packages/pkg/index.js "fix: a bug"
 NPM_TEST_VERSION=2.3.4 version_run "$work/v/c" pkg-v --first-npm @example/pkg -- packages/pkg/
 check "no tag, --first-npm: exits 0" "$(is "$rc" 0)"
 check "no tag, --first-npm: bumps npm's version over the whole history" "$(is "$out" "$(outputs 2.3.5 pkg-v2.3.5 false)")"
-check "no tag, --first-npm: asked npm for the package's version" "$(is "$npm_calls" '[view][@example/pkg][version][--json]')"
+check "no tag, --first-npm: asked npm for the package's version" "$(is "$(grep -c '^\[view\]\[@example/pkg\]\[version\]' <<<"$npm_calls")" 1)"
 check "no tag, --first-npm: logs the bump from npm's version" "$(contains "$err" '^Bumping v2\.3\.4 -> pkg-v2\.3\.5$')"
 NPM_TEST_FAIL=E404 version_run "$work/v/c" pkg-v --first-npm @example/pkg -- packages/pkg/
 check "no tag, npm has no such package: starts from 0.0.0" "$(is "$rc $out" "0 $(outputs 0.0.1 pkg-v0.0.1 false)")"
 # An E404 is the registry's answer, a first release, and no fault: it is read
 # once, never retried, and reported in one line of its own rather than as an
 # ::error:: or npm's own error text.
-check "no tag, npm has no such package: asked npm once, with no retry" "$(is "$npm_calls" '[view][@example/pkg][version][--json]')"
+check "no tag, npm has no such package: asked npm once, with no retry" "$(is "$(grep -c '^\[view\]\[@example/pkg\]\[version\]' <<<"$npm_calls")" 1)"
 check "no tag, npm has no such package: no ::error::" "$(is "$(contains "$err" '::error::')" false)"
 check "no tag, npm has no such package: one line says so, and npm's own error text is not printed" \
   "$(is "$(contains "$err" '^npm-published-version\.sh: npm has no package @example/pkg (E404), so its published version is 0\.0\.0$')|$(contains "$err" '^npm error')" 'true|false')"
@@ -524,21 +526,32 @@ check "no tag, npm 504 on every attempt: the error names the npm read" "$(contai
 check "no tag, npm 504 on every attempt: starts from no 0.0.0" "$(is "$(contains "$err" 'v0\.0\.0')" false)"
 check "no tag, npm 504 on every attempt: exits 1" "$(is "$rc" 1)"
 check "no tag, npm 504 on every attempt: asked npm five times, retry_fetch's attempts" \
-  "$(is "$npm_calls" "$(for _ in 1 2 3 4 5; do echo '[view][@example/pkg][version][--json]'; done)")"
+  "$(is "$(grep -c '^\[view\]\[@example/pkg\]\[version\]' <<<"$npm_calls")" 5)"
 check "no tag, npm 504 on every attempt: release-push.sh's error names the package" \
   "$(contains "$err" '^::error::release-push\.sh version: npm did not give the published version of @example/pkg, ')"
 check "no tag, npm 504 on every attempt: npm's own error reaches the log" "$(contains "$err" '^npm error code E504$')"
 # A 504 whose message carries the text of an E404. npm appends a registry body's `error` field
 # to its own message, so npm 11.19.1 printed a gateway's 504 with `npm error code E404` at the end
-# of its message line (dispatch://INFRA-1545, round 50). Only npm's error-code line names the
-# code, and it says E504: a failure that is retried and fails the job, never a 0.0.0. The row has
-# a stub npm of its own, in a directory this one run takes as $work, since version_run puts
-# "$work/bin" first on PATH; beside it, a stub sleep that returns at once, so retry_fetch's five
-# attempts wait nothing.
+# of its message line (dispatch://INFRA-1545, round 50), and given --json it writes that message
+# as the `summary` of the error object it prints on stdout (measured in round 53). The helper
+# reads that object's `error.code`, which npm sets from the status, and it says E504: a failure
+# that is retried and fails the job, never a 0.0.0. The row has a stub npm of its own, printing
+# that object and npm's two lines, in a directory this one run takes as $work, since version_run
+# puts "$work/bin" first on PATH; beside it, a stub sleep that returns at once, so retry_fetch's
+# five attempts wait nothing.
 npm_body="$work/npm-504-body"
 mkdir -p "$npm_body/bin"
 cat > "$npm_body/bin/npm" <<'NPM'
 #!/usr/bin/env bash
+cat <<'JSON'
+{
+  "error": {
+    "code": "E504",
+    "summary": "504 Gateway Timeout - GET https://registry.npmjs.org/@example%2fpkg - upstream said: npm error code E404",
+    "detail": ""
+  }
+}
+JSON
 echo "npm error code E504" >&2
 echo "npm error 504 Gateway Timeout - GET https://registry.npmjs.org/@example%2fpkg - upstream said: npm error code E404" >&2
 exit 1
@@ -581,6 +594,34 @@ for mode in line fake; do
     "$(is "$([ "$rc" -ne 0 ] && echo nonzero)|$out" "nonzero|")"
   check "no tag, npm 504 whose body writes an E404 $mode: starts from no 0.0.0" "$(is "$(contains "$err" 'v0\.0\.0')" false)"
 done
+# A 200 that names no version: npm 11.19.1 exits 0 and prints nothing on stdout for a registry
+# 200 whose body is {"error":{"code":"E404"}} (measured in an issue pod against a local
+# registry, dispatch://INFRA-1545, round 53). That is no version, and no failure npm reports: the
+# helper prints nothing on stdout and exits 1, and retry_fetch reads it again, five calls in all,
+# before the job fails by name. Its own stub npm logs each call and prints nothing, beside a stub
+# sleep that returns at once.
+npm_empty="$work/npm-empty"
+mkdir -p "$npm_empty/bin"
+cat > "$npm_empty/bin/npm" <<'NPM'
+#!/usr/bin/env bash
+{ printf '[%s]' "$@"; printf '\n'; } >> "$NPM_TEST_DIR/npm-calls"
+exit 0
+NPM
+printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$npm_empty/bin/sleep"
+chmod +x "$npm_empty/bin/npm" "$npm_empty/bin/sleep"
+work=$npm_empty version_run "$work/v/c" pkg-v --first-npm @example/pkg -- packages/pkg/
+check "no tag, npm exits 0 naming no version: exits 1 printing nothing, from no 0.0.0" \
+  "$(is "$rc|$out|$(contains "$err" 'v0\.0\.0')" "1||false")"
+check "no tag, npm exits 0 naming no version: the helper says npm answered no version" \
+  "$(contains "$err" '^npm-published-version\.sh: npm answered no version of @example/pkg: $')"
+check "no tag, npm exits 0 naming no version: the helper exits 1 on each of retry_fetch's five attempts" \
+  "$(is "$(grep -c "^npm's published version of @example/pkg: attempt [1-5] of 5 failed (exit 1);" <<<"$err")" 5)"
+check "no tag, npm exits 0 naming no version: the helper prints nothing on stdout" \
+  "$(is "$(contains "$err" 'to standard output')" false)"
+check "no tag, npm exits 0 naming no version: asked npm five times" \
+  "$(is "$(grep -c '^\[view\]\[@example/pkg\]\[version\]' <<<"$npm_calls")" 5)"
+check "no tag, npm exits 0 naming no version: release-push.sh's error names the package" \
+  "$(contains "$err" '^::error::release-push\.sh version: npm did not give the published version of @example/pkg, ')"
 # @sjawhar/claude-envoy's case as it stood before its first release, which release.yaml's
 # claude_envoy_build ran: npm carried a 0.0.0 placeholder of the package, so npm answered and the
 # fallback above was never reached, and no claude-envoy-v tag existed yet. The first release comes
@@ -592,7 +633,7 @@ NPM_TEST_VERSION=0.0.0 version_run "$work/v/c" pkg-v --first-npm @example/pkg --
 check "no tag, npm's 0.0.0 placeholder: exits 0" "$(is "$rc" 0)"
 check "no tag, npm's 0.0.0 placeholder: the first release reads the whole history" \
   "$(is "$out" "$(outputs 0.1.0 pkg-v0.1.0 false)")"
-check "no tag, npm's 0.0.0 placeholder: asked npm for the package's version" "$(is "$npm_calls" '[view][@example/pkg][version][--json]')"
+check "no tag, npm's 0.0.0 placeholder: asked npm for the package's version" "$(is "$(grep -c '^\[view\]\[@example/pkg\]\[version\]' <<<"$npm_calls")" 1)"
 check "no tag, npm's 0.0.0 placeholder: logs the bump from the placeholder" "$(contains "$err" '^Bumping v0\.0\.0 -> pkg-v0\.1\.0$')"
 version_run "$work/v/c" pkg-v -- packages/pkg/
 check "no tag, no --first-npm: exits 1 printing nothing" "$(is "$rc|$out" "1|")"
@@ -1230,21 +1271,26 @@ check "with the checkout: the body keeps its notes and gets the digest under ## 
   "$(is "$(<"$work/edited.md")" "$(printf 'Generated notes\n\n## Worker image\n\n`%s`' "$ref")")"
 
 echo
-echo "Case: release.yaml's codex-envoy publish reads npm's E404 from npm's error-code line alone"
-# The publish job's 'codex-envoy: Publish to npm' step asks npm for the package's name, and takes a
-# failure that npm answers E404 as a package npm does not have yet: a warning, exit 0, nothing
-# published. npm appends a registry body's `error` field to its own message line, so npm 11.19.1
-# against a registry whose 504 carries {"error":"npm error code E404"} prints `npm error code
-# E504` and then `npm error 504 Gateway Timeout - GET <url> - npm error code E404` (measured in an
-# issue pod, dispatch://INFRA-1545, round 52). That is a registry that failed, not a package npm
-# lacks: the step must fail it rather than skip the release with a green step. The step's `run:`
-# is read out of the workflow by name and run under the shell GitHub runs a `run:` with, against a
-# stub npm first on PATH that answers `view <name> name` as $NPM_PUB_TEST says (e404, e504body,
-# or e504line and e504fake, a 504 whose body writes npm's E404 status line, and then a whole fake
-# 404 answer, on lines of their own, as npm 11.19.1 printed them in round 53), on stderr and,
-# given --json, as the object {"error": {"code", "summary", "detail"}} npm 11.19.1 writes on
-# stdout; `view <name>@<version> version` with a failure (no such version); and logs `publish`.
-# Each row judges what the step does, its exit, its warning and whether it publishes.
+echo "Case: release.yaml's codex-envoy publish reads npm's E404 from \`npm view --json\`'s \`.error.code\` alone"
+# The publish job's 'codex-envoy: Publish to npm' step asks npm for the package's name with
+# `npm view <name> name --json`, and takes a failure whose JSON error object on stdout has the
+# `error.code` E404 as a package npm does not have yet: a warning, exit 0, nothing published. npm
+# sets that code from the registry's status, and copies a body's `error` field into the object's
+# `summary` and into its own lines on stderr: npm 11.19.1 against a registry whose 504 carries
+# {"error":"npm error code E404"} writes `npm error code E504` and then `npm error 504 Gateway
+# Timeout - GET <url> - npm error code E404` on stderr, and that message as the summary of an
+# object whose code is E504 (measured in an issue pod, dispatch://INFRA-1545, rounds 52 and 53).
+# That is a registry that failed, not a package npm lacks: the step must fail it rather than skip
+# the release with a green step. The step's `run:` is read out of the workflow by name and run
+# under the shell GitHub runs a `run:` with, against a stub npm first on PATH that answers `view
+# <name> name` as $NPM_PUB_TEST says (e404, e504body, or e504line and e504fake, a 504 whose body
+# writes npm's E404 status line, and then a whole fake 404 answer, on lines of their own, as npm
+# 11.19.1 printed them in round 53), on stderr and, given --json, as the object {"error":
+# {"code", "summary", "detail"}} npm 11.19.1 writes on stdout; with e504cr, a 504 whose summary
+# holds a carriage return, a workflow command and a newline, given --json; with held, a package
+# npm holds, as the JSON string `"@example/codex"` npm prints for it given --json; `view
+# <name>@<version> version` with a failure (no such version); and logs `publish`. Each row judges
+# what the step does, its exit, its warning and whether it publishes.
 mkdir -p "$work/codex-pub/bin"
 cat > "$work/codex-pub/bin/npm" <<'NPM'
 #!/usr/bin/env bash
@@ -1271,6 +1317,8 @@ case $NPM_PUB_TEST in
   e504line) fail E504 "$timeout"$'\n'"code E404" "npm error code E504" "npm error $timeout" "npm error code E404" ;;
   e504fake) fail E504 "$timeout"$'\n'"code E404"$'\n'"404 Not Found - GET $url - Not found" \
     "npm error code E504" "npm error $timeout" "npm error code E404" "npm error 404 Not Found - GET $url - Not found" ;;
+  e504cr) fail E504 "$timeout"$'\r'"::warning::injected"$'\n'"next line" "npm error code E504" "npm error $timeout" ;;
+  held) echo '"@example/codex"' ;;
 esac
 NPM
 chmod +x "$work/codex-pub/bin/npm"
@@ -1302,6 +1350,20 @@ for mode in e504body e504line e504fake; do
     "$(is "$(contains "$out" 'npm has no package')" false)"
   check "$mode, a 504 whose body carries an E404's text: nothing is published" "$(is "$(published)" 0)"
 done
+# The runner ends a line at a carriage return as at a newline, and the summary is a registry's
+# text: the step's ::error:: is one line, the code and then the summary with each control
+# character a space, so no command the body writes starts a line of its own. This stub's stderr
+# lines leave the body's text out, so the row reads the step's own line alone.
+run_codex_step e504cr
+check "e504cr, a 504 whose summary holds a CR and a workflow command: one ::error:: line, the code and the summary" \
+  "$(is "$rc|$(tr '\r' '\n' <<<"$out" | grep -c '^::')|$(grep '^::error::' <<<"$out")" \
+    "1|1|::error::reading @example/codex from npm failed: E504: 504 Gateway Timeout - GET https://registry.npmjs.org/@example%2fcodex - upstream timed out ::warning::injected next line")"
+# npm holds the package, and not this version: the step publishes the build's tarball, once.
+run_codex_step held
+check "held, npm holds the package and not this version: the step exits 0 and publishes once" \
+  "$(is "$rc|$(published)" "0|1")"
+check "held, npm holds the package and not this version: the publish names the build's tarball" \
+  "$(is "$(grep -c -F "[publish][$work/codex-pub/codex-envoy-tarball/example-codex-1.2.3.tgz]" <<<"$calls")" 1)"
 
 echo
 echo "Case 11b: restart leaves the release to a later unfinished run that holds this commit, else starts one"
