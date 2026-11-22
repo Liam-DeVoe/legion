@@ -279,7 +279,7 @@ func (w *workflowRuntime) stampPodResume(ctx context.Context, issue string, role
 // (retry). A released claim this call resumes answers no turn, even where the resume parks: the
 // row waits on its backoff, and its next attempt reads the park.
 //
-// The role's one open resume is what makes the wake one wake however often the row retries, so a
+// The claim's one open resume is what makes the wake one wake however often the row retries, so a
 // notice that backs off for ten minutes resumes the claim once. A claim of an issue that has left
 // the workflow, or whose tree lingers, is not woken: that pod is a close's to stop. An outbox
 // with no supervisor — a test's, which supervises nothing — wakes nothing: there is no machine to

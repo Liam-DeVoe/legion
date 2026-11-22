@@ -102,11 +102,11 @@ func TestAReleasedClaimIsReadByItsTokenAndItsSessionUntilAnotherPathTakesItOver(
 	}
 }
 
-// One open resume per role is the whole of the dedupe: the second wake of a role whose pod is
-// already coming back writes nothing and answers false, and the wake of another role of the same
-// pod is taken, since a wake resumes one claim. A role whose resume has its first turn stamped
-// is free to be woken again, which is a pod that came back, ran and was released afresh.
-func TestARoleTakesOneWakeWhileItsPodIsComingBack(t *testing.T) {
+// One open resume per claim is the whole of the dedupe: the second wake of a claim whose pod is
+// already coming back writes nothing and answers false, and the wake of another claim of the same
+// pod is taken, since a wake resumes one claim. A claim whose resume has its first turn stamped is
+// free to be woken again, which is a pod that came back, ran and was released afresh.
+func TestAClaimTakesOneWakeWhileItsPodIsComingBack(t *testing.T) {
 	store := migratedStore(t)
 	ctx := context.Background()
 	records := podRecords(t, store)
@@ -139,11 +139,11 @@ func TestARoleTakesOneWakeWhileItsPodIsComingBack(t *testing.T) {
 	})
 }
 
-// Two wakes of one role in transactions of their own — the workflow's, under the apply-fact
+// Two wakes of one claim in transactions of their own — the workflow's, under the apply-fact
 // lock, and the outbox's delivery wake, which runs in one of its own — take once. The index
 // decides it inside each transaction, where a read could be overtaken between its answer and the
 // insert, so the record holds one resume and the caller writes one start row.
-func TestTwoWakesOfOneRoleInSeparateTransactionsTakeOnce(t *testing.T) {
+func TestTwoWakesOfOneClaimInSeparateTransactionsTakeOnce(t *testing.T) {
 	store := migratedStore(t)
 	ctx := context.Background()
 	at := time.Now().UTC().Truncate(time.Millisecond)
@@ -158,7 +158,7 @@ func TestTwoWakesOfOneRoleInSeparateTransactionsTakeOnce(t *testing.T) {
 		}
 	}
 	if taken != 1 {
-		t.Fatalf("wakes taken = %d, want 1: one open resume per role", taken)
+		t.Fatalf("wakes taken = %d, want 1: one open resume per claim", taken)
 	}
 	var resumes int
 	if err := store.Pool().QueryRow(ctx, `select count(*) from pod_resumes where issue = $1 and role = 'implementer'`,

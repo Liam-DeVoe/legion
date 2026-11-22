@@ -541,7 +541,7 @@ func TestABoundaryWhoseClaimRunsNothingStillAnswersADeliveryAroundTheMark(t *tes
 // The take is made here without the resume behind it, which is what both shapes leave in the
 // record: a resume that failed after its take committed, and a daemon that came back up between
 // the two and reads the claim released with the resume open. The wake that meets it takes no wake
-// of its own — the resume already recorded is still the role's one open resume — and brings the
+// of its own — the resume already recorded is still the claim's one open resume — and brings the
 // claim back. No pause held that resume, so the wake says at Warn that it stands open with no
 // process behind it (logRefusedByOpenResume).
 func TestAWakeResumesAClaimLeftReleasedUnderAnOpenResume(t *testing.T) {

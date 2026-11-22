@@ -40,8 +40,8 @@ import (
 // one project and reaches Postgres through an interface here as it does through record.Store.
 //
 // A wake is taken whole by TakePodWake: the resume recorded against the release the wake ends,
-// or against the pause that holds it, which the role's one open resume refuses a second of, and
-// the woken role's backstop cancelled. The store owns that order, and this package never writes a
+// or against the pause that holds it, which the claim's one open resume refuses a second of, and
+// the woken claim's backstop cancelled. The store owns that order, and this package never writes a
 // part of it.
 type Pods interface {
 	// RecordListenerReady stamps when the Envoy listener last said it is alive and reporting,
@@ -63,10 +63,10 @@ type Pods interface {
 	// for no row, passes as 0. The wake is a held wake of held (decision 15), and the session it
 	// brings back is one stopping stopped in a pod it kept (decision 16).
 	PauseOfWake(ctx context.Context, tx pgx.Tx, issue string, token claim.Token, mark int64) (held, stopping int64, err error)
-	// ClosePodGoneResume closes the open resume of issue's role when the pod it was waiting for
-	// has gone away: a release of the issue recorded since that wake was taken. It answers the
-	// issue's newest release where it closed a row, and 0 where it closed none.
-	ClosePodGoneResume(ctx context.Context, tx pgx.Tx, issue string, role claim.Role) (int64, error)
+	// ClosePodGoneResume closes the open resume of issue's claim token, which holds role now, when
+	// the pod it was waiting for has gone away: a release of the issue recorded since that wake was
+	// taken. It answers the issue's newest release where it closed a row, and 0 where it closed none.
+	ClosePodGoneResume(ctx context.Context, tx pgx.Tx, issue string, token claim.Token, role claim.Role) (int64, error)
 	// FirePodBackstop marks the backstop fired and answers whether this call fired it.
 	FirePodBackstop(ctx context.Context, tx pgx.Tx, id int64) (bool, error)
 	// VolumeNoticeCounts and RecordVolumeNotice are the bounds on what an issue's architect is
@@ -450,7 +450,7 @@ func (e *Engine) wakeReleased(ctx context.Context, tx pgx.Tx, released supervise
 	if err != nil {
 		return false, err
 	}
-	newest, err := e.cfg.Pods.ClosePodGoneResume(ctx, tx, issue.Key, released.Role)
+	newest, err := e.cfg.Pods.ClosePodGoneResume(ctx, tx, issue.Key, released.Token, released.Role)
 	if err != nil {
 		return false, err
 	}
