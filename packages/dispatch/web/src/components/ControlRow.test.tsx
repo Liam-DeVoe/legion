@@ -678,6 +678,81 @@ test("a page's own control the reader scrolled out of sight goes with a live upd
   }
 });
 
+/** A row whose page slot draws a modal dialog, as the Delivery page draws its Session groups
+ *  dialog there: a Close button and a link, then a Groups section holding the only group's Delete
+ *  group, which takes the section away when pressed. With `rescued`, the row is in the shell's
+ *  main content with the page's focus rescue mounted on it as `app.tsx` mounts it. */
+function DialogInSlotRow({ rescued }: { rescued: boolean }) {
+  const [deleted, setDeleted] = useState(false);
+  const drawn = (
+    <ControlRow
+      trigger={
+        <button data-control="panel-trigger" type="button">
+          Filter · 0
+        </button>
+      }
+    >
+      <aside aria-label="Session groups" aria-modal="true" role="dialog">
+        <button type="button">Close session groups</button>
+        <a href="/agents/s3/live">Open live conversation with Reviewer</a>
+        {deleted ? null : (
+          <section>
+            <button onClick={() => setDeleted(true)} type="button">
+              Delete group
+            </button>
+          </section>
+        )}
+      </aside>
+    </ControlRow>
+  );
+  return rescued ? <RescuedMain>{drawn}</RescuedMain> : drawn;
+}
+
+// A control of a dialog drawn in a slot is the dialog's, not the row's. The reader has scrolled
+// the dialog so that every control before Delete group is out of sight, and presses Delete group,
+// which takes the Groups section with it. The row hands that focus to none of its own controls,
+// so the filter trigger, in sight, does not take it. With no rescue nothing moves. With the
+// page's rescue mounted, the focus goes to the dialog's own stop with no scroll, since no control
+// of the dialog is in sight.
+test("a control of a dialog drawn in a slot hands its focus to no control of the row, and the page's rescue lands it on the dialog's own stop", async () => {
+  const user = userEvent.setup();
+  // Where the focus went once Delete group had gone, and how many scrolls the page was asked for.
+  const landed: Record<string, { focus: string | null; scrolls: number }> = {};
+  for (const rescued of [false, true]) {
+    const view = render(<DialogInSlotRow rescued={rescued} />);
+    const scrolls = spyOn(Element.prototype, "scrollIntoView");
+    try {
+      const dialog = screen.getByRole("dialog", { name: "Session groups" });
+      const deleteGroup = screen.getByRole("button", { name: "Delete group" });
+      // Scrolled 500 px above the window's top edge: happy-dom lays nothing out.
+      for (const control of dialog.querySelectorAll("a, button")) {
+        if (control !== deleteGroup) {
+          control.getBoundingClientRect = () => new DOMRect(0, -500, 200, 40);
+        }
+      }
+      act(() => deleteGroup.focus());
+      await user.keyboard("{Enter}");
+      await afterRescue();
+      expect(screen.queryByRole("button", { name: "Delete group" })).toBeNull();
+      const focused = document.activeElement;
+      landed[rescued ? "with the page's rescue" : "with no rescue"] = {
+        focus:
+          focused === null || focused === document.body
+            ? "the page"
+            : (focused.getAttribute("aria-label") ?? focused.textContent),
+        scrolls: scrolls.mock.calls.length,
+      };
+    } finally {
+      scrolls.mockRestore();
+      view.unmount();
+    }
+  }
+  expect(landed).toEqual({
+    "with no rescue": { focus: "the page", scrolls: 0 },
+    "with the page's rescue": { focus: "Session groups", scrolls: 0 },
+  });
+});
+
 test("a press on a scroll button takes no focus, so a chip that held it keeps it", async () => {
   const user = userEvent.setup();
   const view = render(

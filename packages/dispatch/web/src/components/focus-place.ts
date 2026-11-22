@@ -20,16 +20,18 @@ import { ROW_SELECTOR } from "./row-marker";
  * same control in the row that moved up into that place, else on that row's first control, else
  * on the control now at its place or the nearest one before it, else on the region's own stop. A
  * component's hand-off walks back the same way inside its own container, and then tries the
- * fallback the component names, else the region's own stop. Each walk back passes over every
- * control that takes typed text (`takesText`) and every control the reader cannot see now
- * (`inSightNow`). It lands a control with `land`, which scrolls a control partly in sight to its
- * nearest edge and one wholly in sight not at all. A region's own stop takes the focus with no
- * scroll (`focusOwnStop`). A loss the reader did not cause leaves the focus on the body, as the
- * page did before it had a rescue, and scrolls nothing, save the exceptions `leaveUncaused`
- * names. A loss of a control the reader had scrolled out of their sight scrolls nothing and
- * focuses no control (`outOfSight`): the focus stays on the body, except in a dialog or a panel,
- * which takes it itself, for a loss the reader caused, and in an open modal dialog, whose own stop
- * takes it, for one they did not (`leaveUnseen`).
+ * fallback the component names, else the region's own stop. A component's hand-off answers only
+ * for its own controls: a focus in a dialog, a panel or a selection bar drawn inside its container
+ * is that region's, and the page's rescue answers its loss inside that region. Each walk back
+ * passes over every control that takes typed text (`takesText`) and every control the reader
+ * cannot see now (`inSightNow`). It lands a control with `land`, which scrolls a control partly
+ * in sight to its nearest edge and one wholly in sight not at all. A region's own stop takes the
+ * focus with no scroll (`focusOwnStop`). A loss the reader did not cause leaves the focus on the
+ * body, as the page did before it had a rescue, and scrolls nothing, save the exceptions
+ * `leaveUncaused` names. A loss of a control the reader had scrolled out of their sight scrolls
+ * nothing and focuses no control (`outOfSight`): the focus stays on the body, except in a dialog
+ * or a panel, which takes it itself, for a loss the reader caused, and in an open modal dialog,
+ * whose own stop takes it, for one they did not (`leaveUnseen`).
  */
 
 /** The form controls: the focus reaches one only while it is not `disabled` (`FOCUSABLE`), and a
@@ -134,9 +136,14 @@ interface Place {
  * The component puts the handler this returns on its root as `onFocus`, which every focus inside
  * it bubbles to, from a portal too, since React bubbles through its own tree. `containerOf` names
  * the container a focused element is counted in, or null for one outside every container, whose
- * going moves nothing. An element React bubbled up from a portal is no control of the container,
- * so it is counted at the place of the one counted before it there, and not at all without one:
- * a nested panel's input is counted where the trigger that opened that panel is.
+ * going moves nothing. A focus in a dialog, a panel or a selection bar drawn inside the container
+ * (`inRegionWithin`) is no focus on a control of the component either, so its going moves nothing
+ * here: the page's rescue answers it inside that region, by a walk back among the region's own
+ * controls in sight, else on the region's own stop with no scroll (`handOn`), and never by a walk
+ * out of the region to the component's controls. An element React bubbled up from a portal is no
+ * control of the container, so it is counted at the place of the one counted before it there, and
+ * not at all without one: a nested panel's input is counted where the trigger that opened that
+ * panel is.
  *
  * The check runs after every commit of the component, so after the one that took the element
  * away, and moves the focus only when the element has left the page and the focus is on the
@@ -186,7 +193,7 @@ export function useFocusPlace(
   return (event) => {
     const element = event.target;
     const container = containerOf(element);
-    if (container === null) {
+    if (container === null || inRegionWithin(container, element)) {
       place.current = null;
       return;
     }
@@ -244,8 +251,9 @@ function rowsAround(element: Element): Element[] {
  *  mark): the reader empties a selection from a row by it, from the bar itself otherwise. */
 const MARK = 'input[type="checkbox"]';
 
-/** The region a press that empties a selection could land in and still be the reader's own: a
- *  dialog or a panel (`DIALOG`), or the selection bar. */
+/** The regions of their own a focus can sit in: a dialog or a panel (`DIALOG`), or the selection
+ *  bar. A press that empties a selection could land in one and still be the reader's own, and a
+ *  focus in one drawn inside a component's container is that region's (`inRegionWithin`). */
 const PRESS_REGION = `${DIALOG}, [data-control="${CONTROL.selectionBar}"]`;
 
 /** Whether the page draws `element`: under no `hidden` ancestor, and given a box. */
@@ -285,6 +293,16 @@ function handOffRegionOf(container: Element): HTMLElement | null {
   const region =
     container.closest(DIALOG) ?? container.closest("main") ?? document.querySelector("main");
   return region instanceof HTMLElement && present(region) ? region : null;
+}
+
+/** Whether `element` sits in a region of its own (`PRESS_REGION`) that `container` holds and is
+ *  not: a dialog, a panel or a selection bar a page draws inside a component's container, as the
+ *  Delivery page draws its Session groups dialog in its control row's slot. Such a focus is the
+ *  region's, so a component's hand-off notes it nowhere (`useFocusPlace`). A region around
+ *  `container`, as the search bar's dialog is around its control row, is none of these. */
+function inRegionWithin(container: Element, element: Element): boolean {
+  const region = element.closest(PRESS_REGION);
+  return region !== null && region !== container && container.contains(region);
 }
 
 /** Whether `element` stands as a control the reader can use: not disabled, and drawn. A focus

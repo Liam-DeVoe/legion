@@ -258,7 +258,10 @@ export interface ControlRowProps {
  * is left unread - hands the focus the same way: to the control now at its place in that slot,
  * else to the nearest one before it, passing over every control that takes typed text, else to
  * the trigger, else to the search box (`useFocusPlace`).
- * **Clear filters**' own rule, the trigger, comes first wherever it sits.
+ * **Clear filters**' own rule, the trigger, comes first wherever it sits. A control of a dialog, a
+ * panel or a selection bar a page draws in a slot - the Delivery page's Session groups dialog - is
+ * that region's and none of the row's: the row hands its focus nowhere, and the page's rescue
+ * answers its going inside that region, never with a control of the row outside it.
  *
  * Beside its slots it draws **Clear filters** and the two scroll buttons, and nothing else. The
  * panel a trigger opens is not in it (`AnchoredPanel` portals to the body and is placed `fixed`,

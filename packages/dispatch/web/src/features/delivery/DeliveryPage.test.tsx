@@ -5,6 +5,7 @@ import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
+import { afterRescue, RescuedMain } from "../../__tests__/focus-rescue";
 import {
   errorFrame,
   type FakeLiveSocket,
@@ -158,15 +159,26 @@ function measureList(): () => void {
 }
 
 /** Renders the page at `url`, in a box of its own at the end of the document, else in
- *  `container`. */
-function renderPage(url = DELIVERY_URL, container?: HTMLElement) {
+ *  `container`; `rescued` draws it in the shell's main content with the page's focus rescue
+ *  mounted on it (`RescuedMain`), as the app shell mounts it. */
+function renderPage(
+  url = DELIVERY_URL,
+  container?: HTMLElement,
+  { rescued = false }: { rescued?: boolean } = {}
+) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   restoreLayout = measureList();
   render(
     <MemoryRouter initialEntries={[url]}>
       <QueryClientProvider client={queryClient}>
         <KeymapProvider>
-          <DeliveryPage />
+          {rescued ? (
+            <RescuedMain>
+              <DeliveryPage />
+            </RescuedMain>
+          ) : (
+            <DeliveryPage />
+          )}
           <LocationProbe />
         </KeymapProvider>
       </QueryClientProvider>
@@ -1098,6 +1110,71 @@ test("a group's Parent agent value reads as its name, and Edit groups opens the 
   await openFilterPanel(user);
   await user.click(screen.getByRole("button", { name: "Edit groups" }));
   expect(screen.getByRole("dialog", { name: "Session groups" })).toBeDefined();
+});
+
+// The Session groups dialog is drawn in the page's control row, inside the row's slot, and its
+// controls are the dialog's, not the row's. The reader has scrolled the dialog so that every
+// control before Delete group is out of sight, and deletes the only group by keyboard. The live
+// update carrying the delete takes the Groups section away with it. The focus goes to no control
+// of the row behind the modal dialog, so the filter trigger, in sight, does not take it. With no
+// control of the dialog in sight, the page's rescue puts it on the dialog's own stop, with no
+// scroll.
+test("Delete group of the only group, with the dialog's other controls out of sight, leaves the focus on the dialog and not on the row behind it", async () => {
+  const user = userEvent.setup();
+  const remove = spyOn(api, "deleteDeliverySessionGroup").mockResolvedValue(undefined);
+  try {
+    const queryClient = renderPage(DELIVERY_URL, undefined, { rescued: true });
+    const grouped: DeliveryTimelineWithMeasures = {
+      ...emptyTimeline,
+      session_groups: [
+        {
+          created_at: "2026-10-11T00:00:00Z",
+          created_by: { id: "alice@example.com", kind: "user" },
+          id: "g1",
+          name: "Release crew",
+          sessions: ["s1", "s2"],
+          updated_at: "2026-10-11T00:00:00Z",
+          updated_by: { id: "alice@example.com", kind: "user" },
+        },
+      ],
+      session_pr_counts: { s1: 2, s2: 1, s3: 1 },
+      session_titles: { s1: "Planner one", s2: "Planner two", s3: "Reviewer" },
+    };
+    const socket = await openSocket();
+    const { sub } = await subscription(socket, "timeline");
+    serve(socket, snapshotFrame(sub, grouped));
+    await openFilterPanel(user);
+    await user.click(await screen.findByRole("button", { name: "Edit groups" }));
+    const dialog = screen.getByRole("dialog", { name: "Session groups" });
+    const deleteGroup = within(dialog).getByRole("button", { name: "Delete group" });
+    // Scrolled 500 px above the window's top edge: happy-dom lays nothing out.
+    for (const control of dialog.querySelectorAll("a[href], button, input")) {
+      if (control !== deleteGroup) {
+        control.getBoundingClientRect = () => new DOMRect(0, -500, 200, 40);
+      }
+    }
+    act(() => deleteGroup.focus());
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(remove).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(queryClient.isMutating()).toBe(0));
+    const scrolls = spyOn(Element.prototype, "scrollIntoView");
+    try {
+      serve(socket, snapshotFrame(sub, { ...grouped, session_groups: [] }));
+      await afterRescue();
+      expect(within(dialog).queryByRole("button", { name: "Delete group" })).toBeNull();
+      const focused = document.activeElement;
+      let landed: string | null = null;
+      if (focused === dialog) landed = "the Session groups dialog";
+      else if (focused === null || focused === document.body) landed = "the page";
+      else landed = focused.getAttribute("aria-label") ?? focused.textContent;
+      expect(landed).toBe("the Session groups dialog");
+      expect(scrolls).not.toHaveBeenCalled();
+    } finally {
+      scrolls.mockRestore();
+    }
+  } finally {
+    remove.mockRestore();
+  }
 });
 
 // R5: the order the list is in rides in the page's address, absent until the reader presses a
