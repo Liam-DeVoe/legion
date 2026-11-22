@@ -504,17 +504,18 @@ func (s *server) versionsAtTimes(
 	return at, rows.Err()
 }
 
-// decisionCut is one decision as a document's markdown holds it: its text, with the blank lines
-// at its end removed, that text's sum (decisionTextSum), where its heading's line starts in the
-// markdown, and whether it stands alone: each typed block of the markdown holds the whole cut,
-// lies wholly inside it, or lies outside it, which decisionCuts reads off the typed block the
-// outline places each heading in (pmdoc.OutlineHeading.Within). A text read alone loses every
-// container it was cut from. A typed block writes its lines with no prefix, so a text cut from
-// wholly inside one reads alone as the blocks it holds there, as a text that holds each typed
-// block it touches whole does; a text that holds a typed block's opening line without its closing
-// line, or its closing line without its opening line, holds a fence its text read alone does not
-// read as that block's. So only a cut that stands alone is read alone (pmdoc.FragmentReadsAs),
-// and any other is compared by its sum alone.
+// decisionCut is one decision as a document's markdown holds it: the text the decisions view shows
+// for it (decisionSections), that text's sum (decisionTextSum), where its heading's line starts in
+// the markdown, and whether it stands alone. A keep holds the sum of the text the view showed the
+// person who kept the decision, and a keep carries across a renderer change only where the cut of
+// the version it names has that sum (markKeptAcrossRenderers), so the cut must be exactly the
+// view's text. A text read alone loses every container it was cut from. A typed block writes its
+// lines with no prefix, so a text cut from wholly inside one reads alone as the blocks it holds
+// there, as a text that holds each typed block it touches whole does. A text that runs past the
+// closing line of a typed block that holds its heading holds that closing line without the
+// block's opening line, a fence its text read alone does not read as that block's. So a cut stands
+// alone unless it runs past such a closing line (decisionCuts), only a cut that stands alone is
+// read alone (pmdoc.FragmentReadsAs), and any other is compared by its sum alone.
 type decisionCut struct {
 	text  string
 	sum   string
@@ -523,17 +524,20 @@ type decisionCut struct {
 }
 
 // decisionCuts is a document's markdown cut into its decisions, each one's text and the sum of
-// that text. It cuts by the rule the block walk cuts the document that stands by
-// (decisionSections): a `##` heading outside `## Replaced` and a `###` heading under it opens a
-// decision, a heading of its own level or higher closes it - `#` included, which opens none - and
-// a deeper heading is text of the decision it stands in.
+// that text. Each cut is the text the decisions view shows for its decision (decisionSections): a
+// keep holds the sum of that text, and it carries across a renderer change only where the version
+// it names cuts the decision to that sum (markKeptAcrossRenderers). It cuts by the rule the view's
+// block walk cuts the document that stands by: a `##` heading outside `## Replaced` and a `###`
+// heading under it opens a decision, and a heading of its own level or higher closes it wherever
+// it stands - `#` included, which opens none, and a heading inside a typed block included - and a
+// deeper heading is text of the decision it stands in.
 //
 // A stored version holds no block id, so a decision is keyed by its heading and by how many
 // decisions before it this cut gives that heading (sectionKey): a document that carries one
 // heading twice, which a replaced decision made again does, is two decisions here as it is two in
-// the view, rather than one the sum cannot name. Its text is the section's with the blank lines at
-// its end removed, so the same section of two versions sums alike whatever follows it; the text is
-// a slice of markdown, so the cut copies nothing.
+// the view, rather than one the sum cannot name. Its text ends where its last block ends, with no
+// blank line after it, so the same section of two versions sums alike whatever follows it; the
+// text is a slice of markdown, so the cut copies nothing.
 //
 // The cut takes the document's headings and typed blocks from pmdoc's parse of the markdown as a
 // stored rendering (pmdoc.RenderingOutline), not from its lines, so it places each where the
@@ -541,17 +545,30 @@ type decisionCut struct {
 // no decision and closes none, and a list item's fenced code or typed block, whose closing line
 // carries the item's indentation, opens no code and closes no typed block of the document's. A
 // heading inside a typed block can open a decision. Each heading's level and title are read from
-// its line (markdownHeading), as headingOf reads a heading block's. A cut ends at the line of the
-// heading that closes it, or at the markdown's end. It stands alone (decisionCut.alone) where the
-// innermost typed block that holds its start strictly inside it is the one that holds its end so,
-// or no typed block holds either: typed blocks nest, so each one then holds the whole cut, lies
-// wholly inside it, or lies outside it, and the cut holds no typed block's opening or closing line
-// without the other. A typed block writes its lines with no prefix, so such a cut reads alone as
-// it stands, whichever typed block holds it. A cut's start, and its end at a heading, take that
-// innermost typed block from the outline, which records the one that holds each heading
-// (pmdoc.OutlineHeading.Within); no typed block holds the markdown's end strictly inside it, since
-// the parser refuses one unclosed at the document's level, so every typed block ends at or before
-// it.
+// its line (markdownHeading), as headingOf reads a heading block's.
+//
+// The view's text of a decision runs from its heading to the end of the furthest block between
+// that heading and the heading that closes it, the blocks inside typed blocks included. So a cut's
+// text runs from its heading's line to the line of the heading that closes it, or to the
+// markdown's end, with the line feeds at its end removed. Where that text then ends with the
+// closing line of a typed block that holds its heading, the section's last block stands inside
+// that typed block before its closing line, so the text ends before that line, again with the line
+// feeds at its end removed; the typed blocks that hold the heading are read so from the outermost
+// in, since the outermost one's closing line comes last. Each typed block that opens inside the
+// cut, before the line of the heading that closes it, is a block of the section, so the text runs
+// at least to the end of that block's closing line: a section that a heading inside a typed block
+// closes holds that typed block whole. The outline gives where each typed block's closing line
+// ends (pmdoc.OutlineTypedBlock.End) and the innermost typed block that holds each heading
+// (pmdoc.OutlineHeading.Within), and the typed block that holds each typed block is read once from
+// the outline's order, which lists a typed block ahead of the blocks it holds.
+//
+// A cut stands alone (decisionCut.alone) unless it runs past the closing line of a typed block
+// that holds its heading. Typed blocks nest, so the innermost one decides: a cut that ends at or
+// before that block's closing line ends before the closing line of every typed block that holds
+// it. Such a cut, as a cut whose heading no typed block holds, lies wholly inside each typed block
+// that holds its heading and holds whole each typed block that opens inside it, so it holds no
+// typed block's opening or closing line without the other. A typed block writes its lines with no
+// prefix, so such a cut reads alone as it stands.
 //
 // A document the parser refuses gives no cuts, and read false: as the document that stands, every
 // decision then has no cut, and as a stored version, it is one the view could not read
@@ -559,7 +576,9 @@ type decisionCut struct {
 //
 // Each call parses the whole markdown, 8.5 to 13.4 ms for a document of 25 to 43 KB, so a view
 // cuts a markdown only where the process keeps no cut of it (documentCuts): the document as it
-// stands (readDecisions) and each stored version it reads (scanStoredDecisions).
+// stands (readDecisions) and each stored version it reads (scanStoredDecisions). After the parse
+// the cut reads each heading and each typed block once, and for each decision the typed blocks
+// that hold its heading.
 func decisionCuts(markdown string) (cuts map[sectionKey]decisionCut, read bool) {
 	if decisionCutsObserver != nil {
 		decisionCutsObserver(markdown)
@@ -568,26 +587,78 @@ func decisionCuts(markdown string) (cuts map[sectionKey]decisionCut, read bool) 
 	if err != nil {
 		return map[sectionKey]decisionCut{}, false
 	}
+	typed := outline.TypedBlocks
+	// holder is the index of the typed block that holds each typed block, or -1 where none does.
+	// The outline lists a typed block ahead of the blocks it holds, and typed blocks nest, so the
+	// typed blocks still open where one starts are a stack, once each that ended before that start
+	// is taken off it.
+	holder := make([]int, len(typed))
+	var opened []int
+	for index, block := range typed {
+		for len(opened) > 0 && typed[opened[len(opened)-1]].End < block.Start {
+			opened = opened[:len(opened)-1]
+		}
+		holder[index] = -1
+		if len(opened) > 0 {
+			holder[index] = opened[len(opened)-1]
+		}
+		opened = append(opened, index)
+	}
 	cuts = map[sectionKey]decisionCut{}
 	seen := map[string]int{}
 	type section struct {
 		key   sectionKey
 		level int
 		start int
-		// within is the innermost typed block that holds start, as its index in
-		// outline.TypedBlocks, or -1 where none does (pmdoc.OutlineHeading.Within).
+		// within is the innermost typed block that holds the heading, as its index in typed, or
+		// -1 where none does (pmdoc.OutlineHeading.Within).
 		within int
 	}
 	var open *section
 	inReplaced := false
-	// closeAt closes the open decision at end, which the typed block at index within of
-	// outline.TypedBlocks holds strictly inside it, or none where within is -1.
-	closeAt := func(end, within int) {
+	// holders lists the typed blocks that hold the open decision's heading, the innermost first.
+	var holders []int
+	// next is the first typed block no cut has read. The cuts come in document order, and each
+	// reads the typed blocks that open before the line of the heading that closes it, where the
+	// next cut starts at the earliest, so no two cuts read one typed block.
+	next := 0
+	// trimmed is where the open decision's text up to end ends once the line feeds at its end
+	// are removed.
+	trimmed := func(end int) int {
+		return open.start + len(strings.TrimRight(markdown[open.start:end], "\n"))
+	}
+	// closeAt closes the open decision at closing: the start of the line of the heading that
+	// closes it, or the markdown's end.
+	closeAt := func(closing int) {
 		if open == nil {
 			return
 		}
-		text := strings.TrimRight(markdown[open.start:end], "\n")
-		cuts[open.key] = decisionCut{text: text, sum: decisionTextSum(text), start: open.start, alone: open.within == within}
+		end := trimmed(closing)
+		holders = holders[:0]
+		for index := open.within; index >= 0; index = holder[index] {
+			holders = append(holders, index)
+		}
+		// The section's last block stands before the closing line of each typed block that holds
+		// the heading and that the text ends with, the outermost first.
+		for index := len(holders) - 1; index >= 0; index-- {
+			if end == typed[holders[index]].End {
+				end = trimmed(strings.LastIndexByte(markdown[:end], '\n') + 1)
+			}
+		}
+		// Each typed block that opens inside the cut is a block of the section, held whole.
+		for next < len(typed) && typed[next].Start <= open.start {
+			next++
+		}
+		for ; next < len(typed) && typed[next].Start < closing; next++ {
+			end = max(end, typed[next].End)
+		}
+		text := markdown[open.start:end]
+		cuts[open.key] = decisionCut{
+			text:  text,
+			sum:   decisionTextSum(text),
+			start: open.start,
+			alone: open.within == -1 || end <= typed[open.within].End,
+		}
 		open = nil
 	}
 	for _, at := range outline.Headings {
@@ -597,7 +668,7 @@ func decisionCuts(markdown string) (cuts map[sectionKey]decisionCut, read bool) 
 			continue
 		}
 		if open != nil && level <= open.level {
-			closeAt(at.Start, at.Within)
+			closeAt(at.Start)
 		}
 		if level <= 2 {
 			inReplaced = level == 2 && heading == replacedHeading
@@ -613,7 +684,7 @@ func decisionCuts(markdown string) (cuts map[sectionKey]decisionCut, read bool) 
 			}
 		}
 	}
-	closeAt(len(markdown), -1)
+	closeAt(len(markdown))
 	return cuts, true
 }
 

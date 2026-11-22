@@ -790,16 +790,16 @@ func TestADecisionKeptRunningPastItsCalloutsClosingLineWaitsAcrossARendererChang
 // A version is cut into its decisions at the headings and typed blocks pmdoc's parser places
 // (decisionCuts), so a heading inside fenced code is the code's text. A paragraph that opens with a
 // code span of three backticks holding two in a row opens no code: the decision after it is cut,
-// and a callout opened after another such paragraph holds a decision inside it, which runs past
-// the callout's closing line and so does not stand alone. A line of backticks that also holds an
-// info string closes no code: a heading after it inside the code opens no decision. A list item,
-// bullet or ordered, that opens with fenced code ends its code at its own closing line, indented
-// past the item's marker, which read alone would open code: a decision after the item is cut,
-// standing alone, and a callout after another such item holds a decision inside it, which a
-// heading inside the callout ends, so it stands alone too, as a typed block writes its lines with
-// no prefix. A list item's typed block inside a callout ends at its own indented fence, which
-// leaves the callout, whose fence the renderer writes longer, holding the decision after it, which
-// runs past that fence.
+// and a callout opened after another such paragraph holds a decision inside it, whose text ends
+// before the callout's closing line, as the view's text does, and so stands alone. A line of
+// backticks that also holds an info string closes no code: a heading after it inside the code
+// opens no decision. A list item, bullet or ordered, that opens with fenced code ends its code at
+// its own closing line, indented past the item's marker, which read alone would open code: a
+// decision after the item is cut, standing alone, and a callout after another such item holds a
+// decision inside it, which a heading inside the callout ends, so it stands alone too, as a typed
+// block writes its lines with no prefix. A list item's typed block inside a callout ends at its
+// own indented fence, which leaves the callout, whose fence the renderer writes longer, holding
+// the decision after it, whose text ends before the callout's closing fence.
 func TestDecisionCutsReadCodeFencesAsTheParserDoes(t *testing.T) {
 	for _, test := range []struct {
 		name, markdown, heading, text string
@@ -816,7 +816,8 @@ func TestDecisionCutsReadCodeFencesAsTheParserDoes(t *testing.T) {
 			name:     "a callout after a paragraph that opens with a code span",
 			markdown: "```a``b``` x\n\n:::callout{#aside kind=\"note\" title=\"\"}\n```a``b``` x\n\n## D\n\nText.\n:::\n",
 			heading:  "D",
-			text:     "## D\n\nText.\n:::",
+			text:     "## D\n\nText.",
+			alone:    true,
 		},
 		{
 			name:     "a line of backticks with an info string inside code",
@@ -850,7 +851,8 @@ func TestDecisionCutsReadCodeFencesAsTheParserDoes(t *testing.T) {
 			name:     "a callout holding a list item whose typed block closes indented",
 			markdown: "::::callout{#aside kind=\"note\" title=\"\"}\n- :::callout{#inner kind=\"note\" title=\"\"}\n  Inner.\n  :::\n\n## D\n\nText.\n::::\n",
 			heading:  "D",
-			text:     "## D\n\nText.\n::::",
+			text:     "## D\n\nText.",
+			alone:    true,
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -864,15 +866,19 @@ func TestDecisionCutsReadCodeFencesAsTheParserDoes(t *testing.T) {
 	}
 }
 
-// A decision's cut stands alone (decisionCut.alone) where each typed block of the markdown holds
-// the whole cut, lies wholly inside it, or lies outside it. A typed block writes its lines with no
-// prefix, so a cut inside a callout that a heading inside the callout ends, one inside a callout
-// inside a callout, one inside a callout that the outer callout's closing line closes, and one
-// that holds a whole callout each read alone as they stand, as they do beside other cuts of the
-// same markdown. A cut that starts inside a callout and runs past its closing line, to a heading
-// after it or to the markdown's end, one that starts inside an inner callout and ends in the outer
-// one, and one that starts outside a callout and ends inside it each hold one of a callout's
-// fences without the other, and none of them stands alone.
+// A decision's cut stands alone (decisionCut.alone) unless it runs past the closing line of a
+// typed block that holds its heading: only such a cut holds one of a typed block's fences without
+// the other, since a cut holds whole each typed block that opens inside it. A typed block writes
+// its lines with no prefix, so a cut inside a callout that a heading inside the callout ends, one
+// that a heading after the callout or the markdown's end ends, which ends before the callout's
+// closing line, one inside a callout inside a callout, one inside a callout that the outer
+// callout's closing line closes, one inside an inner callout that a heading in the outer one ends,
+// one that holds a whole callout, and one that a heading inside a callout after it ends, which
+// holds that whole callout, each read alone as they stand, as they do beside other cuts of the
+// same markdown. A cut that starts inside a callout and runs past its closing line to a paragraph
+// after it, before a heading or the markdown's end, and one that starts inside an inner callout
+// and runs past its closing line to a paragraph in the outer one, each hold a callout's closing
+// line without its opening line, and none of them stands alone.
 func TestADecisionCutStandsAloneUnlessItHoldsOneFenceOfATypedBlock(t *testing.T) {
 	const (
 		aside  = ":::callout{#aside kind=\"note\" title=\"\"}\n"
@@ -891,13 +897,23 @@ func TestADecisionCutStandsAloneUnlessItHoldsOneFenceOfATypedBlock(t *testing.T)
 			alone:    map[string]bool{"D": true},
 		},
 		{
-			name:     "a cut inside a callout that runs past its closing line",
+			name:     "a cut inside a callout that a heading after the callout ends",
 			markdown: aside + "## D\n\nText.\n:::\n\n# Notes\n",
+			alone:    map[string]bool{"D": true},
+		},
+		{
+			name:     "a cut inside a callout that the markdown's end ends",
+			markdown: aside + "## D\n\nText.\n:::",
+			alone:    map[string]bool{"D": true},
+		},
+		{
+			name:     "a cut inside a callout that runs past its closing line",
+			markdown: aside + "## D\n\nText.\n:::\n\nAfter.\n\n# Notes\n",
 			alone:    map[string]bool{"D": false},
 		},
 		{
-			name:     "a cut inside a callout that runs to the markdown's end at its closing line",
-			markdown: aside + "## D\n\nText.\n:::",
+			name:     "a cut inside a callout that runs past its closing line to the markdown's end",
+			markdown: aside + "## D\n\nText.\n:::\n\nAfter.",
 			alone:    map[string]bool{"D": false},
 		},
 		{
@@ -916,18 +932,23 @@ func TestADecisionCutStandsAloneUnlessItHoldsOneFenceOfATypedBlock(t *testing.T)
 			alone:    map[string]bool{"D": true},
 		},
 		{
-			name:     "a cut that starts inside an inner callout and ends in the outer one",
+			name:     "a cut inside an inner callout that a heading in the outer one ends",
 			markdown: outer + inner + "## D\n\nText.\n:::\n\n# Notes\n::::\n",
+			alone:    map[string]bool{"D": true},
+		},
+		{
+			name:     "a cut that starts inside an inner callout and runs past its closing line in the outer one",
+			markdown: outer + inner + "## D\n\nText.\n:::\n\nOuter text.\n\n# Notes\n::::\n",
 			alone:    map[string]bool{"D": false},
 		},
 		{
-			name:     "a cut that starts outside a callout and ends inside it",
+			name:     "a cut that a heading inside a callout after it ends",
 			markdown: "## D\n\nText.\n\n" + aside + "Inside.\n\n# Notes\n:::\n",
-			alone:    map[string]bool{"D": false},
+			alone:    map[string]bool{"D": true},
 		},
 		{
 			name:     "cuts inside a callout, past its closing line and after it",
-			markdown: aside + "## D\n\nText.\n\n## E\n\nText.\n:::\n\n## F\n\nText.\n",
+			markdown: aside + "## D\n\nText.\n\n## E\n\nText.\n:::\n\nAfter.\n\n## F\n\nText.\n",
 			alone:    map[string]bool{"D": true, "E": false, "F": true},
 		},
 		{
@@ -947,6 +968,288 @@ func TestADecisionCutStandsAloneUnlessItHoldsOneFenceOfATypedBlock(t *testing.T)
 				}
 			}
 		})
+	}
+}
+
+// typedBlockDecisions is a decisions.md text whose decisions stand around and inside typed blocks
+// in each way the view reads them. Intro, Top, Nested and Last each hold a callout that a heading
+// inside it ends, and Whole holds one that no heading ends. Inside and Inner stand inside a
+// callout that a heading inside the callout ends. Inside two, Inner two, Outer after inner and
+// Sole stand inside a callout that a heading after it ends (Sole's is the fixture's `## Replaced`).
+// Runs past stands inside a callout and runs past its closing line to the paragraph after it.
+// Quoted holds a list inside a quote. Each list is loose, so that another renderer version can
+// write it in another spelling (respellLooseLists).
+const typedBlockDecisions = `## Intro
+
+Intro text.
+
+:::callout{#k1 kind="note" title="T"}
+The reason:
+
+## Inside
+
+- one
+
+- two
+
+* three
+
+* four
+
+## Inside two
+
+Plain text.
+:::
+
+## Top
+
+- t1
+
+- t2
+
+:::callout{#k2 kind="note" title="U"}
+## Runs past
+
+- r1
+
+- r2
+:::
+
+After the callout.
+
+## Whole
+
+Lead text.
+
+:::callout{#k3 kind="note" title="V"}
+- w1
+
+- w2
+:::
+
+## Nested
+
+::::callout{#k4 kind="note" title="W"}
+:::callout{#k5 kind="note" title="X"}
+## Inner
+
+- n1
+
+- n2
+
+## Inner two
+
+- m1
+
+- m2
+:::
+
+## Outer after inner
+
+Plain.
+::::
+
+## Quoted
+
+> - q1
+>
+> - q2
+
+## Last
+
+Body.
+
+:::callout{#k6 kind="note" title="Y"}
+## Sole
+
+- s1
+
+- s2
+:::`
+
+// typedBlockHeadings is each decision of typedBlockDecisions, in document order, and runsPast the
+// one among them whose text holds its callout's closing line without its opening line.
+var typedBlockHeadings = []string{
+	"Intro", "Inside", "Inside two", "Top", "Runs past", "Whole", "Nested", "Inner", "Inner two",
+	"Outer after inner", "Quoted", "Last", "Sole",
+}
+
+const runsPast = "Runs past"
+
+// typedBlockDecisionsWritten is newDecisionsFixture with typedBlockDecisions written into its
+// decisions.md before `## Replaced`. It returns the version that wrote them and the view after
+// that write.
+func typedBlockDecisionsWritten(t *testing.T) (decisionsFixture, model.Version, issueDecisions) {
+	t.Helper()
+	fixture := newDecisionsFixture(t)
+	version := editIssueDocument(t, fixture.handler, fixture.issue.Key, fixture.decisions.Slug, []map[string]any{{
+		"op": "insert", "markdown": typedBlockDecisions, "before": "## Replaced",
+	}})
+	view := readIssueDecisions(t, fixture.handler, fixture.issue.Key)
+	for _, heading := range typedBlockHeadings {
+		if decision := decisionNamed(t, view, heading); decision.ChangedVersion != version.Number {
+			t.Fatalf("the decision %s = %#v, want it changed at version %d", heading, decision, version.Number)
+		}
+	}
+	return fixture, version, view
+}
+
+// A stored version's cut of a decision (decisionCuts) is the text the view shows for it
+// (decisionSections). A keep holds the sum of the text the view showed, and the carry across a
+// renderer change compares that sum with the sum of the cut (markKeptAcrossRenderers), so a cut
+// that differs from the view's text can never carry a keep. The view's section runs from its
+// heading to the end of the furthest block between that heading and the next heading of its level
+// or higher, wherever that next heading stands. So a section that a heading inside a callout ends
+// holds that whole callout. A section inside a callout that a heading after the callout ends stops
+// before the callout's closing line. A section inside a callout that a paragraph after the callout
+// follows holds the closing line and the paragraph. The stored version cuts each decision of
+// typedBlockDecisions, and each decision of the fixture, as the view shows it, and each cut stands
+// alone except the one that runs past its callout's closing line.
+func TestAStoredVersionCutsEachDecisionAsTheViewShowsIt(t *testing.T) {
+	fixture, version, view := typedBlockDecisionsWritten(t)
+	stored := versionText(t, fixture.database, fixture.decisions.ID, version.Number)
+	cuts, read := decisionCuts(stored)
+	if !read || len(cuts) != len(view.Decisions) {
+		t.Fatalf("decisionCuts(%q) = %#v, %t, want one cut of each of the view's %d decisions", stored, cuts, read, len(view.Decisions))
+	}
+	for _, decision := range view.Decisions {
+		cut, ok := cuts[sectionKey{heading: decision.Heading}]
+		if alone := decision.Heading != runsPast; !ok || cut.text != decision.Text || cut.sum != decision.TextSHA256 || cut.alone != alone {
+			t.Errorf("the cut of %s = %#v, want the view's text %q, alone %t", decision.Heading, cut, decision.Text, alone)
+		}
+	}
+}
+
+// A document with no typed block is cut as it was before the cut followed the view's text into
+// and around typed blocks: each decision's text runs from its heading's line to the line of the
+// next heading of its level or higher, or to the markdown's end, with the line feeds at its end
+// removed, and each cut stands alone. The headings are those the parser places at the document's
+// level (pmdoc.RenderingOutline), so a heading inside a quote or a list item is text. Loose lists,
+// a quote and a list item that each hold a heading, a deeper heading, a `#` heading, `###`
+// decisions under `## Replaced` and a last decision at the markdown's end each leave the cut so:
+// the change reaches only documents with typed blocks.
+func TestADocumentWithNoTypedBlockCutsEachDecisionToTheNextHeadingOfItsLevel(t *testing.T) {
+	const markdown = "## Loose\n\n- one\n\n- two\n\n* three\n\n" +
+		"## Quoted\n\n> - q1\n>\n> - q2\n>\n> ## Quoted heading\n\n" +
+		"## Listed\n\n- An item.\n\n  ## Listed heading\n\n- Another item.\n\n### Deeper\n\nText under a deeper heading.\n\n" +
+		"# Notes\n\nA note.\n\n" +
+		"## After notes\n\n1. first\n\n2. second\n\n" +
+		"## Replaced\n\n### Old choice\n\nReplaced by Loose.\n\n### Last one\n\n- r1\n\n- r2\n"
+	decisions := []struct {
+		level   int
+		heading string
+	}{{2, "Loose"}, {2, "Quoted"}, {2, "Listed"}, {2, "After notes"}, {3, "Old choice"}, {3, "Last one"}}
+	outline, err := pmdoc.RenderingOutline(markdown)
+	if err != nil || len(outline.TypedBlocks) != 0 {
+		t.Fatalf("RenderingOutline(%q) = %+v, %v; the test needs markdown the parser reads with no typed block", markdown, outline, err)
+	}
+	cuts, read := decisionCuts(markdown)
+	if !read || len(cuts) != len(decisions) {
+		t.Fatalf("decisionCuts(%q) = %#v, %t, want the decisions %v", markdown, cuts, read, decisions)
+	}
+	headingAt := func(start int) (int, string) {
+		line, _, _ := strings.Cut(markdown[start:], "\n")
+		return markdownHeading(line)
+	}
+	for _, decision := range decisions {
+		// The reference rule: from the decision's heading to the next heading of its level or
+		// higher, or the markdown's end, the line feeds at the end removed.
+		want := ""
+		for index, at := range outline.Headings {
+			if level, heading := headingAt(at.Start); level != decision.level || heading != decision.heading {
+				continue
+			}
+			end := len(markdown)
+			for _, next := range outline.Headings[index+1:] {
+				if level, _ := headingAt(next.Start); level > 0 && level <= decision.level {
+					end = next.Start
+					break
+				}
+			}
+			want = strings.TrimRight(markdown[at.Start:end], "\n")
+		}
+		if cut, ok := cuts[sectionKey{heading: decision.heading}]; want == "" || !ok || cut.text != want || !cut.alone {
+			t.Errorf("decisionCuts(%q) cuts %s as %#v, want it alone and written %q", markdown, decision.heading, cut, want)
+		}
+	}
+}
+
+// respellLooseLists is markdown with two blank lines, not one, between each two items of a loose
+// list, and inside a quote two of the quote's `>` lines: the same tree in a spelling that no
+// renderer version writes, as a build of another renderer version could have stored it. An item
+// is a line that starts with `- ` or `* `, after the quote's `> ` inside a quote, and two items are
+// of one list where they start with the same marker.
+func respellLooseLists(markdown string) string {
+	lines := strings.Split(markdown, "\n")
+	respelled := make([]string, 0, len(lines))
+	for index, line := range lines {
+		respelled = append(respelled, line)
+		if index == 0 || index+1 == len(lines) || line != "" && line != ">" {
+			continue
+		}
+		prefix := ""
+		if line == ">" {
+			prefix = "> "
+		}
+		if marker := listMarker(lines[index-1], prefix); marker != 0 && marker == listMarker(lines[index+1], prefix) {
+			respelled = append(respelled, line)
+		}
+	}
+	return strings.Join(respelled, "\n")
+}
+
+// listMarker is the marker of the list item that line opens after prefix, `-` or `*`, or 0 where
+// line opens no such item.
+func listMarker(line, prefix string) byte {
+	item, ok := strings.CutPrefix(line, prefix)
+	if !ok || len(item) < 2 || item[1] != ' ' || item[0] != '-' && item[0] != '*' {
+		return 0
+	}
+	return item[0]
+}
+
+// A decision kept before a renderer change stays kept around and inside typed blocks wherever its
+// text stands alone. alice keeps each decision of typedBlockDecisions. Then a build of another
+// renderer version stores the version that wrote them with two blank lines between each two items
+// of every loose list (respellLooseLists), and each keep holds the sum of the view's text of its
+// decision as that version spells it. Each cut of that version is the text the view showed in that
+// spelling, so it has the keep's sum. So every decision stays kept and waits for no review, except
+// Runs past: its text holds its callout's closing line without the opening line, so it does not
+// stand alone, and it waits for review.
+func TestEachDecisionAroundOrInsideATypedBlockStaysKeptAcrossARendererChangeUnlessItRunsPastIt(t *testing.T) {
+	fixture, version, written := typedBlockDecisionsWritten(t)
+	handler, database, key, id := fixture.handler, fixture.database, fixture.issue.Key, fixture.decisions.ID
+	for _, heading := range typedBlockHeadings {
+		decision := decisionNamed(t, written, heading)
+		if keep := keepBlock(t, handler, id, decision.BlockID, decision.TextSHA256); keep.ChangedVersion != version.Number {
+			t.Fatalf("the keep of %s = %#v, want it at version %d", heading, keep, version.Number)
+		}
+	}
+
+	stored := versionText(t, database, id, version.Number)
+	respelled := respellLooseLists(stored)
+	if again, _, err := pmdoc.RenderingOf(respelled); err != nil || again != stored || respelled == stored {
+		t.Fatalf("the respelled version %d %q renders %q (%v), want another spelling of %q", version.Number, respelled, again, err, stored)
+	}
+	another := pmdoc.RendererVersion - 1
+	storeVersionAs(t, database, id, version.Number, respelled, &another)
+	for _, heading := range typedBlockHeadings {
+		decision := decisionNamed(t, written, heading)
+		if _, err := database.Pool.Exec(context.Background(), `
+			update decision_keeps set text_sha256 = $3 where artifact_id = $1 and block_id = $2
+		`, id, decision.BlockID, decisionTextSum(respellLooseLists(decision.Text))); err != nil {
+			t.Fatalf("keep %s as that version spelled it: %v", heading, err)
+		}
+	}
+
+	view := readIssueDecisions(t, handler, key)
+	for _, heading := range typedBlockHeadings {
+		decision, waits := decisionNamed(t, view, heading), heading == runsPast
+		if decision.Text != decisionNamed(t, written, heading).Text || decision.Kept == nil ||
+			decision.Kept.ChangedVersion != version.Number || decision.WaitingReview != waits {
+			t.Errorf("the decision %s kept as another renderer version spelled it = %#v, want its text as written, kept at version %d, waiting for review %t",
+				heading, decision, version.Number, waits)
+		}
 	}
 }
 
