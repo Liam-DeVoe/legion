@@ -144,16 +144,17 @@ func (c *Client) Session(t *testing.T, key *ecdsa.PrivateKey, enrollmentID, meth
 	return c.Req(t, method, path, map[string]string{"Proof": p}, body)
 }
 
-// signedSession is Session for a route that answers at once (GrantValues's): the request is also
-// given up brokerRequestWait after the proof's signing (signedReq).
-func (c *Client) signedSession(t *testing.T, key *ecdsa.PrivateKey, enrollmentID, method, path string, body any) (int, []byte) {
+// signedSession is Session POSTing no body to path, for a route that answers at once
+// (GrantValues's): the request is also given up brokerRequestWait after the proof's signing
+// (signedReq).
+func (c *Client) signedSession(t *testing.T, key *ecdsa.PrivateKey, enrollmentID, path string) (int, []byte) {
 	t.Helper()
 	signing := time.Now()
-	p, err := proof.Sign(key, enrollmentID, method, c.PublicURL+path, signing)
+	p, err := proof.Sign(key, enrollmentID, http.MethodPost, c.PublicURL+path, signing)
 	if err != nil {
 		t.Fatalf("proof.Sign: %v", err)
 	}
-	return c.signedReq(t, signing, method, path, map[string]string{"Proof": p}, body)
+	return c.signedReq(t, signing, http.MethodPost, path, map[string]string{"Proof": p}, nil)
 }
 
 // Launcher is Req carrying a launcher proof: the machine key that holds launcherID signing for it,
@@ -367,7 +368,7 @@ func (c *Client) RequestAgentSecret(t *testing.T, key *ecdsa.PrivateKey, enrollm
 // GrantValues reads the values the grant releases to the session that holds it.
 func (c *Client) GrantValues(t *testing.T, key *ecdsa.PrivateKey, enrollmentID, grantID string) map[string]string {
 	t.Helper()
-	status, body := c.signedSession(t, key, enrollmentID, http.MethodPost, "/v1/grants/"+grantID+"/values", nil)
+	status, body := c.signedSession(t, key, enrollmentID, "/v1/grants/"+grantID+"/values")
 	if status != http.StatusOK {
 		t.Fatalf("POST /v1/grants/%s/values (at %s) = %d, want 200: %s", grantID, c.Addr, status, body)
 	}

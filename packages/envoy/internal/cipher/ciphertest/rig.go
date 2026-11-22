@@ -557,8 +557,8 @@ const RereaderOperator = "rereader@example.com"
 // store, so a row that reads what the broker serves, or goes on to ask for the secret, rereads
 // this way. The Rig's broker takes a proof for a minute from its iat (NewRig's proof.Verifier) and
 // checks it when the request arrives, then holds the request open while the reread runs, behind
-// the policy's writer lock and a store read (handlers_secrets.go:167, policy/current.go:295), so
-// the request sets no deadline from the signing and goes out on heldClient. The Rig's httptest
+// the policy's writer lock and a store read (handlers_secrets.go:167, policy/current.go's reread),
+// so the request sets no deadline from the signing and goes out on heldClient. The Rig's httptest
 // server puts no deadline on a request, so that client is its only bound.
 func (r *Rig) Reread(t *testing.T, name string) (int, []byte) {
 	t.Helper()

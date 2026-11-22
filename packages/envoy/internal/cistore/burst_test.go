@@ -199,7 +199,7 @@ func wrapStore(t testing.TB, conn *natsgo.Conn, delay time.Duration) (*Store, *w
 }
 
 // record records one observation of a head as the webhook handler does, a check when CheckName is
-// set and a suite otherwise, failing after 10 s rather than hanging (within).
+// set and a suite otherwise, failing after eventWait rather than hanging (within).
 func record(s *Store, observation contracts.CIObservation) error {
 	return within(func() error {
 		if observation.CheckName == "" {
@@ -306,7 +306,7 @@ func (c *calls) behind(entered <-chan struct{}, to int) {
 	c.queue(1, to)
 }
 
-// wait waits up to 10 s for every call started and returns their errors.
+// wait waits up to eventWait for every call started and returns their errors.
 func (c *calls) wait(what string) []error {
 	c.t.Helper()
 	waitAll(c.t, &c.wg, what)
@@ -513,8 +513,8 @@ func TestBatchedObservationsSettleAsSerialWritesInArrivalOrder(t *testing.T) {
 }
 
 // recordBurst records n distinct completed checks of h concurrently, released together, as a
-// check_run burst delivers them, and returns each call's error; a call still waiting after 10 s
-// fails the test.
+// check_run burst delivers them, and returns each call's error; a call still waiting after
+// eventWait fails the test.
 func recordBurst(t testing.TB, s *Store, h head, n int) []error {
 	t.Helper()
 	errs := make([]error, n)

@@ -163,9 +163,9 @@ func (b podBroker) values(p pod, grantID string) map[string]string {
 }
 
 // signed POSTs body to path with p's proof of its enrollment, for a route that answers at once
-// (POST /v1/grants/{id}/values, internal/cipher/api/handlers_requests.go:637; POST
-// /v1/enrollments/{id}/renew, handlers_enroll.go:423): the request is given up brokerRequestWait
-// after the proof's signing (signedPost).
+// (POST /v1/grants/{id}/values, internal/cipher/api/handlers_requests.go's grantValues; POST
+// /v1/enrollments/{id}/renew, handlers_enroll.go's renewEnrollment): the request is given up
+// brokerRequestWait after the proof's signing (signedPost).
 func (b podBroker) signed(p pod, path string, body any) (int, []byte) {
 	b.t.Helper()
 	signing := time.Now()

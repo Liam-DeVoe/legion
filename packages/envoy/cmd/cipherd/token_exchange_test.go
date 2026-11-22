@@ -1514,13 +1514,13 @@ const brokerRequestWait = 30 * time.Second
 
 // heldRequestWait bounds one request to a route that holds the request open after its proof
 // check: POST /v1/requests (internal/cipher/api/handlers_requests.go:113, which waits on an
-// advisory lock per requested name, internal/cipher/requests/machine_state.go:770) and a session's
-// POST /v1/secrets/{name}/reread (handlers_secrets.go:167, which answers once the reread has run
-// behind the policy's writer lock, internal/cipher/policy/current.go:295). The binary checks the
-// proof when the request arrives, so such a request sets no deadline from its signing; its give-up
-// is 90 s, past the binary's own 45 s requestDeadline (main.go:877), so a handler that spends that
-// whole budget still answers rather than turning into a transport error. It is ciphertest's
-// clientTimeout for the same reason.
+// advisory lock per requested name, internal/cipher/requests/machine_state.go's lockPendingNames)
+// and a session's POST /v1/secrets/{name}/reread (handlers_secrets.go:167, which answers once the
+// reread has run behind the policy's writer lock, internal/cipher/policy/current.go's reread). The
+// binary checks the proof when the request arrives, so such a request sets no deadline from its
+// signing; its give-up is 90 s, past the binary's own 45 s requestDeadline (main.go:936), so a
+// handler that spends that whole budget still answers rather than turning into a transport error.
+// It is ciphertest's clientTimeout for the same reason.
 const heldRequestWait = 90 * time.Second
 
 // newPlainBroker drives the broker listening at addr with no key: the routes a listed caller

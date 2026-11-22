@@ -53,13 +53,13 @@ var brokerClient = &http.Client{Timeout: brokerRequestWait}
 
 // heldClient is the client of a request to a route that holds the request open after its proof
 // check: POST /v1/requests (internal/cipher/api/handlers_requests.go:113, which waits on an
-// advisory lock per requested name, requests/machine_state.go:770) and a session's POST
-// /v1/secrets/{name}/reread (handlers_secrets.go:167, which answers once the reread has run behind
-// the policy's writer lock, policy/current.go:295). The broker checks the proof when the request
-// arrives, so such a request sets no deadline from its signing; its give-up is clientTimeout, 90
-// s, past the binary's own 45 s requestDeadline (cmd/cipherd/main.go:877), so a handler that
-// spends that whole budget still answers. Every other route this package signs for answers at
-// once and keeps brokerRequestWait from the signing.
+// advisory lock per requested name, requests/machine_state.go's lockPendingNames) and a session's
+// POST /v1/secrets/{name}/reread (handlers_secrets.go:167, which answers once the reread has run
+// behind the policy's writer lock, policy/current.go's reread). The broker checks the proof when
+// the request arrives, so such a request sets no deadline from its signing; its give-up is
+// clientTimeout, 90 s, past the binary's own 45 s requestDeadline (cmd/cipherd/main.go:936), so a
+// handler that spends that whole budget still answers. Every other route this package signs for
+// answers at once and keeps brokerRequestWait from the signing.
 var heldClient = &http.Client{Timeout: clientTimeout}
 
 // signedContext is the context of a request carrying something signed at signing, before the
@@ -198,8 +198,9 @@ func (b Pods) Ask(p Pod, secretName string) RequestReply {
 
 // AskWithReason has p request the agent secret secretName for reason, which is "" for a request
 // that names none, and returns the broker's reply. POST /v1/requests holds the request open after
-// its proof check (handlers_requests.go:113, its advisory lock per name at
-// requests/machine_state.go:770), so it goes out on held, with no deadline from the signing.
+// its proof check (handlers_requests.go:113, its advisory lock per name in
+// requests/machine_state.go's lockPendingNames), so it goes out on held, with no deadline from the
+// signing.
 func (b Pods) AskWithReason(p Pod, secretName, reason string) RequestReply {
 	b.T.Helper()
 	request, err := record.Sign(p.Key, b.Base, []record.AuthorizationDetail{
@@ -208,7 +209,7 @@ func (b Pods) AskWithReason(p Pod, secretName, reason string) RequestReply {
 	if err != nil {
 		b.T.Fatalf("sign %s's request for %s: %v", p.RuntimeID, secretName, err)
 	}
-	status, answer := b.held(p, http.MethodPost, "/v1/requests", map[string]any{"request": request, "session_id": nil})
+	status, answer := b.held(p, map[string]any{"request": request, "session_id": nil})
 	if status != http.StatusOK {
 		b.T.Fatalf("%s's POST /v1/requests for %s = %d %s, want 200", p.RuntimeID, secretName, status, answer)
 	}
@@ -264,8 +265,9 @@ func (b Pods) newKey() *ecdsa.PrivateKey {
 }
 
 // signed sends body to path with p's proof of its enrollment, for a route that answers at once
-// (GET /v1/requests/{id}, handlers_requests.go:469; its cancel, :573; POST /v1/grants/{id}/values,
-// :637): the request is given up brokerRequestWait after the proof's signing (send).
+// (GET /v1/requests/{id}, handlers_requests.go's readRequest; its cancel, cancelRequest; POST
+// /v1/grants/{id}/values, grantValues): the request is given up brokerRequestWait after the
+// proof's signing (send).
 func (b Pods) signed(p Pod, method, path string, body any) (int, []byte) {
 	b.T.Helper()
 	signing := time.Now()
@@ -276,15 +278,17 @@ func (b Pods) signed(p Pod, method, path string, body any) (int, []byte) {
 	return b.send(signing, method, path, map[string]string{"Proof": proofHeader}, body)
 }
 
-// held is signed for a route that holds the request open after its proof check (heldClient): the
-// request sets no deadline from the signing and gives up at heldClient's timeout.
-func (b Pods) held(p Pod, method, path string, body any) (int, []byte) {
+// held POSTs body to /v1/requests with p's proof of its enrollment. The route holds the request
+// open after its proof check (heldClient), so the request sets no deadline from the signing and
+// gives up at heldClient's timeout.
+func (b Pods) held(p Pod, body any) (int, []byte) {
 	b.T.Helper()
-	proofHeader, err := proof.Sign(p.Key, p.EnrollmentID, method, b.Base+path, time.Now())
+	const path = "/v1/requests"
+	proofHeader, err := proof.Sign(p.Key, p.EnrollmentID, http.MethodPost, b.Base+path, time.Now())
 	if err != nil {
-		b.T.Fatalf("sign %s's proof for %s %s: %v", p.RuntimeID, method, path, err)
+		b.T.Fatalf("sign %s's proof for POST %s: %v", p.RuntimeID, path, err)
 	}
-	return b.sendOn(heldClient, time.Time{}, method, path, map[string]string{"Proof": proofHeader}, body)
+	return b.sendOn(heldClient, time.Time{}, http.MethodPost, path, map[string]string{"Proof": proofHeader}, body)
 }
 
 // send is sendOn for a route that answers at once, on brokerClient: signing is the moment the
