@@ -8,14 +8,11 @@ import { displayTree } from "../../__tests__/display-trees";
 import { graphNodeFields } from "../../__tests__/graph-fixture";
 import { api } from "../../api/client";
 import type { AskRead, IssueReferenceSummary } from "../../api/types";
+import { Publisher } from "../issue-page/projection-fixture";
 import { MarkdownBody } from "./MarkdownBody";
 import { warmMarkdownRenderer } from "./markdown-engine";
 import { PlainText } from "./plain-text";
-import {
-  type PublishedReferences,
-  ReferenceNamesProvider,
-  usePublishReferenceNames,
-} from "./reference-names";
+import { type PublishedReferences, ReferenceNamesProvider } from "./reference-names";
 
 // The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
 // random order, so the file loads the engine before its first row, whichever row that is.
@@ -37,12 +34,6 @@ afterEach(() => {
     spy.mockRestore();
   }
 });
-
-/** Publishes `published` for as long as it is drawn, as the page publishes its batched read. */
-function Publisher({ published }: { published: PublishedReferences }): ReactNode {
-  usePublishReferenceNames(published);
-  return null;
-}
 
 /** What a page publishes of its batched read: made anew on every call, as the page's own read
  *  makes its sets anew each time any of its reads answers. */

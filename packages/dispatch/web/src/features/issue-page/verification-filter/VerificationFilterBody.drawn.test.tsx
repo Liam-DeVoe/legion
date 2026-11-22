@@ -17,12 +17,7 @@ import { countEngineParses, displayTree } from "../../../__tests__/display-trees
 import { installIntersectionObserver } from "../../../__tests__/intersection-observer";
 import { api } from "../../../api/client";
 import { issueCoverageQuery, issueResultsQuery } from "../../../api/queries";
-import type {
-  ArtifactBlock,
-  CheckBlock,
-  IssueCheckResults,
-  IssueCoverage,
-} from "../../../api/types";
+import type { CheckBlock, IssueCheckResults, IssueCoverage } from "../../../api/types";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
 import { type PublishedReferences, ReferenceNamesProvider } from "../../refs/reference-names";
 import { KeymapProvider } from "../../shell/KeymapProvider";
@@ -50,10 +45,10 @@ import {
   VERIFICATION_WORDS,
 } from "../page-words";
 import { presetView } from "../presets";
-import { Publisher, publishedNames } from "../projection-fixture";
+import { blockReads, Publisher, publishedNames } from "../projection-fixture";
 import { ViewStage } from "../slots/stage";
 import { useVerificationReads } from "../slots/view-verification";
-import { blockNodeId, treeContext } from "../tree-drafts";
+import { treeContext } from "../tree-drafts";
 import { shortCommit } from "./statement-state";
 import {
   type FailedRead,
@@ -70,7 +65,6 @@ import {
   node,
   OTHER_COMMIT,
   result,
-  SPEC_SLUG,
   statementNode,
   verificationView,
 } from "./verification-fixtures";
@@ -118,44 +112,13 @@ function statementsOf(root: TreeNode): TreeNode[] {
   ];
 }
 
-/** The reads the page names `statements` from, as its own reads hold them (`IssueTreeReads`):
- *  the issue, whose spec they are blocks of; the spec's blocks read, which gives each its kind,
- *  so one whose words hold none is named by the page's word for that kind; and the batched read's
- *  answer for each statement whose node holds a reading of its words, as that read answers a
- *  block (`text_tree`). A statement whose node holds no reading has no answer, as one the read
- *  has not answered for yet. */
-function statementReads(statements: readonly TreeNode[]): IssueTreeReads {
-  const issue = issueDetails();
-  const blocks = statements.map((statement): ArtifactBlock => {
-    const id = statement.id.slice(blockNodeId(SPEC_SLUG, "").length);
-    return {
-      attributes: [],
-      from: 0,
-      id,
-      references: { asks: 0, comments: 0 },
-      to: 1,
-      token: id,
-      type: "requirement",
-    };
-  });
-  return {
-    documents: [{ artifactId: issue.primary_artifact_id, blocks }],
-    issue,
-    targets: statements.flatMap(({ reference, text, tree }) =>
-      reference === undefined || tree === undefined
-        ? []
-        : [{ gone: false, kind: "block", name: text, ref: reference, text_tree: tree }]
-    ),
-  };
-}
-
 /** What the page publishes for `statements`: what its batched read names them by, by the page's
- *  own rule (`targetNaming`) over their reads (`statementReads`, unless a case hands the reads it
- *  built its chips from), and every statement's address as one the page asks for, answered or
- *  not yet. */
+ *  own rule (`targetNaming`) over the reads it names them from (`blockReads`, over the issue the
+ *  statements are blocks of, unless a case hands the reads it built its chips from), and every
+ *  statement's address as one the page asks for, answered or not yet. */
 function publishedStatements(
   statements: readonly TreeNode[],
-  reads: IssueTreeReads = statementReads(statements)
+  reads: IssueTreeReads = blockReads(issueDetails(), statements)
 ): PublishedReferences {
   return {
     ...targetNaming(reads),
@@ -2316,7 +2279,7 @@ test("a check under two statements names the other by its words with no mark of 
   // the others it serves as the tree names them, from those reads: each chip is the page's own
   // for its target (`treeContext`), and the page publishes from the same reads.
   const all = [plain, marked, picture, numbered, stranger];
-  const reads = statementReads(all);
+  const reads = blockReads(issueDetails(), all);
   const { chipOf } = treeContext(reads);
   const under = (block: CheckBlock, others: readonly TreeNode[]): TreeNode => ({
     ...checkNode(block),
