@@ -9,10 +9,10 @@
  *  (`-ldflags "-X main.buildCommit=<commit>"`), as `e2e/acceptance/lib-baseline.sh` builds it. The
  *  build goes to `$TMPDIR/dispatch-e2e-base-<commit>/dispatch` under `flock`, written whole and
  *  renamed, so the workers of a run build it once between them and a later run reuses it. A
- *  machine with neither that binary nor `go` and `git` cannot build it, and the row says so
- *  (`baseBuild`'s `skip`): CI's browser lane runs in a container with no Go. The base's dashboard
- *  is built the same way, from the same commit's tree, where a row names a directory for it
- *  (`baseWebBuild`).
+ *  machine with neither that binary nor `go`, `git`, `tar` and `flock` cannot build it, and the row
+ *  says so (`baseBuild`'s `skip`): CI's browser lane runs in a container with no Go. The base's
+ *  dashboard is built the same way, from the same commit's tree, where a row names a directory for
+ *  it (`baseWebBuild`).
  *
  *  A build serves the stack's own database unless the row names one of its own, so both builds
  *  answer with one set of ids, and it signs its cookies with the stack's dev sign-in key: a
@@ -65,7 +65,7 @@ export type BaseBuild =
 /** The commit `BASELINE_SHA` names, in full: the release this branch lands after. It has no
  *  default, as lib-baseline.sh's has none: main's merge base is older than any sibling branch this
  *  one is stacked on, so a row built on it could pass without being able to fail. */
-export async function baselineCommit(): Promise<string> {
+async function baselineCommit(): Promise<string> {
   const revision = (process.env.BASELINE_SHA ?? "").trim();
   if (revision === "")
     throw new Error(
@@ -132,7 +132,7 @@ export type BaseWebBuild = { readonly webDist: string } | { readonly skip: strin
  *  `directory`, once per commit: the commit's tree taken out with `git archive`, its packages
  *  installed from the lockfile it carries, and its contracts and dashboard built with its own
  *  scripts, under `flock`, with a stamp naming the commit written last, so the workers of a run
- *  build it once between them and a later run reuses it. A machine with no `git`, `bun` or
+ *  build it once between them and a later run reuses it. A machine with no `git`, `tar`, `bun` or
  *  `flock` cannot build it, and the row says so. */
 export async function baseWebBuild(directory: string): Promise<BaseWebBuild> {
   for (const tool of ["git", "tar", "bun", "flock"]) {

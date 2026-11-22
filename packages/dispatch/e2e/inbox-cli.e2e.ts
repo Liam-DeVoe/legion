@@ -578,7 +578,7 @@ test("dispatch inbox lists the reader's unread threads, the page's own thread ro
     // The threads the server answers this reader, and no others: the comment thread of hers an
     // agent has written in, and the message she sent a session that it answered.
     const listed = await meInboxThreads({}, { login: "alice" });
-    const listedRowsRead = listed.rows ?? [];
+    const listedRowsRead = listed.rows;
     expect(listed.total).toBe(2);
     expect(printedThreads(printed)).toEqual(listedRowsRead.map((row) => row.ref).sort());
 

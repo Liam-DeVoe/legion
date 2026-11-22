@@ -18,6 +18,7 @@ import {
 import { blockId } from "./editor";
 import { seedFakeGithub } from "./fake-github-helpers";
 import { inboxCountBadge, inboxCountText } from "./inbox-threads";
+import { inboxRead, openAsksRead } from "./pick-writes";
 import { COMPONENT_MODEL, COMPONENT_REFERENCE, COMPONENT_REPO } from "./reference-surfaces";
 import { expect, type Page, type Request, test } from "./test";
 import { asUser } from "./users";
@@ -327,8 +328,7 @@ test("sidebar: an issue event while the sidebar's first reads are in flight disc
     const page = await alice.newPage();
     const traffic = watchTraffic(page);
     const reads = {
-      inbox: (url: URL) =>
-        url.pathname === "/api/v1/me/inbox" && url.searchParams.get("state") === "inbox",
+      inbox: inboxRead,
       pinned: (url: URL) =>
         url.pathname === "/api/v1/issues" && url.searchParams.get("pinned") === "true",
       projects: (url: URL) => url.pathname === "/api/v1/projects",
@@ -492,12 +492,12 @@ test("replies: a reply in a thread alice wrote in moves her Inbox count, and one
 // assignee write and a project-default write. On an issue page a reader's margin holds one
 // unfiltered read of the open asks and narrows it in the browser, so it holds every open question
 // she can see with the person it waits on, and a write is a read she is owed exactly when that
-// read holds a row it moves. The assignee
-// write tests her rows for one of the issue (`inboxRowsOf`), and the project-default write for
-// one of the project whose person its default decides (`inboxRowsDecidedByDefault`, both in
-// `web/src/api/event-refresh.ts`); the two people either write names (`thread_logins`) read their
-// whole Inbox too, which `e2e/project-default-assignee.e2e.ts` measures. These rows read a third
-// reader, whom neither write names.
+// read holds a row it moves. The assignee write tests her rows for one of the issue
+// (`inboxRowsOf`), and the project-default write for one of the project whose person its default
+// decides (`inboxRowsDecidedByDefault`, both in `web/src/api/event-refresh.ts`); the two people
+// either write names (`thread_logins`) read their whole Inbox too, which
+// `e2e/project-default-assignee.e2e.ts` measures. These rows read a third reader, whom neither
+// write names.
 //
 // The assignee write below moves an issue carrying no question at all, so her list holds no row
 // it moves and she owes no read. The project-default write moves the person a question in her
@@ -528,7 +528,7 @@ test("assignee write: an assignee moved between two other people sends no read f
     const traffic = watchTraffic(page);
     let inboxReads = 0;
     page.on("request", (request) => {
-      if (request.method() === "GET" && new URL(request.url()).pathname === "/api/v1/asks/open") {
+      if (request.method() === "GET" && openAsksRead(new URL(request.url()))) {
         inboxReads += 1;
       }
     });
@@ -593,7 +593,7 @@ test("project default: a project's default moved between two other people reads 
     const traffic = watchTraffic(page);
     let inboxReads = 0;
     page.on("request", (request) => {
-      if (request.method() === "GET" && new URL(request.url()).pathname === "/api/v1/asks/open") {
+      if (request.method() === "GET" && openAsksRead(new URL(request.url()))) {
         inboxReads += 1;
       }
     });

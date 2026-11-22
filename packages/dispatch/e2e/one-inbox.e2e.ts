@@ -16,6 +16,8 @@ import {
 } from "./api";
 import { inboxPane, selectRow } from "./inbox-pane";
 import { agentRowId, asSession, replyRowId, sessionActor, THREAD_SESSION } from "./inbox-threads";
+import { drawnIds } from "./inbox-view";
+import { inboxRead } from "./pick-writes";
 import { sql } from "./psql";
 import { sqlLiteral } from "./seed";
 import { expandedState } from "./settled";
@@ -58,12 +60,6 @@ async function expectMentioned(login: string, commentId: string): Promise<void> 
     .toContain("mentions inbound");
 }
 
-/** `path` with `params`. */
-function address(path: string, params: Readonly<Record<string, string>> = {}): string {
-  const search = new URLSearchParams(params).toString();
-  return search === "" ? path : `${path}?${search}`;
-}
-
 /** The row ids the page draws for the entries of one read of its own: an ask's own id, and a
  *  thread's `reply:` or `agent:` id, as the list names its rows (`rowId`). */
 function pageRowIds(entries: readonly MeInboxEntry[] | null): string[] {
@@ -72,13 +68,6 @@ function pageRowIds(entries: readonly MeInboxEntry[] | null): string[] {
     if (entry.agent !== undefined) return [agentRowId(entry.agent.thread_id)];
     return entry.thread === undefined ? [] : [replyRowId(entry.thread.thread_id)];
   });
-}
-
-/** Every row id the Inbox list holds, in its order. */
-function listedRows(page: Page): Promise<string[]> {
-  return page
-    .locator("[data-inbox-row]")
-    .evaluateAll((rows) => rows.map((row) => row.getAttribute("data-inbox-row") ?? ""));
 }
 
 /** Narrows the page's own Type filter to the value named `label`, or takes that value off again:
@@ -165,12 +154,8 @@ test("the inbox lists everything that reached a person in one list", async ({ br
       const url = new URL(request.url());
       if (url.pathname === "/api/v1/me/inbox") oneReads.push(url);
     });
-    const answered = page.waitForResponse(
-      (response) =>
-        new URL(response.url()).pathname === "/api/v1/me/inbox" &&
-        new URL(response.url()).searchParams.get("state") === "inbox"
-    );
-    await page.goto(address("/"));
+    const answered = page.waitForResponse((response) => inboxRead(new URL(response.url())));
+    await page.goto("/");
     const entries = ((await (await answered).json()) as MeInboxResponse).entries;
 
     // One list of four rows: the open ask, the session's reply in the comment thread, the reply
@@ -184,7 +169,7 @@ test("the inbox lists everything that reached a person in one list", async ({ br
     };
     const four = Object.values(rows).sort();
     await expect
-      .poll(async () => (await listedRows(page)).sort(), { message: "the rows of the one list" })
+      .poll(async () => (await drawnIds(page)).sort(), { message: "the rows of the one list" })
       .toEqual(four);
     // Nothing reached the reader that the page does not list: their own comment, the thread on
     // the closed issue and the mention of them are no rows of the page.
@@ -248,13 +233,13 @@ test("the inbox lists everything that reached a person in one list", async ({ br
     // Reply rows, and Agent message the one Agent row, out of the same list.
     await toggleType(page, "Threads");
     await expect
-      .poll(async () => (await listedRows(page)).sort())
+      .poll(async () => (await drawnIds(page)).sort())
       .toEqual([rows.comment, rows.message].sort());
     await toggleType(page, "Threads");
     await toggleType(page, "Agent message");
-    await expect.poll(() => listedRows(page)).toEqual([rows.direct]);
+    await expect.poll(() => drawnIds(page)).toEqual([rows.direct]);
     await toggleType(page, "Agent message");
-    await expect.poll(async () => (await listedRows(page)).sort()).toEqual(four);
+    await expect.poll(async () => (await drawnIds(page)).sort()).toEqual(four);
 
     // No narrowing reached the server: every read the page sent carries no relation kind.
     expect(oneReads.length, "the page's reads of the one read").toBeGreaterThan(0);
@@ -264,12 +249,12 @@ test("the inbox lists everything that reached a person in one list", async ({ br
 
     // The old Replies address lands on this list, narrowed to its threads, and on no page of its
     // own.
-    await page.goto(address("/replies"));
+    await page.goto("/replies");
     await expect(page).toHaveURL(
       (url) => url.pathname === "/" && url.searchParams.get("type") === "reply"
     );
     await expect
-      .poll(async () => (await listedRows(page)).sort())
+      .poll(async () => (await drawnIds(page)).sort())
       .toEqual([rows.comment, rows.message].sort());
   } finally {
     await context.close();
@@ -354,18 +339,14 @@ test("an answered ask stays in the threads a person takes part in", async ({ bro
   const context = await asUser(browser, named);
   try {
     const page = await context.newPage();
-    const answered = page.waitForResponse(
-      (response) =>
-        new URL(response.url()).pathname === "/api/v1/me/inbox" &&
-        new URL(response.url()).searchParams.get("state") === "inbox"
-    );
-    await page.goto(address("/"));
+    const answered = page.waitForResponse((response) => inboxRead(new URL(response.url())));
+    await page.goto("/");
     const drawn = pageRowIds(((await (await answered).json()) as MeInboxResponse).entries);
     // The list the page draws once both its reads have answered - rows or its empty state - is
     // there before the rows are compared: an empty answer would otherwise match the page before
     // it drew anything.
     await expect(page.getByTestId("inbox-list"), "the Inbox page drew its list").toBeAttached();
-    await expect.poll(async () => (await listedRows(page)).sort()).toEqual([...drawn].sort());
+    await expect.poll(async () => (await drawnIds(page)).sort()).toEqual([...drawn].sort());
     expect(drawn, "the rows the page draws").not.toContain(replyRowId(thread.id));
     expect(drawn, "the rows the page draws").not.toContain(replyRowId(mentioned.id));
     for (const absent of [replyRowId(thread.id), replyRowId(mentioned.id)]) {

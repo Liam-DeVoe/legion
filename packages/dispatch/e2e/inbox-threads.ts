@@ -405,10 +405,15 @@ export interface Twelve {
 
 /** The Inbox row `match` names, once the server has indexed the block that carries it. */
 async function indexedRow(match: (row: OpenAskRow) => boolean): Promise<OpenAskRow> {
-  await expect.poll(async () => (await listOpenAsks()).some(match)).toBe(true);
-  const row = (await listOpenAsks()).find(match);
-  if (row === undefined) throw new Error("the seeded question left the Inbox before it was read");
-  return row;
+  let found: OpenAskRow | undefined;
+  await expect
+    .poll(async () => {
+      found = (await listOpenAsks()).find(match);
+      return found !== undefined;
+    })
+    .toBe(true);
+  if (found === undefined) throw new Error("the seeded question was never listed");
+  return found;
 }
 
 /**

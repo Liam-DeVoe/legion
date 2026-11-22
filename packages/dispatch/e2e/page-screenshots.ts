@@ -12,11 +12,9 @@
  *  none of them: the person who read the images attaches them.
  *
  *  Each scene empties the instance and seeds its own state, as a row of the browser suite starts
- *  from `resetDatabase` (e2e/test.ts), so restart `dispatch:local` to have its own seed back. A
- *  request's scene seeds with the seed of the e2e test that proves its state, imported from the
- *  helper module that test imports it from, so the screenshot shows the state the test asserts.
- *  `page-inbox-today`, the Inbox before those requests, seeds with the helpers the one-list row of
- *  e2e/one-inbox.e2e.ts writes its rows with.
+ *  from `resetDatabase` (e2e/test.ts), so restart `dispatch:local` to have its own seed back.
+ *  `page-inbox-today`, the Inbox as it reads today, seeds its rows with `seedCommentThread` and
+ *  `seedAgentThread` from e2e/inbox-threads.ts.
  *
  *  It is no test: every Playwright project matches `*.e2e.ts` files alone, and `bun run test`
  *  collects only test-named files. */
@@ -28,6 +26,7 @@ import { type Browser, expect as baseExpect, chromium, type Page } from "@playwr
 
 import { setLiveSessions } from "./agents";
 import { baseUrl, createAsk, createIssue, createProject, patchIssue } from "./api";
+import { expectTimeout } from "./expect-timeout";
 import { inboxList, inboxPane, inboxRow } from "./inbox-pane";
 import {
   agentRowId,
@@ -41,14 +40,14 @@ import { shellQuote } from "./local-instance-support";
 import { resetDatabase } from "./seed";
 import { asUser } from "./users";
 
-/** Playwright's assertions with the e2e suite's 15 s wait (e2e/playwright.config.ts). */
-const expect = baseExpect.configure({ timeout: 15_000 });
+/** Playwright's assertions with the e2e suite's wait (e2e/expect-timeout.ts). */
+const expect = baseExpect.configure({ timeout: expectTimeout });
 
 /** One page change in the state to show. */
 interface Scene<Seeded> {
   /** The stem of its two files, `<name>-light.png` and `<name>-dark.png`. */
   readonly name: string;
-  /** Writes the state into the emptied instance: the seed of the e2e test that proves it. */
+  /** Writes the state into the emptied instance. */
   seed(): Promise<Seeded>;
   /** The address to open, relative to the instance's origin. */
   path(seeded: Seeded): string;

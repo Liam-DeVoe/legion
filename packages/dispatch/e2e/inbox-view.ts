@@ -67,10 +67,15 @@ const decisionSpec = [
 
 /** The Inbox row `match` names, once the server has indexed the block that carries it. */
 async function indexedRow(match: (row: OpenAskRow) => boolean): Promise<OpenAskRow> {
-  await expect.poll(async () => (await listOpenAsks()).some(match)).toBe(true);
-  const row = (await listOpenAsks()).find(match);
-  if (row === undefined) throw new Error("the seeded question left the Inbox before it was read");
-  return row;
+  let found: OpenAskRow | undefined;
+  await expect
+    .poll(async () => {
+      found = (await listOpenAsks()).find(match);
+      return found !== undefined;
+    })
+    .toBe(true);
+  if (found === undefined) throw new Error("the seeded question was never listed");
+  return found;
 }
 
 /**
@@ -228,7 +233,7 @@ export async function seedEveryField(): Promise<{
     "It moved to 03:00 last week."
   );
   const listed = await meInboxThreads({ state: "unread" });
-  const readRow = (listed.rows ?? []).find((row) => row.thread_id === read);
+  const readRow = listed.rows.find((row) => row.thread_id === read);
   if (readRow === undefined) throw new Error("the thread to mark read was never listed");
   await markThreadRead(read, readRow.reply.created_at);
   rows.push({
@@ -250,7 +255,7 @@ export async function lastActivity(): Promise<ReadonlyMap<string, string>> {
   for (const ask of await listOpenAsks()) {
     at.set(ask.id, ask.last_reply?.created_at ?? ask.created_at);
   }
-  for (const thread of (await meInboxThreads({ state: "inbox" })).rows ?? []) {
+  for (const thread of (await meInboxThreads({ state: "inbox" })).rows) {
     at.set(
       `${thread.kind === "agent" ? "agent" : "reply"}:${thread.thread_id}`,
       thread.reply.created_at

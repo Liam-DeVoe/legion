@@ -1,9 +1,7 @@
-import { execFile } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
-import { promisify } from "node:util";
 
 import { setLiveSessions } from "./agents";
 import { devSignInPath, e2eAgentToken, sessionCookieFrom } from "./api";
@@ -11,6 +9,7 @@ import { type BaseServer, baseBuild, baseWebBuild, bootBuild, stackBinary } from
 import { selectRow } from "./inbox-pane";
 import { holdReadMarks, THREAD_SESSION } from "./inbox-threads";
 import { bandHeadings } from "./inbox-view";
+import { sqlAt } from "./psql";
 import { type Browser, expect, type Page, test } from "./test";
 
 /**
@@ -46,13 +45,11 @@ import { type Browser, expect, type Page, test } from "./test";
  * project.
  */
 
-const execFileAsync = promisify(execFile);
-
 /** The person who reads both pages, and somebody else who writes in their threads. */
 const reader = "alice";
 const other = "bob";
 
-/** Where the base's dashboard is built, as the check names it. */
+/** Where the base's dashboard is built. The base's server goes where `baseBuild` builds it. */
 const baseWebDirectory = join(tmpdir(), "base-inbox-unchanged");
 
 /** This checkout's own dashboard, which `bun run build:web` builds before the run. */
@@ -64,22 +61,11 @@ const ROW_GAP_MS = 60_000;
 /** Empties `url`, the row's own database, so the build that boots over it first installs its
  *  schema from nothing: every object its own role owns goes, and what the deployment's bootstrap
  *  installed as another role stays - the `vector` extension migration 0072 needs and that role
- *  cannot create. The URL carries a credential, so a refusal says what psql said and never the
- *  command it ran. */
+ *  cannot create. The URL carries a credential, so psql gets it as `sqlAt` passes one, and a
+ *  refusal says what psql said and never the command it ran. */
 async function emptyDatabase(url: string): Promise<void> {
-  const pgBin = (process.env.DISPATCH_E2E_PG_BIN ?? "").trim();
-  const psql = pgBin === "" ? "psql" : join(pgBin, "psql");
   try {
-    await execFileAsync(psql, [
-      "--no-psqlrc",
-      "-q",
-      "-v",
-      "ON_ERROR_STOP=1",
-      "-d",
-      url,
-      "-c",
-      "drop owned by current_user cascade",
-    ]);
+    await sqlAt(url, ["drop owned by current_user cascade"]);
   } catch (error) {
     const stderr =
       error instanceof Error && "stderr" in error && typeof error.stderr === "string"
@@ -89,12 +75,15 @@ async function emptyDatabase(url: string): Promise<void> {
   }
 }
 
-/** Who writes one call of the seed: a person, by the session cookie a dev sign-in on the server
- *  gave them, or the thread's session, by the agent bearer every build of the harness takes. */
-type Writer = { readonly cookie: string } | "session";
+/** A person, by the session cookie a dev sign-in on a server gave them. */
+type Person = { readonly cookie: string };
+
+/** Who writes one call of the seed: a person, or the thread's session, by the agent bearer every
+ *  build of the harness takes. */
+type Writer = Person | "session";
 
 /** A person's session cookie from `server`'s own dev sign-in. */
-async function signedIn(server: BaseServer, login: string): Promise<Writer> {
+async function signedIn(server: BaseServer, login: string): Promise<Person> {
   const response = await fetch(new URL(devSignInPath(login), server.url), { redirect: "manual" });
   const cookie = sessionCookieFrom(response);
   if (response.status !== 302 || cookie === undefined) {
@@ -131,10 +120,9 @@ async function write<T>(
   return (response.status === 204 ? undefined : await response.json()) as T;
 }
 
-/** One read of `path` from `server` as the person `writer` signed in as, answering its body. */
-async function read<T>(server: BaseServer, writer: Writer, path: string): Promise<T> {
-  if (writer === "session") throw new Error("a read of the assignee filter is a person's");
-  const response = await fetch(new URL(path, server.url), { headers: { Cookie: writer.cookie } });
+/** One read of `path` from `server` as `person`, answering its body. */
+async function read<T>(server: BaseServer, person: Person, path: string): Promise<T> {
+  const response = await fetch(new URL(path, server.url), { headers: { Cookie: person.cookie } });
   if (!response.ok) {
     throw new Error(`GET ${path} answered ${response.status}: ${await response.text()}`);
   }
@@ -412,11 +400,15 @@ test("the inbox renders the same page before and after the one read, but for the
   // and the corpus is written a minute a row.
   test.setTimeout(3_600_000);
   const build = await baseBuild();
-  test.skip("skip" in build, "skip" in build ? build.skip : "");
-  if ("skip" in build) return;
+  if ("skip" in build) {
+    test.skip(true, build.skip);
+    return;
+  }
   const web = await baseWebBuild(baseWebDirectory);
-  test.skip("skip" in web, "skip" in web ? web.skip : "");
-  if ("skip" in web) return;
+  if ("skip" in web) {
+    test.skip(true, web.skip);
+    return;
+  }
   const databaseUrl = (process.env.ISSUE_UNCHANGED_DATABASE_URL ?? "").trim();
   if (databaseUrl === "") {
     throw new Error(

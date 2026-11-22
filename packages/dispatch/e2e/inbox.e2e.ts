@@ -322,9 +322,9 @@ test("a later Inbox response clears a hidden ask's pending refresh", async ({ br
   const releaseList = Promise.withResolvers<void>();
   page.on("request", (request) => {
     if (request.method() !== "GET") return;
-    const path = new URL(request.url()).pathname;
-    if (openAsksRead(new URL(request.url()))) inboxReads += 1;
-    if (path === `/api/v1/asks/${hiddenAsk.id}`) hiddenAskReads += 1;
+    const url = new URL(request.url());
+    if (openAsksRead(url)) inboxReads += 1;
+    if (url.pathname === `/api/v1/asks/${hiddenAsk.id}`) hiddenAskReads += 1;
   });
   await page.goto(WIDER_THAN_HER_OWN);
   await expect(page.getByTestId(`ask-${visibleAsk.id}`)).toBeVisible();

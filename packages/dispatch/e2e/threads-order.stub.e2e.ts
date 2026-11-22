@@ -55,9 +55,8 @@ const unreadCommentTest = stubbed(async () => {
   const seeded = await seedThreads();
   await readThrough(seeded.commentIssue, seeded.comment, 2);
   expect(
-    ((await meInboxThreads({ state: "unread" })).rows ?? []).find(
-      (row) => row.thread_id === seeded.comment
-    )?.unread_count
+    (await meInboxThreads({ state: "unread" })).rows.find((row) => row.thread_id === seeded.comment)
+      ?.unread_count
   ).toBe(4);
   return seeded;
 });

@@ -43,19 +43,6 @@ const readingAgent = {
 /** The heading of the one decision the decision row writes. */
 const DECISION = "Read the references";
 
-/** The question block a decision's own document declares: the reading world's, asked with another
- *  urgency. A block of another document of the issue that asks exactly what a block of the same
- *  id asks is a copy of that block and shows its ask (`docs/copied_asks.go`), so the spec's own
- *  block would make this one name the spec's ask; this one settles into an ask of its own. */
-function ownQuestionBlock(): string {
-  const spec = readingQuestionBlock();
-  const own = spec.replace('urgency="med"', 'urgency="high"');
-  if (own === spec) {
-    throw new Error(`setup: the reading question block names no urgency to change: ${spec}`);
-  }
-  return own;
-}
-
 // SLOW(>=2s): seeds the reading world and a comment, loads the Activity tab, pins the comment's
 // row, and opens the margin's Pinned tab, which reads the pinned event back before it draws it.
 test("activity-event-body: a pinned Activity event draws every form of a stored reference through the renderer", async ({
@@ -223,7 +210,7 @@ test("issue-decision: a decision's paragraph draws every form of a stored refere
   const notes = await createIssueArtifact(
     seeded.host.key,
     {
-      content: `${ownQuestionBlock()}\n\n:::decision{#d1}\n### ${DECISION}\n\n${readingText(seeded)}\n:::\n`,
+      content: `${readingQuestionBlock("high")}\n\n:::decision{#d1}\n### ${DECISION}\n\n${readingText(seeded)}\n:::\n`,
       name: "notes.md",
     },
     readingAgent

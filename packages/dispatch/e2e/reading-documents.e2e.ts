@@ -56,20 +56,6 @@ const ANCHOR = "The reading anchor sits here.";
 const SHAPED = "The reading host stores each notice.";
 const DECISION = "Store the notices";
 
-/** The question block the decision's own document declares: the reading world's, asked with
- *  another urgency. A block of another document of the issue that asks exactly what a block of
- *  the same id asks is a copy of that block and shows its ask (`docs/copied_asks.go`), so the
- *  spec's own block would make this one name the spec's ask; this one settles into an ask of its
- *  own. */
-function ownQuestionBlock(): string {
-  const spec = readingQuestionBlock();
-  const own = spec.replace('urgency="med"', 'urgency="high"');
-  if (own === spec) {
-    throw new Error(`setup: the reading question block names no urgency to change: ${spec}`);
-  }
-  return own;
-}
-
 /** Makes the project document the margin rows are reached on: one paragraph, the anchor, and
  *  the question block. A review of the document and a comment anchored to it are read against
  *  the document itself, so it declares the question a `#id` in them names, and a row whose text
@@ -146,7 +132,7 @@ test("margin-decision-passage: a margin decision card's passage draws every form
   const { artifact } = await createIssueArtifact(
     world.host.key,
     {
-      content: `${ownQuestionBlock()}\n\n:::decision{#d1 shaped="${shapes}"}\n### ${DECISION}\n\n${readingText(world)} Shapes ${shapes}.\n:::\n`,
+      content: `${readingQuestionBlock("high")}\n\n:::decision{#d1 shaped="${shapes}"}\n### ${DECISION}\n\n${readingText(world)} Shapes ${shapes}.\n:::\n`,
       name: "notes.md",
     },
     readingAgent
