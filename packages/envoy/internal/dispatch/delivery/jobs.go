@@ -222,8 +222,8 @@ func (j *JobIntake) schedule(key runKey, production Production) {
 
 // fire ends a run's burst and reads its jobs once a read slot is free (reads). An event that
 // arrives during the read starts the next burst; two reads of one run that overlap are safe, since
-// a read never undoes a later one (UpsertRunJobs). The read's deadline, on the intake's clock,
-// starts once it has its slot.
+// a read never undoes a later one (UpsertRunJobs). The read's deadline, the intake's message
+// timeout (heldDurable.messageTimeout) on its clock, starts once it has its slot.
 func (j *JobIntake) fire(key runKey, run *pendingRun) {
 	j.mu.Lock()
 	if j.pending[key] != run {
@@ -238,7 +238,7 @@ func (j *JobIntake) fire(key runKey, run *pendingRun) {
 		return
 	}
 	defer func() { <-j.reads }()
-	ctx, cancel := j.clock.WithTimeout(j.ctx, intakeMessageTimeout)
+	ctx, cancel := j.clock.WithTimeout(j.ctx, j.messageTimeout)
 	defer cancel()
 	j.read(ctx, key, run.production)
 }

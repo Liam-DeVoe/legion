@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -50,7 +51,7 @@ func TestBothIntakesKeepTheirSubscriptions(t *testing.T) {
 		t.Fatalf("start the intakes: %v", err)
 	}
 	// The test ends only once both intakes have stopped, so nothing they started outlives the
-	// test's own cleanups (startIntake's reason).
+	// test's own cleanups (runIntake's reason).
 	t.Cleanup(func() {
 		cancel()
 		stop()
@@ -216,9 +217,12 @@ func TestAMessageInItsHandlerAtShutdownIsAcknowledged(t *testing.T) {
 // it gives up is handed back rather than acknowledged, so the next process to bind the durable
 // redoes it within seconds instead of after the ack wait. The intakes run on a fake clock the row
 // moves (startIntakes): each arms its stop deadline intakeStopBudget from ctx's end, and once the
-// fake reaches it the stop gives the held handler up (its WARN line says so) and returns.
+// fake reaches it the stop gives the held handler up (its WARN line says so) and returns. Every
+// intake of the row takes a message timeout past the run (startIntakes, ackWaitPastTheRun), so
+// only the hand-back brings the message to the next process inside the run, and the GitHub
+// client's own bound is past the run (requestTimeoutPastTheRun), so only the stop gives the held
+// fetch up.
 func TestAHandlerTheStopGivesUpIsRedeliveredAtOnce(t *testing.T) {
-	ackWaitPastTheRun(t)
 	logs := captureLogs(t)
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
@@ -226,14 +230,14 @@ func TestAHandlerTheStopGivesUpIsRedeliveredAtOnce(t *testing.T) {
 	publisher := intakeTestClient(t)
 	fake := newFakeGitHub(t)
 	held := holdPullRequestOneUntilAbandoned(fake)
-	github := fake.newTestClient()
+	github := fake.newTestClient(githubapp.WithRequestTimeout(requestTimeoutPastTheRun))
 	t.Cleanup(held.release)
 
 	stopClock := clocktest.New(time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC))
 	runCtx, cancel := context.WithCancel(ctx)
 	stop, err := startIntakes(runCtx, func(string) (*bus.Client, error) {
 		return bus.Connect([]string{natsURL})
-	}, pool, deliveryTestIntakeLeases(t, pool), github, events.NewBroker(), nil, nil, stopClock)
+	}, pool, deliveryTestIntakeLeases(t, pool), github, events.NewBroker(), nil, nil, stopClock, messageTimeoutPastTheRun)
 	if err != nil {
 		cancel()
 		t.Fatalf("start the intakes: %v", err)
@@ -253,11 +257,21 @@ func TestAHandlerTheStopGivesUpIsRedeliveredAtOnce(t *testing.T) {
 		defer close(stopped)
 		stop()
 	}()
-	// One stop deadline per intake, each armed as ctx ended.
+	// One stop deadline per intake, each armed as ctx ended. The same clock also holds the held
+	// handler's own deadline (Intake.deliver) and, while it runs, the bound of the job intake's
+	// release of its hold (releaseHold), which has no hand-back to wait for: the row waits until
+	// two deadlines stand at intakeStopBudget from ctx's end.
 	deadline := signalled.Add(intakeStopBudget)
-	if armed := stopClock.AwaitArmed(t, "the two intakes' stop deadlines", 2); !slices.Equal(armed, []time.Time{deadline, deadline}) {
-		t.Fatalf("the intakes' stops armed deadlines %v, want both at %v: intakeStopBudget from ctx's end", armed, deadline)
-	}
+	testwait.Until(t, fmt.Sprintf("the two intakes' stop deadlines, armed at %v: intakeStopBudget from ctx's end", deadline), func() ([]time.Time, bool) {
+		armed := stopClock.Armed()
+		at := 0
+		for _, moment := range armed {
+			if moment.Equal(deadline) {
+				at++
+			}
+		}
+		return armed, at == 2
+	})
 	stopClock.Advance(intakeStopBudget)
 	testwait.Receive(t, "the intakes' stop to return once the fake clock reached their stop deadlines", stopped)
 	if !loggedMessage(logs(), "dispatch delivery: the intake stopped before the event's handling finished; handing it back") {
@@ -268,7 +282,7 @@ func TestAHandlerTheStopGivesUpIsRedeliveredAtOnce(t *testing.T) {
 		return fmt.Sprintf("pull request 1's events once stop returned = %q, want the held fetch given up", held.of("1"))
 	})
 
-	runIntake(t, newIntake(intakeTestClient(t), pool, deliveryTestLeases(t, pool), github, events.NewBroker(), loadedSettingsCache(t, ctx, pool)))
+	runIntake(t, ackWaitPastTheRun(newIntake(intakeTestClient(t), pool, deliveryTestLeases(t, pool), github, events.NewBroker(), loadedSettingsCache(t, ctx, pool))))
 	awaitAcknowledged(t, publisher)
 	if events, want := held.of("1"), []string{"start 1", "end 1", "start 1", "end 1"}; !slices.Equal(events, want) {
 		t.Fatalf("pull request 1's events = %q, want %q: the next process redoes the message given up", events, want)
@@ -355,7 +369,7 @@ func TestTwoIntakesOnOneClientRefuseTheSecondBind(t *testing.T) {
 	})
 
 	seedDeliverySettings(t, ctx, pool)
-	startIntake(t, newIntake(shared, pool, leases, github, events.NewBroker(), loadedSettingsCache(t, ctx, pool)))
+	runIntake(t, newIntake(shared, pool, leases, github, events.NewBroker(), loadedSettingsCache(t, ctx, pool)))
 	var refusal map[string]any
 	waitFor(t, func() bool {
 		for _, record := range logs() {

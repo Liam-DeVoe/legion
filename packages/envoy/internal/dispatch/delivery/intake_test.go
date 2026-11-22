@@ -222,7 +222,7 @@ func awaitAcknowledged(t *testing.T, natsClient *bus.Client) {
 
 // captureLogs sends every slog record from Info up from here on to a buffer, as JSON, until the
 // test ends, and answers the records written so far. Intake logs from NATS's delivery goroutine, so
-// the buffer is locked. Call it before startIntake, so the default logger is restored only once
+// the buffer is locked. Call it before runIntake, so the default logger is restored only once
 // intake stops.
 func captureLogs(t *testing.T) func() []map[string]any {
 	t.Helper()
@@ -269,19 +269,22 @@ func capHeadWriteDeliveriesAt(t *testing.T, deliveries uint64) {
 	t.Cleanup(func() { headWriteMaxDeliveries = was })
 }
 
-// ackWaitPastTheRun makes the delivery durable's ack wait longer than any run of the package, for
-// one test: intakeAckWait derives it from intakeMessageTimeout, here six hours, so the durable the
-// intakes create (deliveryConsumerConfig, a take-over's takeOverConfig) waits a day for an
-// acknowledgement. A row whose message must reach a process by a hand-back or a take-over's
-// recreate at the ack floor calls it before it starts any intake: the server's own redelivery
-// once the ack wait expires then never comes inside the run, so a wait the row leaves unbounded
-// fails on a broken hand-back rather than passing on that redelivery. Its restore is registered
-// before the row's intakes start, so it runs once they have stopped.
-func ackWaitPastTheRun(t *testing.T) {
-	t.Helper()
-	was := intakeMessageTimeout
-	intakeMessageTimeout = 6 * time.Hour
-	t.Cleanup(func() { intakeMessageTimeout = was })
+// messageTimeoutPastTheRun is the message timeout (heldDurable.messageTimeout) ackWaitPastTheRun
+// gives an intake: six hours.
+const messageTimeoutPastTheRun = 6 * time.Hour
+
+// ackWaitPastTheRun gives in the message timeout messageTimeoutPastTheRun before its Run, and
+// returns it. intakeAckWait derives the durable's ack wait from it, so the durable the intake
+// creates (deliveryConsumerConfig, a take-over's takeOverConfig) waits a day for an
+// acknowledgement, and the intake's handler deadline (Intake.deliver) is six hours out. A row
+// whose message must reach a process by a hand-back or a take-over's recreate at the ack floor
+// gives it to every intake it runs, since each take-over creates the durable with the taker's own
+// config: the server's own redelivery once the ack wait expires then never comes inside the run,
+// so a wait the row leaves unbounded fails on a broken hand-back rather than passing on that
+// redelivery. It sets a field of in alone, so no other intake reads it.
+func ackWaitPastTheRun(in *Intake) *Intake {
+	in.messageTimeout = messageTimeoutPastTheRun
+	return in
 }
 
 // loadedSettingsCache is a settings cache holding what delivery_settings holds now, read once and
@@ -333,24 +336,6 @@ func publishWorkflowEnvelope(t *testing.T, natsClient *bus.Client, owner, repo, 
 	return duplicate
 }
 
-// startIntake runs intake until the test ends, and waits for Run to return before the test's own
-// cleanups go on. Cancelling alone does not: Run reads the intake's package variables, and the
-// next test's capHeadWriteDeliveriesAt writes one, so a Run still unwinding from the previous test
-// is a data race on it.
-func startIntake(t *testing.T, intake *Intake) {
-	t.Helper()
-	runCtx, cancel := context.WithCancel(t.Context())
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		intake.Run(runCtx)
-	}()
-	t.Cleanup(func() {
-		cancel()
-		testwait.Receive(t, "the intake's Run to return once its context ended", done)
-	})
-}
-
 // intakeTestClient connects one NATS client for an intake test and closes it with the test.
 func intakeTestClient(t *testing.T) *bus.Client {
 	t.Helper()
@@ -363,10 +348,18 @@ func intakeTestClient(t *testing.T) *bus.Client {
 }
 
 // awaitBoundDurable waits for the intake to have created its durable and subscribed to it, so a
-// test that means to publish into a bound consumer does not race the bind. Its one bound is the
-// shared wait's (waitFor): a bind that is merely slow on a loaded machine still passes, and one
-// that never comes fails the row naming the durable's last state.
+// test that means to publish into a bound consumer does not race the bind: awaitDurableBoundAt
+// for an intake with production's in-flight bound (intakeMaxAckPending).
 func awaitBoundDurable(t *testing.T, natsClient *bus.Client) {
+	t.Helper()
+	awaitDurableBoundAt(t, natsClient, intakeMaxAckPending)
+}
+
+// awaitDurableBoundAt waits for the durable to be push-bound with maxAckPending in-flight slots,
+// the bound of the intake that created it (Intake.maxAckPending). Its one bound is the shared
+// wait's (waitFor): a bind that is merely slow on a loaded machine still passes, and one that
+// never comes fails the row naming the durable's last state.
+func awaitDurableBoundAt(t *testing.T, natsClient *bus.Client, maxAckPending int) {
 	t.Helper()
 	var state string
 	waitFor(t, func() bool {
@@ -376,9 +369,9 @@ func awaitBoundDurable(t *testing.T, natsClient *bus.Client) {
 			return false
 		}
 		state = fmt.Sprintf("push_bound=%t max_ack_pending=%d", info.PushBound, info.Config.MaxAckPending)
-		return info.PushBound && info.Config.MaxAckPending == intakeMaxAckPending
+		return info.PushBound && info.Config.MaxAckPending == maxAckPending
 	}, func() string {
-		return fmt.Sprintf("intake never bound its durable with max_ack_pending=%d: %s", intakeMaxAckPending, state)
+		return fmt.Sprintf("intake never bound its durable with max_ack_pending=%d: %s", maxAckPending, state)
 	})
 }
 

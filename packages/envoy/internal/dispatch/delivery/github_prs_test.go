@@ -186,6 +186,12 @@ func (f *fakeGitHub) newTestClient(options ...githubapp.Option) *githubapp.Clien
 	return newAppClient(f.t, githubtest.Spec{Handle: f.mux.ServeHTTP}, options...)
 }
 
+// requestTimeoutPastTheRun is the GitHub client's bound on each call (githubapp.WithRequestTimeout)
+// for a row whose fake GitHub holds a call while the row stages its next step: past any run, so
+// only the row's release or the caller's own context ends that call, and never the client's own
+// bound on the wall clock (githubapp.RequestTimeout).
+const requestTimeoutPastTheRun = 24 * time.Hour
+
 // newAppClient is a GitHub App client, signed with a key made for the test, of the GitHub
 // stand-in spec describes, with options where a test needs them.
 func newAppClient(t *testing.T, spec githubtest.Spec, options ...githubapp.Option) *githubapp.Client {

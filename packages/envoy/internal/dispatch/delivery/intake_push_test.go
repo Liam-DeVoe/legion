@@ -102,7 +102,7 @@ func TestTheIntakeHandsABranchPushToItsImporter(t *testing.T) {
 	pushes := &recordingPushes{}
 	intake := newIntake(natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), settings)
 	intake.pushes = pushes
-	startIntake(t, intake)
+	runIntake(t, intake)
 	awaitBoundDurable(t, natsClient)
 
 	branch := pushEnvelope(t, "cybermonklabs", "legion", "refs/heads/release/1.2")

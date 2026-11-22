@@ -1,7 +1,6 @@
 package delivery
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 	"slices"
@@ -18,10 +17,10 @@ import (
 	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testnats"
-	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A pull-request envelope whose head row could not be stored at all is handed back for
@@ -43,7 +42,7 @@ func TestAnEnvelopeWhoseHeadRowCouldNotBeStoredIsHandedBack(t *testing.T) {
 	withoutBranchCommits(t, ctx, pool)
 
 	natsClient := intakeTestClient(t)
-	startIntake(t, newIntake(natsClient, pool, deliveryTestLeases(t, pool),
+	runIntake(t, newIntake(natsClient, pool, deliveryTestLeases(t, pool),
 		newFakeGitHub(t).newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool)))
 	awaitBoundDurable(t, natsClient)
 	before := deliveryConsumerInfo(t, natsClient).Delivered.Consumer
@@ -95,7 +94,11 @@ type headWriteProcess struct {
 // GitHub answers the pull request's commit read with no commits, after counting it, and holds
 // the first one until the row releases it or the handler making it is abandoned. That read is
 // where a handler can be held for this row: everything after it is the head write, which is the
-// failure under test.
+// failure under test. The client's own bound on that read is past any run
+// (requestTimeoutPastTheRun), so only the row's release or the handler's own end ends it while
+// the row stages its next step. The intake's message timeout is past the run too
+// (ackWaitPastTheRun): the row's envelope must reach the keeper by the take-over's recreate at the
+// ack floor, never by the server's redelivery at the ack wait.
 func startHeadWriteProcess(t *testing.T, pool *store.Pool, natsURL string) *headWriteProcess {
 	t.Helper()
 	second := storetest.SecondProcess(t, &store.Store{Pool: pool})
@@ -122,24 +125,15 @@ func startHeadWriteProcess(t *testing.T, pool *store.Pool, natsURL string) *head
 		}
 		mustEncode(t, w, []any{})
 	})
-	github := fake.newTestClient()
+	github := fake.newTestClient(githubapp.WithRequestTimeout(requestTimeoutPastTheRun))
 	// Registered after the fake's server, so it runs first: the server's Close waits for the
 	// handler it holds.
 	process.release = sync.OnceFunc(func() { close(held) })
 	t.Cleanup(process.release)
 
-	process.intake = newIntake(client, second.Pool, process.leases, github, events.NewBroker(),
-		loadedSettingsCache(t, t.Context(), second.Pool))
-	runCtx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		process.intake.Run(runCtx)
-	}()
-	t.Cleanup(func() {
-		cancel()
-		testwait.Receive(t, "the intake's Run to return once its context ended", done)
-	})
+	process.intake = ackWaitPastTheRun(newIntake(client, second.Pool, process.leases, github, events.NewBroker(),
+		loadedSettingsCache(t, t.Context(), second.Pool)))
+	runIntake(t, process.intake)
 	return process
 }
 
@@ -207,7 +201,6 @@ func durableAnswers(t *testing.T, client *bus.Client) func() []string {
 // the loss deadline that stops the holder, which is less than a loaded runner can take to stop
 // the holder and migrate the table back.
 func TestAHolderWhoseHoldLapsedPublishesNoHandBackAndTheKeeperIsHandedTheEnvelopeOnce(t *testing.T) {
-	ackWaitPastTheRun(t)
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	seedDeliveryProject(t, ctx, pool)

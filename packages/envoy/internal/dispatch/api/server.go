@@ -276,6 +276,10 @@ type DepsInput struct {
 	App           *auth.AppConfig
 	GitHubAPIBase string
 	OIDC          ServiceTokenVerifier
+	// GitHubRequestTimeout bounds each call of the GitHub client (githubapp.WithRequestTimeout);
+	// zero keeps githubapp.RequestTimeout, which is what cmd/dispatch leaves it at. A test whose
+	// stand-in for GitHub holds a read while the test moves a fake clock sets one past any run.
+	GitHubRequestTimeout time.Duration
 	// BrokerTokens decides a broker-issued DPoP token; nil where no broker is configured. See
 	// Deps.BrokerTokens; cmd/dispatch builds it (brokerTokenVerifier).
 	BrokerTokens *ciphertoken.Verifier
@@ -379,6 +383,9 @@ func NewDeps(input DepsInput) (Deps, error) {
 	}
 	if input.CollaboratorHTTPClient != nil {
 		githubOptions = append(githubOptions, githubapp.WithHTTPClient(input.CollaboratorHTTPClient))
+	}
+	if input.GitHubRequestTimeout > 0 {
+		githubOptions = append(githubOptions, githubapp.WithRequestTimeout(input.GitHubRequestTimeout))
 	}
 	github, err := githubapp.New(input.App, input.GitHubAPIBase, githubOptions...)
 	if err != nil {

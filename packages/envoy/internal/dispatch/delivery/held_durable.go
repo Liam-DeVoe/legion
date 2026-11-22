@@ -224,18 +224,28 @@ type heldDurable struct {
 	// returns. It is nil outside tests: a test sets it to hold a take-over that has bound the
 	// durable until past Run's ctx's end.
 	boundHook func()
-	// clock is the time this intake's stop deadline runs on (stopContext), and the job intake's
-	// bursts and reads too (JobIntake.schedule, JobIntake.fire): clock.Real, which newHeldDurable
-	// gives it, and a test's clocktest.Fake, set before Run, as boundHook is.
+	// clock is the time this intake's stop runs on: its deadline (stopContext) and the bounds of
+	// the flush and the release that follow it (flushHandBacks, releaseHold); the delivery
+	// intake's handler deadline too (Intake.deliver), and the job intake's bursts and reads
+	// (JobIntake.schedule, JobIntake.fire). clock.Real, which newHeldDurable gives it, and a test's
+	// clocktest.Fake, set before Run, as boundHook is.
 	clock intakeClock
+	// messageTimeout bounds one message's handling, as the delivery intake's handler deadline
+	// (Intake.deliver), and one run's read, as the job intake's read deadline (JobIntake.fire),
+	// both on clock; the delivery durable's ack wait derives from it (deliveryConsumerConfig).
+	// intakeMessageTimeout, which newHeldDurable gives it, and a test's own, set before Run, as
+	// clock is.
+	messageTimeout time.Duration
 	// holdClock is the time the durable's hold runs on: this intake's tries for it every
-	// durableBindInterval and its checks of the durable every intakeHoldRenew (run), its renewals
-	// and its loss deadline (duty.HoldOptions.Clock), every reading of whether this intake still
-	// holds it (holds, intakeDelivery.holdCovers, retryHeld), and the take-over's bound and its
-	// waits between tries under it (finishTakeOver, retryHeld). clock.Real, which newHeldDurable
-	// gives it, and a test's clocktest.Fake, set before Run, on which a try or a check comes, a
-	// take-over tries a step again or gives it up, and a loss deadline passes only where the test
-	// moves it. Whether another process may take the hold is the database's clock either way.
+	// durableBindInterval and its checks of the durable every intakeHoldRenew (run), the bound on
+	// each try's read and take of the hold and on each read of the durable (takeHold,
+	// lookupDurable), its renewals and its loss deadline (duty.HoldOptions.Clock), every reading of
+	// whether this intake still holds it (holds, intakeDelivery.holdCovers, retryHeld), and the
+	// take-over's bound and its waits between tries under it (finishTakeOver, retryHeld).
+	// clock.Real, which newHeldDurable gives it, and a test's clocktest.Fake, set before Run, on
+	// which a try or a check comes, a try's or a check's read gives up, a take-over tries a step
+	// again or gives it up, and a loss deadline passes only where the test moves it. Whether
+	// another process may take the hold is the database's clock either way.
 	holdClock clock.Clock
 	// checkPasses counts this intake's checks of its durable (check, DurableChecked's pass). Only
 	// the run loop's goroutine reads and writes it.
@@ -257,7 +267,8 @@ func newHeldDurable(natsClient *bus.Client, leases intakeLeases, config func() n
 ) heldDurable {
 	return heldDurable{
 		nats: natsClient, leases: leases, holder: uuid.New(), throttle: &bindThrottle{},
-		config: config, name: config().Durable, key: key, handle: handle, clock: clock.Real(), holdClock: clock.Real(),
+		config: config, name: config().Durable, key: key, handle: handle,
+		clock: clock.Real(), holdClock: clock.Real(), messageTimeout: intakeMessageTimeout,
 	}
 }
 
@@ -265,8 +276,9 @@ func newHeldDurable(natsClient *bus.Client, leases intakeLeases, config func() n
 // (heldDurable.clock), a narrowing of clock.Clock: clock.Real in production and a test's
 // clocktest.Fake. A read is armed for a moment as the wait from the clock's present at the arm,
 // so a clock that moved between the read and the arm fires the timer at that moment all the same
-// (api's hubClock has the same shape). A read's deadline is the clock's too (JobIntake.fire), so a
-// test moves time past it rather than waiting it out.
+// (api's hubClock has the same shape). A handler's deadline and a read's are the clock's too
+// (Intake.deliver, JobIntake.fire), and so are the bounds of the stop's flush and release
+// (flushHandBacks, releaseHold), so a test moves time past them rather than waiting them out.
 type intakeClock interface {
 	Now() time.Time
 	AfterFunc(d time.Duration, f func()) clock.Timer
@@ -368,10 +380,14 @@ func (d *heldDurable) attempt(ctx context.Context) {
 	duty.Exclusive(ctx, d.leases, consumerLease(d.name), time.Time{}, 0, d.takeOver)
 }
 
-// lookupDurable reads the durable's state from the server, bounded by intakeHoldRenew.
+// lookupDurable reads the durable's state from the server, bounded by intakeHoldRenew on the hold's
+// clock (heldDurable.holdClock), the clock the try or the check that reads it runs on.
 func (d *heldDurable) lookupDurable(ctx context.Context) (*natsgo.ConsumerInfo, error) {
-	lookup, cancel := context.WithTimeout(ctx, intakeHoldRenew)
+	clocked, cancel := d.holdClock.WithTimeout(ctx, intakeHoldRenew)
 	defer cancel()
+	// nats.go is shown a deadline it can read: a fake's is its own (clock.WithShownDeadline).
+	lookup, cancelShown := clock.WithShownDeadline(clocked)
+	defer cancelShown()
 	return d.nats.JS().ConsumerInfo(bus.Stream, d.name, natsgo.Context(lookup))
 }
 
@@ -380,10 +396,12 @@ const heldElsewhere = "dispatch delivery: NATS consumer held by another process;
 
 // takeHold takes the durable's hold when no holder holds it live, keeping the token its row
 // records, and reports whether this intake holds it now. duty.TryHold records its own token as it
-// takes a lapsed hold, so the lapsed hold's token is read first (duty.HoldToken).
+// takes a lapsed hold, so the lapsed hold's token is read first (duty.HoldToken). The read and the
+// take are bounded together by intakeHoldRenew on the hold's clock (heldDurable.holdClock), the
+// clock the try runs on.
 func (d *heldDurable) takeHold(ctx context.Context) bool {
 	holdName := intakeHoldName(d.name)
-	bounded, cancel := context.WithTimeout(ctx, intakeHoldRenew)
+	bounded, cancel := d.holdClock.WithTimeout(ctx, intakeHoldRenew)
 	defer cancel()
 	token, live, err := duty.HoldToken(bounded, d.leases, holdName)
 	switch {
@@ -740,8 +758,9 @@ func (d *heldDurable) check(ctx context.Context) {
 // hold once every hand-back reached the server (handBacksReached), so a standby takes the durable
 // over at once and is redelivered whatever this intake handed back. A hold whose token still records
 // a take-over's start (intakeHoldToken) is lapsed instead, which frees it as Release does and keeps
-// the row, so the next holder reads that start. The release runs on a context of its own: it is one
-// statement, and it must reach the database even when the stop's budget has run out.
+// the row, so the next holder reads that start. The flush and the release run on bounds of their
+// own, on the stop's clock (flushHandBacks, releaseHold): the release is one statement, and it must
+// reach the database even when the stop's budget has run out.
 //
 // A hand-back still pending when the stop's context ends does not keep Run past that context, and
 // does not give the hold up either. A hand-back is a publish at the message's reply subject, which
@@ -802,7 +821,10 @@ func (d *heldDurable) finalizeHandBacks(delivery *intakeDelivery, hold *duty.Hol
 	retry := time.NewTicker(intakeFlushWait)
 	defer retry.Stop()
 	for {
-		if d.handBacksSettled() {
+		settling, cancel := context.WithTimeout(context.Background(), intakeFlushWait)
+		settled := d.handBacksSettled(settling)
+		cancel()
+		if settled {
 			if before := finalizerBeforeRelease.Load(); before != nil {
 				(*before)()
 			}
@@ -830,13 +852,14 @@ var finalizerBeforeRelease atomic.Pointer[func()]
 // still-open database pool before its caller closes it (StartIntakes).
 func (d *heldDurable) waitFinalizers() { d.finalizers.Wait() }
 
-// releaseHold releases hold, or lapses it when the next holder must read a take-over's token.
+// releaseHold releases hold, or lapses it when the next holder must read a take-over's token,
+// within intakeHoldRenew on the stop's clock (heldDurable.clock).
 func (d *heldDurable) releaseHold(hold *duty.Hold, lapse bool) {
 	release := hold.Release
 	if lapse {
 		release = hold.Lapse
 	}
-	releasing, cancel := context.WithTimeout(context.Background(), intakeHoldRenew)
+	releasing, cancel := d.clock.WithTimeout(context.Background(), intakeHoldRenew)
 	defer cancel()
 	if err := release(releasing); err != nil {
 		slog.Error("dispatch delivery: release the intake's hold", "name", d.name, "error", err)
@@ -868,24 +891,29 @@ func (d *heldDurable) handBacksReached(ctx context.Context, delivery *intakeDeli
 	return d.flushHandBacks()
 }
 
-// flushHandBacks is handBacksSettled within intakeFlushWait, on a bound of its own as the release
-// that follows it is: both are part of what follows the stop's deadline (intakeStopBudget), and a
-// healthy link answers the flush in a round trip. A flush that has not answered by then is false.
+// flushHandBacks is handBacksSettled within intakeFlushWait on the stop's clock
+// (heldDurable.clock), on a bound of its own as the release that follows it is: both are part of
+// what follows the stop's deadline (intakeStopBudget), and a healthy link answers the flush in a
+// round trip. A flush that has not answered by then is false.
 func (d *heldDurable) flushHandBacks() bool {
-	flushing, cancel := context.WithTimeout(context.Background(), intakeFlushWait)
+	clocked, cancel := d.clock.WithTimeout(context.Background(), intakeFlushWait)
 	defer cancel()
-	settled, _, _ := bus.Bounded(flushing, func() (bool, error) { return d.handBacksSettled(), nil })
+	// nats.go is shown a deadline it can read: a fake's is its own (clock.WithShownDeadline).
+	flushing, cancelShown := clock.WithShownDeadline(clocked)
+	defer cancelShown()
+	settled, _, _ := bus.Bounded(flushing, func() (bool, error) { return d.handBacksSettled(flushing), nil })
 	return settled
 }
 
 // handBacksSettled reports whether no hand-back nats.go had queued can reach the server later: a
-// flush of the intake client's connection answered within intakeFlushWait, so each has reached it,
-// or the connection has closed, which sent its outbound buffer or dropped it with the connection.
-func (d *heldDurable) handBacksSettled() bool {
+// flush of the intake client's connection answered before ctx ended, so each has reached it, or
+// the connection has closed, which sent its outbound buffer or dropped it with the connection.
+func (d *heldDurable) handBacksSettled(ctx context.Context) bool {
 	conn := d.nats.Connection()
-	return conn == nil || conn.IsClosed() || conn.FlushTimeout(intakeFlushWait) == nil
+	return conn == nil || conn.IsClosed() || conn.FlushWithContext(ctx) == nil
 }
 
 // intakeFlushWait bounds each flush that confirms a stop's hand-backs reached the server before its
-// hold is released (handBacksSettled).
+// hold is released (handBacksSettled): on the stop's clock in the stop itself (flushHandBacks), and
+// on the wall clock in a finalizer, which also waits it between flushes (finalizeHandBacks).
 const intakeFlushWait = time.Second

@@ -91,8 +91,9 @@ var commitSHA = regexp.MustCompile(`^[0-9a-f]{40}$`)
 // arrive, success or GitHub's own timeout, is cut off and reported as a bare client timeout
 // instead. This is that bound plus room for the connection and for transferring a response at
 // responseLimit.
-// A var rather than a const so a test can shrink it; nothing outside a test writes it.
-var RequestTimeout = 20 * time.Second
+// Each client takes it unless WithRequestTimeout gives that client a bound of its own
+// (Client.requestTimeout).
+const RequestTimeout = 20 * time.Second
 
 // limitRecordTimeout bounds one write of a limit GitHub answered to the shared ledger. The write
 // is one statement, which a healthy database answers in milliseconds, as the outbox's own
@@ -205,8 +206,8 @@ func (c *ttlCache[K, V]) fresh(key K) (V, bool) {
 // The one fetch serves every waiting caller, so it runs on ctx without its cancellation or
 // deadline: whichever caller started it may go away (a closed browser tab, an ended sync) while
 // others still wait on the same answer, and one caller's cancellation must not fail them. Each
-// request the fetch sends is still bounded by RequestTimeout. Each caller stops waiting when its
-// own ctx ends, with ctx's error.
+// request the fetch sends is still bounded by the client's request timeout. Each caller stops
+// waiting when its own ctx ends, with ctx's error.
 func (c *ttlCache[K, V]) get(ctx context.Context, key K, fetch func(context.Context) (V, error)) (V, error) {
 	var zero V
 	if value, ok := c.fresh(key); ok {
@@ -323,6 +324,14 @@ func WithRateLimitClock(c clock.Clock) Option {
 	return func(client *Client) { client.limitClock = c }
 }
 
+// WithRequestTimeout sets the bound on each API call the client sends (send) to timeout. Without
+// it the client takes RequestTimeout, which is what a deployment does; a test whose stand-in for
+// GitHub holds a call while the test stages its next step passes one past any run, so only the
+// test's release or the caller's own context ends that call.
+func WithRequestTimeout(timeout time.Duration) Option {
+	return func(c *Client) { c.requestTimeout = timeout }
+}
+
 // Client calls the GitHub App API as the configured App. A nil *Client is the
 // valid "no app credentials yet" state: every method returns ErrNoAppKey.
 type Client struct {
@@ -341,6 +350,9 @@ type Client struct {
 	// its fake, and an installation cache entry lapses installationsCacheTTL after its fetch, a
 	// span cireconcile's recheck row moves its fake past when it moves it by AbsentAppRecheck.
 	limitClock clock.Clock
+	// requestTimeout bounds each API call the client sends (send): RequestTimeout unless
+	// WithRequestTimeout replaces it.
+	requestTimeout time.Duration
 
 	mu sync.Mutex
 	// tokens holds each installation's token in this process alone. GitHub budgets an
@@ -397,11 +409,12 @@ func New(app *auth.AppConfig, base string, options ...Option) (*Client, error) {
 		app:  *app,
 		key:  key,
 		base: strings.TrimSuffix(base, "/"),
-		// No Timeout here: request applies RequestTimeout to each call's own context instead,
+		// No Timeout here: send applies requestTimeout to each call's own context instead,
 		// so a caller that needs a shorter one sets it on the context it passes.
 		http:           &http.Client{},
 		now:            time.Now,
 		limitClock:     clock.Real(),
+		requestTimeout: RequestTimeout,
 		tokens:         map[int64]cachedToken{},
 		installationOf: map[string]mintedToken{},
 	}
@@ -995,7 +1008,7 @@ func (c *Client) send(ctx context.Context, scope, method, target, authorization,
 			return nil, 0, nil, held
 		}
 	}
-	bounded, cancel := context.WithTimeout(ctx, RequestTimeout)
+	bounded, cancel := context.WithTimeout(ctx, c.requestTimeout)
 	defer cancel()
 	request, err := http.NewRequestWithContext(bounded, method, target, body)
 	if err != nil {
@@ -1040,7 +1053,7 @@ func (c *Client) send(ctx context.Context, scope, method, target, authorization,
 
 // noteFailure notes err on the attempt ctx carries (githubreads) while ctx, the caller's own
 // context, is live. A request its caller's context ended is no failure of GitHub's: the pass's
-// own bound or this process's shutdown cut it off. The client's own RequestTimeout is not the
+// own bound or this process's shutdown cut it off. The client's own request timeout is not the
 // caller's, so a request it ends is noted.
 func noteFailure(ctx context.Context, err error) {
 	if ctx.Err() == nil {

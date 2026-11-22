@@ -85,9 +85,6 @@ func (r *durableEvents) count() int {
 // row moves it past that deadline (passStopDeadline).
 func stopWithAHeldHandBack(t *testing.T) heldHandBack {
 	t.Helper()
-	// The hand-back is what must bring the message to the standby, so the server's own redelivery
-	// at the ack wait never comes inside the run (ackWaitPastTheRun).
-	ackWaitPastTheRun(t)
 	var row heldHandBack
 	pool, ctx := deliveryTestPool(t)
 	row.pool = pool
@@ -101,12 +98,16 @@ func stopWithAHeldHandBack(t *testing.T) heldHandBack {
 
 	const inFlight = 100
 	row.stopClock = clocktest.New(time.Now())
+	// The hand-back is what must bring the message to the standby, so the server's own redelivery
+	// at the ack wait never comes inside the run: both intakes take a message timeout past it
+	// (ackWaitPastTheRun).
 	holder := startIntakeProcessWith(t, pool, link.URL(), func(number int) bool { return number == inFlight }, func(p *intakeProcess) {
+		ackWaitPastTheRun(p.intake)
 		p.intake.clock = row.stopClock
 	})
 	row.holder = holder
 	awaitBoundDurable(t, publisher)
-	startIntakeProcess(t, pool, natsURL, nil)
+	startIntakeProcessWith(t, pool, natsURL, nil, processAckWaitPastTheRun)
 	holderConn := holder.client.Connection()
 	row.conn = holderConn
 
@@ -377,19 +378,20 @@ func requireNoHandBackAfterCreation(t *testing.T, recorded *durableEvents, from 
 //     nats.go's lock first; either way it does not reach the server after the standby creates the
 //     durable.
 //
-// No step waits on a time but the hold's own expiry: the stop's own deadline (intakeStopBudget) is
-// on the holder's stop clock, which the second and third rows move to it once the write is held and
-// the first never moves, and every wait is testwait's, which only guards against a stop that never
-// returns. The negative controls: a release that does not wait for the hand-backs fails the first's
-// order; a stop that never releases its hold when a publish was left running fails the first's
-// release; a release made at the deadline with a hand-back pending fails the second's hold; a stop
-// that leaves its hold to lapse with a hand-back pending fails the second's renewal; an untracked
-// finalizer fails the third by returning from its shutdown stop with the hold live; and the
-// holder's -NAK published again while the standby holds the message, with the server holding the
-// creation's advisory until the new consumer has delivered it a second time, fails all three by
-// that second delivery. The count does not fail a stop that gives up the holder's handler at its
-// deadline, whose deferred answer hands the first message back too: the new consumer then starts at
-// that message and delivers both once.
+// No step waits on a time but the hold's own expiry: the stop's own deadline (intakeStopBudget),
+// and the bounds of the flush and the release after it (flushHandBacks, releaseHold), are on the
+// holder's stop clock, which the second and third rows move to that deadline once the write is
+// held and the first never moves, and every wait is testwait's, which only guards against a stop
+// that never returns. The negative controls: a release that does not wait for the hand-backs
+// fails the first's order; a stop that never releases its hold when a publish was left running
+// fails the first's release; a release made at the deadline with a hand-back pending fails the
+// second's hold; a stop that leaves its hold to lapse with a hand-back pending fails the second's
+// renewal; an untracked finalizer fails the third by returning from its shutdown stop with the
+// hold live; and the holder's -NAK published again while the standby holds the message, with the
+// server holding the creation's advisory until the new consumer has delivered it a second time,
+// fails all three by that second delivery. The count does not fail a stop that gives up the
+// holder's handler at its deadline, whose deferred answer hands the first message back too: the
+// new consumer then starts at that message and delivers both once.
 func TestAHandBackLeftRunningLandsBeforeTheStandbyTakesOver(t *testing.T) {
 	t.Run("a hand-back that lands before the stop's deadline", func(t *testing.T) {
 		logs := captureLogs(t)

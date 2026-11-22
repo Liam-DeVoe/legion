@@ -61,7 +61,7 @@ func startStopRow(t *testing.T, key func(*natsgo.Msg) (string, *contracts.Envelo
 		}
 		return nil
 	})
-	wanted := deliveryConsumerConfig()
+	wanted := deliveryConsumerConfig(intakeMaxAckPending, intakeMessageTimeout)
 	if createDurable {
 		if _, err := client.JS().AddConsumer(bus.Stream, &wanted); err != nil {
 			t.Fatalf("create the delivery durable: %v", err)

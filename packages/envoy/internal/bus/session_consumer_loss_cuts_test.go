@@ -102,9 +102,7 @@ func runLossCut(t *testing.T, cut lossCut) {
 	size, kept := srv.CutStream(t, Stream, keep)
 	t.Logf("cut the stream's first message block from %d bytes to %d and removed the stream's index", size, kept)
 
-	testwait.Eventually(t, "the stream's owner and the session consumers to reconnect", func() bool {
-		return owner.Connected() && consumers.client.Connected()
-	})
+	waitForReconnectAfterCut(t, owner, consumers)
 	var state sessionStreamState
 	if !testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), 100*time.Millisecond, func() bool {
 		state, err = consumers.streamState(ctx)

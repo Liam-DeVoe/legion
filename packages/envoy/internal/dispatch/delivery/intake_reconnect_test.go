@@ -107,16 +107,16 @@ func TestAHolderWhoseConnectionWasReplacedLeavesTheDurableToTheProcessThatTookIt
 // package comment). What this row decides is therefore one handling by the keeper, and it says
 // nothing about how many times NATS delivered the message.
 //
-// A message the take-over did not carry over is redelivered only when intakeAckWait() expires --
-// intakeMaxAckPending (4) times intakeMessageTimeout (1 min) plus a minute, five minutes here --
-// and it holds one of the keeper's four in-flight slots for every second of it, which is longer
-// than the five-minute reconcile this intake exists to beat.
+// A message the take-over did not carry over is redelivered only when the durable's ack wait
+// expires (intakeAckWait) -- intakeMaxAckPending (4) times intakeMessageTimeout (1 min) plus a
+// minute, five minutes in production, and a day here, where both processes' intakes take a
+// message timeout past the run -- and it holds one of the keeper's four in-flight slots for every
+// second of it, which is longer than the five-minute reconcile this intake exists to beat.
 //
 // R2 is this durable's alone: the job intake acknowledges each message as it receives it (jobs.go's
 // deliver), so no handler of its own ever holds a message its stop must hand back.
 func TestAMessageInFlightWhenTheDurableIsGivenUpReachesTheProcessThatKeepsIt(t *testing.T) {
-	ackWaitPastTheRun(t)
-	processes := startConnectionEventProcesses(t, holderHoldsItsFirstFetch)
+	processes := startConnectionEventProcesses(t, holderHoldsItsFirstFetch, true)
 	// Registered after the intakes are started, so it runs before their stops do, and here
 	// rather than at the end of the row, so a row that fails leaves no request held.
 	t.Cleanup(processes.holderHeld.release)
@@ -138,7 +138,8 @@ func TestAMessageInFlightWhenTheDurableIsGivenUpReachesTheProcessThatKeepsIt(t *
 	// The hold's lapse (intakeHoldTTL, 15 s), the standby's poll (durableBindInterval, 2 s) and
 	// the take-over's delete, subscribe and create under the consumer lease come first. A keeper
 	// that fetches the pull request was handed the message by the take-over; one that is not
-	// waits the five-minute ack wait out with one of its four in-flight slots held.
+	// waits out the ack wait, a day here (ackWaitPastTheRun), with one of its four in-flight slots
+	// held.
 	waitFor(t, func() bool {
 		return processes.keeperFetches.Load() >= 1
 	}, func() string {
@@ -173,7 +174,9 @@ const (
 // writes the pull request's row and, with a shipping deploy stored, its issue.deployed event.
 // The counting fakes of this file's other rows answer 500, which writes nothing and so says
 // nothing about what a person sees. It counts every fetch of that pull request and, when hold is
-// set, holds the first one until the row releases it or the handler making it is abandoned.
+// set, holds the first one until the row releases it or the handler making it is abandoned. The
+// client's own bound on a fetch is past any run (requestTimeoutPastTheRun), so that bound is not
+// what abandons the held fetch while the row stages its next step.
 func writingGitHub(t *testing.T, hold bool) (fetches *atomic.Int64, release func(), github *githubapp.Client) {
 	t.Helper()
 	fetches = &atomic.Int64{}
@@ -210,7 +213,7 @@ func writingGitHub(t *testing.T, hold bool) (fetches *atomic.Int64, release func
 			"message": "feat: a widget", "author": map[string]any{"date": "2024-01-01T00:00:00Z"},
 		}}})
 	})
-	return fetches, release, fake.newTestClient()
+	return fetches, release, fake.newTestClient(githubapp.WithRequestTimeout(requestTimeoutPastTheRun))
 }
 
 // A handler that finishes while its process is cut off from NATS has its work redone by the
@@ -251,7 +254,6 @@ func TestAHandlerThatFinishedWhenTheConnectionWasReplacedIsRedoneByTheKeeperAndS
 // keeper has the durable, so its client dials a replacement rather than reconnecting in place.
 func handlerFinishedDuringTheOutage(t *testing.T, replaceConnection bool) {
 	t.Helper()
-	ackWaitPastTheRun(t)
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	seedDeployedIssues(t, ctx, pool)
@@ -272,8 +274,8 @@ func handlerFinishedDuringTheOutage(t *testing.T, replaceConnection bool) {
 	holderFetches, releaseHolder, holderGitHub := writingGitHub(t, true)
 	keeperFetches, _, keeperGitHub := writingGitHub(t, false)
 	holderLeases := &cuttableLeases{pool: deliveryTestLeases(t, pool)}
-	holder := newIntake(holderClient, pool, holderLeases, holderGitHub, events.NewBroker(), loadedSettingsCache(t, ctx, pool))
-	keeper := newIntake(keeperClient, pool, deliveryTestLeases(t, pool), keeperGitHub, events.NewBroker(), loadedSettingsCache(t, ctx, pool))
+	holder := ackWaitPastTheRun(newIntake(holderClient, pool, holderLeases, holderGitHub, events.NewBroker(), loadedSettingsCache(t, ctx, pool)))
+	keeper := ackWaitPastTheRun(newIntake(keeperClient, pool, deliveryTestLeases(t, pool), keeperGitHub, events.NewBroker(), loadedSettingsCache(t, ctx, pool)))
 
 	runIntake(t, holder)
 	waitFor(t, func() bool {
@@ -318,7 +320,7 @@ func handlerFinishedDuringTheOutage(t *testing.T, replaceConnection bool) {
 	// The redo, and the whole of it: the keeper is handed the message by the take-over, fetches
 	// the pull request and acknowledges it, which is what leaves the durable with nothing
 	// outstanding. A durable still holding the message is one nothing handed over, which waits
-	// out the five-minute ack wait this row cannot change.
+	// out the ack wait, a day here (ackWaitPastTheRun).
 	waitFor(t, func() bool {
 		return keeperFetches.Load() >= 1 && deliveryAckPending(keeperClient) == 0
 	}, func() string {
@@ -375,7 +377,7 @@ func storedPullRequests(t *testing.T, ctx context.Context, pool *store.Pool, num
 // whose connection is replaced rather than reconnected in place.
 func holderBackFromALostHold(t *testing.T, afterTakeOver func(*connectionEventProcesses)) {
 	t.Helper()
-	processes := startConnectionEventProcesses(t, holderCountsItsFetches)
+	processes := startConnectionEventProcesses(t, holderCountsItsFetches, false)
 	server, logs := processes.server, processes.logs
 	holder, keeper := processes.holder, processes.keeper
 	holderClient, keeperClient := processes.holderClient, processes.keeperClient
@@ -492,8 +494,11 @@ const (
 // startConnectionEventProcesses sets the two processes up and leaves them where every row of this
 // file begins: the holder delivering from the delivery durable under its hold, the keeper standing
 // by for it, a reconnect hook on the holder's client, and the logs captured from before either
-// process started. holderFake is what the holder's fake GitHub does with a fetch.
-func startConnectionEventProcesses(t *testing.T, holderFake holderGitHubFake) *connectionEventProcesses {
+// process started. holderFake is what the holder's fake GitHub does with a fetch. pastTheRun gives
+// both intakes a message timeout past the run (ackWaitPastTheRun), for a row whose message must
+// reach the keeper by the take-over's recreate at the ack floor, never by the server's redelivery
+// at the ack wait.
+func startConnectionEventProcesses(t *testing.T, holderFake holderGitHubFake, pastTheRun bool) *connectionEventProcesses {
 	t.Helper()
 	logs := captureLogs(t)
 	// A NATS server of this row's own rather than the package's shared one (testnats.URL): the
@@ -511,6 +516,10 @@ func startConnectionEventProcesses(t *testing.T, holderFake holderGitHubFake) *c
 	holderLeases := &cuttableLeases{pool: deliveryTestLeases(t, pool)}
 	holder := newIntake(holderClient, pool, holderLeases, holderGitHub, events.NewBroker(), loadedSettingsCache(t, ctx, pool))
 	keeper := newIntake(keeperClient, pool, deliveryTestLeases(t, pool), keeperGitHub, events.NewBroker(), loadedSettingsCache(t, ctx, pool))
+	if pastTheRun {
+		ackWaitPastTheRun(holder)
+		ackWaitPastTheRun(keeper)
+	}
 
 	// The holder goes first and has the durable before the keeper starts, so the row knows whose
 	// connection to drop. Its own subscription is waited for as well as the server's PushBound:
@@ -592,7 +601,9 @@ func (count fetchCount) Load() int64 { return count() }
 // That hold's wait on the request's own context, and not on the release alone, is what a row
 // holding a handler through a lost hold needs: the stop a lost hold runs abandons a handler by
 // cancelling it, waits for every handler to return before it hands the messages back, and a
-// handler returns only once the fetch it is inside does.
+// handler returns only once the fetch it is inside does. The holding fake's client has a bound
+// past any run (requestTimeoutPastTheRun), so it is that stop, and not the client's own bound,
+// that abandons the held fetch.
 func holderFakeGitHub(t *testing.T, which holderGitHubFake) (fetchCount, *heldPullRequests, *githubapp.Client) {
 	t.Helper()
 	if which == holderCountsItsFetches {
@@ -601,7 +612,7 @@ func holderFakeGitHub(t *testing.T, which holderGitHubFake) (fetchCount, *heldPu
 	}
 	fake := newFakeGitHub(t)
 	held := holdPullRequestOneUntilAbandoned(fake)
-	return func() int64 { return heldFetches(held, "1") }, held, fake.newTestClient()
+	return func() int64 { return heldFetches(held, "1") }, held, fake.newTestClient(githubapp.WithRequestTimeout(requestTimeoutPastTheRun))
 }
 
 // heldFetches is how many fetches of pull request number a holding fake GitHub was asked for: one

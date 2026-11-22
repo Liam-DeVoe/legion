@@ -15,6 +15,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func TestReduceFilterSubjects(t *testing.T) {
@@ -670,6 +671,15 @@ func waitForStoredState(t *testing.T, owner *Client, sessionID string) {
 		t.Fatalf("%s names no session consumer", sessionID)
 	}
 	testnats.AwaitConsumerStored(t, owner.Connection(), Stream, name)
+}
+
+// waitForReconnectAfterCut waits until the stream's owner and the session consumers' client have
+// both reconnected to the server a row's cut of the stream restarted (testnats.Server.CutStream).
+func waitForReconnectAfterCut(t *testing.T, owner *Client, consumers *SessionConsumers) {
+	t.Helper()
+	testwait.Eventually(t, "the stream's owner and the session consumers to reconnect", func() bool {
+		return owner.Connected() && consumers.client.Connected()
+	})
 }
 
 // A restart whose floor lies below the stream's first sequence, the messages after the floor gone

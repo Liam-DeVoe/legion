@@ -78,6 +78,10 @@ type testServerOptions struct {
 	// state (every check answers ErrNoAppKey).
 	app           *auth.AppConfig
 	githubAPIBase string
+	// githubRequestTimeout is the GitHub client's bound on each call
+	// (DepsInput.GitHubRequestTimeout): zero keeps githubapp.RequestTimeout, and a row whose fake
+	// GitHub holds a read while the row moves its fake clock sets one past any run.
+	githubRequestTimeout time.Duration
 	// settle is the document closer delay. The default keeps settlement-dependent
 	// tests fast; a test that holds an issue row lock across the seeded spec's
 	// settlement passes a delay that cannot fire before it finishes, because that
@@ -363,6 +367,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		HorizonStallAfter:      horizontest.StallWarning,
 		HorizonWarnEvery:       horizontest.StallWarning,
 		OIDC:                   verifier,
+		GitHubRequestTimeout:   options.githubRequestTimeout,
 		BrokerTokens:           brokerTokens,
 		AgentSecretsURL:        options.agentSecretsURL,
 		AgentSecretsTokenFile:  agentSecretsTokenFile,

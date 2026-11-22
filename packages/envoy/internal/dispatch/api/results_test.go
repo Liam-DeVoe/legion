@@ -20,7 +20,6 @@ import (
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
-	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/githubtest"
@@ -3656,15 +3655,11 @@ func assertUnread(t *testing.T, check model.CheckBlock, words ...string) {
 // a deployment holding no App key each leave the check with no result and a detail saying what
 // GitHub answered, never a pass and never a fail.
 func TestCIResultIsUnreadWhenGitHubCannotBeRead(t *testing.T) {
-	// githubapp's own bound on a call, RequestTimeout, runs on the wall clock, so it is lengthened
-	// past any run for this row: only ciReadDeadline, on the fake the row moves, may end the read
-	// GitHub holds. The restore is registered before the server, so it runs after the server's own
-	// cleanups have waited out every call.
-	requestTimeout := githubapp.RequestTimeout
-	githubapp.RequestTimeout = 24 * time.Hour
-	t.Cleanup(func() { githubapp.RequestTimeout = requestTimeout })
+	// The GitHub client's own bound on a call runs on the wall clock, so this row's client takes
+	// one past any run (githubRequestTimeout): only ciReadDeadline, on the fake the row moves, may
+	// end the read GitHub holds.
 	clock := clocktest.New(time.Now())
-	handler, database, fake := resultsGitHubCheckRunsWith(t, testServerOptions{clock: clock})
+	handler, database, fake := resultsGitHubCheckRunsWith(t, testServerOptions{clock: clock, githubRequestTimeout: 24 * time.Hour})
 	issue := issueInRepository(t, handler, "RESCU", "acme/widgets", "Unread")
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", ciCheckBlock("c1", ciCheckKept))
 	writeHead(t, database, "acme/widgets", 7, headCommit, "open", issue.Key)
