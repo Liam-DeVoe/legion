@@ -142,19 +142,6 @@ func TestSavingAPathologicalBodyIsBounded(t *testing.T) {
 		requireShortSearchRuns(t, database, "an issue title of "+sizeText(len(title)), `select title from issues where key = $1`, key)
 		requireShortVectorRuns(t, database, "an issue retitled with the probe", issueVector, key)
 		requireShortVectorRuns(t, database, "the title lexemes of an issue retitled with the probe", `select array_to_tsvector(title_lexemes) from issues where key = $1`, key)
-		// The spec, which issues_search reads into the issue's vector too (issue_embedding_spec),
-		// laddered as a document is: each rung's retitle stores the vector issues_search built
-		// over it, and its indexing statement is the issue's own write of its title. The vector the
-		// spec's first version stored (artifact_versions_issues_search) is read first, at every
-		// rung: a spec indexed without search_text would take hours at the top rung.
-		growsLinearly(t, "indexing an issue's spec of `a_`", "buffers", []int{1 << 10, 16 << 10, 256 << 10}, func(size int) uint64 {
-			key := createIssue(t, "A spec of "+sizeText(size)+" to probe", probedDocument(size))
-			requireShortSearchRuns(t, database, "an issue spec of "+sizeText(size), issueSpec, key)
-			requireShortVectorRuns(t, database, "an issue whose first spec of "+sizeText(size)+" holds the probe", issueVector, key)
-			retitle(t, key, "A spec of "+sizeText(size)+" to probe, indexed again")
-			requireShortVectorRuns(t, database, "an issue retitled over a spec of "+sizeText(size)+" holding the probe", issueVector, key)
-			return indexingBuffers(t, database, `update issues set title = title where key = $1`, key)
-		})
 	})
 	t.Run("trigger artifact_versions_issues_search", func(t *testing.T) {
 		// An issue's spec, its primary document's first version: once the version is in, the
@@ -229,6 +216,25 @@ func TestSavingAPathologicalBodyIsBounded(t *testing.T) {
 	if t.Failed() {
 		return
 	}
+
+	t.Run("issue spec of `a_`", func(t *testing.T) {
+		// The spec, which issues_search reads into the issue's vector too (issue_embedding_spec),
+		// laddered as a document is, after every trigger's row: each version the ladder stores fires
+		// artifact_versions_search and artifact_versions_document_search as well, so a defect of
+		// either would cost this ladder hours before its own row could name it. Each rung's retitle
+		// stores the vector issues_search built over the spec, and its indexing statement is the
+		// issue's own write of its title. The vector the spec's first version stored
+		// (artifact_versions_issues_search) is read first, at every rung: a spec indexed without
+		// search_text would take hours at the top rung.
+		growsLinearly(t, "indexing an issue's spec of `a_`", "buffers", []int{1 << 10, 16 << 10, 256 << 10}, func(size int) uint64 {
+			key := createIssue(t, "A spec of "+sizeText(size)+" to probe", probedDocument(size))
+			requireShortSearchRuns(t, database, "an issue spec of "+sizeText(size), issueSpec, key)
+			requireShortVectorRuns(t, database, "an issue whose first spec of "+sizeText(size)+" holds the probe", issueVector, key)
+			retitle(t, key, "A spec of "+sizeText(size)+" to probe, indexed again")
+			requireShortVectorRuns(t, database, "an issue retitled over a spec of "+sizeText(size)+" holding the probe", issueVector, key)
+			return indexingBuffers(t, database, `update issues set title = title where key = $1`, key)
+		})
+	})
 
 	for _, test := range []struct {
 		shape string

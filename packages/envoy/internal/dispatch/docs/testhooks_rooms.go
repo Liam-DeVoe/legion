@@ -100,9 +100,9 @@ type RoomCounters struct {
 	// state each time a room added or updated the client, a removal each time it took the client
 	// away. An entry a room dropped as stale changed nothing and is not counted, and nor is a
 	// change a room made itself - a local peer's frame or departure - except one: Expired counts
-	// a room's own removal of a client it had taken a state of from another process, which is the
-	// room's expiry of a relayed client no notification removed (awarenessExpiry). It is empty,
-	// never nil, in what RoomCounters answers.
+	// a room's removal, with no notification, of a client it had taken a state of from another
+	// process: its expiry of that client (awarenessExpiry), or a local peer's frame that removes
+	// it. It is empty, never nil, in what RoomCounters answers.
 	RelayedAwareness map[uint64]RelayedAwarenessChanges `json:"relayed_awareness"`
 	// SettlementResumptions holds the time of each settlement-resumption pass of this process that
 	// armed the document's owed settlement (resumeOwedSettlements), on the service's clock, oldest
@@ -122,11 +122,13 @@ type RelayedAwarenessChanges struct {
 	States int64 `json:"states"`
 	// Removals counts the times a room took the client away.
 	Removals int64 `json:"removals"`
-	// Expired counts the times a room took the client away by itself, with no notification,
-	// after taking a state of it from another process's: the room's expiry of a client it stopped
-	// hearing from (awarenessExpiry), since a room's peers and its closes remove only this
-	// process's own clients. It is what carries a removal whose notification was sent while this
-	// process's listener had no connection, and so reached nobody here.
+	// Expired counts the times a room took the client away with no notification, after taking a
+	// state of it from another process's: the room's expiry of a client it stopped hearing from
+	// (awarenessExpiry), or a frame of a local peer that removes the client, which ygo applies for
+	// any client a peer names (a browser's provider sends such a removal once its own timeout for
+	// the client passes). A room's closes and its peers' departures remove only this process's own
+	// clients. It is what carries a removal whose notification was sent while this process's
+	// listener had no connection, and so reached nobody here.
 	Expired int64 `json:"expired"`
 }
 

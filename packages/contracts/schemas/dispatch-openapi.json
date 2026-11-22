@@ -1073,7 +1073,7 @@
     },
     "/api/v1/artifacts/{id}/_test/room-counters": {
       "get": {
-        "description": "Test hook: count this process's room failures, lock-waiting compactions and room closes of a document, read the head its room held after the catch-ups another process's notification asked for and after the sweeps a LISTEN ran, count the LISTENs its listener stood up, the issue-open notifications it applied to the document and the closes the recheck after a LISTEN made, and the awareness changes other processes' notifications made to its room and its own expiries of the clients they relayed, per client, time its settlement resumptions of it, and read the awareness client entries its room holds now.",
+        "description": "Test hook: count this process's room failures, lock-waiting compactions and room closes of a document, read the head its room held after the catch-ups another process's notification asked for and after the sweeps a LISTEN ran, count the LISTENs its listener stood up, the issue-open notifications it applied to the document and the closes the recheck after a LISTEN made, and the awareness changes other processes' notifications made to its room and its removals with no notification of the clients they relayed (an expiry, or a local peer's removal), per client, time its settlement resumptions of it, and read the awareness client entries its room holds now.",
         "operationId": "getApiV1ArtifactsByIdTestRoomCounters",
         "parameters": [
           {

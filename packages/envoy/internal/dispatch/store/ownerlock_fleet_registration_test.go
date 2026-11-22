@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"slices"
-	"strings"
 	"testing"
 	"time"
 
@@ -110,11 +109,12 @@ func TestAnEarlierBuildsRegistrationWaitsForTheGateNoLongerThanItsBound(t *testi
 		t.Fatal(err)
 	}
 	defer publishConn.Release()
-	// No bound of the publish's own ends its wait at the registration's lock_timeout, read as
-	// state where such a bound would stand: its session runs under no lock_timeout or
+	// No bound of the publish's own ends its wait at the registration's lock_timeout, read first
+	// as settings where such a bound would stand: its session runs under no lock_timeout or
 	// statement_timeout, and the gate's trigger function it waits in (owner_lock_legacy_arrival)
-	// sets neither, in its settings or in its body, as owner_lock_legacy_registration's settings
-	// set its own (registrationLockTimeout).
+	// carries neither in its settings, as owner_lock_legacy_registration's settings carry its own
+	// (registrationLockTimeout). A bound set anywhere else on the publish's path, in a function's
+	// body or a callee's settings, is caught by what the publish does: the wait below.
 	var sessionLockTimeout, sessionStatementTimeout string
 	if err := publishConn.QueryRow(ctx, `select current_setting('lock_timeout'), current_setting('statement_timeout')`).Scan(&sessionLockTimeout, &sessionStatementTimeout); err != nil {
 		t.Fatalf("read %s's session timeouts: %v", publish.name, err)
@@ -123,15 +123,13 @@ func TestAnEarlierBuildsRegistrationWaitsForTheGateNoLongerThanItsBound(t *testi
 		t.Fatalf("%s's session runs under lock_timeout %s and statement_timeout %s, want neither: either ends its wait for the gate", publish.name, sessionLockTimeout, sessionStatementTimeout)
 	}
 	var arrivalConfig []string
-	var arrivalBody string
 	if err := s.Pool.QueryRow(ctx, `
-		select coalesce(proconfig, '{}'), prosrc from pg_proc where proname = 'owner_lock_legacy_arrival'
-	`).Scan(&arrivalConfig, &arrivalBody); err != nil {
+		select coalesce(proconfig, '{}') from pg_proc where proname = 'owner_lock_legacy_arrival'
+	`).Scan(&arrivalConfig); err != nil {
 		t.Fatalf("read owner_lock_legacy_arrival's settings: %v", err)
 	}
-	if len(arrivalConfig) != 0 || strings.Contains(arrivalBody, "lock_timeout") || strings.Contains(arrivalBody, "statement_timeout") {
-		t.Fatalf("owner_lock_legacy_arrival, the gate %s waits in, runs under settings %v and a body that sets a timeout (%t), want no bound of its own",
-			publish.name, arrivalConfig, strings.Contains(arrivalBody, "_timeout"))
+	if len(arrivalConfig) != 0 {
+		t.Fatalf("owner_lock_legacy_arrival, the gate %s waits in, runs under settings %v, want no bound of its own", publish.name, arrivalConfig)
 	}
 	published := make(chan error, 1)
 	go func() { published <- arriveOn(ctx, publishConn, publish, uuid.NewString()) }()
