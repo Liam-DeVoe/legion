@@ -369,9 +369,12 @@ const parallelProjects = [
   // its row that a bulk action that takes the marked rows out of the project List's view
   // hands the focus to the row now at their place, whose bar and rows the action takes away,
   // its row that Unpin on a pinned agent keeps the keyboard focus on a control in sight, whose
-  // row the unpin moves to its new place, and its row that a thread's Dismiss in the Inbox's list
+  // row the unpin moves to its new place, its row that a thread's Dismiss in the Inbox's list
   // scrolls nothing and hands the focus to the next row's Dismiss in sight, whose row the Dismiss
-  // takes away. And
+  // takes away, and its four rows that a control held under the reader's press keeps the keyboard
+  // focus - the Inbox's Decline dialog, a references Retry on the Artifacts tab, the Inbox card's
+  // Referenced by Retry, and Unfollow and Unsubscribe on an Inbox card's recipients - which a
+  // native `disabled` takes the focus from. And
   // `focus-landing`'s sixteen rows, one for each page of R2 at each of two widths, whose focused
   // control a press, a live update, another device or a press made offline takes away.
   // Measured in WebKit as well as Firefox:
