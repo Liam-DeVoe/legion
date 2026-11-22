@@ -604,9 +604,12 @@ func (w *worker) callServer(ctx context.Context, call agentwire.CallRequest) (st
 }
 
 // suggestTargetNote is what the model is told after a suggestion's 404 TARGET_NOT_FOUND: what a
-// suggestion's quote must be, and how to find text that is one.
+// suggestion's quote must be, how to find text that is one, and that its replacement may be whole
+// blocks, so a change of several blocks, a move among them, needs no quote across blocks.
 const suggestTargetNote = "\n[The quote is no text of one block of the document. A suggestion replaces text inside one block - one heading, paragraph, list item or table cell: " +
 	"quote text that lies inside one block, such as one of the nearest blocks this answer names, and make one suggestion for each block the change needs. " +
+	"Its replacement is markdown that may hold whole blocks, headings written with their #s, which stand where the quoted text stood: " +
+	"to move blocks, write them beside the whole text of the block where they go, and replace their text where they stood with nothing. " +
 	"dispatch_doc_read with blocks lists the document's blocks.]"
 
 // mendNote is what the model is told after call's answer where that answer is a refusal it can

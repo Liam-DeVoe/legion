@@ -265,8 +265,9 @@ func TestTheLastModelCallIsToldToAnswer(t *testing.T) {
 
 // TestASuggestionsRefusedQuoteSaysToQuoteOneBlock: a suggestion whose quote is no text of one
 // block is refused 404 TARGET_NOT_FOUND, and the model is told what to do instead - quote text
-// inside one block, one suggestion for each block - beside the route's answer, which a block
-// read of the saved step (ReadSavedResult) still reads as the route answered it.
+// inside one block, one suggestion for each block, a replacement that may hold whole blocks -
+// beside the route's answer, which a block read of the saved step (ReadSavedResult) still reads
+// as the route answered it.
 func TestASuggestionsRefusedQuoteSaysToQuoteOneBlock(t *testing.T) {
 	refused := []byte(`{"code":"TARGET_NOT_FOUND","error":"target not found; nearest blocks: \"Summary\" | \"Back-links in issue specs\""}`)
 	_, client := newFakeServer(t, func(agentwire.CallRequest) agentwire.CallAnswer {
@@ -277,7 +278,8 @@ func TestASuggestionsRefusedQuoteSaysToQuoteOneBlock(t *testing.T) {
 	row := agentwire.PlanRow{Plan: 1, Row: 0}
 	told, isError := w.callServer(t.Context(), agentwire.CallRequest{Step: 14, Call: 1, Kind: agentwire.KindRoute, Tool: dispatchSuggest,
 		Arguments: json.RawMessage(`{"issue":"DEMO-3","artifact":"spec","quote":"## Summary\n\nEach spec shows a link.","replace_with":"x"}`), Row: &row})
-	if !isError || !strings.Contains(told, "quote text that lies inside one block") || !strings.Contains(told, "one suggestion for each block") {
+	if !isError || !strings.Contains(told, "quote text that lies inside one block") || !strings.Contains(told, "one suggestion for each block") ||
+		!strings.Contains(told, "may hold whole blocks, headings written with their #s") {
 		t.Fatalf("the model was told %q (refused %t), want the refusal with what a suggestion's quote must be", told, isError)
 	}
 	body, _ := json.Marshal(toolBody{Call: toolCall{Tool: dispatchSuggest}, Result: told, Error: true})

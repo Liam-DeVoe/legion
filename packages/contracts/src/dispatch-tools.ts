@@ -1485,7 +1485,12 @@ export const dispatchToolSpecs = [
       replace_with: z
         .string()
         .describe(
-          "Replacement text; a CR LF or a lone carriage return in it is written as a line feed."
+          "Replacement markdown for the quoted text. Text alone stays in the quoted text's block; whole blocks " +
+            "(paragraphs, lists, headings written with their #s) stand where the quoted text stood, and over a " +
+            "heading's whole text they take the heading's place, so a heading that stays is written with its #s. " +
+            "A table cell takes text alone. To move a section, write its blocks beside the whole text of the block " +
+            "where it goes, and suggest each moved block's text replaced with nothing where it stood (an emptied " +
+            "heading stays as its #s alone). A CR LF or a lone carriage return in it is written as a line feed."
         ),
       body: z.string().describe(`Optional rationale. ${BODY_BLOCK_RULE}`).optional(),
       occurrence: z

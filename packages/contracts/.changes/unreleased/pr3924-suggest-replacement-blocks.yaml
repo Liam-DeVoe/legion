@@ -1,0 +1,5 @@
+kind: Changed
+body: |-
+  `dispatch_suggest`'s `replace_with` description says the replacement is markdown whose blocks
+  stand where the quoted text stood (over a heading's whole text, in the heading's place), that a
+  table cell takes text alone, and how to move a section with suggestions.
