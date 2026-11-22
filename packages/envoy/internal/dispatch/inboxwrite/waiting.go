@@ -187,10 +187,10 @@ func HoldProjectDefault(ctx context.Context, tx pgx.Tx, project string) error {
 }
 
 // waitingOn is the person ask askID waits on while it is open (asks.AskedOfPersonExpression), and
-// "" for an ask that is not open or waits on nobody. A create runs it after its insert, holding its
-// owner row and, where the ask falls through to its project's default, the project's row
-// (HoldDefault), so nothing it reads moves before the create commits: this build's creates store
-// an open ask, and a write that stores an ask already closed - the seed's - reaches nobody, as the
+// "" for an ask that is not open. A create runs it after its insert, holding its owner row and,
+// where the ask falls through to its project's default, the project's row (HoldDefault), so
+// nothing it reads moves before the create commits: this build's creates store an open ask, and a
+// write that stores an ask already closed - the seed's - gives no person its tuples, as the
 // backfill gives an older build's ask that person's tuples only while it is open. A create that
 // read the person itself under those same locks hands them to Record instead (Write.WaitingOn),
 // and this read is not made.

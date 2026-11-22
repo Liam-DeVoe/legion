@@ -831,7 +831,7 @@ test("the search subscribes the text the typing rested on, once", async () => {
   const user = userEvent.setup();
   renderPage();
   const socket = await answered(emptyTimeline);
-  await user.type(screen.getByLabelText("Search"), "widget");
+  await user.type(screen.getByLabelText("Search pull requests"), "widget");
   expect(currentSearch().get("q")).toBe("widget");
   await subscriptionTo(socket, { kind: "timeline", window: URL_WINDOW, query: "q=widget" });
   expect(
