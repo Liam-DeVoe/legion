@@ -5107,6 +5107,7 @@ scripts/e2e/step-records-read.sh <ISSUE>     # → "PASS: <ISSUE>: <n> records; 
 
 The check after the merge: once the release that records each step reaches a deployment, one real issue runs to done there, and this script reads that issue's step records.
 It runs `dispatch steps --issue <ISSUE>` once and prints what the command printed, then one verdict.
+It reads the header, then, where the records of the issue's newest run name an experiment, the line `Experiment <experiment>: variant <variant>.` right after it, and then one run per line; that line anywhere else is no run.
 It runs where the operator runs `dispatch` by hand, with the operator's own credential: the `dispatch` command on PATH, the session the operator's shell names (`DISPATCH_HOST`, `DISPATCH_SESSION_ID`) and the deployed Dispatch and token the operator's `envoy.json`, or `DISPATCH_URL` and `DISPATCH_TOKEN`, name.
 It sets none of those, reads no credential of its own, writes nothing and starts nothing.
 It reads an issue that is done, so every step of it has ended.
@@ -5115,9 +5116,9 @@ It reads an issue that is done, so every step of it has ended.
 | :--- | :--- | :--- |
 | 0 | `PASS: <ISSUE>: <n> records; …` | the read lists a record of each of steps 1 to 5, of the retro and of the merge; every record has ended; every record of kind `step` or `retro` names an agent; every record of kind `step` names the model that answered; a merge record with no agent passes with the line `the merge has no agent: no merger ran it: <line>`, since GitHub merged the pull request before a merger started and the record says so |
 | 1 | one `FAIL: …` line per fault | the read lists records and one does not hold: a place with no record (`no record of the merge`), a record that never ended, a step or retro with no agent, a step with no model; each line names the record as the command printed it |
-| 2 | `UNKNOWN: <reason>` | nothing to judge: the read lists no record of the issue (`dispatch steps lists no record of <ISSUE>`), the command failed (its exit and what it printed), no `dispatch` is on PATH, or the answer is no read of the issue (no header, a line that is no run, a header whose count differs from the lines below it); a usage error is exit 2 too, with the usage on stderr |
+| 2 | `UNKNOWN: <reason>` | nothing to judge: the read lists no record of the issue (`dispatch steps lists no record of <ISSUE>`), the command failed (its exit and what it printed), no `dispatch` is on PATH, or the answer is no read of the issue (no header, a line that is no run, the `Experiment …` line anywhere but right after the header, a header whose count differs from the lines below it); a usage error is exit 2 too, with the usage on stderr |
 
-`scripts/e2e/lib/step-records-read.test.ts` (`bun test scripts/e2e/lib`, in CI's `test` job) runs it against a `dispatch` stand-in on PATH that prints a recorded answer: a whole answer passes, the merge record missing fails, an empty read is `UNKNOWN`, and each fault above has its row.
+`scripts/e2e/lib/step-records-read.test.ts` (`bun test scripts/e2e/lib`, in CI's `test` job) runs it against a `dispatch` stand-in on PATH that prints a recorded answer: a whole answer passes with or without the `Experiment …` line right after the header, the merge record missing fails, an empty read is `UNKNOWN`, and each fault above has its row.
 
 ## plan-ratings.sh
 
@@ -5196,11 +5197,12 @@ Put the case back before anything else runs from that checkout.
 ## plan-ratings-read.sh
 
 ```sh
-scripts/e2e/plan-ratings-read.sh <PROJECT> <ISSUE>     # → "PASS: <ISSUE>: plan …, ratings …, time …, failed steps <n>", exit 0
+scripts/e2e/plan-ratings-read.sh <PROJECT> <ISSUE>     # → "PASS: <ISSUE>: plan …, ratings …, time …, failed steps <n>[, variant <experiment>/<variant>]", exit 0
 ```
 
 The check after the merge: once the release that rates each plan reaches a deployment, one real issue of the project runs to done there, and this script reads it among the project's finished issues.
 It runs `dispatch plans --project <PROJECT>` once and prints what the command printed, then one verdict on the line of `<ISSUE>`, an issue of `<PROJECT>`.
+It reads each line after the header as one finished issue, which ends with `variant <experiment>/<variant>` where the records of the issue's newest run name an experiment, and at `failed steps <n>` where they name none.
 It runs where the operator runs `dispatch` by hand, with the operator's own credential: the `dispatch` command on PATH, the session the operator's shell names (`DISPATCH_HOST`, `DISPATCH_SESSION_ID`) and the deployed Dispatch and token the operator's `envoy.json`, or `DISPATCH_URL` and `DISPATCH_TOKEN`, name.
 It sets none of those, reads no credential of its own, writes nothing and starts nothing.
 It reads no file but `lib/dispatch-read.sh` beside it, so a copy of the two runs outside a checkout of this repository too.
@@ -5209,12 +5211,12 @@ The issue's own `time -` is no fault either: it is Dispatch knowing no span of t
 
 | exit | printed | when |
 | :--- | :--- | :--- |
-| 0 | `PASS: <ISSUE>: plan <plan>, ratings <ratings>, time <time>, failed steps <n>` | the read lists the issue with a plan and at least one rating, each rating with a reason; the line names each rating with its reason as the command printed them, and the time as printed, or `unknown` for `-` |
+| 0 | `PASS: <ISSUE>: plan <plan>, ratings <ratings>, time <time>, failed steps <n>[, variant <experiment>/<variant>]` | the read lists the issue with a plan and at least one rating, each rating with a reason; the line names each rating with its reason as the command printed them, the time as printed, or `unknown` for `-`, and the variant where the issue's line ends with one |
 | 1 | one `FAIL: …` line per fault | the read lists finished issues and the issue's line does not hold: no plan, no rating, a rating with an empty reason, each such line naming the issue's line as the command printed it; or the read lists no line of the issue (`the read lists <n> finished issues of <PROJECT> and no line of <ISSUE>`), or lists it twice (`the read lists <ISSUE> <n> times`) |
 | 2 | `UNKNOWN: <reason>` | nothing to judge: the read lists no finished issue of the project (`dispatch plans lists no finished issue of <PROJECT>`), the command failed (its exit and what it printed), no `dispatch` is on PATH, or the answer is no read of the project (no header, a line that is no finished issue, a rating that is not `<n>/<top> "<reason>"`, a header whose count differs from the lines below it); a usage error is exit 2 too, with the usage on stderr: a project key and the key of an issue of that project |
 
 `scripts/e2e/lib/plan-ratings-read.test.ts` (`bun test scripts/e2e/lib`, in CI's `test` job) runs it against a `dispatch` stand-in on PATH that prints an answer the real command rendered: envoy-client's `dispatch plans` code prints typed finished issues, so a line it prints that this script cannot read fails the test.
-Among its cases: a whole answer passes, an issue rated twice passes, an issue its owner planned passes, an empty read is `UNKNOWN`, and each fault above has its row.
+Among its cases: a whole answer passes, an issue rated twice passes, an issue its owner planned passes, an issue of an experiment's group passes naming its variant, an empty read is `UNKNOWN`, and each fault above has its row.
 [`plan-ratings.sh`](#plan-ratingssh)'s first step runs it against the Dispatch this checkout builds, with a `dispatch` on PATH that runs the same CLI, so it also reads finished issues a real Dispatch served rather than ones the test typed.
 
 ## review-range.sh
