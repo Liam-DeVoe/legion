@@ -3,7 +3,7 @@
 
 ci.yaml's envoy-go job writes one stream per `go test` call of its unit step to
 $RUNNER_TEMP/go-test-json (the step's eighth call is a `go vet`, which writes a log and no
-stream) and uploads the directory as `envoy-go-test-json-<run attempt>`, and
+stream) and uploads the directory as `envoy-go-test-json-<run attempt>`, and envoy-go-alone,
 envoy-go-checks and the race lane's jobs each upload theirs as `<job>-test-json-<run attempt>`
 (dispatch://INFRA-1075). This reads those streams, from .json files, a directory of them, or an
 artifact's .zip, and prints:

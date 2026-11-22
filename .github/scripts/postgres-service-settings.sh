@@ -4,7 +4,8 @@
 # Who runs it, and why it is a script: the read-back step of every ci.yaml job whose Postgres
 # service starts on the lane's disposable settings, each such job's services and steps declared
 # in its own .github/workflows/ci-job-<job>.yaml - daemon-go, envoy-go (one step for each of its
-# five services), envoy-go-checks, envoy-go-race, envoy-go-race-api, envoy-go-race-docs,
+# four services), envoy-go-alone (one for each of its two), envoy-go-checks, envoy-go-race,
+# envoy-go-race-api, envoy-go-race-docs,
 # envoy-go-docs-finalizers, envoy-go-claim-model, dispatch-memory, dispatch-multiprocess,
 # dispatch-two-builds, dispatch-two-builds-same, broker-multiprocess, envoy-session-stall and
 # sessions-script: every step of one body across those jobs. One of them,
@@ -18,7 +19,7 @@
 # <container id> is the service's `${{ job.services.<service id>.id }}`. The runner sets it for a
 # service the job declares and leaves it empty for a service id the job does not have, so an
 # empty one is refused by name rather than handed to docker. <label> is that service id, and
-# every line this prints names it but the usage error, so a red step of a job with five services
+# every line this prints names it but the usage error, so a red step of a job with four services
 # says which of them it read.
 #
 # Why the settings are read back: they are the service's command: line, which makes the server

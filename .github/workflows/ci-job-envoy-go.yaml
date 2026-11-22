@@ -32,8 +32,8 @@ env:
 jobs:
   envoy-go:
     runs-on: ubuntu-24.04-arm
-    # Every go test call of this job, of envoy-go-checks and of the race lane, and each of those
-    # jobs' own timeout-minutes, is sized by R6 from the final measurement pair, two
+    # Every go test call of this job, of envoy-go-alone, of envoy-go-checks and of the race lane,
+    # and each of those jobs' own timeout-minutes, is sized by R6 from the final measurement pair, two
     # workflow_dispatch runs of ci.yaml at one head, runs 44657322918 and 44657415021 at 8cfd2682
     # (dispatch://INFRA-1075, check 6224bb0e), and from the dispatch run at each later head, which
     # is swept the same way and may raise a limit but never lower one (the architect's rule of
@@ -68,14 +68,12 @@ jobs:
     #   the package list    cmd/cipher        555.3 s    44790111577  136476756402   18.51    19m
     #   race-impossible     docs              247.5 s    44979729824  137077480236    8.25     9m
     #   pgmigrate           pgmigrate         278.2 s    44657322918  136026779841    9.27    10m
-    #   shutdown            cmd/dispatch       50.2 s    44657322918  136026779841    1.67     2m
     #   routes              routes             58.7 s    44657322918  136026779841    1.96     2m
     #   events              events             38.6 s    44657322918  136026779841    1.29     2m
     #   natslive (rig)      testnats            4.7 s    44657322918  136026779841    0.16     1m
     #   natslive (cap)      bus                20.5 s    44657415021  136039517737    0.68     1m
     #   natslive (callout)  natscallout         5.1 s    44657415021  136039517737    0.17     1m
     #   integration         integration         7.7 s    44657415021  136039517737    0.26     1m
-    #   rows alone          outbox             88.2 s    (8 runs)     (the sum)       2.94     3m
     #   skip count          cmd/cipherd       298.8 s    44979729824  137077480236    9.96    10m
     #
     # The package list's reading is that of cmd/cipher, then cmd/agent-secrets, 555.3 s: run
@@ -86,26 +84,23 @@ jobs:
     # package time there of cmd/cipherd, then cmd/broker, which the pair read at 263.2 s and 260.8 s
     # (jobs 136026779841 and 136039517737). Its step limit of 20 minutes is its 10m -timeout plus
     # 10, main's rule for it, which the step's comment gives.
-    # The rows-alone call's reading is its slowest package's, the sum of that package's members'
-    # slowest readings in the package list over the pair and the six dispatch runs before run
-    # 44979729824, which first ran it: internal/dispatch/outbox's ten members, 88.19 s; that run
-    # read the package alone at 79.6 s. The call's comment gives each member's sum and the runs.
+    # The shutdown feed test's call and the rows-alone call, which ran at the end of this job's
+    # unit step through run 44979729824, run in envoy-go-alone now, whose comment gives their
+    # readings and limits.
     #
-    # Six of these calls read higher in a dispatch run since the pair than the table's reading,
+    # Five of these calls read higher in a dispatch run since the pair than the table's reading,
     # each giving the table's limit again; each call's comment gives that reading.
     #
-    # Three calls run tests that read a margin off the test binary's own deadline, and each must
+    # Two calls run tests that read a margin off the test binary's own deadline, and each must
     # leave at least that margin above its slowest package's time, or those tests refuse the run
     # rather than waiting in it: the 60 s of pmdoc's perCallReportMargin
-    # (internal/dispatch/pmdoc/linear_test.go:1169) in the package list, the 30 s of the
-    # documents package's roomWaitMargin (internal/dispatch/docs/settlement_credit_test.go:546)
-    # in the race-impossible call, and in the shutdown call the 30 s of horizontest.Drain
-    # (internal/dispatch/horizontest/horizontest.go, Drain), which the shutdown test's wait for its
-    # event feed (waitEventsStart) leaves of the deadline so that its failure prints rather than
-    # being cut off by the package timeout. Each limit clears it; the comment on each call gives
-    # by how much. At 4 minutes the race-impossible call failed that floor and said so itself, in
-    # both arms of run 42577832967: "the test binary's deadline leaves 20.769s, not more than
-    # roomWaitMargin (30s): this looks like a misconfigured run; raise -timeout".
+    # (internal/dispatch/pmdoc/linear_test.go:1169) in the package list, and the 30 s of the
+    # documents package's roomWaitMargin (internal/dispatch/docs/settlement_credit_test.go, which
+    # roomWait leaves of the deadline) in the race-impossible call. Each limit clears it; the
+    # comment on each call gives by how much. At 4 minutes the race-impossible call failed that
+    # floor and said so itself, in both arms of run 42577832967: "the test binary's deadline
+    # leaves 20.769s, not more than roomWaitMargin (30s): this looks like a misconfigured run;
+    # raise -timeout".
     #
     # The job's own bound is its slowest time, 1,622 s (run 44979729824 at 66cba4b8, job
     # 137077480236), against 1,373 s in run 44790111577 at 85f6b018 (job 136476756402) and 1,328 s
@@ -115,18 +110,20 @@ jobs:
     # 44953084676 (jobs 136669775711, 136952816413 and 136995819951) took 1,309 s, 857 s and 843 s,
     # the last two cut short by a failed unit step. The job grew from 1,302 s at 66058706 (run
     # 44717243297) to 1,622 s at 66cba4b8 mostly by the rows-alone call, whose stream ran 278.2 s
-    # from its first event to its last (outbox, its slowest package, 79.6 s), and now takes 23 s
-    # less than envoy-go-race-docs, 1,645 s (job 137077480222). The skip count's step limit of 20
-    # minutes, not a -timeout, fires before the job's: the job less that step's 387 s plus 20
-    # minutes is 1,235 + 1,200 = 2,435 s, 40.58 minutes, under 53. The other steps' own limits are
-    # under that: backend-count.sh's -timeout of 5 minutes and main's step limits of 15 for the skip
-    # counter's test and 6 for the callout check. Both attempts of the pair missed the Go build
-    # cache on arm64 (no go-envoy-test entry for ARM64); the bound takes their times all the same.
+    # from its first event to its last, and which runs in envoy-go-alone now with the shutdown
+    # feed test's call (the architect, 2026-11-22T08:45Z). So 53 is provisional: no run has read
+    # this job without those two calls, and the dispatch run at this head sets its bound by the
+    # formula above from its own time, which no longer keeps the 53 that call put here. The skip
+    # count's step limit of 20 minutes, not a -timeout, fires before the job's: the job less that
+    # step's 387 s plus 20 minutes is 1,235 + 1,200 = 2,435 s, 40.58 minutes, under 53. The other
+    # steps' own limits are under that: backend-count.sh's -timeout of 5 minutes and main's step
+    # limits of 15 for the skip counter's test and 6 for the callout check. Both attempts of the
+    # pair missed the Go build cache on arm64 (no go-envoy-test entry for ARM64); the bound takes
+    # their times all the same.
     # An attempt on x64 that missed it took 1,502 s (run 44097184245, job 134098415747) against warm
     # x64 ones of 737 s and 765 s (runs 44078406008 and 44175873364), and the bound covers it at
-    # 47 %. Eight of the unit step's ten calls run at once, so the step's worst case is the longest
-    # of them, then the shutdown feed test and the rows-alone call, one after the other. The API's
-    # claim model is not among them, running in envoy-go-claim-model.
+    # 47 %. The unit step's eight calls run at once, so the step's worst case is the longest of
+    # them. The API's claim model is not among them, running in envoy-go-claim-model.
     timeout-minutes: 53
     services:
       postgres:
@@ -191,33 +188,7 @@ jobs:
           --health-interval 1s
           --health-timeout 5s
           --health-retries 50
-      # A third instance, for the one untagged test of cmd/dispatch that reads a live event feed
-      # (TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument, shutdown_test.go). It
-      # waits on events_start exactly as the routes package does, and in run 42581214577 it timed
-      # out on it with the server naming the holder: "event horizon held back by an open
-      # transaction … database=dispatch_test_2be55348167c1ee8", a database of another package of
-      # this job, pending_for 5.14 s. It cannot share the routes service either, in either
-      # direction: routes' own tests hold instance-wide transaction ids on purpose
-      # (whoami_test.go's pg_current_xact_id hold, its cluster-database holder and its
-      # out-of-order insert), and routes' horizon loop has already been blown once by a sibling's
-      # `create database … strategy file_copy` (run 41868325451), which is what this test's own
-      # harness does. So it gets a server no other test touches, on 5434
-      # (dispatch://INFRA-1075).
-      postgres_shutdown:
-        # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
-        image: ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
-        env:
-          POSTGRES_PASSWORD: ci
-        ports: ["5434:5432"]
-        # The five settings of the services above, for the reasons given there.
-        command: postgres -c fsync=off -c full_page_writes=off -c synchronous_commit=off -c max_connections=500 -c max_prepared_transactions=20
-        options: >-
-          --shm-size=1g
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 1s
-          --health-timeout 5s
-          --health-retries 50
-      # A fourth instance, for internal/pgmigrate, whose redaction oracle holds scanl.go's
+      # A third instance, for internal/pgmigrate, whose redaction oracle holds scanl.go's
       # transcription of PostgreSQL's scan.l to a real PostgreSQL: it asks a server about 158,364
       # (text, setting) pairs, and what a pair costs is a round trip, not arithmetic. Measured on
       # run 42774209109: 2.16 ms a round trip in this lane against 0.16 ms against an idle
@@ -241,23 +212,23 @@ jobs:
           --health-interval 1s
           --health-timeout 5s
           --health-retries 50
-      # A fifth instance, for internal/dispatch/events, whose horizon tests wait for the event
-      # log's safe horizon as the routes package and the shutdown feed test do: it rests on
-      # pg_snapshot_xmin, so any transaction open anywhere on the instance holds it back
+      # A fourth instance, for internal/dispatch/events, whose horizon tests wait for the event
+      # log's safe horizon as the routes package and envoy-go-alone's shutdown feed test do: it
+      # rests on pg_snapshot_xmin, so any transaction open anywhere on the instance holds it back
       # (internal/dispatch/events/horizon.go, "Safe horizon"). In the package list, on the first
       # service, which every other package of this job shares,
       # TestHorizonAwaitCoversEveryIDCommittedBeforeTheCall took 27.07 s and 53.94 s on the two
       # passing runs of an earlier pair (runs 43514262740 and 43519308059), and on run
       # 43596122521 (job 132450917326) it failed at its one-minute give-up after 60.48 s ("await
       # event horizon: context deadline exceeded"), while cmd/dispatch-seed's batched seeds and
-      # pmdoc ran beside it. The routes package and the shutdown feed test have servers of their
-      # own for the same reason, and it cannot share either of theirs: its own tests hold
-      # transaction ids on purpose (TestHorizonStaysBelowAnOpenLowerWrite's open write, and
-      # TestWriterFloorIgnoresATransactionInAnotherDatabase's transaction in another database of
-      # the instance), which would hold back the horizon those two wait on. Nor pgmigrate's: that
-      # server is there to keep its package's 158,364 round trips off every other package's
-      # queue. So it gets a server no other package touches, on 5436, named on the events call of
-      # the unit step and nowhere else (dispatch://INFRA-1075).
+      # pmdoc ran beside it. The routes package has a server of its own for the same reason
+      # (and the shutdown feed test one in envoy-go-alone), and it cannot share the routes one:
+      # its own tests hold transaction ids on purpose (TestHorizonStaysBelowAnOpenLowerWrite's
+      # open write, and TestWriterFloorIgnoresATransactionInAnotherDatabase's transaction in
+      # another database of the instance), which would hold back the horizon routes waits on.
+      # Nor pgmigrate's: that server is there to keep its package's 158,364 round trips off every
+      # other package's queue. So it gets a server no other package touches, on 5436, named on
+      # the events call of the unit step and nowhere else (dispatch://INFRA-1075).
       postgres_events:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
         image: ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
@@ -338,7 +309,7 @@ jobs:
       # postgres exits and the service's health check fails the job before its first step.
       # .github/scripts/postgres-service-settings.sh
       # holds the five settings and reads them, for these steps and every step like them in this
-      # file; its head says why it is a script. There is a step for each of this job's five
+      # file; its head says why it is a script. There is a step for each of this job's four
       # services, because each is a server of its own started from a command: line of its own,
       # and a runner that dropped one of those lines would leave that one server on the image's
       # defaults with nothing else saying so.
@@ -346,8 +317,6 @@ jobs:
         run: .github/scripts/postgres-service-settings.sh "${{ job.services.postgres.id }}" postgres
       - name: Read the routes service's settings back
         run: .github/scripts/postgres-service-settings.sh "${{ job.services.postgres_routes.id }}" postgres_routes
-      - name: Read the shutdown service's settings back
-        run: .github/scripts/postgres-service-settings.sh "${{ job.services.postgres_shutdown.id }}" postgres_shutdown
       - name: Read the pgmigrate service's settings back
         run: .github/scripts/postgres-service-settings.sh "${{ job.services.postgres_pgmigrate.id }}" postgres_pgmigrate
       - name: Read the events service's settings back
@@ -363,7 +332,7 @@ jobs:
             packages/envoy/internal/testnats/nats.go Image
             packages/envoy/internal/testnats/nats.go HubImage
             packages/envoy/internal/tests3/seaweedfs.go Image
-      # why: .github/ci-notes/ci-job-envoy-go.md#what-the-unit-step-runs-and-why-eight-of-its-ten-calls-run-at-once
+      # why: .github/ci-notes/ci-job-envoy-go.md#what-the-unit-step-runs-and-why-its-eight-calls-run-at-once
       - name: Unit test envoy Go package
         run: |
           mkdir -p "$RUNNER_TEMP/go-test-json" "$RUNNER_TEMP/go-test-logs"
@@ -406,7 +375,7 @@ jobs:
           github.com/sjawhar/envoy/cmd/dispatch
           github.com/sjawhar/envoy/cmd/cipher"
           rest=$(go list ./... | grep -Ev '/integration|/internal/textcheck$|/internal/dispatch/architecture/notes$|/internal/runnerlog$|/internal/dispatch/specgraph$|/cmd/architecture-check$|/cmd/spec-check$|/listenerwire$|/internal/wirecheck$|/internal/cipher($|/)|/cmd/cipherd$|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/natscred$|/internal/cipher/natscallout$|/internal/oidc$|/internal/dispatch/api$|/internal/dispatch/docs$|/internal/dispatch/routes$|/internal/pgmigrate$|/internal/dispatch/events$' | grep -vxF "$lead")
-          printf '%s\n%s\n' "$lead" "$rest" | xargs go test -json -count=1 -p 8 -parallel 12 -skip '^(TestABatchCutOffInFlightKeepsItsOrder|TestABucketWaitWhoseLookupsAreHeldFailsByNameInTime|TestAClaimLeftByAnotherProcessIsTakenWhenItLapses|TestADeletedBucketFailsAWriteWithinTheBudget|TestAHolderWhoseRecordFindsTheHoldAnothersStopsItsRenewal|TestAProcessReportsASilentNATSCutWithinSeconds|TestAStalledListingFailsWithinTheReadTimeout|TestAStandbyDoesNotTryTheHoldForEveryEventTheHolderWrites|TestAStandbyTakesAFreeHoldWithNoNotification|TestAStoppedOutboxHandsThePublisherToTheOtherAtOnce|TestAWriteIsEmbeddedOnItsNotification|TestAnEventNATSNeverAcknowledgesIsBackedOffAndRecorded|TestAnOutboxThatLosesNATSReleasesThePublisher|TestAnOutboxWhoseNATSGoesSilentGivesThePublisherToTheOther|TestClosingThePoolGivesUpOnALateConnectionOnceTheDatabaseStopsAnswering|TestEnrollThroughTheHelperPastTheBoundSaysTheOutcomeIsUnknown|TestEverySecretFormNamesTheSourceItUses|TestExecLearnsOfAGrantAfterAFullHold|TestExecLearnsOfTheGrantWithinASecond|TestGCPSecretMetadataSourceIsPresentWhenItYieldsAToken|TestHealthzAnswersWhilePostgresAndTheBucketBothStopAnswering|TestHealthzAnswersWhilePostgresStopsAnswering|TestHoldExpiryMatchesTheDatabaseClock|TestHoldReportsLossBeforeTheDatabaseExpiryWhenRenewalsFail|TestHoldTakesOverOnTheFirstTryAfterTheLapse|TestIdentity|TestNoSecretFormAsksTheBrokerForACredential|TestOneFillHoldsTheLeaseAndAnotherTakesOverWithinSixtySeconds|TestOnlyOneOutboxPublishesAtATime|TestParseResolvesUnmatchedReferencesWithoutComparingEveryDefinition|TestReserveTokensSharesItsBudgetAcrossConnections|TestSIGTERMWhileARequestHoldsHTTPShutdownStillSettlesTheOwedDocument|TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument|TestSIGTERMWithTheDatabaseUnansweringExitsWithinTheShutdownBudget|TestSamplerHeapReadDelaysNoSample|TestScanPassReturnsWhenThePendingRowsFallDue|TestSyncDeadlineIsRecordedOnTheRow|TestTheChainSkipsAbsenceAndStopsOnABrokenSource|TestTheIdentityStepsRunOnceTheQueueFirstEmbeds|TestTheListenerReplacesAHalfOpenConnection|TestTheLostLineIsWrittenBeforeTheReleaseAndDatesTheStop|TestTheOutboxDoesNotScanWhileIdle|TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestUseCommandOutsideASessionReachesTheMachineSource|TestWebDisplayFixture)$' -timeout 19m > "$RUNNER_TEMP/go-test-json/unit.json" &
+          printf '%s\n%s\n' "$lead" "$rest" | xargs go test -json -count=1 -p 8 -parallel 12 -skip '^(TestABatchCutOffInFlightKeepsItsOrder|TestABucketWaitWhoseLookupsAreHeldFailsByNameInTime|TestAClaimLeftByAnotherProcessIsTakenWhenItLapses|TestADeletedBucketFailsAWriteWithinTheBudget|TestAHolderWhoseRecordFindsTheHoldAnothersStopsItsRenewal|TestAProcessReportsASilentNATSCutWithinSeconds|TestARollingUpdatesSuccessorHandsEachMentionTheOldProcessLeftOnce|TestAStalledListingFailsWithinTheReadTimeout|TestAStandbyDoesNotTryTheHoldForEveryEventTheHolderWrites|TestAStandbyTakesAFreeHoldWithNoNotification|TestAStoppedOutboxHandsThePublisherToTheOtherAtOnce|TestAWriteIsEmbeddedOnItsNotification|TestAnEventNATSNeverAcknowledgesIsBackedOffAndRecorded|TestAnOutboxThatLosesNATSReleasesThePublisher|TestAnOutboxWhoseNATSGoesSilentGivesThePublisherToTheOther|TestClosingThePoolGivesUpOnALateConnectionOnceTheDatabaseStopsAnswering|TestEnrollThroughTheHelperPastTheBoundSaysTheOutcomeIsUnknown|TestEverySecretFormNamesTheSourceItUses|TestExecLearnsOfAGrantAfterAFullHold|TestExecLearnsOfTheGrantWithinASecond|TestGCPSecretMetadataSourceIsPresentWhenItYieldsAToken|TestHealthzAnswersWhilePostgresAndTheBucketBothStopAnswering|TestHealthzAnswersWhilePostgresStopsAnswering|TestHoldExpiryMatchesTheDatabaseClock|TestHoldReportsLossBeforeTheDatabaseExpiryWhenRenewalsFail|TestHoldTakesOverOnTheFirstTryAfterTheLapse|TestIdentity|TestNoSecretFormAsksTheBrokerForACredential|TestOneFillHoldsTheLeaseAndAnotherTakesOverWithinSixtySeconds|TestOnlyOneOutboxPublishesAtATime|TestParseResolvesUnmatchedReferencesWithoutComparingEveryDefinition|TestReserveTokensSharesItsBudgetAcrossConnections|TestSIGTERMWhileARequestHoldsHTTPShutdownStillSettlesTheOwedDocument|TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument|TestSIGTERMWithTheDatabaseUnansweringExitsWithinTheShutdownBudget|TestSamplerHeapReadDelaysNoSample|TestScanPassReturnsWhenThePendingRowsFallDue|TestSyncDeadlineIsRecordedOnTheRow|TestTheChainSkipsAbsenceAndStopsOnABrokenSource|TestTheIdentityStepsRunOnceTheQueueFirstEmbeds|TestTheListenerReplacesAHalfOpenConnection|TestTheLostLineIsWrittenBeforeTheReleaseAndDatesTheStop|TestTheOutboxDoesNotScanWhileIdle|TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestUseCommandOutsideASessionReachesTheMachineSource|TestWebDisplayFixture)$' -timeout 19m > "$RUNNER_TEMP/go-test-json/unit.json" &
           unit=$!
           # The tests the race detector makes impossible, which the race job of each of these
           # packages therefore cannot make, so envoy-go keeps a plain run of them:
@@ -470,8 +439,8 @@ jobs:
           # 53.7 s of wall alone on four idle cores and 63.8 s of CPU. The instance pays for
           # both halves of that - the queue this package waits in, and the 158,364 round trips
           # it puts into the queue every other package of the job waits in - so
-          # DISPATCH_TEST_DATABASE_URL names 5435 on this call and nowhere else, as the three
-          # calls below name 5433, 5436 and 5434. The package list above leaves the package out.
+          # DISPATCH_TEST_DATABASE_URL names 5435 on this call and nowhere else, as the two calls
+          # below name 5433 and 5436. The package list above leaves the package out.
           #
           # -timeout 10m, from the call's own measured times rather than from its CPU. The
           # first arithmetic took the half rule on 120 s - 63.8 s of CPU at about half a core -
@@ -587,49 +556,10 @@ jobs:
           wait "$integration" || i=$?
           v=0
           wait "$vet" || v=$?
-          # The one untagged test of cmd/dispatch that reads a live event feed, on the third
-          # Postgres service: the horizon it waits on is instance-wide, so in run 42581214577 it
-          # timed out on events_start while another package's database held a transaction open,
-          # the server naming that holder. It cannot share the routes service in either
-          # direction - routes' own tests hold transaction ids on purpose, and its horizon loop
-          # has been blown by a sibling's clone before - so 5434 is named on this call and
-          # nowhere else. Its bound is one of the alone call's below (ci_job_reads.py's
-          # UNIT_ALONE_TESTS), so it runs once the eight calls above have ended, before that
-          # call. The package list above skips this test by name, which is unique in the
-          # module (dispatch://INFRA-1075). -timeout 2m, by R6 from the pair at 8cfd2682 (the
-          # table on this job): this call's one package on the slower run is cmd/dispatch,
-          # 50.2 s (run 44657322918, job 136026779841), and 50.2 / 30 = 1.67, so 2m. The limit
-          # leaves 69.8 s above that time, over the 30 s of horizontest.Drain that the test's
-          # wait for its event feed leaves of the deadline. The slowest reading since is 60.0 s
-          # (run 44939290502 at 3a4ffe0b, job 136952816413), 60.0 / 30 = 2.00, the same 2m, which
-          # leaves 60.0 s.
-          d=0
-          DISPATCH_TEST_DATABASE_URL='postgres://postgres:ci@localhost:5434/postgres?sslmode=disable' go test -json -count=1 -timeout 2m -run '^(TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument)$' ./cmd/dispatch/ > "$RUNNER_TEMP/go-test-json/shutdown.json" 2> "$RUNNER_TEMP/go-test-logs/shutdown.log" || d=$?
-          # The rows that run alone, once every other call of the step has ended, one package and
-          # one test at a time (-p 1 -parallel 1), so no member runs beside another test: every test
-          # whose assertion is a bound on how long something takes, measured from its own clock, with
-          # a bound under twice its slowest reading in the pair at 8cfd2682 and the six dispatch runs
-          # swept since (the architect's rule; ci_job_reads.py's UNIT_ALONE_TESTS, from the search of
-          # the whole package list, dispatch://INFRA-1075/artifact/evidence-r10-bounds-md), the
-          # shutdown feed test above among them. Two failures in the package list started it: the
-          # outbox's TestAnOutboxThatLosesNATSReleasesThePublisher (run 44939290502, job 136952816413,
-          # beside 106 pmdoc tests) and textversions' TestAStandbyTakesAFreeHoldWithNoNotification
-          # (run 44953084676, job 136995819951), a package main's envoy-go had passed 24 times. No race
-          # job runs these packages, so this step runs them after its waits, as main runs them, alone
-          # on the runner. The package list skips each by its name, unique in the module; this call
-          # names no server of its own and runs against 5432, quiet by then. -timeout 3m, by R6 from
-          # the members' slowest readings in the package list of runs 44657322918, 44657415021,
-          # 44687712471, 44717243297, 44790111577, 44846096964, 44939290502 and 44953084676, summed
-          # per package: outbox 88.19 s, cmd/dispatch 86.82 s (146.16 s less the shutdown feed test's
-          # 59.34 s), cmd/cipher 58.73 s, textversions 50.40 s, embedqueue 30.00 s, loadtest 12.00 s,
-          # duty 6.49 s, legionagents 4.04 s, pglisten 2.50 s, cistore 2.06 s, testnats 2.03 s,
-          # architecture 1.59 s and pmdoc 0.87 s; the largest, 88.19 / 30 = 2.94, so 3m.
-          a=0
-          go test -json -count=1 -p 1 -parallel 1 -timeout 3m -run '^(TestABatchCutOffInFlightKeepsItsOrder|TestABucketWaitWhoseLookupsAreHeldFailsByNameInTime|TestAClaimLeftByAnotherProcessIsTakenWhenItLapses|TestADeletedBucketFailsAWriteWithinTheBudget|TestAHolderWhoseRecordFindsTheHoldAnothersStopsItsRenewal|TestAProcessReportsASilentNATSCutWithinSeconds|TestAStalledListingFailsWithinTheReadTimeout|TestAStandbyDoesNotTryTheHoldForEveryEventTheHolderWrites|TestAStandbyTakesAFreeHoldWithNoNotification|TestAStoppedOutboxHandsThePublisherToTheOtherAtOnce|TestAWriteIsEmbeddedOnItsNotification|TestAnEventNATSNeverAcknowledgesIsBackedOffAndRecorded|TestAnOutboxThatLosesNATSReleasesThePublisher|TestAnOutboxWhoseNATSGoesSilentGivesThePublisherToTheOther|TestClosingThePoolGivesUpOnALateConnectionOnceTheDatabaseStopsAnswering|TestEnrollThroughTheHelperPastTheBoundSaysTheOutcomeIsUnknown|TestExecLearnsOfAGrantAfterAFullHold|TestExecLearnsOfTheGrantWithinASecond|TestGCPSecretMetadataSourceIsPresentWhenItYieldsAToken|TestHealthzAnswersWhilePostgresAndTheBucketBothStopAnswering|TestHealthzAnswersWhilePostgresStopsAnswering|TestHoldExpiryMatchesTheDatabaseClock|TestHoldReportsLossBeforeTheDatabaseExpiryWhenRenewalsFail|TestHoldTakesOverOnTheFirstTryAfterTheLapse|TestIdentity|TestOneFillHoldsTheLeaseAndAnotherTakesOverWithinSixtySeconds|TestOnlyOneOutboxPublishesAtATime|TestParseResolvesUnmatchedReferencesWithoutComparingEveryDefinition|TestReserveTokensSharesItsBudgetAcrossConnections|TestSIGTERMWhileARequestHoldsHTTPShutdownStillSettlesTheOwedDocument|TestSIGTERMWithTheDatabaseUnansweringExitsWithinTheShutdownBudget|TestSamplerHeapReadDelaysNoSample|TestScanPassReturnsWhenThePendingRowsFallDue|TestSyncDeadlineIsRecordedOnTheRow|TestTheIdentityStepsRunOnceTheQueueFirstEmbeds|TestTheListenerReplacesAHalfOpenConnection|TestTheLostLineIsWrittenBeforeTheReleaseAndDatesTheStop|TestTheOutboxDoesNotScanWhileIdle)$' ./cmd/cipher ./cmd/dispatch ./internal/cistore ./internal/dispatch/architecture ./internal/dispatch/duty ./internal/dispatch/embedqueue ./internal/dispatch/outbox ./internal/dispatch/pmdoc ./internal/dispatch/textversions ./internal/legionagents ./internal/pglisten ./internal/testnats ./loadtest > "$RUNNER_TEMP/go-test-json/alone-unit.json" 2> "$RUNNER_TEMP/go-test-logs/alone-unit.log" || a=$?
           # One group per call, in the order the calls were started: the package list first,
           # then the rest. Each is its own log, then its stream - the package result lines
           # when it passed, the whole stream when it failed - and an ::error:: naming it when it
-          # failed. The step's status is the first non-zero of the ten, and the package list,
+          # failed. The step's status is the first non-zero of the eight, and the package list,
           # which prints as it goes, writes no log of its own.
           status=0
           replay() {
@@ -656,8 +586,6 @@ jobs:
           echo "::endgroup::"
           [ "$v" -eq 0 ] || echo "::error::the agentloop vet failed (exit $v)"
           [ "$status" -ne 0 ] || status=$v
-          replay "the shutdown feed test" "$d" shutdown
-          replay "the rows that run alone" "$a" alone-unit
           exit "$status"
         working-directory: packages/envoy
       # Each named test runs once on each store backend as its `aws` and `gcp` subtests, and each

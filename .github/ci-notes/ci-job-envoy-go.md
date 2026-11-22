@@ -46,45 +46,31 @@ service of this file starts on the same five settings, and
 .github/scripts/postgres-service-settings.sh holds each of them to all five
 (dispatch://INFRA-1075).
 
-## What the unit step runs, and why eight of its ten calls run at once
+## What the unit step runs, and why its eight calls run at once
 
 The step below runs the module's packages in the background and, beside them, seven other
 calls: the plain run of what the race build cannot make, internal/pgmigrate, the routes
 package, internal/dispatch/events, the container-backed NATS matrix, the integration suite
-and the agentloop vet. Once all eight have ended it runs the shutdown feed test and then
-the rows that run alone, one call after the other. The package list runs 104 test
+and the agentloop vet. The package list runs 104 test
 binaries, beside 37 packages with no test files (both runs of the pair at 8cfd2682, read
 from the call's own -json). In the pair at bdffd7d2 (runs 43687973145 and 43691345741,
 jobs 132732382594 and 132742525106) it took 519.5 s and 594.1 s from the first event of
 its stream to the last, and every other call of this step had ended before it did. The eight
 calls are started in the background at the step's head, the long ones first, so the
-step costs the longest of them, and then the last two, rather than their sum. The short
+step costs the longest of them rather than their sum. The short
 calls follow the long ones, and their order among themselves decides nothing: in run 2
 the last of them ended at 07:50:49 while the package list ran until 07:58:31.
 The race-impossible call runs here since the measurement dispatch://INFRA-985 asked for
 was made; the comment on that call says what was measured and what it came back with,
 and why the tests of it whose assertion is a wall-clock time run alone, in envoy-go-race
 and envoy-go-checks, rather than here.
-The shutdown feed test, internal/pgmigrate and internal/dispatch/events are each out of
-the package list on a Postgres service of its own, for the reasons their own calls and
-services give.
-The rows that run alone are out of the package list too, and run after the other calls,
-one package and one test at a time: every test whose assertion is a bound on how long
-something takes, measured from the test's own clock, with a bound under twice its slowest
-reading in the pair at 8cfd2682 and the dispatch runs swept since, by the architect's rule
-and the search of the whole package list that applied it
-(dispatch://INFRA-1075/artifact/evidence-r10-bounds-md): 39 tests in 13 packages,
-ci_job_reads.py's UNIT_ALONE_TESTS, which a test joins by that rule. The shutdown feed test
-is one of them and runs first, in its own call on its own service; the alone call runs the
-rest on the first service, quiet by then. Two failures started the list:
-TestAnOutboxThatLosesNATSReleasesThePublisher, of internal/dispatch/outbox, failed main's
-bound on how soon the cut process releases the publisher hold in the dispatch run
-44939290502 at 3a4ffe0b (job 136952816413), while 106 tests of internal/dispatch/pmdoc ran
-beside it; TestAStandbyTakesAFreeHoldWithNoNotification, of internal/dispatch/textversions,
-failed main's bound on how soon a standby takes a free hold in the dispatch run 44953084676
-at 4165260d (job 136995819951), where main's envoy-go had passed that package 24 times. The
-race lane's tests of that kind run alone in steps of their own; no race job runs these
-packages, so their tests run at the end of this step instead.
+internal/pgmigrate and internal/dispatch/events are each out of the package list on a
+Postgres service of its own, for the reasons their own calls and services give.
+The tests whose assertion is a bound on how long something takes, measured from the test's
+own clock, with a bound under twice its slowest reading beside this step's load, are out of
+the package list too (ci_job_reads.py's UNIT_ALONE_TESTS, 40 tests in 13 packages, the
+shutdown feed test among them), and run in envoy-go-alone, a job of their own beside this
+one; .github/ci-notes/ci-job-envoy-go-alone.md says why.
 
 Each call but the vet writes a `go test -json` stream to a file of its own under
 $RUNNER_TEMP/go-test-json - the natslive call's five go test commands write one between
@@ -98,9 +84,8 @@ output. -count=1 keeps the restored build cache from replaying a stored result a
 `(cached)`. What a background call prints outside its stream cannot be left to interleave
 with the others', so each writes that to a log of its own under $RUNNER_TEMP/go-test-logs,
 replayed with its stream; the package list, which prints as it goes, writes no log of
-its own. The step waits for all eight, runs the shutdown feed test and the rows that run
-alone, replays one group per call, and exits with the first non-zero status of the ten,
-each failing call named in an ::error:: of its own.
+its own. The step waits for all eight, replays one group per call, and exits with the
+first non-zero status of the eight, each failing call named in an ::error:: of its own.
 
 The API package used to run first and on its own in this job, because the per-test
 database clone and drop of every other package queued on the service's one checkpointer
@@ -152,8 +137,8 @@ packages under the tree, the auth service's natscallout today (DATABASE_SKIPS_PA
 What is left is the rest of the module less the routes package, internal/dispatch/events
 and internal/pgmigrate, each of which has a call and a service of its own, and less the two
 longest packages it held (the API's and the documents service's), which the lane runs
-now. Its own -timeout is below, with the call. Its one -skip names seven tests: the
-shutdown feed test, which the shutdown call runs on a service of its own, the two tests
+now. Its own -timeout is below, with the call. Its one -skip names 46 tests: the 40 of
+UNIT_ALONE_TESTS, which envoy-go-alone runs, the shutdown feed test among them, the two tests
 of the web app's display-tree fixture, and the backend count's four tests of
 cmd/cipher. Without `--check` TestWebDisplayFixture writes the committed fixture
 rather than checking it, so a run here would ask nothing of it, and

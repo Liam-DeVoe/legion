@@ -1,0 +1,206 @@
+name: CI job envoy-go-alone
+
+# The steps of ci.yaml's `envoy-go-alone` job, in a file of its own.
+# ci.yaml's job of the same id calls this file, and that caller keeps `needs: changes` and the
+# whole `if:` that decides whether these steps run, so this file carries no `if:` of its own.
+#
+# The job runs beside envoy-go, selected by envoy-go's filter and its `changes` output, so it is
+# held to the merge queue and to `full-ci` exactly as envoy-go is: it runs the tests envoy-go's
+# package list leaves out because their bound on how long a thing takes is under twice their
+# slowest reading beside that list's load (.github/scripts/ci_job_reads.py's UNIT_ALONE_TESTS).
+#
+# The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
+# decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
+# ci.yaml ends. `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
+on:
+  workflow_call:
+    inputs:
+      ci-ok-changes:
+        description: >-
+          ci.yaml's `toJSON(needs.changes)`: end the job with ci-ok's report
+          (.github/actions/ci-ok-report), as every job of ci.yaml ends.
+        type: string
+        required: true
+
+# The proxy line of ci-job-envoy-go.yaml, for the reason given there.
+env:
+  GOPROXY: https://proxy.golang.org|direct
+
+jobs:
+  envoy-go-alone:
+    runs-on: ubuntu-24.04-arm
+    # Each go test call's -timeout is by R6 (ci-job-envoy-go.yaml's comment states the rule),
+    # from its members' own readings, which the comment on each call gives:
+    #
+    #   call                slowest package   reading    run          job           t / 30  limit
+    #   shutdown            cmd/dispatch       50.2 s    44657322918  136026779841    1.67     2m
+    #   rows alone          cmd/dispatch      192.7 s    (9 runs)     (the sum)       6.42     7m
+    #
+    # The rows-alone call's reading is its slowest package's, the sum of that package's members'
+    # slowest readings in envoy-go's package list: cmd/dispatch's seven, 192.67 s. The shutdown
+    # call's test reads a margin off the test binary's own deadline, the 30 s of horizontest.Drain
+    # (internal/dispatch/horizontest/horizontest.go, Drain), which its wait for its event feed
+    # (waitEventsStart) leaves of the deadline so that its failure prints rather than being cut
+    # off by the package timeout; 2m clears it, by 60.0 s over its slowest reading.
+    #
+    # timeout-minutes 21 is provisional: no run has read this job, so it comes from the readings
+    # there are, those of run 44979729824 at 66cba4b8 (envoy-go's job 137077480236), where these
+    # two calls ran at the end of envoy-go's unit step. The job's set-up, as envoy-go's own steps
+    # took it there (from the job's start to its last read-back step, less bun's 6 s and the steps
+    # this job does not run), 44 s; the shutdown call's stream, 7.3 s; the rows-alone call's,
+    # 278.2 s, from its first event to its last; the rolling-update test, which ran in the package
+    # list then, 105.85 s; and the upload, report, post and stop steps after them, 16 s: 451.35 s,
+    # 7.52 minutes, plus the largest -timeout, 7m, plus 6, 20.52, so 21. The test binaries' build
+    # is in none of those readings, since envoy-go's package list had built them, and the job
+    # restores envoy-go's build cache. One dispatch run at this head sets the bound by the same
+    # formula from its own time.
+    timeout-minutes: 21
+    services:
+      # The first service: envoy-go's postgres service, for the reasons given there - the five
+      # settings on its command line and the options below - which the rows-alone call runs
+      # against, quiet but for it.
+      postgres:
+        # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
+        image: ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+        env:
+          POSTGRES_PASSWORD: ci
+        ports: ["5432:5432"]
+        # why: .github/ci-notes/ci-job-envoy-go.md#the-five-settings-on-the-postgres-services-command-line
+        command: postgres -c fsync=off -c full_page_writes=off -c synchronous_commit=off -c max_connections=500 -c max_prepared_transactions=20
+        options: >-
+          --shm-size=1g
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 1s
+          --health-timeout 5s
+          --health-retries 50
+      # why: .github/ci-notes/ci-job-envoy-go-alone.md#the-shutdown-feed-tests-server-of-its-own
+      postgres_shutdown:
+        # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
+        image: ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+        env:
+          POSTGRES_PASSWORD: ci
+        ports: ["5434:5432"]
+        # The five settings of the service above, for the reasons given there.
+        command: postgres -c fsync=off -c full_page_writes=off -c synchronous_commit=off -c max_connections=500 -c max_prepared_transactions=20
+        options: >-
+          --shm-size=1g
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 1s
+          --health-timeout 5s
+          --health-retries 50
+    env:
+      DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+      BROKER_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/envoy/go.mod
+          cache: false
+      # go-envoy-test, envoy-go's family, restored as envoy-go restores it: these tests are a part
+      # of what envoy-go's package list builds, so the fill .github/workflows/ci-caches.yaml makes
+      # for envoy-go holds their builds, and .github/scripts/check-ci-filters.sh holds the restore's
+      # paths to the paths that fill saves.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+            !~/go/pkg/mod/cache/download/**/*.zip
+          key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-envoy-test-{0}-{1}-', runner.os, runner.arch) }}
+      # The sizing step of every lane whose tests start a Dispatch process, as envoy-go's.
+      - name: Size the service for this lane's Dispatch processes
+        run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
+      # One read-back step for each of this job's two services, as envoy-go has one for each of
+      # its own: .github/scripts/postgres-service-settings.sh reads the five settings back.
+      - name: Read the disposable service's settings back
+        run: .github/scripts/postgres-service-settings.sh "${{ job.services.postgres.id }}" postgres
+      - name: Read the shutdown service's settings back
+        run: .github/scripts/postgres-service-settings.sh "${{ job.services.postgres_shutdown.id }}" postgres_shutdown
+      # why: .github/ci-notes/ci-job-envoy-go-alone.md#what-the-job-runs-and-why-it-is-a-job-of-its-own
+      - name: Test what runs apart from envoy-go's load
+        run: |
+          mkdir -p "$RUNNER_TEMP/go-test-json" "$RUNNER_TEMP/go-test-logs"
+          # The one untagged test of cmd/dispatch that reads a live event feed, on this job's second
+          # Postgres service: the horizon it waits on is instance-wide, so in run 42581214577 it
+          # timed out on events_start while another package's database held a transaction open,
+          # the server naming that holder. It keeps the server of its own it had in envoy-go, on
+          # 5434, named on this call and nowhere else, so no other test's clone or transaction meets
+          # it, and it runs before the alone call rather than beside it. Its bound is one of
+          # UNIT_ALONE_TESTS' (ci_job_reads.py), so envoy-go's package list skips this test by name,
+          # which is unique in the module (dispatch://INFRA-1075). -timeout 2m, by R6 from the pair
+          # at 8cfd2682: this call's one package on the slower run is cmd/dispatch, 50.2 s (run
+          # 44657322918, job 136026779841), and 50.2 / 30 = 1.67, so 2m. The limit leaves 69.8 s
+          # above that time, over the 30 s of horizontest.Drain that the test's wait for its event
+          # feed leaves of the deadline. The slowest reading since is 60.0 s (run 44939290502 at
+          # 3a4ffe0b, job 136952816413), 60.0 / 30 = 2.00, the same 2m, which leaves 60.0 s.
+          d=0
+          DISPATCH_TEST_DATABASE_URL='postgres://postgres:ci@localhost:5434/postgres?sslmode=disable' go test -json -count=1 -timeout 2m -run '^(TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument)$' ./cmd/dispatch/ > "$RUNNER_TEMP/go-test-json/shutdown.json" 2> "$RUNNER_TEMP/go-test-logs/shutdown.log" || d=$?
+          # The rows that run alone, one package and one test at a time (-p 1 -parallel 1), so no
+          # member runs beside another test: every test whose assertion is a bound on how long
+          # something takes, measured from its own clock, with a bound under twice its slowest
+          # reading in the pair at 8cfd2682 and the seven dispatch runs swept since (the architect's
+          # rule; ci_job_reads.py's UNIT_ALONE_TESTS, from the search of envoy-go's whole package
+          # list, dispatch://INFRA-1075/artifact/evidence-r10-bounds-md), the shutdown feed test
+          # above among them. Two failures in the package list started it: the outbox's
+          # TestAnOutboxThatLosesNATSReleasesThePublisher (run 44939290502, job 136952816413, beside
+          # 106 pmdoc tests) and textversions' TestAStandbyTakesAFreeHoldWithNoNotification (run
+          # 44953084676, job 136995819951), a package main's envoy-go had passed 24 times. No race
+          # job runs these packages, so this job runs them, as main runs them, alone on the runner.
+          # It is a job of its own rather than calls at the end of envoy-go's unit step because
+          # TestARollingUpdatesSuccessorHandsEachMentionTheOldProcessLeftOnce spends about 118 s on
+          # its product timer whatever the load, which would take envoy-go past envoy-go-race-docs
+          # (the architect, 2026-11-22T08:45Z). envoy-go's package list skips each member by its
+          # name, unique in the module; this call names no server of its own and runs against 5432.
+          # -timeout 7m, by R6 from the members' slowest readings in envoy-go's package list of runs
+          # 44657322918, 44657415021, 44687712471, 44717243297, 44790111577, 44846096964, 44939290502,
+          # 44953084676 and 44979729824, summed per package: cmd/dispatch 192.67 s (146.16 s less the
+          # shutdown feed test's 59.34 s, and the rolling-update test's 105.85 s of run 44979729824,
+          # job 137077480236), outbox 88.19 s, cmd/cipher 58.73 s, textversions 50.40 s, embedqueue
+          # 30.00 s, loadtest 12.00 s, duty 6.49 s, legionagents 4.04 s, pglisten 2.50 s, cistore
+          # 2.06 s, testnats 2.03 s, architecture 1.59 s and pmdoc 0.87 s; the largest,
+          # 192.67 / 30 = 6.42, so 7m. Run 44979729824 read the packages alone, in envoy-go then,
+          # under those sums: cmd/dispatch 52.7 s and outbox 79.6 s.
+          a=0
+          go test -json -count=1 -p 1 -parallel 1 -timeout 7m -run '^(TestABatchCutOffInFlightKeepsItsOrder|TestABucketWaitWhoseLookupsAreHeldFailsByNameInTime|TestAClaimLeftByAnotherProcessIsTakenWhenItLapses|TestADeletedBucketFailsAWriteWithinTheBudget|TestAHolderWhoseRecordFindsTheHoldAnothersStopsItsRenewal|TestAProcessReportsASilentNATSCutWithinSeconds|TestARollingUpdatesSuccessorHandsEachMentionTheOldProcessLeftOnce|TestAStalledListingFailsWithinTheReadTimeout|TestAStandbyDoesNotTryTheHoldForEveryEventTheHolderWrites|TestAStandbyTakesAFreeHoldWithNoNotification|TestAStoppedOutboxHandsThePublisherToTheOtherAtOnce|TestAWriteIsEmbeddedOnItsNotification|TestAnEventNATSNeverAcknowledgesIsBackedOffAndRecorded|TestAnOutboxThatLosesNATSReleasesThePublisher|TestAnOutboxWhoseNATSGoesSilentGivesThePublisherToTheOther|TestClosingThePoolGivesUpOnALateConnectionOnceTheDatabaseStopsAnswering|TestEnrollThroughTheHelperPastTheBoundSaysTheOutcomeIsUnknown|TestExecLearnsOfAGrantAfterAFullHold|TestExecLearnsOfTheGrantWithinASecond|TestGCPSecretMetadataSourceIsPresentWhenItYieldsAToken|TestHealthzAnswersWhilePostgresAndTheBucketBothStopAnswering|TestHealthzAnswersWhilePostgresStopsAnswering|TestHoldExpiryMatchesTheDatabaseClock|TestHoldReportsLossBeforeTheDatabaseExpiryWhenRenewalsFail|TestHoldTakesOverOnTheFirstTryAfterTheLapse|TestIdentity|TestOneFillHoldsTheLeaseAndAnotherTakesOverWithinSixtySeconds|TestOnlyOneOutboxPublishesAtATime|TestParseResolvesUnmatchedReferencesWithoutComparingEveryDefinition|TestReserveTokensSharesItsBudgetAcrossConnections|TestSIGTERMWhileARequestHoldsHTTPShutdownStillSettlesTheOwedDocument|TestSIGTERMWithTheDatabaseUnansweringExitsWithinTheShutdownBudget|TestSamplerHeapReadDelaysNoSample|TestScanPassReturnsWhenThePendingRowsFallDue|TestSyncDeadlineIsRecordedOnTheRow|TestTheIdentityStepsRunOnceTheQueueFirstEmbeds|TestTheListenerReplacesAHalfOpenConnection|TestTheLostLineIsWrittenBeforeTheReleaseAndDatesTheStop|TestTheOutboxDoesNotScanWhileIdle)$' ./cmd/cipher ./cmd/dispatch ./internal/cistore ./internal/dispatch/architecture ./internal/dispatch/duty ./internal/dispatch/embedqueue ./internal/dispatch/outbox ./internal/dispatch/pmdoc ./internal/dispatch/textversions ./internal/legionagents ./internal/pglisten ./internal/testnats ./loadtest > "$RUNNER_TEMP/go-test-json/alone-unit.json" 2> "$RUNNER_TEMP/go-test-logs/alone-unit.log" || a=$?
+          # One group per call, in the order the calls ran. The step's status is the first non-zero
+          # of the two.
+          status=0
+          replay() {
+            echo "::group::$1 (exit $2)"
+            [ ! -s "$RUNNER_TEMP/go-test-logs/$3.log" ] || cat "$RUNNER_TEMP/go-test-logs/$3.log"
+            if [ "$2" -eq 0 ]; then
+              jq -rj 'select(.Action == "build-output" or (.Action == "output" and .Test == null)) | .Output' "$RUNNER_TEMP/go-test-json/$3.json"
+            else
+              jq -rj 'select(.Action == "build-output" or .Action == "output") | .Output' "$RUNNER_TEMP/go-test-json/$3.json"
+            fi
+            echo "::endgroup::"
+            [ "$2" -eq 0 ] || echo "::error::$1 failed (exit $2)"
+            [ "$status" -ne 0 ] || status=$2
+          }
+          replay "the shutdown feed test" "$d" shutdown
+          replay "the rows that run alone" "$a" alone-unit
+          exit "$status"
+        working-directory: packages/envoy
+      # Always, as envoy-go uploads its streams and for the same reasons: a red attempt's times are
+      # the ones a reader needs, and one artifact per attempt, since a download by name picks one
+      # of several of that name without saying so
+      # (docs/solutions/github/run-download-by-name-picks-one-of-several-same-named-artifacts.md).
+      - name: Upload the go test -json streams
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: envoy-go-alone-test-json-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/go-test-json/
+          if-no-files-found: warn
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: envoy-go-alone
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}

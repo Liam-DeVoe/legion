@@ -594,6 +594,12 @@ The three jobs whose tag steps lean on this job's untagged run of ./cmd/dispatch
 and ./cmd/cipherd: each runs only what its tag adds, so a change that starts one
 must start this job too (check-ci-filters.sh's rule 15).
 
+## envoy_go: Two jobs run on this filter, envoy-go and envoy-go-alone, so it names
+
+Two jobs run on this filter, envoy-go and envoy-go-alone, so it names both of
+their files (ci_job_reads.py gates both jobs on it). envoy-go-alone runs a part of
+what envoy-go's package list would run, so it reads nothing envoy-go does not.
+
 ## envoy_go_checks: envoy-go's fast half (envoy-go-checks): the format, generated-contract and pmdoc
 
 envoy-go's fast half (envoy-go-checks): the format, generated-contract and pmdoc
@@ -1065,8 +1071,8 @@ ci-ok job's `needs:`, without which the verdict is reached before that job ends 
 nothing about it, and a gate in
 .github/scripts/ci_job_reads.py. An output an event must force is written in `changes`' outputs
 rather than left to its filter, as every output's workflow_dispatch case is, and so is one an
-event must hold back, as the ten slow suites' pull-request case is
-(.github/ci-notes/ci.md#the-ten-slow-suites-whose-runner-time-dwarfs-every-other-jobs-the).
+event must hold back, as the eleven slow suites' pull-request case is
+(.github/ci-notes/ci.md#the-eleven-slow-suites-whose-runner-time-dwarfs-every-other-jobs-the).
 The ci-filters job's .github/scripts/check-ci-filters.sh holds the filter to that gate,
 CI_OK_SELECTED_BY to the `if:`s, the report step to every job, the ci-ok job's `needs:` to
 every job of the file but the exempt ones, and the re-run term to every job but `ci-ok` and
@@ -1330,12 +1336,13 @@ a pull request is held to. The `full-ci` label no longer decides whether this su
 only which lane it runs: that job's `lane:` input reads the label, and
 .github/ci-notes/ci.md#what-the-lane-input-reads says what each event gets.
 
-## The ten slow suites, whose runner time dwarfs every other job's. The
+## The eleven slow suites, whose runner time dwarfs every other job's. The
 
-The ten slow suites, whose runner time dwarfs every other job's: envoy-go, the three
-race jobs, envoy-go-claim-model, envoy-go-docs-finalizers, dispatch-memory,
-dispatch-multiprocess, dispatch-two-builds and envoy-smoke, under nine outputs, since
-envoy-go-docs-finalizers reads envoy_go_race_docs. The merge queue runs them on the tree
+The eleven slow suites, whose runner time dwarfs every other job's: envoy-go,
+envoy-go-alone, the three race jobs, envoy-go-claim-model, envoy-go-docs-finalizers,
+dispatch-memory, dispatch-multiprocess, dispatch-two-builds and envoy-smoke, under nine
+outputs, since envoy-go-alone reads envoy_go and envoy-go-docs-finalizers reads
+envoy_go_race_docs. The merge queue runs them on the tree
 the change lands as, and that is where their result normally comes from;
 a pull request runs them only when it carries the label `full-ci`. Each is false on a
 pull-request run without that label, so the skip is one `changes` chose: ci-ok reads it as
@@ -1375,7 +1382,7 @@ and so reads the same files.
 ## The paths filter's own verdict for every filter, before the `full-ci` term
 
 The paths filter's own verdict for every filter, before the `full-ci` term (`(github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci'))`) rewrites
-the nine outputs the ten slow suites run behind. On a pull request without that
+the nine outputs the eleven slow suites run behind. On a pull request without that
 label each of those nine is `false` whether its paths matched or not, so a reader of the
 outputs alone cannot tell "the filter said no" from "the label is absent"; with this
 beside them ci-ok's report tells the two apart and says which
@@ -1730,7 +1737,7 @@ them out), the architecture-note check over this repository's own .dispatch/arch
 through the composite action .github/actions/architecture-check, and the spec-file check over
 its .dispatch/spec through the composite action .github/actions/spec-check, both of which
 other repositories can call. The slow half, the envoy-go job (the module's unit tests, the
-container-backed NATS matrix and the integration suite), is one of the ten slow suites,
+container-backed NATS matrix and the integration suite), is one of the eleven slow suites,
 which run in the merge queue and on a pull request labelled `full-ci`, while these checks
 must come back on every push. It restores go-envoy rather than go-envoy-test, the family of
 the slow half (the test binary of every package of the envoy module) and of
@@ -1747,8 +1754,21 @@ The slow half: the unit tests of every package of the envoy module but the race 
 the three race jobs below run under the detector, the text checks, which text-checks runs,
 and the architecture-note packages, which envoy-go-checks runs, with the container-backed
 NATS matrix and the integration suite beside them. The unit tests run against this job's
-five Postgres services; the NATS matrix and the integration suite open no database. Its
-format, generated-code, shell-script, build and pack steps are envoy-go-checks'.
+four Postgres services; the NATS matrix and the integration suite open no database. Its
+format, generated-code, shell-script, build and pack steps are envoy-go-checks', and the
+tests whose bound on how long a thing takes its load would move are envoy-go-alone's.
+
+## What the envoy-go-alone job runs
+
+The tests of envoy-go's package list whose assertion is a bound on how long something
+takes, measured from the test's own clock, and whose bound is under twice their slowest
+reading beside that list's load (.github/scripts/ci_job_reads.py's UNIT_ALONE_TESTS, which
+states the rule and holds the list): envoy-go skips them, and this job runs them beside it,
+one package and one test at a time, against two Postgres services of its own. It reuses
+envoy-go's filter and `changes` output, so it is held to the merge queue and to `full-ci`
+as envoy-go is, and envoy-go's go-envoy-test restore. Its own notes file,
+.github/ci-notes/ci-job-envoy-go-alone.md, says why it is a job of its own rather than calls
+at the end of envoy-go's unit step.
 
 ## The envoy-infra module, its own workspace and its live tests
 

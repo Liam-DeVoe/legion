@@ -52,6 +52,7 @@ env:
       "dispatch-browser": "dispatch_browser",
       "claude-envoy": "claude_envoy",
       "envoy-go": "envoy_go",
+      "envoy-go-alone": "envoy_go",
       "envoy-go-checks": "envoy_go_checks",
       "envoy-infra-go": "envoy_infra_go",
       "text-checks": "text_checks",
@@ -180,7 +181,7 @@ jobs:
       # why: .github/ci-notes/ci.md#why-the-browser-suite-is-ungated-and-what-the-label-decides
       dispatch_browser: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.dispatch_browser }}
       claude_envoy: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.claude_envoy }}
-      # why: .github/ci-notes/ci.md#the-ten-slow-suites-whose-runner-time-dwarfs-every-other-jobs-the
+      # why: .github/ci-notes/ci.md#the-eleven-slow-suites-whose-runner-time-dwarfs-every-other-jobs-the
       envoy_go: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.envoy_go || 'false' }}
       # why: .github/ci-notes/ci.md#why-envoy-gos-fast-half-comes-back-on-every-push
       envoy_go_checks: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.envoy_go_checks }}
@@ -188,7 +189,7 @@ jobs:
       # The checks whose subject is text, in a job with no database: no `full-ci` term, only
       # the dispatched one above, since it is one of the cheapest jobs of the file.
       text_checks: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.text_checks }}
-      # Eight slow suites under seven outputs, gated as .github/ci-notes/ci.md#the-ten-slow-suites-whose-runner-time-dwarfs-every-other-jobs-the says:
+      # Eight slow suites under seven outputs, gated as .github/ci-notes/ci.md#the-eleven-slow-suites-whose-runner-time-dwarfs-every-other-jobs-the says:
       # envoy_go_race_docs starts envoy-go-docs-finalizers as well as envoy-go-race-docs.
       envoy_go_race: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.envoy_go_race || 'false' }}
       envoy_go_race_api: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.envoy_go_race_api || 'false' }}
@@ -205,7 +206,7 @@ jobs:
       # The Lean model's own job, which is minutes rather than tens of them: no `full-ci` term,
       # so it comes back on every push that selects it, as the two suites above do.
       airlock_lean: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.airlock_lean }}
-      # A slow suite, gated as .github/ci-notes/ci.md#the-ten-slow-suites-whose-runner-time-dwarfs-every-other-jobs-the says.
+      # A slow suite, gated as .github/ci-notes/ci.md#the-eleven-slow-suites-whose-runner-time-dwarfs-every-other-jobs-the says.
       envoy_smoke: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.envoy_smoke || 'false' }}
       envoy_e2e_local: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.envoy_e2e_local }}
       envoy_session_stall: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.envoy_session_stall }}
@@ -593,6 +594,18 @@ jobs:
     with:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
 
+  # why: .github/ci-notes/ci.md#what-the-envoy-go-alone-job-runs
+  envoy-go-alone:
+    needs: changes
+    if: needs.changes.outputs.envoy_go == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
+    permissions:
+      contents: read
+      actions: read
+      checks: write
+    uses: ./.github/workflows/ci-job-envoy-go-alone.yaml
+    with:
+      ci-ok-changes: ${{ toJSON(needs.changes) }}
+
   # why: .github/ci-notes/ci.md#the-envoy-infra-module-its-own-workspace-and-its-live-tests
   envoy-infra-go:
     needs: changes
@@ -934,6 +947,7 @@ jobs:
       - claude-envoy
       - envoy-go-checks
       - envoy-go
+      - envoy-go-alone
       - envoy-infra-go
       - text-checks
       - envoy-go-race
