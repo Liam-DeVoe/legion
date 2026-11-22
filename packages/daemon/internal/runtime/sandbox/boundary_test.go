@@ -1179,6 +1179,50 @@ func TestAKeptVolumeCarriesItsWorkspaceToTheIssuesNextPod(t *testing.T) {
 	}
 }
 
+// The rig stands in for each container's CPU limit, the cgroup quota a pod's processes size their
+// threads to, by giving each process it starts GOMAXPROCS and RAYON_NUM_THREADS from that limit
+// (podCPUs). This row fails by name when the two do not reach a process: each init container of an
+// issue pod, which runContainer starts with its own container's limit, and an agent's own command,
+// which agent() starts with the issue pod's limit. Without the row a lost cap shows only on a host
+// whose CPU count carries the rig's processes past a task limit, and no CI runner has that many
+// CPUs. Each child prints the two variables as it has them. The rig builds each child's environment
+// from nothing; the test process's own values are emptied here all the same, so that a child that
+// took them would not pass for one that has the cap.
+func TestEveryProcessTheRigStartsHasItsContainersCPULimit(t *testing.T) {
+	t.Setenv("GOMAXPROCS", "")
+	t.Setenv("RAYON_NUM_THREADS", "")
+	const report = `printf 'GOMAXPROCS=%s RAYON_NUM_THREADS=%s' "${GOMAXPROCS-unset}" "${RAYON_NUM_THREADS-unset}"`
+	// The stand-in for the Go legion appends one line for each init container that runs it.
+	record := filepath.Join(t.TempDir(), "record")
+	standIn := filepath.Join(t.TempDir(), "legion")
+	if err := os.WriteFile(standIn, []byte("#!/bin/sh\n{ "+report+"; echo; } >> "+shellprefix.Literal(record)+"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	rig := newInitRig(t, standIn)
+	pod, err := rig.start(rig.launch(rootSpec(t)))
+	if err != nil {
+		t.Fatalf("the issue's pod: %v", err)
+	}
+	body, err := os.ReadFile(record)
+	if err != nil {
+		t.Fatalf("no init container ran the stand-in: %v", err)
+	}
+	lines := strings.Split(strings.TrimSuffix(string(body), "\n"), "\n")
+	if len(pod.spec.InitContainers) == 0 || len(lines) != len(pod.spec.InitContainers) {
+		t.Fatalf("%d lines from the stand-in, want one for each of the pod's %d init containers: %q", len(lines), len(pod.spec.InitContainers), lines)
+	}
+	for i, c := range pod.spec.InitContainers {
+		limit := c.Resources.Limits[corev1.ResourceCPU]
+		if want := strings.Join(podCPUs(limit), " "); lines[i] != want {
+			t.Errorf("init container %s ran with %q, want %q from its CPU limit %s", c.Name, lines[i], want, limit.String())
+		}
+	}
+	issue := goldenOptions().Resources.Issue.Limits[corev1.ResourceCPU]
+	if got, want := rig.agent().Out(rig.root, "/bin/sh", "-c", report), strings.Join(podCPUs(issue), " "); got != want {
+		t.Errorf("an agent's own command ran with %q, want %q from the issue pod's CPU limit %s", got, want, issue.String())
+	}
+}
+
 // writeFile writes body to path, with every directory above it.
 func writeFile(t *testing.T, path, body string) {
 	t.Helper()
