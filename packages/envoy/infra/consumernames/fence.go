@@ -11,11 +11,11 @@ import (
 )
 
 // familyNames is the selection protocol of m's family as the family's creator configures it, in
-// the parts a record's and a consumer's checks read (selection.Names.Check, selection.Names.Owns):
-// each fresh name's prefix, the fixed name, the key's own check and the metadata every consumer of
-// the family carries (bus newFreshSessions, the listener's durableNames, Dispatch's nameFreshly,
-// the daemon's newDurableNames). member.Metadata is each family's metadata as its creator writes
-// it.
+// the parts a consumer's check reads (selection.Names.Owns): the fixed name, the key's own check
+// and the metadata every consumer of the family carries (bus newFreshSessions, the listener's
+// durableNames, Dispatch's nameFreshly, the daemon's newDurableNames). member.Metadata is each
+// family's metadata as its creator writes it. A record's check is the library's own
+// (checkRecordFence).
 func familyNames(m member) *selection.Names {
 	config := selection.Config{
 		Prefix:   func(string) string { return m.Prefix },
@@ -42,17 +42,14 @@ func familyMember(family, logical string) (member, error) {
 }
 
 // checkRecordFence is the one fence of a record status, the census's reader and cleanup read: the
-// record of logical in family's store must be one the family's creator takes (selection.Names.Check
-// of familyNames): its current, each retired name and an open operation's candidate a fresh name of
-// logical, and an open operation's old name one of those or logical's fixed name. Its refusal is
-// selection.ErrMalformedRecord naming the field and the name. A nil is no leave to delete: a name
-// t-7 deletes also passes deleteOwned.
+// record of logical in family's store must be one the family's creator takes, by the library's own
+// table of the families' naming (selection.CheckFamily): its current, each retired name and an open
+// operation's candidate a fresh name of logical, and an open operation's old name one of those or
+// logical's fixed name. Its refusal is selection.ErrMalformedRecord naming the field and the name,
+// or the library's refusal of a family or a durable key no store keeps. A nil is no leave to
+// delete: a name t-7 deletes also passes deleteOwned.
 func checkRecordFence(family, logical string, record selection.Record) error {
-	m, err := familyMember(family, logical)
-	if err != nil {
-		return err
-	}
-	return familyNames(m).Check(logical, record)
+	return selection.CheckFamily(family, logical, record)
 }
 
 // deleteOwned deletes consumer name, which m's record or m's logical name names, only once the
