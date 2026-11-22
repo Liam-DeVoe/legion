@@ -48,6 +48,7 @@ import {
   labelsAgainstTheCount,
   labelsLeft,
   lineOrder,
+  MEASURED_KEY,
   MEASURED_TITLE,
   PHONE_TITLE,
   propertiesLine,
@@ -68,7 +69,16 @@ import {
 import { onBody } from "./keyboard-issue";
 import { boxesApart } from "./layout";
 import { answeredPost, holdPosts, navigateInApp } from "./sends";
-import { expect, type Locator, type Page, type Request, rowKey, rowPerson, test } from "./test";
+import {
+  emptyDatabase,
+  expect,
+  fixedPerson,
+  type Locator,
+  type Page,
+  type Request,
+  rowKey,
+  test,
+} from "./test";
 import { assertPageFits, assertWhole } from "./unclipped";
 import { asUser } from "./users";
 
@@ -173,12 +183,29 @@ async function pressOutOfTheEdit(
 // `packages/dispatch/AGENTS.md` tags `@phone` for: the header's height limit there, the 24 px
 // targets, the page no wider than the window, the navigation's control first on row one and the
 // dialog it opens, and the 44 px buttons and 16 px type of the dialog a header control opens.
+// Its project is the measured key, "HDR" (`MEASURED_KEY`), the key the 390 px limit was measured
+// on, and not a key of the row's own. Under `rowKey("HDR")`, "HDR" and five characters of
+// `BCDFGHJKLMNPQRSTVWXZ0123456789` (e2e/row-names.ts), a wide suffix left no room on row one for
+// the navigation's control, which took a line of its own, and the header was 265 px against 250:
+// nightly 45024923413's first attempt of this row failed so under HDRVWQDM, and a builds Job at
+// 54a60643 failed it under HDRWWWWW and HDRMMMMM and passed it under HDR11111 and HDRJJJJJ. The
+// red row of the INFRA-983 test round at 54a60643 took the first 390 px reading below alone,
+// under HDRWWWWW. Over the measured key it would take that same reading, so it is folded into
+// this row.
 // SLOW(>=2s): 15,176 ms on chromium and 7,070 ms on iphone (one worker, Job e2e-rows-rdf2g at
 // 43949bc0): twelve loads of the issue on chromium and five on iphone, and at each of its widths
 // every part of the header read whole and Details opened and closed three times.
 test("the header holds its list and its limits at every width @phone", async ({ browser }) => {
   test.setTimeout(300_000);
-  await phase(browser, seedHeader, async (page, seeded) => {
+  // The project key and its issue keys, `HDR-1`, `HDR-2` and on, must be the same text on every
+  // run. The worker empties its database only before its first row (`workerDatabase`,
+  // e2e/test.ts), and Dispatch deletes no project, so a second run of this row in one worker
+  // would find its project already made. So the row empties the database before its seed. Row
+  // (3) draws the same measured key and empties the database too, so neither finds the other's
+  // project.
+  await emptyDatabase();
+  const seed = () => seedHeader(MEASURED_KEY);
+  await phase(browser, seed, async (page, seeded) => {
     await patchIssue(seeded.key, { labels: [...TWENTY_LABELS], title: PHONE_TITLE });
     const desktopProject = test.info().project.name !== "iphone";
 
@@ -602,35 +629,6 @@ test("the header holds its list and its limits at every width @phone", async ({ 
   });
 });
 
-// Red test of the INFRA-983 test round at 54a60643. The row above draws its project's key with
-// `rowKey("HDR")`: "HDR" and five characters of `BCDFGHJKLMNPQRSTVWXZ0123456789`
-// (e2e/row-names.ts). Its 390 px limit was read on the literal key "HDR" (`PHONE_TITLE`). Under a
-// wide suffix the crumbs leave no room on row one for the navigation's control, which takes a
-// line of its own, and the header is 265 px against 250: nightly 45024923413's first attempt of
-// the row above failed so under HDRVWQDM, and a builds Job at 54a60643 failed it under HDRWWWWW
-// and HDRMMMMM and passed it under HDR11111 and HDRJJJJJ. This row seeds the widest key that draw
-// can give. The fixed key is safe: no other row writes it, and every worker, and so every repeat
-// and every retry, starts on a database of its own, emptied (`workerDatabase`, e2e/test.ts).
-// SLOW(>=2s): 1.6 to 1.9 s in builds Job infra983-red-jtbd8 at 6bfdf5c3 (4 CPUs): one load of the
-// issue at 390 px, with every part of the header read whole, at the edge of 2 s on a slower runner.
-test("the header holds its 390 px limit under the widest key the row's own key can be @phone", async ({
-  browser,
-}) => {
-  const widest = fixedKey("HDRWWWWW", 'the widest key rowKey("HDR") draws, read at 390 px');
-  await phase(
-    browser,
-    () => seedHeader(widest),
-    async (page, seeded) => {
-      await patchIssue(seeded.key, { labels: [...TWENTY_LABELS], title: PHONE_TITLE });
-      await page.setViewportSize(viewportAt(IPHONE_13.width));
-      await gotoIssue(page, `/issues/${seeded.key}`);
-      await expectHeaderDrawn(page);
-      await expect(issueHeader(page)).toContainText(PHONE_TITLE);
-      await expectHeaderWithinItsLimit(page, IPHONE_13.width, false, TYPEFACE);
-    }
-  );
-});
-
 // Row (2): a gated root's approval entries stay in the header, and each reads the document its
 // step approves.
 // SLOW(>=2s): 7,145 ms (one worker, Job e2e-rows-rdf2g at 43949bc0): two more projects and
@@ -839,12 +837,22 @@ test("the approval entries stay in the header and read the document each step ap
 // in the fallback, as row (1) reads it in the face, a layout claim "Phone acceptance" in
 // `packages/dispatch/AGENTS.md` tags `@phone` for: the header's height limit and the 24 px
 // targets at 390 px, and the page no wider than the window at 390 and 320 px.
+// Its project is the measured key, "HDR" (`MEASURED_KEY`), as row (1)'s is: the 390 px limit was
+// measured on that key, and a generated key's five more characters change the width of the
+// crumbs on row one, in the face and, by other widths, in each fallback.
 // SLOW(>=2s): 14,270 ms on chromium and 13,365 ms on iphone (one worker, Job e2e-rows-rdf2g at
 // 43949bc0): thirteen loads of the issue in two signed-in contexts, each waiting for the
 // typeface to load or fail, and the header's limits measured at twelve of them.
 test("the header holds its limits when the typeface does not load @phone", async ({ browser }) => {
   test.setTimeout(240_000);
-  await phase(browser, seedHeader, async (page, seeded) => {
+  // The project key and its issue keys, `HDR-1`, `HDR-2` and on, must be the same text on every
+  // run, and neither the worker, which empties its database only before its first row, nor
+  // Dispatch, which deletes no project, takes away the project an earlier run made. So the row
+  // empties the database before its seed, as row (1) does with the same measured key; neither
+  // then finds the other's project.
+  await emptyDatabase();
+  const seed = () => seedHeader(MEASURED_KEY);
+  await phase(browser, seed, async (page, seeded) => {
     await patchIssue(seeded.key, { labels: [...TWENTY_LABELS], title: PHONE_TITLE });
 
     // The page is drawn in the typeface.
@@ -1811,12 +1819,18 @@ test("the header draws the words of its two counts as a reader reads them @phone
   });
 });
 
-/** The logical login of a reader of the row's own (`rowPerson`, e2e/test.ts) whose login is as
- *  long as the measured root's assignee's, `dana@example.dev`: 16 characters, these eleven and
- *  the five characters of the row's own. Everyone who has signed in is one list, the options of
- *  every assignee control, which a fixed login would stay in for every later row of the worker;
- *  the row's own person is taken out of it again when the row ends (`ownPeople`). */
-const LONG_LOGIN = "danaexample";
+/** The person the large roots below are assigned to and read by: a fixed login as long as the
+ *  measured root's assignee's, 16 characters, which the header draws as text in its properties
+ *  line (`AssigneeControl`'s header badge). It is fixed rather than a person of the row's own
+ *  (`rowPerson`, e2e/test.ts), whose five more characters change the width being measured. Like a
+ *  person of the row's own, it is deleted when the row ends (`fixedPerson`, through `ownPeople`):
+ *  everyone who has signed in is one list, the options of every assignee control. */
+function measuredAssignee(): string {
+  return fixedPerson(
+    "dana@example.dev",
+    "the header's limits are read over a login as long as the measured root's assignee's; a generated suffix changes the width being measured"
+  );
+}
 
 // The header holds its limits with 20 labels and the measured title, which is a real root's
 // own. On a copy of that root - a root of a project that gates its spec, 24 children with 3 done,
@@ -1825,16 +1839,26 @@ const LONG_LOGIN = "danaexample";
 // 390 px. Row (1)'s seed is a child with one chip and 3 children, so no row read this issue's
 // shape. This row seeds that shape, under the title the 390 px limit is read on (`PHONE_TITLE`,
 // the measured title less a word), and reads the header's limits with no request waiting and
-// with one; on the phone it reads 390 px.
+// with one; on the phone it reads 390 px. It draws the fixed key "LIKE" and the fixed login
+// (`measuredAssignee`), since a generated key's or login's five more characters change the width
+// being measured: the key's on row one at 390 px, and the login's in the properties line.
 // SLOW(>=2s): 3,938 ms on chromium and 2,597 ms on iphone (one worker, Job e2e-rows-rdf2g at
 // 43949bc0): a root written with 24 children, a second context signed in as the long login, and
 // four loads on chromium and two on iphone, the header's limits measured after each.
 test("the header holds its limits on a large gated root @phone", async ({ browser }) => {
   test.setTimeout(240_000);
+  // The project key and its issue keys, `LIKE-1`, `LIKE-2` and on, must be the same text on
+  // every run, and neither the worker, which empties its database only before its first row, nor
+  // Dispatch, which deletes no project, takes away the project an earlier run made. So the row
+  // empties the database before its seed.
+  await emptyDatabase();
   await phase(
     browser,
     async () => {
-      const like = rowKey("LIKE");
+      const like = fixedKey(
+        "LIKE",
+        "the header's phone limits hold for a key whose crumbs fit beside the navigation control (INFRA-1196 decision 398); a generated suffix changes the width being measured"
+      );
       await createProject({ key: like, name: "Large root" });
       await setGatedSteps(like, ["spec"]);
       const root = await createIssue({
@@ -1855,7 +1879,7 @@ test("the header holds its limits on a large gated root @phone", async ({ browse
       return root;
     },
     async (_alice, root) => {
-      const login = rowPerson(LONG_LOGIN);
+      const login = measuredAssignee();
       const context = await asUser(browser, login);
       try {
         await withIssuePage(context, login);
@@ -1896,7 +1920,9 @@ test("the header holds its limits on a large gated root @phone", async ({ browse
 // every gated document, so each entry carries Approve and Request changes (decision 213). The
 // root has the large root's shape above - 20 labels, 24 children with 3 done and the
 // 16-character login as its assignee - and the measured title whole, so the properties line is
-// as long as R3's cases.
+// as long as R3's cases. It draws the fixed keys "TWO" and "THREE" and the fixed login
+// (`measuredAssignee`), since a generated key's or login's five more characters change the width
+// being measured: the login's in the properties line.
 // SLOW(>=2s): 3,199 to 3,779 ms in three one-worker runs (Job e2e-rows-klnz7 at 4788afaa): two
 // roots written with 24 children and their gated documents each, a second context signed in as
 // the long login, and four loads, the header's limit measured after each.
@@ -1905,15 +1931,23 @@ test("the header holds its 1440 px limit on a root whose project gates two or th
 }) => {
   test.setTimeout(240_000);
   const projects = [
-    { logical: "TWO", steps: ["criteria", "spec"] },
-    { logical: "THREE", steps: ["decisions", "criteria", "spec"] },
+    { project: "TWO", steps: ["criteria", "spec"] },
+    { project: "THREE", steps: ["decisions", "criteria", "spec"] },
   ] as const;
+  // The project keys and their issue keys, `TWO-1`, `THREE-1` and on, must be the same text on
+  // every run, and neither the worker, which empties its database only before its first row, nor
+  // Dispatch, which deletes no project, takes away the projects an earlier run made. So the row
+  // empties the database before its seed.
+  await emptyDatabase();
   await phase(
     browser,
     async () => {
       const roots: { key: string; documents: string[]; steps: readonly string[] }[] = [];
-      for (const { logical, steps } of projects) {
-        const key = rowKey(logical);
+      for (const { project, steps } of projects) {
+        const key = fixedKey(
+          project,
+          "the header's limits hold for the text they are read over (INFRA-1196 decision 398); a generated suffix changes the width being measured"
+        );
         await createProject({ key, name: `Gates ${steps.length} steps` });
         await setGatedSteps(key, [...steps]);
         const root = await createIssue({
@@ -1944,7 +1978,7 @@ test("the header holds its 1440 px limit on a root whose project gates two or th
       return roots;
     },
     async (_alice, roots) => {
-      const login = rowPerson(LONG_LOGIN);
+      const login = measuredAssignee();
       const context = await asUser(browser, login);
       try {
         await withIssuePage(context, login);

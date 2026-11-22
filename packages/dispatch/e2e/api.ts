@@ -381,9 +381,12 @@ export type RowKey = string & { readonly rowKey: unique symbol };
 /** `key` as a key `createProject` takes, for a caller that makes its project under a fixed key on
  *  purpose: a stubbed row's seed, whose key the committed recording holds; the review corpus,
  *  seeded once into each database a worker holds; the docs pictures, which show the key; the
- *  local instance; a live proof whose project another service names (e2e/read-token-live.ts).
- *  `why` names that reason where the key is written, and a call without one throws. A real-stack
- *  row's key is `rowKey(...)`, never this. */
+ *  local instance; a live proof whose project another service names (e2e/read-token-live.ts); a
+ *  row that measures layout over text of a fixed width, since a generated key changes the width
+ *  being measured, and which empties the database before it seeds (`emptyDatabase`,
+ *  e2e/test.ts), so its key and its issue numbers are the same on every run. `why` names that
+ *  reason where the key is written, and a call without one throws. Any other real-stack row's key
+ *  is `rowKey(...)`, never this. */
 export function fixedKey(key: string, why: string): RowKey {
   if (why.trim() === "") {
     throw new Error(`fixedKey: the fixed key ${JSON.stringify(key)} must name why it is fixed`);

@@ -9,6 +9,7 @@ import {
   createIssue,
   createIssueArtifact,
   createProject,
+  fixedKey,
   patchIssue,
   type RowKey,
   userHeaders,
@@ -65,17 +66,35 @@ export function viewportAt(width: number): { readonly height: number; readonly w
 export const MEASURED_TITLE =
   "Dispatch's issue page is redesigned from design research: an ordered body and a header that fits, with nothing lost";
 
+/** The project of `seedHeader`'s issue in the rows that read the header's 390 px limit on it:
+ *  the literal key "HDR" the limit was measured on (`PHONE_TITLE`), fixed rather than a key of
+ *  the row's own (`rowKey`, e2e/test.ts). The crumbs "HDR › HDR-1 › HDR-2" share row one with
+ *  the navigation's control, so their width is part of what the limit measures, and a generated
+ *  key's five more characters change it: under a wide suffix the control takes a line of its own
+ *  and the header grows by 28 px (INFRA-1196 decision 398). A fixed key is the same text on every
+ *  run of a row, and Dispatch deletes no project, so each row that draws it empties the database
+ *  before it seeds (`emptyDatabase`, e2e/test.ts); none of those rows then finds another's
+ *  project, so all of them draw this one key. */
+export const MEASURED_KEY = fixedKey(
+  "HDR",
+  "the header's phone limits hold for a key whose crumbs fit beside the navigation control (INFRA-1196 decision 398); a generated suffix changes the width being measured"
+);
+
 /** `MEASURED_TITLE` less one word, "design", 108 characters: the title the rows that read the
- *  header's 390 px limit set (`expectHeaderWithinItsLimit`). The limit, 8 lines, was measured on
- *  the literal key "HDR", whose crumbs "HDR › HDR-1 › HDR-2" (19 characters) share row one with
- *  Details. A key of the row's own (`rowKey`, e2e/test.ts) is six characters at the least, and
- *  at 390 px its crumbs leave Details a line of its own at nearly every suffix, a one-letter
- *  logical key's included: "H….. › H…..-1 › H…..-2", 28 characters, makes row one 330 to 467 px
- *  of the 362 px it has. So the header needs a line less below it: without the word the title
- *  takes 3 lines at 390 px rather than 4, in Dispatch Inter and in both fallbacks of
- *  web/src/styles.css ("Inter fallback" and "Inter fallback DejaVu"), in every column from 341 px
- *  up. Its first line is the measured title's own, and the other two each end 5 px or more short
- *  of 362 px. */
+ *  header's 390 px limit set (`expectHeaderWithinItsLimit`). Without the word the title takes
+ *  3 lines at 390 px rather than 4, in Dispatch Inter and in both fallbacks of web/src/styles.css
+ *  ("Inter fallback" and "Inter fallback DejaVu"), in every column from 341 px up. Its first line
+ *  is the measured title's own, and the other two each end 5 px or more short of 362 px.
+ *
+ *  The limit, 8 lines and 250 px with no request waiting and 9 lines and 280 px with one, was
+ *  measured on the 20-label seed, the measured title and the literal key "HDR", whose crumbs
+ *  "HDR › HDR-1 › HDR-2" (19 characters) fit on row one beside the navigation's control. The
+ *  rows that read it on `seedHeader`'s issue draw that key (`MEASURED_KEY`), so their crumbs are
+ *  the ones it was measured on; the large gated root's row draws a fixed key of its own,
+ *  "LIKE". The word was dropped while those rows drew keys of their own (`rowKey`,
+ *  e2e/test.ts), whose crumbs took Details onto a line of its own; the rows keep the title, and
+ *  the limit stays as measured rather than grow for a key whose crumbs wrap (INFRA-1196 decision
+ *  398). */
 export const PHONE_TITLE =
   "Dispatch's issue page is redesigned from research: an ordered body and a header that fits, with nothing lost";
 
@@ -117,7 +136,8 @@ export interface HeaderSeed {
   readonly childKeys: readonly string[];
   readonly key: string;
   readonly parentKey: string;
-  /** The project the seed writes in: the row's own (`rowKey("HDR")`, e2e/test.ts), which the
+  /** The project the seed writes in: the row's own (`rowKey("HDR")`, e2e/test.ts), or the key a
+   *  row names (`MEASURED_KEY` for the rows that read the header's 390 px limit), which the
    *  header draws as text before the key. */
   readonly project: string;
   readonly specArtifactId: string;
@@ -129,7 +149,8 @@ export interface HeaderSeed {
  * it in progress, at P1, assigned to alice, with a spec and a Verification document, three
  * children (one done, one in progress, one to do) and two questions an agent asked, which wait
  * on alice. No approval request is open: a row that needs one asks for it. The project is the
- * row's own (`rowKey("HDR")`) unless a row names one.
+ * row's own (`rowKey("HDR")`) unless a row names one, as the rows that read the header's 390 px
+ * limit name `MEASURED_KEY`.
  */
 export async function seedHeader(project: RowKey = rowKey("HDR")): Promise<HeaderSeed> {
   await createProject({ key: project, name: "Header" });

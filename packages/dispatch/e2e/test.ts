@@ -6,13 +6,16 @@
  *  row makes - `rowKey`, `rowPerson`, `rowSessionId` and `rowNumber`, below - or reads a dataset
  *  the worker writes once (`deliverySettings`, `reviewCorpus`), and it takes out again what it
  *  added to a list the stack keeps whole (`ownPeople`, `ownBroadcasts`,
- *  `ownArchitectureSources`). So no row needs the database emptied before it: the worker empties
- *  it once, before its first row (`workerDatabase`, through `emptyDatabase`), for whatever a run
- *  before it left there. What the fake services hold - the fake Envoy's sessions and
- *  subscriptions, the broker's credential requests, the fake GitHub's repositories, the
- *  embedder's counts - is the row's, and no key separates it, so an automatic fixture resets the
- *  fakes before every row (`freshFakes`, through `resetFakes` in e2e/seed.ts). Both used to be a
- *  `test.beforeEach` at the top of every spec file that emptied the database and the fakes
+ *  `ownArchitectureSources`). So a row that keys its data needs no database emptied before it:
+ *  the worker empties it once, before its first row (`workerDatabase`, through `emptyDatabase`),
+ *  for whatever a run before it left there. The few rows docs/testing.md names empty it again
+ *  inside themselves, through `emptyDatabase`; among them are the rows that measure layout over
+ *  text of a fixed width (`fixedKey` in e2e/api.ts, `fixedPerson` below), whose project keys and
+ *  issue numbers must be the same on every run. What the fake services hold - the fake Envoy's
+ *  sessions and subscriptions, the broker's credential requests, the fake GitHub's repositories,
+ *  the embedder's counts - is the row's, and no key separates it, so an automatic fixture resets
+ *  the fakes before every row (`freshFakes`, through `resetFakes` in e2e/seed.ts). Both used to
+ *  be a `test.beforeEach` at the top of every spec file that emptied the database and the fakes
  *  before each row: one copy of one hook in each file, as many places to read it, and one chance
  *  to forget it in every spec written since. As fixtures they run for every row of every file
  *  that imports this `test`, so a row cannot be written without them. A file whose setup does
@@ -211,8 +214,8 @@ export function rowNumber(logical: string): number {
   return rowNumberOf(runningRow(), logical);
 }
 
-/** Every login `rowPerson` has named in the running row, which `ownPeople` deletes when the row
- *  ends. A worker runs one row at a time, so one set serves the worker. */
+/** Every login `rowPerson` and `fixedPerson` have named in the running row, which `ownPeople`
+ *  deletes when the row ends. A worker runs one row at a time, so one set serves the worker. */
 const namedPeople = new Set<string>();
 
 /** The person the running row signs in as and names for the login `logical` its spec writes, so
@@ -249,6 +252,28 @@ export function rowPerson(logical: string): string {
   return login;
 }
 
+/** `login`, a person whose login is fixed on purpose, for a row that measures what the page draws
+ *  of a login - the header's height over its assignee's name - and so needs the login that
+ *  reading was taken on rather than one of the row's own (`rowPerson`), whose five more
+ *  characters change the width being measured. `why` names that reason where the login is
+ *  written, and a call without one throws, as `fixedKey`'s does (e2e/api.ts). `login` is written
+ *  as the server records it, trimmed and lower-cased, and is neither alice nor bob: the rows sign
+ *  in as them, and only a reset re-creates them once `ownPeople` has deleted them.
+ *
+ *  The person is recorded as `rowPerson`'s is, by the row's first sign-in, and is the row's to
+ *  the end in the same way: when the row ends, pass or fail, `ownPeople` deletes its `people`
+ *  and `user_sessions` rows, so the list of everyone who has signed in reads at the next row's
+ *  start as it read at this one's. */
+export function fixedPerson(login: string, why: string): string {
+  if (why.trim() === "") {
+    throw new Error(
+      `fixedPerson: the fixed login ${JSON.stringify(login)} must name why it is fixed`
+    );
+  }
+  namedPeople.add(login);
+  return login;
+}
+
 /** A `signedIn` value that signs the default context in as the row's own person for `login`. */
 export interface OwnPerson {
   readonly own: string;
@@ -271,7 +296,7 @@ let emptied = 0;
  *  worker holds, so that every dataset the worker keeps - the delivery settings, the review
  *  corpus - is written again into it by the next row that reads one. `workerDatabase` empties
  *  through it, once, before the worker's first row, and so does a row that empties the database
- *  itself (a reset is what it is about): a reset made beside the count leaves the worker
+ *  itself (docs/testing.md names those rows): a reset made beside the count leaves the worker
  *  believing its datasets stand in a database that holds none of them, and the next delivery row
  *  reads a deployment with no delivery settings. */
 export async function emptyDatabase(): Promise<void> {
@@ -301,8 +326,8 @@ type DispatchFixtures = {
    *  emptied before its first row (`workerDatabase`). It is automatic, so no row asks for it, and
    *  it carries no value: what a row, and a fixture that names it, take from it is that it ran. */
   freshFakes: undefined;
-  /** The row's own people taken out again once it ends (`rowPerson`). It is automatic and
-   *  carries no value: its work is its teardown. */
+  /** The row's own people taken out again once it ends (`rowPerson`, `fixedPerson`). It is
+   *  automatic and carries no value: its work is its teardown. */
   ownPeople: undefined;
   /** The broadcasts the row sent taken out again once it ends. It is automatic and carries no
    *  value: its work is its teardown. */
@@ -337,11 +362,12 @@ export const test = base.extend<DispatchOptions & DispatchFixtures, DispatchWork
   signedIn: ["alice", { option: true }],
   // The worker's one emptying of its database, before its first row, for whatever a run before
   // it left there: a run of the suite against the same database, or the worker this stack served
-  // before this one. No row needs more: each makes its data under names of its own (`rowKey`,
-  // `rowPerson`, `rowSessionId`, `rowNumber`) or reads a dataset the worker keeps, and takes out
-  // again what it added to a list the stack keeps whole (`ownPeople`, `ownBroadcasts`,
-  // `ownArchitectureSources`), so it starts beside what the rows before it wrote and reads none
-  // of it.
+  // before this one. A row that keys its data needs no more: it makes its data under names of
+  // its own (`rowKey`, `rowPerson`, `rowSessionId`, `rowNumber`) or reads a dataset the worker
+  // keeps, and takes out again what it added to a list the stack keeps whole (`ownPeople`,
+  // `ownBroadcasts`, `ownArchitectureSources`), so it starts beside what the rows before it wrote
+  // and reads none of it. The few rows docs/testing.md names empty it again themselves, through
+  // `emptyDatabase`.
   workerDatabase: [
     // Playwright refuses a first argument that is not a destructuring pattern.
     // biome-ignore lint/correctness/noEmptyPattern: the emptying takes no other fixture.
@@ -364,12 +390,12 @@ export const test = base.extend<DispatchOptions & DispatchFixtures, DispatchWork
     { auto: true },
   ],
   // The teardown is the `finally` of every row that named a person of its own: the `people` row
-  // a dev sign-in records and the `user_sessions` row it starts, of every login `rowPerson`
-  // answered in the row, one statement whatever the row did with them. Rows of one worker run
-  // one at a time on that worker's own stack, so the next row starts on the people list this
-  // row started on. No foreign key reaches either table, and nothing records the person again:
-  // only a sign-in does, and the row's own contexts are closed by now (the default one by the
-  // `context` fixture, which names this one so that it is torn down first).
+  // a dev sign-in records and the `user_sessions` row it starts, of every login `rowPerson` or
+  // `fixedPerson` answered in the row, one statement whatever the row did with them. Rows of one
+  // worker run one at a time on that worker's own stack, so the next row starts on the people
+  // list this row started on. No foreign key reaches either table, and nothing records the
+  // person again: only a sign-in does, and the row's own contexts are closed by now (the default
+  // one by the `context` fixture, which names this one so that it is torn down first).
   ownPeople: [
     // biome-ignore lint/correctness/noEmptyPattern: the cleanup takes no other fixture.
     async ({}, use) => {
