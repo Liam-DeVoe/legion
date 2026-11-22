@@ -1527,11 +1527,14 @@ export const LegionActivityRequest = z.strictObject({
 
 export type LegionActivityRequestBody = z.output<typeof LegionActivityRequest>;
 
-/** `api.ReleaseRecord` — one issue pod the daemon released: the run it released, the roles whose
- * claims it suspended (sorted, as the store holds them), when the release completed, and the size
- * of the git bundle of unpushed work it saved, zero when the workspace held none. `roles` is
- * required because `read_release_records` reads it: the empty list is the whole mark of a
- * release no wake can reach, which that report counts and measures nowhere, and the daemon
+/** `api.ReleaseRecord` — one issue pod the daemon released: the run it released, the roles of the
+ * claims it suspended (each once, sorted, as the store holds them), the tokens of those claims
+ * (`claims`, sorted; contract 222), when the release completed, and the size of the git bundle of
+ * unpushed work it saved, zero when the workspace held none. Two claims of one issue can hold one
+ * role, a keyed agent's on another role's step among them, so `claims` names what `roles` cannot;
+ * it is absent on a release that suspended no claim and on one recorded before contract 222.
+ * `roles` is required because `read_release_records` reads it: the empty list is the whole mark
+ * of a release no wake can reach, which that report counts and measures nowhere, and the daemon
  * writes the list on every release, empty rather than null. `issue` is required because that
  * report reads it too: a wake a project pause held names no release, and ends the releases of its
  * issue instead. */
@@ -1540,6 +1543,7 @@ const legionReleaseRecord = z.object({
   issue: issueKey,
   generation: z.number().int().nonnegative().optional(),
   roles: z.array(nonEmptyString),
+  claims: z.array(nonEmptyString).optional(),
   at: timestamp,
   bundleBytes: z.number().int().nonnegative().optional(),
 });

@@ -1082,13 +1082,15 @@ func TestAPauseStopOfAStepsWorkerArmsItsBackstop(t *testing.T) {
 // A cancel of a release made while the project is paused records the claims the release stopped as
 // stopped by the pause, and arms the backstop of the open phase's worker as the stop transaction
 // does: at step, the claim the record gives the running step (workflow.OpenWorker), here the agent
-// of a key, and not the checker's own claim beside it.
+// of a key, and not the checker's own claim beside it. The release's mark names both claims by
+// their tokens, as its stops record them (store.ReleaseSuspendedClaim).
 func TestAPausedCancelOfAReleaseArmsTheBackstopOfTheStepsWorker(t *testing.T) {
 	r := newPauseRig(t)
-	r.atTheCheckersStep()
+	worker, other := r.atTheCheckersStep()
 	if _, err := r.pool.Exec(r.ctx, `insert into issue_releases
 		(project, issue, generation, first_row, boundary_row, last_row, started_row, role, suspended, marked_at)
-		values ('legion', $1, 2, 18, 20, 22, 0, 'architect', $2, now())`, pauseIssue, []string{string(stepPauseChecker)}); err != nil {
+		values ('legion', $1, 2, 18, 20, 22, 0, 'architect', $2, now())`, pauseIssue,
+		[]string{string(worker.Token), string(other.Token)}); err != nil {
 		t.Fatalf("mark the release of %s: %v", pauseIssue, err)
 	}
 	held := r.pauseLegion()

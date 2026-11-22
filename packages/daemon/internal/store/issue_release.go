@@ -16,9 +16,9 @@ import (
 
 // IssueReleased is one idle release of an issue's pod as its issue_release outbox row names it:
 // the run it released (the issue's generation and its tree root's) and the row, written after the
-// release's per-role stops. It is the release's counterpart to IssueClose, and differs in what it
+// release's per-claim stops. It is the release's counterpart to IssueClose, and differs in what it
 // authorizes: a close acts on an issue the workflow has taken out, a release on an issue that is
-// still in it and comes back at the next wake for one of its roles.
+// still in it and comes back at the next wake of one of its claims.
 type IssueReleased struct {
 	Issue, Tree                     string
 	IssueGeneration, TreeGeneration uint64
@@ -96,10 +96,9 @@ func (c ReleaseCause) String() string {
 }
 
 // ReleaseDecision is what the store decided about one row of a release: the act the row may
-// carry out, the cause of a cancel, the release's own id, the roles whose claims it has
-// suspended so far and the rule that decided the release. Release is the id the mark carries,
-// which the save puts on the bundle it stores, and Suspended is the set a cancel resumes and a
-// finished release records.
+// carry out, the cause of a cancel, the release's own id, the claims it has suspended so far and
+// the rule that decided the release. Release is the id the mark carries, which the save puts on
+// the bundle it stores, and Suspended is the set a cancel resumes and a finished release records.
 //
 // SuspendsNoRole is the mark's kind read back (issue_releases.kind, IdleReleaseMark): the
 // release of a pod no role can use suspends none and saves no bundle, so its rows must be able
@@ -109,8 +108,18 @@ type ReleaseDecision struct {
 	Act            ReleaseAct
 	Cause          ReleaseCause
 	Release        int64
-	Suspended      []claim.Role
+	Suspended      []ReleasedClaim
 	SuspendsNoRole bool
+}
+
+// ReleasedClaim is one claim a release's own stops suspended as `released`, as its mark records
+// it: the claim's token, and the role the claim holds as the mark is read ("" for a token the
+// record holds no claim of). Two claims can hold one role — the agent of a key works a step of
+// another role than its name, beside that role's own claim of an earlier version of the plan — so
+// the mark names each claim by its token, and the role only says what the claim was doing.
+type ReleasedClaim struct {
+	Token claim.Token
+	Role  claim.Role
 }
 
 // releaseMark is the mark one release in flight left, as every row of that release reads it.
@@ -120,9 +129,11 @@ type releaseMark struct {
 	// wake is the newest wake this pod had when the mark was written (max pod_resumes.id), so a
 	// resume row above it is a wake taken since (releaseOvertaken).
 	wake int64
-	// suspended are the roles whose claims this release's own role stops have suspended as
-	// `released`, each appended once its stop has suspended it (ReleaseSuspendedClaim).
+	// suspended are the tokens of the claims this release's own stops have suspended as
+	// `released`, each appended once its stop has suspended it (ReleaseSuspendedClaim), and roles
+	// the role each of those claims holds, in the same order ("" for a token no claim has).
 	suspended []string
+	roles     []string
 	// kind is the release rule that wrote this mark, releaseKindIdle or releaseKindUnowned: the
 	// release of a quiet pod, or the release of a pod no role can use, which suspends no role.
 	kind string
@@ -137,9 +148,11 @@ func (m releaseMark) holds(row int64) bool { return row >= m.first && row <= m.l
 // row no mark holds, which is a row of a release that is over, and otherwise the mark is the one
 // the row belongs to.
 func readReleaseMark(ctx context.Context, tx pgx.Tx, project, issue string, row int64) (mark releaseMark, held bool, err error) {
-	err = tx.QueryRow(ctx, `select id, first_row, boundary_row, last_row, started_row, wake_row, suspended, kind from issue_releases
-		where project = $1 and issue = $2`, project, issue).Scan(&mark.id, &mark.first, &mark.boundary,
-		&mark.last, &mark.started, &mark.wake, &mark.suspended, &mark.kind)
+	err = tx.QueryRow(ctx, `select m.id, m.first_row, m.boundary_row, m.last_row, m.started_row, m.wake_row, m.suspended,
+		array(select coalesce(c.role, '') from unnest(m.suspended) with ordinality t(token, n)
+			left join claims c on c.token = t.token order by t.n),
+		m.kind from issue_releases m where m.project = $1 and m.issue = $2`, project, issue).Scan(&mark.id, &mark.first,
+		&mark.boundary, &mark.last, &mark.started, &mark.wake, &mark.suspended, &mark.roles, &mark.kind)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return releaseMark{}, false, nil
 	}
@@ -152,16 +165,20 @@ func readReleaseMark(ctx context.Context, tx pgx.Tx, project, issue string, row 
 	return mark, true, nil
 }
 
-// roles is the mark's suspended set as the roles it names, in the order the stops recorded them.
-func (m releaseMark) roles() []claim.Role {
+// claims is the mark's suspended set as the claims it names, in the order the stops recorded them.
+func (m releaseMark) claims() []ReleasedClaim {
 	if len(m.suspended) == 0 {
 		return nil
 	}
-	roles := make([]claim.Role, 0, len(m.suspended))
-	for _, role := range m.suspended {
-		roles = append(roles, claim.Role(role))
+	claims := make([]ReleasedClaim, 0, len(m.suspended))
+	for i, token := range m.suspended {
+		c := ReleasedClaim{Token: claim.Token(token)}
+		if i < len(m.roles) {
+			c.Role = claim.Role(m.roles[i])
+		}
+		claims = append(claims, c)
 	}
-	return roles
+	return claims
 }
 
 // suspendsNoRole is whether this mark's release is the one that suspends no role: the release
@@ -186,7 +203,9 @@ func (m releaseMark) suspendsNoRole() bool { return m.kind == releaseKindUnowned
 //     rule refuses to release a pod in (workflow's idleStateReleasable);
 //   - a claim this release suspended that is no longer suspended as `released`: something
 //     resumed it or took its suspension over — an operator's resume, a close, a linger — which
-//     leaves no wake of its own to read.
+//     leaves no wake of its own to read. The claim is the one the mark names by its token: another
+//     claim of its role — one an earlier release left released, one that failed or retired, or
+//     one this release has yet to stop — is none of the release's set.
 //
 // A claim the release itself suspended and still holds is none of those, so the release's own
 // stops never read as work.
@@ -200,13 +219,13 @@ func releaseOvertaken(ctx context.Context, tx pgx.Tx, project, issue string, mar
 	err := tx.QueryRow(ctx, `select exists (
 		select 1 from claims where project = $1 and issue = $2
 		and (last_start_row > $3 or state not in ('ready', 'idle', 'suspended', 'failed', 'retired')
-			or (role = any($4) and not (state = 'suspended' and suspended_by = 'released'))))`,
+			or (token = any($4) and not (state = 'suspended' and suspended_by = 'released'))))`,
 		project, issue, mark.started, mark.suspended).Scan(&overtaken)
 	return overtaken, err
 }
 
-// IssueReleaseStop decides what one role stop of a release may do, and is the one place the
-// release's boundary is read. The boundary is the row that stops the first role process of the
+// IssueReleaseStop decides what one claim stop of a release may do, and is the one place the
+// release's boundary is read. The boundary is the row that stops the first claim process of the
 // pod — the release's first `release` supervise row, recorded as issue_releases.boundary_row
 // when the release was marked.
 //
@@ -229,7 +248,7 @@ func releaseOvertaken(ctx context.Context, tx pgx.Tx, project, issue string, mar
 // The mark stands through a cancel decided here: the caller carries the cancel out whole
 // (CancelIssueRelease), and a cancel that did not finish — a resume refused, the daemon stopped
 // mid-row — is read again by the row's retry, where a mark deleted ahead of the resumes would
-// have left the roles this release suspended `released` in a pod that still stands.
+// have left the claims this release suspended `released` in a pod that still stands.
 //
 // A row no mark holds — a release already cancelled or finished, or a row of an earlier release
 // still on the lane while a newer one runs — is ReleaseOver: it does nothing and cancels
@@ -245,7 +264,7 @@ func (s *Store) IssueReleaseStop(ctx context.Context, project, issue string, row
 		if err != nil || !held {
 			return err
 		}
-		decision.Release, decision.Suspended, decision.SuspendsNoRole = mark.id, mark.roles(), mark.suspendsNoRole()
+		decision.Release, decision.Suspended, decision.SuspendsNoRole = mark.id, mark.claims(), mark.suspendsNoRole()
 		overtaken, err := releaseOvertaken(ctx, tx, project, issue, mark)
 		if err != nil {
 			return err
@@ -274,16 +293,16 @@ func (s *Store) IssueReleaseStop(ctx context.Context, project, issue string, row
 	return decision, nil
 }
 
-// ReleaseSuspendedClaim records on the mark that one role stop of the release has suspended its
-// claim as `released`. The stop calls it after the suspension is made, so the set the mark
+// ReleaseSuspendedClaim records on the mark that one claim stop of the release has suspended its
+// claim, token, as `released`. The stop calls it after the suspension is made, so the set the mark
 // carries is what the release has actually done and not what it set out to do: a stop that could
 // not suspend its claim records nothing, and its row's retry suspends and records together.
 //
-// A row no mark holds records nothing, as it acts on nothing. A role already in the set is left
+// A row no mark holds records nothing, as it acts on nothing. A claim already in the set is left
 // as it is, so a row that ran twice counts once.
-func (s *Store) ReleaseSuspendedClaim(ctx context.Context, project, issue string, role claim.Role, row int64) error {
-	if project == "" || issue == "" || role == "" || row <= 0 {
-		return errors.New("recording a claim a release suspended requires its project, its issue, the role and its outbox row")
+func (s *Store) ReleaseSuspendedClaim(ctx context.Context, project, issue string, token claim.Token, row int64) error {
+	if project == "" || issue == "" || token == "" || row <= 0 {
+		return errors.New("recording a claim a release suspended requires its project, its issue, the claim's token and its outbox row")
 	}
 	err := s.Tx(ctx, func(tx pgx.Tx) error {
 		_, held, err := readReleaseMark(ctx, tx, project, issue, row)
@@ -291,11 +310,11 @@ func (s *Store) ReleaseSuspendedClaim(ctx context.Context, project, issue string
 			return err
 		}
 		_, err = tx.Exec(ctx, `update issue_releases set suspended = suspended || $3::text
-			where project = $1 and issue = $2 and not ($3 = any(suspended))`, project, issue, string(role))
+			where project = $1 and issue = $2 and not ($3 = any(suspended))`, project, issue, string(token))
 		return err
 	})
 	if err != nil {
-		return fmt.Errorf("record the %s claim %s's release suspended: %w", role, issue, err)
+		return fmt.Errorf("record the claim %s of %s the release suspended: %w", token, issue, err)
 	}
 	return nil
 }
@@ -331,7 +350,7 @@ func (s *Store) IssueReleaseSave(ctx context.Context, project, issue string, row
 			return err
 		}
 		decision.Act, decision.Release = ReleaseActs, mark.id
-		decision.Suspended, decision.SuspendsNoRole = mark.roles(), mark.suspendsNoRole()
+		decision.Suspended, decision.SuspendsNoRole = mark.claims(), mark.suspendsNoRole()
 		_, paused, err := readOpenPauseByToken(ctx, tx, project, "")
 		if err != nil {
 			return err
@@ -365,9 +384,8 @@ func (s *Store) IssueReleaseSave(ctx context.Context, project, issue string, row
 // issue's own linger, which this read missed.
 //
 // The decision carries the cause of a cancel, because a pod taken up again reads the same here
-// as it does at a role stop and a deployment's records must say so once, and the roles whose
-// claims the release suspended, which are the roles a finished release records and the claims a
-// cancel resumes.
+// as it does at a claim stop and a deployment's records must say so once, and the claims the
+// release suspended, which are the claims a finished release records and a cancel resumes.
 //
 // This is IssueSuspension's shape with its authorization inverted: a close acts only once its
 // issue has left the workflow or its tree lingers, and a release acts only while the issue is
@@ -387,7 +405,7 @@ func (s *Store) IssueRelease(ctx context.Context, project string, release IssueR
 		if err != nil || !held {
 			return err
 		}
-		decision.Release, decision.Suspended, decision.SuspendsNoRole = mark.id, mark.roles(), mark.suspendsNoRole()
+		decision.Release, decision.Suspended, decision.SuspendsNoRole = mark.id, mark.claims(), mark.suspendsNoRole()
 		decision.Act, decision.Cause = ReleaseCancel, ReleaseCauseUnauthorized
 		var issueGeneration, rootGeneration int64
 		var issuePhase, status, rootPhase, rootStatus string

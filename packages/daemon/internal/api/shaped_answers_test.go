@@ -1067,7 +1067,9 @@ func TestShapeAnswerShapesEveryAnswer(t *testing.T) {
 					t.Error("the record served at the floor carries its tree's memory group, which the reader before memoryContract refuses")
 				}
 			case AnswerReleaseRecords:
-				records := ReleaseRecordsResponse{Releases: []ReleaseRecord{}, Holds: []HoldRecord{},
+				records := ReleaseRecordsResponse{Holds: []HoldRecord{},
+					Releases: []ReleaseRecord{{ID: 101, Issue: "LEGION-208", Roles: []string{"implementer"},
+						Claims: []string{"legion-legion-legion-208-implementer", "legion-legion-legion-208-tester"}}},
 					Resumes: []ResumeRecord{{ID: 203, Issue: "LEGION-210", Kind: "pause", Pause: 7}}}
 				body, _ := shapeAnswer(AnswerReleaseRecords, records, ServingFloor, ServingFloor)
 				shaped, isRecords := body.(ReleaseRecordsResponse)
@@ -1079,6 +1081,15 @@ func TestShapeAnswerShapesEveryAnswer(t *testing.T) {
 				}
 				if records.Resumes[0].Pause != 7 {
 					t.Error("the shaping wrote the resume of the body the route built: the resumes are copied before one is written")
+				}
+				if len(shaped.Releases) != 1 || shaped.Releases[0].Claims != nil {
+					t.Errorf("the release records served at the floor carry a release's `claims`, which strandedTokenContract added: %+v", shaped.Releases)
+				}
+				if len(records.Releases[0].Claims) != 2 {
+					t.Error("the shaping wrote the release of the body the route built: the releases are copied before one is written")
+				}
+				if atOwn, _ := shapeAnswer(AnswerReleaseRecords, records, strandedTokenContract, strandedTokenContract); len(atOwn.(ReleaseRecordsResponse).Releases[0].Claims) != 2 {
+					t.Errorf("the release records served at contract %d lost a release's `claims`", strandedTokenContract)
 				}
 			case AnswerRefusal:
 				failure := Failure{Code: "GRANT_NOT_FOUND", Error: "no grant for this command"}

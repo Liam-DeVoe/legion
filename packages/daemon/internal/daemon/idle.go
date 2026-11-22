@@ -432,30 +432,36 @@ func endIdleHolds(ctx context.Context, st *store.Store, project, issue string, l
 	}
 }
 
-// recordPodRelease writes the record of one completed release: the run it released, the roles
-// whose claims it suspended as released, the moment it completed, and the size of the bundle of
-// unpushed work it saved — zero when the workspace held none. It is called from the teardown
-// (releaseIssue), the one place both the bundle and the fact that the release finished are known.
+// recordPodRelease writes the record of one completed release: the run it released, the claims
+// it suspended as released and the roles those claims held, the moment it completed, and the
+// size of the bundle of unpushed work it saved — zero when the workspace held none. It is called
+// from the teardown (releaseIssue), the one place both the bundle and the fact that the release
+// finished are known.
 //
-// The roles are the ones this release's own stops suspended, as its mark recorded them
-// (store.ReleaseSuspendedClaim), and never every released claim of the issue: a claim an earlier
-// release left `released` and no wake has brought back is still released now, and counting it
-// here would charge this release with a role it never touched and the hours that role's pod was
-// gone a second time.
+// The claims are the ones this release's own stops suspended, as its mark recorded them by their
+// tokens (store.ReleaseSuspendedClaim), and never every released claim of the issue: a claim an
+// earlier release left `released` and no wake has brought back is still released now, and
+// counting it here would charge this release with a claim it never touched and the hours that
+// claim's pod was gone a second time. Two claims of one role are two claims and one role.
 //
 // A record that cannot be written is logged: the pod is already released, and nothing undoes
 // that for want of a row.
-func (r *outbox) recordPodRelease(ctx context.Context, issue string, generation uint64, suspended []claim.Role, bundleBytes int) {
+func (r *outbox) recordPodRelease(ctx context.Context, issue string, generation uint64, suspended []store.ReleasedClaim, bundleBytes int) {
 	if r.supervisor == nil || r.supervisor.store == nil {
 		return
 	}
 	roles := make([]string, 0, len(suspended))
-	for _, role := range suspended {
-		roles = append(roles, string(role))
+	claims := make([]string, 0, len(suspended))
+	for _, c := range suspended {
+		if c.Role != "" && !slices.Contains(roles, string(c.Role)) {
+			roles = append(roles, string(c.Role))
+		}
+		claims = append(claims, string(c.Token))
 	}
 	slices.Sort(roles)
+	slices.Sort(claims)
 	if _, err := r.supervisor.store.RecordPodRelease(ctx, store.PodRelease{
-		Project: r.project, Issue: issue, Generation: generation, Roles: roles,
+		Project: r.project, Issue: issue, Generation: generation, Roles: roles, Claims: claims,
 		At: time.Now().UTC(), BundleBytes: bundleBytes,
 	}); err != nil {
 		r.log.Warn("outbox: could not record an issue pod's release", "issue", issue, "error", err)

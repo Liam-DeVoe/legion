@@ -608,16 +608,17 @@ type releasedRole struct {
 	serving    uint64
 }
 
-// stillReleasedClaims are the claims of the roles in suspended that are still suspended as
-// `released`, each by its token, in token order. Two claims can hold one role — a keyed agent on a
-// step of another role, beside that role's own claim from an earlier version of the plan — and
-// each is a claim of its own to resume.
+// stillReleasedClaims are the claims among suspended, the tokens of the claims a release's own
+// stops suspended (issue_releases.suspended), that are still suspended as `released`, in token
+// order. Two claims can hold one role — a keyed agent on a step of another role, beside that
+// role's own claim from an earlier version of the plan — and only the ones the release suspended
+// are its to resume: another claim of the role an earlier release left released is not.
 func stillReleasedClaims(ctx context.Context, tx pgx.Tx, project, issue string, suspended []string) ([]releasedRole, error) {
 	if len(suspended) == 0 {
 		return nil, nil
 	}
 	rows, err := tx.Query(ctx, `select token, tree, role, generation, serving_generation from claims where project = $1 and issue = $2
-		and role = any($3) and state = 'suspended' and suspended_by = 'released' order by token`,
+		and token = any($3) and state = 'suspended' and suspended_by = 'released' order by token`,
 		project, issue, suspended)
 	if err != nil {
 		return nil, err

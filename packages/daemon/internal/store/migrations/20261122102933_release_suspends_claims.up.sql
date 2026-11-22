@@ -1,0 +1,45 @@
+-- 20261122102933_release_suspends_claims.up.sql — a release's mark and its record name the claims
+-- it suspended by their tokens, not by their roles.
+--
+-- issue_releases.suspended (20261102170500) held the roles whose claims the release's own stops
+-- suspended as `released`. Two claims can hold one role of an issue: the agent of a key works a
+-- step of another role than its name, beside that role's own claim of an earlier version of the
+-- plan. A set of roles then named claims the release never suspended, and three decisions read it
+-- wrong: the stop of the second claim of a role read the first, which this release had suspended,
+-- as "a claim this release suspended that is no longer suspended as `released`"; it read the
+-- second the same way, as did the teardown a failed or retired claim of the role, so the release
+-- was cancelled and the pod kept at every idle period (store.releaseOvertaken); and a cancel
+-- resumed every released claim of the role, a claim an earlier release left released among them
+-- (store.stillReleasedClaims).
+--
+-- suspended now holds the token of each claim the release's own stops suspended, appended by each
+-- stop once its claim is suspended (store.ReleaseSuspendedClaim), and the reads above match a
+-- claim by its token. A mark in flight names roles; it is rewritten to the token of every claim of
+-- the issue that holds one of those roles, which is the set those reads matched before, so a mark
+-- written by the release before decides as it would have.
+--
+-- pod_releases.claims is the tokens of the claims the release suspended, joined by commas as
+-- pod_releases.roles joins the roles, which it keeps: the roles of those claims, each once. The
+-- record of a release the release before wrote names no claim, the empty string.
+--
+-- The release before names each column it reads and writes, so it never reads pod_releases.claims
+-- and writes it at its default. It does read issue_releases.suspended as roles.
+--
+-- There is no down file. This directory keeps none — migrations here are forward-only and no
+-- .down.sql file exists — so the way back is the one transaction that closes this header, its last
+-- paragraph (migrations.WayBack), run with this release's daemon stopped and before the release
+-- before starts, through psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1. It writes each mark in flight
+-- back as the roles of the claims it names, each once, in the order the stops recorded them, since
+-- the release before reads the set as roles; drops pod_releases.claims; and deletes this
+-- migration's version row, which is what makes the version the store reports that release's own
+-- again, and is owed to the roll-forward, which then runs this file again. What the way back costs
+-- is the claims each record named, which the roles it keeps stand for.
+--
+-- begin;
+-- update issue_releases m set suspended = coalesce((select array_agg(r.role order by r.first) from (select c.role, min(t.n) as first from unnest(m.suspended) with ordinality t(token, n) join claims c on c.token = t.token group by c.role) r), '{}');
+-- alter table pod_releases drop column if exists claims;
+-- delete from schema_version where version = 20261122102933;
+-- commit;
+update issue_releases m set suspended = coalesce((select array_agg(c.token order by c.token)
+  from claims c where c.project = m.project and c.issue = m.issue and c.role = any(m.suspended)), '{}');
+alter table pod_releases add column claims text not null default '';

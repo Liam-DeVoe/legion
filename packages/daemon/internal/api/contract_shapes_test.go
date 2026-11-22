@@ -584,11 +584,13 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 		// The release-records golden's own value (TestReleaseRecordsResponseGolden), built
 		// through releaseRecordsBody from the store's rows as the route builds it. Its third
 		// resume is a wake a project pause held, the one resume that carries `pause` (contract
-		// 178), which the record of every contract below 178 describes no key of.
+		// 178), which the record of every contract below 178 describes no key of. Its first
+		// release names the claims it suspended (`claims`, contract 222).
 		AnswerReleaseRecords: {roots: typesOf(ReleaseRecordsResponse{}), bodies: []any{releaseRecordsBody(store.PodReleaseRecords{
 			Releases: []store.PodRelease{
 				{ID: 101, Issue: "LEGION-208", Generation: 3, Roles: []string{"implementer", "tester"},
-					At: released, BundleBytes: 4096},
+					Claims: []string{"legion-legion-legion-208-implementer", "legion-legion-legion-208-tester"},
+					At:     released, BundleBytes: 4096},
 				{ID: 102, Issue: "LEGION-209", Generation: 1, At: released.Add(15 * time.Minute)},
 			},
 			Resumes: []store.PodResume{

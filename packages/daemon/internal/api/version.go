@@ -3112,8 +3112,13 @@ package api
 // each takes the move its own suspender calls for. A caller whose contract is below 222 is served
 // each stranded claim without the key (one band of shaping.go at `strandedTokenContract`): a
 // plugin before INFRA-1048 reads a stranded claim as a strict object and would refuse the whole
-// state over it. From this entry the last number of answers.go's SupportedContracts is
-// `api.strandedTokenContract`, and `deploymentRolesContract` stays 221.
+// state over it. A release of `POST /legion/v1/claims/release-records` names the tokens of the
+// claims it suspended in a new key, `releases.*.claims` (api.ReleaseRecord), absent on a release
+// that suspended none and on one recorded before this release: a release's mark matches the claims
+// it suspended by their tokens, so two claims of one role are two claims, and `roles` names each
+// role once. A caller below 222 is served each release without it (withoutRecordClaims). From this
+// entry the last number of answers.go's SupportedContracts is `api.strandedTokenContract`, and
+// `deploymentRolesContract` stays 221.
 // (This entry takes 222, the lowest number above the base's 221 (the entry above) that no other
 // open pull request declared: a reading of `const DaemonAPIVersion` at refs/pull/<n>/head, by the
 // contract check's own reader (declared_by_open_pull_requests), of each of the 428 open pull

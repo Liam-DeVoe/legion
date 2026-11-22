@@ -419,13 +419,17 @@ func (s *server) activity(w http.ResponseWriter, r *http.Request) {
 }
 
 // ReleaseRecord is one release of an issue pod as a reader of the records sees it: the run it
-// released, the roles whose claims it suspended, when it completed, and how many bytes of
-// unpushed work it saved as a bundle (zero when the workspace held none).
+// released, the roles of the claims it suspended, each once, the tokens of those claims, when it
+// completed, and how many bytes of unpushed work it saved as a bundle (zero when the workspace
+// held none). Two claims of one issue can hold one role, so `claims` names what `roles` cannot.
+// `claims` is absent on a release that suspended no claim, on a record the release before
+// 20261122102933 wrote, and below contract 222 (withoutRecordClaims).
 type ReleaseRecord struct {
 	ID          int64    `json:"id"`
 	Issue       string   `json:"issue"`
 	Generation  uint64   `json:"generation"`
 	Roles       []string `json:"roles"`
+	Claims      []string `json:"claims,omitempty"`
 	At          string   `json:"at"`
 	BundleBytes int      `json:"bundleBytes"`
 }
@@ -552,7 +556,8 @@ func releaseRecordsBody(records store.PodReleaseRecords) ReleaseRecordsResponse 
 			roles = []string{}
 		}
 		body.Releases = append(body.Releases, ReleaseRecord{ID: release.ID, Issue: release.Issue,
-			Generation: release.Generation, Roles: roles, At: recordedAt(release.At), BundleBytes: release.BundleBytes})
+			Generation: release.Generation, Roles: roles, Claims: release.Claims, At: recordedAt(release.At),
+			BundleBytes: release.BundleBytes})
 	}
 	for _, resume := range records.Resumes {
 		body.Resumes = append(body.Resumes, ResumeRecord{ID: resume.ID, Release: resume.Release, Issue: resume.Issue,

@@ -31669,6 +31669,8 @@
       "releases.*",
       "releases.*.at",
       "releases.*.bundleBytes",
+      "releases.*.claims",
+      "releases.*.claims.*",
       "releases.*.generation",
       "releases.*.id",
       "releases.*.issue",

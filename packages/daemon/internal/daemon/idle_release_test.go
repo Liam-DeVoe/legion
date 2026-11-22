@@ -962,3 +962,121 @@ func TestACancelOfAnIssueThatLeftTheWorkflowLetsItsCloseDeleteTheSandbox(t *test
 			got.State, got.SuspendedBy)
 	}
 }
+
+// implementerOfAnotherAgent seeds and restores a second claim of the implementer's role on the
+// rig's issue: the claim of the agent named agent, in state, suspended by by where it is
+// suspended, as quiet as the rest of the pod. Two claims can hold one role: the agent of a key
+// works a step of another role than its name, beside that role's own claim of an earlier version
+// of the plan. A live one gets a locator of its own, as a launch gives it.
+func (r *idleRig) implementerOfAnotherAgent(t *testing.T, agent claim.Agent, state supervise.ClaimState, by supervise.SuspendSource) *supervise.Machine {
+	t.Helper()
+	ctx := context.Background()
+	token, err := claim.AgentToken("legion", r.issue.Key, agent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored := supervise.Claim{Token: token, Project: "legion", Tree: r.issue.Tree, Issue: r.issue.Key,
+		Role: claim.RoleImplementer, TreeEpoch: 1, Generation: 1, ServingGeneration: 1, State: state, SuspendedBy: by,
+		Session: "ses-" + string(agent), SessionFile: "/tmp/" + string(agent) + ".jsonl", PluginContract: api.DaemonAPIVersion}
+	if state == supervise.StateIdle {
+		locator, err := r.rt.Spawn(ctx, runtime.SpawnSpec{Claim: token, Role: claim.RoleImplementer})
+		if err != nil {
+			t.Fatalf("mint a locator: %v", err)
+		}
+		stored.Locator = &locator
+	}
+	if err := r.st.PutClaim(ctx, stored); err != nil {
+		t.Fatalf("seed the claim of %s: %v", agent, err)
+	}
+	if _, err := r.sup.restore(ctx, []supervise.Claim{stored}); err != nil {
+		t.Fatalf("restore the claim of %s: %v", agent, err)
+	}
+	if _, err := r.pool.Exec(ctx, `update claims set updated_at = now() - interval '30 minutes',
+		activity_at = now() - interval '25 minutes', activity_background = false,
+		activity_kinds = '', activity_next_reminder_at = null where token = $1`, string(token)); err != nil {
+		t.Fatalf("backdate the claim of %s: %v", agent, err)
+	}
+	machine, ok := r.sup.Machine(token)
+	if !ok {
+		t.Fatalf("no machine for %s", token)
+	}
+	return machine
+}
+
+// A release keeps the claims its own stops suspended by their tokens, not by their roles. Two
+// claims of one role in one pod are two claims: the stop of the second must not read the first,
+// which this release suspended, as a claim of the release's set that something woke; a failed
+// claim of the role is not one the release suspended at all; and a cancel resumes the claim its
+// release suspended and leaves the claim of the same role that an earlier release left released.
+func TestAReleaseKeepsTheClaimsItSuspendedByTheirTokens(t *testing.T) {
+	t.Run("two idle claims of one role are both released and the pod is taken", func(t *testing.T) {
+		rig := newIdleRig(t)
+		ctx := context.Background()
+		other := rig.implementerOfAnotherAgent(t, "tester", supervise.StateIdle, "")
+
+		queued := rig.queuedBy(t, func() { rig.w.releaseIdlePod(ctx, rig.issue.Key) })
+		if want := []string{"issue_bundle", "supervise:release", "supervise:release", "issue_release"}; !slices.Equal(queued, want) {
+			t.Fatalf("queued rows = %v, want the save, one stop for each live claim and the teardown", queued)
+		}
+		rig.drain(t)
+
+		for _, m := range []*supervise.Machine{rig.machine, other} {
+			if got := m.Claim(); !got.Released() {
+				t.Fatalf("the claim %s after the release = %s by %s, want it released: the stop of one claim of the role read the other as woken",
+					got.Token, got.State, got.SuspendedBy)
+			}
+		}
+		if _, suspended := rig.rt.reads(); suspended != 1 {
+			t.Fatalf("Sandbox teardowns = %d, want the release's one", suspended)
+		}
+		records := rig.records(t)
+		if len(records.Releases) != 1 {
+			t.Fatalf("releases recorded = %+v, want the one", records.Releases)
+		}
+		wantClaims := []string{string(rig.token), string(other.Claim().Token)}
+		slices.Sort(wantClaims)
+		if got := records.Releases[0]; !slices.Equal(got.Claims, wantClaims) || !slices.Equal(got.Roles, []string{"implementer"}) {
+			t.Fatalf("the release recorded claims %v and roles %v, want claims %v and the implementer's role once", got.Claims, got.Roles, wantClaims)
+		}
+	})
+	t.Run("a failed claim of the role does not cancel the release", func(t *testing.T) {
+		rig := newIdleRig(t)
+		ctx := context.Background()
+		rig.implementerOfAnotherAgent(t, "tester", supervise.StateFailed, "")
+
+		rig.w.releaseIdlePod(ctx, rig.issue.Key)
+		rig.drain(t)
+
+		if got := rig.machine.Claim(); !got.Released() {
+			t.Fatalf("the implementer after the release = %s by %s, want it released: a failed claim of its role is no claim the release suspended",
+				got.State, got.SuspendedBy)
+		}
+		if _, suspended := rig.rt.reads(); suspended != 1 {
+			t.Fatalf("Sandbox teardowns = %d, want the release's one", suspended)
+		}
+	})
+	t.Run("a cancel leaves the claim of the role an earlier release left released", func(t *testing.T) {
+		rig := newIdleRig(t)
+		ctx := context.Background()
+		earlier := rig.implementerOfAnotherAgent(t, "tester", supervise.StateSuspended, supervise.SuspendedByReleased)
+
+		queued := rig.queuedBy(t, func() { rig.w.releaseIdlePod(ctx, rig.issue.Key) })
+		if want := []string{"issue_bundle", "supervise:release", "issue_release"}; !slices.Equal(queued, want) {
+			t.Fatalf("queued rows = %v, want the save, the live implementer's stop and the teardown", queued)
+		}
+		rig.rt.beforeAuthorize = func() {
+			if _, err := rig.pool.Exec(ctx, `update issues set generation = 2 where key = $1`, rig.issue.Key); err != nil {
+				t.Errorf("move the issue's generation on: %v", err)
+			}
+		}
+		rig.drain(t)
+
+		if got := earlier.Claim(); !got.Released() {
+			t.Fatalf("the claim an earlier release left released = %s by %s, want it left released: this release never suspended it",
+				got.State, got.SuspendedBy)
+		}
+		if got := rig.machine.Claim(); got.State == supervise.StateSuspended {
+			t.Fatalf("the implementer = %s by %s, want the claim this release suspended resumed", got.State, got.SuspendedBy)
+		}
+	})
+}

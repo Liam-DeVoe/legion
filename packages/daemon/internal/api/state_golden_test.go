@@ -1535,11 +1535,11 @@ func TestReadyForUpdateRequestGolden(t *testing.T) {
 // project's records — so the rows carry only what is served.
 //
 // Two rows of each list, because one row of each pins less than the shape, and a third resume:
-//   - the releases are a release that suspended two roles and saved a bundle, and one whose
-//     stops suspended no claim and whose workspace held nothing unpushed (recordPodRelease
-//     counts only the claims this release's own stops suspended, and the store reads an empty
-//     `roles` column back as none): `roles` is `[]` and never `null`, and `bundleBytes` is 0
-//     rather than absent;
+//   - the releases are a release that suspended two claims of two roles, named in `claims`, and
+//     saved a bundle, and one whose stops suspended no claim and whose workspace held nothing
+//     unpushed (recordPodRelease counts only the claims this release's own stops suspended, and
+//     the store reads an empty `roles` column back as none): `roles` is `[]` and never `null`,
+//     `claims` is absent, and `bundleBytes` is 0 rather than absent;
 //   - the resumes are a wake whose pod was Ready and whose role took its first turn, which is
 //     the row that fills both optional stamps, and a wake of a pod with no release row recorded
 //     for it (`release` is 0) that went ten minutes with no turn, so it is `stuck` and its
@@ -1554,7 +1554,8 @@ func TestReleaseRecordsResponseGolden(t *testing.T) {
 	golden(t, "release-records.json", releaseRecordsBody(store.PodReleaseRecords{
 		Releases: []store.PodRelease{
 			{ID: 101, Issue: "LEGION-208", Generation: 3, Roles: []string{"implementer", "tester"},
-				At: released, BundleBytes: 4096},
+				Claims: []string{"legion-legion-legion-208-implementer", "legion-legion-legion-208-tester"},
+				At:     released, BundleBytes: 4096},
 			{ID: 102, Issue: "LEGION-209", Generation: 1, At: released.Add(15 * time.Minute)},
 		},
 		Resumes: []store.PodResume{

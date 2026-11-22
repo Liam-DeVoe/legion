@@ -210,7 +210,7 @@ type outboxTrees interface {
 	IssueRelease(ctx context.Context, project string, release store.IssueReleased, outOfWorkflow func(status string) bool) (store.ReleaseDecision, error)
 	IssueReleaseStop(ctx context.Context, project, issue string, row int64) (store.ReleaseDecision, error)
 	IssueReleaseSave(ctx context.Context, project, issue string, row int64) (store.ReleaseDecision, error)
-	ReleaseSuspendedClaim(ctx context.Context, project, issue string, role claim.Role, row int64) error
+	ReleaseSuspendedClaim(ctx context.Context, project, issue string, token claim.Token, row int64) error
 	CancelIssueRelease(ctx context.Context, project, issue string, resume store.ReleaseResumeRow, outOfWorkflow func(status string) bool,
 		paused store.ReleaseCancelPause) (store.ReleaseCancelled, error)
 	ClearIssueRelease(ctx context.Context, project, issue string) error
@@ -2929,12 +2929,13 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		if err := machine.Handle(ctx, supervise.RequestSuspend{Claim: token, Reason: payload.Reason, By: supervise.SuspendedByReleased}); err != nil {
 			return fmt.Errorf("release claim %s: %w", token, err)
 		}
-		// The claim is suspended as `released`, so the release's mark records it: it is that set
-		// the cancel resumes, the teardown records as the release's roles, and a later row reads
-		// to tell a claim this release suspended that something resumed since from one still in
-		// the pod (store.ReleaseSuspendedClaim). The row returns its error rather than swallowing
-		// it, so a retry suspends and records together.
-		return r.trees.ReleaseSuspendedClaim(ctx, r.project, row.Issue, payload.Role, row.ID)
+		// The claim is suspended as `released`, so the release's mark records it by its token: it
+		// is that set the cancel resumes, the teardown records as the release's claims, and a later
+		// row reads to tell a claim this release suspended that something resumed since from one
+		// still in the pod (store.ReleaseSuspendedClaim). Another claim of the same role is not in
+		// it. The row returns its error rather than swallowing it, so a retry suspends and records
+		// together.
+		return r.trees.ReleaseSuspendedClaim(ctx, r.project, row.Issue, token, row.ID)
 	case "issue_close":
 		// A child's close as done: the claim is closed as a tree close closes it, retired with its
 		// session kept, since the issue is finished and its next run, should a person set it todo
