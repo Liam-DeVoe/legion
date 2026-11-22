@@ -24,6 +24,7 @@ func TestAFormerHeadTheInstallSeededOutlastsAReadGitHubDidNotAnswer(t *testing.T
 			rig := newCheckStatesRig(t, checkStatesTwoChecks)
 			eachHeadResult(t, rig.handler, rig.issue, "k1", "tester", "pass", eachHeadH1)
 			upsertHead(t, rig, 70, eachHeadH2, rig.issue, "A change")
+			forgetCandidates(t, rig)
 			settleOwed(t, rig)
 			rig.github.setPullCommits(70, eachHeadH1, eachHeadH2)
 			seedInstallCandidates(t, rig, eachHeadH1)

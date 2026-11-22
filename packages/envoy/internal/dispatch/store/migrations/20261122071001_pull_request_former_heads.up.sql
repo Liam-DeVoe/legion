@@ -33,12 +33,13 @@
 --                              left on stopping is taken over once its time has passed.
 --
 -- pull_request_former_heads_keep() keeps it from the writes of pull_request_heads, in each
--- writer's own transaction, by an update trigger and a delete trigger. There is no insert trigger:
--- a new row has left no head yet. The update trigger fires only where the key, head_sha or state
--- moved: every writer of the row names each column in its `do update set` on each write, a
--- read-through included. So a head is kept whether or not a settle ran while the pull request was
--- there, every writer is covered, a write of the release before this one too, and a writer a later
--- change adds is covered with no code of its own.
+-- writer's own transaction, by an update trigger and a delete trigger. It has no insert trigger: a
+-- new row has left no head yet (the candidates a new row starts with are below). The update
+-- trigger fires only where the key, head_sha or state moved: every writer of the row names each
+-- column in its `do update set` on each write, a read-through included. So a head is kept whether
+-- or not a settle ran while the pull request was there, every writer is covered, a write of the
+-- release before this one too, and a writer a later change adds is covered with no code of its
+-- own.
 --
 -- A delete of an open row whose repository the canonical rule names otherwise (the expression of
 -- refs.CanonicalRepoSQL, over repo_projects.renamed_to) is the re-key of a pull request stored
@@ -86,16 +87,40 @@
 -- at the settler's first pass. A head left before this release with no result at it is not known,
 -- and needs no state.
 --
--- The same holds for a result recorded after this release at such a head: no trigger saw the
--- pull request leave it, and the pull request now names another head. So
--- pull_request_former_heads_of_result(), an insert trigger on each result table, leaves the
--- result's commit as a candidate of each open pull request of the issue whose settle reads the
--- result, other than one at that commit, where the pull request holds no row of the commit yet,
--- and marks that issue owed when it left one; the settler confirms it as it confirms the seed's.
--- A head an open pull request left since this release already holds its row, verified, so a
--- result there leaves nothing to read. The seed and the trigger draw from one population, the
--- results of the issue's Verification document, so a result is a candidate whether it was
--- committed before the install, while it ran, or after it.
+-- The same holds for a result recorded after this release at such a head, and for a head an open
+-- pull request left while Dispatch held no open row of it at the issue: no trigger saw the pull
+-- request leave it, and the pull request now names another head. Dispatch's intake of GitHub's
+-- webhooks can be off, and then the read-through of a result's commit writes a pull request's row
+-- at GitHub's head after the result's own transaction, so a pull request first written at its
+-- issue after a result at a head it already left is the common case, not a rare one. So a commit
+-- of the population above, the results of an issue's Verification document, is a candidate of
+-- each open pull request of that issue at another commit whenever either side is written:
+--   - pull_request_former_heads_of_result(), an insert trigger on each result table, leaves the
+--     result's commit as a candidate of each open pull request of the issue whose settle reads the
+--     result (pull_request_former_heads_reader);
+--   - pull_request_former_heads_begin(), an insert and an update trigger on pull_request_heads,
+--     leaves each commit of that issue's population (pull_request_former_heads_population) as a
+--     candidate of a row that starts an open lifecycle at an issue: an open row inserted, a row
+--     reopened, a row keyed anew, and an open row that moves to another issue;
+--   - the install leaves the same for each open row, by the same function.
+-- Each leaves its candidates by pull_request_former_heads_leave(), unverified, where the pull
+-- request holds no row of the commit yet, and marks the issue owed where it left one; the settler
+-- confirms them as it confirms the install's. A head an open pull request left since this release
+-- already holds its row, verified, so a result there leaves nothing to read. The three draw from
+-- one population through those functions, so they cannot drift apart, and a result is a candidate
+-- whether it was committed before the install, while it ran, or after it, and whichever of the
+-- result and the row was written first.
+--
+-- A result written while a row starts at its issue in another transaction would be missed by
+-- both: each trigger reads before the other's write commits. So each takes the issue's lock
+-- (pull_request_former_heads_issue_lock) before it reads: a result's trigger shared, since two
+-- results need not wait for each other, and a row's exclusive, held to the commit, so whichever
+-- comes second reads what the first wrote. A firing takes the issue's lock before any pull
+-- request's lock, and pull_request_former_heads_begin's triggers are named to fire before
+-- pull_request_former_heads_keep's, so the write of one row takes the two in the order a result
+-- takes them. A transaction that writes several rows, as a change of an issue's links does
+-- (delivery.LinksChanged), takes them row by row, and can meet a result in a deadlock, which
+-- Postgres breaks by refusing one of them, as that writer's own comment says of its row locks.
 --
 -- One transaction: the tables, the functions, the triggers and the seed commit together, and the
 -- install holds the three tables they read and watch from the lock below to its commit: a writer
@@ -224,46 +249,110 @@ begin
   return null;
 end $$;
 
+-- The issue whose settle reads the results recorded against a check of a document: the issue
+-- the document is the Verification document of, by the role predicate the server reads it by
+-- (above), and null for any other document. The one statement of that rule here: the population
+-- below and the result's trigger both read it.
+create function pull_request_former_heads_reader(uuid) returns text language sql stable as $$
+  select document.issue_key from artifacts document
+  where document.id = $1
+    and (document.role = 'verification' or (document.role is null and document.issue_key is not null and document.slug = 'verification-md'))
+$$;
+
+-- The population of an issue's candidates: each distinct commit of a result, a role's or a CI
+-- job's, whose document's results the settle of the issue reads (pull_request_former_heads_reader),
+-- whichever issue recorded it.
+create function pull_request_former_heads_population(text) returns setof text language sql stable as $$
+  select result.commit_sha from artifacts document
+  join check_results result on result.check_artifact_id = document.id
+  where document.issue_key = $1 and pull_request_former_heads_reader(document.id) = $1
+  union
+  select result.commit_sha from artifacts document
+  join ci_check_results result on result.check_artifact_id = document.id
+  where document.issue_key = $1 and pull_request_former_heads_reader(document.id) = $1
+$$;
+
+-- The lock of an issue's candidates to the end of the transaction, shared where the second
+-- argument is false and exclusive where it is true: a row's start at the issue reads the issue's
+-- population under it exclusive, and a result's trigger reads the issue's open rows under it
+-- shared (above).
+create function pull_request_former_heads_issue_lock(text, boolean) returns void language plpgsql as $$
+begin
+  if $2 then
+    perform pg_advisory_xact_lock(hashtext('pull-request-former-heads-issue'), hashtext($1));
+  else
+    perform pg_advisory_xact_lock_shared(hashtext('pull-request-former-heads-issue'), hashtext($1));
+  end if;
+end $$;
+
+-- Leaves each of the commits given as a candidate of the row (repo, number) where that row is
+-- open at the issue given and at another commit, unverified, under the pull request's lock, where
+-- the pull request holds no row of the commit yet, and marks the issue owed where it left one;
+-- answers whether it did. The row is read under the lock, so a close of the pull request either
+-- comes first, when the row is closed and takes nothing, or after, when it drops what this left.
+create function pull_request_former_heads_leave(text, integer, text, text[]) returns boolean language plpgsql as $$
+declare
+  left_one boolean;
+begin
+  perform pull_request_former_heads_lock($1, $2);
+  insert into pull_request_former_heads (repo, number, head_sha, verified)
+  select head.repo, head.number, candidate.commit_sha, false
+  from pull_request_heads head cross join unnest($4) as candidate (commit_sha)
+  where head.repo = $1 and head.number = $2 and head.issue_key = $3 and head.state = 'open'
+    and candidate.commit_sha <> head.head_sha
+  on conflict (repo, number, head_sha) do nothing;
+  left_one := found;
+  if left_one then
+    perform check_states_owe($3);
+  end if;
+  return left_one;
+end $$;
+
 -- A result recorded, a role's or a CI job's: its commit is a candidate of each open pull request
--- of the issue whose settle reads it, the issue of the Verification document its check is a block
--- of, where that pull request is at another commit and holds no row of this one; that issue is
--- marked owed where one was left (above). Each pull request's candidate is written under its lock,
--- the locks taken in the order of their keys, so two results of one issue wait for each other in
--- one order, and a close of the pull request either comes first, when the row read under the lock
--- is closed and takes nothing, or after, when it drops what the result left.
+-- of the issue whose settle reads it, where that pull request is at another commit. The issue's
+-- lock, shared, comes before the read of its open rows, and the pull requests' locks after it, in
+-- the order of their keys, so two results of one issue take them in one order.
 create function pull_request_former_heads_of_result() returns trigger language plpgsql as $$
 declare
-  owner text;
+  owner text := pull_request_former_heads_reader(new.check_artifact_id);
   pull record;
-  left_one boolean := false;
 begin
-  select document.issue_key into owner from artifacts document
-  where document.id = new.check_artifact_id
-    and (document.role = 'verification' or (document.role is null and document.issue_key is not null and document.slug = 'verification-md'));
   if owner is null then
     return null;
   end if;
+  perform pull_request_former_heads_issue_lock(owner, false);
   for pull in
     select head.repo, head.number from pull_request_heads head
     where head.issue_key = owner and head.state = 'open' and head.head_sha <> new.commit_sha
     order by hashtext(lower(pull_request_canonical_repo(head.repo)) || '#' || head.number), head.repo, head.number
   loop
-    perform pull_request_former_heads_lock(pull.repo, pull.number);
-    insert into pull_request_former_heads (repo, number, head_sha, verified)
-    select head.repo, head.number, new.commit_sha, false from pull_request_heads head
-    where head.repo = pull.repo and head.number = pull.number and head.issue_key = owner
-      and head.state = 'open' and head.head_sha <> new.commit_sha
-    on conflict (repo, number, head_sha) do nothing;
-    left_one := left_one or found;
+    perform pull_request_former_heads_leave(pull.repo, pull.number, owner, array[new.commit_sha]);
   end loop;
-  if left_one then
-    perform check_states_owe(owner);
-  end if;
+  return null;
+end $$;
+
+-- A row that starts an open lifecycle at an issue (its triggers' when says which): each commit of
+-- the issue's population is a candidate of it, read under the issue's lock, exclusive.
+create function pull_request_former_heads_begin() returns trigger language plpgsql as $$
+begin
+  perform pull_request_former_heads_issue_lock(new.issue_key, true);
+  perform pull_request_former_heads_leave(new.repo, new.number, new.issue_key,
+    array(select pull_request_former_heads_population(new.issue_key)));
   return null;
 end $$;
 
 lock table pull_request_heads, check_results, ci_check_results in share row exclusive mode;
 
+-- The begin triggers fire before the keep triggers of the same write, as Postgres fires a table's
+-- triggers of one event in the order of their names, so a write takes the issue's lock before the
+-- pull request's (above).
+create trigger pull_request_former_heads_begin_insert after insert on pull_request_heads
+  for each row when (new.state = 'open' and new.issue_key is not null)
+  execute function pull_request_former_heads_begin();
+create trigger pull_request_former_heads_begin_update after update on pull_request_heads
+  for each row when (new.state = 'open' and new.issue_key is not null and (old.state <> 'open'
+    or (old.repo, old.number) is distinct from (new.repo, new.number) or old.issue_key is distinct from new.issue_key))
+  execute function pull_request_former_heads_begin();
 create trigger pull_request_former_heads_keep_update after update on pull_request_heads
   for each row when ((old.repo, old.number, old.head_sha, old.state) is distinct from (new.repo, new.number, new.head_sha, new.state))
   execute function pull_request_former_heads_keep();
@@ -274,21 +363,9 @@ create trigger pull_request_former_heads_of_check_results after insert on check_
 create trigger pull_request_former_heads_of_ci_check_results after insert on ci_check_results
   for each row execute function pull_request_former_heads_of_result();
 
-insert into pull_request_former_heads (repo, number, head_sha, verified)
-select distinct head.repo, head.number, result.commit_sha, false
+-- The seed: each open row attributed to an issue starts with the issue's population, by the
+-- function its insert trigger calls.
+select pull_request_former_heads_leave(head.repo, head.number, head.issue_key,
+  array(select pull_request_former_heads_population(head.issue_key)))
 from pull_request_heads head
-join artifacts document on document.issue_key = head.issue_key
-  and (document.role = 'verification' or (document.role is null and document.issue_key is not null and document.slug = 'verification-md'))
-join (
-  select check_artifact_id, commit_sha from check_results
-  union
-  select check_artifact_id, commit_sha from ci_check_results
-) result on result.check_artifact_id = document.id
-where head.state = 'open' and result.commit_sha <> head.head_sha;
-
-select check_states_owe(owed.issue_key)
-from (
-  select distinct head.issue_key from pull_request_heads head
-  join pull_request_former_heads former on former.repo = head.repo and former.number = head.number
-  where head.state = 'open' and not former.verified
-) owed;
+where head.state = 'open' and head.issue_key is not null;

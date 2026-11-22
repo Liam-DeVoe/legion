@@ -30,6 +30,20 @@ func seedInstallCandidates(t *testing.T, rig *checkStatesRig, shas ...string) {
 	}
 }
 
+// forgetCandidates deletes every row pull_request_former_heads holds for #70 of the rig's
+// repository, so the database holds there what the release before the install left: that release
+// kept no former head. A test of the install's seed writes #70's row after its results, and this
+// release answers that write with candidates of its own (pull_request_former_heads_begin), which
+// the release before never wrote; the test calls this right after that write, before any settle,
+// and then writes the install's candidates with seedInstallCandidates.
+func forgetCandidates(t *testing.T, rig *checkStatesRig) {
+	t.Helper()
+	if _, err := rig.database.Pool.Exec(context.Background(), `
+		delete from pull_request_former_heads where repo = $1 and number = 70`, ciJobRepository); err != nil {
+		t.Fatalf("delete #70's former heads: %v", err)
+	}
+}
+
 // candidatesOf is each former head the rig's #70 holds, by commit, and whether it is verified.
 func candidatesOf(t *testing.T, rig *checkStatesRig) map[string]bool {
 	t.Helper()
@@ -62,6 +76,7 @@ func TestAFormerHeadTheInstallSeededIsPublishedOnceItsPullRequestListsIt(t *test
 	eachHeadResult(t, rig.handler, rig.issue, "k1", "tester", "pass", eachHeadH1)
 	eachHeadResult(t, rig.handler, rig.issue, "k2", "tester", "pass", eachHeadH3)
 	upsertHead(t, rig, 70, eachHeadH2, rig.issue, "A change")
+	forgetCandidates(t, rig)
 	settleOwed(t, rig)
 	if _, held := publishedRow(t, rig.database, rig.issue, ciJobRepository, eachHeadH1, "k1"); held {
 		t.Fatal("k1 is published at H1 before the install, which nothing recorded #70 left")
@@ -102,6 +117,7 @@ func TestAFormerHeadTheInstallSeededWaitsForAReadOfItsPullRequestThatFailed(t *t
 	rig := newCheckStatesRig(t, checkStatesTwoChecks)
 	eachHeadResult(t, rig.handler, rig.issue, "k1", "tester", "pass", eachHeadH1)
 	upsertHead(t, rig, 70, eachHeadH2, rig.issue, "A change")
+	forgetCandidates(t, rig)
 	settleOwed(t, rig)
 	rig.github.setPullCommits(70, eachHeadH1, eachHeadH2)
 	rig.github.failPullCommits(http.StatusBadGateway)
@@ -163,6 +179,7 @@ func TestAFormerHeadPastTheCommitsGitHubListsIsKeptByItsComparisons(t *testing.T
 		fmt.Sprintf("%040x", 0xd0001), fmt.Sprintf("%040x", 0xe0001)
 	eachHeadResult(t, rig.handler, rig.issue, "k1", "tester", "pass", h1)
 	upsertHead(t, rig, 70, h2, rig.issue, "A change")
+	forgetCandidates(t, rig)
 	settleOwed(t, rig)
 	rig.github.setPullCommits(70, commits...)
 	rig.github.setPull(70, h2, "main")
@@ -292,5 +309,56 @@ func TestOnePullRequestsCommitsAreReadOnceWhileItMovesToAnotherIssue(t *testing.
 	}
 	if reads := rig.github.pullCommitReadsOf(70); reads != 1 {
 		t.Fatalf("#70's commits were read %d times in all, want once", reads)
+	}
+}
+
+// TestAResultBeforeItsPullRequestStartsAtTheIssueIsACandidate: the tester records k1 passing at
+// H1 for the issue while no open row of #70 is the issue's, so no trigger leaves H1 to #70: no
+// row of #70 exists yet, or #70's row is another issue's, or #70's row is closed. GitHub has moved
+// #70 on to H2 meanwhile, and Dispatch then writes #70's row at H2: its first write, as the
+// read-through of the result's commit writes it after the result's transaction; a write that
+// moves #70 to the issue; or a write that reopens #70. No trigger saw #70 leave H1, so the write
+// itself leaves H1 as a candidate, unverified, as the install does, and marks the issue owed:
+// once the read of #70's commits lists H1, k1 is published yes there.
+func TestAResultBeforeItsPullRequestStartsAtTheIssueIsACandidate(t *testing.T) {
+	for _, row := range []struct {
+		name   string
+		before func(t *testing.T, rig *checkStatesRig)
+	}{
+		{"the row is written for the first time", func(*testing.T, *checkStatesRig) {}},
+		{"the pull request moves to the issue", func(t *testing.T, rig *checkStatesRig) {
+			upsertHead(t, rig, 70, eachHeadH2, rig.fileIssue(t, "Where the pull request starts"), "A change")
+		}},
+		{"the pull request reopens", func(t *testing.T, rig *checkStatesRig) {
+			upsertHead(t, rig, 70, eachHeadH3, rig.issue, "A change")
+			writeHead(t, rig.database, ciJobRepository, 70, eachHeadH3, "closed", rig.issue)
+		}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			rig := newCheckStatesRig(t, checkStatesTwoChecks)
+			row.before(t, rig)
+			settleOwed(t, rig)
+			eachHeadResult(t, rig.handler, rig.issue, "k1", "tester", "pass", eachHeadH1)
+			settleOwed(t, rig)
+			if got := candidatesOf(t, rig); len(got) != 0 {
+				t.Fatalf("#70 holds the former heads %v before its row is the issue's and open, want none", got)
+			}
+			rig.github.setPullCommits(70, eachHeadH1, eachHeadH2)
+			upsertHead(t, rig, 70, eachHeadH2, rig.issue, "A change")
+			if got, want := candidatesOf(t, rig), map[string]bool{eachHeadH1: false}; !maps.Equal(got, want) {
+				t.Fatalf("#70 holds the former heads %v once its row is the issue's and open at H2, want %v: H1, where a result the issue's settle reads was recorded, a candidate no read has confirmed yet", got, want)
+			}
+			settleOwed(t, rig)
+			if got := candidatesOf(t, rig); len(got) != 1 || !got[eachHeadH1] {
+				t.Fatalf("#70 holds the former heads %v after the settle, want H1, verified", got)
+			}
+			if row, held := publishedRow(t, rig.database, rig.issue, ciJobRepository, eachHeadH1, "k1"); !held || row.state == nil ||
+				*row.state != model.PassStandsYes {
+				t.Fatalf("k1 at H1, which #70 left before its row was the issue's, is published as %s, want yes", publishedLine(row))
+			}
+			if reads := rig.github.pullCommitReadsOf(70); reads != 1 {
+				t.Fatalf("the settle read #70's commits %d times, want once", reads)
+			}
+		})
 	}
 }
