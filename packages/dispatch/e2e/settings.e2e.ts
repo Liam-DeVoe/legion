@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-import { routePath } from "../web/src/api/paths";
+import { type Result, routePath } from "../web/src/api/paths";
 import { QUERY_RETRY_DELAY_MS } from "../web/src/api/query-client";
 import {
   baseUrl,
@@ -176,7 +176,7 @@ test("a late answer to a default repository save does not undo a default another
       async (response) =>
         response.request().method() === "GET" &&
         new URL(response.url()).pathname === "/api/v1/projects" &&
-        ((await response.json()) as { default_repo?: string; key: string }[]).some(
+        ((await response.json()) as Result<"/api/v1/projects", "get">).some(
           (project) => project.key === coreKey && project.default_repo === "acme/widgets"
         )
     );
