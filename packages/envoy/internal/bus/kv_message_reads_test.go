@@ -104,3 +104,80 @@ func TestAClientWithStreamMessageReadsReadsAndCreatesWithNoDirectGet(t *testing.
 		t.Fatalf("the plain client's Get(%s) drew no direct get on the wire, so the reading cannot see one", key)
 	}
 }
+
+// A handle given its caller's context (Within) sends its writes through the jetstream handle, and
+// on a client with stream message reads it creates without a direct get as well: Create over a
+// delete marker and over a live value through Within read the marker with a stream message get
+// (boundCreate), where nats.go's jetstream Create would read it with a direct get. The control is a
+// plain client's bound Create over a marker, which sends one.
+func TestABoundCreateOnAClientWithStreamMessageReadsSendsNoDirectGet(t *testing.T) {
+	const bucket = "kv_message_reads_bound"
+	const key = "ses_bound"
+	stream := "KV_" + bucket
+	uri := testnats.URL(t)
+	client, err := Connect([]string{uri}, WithStreamMessageReads())
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(client.Close)
+	js, err := client.Conn.JetStream()
+	if err != nil {
+		t.Fatalf("jetstream: %v", err)
+	}
+	kv, err := EnsureKeyValue(t.Context(), client.Conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.MemoryStorage})
+	if err != nil {
+		t.Fatalf("create bucket %s: %v", bucket, err)
+	}
+	t.Cleanup(func() { _ = js.DeleteKeyValue(bucket) })
+	bound := kv.Within(t.Context())
+
+	watcher, err := Connect([]string{uri})
+	if err != nil {
+		t.Fatalf("connect the second connection: %v", err)
+	}
+	t.Cleanup(watcher.Close)
+	directGets, err := watcher.Conn.SubscribeSync("$JS.API.DIRECT.GET.>")
+	if err != nil {
+		t.Fatalf("subscribe to the direct gets: %v", err)
+	}
+	if err := watcher.Conn.Flush(); err != nil {
+		t.Fatalf("flush the subscription: %v", err)
+	}
+
+	if _, err := bound.Put(key, []byte("live")); err != nil {
+		t.Fatalf("put %s: %v", key, err)
+	}
+	if err := bound.Delete(key); err != nil {
+		t.Fatalf("delete %s: %v", key, err)
+	}
+	if _, err := bound.Create(key, []byte("again")); err != nil {
+		t.Fatalf("a bound Create(%s) over its delete marker: %v", key, err)
+	}
+	if entry, err := kv.Get(key); err != nil || string(entry.Value()) != "again" {
+		t.Fatalf("Get(%s) after the bound Create = %v, %v; want %q", key, entry, err, "again")
+	}
+	if _, err := bound.Create(key, []byte("third")); !errors.Is(err, nats.ErrKeyExists) || !IsCASConflict(err) {
+		t.Fatalf("a bound Create(%s) over a live value answered %v, want nats.ErrKeyExists", key, err)
+	}
+	if sent := requestFor(t, directGets, stream, noRequestFor); sent != nil {
+		t.Fatalf("the bound Create of the client that reads with stream message gets sent the direct get %s", sent.Subject)
+	}
+
+	other, err := watcher.Conn.JetStream()
+	if err != nil {
+		t.Fatalf("jetstream: %v", err)
+	}
+	plain, err := OpenKeyValue(t.Context(), watcher.Conn, other, bucket)
+	if err != nil {
+		t.Fatalf("open %s on the second connection: %v", bucket, err)
+	}
+	if err := plain.Delete(key); err != nil {
+		t.Fatalf("the plain client's delete of %s: %v", key, err)
+	}
+	if _, err := plain.Within(t.Context()).Create(key, []byte("plain")); err != nil {
+		t.Fatalf("the plain client's bound Create(%s) over its delete marker: %v", key, err)
+	}
+	if requestFor(t, directGets, stream, noRequestFor*10) == nil {
+		t.Fatalf("the plain client's bound Create(%s) drew no direct get on the wire, so the reading cannot see one", key)
+	}
+}

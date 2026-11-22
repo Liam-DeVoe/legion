@@ -632,8 +632,35 @@ func (kv KeyValue) Create(key string, value []byte) (uint64, error) {
 	}
 	revision, err := writtenOn(kv, kv.keySubjects(key),
 		func() (uint64, error) { return kv.legacy.Create(key, value) },
-		func(ctx context.Context) (uint64, error) { return kv.watch.Create(ctx, key, value) })
+		func(ctx context.Context) (uint64, error) { return kv.boundCreate(ctx, key, value) })
 	return revision, invalidKey(key, err)
+}
+
+// boundCreate is Create through the jetstream handle under ctx (writtenOn). nats.go's jetstream
+// Create reads the key with a direct get after a write it refused, to tell a delete marker from a
+// live value, and a client that reads with stream message gets (WithStreamMessageReads, an edge
+// listener) sends no direct get: its grant holds none. So a handle whose legacy reads are stream
+// message gets creates as streamMessageReads.Create does, its writes through the jetstream handle
+// under ctx and its read of a marker a stream message get; every other handle takes nats.go's.
+func (kv KeyValue) boundCreate(ctx context.Context, key string, value []byte) (uint64, error) {
+	reads, ok := kv.legacy.(streamMessageReads)
+	if !ok {
+		return kv.watch.Create(ctx, key, value)
+	}
+	revision, err := kv.watch.Update(ctx, key, value, 0)
+	if err == nil {
+		return revision, nil
+	}
+	if _, marker, readErr := reads.read(key, 0); readErr == nil || errors.Is(readErr, nats.ErrKeyNotFound) {
+		if marker > 0 {
+			return kv.watch.Update(ctx, key, value, marker)
+		}
+	}
+	var apiErr *jetstream.APIError
+	if errors.As(err, &apiErr) && (apiErr.ErrorCode == jetstream.JSErrCodeStreamWrongLastSequence || apiErr.ErrorCode == jetstream.JSErrCodeStreamWrongLastSequenceConstant) {
+		return 0, fmt.Errorf("%w: %w", err, jetstream.ErrKeyExists)
+	}
+	return 0, err
 }
 
 func (kv KeyValue) Update(key string, value []byte, last uint64) (uint64, error) {
