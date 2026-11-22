@@ -3070,8 +3070,8 @@ package api
 // on down `stateNarrowings`. 178's band and this one touch no key of each other's, and the bands
 // of 193 and 202 stand between them, so a caller at 202 through 213 is served the pause, the keys
 // 193 added and the repositories block 202 writes, and none of this entry's keys and words (a
-// caller that states 203 to 213 is served the nearest recorded contract below it, 202's or 205's,
-// and 205's records are 202's under its own number, as 205's entry says), a
+// caller that states 203 to 213 is served the nearest recorded contract at or below it, 202's or
+// 205's, and 205's records are 202's under its own number, as 205's entry says), a
 // caller at 193 through 201 the pause, 193's keys and the block in 152's shape (one that states
 // 194 to 198 is served 193's shape and one that states 199 to 201 199's, and 199's is 193's, since
 // 199 moves no shape of an answer a plugin parses), a caller at 178 through 192 the pause and the

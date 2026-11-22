@@ -50,13 +50,13 @@ func childCycleSentences(open []record.OpenChild) string {
 func ChildrenFirstNotice(wait record.ChildWait) record.Notice {
 	reason := fmt.Sprintf("%[1]s starts no phase of its own while Dispatch shows an open child under it: %[2]s. "+
 		"Each one must be released and run until it leaves the workflow, closed, moved to icebox, or moved out from under %[1]s to an issue outside its tree or to no parent; %[1]s starts its own first phase when the last of them has. "+
-		"A child you released and a child you did not release leave by the same status write. %[3]s "+
+		"%[3]s "+
 		"A released child, a held one included, stays under %[1]s, because this wait ends when that child leaves the workflow. "+
 		"Move out from under %[1]s, to no parent, only a child you have not released and that should not run now, and never under another issue of this tree: an open child holds every phase start of the issue it stands under. "+
 		"After the move, have the person on your tree's root asked when that child's work should run or stop: "+
 		"the root's architect asks with dispatch ask, and a child's architect sends the question to the architect above it. "+
 		"When they say to run it, move it back under %[1]s and release it; when they say to stop it, close it, or move it to icebox under the rule when they say its work should wait, citing their answer. "+
 		"Until they answer, sign off neither %[1]s nor any issue above it that you accept.",
-		wait.Parent, openChildNames(wait.Open), record.EndChildRule)
+		wait.Parent, openChildNames(wait.Open), childrenLeave)
 	return record.Notice{Kind: ChildrenFirstNoticeKind, Role: claim.RoleArchitect, Reason: reason + childCycleSentences(wait.Open)}
 }

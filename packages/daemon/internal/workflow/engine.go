@@ -2116,11 +2116,19 @@ func endChildrenFirst(hold string) string {
 	return endChildWords + " When a child can neither finish nor take one of these moves, ask the person. Hold the " + hold + " until they answer."
 }
 
-// endChildWords is how each refusal and notice over children still in the workflow ends: the
-// sentence on a status the daemon has not taken yet, then the rules for ending a child
-// (record.StatusNotTakenYet, record.EndChildRule). endChildrenFirst, waitingForTree and the
-// architect's WAITING_ON_CHILDREN refusal (waitingRefusal) each end with it.
+// endChildWords is how the refusals over children still in the workflow and the pr-merged notice
+// end: the sentence on a status the daemon has not taken yet, then the rules for ending a child
+// (record.StatusNotTakenYet, record.EndChildRule). endChildrenFirst (sign_off's and close_root's
+// refusals, acceptanceRefusals), the architect's WAITING_ON_CHILDREN refusal (waitingRefusal) and
+// waitingForTree each end with it. The two notices over open children, the awaiting-children and
+// the children-first notice, end a child by the rules alone (childrenLeave).
 const endChildWords = record.StatusNotTakenYet + " " + record.EndChildRule
+
+// childrenLeave is what the awaiting-children notice (awaitingChildrenNotice) and the
+// children-first notice (ChildrenFirstNotice) say of ending a child: a released child and an
+// unreleased one leave by the architect's own status write, by the rules for ending a child
+// (record.EndChildRule).
+const childrenLeave = "A child you released and a child you did not release leave by the same status write. " + record.EndChildRule
 
 // The three holds on an issue's acceptance (signOff) and on a root's close (closeRoot) after the
 // work under it, by their refusal codes, in the order the daemon answers them when more than one
