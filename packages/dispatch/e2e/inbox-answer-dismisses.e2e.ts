@@ -257,6 +257,8 @@ async function selectWithKeys(page: Page, id: string): Promise<void> {
   const ids = await inboxList(page)
     .locator("[data-inbox-row]")
     .evaluateAll((rows) => rows.map((drawn) => drawn.getAttribute("data-inbox-row")));
+  // The selection was read settled on one row by the line above, and the keys move it only
+  // after this read, so one instant's answer is the row the moves start from.
   const from = ids.indexOf(await selectedRow(page).getAttribute("data-inbox-row"));
   const to = ids.indexOf(id);
   expect(to, `${id} among the rows ${ids.join(", ")}`).toBeGreaterThanOrEqual(0);
@@ -268,6 +270,8 @@ async function selectWithKeys(page: Page, id: string): Promise<void> {
 
 /** Presses Tab from where the focus is until `target` holds it. */
 async function tabTo(page: Page, target: Locator, what: string): Promise<void> {
+  // Each read follows a key press whose focus move the browser makes before the press resolves,
+  // and the line after the loop reads the focus again and fails with its holder.
   for (let pressed = 0; pressed < 40 && !(await holdsFocus(target)); pressed += 1) {
     await page.keyboard.press("Tab");
   }
@@ -386,6 +390,9 @@ test("the focus after an own Send goes to the column's own stop", async ({ brows
     const scrollBefore = await page.evaluate(() => window.scrollY);
     await page.keyboard.press("Enter");
     await expectHeldWithTheFocus(page, send, "the answer's Send");
+    // The answer's response is held for these two seconds: Send must stay held, with the focus on
+    // it, for the whole time its write is out, and two seconds is longer than any redraw or
+    // focus hand-off the page makes on its own.
     await page.waitForTimeout(2_000);
     await expectHeldWithTheFocus(page, send, "the answer's Send");
     answerHeld.resolve();
@@ -418,7 +425,11 @@ test("the focus after an own Send goes to the column's own stop", async ({ brows
     await expect(row(page, replyRowId(other))).toHaveCount(0);
     await frameAndTask(page);
     await expectHeldWithTheFocus(page, replySend, "the reply box's Send");
+    // The reply's response is held for these two seconds: Send must stay held, with the focus on
+    // it, for the whole time its write is out, and two seconds is longer than any redraw or
+    // focus hand-off the page makes on its own.
     await page.waitForTimeout(2_000);
+    await expectHeldWithTheFocus(page, replySend, "the reply box's Send");
     replyHeld.resolve();
 
     await expect(row(page, replyRowId(thread))).toHaveCount(0);
