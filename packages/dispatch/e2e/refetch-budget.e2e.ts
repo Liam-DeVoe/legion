@@ -344,6 +344,13 @@ function summaryReads(gets: readonly string[], issues: readonly { key: string }[
   return gets.filter((get) => paths.has(get)).sort();
 }
 
+/** The reads a page sends on timers of its own, which no write causes: the Inbox's credential
+ *  list (`web/src/features/credentials/pending.ts`) and the agent registry
+ *  (`web/src/features/refs/agent-registry.ts`), each asked again every 15 s of the page's clock
+ *  while the page holds it. A window that spans a tick holds one: two runs of the status writes
+ *  row counted one against the move to done, the credential list once and the registry once. */
+const TIMED_READS: readonly string[] = ["/api/v1/credential-requests", "/api/v1/agents"];
+
 /** GETs under `/api/` the first load of the citing page sends: 70 on chromium at the commit
  *  before INFRA-4009 (df87c903eb89) and 70 at INFRA-4009's head, one run each - the 50 summaries
  *  and the 20 reads the page and its shell send whatever the message cites. */
@@ -408,14 +415,6 @@ test("status writes: moving and closing a cited issue each send no more reads th
   try {
     const page = await alice.newPage();
     const traffic = watchTraffic(page);
-    // The Inbox's credential list asks the broker again every 15 s once it holds a list
-    // (`web/src/features/credentials/pending.ts`): a page timer no write causes, which can land in
-    // any window below and was once counted against the move to done. Its read is answered as a
-    // Dispatch with no secrets broker answers it, `null`, which the page reads once and never
-    // polls, so the poll stands still and each window holds only what its writes cause.
-    await page.route("**/api/v1/credential-requests?approver=me", (route) =>
-      route.fulfill({ body: "null", contentType: "application/json" })
-    );
     // The scheduler's trailing window is fired on this clock rather than waited out.
     await page.clock.install();
     await page.goto(`/issues/${source.key}/conversation`);
@@ -427,13 +426,14 @@ test("status writes: moving and closing a cited issue each send no more reads th
     await drainRefreshWindow(page, traffic);
     const named = (words: string, title: string) =>
       turns.getByRole("link", { exact: true, name: `${cited.key}, ${words}, ${title}` });
-    /** The GETs `write` sends, from its first write until the window it leaves is drained.
-     *  `write` waits for what it changes to show, which only its last event can bring. */
+    /** The GETs `write` sends, from its first write until the window it leaves is drained, but
+     *  for the page's own timed reads (`TIMED_READS`, by path). `write` waits for what it
+     *  changes to show, which only its last event can bring. */
     const windowOf = async (write: () => Promise<void>): Promise<string[]> => {
       traffic.reset();
       await write();
       await drainRefreshWindow(page, traffic);
-      return [...traffic.gets];
+      return traffic.gets.filter((get) => !TIMED_READS.includes(get.split("?")[0] ?? get));
     };
     const issueReads = (gets: readonly string[]) =>
       gets.filter((get) => get.startsWith("/api/v1/issues/"));
