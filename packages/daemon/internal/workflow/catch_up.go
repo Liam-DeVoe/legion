@@ -152,7 +152,7 @@ func QueueCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []re
 		reason = fmt.Sprintf("the tree of %s at generation %d as the daemon records it now; start or resume it as your role says", issue.Key, issue.Generation)
 	}
 	if len(awaiting) > 0 {
-		reason += fmt.Sprintf("; in accepting: %s (where its task holds acceptance:owner, the acceptance is yours and no worker gives it: read the evidence, then sign_off or request_backward_move; a step acceptance with no key is its fresh agent's)", strings.Join(awaiting, ", "))
+		reason += fmt.Sprintf("; in accepting, waiting for your acceptance, which no worker gives: %s (read the evidence, then sign_off or request_backward_move)", strings.Join(awaiting, ", "))
 	}
 	if ownStep != "" {
 		reason += fmt.Sprintf("; at a step of yours, which no worker does: %s at %s (do it as its owner-step notice says, then report it with complete_step)", issue.Key, ownStep)

@@ -13,11 +13,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// ownersAcceptanceWords is what the catch-up says after the keys of the issues waiting in accepting
-// for the architect's acceptance.
-const ownersAcceptanceWords = "(where its task holds acceptance:owner, the acceptance is yours and no worker gives it: read the evidence, " +
-	"then sign_off or request_backward_move; a step acceptance with no key is its fresh agent's)"
-
 // The start a step's record names at accepting (startAgent: admission's promotion of a member and
 // the boot's open of a run no start counted read it) is the owner's architect only where the
 // acceptance is the owner's own step: for `acceptance:owner` the tree's architect, which owns the
@@ -110,7 +105,7 @@ func TestACatchUpNamesOnlyTheChildrenWhoseAcceptanceIsTheOwners(t *testing.T) {
 	}
 	claimReady(t, pool, testEngine(config.DesignGateRootIssues, nil), root.Key, claim.RoleArchitect, 1)
 	const want = "the tree of LEGION-1 at generation 1 as the daemon records it now; start or resume it as your role says" +
-		"; in accepting: LEGION-3 " + ownersAcceptanceWords
+		"; in accepting, waiting for your acceptance, which no worker gives: LEGION-3 (read the evidence, then sign_off or request_backward_move)"
 	if got := catchUps(t, pool); len(got) != 1 || !strings.HasSuffix(got[0], " reason="+want) {
 		t.Fatalf("catch-ups %v; want one whose reason is %q", got, want)
 	}
@@ -134,7 +129,7 @@ func TestACatchUpNamesTheOwnersOwnStepWhereverItStands(t *testing.T) {
 	}{
 		{"the fresh agent's acceptance", phase.Accepting, 3, []string{"implementer", "reviewer", "acceptance"}, base},
 		{"the owner's acceptance", phase.Accepting, 3, []string{"implementer", "reviewer", "acceptance:owner"},
-			base + "; in accepting: LEGION-208 " + ownersAcceptanceWords},
+			base + "; in accepting, waiting for your acceptance, which no worker gives: LEGION-208 (read the evidence, then sign_off or request_backward_move)"},
 		{"the owner's implementer step", phase.Implementing, 1, []string{"implementer:owner", "reviewer"},
 			base + "; at a step of yours, which no worker does: LEGION-208 at step 1 (implementer) of task a (do it as its owner-step notice says, then report it with complete_step)"},
 		{"another agent's implementer step", phase.Implementing, 1, []string{"implementer", "reviewer:owner"}, base},
