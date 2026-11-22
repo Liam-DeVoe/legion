@@ -500,7 +500,7 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
     task: {
       type: "string",
       description:
-        "stop_task's task: the id of its plan_task block in the plan Legion runs for the issue, default for the project's default steps",
+        "stop_task's task: the id of its plan_task block in the plan Legion runs for the issue, default for the project's default steps. sign_off, retry_or_escalate and request_backward_move take it too, naming the task of the plan the call is of where two or more tasks stand at that act",
     },
     to: {
       type: "string",
@@ -825,6 +825,61 @@ test("retry_or_escalate takes a reason", async () => {
   expect(calls).toHaveLength(before);
 });
 
+// Contract 224: where two or more tasks of the issue's plan stand at the act a call answers, the
+// architect names the task with `task`: sign_off's task at accepting, and retry_or_escalate's held
+// task. The tool carries it to the daemon as given, a call that names none carries no key at all,
+// so the one task at the act is the daemon's to read, and a blank one is refused before the grant
+// is minted.
+test("sign_off and retry_or_escalate send the task they name", async () => {
+  const { calls, daemon } = recordingDaemon({});
+  const run = async (parameters: Record<string, unknown>) =>
+    createLegionTool({
+      pi,
+      daemon,
+      controllerGrant: noControllerGrant,
+      onPhaseCompleted: () => undefined,
+      onUpdateAnswered: () => undefined,
+      handoffReport: noHandoffReport,
+      branchHead: noBranchHead,
+      resolveDocument: noDocumentLookup,
+      session: () => claimSession("architect"),
+    }).execute("", parameters, undefined, undefined, context());
+
+  await expect(run({ op: "sign_off", issue: "LEGION-208", task: "a" })).resolves.toMatchObject({
+    details: {},
+  });
+  expect(calls.at(-1)).toEqual([
+    "signOff",
+    { grantId: "grant-208", issue: "LEGION-208", task: "a" },
+  ]);
+  await expect(
+    run({ op: "retry_or_escalate", issue: "LEGION-208", decision: "retry", task: "b" })
+  ).resolves.toMatchObject({ details: {} });
+  expect(calls.at(-1)).toEqual([
+    "phaseRetry",
+    { grantId: "grant-208", issue: "LEGION-208", decision: "retry", task: "b" },
+  ]);
+  await expect(run({ op: "sign_off", issue: "LEGION-208" })).resolves.toMatchObject({
+    details: {},
+  });
+  expect(calls.at(-1)).toEqual(["signOff", { grantId: "grant-208", issue: "LEGION-208" }]);
+
+  const before = calls.length;
+  for (const [parameters, text] of [
+    [{ op: "sign_off", issue: "LEGION-208", task: " " }, "sign_off requires task"],
+    [
+      { op: "retry_or_escalate", issue: "LEGION-208", decision: "escalate", task: "" },
+      "retry_or_escalate requires task",
+    ],
+  ] as const) {
+    await expect(run(parameters)).resolves.toMatchObject({
+      isError: true,
+      content: [{ type: "text", text }],
+    });
+  }
+  expect(calls).toHaveLength(before);
+});
+
 // Architects sent a child operation a `reason`, as close_root and request_backward_move take one,
 // and were told only that the field is refused: five refusals over four days of architect
 // sessions, each sent again without it and its why lost. The daemon keeps no why for a rerun, so a
@@ -852,7 +907,7 @@ test("rerun_child refuses a reason before any grant, naming issue and the dispat
     // Every field the operation does not take is named, as a phase op's refusal names them.
     [
       { op: "sign_off", issue: "LEGION-208", reason: "approved", note: "x" },
-      'sign_off does not accept field "reason"; sign_off does not accept field "note"; it takes issue',
+      'sign_off does not accept field "reason"; sign_off does not accept field "note"; it takes issue, task',
     ],
     [
       { op: "release_children", issues: ["LEGION-209"], reason: "wave 2" },

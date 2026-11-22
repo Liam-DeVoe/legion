@@ -110,8 +110,8 @@ const OPERATION_FIELDS: Readonly<Record<string, readonly string[]>> = {
   register_plan: ["issue", "artifactId", "version"],
   stop_task: ["issue", "task"],
   release_children: ["issues"],
-  retry_or_escalate: ["issue", "decision", "reason"],
-  sign_off: ["issue"],
+  retry_or_escalate: ["issue", "decision", "reason", "task"],
+  sign_off: ["issue", "task"],
   close_root: ["issue", "reason"],
   rerun_child: ["issue"],
   read_build: [],
@@ -376,7 +376,7 @@ function toolSchema(pi: PiApi): unknown {
     task: z
       .string()
       .describe(
-        "stop_task's task: the id of its plan_task block in the plan Legion runs for the issue, default for the project's default steps"
+        "stop_task's task: the id of its plan_task block in the plan Legion runs for the issue, default for the project's default steps. sign_off, retry_or_escalate and request_backward_move take it too, naming the task of the plan the call is of where two or more tasks stand at that act"
       )
       .optional(),
     to: phaseOp.to,
@@ -419,6 +419,18 @@ function requiredString(
   if (typeof value !== "string" || value.trim() === "")
     throw new Error(`${operation} requires ${name}`);
   return value;
+}
+
+/** The task of the issue's plan an owner's call names (contract 224), `{}` where it names none:
+ * the daemon reads the one task at the act the call answers, and answers TASK_REQUIRED where two
+ * or more stand there. One named is passed on as given; a blank one is refused before any grant. */
+function namedTask(
+  parameters: Record<string, unknown>,
+  operation: string
+): { readonly task?: string } {
+  return parameters.task === undefined
+    ? {}
+    : { task: requiredString(parameters, operation, "task") };
 }
 
 /** Refuses every field `operation` does not take, in the phase ops' wording
@@ -834,21 +846,25 @@ export function createLegionTool(deps: {
               parameters.reason === undefined
                 ? {}
                 : { reason: requiredString(parameters, operation, "reason") };
+            const task = namedTask(parameters, operation);
             const grantId = await mintClaimGrant(client, active);
             await client.phaseRetry({
               grantId,
               issue: requiredString(parameters, operation, "issue"),
               decision,
               ...reason,
+              ...task,
             });
             return jsonSuccess({});
           }
           case "sign_off": {
             // A repeat after a sign-off that landed finds the issue in retro and changes nothing.
             const issue = requiredString(parameters, operation, "issue");
+            const task = namedTask(parameters, operation);
             await retryWhileDaemonRestarts(
               "sign_off",
-              async () => client.signOff({ grantId: await mintClaimGrant(client, active), issue }),
+              async () =>
+                client.signOff({ grantId: await mintClaimGrant(client, active), issue, ...task }),
               restart
             );
             return jsonSuccess({});

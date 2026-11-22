@@ -141,6 +141,10 @@ function returnTo(op: "handoff_complete" | "request_backward_move") {
   return z.number({ error }).int({ error }).min(1, { error });
 }
 
+/** The refusal of a `task` on `request_backward_move` that is no task id: not a string, or blank. */
+const BACKWARD_TASK_REFUSAL =
+  "request_backward_move's task is the id of a task of the issue's plan, as a is";
+
 /** The refusal of the fields `refused` that `op` does not take: each named, then once the fields
  * `op` takes (`takes`), so the agent's next call can be right. The one wording every `legion`
  * tool refuses an unknown field in, a phase op's and pi-legion's own operations' alike. */
@@ -236,6 +240,14 @@ export const PhaseOpArguments = z.discriminatedUnion(
       // The step the move returns to, by its place in the task: the daemon takes the place and
       // refuses a `to` that is not the phase that step runs as.
       return_to: returnTo("request_backward_move").optional(),
+      // The task of the issue's plan the move is of (contract 224): an architect names the task it
+      // returns from accepting where two or more stand there, and a phase worker may name the task
+      // of its own step. The daemon judges it (TASK_REQUIRED, TASK_NOT_AT_PHASE, TASK_NOT_GRANTS);
+      // a blank one is refused here.
+      task: z
+        .string({ error: BACKWARD_TASK_REFUSAL })
+        .refine((value) => value.trim() !== "", { error: BACKWARD_TASK_REFUSAL })
+        .optional(),
     }),
     // The signal carries one field of the agent's: the round its update message named, which the
     // daemon takes the answer for and no other. The claim says who answers, and the plugin
@@ -666,6 +678,7 @@ export async function executePhaseOp(
         reason: args.reason,
         ...(issue === undefined ? {} : { issue }),
         ...(args.return_to === undefined ? {} : { returnTo: args.return_to }),
+        ...(args.task === undefined ? {} : { task: args.task.trim() }),
       });
       return {};
     }

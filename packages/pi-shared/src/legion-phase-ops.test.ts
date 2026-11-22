@@ -156,6 +156,7 @@ test("the phase ops' fields, as a host declares them, are every field of every o
       return_to: { type: "integer", minimum: 1 },
       to: { enum: [...LEGION_PHASE_BACKWARD_TARGETS] },
       reason: { type: "string" },
+      task: { type: "string" },
       round: { type: "string" },
     },
     required: ["op"],
@@ -650,6 +651,64 @@ test("request_backward_move sends return_to as returnTo", async () => {
   ).rejects.toThrow(
     "request_backward_move's return_to is a whole number of 1 or more: the place of a step of your task, 1 for its first"
   );
+});
+
+// Contract 224: a move back may name the task of the issue's plan it is of, `task`, which goes on
+// the wire as the daemon's own `task`: an architect's names the task it returns from accepting
+// where two or more tasks stand there, and a phase worker's may name the task of its own step. A
+// move that names none sends none, and a blank one is refused before any request.
+test("request_backward_move sends the task it names as task", async () => {
+  const architect = runtime({ ...implementer, role: "architect" });
+  await expect(
+    executePhaseOp(architect.ops, {
+      op: "request_backward_move",
+      issue: "LEGION-208",
+      to: "implementing",
+      reason: "Task b's change misses its spec.",
+      task: "b",
+    })
+  ).resolves.toEqual({});
+  expect(architect.routes).toEqual(["/legion/v1/grants", "/legion/v1/phase/backward"]);
+  expect(architect.posted.at(-1)).toEqual({
+    grantId: "grant-for-one-command",
+    to: "implementing",
+    reason: "Task b's change misses its spec.",
+    issue: "LEGION-208",
+    task: "b",
+  });
+  const worker = runtime();
+  await executePhaseOp(worker.ops, {
+    op: "request_backward_move",
+    to: "implementing",
+    reason: "Red.",
+    task: " a ",
+  });
+  expect(worker.posted.at(-1)).toEqual({
+    grantId: "grant-for-one-command",
+    to: "implementing",
+    reason: "Red.",
+    task: "a",
+  });
+  await executePhaseOp(worker.ops, {
+    op: "request_backward_move",
+    to: "implementing",
+    reason: "Red.",
+  });
+  expect(worker.posted.at(-1)).not.toHaveProperty("task");
+  const sent = worker.routes.length;
+  for (const task of [" ", 7]) {
+    await expect(
+      executePhaseOp(worker.ops, {
+        op: "request_backward_move",
+        to: "implementing",
+        reason: "r",
+        task,
+      })
+    ).rejects.toThrow(
+      "request_backward_move's task is the id of a task of the issue's plan, as a is"
+    );
+  }
+  expect(worker.routes).toHaveLength(sent);
 });
 
 // Contract 221: the daemon takes a verdict from a role of the deployment too, and the one
