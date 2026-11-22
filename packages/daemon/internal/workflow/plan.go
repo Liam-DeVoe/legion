@@ -206,9 +206,10 @@ func planSteps(issue string, generation uint64, task string, steps []plan.Step) 
 }
 
 // tellPassedOver says what the first step of issue passed over, the plans of earlier owners
-// (passOverEarlierOwners): one log line for each version, naming the plan the first step runs
-// (runs, the version in force of its generation: the owner's, or the default steps), and one
-// plan-not-taken notice to the issue's architect. Nothing passed over tells nothing.
+// (passOverEarlierOwners): one log line for each copy it deleted, with its generation, naming the
+// plan the first step runs (runs, the version in force of its generation: the owner's, or the
+// default steps), and one plan-not-taken notice to the issue's architect, which names each version
+// once (namedOnce). Nothing passed over tells nothing.
 func (e *Engine) tellPassedOver(ctx context.Context, tx pgx.Tx, issue record.Issue, earlier []record.PlanVersion, runs record.PlanVersion) error {
 	if len(earlier) == 0 {
 		return nil
@@ -218,40 +219,48 @@ func (e *Engine) tellPassedOver(ctx context.Context, tx pgx.Tx, issue record.Iss
 		ran = describeVersion(runs)
 		told = ran
 	}
-	passed := make([]string, len(earlier))
-	for i, version := range earlier {
-		passed[i] = describeVersion(version)
+	for _, version := range earlier {
 		e.logOnCommit(ctx, "workflow: a plan of an earlier owner is not taken", "issue", issue.Key, "generation", version.Generation,
 			"version", version.Version, "document", version.ArtifactID, "giver", version.GivenBy, "runs", ran)
 	}
 	return e.notice(ctx, tx, issue.Key, record.Notice{Kind: "plan-not-taken", Role: claim.RoleArchitect, Reason: fmt.Sprintf(
 		"The first step of %s took no plan of an earlier owner: %s. It runs %s. To run a plan it did not take, give it again with register_plan as your own.",
-		issue.Key, strings.Join(passed, "; "), told)})
+		issue.Key, namedOnce(earlier), told)})
 }
 
 // tellNotTaken says what the first step of issue, whose group runs the project's default steps
 // (group), passed over: every plan of an earlier owner (passOverEarlierOwners) and of its owner
-// (passOverOwners), in that order. One log line for each version, and one plan-not-taken notice to
-// the issue's architect, which names each version and the group, so the owner learns why no plan
-// of its own is taken. Unlike the notice of an earlier owner's plan alone (tellPassedOver), it
-// offers no register_plan: no plan given for this issue is taken. Nothing passed over tells
-// nothing.
+// (passOverOwners), in that order. One log line for each copy it deleted, with its generation, and
+// one plan-not-taken notice to the issue's architect, which names each version once (namedOnce)
+// and the group, so the owner learns why no plan of its own is taken. Unlike the notice of an
+// earlier owner's plan alone (tellPassedOver), it offers no register_plan: no plan given for this
+// issue is taken. Nothing passed over tells nothing.
 func (e *Engine) tellNotTaken(ctx context.Context, tx pgx.Tx, issue record.Issue, group record.Assignment, passed []record.PlanVersion) error {
 	if len(passed) == 0 {
 		return nil
 	}
-	described := make([]string, len(passed))
-	for i, version := range passed {
-		described[i] = describeVersion(version)
+	for _, version := range passed {
 		e.logOnCommit(ctx, "workflow: a plan is not taken: the issue's group runs the project's default steps", "issue", issue.Key,
 			"generation", version.Generation, "version", version.Version, "document", version.ArtifactID, "giver", version.GivenBy,
 			"experiment", group.Experiment, "variant", group.Variant)
 	}
-	// The copies a carry wrote of one version stand side by side, in the order they were given, and
-	// the notice names that version once.
 	return e.notice(ctx, tx, issue.Key, record.Notice{Kind: "plan-not-taken", Role: claim.RoleArchitect, Reason: fmt.Sprintf(
-		"The first step of %s took no plan: %s. %s", issue.Key, strings.Join(slices.Compact(described), "; "),
-		intake.GroupClause(issue.Key, group))})
+		"The first step of %s took no plan: %s. %s", issue.Key, namedOnce(passed), intake.GroupClause(issue.Key, group))})
+}
+
+// namedOnce names the versions a first step passed over as its plan-not-taken notice names them:
+// each version once (describeVersion), in the order it was first passed over. A rerun carries the
+// owner's plan to its new generation with the time it was given (record.Store's CarryPlan), so the
+// versions passed over hold one copy of a version for each generation it ran, and the notice names
+// the version, not its copies.
+func namedOnce(versions []record.PlanVersion) string {
+	named := make([]string, 0, len(versions))
+	for _, version := range versions {
+		if described := describeVersion(version); !slices.Contains(named, described) {
+			named = append(named, described)
+		}
+	}
+	return strings.Join(named, "; ")
 }
 
 // describeVersion names an owner's version of a plan as a log line and a notice name it: its

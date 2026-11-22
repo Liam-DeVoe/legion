@@ -974,3 +974,44 @@ func TestAPlanOfAnEarlierOwnerIsNotTaken(t *testing.T) {
 		kept(t, pool, logged.String(), "LEGION-209", [3]int{1, 1, 5})
 	})
 }
+
+// A rerun carries the owner's plan to its new generation, with the time it was given (record.Store's
+// CarryPlan), so an issue that ran three generations under one owner holds a copy of that owner's
+// version at each. When the issue then leaves its tree, its first step passes over every copy and
+// names the version once in its one notice, and it logs each copy it deleted, with its generation.
+// The fault caught is a notice that names the version once for each copy.
+func TestAnEarlierOwnersPlanCarriedToSeveralGenerationsIsNamedOnce(t *testing.T) {
+	const notTaken = "workflow: a plan of an earlier owner is not taken"
+	earlier := architectOf(t)
+	pool := migratedPool(t)
+	engine, logged := loggedEngine()
+	recordedAt(t, pool, "LEGION-209", "LEGION-208")
+	fact := ownersPlan(t, "LEGION-209", 1, 1, givenTask(t, "Build the widget.", "implementer", "reviewer"))
+	fact.GivenBy = earlier
+	mustTake(t, "version 1 of LEGION-209 at generation 1", applyFacts(t, pool, engine)(planID("LEGION-209", 1, 1), fact))
+	seedRecord(t, pool, func(tx pgx.Tx) error {
+		if err := record.NewStore().CarryPlan(t.Context(), tx, "LEGION-209", 1, 2, false); err != nil {
+			return err
+		}
+		return record.NewStore().CarryPlan(t.Context(), tx, "LEGION-209", 2, 3, false)
+	})
+	recordedAt(t, pool, "LEGION-209", "LEGION-209")
+	execSQL(t, pool, `update issues set generation = 4 where key = $1`, "LEGION-209")
+	logged.Reset()
+
+	firstStep(t, pool, engine, "LEGION-209")
+
+	want := []record.Notice{{Kind: "plan-not-taken", Role: claim.RoleArchitect, Reason: "The first step of LEGION-209 took no plan of an earlier owner: version 1 of document " +
+		planArtifact + ", given by " + string(earlier) + ". It runs the default steps. To run a plan it did not take, give it again with register_plan as your own."}}
+	if got := noticesOf(t, pool, "LEGION-209", "plan-not-taken"); !reflect.DeepEqual(got, want) {
+		t.Fatalf("the plan-not-taken notices = %+v, want %+v, the version named once", got, want)
+	}
+	for _, generation := range []int{1, 2, 3} {
+		if line := fmt.Sprintf(`msg="%s" issue=LEGION-209 generation=%d version=1`, notTaken, generation); !strings.Contains(logged.String(), line) {
+			t.Fatalf("the log =\n%s\nwant the line of the copy at generation %d: %s", logged.String(), generation, line)
+		}
+	}
+	if got := planRowsOf(t, pool, "LEGION-209"); got != [3]int{1, 1, 5} {
+		t.Fatalf("the plan rows of LEGION-209 after its first step = %v, want the default steps alone: every copy of the earlier owner's plan deleted", got)
+	}
+}
