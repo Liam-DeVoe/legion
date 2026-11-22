@@ -155,13 +155,15 @@ func carolsApprove(t *testing.T, broker *capabilityBroker) (http.Handler, Deps, 
 //   - A broker whose settings answer approver_fields true is sent approver_issuer, approver_subject
 //     and approver_session_generation, and approves it.
 //   - A broker whose settings read fails (500), or answers what is not settings (a 200 that is no
-//     JSON object, or an approver_fields that is no boolean), is sent nothing: whether it takes the
-//     fields is unknown, and the approve is 503 AGENT_SECRETS_SETTINGS_UNREAD.
+//     JSON object, or an approver_fields that is not the literal true or false, null included), is
+//     sent nothing: whether it takes the fields is unknown, and the approve is 503
+//     AGENT_SECRETS_SETTINGS_UNREAD.
 //
 // Each approve reads the settings once. Controls: approveCredentialRecord filling the three whatever
 // the broker says fails the first row (the older broker refuses them 400 INVALID_DECISION), and
 // TakesApproverFields answering a failed read as a broker that does not take the fields fails the
-// three unread rows (each is sent the approver and the code, and approves).
+// four unread rows (each is sent the approver and the code, and approves); reading approver_fields
+// with json.Unmarshal into a bool fails the null row alone, since that reads null as false.
 func TestTheApproveNamesTheApproverFieldsOnlyToABrokerThatSaysItTakesThem(t *testing.T) {
 	const todays = `/v1/credential-requests/rec1/approve {"approver":"carol@example.com","code":"ABCD-1234"}`
 	for _, row := range []struct {
@@ -180,6 +182,7 @@ func TestTheApproveNamesTheApproverFieldsOnlyToABrokerThatSaysItTakesThem(t *tes
 		{name: "a broker whose settings read fails", takesFields: true, settingsStatus: http.StatusInternalServerError, want: func(int64) string { return "" }},
 		{name: "a 200 that is no settings object", takesFields: true, settingsBody: `<html>default backend</html>`, want: func(int64) string { return "" }},
 		{name: "an approver_fields that is no boolean", takesFields: true, settingsBody: `{"approver_fields":"yes"}`, want: func(int64) string { return "" }},
+		{name: "an approver_fields that is null", takesFields: true, settingsBody: `{"approver_fields":null}`, want: func(int64) string { return "" }},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			broker := newCapabilityBroker(t, row.takesFields)
