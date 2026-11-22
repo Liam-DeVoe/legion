@@ -183,6 +183,7 @@ var readsWithoutAViewer = map[string]string{
 	"ItemBlockAt":      nodeDetail,
 	"ItemsOwedWindows": serverWork,
 	"ListOwed":         serverWork,
+	"ListOwedAfter":    serverWork,
 	"NextExcerptRetry": serverWork,
 	"OwedItemBlocks":   serverWork,
 	"PendingDocument.Scope": serverWork + " - the document a source whose row is only queued belongs to, which the index-time " +
@@ -200,6 +201,7 @@ var readsWithoutAViewer = map[string]string{
 	"RemovedBlockNode":   nodeDetail,
 	"ScopeSources":       serverWork,
 	"SourceText":         serverWork,
+	"StillOwed":          serverWork + " - a drain's read phase reads whether the queue row it listed still holds the time it was listed with",
 }
 
 // SeedStoreThroughItsWriters writes the people and agents a running deployment's store holds, as

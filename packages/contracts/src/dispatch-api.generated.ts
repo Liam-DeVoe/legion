@@ -340,7 +340,7 @@ export interface paths {
     /** @description List a document's asks. */
     get: operations["getApiV1ArtifactsByIdAsks"];
     put?: never;
-    /** @description Open an ask on a document. After the write commits, a related-item check searches the document's project for the question and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome, with the reason in missing when not made), how it searched, and the three items most like it with each ask item's answer state. */
+    /** @description Open an ask on a document. After the write commits, a related-item check searches the document's project for the question and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome, with the reason in missing when not made), how it searched, and the three items most like it with each ask item's answer state. An ask on a retired document, which takes no new text, is 409 DOCUMENT_RETIRED and writes nothing. */
     post: operations["postApiV1ArtifactsByIdAsks"];
     delete?: never;
     options?: never;
@@ -409,7 +409,7 @@ export interface paths {
     /** @description List a document's comments. The answer carries an ETag, which moves for every write the list shows, a delivery attempt that appends no event included; If-None-Match answers 304. */
     get: operations["getApiV1ArtifactsByIdComments"];
     put?: never;
-    /** @description Comment on a document or one of its quotes. A party address the body writes names that party, as an entry of mentions does. dispatch://agent/<session id> names a session and dispatch://role/<token> names a role, and the comment is delivered to each in the mode delivery names - btw, aside or steer - and in steer when the request names none. The same address inside a fenced code block, an indented code block or a code span names nobody. A person address, dispatch://person/<login>, names a reader of the record, and nothing is delivered to a person. The array and the body make one party set: over 10 delivering parties in it, or a target of a form no delivery route takes, is 400 MENTION_INPUT. */
+    /** @description Comment on a document or one of its quotes. A comment on a quote of a retired document, which takes no new text, is 409 DOCUMENT_RETIRED and writes nothing. A party address the body writes names that party, as an entry of mentions does. dispatch://agent/<session id> names a session and dispatch://role/<token> names a role, and the comment is delivered to each in the mode delivery names - btw, aside or steer - and in steer when the request names none. The same address inside a fenced code block, an indented code block or a code span names nobody. A person address, dispatch://person/<login>, names a reader of the record, and nothing is delivered to a person. The array and the body make one party set: over 10 delivering parties in it, or a target of a form no delivery route takes, is 400 MENTION_INPUT. */
     post: operations["postApiV1ArtifactsByIdComments"];
     delete?: never;
     options?: never;
@@ -856,7 +856,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Accept a suggestion, applying its replacement. */
+    /** @description Accept a suggestion, applying its replacement. A suggestion in a retired document, which takes no new text, is 409 DOCUMENT_RETIRED and writes nothing. */
     post: operations["postApiV1CommentsByIdAccept"];
     delete?: never;
     options?: never;
@@ -907,7 +907,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Reject a suggestion. */
+    /** @description Reject a suggestion. A suggestion in a retired document, which takes no new text, is 409 DOCUMENT_RETIRED and writes nothing. */
     post: operations["postApiV1CommentsByIdReject"];
     delete?: never;
     options?: never;
@@ -1541,7 +1541,7 @@ export interface paths {
     /** @description List an issue's asks, each with its newest reply; ?state= filters, and ?thread=1 adds each ask's thread (replies, rewordings, answers, followers, claimant, route, route_holder). */
     get: operations["getApiV1IssuesByKeyAsks"];
     put?: never;
-    /** @description Open a question ask on an issue (options optional). After the write commits, a related-item check searches the project for the question and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome, with the reason in missing when not made), how it searched, and the three items most like it with each ask item's answer state. */
+    /** @description Open a question ask on an issue (options optional). After the write commits, a related-item check searches the project for the question and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome, with the reason in missing when not made), how it searched, and the three items most like it with each ask item's answer state. An ask anchored in a retired document, which takes no new text, is 409 DOCUMENT_RETIRED and writes nothing. */
     post: operations["postApiV1IssuesByKeyAsks"];
     delete?: never;
     options?: never;
@@ -1594,7 +1594,7 @@ export interface paths {
     /** @description List an issue's comments; ?artifact= scopes to a document. The answer carries an ETag, which moves for every write the list shows, a delivery attempt that appends no event included; If-None-Match answers 304. A comment's author carries proven: true when the write's credential proved it (a browser's person, a broker-issued token's session), and no proven when the request only named it. */
     get: operations["getApiV1IssuesByKeyComments"];
     put?: never;
-    /** @description Comment on an issue, a document quote, or an ask. A reply names the comment it answers in reply_to, and one block of it in reply_to_block; with ask_id in place of reply_to, reply_to_block names one part of that ask. A party address the body writes names that party, as an entry of mentions does. dispatch://agent/<session id> names a session and dispatch://role/<token> names a role, and the comment is delivered to each in the mode delivery names - btw, aside or steer - and in steer when the request names none. The same address inside a fenced code block, an indented code block or a code span names nobody. A person address, dispatch://person/<login>, names a reader of the record, and nothing is delivered to a person. The array and the body make one party set: over 10 delivering parties in it, or a target of a form no delivery route takes, is 400 MENTION_INPUT. */
+    /** @description Comment on an issue, a document quote, or an ask. A reply names the comment it answers in reply_to, and one block of it in reply_to_block; with ask_id in place of reply_to, reply_to_block names one part of that ask. A comment on a quote of a retired document, which takes no new text, is 409 DOCUMENT_RETIRED and writes nothing. A party address the body writes names that party, as an entry of mentions does. dispatch://agent/<session id> names a session and dispatch://role/<token> names a role, and the comment is delivered to each in the mode delivery names - btw, aside or steer - and in steer when the request names none. The same address inside a fenced code block, an indented code block or a code span names nobody. A person address, dispatch://person/<login>, names a reader of the record, and nothing is delivered to a person. The array and the body make one party set: over 10 delivering parties in it, or a target of a form no delivery route takes, is 400 MENTION_INPUT. */
     post: operations["postApiV1IssuesByKeyComments"];
     delete?: never;
     options?: never;
