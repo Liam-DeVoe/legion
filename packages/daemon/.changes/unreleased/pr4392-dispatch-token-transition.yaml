@@ -22,12 +22,14 @@ body: |-
   Where no claim runs a process in the pod, the daemon replaces the pod through the refused claim,
   and the next try starts in the new pod. That replacement reads no workspace. Its message on the
   issue says that no role process ran in the pod, and it names each member of the round that had
-  not answered, but not a member with no session whose launch waits on the pod. When the refused
-  claim's own next try replaces the pod first, the daemon reads that claim as it was at that
-  launch, so the message does not name such a claim, although it has since started in the new
-  pod. After a daemon restart between that launch and the next sweep, the round ends with the
-  message that the pod went, which names that claim, so the daemon errs towards naming a role,
-  never towards hiding a loss. When no member is left to name, the daemon writes no message.
+  not answered, but not a member with no session whose launch waits on the pod. When a refused
+  claim's own next try replaces the pod first, the daemon reads each member as it was at that
+  launch, so the message names no member that then had no session and waited on the pod, that
+  claim or another, although such a member has since started in the new pod. After a daemon
+  restart between that launch and the next sweep, the round ends with the message that the pod
+  went, which names each such member that has started in the new pod, so the daemon errs towards
+  naming a role, never towards hiding a loss. When no member is left to name, the daemon writes
+  no message.
   Where the process of another claim runs in the pod, the claim's next try cannot replace the
   pod, and the daemon replaces it through that process.
   Before that replacement, the daemon reads the issue workspace for a refused claim with a session

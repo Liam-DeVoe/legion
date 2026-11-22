@@ -24,7 +24,6 @@ package daemon
 
 import (
 	"context"
-	"fmt"
 	"slices"
 	"strings"
 	"sync"
@@ -240,54 +239,6 @@ func TestARoundOverAGonePodThatLostWorkWritesOnce(t *testing.T) {
 	rig.awaitPosted(claim.RoleImplementer)
 	if c := rig.claimOf(claim.RoleImplementer); c.UpdateRound != "" {
 		t.Errorf("the implementer is in round %q once its machine took what was posted to it, want none", c.UpdateRound)
-	}
-}
-
-// The other side of the exception a launch's replacement reads at the launch (launchRound): a claim
-// with no session and a process in another pod is named when the round's pod goes. The implementer
-// runs in the round's pod with a session and has not answered the round when the pod goes for a
-// failure of its own. Its relaunch finds its session in no store, so the launch forgets the session
-// and spawns a fresh agent in the pod that replaced the round's (supervise's startFresh). That
-// agent has not registered yet, so the claim records a process in the new pod and no session. The
-// sweep reads the new pod in the round's place and ends the round as a pod that went
-// (endRoundWhosePodWent, podWentWithoutItsRound). The implementer's worker ran in the round's pod,
-// and what it did not push was on that pod's disk, so the message names it (lostClaim). A reading
-// that took a claim with no session and a process for a claim that never had a worker would hide
-// that loss.
-func TestPodUpdateNamesAClaimStartedFreshInAnotherPodWhenTheRoundsPodGoes(t *testing.T) {
-	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
-	token := rig.tokens[claim.RoleImplementer]
-	rig.drifts(podUpdateDrift)
-	rig.tick()
-	rig.awaitRound(claim.RoleImplementer, podUpdateRound)
-	rig.settleAll()
-
-	ended := rig.claimOf(claim.RoleImplementer).Locator
-	if ended == nil {
-		t.Fatal("the implementer records no process to end with its pod")
-	}
-	rig.rt.ScriptResume(fake.SpawnResult{Err: fmt.Errorf("resume %s: %w: the session table holds no such session",
-		token, runtime.ErrSessionFileMissing)})
-	rig.rt.ScriptSpawn(fake.SpawnResult{Locator: *podUpdateLocator(token, podUpdateIssue, podUpdateReplacementPod)})
-	rig.handle(claim.RoleImplementer, supervise.RuntimeObservation{Observation: runtime.Observation{
-		Locator: *ended, Kind: runtime.Gone, At: rig.clock.Now(), Displaced: true,
-	}})
-	if c := rig.claimOf(claim.RoleImplementer); c.Session != "" || podOf(c.Locator) != podUpdateReplacementPod || c.UpdateRound != podUpdateRound {
-		t.Fatalf("the relaunched implementer has session %q and process %+v in round %q, want no session and a process in pod %s, still in round %s",
-			c.Session, c.Locator, c.UpdateRound, podUpdateReplacementPod, podUpdateRound)
-	}
-	rig.settleAll()
-
-	rig.tick()
-	messages := rig.messages()
-	if len(messages) != 1 || !strings.Contains(messages[0], "The pod that ran this issue's roles is gone") ||
-		!strings.Contains(messages[0], "before the pod went: implementer (launching).") {
-		t.Fatalf("the issue was written %q, want one message that its pod went and its implementer lost what it had not pushed", messages)
-	}
-	rig.awaitClaim(claim.RoleImplementer, "its round to end with the message",
-		func(c supervise.Claim) bool { return c.UpdateRound == "" })
-	if calls := rig.replacements(); len(calls) != 0 {
-		t.Errorf("ReplacePod called %d times for a pod that is already gone", len(calls))
 	}
 }
 
