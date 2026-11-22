@@ -455,11 +455,13 @@ const failedRead =
   "This is a failed read of the runs and not a finding: the quarantine was not checked.";
 
 /** The time GitHub's answer says it may be asked again, and the header that says it: `retry-after`
- *  seconds from now where it is present (a secondary limit's), or else `resetMarginSeconds` past
- *  `x-ratelimit-reset` where `x-ratelimit-remaining` is 0 (a primary limit's, REST's or
- *  GraphQL's, which `x-ratelimit-resource` names). Never sooner than a second from now, so an
- *  answer whose reset has already passed is not asked again in a tight loop. `undefined` where
- *  the answer says neither. */
+ *  seconds from now where it is present (a secondary limit's), never sooner than a second from
+ *  now, so a `retry-after: 0` is not asked again in a tight loop; or else `resetMarginSeconds`
+ *  past `x-ratelimit-reset` where `x-ratelimit-remaining` is 0 (a primary limit's, REST's or
+ *  GraphQL's, which `x-ratelimit-resource` names). That second time is already past where the
+ *  reset, plus the margin, has gone by: such an answer names no time to wait for, and `gitHub`'s
+ *  ladder takes its own attempts for it rather than ask again once a second until the cap.
+ *  `undefined` where the answer says neither. */
 function rateLimitWait(headers: Headers): { at: number; header: string } | undefined {
   const soonest = Date.now() + 1000;
   const retryAfter = headers.get("retry-after");
@@ -473,7 +475,7 @@ function rateLimitWait(headers: Headers): { at: number; header: string } | undef
   if (headers.get("x-ratelimit-remaining") === "0" && reset !== null && /^\d+$/.test(reset)) {
     const resource = headers.get("x-ratelimit-resource");
     return {
-      at: Math.max(soonest, (Number(reset) + resetMarginSeconds) * 1000),
+      at: (Number(reset) + resetMarginSeconds) * 1000,
       header:
         `x-ratelimit-reset: ${reset} (x-ratelimit-remaining: 0` +
         `${resource === null ? "" : `, x-ratelimit-resource: ${resource}`}), plus ` +
@@ -485,7 +487,8 @@ function rateLimitWait(headers: Headers): { at: number; header: string } | undef
 
 /** One attempt's outcome: GitHub's answer, or what refused it - `what` as the line before a wait
  *  names it, `wait` where the refusal is GitHub's rate limit and says when to ask again, and
- *  `final` where it is one that a second asking is refused the same way. */
+ *  `final` where it is one that a second asking is refused the same way. A `wait` already past
+ *  outweighs `final`: the rate limit refused the call, and the ladder's attempts answer it. */
 type Attempt =
   | { readonly body: unknown; readonly next: string | undefined }
   | {
@@ -495,10 +498,12 @@ type Attempt =
       readonly final?: boolean;
     };
 
-/** The GitHub API at `api`, read with `token`. A call is three attempts at most, 10 s and then
- *  20 s apart, each bounded at 30 s - the ladder `.github/scripts/gh-read.sh` gives the scripts
- *  beside it, since GitHub refuses a call now and then (a 502, a dropped connection) and one
- *  refusal must decide nothing - except where GitHub's answer says more:
+/** The GitHub API at `api`, read with `token`. A call is three attempts at most, `retrySeconds`
+ *  and then twice that apart, each bounded at 30 s. The default of `retrySeconds`, 10, is the
+ *  ladder's own: 10 s and then 20 s, the ladder `.github/scripts/gh-read.sh` gives the scripts
+ *  beside it, whose GH_RETRY_SECONDS sets what `retrySeconds` sets here, and which the tests set
+ *  lower. GitHub refuses a call now and then (a 502, a dropped connection), and one refusal must
+ *  decide nothing. The ladder holds except where GitHub's answer says more:
  *
  *  - A 403 or 429 with `retry-after`, or with `x-ratelimit-remaining: 0` and `x-ratelimit-reset`,
  *    is GitHub's rate limit, secondary or primary, REST's or GraphQL's; so is GraphQL's primary
@@ -508,6 +513,11 @@ type Attempt =
  *    client's waits together, time two calls spend waiting at once counted once: a wait that
  *    would pass it is not made, and the call throws, naming the refusal and the reset past the
  *    cap. Its default, 0, waits for nothing.
+ *  - A primary limit whose reset, plus `resetMarginSeconds`, has already passed names no time to
+ *    wait for. The call prints one line through `log` that says so and takes the ladder's three
+ *    attempts, `retrySeconds` and then twice that apart, as `gh_read_waiting` does: a wait of a
+ *    second for it would ask again once a second until the cap. Such a 403 or `RATE_LIMITED`
+ *    error does not throw at once.
  *  - A 403 that carries neither header, such as a permission refusal, and a `RATE_LIMITED` error
  *    that names no time, throw at once: asking again is refused the same way.
  *
@@ -517,8 +527,9 @@ export function gitHub(
   token: string,
   {
     waitCapSeconds = 0,
+    retrySeconds = 10,
     log = (line: string) => console.error(line),
-  }: { waitCapSeconds?: number; log?: (line: string) => void } = {}
+  }: { waitCapSeconds?: number; retrySeconds?: number; log?: (line: string) => void } = {}
 ): GitHub {
   let calls = 0;
   let graphqlCalls = 0;
@@ -598,7 +609,7 @@ export function gitHub(
       else graphqlCalls += 1;
       const answer = await attempt(url, post);
       if (!("refusal" in answer)) return answer;
-      if (answer.wait !== undefined) {
+      if (answer.wait !== undefined && answer.wait.at > Date.now()) {
         const added = Math.max(0, answer.wait.at - Math.max(Date.now(), waitedUntil));
         const until = new Date(answer.wait.at).toISOString();
         if (waited + added > waitCapSeconds * 1000) {
@@ -619,7 +630,15 @@ export function gitHub(
         await Bun.sleep(Math.max(0, answer.wait.at - Date.now()));
         continue;
       }
-      if (answer.final) {
+      if (answer.wait !== undefined) {
+        log(
+          `quarantine-check: GitHub refused ${url} with ${answer.what}, and the time its rate ` +
+            `limit names, ${new Date(answer.wait.at).toISOString()} by its ` +
+            `${answer.wait.header}, has already passed, so it names no time to wait for, and ` +
+            `the call takes the ladder's own three attempts, ${retrySeconds} s and then ` +
+            `${2 * retrySeconds} s apart.`
+        );
+      } else if (answer.final) {
         throw new Error(
           `GitHub refused ${url} with ${answer.refusal}, which names no time it may be asked ` +
             `again (no retry-after, and x-ratelimit-remaining not 0), so it was not asked again. ` +
@@ -632,7 +651,7 @@ export function gitHub(
           `GitHub refused ${url} three times, the last with ${answer.refusal}. ${failedRead}`
         );
       }
-      await Bun.sleep(refusals * 10_000);
+      await Bun.sleep(refusals * retrySeconds * 1000);
     }
   }
   async function everyPage<Item>(

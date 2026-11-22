@@ -820,6 +820,93 @@ test("GitHub's rate limit whose reset is past the cap fails at once, naming the 
   }
 });
 
+// A reset whose 3 s past it have gone by names no time to wait for. The client once read it as a
+// second from now and asked again once a second until the cap, so the stand-in refuses more calls
+// than the ladder's three attempts: a client that spun would ask a fourth time and a fifth, 1 s
+// apart, and fail on the cap. `retrySeconds: 1` makes the ladder's 10 s and 20 s 1 s and 2 s.
+test("GitHub's rate limit whose reset is already past takes the ladder's three attempts, without a wait loop", async () => {
+  const reset = Math.floor(Date.now() / 1000) - 60;
+  const limited: Refusal = {
+    body: { message: "API rate limit exceeded for installation." },
+    headers: {
+      "x-ratelimit-remaining": "0",
+      "x-ratelimit-reset": String(reset),
+      "x-ratelimit-resource": "core",
+    },
+    status: 403,
+  };
+  const server = gitHubStandIn([], { rest: Array.from({ length: 9 }, () => limited) });
+  const lines: string[] = [];
+  try {
+    const github = gitHub(server.url, "t", {
+      log: (line) => lines.push(line),
+      retrySeconds: 1,
+      waitCapSeconds: 5,
+    });
+    await expect(github.one(listingPath)).rejects.toThrow(
+      `GitHub refused ${server.url}${listingPath} three times, the last with HTTP 403: ` +
+        '{"message":"API rate limit exceeded for installation."}. This is a failed read of the ' +
+        "runs and not a finding: the quarantine was not checked."
+    );
+    expect(server.seen).toHaveLength(3);
+    expect(github.spent()).toMatchObject({ calls: 3, graphqlCalls: 0 });
+    // The ladder's own waits, 1 s and then 2 s, and no wait of the rate limit's between them.
+    expect(server.seen[1].at - server.seen[0].at).toBeGreaterThanOrEqual(1000);
+    expect(server.seen[2].at - server.seen[1].at).toBeGreaterThanOrEqual(2000);
+    const line =
+      `quarantine-check: GitHub refused ${server.url}${listingPath} with HTTP 403, and the time ` +
+      `its rate limit names, ${new Date((reset + 3) * 1000).toISOString()} by its ` +
+      `x-ratelimit-reset: ${reset} (x-ratelimit-remaining: 0, x-ratelimit-resource: core), plus ` +
+      "3 s, has already passed, so it names no time to wait for, and the call takes the ladder's " +
+      "own three attempts, 1 s and then 2 s apart.";
+    expect(lines).toEqual([line, line, line]);
+  } finally {
+    server.stop();
+  }
+});
+
+test("GraphQL's RATE_LIMITED answer whose reset is already past takes the ladder's three attempts the same way", async () => {
+  const reset = Math.floor(Date.now() / 1000) - 60;
+  const limited: Refusal = {
+    body: { errors: [{ message: "API rate limit exceeded", type: "RATE_LIMITED" }] },
+    headers: {
+      "x-ratelimit-remaining": "0",
+      "x-ratelimit-reset": String(reset),
+      "x-ratelimit-resource": "graphql",
+    },
+    status: 200,
+  };
+  const server = gitHubStandIn([], { graphql: Array.from({ length: 9 }, () => limited) });
+  const lines: string[] = [];
+  try {
+    const github = gitHub(server.url, "t", {
+      log: (line) => lines.push(line),
+      retrySeconds: 1,
+      waitCapSeconds: 5,
+    });
+    await expect(
+      github.graphql("query { rateLimit { cost remaining resetAt } }", {})
+    ).rejects.toThrow(
+      `GitHub refused ${server.url}/graphql three times, the last with HTTP 200 with GraphQL's ` +
+        "RATE_LIMITED error: API rate limit exceeded. This is a failed read of the runs and not " +
+        "a finding: the quarantine was not checked."
+    );
+    expect(server.seen).toHaveLength(3);
+    expect(github.spent()).toMatchObject({ calls: 0, graphqlCalls: 3 });
+    expect(server.seen[1].at - server.seen[0].at).toBeGreaterThanOrEqual(1000);
+    expect(server.seen[2].at - server.seen[1].at).toBeGreaterThanOrEqual(2000);
+    const line =
+      `quarantine-check: GitHub refused ${server.url}/graphql with GraphQL's RATE_LIMITED error, ` +
+      `and the time its rate limit names, ${new Date((reset + 3) * 1000).toISOString()} by its ` +
+      `x-ratelimit-reset: ${reset} (x-ratelimit-remaining: 0, x-ratelimit-resource: graphql), ` +
+      "plus 3 s, has already passed, so it names no time to wait for, and the call takes the " +
+      "ladder's own three attempts, 1 s and then 2 s apart.";
+    expect(lines).toEqual([line, line, line]);
+  } finally {
+    server.stop();
+  }
+});
+
 test("a 403 that names no rate limit fails at once, without a wait", async () => {
   const server = gitHubStandIn([], {
     rest: [{ body: { message: "Resource not accessible by integration" }, status: 403 }],
