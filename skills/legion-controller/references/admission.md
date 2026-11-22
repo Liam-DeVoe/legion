@@ -52,7 +52,7 @@ Name them in the day's report and take nothing for them.
 | `design_gate` | Its root's design gate is not open at every gated step | A person's approval of each step's document |
 | `dispatch_blocker` | A `blocked_by` issue is not `done` | Each blocker `done`, or the link taken off |
 | `children_first` | An open child under it | The last open child leaving the workflow |
-| `accepted_ancestor` | An ancestor's reviewed head is accepted | That ancestor's close |
+| `accepted_ancestor` | The daemon has accepted the head an ancestor's last step passed | That ancestor's close |
 | `children_before_retro` | A parent whose task's last step is not `acceptance:owner` is held before retro while its children run | The last `heldBy` issue leaves the workflow, then Legion starts retro |
 | `task_stopped` | A task is stopped and no step of it runs | A later `register_plan` version that changes the task, or a root's `todo`, starts its first step |
 | `at_work` | In `accepting`, `retro` or `merging`, not `held`, on no slot | Its own sign-off, retro and merge |

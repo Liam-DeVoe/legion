@@ -82,7 +82,8 @@ A parent's own first phase waits while Dispatch shows an open child under it (th
 - While the work is built, a role runs the application from the issue's branch and uses it as its user would:
   a passing check does not show that a person can do their job with it.
 
-- Where the work is a page or a tool a person uses, offer that person a running build before the review; the deployment instructions say how a pod runs one.
+- For a page or a tool a person uses, offer them a running build before the reviewer step, or the last step if none.
+  The deployment instructions say how a pod runs one.
 
 ## 5. Retro
 

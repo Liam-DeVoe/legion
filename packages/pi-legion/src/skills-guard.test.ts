@@ -978,6 +978,49 @@ test("each duty a role skill routes to a reference stands in that reference", ()
   ]).toEqual([]);
 });
 
+// Each sentence that held only in the default steps holds for every order the plan validator
+// allows: a task may leave out the reviewer and the owner's acceptance, a parent whose last step
+// is not the acceptance is held before its retro, retro's `Handoff:` line names the report of the
+// task's last step, and the daemon accepts the head an ancestor's last step passed, which is the
+// reviewed head only where its task has a reviewer step. Each old sentence is gone. This shows the
+// text ships, never that a role follows it.
+test("the skills' sentences that held only in the default steps hold for every order", () => {
+  expect([
+    ...lacks("legion-architect/SKILL.md", [
+      /offer them a running build before the reviewer step, or the last step if none/,
+      /^(?![\s\S]*a running build before the review;)/,
+    ]),
+    ...lacks("legion-architect/references/plan.md", [
+      /Without `acceptance:owner`, retro holds the checks \(`skill:\/\/legion-retro`\), and so does a reviewer step where the task has one/,
+      /^(?![\s\S]*two steps still hold the checks)/,
+    ]),
+    ...lacks("legion-architect/references/wake-routing.md", [
+      /`phase-finished` \| The next phase started, or `retro-held` came too\./,
+      /^(?![\s\S]*The next phase already started\.)/,
+    ]),
+    ...lacks("legion-architect/references/decomposition.md", [
+      /`CHILD_UNDER_ACCEPTED_PARENT`: the daemon has already accepted an ancestor's head, the head its task's last step passed/,
+      /^(?![\s\S]*an ancestor is already accepted)/,
+    ]),
+    ...lacks("legion-controller/references/admission.md", [
+      /`accepted_ancestor` \| The daemon has accepted the head an ancestor's last step passed \|/,
+      /^(?![\s\S]*reviewed head is accepted)/,
+    ]),
+    ...lacks("legion-retro/SKILL.md", [
+      /Read the review \(`--phase review`\) where it has a reviewer step, at the version your `Handoff:` line names when that line names one/,
+      /^(?![\s\S]*the review at the version your task's `Handoff:` line names)/,
+    ]),
+    ...lacks("legion-worker/SKILL.md", [
+      /a later round costs a CI pass and a review, if any\./,
+      /^(?![\s\S]*costs a CI pass and a review\.)/,
+    ]),
+    ...lacks("legion-worker/references/findings.md", [
+      /Where your task has an `acceptance:owner` step, it holds your issue's acceptance until a controller takes the ask/,
+      /^(?![\s\S]*It holds your issue's acceptance until)/,
+    ]),
+  ]).toEqual([]);
+});
+
 // skills/AGENTS.md bounds a skill's SKILL.md and each of its references at 150 lines and 8 KB,
 // counted here as 8,000 bytes. Every file of the Legion role skills is held to it, so a file that
 // grows past it moves its detail one level down before it ships.

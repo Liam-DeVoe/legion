@@ -20,7 +20,7 @@ A refused release writes nothing: release the rest again without the child it na
 
 - `ISSUE_NOT_OWNED`: the issue is another architect's; send the move to the architect above you.
 
-- `CHILD_UNDER_ACCEPTED_PARENT`: an ancestor is already accepted.
+- `CHILD_UNDER_ACCEPTED_PARENT`: the daemon has already accepted an ancestor's head, the head its task's last step passed.
   Take it back with `request_backward_move`, or release once it has closed.
 
 ## Creating children
