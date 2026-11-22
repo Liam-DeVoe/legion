@@ -188,6 +188,39 @@ const ACME_FILES: MadeFile[] = [
   { path: "omp/extensions/skill-pools.ts", text: EXTENSION_TEXT },
   { path: "installers/omp.sh", text: OMP_INSTALLER_TEXT },
   {
+    path: "legion/acme-setup.sh",
+    text: [
+      "#!/bin/sh",
+      "# A made-up role-start setup of a fixture: installs plugins of a made-up catalog.",
+      "repo=acme/catalog",
+      'omp plugin marketplace add "$repo"',
+      'omp plugin install "$p@$catalog" --force',
+      "",
+    ].join("\n"),
+  },
+  {
+    path: "legion/main.go",
+    text: [
+      "package main",
+      "",
+      "// The made-up catalog plugins every role installs.",
+      'var everyRolePlugins = []string{"acme-tools"}',
+      "",
+    ].join("\n"),
+  },
+  {
+    path: "legion/worker/Dockerfile",
+    text: [
+      "FROM scratch",
+      "ARG ACME_RELEASE_URL=https://github.com/acme/skills/releases/download",
+      "ARG ACME_VERSION=1.0.0",
+      'RUN release="${ACME_RELEASE_URL}/v${ACME_VERSION}"; \\',
+      '    install -D -m 0644 "$t/skills/alpha/SKILL.md" /opt/acme-alpha/skills/alpha/SKILL.md; \\',
+      '    printf \'{"name": "acme-alpha", "omp": {}}\\n\' > /opt/acme-alpha/package.json',
+      "",
+    ].join("\n"),
+  },
+  {
     path: ".claude-plugin/marketplace.json",
     text: `${JSON.stringify(
       {
@@ -901,6 +934,24 @@ const KIND_EXAMPLES: Record<
     path: "legion/projects/10-ACME.yaml",
     says: "project ACME: verificationSkillsLeaveOut plugin-gamma, plugin-delta",
     row: "leaves out project:ACME gamma-one acme/skills plugins/plugin-gamma/skills/gamma-one",
+  },
+  "legion-role-setup": {
+    repository: "acme/skills",
+    path: "legion/acme-setup.sh",
+    says: "installs plugins of the catalog acme/catalog at each role start",
+    row: "",
+  },
+  "legion-program": {
+    repository: "acme/skills",
+    path: "legion/main.go",
+    says: "every role installs acme-tools of the catalog",
+    row: "",
+  },
+  "worker-image": {
+    repository: "acme/skills",
+    path: "legion/worker/Dockerfile",
+    says: "installs alpha of acme/skills v1.0.0 as the Oh My Pi plugin /opt/acme-alpha",
+    row: "installs image:acme-alpha alpha acme/skills skills/alpha",
   },
   "prepack-script": {
     repository: "cybermonklabs/legion",
@@ -1643,6 +1694,18 @@ describe("the full run over the owners", () => {
     expect(shown?.says ?? "").toContain(example.says);
     if (example.row !== "")
       expect(installerRows(r, example.repository, example.path)).toContain(example.row);
+  });
+
+  test("a Legion deployment's role setup, program and worker image are read as manifests: the catalog its roles install from, the plugins every role installs, and the skill the image installs from a release", () => {
+    const kinds = new Map(
+      r.table("manifests.tsv").map((row) => [`${row.repository} ${row.path}`, row.kind])
+    );
+    expect(kinds.get("acme/skills legion/acme-setup.sh")).toBe("legion-role-setup");
+    expect(kinds.get("acme/skills legion/main.go")).toBe("legion-program");
+    expect(kinds.get("acme/skills legion/worker/Dockerfile")).toBe("worker-image");
+    expect(installerRows(r, "acme/skills", "legion/worker/Dockerfile")).toContain(
+      "installs image:acme-alpha alpha acme/skills skills/alpha"
+    );
   });
 
   test("every tree file of a manifest kind that names skills is shown (the class inventory)", () => {

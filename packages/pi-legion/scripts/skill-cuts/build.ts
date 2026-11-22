@@ -454,12 +454,14 @@ import {
 import { armPromptBlocks, type SavedHead, sessionHeads } from "./capture";
 import {
   Case,
+  listedName,
   loadCases,
   Profile,
   type ProfileSkill,
   pathHash,
   skillReadFile,
   Thinking,
+  testedCopy,
   textLines,
 } from "./cases";
 import {
@@ -486,6 +488,7 @@ import {
   type GhResult,
   GitBlob,
   graphqlArgs,
+  type InstallerPin,
   installerPins,
   keepsEntry,
   type Manifest,
@@ -2262,6 +2265,64 @@ function devboxHome(copies: Copies, evidence: Evidence[]): string | undefined {
   return undefined;
 }
 
+/** What a Legion pod installs beside its worker image's packages. */
+const LEGION_INSTALLS_RULE =
+  "a Legion pod's role start runs its deployment's role setup (a legion/*setup.sh of the repository whose project file names the project), which installs, from the catalog repository it names (omp plugin marketplace add, then omp plugin install <plugin>@<catalog>), the every-role plugins its program names (everyRolePlugins in legion/main.go) and, when the project file sets verificationSkillsLeaveOut (an empty list too), every other plugin of the catalog but those it names; its worker image (legion/worker*/Dockerfile) installs each skill of a release as an Oh My Pi plugin under /opt; the deployment and the catalog are read at the session's start. A daemon-launched controller installs the every-role plugins alone, which a profile does not tell apart";
+
+/** A marketplace's plugin entry, as copies.ts reads one. */
+type MarketplacePlugin = Extract<Manifest["facts"][number], { type: "marketplace-plugin" }>;
+
+/** What a Legion deployment's role setup installs for the project whose file is `projectPath`
+ *  of `deployment` (LEGION_INSTALLS_RULE), from `manifests` (the deployment's and its catalog's at
+ *  the session's start): the catalog pins of its setup, each plugin entry of the catalog's
+ *  marketplace, the plugins the project's roles install, and why. */
+function legionCatalog(
+  manifests: readonly Manifest[],
+  deployment: string,
+  projectPath: string
+): {
+  setup: InstallerPin[];
+  plugins: { manifest: Manifest; fact: MarketplacePlugin }[];
+  wanted: Set<string>;
+  why: string;
+} {
+  const own = manifests.filter((manifest) => manifest.repository === deployment);
+  const setup = own.flatMap((manifest) =>
+    manifest.facts.flatMap((fact) =>
+      fact.type === "role-setup" ? [{ repository: fact.repo, ref: "", manifest }] : []
+    )
+  );
+  const everyRole = own.flatMap((manifest) =>
+    manifest.facts.flatMap((fact) => (fact.type === "every-role" ? fact.plugins : []))
+  );
+  const leaveOut = own
+    .find((manifest) => manifest.path === projectPath)
+    ?.facts.flatMap((fact) => (fact.type === "leaves-out" ? [fact.plugins] : []))[0];
+  const plugins = manifests
+    .filter((manifest) =>
+      setup.some((pin) => pin.repository.toLowerCase() === manifest.repository.toLowerCase())
+    )
+    .flatMap((manifest) =>
+      manifest.facts.flatMap((fact) =>
+        fact.type === "marketplace-plugin" ? [{ manifest, fact }] : []
+      )
+    );
+  const wanted = new Set(everyRole);
+  if (leaveOut !== undefined) {
+    for (const { fact } of plugins) if (!leaveOut.includes(fact.plugin)) wanted.add(fact.plugin);
+  }
+  const every = everyRole.join(", ") || "none";
+  return {
+    setup,
+    plugins,
+    wanted,
+    why:
+      leaveOut === undefined
+        ? `${projectPath} sets no verificationSkillsLeaveOut, so each role installs the every-role plugins (${every}) alone`
+        : `${projectPath} sets verificationSkillsLeaveOut [${leaveOut.join(", ")}], so each role installs every plugin of the catalog but those, and the every-role plugins (${every})`,
+  };
+}
+
 /** The item of the evidence of a case or a load task that says how far the listing its rebuilt
  *  profile gives is from the listing its session saw; its source is a ListingMeasure as JSON. */
 export const LISTING_MEASURE = "listing measure";
@@ -2461,11 +2522,42 @@ function withMeasure(evidence: readonly Evidence[], measure: Evidence): Evidence
   return out;
 }
 
-/** The names a rebuilt profile lists: its skills, less those Oh My Pi hides (HIDDEN_RULE). */
+/** The names a rebuilt profile lists: its skills, a namespaced one as `<namespace>/<name>`, less
+ *  those Oh My Pi hides (HIDDEN_RULE). */
 function listedNames(result: Pick<ProfileResult, "profile" | "hidden">): string[] {
   return result.profile.skills
-    .map((skill) => skill.name)
+    .map((skill) => listedName(skill))
     .filter((name) => !result.hidden.has(name));
+}
+
+/** How Oh My Pi 18.18.6 lists two skills of one name. */
+const NAMESPACE_RULE =
+  "Oh My Pi 18.18.6 keeps the bare name for the skill of a name it admits first (a skills directory an extension names before any provider's skill) and lists a later one whose text (body or frontmatter) differs as <namespace>/<name>, the namespace its plugin's name, else the directory that holds its skills/, else its provider's id for a dotted directory, made one token of letters, digits, _ and - (extensibility/skills.ts, skillNamespace, lines 96-116, and resolveCollision, lines 164-223); a later one of the same text it drops";
+
+/** The namespace Oh My Pi gives a copy of the unit `unit` (NAMESPACE_RULE): the plugin's name a
+ *  package (less its scope), a plugin or a worker image plugin is loaded under; else the directory
+ *  that holds the copy's `skills/` where the host installs it: a pool's directory, `agent` for
+ *  ~/.omp/agent/skills, and for ~/.claude/skills, a dotted directory, the Claude Code provider's id
+ *  `claude` (discovery/claude.ts, line 43). Each is made one token as Oh My Pi makes it. Undefined
+ *  for any other unit, and for a pool in a dotted directory, whose second copy a profile leaves
+ *  out. */
+function unitNamespace(unit: string): string | undefined {
+  const root = unit.startsWith("package:")
+    ? unit.slice("package:".length).split("/").pop()
+    : unit.startsWith("plugin:")
+      ? unit.slice("plugin:".length).split("@")[0]
+      : unit.startsWith("image:")
+        ? unit.slice("image:".length)
+        : unit.startsWith("pool:")
+          ? path.posix.basename(unit.slice("pool:".length))
+          : unit === "user-skills:omp"
+            ? "agent"
+            : unit === "user-skills:claude-code"
+              ? "claude"
+              : undefined;
+  if (root === undefined || root.startsWith(".")) return undefined;
+  const token = root.replace(/[^\p{L}\p{N}_-]+/gu, "-").replace(/^-+|-+$/g, "");
+  return token === "" ? undefined : token;
 }
 
 /**
@@ -2548,24 +2640,28 @@ function sessionRepository(
 /** The skill directories of the session repository Oh My Pi 18.18.6 lists for a working directory
  *  in a checkout of it (its project skills), each under the working directory and under each of
  *  its parents up to the checkout's root, in the order it admits them, each with its rank among
- *  the skills of one name (`unitRank`) and where Oh My Pi reads it. */
+ *  the skills of one name (`unitRank`), where Oh My Pi reads it, and the namespace it lists a
+ *  second copy of a name under (NAMESPACE_RULE): its directory is dotted, so its provider's id
+ *  (discovery/builtin.ts, line 43; discovery/claude.ts, line 43). */
 const PROJECT_SKILLS = [
   {
     dir: ".omp/skills",
     rank: 1,
     how: "Oh My Pi lists each <name>/SKILL.md that has a description under .omp/skills/ of the working directory and of each parent up to the repository's root, the nearest first (discovery/builtin.ts, loadSkills, lines 314-327, over getProjectAncestorDirs, lines 81-109)",
+    namespace: "native",
   },
   {
     dir: ".claude/skills",
     rank: 5,
     how: "Oh My Pi lists each <name>/SKILL.md under .claude/skills/ of the working directory and of each parent up to the repository's root, the nearest first (discovery/claude.ts, loadSkills, lines 205-224)",
+    namespace: "claude",
   },
 ] as const;
 
 /** Which of a project skill and another skill of its name Oh My Pi 18.18.6 gives a session, and
  *  where its source says so. */
 const PROJECT_PRECEDENCE =
-  "Oh My Pi 18.18.6 keeps under a name the first skill it admits, in its providers' order, highest priority first (capability/index.ts, lines 177-184 and 285-333; extensibility/skills.ts, resolveCollision, lines 141-223, lists a later one of other text under another name, which a profile does not install): its own provider (100) reads the project's .omp/skills of the working directory and of each parent up to the repository's root, the nearest first, before ~/.omp/agent/skills (discovery/builtin.ts, lines 81-109 and 314-342), extension packages come next (90, discovery/omp-plugins.ts, lines 136-169), then the Claude Code provider (80) reads ~/.claude/skills before the .claude/skills of the working directory and of each parent up to the repository's root, the nearest first (discovery/claude.ts, lines 205-249), then Claude Code's plugins (75 and 70, discovery/agent-plugins.ts and discovery/claude-plugins.ts); a skill of an extension's own directory (resources_discover) outranks them all (extensibility/skills.ts, lines 147-151)";
+  "Oh My Pi 18.18.6 keeps under a name the first skill it admits, in its providers' order, highest priority first (capability/index.ts, lines 177-184 and 285-333; extensibility/skills.ts, resolveCollision, lines 141-223, lists a later one of other text under a namespace, as NAMESPACE_RULE says): its own provider (100) reads the project's .omp/skills of the working directory and of each parent up to the repository's root, the nearest first, before ~/.omp/agent/skills (discovery/builtin.ts, lines 81-109 and 314-342), extension packages come next (90, discovery/omp-plugins.ts, lines 136-169), then the Claude Code provider (80) reads ~/.claude/skills before the .claude/skills of the working directory and of each parent up to the repository's root, the nearest first (discovery/claude.ts, lines 205-249), then Claude Code's plugins (75 and 70, discovery/agent-plugins.ts and discovery/claude-plugins.ts); a skill of an extension's own directory (resources_discover) outranks them all (extensibility/skills.ts, lines 147-151)";
 
 /** Where Oh My Pi 18.18.6 admits the skills of the unit `unit` among the skills of one name,
  *  earliest first (PROJECT_PRECEDENCE), counted as PROJECT_SKILLS counts a project's: a pool an
@@ -2688,6 +2784,17 @@ interface ProfileResult {
   readonly shipped: ReadonlySet<string>;
   /** The names of the profile's skills Oh My Pi leaves out of its listing (HIDDEN_RULE). */
   readonly hidden: ReadonlySet<string>;
+  /** Each other install path of a copy the profile holds, with the namespace Oh My Pi lists it
+   *  under when its text there differs (NAMESPACE_RULE): the profile reads each repository at one
+   *  commit, so it holds the copy once. */
+  readonly again: readonly InstallPath[];
+}
+
+/** An install path of a copy: the copy, how its unit ships it, and its unit's namespace. */
+interface InstallPath {
+  readonly copy: { readonly repo: string; readonly path: string; readonly name: string };
+  readonly how: string;
+  readonly namespace: string;
 }
 
 /** Why a profile is refused: it installs no copy of the cut repository's skill. */
@@ -2858,6 +2965,38 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   // A dev box installs every unit its own repository's installers install into Oh My Pi at the
   // session's start, whether or not the session read from it (DEVBOX_INSTALLERS_RULE).
   const home = input.context.startsWith("legion:") ? undefined : devboxHome(copies, evidence);
+  // A Legion pod installs what its deployment gives each role at its start (LEGION_INSTALLS_RULE):
+  // the deployment repository is the one whose project file (legion-project) names the project,
+  // read at the session's start with the catalog its role setup fetches.
+  const projectFile = input.context.startsWith("legion:")
+    ? copies.manifests.find(
+        (row) =>
+          row.kind === "legion-project" && (row.says ?? "").startsWith(`project ${input.project}:`)
+      )
+    : undefined;
+  const deployment = projectFile?.repository;
+  const legionPins = (manifests: readonly Manifest[]): InstallerPin[] => {
+    if (deployment === undefined) return [];
+    const legion = legionCatalog(manifests, deployment, projectFile?.path ?? "");
+    return [
+      ...legion.setup,
+      ...legion.plugins.flatMap(({ manifest, fact }) =>
+        fact.repo !== "" && legion.wanted.has(fact.plugin)
+          ? [{ repository: fact.repo, ref: fact.ref, manifest }]
+          : []
+      ),
+      // Each release the worker image takes a skill from, at its tag.
+      ...manifests.flatMap((manifest) =>
+        manifest.repository === deployment
+          ? manifest.facts.flatMap((fact) =>
+              fact.type === "image-skill"
+                ? [{ repository: fact.repo, ref: fact.ref, manifest }]
+                : []
+            )
+          : []
+      ),
+    ];
+  };
 
   // What each unit ships at the session's start. installers.tsv says what it ships at the commit
   // the copies output read, which is later; so each repository of a unit is read at its commit
@@ -2880,6 +3019,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
     for (const row of listed(via)) repositories.add(row.copy_repository ?? "");
   }
   for (const copy of alone.values()) repositories.add(copy.repo);
+  if (deployment !== undefined) repositories.add(deployment);
   if (home !== undefined) {
     repositories.add(home);
     for (const row of copies.installers) {
@@ -2940,17 +3080,18 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
       at: await github.at(value.repo, sha, run.config.excludePaths),
     };
   }
-  // A repository the dev box's installers pin at the session's start that no unit of the copies
-  // output names (a clone an installer made then and removed since, a marketplace and the source
-  // of a plugin installed from it) is read at that ref too, again until no new one is pinned.
-  if (home !== undefined) {
+  // A repository the dev box's installers, or a Legion deployment's role setup, pin at the
+  // session's start that no unit of the copies output names (a clone an installer made then and
+  // removed since, a marketplace, the source of a plugin installed from it) is read at that ref
+  // too, again until no new one is pinned.
+  if (home !== undefined || deployment !== undefined) {
     const tried = new Set<string>();
     for (let fresh = true; fresh; ) {
       fresh = false;
       const manifests = values.flatMap((value) =>
         repositories.has(value.repo) || value.repo === home ? value.at.manifests : []
       );
-      for (const pin of installerPins(manifests)) {
+      for (const pin of [...installerPins(manifests), ...legionPins(manifests)]) {
         const known = (repo: string) => repo.toLowerCase() === pin.repository.toLowerCase();
         if (values.some((value) => known(value.repo)) || tried.has(pin.repository.toLowerCase())) {
           continue;
@@ -3077,6 +3218,48 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
       });
     }
   }
+  // A Legion pod's role start installs the catalog plugins its deployment gives the project, and
+  // its worker image carries the skills its Dockerfile installs under /opt.
+  if (deployment !== undefined) {
+    const legion = legionCatalog(
+      [...held.values()].flatMap((at) => at.manifests),
+      deployment,
+      projectFile?.path ?? ""
+    );
+    if (legion.setup.length === 0) {
+      evidence.push({
+        item: "left out: the catalog of the Legion role setup",
+        source: `${LEGION_INSTALLS_RULE}; ${deployment} at ${commits.get(deployment)} holds no role setup script that names a catalog`,
+      });
+    }
+    for (const row of resolved.rows) {
+      const plugin = row.unit.startsWith("plugin:") ? (row.unit.slice(7).split("@")[0] ?? "") : "";
+      const catalog = legion.setup.some(
+        (pin) => pin.repository.toLowerCase() === row.manifestRepository.toLowerCase()
+      );
+      const fromCatalog = catalog && row.kind === "claude-marketplace" && legion.wanted.has(plugin);
+      const fromImage = row.manifestRepository === deployment && row.unit.startsWith("image:");
+      if (
+        !(fromCatalog || fromImage) ||
+        row.copyPath === undefined ||
+        !Object.hasOwn(MEMBER_ACTIONS, row.action)
+      ) {
+        continue;
+      }
+      const via = {
+        unit: row.unit,
+        repository: row.manifestRepository,
+        manifest: row.manifestPath,
+      };
+      if (units.has(viaKey(via))) continue;
+      units.set(viaKey(via), {
+        via,
+        why: fromCatalog
+          ? `${LEGION_INSTALLS_RULE}: ${deployment}'s role setup installs ${plugin} of the catalog ${row.manifestRepository} (${legion.why})`
+          : `${LEGION_INSTALLS_RULE}: ${deployment}:${row.manifestPath} at ${commits.get(deployment)} installs it in the worker image`,
+      });
+    }
+  }
 
   const plugins = new Map<string, { repo: string; path: string; name: string; why: string }>();
   /** Each copy a unit ships at the session's start, in the order of the units, with how it ships,
@@ -3087,6 +3270,8 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
     how: string;
     source: string;
     rank: number | undefined;
+    /** The namespace Oh My Pi lists a second copy of the name under (`unitNamespace`). */
+    namespace?: string | undefined;
   }[] = [];
   for (const [key, { via, why }] of units) {
     const id = via.unit;
@@ -3111,6 +3296,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
         how,
         source: `${copy.repo} at ${commits.get(copy.repo)}: ${how}${inR4 ? "" : "; installers.tsv, which the copies output read later, does not list it"}`,
         rank: unitRank(id),
+        namespace: unitNamespace(id),
       });
     }
     for (const row of later) {
@@ -3173,7 +3359,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   if (checkout.repo !== undefined && projectTree !== undefined) {
     const how = `project skill of ${checkout.repo}`;
     const start = `${how} at ${commits.get(checkout.repo)}`;
-    for (const { dir, rank, how: listing } of projectDirs) {
+    for (const { dir, rank, how: listing, namespace } of projectDirs) {
       for (const copy of projectTree.copies) {
         if (path.posix.dirname(copy.path) !== dir) continue;
         // A SKILL.md that could not be read is named in the faults' evidence, and is offered.
@@ -3193,6 +3379,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
           how,
           source: `${start}: ${listing}`,
           rank,
+          namespace,
         });
       }
     }
@@ -3245,8 +3432,9 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
 
   // Each name's copy: the one the session read, when a unit ships it at the session's start (the
   // read shows which of the copies of one name the host gave the session); else a project skill
-  // that Oh My Pi admits before every other copy of its name (PROJECT_PRECEDENCE); else the
-  // first unit's.
+  // that Oh My Pi admits before every other copy of its name (PROJECT_PRECEDENCE); else the copy
+  // of the unit Oh My Pi admits first (unitRank), of units of one rank the first unit's. The
+  // others of the name are left out, or listed under a namespace (NAMESPACE_RULE).
   const chosen = new Map<string, (typeof offers)[number]>();
   for (const [name, read] of readCopies) {
     const offer = offers.find((each) => each.copy.name === name && same(each.copy, read));
@@ -3264,10 +3452,22 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
     });
     if (first && !chosen.has(name)) chosen.set(name, offer);
   }
+  const rankOf = (offer: (typeof offers)[number]) => offer.rank ?? Number.POSITIVE_INFINITY;
   for (const offer of offers) {
-    if (!chosen.has(offer.copy.name)) chosen.set(offer.copy.name, offer);
+    const { name } = offer.copy;
+    if (chosen.has(name)) continue;
+    const first = offers
+      .filter((each) => each.copy.name === name)
+      .reduce((a, b) => (rankOf(b) < rankOf(a) ? b : a));
+    chosen.set(name, first);
   }
   const skills = new Map<string, Omit<ProfileSkill, "commit">>();
+  const again: InstallPath[] = [];
+  /** The blob of the SKILL.md of `copy` at the session's start, as read. */
+  const blobOf = (copy: { repo: string; path: string }) =>
+    (held.get(copy.repo) ?? (copy.repo === checkout.repo ? projectTree : undefined))?.copies.find(
+      (each) => each.path === copy.path
+    )?.blob;
   for (const offer of offers) {
     const pick = chosen.get(offer.copy.name);
     if (pick === undefined) continue;
@@ -3283,13 +3483,41 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
       const why =
         readAt !== undefined
           ? `the session read the copy of ${pick.copy.repo} ${pick.copy.path} (message ${readAt})`
-          : projectOffers.includes(pick) || projectOffers.includes(offer)
+          : projectOffers.includes(pick) ||
+              projectOffers.includes(offer) ||
+              rankOf(pick) < rankOf(offer)
             ? `Oh My Pi gives the session the copy of ${pick.copy.repo} ${pick.copy.path} under that name (${pick.how}): ${PROJECT_PRECEDENCE}`
             : `the copy of ${pick.copy.repo} ${pick.copy.path} came first`;
+      // A second copy of the name whose text differs Oh My Pi lists under its namespace, and one of
+      // the same text it drops (NAMESPACE_RULE).
+      const blob = blobOf(offer.copy);
+      const differs = blob !== undefined && blob !== blobOf(pick.copy);
+      const namespaced =
+        offer.namespace === undefined
+          ? undefined
+          : listedName({ name: offer.copy.name, namespace: offer.namespace });
+      if (differs && namespaced !== undefined && !skills.has(namespaced)) {
+        skills.set(namespaced, { ...offer.copy, namespace: offer.namespace });
+        evidence.push({
+          item: `skill ${namespaced} (${offer.copy.repo} ${offer.copy.path})`,
+          source: `${offer.source}; under the name ${offer.copy.name} ${why}, and this copy's text differs: ${NAMESPACE_RULE}`,
+        });
+        continue;
+      }
+      const text =
+        blob === undefined
+          ? ""
+          : !differs
+            ? "; its SKILL.md is the same, and Oh My Pi drops such a copy (NAMESPACE_RULE)"
+            : namespaced === undefined
+              ? "; its SKILL.md differs, and the namespace Oh My Pi would list it under is not known"
+              : `; its SKILL.md differs, and ${namespaced} is taken`;
       evidence.push({
         item: `left out: skill ${offer.copy.name} from ${offer.copy.repo} ${offer.copy.path}`,
-        source: `${offer.how} too; ${why}`,
+        source: `${offer.how} too; ${why}${text}`,
       });
+    } else if (pick !== offer && offer.namespace !== undefined) {
+      again.push({ copy: offer.copy, how: offer.how, namespace: offer.namespace });
     }
   }
   const shipped = new Set(offers.map((offer) => `${offer.copy.repo}\0${offer.copy.name}`));
@@ -3353,7 +3581,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
 
   const profileSkills: ProfileSkill[] = [];
   for (const skill of [...skills.values()].sort((a, b) =>
-    a.name < b.name ? -1 : a.name > b.name ? 1 : 0
+    listedName(a) < listedName(b) ? -1 : listedName(a) > listedName(b) ? 1 : 0
   )) {
     profileSkills.push({ ...skill, commit: await commitOf(skill.repo) });
   }
@@ -3362,9 +3590,9 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   for (const skill of profileSkills) {
     const at = held.get(skill.repo) ?? (skill.repo === checkout.repo ? projectTree : undefined);
     if (at?.hidden.has(skill.path) !== true) continue;
-    hidden.add(skill.name);
+    hidden.add(listedName(skill));
     evidence.push({
-      item: `not listed: skill ${skill.name}`,
+      item: `not listed: skill ${listedName(skill)}`,
       source: `${skill.repo} ${skill.path} at ${skill.commit}: ${HIDDEN_RULE}`,
     });
   }
@@ -3473,6 +3701,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
     evidence,
     shipped,
     hidden,
+    again,
   };
 }
 
@@ -3741,7 +3970,7 @@ function listsSkill(
   if (profile.systemPrompt !== undefined) {
     return armPromptBlocks(profile.systemPrompt, skill, undefined).line !== "not listed";
   }
-  return skills.some((each) => each.name === skill);
+  return skills.some((each) => listedName(each) === skill);
 }
 
 /**
@@ -3749,9 +3978,11 @@ function listsSkill(
  * `transcriptPath` of `store`; its caller parsed it, `readTranscript`), rebuilt as build-cases
  * rebuilds a case's at the session's start: its context (`sessionContext`), and `caseProfile` from
  * every read of its branch, so the units its host had, at their commits then, their plugins and
- * the context files; a subagent's recorded system prompt (its secrets taken out) and tools. The
- * tested skill `skill` is left out of the skills, since the load test installs it. Throws, naming
- * why, when the session gives none.
+ * the context files; a subagent's recorded system prompt (its secrets taken out) and tools. Each
+ * copy of the tested skill `skill`'s source (cases.ts's `testedCopy`) is left out of the skills,
+ * since the load test installs it; a copy of another source that shares the name stays, under its
+ * namespace. The evidence says where the session's host had the tested source at another install
+ * path too (`held once`). Throws, naming why, when the session gives none.
  */
 async function sessionProfile(
   run: ProfileRun,
@@ -3779,14 +4010,28 @@ async function sessionProfile(
     init === undefined || secrets.value.systemPrompt === undefined
       ? {}
       : { systemPrompt: secrets.value.systemPrompt, tools: init.tools };
+  // Each copy of the tested skill's source, the load test installs (cases.ts's `testedCopy`); a
+  // copy of another source that shares its name stays.
+  const tested = testedCopy(profiled.profile.skills, skill);
   return {
     profile: {
       ...profiled.profile,
       ...recorded,
-      skills: profiled.profile.skills.filter((each) => each.name !== skill),
+      skills: profiled.profile.skills.filter((each) => !tested(each)),
       context,
     },
-    evidence: [...evidence, ...profiled.evidence],
+    evidence: [
+      ...evidence,
+      ...profiled.evidence,
+      // The tested source at another install path: a host that had it there at another commit
+      // listed it a second time under a namespace, which the profile does not hold.
+      ...profiled.again
+        .filter(({ copy }) => tested(copy))
+        .map(({ copy, how, namespace }) => ({
+          item: `held once: skill ${skill} (${copy.repo} ${copy.path})`,
+          source: `${how} too, the same copy; a host that had it there at another commit than the first install's lists that one as ${namespace}/${skill} (NAMESPACE_RULE), and the profile, which reads ${copy.repo} at one commit, holds the tested skill once, so a recorded ${namespace}/${skill} is counted missing by the listing measure`,
+        })),
+    ],
     secretsRemoved: secrets.removed,
     listed: listsSkill(recorded, profiled.profile.skills, skill),
     listing: {
@@ -4102,7 +4347,10 @@ async function caseOf(
     return drop("profile-failed", messageFor(error));
   }
   if (
-    !profiled.profile.skills.some((each) => each.name === run.skill && each.repo === run.cut.repo)
+    !profiled.profile.skills.some(
+      (each) =>
+        each.name === run.skill && each.repo === run.cut.repo && each.namespace === undefined
+    )
   ) {
     return drop("not-cut-copy", notInstalled(run));
   }
@@ -4488,7 +4736,11 @@ async function reprofileCases(
       leave(`${DROP_REASONS["profile-failed"]}: ${messageFor(error)}`);
       continue;
     }
-    if (!profiled.profile.skills.some((each) => each.name === c.skill && each.repo === cut.repo)) {
+    if (
+      !profiled.profile.skills.some(
+        (each) => each.name === c.skill && each.repo === cut.repo && each.namespace === undefined
+      )
+    ) {
       leave(notInstalled({ skill: c.skill, cut }));
       continue;
     }

@@ -6,7 +6,10 @@
  * each copy of it goes) and `twin` (the old directory again, built as `old` is: the false-loss
  * control's second copy of the old arm, with its own capture and runs). Only the skill's directory
  * differs between arms: the messages are the case's own but for the text of the skill's files in
- * its read results, and the profile is the case's own but for the skill, which `none` leaves out.
+ * its read results, and the profile is the case's own, each copy of the skill's source (cases.ts's
+ * `testedCopy`: its repository and path, under its own name or a namespace) installed from the
+ * arm's directory, which `none` leaves out; a copy of another source that shares the name stays
+ * as the profile has it in every arm.
  *
  * In each arm but `none`, each read result of a file of the skill (the case's `skillReads`) is
  * answered from the arm's file the way the pinned Oh My Pi 18.18.6 answers a `skill://` read: one
@@ -43,7 +46,14 @@ import {
   skillHeaderPath,
   stripSkillHeader,
 } from "../skill-scenarios/transcript";
-import { type Case, type ProfileSkill, skillReadFile, textLines } from "./cases";
+import {
+  type Case,
+  listedName,
+  type ProfileSkill,
+  skillReadFile,
+  testedCopy,
+  textLines,
+} from "./cases";
 import type { Arm as ScoreArm } from "./score";
 
 /** The name of an arm, as run records carry it. */
@@ -63,8 +73,8 @@ export interface Arm {
   readonly installedDir: string;
   /** The case's messages, as this arm gives them. */
   readonly messages: SessionMessage[];
-  /** The skills the arm's profile installs: the case's own, less the case's skill for `none`. The
-   * case's skill is installed from `skillDir`. */
+  /** The skills the arm's profile installs: the case's own, less each copy of the case's skill's
+   * source for `none` (cases.ts's `testedCopy`). Each such copy is installed from `skillDir`. */
   readonly profileSkills: ProfileSkill[];
 }
 
@@ -81,7 +91,7 @@ export interface ArmDirs {
  * shown at `shown`: the header and the text, or the not-found text with `isError`. */
 function answer(arm: Arm, file: string, shown: string): { text: string; isError: boolean } {
   if (arm.skillDir === undefined) {
-    const names = arm.profileSkills.map((skill) => skill.name);
+    const names = arm.profileSkills.map((skill) => listedName(skill));
     const available = names.length > 0 ? names.join(", ") : "none";
     return { text: `Unknown skill: ${arm.skill}\nAvailable: ${available}`, isError: true };
   }
@@ -231,13 +241,14 @@ export function buildArm(c: Case, name: ArmName, dirs: ArmDirs, scratch: string)
       if (!kept.some((part) => part.type === "text" || part.type === "toolCall")) return [];
       return [structuredClone({ ...message, content: kept })];
     });
+    const tested = testedCopy(c.profile.skills, c.skill);
     return {
       name,
       skill: c.skill,
       skillDir: undefined,
       installedDir,
       messages,
-      profileSkills: structuredClone(c.profile.skills.filter((skill) => skill.name !== c.skill)),
+      profileSkills: structuredClone(c.profile.skills.filter((skill) => !tested(skill))),
     };
   }
 

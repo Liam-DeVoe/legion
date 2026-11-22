@@ -5,9 +5,12 @@
  * of a case, so the paths Oh My Pi puts in its prompt are the same in every arm:
  *
  * - `skills/`: the arm's installed skills (`arm.profileSkills`), one directory each under its
- *   name. The case's skill comes from the arm's own directory; every other skill is its
- *   repository's directory at its commit, read through `source` and kept under the cache
- *   (`skills/<key of repo, commit, path>`).
+ *   name. Each copy of the case's skill's source (cases.ts's `testedCopy`) comes from the arm's
+ *   own directory; every other skill is its repository's directory at its commit, read through
+ *   `source` and kept under the cache (`skills/<key of repo, commit, path>`). A second copy of a
+ *   name, whose text differs (a profile skill's `namespace`), goes in
+ *   `namespaced/<namespace>/skills/<name>`, one more skills directory of its own
+ *   (`namespacedDirs`), so Oh My Pi lists it as `<namespace>/<name>`.
  * - `plugins/<name>/`: each plugin of `profile.plugins` that is an Oh My Pi extension (its
  *   directory holds a `package.json` with an `omp` field), built as the worker image builds the
  *   Legion plugins: the repository at the commit (`trees/<key of repo, commit>`), its packages
@@ -81,7 +84,7 @@ import path from "node:path";
 import { messageFor } from "@legion/envoy-client/errors";
 import { mapLimit } from "../skill-scenarios/production-dispatch";
 import type { Arm } from "./arms";
-import type { Case } from "./cases";
+import { type Case, listedName, testedCopy } from "./cases";
 import { firstLine, GhRetries } from "./common";
 import {
   BlobBatch,
@@ -228,6 +231,9 @@ export interface InstalledSkill {
 /** The context of one capture, written under `root`. */
 export interface CaseContext {
   readonly skillsDir: string;
+  /** The skills directory of each namespace of the profile (`namespaced/<namespace>/skills`), in
+   *  the profile's order, which the capture gives Oh My Pi after `skillsDir`. */
+  readonly namespacedDirs: readonly string[];
   readonly skills: readonly InstalledSkill[];
   /** Each built plugin's directory, as `--extension` takes it. */
   readonly extensions: readonly string[];
@@ -1176,6 +1182,12 @@ export async function buildContext(
   const retriedBefore = source.reads?.().retries ?? {};
   const builds = new Builds(options.cacheDir);
   const skillsDir = path.join(root, "skills");
+  // A namespaced copy (ProfileSkill's `namespace`) goes in `namespaced/<namespace>/skills/<name>`,
+  // a skills directory the capture gives Oh My Pi after `skills/`, so Oh My Pi admits the bare copy
+  // first and lists this one as `<namespace>/<name>`: skillNamespace (extensibility/skills.ts,
+  // lines 96-115) takes the directory that holds `skills/` for a configured directory's skill.
+  const namespacedDir = path.join(root, "namespaced");
+  const namespacedDirs: string[] = [];
   const pluginsDir = path.join(root, "plugins");
   const checkoutDir = path.join(root, "work");
   const workspace =
@@ -1184,7 +1196,14 @@ export async function buildContext(
       : path.join(checkoutDir, c.profile.workingDirectory);
   const promptFile = path.join(root, "system-prompt.md");
   const claudeConfigDir = path.join(root, "claude-config");
-  for (const owned of [skillsDir, pluginsDir, checkoutDir, promptFile, claudeConfigDir]) {
+  for (const owned of [
+    skillsDir,
+    namespacedDir,
+    pluginsDir,
+    checkoutDir,
+    promptFile,
+    claudeConfigDir,
+  ]) {
     rmSync(owned, { recursive: true, force: true });
   }
   // A dev box's user-level context file (`user: true`) is the one its session's host read
@@ -1198,13 +1217,15 @@ export async function buildContext(
   mkdirSync(skillsDir, { recursive: true });
   mkdirSync(workspace, { recursive: true });
 
+  // Each copy of the case's skill's source, under its own name or a namespace, is the arm's
+  // directory (cases.ts's `testedCopy`); every other skill is its repository's.
+  const tested = testedCopy(arm.profileSkills, arm.skill);
   // The repository skills the cache lacks, read ahead per repository and commit: one tree and a
   // GraphQL batch per BLOB_BATCH blobs, where each file would take a call of its own.
   const ahead = new Map<string, { repo: string; commit: string; dirs: string[] }>();
   for (const skill of arm.profileSkills) {
     const key = cacheKey(skill.repo, skill.commit, skill.path);
-    if (skill.name === arm.skill || existsSync(path.join(options.cacheDir, "skills", key)))
-      continue;
+    if (tested(skill) || existsSync(path.join(options.cacheDir, "skills", key))) continue;
     const id = `${skill.repo}@${skill.commit}`;
     const group = ahead.get(id) ?? { repo: skill.repo, commit: skill.commit, dirs: [] };
     group.dirs.push(skill.path);
@@ -1222,16 +1243,25 @@ export async function buildContext(
       if (release !== undefined) releases.push(release);
     }
     for (const skill of arm.profileSkills) {
-      const dir = path.join(skillsDir, skill.name);
+      const listed = listedName(skill);
+      const dir =
+        skill.namespace === undefined
+          ? path.join(skillsDir, skill.name)
+          : path.join(namespacedDir, skill.namespace, "skills", skill.name);
       if (existsSync(dir)) {
-        throw new Error(`case ${c.id}: the profile installs ${skill.name} twice`);
+        throw new Error(`case ${c.id}: the profile installs ${listed} twice`);
       }
-      if (skill.name === arm.skill) {
+      if (skill.namespace !== undefined) {
+        const parent = path.dirname(dir);
+        mkdirSync(parent, { recursive: true });
+        if (!namespacedDirs.includes(parent)) namespacedDirs.push(parent);
+      }
+      if (tested(skill)) {
         if (arm.skillDir === undefined) {
           throw new Error(`case ${c.id}: arm ${arm.name} has no skill`);
         }
         cpSync(arm.skillDir, dir, { recursive: true, verbatimSymlinks: true });
-        skillRecords.push({ name: skill.name, from: "arm" });
+        skillRecords.push({ name: listed, from: "arm" });
       } else {
         const key = cacheKey(skill.repo, skill.commit, skill.path);
         const cached = await builds.entry("skill", key, (dest) =>
@@ -1239,11 +1269,11 @@ export async function buildContext(
         );
         cpSync(cached, dir, { recursive: true, verbatimSymlinks: true });
         skillRecords.push({
-          name: skill.name,
+          name: listed,
           from: { repo: skill.repo, commit: skill.commit, path: skill.path, key },
         });
       }
-      skills.push({ name: skill.name, dir, ...skillFrontmatter(dir) });
+      skills.push({ name: listed, dir, ...skillFrontmatter(dir) });
     }
   } finally {
     for (const release of releases) release();
@@ -1346,6 +1376,7 @@ export async function buildContext(
 
   return {
     skillsDir,
+    namespacedDirs,
     skills,
     extensions,
     workspace,

@@ -307,7 +307,7 @@ for one repository and 8 in all. It prints one line per repository read (`copies
 <owner/repo>: <entries> entries, <calls> tree reads, <seconds> s, cached|read`) and one per 25
 searches, so the log gives the rate.
 
-Five install paths give a skill to Oh My Pi from outside the owners' trees, and each is a unit of
+Six install paths give a skill to Oh My Pi from outside the owners' trees, and each is a unit of
 the list, read as Oh My Pi 18.18.6 reads it:
 
 - An Oh My Pi plugin package (a `package.json` whose `omp` or `pi` field is set; `pi` counts only
@@ -337,6 +337,14 @@ the list, read as Oh My Pi 18.18.6 reads it:
   script sets read so): the repository's `skills/<skill>` at that ref, installed at
   `~/.agents/skills/<skill>`, which Oh My Pi's agents provider lists (discovery/agents.ts, lines
   123-127 and 158-170).
+- A Legion deployment's files: its role setup script (`legion/*setup.sh`) fetches a catalog
+  repository (`repo=<owner>/<name>`, `omp plugin marketplace add`) and installs plugins of it
+  (`omp plugin install`); its program (`legion/main.go`) names the plugins every role installs
+  (`everyRolePlugins`); a project file's `verificationSkillsLeaveOut` names the catalog plugins
+  its roles leave out; and a worker image's Dockerfile (`legion/worker*/Dockerfile`) installs each
+  skill of a GitHub release as an Oh My Pi plugin under `/opt/<dir>/` (an `image:<dir>` unit, at
+  the release's tag). A marketplace entry whose source is `git-subdir` is the plugin directory
+  `path` of that repository at its pin.
 
 Each repository a pin names (the dependency's, the clone's, the marketplace's, a marketplace
 plugin's source, a `gh skill install`'s) is read at the pin's ref, in place of its default
@@ -440,11 +448,21 @@ that is no unit's repository is read only where Oh My Pi reads a project, one di
 call: each level, its `.omp/`, `.claude/`, `.agent/`, `.agents/`, `.gemini/` and `.github/`, its
 `.omp/skills/` and `.claude/skills/`, and each skill directory in those. So a repository whose
 whole tree GitHub cuts short (`truncated`) is read too. Where another skill has
-the same name, the profile holds the copy Oh My Pi gives the session (unless the session read the
-other): a project's `.omp/skills` comes before `~/.omp/agent/skills` and extension packages; its
-`.claude/skills` comes after those and after `~/.claude/skills`, and before Claude Code plugins;
-of one kind, the nearer level comes first; a pool an extension's `resources_discover` names comes
-before them all. The case's evidence cites the Oh My Pi source for each. Every top-level session
+the same name, the profile holds as the name's copy the one Oh My Pi gives the session (unless the
+session read the other): a project's `.omp/skills` comes before `~/.omp/agent/skills` and
+extension packages; its `.claude/skills` comes after those and after `~/.claude/skills`, and
+before Claude Code plugins; of one kind, the nearer level comes first; a pool an extension's
+`resources_discover` names comes before them all; of units of one kind, the first unit's. Oh My
+Pi lists a later copy whose `SKILL.md` differs as `<namespace>/<name>` and drops one whose
+`SKILL.md` is the same (extensibility/skills.ts, skillNamespace, lines 96-116, and
+resolveCollision, lines 164-223), so the profile installs such a copy with its `namespace`, and a
+capture lays it out under `namespaced/<namespace>/skills/<name>`, a skills directory it gives Oh
+My Pi after its own, where Oh My Pi gives it that name. The namespace is the plugin's name for a
+package (its `node_modules` directory's name), a Claude Code plugin or a worker image plugin;
+else the directory that holds its `skills/`: a pool's directory, `agent` for `~/.omp/agent/skills`;
+for a dotted directory, its provider's id: `native` for a project's `.omp/skills`, `claude` for
+`.claude/skills`. A copy of another unit is left out, with why. The case's evidence cites the Oh
+My Pi source for each. Every top-level session
 in a checkout has its session repository's context files as Oh My Pi reads them: one at each
 level from the working directory up to the checkout's root, the one its ranking keeps in that
 level's slot (`.omp/AGENTS.md` at the nearest level whose `.omp/` holds anything, priority 100;
@@ -481,12 +499,29 @@ out (Oh My Pi 18.18.6 loads no such skill: extensibility/skills.ts, lines 386-38
 skill whose `SKILL.md` frontmatter sets `hide: true` or `disable-model-invocation: true` is
 installed, so `skill://` reads it, and the evidence marks it `not listed`: Oh My Pi loads it and
 leaves it out of the prompt's listing (extensibility/skills.ts, line 494; system-prompt.ts,
-lines 961-983). Oh My Pi lists a second skill of one name and other text as
-`<namespace>/<name>` (extensibility/skills.ts, lines 164-223); a profile installs one copy of a
-name, so such a recorded line is counted missing. A Legion profile installs the plugin lists
+lines 961-983). A Legion profile installs what the deployment gives each role at its start: the
+deployment is the repository whose project file (`legion/projects/*.yaml`) names the session's
+project, read at its commit of the session's start with the catalog its role setup fetches; the
+profile installs each plugin of the catalog its roles install (the every-role plugins, and, when
+the project file sets `verificationSkillsLeaveOut`, an empty list too, every other plugin but those
+it names) and each skill its worker image installs from a release. It installs the plugin lists
 (`omp-plugins` manifests) of the repositories its worker image's packages come from (those of the
 prefix rows under `/opt/legion/`) and no other: a dev box's own plugin list is no pod's, and the
-evidence names each list left out.
+evidence names each list left out. A daemon-launched controller installs the every-role plugins
+alone, which a profile does not tell apart.
+
+The arms and the load test tell the copies of the tested skill apart by their source, not their
+name (cases.ts's `testedCopy`: the repository and path of the copy listed under the skill's own
+name, at any commit, under any namespace). Each arm installs its own text in every copy of that
+source, and `none` leaves out every one, so no arm keeps the old text readable at another path; a
+copy of another source that shares the name (listed as `<namespace>/<name>`) stays as the profile
+has it in every arm. A load task's profile leaves out every copy of the tested source, which the
+load test installs once under `--name`, and keeps the other sources' copies; load reads a
+namespaced skill as `<namespace>/<name>` in every name check, and refuses one on Claude Code,
+whose layout places skills by their bare name. A profile holds each copy once, since it reads a
+repository at one commit: where the session's host had the tested source at a second install path
+too (Oh My Pi lists that one as `<namespace>/<name>` when its text there differs), the task's
+evidence says so (`held once`), and the listing measure counts such a recorded name missing.
 
 Each case and each load task's profile carries a `listing measure` evidence item, whose source
 is one JSON object (`ListingMeasure` in build.ts): how far the listing its rebuilt profile gives

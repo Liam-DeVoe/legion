@@ -1135,6 +1135,8 @@ function writeProfile(
     readonly model: string;
     readonly hintModel: string;
     readonly skillsDir: string;
+    /** The skills directories of the profile's namespaced copies, after `skillsDir`. */
+    readonly namespacedDirs: readonly string[];
   }
 ): void {
   const parsed: unknown = Bun.YAML.parse(readFileSync(options.models, "utf8"));
@@ -1191,7 +1193,7 @@ function writeProfile(
       {
         modelRoles: { default: options.model, smol: options.hintModel },
         disabledProviders: DISABLED_PROVIDERS,
-        skills: { customDirectories: [options.skillsDir] },
+        skills: { customDirectories: [options.skillsDir, ...options.namespacedDirs] },
       },
       null,
       2
@@ -1578,6 +1580,7 @@ export async function captureBody(
       model,
       hintModel,
       skillsDir: context.skillsDir,
+      namespacedDirs: context.namespacedDirs,
     });
     let hintRunMs = 0;
     if (wanted.size > 0) {

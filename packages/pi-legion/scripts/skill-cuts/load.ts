@@ -24,7 +24,10 @@
  *   appended system prompt), the `context` (a case's: `devbox`, the default,
  *   `legion:<project>:<role>` or `subagent:<agent>`), and for Claude Code `claude`, the plugin
  *   layout (ClaudeLayout). `--profile` is the profile of each task that names none; a task that
- *   names none when no `--profile` is given is refused.
+ *   names none when no `--profile` is given is refused. A profile skill with a `namespace` (a
+ *   copy of another source that Oh My Pi lists as `<namespace>/<name>`) is that name in every
+ *   check, so it may share the tested skill's name; a Claude Code profile that holds one is
+ *   refused, since its layout places skills by their bare name.
  *
  * For each task the host's first request is captured once, in the rebuilt context of the task's
  * own profile (its skills, its plugins with capture.ts's stand-ins, its context files, its
@@ -152,7 +155,7 @@ import {
   sessionHeads,
   userTurnKey,
 } from "./capture";
-import { Case, Profile, type ProfileSkill, type Thinking } from "./cases";
+import { Case, listedName, Profile, type ProfileSkill, type Thinking } from "./cases";
 import { json, Refused, Stopped, schemaFaults, writeWhole } from "./common";
 import {
   buildContext,
@@ -421,13 +424,15 @@ interface TaskProfile {
   readonly tested: TestedSkill;
 }
 
-/** The profile of `file`, checked for a test of the skill `name` in `host`. Throws a refusal
- *  naming each fault: a file that is not a profile; a profile skill named `name` (the tested skill
- *  is not one of the other skills) or a name given twice; and for Claude Code a profile with no
- *  plugin layout, or one that puts a skill that goes in a plugin (`claudeKind`) in no plugin or in
- *  two, puts a project skill in a plugin, names a skill the profile does not install, or names a
- *  plugin twice. */
-function loadProfile(file: string, host: Host, name: string): TaskProfile {
+/** The profile of `file`, checked for a test of the skill `name` in `host`. Each check reads a
+ *  skill's listed name (cases.ts's `listedName`: `<namespace>/<name>` for a namespaced copy).
+ *  Throws a refusal naming each fault: a file that is not a profile; a profile skill listed as
+ *  `name` (the tested skill is not one of the other skills) or a name listed twice; and for Claude
+ *  Code a profile with no plugin layout, a namespaced skill (a layout places skills by their bare
+ *  name, and Claude Code has no namespace), or a layout that puts a skill that goes in a plugin
+ *  (`claudeKind`) in no plugin or in two, puts a project skill in a plugin, names a skill the
+ *  profile does not install, or names a plugin twice. */
+export function loadProfile(file: string, host: Host, name: string): TaskProfile {
   let bytes: Uint8Array;
   let raw: unknown;
   try {
@@ -442,7 +447,7 @@ function loadProfile(file: string, host: Host, name: string): TaskProfile {
   }
   const profile = parsed.data;
   const faults: string[] = [];
-  const names = profile.skills.map((skill) => skill.name);
+  const names = profile.skills.map((skill) => listedName(skill));
   if (names.includes(name)) {
     faults.push(`it installs a skill named ${name}, the name the skill is tested under`);
   }
@@ -455,6 +460,12 @@ function loadProfile(file: string, host: Host, name: string): TaskProfile {
   } else if (host === "claude" && layout !== undefined) {
     const held = layout.plugins.flatMap((plugin) => plugin.skills);
     for (const skill of profile.skills) {
+      if (skill.namespace !== undefined) {
+        faults.push(
+          `it installs ${listedName(skill)}, a second copy of ${skill.name} that Oh My Pi lists under a namespace, and a Claude Code layout places skills by their bare name`
+        );
+        continue;
+      }
       const count = held.filter((each) => each === skill.name).length;
       const kind = claudeKind(profile, skill);
       if (kind === "plugin" && count !== 1) {

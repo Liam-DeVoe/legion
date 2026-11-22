@@ -43,6 +43,7 @@ import {
   LOAD_MODEL,
   LoadRun,
   loadCapturePaths,
+  loadProfile,
   loadRunFile,
   renamedSkill,
   runLoad,
@@ -1003,6 +1004,43 @@ test("the skill's name is read as Oh My Pi reads its frontmatter: a value that h
   const unnamed = path.join(scratch, "colon", "unnamed");
   writeTree(unnamed, { "SKILL.md": "---\ndescription: Use when: you need a lookup\n---\n" });
   expect(skillName(unnamed)).toBe("unnamed");
+});
+
+test("a profile skill with a namespace is checked under <namespace>/<name>: it may share the tested skill's name and another skill's, and Claude Code, whose layout places skills by their bare name, refuses it naming it", () => {
+  const dir = path.join(scratch, "namespaced-profile");
+  mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, "profile.json");
+  const skills = [
+    { repo: "acme/skills", commit: COMMIT, path: "skills/beta", name: "beta" },
+    // Other repositories' alpha and beta, which Oh My Pi lists as tools/alpha and tools/beta.
+    { repo: "acme/tools", commit: COMMIT, path: "skills/alpha", name: "alpha", namespace: "tools" },
+    { repo: "acme/tools", commit: COMMIT, path: "skills/beta", name: "beta", namespace: "tools" },
+  ];
+  writeFileSync(file, JSON.stringify({ ...BETA_PROFILE, skills }));
+  expect(loadProfile(file, "omp", "alpha").profile.skills).toEqual(skills);
+  writeFileSync(
+    file,
+    JSON.stringify({
+      ...BETA_PROFILE,
+      skills,
+      claude: {
+        marketplace: "acme-load",
+        plugins: [{ name: "acme-tools", skills: ["beta"] }],
+        skillPlugin: "acme-tools",
+      },
+    })
+  );
+  expect(() => loadProfile(file, "claude", "alpha")).toThrow(
+    "it installs tools/alpha, a second copy of alpha that Oh My Pi lists under a namespace, and a Claude Code layout places skills by their bare name; it installs tools/beta, a second copy of beta"
+  );
+  // A copy listed under the tested name itself is still refused.
+  writeFileSync(
+    file,
+    JSON.stringify({ ...BETA_PROFILE, skills: [{ ...skills[1], namespace: undefined }] })
+  );
+  expect(() => loadProfile(file, "omp", "alpha")).toThrow(
+    "it installs a skill named alpha, the name the skill is tested under"
+  );
 });
 
 describe("skill-cuts load refuses or stops on its own rules", () => {
