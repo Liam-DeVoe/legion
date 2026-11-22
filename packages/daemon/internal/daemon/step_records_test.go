@@ -400,9 +400,8 @@ func (r *stepRecordsRig) rollBackStepRecords() {
 // of each step's agent (planStepAgentMigration) is one of them: it adds a column to plan_steps,
 // and left recorded, its version would keep the roll forward from adding the column to the
 // plan_steps it creates again, and every later write of a plan would fail. The pull requests by
-// task (20261122122826) is another: it names each pull request's task from plan_tasks, and its
-// way back reads plan_tasks to keep each issue's merge row, so it runs while that table stands,
-// and the roll forward names each row's task again from the plan rows it finds, none.
+// task (20261122122826) is another: it alters no plan table, but its way back reads plan_tasks to
+// keep each issue's merge row, so it runs while that table stands.
 func (r *stepRecordsRig) rollBackOwnersPlans() {
 	r.t.Helper()
 	all, err := migrations.All()
@@ -469,12 +468,22 @@ func (r *stepRecordsRig) headerBlock(migration migrations.Migration) string {
 }
 
 // buildsOnPlanTables says whether sql, a migration, names one of the plan's three tables in a
-// statement of its own, not in a comment: it alters one, or reads one.
+// statement of its own or in the way back its header gives (from `-- begin;` to `-- commit;`), and
+// not in the rest of its comments: it alters one or reads one, or its way back reads one, which
+// must then run while the plan's tables stand.
 func buildsOnPlanTables(sql string) bool {
+	wayBack := false
 	for _, line := range strings.Split(sql, "\n") {
 		statement := strings.ToLower(strings.TrimSpace(line))
-		if strings.HasPrefix(statement, "--") {
-			continue
+		if body, comment := strings.CutPrefix(statement, "--"); comment {
+			switch body = strings.TrimSpace(body); {
+			case body == "begin;", body == "commit;":
+				wayBack = body == "begin;"
+				continue
+			case !wayBack:
+				continue
+			}
+			statement = body
 		}
 		for _, word := range strings.FieldsFunc(statement, func(r rune) bool { return !unicode.IsLetter(r) && r != '_' }) {
 			if slices.Contains([]string{"issue_plans", "plan_tasks", "plan_steps"}, word) {
