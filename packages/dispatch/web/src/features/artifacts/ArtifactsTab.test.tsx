@@ -985,7 +985,13 @@ test("offline, a row's Remove whose removal landed is free again at the request 
     await tick(1_000);
     expect(queryClient.getQueryState(["artifacts", "CORE-1"])?.fetchStatus).toBe("paused");
     expect(remove.textContent).toBe("Removing…");
-    expect(remove).toBeDisabled();
+    // Held, never disabled, so a Remove pressed by keyboard keeps the focus: a press of it does
+    // nothing.
+    expect(remove).toHaveAttribute("aria-disabled", "true");
+    expect(remove).not.toBeDisabled();
+    await user.click(remove);
+    await tick(0);
+    expect(deleteArtifact).toHaveBeenCalledTimes(1);
 
     // The removal landed within the second before, which is when the hold's timer started.
     await tick(REQUEST_DEADLINE_MS - 2_000);
@@ -993,7 +999,7 @@ test("offline, a row's Remove whose removal landed is free again at the request 
 
     await tick(2_000);
     expect(remove.textContent).toBe("Remove");
-    expect(remove).not.toBeDisabled();
+    expect(remove).not.toHaveAttribute("aria-disabled");
     expect(listArtifacts.mock.calls.length).toBe(reads);
     expect(within(row).getByRole("alert").textContent).toBe(
       "Could not load artifacts. Dispatch could not be reached."

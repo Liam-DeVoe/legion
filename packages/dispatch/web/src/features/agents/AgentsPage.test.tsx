@@ -4553,8 +4553,9 @@ test("a row back after its session left mid-send holds the send it left until it
       within(back).getByRole("button", { name: pickNamed("Choose issue") }) as HTMLButtonElement;
     const field = () =>
       within(back).getByRole("textbox", { name: "Comment" }) as HTMLTextAreaElement;
-    // The composer holds its draft through its control fieldset.
-    const held = () => field().closest("fieldset")?.disabled;
+    // The composer holds its draft through its control fieldset: `aria-disabled`, never
+    // `disabled`, while the send is out.
+    const held = () => field().closest("fieldset")?.getAttribute("aria-disabled") === "true";
     expect(choose().disabled).toBe(true);
     expect(held()).toBe(true);
     expect(field().value).toBe("Status please");
