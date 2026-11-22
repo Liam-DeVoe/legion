@@ -488,12 +488,24 @@ func handBackAfterCreation(events []string) bool {
 	return created >= 0 && slices.Contains(events[created+1:], "-NAK")
 }
 
-// requireDeliveredOnceAfterTakeOver waits until the consumer the standby created has delivered
-// every message it had to and the standby has acknowledged them, and fails the test when it
-// delivered one of them more than once. It had to deliver each of the row's messages (sequences)
-// from its start sequence on (OptStartSeq, the durable's ack floor plus one; takeOverConfig): the
-// message the holder's stop handed back, and the one before it too when the stop gave up the
-// holder's handler at its deadline and the handler's deferred answer handed that one back as well
+// requireDeliveredOnceAfterTakeOver is requireDeliveredOnceAfterTakeOverWithin, waiting to the
+// test binary's deadline less its margin (untilTheBinaryDeadline).
+func requireDeliveredOnceAfterTakeOver(t *testing.T, publisher *bus.Client, sequences []uint64) {
+	t.Helper()
+	requireDeliveredOnceAfterTakeOverWithin(t, untilTheBinaryDeadline(t), binaryDeadlineBound, publisher, sequences)
+}
+
+// binaryDeadlineBound names the bound of a wait to the test binary's deadline less its margin in a
+// failure (requireDeliveredOnceAfterTakeOver, requireNoHandBackAfterCreation).
+const binaryDeadlineBound = "the test binary's deadline less rowDeadlineMargin (untilTheBinaryDeadline)"
+
+// requireDeliveredOnceAfterTakeOverWithin waits, for at most within, until the consumer the standby
+// created has delivered every message it had to and the standby has acknowledged them, and fails
+// the test when it delivered one of them more than once. A wait that passes within fails the test
+// and names bound. The consumer had to deliver each of the row's messages (sequences) from its
+// start sequence on (OptStartSeq, the durable's ack floor plus one; takeOverConfig): the message
+// the holder's stop handed back, and the one before it too when the stop gave up the holder's
+// handler at its deadline and the handler's deferred answer handed that one back as well
 // (Intake.deliver). Delivered.Consumer counts every delivery, so a hand-back that made the new
 // consumer deliver a message again makes it one more than that count. The recorded order cannot
 // show that hand-back: nats-server v2.15.1 makes a new consumer's ack subscription live (setLeader,
@@ -503,10 +515,10 @@ func handBackAfterCreation(events []string) bool {
 // (consumer.go:3802). A -NAK that reaches the new consumer before its first delivery of the
 // message, or after the standby acknowledged it, changes nothing, because the server ignores it
 // (processNak, consumer.go:3255 and :3259), and the row does not fail for it.
-func requireDeliveredOnceAfterTakeOver(t *testing.T, publisher *bus.Client, sequences []uint64) {
+func requireDeliveredOnceAfterTakeOverWithin(t *testing.T, within time.Duration, bound string, publisher *bus.Client, sequences []uint64) {
 	t.Helper()
 	var info *natsgo.ConsumerInfo
-	waitFor(t, untilTheBinaryDeadline(t), func() bool {
+	waitFor(t, within, func() bool {
 		read, err := publisher.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
 		if err != nil {
 			return false
@@ -514,7 +526,7 @@ func requireDeliveredOnceAfterTakeOver(t *testing.T, publisher *bus.Client, sequ
 		info = read
 		return info.Delivered.Consumer > 0 && info.NumAckPending == 0 && info.NumPending == 0
 	}, func() string {
-		return "the standby's consumer did not deliver the messages the holder left and have them acknowledged: " + consumerState(publisher)
+		return fmt.Sprintf("the standby's consumer did not deliver the messages the holder left and have them acknowledged by its bound, %s: %s", bound, consumerState(publisher))
 	})
 	start := info.Config.OptStartSeq
 	var want uint64
@@ -529,19 +541,30 @@ func requireDeliveredOnceAfterTakeOver(t *testing.T, publisher *bus.Client, sequ
 	}
 }
 
-// requireNoHandBackAfterCreation waits for the standby's creation of the durable and fails the test
-// when a hand-back reached the server after it, or when the standby's consumer delivered one of the
-// row's messages (sequences) more than once. A hand-back the holder's client dropped with its
-// connection never reaches the server, which is allowed: the message stays with the durable.
+// requireNoHandBackAfterCreation is requireNoHandBackAfterCreationWithin, waiting to the test
+// binary's deadline less its margin (untilTheBinaryDeadline).
 func requireNoHandBackAfterCreation(t *testing.T, recorded *durableEvents, from int, publisher *bus.Client, sequences []uint64) {
 	t.Helper()
-	waitFor(t, untilTheBinaryDeadline(t), func() bool { return slices.Contains(recorded.since(from), durableCreated) }, func() string {
-		return fmt.Sprintf("the standby did not create the durable: %q; %s", recorded.since(from), consumerState(publisher))
+	requireNoHandBackAfterCreationWithin(t, untilTheBinaryDeadline(t), binaryDeadlineBound, recorded, from, publisher, sequences)
+}
+
+// requireNoHandBackAfterCreationWithin waits for the standby's creation of the durable and fails
+// the test when a hand-back reached the server after it, or when the standby's consumer delivered
+// one of the row's messages (sequences) more than once (requireDeliveredOnceAfterTakeOverWithin).
+// Its waits end within within in all: the read of the consumer has what the wait for the creation
+// left of it. A wait that passes within fails the test and names bound. A hand-back the holder's
+// client dropped with its connection never reaches the server, which is allowed: the message
+// stays with the durable.
+func requireNoHandBackAfterCreationWithin(t *testing.T, within time.Duration, bound string, recorded *durableEvents, from int, publisher *bus.Client, sequences []uint64) {
+	t.Helper()
+	deadline := time.Now().Add(within)
+	waitFor(t, within, func() bool { return slices.Contains(recorded.since(from), durableCreated) }, func() string {
+		return fmt.Sprintf("the standby did not create the durable by its bound, %s: %q; %s", bound, recorded.since(from), consumerState(publisher))
 	})
 	if events := recorded.since(from); handBackAfterCreation(events) {
 		t.Fatalf("a hand-back landed after the standby created the durable, so it reached the standby's consumer: %q", events)
 	}
-	requireDeliveredOnceAfterTakeOver(t, publisher, sequences)
+	requireDeliveredOnceAfterTakeOverWithin(t, time.Until(deadline), bound, publisher, sequences)
 }
 
 // finalizerOutcome is the outcome that the trace line of the end of delivery's hand-back finalizer
@@ -682,13 +705,54 @@ func carriesNAK() func(chunk []byte) bool {
 }
 
 // inFlightHold is how long the in-flight subtest's link keeps the holder's -NAK from the server,
-// unless the standby creates the durable first: the -NAK stands for a hand-back still on its way
-// to the server when the holder's client closes. The close comes intakeFinalizerConfirmWait (5 s)
-// after the finalizer started, and a hold left to lapse then still has at least intakeHoldTTL less
-// intakeHoldRenew (10 s) on its row, so the -NAK is let go about 5 s before any standby can take
-// the durable over. A hold released at the close lets the standby create the durable at once, and
-// the -NAK is let go after that creation.
+// counted from just before the link's write thaws, unless the standby creates the durable first:
+// the -NAK stands for a hand-back still on its way to the server when the holder's client closes.
+// The link lets the -NAK go only once StartIntakes' stop has returned, so never before the close.
+// The close comes intakeFinalizerConfirmWait (5 s) after the finalizer started, or once the
+// hand-back's publish has ended when that is later, and a hold left to lapse then still has at
+// least intakeHoldTTL less intakeHoldRenew (10 s) on its row. So the -NAK is let go before any
+// standby can take the durable over: about 5 s before, when the publish ends inside the confirm
+// window. A hold released at the close lets the standby create the durable at once, and the -NAK
+// is let go after that creation.
 const inFlightHold = 10 * time.Second
+
+// inFlightSlack is what each bound of the in-flight subtest adds to the product's own bound of the
+// event it waits for, for a runner loaded under the race detector. With these bounds, a failed run
+// ends in seconds. In CI job 137127087412 of envoy-go-race, the subtest waited 26 minutes, to the
+// test binary's deadline, for a -NAK that was never written, and every later test of the package
+// then failed at that deadline.
+const inFlightSlack = 30 * time.Second
+
+// The bounds of the in-flight subtest's own waits, each counted from the start of its wait, or
+// from the moment the link lets the -NAK go where its comment says so. The bound of StartIntakes'
+// stop reads intakeFinalizerConfirmWait, a var, so the subtest computes it where it waits.
+const (
+	// inFlightRunReturnsWithin bounds the holder's Run. It returns at the stop's deadline
+	// (stopBudget), which counts from the stop's start, before this wait, or after the stop's last
+	// wait for a flush, which ends at most intakeFlushWait after that deadline (handBacksReached).
+	inFlightRunReturnsWithin = stopBudget + intakeFlushWait + inFlightSlack
+	// inFlightPublishEndsWithin bounds the end of the hand-back's publish once the link's write
+	// thaws. The parked write (testnats.HandshakeHold.ParkAWrite), about 1 MiB, drains through
+	// small buffers, and the publish then takes nats.go's lock. The product has no bound of its
+	// own here. Under the race detector in CI, the drain took about 3 s.
+	inFlightPublishEndsWithin = inFlightSlack
+	// inFlightNAKLandsWithin bounds the arrival of the -NAK at the server once the link lets it go:
+	// the link's relay writes the chunk that it kept.
+	inFlightNAKLandsWithin = inFlightSlack
+	// inFlightTakeOverWithin bounds the standby's take-over of the hold, from the moment the link
+	// lets the -NAK go. That moment comes after StartIntakes' stop has returned, so after the
+	// finalizer has left the hold to lapse or released it. A row left to lapse expires at most
+	// intakeHoldTTL after its last renewal, which came before that, and the standby tries for the
+	// hold every durableBindInterval.
+	inFlightTakeOverWithin = intakeHoldTTL + durableBindInterval + inFlightSlack
+	// inFlightSettledWithin bounds the reads of the standby's consumer
+	// (requireNoHandBackAfterCreationWithin), from the moment the link lets the -NAK go: the
+	// standby's take of the hold (inFlightTakeOverWithin), then its take-over of the durable, which
+	// deletes and creates it and whose last part takeOverFinishWithin bounds, then the standby's
+	// handling of the row's messages. The standby's fake GitHub answers each fetch at once, and the
+	// standby acknowledges each message as its handler ends.
+	inFlightSettledWithin = inFlightTakeOverWithin + takeOverFinishWithin + inFlightSlack
+)
 
 // closeLockWait is the longest the close of an intake's client waits for nats.go's connection
 // lock: behind a reconnect attempt, whose dial and handshake nats.go bounds by bus.ConnectTimeout
@@ -753,6 +817,16 @@ func handBackRefused(records []map[string]any, delivery *intakeDelivery, refusal
 	return found
 }
 
+// handBackPublishEnd reads the first end of a hand-back publish of delivery in records
+// (traceHandBackPublished): ended reports whether records hold one, and failure is the error that
+// the publish ended with, as the trace line gives it, or nil when it ended with no error.
+func handBackPublishEnd(records []map[string]any, delivery *intakeDelivery) (failure any, ended bool) {
+	record, ended := logtest.LineWhere(records, func(record map[string]any) bool {
+		return record["msg"] == traceHandBackPublished && record["delivery"] == tracePointer(delivery)
+	})
+	return record["error"], ended
+}
+
 // A hand-back the holder made during its stop never reaches the durable a standby recreates.
 //
 // A hand-back is a publish at the message's reply subject, which names the durable rather than the
@@ -806,20 +880,29 @@ func handBackRefused(records []map[string]any, delivery *intakeDelivery, refusal
 //     held, and the stop is then seen waiting for that hand-back with its hold live. Once the link
 //     moves, the subtest reads what the first one reads;
 //   - a hand-back still in flight when the client closes: as at shutdown, but the link keeps the
-//     holder's -NAK from the server, so no flush confirms it before StartIntakes' stop closes the
-//     client. The finalizer leaves the hold to lapse, the standby takes the hold only after its
-//     row's expiry, and the -NAK lands before the standby creates the durable (its own comment).
+//     holder's -NAK from the server, and the subtest forces the order it tests. It thaws the
+//     link's write and waits until the hand-back's publish has ended with no error, and only then
+//     begins StartIntakes' stop, so the -NAK is on its way when that stop closes the client. In CI
+//     job 137127087412 of envoy-go-race, the subtest began that stop first, and the close took the
+//     client before the publish wrote the -NAK. No flush confirms the -NAK before the close. The
+//     finalizer leaves the hold to lapse, the standby takes the hold only after its row's expiry,
+//     and the -NAK lands before the standby creates the durable. Each wait after
+//     stopWithAHeldHandBack has a bound, so a failure ends in seconds (its own comment).
 //
 // The two shutdown subtests and the in-flight subtest each log the outcome of the holder's
 // finalizer, as "FINALIZER outcome=...", and every subtest logs its clients' reconnect counts, as
 // "RECONNECTS holder=<n> standby=<n>", whether they pass or fail (logFinalizerOutcome,
 // logReconnects). No step waits on a time but the stop's own deadline (intakeStopBudget), the
 // finalizer's confirm window, the hold's own expiry, the write deadline in the frozen-link subtest
-// and, in the in-flight subtest, the link's hold of the -NAK (inFlightHold); every other wait runs
+// and, in the in-flight subtest, the link's hold of the -NAK (inFlightHold). Every other wait runs
 // to the test binary's deadline less its margin (untilTheBinaryDeadline) and only guards against an
-// event that never comes. stopWithAHeldHandBack begins the stop only once the second message is in
-// the holder's hands, queued behind the first or held by its callback, and decides whether the
-// hand-back reached its publish by which comes first, that publish or the holder's Run returning.
+// event that never comes, but for the in-flight subtest's waits after stopWithAHeldHandBack
+// returns: each of them ends at a bound worked out from the product's bounds, with inFlightSlack,
+// and its reads of the standby's consumer use the bounded form of the shared helper
+// (requireNoHandBackAfterCreationWithin). stopWithAHeldHandBack begins the stop only once the
+// second message is in the holder's hands, queued behind the first or held by its callback, and
+// decides whether the hand-back reached its publish by which comes first, that publish or the
+// holder's Run returning.
 // The negative controls, each with the subtests that it fails:
 //   - a stop that withholds its hand-backs fails all six in stopWithAHeldHandBack. In the stop's
 //     own rows the holder's Run returns with no hand-back having reached its publish. In the fifth
@@ -1149,24 +1232,45 @@ func TestAHandBackLeftRunningLandsBeforeTheStandbyTakesOver(t *testing.T) {
 	})
 
 	// A hand-back still on its way to the server when the holder's client closes. As in the
-	// shutdown subtest, the Run returns at its deadline with the hand-back's publish held, and the
-	// subtest runs the durables' stop (stopDurables) and thaws the link's write. Here the link also
-	// keeps each chunk of the holder's stream that carries a -NAK from the server
+	// shutdown subtest, the Run returns at its deadline with the hand-back's publish held. Here the
+	// link also keeps each chunk of the holder's stream that carries a -NAK from the server
 	// (testnats.HandshakeHold.HoldChunks, carriesNAK), on the subtest's own bound: until the standby
-	// has created the durable, or for inFlightHold, whichever comes first. So the -NAK is on its way
-	// when the client closes, as one in the kernel's send buffer or on the network is. Every chunk
-	// after it waits behind it, so no flush of the holder's connection can answer, and StartIntakes'
-	// stop closes the client at intakeFinalizerConfirmWait from the finalizer's start. The subtest
-	// requires:
+	// has created the durable, or for inFlightHold, whichever comes first. The subtest then thaws the
+	// link's write, waits until the hand-back's publish has ended (traceHandBackPublished,
+	// handBackPublishEnd), and only then runs the durables' stop (stopDurables). So the -NAK is on
+	// its way when the client closes, as one in the kernel's send buffer or on the network is. Every
+	// chunk after it waits behind it, so no flush of the holder's connection can answer, and
+	// StartIntakes' stop closes the client at intakeFinalizerConfirmWait from the finalizer's start,
+	// or at once when the publish ended after that.
+	//
+	// The subtest forces this order, because the order is what it tests. In CI job 137127087412 of
+	// envoy-go-race, the subtest began stopDurables first and thawed the write after. Under the race
+	// detector, the parked write drained for seconds after the thaw, and the close took nats.go's
+	// lock between the two takes of the hand-back's publish: its read of the connection's reconnect
+	// count and the publish itself (publishHandBack). nats.go then refused the publish as closed,
+	// before it queued a byte, so no -NAK was on its way, and the finalizer released the hold, as it
+	// must when nothing published is unconfirmed. The subtest then waited to the test binary's
+	// deadline for a -NAK that was never written. A publish that ends with an error fails as a
+	// control: no byte of its -NAK is on its way, and the run reads nothing of a hand-back on its way
+	// at the close.
+	//
+	// The subtest requires:
 	//   - that the finalizer then leaves the hold to lapse (finalizerLapse), with the hold's row still
 	//     naming the holder once StartIntakes' stop has returned;
 	//   - that the standby takes the hold only after that row's expiry;
 	//   - that the -NAK reaches the server once the link lets it go, and not after the standby
 	//     created the durable, and that the standby's consumer delivers each of the row's messages
-	//     once, with none lost (requireNoHandBackAfterCreation).
+	//     once, with none lost (requireNoHandBackAfterCreationWithin).
 	//
 	// A run in which a flush confirmed the hand-back fails as a control: the link did not keep its
 	// -NAK, and the run reads nothing of a hand-back still on its way at the close.
+	//
+	// Each wait after stopWithAHeldHandBack ends at a bound: the product's bound of the event, with
+	// inFlightSlack for a loaded runner (inFlightRunReturnsWithin, inFlightPublishEndsWithin, the
+	// bound of StartIntakes' stop, inFlightNAKLandsWithin, inFlightTakeOverWithin, and
+	// inFlightSettledWithin for the reads of the standby's consumer). A failure names the bound that
+	// it passed and ends in seconds, so it does not use up the test binary's deadline and fail every
+	// later test of the package.
 	//
 	// The lapse costs the standby time. The abandoned row expires at most intakeHoldTTL (15 s) after
 	// the abandon, since its last renewal came before it, and at least intakeHoldTTL less
@@ -1187,8 +1291,8 @@ func TestAHandBackLeftRunningLandsBeforeTheStandbyTakesOver(t *testing.T) {
 		logs := captureLogs(t)
 		select {
 		case <-row.stopped:
-		case <-time.After(untilTheBinaryDeadline(t)):
-			t.Fatal("the holder's Run did not return while its hand-back was held")
+		case <-time.After(inFlightRunReturnsWithin):
+			t.Fatalf("the holder's Run did not return within inFlightRunReturnsWithin (%s) while its hand-back was held", inFlightRunReturnsWithin)
 		}
 		if !row.handBackPending() {
 			t.Fatal("control: the hand-back reached NATS before its client closed")
@@ -1197,17 +1301,34 @@ func TestAHandBackLeftRunningLandsBeforeTheStandbyTakesOver(t *testing.T) {
 		row.link.HoldChunks(t, carriesNAK(), letGo)
 		heldUntil := time.Now().Add(inFlightHold)
 		takeOver := watchHoldTakeOver(t, row.pool, row.holder)
+		testnats.RequireLockHeld(t, row.conn)
+		// The write thaws first. StartIntakes' stop begins only once the hand-back's publish has
+		// ended with no error, so the -NAK is written, and kept by the link, before the close begins.
+		row.thaw()
+		waitFor(t, inFlightPublishEndsWithin, func() bool {
+			_, ended := handBackPublishEnd(logs(), row.delivery)
+			return ended
+		}, func() string {
+			return fmt.Sprintf("control: the hand-back's publish did not end within inFlightPublishEndsWithin (%s) of the thaw of the link's write: %s", inFlightPublishEndsWithin, consumerState(row.publisher))
+		})
+		if failure, _ := handBackPublishEnd(logs(), row.delivery); failure != nil {
+			t.Fatalf("control: the hand-back's publish ended with the error %v before StartIntakes' stop began, so no byte of its -NAK is on its way, and this run reads nothing of a hand-back still on its way at the close", failure)
+		}
 		closed := make(chan struct{})
 		go func() {
 			stopDurables(&row.holder.intake.heldDurable)
 			close(closed)
 		}()
-		testnats.RequireLockHeld(t, row.conn)
-		row.thaw()
+		// StartIntakes' stop returns within what is left of the finalizer's confirm window
+		// (intakeFinalizerConfirmWait, which began at the Run's deadline), the close's longest wait
+		// for nats.go's lock (closeLockWait), the end of the finalizer's flush in flight at the close
+		// (intakeFlushWait) and a release, a statement bounded by intakeHoldRenew, with
+		// inFlightSlack.
+		closeWithin := time.Duration(intakeFinalizerConfirmWait.Load()) + closeLockWait + intakeFlushWait + intakeHoldRenew + inFlightSlack
 		select {
 		case <-closed:
-		case <-time.After(untilTheBinaryDeadline(t)):
-			t.Fatal("StartIntakes' stop did not return once the link moved")
+		case <-time.After(closeWithin):
+			t.Fatalf("StartIntakes' stop did not return within %s of its start (intakeFinalizerConfirmWait + closeLockWait + intakeFlushWait + intakeHoldRenew + inFlightSlack): %s", closeWithin, consumerState(row.publisher))
 		}
 		records := logs()
 		abandonedBy, expiry := deliveryHold(t, row.pool)
@@ -1218,18 +1339,21 @@ func TestAHandBackLeftRunningLandsBeforeTheStandbyTakesOver(t *testing.T) {
 			return slices.Contains(row.recorded.since(row.from), durableCreated)
 		})
 		close(letGo)
-		waitFor(t, untilTheBinaryDeadline(t), func() bool { return slices.Contains(row.recorded.since(row.from), "-NAK") }, func() string {
-			return fmt.Sprintf("control: the holder's -NAK did not reach the server once the link let it go: %q", row.recorded.since(row.from))
+		letGoAt := time.Now()
+		waitFor(t, inFlightNAKLandsWithin, func() bool { return slices.Contains(row.recorded.since(row.from), "-NAK") }, func() string {
+			return fmt.Sprintf("control: the holder's -NAK did not reach the server within inFlightNAKLandsWithin (%s) of the link letting it go: %q", inFlightNAKLandsWithin, row.recorded.since(row.from))
 		})
 		select {
 		case <-takeOver.done:
-		case <-time.After(untilTheBinaryDeadline(t)):
-			t.Fatal("the standby did not take the delivery durable's hold after the link let the -NAK go: " + consumerState(row.publisher))
+		case <-time.After(time.Until(letGoAt.Add(inFlightTakeOverWithin))):
+			t.Fatalf("the standby did not take the delivery durable's hold within inFlightTakeOverWithin (%s) of the link letting the -NAK go: %s", inFlightTakeOverWithin, consumerState(row.publisher))
 		}
 		if takeOver.err != nil {
 			t.Fatalf("watch the standby's take-over of the hold: %v", takeOver.err)
 		}
-		requireNoHandBackAfterCreation(t, row.recorded, row.from, row.publisher, row.sequences)
+		requireNoHandBackAfterCreationWithin(t, time.Until(letGoAt.Add(inFlightSettledWithin)),
+			fmt.Sprintf("inFlightSettledWithin (%s) from the link letting the -NAK go", inFlightSettledWithin),
+			row.recorded, row.from, row.publisher, row.sequences)
 		if outcome := finalizerOutcome(records, row.delivery); outcome != finalizerLapse {
 			t.Fatalf("the finalizer's outcome is %q, want %q: the holder's client closed with its -NAK still kept from the server", outcome, finalizerLapse)
 		}
@@ -1464,9 +1588,9 @@ func TestAFlushOfTheReplacementConnectionDoesNotConfirmAHandBackOnTheOneBefore(t
 // the hand-back in doubt (handBacksInDoubt), before its deadline. The row requires:
 //   - that the stop does not release the hold: its row still names the holder once the stop has
 //     returned;
-//   - that the stop logs no intakeHoldFinalizing line, whose claim that the hold stays renewing
-//     until the hand-back reaches NATS no later read can make true, and starts no finalizer
-//     (traceFinalizerStarts);
+//   - that the stop logs no intakeHoldFinalizing line and starts no finalizer
+//     (traceFinalizerStarts): it keeps nothing renewing, since the hand-back's socket has gone
+//     already, and it leaves the hold to lapse at once;
 //   - that the stop leaves the hold to lapse itself (intakeHoldLeftToLapse), so the hold reaches its
 //     expiry unrenewed;
 //   - once the row lets the held -NAK go, that the server reads it, after the reconnect.
@@ -1574,7 +1698,7 @@ func TestAHandBackWrittenBeforeAReconnectInPlaceIsNotConfirmedByAFlushOnTheNewSo
 	}
 	records := logs()
 	if loggedMessage(records, intakeHoldFinalizing) {
-		t.Fatalf("the stop logged %q although its hand-back was already in doubt when it read it: no later flush can confirm that hand-back, so the hold does not stay renewing until it reaches NATS; the holder logged %q",
+		t.Fatalf("the stop logged %q although its hand-back was already in doubt when it read it: the hand-back's socket has gone already, so the stop keeps nothing renewing and leaves the hold to lapse at once; the holder logged %q",
 			intakeHoldFinalizing, loggedMessages(records))
 	}
 	if _, started := logtest.LineWhere(records, func(record map[string]any) bool {

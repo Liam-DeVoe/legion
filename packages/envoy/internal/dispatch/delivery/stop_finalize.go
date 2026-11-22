@@ -33,10 +33,11 @@ import (
 //     that can still confirm it has answered by then: the stop runs one flush at a time and waits
 //     for its answer up to intakeFlushWait at a time (handBacksReached). That does not keep Run
 //     past the context, but for that last wait, and does not give the hold up either: the hold
-//     keeps renewing on a goroutine of its own (finalizeHandBacks) until that hand-back lands and a
-//     flush confirms it, and is released only then. It logs intakeHoldFinalizing. The finalizer
-//     starts here, and the caller that closes the client waits up to intakeFinalizerConfirmWait
-//     from that start before the close (stopDurables).
+//     keeps renewing on a goroutine of its own (finalizeHandBacks). The finalizer releases it once
+//     a flush confirms that hand-back, or once nats.go refuses the hand-back before it queues a
+//     byte, and leaves it to lapse when the hand-back's socket goes before a flush confirms it. It
+//     logs intakeHoldFinalizing. The finalizer starts here, and the caller that closes the client
+//     waits up to intakeFinalizerConfirmWait from that start before the close (stopDurables).
 //
 // The hold is kept while a hand-back may still reach the server because a hand-back is a publish
 // at the message's reply subject, which names the durable rather than the consumer: one that
@@ -86,9 +87,12 @@ func (d *heldDurable) stop(ctx context.Context) {
 // (handBacksUnconfirmed): still pending, or with no answer by then from any flush that can still
 // confirm it. A flush that does not answer is followed by another until the deadline, one at a
 // time (handBacksReached), so a stop logs this line only once its deadline has passed. Its hold
-// stays renewing until a flush confirms the hand-back (stop, finalizeHandBacks). A stop whose
+// stays renewing until the finalizer ends (stop, finalizeHandBacks). The finalizer releases the
+// hold once a flush confirms the hand-back, or once nats.go refuses the hand-back before it queues
+// a byte, so that nothing published is unconfirmed. It leaves the hold to lapse once the socket
+// the hand-back went out on goes before a flush confirms it. A lost hold ends it too. A stop whose
 // hand-back is in doubt logs intakeHoldLeftToLapse instead.
-const intakeHoldFinalizing = "dispatch delivery: a hand-back has not reached NATS by the stop's deadline, so the intake's hold stays renewing until it does"
+const intakeHoldFinalizing = "dispatch delivery: a hand-back has not reached NATS by the stop's deadline, so the intake's hold stays renewing until a flush confirms the hand-back, nats.go refuses it or its socket goes"
 
 // finalizeHandBacks keeps hold renewing while a hand-back of the stopped delivery is pending, and
 // releases it once that hand-back has landed and a flush of the connection, begun after its publish
