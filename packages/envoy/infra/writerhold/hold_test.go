@@ -91,10 +91,13 @@ func newHeldStackWith(t *testing.T, opts holdtest.Options) *heldStack {
 	op := &Operator{
 		Hub: KubeHub{Client: s.Kube.Client, Namespace: holdtest.Namespace, StatefulSet: holdtest.StatefulSet,
 			ConfigMap: holdtest.ConfigMap, Forward: s.Kube},
-		Disks:        stackDisks{disks},
-		URLs:         s.Cluster.URLs(),
-		Connect:      s.ConnectOperator,
-		Probe:        s.DialProbe,
+		Disks:   stackDisks{disks},
+		URLs:    s.Cluster.URLs(),
+		Connect: s.ConnectOperator,
+		Probe:   s.DialProbe,
+		ProbeCredential: func() (ProbeCredential, error) {
+			return ProbeCredentialOf(s.ProbeToken())
+		},
 		RestartLimit: 3 * time.Minute,
 	}
 	h := &heldStack{t: t, s: s, op: op, disks: disks, keys: &memoryKeys{versions: map[string][][]byte{}}}

@@ -72,8 +72,10 @@ that writes the hold takes `--signing-key-secret`. `set` and `prove` also need:
 1. The preflight: the render from ConfigMap `envoy-nats-config` and StatefulSet `envoy-nats`, the
    minter report, each server's `/varz`, `/routez`, `/leafz` and `/gatewayz`, and each protected
    stream. While the row is still `prepare`, the probe runs once and must be admitted, so its
-   refusal in the hold cannot come from its own credential; a probe the hub refuses here stops
-   `hold set`, naming the probe's error, before its intent and its move of the row.
+   refusal in that hold cannot come from its own credential; a probe the hub refuses here stops
+   `hold set`, naming the probe's error, before its intent and its move of the row. The intent
+   records the admitted credential's fingerprint (a sha256 of the account the token names and its
+   audiences, never the token) and its expiry.
 2. The row moves to `held`; the probe is refused.
 3. The writer census: complete listings, literal destinations, push consumers, sources and message
    schedules.
@@ -89,7 +91,13 @@ that writes the hold takes `--signing-key-secret`. `set` and `prove` also need:
 Its rerun, `hold set --hold ID`, goes through the hold's admission like every command: it takes
 the one-command lock and writes a new intent before it restarts anything, then runs the steps
 again, and its done entry follows that intent. A buckets or streams command given `--hold` of a
-hold whose `hold set` is not done runs that rerun first.
+hold whose `hold set` is not done runs that rerun first. On a `held` row the rerun runs no probe
+outside the hold, so it counts the probe's refusal as the hold's only on this hold's own proof:
+the journal holds the admitted-probe record (a), the rerun's credential has its fingerprint (b),
+and that credential lapses after now plus the probe's timeout (c). Otherwise the rerun is UNKNOWN,
+naming which, and changes nothing. The residual: a credential the auth service stops admitting
+between the two runs, its probe entry dropped from the services it lists, still has its fingerprint
+and its expiry, so its refusal reads as the hold's.
 
 ## Workflows and their commands
 

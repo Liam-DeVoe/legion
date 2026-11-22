@@ -213,11 +213,18 @@ func openOperator(ctx context.Context, h HubFlags) (*Operator, error) {
 		},
 		Probe: func(_ context.Context, url string) error {
 			credential, _ := natscred.Service(natscred.ServiceFile(h.ProbeTokenFile))
-			nc, err := nats.Connect(url, credential, nats.Name("envoy-infra hold probe"), nats.NoReconnect(), nats.Timeout(10*time.Second))
+			nc, err := nats.Connect(url, credential, nats.Name("envoy-infra hold probe"), nats.NoReconnect(), nats.Timeout(ProbeTimeout))
 			if err == nil {
 				nc.Close()
 			}
 			return err
+		},
+		ProbeCredential: func() (ProbeCredential, error) {
+			raw, err := natscred.ServiceFile(h.ProbeTokenFile).Read()
+			if err != nil {
+				return ProbeCredential{}, err
+			}
+			return ProbeCredentialOf(raw)
 		},
 	}, nil
 }

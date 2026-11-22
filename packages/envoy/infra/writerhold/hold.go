@@ -2,6 +2,8 @@ package writerhold
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -14,6 +16,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/holdrecord"
+	"github.com/sjawhar/envoy/natscred"
 	"github.com/sjawhar/envoy/natsgrant"
 )
 
@@ -29,6 +32,9 @@ type Operator struct {
 	// Probe dials url with the hold probe's credential (Restart.Probe's contract): nil when the
 	// server admitted it, an error wrapping nats.ErrAuthorization when it refused it.
 	Probe func(ctx context.Context, url string) error
+	// ProbeCredential reads what the hold records of the probe's credential now: its fingerprint
+	// and when it lapses (ProbeCredentialOf), never the secret.
+	ProbeCredential func() (ProbeCredential, error)
 	// URLs are the hub's client URLs, which the probe dials as the hub.
 	URLs []string
 	// Wait waits d, ending early with ctx's error; a sleep when nil.
@@ -610,6 +616,14 @@ func Set(ctx context.Context, records *holdrecord.Client, op *Operator, holdID, 
 		}
 		return cause
 	}
+	// A rerun on a held row runs no probe outside the hold: it counts the probe's refusal as the
+	// hold's only on this hold's own proof that the probe's credential was admitted, and changes
+	// nothing without it (provenProbe).
+	if row.Phase == natsgrant.OperatorPhaseHeld {
+		if err := provenProbe(d, op, time.Now()); err != nil {
+			return nil, err
+		}
+	}
 
 	// Step 1, under the prepare grant (or the held one on a rerun), mutating nothing.
 	nc, err := op.Connect(ctx)
@@ -617,9 +631,18 @@ func Set(ctx context.Context, records *holdrecord.Client, op *Operator, holdID, 
 		return nil, stop(unknownf(StepPreflight, err, "connect to the hub as the operator"))
 	}
 	defer func() { nc.Close() }()
+	var probeRecord map[string]string
 	if row.Phase == natsgrant.OperatorPhasePrepare {
+		credential, err := probeCredential(op)
+		if err != nil {
+			return nil, stop(err)
+		}
 		if err := probeAdmitted(ctx, op); err != nil {
 			return nil, stop(err)
+		}
+		probeRecord = map[string]string{
+			probeFingerprintInput: credential.Fingerprint,
+			probeExpiryInput:      credential.Expiry.UTC().Format(time.RFC3339),
 		}
 	}
 	render, err := Precondition(ctx, op.Hub)
@@ -642,7 +665,12 @@ func Set(ctx context.Context, records *holdrecord.Client, op *Operator, holdID, 
 	present := presentStreams(streams)
 
 	if !pending {
-		if _, err := records.Admit(ctx, holdID, holdrecord.Request{Command: holdrecord.CommandSet}, inputs); err != nil {
+		admitted := maps.Clone(inputs)
+		if admitted == nil {
+			admitted = map[string]string{}
+		}
+		maps.Copy(admitted, probeRecord)
+		if _, err := records.Admit(ctx, holdID, holdrecord.Request{Command: holdrecord.CommandSet}, admitted); err != nil {
 			return nil, err
 		}
 		pending = true
@@ -718,6 +746,84 @@ func probeAdmitted(ctx context.Context, op *Operator) error {
 		return refusef(StepProbe, "the hold's probe was not admitted outside the hold, so its refusal in the hold would not show the hold's: %v", err)
 	}
 	return nil
+}
+
+// The inputs of `hold set`'s intent that record its admitted probe: the fingerprint of the
+// credential the probe was admitted with under prepare, and when that credential lapsed.
+const (
+	probeFingerprintInput = "probe_fingerprint"
+	probeExpiryInput      = "probe_expiry"
+)
+
+// probeCredential is op's read of the probe's credential, UNKNOWN when there is no reader or the
+// credential names no identity or expiry.
+func probeCredential(op *Operator) (ProbeCredential, error) {
+	if op.ProbeCredential == nil {
+		return ProbeCredential{}, unknownf(StepProbe, nil, "the hold has no reader of the probe's credential, so it can record no admitted probe")
+	}
+	credential, err := op.ProbeCredential()
+	if err != nil {
+		return ProbeCredential{}, unknownf(StepProbe, err, "read the probe's credential: its fingerprint and expiry")
+	}
+	return credential, nil
+}
+
+// provenProbe is the rerun's proof, on a held row, that a refusal of its probe is the hold's: the
+// probe credential it presents is the one this hold's set admitted under prepare. It needs (a) this
+// hold's journal to hold that run's admitted-probe record (the latest set intent that recorded one),
+// (b) the rerun's credential to have the recorded fingerprint, and (c) that credential to lapse
+// after now plus the probe's timeout. Otherwise it is UNKNOWN, naming which. A credential revoked
+// between the two runs (a probe entry dropped from the auth service's list) still passes; the
+// README names that residual.
+func provenProbe(d holdrecord.Done, op *Operator, now time.Time) error {
+	const why = "the rerun of hold set on a held row counts its probe's refusal as the hold's only on this hold's proof that the probe's credential was admitted"
+	recorded := ""
+	for _, o := range d.Ops {
+		if o.Command == holdrecord.CommandSet && o.State == holdrecord.StateIntent && o.Inputs[probeFingerprintInput] != "" {
+			recorded = o.Inputs[probeFingerprintInput]
+		}
+	}
+	if recorded == "" {
+		return unknownf(StepProbe, nil, "%s, and (a) this hold's journal holds no admitted-probe record", why)
+	}
+	credential, err := probeCredential(op)
+	if err != nil {
+		return err
+	}
+	if credential.Fingerprint != recorded {
+		return unknownf(StepProbe, nil, "%s, and (b) the probe's credential has fingerprint %s, not %s, the one this hold's set admitted under prepare", why, credential.Fingerprint, recorded)
+	}
+	if !credential.Expiry.After(now.Add(ProbeTimeout)) {
+		return unknownf(StepProbe, nil, "%s, and (c) the probe's credential lapses at %s, not after now plus the probe's timeout (%s)", why, credential.Expiry.UTC().Format(time.RFC3339), ProbeTimeout)
+	}
+	return nil
+}
+
+// ProbeTimeout bounds one dial of the hold's probe.
+const ProbeTimeout = 10 * time.Second
+
+// ProbeCredential is what the hold records of the probe's credential, never the secret: its
+// Fingerprint, a sha256 of its public identity (the account the platform token names and the
+// audiences it is for), and when it lapses.
+type ProbeCredential struct {
+	Fingerprint string
+	Expiry      time.Time
+}
+
+// ProbeCredentialOf reads raw, the probe's platform identity token, unverified
+// (natscred.ReadClaims). A token that names no account or no expiry is an error.
+func ProbeCredentialOf(raw string) (ProbeCredential, error) {
+	claims, err := natscred.ReadClaims(raw)
+	if err != nil {
+		return ProbeCredential{}, err
+	}
+	sum := sha256.New()
+	sum.Write([]byte(claims.Identity))
+	for _, audience := range claims.Audience {
+		sum.Write([]byte{0})
+		sum.Write([]byte(audience))
+	}
+	return ProbeCredential{Fingerprint: hex.EncodeToString(sum.Sum(nil)), Expiry: claims.Expiry}, nil
 }
 
 // censusReadings bounds how many times the writer census is read while its answer is not whole,

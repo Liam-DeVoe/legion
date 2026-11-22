@@ -58,10 +58,13 @@ func newHeldBuckets(t *testing.T) *heldBuckets {
 	op := &writerhold.Operator{
 		Hub: writerhold.KubeHub{Client: s.Kube.Client, Namespace: holdtest.Namespace, StatefulSet: holdtest.StatefulSet,
 			ConfigMap: holdtest.ConfigMap, Forward: s.Kube},
-		Disks:        stackDisks{holdtest.NewDisks(len(s.Cluster.Servers))},
-		URLs:         s.Cluster.URLs(),
-		Connect:      s.ConnectOperator,
-		Probe:        s.DialProbe,
+		Disks:   stackDisks{holdtest.NewDisks(len(s.Cluster.Servers))},
+		URLs:    s.Cluster.URLs(),
+		Connect: s.ConnectOperator,
+		Probe:   s.DialProbe,
+		ProbeCredential: func() (writerhold.ProbeCredential, error) {
+			return writerhold.ProbeCredentialOf(s.ProbeToken())
+		},
 		RestartLimit: 3 * time.Minute,
 	}
 	h := &heldBuckets{t: t, s: s, op: op}

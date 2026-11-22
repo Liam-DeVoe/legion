@@ -74,9 +74,8 @@ func TestHoldSetsRerunAfterARestartPastItsLimit(t *testing.T) {
 			var id string
 			if row.crash {
 				id = h.s.Prepare(t, holdrecord.WorkflowBucketsCreate)
-				_, err := h.s.Records.Admit(ctx, id, holdrecord.Request{Command: holdrecord.CommandSet}, nil)
-				require.NoError(t, err)
-				_, err = h.s.Records.MoveRow(ctx, h.row().Gen, natsgrant.OperatorPhaseHeld, id, "hold set's move, then its crash")
+				h.crashedSetIntent(id)
+				_, err := h.s.Records.MoveRow(ctx, h.row().Gen, natsgrant.OperatorPhaseHeld, id, "hold set's move, then its crash")
 				require.NoError(t, err)
 			} else {
 				h.op.RestartLimit = time.Millisecond

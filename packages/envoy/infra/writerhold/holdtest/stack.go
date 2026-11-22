@@ -2,6 +2,8 @@ package holdtest
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -85,15 +87,35 @@ func (tt *tokenTable) verify(_ context.Context, raw string) (string, bool, time.
 }
 
 // The raw tokens of the stack's probe, measurement job and listeners. The operator's is
-// holdrecordtest's.
-const (
-	probeToken   = "holdtest-probe-token"
-	measureToken = "holdtest-measure-token"
-)
+// holdrecordtest's. The probe's is shaped as a platform identity token, its claims readable, since
+// `hold set` records its fingerprint and expiry (writerhold.ProbeCredentialOf); the stack's auth
+// service verifies every token by its raw string alone.
+var probeToken = PlatformToken(ProbeAccount, []string{"envoy-nats"}, time.Date(2100, 1, 1, 0, 0, 0, 0, time.UTC))
+
+const measureToken = "holdtest-measure-token"
 
 // MeasureToken is the measurement job's platform token, which `envoy-infra streams check` presents
 // as user `service`.
 const MeasureToken = measureToken
+
+// ProbeToken is the stack's probe's platform token, which the stack's auth service admits as the
+// probe account.
+func (s *Stack) ProbeToken() string { return probeToken }
+
+// PlatformToken is a token shaped as a platform identity token: an unsigned JWT whose claims name
+// subject, audience and expiry. The stack's auth service admits a token by its raw string alone, so
+// one it does not list is refused for its own reason, the credential's, whatever its claims say.
+func PlatformToken(subject string, audience []string, expiry time.Time) string {
+	part := func(v any) string {
+		data, err := json.Marshal(v)
+		if err != nil {
+			panic(err)
+		}
+		return base64.RawURLEncoding.EncodeToString(data)
+	}
+	return part(map[string]string{"alg": "none", "typ": "JWT"}) + "." +
+		part(map[string]any{"sub": subject, "aud": audience, "exp": expiry.Unix()}) + ".x"
+}
 
 func listenerToken(machine string) string { return "holdtest-listener-" + machine + "-token" }
 
