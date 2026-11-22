@@ -113,6 +113,11 @@ import {
 
 /** Where the Legion daemon's role prompt composer is, in the repository that holds it. */
 export const PROMPTS_GO = "packages/daemon/internal/prompts/prompts.go";
+/** The repository a load test's own entry of the tested skill names (load.ts's `caseOf`): a name
+ *  for no repository, since a context installs the arm's skill from the arm's directory
+ *  (`testedCopy`). Every read of a profile entry's repository passes it over; a real repository an
+ *  arm's tested copy names (a behaviour case's) is read as any other. */
+export const LOCAL_SKILL_REPO = "local/skill-directory";
 /** The names of a repository's context files (build.ts lists the session repository's), which a
  *  context writes in its checkout. A profile's user-level file (`user: true`) goes to the scratch
  *  Claude Code config directory whatever its name, and every other context file goes in the
@@ -1694,9 +1699,11 @@ async function devboxAgents(
 }> {
   const leftOut: Record<HomeAgents, string[]> = { user: [], home: [] };
   if (legionStore(c) !== undefined) return { links: {}, leftOut };
-  // Each repository of the profile, with each commit the profile holds it at.
+  // Each repository of the profile, with each commit the profile holds it at; not a load test's
+  // own entry (LOCAL_SKILL_REPO), which names no repository.
   const held = new Map<string, string[]>();
   for (const each of [...c.profile.skills, ...c.profile.plugins, ...c.profile.contextFiles]) {
+    if (each.repo === LOCAL_SKILL_REPO) continue;
     const commits = held.get(each.repo) ?? [];
     if (!commits.includes(each.commit)) commits.push(each.commit);
     held.set(each.repo, commits);

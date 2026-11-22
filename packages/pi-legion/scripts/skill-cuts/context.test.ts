@@ -24,6 +24,7 @@ import {
   cacheKey,
   ghSource,
   gitBlobId,
+  LOCAL_SKILL_REPO,
   legionRole,
   localSource,
   NoSuchFile,
@@ -2147,4 +2148,92 @@ test("a dev box's ~/.omp/agents its installers link is the project agents of a s
       `the project agents of a dev box's home: acme/dotfiles's installers/omp.sh:10 at ${COMMIT} names ~/.omp/agents in a line the runner does not read as a link of a directory of the repository (ensure_link or ln -s), so the context reads none of it`,
     ],
   });
+}, 120_000);
+
+/** `inner` with each read recorded as `<method> <repo>`, and a read of LOCAL_SKILL_REPO refused
+ *  as `gh` refuses a repository GitHub does not hold. */
+function recordedSource(inner: RepoSource, calls: string[]): RepoSource {
+  const read = (method: string, repo: string): void => {
+    calls.push(`${method} ${repo}`);
+    if (repo === LOCAL_SKILL_REPO) {
+      throw new Error(`gh api --method GET repos/${repo}/... failed: gh: Not Found (HTTP 404)`);
+    }
+  };
+  return {
+    name: inner.name,
+    async file(repo, commit, file) {
+      read("file", repo);
+      return inner.file(repo, commit, file);
+    },
+    async tree(repo, commit, dir, dest) {
+      read("tree", repo);
+      return inner.tree(repo, commit, dir, dest);
+    },
+    async link(repo, commit, file) {
+      read("link", repo);
+      return inner.link?.(repo, commit, file);
+    },
+  };
+}
+
+// Catches: a load test's task in a dev box's subagent profile that fails before any run, its
+// context reading the installers of the tested skill's own entry, whose repository
+// (LOCAL_SKILL_REPO) GitHub does not hold.
+test("a load test's own entry of the tested skill names no repository: its context reads nothing of LOCAL_SKILL_REPO and still reads the user agents of the profile's dev-box repository; an arm's tested copy of a real repository is read as one", async () => {
+  const root = path.join(dir, "load-own");
+  const repos = path.join(root, "repos");
+  writeRepositories(repos);
+  writeTree(path.join(repos, "acme", "legion", COMMIT), PLUGIN_AGENTS);
+  writeTree(path.join(repos, "acme", "dotfiles", COMMIT), DOTFILES);
+  const options = (name: string, calls: string[]): ContextOptions => ({
+    source: recordedSource(localSource(repos), calls),
+    cacheDir: path.join(root, name, "cache"),
+    root: path.join(root, name, "scratch"),
+  });
+  const beta = { repo: "acme/skills", commit: COMMIT, path: "skills/beta", name: "beta" };
+  const gamma = { repo: "acme/dotfiles", commit: COMMIT, path: "skills/gamma", name: "gamma" };
+  // As load.ts's caseOf builds a task's case and arm: the profile's skills and the tested
+  // skill's own entry, under LOCAL_SKILL_REPO, at the arm's directory.
+  const skillDir = path.join(root, "tested");
+  writeTree(skillDir, { "SKILL.md": ALPHA_ARM });
+  const own = { repo: LOCAL_SKILL_REPO, commit: "4a02261ae3d020c7", path: skillDir, name: "alpha" };
+  const base = aCase("subagent:alpha-reviewer", { plugins: AGENTS_PACK, contextFiles: [] });
+  const task: Case = {
+    ...base,
+    id: "t6",
+    profile: { ...base.profile, skills: [beta, gamma, own] },
+    evidence: [subagentItem("subagent:alpha-reviewer", "devbox")],
+  };
+  const arm: Arm = {
+    name: "old",
+    skill: "alpha",
+    skillDir,
+    installedDir: "/skills/alpha",
+    messages: [{ role: "user", content: [{ type: "text", text: "Write the alpha list." }] }],
+    profileSkills: task.profile.skills,
+  };
+  const calls: string[] = [];
+  const built = await buildContext(task, arm, options("task", calls));
+  expect(calls.filter((call) => call.endsWith(` ${LOCAL_SKILL_REPO}`))).toEqual([]);
+  expect(built.record.agent).toEqual(DOTFILES_REVIEWER);
+  expect(built.record.skills.find((skill) => skill.name === "alpha")?.from).toBe("arm");
+  expect(calls).toContain("tree acme/dotfiles");
+  // A behaviour case whose tested copy is the dev-box repository's own: its installers are read.
+  const copy = aCase("subagent:alpha-reviewer", {
+    plugins: AGENTS_PACK,
+    contextFiles: [],
+    skills: [{ repo: "acme/dotfiles", commit: COMMIT, path: "skills/alpha", name: "alpha" }, beta],
+  });
+  const behaviour = { ...copy, evidence: [subagentItem("subagent:alpha-reviewer", "devbox")] };
+  writeTree(path.join(root, "old"), { "SKILL.md": ALPHA_ARM });
+  const copyArm = buildArm(
+    behaviour,
+    "old",
+    { old: path.join(root, "old"), new: path.join(root, "old") },
+    path.join(root, "arm")
+  );
+  const copied: string[] = [];
+  const read = await buildContext(behaviour, copyArm, options("copy", copied));
+  expect(read.record.agent).toEqual(DOTFILES_REVIEWER);
+  expect(copied).toContain("tree acme/dotfiles");
 }, 120_000);

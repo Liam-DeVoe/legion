@@ -206,6 +206,7 @@ import {
   buildContext,
   type ContextRecord,
   cacheKey,
+  LOCAL_SKILL_REPO,
   type RepoSource,
   readFrontmatter,
   skillFrontmatter,
@@ -1261,13 +1262,14 @@ class LoadTest {
    *  and the rest of the profile as it is (its plugins, context files, appended prompt, and a
    *  subagent's recorded prompt and tools), but that a recorded prompt of a skill tested under
    *  another name lists it under that name (`renamedListingBlocks`), as the scratch copy's
-   *  frontmatter and directory name it. The tested skill's entry names the local directory:
-   *  context.ts installs an arm's own skill from `skillDir` and reads no repository for it. */
+   *  frontmatter and directory name it. The tested skill's entry names the local directory under
+   *  context.ts's LOCAL_SKILL_REPO: context.ts installs an arm's own skill from `skillDir` and
+   *  reads no repository for it. */
   caseOf(id: string, text: string, profile: LoadProfile): { c: CaptureCase; arm: Arm } {
     const { name, renamedFrom, model, thinking } = this.settings;
     const ownName = renamedFrom ?? name;
     const own: ProfileSkill = {
-      repo: "local/skill-directory",
+      repo: LOCAL_SKILL_REPO,
       commit: this.settings.skillText,
       path: this.skillDir,
       name,
