@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/sessionanswers"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/textversions"
 	"github.com/sjawhar/envoy/internal/dispatch/textversions/textversionstest"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -333,15 +334,35 @@ func TestTheKeywordFillWritesWhileTheServerAnswers(t *testing.T) {
 // lock is released, reads answer within 800 ms, and for the 10 s after the slow read ended the
 // cursor still stands; then the fill says it continues and the cursor moves, and every event,
 // those written under the lock included, gets its rows.
+//
+// The fill's first batch waits at its cursor table, which a second transaction (the gate) locks
+// before the fill starts and releases once the answers read is slow, so a batch is in flight as
+// the read turns slow however fast the box writes batches. Without it the race was the box's: on
+// a box that fills the 4,000 events in 0.7 s, the fill had caught up, and asked no pause of the
+// slow read, before the read had run its 800 ms.
 func TestTheKeywordFillPausesWhileTheAnswersReadIsSlow(t *testing.T) {
 	server := newKeywordServer(t)
 	backlog := seedKeywordBacklog(t, server.database, server.deps.Events, 4000)
 	last := backlog[len(backlog)-1].ID
 	issue := createInteractionIssue(t, server.handler, "TEST", "Rotate the signing keys", "# Rotation\n")
+
+	// The gate locks the table rather than the cursor row, since a row lock takes a transaction id
+	// and a table lock does not: the fill's first pass waits for its event horizon, which waits for
+	// every transaction id open on the server (events.Horizon), so a gate holding one would hold
+	// the fill before its first batch rather than in it. Nothing else this test runs touches the
+	// table, so the backend queued behind the gate is the fill's first batch.
+	gate, _ := textversionstest.BeginTransaction(t, server.database)
+	defer func() { _ = gate.Rollback(context.Background()) }()
+	if _, err := gate.Exec(t.Context(), `lock table search_text_versions_fill in exclusive mode`); err != nil {
+		t.Fatalf("lock the keyword fill's cursor table: %v", err)
+	}
+	var noXid bool
+	if err := gate.QueryRow(t.Context(), `select pg_current_xact_id_if_assigned() is null`).Scan(&noXid); err != nil || !noXid {
+		t.Fatalf("the gate holds a transaction id (%v), which the fill's event horizon would wait for", err)
+	}
 	fill := startKeywordFill(t, server)
-	fill.AwaitLine(t, keywordBatchLine, time.Minute)
-	if cursor := textversionstest.Cursor(t, server.database); cursor >= last {
-		t.Fatalf("the fill's first batch took the cursor to %d, the backlog's last event %d: it is not catching up as the lock starts", cursor, last)
+	if queued := storetest.WaitForLockWaiters(t, gate, 1, time.Minute); queued < 1 {
+		t.Fatalf("the fill's first batch did not queue at its cursor table within a minute:\n%s", fill.Log())
 	}
 
 	holder, _ := textversionstest.BeginTransaction(t, server.database)
@@ -357,6 +378,9 @@ func TestTheKeywordFillPausesWhileTheAnswersReadIsSlow(t *testing.T) {
 		return server.latency.Slow(time.Now())
 	})
 	batchesWhenSlow := len(fill.Lines(t, keywordBatchLine))
+	if err := gate.Rollback(t.Context()); err != nil {
+		t.Fatalf("release the keyword fill's cursor table: %v", err)
+	}
 	fill.AwaitLine(t, keywordPausedLine, 30*time.Second)
 	var batchesBeforePause int
 	for _, msg := range fill.Lines(t, "") {
