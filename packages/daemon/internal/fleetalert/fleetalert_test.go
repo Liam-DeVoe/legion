@@ -136,7 +136,7 @@ func TestClosingACaseThatIsNotOpenChangesNothing(t *testing.T) {
 // package adds goes here too.
 func TestEveryCaseHasItsOwnWordAndASentence(t *testing.T) {
 	seen := map[string]bool{}
-	for _, c := range []Case{ControllerUnreachable, ControllerRelaunchRefused, NoLiveSession, SessionListUnreadable, NewerProcessRefused} {
+	for _, c := range []Case{ControllerUnreachable, ControllerRelaunchRefused, ClaimUnreachable, ClaimRelaunchRefused, NoLiveSession, SessionListUnreadable, NewerProcessRefused} {
 		if c.Word == "" || c.Sentence == "" {
 			t.Errorf("case %+v has no word or no sentence", c)
 		}

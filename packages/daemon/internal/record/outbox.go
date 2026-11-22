@@ -496,17 +496,10 @@ type Notice struct {
 	// absent from every other kind. Only an UpdateStalledNotice carries one.
 	Update *UpdateStalled `json:"update,omitempty"`
 	// Claim is the claim token a notice of R5 or R3 speaks for, and is absent from every other
-	// kind: the claim whose relaunch the guard would now let through, whose relaunch the guard has
-	// refused for 60 minutes, that is still unreachable after a relaunch, whose marked process
-	// exits at its Envoy role claim, whose newer process the worker stream still refuses, and, for
-	// the architect's own kind, the claim of its tree that is out of reach. The role is beside it
-	// as every claim notice carries one; the token is what `legion claims list` and the `relaunch`
-	// operation name, so the reader can act on the notice without deriving it.
+	// kind: the claim of its tree out of reach, for the architect's notice, and the claim whose
+	// newer process the worker stream still refuses, for the controller's. The role is beside it
+	// as every claim notice carries one; the token is what `legion claims list` names.
 	Claim string `json:"claim,omitempty"`
-	// Unreachable is every claim that has become unreachable since the controller's last such
-	// notice (R5). Only an UnreachableClaimsNotice carries it, and one that carries no claim is
-	// never queued: the list is the whole of what it says.
-	Unreachable []UnreachableClaim `json:"unreachable,omitempty"`
 	// Pause is a project-paused or project-resumed notice's account of the act, and is absent
 	// from every other kind. Only those two kinds carry one.
 	Pause *ProjectPause `json:"pause,omitempty"`
@@ -680,18 +673,6 @@ func (v VolumeNearFull) MarshalJSON() ([]byte, error) {
 		out.Sizes = []VolumeSize{}
 	}
 	return json.Marshal(out)
-}
-
-// UnreachableClaim is one claim of an unreachable-claims notice: the claim token, its issue, the
-// role it holds, the state the daemon still records it in — the mark changes no state (R5) — and
-// the last registration of its session that the daemon read from Envoy's session list, which is
-// what the 20 minutes are counted from.
-type UnreachableClaim struct {
-	Claim    string     `json:"claim"`
-	Issue    string     `json:"issue,omitempty"`
-	Role     claim.Role `json:"role,omitempty"`
-	State    string     `json:"state,omitempty"`
-	LastSeen time.Time  `json:"lastSeen,omitzero"`
 }
 
 // NoticeFailure is why a claim failed, as the notices of that failure name it: Cause is the one
@@ -1014,33 +995,16 @@ const (
 	TreeStalledNotice      NoticeKind = "tree-stalled"
 	ArchitectStalledNotice NoticeKind = "architect-stalled"
 
-	// The controller's notices of the claims Envoy cannot reach (R5) and of a claim whose newer
-	// process its worker stream still refuses (R3).
-	//
-	// UnreachableClaimsNotice lists each claim that has become unreachable since the last such
-	// notice: its session's last registration with Envoy is more than 20 minutes old, counted as
-	// R5 counts it. The claim keeps its state; the controller decides a relaunch.
-	// RelaunchReadyNotice names a claim whose relaunch the guard refused and would now let
-	// through, sent once. RelaunchGuardHeldNotice names a claim the guard has refused for 60
-	// minutes, and RelaunchNotBackNotice one that a relaunch reached and that is still
-	// unreachable 20 minutes later; each is sent once and names its claim as a case for a person.
-	// UnreachableExitNotice names a marked claim that owes no task and whose process exits at its
-	// Envoy role claim, sent at the first such exit, also a case for a person.
 	// EnvoyNoLiveSessionNotice says Envoy's whole list has held no live session for 20 minutes,
-	// so nothing is marked at all. WorkerLockedOutNotice names a claim whose newer process the
-	// worker stream has refused for 5 minutes because an older connection will not close, which
-	// only a person can end.
-	UnreachableClaimsNotice  NoticeKind = "unreachable-claims"
-	RelaunchReadyNotice      NoticeKind = "relaunch-ready"
-	RelaunchGuardHeldNotice  NoticeKind = "relaunch-guard-held"
-	RelaunchNotBackNotice    NoticeKind = "relaunch-not-back"
-	UnreachableExitNotice    NoticeKind = "unreachable-exit"
+	// so the daemon marks no claim out of reach (R5). WorkerLockedOutNotice names a claim whose
+	// newer process the worker stream has refused for 5 minutes because an older connection will
+	// not close, which only a person can end (R3).
 	EnvoyNoLiveSessionNotice NoticeKind = "envoy-no-live-session"
 	WorkerLockedOutNotice    NoticeKind = "worker-locked-out"
 
 	// ClaimOutOfReachNotice is the one unreachable notice an architect is told: one for each
 	// claim of its tree other than its own (R5). It asks nothing of the architect, since the
-	// controller decides the relaunch, and an architect that is itself out of reach is never told
+	// daemon relaunches the claim, and an architect that is itself out of reach is never told
 	// of its own claim, which it could not hear. Its word is not the architect stall arm's
 	// (ArchitectClaimUnreachable), which names a failed or missing architect claim instead.
 	ClaimOutOfReachNotice NoticeKind = "claim-out-of-reach"
@@ -1048,15 +1012,13 @@ const (
 	ProjectResumedNotice  NoticeKind = "project-resumed"
 )
 
-// reachNoticeKind says whether a notice of kind is one of the unreachable-claim notices, which the
-// release before them cannot decode, so it is queued as OutboxKindReachNotice or
-// OutboxKindReachControllerNotice, which that release never runs. The claim and unreachable fields
-// ride on these kinds alone (validateUnreachableNotice), so no other notice carries a field that
-// release does not know.
+// reachNoticeKind says whether a notice of kind is one of this change's notices, which the release
+// before them cannot decode, so it is queued as OutboxKindReachNotice or
+// OutboxKindReachControllerNotice, which that release never runs. The claim field rides on these
+// kinds alone (validateClaimNotice), so no other notice carries a field that release does not know.
 func reachNoticeKind(kind NoticeKind) bool {
 	switch kind {
-	case UnreachableClaimsNotice, RelaunchReadyNotice, RelaunchGuardHeldNotice, RelaunchNotBackNotice,
-		UnreachableExitNotice, EnvoyNoLiveSessionNotice, WorkerLockedOutNotice, ClaimOutOfReachNotice:
+	case EnvoyNoLiveSessionNotice, WorkerLockedOutNotice, ClaimOutOfReachNotice:
 		return true
 	default:
 		return false
@@ -1154,16 +1116,12 @@ type ArchitectStall struct {
 // Every other kind says something about the project — a free slot, a todo issue, the day's tick
 // — which one wake carries however many facts find it pending.
 //
-// The five notices of a claim the daemon cannot reach answer true for the same reason the
-// provider-errors notice does (R5): one pod's loss takes every claim of that pod out of reach at
-// once, each owing a notice of its own, and each is sent once and never again while the claim stays
-// out of reach, so a second claim's notice dropped behind the first claim's would never be sent at
-// all. The unreachable-claims list and the notice that Envoy lists nobody speak for the project, as
-// a tick does, so both answer false.
+// The lock-out notice answers true for the same reason the provider-errors notice does (R3): each
+// claim's is sent once, so a second claim's notice dropped behind the first claim's would never be
+// sent at all. The notice that Envoy lists nobody speaks for the project, as a tick does.
 func NoticePerClaim(kind NoticeKind) bool {
 	switch kind {
-	case ProviderErrorsNotice, TreeStalledNotice,
-		RelaunchReadyNotice, RelaunchGuardHeldNotice, RelaunchNotBackNotice, UnreachableExitNotice, WorkerLockedOutNotice:
+	case ProviderErrorsNotice, TreeStalledNotice, WorkerLockedOutNotice:
 		return true
 	default:
 		return false
@@ -2370,7 +2328,7 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		if err := validateNoticeEscalation(value.Kind, value.Reason, value.Escalation); err != nil {
 			return err
 		}
-		if err := validateUnreachableNotice(value.Kind, value.Claim, value.Unreachable); err != nil {
+		if err := validateClaimNotice(value.Kind, value.Claim); err != nil {
 			return err
 		}
 	case ControllerNotice:
@@ -2417,7 +2375,7 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		if value.Kind == ArchitectStalledNotice && value.Reason == "" {
 			return fmt.Errorf("an architect-stalled notice carries the reason that names its arm, the root and what the record says")
 		}
-		if err := validateUnreachableNotice(value.Kind, value.Claim, value.Unreachable); err != nil {
+		if err := validateClaimNotice(value.Kind, value.Claim); err != nil {
 			return err
 		}
 	case SuperviseRequest:
@@ -2731,19 +2689,13 @@ func validateNoticeEscalation(kind NoticeKind, reason, escalation string) error 
 	return nil
 }
 
-// validateUnreachableNotice holds the claim token and the list of unreachable claims to the notices
-// of R5 and R3 that carry them, as every other field of a notice is held to its own kinds. Both
-// arms of the switch above call it, because the architect reads one of these kinds and the
-// controller the rest.
-//
-// A kind that speaks for one claim names it: the notice is what the controller acts on, and a
-// relaunch names a claim token, so a notice that named none would send its reader to the claims
-// list to work out which claim it meant. The list notice carries at least one claim, since the
-// list is the whole of what it says.
-func validateUnreachableNotice(kind NoticeKind, claimToken string, unreachable []UnreachableClaim) error {
+// validateClaimNotice holds the claim token to the notices of R5 and R3 that speak for one claim,
+// as every other field of a notice is held to its own kinds: each of them names it, and no other
+// notice does. Both arms of the switch above call it, because the architect reads one of these
+// kinds and the controller the other.
+func validateClaimNotice(kind NoticeKind, claimToken string) error {
 	switch kind {
-	case RelaunchReadyNotice, RelaunchGuardHeldNotice, RelaunchNotBackNotice, UnreachableExitNotice,
-		WorkerLockedOutNotice, ClaimOutOfReachNotice:
+	case WorkerLockedOutNotice, ClaimOutOfReachNotice:
 		if claimToken == "" {
 			return fmt.Errorf("a %s notice names the claim it speaks for", kind)
 		}
@@ -2751,20 +2703,6 @@ func validateUnreachableNotice(kind NoticeKind, claimToken string, unreachable [
 		if claimToken != "" {
 			return fmt.Errorf("a %s notice names a claim; only a notice of a claim out of reach or locked out does", kind)
 		}
-	}
-	if kind == UnreachableClaimsNotice {
-		if len(unreachable) == 0 {
-			return fmt.Errorf("an %s notice lists at least one claim", kind)
-		}
-		for _, entry := range unreachable {
-			if entry.Claim == "" {
-				return fmt.Errorf("an %s notice names its claim in every row", kind)
-			}
-		}
-		return nil
-	}
-	if len(unreachable) > 0 {
-		return fmt.Errorf("a %s notice lists unreachable claims; only an %s notice does", kind, UnreachableClaimsNotice)
 	}
 	return nil
 }
@@ -2775,8 +2713,7 @@ func controllerOnlyNoticeKind(kind NoticeKind) bool {
 	switch kind {
 	case TriageNotice, SlotFreeNotice, TodoNotice, TickNotice, UnslottedNotice, AwaitingPersonNotice, ParkedDecisionNotice,
 		UpdateStalledNotice, ProviderErrorsNotice, TreeStalledNotice, ArchitectStalledNotice,
-		UnreachableClaimsNotice, RelaunchReadyNotice, RelaunchGuardHeldNotice, RelaunchNotBackNotice,
-		UnreachableExitNotice, EnvoyNoLiveSessionNotice, WorkerLockedOutNotice, ProjectPausedNotice, ProjectResumedNotice:
+		EnvoyNoLiveSessionNotice, WorkerLockedOutNotice, ProjectPausedNotice, ProjectResumedNotice:
 		return true
 	default:
 		return false

@@ -3019,7 +3019,7 @@ package api
 // 2026-11-21T12:31:48Z, found 205 declared by no other, so this entry kept 205. Read the base's own
 // number and every open pull request again at every forward merge rather than from this line.)
 //
-// 208: a claim Envoy cannot reach, and its relaunch on its same session.
+// 208: a claim Envoy cannot reach, which the daemon relaunches on its same session.
 // Every claim view of `GET /legion/v1/state` (`read_state` and `read_record`) and the controller's
 // locator gain `unreachable`, `{since, lastSeen?}`: the daemon's mark of a claim whose session's
 // last registration with Envoy is more than 20 minutes old, counted from the latest of that
@@ -3027,35 +3027,13 @@ package api
 // read of Envoy's list (supervise.Reach, the daemon's reach keeper). The claim keeps its state;
 // the key is absent while it is reachable, and absent from every view the route serves a caller
 // below 208 (api.stateFor, withoutUnreachableLocator, withoutUnreachableClaims), whose plugin
-// reads claim views with a schema that knows no such key. The `legion` tool's controller gains
-// `relaunch`, which posts
-// `POST /legion/v1/claims/relaunch` (`api.RelaunchRequest`: `grantId` and `claim`, the claim's
-// token as the notices name it). Its answers (api.claimRelaunch, relaunchRefusal) are: 200
-// `api.RelaunchResponse`, `{}`, also for a relaunch whose launch after the stop waits for the
-// daemon's store, which the daemon then makes itself at the probe interval; an uncoded 400 for a
-// body that does not decode, and 400 MISSING_FIELD for an empty `grantId` or `claim`; 403
-// GRANT_EXPIRED, GRANT_UNAVAILABLE or GRANT_REVOKED for a grant that is expired, unknown or no
-// longer held by its claim, 409 STALE_PLUGIN_CONTRACT for a worker grant whose claim speaks another
-// contract, and 403 CONTROLLER_REQUIRED for every other worker grant; 409 CLAIM_IS_CONTROLLER for
-// the project's own controller claim; 404 NO_CLAIM for a claim this daemon does not supervise; 409
-// PROJECT_PAUSED, naming the pause that stands, for any other claim while the project is paused,
-// which stops nothing and spends no relaunch; an uncoded 503 once the daemon's stop has begun; 409
-// CLAIM_REACHABLE, CLAIM_UNSETTLED,
-// RELAUNCH_GUARD, RELAUNCHED_RECENTLY, POD_UNREACHABLE, LAUNCHER_NOT_CONNECTED,
-// RELAUNCH_REPLACES_POD, PROCESS_OUTLIVED_STOP or TREE_REFUSES_LAUNCH (the tree itself refuses the
-// claim's launch: its cleanup is reserved or confirmed, its lifecycle is absent, or its bound
-// epoch is stale or unset, so nothing was stopped) for a relaunch
-// the daemon refuses; 503 TREE_CHECK_FAILED for a relaunch whose tree check before the stop the
-// daemon's store did not answer, which stopped nothing and may be asked for again; and 500
-// RELAUNCH_FAILED for a daemon with no relaunch, a refusal whose record it could not write, and
-// every other failure.
-// `packages/contracts/src/legion-claim-recovery.ts` mirrors the request and the `{}`. The
-// controller's plugin starts to post `POST /legion/v1/claims/activity` as a worker's does, under
-// the registration a daemon-launched controller holds, which the relaunch guard reads. Every
-// plugin session, a worker's and that controller's, posts the same report again every 5 minutes
-// while a turn is open, whatever it says, and the guard refuses a claim in a turn whose last
-// report of that turn is less than 20 minutes old; the body is the one it already posted, so a
-// plugin before it sends none of them and its claim is judged by the rules before it.
+// reads claim views with a schema that knows no such key. The controller's plugin starts to post
+// `POST /legion/v1/claims/activity` as a worker's does, under the registration a daemon-launched
+// controller holds, which the relaunch guard reads. Every plugin session, a worker's and that
+// controller's, posts the same report again every 5 minutes while a turn is open, whatever it
+// says, and the guard refuses a claim in a turn whose last report of that turn is less than 20
+// minutes old; the body is the one it already posted, so a plugin before it sends none of them
+// and its claim is judged by the rules before it.
 // (This change took 157 at its forward merge over main's 146, read just before
 // 2026-11-17T10:29Z: of the remote branches committed to since 2026-11-10, the heads above 146
 // declare 147 to 156, among them two merge-queue groups at 151, so 157 was the lowest number no

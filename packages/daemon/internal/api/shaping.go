@@ -289,16 +289,14 @@ func shapeAnswer(id AnswerID, body any, restore, strip int) (any, tookOff) {
 		}
 	case AnswerHealth, AnswerRegister, AnswerRegisterController, AnswerNoContent,
 		AnswerGrant, AnswerHandoffComplete, AnswerEmptyObject, AnswerFreshSession,
-		AnswerCompact, AnswerTurnOutcome, AnswerWaveRelease, AnswerProjectPause, AnswerProjectResume,
-		AnswerRelaunch:
+		AnswerCompact, AnswerTurnOutcome, AnswerWaveRelease, AnswerProjectPause, AnswerProjectResume:
 		// The identity, one row each: every contract this daemon serves one of these answers
 		// reads the body it writes. No key has arrived on any of them since that answer arrived.
 		// One key has gone: AnswerHandoffComplete lost its `note` at stateMachineContract, and
 		// no reader from ServingFloor to 85 requires it, so no stand-in is written for it
-		// (version.go's 86). AnswerTurnOutcome arrived whole at stateMachineContract,
-		// AnswerProjectPause and AnswerProjectResume arrived whole at pauseContract, and
-		// AnswerRelaunch arrived whole at unreachableContract, so no older contract records any
-		// of them at all.
+		// (version.go's 86). AnswerTurnOutcome arrived whole at stateMachineContract, and
+		// AnswerProjectPause and AnswerProjectResume arrived whole at pauseContract, so no older
+		// contract records any of them at all.
 		return body, took
 	case answerUnparsed:
 		// The identity too, and for a reason of its own: no plugin parses these bodies, so no
@@ -867,7 +865,7 @@ const shapedAnswersContract = 193
 // the controller's locator (version.go's 208, R5): a plugin before it reads both with a schema that
 // knows no such key, so a caller from a pod below it is served the state without the mark
 // (withoutUnreachableLocator, withoutUnreachableClaims). It is the last number of answers.go's
-// SupportedContracts and the arrival of the relaunch's answer.
+// SupportedContracts.
 const unreachableContract = 208
 
 // waitingOnIssueContract is the daemon contract that added `waiting_on_issue` to the waiting

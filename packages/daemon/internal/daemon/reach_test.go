@@ -3,10 +3,10 @@ package daemon
 // The daemon's half of R5 and R6: once a minute it reads Envoy's session list, marks a claim whose
 // session's last registration is more than 20 minutes old — counted from the latest of that
 // registration, its boot, the session's first ready, the end of its last failed read and its last
-// read that found no live session — tells the controller and the tree's architect, and writes R6's
-// line for what no agent can hear. The keeper is driven directly over fakes of the list, the
-// store's write, the outbox and the clock, because what it decides is decided from the claims it is
-// handed and what it read.
+// read that found no live session — tells the tree's architect, relaunches the claim, and writes
+// R6's line for what no agent can act on. The keeper is driven directly over fakes of the list,
+// the store's write, the outbox, the relaunch and the clock, because what it decides is decided
+// from the claims it is handed and what it read.
 
 import (
 	"bytes"
@@ -25,6 +25,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/fleetalert"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -97,7 +98,7 @@ func newReachRig(t *testing.T, daemonController bool) *reachRig {
 			},
 		},
 		alerts: fleetalert.New(log, "legion"),
-		relaunchController: func(_ context.Context, c supervise.Claim, at time.Time) (supervise.Claim, error) {
+		relaunch: func(_ context.Context, c supervise.Claim, at time.Time) (supervise.Claim, error) {
 			r.mu.Lock()
 			defer r.mu.Unlock()
 			r.relaunched = append(r.relaunched, c)
@@ -280,9 +281,8 @@ func TestAClaimIsMarkedTwentyMinutesAfterItsLastRegistrationCountedFromTheBoot(t
 	r.at(19 * time.Minute)
 	r.listing(map[string]time.Duration{"ses_implementer": -time.Hour, "ses_other": 19 * time.Minute})
 	r.sweep(worker)
-	if r.reach(worker.Token).Unreachable() || len(r.notices(record.UnreachableClaimsNotice)) != 0 {
-		t.Fatalf("at 19 minutes after the boot the claim reads %+v and the controller was told %d times; the boot counts",
-			r.reach(worker.Token), len(r.notices(record.UnreachableClaimsNotice)))
+	if r.reach(worker.Token).Unreachable() {
+		t.Fatalf("at 19 minutes after the boot the claim reads %+v; the boot counts", r.reach(worker.Token))
 	}
 
 	r.at(21 * time.Minute)
@@ -292,34 +292,29 @@ func TestAClaimIsMarkedTwentyMinutesAfterItsLastRegistrationCountedFromTheBoot(t
 	if !got.Unreachable() || !got.Since.Equal(reachBoot) || !got.LastSeen.Equal(reachBoot.Add(-time.Hour)) {
 		t.Fatalf("at 21 minutes the claim's reach = %+v, want it marked since the boot with its last registration read", got)
 	}
-	told := r.notices(record.UnreachableClaimsNotice)
-	if len(told) != 1 || told[0].issue != "LEGION" || len(told[0].notice.Unreachable) != 1 ||
-		told[0].notice.Unreachable[0].Claim != string(worker.Token) || told[0].notice.Unreachable[0].State != string(supervise.StateWorking) {
-		t.Fatalf("the controller was told %+v, want one list naming the working claim on the project", told)
-	}
-
-	r.at(40 * time.Minute)
-	r.sweep(r.with(worker))
-	if told := r.notices(record.UnreachableClaimsNotice); len(told) != 1 {
-		t.Fatalf("a claim still out of reach was listed %d times, want once", len(told))
+	r.mu.Lock()
+	told := len(r.told)
+	r.mu.Unlock()
+	if told != 0 {
+		t.Fatalf("the controller was told %d notices of a claim out of reach, want none: the daemon relaunches it", told)
 	}
 
 	// Its session registers: reachable again, and reported again only once it is out of reach again.
 	r.at(41 * time.Minute)
 	r.listing(map[string]time.Duration{"ses_implementer": 41 * time.Minute})
 	r.sweep(r.with(worker))
-	if r.reach(worker.Token).Unreachable() || r.reach(worker.Token).Reported {
+	if r.reach(worker.Token).Unreachable() {
 		t.Fatalf("a claim whose session registered reads %+v, want it reachable and its report over", r.reach(worker.Token))
 	}
 	r.at(60 * time.Minute)
 	r.sweep(r.with(worker))
-	if told := r.notices(record.UnreachableClaimsNotice); len(told) != 1 {
-		t.Fatalf("at 19 minutes after its registration the claim was listed %d times, want once (the first episode)", len(told))
+	if r.reach(worker.Token).Unreachable() {
+		t.Fatal("19 minutes after its registration the claim is marked again")
 	}
 	r.at(62 * time.Minute)
 	r.sweep(r.with(worker))
-	if told := r.notices(record.UnreachableClaimsNotice); len(told) != 2 {
-		t.Fatalf("the claim out of reach a second time was listed %d times in all, want twice", len(told))
+	if !r.reach(worker.Token).Unreachable() {
+		t.Fatal("21 minutes after its registration the claim is not marked again")
 	}
 }
 
@@ -589,19 +584,16 @@ func TestAListWithNoLiveSessionMarksNoneAndIsToldOnce(t *testing.T) {
 	}
 }
 
-// A claim reported before a daemon boot is not reported again after it: its record says so.
-func TestAClaimReportedBeforeABootIsNotReportedAgainAfterIt(t *testing.T) {
+// An architect told of a claim before a daemon boot is not told again after it: its record says so.
+func TestAnArchitectToldBeforeABootIsNotToldAgainAfterIt(t *testing.T) {
 	r := newReachRig(t, false)
 	worker := reachClaim(t, "LEGION-208", "LEGION-209", claim.RoleImplementer, "ses_implementer")
-	worker.Reach = supervise.Reach{Session: "ses_implementer", FirstReady: worker.LastReady, Reported: true, ArchitectTold: true}
+	worker.Reach = supervise.Reach{Session: "ses_implementer", FirstReady: worker.LastReady, ArchitectTold: true}
 	r.at(21 * time.Minute)
 	r.listing(map[string]time.Duration{"ses_other": 21 * time.Minute})
 	r.sweep(worker)
 	if !r.reach(worker.Token).Unreachable() {
 		t.Fatal("the claim was not marked 21 minutes after the boot")
-	}
-	if told := r.notices(record.UnreachableClaimsNotice); len(told) != 0 {
-		t.Fatalf("a claim reported before the boot was listed again: %+v", told)
 	}
 	if notices := r.architectNotices("LEGION-209"); len(notices) != 0 {
 		t.Fatalf("its architect was told again: %+v", notices)
@@ -609,9 +601,8 @@ func TestAClaimReportedBeforeABootIsNotReportedAgainAfterIt(t *testing.T) {
 }
 
 // A boot restores a claim the last daemon left mid-launch as launch_uncertain, and the claim
-// stays queued until a launch starts. Neither state ends the episode: the claim reported before
-// the boot is not reported again after it, and the relaunch's not-back notice still comes 20
-// minutes after that relaunch (R5).
+// stays queued until a launch starts. Neither state ends the episode: the relaunch made before
+// the boot is still the episode's, and R6's line still comes 20 minutes after it (R5).
 func TestAClaimRestoredMidLaunchKeepsItsEpisode(t *testing.T) {
 	for _, restored := range []supervise.ClaimState{supervise.StateLaunchUncertain, supervise.StateQueued} {
 		t.Run(string(restored), func(t *testing.T) {
@@ -620,14 +611,14 @@ func TestAClaimRestoredMidLaunchKeepsItsEpisode(t *testing.T) {
 			r.at(21 * time.Minute)
 			r.listing(map[string]time.Duration{"ses_other": 21 * time.Minute})
 			r.sweep(worker)
-			// The controller's relaunch at 25 minutes launches generation 4, which its launch
-			// records on the claim's own row.
+			// A relaunch at 25 minutes launches generation 4, which its launch records on the
+			// claim's own row.
 			worker.Generation++
 			worker.LastRelaunch = reachBoot.Add(25 * time.Minute)
 			r.at(26 * time.Minute)
 			r.sweep(r.with(worker))
-			if got := r.reach(worker.Token); !got.Reported || !got.Relaunched {
-				t.Fatalf("before the boot the claim reads %+v, want it reported and relaunched", got)
+			if got := r.reach(worker.Token); !got.Unreachable() || !got.Relaunched {
+				t.Fatalf("before the boot the claim reads %+v, want it marked and relaunched", got)
 			}
 
 			// The daemon ends during that launch and boots again at 30 minutes. The boot
@@ -640,8 +631,8 @@ func TestAClaimRestoredMidLaunchKeepsItsEpisode(t *testing.T) {
 			stored := booted.with(worker)
 			stored.State = restored
 			booted.sweep(stored)
-			if got := booted.reach(worker.Token); !got.Reported || !got.Relaunched {
-				t.Fatalf("a claim restored as %s reads %+v, want its episode kept: reported and relaunched", restored, got)
+			if got := booted.reach(worker.Token); !got.Unreachable() || !got.Relaunched {
+				t.Fatalf("a claim restored as %s reads %+v, want its episode kept: marked and relaunched", restored, got)
 			}
 
 			// The launch comes up and the claim is still out of reach.
@@ -650,42 +641,25 @@ func TestAClaimRestoredMidLaunchKeepsItsEpisode(t *testing.T) {
 				booted.listing(map[string]time.Duration{"ses_other": time.Duration(minute) * time.Minute})
 				booted.sweep(booted.with(worker))
 			}
-			if told := booted.notices(record.UnreachableClaimsNotice); len(told) != 0 {
-				t.Fatalf("a claim reported before the boot and restored as %s was listed again: %+v", restored, told)
+			if lines := booted.lines(fleetalert.ClaimUnreachable.Word); lines != 1 {
+				t.Fatalf("a claim restored as %s wrote R6's not-back line %d times, want once, 20 minutes after the relaunch", restored, lines)
 			}
-			if notBack := booted.notices(record.RelaunchNotBackNotice); len(notBack) != 1 || notBack[0].notice.Claim != string(worker.Token) {
-				t.Fatalf("not-back notices after a restore as %s = %+v, want one 20 minutes after the relaunch", restored, notBack)
+			if len(booted.relaunched) != 0 {
+				t.Fatalf("a claim relaunched before the boot was relaunched again within 6 hours: %+v", booted.relaunched)
 			}
 		})
 	}
 }
 
-// The tree's architect is told of each claim of its tree but its own, and the controller's list
-// names every claim, the architect's included. A list the outbox did not take leaves its claims
-// unreported, to be listed again at the next pass.
+// The tree's architect is told of each claim of its tree but its own, once an episode, and asked
+// nothing.
 func TestTheArchitectIsToldOfItsTreesClaimsButItsOwn(t *testing.T) {
 	r := newReachRig(t, false)
 	architect := reachClaim(t, "LEGION-208", "LEGION-208", claim.RoleArchitect, "ses_architect")
 	worker := reachClaim(t, "LEGION-208", "LEGION-209", claim.RoleImplementer, "ses_implementer")
-	r.mu.Lock()
-	r.refuseTell = true
-	r.mu.Unlock()
-	r.at(21 * time.Minute)
-	r.listing(map[string]time.Duration{"ses_other": 21 * time.Minute})
-	r.sweep(architect, worker)
-	if r.reach(worker.Token).Reported {
-		t.Fatal("a claim whose list the outbox did not take is marked reported")
-	}
-	r.mu.Lock()
-	r.refuseTell = false
-	r.mu.Unlock()
 	r.at(22 * time.Minute)
-	r.sweep(r.with(architect), r.with(worker))
-
-	told := r.notices(record.UnreachableClaimsNotice)
-	if len(told) != 1 || len(told[0].notice.Unreachable) != 2 {
-		t.Fatalf("the controller was told %+v, want one list of both claims", told)
-	}
+	r.listing(map[string]time.Duration{"ses_other": 22 * time.Minute})
+	r.sweep(architect, worker)
 	if notices := r.architectNotices("LEGION-209"); len(notices) != 1 || notices[0].Kind != record.ClaimOutOfReachNotice ||
 		notices[0].Claim != string(worker.Token) {
 		t.Fatalf("the architect's notices on LEGION-209 = %+v, want one naming the implementer's claim", notices)
@@ -700,158 +674,107 @@ func TestTheArchitectIsToldOfItsTreesClaimsButItsOwn(t *testing.T) {
 	}
 }
 
-// The four per-claim notices: the guard would now let a refused claim through; the guard has
-// refused it for 60 minutes; a relaunch reached it and it is still out of reach 20 minutes later;
-// and a marked claim that owes no task was relaunched by the daemon's own supervision, which is
-// its process exiting at its Envoy role claim. Each is sent once.
-func TestEachPerClaimNoticeOfAnUnreachableClaimIsSentOnce(t *testing.T) {
-	t.Run("the guard would now let it through, and then 60 minutes of refusal", func(t *testing.T) {
-		r := newReachRig(t, false)
-		worker := reachClaim(t, "LEGION-208", "LEGION-209", claim.RoleImplementer, "ses_implementer")
-		worker.ActivityAt, worker.ActivityBackground, worker.ActivityKinds = reachBoot, true, []string{"async-job"}
-		r.at(21 * time.Minute)
-		r.listing(map[string]time.Duration{"ses_other": 21 * time.Minute})
-		r.sweep(worker)
-		if err := r.k.guardRefused(context.Background(), worker.Token, reachBoot.Add(25*time.Minute)); err != nil {
-			t.Fatalf("record the guard's refusal: %v", err)
-		}
-		for minute := 26; minute <= 90; minute++ {
-			r.at(time.Duration(minute) * time.Minute)
-			r.sweep(r.with(worker))
-		}
-		if held := r.notices(record.RelaunchGuardHeldNotice); len(held) != 1 || held[0].notice.Claim != string(worker.Token) || held[0].issue != "LEGION-209" {
-			t.Fatalf("guard-held notices = %+v, want one at 60 minutes of refusal", held)
-		}
-		if ready := r.notices(record.RelaunchReadyNotice); len(ready) != 0 {
-			t.Fatalf("relaunch-ready notices = %+v while the job still runs, want none", ready)
-		}
-		worker.ActivityAt, worker.ActivityBackground, worker.ActivityKinds = reachBoot.Add(90*time.Minute), false, nil
-		for minute := 91; minute <= 95; minute++ {
-			r.at(time.Duration(minute) * time.Minute)
-			r.sweep(r.with(worker))
-		}
-		if ready := r.notices(record.RelaunchReadyNotice); len(ready) != 1 || ready[0].notice.Claim != string(worker.Token) {
-			t.Fatalf("relaunch-ready notices = %+v, want one once the job ended", ready)
-		}
-	})
-	t.Run("still out of reach 20 minutes after a relaunch", func(t *testing.T) {
-		r := newReachRig(t, false)
-		worker := reachClaim(t, "LEGION-208", "LEGION-209", claim.RoleImplementer, "ses_implementer")
-		r.at(21 * time.Minute)
-		r.listing(map[string]time.Duration{"ses_other": 21 * time.Minute})
-		r.sweep(worker)
-		// The relaunch's launch records it on the claim's own row, which the next sweep reads.
-		worker.Generation++
-		worker.LastRelaunch = reachBoot.Add(30 * time.Minute)
-		for minute := 31; minute <= 55; minute++ {
-			r.at(time.Duration(minute) * time.Minute)
-			r.sweep(r.with(worker))
-		}
-		if notBack := r.notices(record.RelaunchNotBackNotice); len(notBack) != 1 || notBack[0].notice.Claim != string(worker.Token) {
-			t.Fatalf("not-back notices = %+v, want one 20 minutes after the relaunch", notBack)
-		}
-		if exits := r.notices(record.UnreachableExitNotice); len(exits) != 0 {
-			t.Fatalf("the relaunch's own launch was told as an exit: %+v", exits)
-		}
-	})
-	t.Run("a marked claim owing no task exits at its role claim", func(t *testing.T) {
-		r := newReachRig(t, false)
-		planner := reachClaim(t, "LEGION-208", "LEGION-210", claim.RolePlanner, "ses_planner")
-		r.at(21 * time.Minute)
-		r.listing(map[string]time.Duration{"ses_other": 21 * time.Minute})
-		r.sweep(planner)
-		for minute := 22; minute <= 30; minute++ {
-			planner.Generation++
-			planner.State = supervise.StateLaunching
-			r.at(time.Duration(minute) * time.Minute)
-			r.sweep(r.with(planner))
-		}
-		if exits := r.notices(record.UnreachableExitNotice); len(exits) != 1 || exits[0].notice.Claim != string(planner.Token) {
-			t.Fatalf("exit notices = %+v, want one at the first exit", exits)
-		}
-		if !r.reach(planner.Token).Unreachable() {
-			t.Fatal("the mark did not hold through the claim's launch states")
-		}
-
-		owed := reachClaim(t, "LEGION-208", "LEGION-211", claim.RoleTester, "ses_tester")
-		owed.Pending = &supervise.Delivery{ID: "task", Task: "test it"}
-		r.sweep(owed)
-		r.at(52 * time.Minute)
-		r.sweep(r.with(owed))
-		owed.Generation++
-		r.at(53 * time.Minute)
-		r.sweep(r.with(owed))
-		if exits := r.notices(record.UnreachableExitNotice); len(exits) != 1 {
-			t.Fatalf("a claim owing a task was told as an exit: %+v", exits)
-		}
-	})
+// settledWorker is an implementer's claim the relaunch guard lets through: its last activity
+// report, made after its launch, shows nothing running, and it is in no turn.
+func settledWorker(t *testing.T) supervise.Claim {
+	worker := reachClaim(t, "LEGION-208", "LEGION-209", claim.RoleImplementer, "ses_implementer")
+	worker.ActivityAt = reachBoot
+	return worker
 }
 
-// The keeper reads a relaunch before its launch is recorded (LastRelaunchGeneration 0), and the
-// launch then lands at a later generation than that first read. Three paths make it so: the
-// launch's own loop retries a refused start; the launch is tried again at the probe interval after
-// a store that did not answer; and a daemon that ends mid-start comes back with the claim
-// launch_uncertain and spawns it once more. Each path is read too while that later try is still
-// starting and has recorded no generation. Each is the relaunch's own launch, so none is an exit
-// of the claim's.
-func TestARelaunchsLaunchAtALaterGenerationIsNoExit(t *testing.T) {
-	type read struct {
-		generation, recorded uint64
-		state                supervise.ClaimState
-	}
-	for _, tc := range []struct {
-		name  string
-		reads []read
-	}{
-		{name: "the launch retries a refused start", reads: []read{
-			{generation: 4, state: supervise.StateLaunching},
-			{generation: 5, state: supervise.StateLaunching},
-			{generation: 5, recorded: 5, state: supervise.StateLaunching},
-			{generation: 5, recorded: 5, state: supervise.StateIdle},
-		}},
-		{name: "the launch is tried again at the probe interval", reads: []read{
-			{generation: 3, state: supervise.StateLaunching},
-			{generation: 3, state: supervise.StateLaunching},
-			{generation: 4, state: supervise.StateLaunching},
-			{generation: 4, recorded: 4, state: supervise.StateIdle},
-		}},
-		{name: "a restart spawns the launch_uncertain claim again", reads: []read{
-			{generation: 4, state: supervise.StateLaunchUncertain},
-			{generation: 5, state: supervise.StateLaunching},
-			{generation: 5, recorded: 5, state: supervise.StateLaunching},
-			{generation: 5, recorded: 5, state: supervise.StateIdle},
-		}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			r := newReachRig(t, false)
-			planner := reachClaim(t, "LEGION-208", "LEGION-210", claim.RolePlanner, "ses_planner")
-			planner.Generation = 3
-			r.at(21 * time.Minute)
-			r.listing(map[string]time.Duration{"ses_other": 21 * time.Minute})
-			r.sweep(planner)
-			if !r.reach(planner.Token).Unreachable() {
-				t.Fatal("the planner was not marked at 21 minutes")
-			}
-			planner.LastRelaunch = reachBoot.Add(25 * time.Minute)
-			for i, step := range tc.reads {
-				planner.Generation, planner.LastRelaunchGeneration, planner.State = step.generation, step.recorded, step.state
-				r.at(time.Duration(26+i) * time.Minute)
-				r.sweep(r.with(planner))
-			}
-			if exits := r.notices(record.UnreachableExitNotice); len(exits) != 0 {
-				t.Fatalf("the relaunch's own launch at a later generation was told as an exit: %+v", exits)
-			}
-			if got := r.reach(planner.Token); got.Generation != planner.Generation || !got.Relaunched {
-				t.Fatalf("the record reads %+v, want it relaunched and counting from the launch's generation %d", got, planner.Generation)
-			}
+// toldCount is how many controller notices the rig's outbox took.
+func (r *reachRig) toldCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.told)
+}
 
-			// A later launch of the claim than the relaunch's own is still the exit it is.
-			planner.Generation++
-			r.at(40 * time.Minute)
-			r.sweep(r.with(planner))
-			if exits := r.notices(record.UnreachableExitNotice); len(exits) != 1 {
-				t.Fatalf("exit notices after a launch past the relaunch's = %+v, want one", exits)
-			}
-		})
+// The daemon relaunches a workflow role's claim it has marked out of reach, on its same session,
+// once: no agent is asked to, and the controller is told nothing.
+func TestTheDaemonRelaunchesAWorkerClaimItCannotReach(t *testing.T) {
+	r := newReachRig(t, false)
+	worker := settledWorker(t)
+	r.at(19 * time.Minute)
+	r.listing(map[string]time.Duration{"ses_other": 19 * time.Minute})
+	r.sweep(worker)
+	if len(r.relaunched) != 0 {
+		t.Fatalf("a claim not yet out of reach was relaunched: %+v", r.relaunched)
 	}
+	for minute := 21; minute <= 39; minute++ {
+		r.at(time.Duration(minute) * time.Minute)
+		r.listing(map[string]time.Duration{"ses_other": time.Duration(minute) * time.Minute})
+		r.sweep(r.with(worker))
+	}
+	if len(r.relaunched) != 1 || r.relaunched[0].Token != worker.Token {
+		t.Fatalf("the daemon relaunched %+v, want the implementer's claim once", r.relaunched)
+	}
+	if got := r.reach(worker.Token); !got.Unreachable() || !got.Relaunched {
+		t.Fatalf("after the relaunch the claim reads %+v, want it marked and relaunched", got)
+	}
+	if told := r.toldCount(); told != 0 {
+		t.Fatalf("the controller was told %d notices, want none", told)
+	}
+	if lines := r.lines(fleetalert.ClaimUnreachable.Word) + r.lines(fleetalert.ClaimRelaunchRefused.Word); lines != 0 {
+		t.Fatalf("R6 wrote %d lines for a relaunch still inside its 20 minutes, want none", lines)
+	}
+}
+
+// Each case the daemon's relaunch of a workflow claim cannot get past writes R6's line for that
+// claim once, and the controller is told nothing of any of them.
+func TestACaseForAPersonWritesTheClaimsLineOnce(t *testing.T) {
+	t.Run("the guard refuses it for 60 minutes", func(t *testing.T) {
+		r := newReachRig(t, false)
+		worker := settledWorker(t)
+		worker.ActivityBackground, worker.ActivityKinds = true, []string{"async-job"}
+		sweepTo := func(last int, from int) {
+			for minute := from; minute <= last; minute++ {
+				r.at(time.Duration(minute) * time.Minute)
+				r.listing(map[string]time.Duration{"ses_other": time.Duration(minute) * time.Minute})
+				r.sweep(r.with(worker))
+			}
+		}
+		sweepTo(80, 21)
+		if lines := r.lines(fleetalert.ClaimRelaunchRefused.Word); lines != 0 {
+			t.Fatalf("R6 wrote %d refused lines before 60 minutes of refusal, want none", lines)
+		}
+		sweepTo(100, 81)
+		if lines := r.lines(fleetalert.ClaimRelaunchRefused.Word); lines != 1 {
+			t.Fatalf("R6 wrote %d refused lines after 60 minutes of refusal, want one", lines)
+		}
+		if len(r.relaunched) != 0 || r.toldCount() != 0 {
+			t.Fatalf("relaunched %+v and told the controller %d notices, want neither", r.relaunched, r.toldCount())
+		}
+	})
+	t.Run("its relaunch did not bring it back", func(t *testing.T) {
+		r := newReachRig(t, false)
+		worker := settledWorker(t)
+		for minute := 21; minute <= 60; minute++ {
+			r.at(time.Duration(minute) * time.Minute)
+			r.listing(map[string]time.Duration{"ses_other": time.Duration(minute) * time.Minute})
+			r.sweep(r.with(worker))
+			if minute == 40 && r.lines(fleetalert.ClaimUnreachable.Word) != 0 {
+				t.Fatal("R6 wrote the not-back line inside the 20 minutes after the relaunch")
+			}
+		}
+		if lines := r.lines(fleetalert.ClaimUnreachable.Word); lines != 1 || len(r.relaunched) != 1 || r.toldCount() != 0 {
+			t.Fatalf("not-back lines %d, relaunches %d, controller notices %d; want 1, 1 and 0", lines, len(r.relaunched), r.toldCount())
+		}
+	})
+	t.Run("its launcher is not connected", func(t *testing.T) {
+		r := newReachRig(t, false)
+		r.relaunch = runtime.ErrLauncherNotConnected
+		worker := settledWorker(t)
+		for minute := 21; minute <= 30; minute++ {
+			r.at(time.Duration(minute) * time.Minute)
+			r.listing(map[string]time.Duration{"ses_other": time.Duration(minute) * time.Minute})
+			r.sweep(r.with(worker))
+		}
+		if lines := r.lines(fleetalert.ClaimRelaunchRefused.Word); lines != 1 || r.toldCount() != 0 {
+			t.Fatalf("refused lines %d and controller notices %d, want 1 and 0", lines, r.toldCount())
+		}
+		if len(r.relaunched) < 2 || r.reach(worker.Token).Relaunched {
+			t.Fatalf("the refused relaunch was asked %d times and the claim reads %+v; want it asked again at each sweep and not relaunched",
+				len(r.relaunched), r.reach(worker.Token))
+		}
+	})
 }

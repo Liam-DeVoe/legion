@@ -78,7 +78,6 @@ const (
 	AnswerRefusal            AnswerID = "refusal"
 	AnswerProjectPause       AnswerID = "project-pause"
 	AnswerProjectResume      AnswerID = "project-resume"
-	AnswerRelaunch           AnswerID = "relaunch"
 )
 
 // Answer is one response schema a plugin parses, with every route that answers it and the
@@ -200,10 +199,6 @@ var Answers = []Answer{
 	// version.go's 178: the pause the controller's resume ended and how many held rows it let out
 	// (`api.ProjectResumeResponse`), arrived with its route as the pause's answer did.
 	{ID: AnswerProjectResume, Routes: []string{"POST /legion/v1/project/resume"}, Since: pauseContract},
-	// version.go's 208: the controller's relaunch of a claim Envoy cannot reach, on its same
-	// session (`api.RelaunchResponse`, `{}`). The route arrives with the answer, so no contract
-	// below 208 records either.
-	{ID: AnswerRelaunch, Routes: []string{"POST /legion/v1/claims/relaunch"}, Since: unreachableContract},
 }
 
 // EnumeratedField is one field of one answer that a plugin parses with a strict enumeration,

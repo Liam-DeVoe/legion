@@ -287,7 +287,7 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 			StartedAt: projectedAt.Add(-time.Minute), EndedAt: projectedAt.Add(-30 * time.Second),
 		},
 		Reach: supervise.Reach{Session: "ses_implementer_500", FirstReady: projectedAt.Add(-50 * time.Minute),
-			Since: projectedAt.Add(-25 * time.Minute), LastSeen: projectedAt.Add(-25 * time.Minute), Reported: true},
+			Since: projectedAt.Add(-25 * time.Minute), LastSeen: projectedAt.Add(-25 * time.Minute), ArchitectTold: true},
 	}
 
 	store := projectionStore{
@@ -360,7 +360,7 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 			"leakCheckCause": current.LeakCheckCause,
 			// The claim's mark out of reach (R5): when the 20 minutes were counted from and the
 			// last registration the daemon read, never the rest of the reach record, which is the
-			// daemon's own bookkeeping of what it told.
+			// daemon's own bookkeeping of its relaunch.
 			"unreachable": map[string]any{
 				"since": current.Reach.Since, "lastSeen": current.Reach.LastSeen,
 			},

@@ -3,33 +3,28 @@ package record
 import (
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 )
 
-// The notices R5 and R3 add are the controller's alone, and each is keyed as its rule says: the
-// list of claims that have newly gone out of reach and the one that says Envoy lists nobody speak
-// for the project, so one wake carries whatever a pass finds, while every other kind speaks for one
-// claim and is one wake per claim.
-func TestTheUnreachableNoticesAreTheControllersAndKeyedPerClaim(t *testing.T) {
+// The controller's notices R5 and R3 add are its alone, and each is keyed as its rule says: the
+// notice that Envoy lists nobody speaks for the project, and the lock-out notice for one claim.
+func TestTheReachNoticesAreTheControllersAndKeyedAsTheirRuleSays(t *testing.T) {
 	for kind, perClaim := range map[NoticeKind]bool{
-		UnreachableClaimsNotice:  false,
 		EnvoyNoLiveSessionNotice: false,
-		RelaunchReadyNotice:      true,
-		RelaunchGuardHeldNotice:  true,
-		RelaunchNotBackNotice:    true,
-		UnreachableExitNotice:    true,
 		WorkerLockedOutNotice:    true,
 	} {
 		if !controllerOnlyNoticeKind(kind) {
-			t.Errorf("%s is not a controller-only notice kind", kind)
+			t.Errorf("%s is not the controller's alone", kind)
 		}
 		if validNoticeKind(kind) {
-			t.Errorf("%s is an architect's notice kind as well; these go to the controller alone", kind)
+			t.Errorf("%s is an architect's notice kind too", kind)
 		}
-		if NoticePerClaim(kind) != perClaim {
-			t.Errorf("NoticePerClaim(%s) = %v, want %v", kind, NoticePerClaim(kind), perClaim)
+		if got := NoticePerClaim(kind); got != perClaim {
+			t.Errorf("NoticePerClaim(%s) = %t, want %t", kind, got, perClaim)
+		}
+		if !reachNoticeKind(kind) {
+			t.Errorf("%s is not queued under a kind of its own", kind)
 		}
 	}
 }
@@ -45,62 +40,34 @@ func TestTheArchitectsUnreachableNoticeIsAnArchitectsKind(t *testing.T) {
 	}
 }
 
-func TestAnUnreachableNoticeIsAValidOutboxPayload(t *testing.T) {
-	at := time.Date(2026, 11, 12, 15, 51, 1, 0, time.UTC)
-	for _, payload := range []OutboxPayload{
-		ControllerNotice{Kind: UnreachableClaimsNotice, Unreachable: []UnreachableClaim{
-			{Claim: "legion-LEGION-836-implementer", Issue: "LEGION-836", Role: claim.RoleImplementer, State: "working", LastSeen: at},
-		}},
-		ControllerNotice{Kind: EnvoyNoLiveSessionNotice, Reason: "Envoy has listed no live session for 20 minutes"},
-		ControllerNotice{Kind: RelaunchReadyNotice, Role: claim.RoleImplementer, Claim: "legion-LEGION-836-implementer",
-			Reason: "its background job has ended, so relaunch would now reach it"},
-		ControllerNotice{Kind: RelaunchGuardHeldNotice, Role: claim.RoleImplementer, Claim: "legion-LEGION-836-implementer",
-			Reason: "the guard has refused its relaunch for 60 minutes; this is a case for a person"},
-		ControllerNotice{Kind: RelaunchNotBackNotice, Role: claim.RoleImplementer, Claim: "legion-LEGION-836-implementer",
-			Reason: "it is still unreachable 20 minutes after its relaunch; this is a case for a person"},
-		ControllerNotice{Kind: UnreachableExitNotice, Role: claim.RolePlanner, Claim: "legion-LEGION-836-planner",
-			Reason: "its process exits at its Envoy role claim; this is a case for a person"},
-		ControllerNotice{Kind: WorkerLockedOutNotice, Role: claim.RoleImplementer, Claim: "legion-LEGION-836-implementer",
-			Reason: "generation 7 has been refused the worker stream for 5 minutes; generation 6 is still connected"},
-		Notice{Kind: ClaimOutOfReachNotice, Role: claim.RoleImplementer, Claim: "legion-LEGION-836-implementer",
-			Reason: "its session's last registration with Envoy is more than 20 minutes old"},
-	} {
-		if _, err := NewOutboxRow("LEGION-836", payload, at); err != nil {
-			t.Errorf("NewOutboxRow(%#v): %v", payload, err)
-		}
-	}
-}
-
-// The claim token and the list of unreachable claims ride on the kinds that carry them and on no
-// other, as every other field of a notice does.
-func TestOnlyTheUnreachableNoticesCarryAClaimOrAList(t *testing.T) {
-	at := time.Date(2026, 11, 12, 15, 51, 1, 0, time.UTC)
+// The claim token rides on the kinds that speak for one claim and on no other, as every other
+// field of a notice does.
+func TestOnlyTheClaimNoticesCarryAClaim(t *testing.T) {
+	token := "legion-legion-209-implementer"
 	for _, tc := range []struct {
 		name    string
 		payload OutboxPayload
-		reason  string
+		refused string
 	}{
-		{name: "a claim token on a tick", payload: ControllerNotice{Kind: TickNotice, Claim: "legion-LEGION-836-implementer"},
-			reason: "names a claim"},
-		{name: "a claim token on a phase-finished notice", payload: Notice{Kind: "phase-finished", Claim: "legion-LEGION-836-implementer"},
-			reason: "names a claim"},
-		{name: "an unreachable list on a tick", payload: ControllerNotice{Kind: TickNotice, Unreachable: []UnreachableClaim{{Claim: "c"}}},
-			reason: "lists unreachable claims"},
-		{name: "an unreachable-claims notice with no list", payload: ControllerNotice{Kind: UnreachableClaimsNotice},
-			reason: "lists at least one claim"},
-		{name: "an unreachable claim with no claim token", payload: ControllerNotice{Kind: UnreachableClaimsNotice,
-			Unreachable: []UnreachableClaim{{Issue: "LEGION-836", Role: claim.RoleImplementer}}}, reason: "names its claim"},
-		{name: "a per-claim unreachable notice with no claim token", payload: ControllerNotice{Kind: RelaunchReadyNotice,
-			Role: claim.RoleImplementer, Reason: "its job ended"}, reason: "names the claim it speaks for"},
+		{name: "the architect's notice names its claim",
+			payload: Notice{Kind: ClaimOutOfReachNotice, Role: claim.RoleImplementer, Claim: token, Reason: "r"}},
+		{name: "the lock-out notice names its claim",
+			payload: ControllerNotice{Kind: WorkerLockedOutNotice, Role: claim.RoleImplementer, Claim: token, Reason: "r"}},
+		{name: "the no-live notice names none",
+			payload: ControllerNotice{Kind: EnvoyNoLiveSessionNotice, Reason: "r"}},
+		{name: "the architect's notice without its claim",
+			payload: Notice{Kind: ClaimOutOfReachNotice, Role: claim.RoleImplementer, Reason: "r"}, refused: "names the claim"},
+		{name: "the lock-out notice without its claim",
+			payload: ControllerNotice{Kind: WorkerLockedOutNotice, Role: claim.RoleImplementer, Reason: "r"}, refused: "names the claim"},
+		{name: "a tick that names a claim",
+			payload: ControllerNotice{Kind: TickNotice, Claim: token}, refused: "names a claim"},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			_, err := NewOutboxRow("LEGION-836", tc.payload, at)
-			if err == nil {
-				t.Fatalf("NewOutboxRow(%#v) was accepted, want a refusal naming %q", tc.payload, tc.reason)
-			}
-			if !strings.Contains(err.Error(), tc.reason) {
-				t.Fatalf("NewOutboxRow(%#v) refused with %q, want it to name %q", tc.payload, err, tc.reason)
-			}
-		})
+		err := validateOutboxPayload("LEGION-209", tc.payload)
+		switch {
+		case tc.refused == "" && err != nil:
+			t.Errorf("%s: refused: %v", tc.name, err)
+		case tc.refused != "" && (err == nil || !strings.Contains(err.Error(), tc.refused)):
+			t.Errorf("%s: err = %v, want one that %s", tc.name, err, tc.refused)
+		}
 	}
 }

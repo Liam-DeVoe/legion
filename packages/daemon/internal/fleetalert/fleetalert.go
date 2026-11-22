@@ -1,15 +1,15 @@
-// Package fleetalert writes the daemon's error lines for the cases no agent can hear (R6): the
-// project's controller is the one out of reach, Envoy lists nobody, the daemon cannot read Envoy's
-// session list at all, or a claim's newer process is still locked out by an older one that will not
-// stop (R3).
+// Package fleetalert writes the daemon's error lines for the cases no agent can hear or act on
+// (R6): a claim out of reach that the daemon's relaunch did not bring back or cannot make, the
+// project's controller among them, Envoy lists nobody, the daemon cannot read Envoy's session list
+// at all, or a claim's newer process is still locked out by an older one that will not stop (R3).
 //
-// Every notice of R5 goes to a session over Envoy, so none of these cases can reach a person that
-// way. The line goes outside Envoy instead: the deployment repository's `legion/` program holds a
-// log-match alert policy over the daemons' own containers which matches Prefix in the entry's
-// `jsonPayload.msg` and opens an incident in Slack's #fleet-alerts and under the infrastructure
-// lead's Envoy role, as `legion/sessions_readonly_alert.go` does for a statement refused in a
-// read-only transaction. Prefix is therefore a contract between the two repositories: this
-// package's test holds it, and the policy's filter names it.
+// No agent can resolve these cases, so the line goes to a person, outside Envoy: the deployment
+// repository's `legion/` program holds a log-match alert policy over the daemons' own containers
+// which matches Prefix in the entry's `jsonPayload.msg` and opens an incident in Slack's
+// #fleet-alerts and under the infrastructure lead's Envoy role, as
+// `legion/sessions_readonly_alert.go` does for a statement refused in a read-only transaction.
+// Prefix is therefore a contract between the two repositories: this package's test holds it, and
+// the policy's filter names it.
 //
 // A line is written once per case and claim until that case ends, so a case that holds for hours
 // opens one incident rather than one a minute, and the daemon's store keeps which lines are open
@@ -55,6 +55,19 @@ var (
 	ControllerRelaunchRefused = Case{
 		Word:     "controller_relaunch_refused",
 		Sentence: "the project's controller is out of reach of Envoy and the daemon cannot relaunch it; a person must look at its process",
+	}
+	// ClaimUnreachable is a workflow role's claim still out of reach 20 minutes after a relaunch,
+	// or out of reach a second time within 6 hours of its last relaunch (R5).
+	ClaimUnreachable = Case{
+		Word:     "claim_unreachable",
+		Sentence: "a workflow role's claim is out of reach of Envoy and its relaunch did not bring it back; a person must look at its pod or its connection",
+	}
+	// ClaimRelaunchRefused is a workflow role's claim out of reach whose relaunch the daemon cannot
+	// make: its launcher is not connected, the launch would replace its pod, its process outlived
+	// the stop, every claim of its pod is out of reach, or the guard has refused it for 60 minutes.
+	ClaimRelaunchRefused = Case{
+		Word:     "claim_relaunch_refused",
+		Sentence: "a workflow role's claim is out of reach of Envoy and the daemon cannot relaunch it; a person must look at its pod or its process",
 	}
 	// NoLiveSession is Envoy's whole session list, Legion's sessions and every other, holding no
 	// live session for ListSilentFor.

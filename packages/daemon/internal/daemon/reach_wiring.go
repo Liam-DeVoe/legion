@@ -3,7 +3,6 @@ package daemon
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -156,85 +155,29 @@ func putReachMarks(ctx context.Context, tx pgx.Tx, marks []reachMark) error {
 	return nil
 }
 
-// relaunchOwnController is the daemon's relaunch of its own controller at at (reachKeeper's
-// relaunchController): RequestRelaunch to the controller claim's machine, which may replace the
-// controller's pod, with the step the store holds as the guard's freshest durable reading. It
-// answers the claim as the relaunch left it, which records the relaunch
-// (supervise.Claim.LastRelaunch).
-func (s *supervision) relaunchOwnController(ctx context.Context, c supervise.Claim, at time.Time) (supervise.Claim, error) {
+// relaunchByDaemon is the daemon's relaunch of a marked claim at at (reachKeeper's relaunch):
+// RequestRelaunch to the claim's machine, with the step the store holds as the guard's freshest
+// durable reading. The controller's relaunch may replace its pod, since no other role runs there;
+// a workflow claim's may not, and waits while the project is paused, which starts no turn of a
+// role but the controller's (errRelaunchWaitsForResume). It answers the claim as the relaunch left
+// it, which records the relaunch (supervise.Claim.LastRelaunch).
+func (s *supervision) relaunchByDaemon(ctx context.Context, c supervise.Claim, at time.Time) (supervise.Claim, error) {
+	controller := c.Role == claim.RoleController
+	if !controller && s.supervisor.deps.Paused != nil {
+		if _, paused := s.supervisor.deps.Paused(); paused {
+			return c, errRelaunchWaitsForResume
+		}
+	}
 	m, ok := s.supervisor.Machine(c.Token)
 	if !ok {
-		return supervise.Claim{}, fmt.Errorf("the controller's claim %s is not supervised", c.Token)
+		return supervise.Claim{}, fmt.Errorf("the claim %s is not supervised", c.Token)
 	}
 	step, err := s.reach.stepOf(ctx, c)
 	if err != nil {
 		return supervise.Claim{}, err
 	}
-	err = m.Handle(store.ForConcurrentWorker(ctx), supervise.RequestRelaunch{Claim: c.Token, Step: step, Cause: relaunchedByDaemon, MayReplacePod: true, At: at})
+	err = m.Handle(store.ForConcurrentWorker(ctx), supervise.RequestRelaunch{Claim: c.Token, Step: step, Cause: relaunchedByDaemon, MayReplacePod: controller, At: at})
 	return m.Claim(), err
-}
-
-// relaunch is the controller's `relaunch` of an unreachable claim (api.Options.Relaunch): the
-// three things only the keeper knows are checked first — the claim is marked out of reach, its
-// last relaunch is at least 6 hours old, and its pod holds a claim Envoy can still reach — and
-// then the machine is asked, which checks the guard again under its lock and asks the runtime
-// before it stops anything (supervise.RequestRelaunch). The last relaunch is the one the claim
-// itself records (supervise.Claim.LastRelaunch), which the relaunch's own launch wrote, so a
-// relaunch whose keeper never wrote its record — a daemon that ended first, a store that refused
-// the write — is still refused a second time within the 6 hours.
-//
-// A guard's refusal and a relaunch that reached the claim are recorded for the notices that
-// follow (reachKeeper.guardRefused, reachKeeper.relaunched). A refusal the store would not record
-// is answered as a failure of its own (supervise.ErrReachUnwritten): the notice that the guard
-// would now let the claim through counts from it, so the controller must not wait for that
-// notice. A relaunch's record the store would not write is logged, and the relaunch is answered
-// as made, since the launch has recorded it already.
-//
-// The pod check reads every claim the daemon holds: a relaunch into a pod that reaches Envoy for
-// none of its two or more live claims fails each worker at its deaths limit and recovers none, so
-// that pod is a case for a person.
-func (s *supervision) relaunch(ctx context.Context, m *supervise.Machine) error {
-	c := m.Claim()
-	now := s.reach.now()
-	if err := s.reach.relaunchRefusal(c, s.podSiblings(c), now); err != nil {
-		return err
-	}
-	step, err := s.reach.stepOf(ctx, c)
-	if err != nil {
-		return err
-	}
-	err = m.Handle(ctx, supervise.RequestRelaunch{Claim: c.Token, Step: step, Cause: relaunchedByController, At: now})
-	switch {
-	case errors.Is(err, supervise.ErrRelaunchGuard):
-		if unwritten := s.reach.guardRefused(ctx, c.Token, now); unwritten != nil {
-			return fmt.Errorf("%w; %w, so no notice will say when the guard would let it through: %w", err, supervise.ErrReachUnwritten, unwritten)
-		}
-	case err == nil:
-		if unwritten := s.reach.relaunched(ctx, m.Claim()); unwritten != nil && ctx.Err() == nil {
-			s.log.Error("reach: the keeper's record of a relaunch was not written; its launch recorded the relaunch, and the next sweep writes the record again",
-				"claim", c.Token, "error", unwritten)
-		}
-	}
-	return err
-}
-
-// podSiblings is every live claim of the pod c runs in, c among them, as the machines last
-// published them, which is where the daemon holds each claim's process now; none for a claim
-// that runs in no pod (tmux), which shares nothing. It is read before the keeper's lock is taken
-// (reachKeeper.relaunchRefusal), so no machine's lock is waited on under it.
-func (s *supervision) podSiblings(c supervise.Claim) []supervise.Claim {
-	if c.Locator == nil || c.Locator.Sandbox == nil {
-		return nil
-	}
-	pod := c.Locator.Sandbox.PodUID
-	var siblings []supervise.Claim
-	for _, m := range s.supervisor.supervised() {
-		other := m.View().Claim
-		if other.Locator != nil && other.Locator.Sandbox != nil && other.Locator.Sandbox.PodUID == pod && runsOnSession(other.State) {
-			siblings = append(siblings, other)
-		}
-	}
-	return siblings
 }
 
 // markControllerLocator puts the mark of the project controller's claim, where the daemon holds

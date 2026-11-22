@@ -30,22 +30,11 @@ var kindsTheReleaseBeforeRuns = []OutboxKind{
 }
 
 // reachNotices is one of each notice this change adds, as its writers fill it: the controller's
-// seven and the architect's one. The release before decodes none of them: it knows none of the
-// kinds, and its decoder refuses the claim and unreachable fields (DisallowUnknownFields).
+// two and the architect's one. The release before decodes none of them: it knows none of the
+// kinds, and its decoder refuses the claim field (DisallowUnknownFields).
 func reachNotices(at time.Time) []OutboxPayload {
 	return []OutboxPayload{
-		ControllerNotice{Kind: UnreachableClaimsNotice, Unreachable: []UnreachableClaim{
-			{Claim: "legion-LEGION-836-implementer", Issue: "LEGION-836", Role: claim.RoleImplementer, State: "working", LastSeen: at},
-		}},
 		ControllerNotice{Kind: EnvoyNoLiveSessionNotice, Reason: "Envoy has listed no live session for 20 minutes"},
-		ControllerNotice{Kind: RelaunchReadyNotice, Role: claim.RoleImplementer, Claim: "legion-LEGION-836-implementer",
-			Reason: "its background job has ended, so relaunch would now reach it"},
-		ControllerNotice{Kind: RelaunchGuardHeldNotice, Role: claim.RoleImplementer, Claim: "legion-LEGION-836-implementer",
-			Reason: "the guard has refused its relaunch for 60 minutes; this is a case for a person"},
-		ControllerNotice{Kind: RelaunchNotBackNotice, Role: claim.RoleImplementer, Claim: "legion-LEGION-836-implementer",
-			Reason: "it is still unreachable 20 minutes after its relaunch; this is a case for a person"},
-		ControllerNotice{Kind: UnreachableExitNotice, Role: claim.RolePlanner, Claim: "legion-LEGION-836-planner",
-			Reason: "its process exits at its Envoy role claim; this is a case for a person"},
 		ControllerNotice{Kind: WorkerLockedOutNotice, Role: claim.RoleImplementer, Claim: "legion-LEGION-836-implementer",
 			Reason: "generation 7 has been refused the worker stream for 5 minutes; generation 6 is still connected"},
 		Notice{Kind: ClaimOutOfReachNotice, Role: claim.RoleImplementer, Claim: "legion-LEGION-836-implementer",
@@ -140,8 +129,8 @@ func TestAControllerNoticeIsPendingUnderTheKindItIsQueuedAs(t *testing.T) {
 			issue   string
 			payload OutboxPayload
 		}{
-			{"LEGION", ControllerNotice{Kind: UnreachableClaimsNotice, Unreachable: []UnreachableClaim{{Claim: "legion-legion-209-implementer"}}}},
-			{"LEGION-209", ControllerNotice{Kind: RelaunchReadyNotice, Role: claim.RoleImplementer, Claim: "legion-legion-209-implementer", Reason: "r"}},
+			{"LEGION", ControllerNotice{Kind: EnvoyNoLiveSessionNotice, Reason: "r"}},
+			{"LEGION-209", ControllerNotice{Kind: WorkerLockedOutNotice, Role: claim.RoleImplementer, Claim: "legion-legion-209-implementer", Reason: "r"}},
 			{"LEGION", ControllerNotice{Kind: TickNotice}},
 		} {
 			row, err := NewOutboxRow(queued.issue, queued.payload, now)
@@ -156,9 +145,9 @@ func TestAControllerNoticeIsPendingUnderTheKindItIsQueuedAs(t *testing.T) {
 			role  claim.Role
 			want  bool
 		}{
-			{UnreachableClaimsNotice, "", "", true},
-			{RelaunchReadyNotice, "LEGION-209", claim.RoleImplementer, true},
-			{RelaunchReadyNotice, "LEGION-210", claim.RoleImplementer, false},
+			{EnvoyNoLiveSessionNotice, "", "", true},
+			{WorkerLockedOutNotice, "LEGION-209", claim.RoleImplementer, true},
+			{WorkerLockedOutNotice, "LEGION-210", claim.RoleImplementer, false},
 			{TickNotice, "", "", true},
 		} {
 			pending, err := records.ControllerNoticePending(ctx, tx, "LEGION", tc.kind, tc.issue, tc.role)
@@ -167,10 +156,10 @@ func TestAControllerNoticeIsPendingUnderTheKindItIsQueuedAs(t *testing.T) {
 				t.Errorf("ControllerNoticePending(%s, %q, %q) = %t, want %t", tc.kind, tc.issue, tc.role, pending, tc.want)
 			}
 		}
-		pending, err := records.ControllerNoticesPending(ctx, tx, "LEGION", RelaunchReadyNotice, []string{"LEGION-209", "LEGION-210"}, claim.RoleImplementer)
+		pending, err := records.ControllerNoticesPending(ctx, tx, "LEGION", WorkerLockedOutNotice, []string{"LEGION-209", "LEGION-210"}, claim.RoleImplementer)
 		must(t, err)
 		if _, ok := pending["LEGION-209"]; !ok || len(pending) != 1 {
-			t.Errorf("ControllerNoticesPending(relaunch-ready, LEGION-209 and LEGION-210) = %v, want LEGION-209 alone", pending)
+			t.Errorf("ControllerNoticesPending(worker-locked-out, LEGION-209 and LEGION-210) = %v, want LEGION-209 alone", pending)
 		}
 	})
 }

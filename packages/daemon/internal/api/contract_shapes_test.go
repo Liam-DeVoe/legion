@@ -683,9 +683,6 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 		AnswerProjectResume: {roots: typesOf(ProjectResumeResponse{}), bodies: []any{ProjectResumeResponse{
 			Pause: ended, Released: 3,
 		}}},
-		// The relaunch's golden own value (`relaunch.json`): `{}`, the answer of a relaunch made,
-		// which carries no key at the one contract that records it, unreachableContract.
-		AnswerRelaunch: {roots: typesOf(RelaunchResponse{}), bodies: []any{RelaunchResponse{}}},
 	}
 }
 

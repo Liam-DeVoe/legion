@@ -1873,14 +1873,14 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 	sup.deps.StallBackstopped = supervisionOf.stallBackstopped
 	supervisionOf.reach = newReachKeeper(reachKeeperOptions{
 		log: log, project: cfg.Project, boot: p.clock.Now(), now: p.clock.Now,
-		daemonController:   cfg.ControllerLaunch == config.ControllerLaunchDaemon,
-		list:               listSessions(cfg.EnvoyURL, p.secrets["ENVOY_TOKEN"]),
-		put:                st.PutClaimReach,
-		reachNotify:        notices,
-		alerts:             alerts,
-		relaunchController: supervisionOf.relaunchOwnController,
-		step:               st.ClaimStep,
-		notices:            st,
+		daemonController: cfg.ControllerLaunch == config.ControllerLaunchDaemon,
+		list:             listSessions(cfg.EnvoyURL, p.secrets["ENVOY_TOKEN"]),
+		put:              st.PutClaimReach,
+		reachNotify:      notices,
+		alerts:           alerts,
+		relaunch:         supervisionOf.relaunchByDaemon,
+		step:             st.ClaimStep,
+		notices:          st,
 	})
 	supervisionOf.lockOuts = lockOuts
 	sup.deps.SessionGone = cleanSessionStop(&sessionStops, cfg.EnvoyURL, p.secrets["ENVOY_TOKEN"], log, supervisionOf.reach.registrationRead)
@@ -2922,7 +2922,6 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		RoleHoldersChanged: roleHoldersChanged,
 		ReleaseRecords:     st,
 		ClaimActivity:      st,
-		Relaunch:           s.relaunch,
 		Pause:              pauses,
 	})
 

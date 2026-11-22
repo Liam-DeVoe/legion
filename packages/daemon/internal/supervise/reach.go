@@ -22,16 +22,15 @@ import (
 const UnreachableAfter = 20 * time.Minute
 
 // Reach is the daemon's record of whether Envoy can reach a claim's session (R5), kept on the
-// claim's own row (store's PutClaimReach) because three of its facts must outlive a daemon restart:
-// a claim reported before a boot is not reported again after it, a second relaunch within 6 hours
-// is refused whatever the claim did between them, and the daemon relaunches its own controller at
-// most once in 6 hours. No write a machine makes carries it, as none carries the step or the
-// activity report: the daemon's minute sweep and the relaunch write it between a machine's writes
-// (internal/daemon's reach keeper). The one exception is LastRelaunch, which only a relaunch makes
-// and which a machine's write alone carries.
+// claim's own row (store's PutClaimReach) because two of its facts must outlive a daemon restart:
+// an architect told before a boot is not told again after it, and a second relaunch within 6
+// hours is refused whatever the claim did between them. No write a machine makes carries it, as
+// none carries the step or the activity report: the daemon's minute sweep and its relaunches write
+// it between a machine's writes (internal/daemon's reach keeper). The one exception is
+// LastRelaunch, which only a relaunch makes and which a machine's write alone carries.
 //
 // Its fields fall in four groups. Session and FirstReady are of the session the claim records,
-// which is what the 20 minutes are counted from. Since through ExitTold are one episode of the
+// which is what the 20 minutes are counted from. Since through Relaunched are one episode of the
 // claim out of reach, cleared when its session registers again or the claim stops recording that
 // session (EndEpisode). RelaunchedAt is of the keeper's record of the claim, and no episode clears
 // it. LastRelaunch is of the claim's own row, and no part of the keeper's record.
@@ -52,30 +51,14 @@ type Reach struct {
 	// LastSeen is the last registration of Session the daemon had read from Envoy's list when it
 	// marked the claim, and the zero time where it had read none since its boot.
 	LastSeen time.Time `json:"lastSeen,omitzero"`
-	// Generation is the launch the daemon last read of the claim while it was marked: a later one
-	// is a process the claim was relaunched into since, which UnreachableExitNotice reads.
-	Generation uint64 `json:"generation,omitempty"`
-	// Reported is whether the controller has been told of this episode in an unreachable-claims
-	// notice (record.UnreachableClaimsNotice), and ArchitectTold whether the tree's architect has
-	// been told in its own (record.ClaimOutOfReachNotice). They are two because the controller's
-	// list is one wake per project, which a list still waiting unsent holds back, while the
-	// architect's notice is a row of its own.
-	Reported      bool `json:"reported,omitempty"`
+	// ArchitectTold is whether the tree's architect has been told of this episode
+	// (record.ClaimOutOfReachNotice).
 	ArchitectTold bool `json:"architectTold,omitempty"`
-	// GuardRefusedAt is when the relaunch guard first refused a relaunch of the claim in this
-	// episode (RelaunchGuard). ReadyTold is whether the controller has been told the guard would
-	// now let it through, and HeldTold whether it has been told the guard has refused it for 60
-	// minutes. A refusal after ReadyTold starts a refusal of its own.
+	// GuardRefusedAt is when the relaunch guard first refused the daemon's relaunch of the claim in
+	// this episode (RelaunchGuard), which R6's line for a guard held 60 minutes counts from.
 	GuardRefusedAt time.Time `json:"guardRefusedAt,omitzero"`
-	ReadyTold      bool      `json:"readyTold,omitempty"`
-	HeldTold       bool      `json:"heldTold,omitempty"`
-	// Relaunched is whether a relaunch reached the claim in this episode, and NotBackTold whether
-	// the controller has been told it is still out of reach 20 minutes after it.
-	Relaunched  bool `json:"relaunched,omitempty"`
-	NotBackTold bool `json:"notBackTold,omitempty"`
-	// ExitTold is whether the controller has been told of a marked claim that owes no task and
-	// whose process exits at its Envoy role claim (record.UnreachableExitNotice).
-	ExitTold bool `json:"exitTold,omitempty"`
+	// Relaunched is whether a relaunch reached the claim in this episode.
+	Relaunched bool `json:"relaunched,omitempty"`
 	// RelaunchedAt is the claim's last relaunch this record has taken in (Claim.LastRelaunch, as
 	// the keeper last read it), whatever the episode: a later Claim.LastRelaunch is one the keeper
 	// has yet to take into the episode, which it does at its next read of the claim.
@@ -104,9 +87,8 @@ const RelaunchAgainAfter = 6 * time.Hour
 const relaunchWaitTool = "wait"
 
 // The refusals of a relaunch the daemon gives before the machine is asked (internal/daemon's reach
-// keeper) and the machine's own (RelaunchGuard, the tree lifecycle's recheck), each a sentinel the
-// API names a code for. The three a runtime answers are runtime's (ErrLauncherNotConnected,
-// ErrRelaunchReplacesPod, ErrProcessOutlivedStop).
+// keeper) and the machine's own (RelaunchGuard, the tree lifecycle's recheck). The three a runtime
+// answers are runtime's (ErrLauncherNotConnected, ErrRelaunchReplacesPod, ErrProcessOutlivedStop).
 var (
 	// ErrClaimReachable: the claim is not marked out of reach, so Envoy can still reach its
 	// session, or has registered it within the 20 minutes.
@@ -132,10 +114,6 @@ var (
 	// — the store did not answer it, or the request's time ran out waiting on it — so the relaunch
 	// stopped nothing and may be asked for again.
 	ErrTreeCheckFailed = errors.New("the daemon could not check the claim's tree lifecycle, so nothing was stopped; relaunch it again")
-	// ErrReachUnwritten: the daemon could not write the record a relaunch's notices are told from
-	// — the guard's refusal, which the notice that the guard would now let the claim through
-	// counts from — so no such notice may follow, and the relaunch is answered as a failure.
-	ErrReachUnwritten = errors.New("the daemon could not write the claim's reach record")
 )
 
 // RelaunchGuard is why a relaunch must not cut c's process now, and "" when it may (R5): the worker

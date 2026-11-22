@@ -10,11 +10,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// The daemon's reach keeper marks a claim reported only once the notice that lists it is in the
-// outbox (R5), so it must know whether the wake queued a row: a project's unreachable-claims list
-// is one wake per project, and a second list while the first still waits unsent would be dropped,
-// with its claims marked told and never sent. Each per-claim kind stands per claim, as the
-// provider-errors notice does.
+// The reach keeper and the lock-out report mark a notice told only once it is in the outbox, so
+// they must know whether the wake queued a row: the notice that Envoy lists nobody is one wake per
+// project, and the lock-out notice one per claim, as the provider-errors notice is.
 func TestTellControllerQueuedSaysWhetherTheNoticeWasQueued(t *testing.T) {
 	pool := migratedPool(t)
 	admission := quiet(t, 2)
@@ -30,29 +28,26 @@ func TestTellControllerQueuedSaysWhetherTheNoticeWasQueued(t *testing.T) {
 		}
 		return queued
 	}
-	list := func(token string) record.ControllerNotice {
-		return record.ControllerNotice{Kind: record.UnreachableClaimsNotice,
-			Unreachable: []record.UnreachableClaim{{Claim: token, Issue: "LEGION-209", Role: claim.RoleImplementer}}}
-	}
+	noLive := record.ControllerNotice{Kind: record.EnvoyNoLiveSessionNotice, Reason: "Envoy lists no live session"}
 
-	if tell(list("legion-legion-legion-209-implementer"), testProject) {
+	if tell(noLive, testProject) {
 		t.Fatal("a notice with no controller registered was queued; nobody would read it")
 	}
 	registerController(t, pool)
-	if !tell(list("legion-legion-legion-209-implementer"), testProject) {
-		t.Fatal("the first unreachable-claims notice was not queued")
+	if !tell(noLive, testProject) {
+		t.Fatal("the first no-live-session notice was not queued")
 	}
-	if tell(list("legion-legion-legion-210-implementer"), testProject) {
-		t.Fatal("a second unreachable-claims notice was queued while the first waits; the keeper must list its claim again later")
+	if tell(noLive, testProject) {
+		t.Fatal("a second no-live-session notice was queued while the first waits")
 	}
-	ready := func(issue string) record.ControllerNotice {
-		return record.ControllerNotice{Kind: record.RelaunchReadyNotice, Role: claim.RoleImplementer,
-			Claim: "legion-legion-" + issue + "-implementer", Reason: "the guard would now let it through"}
+	locked := func(issue string) record.ControllerNotice {
+		return record.ControllerNotice{Kind: record.WorkerLockedOutNotice, Role: claim.RoleImplementer,
+			Claim: "legion-legion-" + issue + "-implementer", Reason: "an older process will not stop"}
 	}
-	if !tell(ready("legion-209"), "LEGION-209") || !tell(ready("legion-210"), "LEGION-210") {
+	if !tell(locked("legion-209"), "LEGION-209") || !tell(locked("legion-210"), "LEGION-210") {
 		t.Fatal("a per-claim notice of one claim stopped another claim's")
 	}
-	if tell(ready("legion-209"), "LEGION-209") {
-		t.Fatal("a second relaunch-ready notice of one claim was queued while its first waits")
+	if tell(locked("legion-209"), "LEGION-209") {
+		t.Fatal("a second lock-out notice of one claim was queued while its first waits")
 	}
 }

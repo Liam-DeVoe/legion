@@ -39,7 +39,7 @@ func TestTheReachRecordSurvivesARestartAndNoClaimWriteCarriesIt(t *testing.T) {
 	at := time.Date(2026, 11, 12, 15, 51, 1, 0, time.UTC)
 	want := supervise.Reach{
 		Session: "ses_implementer", FirstReady: at.Add(-time.Hour), Since: at, LastSeen: at,
-		Generation: c.Generation, Reported: true, RelaunchedAt: at.Add(25 * time.Minute), Relaunched: true,
+		ArchitectTold: true, GuardRefusedAt: at.Add(5 * time.Minute), RelaunchedAt: at.Add(25 * time.Minute), Relaunched: true,
 	}
 	if known, err := st.PutClaimReach(ctx, c.Token, want); err != nil || !known {
 		t.Fatalf("PutClaimReach = %t, %v", known, err)
@@ -180,7 +180,7 @@ func TestAReachRecordWrittenInATransactionThatDoesNotCommitIsNotWritten(t *testi
 	if err := st.PutClaim(ctx, c); err != nil {
 		t.Fatalf("put claim: %v", err)
 	}
-	marked := supervise.Reach{Session: "ses_implementer", Since: time.Date(2026, 11, 12, 15, 51, 1, 0, time.UTC), Reported: true}
+	marked := supervise.Reach{Session: "ses_implementer", Since: time.Date(2026, 11, 12, 15, 51, 1, 0, time.UTC), ArchitectTold: true}
 	refused := errors.New("the notice's own write was refused")
 	if err := st.Tx(ctx, func(tx pgx.Tx) error {
 		if known, err := PutClaimReachTx(ctx, tx, c.Token, marked); err != nil || !known {
