@@ -114,10 +114,12 @@ func (e *Engine) dropSupersededChanges(ctx context.Context, tx pgx.Tx, tree stri
 // them): those gates recorded a document until the clear, and Dispatch holds the set they
 // recorded until something tells it otherwise. It is queued through the engine's own store,
 // which in the daemon wakes the issue's board lane once the clear commits (projectRecords), so
-// the publication is sent then rather than at the lane's next sweep.
+// the publication is sent then rather than at the lane's next sweep. The empty set carries no
+// entry, so nothing in it says whether a row holds a tree (record.DesignGateDocument.Holds), and
+// it needs none of the deployment's steps to build it.
 func (e *Engine) publishEmptied(ctx context.Context, tx pgx.Tx, emptied []string, now time.Time) error {
 	for _, issue := range emptied {
-		if err := e.store.EnqueueDesignGates(ctx, tx, record.DesignGatesPublish{Issue: issue, Gates: record.GateDocuments(nil)}, now); err != nil {
+		if err := e.store.EnqueueDesignGates(ctx, tx, record.DesignGatesPublish{Issue: issue, Gates: record.GateDocuments(nil, nil)}, now); err != nil {
 			return err
 		}
 	}

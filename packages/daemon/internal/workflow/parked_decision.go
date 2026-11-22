@@ -179,14 +179,15 @@ func ForgetSuperseded(ctx context.Context, tx pgx.Tx, store record.Store, steps 
 // decision is asked as its relay is: at the version reviewed, at its own place in Dispatch's log
 // and of the document reviewed (record.DecisionMark.Version, Seq, At and Artifact, which the
 // outbox's parkDecision keeps from the notice's Version, Review and Artifact). The approval is
-// the root's own, and it is named only while steps gates its step (gates.design off asks no
-// person, and a step the deployment stopped gating asks no person either), on the document of
-// that step (record.DesignStep.Document), which is the document the person reviewed and the one
-// whose approval the architect requests again. It is asked at the version the person approved,
-// with no mark: the gate's approval of that same version is the kept approval as the new
-// generation's registration read it again, so it stands, and an approval of a later version is
-// the person's word in its place, so the sentence would ask them again for what they already
-// decided.
+// the root's own, and it is named only while a person approves its step (record.TakesStep:
+// gates.design off asks no person, and a step the deployment stopped gating asks no person either,
+// unless it is criteria the root registered beside a deployment that gates spec and not criteria),
+// on the document of that step (record.DesignStep.Document), which is the document the person
+// reviewed and the one whose approval the architect requests again. It is asked at the version the
+// person approved, with no mark: the gate's approval of that same version is the kept approval as
+// the new generation's registration read it again, so it stands, and an approval of a later
+// version is the person's word in its place, so the sentence would ask them again for what they
+// already decided.
 func KeptDecisionsTask(gates KeptGates, steps []record.DesignStep, tree string, owed record.KeptDecisions) (string, record.KeptDecisions) {
 	var kept record.KeptDecisions
 	named := make([]string, 0, len(owed.Decisions))
@@ -198,7 +199,7 @@ func KeptDecisionsTask(gates KeptGates, steps []record.DesignStep, tree string, 
 		named = append(named, fmt.Sprintf("%s (%s by %s)", d.Ref, d.Decision, d.Actor))
 	}
 	step := owed.Step.OrSpec()
-	if owed.Approved > 0 && slices.Contains(steps, step) && SupersedingApproval(gateOf(gates[tree], step), true,
+	if owed.Approved > 0 && record.TakesStep(steps, step) && SupersedingApproval(gateOf(gates[tree], step), true,
 		Decision{Kind: record.DecisionDesignApproved, Step: step, Version: owed.Approved}) == nil {
 		kept.KeptApproval = owed.KeptApproval
 	}

@@ -234,11 +234,11 @@ var chargeFunctions = []string{"chargePrompt", "chargeDeath", "relaunchAfterFail
 // each may write one only to zero: a reset is the end of what a budget measures, which is no event
 // the policy is asked about.
 var budgetResets = map[string]string{
-	"confirm":       "a started turn of the task resets the prompt failures and the prompt retirements (Budgets, PromptFailures and PromptRetires)",
-	"ready":         "the agent's ready resets the launch failures, since the launch it measured came up (Budgets, LaunchFailures)",
-	"turnEnded":     "a turn that ends normally resets the deaths, since the agent got through the work they were charged against (Budgets, Deaths)",
-	"retirePending": "the task's retirement resets the deaths charged against it, in the same write (Budgets, Deaths)",
-	"retry":         "an operator's retry of a failed claim starts every budget again from nothing (RequestRetry)",
+	"confirmCarrying": "a started turn of the task resets the prompt failures and the prompt retirements (Budgets, PromptFailures and PromptRetires)",
+	"ready":           "the agent's ready resets the launch failures, since the launch it measured came up (Budgets, LaunchFailures)",
+	"turnEnded":       "a turn that ends normally resets the deaths, since the agent got through the work they were charged against (Budgets, Deaths)",
+	"retirePending":   "the task's retirement resets the deaths charged against it, in the same write (Budgets, Deaths)",
+	"retry":           "an operator's retry of a failed claim starts every budget again from nothing (RequestRetry)",
 }
 
 // The packages this test reads, by import path.

@@ -41,3 +41,37 @@ func TestADecisionIsAskedOnlyOfTheGateOfItsOwnStep(t *testing.T) {
 		})
 	}
 }
+
+// A person's changes request on a root's Verification document is asked of its criteria gate
+// wherever a person approves that step: a deployment that gates criteria, and one that gates spec
+// and not criteria, where the root registered the document as criteria and one approval opens both
+// (record.TakesStep). The approval of a later version answers the request in both, so neither a
+// kept decision nor a queued notice tells the architect a request the person has since approved.
+// Where no person approves criteria (a deployment that gates neither spec nor criteria), the gate's
+// approval is its registration's, and the request stands.
+func TestAChangesRequestOnTheVerificationDocumentIsAskedWhereAPersonApprovesIt(t *testing.T) {
+	approved := 3
+	gates := map[record.DesignStep]record.DesignGate{record.DesignStepCriteria: {Issue: "LEGION-208",
+		Step: record.DesignStepCriteria, ArtifactID: "verification-208", LatestVersion: 3, ApprovedVersion: &approved,
+		ApprovedMark: record.EventMark{Seq: 9}}}
+	review := Decision{Kind: record.DecisionDesignChangesRequested, Version: 2, Mark: record.EventMark{Seq: 5}}
+	ref := stepRef("LEGION-208", record.DesignStepCriteria)
+	for _, tc := range []struct {
+		name       string
+		steps      []record.DesignStep
+		superseded bool
+	}{
+		{name: "a deployment that gates criteria", steps: []record.DesignStep{record.DesignStepSpec, record.DesignStepCriteria},
+			superseded: true},
+		{name: "a deployment that gates spec and not criteria", steps: []record.DesignStep{record.DesignStepSpec}, superseded: true},
+		{name: "a deployment that gates neither", steps: []record.DesignStep{record.DesignStepDecisions}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := RefSuperseded(gates, tc.steps, "LEGION-208", ref, review)
+			if (got != nil) != tc.superseded {
+				t.Fatalf("RefSuperseded(criteria gate approved at 3, steps %v, a changes request of version 2) = %+v, want superseded %t",
+					tc.steps, got, tc.superseded)
+			}
+		})
+	}
+}

@@ -1,8 +1,6 @@
 package workflow
 
 import (
-	"slices"
-
 	"github.com/sjawhar/legion/daemon/internal/classify"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
@@ -32,7 +30,7 @@ type Approval struct {
 // SupersedingApproval is the one place that decides whether a person's recorded review of a design
 // document is still their word, so a task or a notice may name it. Every sender asks it, of the
 // gate the issue holds for d.Step as the record holds it when it asks (gate, nil where the issue
-// holds none) and of whether the deployment gates that step (gated): the changes notice
+// holds none) and of whether a person approves that step (gated): the changes notice
 // (tellChanges; the registration's and the artifact event's reading of the gate before they apply
 // the review; and the daemon's readNoticeTree at the notice's delivery), the resume of a root a
 // person answered (resumeTask), the decisions and the approval kept for an architect's start or
@@ -54,7 +52,7 @@ type Approval struct {
 //     opening);
 //   - no gate of the issue for d.Step's document, or a gate of another step (a step and a gate
 //     naming none are the spec step's, record.DesignStep.OrSpec);
-//   - a step the deployment does not gate (its approval is its registration's and no person's);
+//   - a step no person approves (its approval is its registration's: record.TakesStep);
 //   - a gate with no approval;
 //   - a gate that now holds another document than the one reviewed, where the sender knows it
 //     (d.Artifact);
@@ -96,16 +94,18 @@ func SupersedingApproval(gate *record.DesignGate, gated bool, d Decision) (super
 // RefSuperseded is SupersedingApproval for a sender that holds only the review's Dispatch reference,
 // ref on issue (record.ParkedDecision.Ref, record.Notice.Ref): the step whose document ref names
 // (refStep) is resolved once here and set as d.Step, and SupersedingApproval is asked of that step's
-// gate in gates, the gates of issue, and of whether steps, the steps the deployment gates, holds
-// it. A reference that names no step's document (an ask's or a comment's) is asked of no gate,
-// and stands: nil.
+// gate in gates, the gates of issue, and of whether a person approves that step under steps, the
+// steps the deployment gates (record.TakesStep: a step the deployment gates, or criteria a root
+// registered beside a deployment that gates spec and not criteria, which the one approval of both
+// documents opens, as the engine's gatesStep reads it). A reference that names no step's document
+// (an ask's or a comment's) is asked of no gate, and stands: nil.
 func RefSuperseded(gates map[record.DesignStep]record.DesignGate, steps []record.DesignStep, issue, ref string, d Decision) *Approval {
 	step, named := refStep(issue, ref)
 	if !named {
 		return nil
 	}
 	d.Step = step
-	return SupersedingApproval(gateOf(gates, step), slices.Contains(steps, step), d)
+	return SupersedingApproval(gateOf(gates, step), record.TakesStep(steps, step), d)
 }
 
 // NoticeSuperseded is RefSuperseded of the decision of kind a queued notice carries on issue, a

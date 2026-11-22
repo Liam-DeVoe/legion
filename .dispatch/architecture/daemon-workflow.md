@@ -31,3 +31,19 @@ It serves no repository of its own either
 — a name is served when GitHub answers that both role Apps are installed on it, and until GitHub has answered for a pair's names its `to` counts as served and its `from` does not
 — so a pair may be configured before the transfer and simply answers nothing until the events arrive under the new name.
 What moves a record onto another repository is Dispatch's own resolution of the issue, which `ApplyRepositoryChange` applies, and nothing else moves it.
+
+News of an approved new version reaches the holders of a tree's work from the record, never from a message composed when the gate moved.
+Migration `20261119203047_design_news` adds the told record, `design_news_told`, one row per issue and audience: the `holder` row is what the session holding that issue's phase took, the `architect` row of a tree root what that tree's root architect took, `versions` maps each gated step to the approved version taken, and `opening_owed` says the gate's opening is owed to that audience.
+A confirmed delivery's copy of the news its prompt carried (`pending_task_deliveries.carried_news`) is a credit, not a write to the row: every reader reads the told rows through `design_news_told_in`, which adds each standing credit, and a credit counts only in the run it was rendered in (`design_news_current`).
+The write that records `carried_ran`, once the turn's result says the turn ran, folds the credit into the row (`store.settleDesignNews`).
+A take-back or a retirement writes nothing to the told rows: the delivery written without its copy, or deleted, ends its credit.
+`Engine.enter` writes a member's baseline at its first working entry (`record.Store.BaselineTold`), so a delivery retired before its turn ran leaves its news owed.
+`record.OwedNews` is the one rule over it: news is owed while the standing gate is open and a step's approved version is above the told one, `spec` and `decisions` concerning every member and `criteria` the tree root alone, and never to a member whose pull request merged, which `Engine.backward` also refuses to move back (`BACKWARD_REFUSED`).
+The change set is Dispatch's, read from `GET /api/v1/artifacts/{id}/changes` and kept in `design_changes` once per document and version pair, `read` or `unavailable` with its reason, since two stored versions never change.
+The outbox kind `design_changes` (`record.DesignNewsReconcile`, one unrun row per tree) runs on a lane of its own, `record.LaneDocuments`, so its Dispatch read holds back no start, stop or suspend of the lifecycle lane and waits behind no architect notice of the board lane;
+its executor, the daemon's `designChanges`, records each pair, raises the told versions of a change that changed nothing of the work (decision blocks alone, or a version Dispatch answers `unchanged`: `record.DesignChanges.WorkUnchanged`), and queues a news-only start (`record.SuperviseRequest.News`) for each holder owed news.
+`putGateTold` queues that row when an approved version rises or the standing gate opens, `Engine.queueMovedNews` when a move leaves its holder owed news, and the entry sweep's tick (`queueOwedDesignNews`) is the backstop.
+Every phase start and every news-only start carries the news, which `workflow.RenderNews` renders at send from the record as it stands then, and a merger's start waits while its change set is not recorded (`mergerWaitsForTheDesignGate`).
+The opening is decided for each holder in one function, `openingDelivery`, which `tellGateMoved` calls: a holder owed news is sent no role message, its `opening_owed` is set, and the news task leads with the opened sentence;
+every other holder is sent the opened role message, with the clause that nothing its issue holds changed where its told row shows it.
+The closed message goes to every holder as before.
