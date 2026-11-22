@@ -281,10 +281,11 @@ func blockRefCarries(fromKind, alias string) string {
 // followed_by, and a decision block's from_ask and decided_by, which the
 // arm renders through the block_refs row of the pair as it renders a block's every other link, and
 // the kinds the view answers from the tuples alone, with no projection row behind them (its store
-// class, migration 20261117020856): changed_by_run, has_kind, triggered_by, constrained_by and
-// prevented_by out of any node, and part_of and authored_by out of a node of the kinds
-// cybermonklabs/legion#4193 adds (graphstore.KindInteraction and the three beside it). It is the list
-// the view's tuple arm renders (migrations 20261109215947, 20261116094101 and 20261117020856) and
+// class, migration 20261117020856), which the graph read's store arm reads by the same lists
+// (keyedStoreArm): storeArmPointers out of any node, and storeArmPlacements and authored_by out of
+// a node of the kinds cybermonklabs/legion#4193 adds (graphstore.KindInteraction and the three
+// beside it). It is the list the view's tuple arm renders (migrations 20261109215947,
+// 20261116094101 and 20261117020856) and
 // the list the announcer writes into server_build_announcements.tuple_kinds (startup.Deps), which
 // is how the release that deletes an old arm of the view reads whether the release a rollback
 // would reach writes that arm's kinds as tuples too. A child that moves another relation into the
@@ -295,13 +296,10 @@ func blockRefCarries(fromKind, alias string) string {
 // a constraint. A session's, a page's and a block's placement are part_of tuples no arm renders,
 // and a block's membership of its document stays in_document.
 func TupleKinds() []string {
-	kinds := append([]string{
+	kinds := slices.Concat([]string{
 		TupleInDocument, "mentions", graphstore.TupleAnchoredTo, graphstore.TupleOwnedBy,
-		graphstore.TupleFollowedBy, TupleFromAsk, graphstore.TupleDecidedBy,
-		graphstore.TupleChangedByRun, graphstore.TupleHasKind, graphstore.TupleTriggeredBy,
-		graphstore.TupleConstrainedBy, graphstore.TuplePreventedBy,
-		graphstore.TuplePartOf, graphstore.TupleAuthoredBy,
-	}, pmdoc.LinkKinds()...)
+		graphstore.TupleFollowedBy, TupleFromAsk, graphstore.TupleDecidedBy, graphstore.TupleAuthoredBy,
+	}, storeArmPointers, storeArmPlacements, pmdoc.LinkKinds())
 	slices.Sort(kinds)
 	return slices.Compact(kinds)
 }
