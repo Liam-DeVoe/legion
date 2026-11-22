@@ -26,18 +26,19 @@ var taskCopiesKinds = []string{
 	"conflict_confirm", "merge_forward", "task_branch",
 }
 
-// 20261122122826 keys pull_requests by the issue and the task. The release before kept one row for
-// each issue, with no task column, and ran plans of one task: each row it wrote keeps every field
-// and reads the task of its issue's plan at the issue's generation, so the row of the issue's merge
-// (record.MergePullRequest) is that row; a row of an issue with no plan rows at its generation, one
-// that ran before plans and one whose plan is of an earlier generation, reads the task "", and that
-// row is its merge's. After the migration a second task of an issue keeps a row of its own, and one
-// task keeps one row. The outbox check is written again with every kind 20261121165047 named and
+// 20261122122826 keys pull_requests by the issue and the branch, and the table stores no task. The
+// release before kept one row for each issue, with no task column, and ran plans of one task: each
+// row it wrote keeps every field and reads the task of its issue's plan at the issue's generation
+// whose branch it is on, so the row of the issue's merge (record.MergePullRequest) is that row; a
+// row of an issue with no plan rows at its generation, one that ran before plans and one whose plan
+// is of an earlier generation, reads the task "", and that row is its merge's. After the migration
+// the table still has no task column, a second branch of an issue keeps a row of its own, and one
+// branch keeps one row. The outbox check is written again with every kind 20261121165047 named and
 // task_pull_requests_close, which it refused before; a kind that is none is still refused. The way
 // back the header gives keeps the row of each issue's merge and deletes the others, keys the table
-// by the issue again, drops the column and the kind, and deletes its version row, so the
-// roll-forward runs the migration again.
-func TestMigrationPullRequestsByTaskKeepsEachRowUnderItsTask(t *testing.T) {
+// by the issue again, drops the kind, and deletes its version row, so the roll-forward runs the
+// migration again.
+func TestMigrationPullRequestsByTaskKeysEachRowByItsBranch(t *testing.T) {
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, pullRequestsByTaskVersion-1)
@@ -124,14 +125,19 @@ func TestMigrationPullRequestsByTaskKeepsEachRowUnderItsTask(t *testing.T) {
 		}
 	}
 
-	second := `insert into pull_requests (issue, task, repo, number, branch, head_sha, head_updated_at, failing, fix_attempts,
-		blocked_attempts, check_runs, generation, snapshot, head_counted)
-		values ('LEGION-208', $1, 'acme/widgets', $2, $3, 'head-y', now(), '[]', 0, 0, '[]', 0, '', '')`
-	if err := exec(second, "y", 2208, "legion/LEGION-208.y"); err != nil {
-		t.Fatalf("record the pull request of a second task of LEGION-208: %v", err)
+	if err := exec(`update pull_requests set task = 'x'`); err == nil || !strings.Contains(err.Error(), "does not exist") {
+		t.Fatalf("update pull_requests set task after the migration = %v, want the column unknown: the table stores no task", err)
 	}
-	if err := exec(second, "y", 3208, "legion/LEGION-208.y.2"); !refusedBy(err, "23505", "pull_requests_pkey") {
-		t.Fatalf("a second row of task y of LEGION-208 = %v, want the key (issue, task) to refuse it (23505)", err)
+	second := `insert into pull_requests (issue, repo, number, branch, head_sha, head_updated_at, failing, fix_attempts,
+		blocked_attempts, check_runs, generation, snapshot, head_counted)
+		values ('LEGION-208', $1, $2, $3, 'head-y', now(), '[]', 0, 0, '[]', 0, '', '')`
+	if err := exec(second, "acme/widgets", 2208, "legion/LEGION-208.y"); err != nil {
+		t.Fatalf("record the pull request of a second branch of LEGION-208: %v", err)
+	}
+	// Another spelling of the repository, which 0004's pull_requests_repo_branch keys apart, so only
+	// the key (issue, branch) can refuse it.
+	if err := exec(second, "ACME/widgets", 3208, "legion/LEGION-208.y"); !refusedBy(err, "23505", "pull_requests_pkey") {
+		t.Fatalf("a second row of legion/LEGION-208.y of LEGION-208 = %v, want the key (issue, branch) to refuse it (23505)", err)
 	}
 	for _, kind := range append(append([]string{}, taskCopiesKinds...), "task_pull_requests_close") {
 		if err := queue(kind); err != nil {
@@ -160,9 +166,6 @@ func TestMigrationPullRequestsByTaskKeepsEachRowUnderItsTask(t *testing.T) {
 		blocked_attempts, check_runs, generation, snapshot, head_counted)
 		values ('LEGION-208', 'acme/widgets', 4208, 'legion/LEGION-208.z', 'head-z', now(), '[]', 0, 0, '[]', 0, '', '')`); !refusedBy(err, "23505", "pull_requests_pkey") {
 		t.Fatalf("a second row of LEGION-208 after the way back = %v, want the key issue to refuse it (23505)", err)
-	}
-	if err := exec(`update pull_requests set task = 'x'`); err == nil || !strings.Contains(err.Error(), "does not exist") {
-		t.Fatalf("update pull_requests set task after the way back = %v, want the column gone", err)
 	}
 	if got := rowsAsText(t, store, `select count(*)::text from schema_version where version = 20261122122826`); got[0] != "0" {
 		t.Fatalf("schema_version rows of %d after the way back = %s, want none", pullRequestsByTaskVersion, got[0])

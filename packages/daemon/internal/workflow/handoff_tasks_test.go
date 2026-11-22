@@ -12,12 +12,16 @@ import (
 )
 
 // seedTaskPRs gives each of tasks of key its own open pull request, on its branch
-// legion/<key>.<task>, numbered 44 and up in the order given, at the head head-<task>.
+// legion/<key>.<task>, which the task's row then holds (seedTaskBranch), so the pull request is the
+// task's (record.StoredPlan.TaskOfBranch), numbered 44 and up in the order given, at the head
+// head-<task>.
 func seedTaskPRs(t *testing.T, pool *pgxpool.Pool, key string, tasks ...string) {
 	t.Helper()
 	for i, task := range tasks {
-		seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: key, Task: task, Repo: "sjawhar/legion", Number: 44 + i,
-			Branch: "legion/" + key + "." + task, HeadSHA: "head-" + task, Failing: []string{}})
+		branch := "legion/" + key + "." + task
+		seedTaskBranch(t, pool, key, task, branch)
+		seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: key, Repo: "sjawhar/legion", Number: 44 + i,
+			Branch: branch, HeadSHA: "head-" + task, Failing: []string{}})
 	}
 }
 

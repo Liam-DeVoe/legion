@@ -69,7 +69,8 @@ func TestAFailedClaimHoldsItsTaskAndTheOtherGoesOn(t *testing.T) {
 		planTask{id: "a", steps: []string{"implementer", "reviewer"}, agents: []claim.Agent{"implementer", "reviewer"}, state: record.TaskRunning, place: atStep(1)},
 		planTask{id: "b", steps: []string{"implementer", "reviewer"}, agents: []claim.Agent{"implementer-2", "reviewer-2"}, state: record.TaskRunning, place: atStep(2)},
 		planTask{id: "c", steps: []string{"tester"}, agents: []claim.Agent{"tester"}, needs: []string{"a", "b"}, state: record.TaskWaiting})
-	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: root.Key, Task: "b", Repo: "sjawhar/legion", Number: 45,
+	seedTaskBranch(t, pool, root.Key, "b", "legion/LEGION-208.b")
+	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: root.Key, Repo: "sjawhar/legion", Number: 45,
 		Branch: "legion/LEGION-208.b", HeadSHA: "head-b", Failing: []string{}})
 	apply := applyFacts(t, pool, engine)
 

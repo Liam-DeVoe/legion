@@ -320,26 +320,46 @@ func (p *StoredPlan) Task() (PlanTask, error) {
 	return p.Tasks[0], nil
 }
 
-// TaskOfBranch is the task of p whose branch (BranchOf) branch is, for the issue keyed issueKey,
-// and whether one is: the task whose row holds branch, else, for the issue's own branch, the one
-// task whose row holds no branch, a task a release before tasks had branches of their own started.
-// Each task that holds no branch reads the issue's branch until its first start gives it one, so
-// where several hold none, none of them holds that branch yet.
-func (p StoredPlan) TaskOfBranch(issueKey, branch string) (string, bool) {
+// TasksOfBranch is each task of p whose branch (BranchOf) branch is, for the issue keyed issueKey,
+// in task id order: the one rule by which a pull request on branch, and each fact of it, is a
+// task's (PullRequest.Task, TaskOfBranch). A task whose row holds branch is its only task. The
+// issue's own branch (claim.IssueBranch), while no task's row holds it, is the branch of each task
+// whose row holds none, as BranchOf reads it: of those, the ones that have started hold it before
+// any that waits, since a waiting task's first start gives it a branch of its own (AssignTaskBranch,
+// which counts the issue's branch given while a started task holds none). So a task a release
+// before tasks had branches of their own started holds the issue's branch beside tasks a later
+// version added, and the one task of a plan of one that has not started yet holds it too. In the
+// daemon a row of a started task holds no branch only for that task of the release before, which
+// ran plans of one task (plan.Supported), so the answer is one task or none; a plan whose rows name
+// several such started tasks names each of them.
+func (p StoredPlan) TasksOfBranch(issueKey, branch string) []string {
 	if branch == "" {
-		return "", false
+		return nil
 	}
-	var unbranched []string
+	var started, waiting []string
 	for _, task := range p.Tasks {
-		if task.Branch == branch {
-			return task.Task, true
-		}
-		if task.Branch == "" {
-			unbranched = append(unbranched, task.Task)
+		switch {
+		case task.Branch == branch:
+			return []string{task.Task}
+		case task.Branch != "" || branch != claim.IssueBranch(issueKey):
+		case task.State == TaskWaiting:
+			waiting = append(waiting, task.Task)
+		default:
+			started = append(started, task.Task)
 		}
 	}
-	if branch == claim.IssueBranch(issueKey) && len(unbranched) == 1 {
-		return unbranched[0], true
+	if len(started) > 0 {
+		return started
+	}
+	return waiting
+}
+
+// TaskOfBranch is the task of p whose branch branch is (TasksOfBranch), for the issue keyed
+// issueKey, and whether one is: none where no task's branch it is, and none where it is several
+// tasks' branch, whose facts are no one task's.
+func (p StoredPlan) TaskOfBranch(issueKey, branch string) (string, bool) {
+	if tasks := p.TasksOfBranch(issueKey, branch); len(tasks) == 1 {
+		return tasks[0], true
 	}
 	return "", false
 }

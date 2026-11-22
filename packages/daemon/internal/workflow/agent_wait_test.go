@@ -370,7 +370,8 @@ func TestAStepThatWaitsIsNoRunningStep(t *testing.T) {
 
 	t.Run("k's completion moves m", func(t *testing.T) {
 		pool, engine, root := aWaitsWhileMWorks(t)
-		seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: root.Key, Task: "m", Repo: "sjawhar/legion", Number: 44,
+		seedTaskBranch(t, pool, root.Key, "m", "legion/"+root.Key+".m")
+		seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: root.Key, Repo: "sjawhar/legion", Number: 44,
 			Branch: "legion/" + root.Key + ".m", HeadSHA: "head-m", Failing: []string{}})
 		completed := intake.HandoffComplete{Generation: root.Generation, Issue: root.Key, Role: claim.RoleImplementer,
 			Claim: agentClaim(t, root.Key, "k"), Summary: "done", Commit: "head-m", HandoffRecord: "k-m", HandoffVersion: 1}

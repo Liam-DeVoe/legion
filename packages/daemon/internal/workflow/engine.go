@@ -3252,11 +3252,12 @@ func (e *Engine) workerClaim(ctx context.Context, tx pgx.Tx, issue record.Issue,
 	return record.WorkerClaim(project, issue.Key, role, rows)
 }
 
-// issueForBranch is the issue whose branch (claim.IssueBranch) branch is, when it is recorded on
-// repo, as its record keeps GitHub's spelling (record.Issue.GitHubRepo), compared as
-// sameRepository compares two names — without case, as GitHub compares names, and a configured
-// rename's two names as one repository: a pull request on legion/<KEY> in another repository is
-// never <KEY>'s.
+// issueForBranch is the issue whose branch (claim.IssueBranch) or one of whose tasks' branches
+// (claim.BranchIssue) branch is, when it is recorded on repo, as its record keeps GitHub's
+// spelling (record.Issue.GitHubRepo), compared as sameRepository compares two names — without
+// case, as GitHub compares names, and a configured rename's two names as one repository: a pull
+// request on legion/<KEY> in another repository is never <KEY>'s. The task of a pull request on
+// branch is read from the branch wherever it is needed (viewOfPullRequest, record.PullRequest.Task).
 func (e *Engine) issueForBranch(ctx context.Context, tx pgx.Tx, repo, branch string) (*record.Issue, error) {
 	key, ok := claim.BranchIssue(branch)
 	if !ok {

@@ -227,13 +227,13 @@ func (e *Engine) listenerWake(ctx context.Context, tx pgx.Tx, fact intake.Listen
 // R4; dispatch://INFRA-945 R3 item 2 wakes on a settlement the daemon records for the head of the
 // issue's pull request).
 //
-// Only the workers of the pod's open steps are woken (OpenStepsOf): the settlement is their
-// business and no one else's, and an architect reads it from its own notices. Each such worker is
-// the claim of the agent that works its step (Engine.workerClaim), and it is woken only where it
-// stands released: another released claim of the same role, an earlier version's agent, does not
-// work the step. A head that settles again as each of its checks finishes wakes the pod no second
-// time, because the role's resume is still open. It answers each role it woke, in the steps'
-// order.
+// Only the workers of the open steps of each task whose branch the pull request is on are woken
+// (openStepsOfPullRequest): the settlement is their business and no one else's, and an architect
+// reads it from its own notices. Each such worker is the claim of the agent that works its step
+// (Engine.workerClaim), and it is woken only where it stands released: another released claim of
+// the same role, an earlier version's agent, does not work the step. A head that settles again as
+// each of its checks finishes wakes the pod no second time, because the role's resume is still
+// open. It answers each role it woke, in the steps' order.
 func (e *Engine) wakeOnSettlement(ctx context.Context, tx pgx.Tx, fact intake.PullRequestChecks) ([]claim.Role, error) {
 	if e.cfg.Pods == nil || fact.HeadSHA == "" {
 		return nil, nil
@@ -250,6 +250,10 @@ func (e *Engine) wakeOnSettlement(ctx context.Context, tx pgx.Tx, fact intake.Pu
 	if err != nil || issue == nil {
 		return nil, err
 	}
+	steps, err := e.openStepsOfPullRequest(ctx, tx, *issue, *pr)
+	if err != nil {
+		return nil, err
+	}
 	// A list of commit statuses the decoder could not read names none, and the pull request keeps
 	// the statuses it holds for the head when the settlement is applied, since a context a
 	// settlement leaves out stays as it is kept (classify.ApplySettlement), so the task names the
@@ -258,7 +262,7 @@ func (e *Engine) wakeOnSettlement(ctx context.Context, tx pgx.Tx, fact intake.Pu
 		fact.Statuses = keptStatuses(*pr, fact.HeadSHA)
 	}
 	var woke []claim.Role
-	for _, step := range OpenStepsOf(*issue) {
+	for _, step := range steps {
 		worker, err := e.workerClaim(ctx, tx, *issue, step.Role)
 		if err != nil {
 			return nil, err

@@ -965,12 +965,15 @@ func (o ReviewOrder) After(other ReviewOrder) bool {
 	return o.ID > other.ID
 }
 
-// PullRequest is the daemon's latest GitHub observation for one task's pull request.
+// PullRequest is the daemon's latest GitHub observation for the pull request on one branch of an
+// issue: the table holds one row for each branch of an issue (store migration
+// 20261122122826_pull_requests_by_task), keyed by Issue and Branch.
 type PullRequest struct {
 	Issue string
-	// Task is the task of Issue's plan whose branch the pull request is on, "" for an issue with
-	// no plan rows at the generation that recorded it: the table holds one row for each task of an
-	// issue (store migration 20261122122826_pull_requests_by_task), keyed by Issue and Task.
+	// Task is the task of Issue's plan at the issue's generation whose branch the pull request is on
+	// (StoredPlan.TaskOfBranch), "" where it is no one task's, which every pull request of an issue
+	// with no plan rows is. It is read, never stored: every read derives it from the plan's rows,
+	// and PutPullRequest writes nothing of it, so no row holds a task the branch contradicts.
 	Task   string
 	Repo   string
 	Number int
@@ -2048,17 +2051,18 @@ type Store interface {
 	PutPhase(ctx context.Context, tx pgx.Tx, phase PhaseRow) error
 	// PullRequest is the pull request of issue when the record holds one row for it, which every
 	// issue whose tasks have no pull requests of their own does; of an issue that holds several it
-	// is the first by task. A reader of one task's reads PullRequestOfTask, of the issue's merge
-	// MergePullRequest, and of each TaskPullRequests.
+	// is the first by task (TaskPullRequests). A reader of one task's reads PullRequestOfTask, of
+	// the issue's merge MergePullRequest, and of each TaskPullRequests.
 	PullRequest(ctx context.Context, tx pgx.Tx, issue string) (*PullRequest, error)
-	// PullRequestOfTask is the pull request of task of issue, nil for none ("" is the task of an
-	// issue with no plan rows).
+	// PullRequestOfTask is the pull request of task of issue, the one on the branch task holds
+	// (PullRequest.Task), nil for none ("" is the task of an issue with no plan rows).
 	PullRequestOfTask(ctx context.Context, tx pgx.Tx, issue, task string) (*PullRequest, error)
 	// MergePullRequest is the pull request of the task of issue that merges: the one task of the
 	// plan at the issue's generation that no task needs (plan.Sinks), or task "" where the issue
 	// has no plan rows at its generation; nil where that task has none.
 	MergePullRequest(ctx context.Context, tx pgx.Tx, issue string) (*PullRequest, error)
-	// TaskPullRequests is each pull request of issue, by task.
+	// TaskPullRequests is each pull request of issue, by task (PullRequest.Task), those of one task
+	// by branch.
 	TaskPullRequests(ctx context.Context, tx pgx.Tx, issue string) ([]PullRequest, error)
 	PullRequestByBranch(ctx context.Context, tx pgx.Tx, repo, branch string) (*PullRequest, error)
 	PullRequestByNumber(ctx context.Context, tx pgx.Tx, repo string, number int) (*PullRequest, error)
@@ -2075,8 +2079,8 @@ type Store interface {
 	// cannot: a tree that has stopped with its work merged is exactly the tree such a caller
 	// reports.
 	PullRequestsOf(ctx context.Context, tx pgx.Tx, issues []string) (map[string]PullRequest, error)
-	// PutPullRequest writes pr as the pull request of its issue's task pr.Task, in place of the row
-	// the record holds for that task or, recorded under another task, for its branch.
+	// PutPullRequest writes pr as the pull request of its issue's branch pr.Branch, in place of the
+	// row the record holds for that branch; pr.Task is read and never written (PullRequest.Task).
 	PutPullRequest(ctx context.Context, tx pgx.Tx, pr PullRequest) error
 	// ProductionCheck is issue's production check, nil for none; PutProductionCheck writes it,
 	// one per issue.

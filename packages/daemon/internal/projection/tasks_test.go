@@ -97,9 +97,9 @@ func TestTheStateServesEachTaskOfAnIssue(t *testing.T) {
 		must(t, records.StopTask(ctx, tx, key, 1, "m", "its owner stopped it"))
 		must(t, records.SetStepWait(ctx, tx, key, 1, "d", record.StepWaitJoin, &since))
 		must(t, records.SetStepWait(ctx, tx, key, 1, "x", record.StepWaitAgent, &since))
-		must(t, records.PutPullRequest(ctx, tx, record.PullRequest{Issue: key, Task: "b", Repo: "acme/widgets", Number: 42,
+		must(t, records.PutPullRequest(ctx, tx, record.PullRequest{Issue: key, Repo: "acme/widgets", Number: 42,
 			Branch: branches["b"], Base: "main", HeadSHA: "hb", State: record.PullRequestOpen, MergeState: record.MergeStateBlocked, Generation: 1}))
-		must(t, records.PutPullRequest(ctx, tx, record.PullRequest{Issue: key, Task: "m", Repo: "acme/widgets", Number: 40,
+		must(t, records.PutPullRequest(ctx, tx, record.PullRequest{Issue: key, Repo: "acme/widgets", Number: 40,
 			Branch: branches["m"], Base: "main", HeadSHA: "hm", State: record.PullRequestOpen, MergeState: record.MergeStateClean, Generation: 1}))
 		// The reviewer's row runs b's step, whose review approved the head b's pull request stands
 		// at: the round waits on GitHub's merge state for it, which the record holds `blocked`.

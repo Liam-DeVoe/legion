@@ -283,10 +283,11 @@ func TestARollbackAndItsRollForwardKeepEveryRecordOfTheWalk(t *testing.T) {
 	}
 	// The earlier release keys pull_requests by the issue alone, so the walk took the way back of
 	// the pull requests by task, which reads plan_tasks, before the plan's.
-	var taskColumns int
-	if err := r.st.Pool().QueryRow(context.Background(), `select count(*) from information_schema.columns
-		where table_schema = current_schema() and table_name = 'pull_requests' and column_name = 'task'`).Scan(&taskColumns); err != nil || taskColumns != 0 {
-		t.Fatalf("after the rollback pull_requests holds %d task columns (%v), want none: the way back of the pull requests by task did not run", taskColumns, err)
+	var key string
+	if err := r.st.Pool().QueryRow(context.Background(), `select string_agg(a.attname::text, ',' order by k.ord) from pg_constraint c
+		cross join lateral unnest(c.conkey) with ordinality k(attnum, ord) join pg_attribute a on a.attrelid = c.conrelid and a.attnum = k.attnum
+		where c.conrelid = 'pull_requests'::regclass and c.contype = 'p'`).Scan(&key); err != nil || key != "issue" {
+		t.Fatalf("after the rollback pull_requests is keyed by %q (%v), want issue: the way back of the pull requests by task did not run", key, err)
 	}
 	r.dispatch.start()
 	r.reboot()

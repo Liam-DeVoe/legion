@@ -140,11 +140,11 @@ import (
 // table: they add `plan_tasks.branch` and `plan_tasks.join_conflicts` at defaults every row reads
 // as the issue's own branch and no conflicted join, create `plan_branches`, and restate
 // 20261119003157's kinds with task_branch (migration_20261121165047_test.go).
-// The pull requests by task (20261122122826) stand above every other version of this list and
-// need the plan's tables: they add `pull_requests.task`, which every row the upgrade finds reads as
-// the one task of its issue's plan, or the empty string where it has none, key the table by the issue and the
-// task, and restate 20261121165047's kinds with task_pull_requests_close, so that list is the last
-// word of outbox_kind_check now (migration_20261122122826_test.go).
+// The pull requests by task (20261122122826) stand above every other version of this list: they
+// key the table by the issue and the branch, which every row the upgrade finds holds, store no
+// task (the record reads a row's task from the plan's tables at each read), and restate
+// 20261121165047's kinds with task_pull_requests_close, so that list is the last word of
+// outbox_kind_check now (migration_20261122122826_test.go).
 // The branch of a pending delivery (20261122131321) is applied after all of these and touches no
 // outbox_kind_check: it adds pending_task_deliveries.branch at its default, the empty string, on
 // every row it finds, so it needs no row of its own here (migration_20261122131321_test.go).

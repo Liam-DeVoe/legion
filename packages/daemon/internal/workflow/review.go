@@ -296,7 +296,7 @@ func (e *Engine) mergeability(ctx context.Context, tx pgx.Tx, fact intake.PullRe
 			return intake.Result{}, err
 		}
 	}
-	issue, err := e.store.Issue(ctx, tx, pr.Issue)
+	issue, err := e.issueOfPullRequest(ctx, tx, *pr)
 	if err != nil || issue == nil {
 		return intake.Result{}, err
 	}
@@ -505,12 +505,14 @@ func namedStatuses(statuses []record.CommitStatus) string {
 // request's head says (settledChecks), and moves nothing: the daemon passes the CI result on, and
 // the worker that holds the step decides whether to re-run, wait or fix
 // (dispatch://INFRA-714/spec R1). One message goes to the claim of each worker that works the
-// issue - the worker of each of its steps that take work (OpenStepsOf), the implementer, whose code
-// the checks ran on, and the architect that owns the issue (owningArchitect) - each on the role
-// topic of that claim (record.RoleMessage), the way the daemon reaches a role holder with a
-// message. A claim named twice, the implementer holding a step or one keyed agent working two of
-// the roles, is told once, and an issue with no step that takes work names no worker of a step
-// (addressRoles): a held step, a held or stopped task's and a step that waits are none of them.
+// pull request's branch - the worker of each step that takes work of each task whose branch the
+// pull request is on (openStepsOfPullRequest, every step of an issue of one task), the
+// implementer, whose code the checks ran on, and the architect that owns the issue
+// (owningArchitect) - each on the role topic of that claim (record.RoleMessage), the way the
+// daemon reaches a role holder with a message. A claim named twice, the implementer holding a step
+// or one keyed agent working two of the roles, is told once, and an issue with no step that takes
+// work names no worker of a step (addressRoles): a held step, a held or stopped task's and a step
+// that waits are none of them.
 // told is what the settlement standing for the head said before this one, so a second settlement
 // of the same head that leaves the same conclusions tells nobody again, and so does a settlement
 // that stands for no head. Linger holds a member of a closed tree where it stood
@@ -551,8 +553,12 @@ func (e *Engine) tellChecks(ctx context.Context, tx pgx.Tx, pr *record.PullReque
 		}
 		recipients = append(recipients, roleRecipient{issue: owner, role: claim.RoleArchitect, row: issue.Key})
 	}
+	steps, err := e.openStepsOfPullRequest(ctx, tx, *issue, *pr)
+	if err != nil {
+		return err
+	}
 	roles := []claim.Role{}
-	for _, step := range OpenStepsOf(*issue) {
+	for _, step := range steps {
 		roles = append(roles, step.Role)
 	}
 	for _, role := range append(roles, claim.RoleImplementer) {
@@ -788,7 +794,7 @@ func (e *Engine) review(ctx context.Context, tx pgx.Tx, fact intake.PullRequestR
 	if err != nil || pr == nil {
 		return intake.Result{}, err
 	}
-	issue, err := e.store.Issue(ctx, tx, pr.Issue)
+	issue, err := e.issueOfPullRequest(ctx, tx, *pr)
 	if err != nil || issue == nil {
 		return intake.Result{}, err
 	}
@@ -1389,7 +1395,7 @@ func (e *Engine) askMergeStateFor(ctx context.Context, tx pgx.Tx, pr *record.Pul
 	if e.cfg.ReadMergeState == nil || pr.State != record.PullRequestOpen {
 		return nil
 	}
-	issue, err := e.store.Issue(ctx, tx, pr.Issue)
+	issue, err := e.issueOfPullRequest(ctx, tx, *pr)
 	if err != nil || issue == nil {
 		return err
 	}

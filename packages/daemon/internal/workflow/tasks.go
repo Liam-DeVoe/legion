@@ -87,6 +87,61 @@ func (e *Engine) pullRequestOf(ctx context.Context, tx pgx.Tx, issue record.Issu
 	return e.store.PullRequest(ctx, tx, issue.Key)
 }
 
+// viewOfPullRequest is the copy of issue read for the task whose branch pr is on
+// (record.StoredPlan.TaskOfBranch, the rule every read of a pull request's task reads by,
+// record.PullRequest.Task), and the walk of that task: the one reading of a fact of a pull request
+// that reaches its task, so a fact of one task's pull request moves that task and no other, and
+// one of a done task's moves none, its copy standing in done. An issue whose plan holds one task,
+// or none, is its own view, whatever branch the pull request is on. ok is false where its plan
+// holds several tasks and the branch is no one task's: a pull request whose facts move nothing,
+// which is logged.
+func (e *Engine) viewOfPullRequest(ctx context.Context, tx pgx.Tx, issue record.Issue, pr record.PullRequest) (record.Issue, Walk, bool, error) {
+	stored, err := e.store.Plan(ctx, tx, issue.Key, issue.Generation)
+	if err != nil {
+		return record.Issue{}, Walk{}, false, err
+	}
+	if stored == nil || len(stored.Tasks) <= 1 {
+		return viewOn(issue, stored, "")
+	}
+	task, ok := stored.TaskOfBranch(issue.Key, pr.Branch)
+	if !ok {
+		e.logOnCommit(ctx, "workflow: a fact of a pull request on a branch that no one task of its issue holds moves no task",
+			"issue", issue.Key, "pullRequest", pr.Number, "branch", pr.Branch, "tasks", stored.TasksOfBranch(issue.Key, pr.Branch))
+		return issue, Walk{}, false, nil
+	}
+	return viewOn(issue, stored, task)
+}
+
+// issueOfPullRequest is the issue pr is recorded for, read for the task whose branch pr is on
+// (viewOfPullRequest): the issue each handler of a fact of the pull request acts on. It is nil
+// where the record holds no such issue, and where the issue's plan holds several tasks and the
+// branch is no one task's, so the fact records the pull request and moves nothing.
+func (e *Engine) issueOfPullRequest(ctx context.Context, tx pgx.Tx, pr record.PullRequest) (*record.Issue, error) {
+	issue, err := e.store.Issue(ctx, tx, pr.Issue)
+	if err != nil || issue == nil {
+		return nil, err
+	}
+	view, _, ok, err := e.viewOfPullRequest(ctx, tx, *issue, pr)
+	if err != nil || !ok {
+		return nil, err
+	}
+	return &view, nil
+}
+
+// openStepsOfPullRequest is the steps of issue that take work (OpenStepsOf) of each task whose
+// branch pr is on (record.StoredPlan.TasksOfBranch): the steps a settlement of the pull request's
+// checks is the business of, and no step of a task on another branch. Every step of an issue whose
+// plan holds one task, or none, is.
+func (e *Engine) openStepsOfPullRequest(ctx context.Context, tx pgx.Tx, issue record.Issue, pr record.PullRequest) ([]record.RunningStep, error) {
+	open := OpenStepsOf(issue)
+	stored, err := e.store.Plan(ctx, tx, issue.Key, issue.Generation)
+	if err != nil || stored == nil || len(stored.Tasks) <= 1 {
+		return open, err
+	}
+	tasks := stored.TasksOfBranch(issue.Key, pr.Branch)
+	return slices.DeleteFunc(open, func(step record.RunningStep) bool { return !slices.Contains(tasks, step.Task) }), nil
+}
+
 // viewOfAgent is the copy of issue read for the task whose running step agent runs
 // (record.Issue.StepOfAgent, a held step among them), and the walk of that task: the one reading
 // of a fact of a step that reaches its task by the agent of the claim it names. An issue whose
