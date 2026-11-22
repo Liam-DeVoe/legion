@@ -44,8 +44,8 @@ The budget, by the rule .github/ci-notes/dispatch-browser.md states for every jo
 `0d9a0258` the tool reads the check runs through GraphQL, and the check step of each of its
 nightly jobs took 24 to 28 s on 2026-11-22: jobs 137090407550 (04:12:26Z to 04:12:50Z),
 137103508525 (05:11:34Z to 05:11:59Z) and 137106841419 (05:26:38Z to 05:27:02Z) 24 or 25 s, and
-the four after them, 137148928893, 137198886464, 137203993375 and 137215767381 (12:58:36Z to
-12:59:04Z, at `54a60643`), 27 or 28 s, as the runs it reads grew from 1,198 to 1,347. On
+the four after them, 137148928893, 137198886464, 137203993375 and 137215767381 (the last at
+`54a60643`, 12:58:36Z to 12:59:04Z), 27 or 28 s, as the runs it reads grew from 1,198 to 1,347. On
 2026-11-22 at 03:15Z, from this issue's pod, the tool's reads of the same 14 days took 22 s: 1,195
 runs in 34 REST calls and 13 GraphQL calls costing 132 points. Before that, the REST reader's 37
 steps that succeeded on 2026-11-21 and 22 took 68 to 104 s, the longest job 137021330193 of run

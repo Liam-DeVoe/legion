@@ -335,12 +335,12 @@ The clock of a unit test:
   and any name, destructure or `bind` that one of these is given, or a reference to one that the
   file hands on: an argument, a value it stores, returns or exports.
   The scan does not follow a holder of waits handed to another function or stored inside a value,
-  and a wait reached only through one: a holder is `Bun`, `globalThis`, `window`, or a timers
-  module or namespace, as in `nap(Bun)` and `{ bun: Bun }`.
+  and a wait reached only through one: a holder is `Bun`, `"bun"` or a timers module bound whole,
+  or a timers module's `scheduler`, as in `nap(Bun)` and `{ bun: Bun }`.
   An exported holder is found where the file exports it, since an export is no value handed to a
   function.
-  The act-rule inputs (`*.fixture.tsx`, which the scan's `sourceFiles` skips by name) are left out,
-  since they are written to break rules.
+  The act-rule inputs (`*.fixture.ts` and `*.fixture.tsx`, which the scan's `sourceFiles` skips by
+  name) are left out, since they are written to break rules.
   A call, or a reference handed on, passes in two ways alone.
   One is `afterOnFakeClock` from `web/src/__tests__/fake-clock.ts`, which refuses the real clock.
   The other is the marker comment directly above the statement holding the wait, with no blank

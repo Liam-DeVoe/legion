@@ -41,8 +41,8 @@ import { afterOnFakeClock, onFakeClock } from "./fake-clock";
  * exported (`export const pause = Bun.sleep`, `export { setTimeout as later }`), each found at
  * the reference as a call is (`placeOf`). The scan does not follow a holder of waits handed to
  * another function or stored inside a value, and a wait reached only through one: a holder is
- * `Bun`, `globalThis`, `window`, or a timers module or namespace, as in `nap(Bun)` and
- * `{ bun: Bun }`. An exported holder is found where the file exports it, since an export is no
+ * `Bun`, "bun" or a timers module bound whole, or a timers module's `scheduler`, as in `nap(Bun)`
+ * and `{ bun: Bun }`. An exported holder is found where the file exports it, since an export is no
  * value handed to a function. The names are read in a fixed-point pass over the whole file, so an
  * alias of an alias is one, and so is one bound below its call; a name is an alias in the whole
  * file once any binding makes it one. A wait the scan sees all of starts none: one called (found
@@ -79,10 +79,10 @@ import { afterOnFakeClock, onFakeClock } from "./fake-clock";
  * `jest.advanceTimersByTime` runs neither, so a row waits for what the frame or the turn brings,
  * and a wait that has nothing else to wait for says why it stays. The scan reads a test's own
  * calls: a product function the row tests that sets a timer itself is the product's code, not a
- * wait of the row's. The act-rule inputs (`*.fixture.tsx`, which the scan's `sourceFiles` skips by
- * name) are left out, since they are written to break rules. A file that imports `bun:test` or
- * Testing Library is a test file or a helper whatever its name, and the scan holds itself to
- * reading every such file.
+ * wait of the row's. The act-rule inputs (`*.fixture.ts` and `*.fixture.tsx`, which the scan's
+ * `sourceFiles` skips by name) are left out, since they are written to break rules. A file that
+ * imports `bun:test` or Testing Library is a test file or a helper whatever its name, and the scan
+ * holds itself to reading every such file.
  */
 
 const webSource = fileURLToPath(new URL("..", import.meta.url));
@@ -127,7 +127,8 @@ const readers: Record<string, readonly string[]> = {
 const fakeClockFile = "__tests__/fake-clock.ts";
 const fakeClockHelper = "afterOnFakeClock";
 
-/** Every `.ts(x)` file under `directory` but the act-rule inputs (`*.fixture.tsx`). */
+/** Every `.ts(x)` file under `directory` but the act-rule inputs (`*.fixture.ts` and
+ *  `*.fixture.tsx`). */
 function sourceFiles(directory: string): string[] {
   return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
     const path = join(directory, entry.name);
@@ -162,12 +163,14 @@ const kinds: readonly Kind[] = ["wait", "bun", "timers", "scheduler"];
 /** Whether something stands for a kind. */
 type Is = (kind: Kind) => boolean;
 
+/** The strings each `const` of a file is bound to, by its name (`constantStrings`), which a
+ *  member's key may be. */
+type ConstantStrings = ReadonlyMap<string, readonly string[]>;
+
 /** The names that stand for each kind in a file: the global ones (`setTimeout`, `Bun`), and every
  *  name a binding anywhere in the file gives one of those (`waitNames`); and `strings`, the
- *  strings each `const` of the file is bound to, by its name, which a member's key may be. */
-type WaitNames = Record<Kind, Set<string>> & {
-  readonly strings: ReadonlyMap<string, readonly string[]>;
-};
+ *  file's `ConstantStrings`. */
+type WaitNames = Record<Kind, Set<string>> & { readonly strings: ConstantStrings };
 
 /** The operators whose value is one of their operands: `??`, `||` and `&&`. */
 const choices: ReadonlySet<ts.SyntaxKind> = new Set([
@@ -184,25 +187,27 @@ const assignments: ReadonlySet<ts.SyntaxKind> = new Set([
   ts.SyntaxKind.AmpersandAmpersandEqualsToken,
 ]);
 
-const noStrings: ReadonlyMap<string, readonly string[]> = new Map();
+const noStrings: ConstantStrings = new Map();
+
+/** The names a key may be: a string literal's text, or each string a `const` of the file named
+ *  `key` is bound to (`strings`). */
+function keysOf(key: ts.Expression, strings: ConstantStrings): readonly string[] {
+  if (ts.isStringLiteralLike(key)) return [key.text];
+  return ts.isIdentifier(key) ? (strings.get(key.text) ?? []) : [];
+}
 
 /** The object of a member and each name it may have: `window.setTimeout`, `window["setTimeout"]`,
  *  and `globalThis[key]` with a name for each string a `const key` of the file is bound to
- *  (`strings`), so a member reached by a constant key is read as the one it names. */
+ *  (`keysOf`), so a member reached by a constant key is read as the one it names. */
 function member(
   expression: ts.Expression,
-  strings: ReadonlyMap<string, readonly string[]> = noStrings
+  strings: ConstantStrings = noStrings
 ): { object: ts.Expression; keys: readonly string[] } | undefined {
   if (ts.isPropertyAccessExpression(expression)) {
     return { keys: [expression.name.text], object: expression.expression };
   }
   if (!ts.isElementAccessExpression(expression)) return undefined;
-  const key = expression.argumentExpression;
-  const keys = ts.isStringLiteralLike(key)
-    ? [key.text]
-    : ts.isIdentifier(key)
-      ? (strings.get(key.text) ?? [])
-      : [];
+  const keys = keysOf(expression.argumentExpression, strings);
   return keys.length === 0 ? undefined : { keys, object: expression.expression };
 }
 
@@ -300,32 +305,33 @@ interface Binding {
   readonly source: Is;
 }
 
-/** The text of a property's name where it is written out (`setTimeout`, `"setTimeout"`,
- *  `["setTimeout"]`). */
-function propertyText(name: ts.PropertyName): string | undefined {
-  if (!ts.isComputedPropertyName(name)) return name.text;
-  return ts.isStringLiteralLike(name.expression) ? name.expression.text : undefined;
+/** The names a property's name may be: its text where it is written out (`setTimeout`,
+ *  `"setTimeout"`), and a computed one's keys as `member()` reads them (`keysOf`: `["setTimeout"]`,
+ *  or `[key]` of a `const key`). */
+function propertyKeys(name: ts.PropertyName, strings: ConstantStrings): readonly string[] {
+  return ts.isComputedPropertyName(name) ? keysOf(name.expression, strings) : [name.text];
 }
 
 /** What a destructure `target` binds of `source`: each of its names, or nested patterns, with the
  *  member of `source` it takes or the default it falls back to, and a rest with `source`'s module
  *  or `Bun` whole. */
 function parts(target: ts.BindingName | ts.Expression, source: Is, names: WaitNames): Binding[] {
-  const taken = (property: string | undefined, fallback: ts.Expression | undefined): Is => {
-    const value: Is = property === undefined ? () => false : memberIs(source, property);
-    return (kind) => value(kind) || (fallback !== undefined && is(fallback, kind, names));
-  };
+  const taken =
+    (keys: readonly string[], fallback: ts.Expression | undefined): Is =>
+    (kind) =>
+      keys.some((key) => memberIs(source, key)(kind)) ||
+      (fallback !== undefined && is(fallback, kind, names));
   const rest: Is = (kind) => kind !== "wait" && source(kind);
   if (ts.isObjectBindingPattern(target)) {
     return target.elements.map((element) => {
       if (element.dotDotDotToken !== undefined) return { source: rest, target: element.name };
-      const property =
+      const keys =
         element.propertyName !== undefined
-          ? propertyText(element.propertyName)
+          ? propertyKeys(element.propertyName, names.strings)
           : ts.isIdentifier(element.name)
-            ? element.name.text
-            : undefined;
-      return { source: taken(property, element.initializer), target: element.name };
+            ? [element.name.text]
+            : [];
+      return { source: taken(keys, element.initializer), target: element.name };
     });
   }
   if (!ts.isObjectLiteralExpression(target)) return [];
@@ -333,7 +339,7 @@ function parts(target: ts.BindingName | ts.Expression, source: Is, names: WaitNa
     if (ts.isSpreadAssignment(property)) return [{ source: rest, target: property.expression }];
     if (ts.isShorthandPropertyAssignment(property)) {
       const fallback = property.objectAssignmentInitializer;
-      return [{ source: taken(property.name.text, fallback), target: property.name }];
+      return [{ source: taken([property.name.text], fallback), target: property.name }];
     }
     if (!ts.isPropertyAssignment(property)) return [];
     const value = property.initializer;
@@ -341,7 +347,10 @@ function parts(target: ts.BindingName | ts.Expression, source: Is, names: WaitNa
       ts.isBinaryExpression(value) && value.operatorToken.kind === ts.SyntaxKind.EqualsToken;
     return [
       {
-        source: taken(propertyText(property.name), defaulted ? value.right : undefined),
+        source: taken(
+          propertyKeys(property.name, names.strings),
+          defaulted ? value.right : undefined
+        ),
         target: defaulted ? value.left : value,
       },
     ];
@@ -366,8 +375,9 @@ function bindTo(target: ts.BindingName | ts.Expression, source: Is, names: WaitN
 }
 
 /** Every place `file` binds a name: an import, `import … = require(…)`, a declaration, a
- *  parameter's default and an assignment, each with what its value stands for, read from `names`
- *  as they stand when it is asked. */
+ *  parameter's default, an assignment, and the first parameter of a callback that the `then` of a
+ *  module's promise hands the module, each with what its value stands for, read from `names` as
+ *  they stand when it is asked. */
 function bindings(file: ts.SourceFile, names: WaitNames): Binding[] {
   const found: Binding[] = [];
   const standsFor =
@@ -423,7 +433,7 @@ function bindings(file: ts.SourceFile, names: WaitNames): Binding[] {
 
 /** The strings each `const` of `file` is bound to, by its name (`const key = "setTimeout"`): a
  *  name bound to two in two scopes has both. */
-function constantStrings(file: ts.SourceFile): Map<string, string[]> {
+function constantStrings(file: ts.SourceFile): ConstantStrings {
   const strings = new Map<string, string[]>();
   const visit = (node: ts.Node): void => {
     if (
@@ -444,9 +454,10 @@ function constantStrings(file: ts.SourceFile): Map<string, string[]> {
 }
 
 /** The names that stand for each kind in `file`: the global ones, and every name a binding gives
- *  one of those. The bindings are read again, over the whole file, until none adds a name, so an
- *  alias of an alias is found, and so is one bound above the binding it names; a name is an alias
- *  in the whole file once any binding makes it one, and no function's data flow is followed. */
+ *  one of those; and the file's `ConstantStrings`. The bindings are read again, over the whole
+ *  file, until none adds a name, so an alias of an alias is found, and so is one bound above the
+ *  binding it names; a name is an alias in the whole file once any binding makes it one, and no
+ *  function's data flow is followed but the module the `then` of its promise hands a callback. */
 function waitNames(file: ts.SourceFile): WaitNames {
   const names: WaitNames = {
     bun: new Set(["Bun"]),
@@ -1008,10 +1019,10 @@ test("the scheduler of node:timers' promises and a namespace a dynamic import ha
   ]);
 });
 
-// The same section says the scan reads a member of `globalThis`, `window` or `self` by its key, a
-// string literal or a `const` of the file bound to one. A timer of `globalThis` reached by a key
-// held in a constant waits 50 ms of real time, and the scan did not find it at 54a60643
-// (INFRA-983, tester round 4).
+// The same section says the scan finds a timer that is a member of any object by its key, a
+// string literal or a `const` of the file bound to one (`globalThis[key]`). A timer of
+// `globalThis` reached by a key held in a constant waits 50 ms of real time, and the scan did not
+// find it at 54a60643 (INFRA-983, tester round 4).
 test("a timer of globalThis reached by a constant key starts a wait", () => {
   refusedAndKept(['const key = "setTimeout";\nawait new Promise((r) => globalThis[key](r, 50));']);
 });
@@ -1019,7 +1030,7 @@ test("a timer of globalThis reached by a constant key starts a wait", () => {
 // A constant key reads the member it names of `window`, of `self` and of any other object, as a
 // string literal does: a `const` bound to a string, one bound `as const` or to a template with no
 // substitution, and a name that two scopes bind to two strings, which may be either. A method of a
-// wait is read by one too.
+// wait is read by one too, and so is a destructure's computed key (`{ [key]: later }`).
 test("a constant key of window, self or any object reads the member it names", () => {
   refusedAndKept([
     'const key = "requestAnimationFrame";\nwindow[key](run);',
@@ -1028,6 +1039,7 @@ test("a constant key of window, self or any object reads the member it names", (
     'const method = "sleep";\nawait Bun[method](50);',
     'function focusOn() {\n  const key = "focus";\n}\nconst key = "setTimeout";\nwindow[key](run, 50);',
     'const call = "call";\nsetTimeout[call](window, run, 50);',
+    'const key = "setTimeout";\nconst { [key]: later } = window;\nlater(run, 50);',
   ]);
 });
 
