@@ -54,7 +54,11 @@ const BUSY: MutationObserverInit = {
 export const HISTORY_ENTRY_ATTRIBUTE = "data-history-entry";
 
 /** What tells a control apart across a redraw, where React draws it anew as another element: the
- *  history entry it stands in, its own `id`, its tag, its role and its name, in one key. */
+ *  history entry it stands in, its own `id`, its tag, its role and its name, in one key. The lost
+ *  control's identity is read from the lost control itself once it is lost, all but its entry,
+ *  which is the one it stood in when it took the focus. So a control renamed since it took the
+ *  focus, as a Pin that the reader's press or another session's change relabelled Unpin is, is
+ *  still known as the same control when it is drawn anew. */
 type ControlIdentity = string;
 
 /** A stretch of the window from `top` down to `bottom`, in CSS pixels. */
@@ -93,10 +97,11 @@ type Loss = "disabled" | "hidden" | "removed";
  * forgets them once the focus moves to another control. A loss while no press stands - a live
  * update, another session's change that takes a row away, a read that answers on its own, a
  * control or a popover gone - leaves the focus on the page's body, where the page's keys work, and
- * the keeper moves nothing and scrolls nothing. A control drawn in the same change with the lost
- * one's identity (`ControlIdentity`), as when React draws an entry anew under a new key, is the
- * same control and no loss: it is given the focus back whether or not the reader pressed it, and
- * it keeps their press.
+ * the keeper moves nothing and scrolls nothing. A control drawn in the same change with the
+ * identity the lost one had as it went (`ControlIdentity`), as when React draws an entry anew
+ * under a new key, is the same control and no loss, even where it was renamed since it took the
+ * focus, as a Pin that the reader's press or a live change relabelled Unpin is: it is given the
+ * focus back whether or not the reader pressed it, and it keeps their press.
  *
  * Where a press stands, the focus goes, in this order: to that control drawn anew; else to the
  * control nearest to where the lost one stood, among those that stay enabled, drawn and in sight
@@ -130,8 +135,8 @@ export function useDetailsFocusKeeper(box: RefObject<HTMLElement | null>, active
 export interface PressWatch<C extends Element = Element> {
   /** The control the watch hears: the one it was made on, or the one it follows since. */
   readonly control: C;
-  /** Hears `event`, a click or a keydown, where it was made on the control or inside it while
-   *  the control holds the focus. Any other event is no press of the control. */
+  /** Hears `event`, which is a click or a keydown: a press of the control where it was made on
+   *  the control or inside it while the control holds the focus, and no press otherwise. */
   hear(event: Event): void;
   /** Whether a press of the reader's on the control stands, so that its loss now is theirs. */
   stands(): boolean;
@@ -179,12 +184,10 @@ export function watchPresses<C extends Element>(control: C): PressWatch<C> {
   let tookBusy = false;
   // The animation frame the last press waits for.
   let frame: number | null = null;
-  // Whether `observer` watches the control: from a press heard until a press is answered. A
-  // control busy as it was pressed is noted by `hear` itself.
-  let observing = false;
   const observer = new MutationObserver(() => {
     if (stands() && (tookBusy || busy(watched))) answerIfIdle();
   });
+  observer.observe(control, BUSY);
 
   function stands(): boolean {
     return acted || key?.defaultPrevented === true;
@@ -201,8 +204,6 @@ export function watchPresses<C extends Element>(control: C): PressWatch<C> {
     tookBusy = false;
     if (frame !== null) window.cancelAnimationFrame(frame);
     frame = null;
-    observer.disconnect();
-    observing = false;
   }
 
   // Answers the press where the control stands idle where the reader pressed it, on the page and
@@ -226,24 +227,17 @@ export function watchPresses<C extends Element>(control: C): PressWatch<C> {
     },
     follow(next) {
       watched = next;
-      if (observing) {
-        observer.disconnect();
-        observer.observe(watched, BUSY);
-      }
+      observer.disconnect();
+      observer.observe(watched, BUSY);
     },
     hear(event) {
       const { target, type } = event;
       if (
-        !(PRESSES as readonly string[]).includes(type) ||
         document.activeElement !== watched ||
         !(target instanceof Node) ||
         !watched.contains(target)
       ) {
         return;
-      }
-      if (!observing) {
-        observer.observe(watched, BUSY);
-        observing = true;
       }
       settleKey();
       if (!acted) tookBusy = false;
@@ -256,7 +250,10 @@ export function watchPresses<C extends Element>(control: C): PressWatch<C> {
       });
     },
     stands,
-    stop: answer,
+    stop() {
+      answer();
+      observer.disconnect();
+    },
   };
 }
 
@@ -272,9 +269,10 @@ function busy(control: Element): boolean {
 /** Keeps the focus inside `root` (`useDetailsFocusKeeper`) until the returned function is called. */
 function keepFocusIn(root: HTMLElement): () => void {
   // The watch of the reader's presses on the control inside the box that holds the focus, which
-  // names that control, with the control's identity as it was when it took the focus: its loss
+  // names that control, with the history entry the control stood in when it last took the focus,
+  // which a control removed from its entry no longer finds around it (`identityOf`): its loss
   // while a press stands is theirs, and the keeper hands the focus on.
-  let held: { readonly identity: ControlIdentity; readonly press: PressWatch<HTMLElement> } | null =
+  let held: { readonly entry: string | null; readonly press: PressWatch<HTMLElement> } | null =
     null;
   // The move the keeper makes a task after the held control was lost: every record heard since,
   // and the timer that makes it.
@@ -293,10 +291,10 @@ function keepFocusIn(root: HTMLElement): () => void {
     // keeper gives the control drawn anew the focus (`move`), has not moved to another control,
     // so the reader's press on it still stands.
     if (held?.press.control === target) {
-      held = { ...held, identity: identityOf(target) };
+      held = { ...held, entry: entryOf(target) };
     } else {
       held?.press.stop();
-      held = { identity: identityOf(target), press: watchPresses(target) };
+      held = { entry: entryOf(target), press: watchPresses(target) };
     }
     observer.observe(root, WATCHED);
   }
@@ -360,7 +358,7 @@ function keepFocusIn(root: HTMLElement): () => void {
     if (pending === null || held === null) return;
     const { records } = pending;
     pending = null;
-    const { identity, press } = held;
+    const { entry, press } = held;
     const { control } = press;
     // A focus a site's passive effect or the reader put somewhere since stays where they put it,
     // and so does one still on the lost control once it stands again.
@@ -375,7 +373,7 @@ function keepFocusIn(root: HTMLElement): () => void {
     if (!drawn(root)) return;
     const removal = removalOf(control, records);
     const stood = placeOf(control, root, removal);
-    const replacement = replacementOf(identity, root, records, stood);
+    const replacement = replacementOf(identityOf(control, entry), root, records, stood);
     const target =
       replacement ??
       (press.stands()
@@ -460,14 +458,24 @@ function removalOf(control: Node, records: readonly MutationRecord[]): MutationR
   return removal;
 }
 
-function identityOf(control: HTMLElement): ControlIdentity {
+/** The identity of `control` (`ControlIdentity`) in the history entry `entry`: its own `id`, tag,
+ *  role and name as they stand now. A removed control keeps the attributes and the text it had as
+ *  it went, so the lost control's identity is the one it had as it was lost. */
+function identityOf(control: HTMLElement, entry: string | null): ControlIdentity {
   return JSON.stringify([
-    control.closest(`[${HISTORY_ENTRY_ATTRIBUTE}]`)?.getAttribute(HISTORY_ENTRY_ATTRIBUTE) ?? null,
+    entry,
     control.id,
     control.tagName,
     control.getAttribute("role"),
     control.getAttribute("aria-label") ?? (control.textContent ?? "").trim(),
   ]);
+}
+
+/** The id of the history entry `control` stands in; null outside every entry. */
+function entryOf(control: Element): string | null {
+  return (
+    control.closest(`[${HISTORY_ENTRY_ATTRIBUTE}]`)?.getAttribute(HISTORY_ENTRY_ATTRIBUTE) ?? null
+  );
 }
 
 /** Where the lost control stood. A removed one's place is the gap its `removal` left between the
@@ -551,7 +559,7 @@ function replacementOf(
           !control.matches(CONTROLS) ||
           control.matches(":disabled") ||
           !drawn(control) ||
-          identityOf(control) !== identity
+          identityOf(control, entryOf(control)) !== identity
         ) {
           continue;
         }

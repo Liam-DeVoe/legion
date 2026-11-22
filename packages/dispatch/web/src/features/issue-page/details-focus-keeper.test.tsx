@@ -722,6 +722,88 @@ test("an entry remounted under a new key gives the same control in the new entry
   }
 });
 
+/** How the history's three turns stand in `pinTurns`: `drawing` keys the middle one, as in
+ *  `turns`, and `pinned` says whether that turn is pinned. */
+interface PinTurnsDrawn {
+  readonly drawing: number;
+  readonly pinned: boolean;
+}
+
+/** Three turns of the history, each with Reply and Pin, as in `turns`, but the middle turn's Pin
+ *  is a toggle, as `PinButton` is: a press pins the turn at once, and the same button is named
+ *  Unpin while the turn is pinned. It shows no busy state, so the reader's press of it is answered
+ *  two frames later (`watchPresses`). */
+function pinTurns(state: PinTurnsDrawn, set: (state: PinTurnsDrawn) => void): ReactNode {
+  return (
+    <ol data-height={180} data-top={60}>
+      {[0, 1, 2].map((turn) => (
+        <li
+          data-height={60}
+          data-history-entry={`turn:${turn}`}
+          data-top={60 + turn * 60}
+          key={turn === 1 ? `turn-1-${state.drawing}` : `turn-${turn}`}
+        >
+          <button data-top={70 + turn * 60} type="button">
+            Reply
+          </button>
+          <button
+            aria-label={turn === 1 && state.pinned ? "Unpin" : "Pin"}
+            data-top={94 + turn * 60}
+            onClick={turn === 1 ? () => set({ ...state, pinned: !state.pinned }) : undefined}
+            type="button"
+          />
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+/** The middle turn's Pin in `pinTurns`, given the focus, is relabelled Unpin in place: by the
+ *  reader's Enter on it where `press` is "key", by another session's change where it is "none".
+ *  Three frames later, by when a press of the reader's is answered, its entry is drawn anew under
+ *  a new key: where the focus is then. */
+async function pinRelabelledThenRemounted(press: "key" | "none"): Promise<string> {
+  const box = drawBox<PinTurnsDrawn>(true, { drawing: 0, pinned: false }, pinTurns);
+  try {
+    const pin = within(screen.getAllByRole("listitem")[1]).getByRole("button", { name: "Pin" });
+    await take(pin, press);
+    if (press === "none") await box.change({ drawing: 0, pinned: true });
+    expect(pin, "the Pin was not relabelled Unpin in place").toHaveAttribute("aria-label", "Unpin");
+    await box.frame();
+    await box.frame();
+    await box.frame();
+    await box.change({ drawing: 1, pinned: true });
+    expect(pin.isConnected, "the turn was not drawn anew under a new key").toBe(false);
+    return focusName();
+  } finally {
+    box.unmount();
+  }
+}
+
+test("a Pin the reader's Enter relabelled Unpin, its press answered, is the same control when its entry is drawn anew under a new key", async () => {
+  const restore = chromiumLayout();
+  try {
+    expect(
+      await pinRelabelledThenRemounted("key"),
+      "the focus did not go to the Unpin drawn anew, though the reader's own press renamed it"
+    ).toBe("Unpin in turn:1");
+  } finally {
+    restore();
+  }
+});
+
+test("a Pin relabelled Unpin by a live change, with no press of the reader's, is the same control when its entry is drawn anew under a new key", async () => {
+  const restore = chromiumLayout();
+  try {
+    expect(
+      await pinRelabelledThenRemounted("none"),
+      "the focus did not go to the Unpin drawn anew, though a live change only renamed it"
+    ).toBe("Unpin in turn:1");
+  } finally {
+    restore();
+  }
+});
+
 /** Two turns of the log and, at its end, Load older, which goes away once the log's last page is
  *  read, with no control drawn in its place. */
 function logEnd(more: boolean): ReactNode {
