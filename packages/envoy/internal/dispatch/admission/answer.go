@@ -213,9 +213,15 @@ func unserved(w http.ResponseWriter, ctx context.Context, err error) bool {
 	var refusal *Refusal
 	switch {
 	case errors.As(context.Cause(ctx), &refusal), errors.As(err, &refusal):
-		// No value of err is logged: err can carry text a caller's credential header chose (a
-		// token's unverified claims, quoted by its verifier), and the refusal's answer says why.
-		slog.Debug("dispatch: request refused the units it asked back")
+		// The class is the request's own ticket's (TicketFrom), not the refusal's: err can carry
+		// text a caller's credential header chose (a token's unverified claims, quoted by its
+		// verifier), so no value of err, nor of what errors.As took out of it, is logged. A take-back
+		// is refused by its class's queue alone (Ticket.Resume takes no lane), so no lane is named.
+		if ticket := TicketFrom(ctx); ticket != nil {
+			slog.Debug("dispatch: request refused the units it asked back", "class", ticket.arrival.class)
+		} else {
+			slog.Debug("dispatch: request refused the units it asked back")
+		}
 		WriteRefused(w, refusal)
 	case DeadlinePassed(ctx):
 		slog.Debug("dispatch: read ran past its deadline", "error", err)
