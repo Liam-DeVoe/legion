@@ -77,9 +77,9 @@ type intakeDelivery struct {
 }
 
 // intakeMessage is one message on its way to its key's handler, with its envelope when keying
-// decoded it, so the handler does not decode it again. Keying decodes every message it wants, a
-// pull request's, a workflow run's and a push's alike, so the envelope is absent only when that
-// decode failed and deliver reports the failure.
+// decoded it, so the handler does not decode it again, and the key it runs under. Keying decodes
+// every message it wants, a pull request's, a workflow run's and a push's alike, so the envelope
+// is absent only when that decode failed and deliver reports the failure.
 //
 // It is instead work that is not a message when work is set (heldDurable.queue): the key's
 // goroutine runs it in its turn, under the delivery's handling context, and the item holds no
@@ -87,6 +87,7 @@ type intakeDelivery struct {
 type intakeMessage struct {
 	msg      *natsgo.Msg
 	envelope *contracts.Envelope
+	key      string
 	work     func(context.Context)
 }
 
@@ -690,7 +691,7 @@ func (d *intakeDelivery) receive(msg *natsgo.Msg) {
 		d.acknowledge(msg)
 		return
 	}
-	if !d.keys.run(key, intakeMessage{msg: msg, envelope: envelope}) {
+	if !d.keys.run(key, intakeMessage{msg: msg, envelope: envelope, key: key}) {
 		d.giveBack(msg)
 	}
 }

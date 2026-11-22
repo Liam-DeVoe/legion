@@ -37,11 +37,11 @@
 -- - state_url is the daemon the row follows: the setting's state_url when the row was written. A
 --   row naming another daemon than the setting is no starting point, so the intake reads the
 --   setting's daemon whole. A write of the setting (legion.PutSettings) sets it to '', which no
---   setting names, and every column below but previous_state_id to its empty value: that is what
---   makes a PUT of the same URL a fresh whole read. A write of the URL the row follows while a
---   message holds the owed read (read_holder) leaves the row as it is instead: that message's read,
---   a whole read, is the read the write calls for. A delete of the setting deletes the row
---   (legion.DeleteSettings).
+--   setting names, and every column below but previous_state_id and previous_state_url to its
+--   empty value: that is what makes a PUT of the same URL a fresh whole read. A write of the URL
+--   the row follows while a message holds the owed read (read_holder) leaves the row as it is
+--   instead: that message's read, a whole read, is the read the write calls for. A delete of the
+--   setting deletes the row (legion.DeleteSettings).
 -- - run is the daemon run (the UUID it minted at boot) of the newest message the intake applied, or
 --   the daemon.stateRun of the daemon that served a successful whole read made after it, where that
 --   daemon served one; null before either. A boot at or below last_seq under another run is a
@@ -85,9 +85,13 @@
 --   another daemon: the write sets it to the row's state_id, and keeps it where state_id is null.
 --   The intake finishes each message of this store unapplied while state_id is null or another
 --   store (legion's outcomeForgotten): R3 applies no message of the daemon the setting named
---   before. Such a message calls for no read of its own and holds none; it makes an owed read
---   that is due and that no message holds, as the project's next message. A write of the URL the
---   row follows and a whole read keep the column. Null for none.
+--   before. Such a message calls for no read and holds none. A write of previous_state_url clears
+--   it. A write of the URL the row follows and a whole read keep it. Null for none.
+-- - previous_state_url is the URL the row followed when the write set previous_state_id: the
+--   write sets it to the row's state_url with previous_state_id, and keeps it with
+--   previous_state_id. A write of this URL names that daemon again, so it clears both columns,
+--   and the intake then judges the daemon's messages as the messages of the setting's daemon. A
+--   write of the URL the row follows and a whole read keep it. Null for none.
 --
 -- legion_event_parts holds the messages of a transaction the daemon split over several messages
 -- (each but the last carries `more: true`) until its last message arrives: the intake then applies
@@ -149,7 +153,8 @@ create table legion_event_cursors (
   read_holds integer not null default 0,
   state_id text,
   schema_version bigint,
-  previous_state_id text
+  previous_state_id text,
+  previous_state_url text
 );
 
 create table legion_event_parts (

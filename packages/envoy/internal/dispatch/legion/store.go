@@ -119,7 +119,8 @@ func GetSettings(ctx context.Context, pool *store.Pool, project string) (Setting
 // to have a project's state read whole again. Where a message holds the project's owed read, a
 // write of the same URL joins that read and forgets nothing: the message's redelivery makes the
 // read, a whole read, and the hold's count of hand-backs goes on. After a write that names another
-// daemon, the intake finishes each message of the store the project followed before, unapplied.
+// daemon, the intake finishes each message of the store the project followed before, unapplied,
+// until a write names that daemon's URL again.
 func PutSettings(ctx context.Context, pool *store.Pool, project, stateURL string, actor model.Actor) (Settings, error) {
 	createdBy, err := json.Marshal(actor)
 	if err != nil {
@@ -185,10 +186,13 @@ func DeleteSettings(ctx context.Context, pool *store.Pool, project string) (bool
 //     position, reason, holder and store back to its empty value, and deletes the parts of a split
 //     transaction held for it, so the intake has no starting point for the project and reads the
 //     setting's daemon whole at the wake (ReadReasonStart). A write that names another daemon
-//     records the store the cursor held, or keeps the one recorded already where it held none, as
-//     the store of the daemon the setting named before (previous_state_id): the intake finishes
-//     each message of that store unapplied (outcomeForgotten), so the message that held the read
-//     holds it no more. A write of the same daemon keeps what is recorded there.
+//     records the store the cursor held with the URL it followed, or keeps the pair recorded
+//     already where it held none, as the store of the daemon the setting named before
+//     (previous_state_id, previous_state_url): the intake finishes each message of that store
+//     unapplied (outcomeForgotten), so the message that held the read holds it no more. A write of
+//     the URL recorded there names that daemon again, so it clears the pair, and the daemon's
+//     messages are judged as the setting's daemon's: they hold and make an owed read as every
+//     message does. A write of the same daemon keeps what is recorded there.
 //   - A delete deletes the cursor, and with it the held parts (their foreign key).
 func settingWritten(ctx context.Context, tx pgx.Tx, project, stateURL string) error {
 	var err error
@@ -203,7 +207,14 @@ func settingWritten(ctx context.Context, tx pgx.Tx, project, stateURL string) er
 				update legion_event_cursors set
 					state_url = '', run = null, last_seq = null, read_reasons = '{}', read_tried_at = null,
 					read_holder = null, read_holds = 0, state_id = null, schema_version = null,
-					previous_state_id = case when state_url = $3 then previous_state_id else coalesce(state_id, previous_state_id) end
+					previous_state_id = case
+						when previous_state_url = $3 then null
+						when state_url = $3 then previous_state_id
+						else coalesce(state_id, previous_state_id) end,
+					previous_state_url = case
+						when previous_state_url = $3 then null
+						when state_url = $3 or state_id is null then previous_state_url
+						else state_url end
 				where project = $1 and (state_url <> $3 or read_holder is null)
 				returning project
 			), parts as (delete from legion_event_parts where project in (select project from forgotten))

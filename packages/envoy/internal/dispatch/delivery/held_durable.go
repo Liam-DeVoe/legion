@@ -286,11 +286,13 @@ type HeldDurable struct {
 }
 
 // HeldMessage is one message a HeldDurable hands its handler, on the goroutine of the message's
-// key: the message, its envelope as the key decoded it (nil where it did not decode), and the
-// delivery it arrived on, which answers it.
+// key: the message, its envelope as the key decoded it (nil where it did not decode), the key it
+// runs under (Key, as the owner's key function answered it for this delivery), and the delivery it
+// arrived on, which answers it.
 type HeldMessage struct {
 	Msg      *natsgo.Msg
 	Envelope *contracts.Envelope
+	Key      string
 	delivery *intakeDelivery
 }
 
@@ -304,7 +306,7 @@ func NewHeldDurable(natsClient *bus.Client, leases DurableLeases, config func() 
 	key func(*natsgo.Msg) (string, *contracts.Envelope, bool), handle func(HeldMessage), bound func(),
 ) *HeldDurable {
 	held := &HeldDurable{heldDurable: newHeldDurable(natsClient, leases, config, key, func(delivery *intakeDelivery, message intakeMessage) {
-		handle(HeldMessage{Msg: message.msg, Envelope: message.envelope, delivery: delivery})
+		handle(HeldMessage{Msg: message.msg, Envelope: message.envelope, Key: message.key, delivery: delivery})
 	})}
 	held.bound = bound
 	return held

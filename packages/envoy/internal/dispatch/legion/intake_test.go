@@ -448,27 +448,31 @@ func requireWholeRead(t *testing.T, row readRecord, reason string, ok bool) {
 
 // cursorRow is project's legion_event_cursors row.
 type cursorRow struct {
-	lastSeq         *int64
-	readOwed        bool
-	run             *string
-	stateID         *string
-	readReasons     []string
-	readHolder      *int64
-	readHolds       int
-	previousStateID *string
+	lastSeq          *int64
+	readOwed         bool
+	run              *string
+	stateID          *string
+	readReasons      []string
+	readHolder       *int64
+	readHolds        int
+	previousStateID  *string
+	previousStateURL *string
 }
 
 func (r cursorRow) String() string {
-	return fmt.Sprintf("{lastSeq=%s readOwed=%v readReasons=%v readHolder=%s readHolds=%d run=%s stateId=%s previousStateId=%s}",
-		orNone(r.lastSeq), r.readOwed, r.readReasons, orNone(r.readHolder), r.readHolds, orNone(r.run), orNone(r.stateID), orNone(r.previousStateID))
+	return fmt.Sprintf("{lastSeq=%s readOwed=%v readReasons=%v readHolder=%s readHolds=%d run=%s stateId=%s previousStateId=%s previousStateUrl=%s}",
+		orNone(r.lastSeq), r.readOwed, r.readReasons, orNone(r.readHolder), r.readHolds, orNone(r.run), orNone(r.stateID), orNone(r.previousStateID),
+		orNone(r.previousStateURL))
 }
 
 func cursorOf(t *testing.T, database *store.Store, project string) cursorRow {
 	t.Helper()
 	var row cursorRow
 	if err := database.Pool.QueryRow(context.Background(),
-		`select last_seq, read_owed, run, state_id, read_reasons, read_holder, read_holds, previous_state_id from legion_event_cursors where project = $1`, project).Scan(
-		&row.lastSeq, &row.readOwed, &row.run, &row.stateID, &row.readReasons, &row.readHolder, &row.readHolds, &row.previousStateID); err != nil {
+		`select last_seq, read_owed, run, state_id, read_reasons, read_holder, read_holds, previous_state_id, previous_state_url
+		from legion_event_cursors where project = $1`, project).Scan(
+		&row.lastSeq, &row.readOwed, &row.run, &row.stateID, &row.readReasons, &row.readHolder, &row.readHolds, &row.previousStateID,
+		&row.previousStateURL); err != nil {
 		t.Fatalf("read the cursor of %s: %v", project, err)
 	}
 	return row
@@ -2201,10 +2205,11 @@ func TestAMessageWhoseSequenceItsEventsDoNotReachMovesNoCursor(t *testing.T) {
 // daemon with no store, while the daemon named before still publishes under the same project, in
 // its own store and run, at its next sequences. None of its messages is applied, none gives the
 // cursor its store, none holds a read, and the drop is logged once: each is finished at its first
-// delivery, and inside the minute none makes a read. R3 tries a failed read again at the project's
-// next message, so the one that arrives a minute on, once the owed read is due, makes it as a call
-// no message makes would, and is finished unapplied all the same. The read takes the named
-// daemon's state and store, and the named daemon's own next event is applied on it.
+// delivery, and none makes a read. R3 says a failed starting read is one that no message holds,
+// so the message of the daemon named before that arrives a minute on, once the owed read is due,
+// makes no read either. The named daemon's own next message, of its own store and run while the
+// cursor holds no store, makes the due read, which takes the named daemon's state and store, and
+// that message is applied on it.
 func TestARepointedSettingWhoseFirstReadFailsAppliesNoMessageOfTheDaemonItNamedBefore(t *testing.T) {
 	const namedRun, namedStore = "2c7e9a14-5b3d-4f86-a1e0-8d6c4b2f9e37", "6e1f3a8c-2d4b-4c97-b5a0-9f7e1d3c8b26"
 	rig := newIntakeRig(t)
@@ -2239,40 +2244,43 @@ func TestARepointedSettingWhoseFirstReadFailsAppliesNoMessageOfTheDaemonItNamedB
 	}
 
 	// A minute on, the owed read is due, and the named daemon answers, in a store and under a run
-	// of its own. The daemon named before publishes again: its message makes the owed read, holds
-	// none, and is not applied.
+	// of its own. The daemon named before publishes again: its message makes no read, holds none,
+	// and is not applied.
 	implementing := strings.Replace(planning("INFRA"), `"planning"`, `"implementing"`, 1)
 	named.serves(strings.Replace(strings.Replace(daemonState("INFRA", 5, implementing), rigStateID, namedStore, 1), rigRun, namedRun, 1))
 	rig.clock.advance(ReadRetryAfter + time.Second)
 	rig.publish("INFRA", change(2000004, "INFRA-1", moved("phase", "merging")))
 	rig.settled()
+	if served := named.served(); served != 1 {
+		t.Errorf("the named daemon served %d reads after the message of the daemon named before a minute on, want its failed one alone: that message made a read", served)
+	}
+	if c := cursorOf(t, rig.database, "INFRA"); !c.readOwed || c.lastSeq != nil || c.stateID != nil || c.readHolder != nil || c.readHolds != 0 {
+		t.Errorf("the cursor is %s, want the read still owed, no sequence, no store and no holder", c)
+	}
+
+	// The named daemon's own next message, of its own store and run while the cursor holds no
+	// store, makes the due read and is applied on it.
+	rig.publishIn("INFRA", namedRun, namedStore, time.Now().UTC().Truncate(time.Microsecond), false, change(6, "INFRA-1", moved("phase", "testing")))
+	rig.settled()
 	if served := named.served(); served != 2 {
-		t.Errorf("the named daemon served %d reads, want the failed one and the one the message a minute on made", served)
+		t.Errorf("the named daemon served %d reads, want the failed one and the one its own message made", served)
 	}
 	whole := wholeReadsOf(t, rig.database, "INFRA")
 	if len(whole) != 3 {
 		t.Fatalf("whole reads = %v, want the first daemon's, the named daemon's failed one and its good one", whole)
 	}
 	requireWholeRead(t, whole[2], ReadReasonRetry, true)
-	if c := cursorOf(t, rig.database, "INFRA"); c.readOwed || c.lastSeq == nil || *c.lastSeq != 5 || c.stateID == nil || *c.stateID != namedStore || c.readHolder != nil {
-		t.Errorf("the cursor after the good read is %s, want the named daemon's sequence 5 and store %s, nothing owed and no holder", c, namedStore)
+	if c := cursorOf(t, rig.database, "INFRA"); c.readOwed || c.lastSeq == nil || *c.lastSeq != 6 || c.stateID == nil || *c.stateID != namedStore || c.readHolder != nil {
+		t.Errorf("the cursor is %s, want the named daemon's message's sequence 6 on the read's store %s, nothing owed and no holder", c, namedStore)
 	}
 	if drops := rig.awaitLogRecords(forgottenLine, 1); len(drops) != 1 || drops[0]["project"] != "INFRA" || drops[0]["stateId"] != rigStateID {
 		t.Errorf("the drops logged = %v, want one naming INFRA and the message's store", drops)
 	}
 	if held := rig.logRecords(heldLine); len(held) != 0 {
-		t.Errorf("the messages sent back = %v, want none: no message of the daemon the setting named before holds a read", held)
+		t.Errorf("the messages sent back = %v, want none: no message of the daemon the setting named before holds a read, and the named daemon's message found the read due", held)
 	}
-
-	// The named daemon's own next event is applied on the read.
-	rig.publishIn("INFRA", namedRun, namedStore, time.Now().UTC().Truncate(time.Microsecond), false, change(6, "INFRA-1", moved("phase", "testing")))
-	rig.settled()
 	if got := history(t, rig.database, "INFRA", "INFRA-1", FieldPhase); !slices.Equal(got, []string{`"planning"`, `"implementing"`, `"testing"`}) {
 		t.Errorf("the phase's history is %v, want the first daemon's read's planning, the named daemon's read's implementing and its event's testing, and no merging", got)
-	}
-	requireLastSeq(t, rig.database, "INFRA", 6)
-	if served := named.served(); served != 2 {
-		t.Errorf("the named daemon served %d reads, want the failed one and the good one", served)
 	}
 }
 
@@ -2869,6 +2877,64 @@ func TestAHoldsHandBacksAreCountedAcrossATakeOver(t *testing.T) {
 	}
 	if c := cursorOf(t, rig.database, "INFRA"); !slices.Equal(c.readReasons, []string{ReadReasonRetry}) || c.readHolder != nil || c.readHolds != 0 {
 		t.Errorf("INFRA's cursor is %s, want the read owed for retry, no holder and no hand-back counted", c)
+	}
+}
+
+// TestOnlyAGoodWholeReadClearsTheHolderOfTheOwedRead: the message that holds a project's owed read
+// and the cursor's count of its hand-backs go only with a good whole read or with the message
+// (recordWhole). A failed read recorded while the cursor follows another daemon than the setting
+// names keeps them, as the cursor comes to follow the setting's daemon; a failed read while it
+// follows that daemon keeps them too; and a good read clears them. No step of the intake leaves a
+// holder on a cursor that follows another daemon, since a write of the setting that names another
+// daemon clears it, so the test writes INFRA's cursor so by hand: it follows another URL, owes the
+// read for retry, and names stream sequence 42 as the holder, gone back 3 times.
+func TestOnlyAGoodWholeReadClearsTheHolderOfTheOwedRead(t *testing.T) {
+	daemon := newFakeDaemon(t, "")
+	daemon.refuses(http.StatusServiceUnavailable)
+	database, setting := configured(t, daemon.URL)
+	if _, err := database.Pool.Exec(t.Context(), `
+		insert into legion_event_cursors (project, state_url, read_reasons, read_tried_at, read_holder, read_holds)
+		values ('INFRA', 'http://another-daemon.example', '{retry}', now() - interval '2 minutes', 42, 3)
+	`); err != nil {
+		t.Fatalf("write INFRA's cursor: %v", err)
+	}
+	stateURL := func() string {
+		var url string
+		if err := database.Pool.QueryRow(t.Context(), `select state_url from legion_event_cursors where project = 'INFRA'`).Scan(&url); err != nil {
+			t.Fatalf("read the URL INFRA's cursor follows: %v", err)
+		}
+		return url
+	}
+	requireHolder := func(after string) {
+		t.Helper()
+		if c := cursorOf(t, database, "INFRA"); c.readHolder == nil || *c.readHolder != 42 || c.readHolds != 3 ||
+			!slices.Equal(c.readReasons, []string{ReadReasonRetry}) {
+			t.Errorf("INFRA's cursor after %s is %s, want the read owed for retry and held by 42, gone back 3 times", after, c)
+		}
+	}
+
+	if err := ReadWhole(t.Context(), database.Pool, setting, ReadReasonRetry); err != nil {
+		t.Fatalf("read INFRA's daemon whole: %v", err)
+	}
+	if url := stateURL(); url != daemon.URL {
+		t.Fatalf("INFRA's cursor follows %q after the failed read, want the setting's %s", url, daemon.URL)
+	}
+	requireHolder("a failed read while it followed another daemon")
+
+	if err := ReadWhole(t.Context(), database.Pool, setting, ReadReasonRetry); err != nil {
+		t.Fatalf("read INFRA's daemon whole again: %v", err)
+	}
+	requireHolder("a failed read while it followed the setting's daemon")
+
+	daemon.serves(daemonState("INFRA", 10, planning("INFRA")))
+	if err := ReadWhole(t.Context(), database.Pool, setting, ReadReasonRetry); err != nil {
+		t.Fatalf("read INFRA's daemon whole a third time: %v", err)
+	}
+	if c := cursorOf(t, database, "INFRA"); c.readOwed || c.readHolder != nil || c.readHolds != 0 || c.lastSeq == nil || *c.lastSeq != 10 {
+		t.Errorf("INFRA's cursor after a good read is %s, want it at the read's 10 with nothing owed, no holder and no hand-back counted", c)
+	}
+	if reads := wholeReadsOf(t, database, "INFRA"); len(reads) != 3 || reads[0].ok || reads[1].ok || !reads[2].ok {
+		t.Errorf("INFRA's whole reads are %v, want two failed reads and a good one", reads)
 	}
 }
 
