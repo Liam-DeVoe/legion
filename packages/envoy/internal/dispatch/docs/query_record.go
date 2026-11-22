@@ -78,7 +78,11 @@ var queryTakes = map[string][]string{
 
 // decisionsTakes is the decisions query's rule: of the types graphstore.QueryTakes lists for it,
 // each ask by the ask's own node, never the block that shows it in a document; each decision; and
-// each reading whose parent in the walk is a decision, the reading under an agent's decision.
+// each reading of a decision, whose parent in the walk is a decision or a person's answered ask,
+// the decision that ask is. A reading in an ask a person answered stands under the ask's own node
+// (refs.DecisionFacts places its part_of there), and the decisions read lists it under that ask's
+// entry; a reading in an ask nobody has answered is no reading yet and stands under the ask's
+// block, which this rule never takes it under.
 func decisionsTakes(tree IssueTree, index int) bool {
 	node := tree.Nodes[index]
 	if !slices.Contains(queryTakes[graphstore.QueryDecisions], node.Type) {
@@ -88,8 +92,12 @@ func decisionsTakes(tree IssueTree, index int) bool {
 	case graphstore.SupertagAsk:
 		return node.Kind == graphstore.KindAsk
 	case refs.ReadingSupertag:
-		parent, held := tree.index[node.Parent]
-		return held && tree.Nodes[parent].Type == refs.DecisionSupertag
+		at, held := tree.index[node.Parent]
+		if !held {
+			return false
+		}
+		parent := tree.Nodes[at]
+		return parent.Type == refs.DecisionSupertag || parent.Kind == graphstore.KindAsk
 	}
 	return true
 }

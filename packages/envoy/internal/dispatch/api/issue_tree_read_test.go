@@ -956,7 +956,8 @@ func decisionsViewSpec(key string) string {
 // by member: an ask by its ask id with its question, options, urgency and multiple; a decision and
 // an answered ask with every member of model.Decision the read's `decisions` answers for it, and
 // the block id, text, sum, kind, replaced, kept and waiting_review of its entry; and each reading
-// of a decision under that decision. It answers each entry's node by the entry's key.
+// the read lists under an entry, a decision's or an answered ask's, under that entry's node. It
+// answers each entry's node by the entry's key.
 func requireDecisionsViewAsRead(t *testing.T, what string, view treeAnswer, read issueDecisions) map[string]model.IssueTreeNode {
 	t.Helper()
 	decided := make(map[string]model.Decision, len(read.Decisions))
@@ -973,6 +974,14 @@ func requireDecisionsViewAsRead(t *testing.T, what string, view treeAnswer, read
 		}
 		node := held[0]
 		nodes[entryKey(entry)] = node
+		for _, reading := range entry.Readings {
+			held := view.nodesNamed(reading.Node.Kind, reading.Node.ID)
+			if len(held) != 1 || held[0].Role != treeRoleQuery || held[0].Parent == nil ||
+				held[0].Parent.Kind != entry.Node.Kind || held[0].Parent.ID != entry.Node.ID {
+				t.Errorf("%s: ?view=decisions answers the reading %s:%s of the entry %s as %s, want it once, the query's, under that entry's node",
+					what, reading.Node.Kind, reading.Node.ID, entryKey(entry), entryJSON(t, held))
+			}
+		}
 		if entry.Node.Kind == graphstore.KindAsk {
 			if entry.Question == nil || node.Text != *entry.Question || node.Ask == nil ||
 				entryJSON(t, node.Ask.Options) != entryJSON(t, entry.Options) || entry.Urgency == nil || node.Ask.Urgency != *entry.Urgency ||
@@ -1009,31 +1018,22 @@ func requireDecisionsViewAsRead(t *testing.T, what string, view treeAnswer, read
 				what, entryKey(entry), got.BlockID, got.Kind, got.Replaced, entryJSON(t, got.Kept), got.WaitingReview,
 				blockID, entry.Kind, entry.Replaced, entryJSON(t, entry.Kept), entry.WaitingReview)
 		}
-		if entry.Node.Kind != refs.BlockNodeKind {
-			continue
-		}
-		for _, reading := range entry.Readings {
-			held := view.nodesNamed(reading.Node.Kind, reading.Node.ID)
-			if len(held) != 1 || held[0].Role != treeRoleQuery || held[0].Parent == nil ||
-				held[0].Parent.Kind != entry.Node.Kind || held[0].Parent.ID != entry.Node.ID {
-				t.Errorf("%s: ?view=decisions answers the reading %s:%s of the entry %s as %s, want it once, the query's, under that decision",
-					what, reading.Node.Kind, reading.Node.ID, entryKey(entry), entryJSON(t, held))
-			}
-		}
 	}
 	return nodes
 }
 
 // TestTheDecisionsViewAnswersTheDecisionsQuery: an issue born converted and one that has not
-// converted each hold decisionsViewSpec, with its ask a1 answered, a2 open, its decision d1, which
-// holds the reading g1, kept by alice, d2 waiting for review, and a constraint r1's constrained_by
-// names. Each one's ?view=decisions answers every entry of the decisions read as the query's,
-// keyed and shaped as that read answers it (requireDecisionsViewAsRead), the open question with its
-// options, the kept decision with its keeper, the waiting one waiting and the reading under its
-// decision, and no node of its query but an ask, a decision or a reading under a decision. Its
-// ?view=spec answers, as context, d1 and the answered a1, each with its shaped tuple to r1, and the
-// constraint with r1's constrained_by, and neither the open a2, which shaped r2, nor d2, which
-// shaped nothing. A version of the decisions query node is answered as a version no record holds.
+// converted each hold decisionsViewSpec, with its ask a1 answered and then closed by the reading
+// g2, a2 open, its decision d1, which holds the reading g1, kept by alice, d2 waiting for review,
+// and a constraint r1's constrained_by names. Each one's ?view=decisions answers every entry of the
+// decisions read as the query's, keyed and shaped as that read answers it
+// (requireDecisionsViewAsRead), the open question with its options, the kept decision with its
+// keeper, the waiting one waiting, the reading under its decision and the reading under the
+// answered ask's node, and no node of its query but an ask, a decision or a reading of a decision
+// or of an answered ask. Its ?view=spec answers, as context, d1 and the answered a1, each with its
+// shaped tuple to r1, and the constraint with r1's constrained_by, and neither the open a2, which
+// shaped r2, nor d2, which shaped nothing. A version of the decisions query node is answered as a
+// version no record holds.
 func TestTheDecisionsViewAnswersTheDecisionsQuery(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	documents := deps.Docs.(*docs.Service)
@@ -1055,6 +1055,10 @@ func TestTheDecisionsViewAnswersTheDecisionsQuery(t *testing.T) {
 		spec := readDecisionDocument(t, database, issue.Key, "spec")
 		answered, open := blockAskID(t, handler, issue.Key, "a1"), blockAskID(t, handler, issue.Key, "a2")
 		answerDecisionBlock(t, handler, answered, "bob", []string{"Urgency"}, "Urgency, then age.", nil)
+		// The reading g2 closes the answered a1, written as a person rewrites the spec around it.
+		uploadAs(t, handler, issue.Key, "spec.md",
+			withAskReading(t, documentMarkdown(t, handler, spec.id), "a1", "g2", "The agent reads the answer as urgency before age."), "alice")
+		settleIssue(t, documents, issue.Key)
 		kept := requireEntry(t, readEntries(t, handler, issue.Key), "the decision d1", refs.BlockNodeKind+":"+spec.address("d1"))
 		keepBlock(t, handler, spec.id, "d1", kept.TextSHA256)
 		written := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/constraints",
@@ -1087,6 +1091,17 @@ func TestTheDecisionsViewAnswersTheDecisionsQuery(t *testing.T) {
 		if node, held := nodes[askNode(answered)]; !held || node.Decision == nil || node.Decision.Kind != "person" {
 			t.Errorf("%s: ?view=decisions answers the answered ask a1 (held %t) as %s, want a person's decision", what, held, entryJSON(t, node))
 		}
+		closing := spec.address("g2")
+		askEntry := requireEntry(t, read.Entries, "the answered ask a1", askNode(answered))
+		if !slices.ContainsFunc(askEntry.Readings, func(reading decisionReading) bool { return reading.Node.ID == closing }) {
+			t.Fatalf("%s: the decisions read lists the readings %s under the answered ask a1, want the reading g2 (%s) that closes it",
+				what, entryJSON(t, askEntry.Readings), closing)
+		}
+		if held := view.nodesNamed(refs.BlockNodeKind, closing); len(held) != 1 || held[0].Role != treeRoleQuery || held[0].Supertag != refs.ReadingSupertag ||
+			held[0].Parent == nil || held[0].Parent.Kind != graphstore.KindAsk || held[0].Parent.ID != answered {
+			t.Errorf("%s: ?view=decisions answers the reading g2 that closes the answered ask a1 as %s, want it once, the query's reading, under the ask's node %s",
+				what, entryJSON(t, held), answered)
+		}
 		if node, held := nodes[decisionNode("d1")]; !held || node.Decision == nil || node.Decision.Kept == nil || node.Decision.Kept.KeptBy != "alice" ||
 			node.Decision.Kept.KeptAt.IsZero() || node.Decision.WaitingReview {
 			t.Errorf("%s: ?view=decisions answers the kept decision d1 (held %t) as %s, want it kept by alice, with when, and not waiting",
@@ -1102,9 +1117,9 @@ func TestTheDecisionsViewAnswersTheDecisionsQuery(t *testing.T) {
 			if node.Role != treeRoleQuery {
 				continue
 			}
-			parentDecision := node.Parent != nil && node.Parent.Supertag == refs.DecisionSupertag
-			if node.Kind != graphstore.KindAsk && node.Supertag != refs.DecisionSupertag && (node.Supertag != refs.ReadingSupertag || !parentDecision) {
-				t.Errorf("%s: ?view=decisions answers %s:%s (%s) as the query's, which is no ask, no decision and no reading under a decision",
+			underDecision := node.Parent != nil && (node.Parent.Supertag == refs.DecisionSupertag || node.Parent.Kind == graphstore.KindAsk)
+			if node.Kind != graphstore.KindAsk && node.Supertag != refs.DecisionSupertag && (node.Supertag != refs.ReadingSupertag || !underDecision) {
+				t.Errorf("%s: ?view=decisions answers %s:%s (%s) as the query's, which is no ask, no decision and no reading of a decision or an answered ask",
 					what, node.Kind, node.ID, node.Supertag)
 			}
 		}

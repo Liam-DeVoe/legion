@@ -776,15 +776,19 @@ func renderStepTextColumns(t *testing.T, rig *renderRig) {
 	}
 }
 
-// TestTheDecisionsQueryTakesItsNodesAndBuildsNoRecord: over a walk holding an ask's node, the
-// block that shows that ask in the spec, a decision with a reading under it, a reading under the
-// ask and a requirement, the decisions query takes the ask's node, the decision and the reading
-// under the decision, and nothing else; and a record of the decisions query is refused, through
-// ReadQueryRecord and through the walk's own builder, with the error a query no definition names is
-// refused with, so no version records its digest.
+// TestTheDecisionsQueryTakesItsNodesAndBuildsNoRecord: over a walk holding an answered ask's node
+// with a reading under it, the block that shows that ask in the spec, an ask nobody has answered
+// with a reading under its block, a decision with a reading under it, and a requirement, the
+// decisions query takes each ask's own node, the decision, the reading under the decision and the
+// reading under the answered ask's node, and nothing else: neither block of an ask nor the reading
+// in the ask nobody has answered, which is no reading yet; and a record of the decisions query is
+// refused, through ReadQueryRecord and through the walk's own builder, with the error a query no
+// definition names is refused with, so no version records its digest.
 func TestTheDecisionsQueryTakesItsNodesAndBuildsNoRecord(t *testing.T) {
 	issue := refs.Target{Kind: graphstore.KindIssue, ID: "CORE-1"}
 	ask := refs.Target{Kind: graphstore.KindAsk, ID: "5d1f6a3e-0c4b-4f7e-9b1a-2c3d4e5f6a7b"}
+	open := refs.Target{Kind: graphstore.KindAsk, ID: "6e2a7b4f-1d5c-4a8f-8c2b-3d4e5f6a7b8c"}
+	openBlock := refs.Target{Kind: refs.BlockNodeKind, ID: "CORE-1/tree#a2"}
 	decision := refs.Target{Kind: refs.BlockNodeKind, ID: "CORE-1/tree#d1"}
 	nodes := []TreeNode{
 		{Kind: issue.Kind, ID: issue.ID, Type: graphstore.SupertagIssue},
@@ -794,6 +798,9 @@ func TestTheDecisionsQueryTakesItsNodesAndBuildsNoRecord(t *testing.T) {
 		{Kind: refs.BlockNodeKind, ID: "CORE-1/tree#g1", Parent: decision, Type: refs.ReadingSupertag},
 		{Kind: refs.BlockNodeKind, ID: "CORE-1/tree#g2", Parent: ask, Type: refs.ReadingSupertag},
 		{Kind: refs.BlockNodeKind, ID: "CORE-1/tree#r1", Parent: issue, Type: "requirement"},
+		{Kind: open.Kind, ID: open.ID, Parent: issue, Type: graphstore.SupertagAsk},
+		{Kind: openBlock.Kind, ID: openBlock.ID, Parent: issue, Type: graphstore.SupertagAsk},
+		{Kind: refs.BlockNodeKind, ID: "CORE-1/tree#g3", Parent: openBlock, Type: refs.ReadingSupertag},
 	}
 	tree := IssueTree{Issue: issue.ID, Nodes: nodes, Memo: -1, index: map[refs.Target]int{}}
 	for index, node := range nodes {
@@ -804,9 +811,10 @@ func TestTheDecisionsQueryTakesItsNodesAndBuildsNoRecord(t *testing.T) {
 	for _, index := range taken {
 		addresses = append(addresses, nodes[index].Address())
 	}
-	want := []string{nodes[1].Address(), nodes[3].Address(), nodes[4].Address()}
+	want := []string{nodes[1].Address(), nodes[3].Address(), nodes[4].Address(), nodes[5].Address(), nodes[7].Address()}
 	if !defined || !slices.Equal(addresses, want) {
-		t.Errorf("the decisions query takes %v (defined %t), want %v: the ask's own node, the decision and the reading under it", addresses, defined, want)
+		t.Errorf("the decisions query takes %v (defined %t), want %v: each ask's own node, the decision, the reading under it and the reading under the answered ask",
+			addresses, defined, want)
 	}
 
 	const refused = `the query "decisions" has no record`
