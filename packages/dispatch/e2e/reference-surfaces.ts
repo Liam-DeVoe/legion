@@ -366,16 +366,49 @@ export async function expectStatusMark(
   );
 }
 
+/** What a drawn reference shows, as `expectIssueReference` reads it in the page: its accessible
+ *  name, its text with white space folded as `toHaveText` folds it, and each status mark in it. */
+interface DrawnIssueReference {
+  readonly label: string | null;
+  readonly marks: readonly {
+    readonly glyph: string | null;
+    readonly label: string | null;
+    readonly role: string | null;
+  }[];
+  readonly text: string;
+}
+
+/** Reads `element` as `DrawnIssueReference`; it runs in the page, so it names nothing outside. */
+function readIssueReference(element: Element): DrawnIssueReference {
+  return {
+    label: element.getAttribute("aria-label"),
+    marks: Array.from(element.querySelectorAll("svg[data-status-glyph]"), (mark) => ({
+      glyph: mark.getAttribute("data-status-glyph"),
+      label: mark.getAttribute("aria-label"),
+      role: mark.getAttribute("role"),
+    })),
+    text: (element.textContent ?? "").replace(/\u200b/gu, "").replace(/\s+/gu, " ").trim(),
+  };
+}
+
 /** Holds `reference` to a bare reference to `issue`, read: the issue's status mark and its key,
- *  and no title, named by `issueReferenceName`. The same in a rendered body, the document editor
- *  and a row of the new issue page (dispatch://INFRA-4009 R1, R3). */
+ *  and no title, named by `issueReferenceName`, its one mark held to what `expectStatusMark`
+ *  holds a mark to. The same in a rendered body, the document editor and a row of the new issue
+ *  page (dispatch://INFRA-4009 R1, R3). It reads all of it in one call to the page, polled until
+ *  it holds: each assertion is a round trip that finds the reference again, and a page can cite
+ *  hundreds of issues - six assertions for each reference made the live editor row of
+ *  `bare-references.e2e.ts`, which reads hundreds, about four times as long as it was when it
+ *  read each reference's title once. */
 export async function expectIssueReference(reference: Locator, issue: NamedIssue): Promise<void> {
-  await expect(reference, `${issue.key} is named by its key, status and title`).toHaveAttribute(
-    "aria-label",
-    issueReferenceName(issue)
-  );
-  await expect(reference, `${issue.key} draws its key and no title`).toHaveText(issue.key);
-  await expectStatusMark(reference.locator("svg[data-status-glyph]"), issue.status, issue.key);
+  await expect
+    .poll(() => reference.evaluate(readIssueReference), {
+      message: `${issue.key} draws its status mark and its key, named by its key, status and title`,
+    })
+    .toEqual({
+      label: issueReferenceName(issue),
+      marks: [{ glyph: statusGlyph(issue.status), label: statusText(issue.status), role: "img" }],
+      text: issue.key,
+    });
 }
 
 /** The reference each element in scope matching `selector` names, in the order they are drawn:
