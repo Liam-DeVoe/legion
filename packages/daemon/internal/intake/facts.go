@@ -693,12 +693,15 @@ func (r PullRequestReview) Deciding() bool {
 // (claim.BranchIssue) at its head: opened, reopened, or moved by a push (decodePullRequest). It is
 // a fact only on a repository the daemon writes legion-verdict on (ConsumerSpec.VerdictRepositories);
 // the consumer acknowledges it with no transaction on every other repository. The daemon records
-// the pull request with its head, since pull_requests holds only a Legion issue's.
+// the pull request with its head, since pull_requests holds only a Legion issue's. UpdatedAt is
+// GitHub's clock of the pull request's last change as the event carries it, zero where it carries
+// none, by which a sighting delivered late is ordered among the others.
 type OutsidePullRequest struct {
-	Repo    string
-	Number  int
-	Branch  string
-	HeadSHA string
+	Repo      string
+	Number    int
+	Branch    string
+	HeadSHA   string
+	UpdatedAt time.Time
 }
 
 func (OutsidePullRequest) namedIssue() (string, bool) { return "", false }

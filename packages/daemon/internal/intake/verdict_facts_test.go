@@ -16,10 +16,11 @@ import (
 )
 
 // A pull request event on a branch that is no issue's decodes to the sighting of an outside pull
-// request at its head: opened, reopened, or moved by a push. Every other action of such a pull
-// request, and one that names no head, is no fact. The decoder reads no verdict repository: the
-// consumer acknowledges the sighting of a repository no verdict entry names with no transaction
-// (TestLegionVerdictAnOutsidePullRequestIsAFactOnAVerdictRepositoryAlone).
+// request at its head, with GitHub's updated_at of the pull request, by which a sighting delivered
+// late is ordered among the others: opened, reopened, or moved by a push. Every other action of
+// such a pull request, and one that names no head, is no fact. The decoder reads no verdict
+// repository: the consumer acknowledges the sighting of a repository no verdict entry names with
+// no transaction (TestLegionVerdictAnOutsidePullRequestIsAFactOnAVerdictRepositoryAlone).
 func TestLegionVerdictAPullRequestOnNoIssueBranchDecodesAsOutside(t *testing.T) {
 	const subject = "notifications.github.sjawhar.legion.pr.42"
 	envelope := func(action, head string) []byte {
@@ -27,13 +28,15 @@ func TestLegionVerdictAPullRequestOnNoIssueBranchDecodesAsOutside(t *testing.T) 
 		payload, err := json.Marshal(map[string]string{
 			"kind": "pr", "action": action, "repo": "sjawhar/legion", "number": "42", "title": "a person's change",
 			"author": "a-writer", "head_sha": head, "head_ref": "feature/faster-builds", "base_ref": "main", "merged": "false",
+			"updated_at": "2026-11-22T18:04:05Z",
 		})
 		if err != nil {
 			t.Fatal(err)
 		}
 		return envelopeJSON(t, "outside-"+action, "github", string(payload))
 	}
-	outside := OutsidePullRequest{Repo: "sjawhar/legion", Number: 42, Branch: "feature/faster-builds", HeadSHA: "head-outside"}
+	outside := OutsidePullRequest{Repo: "sjawhar/legion", Number: 42, Branch: "feature/faster-builds", HeadSHA: "head-outside",
+		UpdatedAt: time.Date(2026, 11, 22, 18, 4, 5, 0, time.UTC)}
 	for _, tc := range []struct {
 		action, head string
 		want         Fact

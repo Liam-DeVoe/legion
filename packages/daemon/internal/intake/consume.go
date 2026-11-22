@@ -868,6 +868,13 @@ func consumeMessage(ctx context.Context, message jetstream.Msg, spec ConsumerSpe
 		attributes := append([]any{"event_id", decoded.EventID, "reason", decoded.Refused.reason}, decoded.Refused.settlement.attributes()...)
 		logMessage(spec.Logger, slog.LevelWarn, "intake: a checks settlement was dropped: the decoder refused it", message, attributes...)
 	}
+	// A merge group whose head_ref names no pull request decodes to no fact, so on a verdict
+	// repository, where the queue waits on legion-verdict, its group would wait out its timeout
+	// with nothing to say why: this line says so, naming the ref and the commit.
+	if group := decoded.UnnamedGroup; group != nil && verdictRepository(spec, group.repo) {
+		logMessage(spec.Logger, slog.LevelWarn, unnamedMergeGroupLine, message, "event_id", decoded.EventID, "repository", group.repo,
+			"head_ref", group.ref, "head_sha", group.sha)
+	}
 	if decoded.LegacyName {
 		if count, due := names.legacyRead(spec.Now()); due {
 			logMessage(spec.Logger, slog.LevelInfo, "an issue event named in the old form", message, "legacy_count", count)
@@ -1106,19 +1113,26 @@ func recordedPullRequest(ctx context.Context, spec ConsumerSpec, pool Pool, fact
 // nothing on any other repository, where nothing writes legion-verdict, and nothing for a checks
 // settlement anywhere, since no verdict reads one.
 func outsideFact(spec ConsumerSpec, fact Fact) (Fact, bool) {
-	verdicts := func(repo string) bool {
-		return slices.ContainsFunc(spec.VerdictRepositories, func(r ghrepo.Repository) bool { return strings.EqualFold(r.String(), repo) })
-	}
 	switch fact := fact.(type) {
 	case OutsidePullRequest:
-		return fact, verdicts(fact.Repo)
+		return fact, verdictRepository(spec, fact.Repo)
 	case PullRequestReview:
-		return OutsideReview{PullRequestReview: fact}, verdicts(fact.Repo)
+		return OutsideReview{PullRequestReview: fact}, verdictRepository(spec, fact.Repo)
 	case MergeGroup:
-		return fact, verdicts(fact.Repo)
+		return fact, verdictRepository(spec, fact.Repo)
 	}
 	return nil, false
 }
+
+// verdictRepository is whether repo is one of spec's verdict repositories, matched without case, as
+// GitHub matches names.
+func verdictRepository(spec ConsumerSpec, repo string) bool {
+	return slices.ContainsFunc(spec.VerdictRepositories, func(r ghrepo.Repository) bool { return strings.EqualFold(r.String(), repo) })
+}
+
+// unnamedMergeGroupLine is what the consumer logs of a merge group of a verdict repository whose
+// head_ref names no pull request (decodedMessage.UnnamedGroup).
+const unnamedMergeGroupLine = "intake: a merge group's head_ref names no pull request, so legion-verdict is not written on its commit"
 
 // prepareRepository runs ConsumerSpec.PrepareRepository for a Dispatch issue fact, within AckWait,
 // and is the fact to apply. Every other fact passes through untouched.

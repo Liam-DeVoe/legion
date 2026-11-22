@@ -40,6 +40,11 @@ type decodedMessage struct {
 	// refused settlement is not poison, since no redelivery reads it otherwise, so the consumer
 	// acknowledges it and logs it once per event id (consumeMessage).
 	Refused *checksRefusal
+	// UnnamedGroup is a merge group of a repository this daemon hears that asks for its checks and
+	// whose head_ref names no pull request (decodeMergeGroup). Fact is nil when it is set. The
+	// consumer acknowledges it and warns of it where the repository is a verdict repository
+	// (consumeMessage).
+	UnnamedGroup *unnamedGroup
 }
 
 // settlementRead is what a checks settlement's payload gives of the three fields a settlement is
@@ -127,6 +132,7 @@ func decodeMessage(subject, project string, repositories []ghrepo.Repository, da
 	var err error
 	var legacy bool
 	var refused *checksRefusal
+	var unnamed *unnamedGroup
 	switch {
 	case subject == legionWakeSubject:
 		if envelope.Source != "envoy" {
@@ -142,14 +148,15 @@ func decodeMessage(subject, project string, repositories []ghrepo.Repository, da
 		if envelope.Source != "github" {
 			return decodedMessage{}, fmt.Errorf("GitHub subject has envelope source %q", envelope.Source)
 		}
-		fact, unread, refused, err = decodeGitHubFact(subject, repositories, envelope.Payload)
+		fact, unread, refused, unnamed, err = decodeGitHubFact(subject, repositories, envelope.Payload)
 	default:
 		return decodedMessage{}, fmt.Errorf("unsupported durable subject %q", subject)
 	}
 	if err != nil {
 		return decodedMessage{}, err
 	}
-	return decodedMessage{Source: envelope.Source, EventID: envelope.factID(), Fact: fact, Unread: unread, LegacyName: legacy, Refused: refused}, nil
+	return decodedMessage{Source: envelope.Source, EventID: envelope.factID(), Fact: fact, Unread: unread, LegacyName: legacy, Refused: refused,
+		UnnamedGroup: unnamed}, nil
 }
 
 func (e envoyEnvelope) valid() error {
@@ -715,12 +722,14 @@ func isJSONObject(raw json.RawMessage) bool {
 
 // decodeGitHubFact decodes one GitHub event's payload into its fact, with each optional field it
 // could not read (unread). refused is set only for a checks settlement of a heard repository that
-// decodeChecks dropped: a payload that is no object, names a repository this daemon does not hear,
-// or is of another kind is no checks settlement of this daemon, and is no fact in silence.
-func decodeGitHubFact(subject string, repositories []ghrepo.Repository, payload string) (fact Fact, unread []string, refused *checksRefusal, err error) {
+// decodeChecks dropped, and unnamed only for a merge group of a heard repository that asks for its
+// checks and whose head_ref names no pull request (decodeMergeGroup): a payload that is no object,
+// names a repository this daemon does not hear, or is of another kind is neither, and is no fact in
+// silence.
+func decodeGitHubFact(subject string, repositories []ghrepo.Repository, payload string) (fact Fact, unread []string, refused *checksRefusal, unnamed *unnamedGroup, err error) {
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(payload), &raw); err != nil || raw == nil {
-		return nil, nil, nil, nil
+		return nil, nil, nil, nil, nil
 	}
 	// The payload names the event's repository; the subject's segments cannot, since a name may hold
 	// a dot. Only the event of a repository GitHub intake hears (ConsumerSpec.Repositories, as
@@ -731,12 +740,12 @@ func decodeGitHubFact(subject string, repositories []ghrepo.Repository, payload 
 	repo, _ := rawString(raw, "repo")
 	at := slices.IndexFunc(repositories, func(heard ghrepo.Repository) bool { return strings.EqualFold(heard.String(), repo) })
 	if at < 0 {
-		return nil, nil, nil, nil
+		return nil, nil, nil, nil, nil
 	}
 	repository := repositories[at]
 	kind, ok := rawString(raw, "kind")
 	if !ok {
-		return nil, nil, nil, nil
+		return nil, nil, nil, nil, nil
 	}
 	switch kind {
 	case "pr":
@@ -751,11 +760,11 @@ func decodeGitHubFact(subject string, repositories []ghrepo.Repository, payload 
 			refused = &checksRefusal{reason: reason, settlement: readSettlement(raw)}
 		}
 	case "merge_group":
-		fact = decodeMergeGroup(repository, raw)
+		fact, unnamed = decodeMergeGroup(repository, raw)
 	}
 	// Comments, and every other kind, route to the current role but do not change the durable
 	// workflow record.
-	return fact, unread, refused, err
+	return fact, unread, refused, unnamed, err
 }
 
 // decodePullRequest decodes a pull request's lifecycle event. On an issue's branch
@@ -777,7 +786,8 @@ func decodePullRequest(repository ghrepo.Repository, raw map[string]json.RawMess
 		if sha == "" || (action != "opened" && action != "reopened" && action != "synchronize") {
 			return nil, nil
 		}
-		return OutsidePullRequest{Repo: repository.String(), Number: number, Branch: branch, HeadSHA: sha}, nil
+		updatedAt, _ := rawTimestamp(raw, "updated_at")
+		return OutsidePullRequest{Repo: repository.String(), Number: number, Branch: branch, HeadSHA: sha, UpdatedAt: updatedAt}, nil
 	}
 	repo := repository.String()
 	sha, _ := rawString(raw, "head_sha")
@@ -901,14 +911,31 @@ func decodePush(repository ghrepo.Repository, raw map[string]json.RawMessage) (F
 // decodeMergeGroup decodes a merge queue's group (MergeGroup): the pull request its head_ref names,
 // which Envoy reads into number and leaves out where the ref names none, GitHub's action, and the
 // group's own commit. One that names no pull request, no action or no commit is no fact: there is
-// nothing to decide, or nothing to write on.
-func decodeMergeGroup(repository ghrepo.Repository, raw map[string]json.RawMessage) Fact {
-	number, action, ok := githubIdentity(raw)
+// nothing to decide, or nothing to write on. One that asks for its checks and whose ref names no
+// pull request is answered as unnamed, its ref and its commit, which the consumer warns of on a
+// verdict repository: no legion-verdict reaches that group's commit, and the queue holds it until
+// its timeout.
+func decodeMergeGroup(repository ghrepo.Repository, raw map[string]json.RawMessage) (Fact, *unnamedGroup) {
+	number, numbered := rawNumber(raw, "number")
+	action, _ := rawString(raw, "action")
 	sha, _ := rawString(raw, "head_sha")
-	if !ok || action == "" || sha == "" {
-		return nil
+	switch {
+	case action == "" || sha == "":
+		return nil, nil
+	case !numbered:
+		if !(MergeGroup{Action: action}).ChecksRequested() {
+			return nil, nil
+		}
+		ref, _ := rawString(raw, "head_ref")
+		return nil, &unnamedGroup{repo: repository.String(), ref: ref, sha: sha}
 	}
-	return MergeGroup{Repo: repository.String(), Number: number, Action: action, HeadSHA: sha}
+	return MergeGroup{Repo: repository.String(), Number: number, Action: action, HeadSHA: sha}, nil
+}
+
+// unnamedGroup is a merge queue's group of a heard repository that asks for its checks and whose
+// head_ref names no pull request (decodeMergeGroup): its repository, its ref and its commit.
+type unnamedGroup struct {
+	repo, ref, sha string
 }
 
 // decodeChecks decodes a checks settlement of the pull request its subject names. A settlement

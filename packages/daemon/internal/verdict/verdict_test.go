@@ -151,11 +151,27 @@ func TestDecideIsR4sTable(t *testing.T) {
 			refusedBy("a-reader", false, h)), Success, ""},
 		{"a Legion head: a person's request for changes before every step passed", withReviews(defaultSteps(checks(""), noVerdict, noVerdict),
 			refusedBy("a-writer", true, h)), Failure, ""},
-		{"a Legion head: the CI reviewer decides no Legion head", func() Inputs {
+		{"a Legion head: the CI reviewer's approval is no verdict", func() Inputs {
 			in := withReviews(defaultSteps(allYes, approves, noVerdict), approvedBy(ciReviewer, false, h))
 			in.CIReviewer = ciReviewer
 			return in
 		}(), None, ""},
+		{"a Legion head: the CI reviewer's request for changes refuses every step's pass", func() Inputs {
+			in := withReviews(defaultSteps(allYes, approves, approves), refusedBy(ciReviewer, false, h))
+			in.CIReviewer = ciReviewer
+			return in
+		}(), Failure, ""},
+		{"a Legion head: the CI reviewer's later approval lifts its own request for changes", func() Inputs {
+			in := withReviews(defaultSteps(allYes, approves, approves), submitted(refusedBy(ciReviewer, false, h), 41, 1),
+				submitted(approvedBy(ciReviewer, false, h), 42, 5))
+			in.CIReviewer = ciReviewer
+			return in
+		}(), Success, ""},
+		{"a Legion head: the CI reviewer's request for changes at another head refuses nothing here", func() Inputs {
+			in := withReviews(defaultSteps(allYes, approves, approves), refusedBy(ciReviewer, false, h0))
+			in.CIReviewer = ciReviewer
+			return in
+		}(), Success, ""},
 
 		// A head no Legion issue owns, on a repository whose entry names a ci_reviewer.
 		{"an outside head: the CI reviewer named in another case than GitHub spells it", Inputs{Head: h, CIReviewer: "Example-CI-Review[bot]",

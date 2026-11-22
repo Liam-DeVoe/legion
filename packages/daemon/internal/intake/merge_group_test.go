@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -130,4 +132,84 @@ func TestLegionVerdictAMergeGroupIsAFactOnAVerdictRepositoryAlone(t *testing.T) 
 			t.Fatalf("applied %#v, want the merge group %#v", facts, want)
 		}
 	})
+}
+
+// unnamedGroupLine is what the consumer logs of a merge group on a verdict repository whose
+// head_ref names no pull request.
+const unnamedGroupLine = "intake: a merge group's head_ref names no pull request, so legion-verdict is not written on its commit"
+
+// N6: a merge group whose head_ref names no pull request - Envoy publishes "number": "" for a ref
+// not of the shape gh-readonly-queue/<base>/pr-<number>-<base sha> - asks for checks on a commit the
+// daemon cannot decide, so it is no fact. On a verdict repository, where the queue then waits on
+// legion-verdict until its timeout, the consumer warns of it, naming the ref and the commit; on
+// any other repository nothing writes legion-verdict, and it says nothing.
+func TestLegionVerdictAMergeGroupNamingNoPullRequestIsWarnedOf(t *testing.T) {
+	pool := migratedPool(t)
+	js, stream := testJetStream(t)
+	data, err := os.ReadFile(filepath.Join("..", "..", "..", "contracts", "fixtures", "github-envelopes", "merge-group-checks-requested.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var golden struct {
+		Topic   string         `json:"topic"`
+		Payload map[string]any `json:"payload"`
+	}
+	if err := json.Unmarshal(data, &golden); err != nil {
+		t.Fatal(err)
+	}
+	const ref = "refs/heads/gh-readonly-queue/main/entry-1050-7f60bbfb57cb2a1d0e9f8a7b6c5d4e3f2a1b0c9d"
+	golden.Payload["number"], golden.Payload["head_ref"] = "", ref
+	payload, err := json.Marshal(golden.Payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sha, _ := golden.Payload["head_sha"].(string)
+	for _, tc := range []struct {
+		name     string
+		verdicts []ghrepo.Repository
+		warned   bool
+	}{
+		{"a repository no verdict entry names", nil, false},
+		{"a verdict repository", []ghrepo.Repository{ghrepo.MustParse("SJawhar/Legion")}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			logs := &lockedBuffer{}
+			spec := consumerSpec(logs)
+			spec.AckWait = time.Minute
+			spec.VerdictRepositories = tc.verdicts
+			var mu sync.Mutex
+			var applied []Fact
+			stop := startConsume(t, js, spec, pool, handlerFunc(func(_ context.Context, _ pgx.Tx, fact Fact) (Result, error) {
+				mu.Lock()
+				defer mu.Unlock()
+				applied = append(applied, fact)
+				return Result{}, nil
+			}))
+			defer stop()
+			assertAcknowledgedThrough(t, stream, githubConsumerName(spec.Project), publish(t, js, golden.Topic,
+				envelopeJSON(t, "merge-group-unnamed-"+strconv.FormatBool(tc.warned), "github", string(payload))))
+			mu.Lock()
+			facts := slices.Clone(applied)
+			mu.Unlock()
+			if len(facts) != 0 {
+				t.Fatalf("applied %#v, want nothing of a merge group that names no pull request", facts)
+			}
+			var lines []string
+			for _, line := range strings.Split(logs.String(), "\n") {
+				if strings.Contains(line, unnamedGroupLine) {
+					lines = append(lines, line)
+				}
+			}
+			if !tc.warned {
+				if len(lines) != 0 {
+					t.Fatalf("lines = %q, want none on a repository nothing writes legion-verdict on", lines)
+				}
+				return
+			}
+			if len(lines) != 1 || !strings.Contains(lines[0], "level=WARN") || !strings.Contains(lines[0], "head_ref="+ref) ||
+				!strings.Contains(lines[0], "head_sha="+sha) || !strings.Contains(lines[0], "repository=sjawhar/legion") {
+				t.Fatalf("lines = %q, want one warning naming the ref %s, the commit %s and the repository", lines, ref, sha)
+			}
+		})
+	}
 }

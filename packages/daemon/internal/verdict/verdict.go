@@ -9,7 +9,8 @@
 // an agent whose claim wrote none of the change (Step.Wrote). Each of those is read at the head
 // alone, so a step's pass at an earlier commit counts at no later head; the daemon reads no diff.
 // Once every step has passed with no independent review, the head concludes failure, for a reason
-// Decide names, so the merger can tell the owner. A person's approval of such a head is no verdict.
+// Decide names, so the merger can tell the owner. A person's approval of such a head is no verdict,
+// and neither is the CI reviewer's.
 // On any other head, the verdict is the last review at the head of the entry's ci_reviewer, the
 // side reviewer's verdict where the entry takes side reviews, or a person's approval. A person is
 // an account of type User with write access to the repository.
@@ -157,6 +158,10 @@ type Inputs struct {
 // step refused (Reason).
 func Decide(in Inputs) (Conclusion, Reason) {
 	refused, approved := personsAt(in)
+	// The CI reviewer's request for changes refuses every kind of head; its approval is a verdict on
+	// a head no Legion issue owns alone.
+	ci := ciReviewerAt(in)
+	refused = refused || ci == StateChangesRequested
 	var reason Reason
 	if in.Legion {
 		// A person's approval is no verdict on a Legion head: only the steps of its plan are.
@@ -164,10 +169,7 @@ func Decide(in Inputs) (Conclusion, Reason) {
 		failed, approved, reason = stepsAt(in)
 		refused = refused || failed
 	} else {
-		if ci := ciReviewerAt(in); ci != "" {
-			refused = refused || ci == StateChangesRequested
-			approved = approved || ci == StateApproved
-		}
+		approved = approved || ci == StateApproved
 		if in.SideReviews {
 			refused = refused || in.Side == ReviewerChanges
 			approved = approved || in.Side == ReviewerApprove
@@ -304,10 +306,11 @@ func after(a, b Review) bool {
 }
 
 // isCIReviewer is whether author is the entry's ci_reviewer, compared without case as GitHub
-// compares logins: the configuration keeps the login as an operator spelled it. A Legion head has
-// none: the CI reviewer's review of it is a bot's, which decides nothing.
+// compares logins: the configuration keeps the login as an operator spelled it. Its reviews are
+// read apart from a person's on every kind of head (ciReviewerAt): on a Legion head its request
+// for changes refuses the head and its approval decides nothing (Decide).
 func isCIReviewer(in Inputs, author string) bool {
-	return !in.Legion && in.CIReviewer != "" && strings.EqualFold(author, in.CIReviewer)
+	return in.CIReviewer != "" && strings.EqualFold(author, in.CIReviewer)
 }
 
 // deciding is whether a review in state decides anything.

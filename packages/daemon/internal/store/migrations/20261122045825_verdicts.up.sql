@@ -6,8 +6,10 @@
 -- writes each table.
 --
 -- outside_pull_requests records each sighting of such a pull request at a head, from webhook
--- events. pull_requests cannot hold it, because its primary key is the Legion issue that owns the
--- pull request (0004_record). verdict_reviews records each review of a verdict repository's pull
+-- events and the writers' sweep, with GitHub's updated_at of the pull request the sighting carried
+-- (null where it carried none), by which the newest sighting is the current head. pull_requests
+-- cannot hold it, because its primary key is the Legion issue that owns the pull request
+-- (0004_record). verdict_reviews records each review of a verdict repository's pull
 -- request at a head, delivered by webhook, of a Legion head or an outside one: the head it read,
 -- its author, whether GitHub gives the author write access, its state, and when GitHub says it was
 -- submitted (null when the event did not say). side_reviewers records each naming of a reviewer
@@ -21,11 +23,13 @@
 -- written.
 --
 -- A row is a record that nothing changes after its insert, and a read of the newest row of a key
--- takes the highest id. So no table has a primary key or a unique index, and none has a check:
+-- takes the highest id, of the newest updated_at first for outside_pull_requests. So no table has a
+-- primary key or a unique index, and none has a check:
 -- the store's writes refuse a row that leaves out its repository, its head, its pull request's
 -- number where the table has one, or its time, and a verdict, a write's kind or a conclusion its
--- reader does not know. Every column has a default but submitted_at, which is nullable, and each
--- index keys on lower(repository), as the store's reads compare a repository's names without case.
+-- reader does not know. Every column has a default but submitted_at and updated_at, which are
+-- nullable, and each index keys on lower(repository), as the store's reads compare a repository's
+-- names without case.
 --
 -- This migration only adds tables and indexes that are not unique, and it adds no outbox kind, so
 -- a release before this one runs on the schema it leaves: that release names none of these tables
@@ -41,6 +45,7 @@ create table outside_pull_requests (
   repository text not null default '',
   number integer not null default 0,
   head text not null default '',
+  updated_at timestamptz,
   recorded_at timestamptz not null default now());
 create index outside_pull_requests_number on outside_pull_requests (lower(repository), number, id);
 
