@@ -91,7 +91,10 @@ func daemonStore(pool Pool, project string) (*consumernames.PGStore, error) {
 // NativeFirstCreate), and a last floor is tagged with the stream identity the operator recorded
 // in the sentinel (streamID).
 type durableNames struct {
-	names   *consumernames.Names
+	names *consumernames.Names
+	// naming is the project's family's naming in the families' table (daemonNaming), which the
+	// creator's Config and each create's metadata take.
+	naming  consumernames.Naming
 	store   *consumernames.PGStore
 	pool    Pool
 	logger  *slog.Logger
@@ -111,26 +114,39 @@ func GenerationConnection(physical string) string {
 	return logical + "/" + strings.TrimPrefix(physical, logical+"~")
 }
 
-// daemonNaming is the daemon family's naming in the families' table, the one
-// consumernames.FamilyNaming gives each of a daemon's logical names (consumernames.LogicalNaming):
-// fresh names <logical>~<nuid>, the fixed name the logical name, and the metadata every consumer of
-// a logical name carries. The creator's Config and each create's metadata take it from there, never
-// by hand, so the creator and an operator's reader (consumernames.CheckFamily,
-// consumernames.OwnsFamily) judge a record and a consumer alike.
-var daemonNaming = consumernames.LogicalNaming()
+// daemonNaming is the naming of project's daemon family (daemon/<project>) in the families' table,
+// the one consumernames.FamilyNaming gives each of the daemon's logical names: fresh names
+// <logical>~<nuid>, the fixed name the logical name, the metadata every consumer of a logical name
+// carries, and the key rule that takes only legion-go-<project>-<kind> of this project. The
+// creator's Config and each create's metadata take it from there, never by hand, so the creator and
+// an operator's reader (consumernames.CheckFamily, consumernames.OwnsFamily) judge a key, a record
+// and a consumer alike. It is the same for each of the project's keys; the Dispatch durable's is
+// asked for.
+func daemonNaming(project string) (consumernames.Naming, error) {
+	family, err := consumernames.DaemonFamily(project)
+	if err != nil {
+		return consumernames.Naming{}, fmt.Errorf("intake: the naming of project %q: %w", project, err)
+	}
+	return consumernames.FamilyNaming(family, dispatchConsumerName(project))
+}
 
 func newDurableNames(pool Pool, spec ConsumerSpec) (*durableNames, error) {
 	store, err := daemonStore(pool, spec.Project)
 	if err != nil {
 		return nil, err
 	}
-	d := &durableNames{store: store, pool: pool, logger: spec.Logger, connect: spec.Connect, generations: map[string]jetstream.JetStream{}}
+	naming, err := daemonNaming(spec.Project)
+	if err != nil {
+		return nil, err
+	}
+	d := &durableNames{naming: naming, store: store, pool: pool, logger: spec.Logger, connect: spec.Connect, generations: map[string]jetstream.JetStream{}}
 	d.names = consumernames.New(consumernames.Config{
 		Store:             store,
 		Server:            durableServer{d},
-		Prefix:            daemonNaming.Prefix,
-		Fixed:             daemonNaming.Fixed,
-		Metadata:          daemonNaming.Metadata,
+		Prefix:            naming.Prefix,
+		Fixed:             naming.Fixed,
+		Metadata:          naming.Metadata,
+		CheckKey:          naming.CheckKey,
 		Floor:             func(info *jetstream.ConsumerInfo) uint64 { return info.AckFloor.Stream },
 		StreamID:          d.streamID,
 		MissingRecord:     d.missingRecord,
@@ -262,7 +278,7 @@ func (d *durableNames) open(ctx context.Context, config jetstream.ConsumerConfig
 	if err != nil {
 		return nil, d.failed(logical, sel, operationUpdate, err)
 	}
-	selected := physicalConfig(config, current)
+	selected := d.physicalConfig(config, current)
 	selected.DeliverPolicy, selected.OptStartSeq, selected.OptStartTime = info.Config.DeliverPolicy, info.Config.OptStartSeq, info.Config.OptStartTime
 	consumer, err := js.UpdateConsumer(ctx, notificationStream, selected)
 	if err != nil {
@@ -396,7 +412,7 @@ func (d *durableNames) create(config jetstream.ConsumerConfig) consumernames.Cre
 		if err != nil {
 			return nil, err
 		}
-		physical := physicalConfig(config, name)
+		physical := d.physicalConfig(config, name)
 		switch start.Native {
 		case consumernames.NativeNew:
 			physical.DeliverPolicy = jetstream.DeliverNewPolicy
@@ -419,15 +435,15 @@ func (d *durableNames) create(config jetstream.ConsumerConfig) consumernames.Cre
 
 // physicalConfig is config, whose Durable is a logical name, for the physical consumer name: its
 // Durable the physical name, and its metadata carrying every pair the daemon family's consumers of
-// that logical name carry (daemonNaming.Metadata), the ones the owner check requires.
-func physicalConfig(config jetstream.ConsumerConfig, name string) jetstream.ConsumerConfig {
+// that logical name carry (the naming's Metadata), the ones the owner check requires.
+func (d *durableNames) physicalConfig(config jetstream.ConsumerConfig, name string) jetstream.ConsumerConfig {
 	logical := config.Durable
 	config.Durable = name
 	config.Metadata = maps.Clone(config.Metadata)
 	if config.Metadata == nil {
 		config.Metadata = map[string]string{}
 	}
-	maps.Copy(config.Metadata, daemonNaming.Metadata(logical))
+	maps.Copy(config.Metadata, d.naming.Metadata(logical))
 	return config
 }
 
