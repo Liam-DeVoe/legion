@@ -38,15 +38,17 @@ type roleForReader struct {
 // roleForReaders is every non-test reader of phase.RoleFor in the daemon, read directly or through
 // one of its forwarders (internal/workflow's RoleFor, record.Issue.RoleAt and Walk.RoleAt), and the
 // tests that hold each one's behaviour. A reader is a call, or the function passed as a value to a
-// caller that calls it. Four of them have a guard of their own for admitted, the phase RoleFor
+// caller that calls it. Five of them have a guard of their own for admitted, the phase RoleFor
 // answers the architect for: Walk.endingRole reads the role whose step a move ends, which
 // noticeFor leaves out of the notice of the move out of admitted; Engine.leftItsPhase records
 // no worker's completion while the issue stands at admitted; the completion's entry fence
 // (intake.EntryFence, which the completion route and the workflow's handoff both ask) answers a
-// completion at admitted as one of a phase its role does not work; and the stalled-tree
+// completion at admitted as one of a phase its role does not work; the stalled-tree
 // notice's reason tells an issue at admitted as standing in a phase no role works, the words it
-// wrote before RoleFor named the architect there. Every other site reaches its answer through a
-// guard that starts, resumes or reports no architect as a phase worker (OpenRoleOf, the worker of
+// wrote before RoleFor named the architect there; and record.Issue.OwnersPlace, the rule of the
+// owner's own place, answers false at admitted, where the owner does no step. Every other site
+// reaches its answer through a guard that starts, resumes or reports no architect as a phase
+// worker (OpenRoleOf, the worker of
 // an open phase, answers none for the architect's phases, so the paths that read it are no readers
 // here), or names the role an admitted root's entry numbers are of, or names the architect in the
 // notice of a task its owner stopped in the architect's phase, where the stop ends no process
@@ -90,6 +92,8 @@ var roleForReaders = map[roleForSite]roleForReader{
 	{file: "internal/projection/project.go", fn: "Project"}: {calls: 1, tests: []string{
 		"TestProjectShowsARootsArchitectHandshake", "TestTheServedStateNamesTheRunningDeploymentRole"}},
 	{file: "internal/record/record.go", fn: "Issue.RoleAt"}: {calls: 1, tests: []string{"TestAnIssueReadsTheRoleOfItsRunningStep"}},
+	{file: "internal/record/record.go", fn: "Issue.OwnersPlace"}: {calls: 1, tests: []string{
+		"TestThePlaceOfAnIssueIsTheOwnersWhereTheArchitectWorksIt", "TestASignOffEndsOnlyTheOwnersOwnAcceptance"}},
 	{file: "internal/workflow/architect_start.go", fn: "writeCarriedPhase"}: {calls: 1, tests: []string{
 		"TestTheArchitectTaskOfEachShape", "TestTheWorkflowsOtherReadersNameTheRunningDeploymentRole"}},
 	{file: "internal/workflow/effects.go", fn: "HeldNotice"}: {calls: 1, tests: []string{
@@ -152,8 +156,8 @@ var roleForReaders = map[roleForSite]roleForReader{
 	{file: "internal/workflow/review.go", fn: "Engine.tellChecks"}: {calls: 1, tests: []string{
 		"TestASettlementMovesNothingAndTellsTheThreeRoles", "TestTheWorkflowsOtherReadersNameTheRunningDeploymentRole"}},
 	{file: "internal/workflow/standing.go", fn: "reportsBefore"}: {calls: 1, tests: []string{"TestATaskNamesItsWorkingCopyItsStepAndTheReportsBeforeIt"}},
-	{file: "internal/workflow/steps.go", fn: "Engine.startAgent"}: {calls: 1, tests: []string{
-		"TestAnIssueAtAdmittedRunsNoStep", "TestTheStartOfADeploymentStepNamesItsAgent"}},
+	{file: "internal/workflow/steps.go", fn: "Engine.startAgent"}: {calls: 2, tests: []string{
+		"TestAnIssueAtAdmittedRunsNoStep", "TestTheStartOfADeploymentStepNamesItsAgent", "TestAnAcceptanceStartNamesTheAgentThatDoesIt"}},
 	{file: "internal/workflow/steps.go", fn: "Engine.upgradedStart"}: {calls: 2, tests: []string{
 		"TestAnIssueAtAdmittedRunsNoStep", "TestATaskMovesToItsRowsPlaceAndCountsItsReturn"}},
 	{file: "internal/workflow/stranded.go", fn: "Stranded"}: {calls: 1, tests: []string{
