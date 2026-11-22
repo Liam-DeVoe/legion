@@ -191,9 +191,15 @@ func Connect(urls []string, seed string, name string, options ...nats.Option) (*
 		}
 		options = append(options, nats.Nkey(public, user.Sign))
 	}
-	// Last, so these pings, this buffer and this name hold whatever a caller passed before them.
-	options = append(options, detectSilentCuts, nats.ReconnectBufSize(-1), nats.Name(name))
-	return nats.Connect(strings.Join(urls, ","), options...)
+	return nats.Connect(strings.Join(urls, ","), append(options, forced(name)...)...)
+}
+
+// forced is the options every daemon connection carries after its caller's and its credential's,
+// in Connect and ConnectService alike, so neither can drop one: the pings detectSilentCuts sets,
+// no reconnect buffer, and the connection's name. Last, so they hold whatever a caller passed
+// before them.
+func forced(name string) []nats.Option {
+	return []nats.Option{detectSilentCuts, nats.ReconnectBufSize(-1), nats.Name(name)}
 }
 
 // ServiceIdentity is the account the platform identity token in the file at tokenFile names (its
@@ -237,10 +243,10 @@ func ConnectService(urls []string, tokenFile, name string, options ...nats.Optio
 		return nil, err
 	}
 	credential, keeper := natscred.Service(natscred.ServiceFile(tokenFile))
-	// Last, as Connect's, so this credential, prefix, pings, buffer and name hold whatever a caller
-	// passed.
-	options = append(options, credential, nats.CustomInboxPrefix(natsgrant.InboxPrefix(identity)), detectSilentCuts, nats.ReconnectBufSize(-1), nats.Name(name))
-	conn, err := nats.Connect(strings.Join(urls, ","), options...)
+	// The credential and the prefix after the caller's options, then the forced ones (forced), so
+	// these hold whatever a caller passed.
+	options = append(options, credential, nats.CustomInboxPrefix(natsgrant.InboxPrefix(identity)))
+	conn, err := nats.Connect(strings.Join(urls, ","), append(options, forced(name)...)...)
 	if err != nil {
 		return nil, err
 	}
