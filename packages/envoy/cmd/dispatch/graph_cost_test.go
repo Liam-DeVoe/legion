@@ -44,6 +44,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"maps"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -125,18 +126,30 @@ func (a *costArm) ready(t *testing.T) {
 // that build migrates at boot, and both delivering to one stub Envoy listener, so a delivery costs
 // the same transport on either arm. It answers them in the order they are measured in, this child
 // first. The base arm is named "the base build" and not "the commit before this child":
-// BASELINE_SHA may name a commit that already holds some of this child's own bases.
+// BASELINE_SHA may name a commit that already holds some of this child's own bases. Neither
+// server is given any environment beyond its ENVOY_URL (startCostArmsWith).
 func startCostArms(t *testing.T, envoyURL string) (*costArm, *costArm) {
 	t.Helper()
+	return startCostArmsWith(t, envoyURL, nil)
+}
+
+// startCostArmsWith is startCostArms with env added to both servers' environment beside their
+// ENVOY_URL, for a setting both builds have to run under. A server's environment is the rows
+// startDispatchProcessWith sets and its options.Env, and nothing of this test's own process, so
+// such a setting reaches the servers only through here.
+func startCostArmsWith(t *testing.T, envoyURL string, env map[string]string) (*costArm, *costArm) {
+	t.Helper()
 	older := baseBuild(t)
+	environment := map[string]string{"ENVOY_URL": envoyURL}
+	maps.Copy(environment, env)
 	head := startCostArm(t, "this child", true, dispatchOptions{
 		SigningKey: costSigningKey,
-		Env:        map[string]string{"ENVOY_URL": envoyURL},
+		Env:        environment,
 	})
 	base := startCostArm(t, "the base build", false, dispatchOptions{
 		Binary:     older,
 		SigningKey: costSigningKey,
-		Env:        map[string]string{"ENVOY_URL": envoyURL},
+		Env:        environment,
 	})
 	t.Logf("arm %q is this working copy's build, serving %s", head.name, costDatabaseName(head.databaseURL))
 	t.Logf("arm %q is %s, serving %s", base.name, older, costDatabaseName(base.databaseURL))
