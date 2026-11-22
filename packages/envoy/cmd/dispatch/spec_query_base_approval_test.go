@@ -19,14 +19,18 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// An issue a person approved before this change keeps its approval, under the gate it started with
+// An issue a person approved before this change keeps its approval, under the rule it started with
 // (R24), now that the spec query takes the component and interface nodes an issue proposes (R22).
 // The base release writes an issue with a memo and a requirement and the person approves its spec;
-// the head, over the same database once its migrations ran, reads the spec query's record of the
-// approved version at the revision it was read at and finds the digest the base release pinned on
-// the review; the approval reads as standing; and a version the head writes that changes only prose
-// outside the memo carries the approval, since its record is the approved one byte for byte.
+// the head, over the same database once its migrations ran, answers for the approved version the
+// digest the base release pinned on the review, and the approval reads as standing. A version that
+// changes only prose outside the memo then reads as the base release's own rule reads it: the base
+// release approves a second issue of the same text and writes that version of it itself, and the
+// head's reading of the first after the same write is the base release's reading of the second.
 func TestAnApprovalOfTheBaseStandsUnderASpecQueryThatTakesComponents(t *testing.T) {
+	const text = ":::callout{#memo}\nWe keep each approval. A person approved it once. It stands after the change.\n:::\n\n" +
+		"Prose outside the memo.\n\n:::requirement{#r-stands}\nAn approval of the base stands.\n:::\n"
+	prose := map[string]string{"op": "replace", "find": "Prose outside the memo.", "with": "Other prose outside the memo."}
 	ctx := context.Background()
 	databaseURL := censusDatabase(t)
 	base := baseRelease(t)
@@ -41,9 +45,7 @@ func TestAnApprovalOfTheBaseStandsUnderASpecQueryThatTakesComponents(t *testing.
 	previous.waitHealthy(t)
 	baseCommit := announcedBaseCommit(t, ctx, database)
 	previous.call(t, http.MethodPost, "/api/v1/projects", `{"key":"STD","name":"The standing approval"}`, http.StatusCreated)
-	issue, spec := createCensusIssue(t, previous, "STD", "Approved on the base",
-		":::callout{#memo}\nWe keep each approval. A person approved it once. It stands after the change.\n:::\n\n"+
-			"Prose outside the memo.\n\n:::requirement{#r-stands}\nAn approval of the base stands.\n:::\n")
+	issue, spec := createCensusIssue(t, previous, "STD", "Approved on the base", text)
 	approved := approveAndCapture(t, ctx, previous, database, issue, spec, "the spec approved on the base")
 	var pinned string
 	if err := database.QueryRow(ctx, `
@@ -52,6 +54,12 @@ func TestAnApprovalOfTheBaseStandsUnderASpecQueryThatTakesComponents(t *testing.
 		t.Fatalf("read the digest the base release pinned on the approval: %v", err)
 	}
 	t.Logf("the base release %s approved version %d of %s's spec, pinning %s", baseCommit, approved.version, issue, pinned)
+	other, otherSpec := createCensusIssue(t, previous, "STD", "Approved and edited on the base", text)
+	approveAndCapture(t, ctx, previous, database, other, otherSpec, "the second spec approved on the base")
+	agentEdits(t, previous, otherSpec, prose)
+	settledDocument(t, ctx, previous, database, otherSpec)
+	baseRule := approvalOf(t, previous, otherSpec)
+	t.Logf("the base release reads %s's spec, after a version that changes only prose outside the memo, as %+v", other, baseRule)
 	stopProcess(t, previous)
 	for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(500 * time.Millisecond) {
 		var live int
@@ -97,7 +105,13 @@ func TestAnApprovalOfTheBaseStandsUnderASpecQueryThatTakesComponents(t *testing.
 	current := startDispatchProcessWith(t, databaseURL, dispatchOptions{Binary: head, SigningKey: previousBuildSigningKey, SettleDelay: oneAnswerSettleDelay})
 	current.waitHealthy(t)
 	requireApprovedNow(t, current, spec, "the spec the base release approved, read by the head")
-	agentEdits(t, current, spec, map[string]string{"op": "replace", "find": "Prose outside the memo.", "with": "Other prose outside the memo."})
+	agentEdits(t, current, spec, prose)
 	settledDocument(t, ctx, current, database, spec)
-	requireApprovedNow(t, current, spec, "the spec after the head wrote a version that changes only prose outside the memo")
+	headRule := approvalOf(t, current, spec)
+	if headRule.State != baseRule.State || headRule.LatestVersion != baseRule.LatestVersion || headRule.approvedLatest() != baseRule.approvedLatest() ||
+		(headRule.Version == nil) != (baseRule.Version == nil) || (headRule.Version != nil && *headRule.Version != *baseRule.Version) {
+		t.Fatalf("after a version that changes only prose outside the memo, the head reads %s's spec as %+v, and the base release read %s's as %+v: the approval took another rule",
+			issue, headRule, other, baseRule)
+	}
+	t.Logf("after a version that changes only prose outside the memo, the head reads %s's spec as %+v, as the base release read %s's", issue, headRule, other)
 }
