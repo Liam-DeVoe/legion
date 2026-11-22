@@ -43,7 +43,8 @@ import {
 interface StoreNode {
   /** The words a row reads it by (`nameOf`). */
   readonly name: string;
-  /** The address of its row (`outlineRowPath`), as a lens chip links it. */
+  /** The address of its row (`outlineRowPath`), as a lens chip links it: the `title` of the link
+   *  mark a row's words name it in (`namedRuns`). */
   readonly path: string;
 }
 
@@ -219,11 +220,17 @@ function nameFacts(draft: Draft, node: TreeAnswerNode, index: () => StoreIndex):
 
 /**
  * `node`, a reading or a node inside one, with each store address in its text runs written as
- * the name of the node it names, in a run that carries a link to that node's row
- * (`{ type: "link", attrs: { href } }`) beside the run's own marks, where `index` holds the node,
- * and as its kind's word (`storeKindWord`) with the run's own marks otherwise. An address is
- * found as `addressesAsShortForms` finds one (`referenceSpans`), and what `trimReference` cuts off
- * its end stays where it stood. A run in code - marked as inline code, or inside a code block -
+ * the name of the node it names, in a run that carries a link mark beside the run's own marks,
+ * where `index` holds the node, and as its kind's word (`storeKindWord`) with the run's own marks
+ * otherwise. The link mark holds the store address as its `href`, as `storeAddressReference`
+ * writes it, and the path of the node's row as its `title`
+ * (`{ type: "link", attrs: { href, title } }`): the body's reference pass (`refs/RefLink.tsx`'s
+ * `collectReferenceAnchors`) reads a link to a path of an issue's page as a reference to the
+ * issue, which it draws by the issue's title at the issue's own path, while it leaves alone a
+ * link to a store address, which no route names. The row's link pass (`RowText.tsx`'s
+ * `DrawnText`) then makes the path the link's address. An address is found as
+ * `addressesAsShortForms` finds one (`referenceSpans`), and what `trimReference` cuts off its
+ * end stays where it stood. A run in code - marked as inline code, or inside a code block -
  * stays as its author wrote it, as `withShortAddresses` keeps it, and so does a run that already
  * links somewhere, since a link holds no second link; `inCode` says `node` stands inside a code
  * block, so none of its runs is named.
@@ -291,7 +298,7 @@ function namedRuns(
     if (words !== "") runs.push({ ...run, text: words });
     runs.push({
       ...run,
-      marks: [...marks, { attrs: { href: named.path }, type: "link" }],
+      marks: [...marks, { attrs: { href: address, title: named.path }, type: "link" }],
       text: named.name,
     });
     words = "";

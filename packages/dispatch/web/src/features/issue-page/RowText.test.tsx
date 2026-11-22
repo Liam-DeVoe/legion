@@ -138,3 +138,47 @@ test("a reader who put the focus on nothing is given none by a paint of other wo
     view.unmount();
   }
 });
+
+// A store address the words name by its node (decision 388, `lenses/store-words.ts`) is a link
+// holding the address, which the body's reference pass leaves alone, and its row's path as its
+// title. The row makes the path its address: the link opens that row, with the node's name as
+// its words, and is no reference link.
+test("a store address named in a row's words links to its node's row by the node's name", async () => {
+  const address = "dispatch://risk/d4000000-0000-4000-8000-000000000004";
+  const path = "/issues/CORE-1?node=d4000000-0000-4000-8000-000000000004";
+  const heading = "Failover takes minutes";
+  const reading: DisplayTree = {
+    content: [
+      {
+        content: [
+          { text: "Two regions, until ", type: "text" },
+          {
+            marks: [{ attrs: { href: address, title: path }, type: "link" }],
+            text: heading,
+            type: "text",
+          },
+          { text: ".", type: "text" },
+        ],
+        type: "paragraph",
+      },
+    ],
+    type: "doc",
+  };
+  const view = draw(row(`Two regions, until ${address}.`, reading));
+  try {
+    await waitFor(() => {
+      const links = [...view.container.querySelectorAll("a")].filter(
+        (anchor) => anchor.textContent === heading
+      );
+      expect(links.map((link) => link.getAttribute("href"))).toEqual([path]);
+      expect(links[0]?.hasAttribute("title"), "the link keeps the row's path as its title").toBe(
+        false
+      );
+      expect(links[0]?.hasAttribute("data-dispatch-ref"), "the link is a reference link").toBe(
+        false
+      );
+    });
+  } finally {
+    view.unmount();
+  }
+});

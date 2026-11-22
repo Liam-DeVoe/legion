@@ -405,29 +405,30 @@ test("a lens's, a risk's and a finding's words draw no address of a lens, a risk
   expect(drawnWords.finding.startsWith("A second region doubles the cost, as ")).toBe(true);
 });
 
-/** Each run of `tree` that carries a link mark, as its words and the address it links to. */
+/** Each run of `tree` that carries a link mark, as its words and the link's attributes: the
+ *  address it links to (`href`), and a named store address's own address with the path of its
+ *  node's row as its `title`. */
 function linksIn(tree: DisplayTree | undefined): [string, unknown][] {
   if (tree === undefined) return [];
   const marks = Array.isArray(tree.marks) ? (tree.marks as DisplayTree[]) : [];
   const link = marks.find((mark) => mark.type === "link");
   const own: [string, unknown][] =
-    typeof tree.text === "string" && link !== undefined
-      ? [[tree.text, (link.attrs as { readonly href?: unknown } | undefined)?.href]]
-      : [];
+    typeof tree.text === "string" && link !== undefined ? [[tree.text, link.attrs]] : [];
   const children = Array.isArray(tree.content) ? (tree.content as DisplayTree[]) : [];
   return [...own, ...children.flatMap(linksIn)];
 }
 
 /** The address of the row of the node `readId` names on the issue's page, which a link in a
- *  row's words names it by (`?node=`). */
+ *  row's words holds as its `title` and its row makes its address (`?node=`). */
 function rowPath(readId: string): string {
   return `${presetPath(KEY, "conversation")}?node=${encodeURIComponent(readId)}`;
 }
 
 // A statement's words, and a comment's, that cite a lens the answer holds by its own address read
-// the lens by its kind's words, as its chip names it, in a link to its row beside the run's own
-// marks. The comment's stored words, which the read sent no reading of, are read to a reading
-// that holds the link, and its row draws its words from it.
+// the lens by its kind's words, as its chip names it, in a link beside the run's own marks that
+// holds the lens's address and the path of its row. The comment's stored words, which the read
+// sent no reading of, are read to a reading that holds the link, and its row draws its words
+// from it.
 test("a statement's and a comment's words read a lens they cite by its kind's words, linked to its row", () => {
   const cited = `dispatch://lens/${FIRST}`;
   const { root } = drawn(
@@ -460,16 +461,17 @@ test("a statement's and a comment's words read a lens they cite by its kind's wo
   expect(
     [nodeWords(statement), nodeWords(comment)].filter((words) => STORE_ADDRESS.test(words))
   ).toEqual([]);
+  const link = { href: cited, title: rowPath(FIRST) };
   expect([linksIn(statement.tree), linksIn(comment.tree)]).toEqual([
-    [["Trade-off analysis", rowPath(FIRST)]],
-    [["Trade-off analysis", rowPath(FIRST)]],
+    [["Trade-off analysis", link]],
+    [["Trade-off analysis", link]],
   ]);
   expect(comment.tree?.content).toEqual([
     {
       content: [
         { text: "See ", type: "text" },
         {
-          marks: [{ type: "strong" }, { attrs: { href: rowPath(FIRST) }, type: "link" }],
+          marks: [{ type: "strong" }, { attrs: link, type: "link" }],
           text: "Trade-off analysis",
           type: "text",
         },
@@ -478,7 +480,7 @@ test("a statement's and a comment's words read a lens they cite by its kind's wo
       type: "paragraph",
     },
   ]);
-  // The link's address opens the lens's row, as the page reads an address.
+  // The path the link holds opens the lens's row, as the page reads an address.
   const { target } = issueAddress(
     { key: KEY, kind: "issue" },
     new URL(rowPath(FIRST), "https://dispatch.example").search,
@@ -520,9 +522,10 @@ test("a statement's and a verdict's words read a risk they cite by its heading, 
     "Keep one region: Failover takes minutes",
     "Keep one region: Failover takes minutes",
   ]);
+  const link = { href: cited, title: rowPath(risk) };
   expect([linksIn(statement.tree), linksIn(verdict.tree)]).toEqual([
-    [["Failover takes minutes", rowPath(risk)]],
-    [["Failover takes minutes", rowPath(risk)]],
+    [["Failover takes minutes", link]],
+    [["Failover takes minutes", link]],
   ]);
 });
 
@@ -556,7 +559,9 @@ test("a statement's and an early warning's words read a constraint they cite by 
     "Answer as RFC 9110 says.",
     "A reply breaks RFC 9110 first.",
   ]);
-  expect(linksIn(statement.tree)).toEqual([["RFC 9110", rowPath(constraint)]]);
+  expect(linksIn(statement.tree)).toEqual([
+    ["RFC 9110", { href: cited, title: rowPath(constraint) }],
+  ]);
 });
 
 // A risk the answer does not hold has no row to link and no words to read: its address reads as
@@ -622,8 +627,8 @@ test("an address in code stays as written", () => {
     `Run dispatch read ${cited} before Trade-off analysis, or lens.`
   );
   expect(linksIn(statement.tree)).toEqual([
-    ["Trade-off analysis", rowPath(FIRST)],
-    [cited, "https://example.com/lens"],
+    ["Trade-off analysis", { href: cited, title: rowPath(FIRST) }],
+    [cited, { href: "https://example.com/lens" }],
   ]);
   expect((statement.tree?.content as DisplayTree[] | undefined)?.[1]).toBe(
     (tree.content as DisplayTree[])[1]
