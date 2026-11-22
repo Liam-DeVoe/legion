@@ -165,7 +165,8 @@ ci_log_guard_stderr gh api repos/o/d &> both.txt
 ci_log_guard_stderr gh api repos/o/e 2>&1 >&2
 { ci_log_guard_stderr gh api repos/o/p; } > out.json
 ( ci_log_guard_stderr gh api repos/o/q ) > out.json
-ci_log_guard_stderr gh api repos/o/r | ci_log_guard cat
+ci_log_guard_stderr gh api repos/o/r | jq . > out.json
+ci_log_guard_stderr gh api repos/o/t | sort >> sorted.txt 2>/dev/null
 v="$(ci_log_guard_stderr gh api repos/o/s)"
 SH
 )")
@@ -195,6 +196,28 @@ for found in h i j k l m n; do
     "$(contains "$out" "runs .[^\`]*ci_log_guard_stderr gh api repos/o/${found}[^\`]*.: ci_log_guard_stderr blocks only stderr")"
 done
 check "and counts seven problems" "$(contains "$out" '^::error::check-log-guard: 7 problem(s)$')"
+
+# The fourth review's forms: after a pipe the last stage writes after the guard's block has
+# closed, so only a file keeps that output out of the log; a stage naming /dev/stderr, a dup to a
+# file descriptor and a pipe into ci_log_guard (whose block interleaves with this one under the
+# runner's one stop state) all reach it.
+echo "case: a call piped into a stage that writes to the log, or into ci_log_guard, fails by name"
+root=$(fixture piped "$(cat <<'SH'
+ci_log_guard_stderr gh api repos/o/u | sort >&2
+ci_log_guard_stderr gh api repos/o/v | tail -n 20 >&2
+ci_log_guard_stderr gh api repos/o/w | jq . 1>&2
+ci_log_guard_stderr gh api repos/o/x | tee /dev/stderr > out.json
+ci_log_guard_stderr gh api repos/o/y | ci_log_guard cat
+ci_log_guard_stderr gh api repos/o/z | jq . > /dev/stdout
+SH
+)")
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+for found in u v w x y z; do
+  check "names the stderr guard of \`gh api repos/o/$found\`" \
+    "$(contains "$out" "runs .[^\`]*ci_log_guard_stderr gh api repos/o/${found}[^\`]*.: ci_log_guard_stderr blocks only stderr")"
+done
+check "and counts six problems" "$(contains "$out" '^::error::check-log-guard: 6 problem(s)$')"
 
 echo "case: a row with its reason allows its command, and only that one"
 root=$(fixture allowed 'docker pull ghcr.io/o/i' \

@@ -182,18 +182,46 @@ def _close_of(line: str, frame: tuple) -> int:
     return -1
 
 
+# Where a redirection sends stdout that is still the log after a pipe: the stage writes it after
+# the guard's block has closed.
+LOG_TARGETS = ("/dev/stdout", "/dev/stderr", "/dev/fd/1", "/dev/fd/2", "/proc/self/fd/1", "/proc/self/fd/2")
+
+
+def _target(line: str, i: int) -> str:
+    """The target of the redirection whose `>` (or `&>`'s `>`) is at `i`: `&<fd>` for a dup, `(`
+    for a `>(…)`, else the target word, with its quotes taken off."""
+    rest = line[i + 1:].lstrip(">|")
+    if rest.startswith("&"):
+        return "&" + re.match(r"&(\S*)", rest).group(1)
+    rest = rest.lstrip(" \t")
+    if rest.startswith("(") or rest.startswith(">("):
+        return "("
+    word = re.match(r"""[^\s;&|<>()]*""", rest).group(0)
+    return word.strip("'\"") or "("
+
+
 def stdout_safe(line: str, start: int, frames: list) -> bool:
     """Whether the command that starts at `start`, inside `frames`, keeps its stdout out of the
-    log: it redirects stdout (`>`, `1>`, `>>`, `>|`, `>&…`, `&>`, but not `2>` and not into a
-    `>(…)`), it pipes into `ci_log_guard`, or it ends at an unquoted `;`, `&&`, `||`, a lone `&`,
-    a newline or its frame's close inside a group (`{ …; }`, `( … )`) whose own stdout is kept
-    so. A `#` at a word's start ends the line's code. Each character is read in the state _scan
-    gives it, so a quote, a nested capture or an escape hides it."""
+    log. Before any pipe, a redirection of stdout does (`>`, `1>`, `>>`, `>|`, `>&…`, `&>`, but
+    not `2>` and not into a `>(…)`): the command's stdout then goes where it goes while the block
+    is open. After a pipe, the last stage writes after the block has closed, so only a redirection
+    to a file does, not to a file descriptor, `/dev/stdout`, `/dev/stderr` or a `>(…)`, and any
+    stage naming one of LOG_TARGETS refuses the call (`| tee /dev/stderr > f`); a pipe into
+    `ci_log_guard` is refused too, since its block and this one interleave under one stop state.
+    The command ends at an unquoted `;`, `&&`, `||`, a lone `&`, a newline, a `#` at a word's
+    start, or its frame's close; inside a `{ …; }` or `( … )` group, the group's own redirection
+    is then read the same way. Each character is read in the state _scan gives it, so a quote, a
+    nested capture or an escape hides it."""
+    piped = False
     for i in range(start, len(line)):
         stack, quote, escaped = _scan(line, i)
         if len(stack) < len(frames):
             break
-        if quote or escaped or len(stack) > len(frames):
+        if escaped or len(stack) > len(frames):
+            continue
+        if piped and _word_start(line, i) and any(line.startswith(t, i + (line[i] in "'\"")) for t in LOG_TARGETS):
+            return False
+        if quote:
             continue
         ch, nxt = line[i], line[i + 1:i + 2]
         if ch == "#" and _word_start(line, i):
@@ -203,23 +231,36 @@ def stdout_safe(line: str, start: int, frames: list) -> bool:
         if ch == "|":
             if nxt == "|" or line[i - 1:i] == "|":
                 break
-            if line[i + 1:].lstrip(" \t").startswith("ci_log_guard "):
-                return True
+            if line[i - 1:i] == ">":
+                continue
+            if line[i + 1:].lstrip(" \t").startswith("ci_log_guard"):
+                return False
+            piped = True
         elif ch == "&":
             if nxt == ">":
-                return True
-            if line[i - 1:i] not in (">", "&") and nxt != "&":
-                break
-            if nxt == "&":
-                break
+                continue
+            if line[i - 1:i] in (">", "&") or nxt == "&":
+                if nxt == "&":
+                    break
+                continue
+            break
         elif ch == ">":
             before = line[i - 1:i]
-            if before in (">", "&"):
+            if before == ">":
                 continue
             if before.isdigit() and before != "1" and (i - 1 == start or line[i - 2:i - 1] in " \t"):
                 continue
-            if line[i + 1:].lstrip(" \t>|").startswith("("):
+            target = _target(line, i)
+            if target == "(":
                 return False
+            if target.startswith("&"):
+                if piped or target == "&1":
+                    return False
+                return True
+            if target in LOG_TARGETS:
+                if piped or target in ("/dev/stdout", "/dev/fd/1", "/proc/self/fd/1"):
+                    return False
+                return True
             return True
     groups = [f for f in frames if f[0] in ("brace", "subshell")]
     if not groups or frames[-1][0] not in ("brace", "subshell"):
