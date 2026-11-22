@@ -150,6 +150,8 @@ export interface SpecRun {
    *  decision does until what decided each statement is held (`SpecFilterBody.tsx`'s
    *  `decidedHeld`). */
   readonly decision?: SpecDecision;
+  /** The key the runs are split by: the head tie's `key`; absent where no decision heads it. */
+  readonly key?: string;
   readonly statements: readonly SpecStatement[];
 }
 
@@ -274,6 +276,7 @@ export function specDecidedBy({
     };
     const fresh = {
       ...(head?.decision === undefined ? {} : { decision: head.decision }),
+      ...(head === undefined ? {} : { key: head.key }),
       statements: [statement],
     };
     const group = groups.at(-1);

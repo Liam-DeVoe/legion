@@ -2453,6 +2453,44 @@ test("an opened Spec line draws two statements under an overtaken question as on
   }
 });
 
+// Under Spec an opened line runs its statements again by the key `specDecidedBy` split their runs
+// by (`SpecRun.key`). Two overtaken statements one person's decision shaped, with a live statement
+// between them, are two runs of that decision in their group; opened while the asks read is out,
+// when that decision waits on it, the line draws them side by side as one run beside one cell.
+test("an opened Spec line draws two runs of a decision that waits on the asks read as one run", async () => {
+  const user = userEvent.setup();
+  const root: TreeNode = {
+    ...stamped(
+      specIssueTree([statement("r1"), statement("r2"), statement("r3"), specDecisionNode("d1")]),
+      { "spec#b-r1": { life: "overtaken" }, "spec#b-r3": { life: "overtaken" } }
+    ),
+    views: {
+      spec: specViewAnswer([
+        answerNode("spec#b-r1", "requirement", { role: "query", state: "overtaken" }),
+        answerNode("spec#b-r2", "requirement", { role: "query" }),
+        answerNode("spec#b-r3", "requirement", { role: "query", state: "overtaken" }),
+        specDecision("d1", {
+          decision: {
+            kind: "person",
+            links: [specShaped(specStatementRef("r1")), specShaped(specStatementRef("r3"))],
+          },
+        }),
+      ]),
+    },
+  };
+  const view = drawSpec(root, { asksOut: true });
+  try {
+    const line = theLine(view.container);
+    await user.click(line);
+    await waitFor(() => expect(line).toHaveAttribute("aria-expanded", "true"));
+    const waits = cellBeside(view.container, "spec#b-r1");
+    expect(waits).not.toHaveAttribute("data-decision-id");
+    expect(waits).toHaveAttribute("data-spec-statements", "spec#b-r1 spec#b-r3");
+  } finally {
+    view.unmount();
+  }
+});
+
 // Under Spec a closed statement folds out of the runs before they are built: two statements one
 // decision shaped, with an overtaken statement between them, are one run beside one cell of that
 // decision, as they are with no statement between them.
