@@ -1132,6 +1132,7 @@ export function IssueTree({
               message={read.message}
               onRetry={read.retry}
               retrying={read.retrying}
+              speaks={read.speaks}
             />
           ))}
         </div>

@@ -231,8 +231,9 @@ export function SpecFilterBody({
   // that stand failed (`failed`), and no other, and none of them while it is read again already.
   // Each read of a line is paired with its key's hash (`lineRead`), and each line carries the
   // refusals of its reads it has counted while the body lives, each once under its key
-  // (`useLineRefusals`), which keys its alert. A line is drawn while a read of it stands failed,
-  // which holds a refusal, so it is drawn exactly while the hook says it stands.
+  // (`useLineRefusals`), which keys its alert, and whether it speaks. A line is drawn while a read
+  // of it stands failed, which holds a refusal, so it is drawn exactly while the hook says it
+  // stands.
   // The names reads' line (`namesFailure`) comes after all of these, as the outline draws it
   // last (`outline-reads.ts`): the tree reads the names last, once no read it is built from is
   // still out, and gives that line's state itself.
@@ -264,6 +265,7 @@ export function SpecFilterBody({
       ...group,
       failed: group.reads.flatMap(({ failing, read }) => (failing ? [read] : [])),
       refusals: counted[at].refusals,
+      speaks: counted[at].speaks,
     }))
     .filter(({ failed }) => failed.length > 0);
   // How a reference a plain line cites is named - in the three sentences, a quote, a question,
@@ -503,7 +505,7 @@ export function SpecFilterBody({
           gives a focus left on nothing to a line's Retry where the view draws no row, and moves
           it on to the next line, the tab-stop row or the tree as a line that held it leaves
           (`slots/stage.tsx`). */}
-      {unreadable.map(({ failed, line, message, refusals }) => (
+      {unreadable.map(({ failed, line, message, refusals, speaks }) => (
         <FailedReadLine
           // Which failure the line says, which keys its alert: the refusals of the line's reads
           // that stand failed that the line has counted while the body lives, each once under
@@ -518,6 +520,9 @@ export function SpecFilterBody({
             for (const read of failed) if (!read.isFetching) void read.refetch();
           }}
           retrying={failed.every((read) => read.isFetching)}
+          // Whether the line speaks (`useLineRefusals`): a line that stands again for refusals
+          // it counted draws without speaking, since it said them as it counted them.
+          speaks={speaks}
         />
       ))}
       {namesFailure === undefined ? null : (
@@ -529,6 +534,7 @@ export function SpecFilterBody({
           message={STATE_LINES.names_unreadable}
           onRetry={namesFailure.retry}
           retrying={namesFailure.retrying}
+          speaks={namesFailure.speaks}
         />
       )}
       <Legend />

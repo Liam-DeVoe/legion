@@ -92,6 +92,8 @@ export interface NamesFailure {
   /** Whether one of those reads runs, again or under a new set of addresses (TanStack Query's
    *  `isFetching`). */
   readonly retrying: boolean;
+  /** Whether the line speaks: not where it stands again for a failure it already said. */
+  readonly speaks: boolean;
 }
 
 /**
@@ -442,7 +444,7 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   // no answer under its set, and the line is busy while one of those runs.
   const targetsAnswered = targets.data !== undefined;
   const moreAnswered = moreHeld !== undefined;
-  const [{ refusals: failure, stands }] = useLineRefusals([
+  const [{ refusals: failure, speaks, stands }] = useLineRefusals([
     [
       { errorUpdateCount: targets.errorUpdateCount, failing: !targetsAnswered, hash: targetsHash },
       { errorUpdateCount: more.errorUpdateCount, failing: !moreAnswered, hash: moreHash },
@@ -461,9 +463,10 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
               if (!moreAnswered) void refetchMore();
             },
             retrying,
+            speaks,
           }
         : undefined,
-    [failure, moreAnswered, refetchMore, refetchTargets, retrying, stands, targetsAnswered]
+    [failure, moreAnswered, refetchMore, refetchTargets, retrying, speaks, stands, targetsAnswered]
   );
   // The same answer every link of this page would otherwise read one pointer at a time, which a
   // link in a document, in a decision's card or in a comment's preview shows, and a row's

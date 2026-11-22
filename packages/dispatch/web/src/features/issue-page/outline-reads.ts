@@ -51,6 +51,8 @@ export interface FailedRead {
    *  one of the names reads that hold no answer under their set runs, again or as a first read
    *  of a new set (`NamesFailure.retrying`). */
   readonly retrying: boolean;
+  /** Whether the line says its failure; the names line's comes from `NamesFailure.speaks`. */
+  readonly speaks?: boolean;
 }
 
 /** What the outline's reads give (`useOutlineReads`). Each field is one value for as long as the

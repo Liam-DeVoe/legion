@@ -2080,6 +2080,40 @@ test("a line's alert is not said again where the issue names again a spec whose 
   }
 });
 
+// A line that stands again for a refusal it counted has said it, and is drawn without speaking.
+// The statements line stands on the spec's refused blocks; the issue names a spec of another id,
+// whose blocks read is out with no refusal, so no read of the line stands failed and it leaves.
+// The issue then names the first spec again: the line stands again on its blocks read, which
+// holds no answer and the refusal the line counted, and is drawn with no live role.
+test("a line that stands again where the issue names again a spec whose refused blocks read it counted is drawn without speaking", async () => {
+  const { read, redraw, view } = drawBody(issueTree([statement("r1")]), [], { blocks: "failed" });
+  const other = artifact("artifact-spec-2", "spec-2", true);
+  try {
+    await waitFor(() => alertSaying(view, STATE_LINES.statements_unreadable));
+    read.blocks.mockReturnValue(new Promise<never>(() => {}));
+    const base = issueDetails();
+    redraw(true, {
+      ...base,
+      artifacts: [other, ...base.artifacts.filter(({ primary }) => !primary)],
+      primary_artifact_id: other.id,
+    });
+    expect(
+      view.queryByText(STATE_LINES.statements_unreadable),
+      "the line stayed on a read out with no refusal"
+    ).toBeNull();
+    redraw(true, base);
+    const words = view.getByText(STATE_LINES.statements_unreadable);
+    expect(words, "the line said again a refusal it had counted").not.toHaveAttribute("role");
+    expect(view.queryByRole("alert"), "a line standing again quietly spoke").toBeNull();
+    const line = words.closest<HTMLElement>("[data-failed-read]");
+    if (line === null) throw new Error("the line's words stand outside a failed-read line");
+    expect(within(line).getByRole("button", { name: "Retry" })).toBeInTheDocument();
+  } finally {
+    view.unmount();
+    read.mockRestore();
+  }
+});
+
 // A line's alert is drawn afresh, so a screen reader says it again, only for a new refusal of a
 // read the line stands failed on. A read of the line that holds an answer keeps it when a
 // refresh of it - an event's - is refused, and the line says nothing new of it, so with the

@@ -358,15 +358,20 @@ test("a names read back on a set of addresses whose failure the line counted sta
   try {
     const view = renderHook(() => useIssueTree(issue).namesFailure, { wrapper });
     await waitFor(() => expect(view.result.current?.failure).toBe(1));
+    expect(view.result.current?.speaks, "the line's first failure was not said").toBe(true);
     // A comment arrives, and the names read of the tree's new set fails too.
     await act(async () => client.setQueryData(["comments", KEY], [comment]));
     await waitFor(() => expect(view.result.current?.failure).toBe(2));
+    // The new set's names read answers, the one active read holding none, and the line leaves.
+    await act(async () => client.setQueriesData({ type: "active" }, (d) => d ?? { targets: [] }));
+    await waitFor(() => expect(view.result.current).toBeUndefined());
     // The comment goes: the read moves back to the first set, whose failure the line counted, and
     // is out.
     out = held.promise;
     await act(async () => client.setQueryData(["comments", KEY], []));
     await waitFor(() => expect(view.result.current?.retrying).toBe(true));
     expect(view.result.current?.failure, "the first set's failure was said again").toBe(2);
+    expect(view.result.current?.speaks, "the line said again a failure it had said").toBe(false);
     view.unmount();
   } finally {
     held.resolve();

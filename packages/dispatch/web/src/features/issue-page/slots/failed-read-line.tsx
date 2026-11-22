@@ -32,6 +32,8 @@ export interface FailedReadLineProps {
   onRetry: () => void;
   /** Whether the read runs again (TanStack Query's `isFetching`). */
   retrying: boolean;
+  /** Unless false, the line speaks: one standing again for a failure it already said is quiet. */
+  speaks?: boolean;
 }
 
 /**
@@ -59,6 +61,7 @@ export function FailedReadLine({
   message,
   onRetry,
   retrying,
+  speaks = true,
 }: FailedReadLineProps): ReactNode {
   const leaves = useContext(FailedLineLeaves);
   // The failures the line has seen while drawn, for a view that names none: a run it saw end left
@@ -82,7 +85,11 @@ export function FailedReadLine({
   );
   return (
     <div className="flex flex-wrap items-center gap-3 text-sm" data-failed-read="" ref={line}>
-      <p className={pageFailedText} key={failure ?? next.failures} role="alert">
+      <p
+        className={pageFailedText}
+        key={failure ?? next.failures}
+        role={speaks ? "alert" : undefined}
+      >
         {message}
       </p>
       <button

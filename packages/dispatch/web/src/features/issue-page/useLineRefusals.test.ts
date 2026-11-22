@@ -23,6 +23,7 @@ function drawLine(reads: readonly LineRead[]) {
   return {
     count: () => hook.result.current.refusals,
     draw: (line: readonly LineRead[]) => hook.rerender({ line }),
+    speaks: () => hook.result.current.speaks,
     stands: () => hook.result.current.stands,
     unmount: () => hook.unmount(),
   };
@@ -153,6 +154,63 @@ test("a read whose count fell below the one seen under its key adds the whole of
   try {
     line.draw([lineRead("set-a", 1, true)]);
     expect(line.count(), "the refusal of the query made afresh was not counted").toBe(4);
+  } finally {
+    line.unmount();
+  }
+});
+
+// A line speaks as it begins standing with a new refusal, and goes on speaking while it stands,
+// a second draw of the same state included. A read out with no refusal stands no line, and a line
+// that does not stand does not speak.
+test("a line that begins standing with a new refusal speaks while it stands", () => {
+  const line = drawLine([lineRead("set-a", 0, true)]);
+  try {
+    expect(line.speaks(), "a line that does not stand spoke").toBe(false);
+    line.draw([lineRead("set-a", 1, true)]);
+    expect(line.speaks(), "the line began standing with a new refusal and said nothing").toBe(true);
+    line.draw([lineRead("set-a", 1, true)]);
+    expect(line.speaks(), "a second draw of the same state took the line's voice").toBe(true);
+    line.draw([lineRead("set-b", 0, true)]);
+    expect(line.speaks(), "the line went quiet while a read under a new key was out").toBe(true);
+  } finally {
+    line.unmount();
+  }
+});
+
+// A line that stopped standing and stands again on a key whose refusal it counted has said that
+// refusal: it draws without speaking, on every draw while it stands with no new refusal.
+test("a line that stands again with no new refusal does not speak", () => {
+  const line = drawLine([lineRead("set-a", 1, true)]);
+  try {
+    expect(line.speaks()).toBe(true);
+    line.draw([lineRead("set-b", 0, false)]);
+    expect(line.stands()).toBe(false);
+    expect(line.speaks(), "a line that does not stand spoke").toBe(false);
+    line.draw([lineRead("set-a", 1, true)]);
+    expect(line.stands()).toBe(true);
+    expect(line.speaks(), "the line said again a refusal it had counted").toBe(false);
+    line.draw([lineRead("set-a", 1, true)]);
+    expect(line.speaks(), "a second draw of the same state gave the line its voice").toBe(false);
+  } finally {
+    line.unmount();
+  }
+});
+
+// A line that stands quietly speaks from its next new refusal, and goes on speaking while it
+// stands, as a line that began standing with it would.
+test("a line that stands quietly speaks once it counts a new refusal, while it stands", () => {
+  const line = drawLine([lineRead("set-a", 1, true)]);
+  try {
+    line.draw([lineRead("set-b", 0, false)]);
+    line.draw([lineRead("set-a", 1, true)]);
+    expect(line.speaks()).toBe(false);
+    line.draw([lineRead("set-a", 2, true)]);
+    expect(line.count()).toBe(2);
+    expect(line.speaks(), "the line's new refusal was not said").toBe(true);
+    line.draw([lineRead("set-b", 0, true)]);
+    expect(line.speaks(), "the line went quiet while a read under a new key was out").toBe(true);
+    line.draw([lineRead("set-b", 0, false)]);
+    expect(line.speaks(), "a line that does not stand spoke").toBe(false);
   } finally {
     line.unmount();
   }
