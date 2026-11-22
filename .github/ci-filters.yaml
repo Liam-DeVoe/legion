@@ -350,8 +350,10 @@ daemon_go_tests:
   - *ci_router
   - *ci_filters_data
   - '.github/workflows/ci-job-daemon-go.yaml'
-  # cmd/legion/release_list_test.go holds LEGION_VERSION_ARGS to what the binary links.
+  # cmd/legion/release_list_test.go holds LEGION_VERSION_ARGS to what the binary links, for each
+  # target .github/go-release-targets.json lists.
   - '.github/workflows/release.yaml'
+  - '.github/go-release-targets.json'
   - *go_workspace
   - 'packages/daemon/**'
   - *daemon_envoy_deps
