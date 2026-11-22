@@ -104,3 +104,77 @@ func TestEachStartOfATaskWaitsForItsJoin(t *testing.T) {
 		}
 	})
 }
+
+// joinRowsOf is each task_branch row of the outbox of key, oldest first, as `<task> at <generation>`.
+func joinRowsOf(t *testing.T, pool *pgxpool.Pool, key string) []string {
+	t.Helper()
+	rows, err := pool.Query(t.Context(), `select (payload->>'task') || ' at ' || (payload->>'generation') from outbox
+		where kind = 'task_branch' and issue = $1 order by id`, key)
+	if err != nil {
+		t.Fatalf("read the task_branch rows of %s: %v", key, err)
+	}
+	named, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("read the task_branch rows of %s: %v", key, err)
+	}
+	return named
+}
+
+// A join that waited at a re-admission starts again: task d, which needs c, runs at its first
+// step, which waits for its join, and the task_branch row of its join at generation 1 has not run.
+// The re-admission of the issue carries its run to generation 2, d's wait among it, and the row of
+// generation 1 will finish without acting (the outbox's taskBranch), so the settle of the
+// re-admission's fact queues d's join at generation 2, and d keeps its wait: nothing of its step
+// starts. The end of the join of generation 1 changes nothing; the end of the join of generation 2
+// starts d's step.
+//
+// The fault it catches is a join that nothing queues again, so its task waits for ever (its
+// control: the settle without the join again: no row at generation 2, and the test fails).
+func TestAJoinThatWaitedAtAReadmissionStartsAgain(t *testing.T) {
+	pool := migratedPool(t)
+	engine := returnEngine()
+	root := stepRoot(t, pool, phase.Implementing)
+	seedSlot(t, pool, record.Slot{Issue: root.Key, Index: 0})
+	seedTasks(t, pool, root.Key, root.Generation,
+		planTask{id: "c", steps: []string{"tester:c"}, agents: []claim.Agent{"test-c"}, state: record.TaskDone, place: atStep(1)},
+		planTask{id: "d", steps: []string{"implementer:d"}, agents: []claim.Agent{"impl-d"}, needs: []string{"c"}, state: record.TaskRunning, place: atStep(1)})
+	branch := "legion/" + root.Key + ".d"
+	seedTaskBranch(t, pool, root.Key, "d", branch)
+	joinWaits(t, pool, root.Key, root.Generation, "d")
+	seedRecord(t, pool, func(tx pgx.Tx) error {
+		row, err := record.NewOutboxRow(root.Key, record.TaskBranch{Generation: root.Generation, Task: "d"}, stepClock)
+		if err != nil {
+			return err
+		}
+		return record.NewStore().Enqueue(t.Context(), tx, row)
+	})
+
+	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
+		next := root
+		next.Generation++
+		if err := engine.store.PutIssue(ctx, tx, next); err != nil {
+			return err
+		}
+		return engine.store.CarryPlan(ctx, tx, root.Key, root.Generation, next.Generation, true)
+	})
+
+	if rows := joinRowsOf(t, pool, root.Key); !slices.Equal(rows, []string{"d at 1", "d at 2"}) {
+		t.Fatalf("the task_branch rows of %s after its re-admission = %v, want d's at generation 1 and d's at generation 2", root.Key, rows)
+	}
+	assertWaits(t, tasksOf(t, pool, engine, root.Key), "d", atStep(1), record.StepWaitJoin)
+	if claims := startClaims(t, pool, root.Key, claim.RoleImplementer); len(claims) != 0 {
+		t.Fatalf("the implementer's starts of %s = %v, want none: d's step waits for its join", root.Key, claims)
+	}
+
+	apply := applyFacts(t, pool, engine)
+	mustSpend(t, "the end of d's join at generation 1", apply("task-joined:1",
+		intake.TaskJoined{Issue: root.Key, Generation: root.Generation, Task: "d", Branch: branch, Needs: []string{"c"}}))
+	assertWaits(t, tasksOf(t, pool, engine, root.Key), "d", atStep(1), record.StepWaitJoin)
+
+	mustSpend(t, "the end of d's join at generation 2", apply("task-joined:2",
+		intake.TaskJoined{Issue: root.Key, Generation: root.Generation + 1, Task: "d", Branch: branch, Needs: []string{"c"}}))
+	assertWaits(t, tasksOf(t, pool, engine, root.Key), "d", atStep(1), record.StepWaitNone)
+	if claims := startClaims(t, pool, root.Key, claim.RoleImplementer); !slices.Equal(claims, []claim.Token{agentClaim(t, root.Key, "impl-d")}) {
+		t.Fatalf("the implementer's starts of %s after d's join at generation 2 = %v, want d's agent impl-d alone", root.Key, claims)
+	}
+}

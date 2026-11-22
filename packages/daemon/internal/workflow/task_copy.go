@@ -81,19 +81,8 @@ func (e *Engine) taskJoined(ctx context.Context, tx pgx.Tx, fact intake.TaskJoin
 	if err != nil {
 		return intake.Result{}, err
 	}
-	role := w.RoleAt(w.Place)
-	if err := e.clearHandoff(ctx, tx, issue.Key, role); err != nil {
-		return intake.Result{}, err
-	}
-	pr, err := e.store.PullRequestOfTask(ctx, tx, issue.Key, fact.Task)
-	if err != nil {
-		return intake.Result{}, err
-	}
-	e.logOnCommit(ctx, "workflow: a task's join ended, and its step starts", "issue", issue.Key, "tree", issue.Tree, "task", fact.Task,
-		"place", placeWords(w.Place), "role", role, "branch", fact.Branch, "needs", fact.Needs, "conflicts", fact.Conflicts)
-	return intake.Result{}, e.start(ctx, tx, view, w, role, func(at Standing) string {
-		return task(view, at, record.PhaseRow{}, pr, "")
-	}, false)
+	return intake.Result{}, e.startAfterWait(ctx, tx, view, w, "workflow: a task's join ended, and its step starts",
+		"branch", fact.Branch, "needs", fact.Needs, "conflicts", fact.Conflicts)
 }
 
 // stepOfStart is the running step start starts on issue (record.Issue.Running): the step of the
