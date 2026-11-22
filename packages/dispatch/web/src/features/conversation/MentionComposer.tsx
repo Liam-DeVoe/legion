@@ -881,8 +881,8 @@ export function MentionComposer({
   ]);
   // A composer fixed at the foot of the screen - the docked one below `sm`, or one a host's frame
   // places there - is in the foot's page layer (`hooks/useFootInset.ts` lists the foot's layers
-  // and the elements in each), and publishes how far up it reaches so the layers above it ride
-  // above its controls; a refusal's row grows it upward. One with neither lays out in the page.
+  // and the elements in each), and publishes its band, its box on the screen, so the floats keep
+  // clear of its controls; a refusal's row grows it upward. One with neither lays out in the page.
   useFootInset(
     frame === undefined ? formRef : frameRef,
     !dormant && (docked || frame !== undefined),

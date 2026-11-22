@@ -478,11 +478,13 @@ export function AgentThread({
   const shownRefusal = refusedPress ? refusal : null;
   if (refusal === null && refusedPress) setRefusedPress(false);
   const hintId = useId();
-  // The composer sits at the foot of a page that fills the screen, in its flow, with the row
+  // The composer sits at the foot of a page that fills the screen, in its flow, above the rows
   // under it, and `Jump to latest` floats just above it while the reader is back in the
   // transcript: both are in the foot's page layer (`hooks/useFootInset.ts` lists the foot's
-  // layers and the elements in each), so the floats above that layer ride above them. Only the
-  // view in front: one the shell keeps behind it is laid over the page, invisible.
+  // layers and the elements in each), so the floats of the layers above keep clear of their
+  // bands. The rows under the composer are an element of that layer of their own
+  // (`AgentConversationPage`). Only the view in front: one the shell keeps behind it is laid
+  // over the page, invisible.
   const composerRef = useRef<HTMLFormElement>(null);
   useFootInset(composerRef, front, "page");
   const jumpRef = useRef<HTMLButtonElement>(null);

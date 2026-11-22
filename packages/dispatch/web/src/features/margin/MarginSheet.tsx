@@ -227,7 +227,7 @@ export function MarginSheet({
   const covered = collapsed || (isPhoneViewport && phoneThread !== undefined);
   // Collapsed below `xl`, the sheet is a bar fixed at the foot of the screen, in the foot's page
   // layer (`hooks/useFootInset.ts` lists the foot's layers and the elements in each), so it
-  // publishes how far up it reaches and the layers above it ride above it. Expanded, it is a
+  // publishes its band, its box on the screen, and the floats keep clear of it. Expanded, it is a
   // modal sheet over the page, and adds nothing. The dialog's container is this same `<aside>`.
   useFootInset(dialog.containerRef, compactSheet && owner !== undefined && !sheet.expanded, "page");
 
