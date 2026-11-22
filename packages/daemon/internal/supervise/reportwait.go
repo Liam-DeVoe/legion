@@ -115,12 +115,13 @@ import (
 //
 // The report can come and its finish fail on the store (Machine.finishOwed). It came, so no work
 // begins to wait for it any more and no bound takes the task back, whichever turn the take awaits
-// (takePhase, waitFinish); but work already waiting goes on waiting for that finish, which the
-// end-frame bound makes again until it lands, and runs at it (finishAtTurnsEnd), as at the report's
-// own finish. Every take-back finishes such a task by that report instead, since each reads this
-// phase before it takes anything back: interrupted (every let-go that settles a take, a death, a
-// replacement, the reconnect deadline and this wait's own take-back among them), takeBackUnstarted
-// (a retirement and a suspension), takeBack (the operator's compaction, R5's second bound and a
+// and whatever the claim's plugin, one whose end frame finishes its task included (takePhase,
+// waitFinish); but work already waiting goes on waiting for that finish, which the end-frame bound
+// makes again until it lands, and runs at it (finishAtTurnsEnd), as at the report's own finish.
+// Every take-back finishes such a task by that report instead, since each reads this phase before
+// it takes anything back: interrupted (every let-go that settles a take, a death, a replacement,
+// the reconnect deadline and this wait's own take-back among them), takeBackUnstarted (a
+// retirement and a suspension), takeBack (the operator's compaction, R5's second bound and a
 // provider error that holds the issue) and takeToLadder (a provider error the ladder waits out).
 // takeBackInMemory, which reads no phase, runs only behind the last two. The retirement of such a
 // task for a newer one finishes it by that report too (retirePending).
@@ -188,8 +189,8 @@ type waitPhase uint8
 
 const (
 	// waitNone is no turn running and no take the wait is on: none stands accepted, or the claim's
-	// plugin is below TaskTakeContract, whose end frame finishes its task (TakesNoTask), so no
-	// work waits on its take past its turn's end.
+	// plugin is below TaskTakeContract, whose end frame finishes its task (TakesNoTask), and no
+	// finish of the take is owed (waitFinish), so no work waits on its take past its turn's end.
 	waitNone waitPhase = iota
 	// waitTurn is the first phase: a turn runs (inTurn) — the take's own, one the take was passed
 	// over in while it awaits its turn (heldUnrun), or one of a claim holding no take — and work
@@ -201,12 +202,12 @@ const (
 	// number has not come.
 	waitReport
 	// waitFinish is the second phase's report come and its finish refused by the store
-	// (Machine.finishOwed), which the end-frame bound makes again, whichever turn the take awaits:
-	// the report decides. No work begins to wait for it, work already waiting goes on waiting for
-	// that finish, no bound of the wait nor R5's second wait arms over it, and every take-back
-	// finishes the task by that report instead: retirePending, interrupted, takeBackUnstarted,
-	// takeBack and takeToLadder each ask makeOwedFinish before they take anything back (this
-	// file's doc).
+	// (Machine.finishOwed), which the end-frame bound makes again, whichever turn the take awaits
+	// and whatever the claim's plugin: the report decides. No work begins to wait for it, work
+	// already waiting goes on waiting for that finish, no bound of the wait nor R5's second wait
+	// arms over it, and every take-back finishes the task by that report instead: retirePending,
+	// interrupted, takeBackUnstarted, takeBack and takeToLadder each ask makeOwedFinish before they
+	// take anything back (this file's doc).
 	waitFinish
 	// waitTake is the third phase: the take awaits its turn — given back the turn the daemon gave a
 	// run that was not its own (putBack), or not given one yet. Work already waiting goes on
@@ -226,17 +227,20 @@ func (m *Machine) reportWaitNow() waitPhase {
 
 // takePhase is the phase of the wait the pending take is in, read off the take alone, whether or
 // not a turn runs: the one rule of where the take stands. A finish the store refused comes before
-// the take's own turn, since the report that came decides: a take awaiting its turn whose finish is
-// owed is in waitFinish, not waitTake. The end of a turn and of a compaction read it directly
-// (runHeldAtEnd, endNothingHeld), since the claim they end is still stored working, which
-// reportWaitNow reads as the turn.
+// the take's own turn and before the claim's plugin, since the report that came decides: a take
+// awaiting its turn whose finish is owed is in waitFinish, not waitTake, and so is a take of a
+// plugin below TaskTakeContract (TakesNoTask), which is in waitNone only with no finish owed. The
+// end of a turn and of a compaction read it directly (runHeldAtEnd, endNothingHeld), since the
+// claim they end is still stored working, which reportWaitNow reads as the turn.
 func (m *Machine) takePhase() waitPhase {
 	p := m.claim.Pending
 	switch {
-	case p == nil || !p.taken() || TakesNoTask(m.claim.PluginContract):
+	case p == nil || !p.taken():
 		return waitNone
 	case m.finishOwed:
 		return waitFinish
+	case TakesNoTask(m.claim.PluginContract):
+		return waitNone
 	case p.awaitsTurn():
 		return waitTake
 	}

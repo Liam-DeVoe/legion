@@ -8,8 +8,8 @@
 // while a relaunch is in the runtime waits, and is then judged against the claim the relaunch
 // left, not the one it replaced. The one thing a decision never waits on is the working copy's
 // adoption a take makes: it runs with the lock let go and posts its outcome back as TakeAdopted
-// (Machine.Take), so a slow shim cannot hold the claim. (The only agent round trip a decision
-// does wait on is the get_state a claim restored working asks, bounded by the RPC timeout.)
+// (Machine.Take), so a slow shim cannot hold the claim. (The agent round trips a decision does
+// wait on are the get_state asks Timeouts.RPC lists, each bounded by the RPC timeout.)
 //
 // The package reads no configuration and knows neither the worker stream nor any runtime's
 // implementation: its limits and timeouts are constructor parameters, the connection directory is
@@ -1435,11 +1435,12 @@ type Machine struct {
 	// that report arrived — ready or idle at once, and at the end of the turn when it came while
 	// the claim was working, whatever the claim's plugin (armEndFrameBound) — and the bound arms
 	// itself again after every write the store refuses, until one lands, which is logged by=report
-	// (finishAtTurnsEnd, overTurnFinish). A let-go that settles the task's over turn finishes it
-	// too rather than take it back (interrupted, settle). The retirement that lands ends it
-	// (retireTask). It is kept in memory, and a daemon that starts while it stands owes it again,
-	// read from the report the claim's window keeps (Claim.owedReport, NewMachine), since that
-	// report is applied and its worker's resend of it is a repeat that finishes nothing.
+	// (finishAtTurnsEnd, overTurnFinish). A let-go finishes it too rather than take it back, in a
+	// turn or not and whatever the claim's plugin (takePhase, waitFinish; interrupted, settle). The
+	// retirement that lands ends it (retireTask). It is kept in memory, and a daemon that starts
+	// while it stands owes it again, read from the report the claim's window keeps
+	// (Claim.owedReport, NewMachine), since that report is applied and its worker's resend of it is
+	// a repeat that finishes nothing.
 	finishOwed bool
 	// ladderOwed is the provider error of a turn-outcome report that a daemon start found applied
 	// with nothing of what it does to the task written — the take still accepted, the ladder's
@@ -1950,13 +1951,10 @@ func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 	switch c.State {
 	case StateLaunching, StateShimConnected:
 		m.armBoot()
-		m.setView(viewNoHello)
 	case StateRegistered:
 		m.armRegistration()
-		m.setView(viewNoHello)
 	case StateReady, StateIdle:
 		m.armRegistration()
-		m.setView(viewNoHello)
 		// A task whose take's turn started and ended under an earlier daemon, which nothing has
 		// finished: its report may still come, and for a plugin that names no number (whose end
 		// frame finishes its task, TakesNoTask) where none does the end of that turn
@@ -1975,8 +1973,11 @@ func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 		m.askTrigger = "boot"
 	case StateWorking:
 		m.armRegistration()
-		m.setView(viewNoHello)
 		m.askFirst = true
+	}
+	// A claim restored with a process has no connection until its shim's first hello (connview.go).
+	if slices.Contains(live, c.State) {
+		m.setView(viewNoHello)
 	}
 	// A report applied before the daemon that applied it stopped, whose effect on the pending task
 	// the store refused: it is owed again, as it was there. A take that awaits its turn still is

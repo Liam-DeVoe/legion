@@ -145,10 +145,7 @@ func TestTakeBackOverAnOwedFinishFinishesOnEveryPath(t *testing.T) {
 			h.wantState(StateSuspended)
 		}},
 		{name: "the operator's compaction", run: func(t *testing.T, h *harness, number uint64) {
-			if err := h.m.Compact(h.ctx, testCompactInstructions); err != nil {
-				t.Fatalf("the compaction answered %v, want the claim given back", err)
-			}
-			h.m.Wait()
+			compactedByTheOperator(t, h)
 		}},
 		{name: "R5's second wait, which arms over no owed finish", refusing: true, run: func(t *testing.T, h *harness, number uint64) {
 			h.observe(runtime.Alive)
@@ -225,22 +222,11 @@ func TestTakeWhoseFinishIsOwedIsNotPutBackByTheLateReportOfItsGivenRun(t *testin
 	h.wantCharges()
 }
 
-// finishesOf is the finish lines of task number: a harness that ran an earlier task logs its
-// finish too.
-func (h *harness) finishesOf(number uint64) []loggedRecord {
+// recordsNaming is the records of the line message that name task number: a harness that ran an
+// earlier task logs its lines too.
+func (h *harness) recordsNaming(message string, number uint64) []loggedRecord {
 	var lines []loggedRecord
-	for _, r := range h.records.of(finishedLine) {
-		if task, _ := r.attr("task"); task.String() == strconv.FormatUint(number, 10) {
-			lines = append(lines, r)
-		}
-	}
-	return lines
-}
-
-// startsOf is the turn start lines that name task number.
-func (h *harness) startsOf(number uint64) []loggedRecord {
-	var lines []loggedRecord
-	for _, r := range h.records.of(turnStartedLine) {
+	for _, r := range h.records.of(message) {
 		if task, _ := r.attr("task"); task.String() == strconv.FormatUint(number, 10) {
 			lines = append(lines, r)
 		}
@@ -304,7 +290,7 @@ func TestTakeRestoredWhoseOwnReportsFinishIsRefusedBeforeTheHelloIsNotPutBackAtI
 				t.Errorf("the hello logged %q over the take whose finish is owed, want nothing put back", lines)
 			}
 			tc.replay(h)
-			if starts := h.startsOf(number); len(starts) != 1 {
+			if starts := h.recordsNaming(turnStartedLine, number); len(starts) != 1 {
 				t.Errorf("%d start lines name task %d, want one: the take's own turn, replayed, is no second run of it", len(starts), number)
 			}
 			h.advance(2 * turnStartBound)
@@ -314,7 +300,7 @@ func TestTakeRestoredWhoseOwnReportsFinishIsRefusedBeforeTheHelloIsNotPutBackAtI
 			if p := h.claim().Pending; p != nil {
 				t.Fatalf("the claim holds %+v once the store answered, want task %d finished", p, number)
 			}
-			finished := h.finishesOf(number)
+			finished := h.recordsNaming(finishedLine, number)
 			if len(finished) != 1 {
 				t.Fatalf("task %d was finished %d times, want once", number, len(finished))
 			}
@@ -550,10 +536,7 @@ func TestTakeWhoseFinishIsOwedReadsAsATakeWhoseTurnRan(t *testing.T) {
 		h.reach(StateReady)
 		number := h.takeOf("the task a migrated worker took")
 
-		if err := h.m.Compact(h.ctx, testCompactInstructions); err != nil {
-			t.Fatalf("the compaction answered %v", err)
-		}
-		h.m.Wait()
+		compactedByTheOperator(t, h)
 
 		if p := h.pending(); p.Number != number || p.taken() {
 			t.Fatalf("the claim holds %+v, want task %d taken back by the compaction", p, number)
@@ -562,4 +545,46 @@ func TestTakeWhoseFinishIsOwedReadsAsATakeWhoseTurnRan(t *testing.T) {
 			t.Fatalf("logged %q, want the compaction's abort of the take's turn logged once", lines)
 		}
 	})
+}
+
+// An old-contract claim's take whose finish is owed (plan v124): the claim's plugin is below
+// TaskTakeContract (TakesNoTask), and a report named the take's number and the store refused its
+// finish (Machine.finishOwed). The report that came decides, whatever the claim's plugin: the take
+// is in waitFinish (takePhase), and a let-go finishes the task once, by that report, and takes
+// nothing back:
+//
+//   - cut in a turn, one of the host's own that started after the take's turn ended;
+//   - between turns, where the end frame finishes an old-contract claim's task with no finish owed
+//     (interrupted's TakesNoTask branch): its line names the report, not the end frame.
+//
+// The negative control is the commit under this change, where takePhase read the claim's plugin
+// before the owed finish (waitNone): the let-go in a turn took the task back as a cut turn, to run
+// again in the next process, and the one between turns finished it by its end frame.
+func TestTakeOfAnOldContractClaimWhoseFinishIsOwedIsFinishedByItsReportAtALetGo(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		inTurn bool
+	}{
+		{"cut in a turn", true},
+		{"between turns", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			h.reach(StateReady)
+			h.takesTurnEndsWithItsReportToCome()
+			number := h.pending().Number
+			h.store.fail("RetireDelivery", errBoom)
+			if err := h.reportTurn(number, nil); err == nil {
+				t.Fatal("the report whose finish the store refused answered no failure")
+			}
+			if tc.inTurn {
+				h.must(StreamTurnStart{Claim: h.token})
+			}
+			h.store.fail("RetireDelivery", nil)
+
+			h.observe(runtime.Gone)
+
+			h.wantOwedFinishMade(number)
+		})
+	}
 }

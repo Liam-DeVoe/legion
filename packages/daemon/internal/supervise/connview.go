@@ -189,6 +189,12 @@ func (m *Machine) armReconnectForTask() {
 	if m.connSeen == viewWhole || !SaidReady(m.claim.State) || m.claim.Locator == nil {
 		return
 	}
+	m.armReconnectUnlessArmed()
+}
+
+// armReconnectUnlessArmed arms the reconnect deadline whole from now (reconnectBound) only where
+// none stands, so a deadline armed already keeps its time (armReconnectForTask, readyView).
+func (m *Machine) armReconnectUnlessArmed() {
 	if _, armed := m.timers[TimerRegistration]; !armed {
 		m.arm(TimerRegistration, m.reconnectBound(), "")
 	}
@@ -239,9 +245,7 @@ func (m *Machine) readyView() {
 		m.arm(TimerRegistration, max(due.Sub(m.deps.Clock.Now()), 0), "")
 		return
 	}
-	if _, armed := m.timers[TimerRegistration]; !armed {
-		m.arm(TimerRegistration, m.reconnectBound(), "")
-	}
+	m.armReconnectUnlessArmed()
 }
 
 // startAskServes is whether the hello now read is the one a daemon start's own ask serves: the
@@ -341,7 +345,7 @@ func (m *Machine) markTurnUnseen() {
 // answer is then applied to the claim with every frame the shim replayed applied already
 // (applyTurnAnswer). The bounds are armed whole from here at the end of this decision, or at the
 // end of the turn the answer started.
-func (m *Machine) answerView(ctx context.Context, streaming bool, ev Event) error {
+func (m *Machine) answerView(ctx context.Context, streaming bool) error {
 	cut := m.connSeen != viewWhole
 	m.setView(viewWhole)
 	m.disarm(TimerRegistration)
@@ -349,7 +353,7 @@ func (m *Machine) answerView(ctx context.Context, streaming bool, ev Event) erro
 	if cut {
 		m.log.Info(viewAnsweredLine, "streaming", streaming)
 	}
-	return m.applyTurnAnswer(ctx, streaming, ev)
+	return m.applyTurnAnswer(ctx, streaming)
 }
 
 // applyTurnAnswer applies the agent's answer to whether it is in a turn to the claim, read behind
@@ -360,12 +364,12 @@ func (m *Machine) answerView(ctx context.Context, streaming bool, ev Event) erro
 // daemon reads, applied where that answer makes the view whole (answerView): the ask a reconnect
 // hello makes, and a daemon start's own two — of a claim restored working (askTurnOver) and of a
 // restored take on a stale plugin (turnAnswered).
-func (m *Machine) applyTurnAnswer(ctx context.Context, streaming bool, ev Event) error {
+func (m *Machine) applyTurnAnswer(ctx context.Context, streaming bool) error {
 	switch {
 	case streaming && !m.busy():
-		return turnStarted(m, ctx, ev)
+		return turnStarted(m, ctx, nil)
 	case !streaming && m.inTurn():
-		return turnEnded(m, ctx, ev)
+		return turnEnded(m, ctx, nil)
 	}
 	return nil
 }

@@ -1189,7 +1189,6 @@ go_notices:
   - 'packages/envoy/cmd/cipher/*'
   - 'packages/envoy/cmd/cipher-helper/*'
   - *listener_command
-  - 'packages/envoy/legiontasks/*'
   - 'packages/envoy/infra/go.mod'
   - 'packages/envoy/infra/go.sum'
   - 'packages/envoy/infra/go.work'
@@ -1638,8 +1637,6 @@ envoy_infra_go:
   - *dispatch_server
   - 'packages/envoy/cmd/dispatch/testdata/signin-domain-vectors.json'
   - *listener_command
-  # The task bucket's names, which natsgrant's grants import.
-  - 'packages/envoy/legiontasks/*'
   - 'packages/envoy/internal/cmdtest/*'
   - 'packages/envoy/internal/contracts/**'
   - 'packages/envoy/internal/dispatch/githubapp/**'

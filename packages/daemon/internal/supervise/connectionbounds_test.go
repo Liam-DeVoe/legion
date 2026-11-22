@@ -106,12 +106,8 @@ func (h *harness) wantRunOnce(number uint64) {
 	if p := h.claim().Pending; p != nil && p.Number == number {
 		h.t.Fatalf("the claim still holds %+v, want task %d finished", p, number)
 	}
-	finished := h.records.of(finishedLine)
-	if len(finished) != 1 {
-		h.t.Fatalf("%q was logged %d times, want once", finishedLine, len(finished))
-	}
-	wantAttr(h.t, finished[0], "task", strconv.FormatUint(number, 10))
-	wantAttr(h.t, finished[0], "by", finishedByReport)
+	h.wantFinishedOnce(finishedByReport)
+	wantAttr(h.t, h.records.of(finishedLine)[0], "task", strconv.FormatUint(number, 10))
 	if value, held := h.values.value(h.token); held && value.Number == number {
 		h.t.Fatalf("the bucket still holds %+v, want task %d's value deleted", value, number)
 	}
@@ -396,18 +392,13 @@ func TestTakeIsTakenBackAsACutTurnWhenTheAgentAnswersNothingByTheReconnectDeadli
 	h.wantState(StateLaunching)
 	h.wantBudgets(Budgets{})
 	h.wantCharges()
-	if p := h.pending(); p.Number != number || p.taken() || !p.Interrupted {
-		t.Fatalf("the claim holds %+v, want task %d taken back with the note of a cut turn", p, number)
-	}
+	h.wantTakenBackWithItsNote(number)
 	// A late end frame of the process let go disarms nothing of the launch that replaces it.
 	h.mustQuiet(StreamTurnEnd{Claim: h.token})
 	if !h.armed(TimerRegistration) {
 		t.Fatal("a late frame of the process let go disarmed the new launch's registration deadline")
 	}
-	h.wantTakenOnceMore(number, func(h *harness) {
-		h.relaunched()
-		h.mustTake()
-	})
+	h.wantTakenOnceMore(number, relaunchedAndTaken)
 }
 
 // Row 9: no answer, and a turn end frame on the new connection: the second wait is armed whole
@@ -471,13 +462,8 @@ func TestRelaunchAProcessWhoseShimNeverReconnectsAfterAClose(t *testing.T) {
 	if cause := h.claim().PendingCause; cause != CauseNeverReconnected {
 		t.Fatalf("the relaunch is pending cause %q, want %q", cause, CauseNeverReconnected)
 	}
-	if p := h.pending(); p.Number != number || p.taken() || !p.Interrupted {
-		t.Fatalf("the claim holds %+v, want task %d taken back with the note of a cut turn", p, number)
-	}
-	h.wantTakenOnceMore(number, func(h *harness) {
-		h.relaunched()
-		h.mustTake()
-	})
+	h.wantTakenBackWithItsNote(number)
+	h.wantTakenOnceMore(number, relaunchedAndTaken)
 }
 
 // Row 11: a hello before the reconnect deadline the close armed disarms it, and the bounds are
@@ -712,16 +698,10 @@ func owedFinishOverATurnThatRan(t *testing.T, refusing bool) (*harness, uint64) 
 // taken back: the store records it finished, and no value of it is left for a process to take.
 func (h *harness) wantOwedFinishMade(number uint64) {
 	h.t.Helper()
-	finished := h.records.of(finishedLine)
-	if len(finished) != 1 {
-		h.t.Fatalf("%q was logged %d times, want once", finishedLine, len(finished))
-	}
-	wantAttr(h.t, finished[0], "by", finishedByReport)
-	for _, r := range h.records.of(takenBackLine) {
-		if task, _ := r.attr("task"); task.String() == strconv.FormatUint(number, 10) {
-			cause, _ := r.attr("cause")
-			h.t.Fatalf("task %d was taken back (%s), want it finished by its owed report", number, cause)
-		}
+	h.wantFinishedOnce(finishedByReport)
+	for _, r := range h.recordsNaming(takenBackLine, number) {
+		cause, _ := r.attr("cause")
+		h.t.Fatalf("task %d was taken back (%s), want it finished by its owed report", number, cause)
 	}
 	if p := h.claim().Pending; p != nil && p.Number == number {
 		h.t.Fatalf("the claim still holds %+v, want task %d finished", p, number)
@@ -897,10 +877,7 @@ func TestTakeOfARestoredClaimReadiedWithNoHelloIsEndedByTheReconnectDeadline(t *
 		t.Fatalf("the relaunch is pending cause %q, want %q", cause, CauseNeverReconnected)
 	}
 	h.wantTakenBackWithItsNote(number)
-	h.wantTakenOnceMore(number, func(h *harness) {
-		h.relaunched()
-		h.mustTake()
-	})
+	h.wantTakenOnceMore(number, relaunchedAndTaken)
 }
 
 // retiredByTheOperator is the operator's stop of the claim, which retires it (retire).
@@ -915,8 +892,7 @@ func retiredByTheOperator(t *testing.T, h *harness) {
 func retriedAfterRetirement(h *harness) {
 	h.t.Helper()
 	h.must(RequestOperatorRetry{Claim: h.token})
-	h.relaunched()
-	h.mustTake()
+	relaunchedAndTaken(h)
 }
 
 // relaunchedAndTaken is the process a relaunch started brought up to ready, its take accepted.
@@ -1375,10 +1351,7 @@ func TestTakeOfARestoredWorkingClaimIsBoundedByTheReconnectDeadlineArmedAtItsFir
 			t.Fatalf("the relaunch is pending cause %q, want none: it is charged nothing", cause)
 		}
 		h.wantTakenBackWithItsNote(number)
-		h.wantTakenOnceMore(number, func(h *harness) {
-			h.relaunched()
-			h.mustTake()
-		})
+		h.wantTakenOnceMore(number, relaunchedAndTaken)
 	})
 	t.Run("an answered ask", func(t *testing.T) {
 		h := restoredWorking(t, awaiting)

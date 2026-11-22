@@ -117,10 +117,7 @@ func TestTaskCostReadsTheMachinesOwnLog(t *testing.T) {
 		t.Fatalf("pending %+v, want both tasks finished", p)
 	}
 
-	cost, err := ReadTaskCost(strings.NewReader(log.String()), TaskCostArgs{From: epoch.Add(-time.Hour), To: h.clock.Now().Add(time.Second), Take: takeBound})
-	if err != nil {
-		t.Fatal(err)
-	}
+	cost := readLogCost(t, h, log)
 	if cost.TurnsStarted != (TurnCauses{Task: 2, None: 1}) || cost.TurnsEnded != (TurnCauses{Task: 2, None: 1}) {
 		t.Errorf("turns started %+v and ended %+v, want two by a task number and one with no cause each", cost.TurnsStarted, cost.TurnsEnded)
 	}
@@ -674,10 +671,7 @@ func TestTaskCostLogReadsTheMachinesOwnPutBack(t *testing.T) {
 				t.Fatalf("the log holds %d put-back lines, want one", n)
 			}
 
-			cost, err := ReadTaskCost(strings.NewReader(log.String()), TaskCostArgs{From: epoch.Add(-time.Hour), To: h.clock.Now().Add(time.Second), Take: takeBound})
-			if err != nil {
-				t.Fatal(err)
-			}
+			cost := readLogCost(t, h, log)
 			if cost.TurnsStarted != (TurnCauses{Task: 1, None: 1}) || cost.TurnsEnded != (TurnCauses{Task: 1, None: 1}) {
 				t.Errorf("turns started %+v and ended %+v, want one by a task number and the put-back run with no cause each", cost.TurnsStarted, cost.TurnsEnded)
 			}

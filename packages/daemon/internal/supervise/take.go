@@ -480,8 +480,7 @@ func take(m *Machine, ctx context.Context, ev Event) error {
 }
 
 // answeredFromRecord answers the four takes the record alone decides (take), and reports whether
-// it answered this one. The phase is read once, from the one function that decides it
-// (takePhase).
+// it answered this one.
 func (m *Machine) answeredFromRecord(request RequestTake) bool {
 	p := m.claim.Pending
 	switch {

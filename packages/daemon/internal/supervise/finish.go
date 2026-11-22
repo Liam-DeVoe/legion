@@ -90,12 +90,13 @@ func finishAtTurnsEnd(m *Machine, ctx context.Context, _ Event) error {
 }
 
 // overTurnFinish is how a take's turn that is over settles its task where no write of the store
-// has finished it yet: by the report whose finish the store refused (finishOwed), else by its end
-// frame for a plugin that names no number (TakesNoTask); false for neither, a task of a
-// plugin that names its number which no report has finished, which only that report finishes.
+// has finished it yet: by the report whose finish the store refused (takePhase, waitFinish),
+// whatever the claim's plugin, else by its end frame for a plugin that names no number
+// (TakesNoTask); false for neither, a task of a plugin that names its number which no report has
+// finished, which only that report finishes.
 func (m *Machine) overTurnFinish() (by string, finishes bool) {
 	switch {
-	case m.finishOwed:
+	case m.takePhase() == waitFinish:
 		return finishedByReport, true
 	case TakesNoTask(m.claim.PluginContract):
 		return finishedByEndFrame, true

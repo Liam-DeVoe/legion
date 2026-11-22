@@ -187,7 +187,7 @@ func (m *Machine) onAnchoredConn() bool {
 // see either.
 func (m *Machine) anchorRestored() {
 	p := m.claim.Pending
-	if p == nil || !p.taken() || p.TakenText == "" || m.finishOwed || m.ladderOwed != nil {
+	if p == nil || !p.taken() || p.TakenText == "" || m.takePhase() == waitFinish || m.ladderOwed != nil {
 		return
 	}
 	count := m.counted()

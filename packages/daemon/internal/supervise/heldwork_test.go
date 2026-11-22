@@ -96,7 +96,7 @@ func TestAReconnectDeadlineLeavesAHeldSuspensionToTheTakesTurnAndReport(t *testi
 // a pending task asks once, bounded by the reconnect deadline (connview.go), so the relaunch is
 // decided by the next hello's answer or by that deadline, and never left to the stall backstop:
 //
-//   - the next hello asks again (askRestoredTurn), and an answer of no turn ends the turn the claim
+//   - the next hello asks again (askView), and an answer of no turn ends the turn the claim
 //     is read in (applyTurnAnswer): the relaunch waits for the take's report, which finishes the
 //     task once before the relaunch runs;
 //   - with no answer and no turn frame on that connection by the reconnect deadline, the process is

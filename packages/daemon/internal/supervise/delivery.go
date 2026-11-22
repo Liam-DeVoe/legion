@@ -1199,15 +1199,15 @@ const outOfMemoryTask = "Your pod ran out of memory. Kubernetes ended the contai
 // delivery id, which names its round, and the next take of it drops it (takeable).
 //
 // A take whose report named its number and whose finish the store refused (Machine.finishOwed) is
-// not taken back but finished, by that report, whichever turn it awaits and whether or not a turn
-// runs: the report decides (makeOwedFinish), and a finish the store refuses again is retried as
-// this let-go's own refusals are. A take whose turn has otherwise ended (takesTurnRan) is settled
-// by its claim's contract. Where the end frame finishes a task — a plugin below
-// TaskTakeContract, whose reports name no number (TakesNoTask) — it is not taken back but
-// finished: its turn ran whole, and only the report of it is lost with the process (finishTask,
-// by the end frame). Where only a report naming the number finishes it, and none has, the end of
-// a run says nothing of whose run it was, so it is taken back with the note a cut turn gets, as
-// though its turn were still running: the next accepted take carries the sentence of its
+// not taken back but finished, by that report, whichever turn it awaits, whether or not a turn
+// runs, and whatever the claim's plugin: the report decides (makeOwedFinish), and a finish the
+// store refuses again is retried as this let-go's own refusals are. A take whose turn has otherwise
+// ended (takesTurnRan) is settled by its claim's contract. Where the end frame finishes a task — a
+// plugin below TaskTakeContract, whose reports name no number (TakesNoTask) — it is not taken back
+// but finished: its turn ran whole, and only the report of it is lost with the process
+// (finishTask, by the end frame). Where only a report naming the number finishes it, and none has,
+// the end of a run says nothing of whose run it was, so it is taken back with the note a cut turn
+// gets, as though its turn were still running: the next accepted take carries the sentence of its
 // interruption, and the let-go that follows records the task's turn as cut off
 // (Machine.cutTurnOf). Whether a turn runs is the one answer every let-go reads (cutsTurn, as
 // recordEnd and the stall backstop read it): a claim stored working for nothing that runs is in

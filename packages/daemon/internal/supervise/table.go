@@ -1417,7 +1417,7 @@ func observe(m *Machine, ctx context.Context, ev Event) error {
 			if m.helloAsked {
 				return nil
 			}
-			return m.askTurnOver(ctx, ev)
+			return m.askTurnOver(ctx)
 		}
 		if m.askTurn && !m.askedAt.IsZero() && !m.helloAsked {
 			m.askRestoredTurn(ctx)
@@ -1573,12 +1573,12 @@ func turnAnswered(m *Machine, ctx context.Context, ev Event) error {
 		if m.connSeen != viewAsked {
 			return nil
 		}
-		return m.answerView(ctx, answer.Streaming, ev)
+		return m.answerView(ctx, answer.Streaming)
 	}
 	if answer.Streaming && !m.busy() {
 		m.log.Info("supervise: the agent of a claim the daemon's start restored is in a turn its shim's replay did not show begin; the claim is working")
 	}
-	if err := m.answerView(ctx, answer.Streaming, ev); err != nil {
+	if err := m.answerView(ctx, answer.Streaming); err != nil {
 		return err
 	}
 	if !answer.Streaming {
@@ -1625,7 +1625,7 @@ func reconnectedMidTurn(m *Machine, ctx context.Context, ev Event) error {
 	if m.askView(ctx) {
 		return nil
 	}
-	return m.askTurnOver(ctx, ev)
+	return m.askTurnOver(ctx)
 }
 
 // unansweredAsksWarn is the count of unanswered asks in a row from which askTurnOver and
@@ -1664,7 +1664,7 @@ func (m *Machine) logUnansweredAsk(ctx context.Context, line string, args ...any
 // answer either way makes the connection's view whole again where every answer does, which ends
 // the reconnect deadline and askFirst with it (answerView), the ask a reconnect hello would make
 // served by this one (connview.go).
-func (m *Machine) askTurnOver(ctx context.Context, ev Event) error {
+func (m *Machine) askTurnOver(ctx context.Context) error {
 	if !m.askFirst {
 		return nil
 	}
@@ -1682,7 +1682,7 @@ func (m *Machine) askTurnOver(ctx context.Context, ev Event) error {
 	if !state.IsStreaming {
 		m.log.Info("supervise: the turn an earlier daemon saw start is over")
 	}
-	return m.answerView(ctx, state.IsStreaming, ev)
+	return m.answerView(ctx, state.IsStreaming)
 }
 
 // closed is the claim's connection closing: the connection's view of the worker's turns is cut,
