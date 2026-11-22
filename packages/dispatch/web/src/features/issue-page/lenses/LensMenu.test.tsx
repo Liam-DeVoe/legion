@@ -646,6 +646,34 @@ test("a refusal adds no row", async () => {
   }
 });
 
+// A pick on a node that became gone while its menu was open is refused 409 NODE_GONE, and the
+// row says the node is no longer here, as for a 404: gone is final, and no second pick can land.
+test("a pick on a gone node says it is no longer here", async () => {
+  const user = userEvent.setup();
+  const [read] = buildIssueTree({ issue: ISSUE, tree: treeAnswer(0) }).children;
+  if (read?.reference === undefined) throw new Error("the tree read draws no statement");
+  answerCatalogue(() => Response.json(schema(CATALOGUE)));
+  const tree = answerTreeReads();
+  const bodies = answerInvocations(() =>
+    Response.json(
+      { code: "NODE_GONE", error: "the node is gone, and gone is final: no write writes on it" },
+      { status: 409 }
+    )
+  );
+  const view = renderAt(<TreeReadRows />);
+  try {
+    const control = await focusedAct(view, read.id);
+    await user.click(control);
+    await user.click((await drawnItems(view))[0] as HTMLElement);
+    await waitFor(() => expect(bodies).toHaveLength(1));
+    await letRequestsSettle();
+    expect(refusal(view), "a gone node's refusal says another sentence").toBe(LENS_ANSWERS.gone);
+    expect(tree.reads, "the refusal read the tree again").toBe(1);
+  } finally {
+    view.unmount();
+  }
+});
+
 // A 201 that comes after the reader left this issue's outline moves nothing: the reader stays
 // where they went, on a page that is no issue's, on another issue's outline or on one of this
 // issue's views, whose own query stands.
