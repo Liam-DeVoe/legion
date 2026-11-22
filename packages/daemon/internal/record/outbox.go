@@ -897,7 +897,7 @@ type CatchUp struct {
 // ended carries neither, and reads as registered on the root's own document.
 //
 // A catch-up carries one entry for each step the root must hold open before its tree works
-// (classify.RequiredSteps over the steps the tree is gated on, TreeSteps), so a deployment that
+// (TreeGate.Required, RequiredSteps over the steps the tree is gated on), so a deployment that
 // gates nothing carries the one spec entry with Gated false: that registration opens the step at
 // once and asks no person, which is what the policy word `off` said. The list replaced that
 // word, because one word cannot name a list and each entry now says its own step's part of it. A
@@ -1845,28 +1845,22 @@ type PhaseEnded struct {
 
 // DroppedMergeForward is a merge forward a move into awaiting_children dropped before it landed
 // (PhaseEnded.MergeForward): Head is the head the merge forward was asked of, Base the base branch
-// it was to merge forward onto that head, and Role the role it was asked of where that is another
-// role than the implementer, empty for the implementer, as the record's ask that names no role is
-// the implementer's (MergeForward.Asked).
+// it was to merge forward onto that head, and Role the role it was asked of (MergeForward.Asked):
+// the implementer, or the merger for an ask made in merging. Its one writer, workflow's
+// awaitChildren, sets Role on every value, and no release before this one wrote a row that carries
+// the type, since such a release refuses a row with `mergeForward` (PhaseEnded), so no reader
+// meets an empty role.
 type DroppedMergeForward struct {
 	Head string     `json:"head"`
 	Base string     `json:"base"`
-	Role claim.Role `json:"role,omitempty"`
-}
-
-// Asked is the role d was asked of: Role, or the implementer where Role is empty.
-func (d DroppedMergeForward) Asked() claim.Role {
-	if d.Role == "" {
-		return claim.RoleImplementer
-	}
-	return d.Role
+	Role claim.Role `json:"role"`
 }
 
 // childrenFinished is when a waiting parent's next task comes, in every message of a move into
 // awaiting_children (PhaseEnded.Message, DroppedMergeForward.RoleMessageBody).
 const childrenFinished = "The daemon gives the issue its next task once its children are finished."
 
-// RoleMessageBody is the body of the role message (RoleMessage) the role d was asked of (Asked) is
+// RoleMessageBody is the body of the role message (RoleMessage) the role d was asked of (Role) is
 // sent when a move into awaiting_children that ends no phase of that role's drops d (workflow's
 // awaitChildren): the issue waits on its open children, d named with that role's rule for it
 // (told), and when the issue's next task comes.
@@ -1899,7 +1893,7 @@ func (PhaseEnded) OutboxKind() OutboxKind { return OutboxKindPhaseEnded }
 //
 //   - where the move dropped no merge forward that had not landed, the worker commits and pushes
 //     what it has and does no more work on the phase, whatever its role;
-//   - where it dropped one and the worker is the role it was asked of (DroppedMergeForward.Asked),
+//   - where it dropped one and the worker is the role it was asked of (DroppedMergeForward.Role),
 //     the same, with the dropped merge forward named and that role's rule for it
 //     (DroppedMergeForward.told);
 //   - where it dropped one and the worker is another, it writes and pushes nothing more, since
@@ -1908,11 +1902,11 @@ func (PhaseEnded) OutboxKind() OutboxKind { return OutboxKindPhaseEnded }
 func (p PhaseEnded) Message(issue string) string {
 	work := fmt.Sprintf("Commit and push what you have to the issue's branch, and do no more work on %s.", p.From)
 	if dropped := p.MergeForward; dropped != nil {
-		if p.Role == dropped.Asked() {
+		if p.Role == dropped.Role {
 			work += " " + dropped.told(issue)
 		} else {
 			work = fmt.Sprintf("Write and push nothing more, because the %s may be merging in the workspace you share:"+
-				" put what you found on the Dispatch issue, and do no more work on %s.", dropped.Asked(), p.From)
+				" put what you found on the Dispatch issue, and do no more work on %s.", dropped.Role, p.From)
 		}
 	}
 	return fmt.Sprintf("%s: the daemon ended your %s phase, and the issue is in %s now: it waits on its open Dispatch children, and no task of yours follows."+

@@ -25,14 +25,15 @@ body: |-
   entry whose task a re-admission cleared and no retry has replaced, and for a reviewer on an
   entry the release before raised, since that release stored the reviewer's task with its round's
   sentences. Where the move drops a merge forward of the parent's pull request that has not
-  landed, a stopped worker other than the implementer is told to write and push nothing more,
-  since the implementer may be merging in the workspace they share, and the implementer is told
-  of the dropped merge forward, with its head and its base, in its own `phase_ended` message where
-  the move ended its phase and otherwise in a `role_message`: one that has begun the merge
-  finishes and pushes it and does nothing more, one that has not begun it begins none, and the
-  daemon does not ask for it again. `request_backward_move` and `sign_off` on the parent are
-  refused `WAITING_ON_CHILDREN`. The wait records each child that held it, the ones open at the
-  move and each one an admission pass finds open under the parent later. Once no child is open,
+  landed, a stopped worker other than the role it was asked of (the implementer, or the
+  merger for an ask made in merging) is told to write and push nothing more, since that
+  role may be merging in the workspace they share, and that role is told of the dropped
+  merge forward, with its head and its base, in its own `phase_ended` message where the move
+  ended its phase and otherwise in a `role_message`: one that has begun the merge finishes
+  and pushes it and does nothing more, one that has not begun it begins none, and the daemon
+  does not ask for it again. `request_backward_move` and `sign_off` on the parent are refused
+  `WAITING_ON_CHILDREN`. The wait records each child that held it, the ones open at the move
+  and each one an admission pass finds open under the parent later. Once no child is open,
   the admission pass returns the parent on a new phase entry, marked as a move back, so a
   completion from before the wait is refused. A held plan or implementation comes back as that
   phase, and a held test, review or acceptance comes back as `testing`, on a task that names the

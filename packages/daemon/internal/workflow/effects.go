@@ -1206,15 +1206,18 @@ func continueLine(issue record.Issue) string {
 // viewSentence is the one sentence each task of a phase worker of issue carries when its spec is
 // a view on an ancestor's requirements (record.Issue.ViewOf, dispatch://INFRA-3320, R4), and ""
 // for any other issue: the issue's requirements are the parts of the ancestor's requirements that
-// the Delivers: line of the issue's spec names. The task is built from the record alone, inside
-// the transition, so the view fact the last registration of the spec step recorded is what it
-// reads, whether a basis or a person's approval opened that step, and no document is read.
+// the Delivers: line of the issue's spec names, so the Coverage line Dispatch prints for the
+// issue, which counts only the requirement blocks of the issue's own spec, shows no gap in its work.
+// The task is built from the record alone, inside the transition, so the view fact the last
+// registration of the spec step recorded is what it reads, whether a basis or a person's approval
+// opened that step, and no document is read.
 func viewSentence(issue record.Issue) string {
 	if issue.ViewOf == "" {
 		return ""
 	}
-	return fmt.Sprintf("%s is a view on %s: the requirements of %s are the parts of the requirements of %s that the Delivers: line in the spec of %s names.",
-		issue.Key, issue.ViewOf, issue.Key, issue.ViewOf, issue.Key)
+	return fmt.Sprintf("%s is a view on %s: the requirements of %s are the parts of the requirements of %s that the Delivers: line in the spec of %s names,"+
+		" so Dispatch's Coverage line, which counts only %s's own blocks, shows no gap.",
+		issue.Key, issue.ViewOf, issue.Key, issue.ViewOf, issue.Key, issue.Key)
 }
 
 // handoffWord is the word of the Dispatch handoff record role writes (phase.Handoff's writer), ""

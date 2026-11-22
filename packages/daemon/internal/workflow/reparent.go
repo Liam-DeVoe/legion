@@ -154,7 +154,7 @@ func (e *Engine) reparentSeed(ctx context.Context, tx pgx.Tx, issue record.Issue
 	if err != nil {
 		return record.ReparentSeed{}, err
 	}
-	for _, step := range classify.RequiredSteps(e.cfg.Steps) {
+	for _, step := range (record.TreeGate{Steps: e.cfg.Steps, Rows: gates}).Required() {
 		gate, held := gates[step]
 		if !held {
 			continue

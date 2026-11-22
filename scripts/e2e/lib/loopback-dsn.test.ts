@@ -1,12 +1,15 @@
 import { describe, expect, test } from "bun:test";
+import { chmodSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
+import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 
 // loopback-dsn.py's tests: the helper reads each DSN with the real libpq of this host, so every
 // case asserts the answer libpq gave the helper rather than a pattern of the DSN's text. The
-// last block drives lib/loopback-dsn.sh's run_database_url, which the proofs call and lib/rig.sh
+// next block drives lib/loopback-dsn.sh's run_database_url, which the proofs call and lib/rig.sh
 // sources, and pins the connection string it answers with. A host with no python3 or no libpq
-// skips them, naming what it lacks.
+// skips them, naming what it lacks. The last block runs lib/loopback-dsn.sh's helpers under
+// `set -x` over stand-ins for python3 and psql, and reads where the trace holds the DSN.
 
 const root = join(import.meta.dir, "..", "..", "..");
 const helper = join(import.meta.dir, "loopback-dsn.py");
@@ -387,4 +390,71 @@ describe.skipIf(skip)("lib/loopback-dsn.sh's run_database_url names the run's ow
         " refusal prints no value that holds one"
     );
   });
+});
+
+/** The shell a traced case runs: the lib sourced, then the case's CALL under `set -x`, with the
+ *  DSN in the environment as `variable` and stand-ins for python3 and psql first on PATH. $1 is
+ *  the checkout, and $2 the call. */
+const tracedRig = `set -euo pipefail
+. "$1/scripts/e2e/lib/loopback-dsn.sh"
+set -x
+eval "$2"
+set +x
+printf '%s\\n' "\${answer-}"
+`;
+const scratch = temporaryDirectories("loopback-dsn-test");
+
+/** Runs call under `set -x` (tracedRig), where python3 prints 127.0.0.1 and psql succeeds, with
+ *  dsn in `variable`: its exit status, the trace (its stderr) and what it assigned `answer`. */
+function traced(call: string, dsn: string): { code: number; trace: string; answer: string } {
+  const bin = scratch();
+  const standIns: [string, string][] = [
+    ["python3", "echo 127.0.0.1"],
+    ["psql", "exit 0"],
+  ];
+  for (const [name, body] of standIns) {
+    writeFileSync(join(bin, name), `#!/bin/sh\n${body}\n`);
+    chmodSync(join(bin, name), 0o755);
+  }
+  const run = Bun.spawnSync(["bash", "-c", tracedRig, "traced", root, call], {
+    env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, [variable]: dsn },
+    stderr: "pipe",
+    stdout: "pipe",
+  });
+  return {
+    code: run.exitCode,
+    trace: run.stderr.toString(),
+    answer: run.stdout.toString().trim(),
+  };
+}
+
+// Each helper turns the shell's xtrace off for itself, so under `bash -x` the DSN's password is
+// on no line of its own trace. A caller's own line that passes the DSN still carries it, which
+// require_loopback_env avoids by taking the variable's name: its call holds no DSN at all.
+describe("lib/loopback-dsn.sh's helpers trace no DSN of their own", () => {
+  const dsn = `postgres://legion_test:${password}@127.0.0.1:5433/postgres?sslmode=disable`;
+
+  test("require_loopback_env reads the DSN by its variable's name, and the trace holds none of it", () => {
+    const run = traced(`require_loopback_env answer ${variable} "${what}"`, dsn);
+    expect(run.trace).toContain(`+ require_loopback_env answer ${variable} `);
+    expect(run.trace).not.toContain(password);
+    expect(run.code).toBe(0);
+    expect(run.answer).toBe("127.0.0.1");
+  });
+
+  const callers: [string, string][] = [
+    ["require_loopback_dsn", `require_loopback_dsn answer ${variable} "$${variable}" "${what}"`],
+    ["run_database_url", `run_database_url answer ${variable} "$${variable}" ppd_1 "${what}"`],
+    ["empty_public_schema", `empty_public_schema "$${variable}"`],
+  ];
+  for (const [name, call] of callers) {
+    test(`${name} holds the password on its caller's line alone`, () => {
+      const run = traced(call, dsn);
+      const holding = run.trace.split("\n").filter((line) => line.includes(password));
+      expect(holding.length).toBe(1);
+      // The case's call runs through eval, which traces it one `+` deeper than eval's own line.
+      expect(holding[0]).toMatch(new RegExp(`^\\++ ${name} `));
+      expect(run.code).toBe(0);
+    });
+  }
 });

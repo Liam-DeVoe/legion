@@ -104,9 +104,12 @@
 # the key file at the start of each run of part two and gives the key to that run's panes'
 # environment alone, so a run that starts late reads the token minted last. This script exports
 # no key and prints no token, and it unsets the caller's ANTHROPIC_API_KEY before either part, so
-# no build, broker or service it starts holds one. Once part two ran, the key-leak check counts in
-# the evidence directory, without printing them, the key file's first 8 characters, or, for a
-# minted token, the header of each token the run minted, and fails the run on any.
+# no build, broker or service it starts holds one. Each of its functions that holds the key or the
+# token turns the shell's xtrace off for itself (jwt_exp, mint_gateway_token, key_leaks), and the
+# loopback guard reads LEGION_TEST_PG_DSN by its name (require_loopback_env), so a run under
+# `bash -x` traces no part of the key, the token or the DSN. Once part two ran, the key-leak check
+# counts in the evidence directory, without printing them, the key file's first 8 characters, or,
+# for a minted token, the header of each token the run minted, and fails the run on any.
 #
 # Three variables narrow part two to the runs one measurement needs, and the script passes them to
 # its driver unchanged: APPROVED_VERSION_NEWS_STEP names one step by the word the last line names
@@ -384,8 +387,12 @@ check_jj() {
 
 # jwt_exp TOKEN prints the exp claim of the JWT TOKEN, the second it ends at, read from its payload
 # with no check of its signature, which is the gateway's to check. It prints nothing and fails
-# where the payload holds no exp claim.
+# where the payload holds no exp claim. Like every reader of a secret here, it turns the shell's
+# xtrace off for itself (`local -`) before it expands TOKEN, so a run under `bash -x` writes no
+# part of the token into its transcript.
 jwt_exp() {
+  local -
+  set +x
   local payload=${1#*.} claims
   payload=${payload%%.*}
   case $((${#payload} % 4)) in
@@ -403,10 +410,14 @@ jwt_exp() {
 # over, so the driver never reads half a token. It sets gateway_exp to the token's exp claim, and
 # adds the token's header, the part before its first dot, to the list the key-leak check reads
 # (gateway_tree/headers). The token is in no output and in no command's arguments: curl writes it
-# into this shell's variable, and printf, a builtin, writes it to the file. A mint that fails, an
-# answer that is no JWT, and a token whose exp claim leaves it gateway_keep_seconds or less write
-# nothing: each sets gateway_said to the reason and fails.
+# into this shell's variable, and printf, a builtin, writes it to the file. It turns the shell's
+# xtrace off for itself (`local -`) before the token stands in a variable, so a run under `bash -x`
+# traces no command that holds the token or a part of it. A mint that fails, an answer that is no
+# JWT, and a token whose exp claim leaves it gateway_keep_seconds or less write nothing: each sets
+# gateway_said to the reason and fails.
 mint_gateway_token() {
+  local -
+  set +x
   local token exp now header
   if ! token=$(timeout "$gateway_mint_seconds" curl -sSf --retry 3 -H 'Metadata-Flavor: Google' \
     "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity?audience=$gateway_audience&format=full"); then
@@ -468,6 +479,19 @@ refresh_gateway_token() {
       note "the identity token for the audience $gateway_audience was not minted again at $(date -u +%Y-%m-%dT%H:%M:%SZ): $gateway_said; the token in $key_file has $((gateway_exp - now)) seconds left, and the next try is in $gateway_retry_seconds s" >&2
     fi
   done
+}
+
+# key_leaks prints how many times the first 8 characters of the key in key_file occur in the
+# evidence directory (the key-leak check), and prints nothing of the key: grep reads those
+# characters from a pipe, and only the count of matches leaves it. The key stands in a variable of
+# this function alone, which turns the shell's xtrace off for itself (`local -`) before it reads
+# the file, so a run under `bash -x` writes no part of the key into its transcript.
+key_leaks() {
+  local -
+  set +x
+  local key
+  key=$(<"$key_file")
+  { grep -rFoa -f <(printf '%s\n' "${key:0:8}") "$version_news_evidence" || true; } | wc -l
 }
 
 # head_only_why WORD prints the why of WORD's entry of head_only, and answers 1 for a step that
@@ -728,16 +752,17 @@ for tool in go git tar awk python3; do
   command -v "$tool" >/dev/null || fail "$tool is not on PATH"
 done
 check_jj
-[ -n "${LEGION_TEST_PG_DSN:-}" ] ||
+[ -n "${LEGION_TEST_PG_DSN:+set}" ] ||
   refuse "LEGION_TEST_PG_DSN is required: it names the PostgreSQL the daemon migrates and runs on (postgres://<user>@<host>:<port>/<database>?sslmode=disable). This script starts no database."
 # require_loopback_dsn in lib/loopback-dsn.sh says why a caller of the loopback guard clears
-# these three. The lib's prerequisites reads the DSN again, inside the run it makes.
+# these three. The lib's prerequisites reads the DSN again, inside the run it makes. Both name
+# the variable and not its value (require_loopback_env), so a run under `bash -x` traces no DSN.
 unset PGHOSTADDR PGSERVICE PGSERVICEFILE
 # A caller's own model key reaches nothing the run starts, in either part: no build, no Dispatch
 # and no daemon holds it, and part two's driver reads the key file and gives the key to each pane
 # alone.
 unset ANTHROPIC_API_KEY
-require_loopback_dsn db_host LEGION_TEST_PG_DSN "$LEGION_TEST_PG_DSN" "this run creates and drops databases there" ||
+require_loopback_env db_host LEGION_TEST_PG_DSN "this run creates and drops databases there" ||
   refuse "$db_host"
 note "store LEGION_TEST_PG_DSN on $db_host (not printed)"
 # The base is read only by a run that uses it: the control, and part two's base arm.
@@ -934,20 +959,18 @@ proof=$part_two/proof.log
 
 # The key, counted in every file the run kept and printed nowhere: grep reads what it looks for from
 # a pipe or a file, and only the count of matches leaves it. For a key file's key that is the key's
-# first 8 characters. For the identity token it is the header of each token the run minted, which
-# mint_gateway_token lists: the first 8 characters of a JWT are those of every JWT whose header
-# names its algorithm first, while the header of a token Google signs also names the key it signs
-# with, and every token signed with that key opens with it, so the list stands for every token a
-# run of part two read.
+# first 8 characters (key_leaks). For the identity token it is the header of each token the run
+# minted, which mint_gateway_token lists: the first 8 characters of a JWT are those of every JWT
+# whose header names its algorithm first, while the header of a token Google signs also names the
+# key it signs with, and every token signed with that key opens with it, so the list stands for
+# every token a run of part two read.
 begin key-leak
 if [ -n "$gateway_audience" ]; then
   leaks=$({ grep -rFoa -f "$gateway_tree/headers" "$version_news_evidence" || true; } | wc -l)
   note "the headers of the identity tokens the run minted occur $leaks times in $version_news_evidence"
   [ "$leaks" -eq 0 ] || fail "the header of an identity token the run minted is in the evidence directory $leaks times"
 else
-  key=$(<"$key_file")
-  leaks=$({ grep -rFoa -f <(printf '%s\n' "${key:0:8}") "$version_news_evidence" || true; } | wc -l)
-  unset key
+  leaks=$(key_leaks)
   note "the key's first 8 characters occur $leaks times in $version_news_evidence"
   [ "$leaks" -eq 0 ] || fail "the model key's first 8 characters are in the evidence directory $leaks times"
 fi

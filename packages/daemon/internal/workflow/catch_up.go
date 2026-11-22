@@ -318,10 +318,11 @@ type treeWaits struct {
 // own design gate (record.Chains.HoldsOwnGate) also has the catch-up say whether a hand-over of the
 // release before carried it in at this generation, and whether its old root's gate came with it
 // (ArchitectCarried, the issue's own record), and each design-gate step it must hold open and how
-// it stands. The steps are the ones its tree is gated on (classify.TreeSteps), so a criteria row
-// the architect registered beside a deployment that gates spec and not criteria is listed after the
-// spec, gated as the spec is. An issue under a gate holder registers no gate and was carried in by
-// no hand-over, so its catch-up states no step and is neither handed over nor carried.
+// it stands. The steps are the ones its tree's work waits on (record.TreeGate.Required), so a
+// criteria row the architect registered beside a deployment that gates spec and not criteria is
+// listed after the spec, gated as the spec is. An issue under a gate holder registers no gate and
+// was carried in by no hand-over, so its catch-up states no step and is neither handed over nor
+// carried.
 //
 // With it come the keys, in key order, of the listed issues waiting for this architect's
 // acceptance (awaitingAcceptance). No worker runs in accepting, and the one phase-finished notice
@@ -356,7 +357,7 @@ func treeCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []rec
 			return record.CatchUp{}, treeWaits{}, err
 		}
 		gated := classify.TreeSteps(steps, gates)
-		required := classify.RequiredSteps(gated)
+		required := record.TreeGate{Steps: steps, Rows: gates}.Required()
 		catchUp.Gates = make([]record.CatchUpGate, 0, len(required))
 		for _, step := range required {
 			stated := record.CatchUpGate{Step: step, Gated: slices.Contains(gated, step)}

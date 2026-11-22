@@ -102,7 +102,7 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		// The move dropped a merge forward that had not landed, which the message names.
 		PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.AwaitingChildren,
 			Reason:       "the admission pass stopped the tester's testing phase, while these Dispatch children of LEGION-208 were open: LEGION-209 (todo)",
-			MergeForward: &DroppedMergeForward{Head: "c0de", Base: "main"}},
+			MergeForward: &DroppedMergeForward{Head: "c0de", Base: "main", Role: claim.RoleImplementer}},
 		SuperviseRequest{Op: "retire_task", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 2, Phase: phase.Implementing, Entry: 3},
 		HookPrompt{Hook: "back-to-implementing", Role: claim.RoleImplementer, From: phase.Reviewing, To: phase.Implementing,
 			Count: 3, Counts: map[string]int{"testing-implementing": 1, "reviewing-implementing": 3},
@@ -1073,12 +1073,12 @@ const droppedMergeForwardRefusal = "a phase-ended message that names a dropped m
 // A phase_ended row decodes strictly (DecodeOutboxPayload) whether or not it names a merge
 // forward the move into awaiting_children dropped before it landed: a row a release before this
 // one wrote, or one that dropped none, carries no `mergeForward`, and a row that dropped one
-// carries its head and its base under that name.
+// carries its head, its base and the role it was asked of under that name.
 func TestAPhaseEndedRowDecodesWithAndWithoutADroppedMergeForward(t *testing.T) {
 	const reason = "the admission pass stopped the tester's testing phase, while these Dispatch children of LEGION-208 were open: LEGION-209 (todo)"
 	ended := PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.AwaitingChildren, Reason: reason}
 	dropped := ended
-	dropped.MergeForward = &DroppedMergeForward{Head: "c0de", Base: "main"}
+	dropped.MergeForward = &DroppedMergeForward{Head: "c0de", Base: "main", Role: claim.RoleImplementer}
 	for _, tc := range []struct {
 		name    string
 		payload string
@@ -1087,7 +1087,7 @@ func TestAPhaseEndedRowDecodesWithAndWithoutADroppedMergeForward(t *testing.T) {
 		{name: "a row that names no dropped merge forward", payload: `{"role":"tester","from":"testing","to":"awaiting_children","reason":"` + reason + `"}`,
 			want: ended},
 		{name: "a row that names a dropped merge forward", payload: `{"role":"tester","from":"testing","to":"awaiting_children","reason":"` + reason +
-			`","mergeForward":{"head":"c0de","base":"main"}}`, want: dropped},
+			`","mergeForward":{"head":"c0de","base":"main","role":"implementer"}}`, want: dropped},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			row := OutboxRow{ID: 70, Kind: OutboxKindPhaseEnded, Issue: "LEGION-208", Payload: json.RawMessage(tc.payload)}
@@ -1661,21 +1661,22 @@ func TestARowsBackoffDoublesFromOneSecondUpToSixtyFourSeconds(t *testing.T) {
 //   - The plain form, where the move dropped no merge forward that had not landed: the worker
 //     commits and pushes what it has and does no more work on the phase. The implementer is told
 //     the same, so the role alone does not choose the form.
-//   - The implementer's form, where the move dropped one: the plain words, with the dropped merge
-//     forward named (the issue, the base and the head), the rule that an implementer that has
-//     begun the merge finishes it, pushes it and does nothing more and one that has not begun it
-//     begins none, and that the daemon does not ask for it again and the implementer merges the
-//     base forward only once GitHub reads the pull request CONFLICTING.
+//   - The asked role's form, where the move dropped one and the worker is the role it was asked
+//     of, here the implementer: the plain words, with the dropped merge forward named (the issue,
+//     the base and the head), the rule that a role that has begun the merge finishes it, pushes it
+//     and does nothing more and one that has not begun it begins none, and that the daemon does
+//     not ask for it again and the role merges the base forward only once GitHub reads the pull
+//     request CONFLICTING.
 //   - Any other worker's form, where the move dropped one: "Commit and push" gives way to writing
-//     and pushing nothing more, because the implementer may be merging in the workspace they
-//     share, and putting what it found on the Dispatch issue.
+//     and pushing nothing more, because the role it was asked of may be merging in the workspace
+//     they share, and putting what it found on the Dispatch issue.
 //
 // The same words are asserted by internal/admit's and internal/daemon's
 // TestParentWaitsHoldsEveryPhaseStart.
 func TestAPhaseEndedMessageIntoAwaitingChildrenGivesTheWaitsOwnWords(t *testing.T) {
 	const reason = "the admission pass stopped the %s's %s phase, while these Dispatch children of LEGION-208 were open: LEGION-209 (todo), LEGION-210 (backlog)"
 	tested, implemented := fmt.Sprintf(reason, "tester", "testing"), fmt.Sprintf(reason, "implementer", "implementing")
-	dropped := &DroppedMergeForward{Head: "c0de", Base: "main"}
+	dropped := &DroppedMergeForward{Head: "c0de", Base: "main", Role: claim.RoleImplementer}
 	for _, tc := range []struct {
 		name  string
 		ended PhaseEnded

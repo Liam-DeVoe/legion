@@ -159,18 +159,15 @@ func (e *Engine) awaitChildren(ctx context.Context, tx pgx.Tx, issue record.Issu
 	}
 	var dropped *record.DroppedMergeForward
 	if cleared != nil && cleared.Landed == "" {
-		dropped = &record.DroppedMergeForward{Head: cleared.Head, Base: cleared.Base}
-		if asked := cleared.Asked(); asked != claim.RoleImplementer {
-			dropped.Role = asked
-		}
+		dropped = &record.DroppedMergeForward{Head: cleared.Head, Base: cleared.Base, Role: cleared.Asked()}
 	}
 	e.logOnCommit(ctx, "workflow: a parent waits on its open children", "issue", issue.Key, "tree", issue.Tree,
 		"from", from, "holds", hold.Start, "children", openChildNames(hold.Open))
 	if err := e.notice(ctx, tx, issue.Key, awaitingChildrenNotice(issue.Key, from, hold)); err != nil {
 		return err
 	}
-	if dropped != nil && hold.Ended != dropped.Asked() {
-		addressed, err := e.addressRoles(issue.Project, []roleRecipient{{issue: issue.Key, role: dropped.Asked(), row: issue.Key}}, nil)
+	if dropped != nil && hold.Ended != dropped.Role {
+		addressed, err := e.addressRoles(issue.Project, []roleRecipient{{issue: issue.Key, role: dropped.Role, row: issue.Key}}, nil)
 		if err != nil {
 			return err
 		}

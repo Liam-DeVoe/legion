@@ -1267,14 +1267,14 @@ func basisApproval(gate record.DesignGate) string {
 	return fmt.Sprintf("a person approved version %d of %s", gate.Basis.Version, documentOf(gate.Basis.Issue, gate.Step.OrSpec()))
 }
 
-// basisStepsOf is every step the tree is gated on (record.TreeSteps over steps, the deployment's,
-// and gates: a criteria row the root registered beside a deployment that gates spec and not
-// criteria among them) that stands open on an ancestor's approval in gates, in the tree's order.
-// The opened role message (putGateTold, for tellGateMoved) and the gate sentence a task of news
-// leads with (gateAtSend) both read it, so neither says a person approved such a step.
+// basisStepsOf is every step the tree's work waits on (record.TreeGate.Required over steps, the
+// deployment's, and gates: a criteria row the root registered beside a deployment that gates spec
+// and not criteria among them) that stands open on an ancestor's approval in gates, in the tree's
+// order. The opened role message (putGateTold, for tellGateMoved) and the gate sentence a task of
+// news leads with (gateAtSend) both read it, so neither says a person approved such a step.
 func basisStepsOf(steps []record.DesignStep, gates map[record.DesignStep]record.DesignGate) []record.DesignGate {
 	var onBasis []record.DesignGate
-	for _, step := range classify.RequiredSteps(classify.TreeSteps(steps, gates)) {
+	for _, step := range (record.TreeGate{Steps: steps, Rows: gates}).Required() {
 		if gate, ok := gates[step]; ok && gate.OnBasis() {
 			onBasis = append(onBasis, gate)
 		}
