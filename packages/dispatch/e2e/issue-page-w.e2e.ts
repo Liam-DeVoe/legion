@@ -134,9 +134,16 @@ const CATALOGUE_READ = "**/api/v1/schema/blocks";
 /** The invocation of a lens (`POST /api/v1/issues/{key}/lenses`). */
 const INVOKE_ROUTE = "**/api/v1/issues/*/lenses";
 
-/** The reads the page's shell sends on a timer of its own, on every page and whatever the page
- *  does: the agents and the credential requests waiting on the reader. A count of the requests
- *  an act sends leaves these out, since a window that spans one says nothing of the act. */
+/** The reads the page's shell sends on a timer of its own, whatever an act does. The credential
+ *  requests waiting on the reader are read on every page, as it loads and every 15 s after, by
+ *  the shell's Inbox count (`web/src/features/credentials/pending.ts`'s
+ *  `CREDENTIAL_POLL_INTERVAL_MS`, `inbox/useInboxCount.ts`, `app.tsx`). The agents are read every
+ *  15 s by the shell's poller (`refs/agent-registry.ts`' `AgentRegistryPoller`,
+ *  `AGENT_REGISTRY_POLL_MS`), but only while something on the page draws an agent's name
+ *  (`refs/AgentName.tsx` calls `useAgentRegistry(true)`), as the seeded issue's rows by agent
+ *  sessions do (`e2e/issue-layout-seed.ts`). The rows here write as a person, so no lens row of
+ *  theirs draws an agent's name and starts the agents read. A count of the requests an act sends
+ *  leaves both reads out, since a window that spans one says nothing of the act. */
 const SHELL_TIMED_READS: Readonly<Record<string, true>> = {
   "/api/v1/agents": true,
   "/api/v1/credential-requests": true,

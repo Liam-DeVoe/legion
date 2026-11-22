@@ -103,30 +103,26 @@ const ITEMS: Readonly<Record<string, true>> = { ask: true, comment: true, messag
 /** A fact line of a lens row whose words one stored attribute holds (`STORED_WORDS`). */
 type StoredFact = "earlyWarning" | "prevention" | "reference" | "takenWhere";
 
-/** One lens attribute that holds stored words. */
+/** One fact line of a lens row whose words one stored attribute holds. */
 interface StoredWords {
   /** The kind of node that holds it. */
   readonly type: LensType;
   /** The attribute's name, as the tree read gives it. */
   readonly attribute: string;
-  /** The fact line its words are, by its `LensFacts` member; none for the row's own words. */
-  readonly fact?: StoredFact;
+  /** The fact line its words are, by its `LensFacts` member. */
+  readonly fact: StoredFact;
   /** Whether a node of `type` draws the line; every one does where this is absent. */
   readonly drawn?: (node: TreeAnswerNode) => boolean;
 }
 
 /**
- * The lens attributes that hold stored words, each under the kind of node that holds it: the
- * row's own words - a lens's verdict, a risk's heading - and each fact line by its `LensFacts`
- * member and the rule a node draws it by - a risk's early warning and prevention; a standard's
- * reference, and where a measurement was taken. A constraint's own words are `constraintRuns`'.
- * `lensDrafts` reads each through `plainWords` (`storedRowWords`, `storedFacts`), and
- * `store-words.ts` through its reader that names each store address, so an attribute is named
- * here alone.
+ * The fact lines whose words one stored attribute holds, each under the kind of node that holds
+ * it, by its `LensFacts` member and the rule a node draws it by: a risk's early warning and
+ * prevention; a standard's reference, and where a measurement was taken. `lensDrafts` reads each
+ * through `plainWords` (`storedFacts`), and `store-words.ts` through its reader that names each
+ * store address, so an attribute is named here alone, as a row's own words' is (`ROW_WORDS`).
  */
-export const STORED_WORDS: readonly StoredWords[] = [
-  { attribute: "verdict", type: "lens" },
-  { attribute: "heading", type: "risk" },
+const STORED_WORDS: readonly StoredWords[] = [
   { attribute: "early_warning", fact: "earlyWarning", type: "risk" },
   { attribute: "prevention", fact: "prevention", type: "risk" },
   {
@@ -143,12 +139,15 @@ export const STORED_WORDS: readonly StoredWords[] = [
   },
 ];
 
-/** The stored string the row of `node`, of kind `type`, draws its words from (`STORED_WORDS`):
- *  a lens's verdict and a risk's heading, `""` where the node holds none; undefined for a kind
- *  whose words no one attribute holds. */
-export function storedRowWords(node: TreeAnswerNode, type: LensType): string | undefined {
-  const stored = STORED_WORDS.find((one) => one.type === type && one.fact === undefined);
-  return stored === undefined ? undefined : (node.attributes?.[stored.attribute] ?? "");
+/** The attribute that holds the stored words the row of a lens and of a risk draws
+ *  (`storedRowWords`): a lens's verdict and a risk's heading. A finding's words are its text, and
+ *  a constraint's `constraintRuns`'. */
+const ROW_WORDS: Readonly<Record<"lens" | "risk", string>> = { lens: "verdict", risk: "heading" };
+
+/** The stored string the row of `node`, a lens or a risk as `type` says, draws its words from
+ *  (`ROW_WORDS`): a lens's verdict and a risk's heading, `""` where the node holds none. */
+export function storedRowWords(node: TreeAnswerNode, type: "lens" | "risk"): string {
+  return node.attributes?.[ROW_WORDS[type]] ?? "";
 }
 
 /** The fact lines of `node`, of kind `type`, whose words one stored attribute holds
@@ -160,9 +159,7 @@ export function storedFacts(
 ): Partial<Pick<LensFacts, StoredFact>> {
   const facts: { [fact in StoredFact]?: string } = {};
   for (const stored of STORED_WORDS) {
-    if (stored.type !== type || stored.fact === undefined || stored.drawn?.(node) === false) {
-      continue;
-    }
+    if (stored.type !== type || stored.drawn?.(node) === false) continue;
     const read = words(node.attributes?.[stored.attribute] ?? "");
     if (read !== "") facts[stored.fact] = read;
   }
@@ -204,7 +201,7 @@ export function lensDrafts(
   if (address !== undefined) draft.reference = address;
   switch (type) {
     case "lens": {
-      draft.text = plainWords(storedRowWords(node, type) ?? "");
+      draft.text = plainWords(storedRowWords(node, type));
       const kind = kindOf(node, context);
       draft.lens = kind === "" ? { ...NO_CHIPS } : { ...NO_CHIPS, kind };
       break;
@@ -215,7 +212,7 @@ export function lensDrafts(
       draft.lens = { ...NO_CHIPS };
       break;
     case "risk":
-      draft.text = plainWords(storedRowWords(node, type) ?? "");
+      draft.text = plainWords(storedRowWords(node, type));
       draft.lens = { ...NO_CHIPS, ...storedFacts(node, type) };
       break;
     case "constraint":

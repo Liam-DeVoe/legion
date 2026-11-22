@@ -7,7 +7,13 @@ import { outlineRowPath } from "../issue-address";
 import { chipWords } from "../node-row-chip";
 import { NODE_TYPE_NAMES } from "../page-words";
 import { storedReading } from "../stored-reading";
-import { addressesAsShortForms, type Draft, plainWords, storeKindWord } from "../tree-drafts";
+import {
+  addressesAsShortForms,
+  type Draft,
+  plainWords,
+  storeKindOf,
+  storeKindWord,
+} from "../tree-drafts";
 import type { TreeDraftContext } from "../tree-read/tree-nodes";
 import type { TreeAnswer, TreeAnswerNode } from "../tree-read/tree-read";
 import {
@@ -19,7 +25,6 @@ import {
   lensChipWords,
   lensTypeOf,
   plainRuns,
-  STORED_WORDS,
   storeAddressOf,
   storedFacts,
   storedRowWords,
@@ -68,8 +73,9 @@ const NO_MARKS: readonly DisplayTree[] = [];
  *   addresses stay as written, which the row's link pass links as it links a text drawn as
  *   stored (`RowText.tsx`'s `StoredText`), and its line writes short as every line does.
  * - A lens's, a risk's and a constraint's own draft, whose words `lensDrafts` read from their
- *   attributes (`STORED_WORDS`, `constraintRuns`): each attribute that holds a store address read
- *   again with its names (`nameStored`), an author's link to a node among them.
+ *   attributes (`storedRowWords`, `constraintRuns`, `storedFacts`): each attribute that holds a
+ *   store address read again with its names (`nameStored`), an author's link to a node among
+ *   them.
  *
  * A child issue's title is no markdown and its row draws it as written, so it is left as it is;
  * its line reads a store address as its kind's word, as every line does.
@@ -138,7 +144,7 @@ function nameOf(node: TreeAnswerNode, type: LensType, context: TreeDraftContext)
   if (type === "lens") return lensChipWords(addressesAsShortForms(kindOf(node, context))).words;
   const words =
     type === "risk"
-      ? plainWords(storedRowWords(node, type) ?? "")
+      ? plainWords(storedRowWords(node, type))
       : type === "constraint"
         ? constraintWords(node)
         : (context.lineOf(node.id) ?? "");
@@ -250,13 +256,13 @@ function nameLine(draft: Draft, named: DisplayTree | undefined): void {
 
 /**
  * `draft`'s words that `lensDrafts` read from the attributes of `node`, of kind `type`, read
- * again with each store address in them named (`namedLine`), each only where it names one: a
- * lens's verdict and a risk's heading with their named reading (`nameLine`), so the row links
- * the names; a constraint's words (`constraintRuns`) so too, one paragraph of each stored
- * string's runs, those of a string that names nothing its plain words (`plainRuns`); and each
- * fact line (`STORED_WORDS`) as that reading's words, by the rule `lensDrafts` reads them by
- * (`storedFacts`). The fact lines draw as text (`LensLines.tsx`'s `Words`), so they gain the
- * name and no link.
+ * again with each store address in them named (`namedLine`): a lens's verdict and a risk's
+ * heading (`storedRowWords`) with their named reading (`nameLine`), so the row links the names,
+ * and a constraint's words (`constraintRuns`) so too, one paragraph of each stored string's runs,
+ * those of a string that names nothing its plain words (`plainRuns`), each only where it names
+ * one; and each fact line as that reading's words, by the rule `lensDrafts` reads them by
+ * (`storedFacts`), which for a line that names nothing are the plain words `lensDrafts` wrote.
+ * The fact lines draw as text (`LensLines.tsx`'s `Words`), so they gain the name and no link.
  */
 function nameStored(
   draft: Draft,
@@ -280,14 +286,7 @@ function nameStored(
   } else {
     nameLine(draft, namedLine(storedRowWords(node, type), index, addressesAsShortForms));
   }
-  const facts = draft.lens;
-  const cited = STORED_WORDS.some(
-    (stored) =>
-      stored.type === type &&
-      stored.fact !== undefined &&
-      cites(node.attributes?.[stored.attribute])
-  );
-  if (facts !== undefined && cited) draft.lens = { ...facts, ...storedFacts(node, type, words) };
+  if (draft.lens !== undefined) draft.lens = { ...draft.lens, ...storedFacts(node, type, words) };
 }
 
 /**
@@ -431,7 +430,7 @@ function linkedAddress(link: DisplayTree): string | undefined {
   if (link.type !== "link") return undefined;
   const href = (link.attrs as { readonly href?: unknown } | undefined)?.href;
   const address = typeof href === "string" ? storeAddressReference(href) : undefined;
-  return address === undefined || storeKindWord(address) === undefined ? undefined : address;
+  return address === undefined || storeKindOf(address) === undefined ? undefined : address;
 }
 
 /** Where the page stands, as the router holds it (`useLocation`). */
@@ -461,23 +460,28 @@ export function storeLinkPath(href: string, title: string, page: PageAddress): s
 
 /**
  * Whether `readId`, a node's id in the tree read, is that of the node the store address `address`
- * names, as `addressOf` builds an address from a read id (`storeAddressOf`): with a leading
- * `<kind>/` taken off, the address's id (`dispatch://<kind>/<id>`) for a lens, a risk and a
- * constraint. For a finding (`dispatch://lens/<id>#b-<block>`), the block id is the part after the
- * read id's last `#`, or the whole read id where it holds none, and where it holds one the part
- * before it is the lens's id; a read id of the block id alone names no lens, as `addressOf`
- * takes the lens from the finding's parent.
+ * names, as `addressOf` builds an address from a read id (`storeAddressOf`) for the kind the
+ * address names (`storeKindOf`): with a leading `<kind>/` taken off, the address's id
+ * (`dispatch://<kind>/<id>`) for a lens, a risk and a constraint. For a finding
+ * (`dispatch://lens/<id>#b-<block>`), the block id is the part after the read id's last `#`, or
+ * the whole read id where it holds none, and where it holds one the part before it is the lens's
+ * id; a read id of the block id alone names no lens, as `addressOf` takes the lens from the
+ * finding's parent.
  */
 function namesNode(address: string, readId: string): boolean {
-  if (address.includes("#")) {
-    const hash = readId.lastIndexOf("#");
-    const lens =
-      hash === -1
-        ? address.slice("dispatch://lens/".length, address.indexOf("#"))
-        : readId.slice(0, hash);
-    return storeAddressReference(storeAddressOf("finding", readId, lens)) === address;
+  const kind = storeKindOf(address);
+  switch (kind) {
+    case undefined:
+      return false;
+    case "finding": {
+      const hash = readId.lastIndexOf("#");
+      const lens =
+        hash === -1
+          ? address.slice("dispatch://lens/".length, address.indexOf("#"))
+          : readId.slice(0, hash);
+      return storeAddressReference(storeAddressOf(kind, readId, lens)) === address;
+    }
+    default:
+      return storeAddressReference(storeAddressOf(kind, readId)) === address;
   }
-  const kind = address.slice("dispatch://".length, address.lastIndexOf("/"));
-  if (kind !== "constraint" && kind !== "lens" && kind !== "risk") return false;
-  return storeAddressReference(storeAddressOf(kind, readId)) === address;
 }
