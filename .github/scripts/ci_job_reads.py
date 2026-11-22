@@ -1135,10 +1135,12 @@ TWO_BUILDS_SAME_STEP = "Two-build tests of the Dispatch server against its own b
 # consumernames package (mixedbuild_*_test.go), against the previous build's listener, which
 # build-dispatch-build.sh builds beside its server. It runs only what the twobuild tag adds there,
 # since envoy-infra-go's unit step runs the package's untagged tests, and fails on a skipped row.
-# It is a gate of its own (consumer_names_mixed_build), so the TAG_RUNS pairing below holds
-# envoy_infra_go to this step's reads and not to the Dispatch half's.
+# Its first line sets pipefail: a step that names no shell runs as `bash -e`, so a failed go test
+# piped into tee would pass. It is a gate of its own (consumer_names_mixed_build), so the TAG_RUNS
+# pairing below holds envoy_infra_go to this step's reads and not to the Dispatch half's.
 MIXED_BUILD_STEP = "Mixed-build tests of the consumer-names cutover"
 MIXED_BUILD_SCRIPT = f"""\
+set -o pipefail
 pattern=$(../../../{TAGGED_TESTS} twobuild ./consumernames)
 go test -tags twobuild -count=1 -v -timeout 18m -run "$pattern" ./consumernames 2>&1 | tee "$RUNNER_TEMP/mixed-build.log"
 if grep -E -e '--- SKIP' "$RUNNER_TEMP/mixed-build.log"; then
