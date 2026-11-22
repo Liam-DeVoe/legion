@@ -129,7 +129,7 @@ func TestALinksOwedReadHidesNoStoredHeadAndEachOtherOweHidesItInEitherOrder(t *t
 				if owed := owedCount(t, ctx, pool, "acme/widgets", number); owed != 0 {
 					t.Fatalf("after a link to #%d, whose head is held, %d reads of it are owed; want none", number, owed)
 				}
-				var before *int64
+				var before *owedRead
 				if linkFirst {
 					linkOwedBeforeTheHeadWas(t, ctx, pool, number)
 					if owedCount(t, ctx, pool, "acme/widgets", number) != 1 {
@@ -156,7 +156,7 @@ func TestALinksOwedReadHidesNoStoredHeadAndEachOtherOweHidesItInEitherOrder(t *t
 					}
 				}
 				hidden("after both owes")
-				if err := settleOwedRead(ctx, pool, "acme/widgets", number, *before); err != nil {
+				if err := settleOwedRead(ctx, pool, before.Repo, number, before.Revision); err != nil {
 					t.Fatalf("settle the read of #%d at the first owe's revision: %v", number, err)
 				}
 				if owedCount(t, ctx, pool, "acme/widgets", number) != 1 {

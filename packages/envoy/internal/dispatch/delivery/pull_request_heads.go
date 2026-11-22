@@ -1467,9 +1467,9 @@ func (in *Intake) recordPullRequestHead(ctx context.Context, payload map[string]
 	if covered {
 		return headRead{}, nil
 	}
-	// owed is the revision of the read this pull request was owed as this read begins, nil where
-	// none was owed or it could not be read, read before any call to GitHub: the delete below
-	// takes only that row, so an owe made after this moment stays for the reconcile.
+	// owed is the row of the read this pull request was owed as this read begins, nil where none
+	// was owed or it could not be read, read before any call to GitHub: the delete below takes
+	// only that row, by its own name, so an owe made after this moment stays for the reconcile.
 	owed := owedRevision(ctx, in.pool, repoFull, number)
 	token, err := in.github.RepositoryToken(ctx, owner, repo)
 	if err != nil {
@@ -1524,7 +1524,7 @@ func (in *Intake) recordPullRequestHead(ctx context.Context, payload map[string]
 	// message's whole deadline (the review of cybermonklabs/legion#4209 at ac562e9837, N1).
 	if owed != nil {
 		settling, cancel := owedTableBound(ctx)
-		err := settleOwedRead(settling, in.pool, repoFull, number, *owed)
+		err := settleOwedRead(settling, in.pool, owed.Repo, number, owed.Revision)
 		cancel()
 		if err != nil {
 			logging.FromContext(ctx).Warn("dispatch delivery: delete the read owed before this read; the reconcile reads the pull request once more",

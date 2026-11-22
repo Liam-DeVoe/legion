@@ -169,18 +169,20 @@ func owedTableBound(ctx context.Context) (context.Context, context.CancelFunc) {
 // locked, as a migration of it would, holds no head read and no acknowledgement.
 const owedRevisionReadTimeout = time.Second
 
-// owedRevision is the revision of the read repoFull's pull request number is owed as a read of
-// GitHub begins, nil where none is owed: the one row that read's answer covers and may delete
-// (settleOwedRead). Where the read fails or runs past owedRevisionReadTimeout, it answers nil with
+// owedRevision is the row of the read repoFull's pull request number is owed as a read of GitHub
+// begins, nil where none is owed: its own name, its number and its revision, the one row that
+// read's answer covers and may delete (settleOwedRead, by that name). The row is found in any
+// letter case (owedRowInAnyCase), as every other reader of an owed read finds it: a link writes
+// the owe in the link's letters, and the event of the same pull request names the repository in
+// GitHub's, so a read in exact case found no row, settled nothing, and the reconcile read the pull
+// request once more. Where the read fails or runs past owedRevisionReadTimeout, it answers nil with
 // one log line, so the read deletes nothing: the record stays, and the reconcile's next pass reads
 // the pull request once more and settles it. That costs one read, and loses no owe.
-func owedRevision(ctx context.Context, pool *store.Pool, repoFull string, number int) *int64 {
+func owedRevision(ctx context.Context, pool *store.Pool, repoFull string, number int) *owedRead {
 	bounded, cancel := context.WithTimeout(ctx, owedRevisionReadTimeout)
 	defer cancel()
-	var revision int64
-	err := pool.QueryRow(bounded, `
-		select revision from pull_request_reads_owed where repo = $1 and number = $2
-	`, repoFull, number).Scan(&revision)
+	row := owedRead{Number: number}
+	err := pool.QueryRow(bounded, `select o.repo, o.revision from `+owedRowInAnyCase, repoFull, number).Scan(&row.Repo, &row.Revision)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil
 	}
@@ -189,7 +191,7 @@ func owedRevision(ctx context.Context, pool *store.Pool, repoFull string, number
 			"repo", repoFull, "number", number, "error", err)
 		return nil
 	}
-	return &revision
+	return &row
 }
 
 // owePullRequestRead records that the pull request number of the repository given changed, that
@@ -535,11 +537,11 @@ func refusalOf(err error) string {
 	return ""
 }
 
-// settleOwedRead deletes the read repoFull's pull request number is owed where the row's revision
-// is still revision, the one a read took before it read GitHub (owedRevision,
-// listOwedPullRequestReads). That read's answer covers every owe that row recorded, and every owe
-// made since gave the row another revision (owePullRequestRead, the triggers of
-// pull_request_heads), so its record stays for the next read.
+// settleOwedRead deletes the read pull request number is owed under repoFull, the row's own name
+// as the read that took its revision read it (owedRevision, listOwedPullRequestReads,
+// owedReadsIn), where the row's revision is still revision. That read's answer covers every owe
+// that row recorded, and every owe made since gave the row another revision (owePullRequestRead,
+// the triggers of pull_request_heads), so its record stays for the next read.
 func settleOwedRead(ctx context.Context, pool *store.Pool, repoFull string, number int, revision int64) error {
 	if _, err := pool.Exec(ctx, `
 		delete from pull_request_reads_owed where repo = $1 and number = $2 and revision = $3
