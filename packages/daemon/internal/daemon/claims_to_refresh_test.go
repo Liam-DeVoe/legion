@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -37,7 +38,7 @@ func refreshCountSource(t *testing.T, cfg config.Config, st *store.Store) *sourc
 		runtime: "tmux", admissionCap: cfg.AdmissionCap, startedAt: time.Now(),
 		deployment: func() capabilities.Deployment { return capabilities.Deployment{} },
 		reports:    func() map[claim.Token]capabilities.Report { return nil },
-		noPluginInstall: func(_ context.Context, c supervise.Claim) bool {
+		noPluginInstall: func(_ context.Context, _ pgx.Tx, c supervise.Claim) bool {
 			return c.Role == claim.RoleReviewer
 		},
 	}
@@ -151,6 +152,44 @@ func TestTheStateCountsTheClaimsTheStalePluginLaneHasLeftToRefresh(t *testing.T)
 	}
 	if got := refreshCountState(t, cfg, st, view).ClaimsToRefresh; got != 0 {
 		t.Fatalf("claimsToRefresh = %d once every claim records this contract, want 0", got)
+	}
+}
+
+// Under Kubernetes the state's count asks, of a stale claim of a role that is none of Legion's,
+// whether its launch installs a plugin, and that reads the plan of the claim's issue. The count
+// runs inside the state's snapshot under a context that marks the connection the snapshot holds,
+// as every API route's does, so the pool refuses that caller a connection of its own
+// (store.ErrNestedAcquire). The deployment's prober runs on Claude Code, and the plan of its
+// issue defines no prober, so its stale claim is one no install moves and the count leaves it
+// out: the read goes through the snapshot itself (stateNoPluginInstall).
+func TestTheStateCountReadsAClaimsPlanThroughItsOwnSnapshot(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Runtime.Name = "kubernetes"
+	cfg.Roles = []config.Role{{Name: "prober", Type: "testing", GitHubApp: config.RoleAppReview}}
+	cfg.WorkerBackends = map[claim.Role]runtime.Backend{"prober": runtime.BackendClaude}
+	issue := cfg.Project + "-1"
+	c := previousClaim(t, cfg, issue, issue, "prober", supervise.StateIdle)
+	c.PluginContract = api.DaemonAPIVersion - 1
+	putPreviousRun(t, cfg, previousRun{issues: []record.Issue{runningRoot(issue, phase.Implementing)}, claims: []supervise.Claim{c}})
+
+	ctx := store.WithTransactionTracking(context.Background())
+	st, err := store.Open(ctx, cfg.PostgresDSN)
+	if err != nil {
+		t.Fatalf("open the store: %v", err)
+	}
+	t.Cleanup(st.Close)
+	view := refreshCountSource(t, cfg, st)
+	view.noPluginInstall = stateNoPluginInstall(cfg)
+	var state api.State
+	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+		var err error
+		state, _, err = view.State(ctx, tx)
+		return err
+	}); err != nil {
+		t.Fatalf("State: %v", err)
+	}
+	if state.ClaimsToRefresh != 0 {
+		t.Fatalf("claimsToRefresh = %d, want 0: the deployment's prober runs on Claude Code, so no install moves its claim", state.ClaimsToRefresh)
 	}
 }
 

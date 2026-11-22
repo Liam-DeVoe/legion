@@ -87,6 +87,21 @@ func planRoleOf(st *store.Store) func(ctx context.Context, issue string, role cl
 	}
 }
 
+// planRoleIn is planRoleOf for a caller that already holds tx, a transaction of the daemon's
+// store: the role is read through tx, since the pool refuses a caller that holds a connection a
+// second one of its own (store.ErrNestedAcquire). The state's snapshot is such a caller
+// (stateNoPluginInstall).
+func planRoleIn(tx pgx.Tx) func(ctx context.Context, issue string, role claim.Role) (record.PlanRole, bool, error) {
+	records := record.NewStore()
+	return func(ctx context.Context, issue string, role claim.Role) (record.PlanRole, bool, error) {
+		defined, found, err := records.PlanRoleOf(ctx, tx, issue, string(role))
+		if err != nil {
+			return record.PlanRole{}, false, fmt.Errorf("the role %s of the plan of %s: %w", role, issue, err)
+		}
+		return defined, found, nil
+	}
+}
+
 // roleApps is the one value every reader of a claim's App holds (appauth.RoleApps): deployed, the
 // App of each role the deployment defines (deploymentApps), and planRole, the daemon's one reader
 // of a role of a plan (planRoleOf), read for the role's type, so a role of an issue's plan acts as
