@@ -1,6 +1,7 @@
 package textversions
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"log/slog"
@@ -9,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/sessionanswers"
@@ -78,6 +80,13 @@ type Config struct {
 	Released <-chan struct{}
 	// Logger is where the fill logs; nil is slog.Default.
 	Logger *slog.Logger
+	// standbyClock is what a standby's retry and the bound on each of its tries for the hold run
+	// on (runner.standBy, runner.tryHold). Nil, which every process the deployment runs leaves
+	// it, is clock.Real(): a retry every standbyRetry and a bound of holdOptions.Renew on the wall
+	// clock. A test sets a clocktest.Fake, so a standby's retry fires only where the test moves
+	// the fake to it. The hold's renewal and the holder's passes and release stay on the wall
+	// clock.
+	standbyClock clock.Clock
 }
 
 // Run fills the keyword table in a serving process until ctx ends, under the fill's hold
@@ -108,11 +117,13 @@ func Run(ctx context.Context, cfg Config) error {
 }
 
 // runner is one process's fill under the hold: its Config, the filler its passes run, whose
-// holder it takes the hold as and whose logger it logs to, and when it last logged where the fill
-// stands.
+// holder it takes the hold as and whose logger it logs to, the clock it stands by on, and when it
+// last logged where the fill stands.
 type runner struct {
-	cfg        Config
-	fill       *filler
+	cfg  Config
+	fill *filler
+	// standby is cfg.standbyClock, clock.Real() where that is nil.
+	standby    clock.Clock
 	caughtUpAt time.Time
 }
 
@@ -137,7 +148,7 @@ func newRunner(cfg Config) (*runner, error) {
 	fill.logger = logger
 	fill.holder = uuid.New()
 	fill.pause = newPauser(cfg.Latency, logger).waitUntilFast
-	return &runner{cfg: cfg, fill: fill}, nil
+	return &runner{cfg: cfg, fill: fill, standby: cmp.Or[clock.Clock](cfg.standbyClock, clock.Real())}, nil
 }
 
 // The lines the hold logs.
@@ -176,12 +187,13 @@ func (r *runner) run(ctx context.Context) {
 }
 
 // standBy tries for the hold until it takes it, and answers it, or until ctx ends, and answers
-// nil: at once, then each time cfg.Released is signalled and every retry. It says it stands by
-// once, at the first refusal.
+// nil: at once, then each time cfg.Released is signalled and every retry. The retry ticks every
+// standbyRetry on the runner's standby clock, a clock.Ticker whose next tick is armed once the try
+// its last tick brought is done. It says it stands by once, at the first refusal.
 func (r *runner) standBy(ctx context.Context) *duty.Hold {
-	retry := time.NewTicker(standbyRetry)
+	retry := clock.NewTicker(r.standby, standbyRetry, false)
 	defer retry.Stop()
-	said := false
+	said, ticked := false, false
 	for {
 		hold, err := r.tryHold(ctx)
 		switch {
@@ -195,18 +207,25 @@ func (r *runner) standBy(ctx context.Context) *duty.Hold {
 			r.fill.logger.Info(standingByMessage, "holder", r.fill.holder)
 			said = true
 		}
+		if ticked {
+			retry.Next()
+			ticked = false
+		}
 		select {
 		case <-ctx.Done():
 			return nil
 		case <-r.cfg.Released:
-		case <-retry.C:
+		case <-retry.C():
+			retry.Took()
+			ticked = true
 		}
 	}
 }
 
-// tryHold takes the hold when no other holder holds it live, within one renewal interval.
+// tryHold takes the hold when no other holder holds it live, within one renewal interval on the
+// runner's standby clock.
 func (r *runner) tryHold(ctx context.Context) (*duty.Hold, error) {
-	bounded, cancel := context.WithTimeout(ctx, holdOptions.Renew)
+	bounded, cancel := r.standby.WithTimeout(ctx, holdOptions.Renew)
 	defer cancel()
 	return duty.TryHold(bounded, r.cfg.Leases, fillHoldName, r.fill.holder, holdOptions)
 }
