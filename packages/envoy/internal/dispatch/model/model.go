@@ -1819,7 +1819,8 @@ type CheckResultRetractedEventPayload struct {
 }
 
 // CheckStateChangedEventType is the event Dispatch appends on a check's issue each time the state
-// of one of its `before_merge` checks at an open head changes.
+// of one of its `before_merge` checks at an open head, or at a head an open pull request has left,
+// changes.
 const CheckStateChangedEventType = "check.state_changed"
 
 // CheckStatesActor writes every check.state_changed: a system actor, since the state is what
@@ -1828,7 +1829,9 @@ const CheckStateChangedEventType = "check.state_changed"
 var CheckStatesActor = Actor{Kind: "system", ID: "dispatch-check-states"}
 
 // CheckStateChangedEventPayload is the payload of check.state_changed, appended on the check's
-// issue: the state of one before_merge check at one open head, as passStandsOf computed it.
+// issue: the state of one before_merge check at one head, as passStandsOf computed it. The head is
+// open, or one an open pull request has left (a former head): PullRequests names the open pull
+// requests at the head, or that were at it.
 // Check, CheckVersion and State are nil in the set form: the event that tells a head's set of
 // checks when no check's own event tells it (a head with no check, a check removed).
 // CheckArtifactID is nil where the issue has no Verification document.

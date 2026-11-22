@@ -18,7 +18,13 @@ import (
 )
 
 // check_states.go publishes the state of each `before_merge` check at each open pull request head
-// of an issue, one check.state_changed event for each change of a state.
+// of an issue, and at each former head of an open pull request, one check.state_changed event for
+// each change of a state. A former head is a head the settler published states at while a pull
+// request was at it, which that pull request has since left while it stays open (formerHeadsOf):
+// the tester may have tested that head while the pull request moved on, and the testing move reads
+// the states at the head the tester tested, so a result recorded there after the move still
+// publishes its state there. A head's states stop, and its rows go, once no open pull request is
+// or was at it: its pull requests closed or merged.
 //
 // A write that can change a state does not publish anything itself: a row trigger on each table a
 // state is computed from marks the issue owed, in the writer's own transaction
@@ -229,11 +235,15 @@ func (c *checkStatesSettler) settleRound(ctx context.Context, issue string) (mor
 		if err != nil {
 			return false, err
 		}
-		answer, held, err := c.server.answerIssueChecks(ctx, issue, noCommitNamed, nil)
+		former, err := formerHeadsOf(ctx, pool, issue, heads)
+		if err != nil {
+			return false, err
+		}
+		answer, held, err := c.server.answerIssueChecks(ctx, issue, noCommitNamed, nil, former)
 		if err != nil {
 			return false, fmt.Errorf("compute the checks of %s: %w", issue, err)
 		}
-		computed, readFailed, err := checkStatesAtOpenHeads(issue, heads, answer)
+		computed, readFailed, err := checkStatesAtHeads(issue, slices.Concat(heads, former), answer)
 		if err != nil {
 			return false, err
 		}
@@ -268,10 +278,54 @@ func dueMarksOf(ctx context.Context, pool *store.Pool, issue string) ([]int64, i
 	return marks, failures, nil
 }
 
-// headStates is what the settler computed at one open head of an issue: the head's repository and
-// commit, the open pull requests of the issue at it, in number order, the block ids of the issue's
-// `before_merge` checks in document order, which is the head's set of checks, and the state of
-// each of them there, in the same order.
+// formerHeadsOf is each former head of an open pull request of issue, heads being the pull
+// requests delivery.HeadsAttributedTo answers: a head the settler published states at while that
+// pull request was at it, which the pull request has since left and no open pull request heads
+// now. The published rows are the record of a pull request's heads: the set row of each head names
+// every pull request the settler computed the head for (publish). Each former head is the open
+// pull request's row moved back to that commit, so the computation reads it as it reads an open
+// head (answerIssueChecks) and an event there names the open pull requests that were at it. A head
+// whose pull requests are all closed or merged is no former head, and publish deletes its rows as
+// it deletes those of an open head whose pull request closed. The rows are read before the compute
+// and outside publish's transaction: only the settler writes check_states, under the issue's
+// lease, which this settle holds.
+func formerHeadsOf(ctx context.Context, pool *store.Pool, issue string, heads []delivery.AttributedHead) ([]delivery.AttributedHead, error) {
+	rows, err := pool.Query(ctx, `
+		select repo, head_sha, pull_requests from check_states
+		where issue_key = $1 and check_block_id = '' order by repo, head_sha`, issue)
+	if err != nil {
+		return nil, fmt.Errorf("read the published heads of %s: %w", issue, err)
+	}
+	defer rows.Close()
+	var former []delivery.AttributedHead
+	for rows.Next() {
+		var repo, sha string
+		var pullRequests []int
+		if err := rows.Scan(&repo, &sha, &pullRequests); err != nil {
+			return nil, fmt.Errorf("read the published heads of %s: %w", issue, err)
+		}
+		if slices.ContainsFunc(heads, func(head delivery.AttributedHead) bool {
+			return head.Open && head.Repo == repo && head.HeadSHA == sha
+		}) {
+			continue
+		}
+		for _, head := range heads {
+			if head.Open && head.Repo == repo && slices.Contains(pullRequests, head.Number) {
+				head.HeadSHA = sha
+				former = append(former, head)
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the published heads of %s: %w", issue, err)
+	}
+	return former, nil
+}
+
+// headStates is what the settler computed at one head of an issue, open or former: the head's
+// repository and commit, the open pull requests of the issue at it or that were at it, in number
+// order, the block ids of the issue's `before_merge` checks in document order, which is the head's
+// set of checks, and the state of each of them there, in the same order.
 type headStates struct {
 	repo, head   string
 	pullRequests []int
@@ -287,17 +341,19 @@ type checkStateAt struct {
 	roles, results               []string
 }
 
-// checkStatesAtOpenHeads is the states of issue at each of its open heads: heads are the pull
-// requests delivery.HeadsAttributedTo answers, and answer is answerIssueChecks's. Two open pull
-// requests at one commit of one repository are one head with one state. The state of a check at a
-// head is its subject whose basis is that head's pull request and commit. readFailed says whether
-// a state reads read_failed: a check CI proves whose check runs GitHub could not be read there.
+// checkStatesAtHeads is the states of issue at each of its open heads and its former heads: heads
+// are the pull requests delivery.HeadsAttributedTo answers followed by formerHeadsOf's, and answer
+// is answerIssueChecks's, given the same former heads. Two open pull requests at one commit of one
+// repository are one head with one state, and so are two that were at one commit. The state of a
+// check at a head is its subject whose basis is that head's pull request and commit. readFailed
+// says whether a state reads read_failed: a check CI proves whose check runs GitHub could not be
+// read there.
 //
 // The heads are read apart from the computation's own read of them, so a head that moved between
 // the two reads is a head the computation holds no subject of. That is an error, which keeps every
 // mark: the move marked the issue owed after these marks were read, and the round after the next
 // wake computes both from one read.
-func checkStatesAtOpenHeads(issue string, heads []delivery.AttributedHead, answer issueCheckResults) ([]headStates, bool, error) {
+func checkStatesAtHeads(issue string, heads []delivery.AttributedHead, answer issueCheckResults) ([]headStates, bool, error) {
 	type headKey struct{ repo, head string }
 	grouped := map[headKey]*headStates{}
 	linked := map[headKey][]string{}
@@ -401,13 +457,15 @@ type checkStateKey struct {
 	repo, head, check string
 }
 
-// publishedCheckState is one row of check_states as the settler compares it.
+// publishedCheckState is one row of check_states as the settler compares it. pullRequests is, on a
+// head's set row, every pull request the settler computed the head for (publish).
 type publishedCheckState struct {
-	state  *string
-	reason string
-	roles  []string
-	ciCase string
-	checks []string
+	state        *string
+	reason       string
+	roles        []string
+	ciCase       string
+	checks       []string
+	pullRequests []int
 }
 
 // sameState reports whether the published row holds the state computed: a change of the state,
@@ -421,12 +479,15 @@ func (p publishedCheckState) sameState(state checkStateAt) bool {
 // publish appends one check.state_changed event for each state that differs from the one published
 // at that head, and the set form for each head whose set of checks moved with no check's event to
 // carry it, in one transaction under the issue's owner lock: it raises the issue's serial by one
-// for each event, stores what each event published, deletes the rows of heads no longer open and
-// of checks no longer in a head's set, with no event, and deletes the marks the round read. Where
-// a state reads read_failed it inserts one mark due later, with no notification, so the issue is
-// read again once GitHub may answer. Only the settler writes check_states, under the issue's
-// lease, so the rows it reads here are the newest published. It answers the events, which the
-// caller publishes once the transaction has committed.
+// for each event, stores what each event published, deletes the rows of heads neither open nor
+// former (checkStatesAtHeads computed no state there) and of checks no longer in a head's set,
+// with no event, and deletes the marks the round read. A head's set row keeps every pull request
+// the settler computed the head for, whether or not an event named it, which is the record
+// formerHeadsOf reads once a pull request leaves the head. Where a state reads read_failed it
+// inserts one mark due later, with no notification, so the issue is read again once GitHub may
+// answer. Only the settler writes check_states, under the issue's lease, so the rows it reads here
+// are the newest published. It answers the events, which the caller publishes once the transaction
+// has committed.
 func (c *checkStatesSettler) publish(
 	ctx context.Context, issue string, marks []int64, failures int, artifact *string, computed []headStates, readFailed bool,
 ) ([]model.Event, error) {
@@ -478,13 +539,27 @@ func (c *checkStatesSettler) publish(
 				return nil, err
 			}
 			lastSeq = seq
-			if err := upsertCheckState(ctx, tx, issue, key, artifact, &version, &answer, state.reason, state.roles, state.ciCase, head, seq); err != nil {
+			if err := upsertCheckState(ctx, tx, issue, key, artifact, &version, &answer, state.reason, state.roles, state.ciCase,
+				head.checks, head.pullRequests, seq); err != nil {
 				return nil, err
 			}
 		}
 		key := checkStateKey{head.repo, head.head, ""}
 		kept[key] = true
-		if row, held := published[key]; held && sameStringSet(row.checks, head.checks) {
+		row, held := published[key]
+		named := unionOfPullRequests(row.pullRequests, head.pullRequests)
+		if held && sameStringSet(row.checks, head.checks) {
+			if len(named) > len(row.pullRequests) {
+				// A pull request came to a head another one is or was at, and no event here needed
+				// to name it: the set row names it all the same, so the head stays a former head
+				// of that pull request once it moves on.
+				if _, err := tx.Exec(ctx, `
+					update check_states set pull_requests = $4
+					where issue_key = $1 and repo = $2 and head_sha = $3 and check_block_id = ''`,
+					issue, key.repo, key.head, named); err != nil {
+					return nil, fmt.Errorf("name the pull requests of %s at %s: %w", issue, key.head, err)
+				}
+			}
 			continue
 		}
 		// The head's set of checks moved, or the head is new. A check's event at this head carries
@@ -498,7 +573,7 @@ func (c *checkStatesSettler) publish(
 				return nil, err
 			}
 		}
-		if err := upsertCheckState(ctx, tx, issue, key, artifact, nil, nil, "", nil, "", head, lastSeq); err != nil {
+		if err := upsertCheckState(ctx, tx, issue, key, artifact, nil, nil, "", nil, "", head.checks, named, lastSeq); err != nil {
 			return nil, err
 		}
 	}
@@ -550,7 +625,7 @@ func (c *checkStatesSettler) retryAfter(failures int) time.Duration {
 // publishedCheckStates is every row of check_states of issue, read under its owner lock.
 func publishedCheckStates(ctx context.Context, tx pgx.Tx, issue string) (map[checkStateKey]publishedCheckState, error) {
 	rows, err := tx.Query(ctx, `
-		select repo, head_sha, check_block_id, state, reason, roles, ci_case, checks
+		select repo, head_sha, check_block_id, state, reason, roles, ci_case, checks, pull_requests
 		from check_states where issue_key = $1`, issue)
 	if err != nil {
 		return nil, fmt.Errorf("read the published check states of %s: %w", issue, err)
@@ -560,7 +635,8 @@ func publishedCheckStates(ctx context.Context, tx pgx.Tx, issue string) (map[che
 	for rows.Next() {
 		var key checkStateKey
 		var row publishedCheckState
-		if err := rows.Scan(&key.repo, &key.head, &key.check, &row.state, &row.reason, &row.roles, &row.ciCase, &row.checks); err != nil {
+		if err := rows.Scan(&key.repo, &key.head, &key.check, &row.state, &row.reason, &row.roles, &row.ciCase, &row.checks,
+			&row.pullRequests); err != nil {
 			return nil, fmt.Errorf("read the published check states of %s: %w", issue, err)
 		}
 		published[key] = row
@@ -572,10 +648,11 @@ func publishedCheckStates(ctx context.Context, tx pgx.Tx, issue string) (map[che
 }
 
 // upsertCheckState stores what one event published at key: a check's state, or the set row,
-// whose version and state are null.
+// whose version and state are null, with the head's set of checks and the pull requests to name
+// there.
 func upsertCheckState(
 	ctx context.Context, tx pgx.Tx, issue string, key checkStateKey, artifact *string, version *int, state *string,
-	reason string, roles []string, ciCase string, head headStates, seq int64,
+	reason string, roles []string, ciCase string, checks []string, pullRequests []int, seq int64,
 ) error {
 	if _, err := tx.Exec(ctx, `
 		insert into check_states (issue_key, repo, head_sha, check_block_id, check_artifact_id, check_version, state,
@@ -586,7 +663,7 @@ func upsertCheckState(
 			state = excluded.state, reason = excluded.reason, roles = excluded.roles, ci_case = excluded.ci_case,
 			checks = excluded.checks, pull_requests = excluded.pull_requests, event_seq = excluded.event_seq`,
 		issue, key.repo, key.head, key.check, artifact, version, state, reason, nonNilStrings(roles), ciCase,
-		nonNilStrings(head.checks), head.pullRequests, seq); err != nil {
+		nonNilStrings(checks), pullRequests, seq); err != nil {
 		return fmt.Errorf("store the published state of %s at %s of %s: %w", key.check, key.head, issue, err)
 	}
 	return nil
@@ -595,4 +672,9 @@ func upsertCheckState(
 // sameStringSet reports whether a and b hold the same strings, in any order.
 func sameStringSet(a, b []string) bool {
 	return slices.Equal(slices.Sorted(slices.Values(a)), slices.Sorted(slices.Values(b)))
+}
+
+// unionOfPullRequests is the pull requests a or b names, each once, in number order.
+func unionOfPullRequests(a, b []int) []int {
+	return slices.Compact(slices.Sorted(slices.Values(slices.Concat(a, b))))
 }

@@ -137,6 +137,10 @@ type comparisonReader struct {
 	// id and then by the head's repository and commit (deriveCIResults), which answer gives each
 	// subject of it.
 	headCI map[string]map[ciHeadKey]*model.CheckCI
+	// former is, by issue, the former heads of its open pull requests the check states settler
+	// computes beside its open heads (formerHeadsOf), which headBases adds to the heads of that
+	// issue; empty for every read of the route.
+	former map[string][]delivery.AttributedHead
 }
 
 // noCommitNamed is the `at` of a read that named no commit, which is every read but the one a

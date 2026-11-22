@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 
+	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -17,7 +18,14 @@ import (
 // settler (check_states.go) publishes the very states the read answers. The route keeps what is
 // the route's alone: the query, the 404 for an issue nobody has, and the answer without the
 // computed state under an end-to-end test's hide-state file (listCheckResults).
-func (s *server) answerIssueChecks(ctx context.Context, issueKey, at string, trees *displayTreeReader) (issueCheckResults, bool, error) {
+//
+// former is the settler's alone, nil for the route: the former heads of issueKey's open pull
+// requests (formerHeadsOf), each a pull request's row at a commit it has left. A `before_merge`
+// check compares its results with each of them and reads a check CI proves at each, as at an open
+// head, so each is a subject whose state the settler publishes there; at an open head every state
+// is the one the route answers, since a subject's state reads only the results at its own commit
+// and the read at its own head.
+func (s *server) answerIssueChecks(ctx context.Context, issueKey, at string, trees *displayTreeReader, former []delivery.AttributedHead) (issueCheckResults, bool, error) {
 	artifact, held, err := s.verificationDocument(ctx, s.deps.Store.Pool, issueKey, "")
 	if err != nil {
 		return issueCheckResults{}, false, err
@@ -50,7 +58,7 @@ func (s *server) answerIssueChecks(ctx context.Context, issueKey, at string, tre
 		}
 		checks[index].Results = results
 	}
-	headCI, err := s.deriveCIResults(ctx, issueKey, checks)
+	headCI, err := s.deriveCIResults(ctx, issueKey, checks, former)
 	if err != nil {
 		return issueCheckResults{}, false, err
 	}
@@ -59,6 +67,7 @@ func (s *server) answerIssueChecks(ctx context.Context, issueKey, at string, tre
 	// (comparisonReader.learn).
 	reader := newComparisonReader(s, at)
 	reader.headCI = headCI
+	reader.former = map[string][]delivery.AttributedHead{issueKey: former}
 	reader.learn(ctx, checks)
 	for index := range checks {
 		reader.answer(ctx, &checks[index])
