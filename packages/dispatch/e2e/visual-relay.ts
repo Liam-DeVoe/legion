@@ -121,13 +121,16 @@ async function main(argv: readonly string[]): Promise<void> {
   if (directory === undefined) throw new Error(usage);
   if (mode === "host") {
     const servers = await relayPortsToSockets(directory, portsOf(rest));
-    console.log(readyLine);
     const stop = () => {
       for (const server of servers) server.close();
       process.exit(0);
     };
+    // The handlers go in before the ready line goes out: a caller may stop the relay the moment
+    // it reads that line, and a signal that arrives before its handler ends the process with the
+    // signal's default instead of the clean exit.
     process.once("SIGINT", stop);
     process.once("SIGTERM", stop);
+    console.log(readyLine);
     return;
   }
   const split = rest.indexOf("--");
