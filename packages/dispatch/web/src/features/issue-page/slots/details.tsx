@@ -4,8 +4,8 @@ import { createPortal } from "react-dom";
 
 import { primarySpec } from "../../../api/issue-cache";
 import { userStateQuery } from "../../../api/queries";
-import { labelsControlName } from "../../issue/IssueLabels";
 import { stateForIssue } from "../../issue/pins";
+import { propertyControlSelector } from "../../issue/property-control";
 import { useMargin } from "../../margin/margin-context";
 import { useKeymap } from "../../shell/keymap";
 import { DETAILS_ROW_ATTRIBUTE, useOpenDetailsAt } from "../details-rows";
@@ -13,7 +13,6 @@ import type { IssueField } from "../IssueFieldForms";
 import { IssueMarginCards, IssueMarginPanel } from "../IssueMargin";
 import { DETAILS_ATTRIBUTE, useFillMarginSlot } from "../margin-slot";
 import { NoTooltips } from "../NoTooltips";
-import { ANSWER_LINES, CONTROL_LABELS } from "../page-words";
 import type { SlotProps } from "../slot-props";
 import { usableControl } from "../usable-control";
 import { useIssueHeaderWrites } from "../useIssueHeaderWrites";
@@ -76,27 +75,19 @@ export function DetailsSlot({ issue }: SlotProps): ReactNode {
       // it, as a reader does.
       action: "issue.labels",
       run: () => openDetailsAt("labels", true),
-      when: () => {
-        // The control, by the name it has for the issue as it is now (`labelsControlName`):
-        // "Add a label to CORE-1" while it has no label, "Edit labels" once it has one, and
-        // "Saving labels of CORE-1" while a save of them is out, which the panel's labels read
-        // from these same writes. While that save is out the control is busy, `aria-disabled` and
-        // refusing to open, so the key acts only while the control takes a press
-        // (`usableControl`), which counts no refusal from Details being closed: the key opens
-        // Details at the row first. A closed Development is a refusal: it keeps the row on the page
-        // but `hidden` (`details-leaves.tsx`'s `PropertySection`), so the key is off while
-        // Development is closed.
-        const name = labelsControlName(issue.key, {
-          labels: issue.labels ?? [],
-          saving: writes.labels.isPending,
-          words: { ANSWER_LINES, CONTROL_LABELS },
-        });
-        return usableControl(
+      // The control, by its mark (`property-control.ts`), which it carries whatever its name says
+      // of its state. While a save of the labels is out the control is busy, `aria-disabled` and
+      // refusing to open, so the key acts only while the control takes a press
+      // (`usableControl`), which counts no refusal from Details being closed: the key opens
+      // Details at the row first. A closed Development is a refusal: it keeps the row on the page
+      // but `hidden` (`details-leaves.tsx`'s `PropertySection`), so the key is off while
+      // Development is closed.
+      when: () =>
+        usableControl(
           document.querySelector(
-            `[${DETAILS_ROW_ATTRIBUTE}="labels"] button[aria-label="${CSS.escape(name)}"]`
+            `[${DETAILS_ROW_ATTRIBUTE}="labels"] ${propertyControlSelector("labels", issue.key)}`
           )
-        );
-      },
+        ),
     },
   ]);
   return (

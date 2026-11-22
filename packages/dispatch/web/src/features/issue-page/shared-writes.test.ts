@@ -394,12 +394,13 @@ test("the four control names are main's", async () => {
   }
 });
 
-// The new issue page's `l` key and its rows find the labels control by the name it
-// carries inside `NoTooltips`, which `labelsControlName` builds: the words it draws, then the
-// joining word of `page-words.ts` and the issue's key, while it has no label; `main`'s name once
-// it has one; and while it saves, the words it draws then, their ellipsis dropped, then the
-// joining word of `page-words.ts` and the key. Given `null`, outside `NoTooltips`, it is `main`'s
-// name in every state. Each expected name is built from the words of `page-words.ts`.
+// Inside `NoTooltips` the labels control carries the name `labelsControlName` builds, which a
+// screen reader reads and a voice user says (the page finds the control by its mark): the words
+// it draws, then the joining word of `page-words.ts` and the issue's key, while it has no label;
+// `main`'s name once it has one; and while it saves, the words it draws then, their ellipsis
+// dropped, then the joining word of `page-words.ts` and the key. Given `null`, outside
+// `NoTooltips`, it is `main`'s name in every state. Each expected name is built from the words of
+// `page-words.ts`.
 test("labelsControlName names the labels control as it is drawn", () => {
   const words = { ANSWER_LINES, CONTROL_LABELS };
   const addName = `${CONTROL_LABELS.add_label} ${CONTROL_LABELS.control_name_to} CORE-1`;

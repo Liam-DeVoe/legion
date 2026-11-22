@@ -12,6 +12,8 @@
  *
  * - the new issue page's add menu (`IssueAddMenu.tsx`), which presses the control of each
  *   property it lists, and watches the mark for a change;
+ * - the key `l`, the catalogue's Edit labels (`issue-page/slots/details.tsx`), which presses the
+ *   labels' control in Details' Labels row;
  * - the Retry of Details' Blocked by titles (`IssueMargin.tsx`), which hands the focus it held on
  *   to the row's control;
  * - the hand-offs of Details' priority line (`usePriorityHandOffs.ts`), which hand the focus on

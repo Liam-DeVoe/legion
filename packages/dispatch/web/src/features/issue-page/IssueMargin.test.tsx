@@ -5883,8 +5883,9 @@ function labelsKey(): boolean | undefined {
 }
 
 // On an issue with no label the labels' control is named for adding one (`labelsControlName`),
-// and the add menu's Labels and the key `l` find it by that name. While both looked for "Edit
-// labels", the menu listed no Labels on such an issue and `l` did nothing.
+// and the add menu's Labels and the key `l` find it by its mark (`propertyControl`), whatever its
+// name. While both looked for "Edit labels", the menu listed no Labels on such an issue and `l`
+// did nothing.
 test("on an issue with no label, the Add menu's Labels and the key l reach the labels control", async () => {
   const user = userEvent.setup();
   const { restore } = stubIssueApi();
@@ -5924,10 +5925,10 @@ test("on an issue with no label, the Add menu's Labels and the key l reach the l
 });
 
 // While a save of the labels is out, the labels' control is named for it ("Saving labels of
-// CORE-1", `labelsControlName` given the page's `ANSWER_LINES`), and the key `l` finds it by that
-// name; the control is then busy, `aria-disabled` and refusing to open, so `l` is off until the
-// save lands. While `l` read only `disabled`, the list of keys named it enabled for the length of
-// the save and the key pressed a control that opened nothing.
+// CORE-1", `labelsControlName` given the page's `ANSWER_LINES`), and the key `l` still finds it
+// by its mark; the control is then busy, `aria-disabled` and refusing to open, so `l` is off until
+// the save lands. While `l` read only `disabled`, the list of keys named it enabled for the length
+// of the save and the key pressed a control that opened nothing.
 test("while the labels are saving, the key l is off, and on again once the save lands", async () => {
   const user = userEvent.setup();
   const { patchIssue, restore } = stubIssueApi();
