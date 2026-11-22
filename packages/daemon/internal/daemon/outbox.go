@@ -2636,6 +2636,12 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		if err := r.roleWaitsForItsPod(ctx, row, issue, slotOfToken(token, payload.Role), payload.Role); err != nil {
 			return err
 		}
+		// A step of a task on a branch of its own waits, in the same place and for the same
+		// reason, for a pod of another image than this daemon's: its shim may adopt in the
+		// issue's own working copy whatever branch the adoption names.
+		if err := r.branchWaitsForItsPod(issue, payload); err != nil {
+			return err
+		}
 		// A child carried into a tree of its own — a finished root's hand-over, or a person's label
 		// on a child its tree left mid-run — may still run a role of its old tree: one in a turn when
 		// the old tree's close held its suspension, which that close's row, and the stop the move
@@ -4170,6 +4176,34 @@ func (r *outbox) reroleWaitsForCredential(issue record.Issue, token claim.Token,
 	}
 	return wait.Errorf("%s%s of %s: the pod %s was built before its launchers waited for a new role's credential; its update round or its release replaces it: %w",
 		pods.StartWaitsForPodPrefix, role, issue.Key, pod, runtime.ErrAwaitsPodUpdate)
+}
+
+// branchWaitsForItsPod is the fence the start of a step of a task on a branch of its own carries
+// (record.SuperviseRequest.Branch, neither "" nor the issue's own branch) where the issue's live
+// pod runs an image other than the one this daemon's runtime launches (runtime.IssuePodImage): the
+// shim of a release before the adoption named a branch decodes the frame and ignores the branch,
+// and adopts in the issue's own working copy, so the step's agent would work in the copy of the
+// task that holds the issue's branch. It answers a wait, whose text begins with
+// pods.StartWaitsForPodPrefix and which is runtime.ErrAwaitsPodUpdate too, as roleWaitsForItsPod's
+// is, so the idle view, the release's boundary and the served state read the row as every other
+// wait for the pod, and the row tries again on its own backoff. Such a pod drifts on its image, so
+// its update round replaces it, and no launch replaces a live pod. It reads the image, not the
+// shim's contract, so a pod of a later release waits too. The starts of the task on the issue's
+// own branch never wait, and a runtime with no pods answers nothing.
+func (r *outbox) branchWaitsForItsPod(issue record.Issue, start record.SuperviseRequest) error {
+	if start.Branch == "" || start.Branch == claim.IssueBranch(issue.Key) {
+		return nil
+	}
+	images, ok := r.supervisor.deps.Runtime.(runtime.IssuePodImage)
+	if !ok {
+		return nil
+	}
+	pod, other := images.PodRunsOtherImage(issue.Key)
+	if !other {
+		return nil
+	}
+	return wait.Errorf("%s%s of %s: the pod %s runs an image other than this daemon's, whose shim may adopt in the issue's own working copy and not in %s; its update round replaces it: %w",
+		pods.StartWaitsForPodPrefix, start.Role, issue.Key, pod, start.Branch, runtime.ErrAwaitsPodUpdate)
 }
 
 // startWaitToldPrefix begins the last error of a start that waits for its pod once the controller

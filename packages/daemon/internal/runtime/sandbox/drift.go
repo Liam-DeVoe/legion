@@ -17,6 +17,8 @@ import (
 
 var _ runtime.IssuePodReplacer = (*Runtime)(nil)
 
+var _ runtime.IssuePodImage = (*Runtime)(nil)
+
 // A running issue pod whose configuration has drifted is not replaced where it is found: every
 // role of the issue runs in that one pod, and ending it ends each of their processes mid-turn and
 // deletes the disk they work on, with everything unpushed on it. The daemon opens an update round
@@ -646,4 +648,28 @@ func (r *Runtime) SlotWaitsForCredential(issue string, slot claim.Role) (string,
 		return "", true
 	}
 	return pod, false
+}
+
+// PodRunsOtherImage satisfies runtime.IssuePodImage: the uid of the issue's live pod (livePod)
+// whose Sandbox's template names a container image other than the one this runtime launches every
+// container with (imageOtherThan, the comparison the drift makes, templateImageDrift), and true;
+// "" and false where the issue has no Sandbox, no live pod, or a template of this runtime's image.
+// It reads the informers' stores alone and makes no API call.
+func (r *Runtime) PodRunsOtherImage(issue string) (string, bool) {
+	name, err := issueSandboxName(r.project, issue)
+	if err != nil {
+		return "", false
+	}
+	s, err := r.storedSandbox(name)
+	if err != nil || s == nil {
+		return "", false
+	}
+	pod := r.storedPod(name)
+	if !livePod(s, pod) {
+		return "", false
+	}
+	if _, other := imageOtherThan(&s.Spec.PodTemplate.Spec, r.image); !other {
+		return "", false
+	}
+	return string(pod.UID), true
 }

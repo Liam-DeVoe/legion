@@ -241,6 +241,17 @@ type IssuePodRoles interface {
 	SlotWaitsForCredential(issue string, slot claim.Role) (pod string, waits bool)
 }
 
+// IssuePodImage answers whether the issue's Sandbox holds a live pod built from an image other than
+// the one this runtime launches, and that pod's uid. Such a pod's shim may be of a release before
+// the adoption named a branch, which ignores the branch and adopts in the issue's own working copy,
+// so the start of a step of a task on a branch of its own waits until the pod's update round,
+// which its image drift opens, replaces it (internal/daemon's branchWaitsForItsPod). It reads the
+// image, not the shim's contract, so it answers true for a pod of a later release too. A runtime
+// with no pods (tmux), whose shim is the daemon's own binary, does not implement it.
+type IssuePodImage interface {
+	PodRunsOtherImage(issue string) (pod string, other bool)
+}
+
 // IssuePodReplacer ends the pod of an update round that has no role process in it, asked by the
 // issue alone, and returns when the runtime no longer has that pod. It is ReplacePod for a round
 // with no claim left to name the pod through: every role of the pod is suspended or between

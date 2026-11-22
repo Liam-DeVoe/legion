@@ -129,6 +129,7 @@ type Runtime struct {
 	drift        map[claim.Token][]string
 	gone         map[claim.Token]bool
 	issuePods    map[string]string
+	otherImages  map[string]bool
 	keptVolumes  map[string]time.Time
 	sessions     map[claim.Token]string
 	work         map[string]runtime.WorkspaceWork
@@ -161,6 +162,7 @@ func NewRuntime() *Runtime {
 		drift:       map[claim.Token][]string{},
 		gone:        map[claim.Token]bool{},
 		issuePods:   map[string]string{},
+		otherImages: map[string]bool{},
 		keptVolumes: map[string]time.Time{},
 		sessions:    map[claim.Token]string{},
 		work:        map[string]runtime.WorkspaceWork{},
@@ -270,6 +272,28 @@ func (r *Runtime) ScriptIssuePod(issue, pod string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.issuePods[issue] = pod
+}
+
+// ScriptPodImage says whether the pod uid pod runs an image other than the one the fake launches,
+// the image of an earlier release's pod. Every pod runs the fake's own image until a call names
+// it, and a pod the fake builds in place of a replaced one (launchInto) runs it too.
+func (r *Runtime) ScriptPodImage(pod string, other bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.otherImages[pod] = other
+}
+
+// PodRunsOtherImage satisfies runtime.IssuePodImage: the pod IssuePod answers for issue, where
+// ScriptPodImage said it runs another image, and true; "" and false otherwise. It records no call:
+// the daemon asks it on every try of a start, and a test reads what the start did instead.
+func (r *Runtime) PodRunsOtherImage(issue string) (string, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	now, live := r.podNow(r.issuePods[issue])
+	if !live || now == "" || !r.otherImages[now] {
+		return "", false
+	}
+	return now, true
 }
 
 // ScriptKeptVolume makes every later IssueKeepsVolume of issue answer as the Sandbox runtime
