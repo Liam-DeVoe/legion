@@ -28,9 +28,9 @@
  *  `(view kept)`, and fails only a move that is neither and is more than its allowance.
  *
  *  Each case prints one line, `LANDING <page> <cause> <width> <engine> expected=<...> got=<...>
- *  scrolled=<...>`, so a run reads case by case. The rows run each case at 1440x900 and 390x664,
- *  setting the window themselves as the three-engine rows of `table-controls.e2e.ts` do, so the
- *  phone project runs none of them.
+ *  scrolled=<...>`, so a run reads case by case. Each page has two rows, one running its four
+ *  cases at 1440x900 and one at 390x664, each setting the window itself as the three-engine rows
+ *  of `table-controls.e2e.ts` do, so the phone project runs none of them.
  */
 
 import type { Browser, ElementHandle, Locator } from "@playwright/test";
@@ -70,22 +70,24 @@ import {
 import { expect, type Page, test } from "./test";
 import { asUser, withAlice } from "./users";
 
-/** The two sizes each case runs at: a desktop window wide enough for the Inbox's reading column,
- *  and a phone's. */
+/** The two sizes a page's cases run at, a row each: a desktop window wide enough for the Inbox's
+ *  reading column, and a phone's. */
 const SIZES = [
   { height: 900, width: 1440 },
   { height: 664, width: 390 },
 ] as const;
 
-/** The four causes, in the order each size runs them. The offline case is last: it waits out the
- *  request deadline, and then for its write to land. */
+/** The four causes, in the order each row runs them. The offline case is last: it installs the
+ *  page's own clock, which stays for the rest of the row, runs that clock past the request
+ *  deadline, and then waits for its write to land. */
 const CAUSES = ["press", "live", "device", "offline"] as const;
 type Cause = (typeof CAUSES)[number];
 
-/** How far past the request deadline (`REQUEST_DEADLINE_MS`) an offline case reads the focus:
- *  room for the timers that fire at the deadline and for the commits they make. A write goes late
- *  at the same mark (`SEND_DEADLINE_MS`, web/src/features/writes/keyed-write.ts), and a hold
- *  through the read after a write ends at it (`readWithinBound`, web/src/api/read-bound.ts). */
+/** How far past the request deadline (`REQUEST_DEADLINE_MS`) an offline case reads the focus, on
+ *  the page's own clock: room for the timers that fire at the deadline and for the frames, tasks
+ *  and commits they start. A write goes late at the same mark (`SEND_DEADLINE_MS`,
+ *  web/src/features/writes/keyed-write.ts), and a hold through the read after a write ends at it
+ *  (`readWithinBound`, web/src/api/read-bound.ts). */
 const PAST_THE_DEADLINE_MS = 2_000;
 
 /** A day, for the brush window the Delivery page's press case opens on. */
@@ -126,8 +128,8 @@ interface CaseContext {
 
 type Arrange = (context: CaseContext) => Promise<Arranged>;
 
-/** A page's row: its seed, made once, and each cause's case, or why the cause can take no control
- *  away on that page. */
+/** A page's two rows, one at each size: the seed each row makes once, and each cause's case, or
+ *  why the cause can take no control away on that page. */
 interface Scene {
   readonly seed: () => Promise<SurfaceScene>;
   readonly cases: Readonly<Record<Cause, Arrange | { readonly none: string }>>;
@@ -1088,9 +1090,9 @@ function print(
  * Runs one case and adds what it found wrong to `wrong`. It arranges the case, which seeds, opens
  * the page and puts the focus on the control; reads the page; makes the cause - offline, with the
  * browser offline from just before the press - and waits for the page to answer it, and offline
- * for the request deadline to pass since the press; then reads where the focus rests, and prints
- * the case's line. Whatever stops the case, it leaves the seed as the next case needs it
- * (`Arranged.after`).
+ * runs the page's own clock on until the request deadline has passed since the press; then reads
+ * where the focus rests, and prints the case's line. Whatever stops the case, it leaves the seed
+ * as the next case needs it (`Arranged.after`).
  */
 async function runCase(run: Run, arrange: Arrange, wrong: string[]): Promise<void> {
   const { cause, page } = run;
@@ -1100,6 +1102,12 @@ async function runCase(run: Run, arrange: Arrange, wrong: string[]): Promise<voi
       () => true,
       () => false
     );
+  const offline = cause === "offline";
+  // The offline case installs the page's own clock before it opens its page, so every timer the
+  // page it opens sets follows that clock: the request and write deadlines, the read bound, the
+  // press's bounds and the rescue's frames and tasks. The clock keeps the wall clock's pace until
+  // the case runs it on below, and it stays installed for the rest of the row.
+  if (offline) await page.clock.install();
   const arranged = await arrange(run);
   try {
     const holds = await passes(expect(arranged.control).toBeFocused());
@@ -1119,21 +1127,26 @@ async function runCase(run: Run, arrange: Arrange, wrong: string[]): Promise<voi
     // the landing may scroll, by no more than that control's own size. A landing not drawn yet -
     // a held control under the name it takes once held - is not waited for, and allows no scroll.
     const partly = landing === undefined ? false : await partlyOutOfSight(landing.at);
-    const offline = cause === "offline";
     const browserContext = page.context();
     try {
       if (offline) {
         await browserContext.setOffline(true);
         await page.waitForFunction(() => !navigator.onLine);
       }
-      const pressed = Date.now();
+      // The press's time on the page's own clock, which the offline case installed.
+      const pressed = offline ? await page.evaluate(() => Date.now()) : 0;
       await arranged.cause();
       const answered = await passes(arranged.answered());
       if (!answered) wrong.push(`${caseName}: the page never showed what the cause does`);
-      const left = REQUEST_DEADLINE_MS + PAST_THE_DEADLINE_MS - (Date.now() - pressed);
-      // The offline case's claim is a span of time: the focus is read once the request deadline
-      // has passed since the press, whatever the page does at that deadline.
-      if (offline && left > 0) await page.waitForTimeout(left);
+      if (offline) {
+        // The offline case's claim is a span of time: the focus is read once the request deadline
+        // has passed since the press, whatever the page does at that deadline. The page's clock
+        // is run on to that mark rather than waited out, and every timer due on the way fires in
+        // the order it falls due.
+        const spent = (await page.evaluate(() => Date.now())) - pressed;
+        const left = REQUEST_DEADLINE_MS + PAST_THE_DEADLINE_MS - spent;
+        if (left > 0) await page.clock.runFor(left);
+      }
       // The page's rescue runs a frame and a task after a loss, and a component's hand-off in the
       // commit that took the control away, so both are done after these frames.
       await nextFrames(page);
@@ -1180,8 +1193,8 @@ async function runCase(run: Run, arrange: Arrange, wrong: string[]): Promise<voi
     } finally {
       if (offline) {
         await browserContext.setOffline(false);
-        // The write the press left out lands once the browser is online again, so the next case
-        // starts with nothing pending: a write landing under it would be a live update of its own.
+        // The write the press left out lands once the browser is online again, so the row ends
+        // with nothing pending, and the case's clean-up (`Arranged.after`) runs after that write.
         await expect(page.getByTestId("pending-writes")).toHaveCount(0, { timeout: 60_000 });
       }
     }
@@ -1191,26 +1204,28 @@ async function runCase(run: Run, arrange: Arrange, wrong: string[]): Promise<voi
 }
 
 for (const surface of [...STUBBABLE_SURFACES, ...REAL_STACK_SURFACES]) {
-  // SLOW(>=2s): one page seeded and opened up to eight times, two of its cases waiting out the
-  // request deadline offline, and up to two opening a second signed-in context.
-  // `@firefox` and `@webkit`: a focused control taken away fires no `focusout` in these engines,
-  // so the page's focus rescue sees that loss only by watching the page (`playwright.config.ts`).
-  // The body is the landing of a loss the reader did not cause, the live and the device cases
-  // outside a modal dialog, as on the page before it had a focus rescue: it is no defect.
-  test(`a control holding the focus on the ${surface}, taken away by a press, a live update, another device or an offline press past the request deadline, hands the focus where its cause says, at 1440 and 390 @firefox @webkit`, async ({
-    browser,
-    browserName,
-    page,
-  }) => {
-    // Up to eight cases, two of them waiting 32 s offline and then for their write to land, at
-    // most 60 s each; the rest each open the page once, and each device case a second context too.
-    test.setTimeout(360_000);
-    const scene = SCENES[surface];
-    const seeded = await scene.seed();
-    const wrong: string[] = [];
-    let n = 0;
-    for (const size of SIZES) {
+  for (const size of SIZES) {
+    // SLOW(>=2s): one page seeded and opened up to four times, its device case opening a second
+    // signed-in context, and its offline case waiting for the write it left out to land once the
+    // browser is online again.
+    // `@firefox` and `@webkit`: a focused control taken away fires no `focusout` in these engines,
+    // so the page's focus rescue sees that loss only by watching the page (`playwright.config.ts`).
+    // The body is the landing of a loss the reader did not cause, the live and the device cases
+    // outside a modal dialog, as on the page before it had a focus rescue: it is no defect.
+    test(`a control holding the focus on the ${surface}, taken away by a press, a live update, another device or an offline press past the request deadline, hands the focus where its cause says, at ${size.width} @firefox @webkit`, async ({
+      browser,
+      browserName,
+      page,
+    }) => {
+      // Up to four cases, each opening the page once and the device case a second context too,
+      // and the offline case then waiting for its write to land, at most 60 s. The offline case's
+      // 32 s past its press are run on the page's own clock at once, not waited out.
+      test.setTimeout(150_000);
+      const scene = SCENES[surface];
+      const seeded = await scene.seed();
+      const wrong: string[] = [];
       await page.setViewportSize(size);
+      let n = 0;
       for (const cause of CAUSES) {
         n += 1;
         const named: CaseName = { browserName, cause, size, surface };
@@ -1229,7 +1244,7 @@ for (const surface of [...STUBBABLE_SURFACES, ...REAL_STACK_SURFACES]) {
           }
         );
       }
-    }
-    expect(wrong, wrong.join("; ")).toEqual([]);
-  });
+      expect(wrong, wrong.join("; ")).toEqual([]);
+    });
+  }
 }
