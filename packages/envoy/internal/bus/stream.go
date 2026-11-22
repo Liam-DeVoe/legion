@@ -124,9 +124,11 @@ const DispatchDeliveryDurable = consumernames.DispatchDeliveryDurable
 const DispatchJobDurable = consumernames.DispatchJobDurable
 
 // ListenerDurable is the durable consumer of the stream that the listener of machine machineID
-// binds. A space in the machine id is a hyphen in the name.
+// binds: the family table's prefix (consumernames.ListenerDurablePrefix), the one the session
+// store's key rule takes a durable's key by, and the machine id. A space in the machine id is a
+// hyphen in the name.
 func ListenerDurable(machineID string) string {
-	return "listener-" + strings.ReplaceAll(machineID, " ", "-")
+	return consumernames.ListenerDurablePrefix + strings.ReplaceAll(machineID, " ", "-")
 }
 
 // ListenerQueue is the queue group the listener of machine machineID subscribes the role lanes in,
