@@ -56,7 +56,8 @@ type Change struct {
 //     stream is absent.
 //
 // Each present stream must again show no sources, no mirror, no republish, no subject transform
-// and allow_msg_schedules false, and then the writer census runs again over the account. Any other
+// and allow_msg_schedules false, and then the writer census runs again over the account, read
+// again while its answer is not whole, as the hold's own census is (wholeCensusIn). Any other
 // difference stops the command naming the stream. The readings, in ProtectedStreams' order, are
 // returned.
 func Postcheck(ctx context.Context, nc *nats.Conn, step1 []StreamReading, changes map[string]Change) ([]StreamReading, error) {
@@ -107,7 +108,7 @@ func Postcheck(ctx context.Context, nc *nats.Conn, step1 []StreamReading, change
 		readings = append(readings, now)
 		present = append(present, name)
 	}
-	if _, err := takeCensus(ctx, nc, StepPostcheck, present); err != nil {
+	if err := wholeCensusIn(ctx, nc, StepPostcheck, present, pause); err != nil {
 		return nil, err
 	}
 	return readings, nil

@@ -55,6 +55,11 @@ func (op *Operator) wait(ctx context.Context, d time.Duration) error {
 	if op.Wait != nil {
 		return op.Wait(ctx, d)
 	}
+	return pause(ctx, d)
+}
+
+// pause waits d, ending early with ctx's error.
+func pause(ctx context.Context, d time.Duration) error {
 	timer := time.NewTimer(d)
 	defer timer.Stop()
 	select {
@@ -929,21 +934,28 @@ const (
 	censusPause    = 3 * time.Second
 )
 
-// wholeCensus is the writer census (TakeCensus) read until one answer is whole: a server just
-// restarted lists a stream whose leader it has not heard yet under `missing`, which is a reading
-// that is not whole, never a clean one, so it is read again, censusReadings times at most, after
-// which the step is UNKNOWN. A finding stops the hold at once.
+// wholeCensus is the hold's writer census, read until one answer is whole (wholeCensusIn, step
+// StepCensus), pausing through op's wait.
 func (op *Operator) wholeCensus(ctx context.Context, nc *nats.Conn, present []string) error {
+	return wholeCensusIn(ctx, nc, StepCensus, present, op.wait)
+}
+
+// wholeCensusIn is the writer census in step (takeCensus) read until one answer is whole: a server
+// just restarted lists a stream whose leader it has not heard yet under `missing`, and a listing
+// right after a command recreated a stream can still lack it while its STREAM.INFO finds it; each
+// is a reading that is not whole, never a clean one, so it is read again after censusPause (wait),
+// censusReadings times at most, after which the step is UNKNOWN. A finding stops it at once.
+func wholeCensusIn(ctx context.Context, nc *nats.Conn, step string, present []string, wait func(context.Context, time.Duration) error) error {
 	var err error
 	for range censusReadings {
-		if _, err = TakeCensus(ctx, nc, present); err == nil {
+		if _, err = takeCensus(ctx, nc, step, present); err == nil {
 			return nil
 		}
 		var unknown *Unknown
 		if !errors.As(err, &unknown) {
 			return err
 		}
-		if waitErr := op.wait(ctx, censusPause); waitErr != nil {
+		if waitErr := wait(ctx, censusPause); waitErr != nil {
 			return errors.Join(err, waitErr)
 		}
 	}
