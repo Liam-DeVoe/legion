@@ -266,13 +266,14 @@ function useCatchUp(issueKey: string, shown: boolean): void {
 /**
  * The steps Legion ran on the issue (`GET /issues/{key}/steps`): one table per task, in the order
  * of each task's first step, and one row per run of a step - its role, type, agent, model,
- * attempt, start, end and result. The records are the Legion daemon's; this tab only reads them,
- * and only through its catch-up (`useCatchUp`) and Retry, so the query fetches nothing on its
- * own: it is never enabled, and a read that failed is asked again by the catch-up's next read,
- * not by the app's retry policy, whose retries no cleanup of the tab could stop. A failed read
- * shows alone only while the tab has drawn nothing; after a read that answered, the failure and
- * its Retry stand above the rows that read drew, since nothing may read again until the next
- * start or Retry.
+ * attempt, start, end and result. Where the records of the issue's newest run name an experiment,
+ * the tab shows `Experiment <experiment>: variant <variant>` once above its tables. The records
+ * are the Legion daemon's; this tab only reads them, and only through its catch-up (`useCatchUp`)
+ * and Retry, so the query fetches nothing on its own: it is never enabled, and a read that failed
+ * is asked again by the catch-up's next read, not by the app's retry policy, whose retries no
+ * cleanup of the tab could stop. A failed read shows alone only while the tab has drawn nothing;
+ * after a read that answered, the failure and its Retry stand above the rows that read drew,
+ * since nothing may read again until the next start or Retry.
  */
 export function StepsTab({ active, issueKey }: { active: boolean; issueKey: string }): ReactNode {
   const query = useQuery({ ...issueStepsQuery(issueKey), enabled: false, retry: false });

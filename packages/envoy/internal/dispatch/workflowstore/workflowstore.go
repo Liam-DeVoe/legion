@@ -8,15 +8,19 @@
 //
 // The Legion daemon writes a run twice, at its start and at its end, under one id, and the two
 // writes can arrive in either order, or more than once; the rating of a retro is a third write of
-// the retro's run, in any order with the other two. It writes a run's plan under one id too, when
+// the retro's run, in any order with the other two. For an issue a draw put in an experiment's
+// group, it also writes the run's identity with the experiment and the variant after each of the
+// run's own writes, in any order with them too. It writes a run's plan under one id too, when
 // the work starts and again at each later version of the owner's plan that Legion takes. So a
 // write never refuses for its order, and makes the node when none exists. A run's write sets each
 // field the node does not hold yet, but returned_to, which only the write that sets the result
-// sets, and leaves each field it holds (PutStep). A plan's source, document, version and tasks are
-// one fact, which a write of a higher version replaces whole and any other write leaves (PutPlan).
-// The read of an issue (IssueSteps) answers each run with its attempt, which no write stores, and
-// the read of a project (ProjectPlans) answers each of its finished issues with its plan, its
-// ratings, its time and its count of failed steps.
+// sets, and leaves each field it holds (PutStep); it sets the experiment and the variant together
+// or neither. A plan's source, document, version and tasks are one fact, which a write of a higher
+// version replaces whole and any other write leaves (PutPlan). The read of an issue (IssueSteps)
+// answers each run with its attempt, which no write stores, and the read of a project
+// (ProjectPlans) answers each of its finished issues with its plan, its ratings, its time, its
+// count of failed steps, and the experiment and the variant the step records of its newest run
+// name, nil where they name none.
 //
 // The vocabulary is the graph's node and tuple store's, which this tree does not hold yet, as
 // internal/dispatch/prioritystore's is: the rows copy into that store's tables column for column
