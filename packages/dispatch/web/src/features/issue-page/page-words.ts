@@ -882,6 +882,17 @@ export const SETTLE_ANSWERS = freeze({
 } as const);
 
 /**
+ * What a key pressed on the outline's line of overtaken nodes says where the key does nothing
+ * there, drawn at the line as a key's report is (`page-structure.ts`'s `KEY_REPORTS`, which says
+ * where a key could not go). One of the tables `ANSWER_SOURCES` gathers.
+ */
+export const LINE_KEY_REPORTS = freeze({
+  /** The right arrow on a line, open or closed, below 1024 px (`useTreeKeymap.ts`): there the
+   *  key zooms into a row, and a line holds no node to zoom into. */
+  right_arrow_narrow: "Enter opens and closes this line at this width.",
+} as const);
+
+/**
  * How a document of the issue stands with its reviewers, in words (R5): the head's "How it gets
  * done" row says this of the plan. The keys are `ArtifactApproval.state`; the version a review
  * covers is no part of the word, because the head is one line and the document's own toolbar
@@ -1653,6 +1664,7 @@ export const ANSWER_SOURCES: readonly unknown[] = freeze([
   HELP_LINES,
   KEY_REPORTS,
   SETTLE_ANSWERS,
+  LINE_KEY_REPORTS,
   LENS_ANSWERS,
 ]);
 

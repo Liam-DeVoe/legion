@@ -135,19 +135,21 @@ function liveFeedOn(client: QueryClient): () => void {
 
 /** How a case draws its row: the node, `PROPOSED` where none is given; the live feed, up where
  *  none is said, as the shell's event feed holds it; the number of first reads of the coverage
- *  that fail, none where none is said; and the coverage each other read answers, no requirement
- *  where none is given. */
+ *  that fail, none where none is said; the coverage each other read answers, no requirement
+ *  where none is given; and what each read of the tree answers, `treeAnswer()` at once where
+ *  nothing is given. */
 interface RowOptions {
   readonly covered?: unknown;
   readonly failedCoverage?: number;
   readonly feed?: "up" | "down";
   readonly node?: TreeNode;
+  readonly tree?: () => Promise<TreeAnswer>;
 }
 
 /** The focused proposed row `options.node`, drawn in the tree of `KEY` as `IssueTree` draws its
  *  rows (`SettleIssueProvider`), its settle answered by `answer` at each attempt, the first
- *  `options.failedCoverage` reads of the coverage failing, and each other read of it answered
- *  `options.covered`. */
+ *  `options.failedCoverage` reads of the coverage failing, each other read of it answered
+ *  `options.covered`, and each read of the tree answered by `options.tree`. */
 function drawRow(
   answer: (attempt: number) => Promise<unknown>,
   options: RowOptions = {}
@@ -168,7 +170,7 @@ function drawRow(
   };
   const tree = spyOn(api, "getIssueTree").mockImplementation(async (_key, query) => {
     read(query?.view ?? "tree");
-    return treeAnswer();
+    return query?.view === undefined && options.tree !== undefined ? options.tree() : treeAnswer();
   });
   let coverageReads = 0;
   const coverage = spyOn(api, "getIssueCoverage").mockImplementation(async () => {
@@ -513,6 +515,37 @@ test("Settling… is said while the write is out", async () => {
     await act(async () => landing.resolve(settled()));
     await waitFor(() => expect(drawn.settle().textContent).toBe(CONTROL_LABELS.settle));
     expect(drawn.settle().disabled).toBe(false);
+    expect(drawn.sentence()).toBeNull();
+  } finally {
+    drawn.unmount();
+  }
+});
+
+// A landing reads the tree again, which draws the row with no mark and no act, and the coverage,
+// which the write waits for. Until the tree read answers, the act still says "Settling…" and takes
+// no press, though the coverage has answered and the write has settled: a press then would settle
+// a node Dispatch holds settled, and be refused. Where the tree read answers with the node still
+// proposed, the act takes a press again.
+test("after a 200 Settling… is said until the tree read answers", async () => {
+  const user = userEvent.setup();
+  const answer = Promise.withResolvers<TreeAnswer>();
+  const drawn = drawRow(async () => settled(), { tree: () => answer.promise });
+  const tree = () => drawn.client.getQueryState(issueTreeQuery(KEY).queryKey);
+  try {
+    await user.click(drawn.settle());
+    await waitFor(() => expect(drawn.client.isMutating(), "the write is still out").toBe(0));
+    expect(drawn.reads).toContain("coverage");
+    expect(drawn.client.getQueryState(issueCoverageQuery(KEY).queryKey)?.fetchStatus).toBe("idle");
+    expect(drawn.reads.filter((what) => what === "tree")).toEqual(["tree"]);
+    expect(tree()?.fetchStatus, "the tree read answered").toBe("fetching");
+    expect(drawn.settle().textContent).toBe(SETTLE_ANSWERS.settling);
+    expect(drawn.settle().disabled).toBe(true);
+
+    await act(async () => answer.resolve(treeAnswer()));
+    await waitFor(() => expect(tree()?.fetchStatus).toBe("idle"));
+    await waitFor(() => expect(drawn.settle().textContent).toBe(CONTROL_LABELS.settle));
+    expect(drawn.settle().disabled).toBe(false);
+    expect(drawn.row().querySelector('[data-node-mark="proposed"]')).not.toBeNull();
     expect(drawn.sentence()).toBeNull();
   } finally {
     drawn.unmount();

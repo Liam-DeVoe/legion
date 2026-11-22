@@ -1,5 +1,6 @@
 import { isOvertaken, isProposed, overtakenLineOf } from "../issue-address";
 import type { NodeChip, NodeLife, TreeNode } from "../issue-tree";
+import { LINE_KEY_REPORTS } from "../page-words";
 import { withoutVersion } from "../tree-keys";
 import { nodeStatesOf } from "../tree-read/tree-nodes";
 import type { TreeAnswer } from "../tree-read/tree-read";
@@ -23,6 +24,12 @@ import type { TreeAnswer } from "../tree-read/tree-read";
  * `tree-read/tree-nodes.ts` (`nodeStatesOf`), which imports no value of this module or of
  * `issue-tree.ts`.
  */
+
+/** What the right arrow says on a line of overtaken nodes below 1024 px, where it opens nothing
+ *  (spec R5 opens a line with it from 1024 px up): how the line opens and closes there. The
+ *  keys (`useTreeKeymap.ts`) read it here, since their own import of `page-words.ts` is part
+ *  I's line. */
+export const NARROW_LINE_REPORT = LINE_KEY_REPORTS.right_arrow_narrow;
 
 /** What the tree read says of one node beside its kind: its life, where it has one, and whether
  *  it is reserved for its author, who is the reader. A live or settled node that every reader

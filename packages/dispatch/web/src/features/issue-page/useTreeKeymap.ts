@@ -5,6 +5,7 @@ import { focusOnDocument } from "../shell/roving";
 import { type RowAction, rowActionSelector } from "./DecisionActions";
 import { bringOnScreen } from "./identity-block";
 import type { TreeNode } from "./issue-tree";
+import { NARROW_LINE_REPORT } from "./node-states/node-states";
 import { type OutlineWriter, replyItemOf, takesAnswer } from "./outline-writer";
 import { KEY_REPORTS } from "./page-structure";
 import { CONTROL_LABELS } from "./page-words";
@@ -375,9 +376,13 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
         if (row === undefined) return;
         // A line of overtaken nodes opens and closes in place from 1024 px up, as a row's
         // branch does; below, where the right arrow zooms into a row, there is nothing on a
-        // line to zoom into.
+        // line to zoom into, and the key says so at the line, open or closed: Enter opens and
+        // closes it there.
         if (row.kind === "overtaken") {
-          if (tree.oneNodeAtATime) return;
+          if (tree.oneNodeAtATime) {
+            tree.onReport(NARROW_LINE_REPORT);
+            return;
+          }
           tree.onReport("");
           tree.onOvertaken?.(row.of.id, !row.open);
           return;
@@ -419,7 +424,8 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
         if (row === undefined) return;
         // An open line of overtaken nodes closes at every width; a closed one does what a row at
         // its level does, its parent being the node whose children it folds: below 1024 px the tree
-        // zooms to that node, and from 1024 px up the key moves to its row, the nearest row above
+        // zooms to that node, or says it is zoomed to it already, as a row's key says it of the
+        // row's parent below, and from 1024 px up the key moves to its row, the nearest row above
         // at the level above.
         if (row.kind === "overtaken") {
           tree.onReport("");
@@ -428,7 +434,11 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
             .map((above) => above.level)
             .lastIndexOf(row.level - 1);
           if (row.open) tree.onOvertaken?.(row.of.id, false);
-          else if (tree.oneNodeAtATime) tree.onZoom(row.of.id);
+          else if (tree.oneNodeAtATime && row.of.id === tree.zoom) {
+            tree.onReport(
+              row.of.id === tree.root.id ? KEY_REPORTS.whole_tree : KEY_REPORTS.parent_zoomed
+            );
+          } else if (tree.oneNodeAtATime) tree.onZoom(row.of.id);
           else if (parent !== -1) moveTo(parent);
           return;
         }

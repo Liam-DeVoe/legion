@@ -74,6 +74,7 @@ import {
   CONTROL_LABELS,
   EMPTY_STATE_LINES,
   GLYPH_TOKENS,
+  LINE_KEY_REPORTS,
   NODE_STATE_WORDS,
   type NodeType,
   PLAN_WORDS,
@@ -493,10 +494,9 @@ afterEach(() => {
 });
 
 /** happy-dom answers every media query against its own 1024 px window: this answers them for
- *  one 1440 px wide, where the tree draws its rows whole rather than one node at a time
- *  (`IssueTree.tsx`'s `ZOOMED_TREE_QUERY`), as `IssueTree.test.tsx`'s `setViewport` does. */
-function readWide(): void {
-  const width = 1440;
+ *  one `width` px wide, as `IssueTree.test.tsx`'s `setViewport` does: from 1024 px up the tree
+ *  draws its rows whole, and below it one node at a time (`IssueTree.tsx`'s `ZOOMED_TREE_QUERY`). */
+function readAt(width: number): void {
   window.matchMedia = ((query: string) => {
     const max = /max-width:\s*([\d.]+)px/.exec(query)?.[1];
     const min = /min-width:\s*([\d.]+)rem/.exec(query)?.[1];
@@ -513,6 +513,11 @@ function readWide(): void {
       removeListener: () => {},
     } as MediaQueryList;
   }) as typeof window.matchMedia;
+}
+
+/** `readAt` a window 1440 px wide, where the tree draws its rows whole. */
+function readWide(): void {
+  readAt(1440);
 }
 
 /** `root` drawn by the page's tree, under the page's keymap and the providers it reads, as
@@ -1033,6 +1038,97 @@ test("a press, Enter and the left arrow close the overtaken line an address open
     } finally {
       view.unmount();
     }
+  }
+});
+
+// Below 1024 px the left arrow on a closed line of overtaken nodes does what it does on a row at
+// the line's level, the line's parent being the node whose children it folds. Where the tree is
+// zoomed to that node already - the issue, or a row the reader zoomed into - the key says so at
+// the line, in the words a row at that level says, and the zoom stays. It zoomed to that node
+// again, which moved nothing and said nothing.
+test("at 390 px the left arrow on a closed overtaken line says the tree is zoomed to its parent", async () => {
+  readAt(390);
+  const user = userEvent.setup();
+  const view = renderTree(
+    stamped(
+      node(KEY, "issue", [
+        node("comment-1", "comment", [
+          node("comment-1a", "comment"),
+          node("comment-1b", "comment"),
+        ]),
+        node("comment-2", "comment"),
+      ]),
+      { "comment-1b": { life: "overtaken" }, "comment-2": { life: "overtaken" } }
+    )
+  );
+  const crumbs = () =>
+    [...view.container.querySelectorAll<HTMLElement>("[data-crumb]")].map(
+      (crumb) => crumb.dataset.crumb
+    );
+  /** Left on the tree's last row, the closed line the zoom's own overtaken children fold to,
+   *  says `report` at the line, and leaves the focus on it and the zoom where it was. */
+  const leftOnTheZoomsLine = async (report: string) => {
+    const zoom = crumbs();
+    await user.keyboard("{End}");
+    const lines = view.container.querySelectorAll<HTMLElement>("[data-overtaken-line]");
+    const line = [...lines].at(-1) ?? null;
+    await waitFor(() => expect(document.activeElement).toBe(line));
+    expect(line).toHaveAttribute("aria-expanded", "false");
+
+    await user.keyboard("{ArrowLeft}");
+    await waitFor(() => expect(line?.querySelector("[data-row-report]")?.textContent).toBe(report));
+    expect(document.activeElement).toBe(line);
+    expect(line).toHaveAttribute("aria-expanded", "false");
+    expect(crumbs()).toEqual(zoom);
+  };
+  try {
+    await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
+    expect(crumbs()).toEqual([]);
+    await leftOnTheZoomsLine(KEY_REPORTS.whole_tree);
+
+    await user.keyboard("{Home}");
+    await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
+    await user.keyboard(".");
+    await waitFor(() => expect(crumbs()).toEqual([KEY]));
+    await leftOnTheZoomsLine(KEY_REPORTS.parent_zoomed);
+    expect(rowOf(view.container, "comment-1a")).not.toBeNull();
+  } finally {
+    view.unmount();
+  }
+});
+
+// Below 1024 px the right arrow zooms into a row, and a line of overtaken nodes holds no node to
+// zoom into: on the line, closed or open, the key says at the line that Enter opens and closes
+// it at this width, and opens or closes nothing. It moved nothing and said nothing.
+test("at 390 px the right arrow on an overtaken line says Enter opens and closes it", async () => {
+  readAt(390);
+  const user = userEvent.setup();
+  const view = renderTree(commentAndLine());
+  try {
+    await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
+    const line = theLine(view.container);
+    const report = () => line.querySelector("[data-row-report]")?.textContent;
+    for (const open of [false, true]) {
+      await user.keyboard("j");
+      await waitFor(() => expect(document.activeElement).toBe(line));
+      expect(report()).toBeUndefined();
+
+      await user.keyboard("{ArrowRight}");
+      await waitFor(() =>
+        expect(report(), `open: ${open}`).toBe(LINE_KEY_REPORTS.right_arrow_narrow)
+      );
+      expect(document.activeElement).toBe(line);
+      expect(line).toHaveAttribute("aria-expanded", String(open));
+      expect(rowOf(view.container, "comment-2") !== null, `open: ${open}`).toBe(open);
+
+      // Enter opens and closes the line, and the key back to the row above lets the report go.
+      await user.keyboard("{Enter}");
+      await waitFor(() => expect(line).toHaveAttribute("aria-expanded", String(!open)));
+      await user.keyboard("k");
+      await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
+    }
+  } finally {
+    view.unmount();
   }
 });
 
