@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, renderHook } from "@testing-library/react";
 import type { ReactNode } from "react";
 
+import type { ArtifactBlock, IssueDetails } from "../../api/types";
 import {
   type KnownReferences,
   type PublishedReferences,
@@ -25,9 +26,11 @@ import { lineOrKindWord, useNodeLine } from "./node-line";
  * What the shared reader makes of what the tree holds, read through the code the page's
  * surfaces draw with, for a test of the tree that holds a node or a chip rather than a row drawn
  * of it: a node's one line, as a row draws it (`node-line.tsx`'s `useNodeLine`); the names the
- * store projects from what a page publishes (`ReferenceNamesProvider`); and a chip's name, cut as
- * a chip cuts it (`chipName`). The engine must have loaded (`warmMarkdownRenderer`), so each is
- * answered in the render that draws it.
+ * store projects from what a page publishes (`ReferenceNamesProvider`); a chip's name, cut as a
+ * chip cuts it (`chipName`); and the reads the page names a test's blocks from (`blockReads`), so
+ * a test names them by the page's own rule (`targetNaming`, `treeContext`) and copies none of it.
+ * The engine must have loaded (`warmMarkdownRenderer`), so each is answered in the render that
+ * draws it.
  */
 
 /** The one line a row draws for `node` (`useNodeLine`), each reference in it read as the words
@@ -158,6 +161,56 @@ export function projectedNames(
   readings: ReadonlyMap<string, ReferenceNameReading>
 ): ReadonlyMap<string, string> {
   return projectedKnown(readings).names;
+}
+
+/**
+ * The reads the page names `nodes` from, as its own reads hold them (`IssueTreeReads`): `issue`,
+ * whose documents the nodes are blocks of; each document's blocks read, which gives each node's
+ * block its kind (`type`), so one whose words hold none is named by the page's word for that
+ * kind; and the batched read's answer for each node that holds a reading of its words (`tree`),
+ * as that read answers a block (`text_tree`). A node that holds no reading has no answer, as one
+ * the read has not answered for yet. Each node is the block its own address names
+ * (`reference`): a block of the spec is in the issue's spec, a block of any other document in the
+ * document of `issue` with that slug, and a node whose address names neither is in no blocks
+ * read.
+ */
+export function blockReads(
+  issue: IssueDetails,
+  nodes: readonly Pick<TreeNode, "reference" | "text" | "tree" | "type">[]
+): IssueTreeReads {
+  const blocks = new Map<string, ArtifactBlock[]>();
+  for (const { reference, type } of nodes) {
+    const route = reference === undefined ? undefined : parseNodeReference(reference);
+    if ((route?.kind !== "spec" && route?.kind !== "artifact") || route.block === undefined) {
+      continue;
+    }
+    const slug = route.kind === "artifact" ? route.slug : undefined;
+    const artifactId =
+      slug === undefined
+        ? issue.primary_artifact_id
+        : issue.artifacts?.find((artifact) => artifact.slug === slug)?.id;
+    if (artifactId === undefined) continue;
+    const id = route.block.id;
+    const block: ArtifactBlock = {
+      attributes: [],
+      from: 0,
+      id,
+      references: { asks: 0, comments: 0 },
+      to: 1,
+      token: id,
+      type,
+    };
+    blocks.set(artifactId, [...(blocks.get(artifactId) ?? []), block]);
+  }
+  return {
+    documents: [...blocks].map(([artifactId, held]) => ({ artifactId, blocks: held })),
+    issue,
+    targets: nodes.flatMap(({ reference, text, tree }) =>
+      reference === undefined || tree === undefined
+        ? []
+        : [{ gone: false, kind: "block", name: text, ref: reference, text_tree: tree }]
+    ),
+  };
 }
 
 /** The names the page publishes from `reads` (`targetNaming`), as the store projects them. */

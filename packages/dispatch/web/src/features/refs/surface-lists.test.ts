@@ -1193,31 +1193,22 @@ interface MemberChain {
   readonly root: ts.Identifier | undefined;
 }
 
-/** The member chain `expression` reads (`MemberChain`), through `!`, `?.`, brackets and casts
- *  (`as`, `satisfies` and `<T>`): `edge.excerpt?.text` is `edge`, then `excerpt` and `text`, and
- *  so is `(edge as Edge).excerpt!.text`. */
+/** The member chain `expression` reads (`MemberChain`), through `?.` and what `uncast` takes
+ *  off: `edge.excerpt?.text` is `edge`, then `excerpt` and `text`, and so is
+ *  `(edge as Edge).excerpt!.text`. */
 function memberChain(expression: ts.Expression): MemberChain {
   const path: (string | undefined)[] = [];
-  let at = expression;
+  let at = uncast(expression);
   for (;;) {
     if (ts.isPropertyAccessExpression(at)) {
       path.unshift(at.name.text);
-      at = at.expression;
     } else if (ts.isElementAccessExpression(at)) {
       const key = uncast(at.argumentExpression);
       path.unshift(ts.isStringLiteral(key) || ts.isNumericLiteral(key) ? key.text : undefined);
-      at = at.expression;
-    } else if (
-      ts.isNonNullExpression(at) ||
-      ts.isParenthesizedExpression(at) ||
-      ts.isAsExpression(at) ||
-      ts.isSatisfiesExpression(at) ||
-      ts.isTypeAssertionExpression(at)
-    ) {
-      at = at.expression;
     } else {
       break;
     }
+    at = uncast(at.expression);
   }
   return { path, root: ts.isIdentifier(at) ? at : undefined };
 }
@@ -1242,15 +1233,32 @@ function importsOf(tree: ts.SourceFile): Map<string, string> {
   return names;
 }
 
-/** `expression` with the casts and parentheses around it taken off: `{ … } as const` is the
- *  object literal it casts. */
+/** An expression that holds the value of the one inside it: brackets, a cast (`as`,
+ *  `satisfies` or `<T>`) or `!`. */
+type Cast =
+  | ts.AsExpression
+  | ts.NonNullExpression
+  | ts.ParenthesizedExpression
+  | ts.SatisfiesExpression
+  | ts.TypeAssertion;
+
+/** Whether `node` is a `Cast`: the one list of them, which `uncast` takes off going down and a
+ *  walk up from a value (`memberReadOf`, `passesOn`) goes through. */
+function isCast(node: ts.Node): node is Cast {
+  return (
+    ts.isAsExpression(node) ||
+    ts.isNonNullExpression(node) ||
+    ts.isParenthesizedExpression(node) ||
+    ts.isSatisfiesExpression(node) ||
+    ts.isTypeAssertionExpression(node)
+  );
+}
+
+/** `expression` with every `Cast` around it taken off: `{ … } as const` is the object literal
+ *  it casts, and `(LINES as Lines)!` is `LINES`. */
 function uncast(expression: ts.Expression): ts.Expression {
   let value = expression;
-  while (
-    ts.isAsExpression(value) ||
-    ts.isSatisfiesExpression(value) ||
-    ts.isParenthesizedExpression(value)
-  ) {
+  while (isCast(value)) {
     value = value.expression;
   }
   return value;
@@ -1260,15 +1268,14 @@ function uncast(expression: ts.Expression): ts.Expression {
  *  literal: a table of the page's own words is one (`issue-page/slots/body.tsx`'s
  *  `ABSENT_LINES`, whose lines each hold a `heading`). A name the file binds again anywhere below
  *  its top level is no table (`namesBoundBelowTop`), since a read of it may be of that other
- *  binding. Neither is a name the file writes to (`writtenNames`), nor one it uses whole - other
- *  than as the root of a member read (`namesUsedWhole`) - since what it holds is then no longer
- *  what its literal says, or the walk no longer sees all that is done with it. Which member read
- *  off a table is words the file wrote is `readsWordTable`'s to say. */
+ *  binding. Neither is a name the file writes to (`writtenNames`), nor one it uses whole
+ *  (`namesUsedWhole`) - the name itself, or a member of it, passed on as a value - since what it
+ *  holds is then no longer what its literal says, or the walk no longer sees all that is done
+ *  with it. Which member read off a table is words the file wrote is `readsWordTable`'s to say. */
 function wordTablesOf(tree: ts.SourceFile): ReadonlyMap<string, ts.ObjectLiteralExpression> {
   const below = namesBoundBelowTop(tree);
   const written = writtenNames(tree);
-  const whole = namesUsedWhole(tree);
-  const tables = new Map<string, ts.ObjectLiteralExpression>();
+  const literals = new Map<string, ts.ObjectLiteralExpression>();
   for (const statement of tree.statements) {
     if (
       !ts.isVariableStatement(statement) ||
@@ -1285,14 +1292,14 @@ function wordTablesOf(tree: ts.SourceFile): ReadonlyMap<string, ts.ObjectLiteral
         ts.isObjectLiteralExpression(value) &&
         name !== undefined &&
         !below.has(name) &&
-        !written.has(name) &&
-        !whole.has(name)
+        !written.has(name)
       ) {
-        tables.set(name, value);
+        literals.set(name, value);
       }
     }
   }
-  return tables;
+  const whole = namesUsedWhole(tree, literals);
+  return new Map([...literals].filter(([name]) => !whole.has(name)));
 }
 
 /** Every name a declaration below `tree`'s top level binds (`boundNames`): a variable's - a
@@ -1331,20 +1338,6 @@ function namesBoundBelowTop(tree: ts.SourceFile): ReadonlySet<string> {
   return names;
 }
 
-/** The calls that write what their first argument holds: `Object.assign(LINES.absent, …)`, and
- *  each other call of `Object` or `Reflect` that sets, defines or deletes a member of it or sets
- *  its prototype. */
-const WRITING_CALLS: readonly string[] = [
-  "Object.assign",
-  "Object.defineProperties",
-  "Object.defineProperty",
-  "Object.setPrototypeOf",
-  "Reflect.defineProperty",
-  "Reflect.deleteProperty",
-  "Reflect.set",
-  "Reflect.setPrototypeOf",
-];
-
 /** Each target a destructuring assignment's pattern writes, at any depth - a member's value, a
  *  shorthand member's name, an element, a rest, each with its default taken off - and any other
  *  target itself: `LINES.absent` of `({ heading: LINES.absent } = decision)` and of
@@ -1372,9 +1365,9 @@ function patternTargets(target: ts.Expression): ts.Expression[] {
 /** Every name `tree` writes to, as the root of what it writes (`memberChain`, casts taken off):
  *  each target an assignment of any kind writes, compound ones among them, and each target in
  *  the pattern of a destructuring one (`patternTargets`); each target a `for … in` or a
- *  `for … of` over an expression writes, through its pattern too; what `++` or `--` steps; what
- *  `delete` takes out; and the first argument of each call that writes it (`WRITING_CALLS`).
- *  A name handed whole anywhere, to any call among them, is `namesUsedWhole`'s. */
+ *  `for … of` over an expression writes, through its pattern too; what `++` or `--` steps; and
+ *  what `delete` takes out. A name, or a member of it, handed to a call - `Object.assign` and
+ *  `Reflect.set` among them - is `namesUsedWhole`'s. */
 function writtenNames(tree: ts.SourceFile): ReadonlySet<string> {
   const names = new Set<string>();
   const write = (target: ts.Expression): void => {
@@ -1401,14 +1394,6 @@ function writtenNames(tree: ts.SourceFile): ReadonlySet<string> {
       write(node.operand);
     } else if (ts.isDeleteExpression(node)) {
       write(node.expression);
-    } else if (
-      ts.isCallExpression(node) &&
-      ts.isPropertyAccessExpression(node.expression) &&
-      ts.isIdentifier(node.expression.expression) &&
-      WRITING_CALLS.includes(`${node.expression.expression.text}.${node.expression.name.text}`)
-    ) {
-      const first = node.arguments[0];
-      if (first !== undefined) write(first);
     }
     ts.forEachChild(node, visit);
   };
@@ -1416,19 +1401,29 @@ function writtenNames(tree: ts.SourceFile): ReadonlySet<string> {
   return names;
 }
 
-/** Every name `tree` uses whole: wherever it stands for a value (`namesNoValue`) other than as
- *  the root of a member read (`rootsMemberRead`). That is a name handed to a call
- *  (`fill(LINES)`, `Object.defineProperty(LINES, …)`, `Reflect.set(LINES, …)`), aliased
+/** Every name `tree` uses whole, wherever it stands for a value (`namesNoValue`): bare, or as
+ *  the root of a member read that is passed on (`memberReadOf`, `passesOn`). A bare name is
+ *  one handed to a call (`fill(LINES)`, `Object.defineProperty(LINES, …)`), aliased
  *  (`const alias = LINES`), the source of a destructuring (`const { absent } = LINES`) or of a
  *  `for … of`, spread, held by a shorthand member, handed to an attribute, returned, or any
- *  other value made of it. A name inside a type (`typeof LINES`) names no value, and is not
- *  read. */
-function namesUsedWhole(tree: ts.SourceFile): ReadonlySet<string> {
+ *  other value made of it. A member read passed on is one the file may write through out of the
+ *  walk's sight: `fill(LINES.absent)`, `Object.assign(LINES.absent, …)`,
+ *  `const absent = LINES.absent`. The one exception is a member read that `readsWordTable`
+ *  resolves, inside the name's own literal in `literals`, to nothing but strings: what
+ *  `cut(LINES.absent.heading)` hands on is words, which no call writes. A name inside a type
+ *  (`typeof LINES`) names no value, and is not read. */
+function namesUsedWhole(
+  tree: ts.SourceFile,
+  literals: ReadonlyMap<string, ts.ObjectLiteralExpression>
+): ReadonlySet<string> {
   const names = new Set<string>();
   const visit = (node: ts.Node): void => {
     if (ts.isTypeNode(node)) return;
-    if (ts.isIdentifier(node) && !namesNoValue(node) && !rootsMemberRead(node)) {
-      names.add(node.text);
+    if (ts.isIdentifier(node) && !namesNoValue(node)) {
+      const read = memberReadOf(node);
+      if (read === undefined || (passesOn(read) && !readsWordTable(memberChain(read), literals))) {
+        names.add(node.text);
+      }
     }
     ts.forEachChild(node, visit);
   };
@@ -1449,24 +1444,84 @@ function namesNoValue(name: ts.Identifier): boolean {
   return "name" in parent && parent.name === name;
 }
 
-/** Whether `name`, with the casts, `!` and parentheses around it taken off, is what a member
- *  read reads off: `LINES` of `LINES.absent`, of `LINES!["absent"]` and of
- *  `(LINES as Lines).absent`. */
-function rootsMemberRead(name: ts.Identifier): boolean {
+/** The member read `name` is the root of, at its whole length, through every `Cast` inside it
+ *  (`memberChain`): `LINES.absent.heading` for `LINES` there, and `(LINES as Lines)!["absent"]`
+ *  for `LINES` there. `undefined` where `name` roots no member read. */
+function memberReadOf(name: ts.Identifier): ts.Expression | undefined {
   let at: ts.Node = name;
-  while (
-    ts.isAsExpression(at.parent) ||
-    ts.isSatisfiesExpression(at.parent) ||
-    ts.isTypeAssertionExpression(at.parent) ||
-    ts.isNonNullExpression(at.parent) ||
-    ts.isParenthesizedExpression(at.parent)
-  ) {
-    at = at.parent;
+  let read: ts.Expression | undefined;
+  for (;;) {
+    const parent = at.parent;
+    if (
+      (ts.isPropertyAccessExpression(parent) || ts.isElementAccessExpression(parent)) &&
+      parent.expression === at
+    ) {
+      read = parent;
+    } else if (!isCast(parent)) {
+      return read;
+    }
+    at = parent;
   }
-  const read = at.parent;
+}
+
+/**
+ * Whether `value` is passed on as a value, so that what it holds may be written out of the
+ * walk's sight. It is where it stands - itself, or through brackets, casts, `!`, a conditional's
+ * branch, either side of `??` or `||` or the right of `&&` that answers it - as an argument of a
+ * call or of `new`; the initializer of a variable, a parameter, a destructured binding, a
+ * class's field or a member of an object literal; the right side of `=`, `&&=`, `||=` or `??=`;
+ * what a `return` or an arrow's body answers; a spread, in a list, a call's arguments, an object
+ * or an element's attributes; an element of a list written out; an attribute's value; or the
+ * list a `for … of` walks. Anywhere else - drawn, joined with `+`, compared, written to, a
+ * method called on it - it is not.
+ */
+function passesOn(value: ts.Expression): boolean {
+  let at: ts.Node = value;
+  for (;;) {
+    const parent = at.parent;
+    const binary = ts.isBinaryExpression(parent) ? parent : undefined;
+    const operator = binary?.operatorToken.kind;
+    const answers =
+      isCast(parent) ||
+      (ts.isConditionalExpression(parent) && parent.condition !== at) ||
+      operator === ts.SyntaxKind.QuestionQuestionToken ||
+      operator === ts.SyntaxKind.BarBarToken ||
+      (operator === ts.SyntaxKind.AmpersandAmpersandToken && binary?.right === at);
+    if (!answers) break;
+    at = parent;
+  }
+  const holder = at.parent;
+  if (ts.isCallExpression(holder) || ts.isNewExpression(holder)) {
+    return holder.arguments?.some((argument) => argument === at) === true;
+  }
+  if (
+    ts.isVariableDeclaration(holder) ||
+    ts.isParameter(holder) ||
+    ts.isBindingElement(holder) ||
+    ts.isPropertyDeclaration(holder) ||
+    ts.isPropertyAssignment(holder)
+  ) {
+    return holder.initializer === at;
+  }
+  if (ts.isBinaryExpression(holder)) {
+    const operator = holder.operatorToken.kind;
+    return (
+      holder.right === at &&
+      (operator === ts.SyntaxKind.EqualsToken ||
+        operator === ts.SyntaxKind.AmpersandAmpersandEqualsToken ||
+        operator === ts.SyntaxKind.BarBarEqualsToken ||
+        operator === ts.SyntaxKind.QuestionQuestionEqualsToken)
+    );
+  }
+  if (ts.isArrowFunction(holder)) return holder.body === at;
+  if (ts.isJsxExpression(holder)) return ts.isJsxAttribute(holder.parent);
+  if (ts.isForOfStatement(holder)) return holder.expression === at;
   return (
-    (ts.isPropertyAccessExpression(read) || ts.isElementAccessExpression(read)) &&
-    read.expression === at
+    ts.isReturnStatement(holder) ||
+    ts.isSpreadElement(holder) ||
+    ts.isSpreadAssignment(holder) ||
+    ts.isJsxSpreadAttribute(holder) ||
+    ts.isArrayLiteralExpression(holder)
   );
 }
 
@@ -3306,9 +3361,10 @@ describe("a stored text drawn as its characters is read from the syntax tree", (
   });
 
   // A table the file writes to holds what its literal says no longer (`writtenNames`): a member
-  // of it assigned, assigned by a compound assignment, stepped by `++` or `--`, taken out by
-  // `delete` or handed to `Object.assign`, a read of it is still a draw. A table nothing writes
-  // keeps its exemption. The rows after this one read the other writes and uses that end it.
+  // of it assigned, assigned by a compound assignment, stepped by `++` or `--`, or taken out by
+  // `delete`, a read of it is still a draw, and so is a read of a table a member of which is
+  // handed to `Object.assign` (`namesUsedWhole`). A table nothing writes keeps its exemption.
+  // The rows after this one read the other writes and uses that end it.
   test("a table the file writes to draws what it holds, however it is written", () => {
     const source = [
       'const ONE = { absent: { heading: "Not found" } };',
@@ -3349,9 +3405,9 @@ describe("a stored text drawn as its characters is read from the syntax tree", (
   });
 
   // A table handed whole to a call is out of the walk's sight from then: the call may write it,
-  // as `Object.defineProperty` and any function of the file's own may (`namesUsedWhole`). A
-  // member of a table handed to a call that writes its first argument is written as well
-  // (`WRITING_CALLS`), `Reflect.set` as `Object.assign`. A read of either is still a draw.
+  // as `Object.defineProperty` and any function of the file's own may (`namesUsedWhole`). So is
+  // a table a member of which is handed to `Reflect.set`, as to any other call. A read of either
+  // is still a draw.
   test("a table handed to a call draws what it holds", () => {
     const source = [
       'const FILLED = { absent: { heading: "Not found" } };',
@@ -3376,6 +3432,34 @@ describe("a stored text drawn as its characters is read from the syntax tree", (
       "fixture.tsx:11 heading a JSX child",
       "fixture.tsx:12 heading a JSX child",
       "fixture.tsx:13 heading a JSX child",
+    ]);
+  });
+
+  // A member of a table handed to a call is out of the walk's sight as well: the call may write
+  // it, as `fill` and a constructor may (`namesUsedWhole`, `passesOn`). A member that holds a
+  // string is words, which no call writes, so a table whose only member handed on is one keeps
+  // its exemption (`readsWordTable`). A read of each other is still a draw.
+  test("a table whose member is handed to a call draws what it holds", () => {
+    const source = [
+      'const FILLED = { absent: { heading: "Not found" } };',
+      'const BUILT = { absent: { heading: "Not found" } };',
+      'const KEPT = { absent: { heading: "Not found" } };',
+      "export function Handed({ decision }: { decision: Decision }) {",
+      "  fill(FILLED.absent, decision);",
+      "  new Filler(BUILT.absent, decision);",
+      "  announce(KEPT.absent.heading);",
+      "  return (",
+      "    <div>",
+      "      <h2>{FILLED.absent.heading}</h2>",
+      "      <h2>{BUILT.absent.heading}</h2>",
+      "      <h2>{KEPT.absent.heading}</h2>",
+      "    </div>",
+      "  );",
+      "}",
+    ].join("\n");
+    expect(draws(source)).toEqual([
+      "fixture.tsx:10 heading a JSX child",
+      "fixture.tsx:11 heading a JSX child",
     ]);
   });
 
@@ -3404,6 +3488,93 @@ describe("a stored text drawn as its characters is read from the syntax tree", (
     expect(draws(source)).toEqual([
       "fixture.tsx:11 heading a JSX child",
       "fixture.tsx:12 heading a JSX child",
+    ]);
+  });
+
+  // A member of a table held under another name is written through that name, out of the
+  // walk's sight: an alias of it, and one a conditional chooses (`namesUsedWhole`, `passesOn`).
+  // A member that holds a string is words, which no write reaches, so a table whose only member
+  // held so is one keeps its exemption (`readsWordTable`). A read of each other is still a draw.
+  test("a table whose member is aliased draws what it holds", () => {
+    const source = [
+      'const ALIASED = { absent: { heading: "Not found" } };',
+      'const CHOSEN = { absent: { heading: "Not found" }, late: { heading: "Too late" } };',
+      'const KEPT = { absent: { heading: "Not found" } };',
+      "export function Aliased({ decision, late }: { decision: Decision; late: boolean }) {",
+      "  const absent = ALIASED.absent;",
+      "  absent.heading = decision.heading;",
+      "  const line = late ? CHOSEN.late : CHOSEN.absent;",
+      "  line.heading = decision.heading;",
+      "  const heading = KEPT.absent.heading;",
+      "  return (",
+      "    <div>",
+      "      <h2>{ALIASED.absent.heading}</h2>",
+      "      <h2>{CHOSEN.absent.heading}</h2>",
+      "      <h2>{KEPT.absent.heading}</h2>",
+      "      <p>{heading}</p>",
+      "    </div>",
+      "  );",
+      "}",
+    ].join("\n");
+    expect(draws(source)).toEqual([
+      "fixture.tsx:12 heading a JSX child",
+      "fixture.tsx:13 heading a JSX child",
+    ]);
+  });
+
+  // The same holds wherever else a member of a table is passed on as a value (`passesOn`):
+  // returned, an arrow's answer, assigned, the list a `for … of` walks, held by a member of an
+  // object, spread, an element of a list, answered by `??`, or handed to an attribute. A string
+  // member handed to one keeps its table's exemption. A read of each other is still a draw.
+  test("a table whose member is passed on any other way draws what it holds", () => {
+    const source = [
+      'const RETURNED = { absent: { heading: "Not found" } };',
+      'const ANSWERED = { absent: { heading: "Not found" } };',
+      'const ASSIGNED = { absent: { heading: "Not found" } };',
+      'const WALKED = { absent: { heading: "Not found" }, lines: [{ heading: "Not found" }] };',
+      'const HELD = { absent: { heading: "Not found" } };',
+      'const SPREAD = { absent: { heading: "Not found" } };',
+      'const LISTED = { absent: { heading: "Not found" } };',
+      'const FALLEN = { absent: { heading: "Not found" } };',
+      'const HANDED = { absent: { heading: "Not found" } };',
+      'const KEPT = { absent: { heading: "Not found" } };',
+      "function absentLine() {",
+      "  return RETURNED.absent;",
+      "}",
+      "const answered = () => ANSWERED.absent;",
+      "export function Passed({ decision }: { decision: Decision }) {",
+      "  let line;",
+      "  line = ASSIGNED.absent;",
+      "  for (const each of WALKED.lines) each.heading = decision.heading;",
+      "  const held = { line: HELD.absent, copy: { ...SPREAD.absent }, list: [LISTED.absent] };",
+      "  const fallen = decision.line ?? FALLEN.absent;",
+      "  return (",
+      "    <div>",
+      "      <Line line={HANDED.absent} title={KEPT.absent.heading} />",
+      "      <h2>{RETURNED.absent.heading}</h2>",
+      "      <h2>{ANSWERED.absent.heading}</h2>",
+      "      <h2>{ASSIGNED.absent.heading}</h2>",
+      "      <h2>{WALKED.absent.heading}</h2>",
+      "      <h2>{HELD.absent.heading}</h2>",
+      "      <h2>{SPREAD.absent.heading}</h2>",
+      "      <h2>{LISTED.absent.heading}</h2>",
+      "      <h2>{FALLEN.absent.heading}</h2>",
+      "      <h2>{HANDED.absent.heading}</h2>",
+      "      <h2>{KEPT.absent.heading}</h2>",
+      "    </div>",
+      "  );",
+      "}",
+    ].join("\n");
+    expect(draws(source)).toEqual([
+      "fixture.tsx:24 heading a JSX child",
+      "fixture.tsx:25 heading a JSX child",
+      "fixture.tsx:26 heading a JSX child",
+      "fixture.tsx:27 heading a JSX child",
+      "fixture.tsx:28 heading a JSX child",
+      "fixture.tsx:29 heading a JSX child",
+      "fixture.tsx:30 heading a JSX child",
+      "fixture.tsx:31 heading a JSX child",
+      "fixture.tsx:32 heading a JSX child",
     ]);
   });
 

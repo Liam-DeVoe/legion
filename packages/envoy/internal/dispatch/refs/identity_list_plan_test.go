@@ -94,7 +94,7 @@ func TestAPersonsListKeysEveryReadOfTheStoreOnThePerson(t *testing.T) {
 				listedPerson, node, node.IndexCond, person, plan)
 			continue
 		}
-		read := (node.Rows + node.RemovedByFilter) * node.Loops
+		read := (node.Rows + node.RowsRemovedByFilter) * node.Loops
 		if strings.Contains(node.IndexCond, "(kind = '"+graphstore.TupleMentions+"'::text)") {
 			identity++
 			if read != float64(len(mentioning)) {
@@ -105,7 +105,7 @@ func TestAPersonsListKeysEveryReadOfTheStoreOnThePerson(t *testing.T) {
 		}
 		if read != 0 {
 			t.Errorf("the search %q reads %.0f tuples into %s (%.0f answered, %.0f refused by its filter, over %.0f loops), want none: no arm but the identity arm answers a tuple the store holds into this person:\n%s",
-				node.IndexCond, read, listedPerson, node.Rows, node.RemovedByFilter, node.Loops, plan)
+				node.IndexCond, read, listedPerson, node.Rows, node.RowsRemovedByFilter, node.Loops, plan)
 		}
 	}
 	if identity != 1 {

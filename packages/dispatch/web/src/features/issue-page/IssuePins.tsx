@@ -20,7 +20,7 @@ import { buildIssuePath } from "../refs/routes";
 import { textSourceKind, textSourceOf } from "../refs/text-references";
 import { lineOrKindWord, useNodeLine } from "./node-line";
 import { authorText, pageChrome } from "./page-structure";
-import { CONTROL_LABELS } from "./page-words";
+import { CONTROL_LABELS, NODE_TYPE_NAMES } from "./page-words";
 import { ROW_LINK } from "./row-references";
 import { issueAsksQuery, issueCommentsQuery, issueMessagesQuery } from "./useIssueTree";
 
@@ -121,6 +121,7 @@ export function IssuePins({
         <ul className="mt-1 flex min-w-0 flex-col gap-0.5" ref={list}>
           {pins.map((pin) => {
             const id = conversationItemId(pin.kind, pin.id);
+            const record = pinRecord(pin.kind, pin.id);
             return (
               <li className="flex min-w-0 items-center gap-2 text-sm" data-pin={id} key={id}>
                 <Link
@@ -131,12 +132,14 @@ export function IssuePins({
                       : buildIssuePath({ id: pin.id, key: issueKey, kind: pin.kind })
                   }
                 >
-                  <PinLine
-                    id={pin.id}
-                    issueKey={issueKey}
-                    kind={pin.kind}
-                    record={pinRecord(pin.kind, pin.id)}
-                  />
+                  {/* Where no read holds the record - its read has not answered or has failed,
+                      or it is a handoff, whose words no read here holds - there are no words to
+                      wait on, so the pin is drawn by the page's word for its kind at once. */}
+                  {record === undefined ? (
+                    <span {...pageChrome}>{NODE_TYPE_NAMES[pin.kind]}</span>
+                  ) : (
+                    <PinLine id={pin.id} issueKey={issueKey} kind={pin.kind} record={record} />
+                  )}
                 </Link>
                 <PinButton label={CONTROL_LABELS.unpin} onClick={() => unpin(id)} pinned quiet />
               </li>
@@ -184,10 +187,9 @@ interface PinnedRecord {
  *  `useNodeLine`) - its first line, projected from the server's reading of its text where the
  *  read sent one and from its text as stored otherwise, each reference in it read as its
  *  target's name, and cut by R1's first-line rule - with the record as the source its references
- *  are read against. Nothing of it until the projection has answered. The page's word for the
- *  pin's kind where the line holds no words, and at once where no read holds the record - its
- *  read has not answered or has failed, or it is a handoff, whose words no read here holds - since
- *  there are then no words to wait on. */
+ *  are read against. Nothing of it until the projection has answered, and the page's word for
+ *  the pin's kind where the line holds no words. A pin no read holds the record of is drawn by
+ *  `IssuePins` itself, so the projection runs only for a record there is. */
 function PinLine({
   id,
   issueKey,
@@ -197,23 +199,22 @@ function PinLine({
   id: string;
   issueKey: string;
   kind: ConversationPinKind;
-  record: PinnedRecord | undefined;
+  record: PinnedRecord;
 }): ReactNode {
   const { line, reads } = useNodeLine(
     {
       id,
       source: textSourceOf(textSourceKind(kind), id, issueKey),
-      text: record?.text ?? "",
-      tree: record?.tree,
+      text: record.text,
+      tree: record.tree,
       type: kind,
     },
     { surface: "issue-pin" }
   );
-  const drawn = record === undefined ? "" : line;
   return (
     <>
       {reads}
-      <span {...(drawn === "" ? pageChrome : authorText)}>{lineOrKindWord(drawn, kind)}</span>
+      <span {...(line === "" ? pageChrome : authorText)}>{lineOrKindWord(line, kind)}</span>
     </>
   );
 }

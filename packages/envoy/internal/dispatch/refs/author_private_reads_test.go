@@ -47,14 +47,20 @@ func reserveForAuthor(t *testing.T, tx pgx.Tx, kind, id string) {
 	}
 }
 
-// closureOf is CORE-1's closure as who reads it.
+// referencesOf is CORE-1's references read as who reads it.
+func referencesOf(t *testing.T, tx pgx.Tx, who model.Actor) References {
+	t.Helper()
+	references, err := Closure(context.Background(), tx, who, "CORE-1", "")
+	if err != nil {
+		t.Fatalf("read the references as %s: %v", who.ID, err)
+	}
+	return references
+}
+
+// closureOf is CORE-1's members as who reads them.
 func closureOf(t *testing.T, tx pgx.Tx, who model.Actor) []Member {
 	t.Helper()
-	members, _, err := Closure(context.Background(), tx, who, "CORE-1")
-	if err != nil {
-		t.Fatalf("read the closure as %s: %v", who.ID, err)
-	}
-	return members
+	return referencesOf(t, tx, who).Members
 }
 
 // A private comment's links are no part of the closure another person reads, so it is neither
@@ -84,26 +90,35 @@ func TestTheClosureAnswersANodeReservedForItsAuthorToThatAuthorAlone(t *testing.
 	}
 }
 
-// The closure reads its second hop under the same visibility as its first. An issue comment links
-// a public document A, and A links a document B reserved for its author. Another person's closure
-// is A alone, at depth 1 through the comment, and nothing of B. Its author's is A at depth 1 and
-// B at depth 2 through A.
-func TestTheClosureAnswersADocumentReservedForItsAuthorTwoHopsAwayToThatAuthorAlone(t *testing.T) {
+// The references read reads its links in under the same visibility as its links out. A public
+// document and a document reserved for its author each link the issue's own document. Another
+// person's linked_from is the public document alone, through the issue's document, and nothing of
+// the private one; its author's is both, each through the issue's document.
+func TestTheReferencesReadAnswersADocumentReservedForItsAuthorThatLinksInToThatAuthorAlone(t *testing.T) {
 	tx := prefixFixture(t)
-	publicDocument, publicDocumentKey := createReferenceArtifact(t, tx, "", "CORE", "public-md")
-	_, privateDocumentKey := createReferenceArtifact(t, tx, "", "CORE", "private-md")
-	comment := createReferenceComment(t, tx, "CORE-1")
-	insertReference(t, tx, "comment", comment, "artifact", publicDocumentKey)
-	insertReference(t, tx, "artifact", publicDocument, "artifact", privateDocumentKey)
+	_, ownDocumentKey := createReferenceArtifact(t, tx, "CORE-1", "CORE", "own-md")
+	publicDocument, _ := createReferenceArtifact(t, tx, "", "CORE", "public-md")
+	privateDocument, privateDocumentKey := createReferenceArtifact(t, tx, "", "CORE", "private-md")
+	insertReference(t, tx, "artifact", publicDocument, "artifact", ownDocumentKey)
+	insertReference(t, tx, "artifact", privateDocument, "artifact", ownDocumentKey)
 	reserveForAuthor(t, tx, "artifact", privateDocumentKey)
 
-	firstHop := Member{RefKey: publicDocumentKey, Depth: 1, Via: model.ReferenceVia{Kind: "comment", ID: comment}}
-	if got, want := closureOf(t, tx, privateReader), []Member{firstHop}; !reflect.DeepEqual(got, want) {
-		t.Errorf("another person's closure = %#v; want %#v, without the private document %s", got, want, privateDocumentKey)
+	linkedFrom := func(who model.Actor) []string {
+		t.Helper()
+		var lines []string
+		for _, link := range referencesOf(t, tx, who).LinkedFrom {
+			lines = append(lines, link.Node.Kind+" "+link.Node.ID+" via "+link.Via.Kind+" "+link.Via.ID)
+		}
+		return lines
 	}
-	want := []Member{firstHop, {RefKey: privateDocumentKey, Depth: 2, Via: model.ReferenceVia{Kind: "artifact", ID: publicDocument}}}
-	if got := closureOf(t, tx, privateAuthor); !reflect.DeepEqual(got, want) {
-		t.Errorf("the author's closure = %#v; want %#v", got, want)
+	through := " via artifact " + ownDocumentKey
+	if got, want := linkedFrom(privateReader), []string{"artifact " + publicDocument + through}; !reflect.DeepEqual(got, want) {
+		t.Errorf("another person's linked_from = %q; want %q, without the private document %s", got, want, privateDocumentKey)
+	}
+	want := []string{"artifact " + publicDocument + through, "artifact " + privateDocument + through}
+	sort.Strings(want)
+	if got := linkedFrom(privateAuthor); !reflect.DeepEqual(got, want) {
+		t.Errorf("the author's linked_from = %q; want %q", got, want)
 	}
 }
 
