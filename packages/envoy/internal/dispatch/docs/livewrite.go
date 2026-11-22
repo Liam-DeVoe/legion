@@ -1451,7 +1451,10 @@ func (s *Service) creditLiveWrite(write *liveWrite, actor model.Actor) {
 // and is listed by ygo from before its read of the store, so it is found here and published into:
 // Server.Apply waits for its load. A room that retires between this check and the publish's
 // Apply is loaded again by that Apply, from a store that holds the write, and idles out like any
-// room a write loads.
+// room a write loads. A load under way that refuses itself, because a transaction holding its
+// grant began it (errRoomLoadUnderGrant, servicePersistenceAdapter.LoadDocContext), leaves no room
+// to publish into, and hands the publish waiting on it that refusal: the publish ends as one that
+// found no room does (publishedWithoutARoom), which is no failure of any room's.
 //
 // A room that cannot take an update is failed - but not one that refused the publish because it
 // had already failed (ErrServiceUnavailable). By the time such a refusal is handled the recovery
@@ -1482,6 +1485,10 @@ func (s *Service) publishLiveWrite(write *liveWrite) {
 		if err == nil {
 			continue
 		}
+		if errors.Is(err, errRoomLoadUnderGrant) {
+			s.publishedWithoutARoom(write)
+			return
+		}
 		slog.Error("dispatch: publish committed live document write", "room", write.artifactID, "error", err)
 		if s.afterPublishRefused != nil {
 			s.afterPublishRefused(write.artifactID)
@@ -1496,8 +1503,9 @@ func (s *Service) publishLiveWrite(write *liveWrite) {
 
 // publishedWithoutARoom ends a publish that reached no room: this process holds none of the
 // document, resident or loading (roomHeld), so the publish loads none, which would hold the
-// document in memory with no reader in it. Nothing of the write is lost by it, and nothing of it
-// is left half-made.
+// document in memory with no reader in it; or the load it found under way refused itself under
+// another transaction's grant (errRoomLoadUnderGrant), which left no room under the name. Nothing
+// of the write is lost by it, and nothing of it is left half-made.
 //
 // Every update it would have applied is durable - the transaction appended and committed all of
 // them before this publish began (coldFork says why the room would be loaded here rather than

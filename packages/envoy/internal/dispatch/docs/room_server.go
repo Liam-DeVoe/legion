@@ -3,7 +3,6 @@ package docs
 import (
 	"context"
 	"errors"
-	"fmt"
 	"slices"
 	"sync"
 	"time"
@@ -16,8 +15,7 @@ import (
 // the service makes waits for each repair committing into the room (holdOpen) to hand its update
 // to the room's persistence, and holds off new repairs until the room is closed. Its Apply
 // shadows ygo's, so each Apply holds its room against the room budget's close while it is inside
-// its callback (closeUnused), an Apply of a transaction whose grant holds bytes holds it against
-// every close the service makes, and the room is looked at once the Apply has returned (applied).
+// its callback (closeUnused), and the room is looked at once the Apply has returned (applied).
 //
 // A settlement writes its repairs while it holds the document's advisory lock, and ygo hands a
 // commit's update to the room's persistence inside the commit. Were the room's persistence worker
@@ -56,11 +54,10 @@ type roomServer struct {
 	applied func(room string)
 }
 
-// closeGate is a room's gate between the repairs committing into the room and the Applies of
-// transactions whose grant holds bytes (roomServer.Apply), which hold it shared and only ever try
-// it, and a close of the room, which holds it exclusively. holders counts the closes, repairs and
-// Applies that hold it or wait for it; each finds the gate already in gates when there is one, so
-// any two of them that overlap share it.
+// closeGate is a room's gate between the repairs committing into the room, which hold it shared,
+// and a close of the room, which holds it exclusively. holders counts the closes and repairs that
+// hold it or wait for it; each finds the gate already in gates when there is one, so any two of
+// them that overlap share it.
 type closeGate struct {
 	sync.RWMutex
 	holders int
@@ -234,29 +231,11 @@ func (r *roomServer) closeUnused(room string, before func()) (bool, error) {
 // read, a warm-up - hold nothing of the room's state while they use it, so the end of their Apply
 // is the moment their use of it ends. The hold is released before applied, which can close the
 // room.
-//
-// An Apply of a transaction whose grant holds bytes (transactionHolds) holds the room's close gate
-// shared too, as a repair does (holdOpen), from before ygo's OnInject looks at whether the room is
-// resident (Service.allowApply) until ygo's Apply returns, so no close the service makes takes the
-// room out between that look and ygo's lookup of the room, which would load it again on this
-// goroutine, under a grant of the load's own taken while the transaction holds its own
-// (loadSlots). It takes the gate only where no close holds it or waits for it, and is refused
-// otherwise as a room that is not resident (errRoomLoadUnderGrant), the 503 its caller retries: a
-// close can wait for the room's persistence worker, which can wait for the bytes the transaction
-// holds.
 func (r *roomServer) Apply(ctx context.Context, room string, fn func(doc *crdt.Doc, transact func(func(*crdt.Transaction)))) error {
 	gate := r.acquireGate(room)
-	opened := transactionHolds(ctx)
-	if opened && !gate.TryRLock() {
-		r.releaseGate(room, gate)
-		return fmt.Errorf("%w: %w", websocket.ErrInjectRefused, errRoomLoadUnderGrant)
-	}
 	gate.applies.RLock()
 	err := r.Server.Apply(ctx, room, fn)
 	gate.applies.RUnlock()
-	if opened {
-		gate.RUnlock()
-	}
 	r.releaseGate(room, gate)
 	if r.applied != nil {
 		r.applied(room)

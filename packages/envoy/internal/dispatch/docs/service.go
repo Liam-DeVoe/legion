@@ -211,8 +211,15 @@ type Service struct {
 	afterReadWarm func(room string)
 	// afterApplyAllowed runs at the end of ygo's OnInject for an Apply (allowApply), once its
 	// look at whether the room is resident has passed and before ygo looks the room up, on the
-	// Apply's own goroutine. Nil outside tests; tests use it to close the room in that window.
+	// Apply's own goroutine. Nil outside tests; tests use it to close the room, or to wait for
+	// ygo's idle sweep to retire it, in that window.
 	afterApplyAllowed func(room string)
+	// beforeRoomLoadRefused runs as a room's load refuses itself under a transaction's held grant
+	// (servicePersistenceAdapter.LoadDocContext), on that load's goroutine - the transaction's
+	// Apply - once ygo has listed the room's placeholder and before the refusal reaches the
+	// callers waiting on it. Nil outside tests; tests hold the refusal there until another caller
+	// waits on that placeholder.
+	beforeRoomLoadRefused func(room string)
 	// afterReadCopy runs once a read of a room has copied the room's document (holdLive) and
 	// before that copy is offered to the room's replica (startFromRead). Nil outside tests;
 	// tests use it to commit into the room, and to leave the room's replica recovered, in the
@@ -2035,11 +2042,15 @@ const (
 	// Nothing retries it or counts it as a failure: the document's pending-settlement row leaves it
 	// to resume.
 	settleOutOfBudget
-	// settleNoRoom is a settlement whose document no room holds that the room budget had no
-	// opening to load one through (roomBudget.awaitServerRoom): the rooms already open fill the
-	// budget and none of them became closable while it waited. It is armed again a settle delay
-	// later and counted no failure - nothing is wrong with the room or the document, and the
-	// openings fall free as the rooms the budget charges are closed - and the pending-settlement
+	// settleNoRoom is a settlement that could not load the room of a document no room holds, for
+	// one of two causes neither of which is wrong with the room or the document: the room budget
+	// had no opening to load one through (roomBudget.awaitServerRoom) - the rooms already open
+	// fill the budget and none of them became closable while it waited - or its load waited on a
+	// load a transaction holding its grant began, which refused itself busy and handed that
+	// refusal to every caller waiting on it (errRoomLoadUnderGrant,
+	// servicePersistenceAdapter.LoadDocContext). It is armed again a settle delay later and
+	// counted no failure - the openings fall free as the rooms the budget charges are closed, and
+	// the refused load was that transaction's, not this settlement's - and the pending-settlement
 	// row stands meanwhile, so a process that ends here leaves the settlement to resume.
 	settleNoRoom
 	// settleRefusedInShutdown is a settlement that had to write into a room Shutdown has begun
@@ -2076,18 +2087,18 @@ func (s *Service) settleRoom(room string, generation uint64) {
 }
 
 // followUpSettlement does what follows a settlement the timer or Shutdown ran, by how it ended
-// (settleNext): it runs one that stopped short again a settle delay later, arms again one the
-// room budget had no opening for, and logs one that a shutdown's budget or closing room cut
-// short, which the document's pending-settlement row leaves to resume. Every other ending needs
-// nothing more.
+// (settleNext): it runs one that stopped short again a settle delay later, arms again one that
+// could not load its room, and logs one that a shutdown's budget or closing room cut short, which
+// the document's pending-settlement row leaves to resume. Every other ending needs nothing more.
 func (s *Service) followUpSettlement(room string, outcome settleOutcome) {
 	switch outcome.next {
 	case settleRetry:
 		s.retrySettle(room, outcome.generation, outcome.err)
 	case settleNoRoom:
 		// Armed again rather than retried: the budget's openings fall free as the rooms it
-		// charges are closed, and nothing here is a fault of this room's to count against it
-		// (retrySettleLocked, maxSettleFailures).
+		// charges are closed, a refused load was a grant-holding transaction's and not this
+		// room's, and neither is a fault to count against the room (retrySettleLocked,
+		// maxSettleFailures).
 		s.scheduleSettle(room)
 	case settleOutOfBudget:
 		slog.Warn("dispatch: document settlement stopped at the shutdown budget", "room", room, "error", outcome.err)

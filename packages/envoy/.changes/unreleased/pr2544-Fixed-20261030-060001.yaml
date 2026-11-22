@@ -168,11 +168,12 @@ body: |-
     pool has it free at once and is otherwise answered `503 DOC_SERVICE_UNAVAILABLE` for its caller
     to retry, since waiting for more while it holds could wait on a waiter that needs what it holds.
     The same write takes a slot to fold a stored history in only where one is free at once, and
-    loads no room: it reads a document no room holds from the store, on what it already holds. An
-    issue's close, reopen, sweep and ask repair weigh all of the issue's documents before their
-    first fork and take that whole sum there, so they meet that refusal only where a document grew
-    in between, a stored history folds into more than its rows weigh, or the pool's fold slots are
-    all taken.
+    loads no room: it reads a document no room holds from the store, on what it already holds, and
+    where a room it found resident retires or closes before the write reaches it, the load that
+    would replace that room is refused and the write is answered the same `503`. An issue's close,
+    reopen, sweep and ask repair weigh all of the issue's documents before their first fork and
+    take that whole sum there, so they meet that refusal only where a document grew in between, a
+    stored history folds into more than its rows weigh, or the pool's fold slots are all taken.
 
     What the server holds for one browser's socket is bounded as well, at 70 MiB of frames queued
     for it and not yet written. ygo bounded that queue in frames alone, 512 of them whatever their
@@ -216,19 +217,19 @@ body: |-
     leave still decodes, and leave one they would carry past the cap as it was.
 
     These bounds are built on the ygo fork Dispatch pins,
-    `github.com/cybermonklabs/ygo v1.55.1-legion.1`. It applies a browser's update whole or not at
+    `github.com/cybermonklabs/ygo v1.55.1-legion.2`. It applies a browser's update whole or not at
     all under the allowance, roots and content kinds the room gives it, and reports what a refused
     apply's counters reached. It runs the room's render check after the apply and before its commit,
     keeps what parks out of the document until it lands, lets a delete range park only under a
     client id the room allows, and answers a frame only once its commit is stored. At this pin a
     keystroke into a document of 40,000 clients no longer walks every client for that check, the
     check is told which of its runs judges a drain, the room keeps no record of a server write
-    as the sender of what that write parked, and an unsubscribed callback keeps nothing it captured
-    reachable. It carries the three fixes of the fork's release at `d18319dc` as well: the record
-    of who parked each struct holds only what the room's queue holds, a parked string a merge cuts
-    at its front keeps only its own part, and a sync reply carrying a sync step 1 is dropped,
-    rather than answered outside the bound on a first sync's answer and relayed to every other
-    browser.
+    as the sender of what that write parked, an unsubscribed callback keeps nothing it captured
+    reachable, and a room's load is handed the context of the call that loads it. It carries the
+    three fixes of the fork's release at `d18319dc` as well: the record of who parked each struct
+    holds only what the room's queue holds, a parked string a merge cuts at its front keeps only its
+    own part, and a sync reply carrying a sync step 1 is dropped, rather than answered outside the
+    bound on a first sync's answer and relayed to every other browser.
 time: 2026-10-30T06:00:01.000000000Z
 custom:
     Issue: pr2544

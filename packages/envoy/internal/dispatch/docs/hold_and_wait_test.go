@@ -3,6 +3,7 @@ package docs
 import (
 	"context"
 	"errors"
+	"fmt"
 	"runtime"
 	"slices"
 	"strings"
@@ -21,6 +22,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/goroutinetest"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -750,7 +752,7 @@ func twoRowDocument(t *testing.T, service *Service, number, bytes int) (string, 
 
 // A transaction holding its first document's fork whose cold read of a later document finds every
 // slot of the buffered folds held, by a fold waiting for the bytes the transaction holds, is
-// refused busy at once (foldRead, errFoldSlotsBusy), and the fold goes on once the transaction
+// refused busy at once (takeFoldSlot, errFoldSlotsBusy), and the fold goes on once the transaction
 // gives its grant back. Before, the read waited for the slot holding its grant, and the fold for
 // the grant's bytes, until this test's bound.
 func TestAJoinedTransactionsColdReadBesideHeldFoldSlotsIsRefusedBusyAndTheFoldGoesOn(t *testing.T) {
@@ -1543,21 +1545,234 @@ func TestAJoinedTransactionsColdReadBesideALoadWaitingForAFoldSlotFinishes(t *te
 	}
 }
 
-// A transaction holding its first document's fork that applies to another document's resident
-// room - a version's capture of it, or a mark's watch (captureLiveTextAndAuthors, VerifyMark) -
-// holds that room against every close the service makes from ygo's look at whether it is resident
-// (allowApply) until its Apply returns (roomServer.Apply): an eviction begun between that look and
-// ygo's lookup of the room waits for the Apply, which applies to the room it found, and nothing
-// loads on the transaction's goroutine. Before, the eviction closed the room in between, and ygo's
-// lookup loaded it again on that goroutine, under a grant of the load's own taken while the
-// transaction held its own.
-func TestATransactionsApplyHoldsTheRoomItFoundResidentUntilYgoLooksItUp(t *testing.T) {
+// A transaction holding its first document's fork that applies to another document's room it
+// found resident - a version's capture of it, or a mark's watch (captureLiveTextAndAuthors,
+// VerifyMark) - is answered busy at once where that room leaves between ygo's look at whether it
+// is resident (allowApply) and ygo's lookup of it, whichever takes it out: ygo's idle sweep, which
+// retires a room no peer and no caller has held for the idle timeout, or a close the service makes
+// (Evict). ygo hands the room's load the Apply's context, and the load refuses it before it records
+// or reads anything (servicePersistenceAdapter.LoadDocContext, errRoomLoadUnderGrant), the 503 its
+// caller retries. The rest of the pool is held beside the transaction's grant, so a load that ran
+// on the transaction's goroutine would wait for bytes nothing gives back while the transaction
+// holds its own, and answer nothing. The refusal fails no room: once the transaction has ended, a
+// write holding no grant lands on the document. Before, the load ran on that goroutine under a
+// grant of its own, which it waited for, and a close the service makes waited for the Apply
+// instead (roomServer.Apply's hold of the close gate), which was handed the room it found.
+func TestATransactionsApplyToARoomThatLeftAfterItsLookIsRefusedBusyAtTheLoad(t *testing.T) {
+	// goneBound bounds the room's going once the Apply has passed allowApply: the idle sweep runs
+	// every second, and a close of a room no caller is inside closes it at once.
+	const goneBound = 20 * time.Second
+	// refusalBound bounds the Apply's answer once the room has gone: the refusal takes no lock and
+	// reads nothing, and a load waiting for the pool beside the transaction's grant has answered
+	// nothing by then.
+	const refusalBound = 10 * time.Second
+	for _, route := range []struct {
+		name string
+		// idleTimeout is the server's room idle timeout. ygo's sweeper reads it when the first room
+		// starts it, so it is set before any room loads.
+		idleTimeout time.Duration
+		// takeOut starts the room's going, from inside allowApply on the Apply's own goroutine,
+		// and answers what reports the end of the close it began, or nil where it began none.
+		takeOut func(service *Service, room string) <-chan error
+	}{
+		{"ygo's idle sweep retires it", 2 * time.Second, func(*Service, string) <-chan error { return nil }},
+		{"a close the service makes closes it", time.Hour, func(service *Service, room string) <-chan error {
+			closed := make(chan error, 1)
+			go func() { closed <- service.Evict(context.Background(), room) }()
+			return closed
+		}},
+	} {
+		t.Run(route.name, func(t *testing.T) {
+			ctx := context.Background()
+			service, _ := newTestService(t)
+			service.hooks = newTestHooks()
+			service.settle = time.Hour
+			service.srv.RoomIdleTimeout = route.idleTimeout
+			documents, _ := residentGrantDocuments(t, service, []int{62, 63}, []int{16 << 10, 8 << 10})
+			written, other := documents[0], documents[1]
+			pool := useLoadSlots(t, newLoadSlots(1))
+			joined, _, end := joinedTransaction(t, ctx, service)
+			if err := <-applyGrantEdit(service, joined, written); err != nil {
+				t.Fatalf("the transaction's write of its first document: %v", err)
+			}
+			if !transactionHolds(joined) {
+				t.Fatal("the transaction's grant holds nothing once its fork stands, so nothing here is tested")
+			}
+			// The room is looked up once more here, which stamps it idle from now, so the idle
+			// sweep retires it no sooner than the idle timeout on, and the Apply below finds it.
+			if err := loadRoomOf(service, other); err != nil {
+				t.Fatalf("look up the room of %s: %v", other, err)
+			}
+			if service.srv.GetDoc(other) == nil {
+				t.Fatalf("no room of %s is resident, so the transaction's Apply would be refused before ygo looks it up", other)
+			}
+			record, _ := service.roomLoads.Load(other)
+			filler := fillPoolBut(t, pool, 0)
+
+			var reached atomic.Bool
+			var closed <-chan error
+			gone := make(chan error, 1)
+			service.afterApplyAllowed = func(room string) {
+				if room != other || !reached.CompareAndSwap(false, true) {
+					return
+				}
+				closed = route.takeOut(service, room)
+				for deadline := time.Now().Add(goneBound); service.srv.GetDoc(room) != nil; time.Sleep(10 * time.Millisecond) {
+					if time.Now().After(deadline) {
+						gone <- fmt.Errorf("the room did not go within %s while the transaction's Apply stood between ygo's look and its lookup: something held it there", goneBound)
+						return
+					}
+				}
+				gone <- nil
+			}
+			var applyErr error
+			applied := make(chan struct{})
+			go func() {
+				defer close(applied)
+				applyErr = service.srv.Apply(joined, other, func(*crdt.Doc, func(func(*crdt.Transaction))) {})
+			}()
+			// letGo gives the pool back and waits for the Apply and for the close it began, so no load
+			// or close runs past the test's end, and answers the close's error. It runs once, after
+			// the hook has run or where it never will.
+			letGo := func() (closeErr error) {
+				filler.release()
+				select {
+				case <-applied:
+				case <-time.After(holdAndWaitBound):
+					t.Errorf("the transaction's Apply did not end within %s once the pool was free", holdAndWaitBound)
+				}
+				if closed == nil {
+					return nil
+				}
+				select {
+				case closeErr = <-closed:
+				case <-time.After(holdAndWaitBound):
+					t.Errorf("the close did not end within %s once the pool was free", holdAndWaitBound)
+				}
+				return closeErr
+			}
+			select {
+			case err := <-gone:
+				if err != nil {
+					letGo()
+					t.Fatal(err)
+				}
+			case <-applied:
+				t.Fatalf("the transaction's Apply was answered %v without reaching allowApply's end, so nothing here is tested", applyErr)
+			case <-time.After(goneBound + holdAndWaitBound):
+				letGo()
+				t.Fatalf("the transaction's Apply did not reach allowApply's end within %s", goneBound+holdAndWaitBound)
+			}
+			select {
+			case <-applied:
+			case <-time.After(refusalBound):
+				letGo()
+				t.Fatalf("the transaction's Apply was not answered within %s once %s: the room's load ran on its goroutine and waited for the pool while the transaction held its grant", refusalBound, route.name)
+			}
+			if !errors.Is(applyErr, errRoomLoadUnderGrant) || !errors.Is(applyErr, ErrServiceUnavailable) || errors.Is(applyErr, websocket.ErrInjectRefused) {
+				letGo()
+				t.Fatalf("the transaction's Apply, once %s after ygo's look, was answered %v, want the room's load refused busy: %v", route.name, applyErr, errRoomLoadUnderGrant)
+			}
+			if current, recorded := service.roomLoads.Load(other); recorded && current != record {
+				letGo()
+				t.Fatal("a load of the room began on the transaction's goroutine")
+			}
+			end()
+			if err := letGo(); err != nil {
+				t.Fatalf("the close: %v", err)
+			}
+			if failure := service.roomFailure(other); failure != nil {
+				t.Fatalf("the room is failed once its load was refused busy: %v", failure)
+			}
+			counters, err := service.RoomCounters(other)
+			if err != nil {
+				t.Fatalf("read the room's counters: %v", err)
+			}
+			if counters.RoomFailures != 0 {
+				t.Fatalf("the document's room failed %d times, want none: a busy refusal of its load is not the room's failure", counters.RoomFailures)
+			}
+			if err := grantWrite(ctx, service, other, grantWriteHeading, "Written"); err != nil {
+				t.Fatalf("a write holding no grant, once the transaction ended: %v", err)
+			}
+			requireHeading(t, service, other, false)
+		})
+	}
+}
+
+// A room's load whose context carries no transaction whose grant holds bytes loads the room as
+// before: ygo hands the load its caller's context (servicePersistenceAdapter.LoadDocContext), and
+// only a grant holding bytes refuses it. An Apply under no transaction, and one under a
+// transaction whose grant holds nothing yet - it has forked and read nothing - each load the room
+// of a document no room holds.
+func TestARoomsLoadUnderNoGrantOrAGrantHoldingNothingLoadsTheRoom(t *testing.T) {
 	ctx := context.Background()
 	service, _ := newTestService(t)
 	service.settle = time.Hour
-	documents, _ := residentGrantDocuments(t, service, []int{62, 63}, []int{16 << 10, 8 << 10})
+	alone := createIssueDocument(t, service.store, 64, "Loaded under no transaction.")
+	underTx := createIssueDocument(t, service.store, 65, "Loaded under a transaction holding nothing.")
+	for _, document := range []string{alone, underTx} {
+		storeHistory(t, service, document, grantTestState(t, 1<<10))
+	}
+	if err := loadRoomOf(service, alone); err != nil {
+		t.Fatalf("load the room of a document under no transaction: %v", err)
+	}
+	if service.srv.GetDoc(alone) == nil {
+		t.Fatal("an Apply under no transaction left no room of its document resident")
+	}
+	joined, _, _ := joinedTransaction(t, ctx, service)
+	if transactionHolds(joined) {
+		t.Fatal("the transaction's grant holds bytes before it forked or read anything, so nothing here is tested")
+	}
+	err := service.srv.Apply(joined, underTx, func(*crdt.Doc, func(func(*crdt.Transaction))) {})
+	if err != nil && !errors.Is(err, websocket.ErrNoChanges) {
+		t.Fatalf("an Apply under a transaction whose grant holds nothing: %v", err)
+	}
+	if service.srv.GetDoc(underTx) == nil {
+		t.Fatal("an Apply under a transaction whose grant holds nothing left no room of its document resident")
+	}
+}
+
+// roomLoadWaiters is how many goroutines wait on a room's load another caller began, read off the
+// goroutine dump (goroutinetest), since nothing reports that a caller has reached that wait: parked
+// in ygo's getOrCreateRoom, on the select over the loading room's ready barrier. The dump leaves
+// the runtime's own frames out, so the frame under a parked goroutine's header is the one parked.
+func roomLoadWaiters() int {
+	waiting := 0
+	for _, goroutine := range goroutinetest.Traces() {
+		lines := strings.SplitN(goroutine, "\n", 3)
+		if len(lines) < 2 || !strings.Contains(lines[0], "[select") {
+			continue
+		}
+		if strings.Contains(lines[1], "(*Server).getOrCreateRoom(") {
+			waiting++
+		}
+	}
+	return waiting
+}
+
+// A settlement whose warm-up waits on a room's load that a transaction holding its grant began
+// meets that load's refusal (servicePersistenceAdapter.LoadDocContext, errRoomLoadUnderGrant),
+// which is no fault of the room's or the document's: the settlement is armed again and counted no
+// failure, as one the room budget had no opening for is (settleNoRoom), and the document's
+// pending-settlement row stands until the settlement's next run commits. The transaction's Apply
+// finds the room it looked at gone - a close the service makes takes it out between allowApply's
+// look and ygo's lookup - and makes the room's placeholder, and its load is held at its refusal
+// (beforeRoomLoadRefused) until the settlement's warm-up waits on that placeholder. Before, the
+// warm-up's refusal stopped the settlement short as a fault (settleRetry) and was counted toward
+// maxSettleFailures, so three such meetings failed a healthy room.
+func TestASettlementWhoseWarmUpMeetsALoadRefusedUnderAGrantCountsNoFailure(t *testing.T) {
+	ctx := context.Background()
+	service, _ := newTestService(t)
+	service.settle = time.Hour
+	documents, _ := residentGrantDocuments(t, service, []int{66, 67}, []int{16 << 10, 8 << 10})
 	written, other := documents[0], documents[1]
-	pool := useLoadSlots(t, newLoadSlots(1))
+	// The document owes a settlement: a write lands on it, which leaves its pending-settlement row.
+	if err := grantWrite(ctx, service, other, grantWriteHeading, "Written"); err != nil {
+		t.Fatalf("the write that leaves the document owing a settlement: %v", err)
+	}
+	if owes, err := settlementPending(ctx, service.store.Pool, other); err != nil || !owes {
+		t.Fatalf("the written document owes a settlement: %t (%v), want true", owes, err)
+	}
 	joined, _, end := joinedTransaction(t, ctx, service)
 	if err := <-applyGrantEdit(service, joined, written); err != nil {
 		t.Fatalf("the transaction's write of its first document: %v", err)
@@ -1565,53 +1780,213 @@ func TestATransactionsApplyHoldsTheRoomItFoundResidentUntilYgoLooksItUp(t *testi
 	if !transactionHolds(joined) {
 		t.Fatal("the transaction's grant holds nothing once its fork stands, so nothing here is tested")
 	}
-	found := service.srv.GetDoc(other)
-	if found == nil {
+	if service.srv.GetDoc(other) == nil {
 		t.Fatalf("no room of %s is resident, so the transaction's Apply would be refused before ygo looks it up", other)
 	}
-	var taken slotsHeld
-	pool.taken = taken.record
-	var reached atomic.Bool
-	evicted := make(chan struct{})
-	var evictErr error
+
+	var closedOnce atomic.Bool
 	service.afterApplyAllowed = func(room string) {
-		if room != other || !reached.CompareAndSwap(false, true) {
+		if room != other || !closedOnce.CompareAndSwap(false, true) {
 			return
 		}
-		go func() {
-			evictErr = service.Evict(context.Background(), room)
-			close(evicted)
-		}()
-		// An eviction the Apply does not hold the room against closes it well within this.
-		select {
-		case <-evicted:
-		case <-time.After(2 * time.Second):
+		if err := service.Evict(context.Background(), room); err != nil {
+			t.Errorf("close the room between the transaction's look and ygo's lookup: %v", err)
 		}
 	}
-	var handed *crdt.Doc
-	err := service.srv.Apply(joined, other, func(doc *crdt.Doc, _ func(func(*crdt.Transaction))) { handed = doc })
-	if err != nil && !errors.Is(err, websocket.ErrNoChanges) {
-		t.Fatalf("the transaction's Apply to the room it found resident: %v", err)
+	refusing := make(chan struct{})
+	refuse := sync.OnceFunc(func() { close(refusing) })
+	release := make(chan struct{})
+	letRefusalGo := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(letRefusalGo)
+	service.beforeRoomLoadRefused = func(room string) {
+		if room != other {
+			return
+		}
+		refuse()
+		<-release
 	}
-	if !reached.Load() {
-		t.Fatal("the transaction's Apply never passed allowApply, so nothing here is tested")
+	var applyErr error
+	applied := make(chan struct{})
+	go func() {
+		defer close(applied)
+		applyErr = service.srv.Apply(joined, other, func(*crdt.Doc, func(func(*crdt.Transaction))) {})
+	}()
+	select {
+	case <-refusing:
+	case <-applied:
+		t.Fatalf("the transaction's Apply was answered %v without its load refusing itself, so nothing here is tested", applyErr)
+	case <-time.After(holdAndWaitBound):
+		t.Fatalf("the transaction's load did not reach its refusal within %s", holdAndWaitBound)
 	}
-	if handed != found {
-		t.Fatal("the transaction's Apply was handed a room loaded on its own goroutine, not the room it found resident: an eviction took the room out between ygo's look and its lookup")
+
+	settled := make(chan struct{})
+	go func() {
+		defer close(settled)
+		settleNow(service, other)
+	}()
+	waitFor(t, holdAndWaitBound, "the settlement's warm-up to wait on the load the transaction began", func() bool { return roomLoadWaiters() == 1 })
+	letRefusalGo()
+	select {
+	case <-applied:
+	case <-time.After(holdAndWaitBound):
+		t.Fatalf("the transaction's Apply did not end within %s once its load's refusal went on", holdAndWaitBound)
 	}
-	if takes := taken.all(); len(takes) != 0 {
-		t.Fatalf("the pool recorded takes leaving it holding %v during the transaction's Apply: a room's load took a grant of its own on the transaction's goroutine", takes)
+	if !errors.Is(applyErr, errRoomLoadUnderGrant) {
+		t.Fatalf("the transaction's Apply was answered %v, want its load refused busy: %v", applyErr, errRoomLoadUnderGrant)
 	}
 	select {
-	case <-evicted:
+	case <-settled:
 	case <-time.After(holdAndWaitBound):
-		t.Fatalf("the eviction did not finish within %s once the transaction's Apply returned", holdAndWaitBound)
+		t.Fatalf("the settlement did not end within %s once the load it waited on was refused", holdAndWaitBound)
 	}
-	if evictErr != nil {
-		t.Fatalf("the eviction: %v", evictErr)
+
+	state := service.lockExistingState(other)
+	if state == nil {
+		t.Fatal("the service holds no record of the document once its settlement ended, so nothing arms it again")
 	}
+	failures, armed := state.settleFailures, state.settle != nil
+	service.unlockState(other, state)
+	if failures != 0 {
+		t.Fatalf("the settlement counted %d failures once its warm-up met a load refused under another transaction's grant, want none: the refusal was that transaction's load's, not the room's", failures)
+	}
+	if !armed {
+		t.Fatal("the settlement is not armed again once its warm-up met the refused load")
+	}
+	if failure := service.roomFailure(other); failure != nil {
+		t.Fatalf("the room is failed once a settlement's warm-up met the refused load: %v", failure)
+	}
+	if owes, err := settlementPending(ctx, service.store.Pool, other); err != nil || !owes {
+		t.Fatalf("the document owes a settlement once its warm-up met the refused load: %t (%v), want true", owes, err)
+	}
+
 	end()
-	if held := pool.held.Load(); held != 0 {
-		t.Fatalf("the pool holds %d bytes once the transaction ended, want none", held)
+	service.SettleNow(other)
+	waitFor(t, holdAndWaitBound, "the settlement's next run to commit", func() bool {
+		owes, err := settlementPending(ctx, service.store.Pool, other)
+		return err == nil && !owes
+	})
+}
+
+// A committed write whose publish waits on a room's load that a transaction holding its grant
+// began finds no room to publish into once that load refuses itself (errRoomLoadUnderGrant), and
+// ends as a publish that found none does (publishedWithoutARoom): the write's text is judged on
+// the stored document, so its lost-edit verdict is reached (Ledger.LostOps), the document's
+// settlement is armed as the room's update observer would have armed it, and no room fails. The
+// transaction's Apply finds the room it looked at gone - a close the service makes takes it out
+// between allowApply's look and ygo's lookup - and makes the room's placeholder, which the write's
+// publish finds listed (roomHeld), and its load is held at its refusal (beforeRoomLoadRefused)
+// until the publish waits on it. Before, the publish logged the refusal as an error and returned,
+// with no verdict on the write's text and no settlement armed for it, which then waited for the
+// room's next load or the resumption.
+func TestAPublishWaitingOnALoadRefusedUnderAGrantEndsAsOneThatFoundNoRoom(t *testing.T) {
+	ctx := context.Background()
+	service, _ := newTestService(t)
+	service.settle = time.Hour
+	documents, _ := residentGrantDocuments(t, service, []int{68, 69}, []int{16 << 10, 8 << 10})
+	written, other := documents[0], documents[1]
+	joined, _, end := joinedTransaction(t, ctx, service)
+	if err := <-applyGrantEdit(service, joined, written); err != nil {
+		t.Fatalf("the transaction's write of its first document: %v", err)
 	}
+	if !transactionHolds(joined) {
+		t.Fatal("the transaction's grant holds nothing once its fork stands, so nothing here is tested")
+	}
+	if service.srv.GetDoc(other) == nil {
+		t.Fatalf("no room of %s is resident, so the transaction's Apply would be refused before ygo looks it up", other)
+	}
+
+	var closedOnce atomic.Bool
+	service.afterApplyAllowed = func(room string) {
+		if room != other || !closedOnce.CompareAndSwap(false, true) {
+			return
+		}
+		if err := service.Evict(context.Background(), room); err != nil {
+			t.Errorf("close the room between the transaction's look and ygo's lookup: %v", err)
+		}
+	}
+	refusing := make(chan struct{})
+	refuse := sync.OnceFunc(func() { close(refusing) })
+	release := make(chan struct{})
+	letRefusalGo := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(letRefusalGo)
+	service.beforeRoomLoadRefused = func(room string) {
+		if room != other {
+			return
+		}
+		refuse()
+		<-release
+	}
+	var applyErr error
+	applied := make(chan struct{})
+	go func() {
+		defer close(applied)
+		applyErr = service.srv.Apply(joined, other, func(*crdt.Doc, func(func(*crdt.Transaction))) {})
+	}()
+	select {
+	case <-refusing:
+	case <-applied:
+		t.Fatalf("the transaction's Apply was answered %v without its load refusing itself, so nothing here is tested", applyErr)
+	case <-time.After(holdAndWaitBound):
+		t.Fatalf("the transaction's load did not reach its refusal within %s", holdAndWaitBound)
+	}
+
+	// Another transaction writes the document: it forks the stored document, since no room of it
+	// is published (readFork), and its commit publishes, holding no grant by then (Ledger.publish),
+	// into the placeholder ygo lists.
+	tx, err := service.store.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the writing transaction: %v", err)
+	}
+	t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
+	writeCtx, ledger := service.Join(ctx, tx)
+	t.Cleanup(ledger.Discard)
+	if _, err := service.ApplyOps(writeCtx, other, grantEdit, grantWriter, nil); err != nil {
+		t.Fatalf("the write to the document whose load the transaction holds at its refusal: %v", err)
+	}
+	committed := make(chan error, 1)
+	go func() { committed <- ledger.Commit(ctx) }()
+	waitFor(t, holdAndWaitBound, "the write's publish to wait on the load the transaction began", func() bool { return roomLoadWaiters() == 1 })
+	letRefusalGo()
+	select {
+	case <-applied:
+	case <-time.After(holdAndWaitBound):
+		t.Fatalf("the transaction's Apply did not end within %s once its load's refusal went on", holdAndWaitBound)
+	}
+	if !errors.Is(applyErr, errRoomLoadUnderGrant) {
+		t.Fatalf("the transaction's Apply was answered %v, want its load refused busy: %v", applyErr, errRoomLoadUnderGrant)
+	}
+	if err := answeredWithin(t, committed, "the write's commit and publish, once the load its publish waited on was refused"); err != nil {
+		t.Fatalf("the write's commit: %v", err)
+	}
+
+	lost, judged := ledger.LostOps(other)
+	if !judged {
+		t.Fatal("the write's lost-edit verdict was not reached: its publish ended on the refused load without judging the write's text on the stored document")
+	}
+	if len(lost) != 0 {
+		t.Fatalf("the write's lost-edit verdict names operations %v as lost, want none: nothing else wrote the document", lost)
+	}
+	state := service.lockExistingState(other)
+	if state == nil {
+		t.Fatal("the service holds no record of the document once its write was published, so no settlement is armed for it")
+	}
+	armed := state.settle != nil
+	service.unlockState(other, state)
+	if !armed {
+		t.Fatal("no settlement is armed for the published write once its publish met the refused load")
+	}
+	if failure := service.roomFailure(other); failure != nil {
+		t.Fatalf("the room is failed once a publish met the refused load: %v", failure)
+	}
+	if owes, err := settlementPending(ctx, service.store.Pool, other); err != nil || !owes {
+		t.Fatalf("the written document owes a settlement: %t (%v), want true", owes, err)
+	}
+
+	end()
+	service.SettleNow(other)
+	waitFor(t, holdAndWaitBound, "the settlement the publish armed to commit", func() bool {
+		owes, err := settlementPending(ctx, service.store.Pool, other)
+		return err == nil && !owes
+	})
+	requireHeading(t, service, other, false)
 }

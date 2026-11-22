@@ -320,4 +320,14 @@ require (
 // replica has decoded the commit and before ygo's persistence observer, so no grant is held while
 // that observer waits on the room's queue of updates to store or on its worker's exit. The tag is
 // on 7768e28e, the head of release/v1.55.1/2026-11-21.2.
-replace github.com/reearth/ygo => github.com/cybermonklabs/ygo v1.55.1-legion.1
+// v1.55.1-legion.2 adds PersistenceAdapterLoadContext: where the adapter implements it, ygo loads
+// a room through LoadDocContext, with the context of the call that created the room - a browser's
+// request, an Apply's or a relay Inject's - in place of LoadDoc. Dispatch's adapter implements it
+// (servicePersistenceAdapter.LoadDocContext) and refuses busy, before it reads anything, a load
+// whose context carries a transaction whose grant holds bytes: such a transaction applies only to
+// a room it found resident (allowApply), and where ygo's idle sweep or a close the service makes
+// took that room out before ygo looked it up, its Apply is answered the 503 its caller retries
+// rather than loading the room on its goroutine under a grant of the load's own. It is cut with
+// knives on cybermonklabs/ygo as the member rel/v1.55.1-load-context; the tag is on 4004ab70, the
+// head of release/v1.55.1/2026-11-22.
+replace github.com/reearth/ygo => github.com/cybermonklabs/ygo v1.55.1-legion.2

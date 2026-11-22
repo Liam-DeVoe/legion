@@ -184,14 +184,13 @@ const loadSlotsName = "load"
 //
 // It cannot deadlock, because every holder finishes and gives its bytes back: it waits for
 // nothing another holder or a waiter can hold for good, and it waits for no more of the pool while
-// it holds some, but in the one window ygo's idle sweep leaves (below). The order of the queue is
-// what makes that last rule bind: a holder queued for more waits behind every waiter ahead of it,
-// whatever is free, so a holder that queued for more behind a waiter needing the bytes it holds
-// would wait on that waiter, and the waiter on it, with most of the pool free. That is what a
-// rewritten document's drive met in CI: a settlement's room load held about 377 MB, a write's cold
-// fork queued for 377 MB with 223 MB free, and the load's read-back queued behind the write for 39
-// MB more, until the write's 45-second bound answered it 503 (dispatch://INFRA-179, job
-// 136940412632).
+// it holds some. The order of the queue is what makes that last rule bind: a holder queued for
+// more waits behind every waiter ahead of it, whatever is free, so a holder that queued for more
+// behind a waiter needing the bytes it holds would wait on that waiter, and the waiter on it, with
+// most of the pool free. That is what a rewritten document's drive met in CI: a settlement's room
+// load held about 377 MB, a write's cold fork queued for 377 MB with 223 MB free, and the load's
+// read-back queued behind the write for 39 MB more, until the write's 45-second bound answered it
+// 503 (dispatch://INFRA-179, job 136940412632).
 //
 // The rule is take's, not each caller's: a take on a grant that already holds bytes takes the
 // difference only where the pool gives it at once, and is refused otherwise (errGrantShort). A
@@ -258,10 +257,10 @@ const loadSlotsName = "load"
 //     errFoldSlotsBusy), and loads no room: a read under it of a document no room holds here reads
 //     the stored document on the transaction's own grant (docTree, captureLiveTextAndAuthors,
 //     storedTree), and an Apply that would load one is refused (allowApply,
-//     errRoomLoadUnderGrant), each the 503 its caller retries (transactionHolds). An Apply to a
-//     room it found resident holds that room against every close the service makes until ygo has
-//     looked it up (roomServer.Apply); ygo's idle sweep is the one close that takes no such hold
-//     (below).
+//     errRoomLoadUnderGrant), each the 503 its caller retries (transactionHolds). A room the
+//     transaction found resident that ygo's idle sweep retires, or a close the service makes
+//     takes out, before ygo looks it up for the Apply is refused at its load the same way
+//     (servicePersistenceAdapter.LoadDocContext).
 //   - a connection of the rooms pool, for the cold read of a later document or a read beside its
 //     fork (coldFork, coldRead, storedTree). No holder of one waits for the pool or a fold slot
 //     (the order below), so that wait ends.
@@ -307,14 +306,12 @@ const loadSlotsName = "load"
 // one transaction's forks and reads share one grant (forkSlot), which Join's context carries,
 // so a transaction writing two documents, or reading one beside its fork of another, never waits
 // for the bytes its own fork holds, nor for a grant of its own beside them; and a refused apply
-// gives its grant back before its refusal's re-scan takes one (weighPeerUpdate, rebuildTakes). The
-// one window left is ygo's: a transaction holding its grant that applies to a room it found
-// resident (allowApply) holds that room against every close the service makes until ygo has
-// looked it up (roomServer.Apply), but ygo's idle sweep, which retires a room no peer and no
-// caller has held for roomIdleTimeout, takes no hold of the service's, and a room it retires in
-// that window is loaded again on the transaction's goroutine, under a grant of the load's own
-// taken while the transaction holds its own. ygo hands its load no context the transaction could
-// mark, and nothing the service holds keeps the sweep off a room it has not entered.
+// gives its grant back before its refusal's re-scan takes one (weighPeerUpdate, rebuildTakes). A
+// transaction holding its grant that applies to a room it found resident (allowApply) loads none
+// either where ygo's idle sweep retires that room, or a close the service makes takes it out,
+// before ygo looks it up: ygo hands the room's load the Apply's context, and the load refuses it
+// busy before it reads anything (servicePersistenceAdapter.LoadDocContext, errRoomLoadUnderGrant),
+// the 503 that write's caller retries.
 //
 // Beside the pool, a holder takes four things in one order, and waits for none of them while it
 // holds one that comes later: a slot of the buffered folds (foldSlots), then its grant of the
@@ -636,8 +633,8 @@ func carriesLoadGrant(ctx context.Context) bool {
 // pool (Ledger.forkSlot): a fork of the transaction stands under it, or a read of the transaction
 // holds what it took. Such a transaction waits for nothing another holder of the pool can hold
 // while it waits for the pool (loadSlots): it takes more of its grant only at once (take), takes a
-// slot of the buffered folds only at once (foldRead), and loads no room (allowApply, docTree,
-// captureLiveTextAndAuthors, VerifyMark).
+// slot of the buffered folds only at once (takeFoldSlot), and loads no room (allowApply,
+// servicePersistenceAdapter.LoadDocContext, docTree, captureLiveTextAndAuthors, VerifyMark).
 func transactionHolds(ctx context.Context) bool {
 	ledger := ledgerFrom(ctx)
 	return ledger != nil && ledger.tx != nil && ledger.forks != nil && ledger.forks.slot.held

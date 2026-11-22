@@ -179,11 +179,16 @@ func skipUnreadableSettlement(room string, err error) bool {
 func (s *Service) settleRoomWithin(parent context.Context, room string, generation uint64, mayLoad bool) settleOutcome {
 	settle := &settlement{service: s, room: room, generation: generation}
 	// stoppedShort is the outcome of a settlement that stopped short with err having written
-	// nothing into the room: a retry, unless parent has ended, the document has been removed or
-	// Shutdown refused the write. The generation it counts that retry's failure against is the one
-	// the settlement stands at now, which its take reads again once the room is warm. An err that
-	// is the append gate's refusal of an update the room took after its issue closed is no fault
-	// to retry: it ends the settlement (endOnRefusedUpdate).
+	// nothing into the room: a retry, unless parent has ended, the document has been removed,
+	// Shutdown refused the write, or err is a room load refused under a transaction's held grant.
+	// The generation it counts that retry's failure against is the one the settlement stands at
+	// now, which its take reads again once the room is warm. An err that is the append gate's
+	// refusal of an update the room took after its issue closed is no fault to retry: it ends the
+	// settlement (endOnRefusedUpdate). A room load refused under a held grant
+	// (errRoomLoadUnderGrant) is no fault of the room's or the document's either: the settlement
+	// met it waiting on a load a transaction holding its grant began, which refused itself and
+	// handed the refusal to every caller waiting on it (servicePersistenceAdapter.LoadDocContext),
+	// so the settlement is armed again and counted no failure (settleNoRoom).
 	settle.stoppedShort = func(err error) settleOutcome {
 		if errors.Is(err, ErrIssueClosed) {
 			return settle.endOnRefusedUpdate()
@@ -196,6 +201,8 @@ func (s *Service) settleRoomWithin(parent context.Context, room string, generati
 			return settleOutcome{}
 		case s.shuttingDown(room) && errors.Is(err, ErrServiceUnavailable):
 			next = settleRefusedInShutdown
+		case errors.Is(err, errRoomLoadUnderGrant):
+			next = settleNoRoom
 		}
 		return settleOutcome{next: next, err: err, generation: settle.generation}
 	}
@@ -325,7 +332,10 @@ func (st *settlement) take(parent context.Context, mayLoad bool) (settleStep, se
 		// read the issue for it: it applies nothing, and a closed issue's document settles as an
 		// open one's does, so the refusal a closed issue makes of a caller's injection is not
 		// this load's to meet. A late departure's settlement hands it the settlement's mark too,
-		// through parent (settleLastPeer, withSettlementLoad).
+		// through parent (settleLastPeer, withSettlementLoad). The warm-up holds no grant, so its
+		// own load is never refused busy, but it can wait on a load a transaction holding its
+		// grant began, which refuses itself and hands the warm-up that refusal: the settlement
+		// stops short on it as one the budget had no opening for does (stoppedShort, settleNoRoom).
 		warmCtx := withOwnerVerified(parent)
 		if shuttingDown {
 			warmCtx = withShutdownLoad(warmCtx)

@@ -182,8 +182,14 @@ type servicePersistenceAdapter struct {
 	service *Service
 }
 
-// LoadDoc reads the durable state a room loads and hands ygo none of it: the state goes on the
-// load's record (roomLoad.read), and the room's own load hook decodes it (bootstrapLoadedState,
+// LoadDoc is LoadDocContext for a caller that has no context. ygo loads every room through
+// LoadDocContext (PersistenceAdapterLoadContext), so a load through this refuses nothing busy.
+func (a *servicePersistenceAdapter) LoadDoc(room string) ([]byte, error) {
+	return a.LoadDocContext(context.Background(), room)
+}
+
+// LoadDocContext reads the durable state a room loads and hands ygo none of it: the state goes on
+// the load's record (roomLoad.read), and the room's own load hook decodes it (bootstrapLoadedState,
 // whose comment states how), because ygo's own apply runs the format cleanup a remote apply runs
 // and the room's stored history already holds every cleanup the room made. A preload
 // (takePreload), the state a socket's admission check read and the room's load takes in place of
@@ -209,19 +215,43 @@ type servicePersistenceAdapter struct {
 // Nothing of ygo's own runs between this read and the hook it calls next: there is no decode of
 // what this returns (sjawhar/ygo v1.55.1-sami.7, provider/websocket/server.go:2019-2024), and the
 // only way a load fails with nothing of this service still to run on its goroutine is a panic out
-// of this read. Every way the read ends short is therefore failed here, on the load's own
-// goroutine and before ygo closes the room's barrier: the store's refusal, a stored history whose
-// header declares more items than one update may hold (loadDecoded, loadableHistory), and a panic
-// out of any of it, recovered here as the hook recovers its own (bootstrapLoadedState,
-// foldDocument). A history ygo refuses the bytes of is not one of them: the room's own decode
-// fails the room for it (onLoadDocument). ygo
+// of this read. Every way the read ends short, but the busy refusal below, is therefore failed
+// here, on the load's own goroutine and before ygo closes the room's barrier: the store's refusal,
+// a stored history whose header declares more items than one update may hold (loadDecoded,
+// loadableHistory), and a panic out of any of it, recovered here as the hook recovers its own
+// (bootstrapLoadedState, foldDocument). A history ygo refuses the bytes of is not one of them: the
+// room's own decode fails the room for it (onLoadDocument). ygo
 // recovers such a panic too and hands every waiter the load's error (server.go:2010-2029), but it
 // does so with the record this load began still standing under the room's name and the room
 // healthy, which left the failure to whichever caller's Apply met it - a caller that cannot tell
 // the load it waited on from the load that began after it, since ygo removes the room before any
 // waiter wakes (server.go:2031-2040). Recovered here, a load's failure is the load's own
 // (sjawhar/legion#2519).
-func (a *servicePersistenceAdapter) LoadDoc(room string) (_ []byte, err error) {
+//
+// ctx is the context of the call that created the room (cybermonklabs/ygo v1.55.1-legion.2,
+// PersistenceAdapterLoadContext): a browser's request, an Apply's or a relay Inject's. A load
+// whose ctx is joined to a transaction whose grant holds bytes (transactionHolds) is refused busy
+// before it records or reads anything (errRoomLoadUnderGrant), the 503 that write's caller
+// retries: it would take a grant of its own on the transaction's goroutine, waiting for the pool
+// while the transaction held its own (loadSlots). Such a transaction applies only to a room it
+// found resident (allowApply), so its Apply reaches a load only where that room went before ygo
+// looked it up: ygo's idle sweep retired it, or a close the service makes took it out. That
+// refusal is not the room's failure: it begins no record and takes no grant, so it has neither to
+// give back, and it fails no room. ygo removes its placeholder and hands the refusal to every
+// caller waiting on this load (provider/websocket/server.go, failRoomLoad), and the next access
+// loads the room afresh. A caller that waited on it meets the same refusal as no fault of the
+// room's: a settlement's warm-up is armed again and counted no failure (settleNoRoom), and a
+// committed write's publish ends as one that found no room does (publishedWithoutARoom). Every
+// other load - its ctx joined to no transaction, or to one whose grant holds nothing - reads as
+// above, and runs on no request's context: one load serves every caller waiting on it, so no
+// caller's end ends it.
+func (a *servicePersistenceAdapter) LoadDocContext(ctx context.Context, room string) (_ []byte, err error) {
+	if transactionHolds(ctx) {
+		if hook := a.service.beforeRoomLoadRefused; hook != nil {
+			hook(room)
+		}
+		return nil, errRoomLoadUnderGrant
+	}
 	load := a.service.beginRoomLoad(room)
 	slot := newLoadSlot()
 	defer func() {
@@ -660,11 +690,11 @@ func (s *Service) refuseIfRebuilding(room string) error {
 // applied as before.
 //
 // ygo looks the room up only once this has returned (getOrCreateRoom), and loads it there where it
-// is gone by then. Such a transaction's Apply holds the room against every close the service
-// makes from before this look until its Apply has returned (roomServer.Apply), so a room this
-// finds resident is the room ygo finds; a close already under way or waiting refuses the Apply
-// before this runs. ygo's idle sweep takes no hold of the service's, and is the one close that can
-// still retire the room in between, a room no peer has held for roomIdleTimeout.
+// is gone by then: ygo's idle sweep can retire it in between, a room no peer and no caller has
+// held for roomIdleTimeout, and so can a close the service makes. ygo hands that load the Apply's
+// context, and the load refuses it busy before it reads anything where the transaction's grant
+// still holds bytes (servicePersistenceAdapter.LoadDocContext): the Apply is answered the same 503
+// as one this refuses (errRoomLoadUnderGrant), nothing loads on its goroutine, and no room fails.
 func (s *Service) allowApply(ctx context.Context, info websocket.InjectInfo) error {
 	if transactionHolds(ctx) && s.srv.GetDoc(info.Room) == nil {
 		return errRoomLoadUnderGrant
@@ -679,7 +709,9 @@ func (s *Service) allowApply(ctx context.Context, info websocket.InjectInfo) err
 }
 
 // errRoomLoadUnderGrant refuses the load of a room a transaction holding its grant would have
-// waited for (allowApply). It is ErrServiceUnavailable, the API's 503 DOC_SERVICE_UNAVAILABLE.
+// waited for: here, where no room of the document is resident (allowApply), and at the load itself,
+// where the room went after that look (servicePersistenceAdapter.LoadDocContext). It is
+// ErrServiceUnavailable, the API's 503 DOC_SERVICE_UNAVAILABLE.
 var errRoomLoadUnderGrant = fmt.Errorf("%w: a transaction holding its grant of the pod's load concurrency loads no room, and this document's room is not resident", ErrServiceUnavailable)
 
 // allowInject decides whether ygo may apply an injection to a room. Its issue read goes
