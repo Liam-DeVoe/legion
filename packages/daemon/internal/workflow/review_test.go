@@ -1648,8 +1648,9 @@ func reviewStuckNotices(t *testing.T, pool *pgxpool.Pool) []record.Notice {
 	return notices
 }
 
-// reviewClaim is LEGION-208's reviewer claim as the daemon names it, the token claim.NewToken
-// spells for the issue's project, key and role (the workflow's reviewerToken): the claim the
+// reviewClaim is LEGION-208's reviewer claim as the daemon names it here, the reviewer role's own
+// token claim.NewToken spells for the issue's project, key and role: the claim of the worker on the
+// reviewer's step where no plan row names another (the workflow's reviewersClaim), the claim the
 // fixtures record the reviewer's session on, and the claim each of the reviewer's completions
 // carries, as the claim a reviewer's agent completes under does.
 const reviewClaim claim.Token = "legion-legion-legion-208-reviewer"
@@ -1659,8 +1660,10 @@ const reviewClaim claim.Token = "legion-legion-legion-208-reviewer"
 // entry the round's start raised, with its task, raised before any review of the round
 // (record.PhaseRow.Entry, EntryTask and EntryRaisedAt), as every round's row does: only a review
 // submitted after that entry moves the commit the reviewer read (workflow's review). It names no
-// claim yet: the reviewer submits its review before it completes, and only a completion writes a
-// row's claim (record.PhaseRow.Claim, which the engine's completion handler writes). The reviewer's
+// claim, as a row seeded with no step of a plan does, and the reviewer submits its review before it
+// completes: the claim the round reads is then the reviewer role's own token (workflow's
+// reviewersClaim). An entry of a plan's step writes the claim of its agent on the row, and a
+// completion writes it (record.PhaseRow.Claim). The reviewer's
 // claim is recorded as the daemon records it, under the token the daemon names it by
 // (reviewClaim) and with the session its agent registered, the session reviewBody's footer names.
 func seedRoundOneRows(t *testing.T, pool *pgxpool.Pool) {
@@ -1734,8 +1737,8 @@ func TestAReviewAppReviewFromAnotherSessionIsSetAside(t *testing.T) {
 // because the reviewer's claim records no session yet (workflow's RefusedWhileNoSession).
 const reviewWaitsLine = "workflow: a review of the review App waits: the reviewer's claim records no session, so the next read of the pull request's reviews judges it again"
 
-// In the reviewer's first round its row names no claim (seedRoundOneRows): the reviewer submits the
-// review of its first round before it completes, and only a completion writes a row's claim. The
+// In the reviewer's first round its row names no claim (seedRoundOneRows), as a row that runs no
+// step of a plan does, and the reviewer submits the review of its first round before it completes. The
 // reviewer's session is the one the claims record holds for the claim the daemon starts the
 // reviewer under, in that round as in every later one, so another review-App session's APPROVE or
 // REQUEST_CHANGES at the head - the controller's, here - decides nothing in round 1 either: it is
@@ -1792,7 +1795,7 @@ func TestInTheReviewersFirstRoundOnlyItsOwnSessionDecides(t *testing.T) {
 				SubmittedAt: time.Date(2026, 9, 23, 0, 1, 0, 0, time.UTC)})
 			row := reviewerRow(t, pool)
 			if row.Claim != "" {
-				t.Fatalf("the reviewer's row names the claim %q, want none: no completion of the reviewer's was applied", row.Claim)
+				t.Fatalf("the reviewer's row names the claim %q, want none: it runs no step of a plan, and no completion of the reviewer's was applied", row.Claim)
 			}
 			if got := issuePhase(t, pool); got != tc.want {
 				t.Fatalf("after the review the issue is in %s, want %s", got, tc.want)
