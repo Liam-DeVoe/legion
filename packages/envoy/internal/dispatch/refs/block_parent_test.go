@@ -415,9 +415,10 @@ func moverUnderRight() blockDoc {
 // A version that moves a block under another parent and changes no text retracts the parent it
 // left and asserts the one it reached at one time, the pass's own, which is no earlier than that
 // version's created_at, by its writer and under the event that recorded it, moves no block's
-// changed_version or changed_at, and states nothing else at all, the moved block being the one
-// child of either parent, so its rank still stands. A version that changes one block's text
-// alone reads the parent of every other block again, and the same version indexed twice loses
+// changed_version or changed_at, and states nothing else but the same retraction and assertion of
+// its text_parent, since its text moved into the other holder's: the moved block is the one child
+// of either parent, so its rank and its text_rank still stand. A version that changes one block's
+// text alone reads the parent of every other block again, and the same version indexed twice loses
 // the revision fence and appends no tuple. A block one version drops and the next restores
 // joins the document a second time, on its new row, and no block that stayed joins it twice.
 func TestABlockParentIsATupleAndItsColumnIsItsProjection(t *testing.T) {
@@ -716,13 +717,20 @@ func TestABlockParentIsATupleAndItsColumnIsItsProjection(t *testing.T) {
 				block, was.version, was.at, now.version, now.at)
 		}
 	}
-	if len(stated) != 2 {
-		t.Errorf("the move stated %d tuples, want the retraction and the assertion alone: %v", len(stated), stated)
+	// The block's text moved from left's into right's, so its text parent moves with its parent:
+	// the move states the same two tuples of each kind, and nothing else.
+	if len(stated) != 4 {
+		t.Errorf("the move stated %d tuples, want the retraction and the assertion of its part_of and of its text_parent alone: %v", len(stated), stated)
 	}
 	for _, tuple := range stated {
-		if tuple.Kind != graphstore.TuplePartOf {
-			t.Errorf("the move stated a %s tuple, want nothing but part_of: %+v", tuple.Kind, tuple)
+		if tuple.Kind != graphstore.TuplePartOf && tuple.Kind != TupleTextParent {
+			t.Errorf("the move stated a %s tuple, want nothing but part_of and text_parent: %+v", tuple.Kind, tuple)
+			continue
 		}
+		if want := mover.address("right"); tuple.Asserted != (tuple.ToID == want) || !tuple.Asserted && tuple.ToID != mover.address("left") {
+			t.Errorf("the move stated %+v, want the retraction of left and the assertion of right", tuple)
+		}
+		requireMovedBy(tuple.Kind, tuple)
 	}
 }
 

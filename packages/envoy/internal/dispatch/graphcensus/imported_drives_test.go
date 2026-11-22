@@ -836,8 +836,9 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 }
 
 // The terms that count what several drives here append: a block a version states afresh, with its
-// two base attributes, its in_document and its part_of, which the term block counts, the rank and
-// the placement its first row takes and its text value, which block_values and block_text count,
+// two base attributes, its in_document and its part_of, which the term block counts, the rank, the
+// placement, the text_parent and the text_rank its first row takes and its text value, which
+// block_values and block_text count,
 // and the authored_by a block of an issue's room takes, which block_author counts; a version's
 // node, which the term version counts, and the definition_version of a version of a query, which
 // query_version counts; a document's part_of its issue, which document_part_of counts; a person's
@@ -860,6 +861,8 @@ var (
 	blockValuesCounted = map[graphcensus.StoredKind][]string{
 		{refs.BlockNodeKind, refs.AttributeRank}:       {"block_values"},
 		{refs.BlockNodeKind, refs.AttributePlacement}:  {"block_values"},
+		{refs.BlockNodeKind, refs.TupleTextParent}:     {"block_values"},
+		{refs.BlockNodeKind, refs.AttributeTextRank}:   {"block_values"},
 		{refs.BlockNodeKind, graphstore.AttributeText}: {"block_text"},
 	}
 	roomBlockCounted = map[graphcensus.StoredKind][]string{

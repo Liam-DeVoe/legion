@@ -1448,11 +1448,12 @@ func (s *Service) indexOwed(ctx context.Context, document owedDocument) owedOutc
 // holding no blocks, so no pass removes a block it could not read.
 //
 // Otherwise it runs, in the transaction, the one pass under the tree artifact a settlement of the
-// room runs (indexRoom, over the fragments joined in the room's order), at the newest version of
-// each fragment's document, each document's facts caused by the event that recorded its version
-// (causeRoomFacts), stamps each document's links with that event, and clears the owed mark of every
-// artifact of the room, the tree's own included: the pass's fence (refs.PlanBlocks) clears the
-// marks of the documents it indexes, and a document holding no version is cleared here.
+// room runs (indexRoom, over the fragments' own renderings laid end to end in the room's order,
+// fragmentsText), at the newest version of each fragment's document, each document's facts caused
+// by the event that recorded its version (causeRoomFacts), stamps each document's links with that
+// event, and clears the owed mark of every artifact of the room, the tree's own included: the
+// pass's fence (refs.PlanBlocks) clears the marks of the documents it indexes, and a document
+// holding no version is cleared here.
 //
 // The transaction reads, extracts and plans the whole pass before its first write (queueWrites),
 // as indexOwedDocument's does, so it holds a transaction id only for the pass's statements and the
@@ -1537,16 +1538,18 @@ func (s *Service) indexOwedRoom(ctx context.Context, document owedDocument) (ind
 		return false, false, false, err
 	}
 	versions := refs.Versions{}
-	// markdowns is each fragment's own rendering: one that renders as no text holds no block
-	// (withoutSilentFragments).
+	// markdowns is each fragment's own rendering, with its blocks' ranges in it (offsets): the text
+	// the pass indexes, laid end to end (fragmentsText), in which one that renders as no text holds
+	// no block.
 	markdowns := make([]string, len(documents))
+	offsets := make([][]pmdoc.BlockOffset, len(documents))
 	for index, fragment := range documents {
 		if latest[index].number == 0 {
 			parts[index] = &pmdoc.Node{Type: parts[index].Type, Attrs: parts[index].Attrs}
 			continue
 		}
 		versions[fragment] = refs.Version{Number: latest[index].number, At: latest[index].at}
-		markdown, _, err := renderFragment(parts[index])
+		markdown, held, err := renderFragment(parts[index])
 		if err != nil {
 			slog.Warn("dispatch: block index cannot render a fragment of an issue room; the room stays owed and nothing of it is indexed",
 				"room", room, "artifact", fragment, "error", err)
@@ -1555,16 +1558,12 @@ func (s *Service) indexOwedRoom(ctx context.Context, document owedDocument) (ind
 		if markedAt != nil && markdown != latest[index].markdown {
 			return false, true, false, nil
 		}
-		markdowns[index] = markdown
+		markdowns[index], offsets[index] = markdown, held
 	}
 	if len(versions) > 0 {
 		joined, joinedCounts := joinFragments(parts)
-		markdown, offsets, err := renderFragment(joined)
-		if err != nil {
-			return false, false, false, err
-		}
-		offsets = withoutSilentFragments(offsets, parts, func(index int) bool { return markdowns[index] == "" })
-		blocks := offsetBlocks(offsets, read.layout.blockDocuments(room, joined, joinedCounts))
+		markdown, laid := fragmentsText(markdowns, offsets)
+		blocks := offsetBlocks(laid, read.layout.blockDocuments(room, joined, joinedCounts))
 		// The events that recorded each version are read before the pass, as for one document:
 		// each document's is the cause of the facts the pass states of its blocks.
 		events := make(map[string]int64, len(versions))

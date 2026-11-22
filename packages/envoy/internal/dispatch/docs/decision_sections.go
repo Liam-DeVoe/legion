@@ -248,6 +248,8 @@ func tiesOf(section decisionSection, ties map[string][]string) []string {
 // converted yet, read off the newest version of each through the section reader - and each spec
 // whose answered asks left it (graphcensus.ReadRestoreWork), with those asks. A newest version
 // outside the Proof schema is counted as one unconverted section, since the step cannot read it.
+//
+// kept for one release: decisions-documents-fn
 func ReadDecisionsCensus(ctx context.Context, q graphstore.Queryer) (graphcensus.DecisionsCensus, error) {
 	var census graphcensus.DecisionsCensus
 	rows, err := q.Query(ctx, `

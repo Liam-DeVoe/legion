@@ -534,6 +534,8 @@ func seedRunDrives(t *testing.T) []StoreDrive {
 			{refs.BlockNodeKind, graphstore.TuplePartOf}:              {"block"},
 			{refs.BlockNodeKind, refs.AttributeRank}:                  {"block_values"},
 			{refs.BlockNodeKind, refs.AttributePlacement}:             {"block_values"},
+			{refs.BlockNodeKind, refs.TupleTextParent}:                {"block_values"},
+			{refs.BlockNodeKind, refs.AttributeTextRank}:              {"block_values"},
 			{refs.BlockNodeKind, graphstore.AttributeText}:            {"block_text"},
 			{refs.BlockNodeKind, "mentions"}:                          {"block_ref"},
 		},

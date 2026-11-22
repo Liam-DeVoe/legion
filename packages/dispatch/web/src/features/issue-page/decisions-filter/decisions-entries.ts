@@ -66,11 +66,10 @@ import {
  * refused; nor are the comments, which only move a decision between parts.
  *
  * The seam says too which decisions are a person's write-up of an answered question
- * (`writeUps`) - a person's entry that names an answered ask of this issue (`from_ask`), whose
+ * (`writeUps`) - a person's entry whose `from_ask` names an answered ask of this issue, whose
  * decision entry the seam leaves out of every part - and which questions each one restates: an
- * address naming a write-up
- * lands on the row of a question it answers, and only the decisions read and the asks can tell a
- * write-up from a person's decision of its own.
+ * address naming a write-up lands on the row of a question it answers, and only the decisions
+ * read and the asks can tell a write-up from a person's decision of its own.
  *
  * The hook is the module's one export and its answer's type is its own, so the read that
  * replaces this module has one name to give the view and nothing else of it to keep.
@@ -106,12 +105,12 @@ interface DecisionsEntries {
    *  (`standsFailed`): it holds no answer, and a fetch of it failed since it last held one. A read
    *  stays here while it runs again, until it answers. */
   readonly unreadable: readonly DecisionsRead[];
-  /** Each person's write-up of an answered question of this issue (a person's decision that
-   *  names an answered ask of this issue), by its node's
-   *  id, with the node ids of the answered questions it restates. The list draws no row for a
-   *  write-up, so an address naming one lands on the row of a question it answers. Undefined
-   *  while the asks read holds no answer and is not refused: until it answers, an answer it
-   *  brings may make any person's decision a write-up. */
+  /** Each person's write-up of an answered question, by its decision node's id, with the node ids
+   *  of the answered questions it restates. A write-up is a decision node whose entry in the
+   *  decisions read is a person's entry whose `from_ask` names an answered ask of this issue. The
+   *  list draws no row for a write-up, so an address naming one lands on the row of a question it
+   *  answers. Undefined while the asks read holds no answer and is not refused: until it answers,
+   *  an answer it brings may make any person's decision a write-up. */
   readonly writeUps: ReadonlyMap<string, ReadonlySet<string>> | undefined;
 }
 
@@ -214,33 +213,41 @@ export function useDecisionsEntries({
     }
     return found;
   }, [asks, asksRefused, decisions, root]);
-  // From the model's inputs alone, and the write-ups once the asks read tells them: how a read
-  // stands is no input of the model, so while only that changes the parts keep their identity and
-  // nothing the body works out from them is worked out again. A write-up is no entry of its own
-  // (R2, R9): the question it restates is the person's decision, so its decision entry leaves
-  // every part.
+  // The model's parts, from its inputs alone: how a read stands is no input of the model, and
+  // neither are the write-ups, so while only those change it is not worked out again.
+  const model = useMemo(
+    () =>
+      decisionsParts({
+        asks,
+        changes,
+        decisions,
+        issueKey: issue.key,
+        nodeIdOf,
+        reader,
+        root,
+        view,
+      }),
+    [asks, changes, decisions, issue.key, nodeIdOf, reader, root, view]
+  );
+  // The view's parts, from the model and the write-ups once the asks read tells them: while only
+  // how a read stands changes, the parts keep their identity and nothing the body works out from
+  // them is worked out again. A write-up is no entry of its own (R2, R9): the question it
+  // restates is the person's decision, so its decision entry leaves every part.
   const parts = useMemo<DecisionsParts>(() => {
-    const model = decisionsParts({
-      asks,
-      changes,
-      decisions,
-      issueKey: issue.key,
-      nodeIdOf,
-      reader,
-      root,
-      view,
-    });
     const own = <Entry extends DecisionsEntry>(entries: readonly Entry[]): Entry[] =>
       entries.filter((entry) => entry.kind !== "decision" || !writeUps?.has(entry.node.id));
-    const yours = model.others.length === 0 ? model.yours : [...model.yours, ...model.others];
+    const yours =
+      model.others.length === 0
+        ? model.yours
+        : newestFirst([...model.yours, ...model.others], root);
     return {
       ...model,
       agents: own(model.agents),
       others: [],
       review: own(model.review),
-      yours: own(model.others.length === 0 ? yours : newestFirst(yours, root)),
+      yours: own(yours),
     };
-  }, [asks, changes, decisions, issue.key, nodeIdOf, reader, root, view, writeUps]);
+  }, [model, root, writeUps]);
   return { failures, parts, readsHeld, retry, retrying, unreadable, writeUps };
 }
 

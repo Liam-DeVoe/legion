@@ -12,6 +12,7 @@ body: |-
     `envoy-dispatch backfill-block-ids` prints `documents=0` where it read no document, rather than nothing.
     `envoy-dispatch census --store` reads a database this build has not migrated yet as an absent store and names the reason, and with `--sizing` still runs its growth pass.
     A Keep on a decision node reads the node again under its locks, and answers 409 `DECISION_CHANGED` when the decision changed while it waited, and 404 when the decision was replaced or removed, with nothing written.
+    A reference `dispatch://KEY/decisions`, and a link to an issue's Decisions page (`/issues/KEY/decisions`) whatever its fragment, reads as the issue, whose decision nodes that page reads, rather than as no reference and as the issue's `decisions.md`.
 time: 2026-11-17T17:19:47.000000000Z
 custom:
     Issue: pr4173

@@ -78,7 +78,11 @@ var queryTakes = map[string][]string{
 
 // decisionsTakes is the decisions query's rule: of the types graphstore.QueryTakes lists for it,
 // each ask by the ask's own node, never the block that shows it in a document; each decision; and
-// each reading whose parent in the walk is a decision, the reading under an agent's decision.
+// each reading of a decision, whose parent in the walk is a decision or a person's answered ask,
+// the decision that ask is. A reading in an ask a person answered stands under the ask's own node
+// (refs.DecisionFacts places its part_of there), and the decisions read lists it under that ask's
+// entry; a reading in an ask nobody has answered is no reading yet and stands under the ask's
+// block, which this rule never takes it under.
 func decisionsTakes(tree IssueTree, index int) bool {
 	node := tree.Nodes[index]
 	if !slices.Contains(queryTakes[graphstore.QueryDecisions], node.Type) {
@@ -88,8 +92,12 @@ func decisionsTakes(tree IssueTree, index int) bool {
 	case graphstore.SupertagAsk:
 		return node.Kind == graphstore.KindAsk
 	case refs.ReadingSupertag:
-		parent, held := tree.index[node.Parent]
-		return held && tree.Nodes[parent].Type == refs.DecisionSupertag
+		at, held := tree.index[node.Parent]
+		if !held {
+			return false
+		}
+		parent := tree.Nodes[at]
+		return parent.Type == refs.DecisionSupertag || parent.Kind == graphstore.KindAsk
 	}
 	return true
 }
@@ -219,33 +227,6 @@ func WalkIssueTree(ctx context.Context, q Queryer, issueKey string, cut refs.Tre
 		walk.take(&tree, root)
 	}
 	return tree, nil
-}
-
-// walkDocumentTree is the walk of the tree of a document no issue holds - a project's document, a
-// conversation's file - at cut, in the walk's order: the document's own node first and then its
-// part_of subtree, walked as the first part of WalkIssueTree walks an issue's, every node of it
-// one whose address begins with the owner its ref_key begins with, the project's key or the
-// conversation's (graphstore.ArtifactRefKey). No conversation hangs under such a document, and no
-// issue's walk has a second part there.
-func walkDocumentTree(ctx context.Context, q Queryer, refKey string, cut refs.TreeCut) ([]TreeNode, error) {
-	owner, _, _ := strings.Cut(refKey, "/")
-	document := refs.Target{Kind: graphstore.KindArtifact, ID: refKey}
-	walk := treeWalk{
-		issue:    document,
-		owner:    owner,
-		cut:      cut,
-		nodes:    map[refs.Target]TreeNode{},
-		children: map[refs.Target][]refs.Target{},
-		blocks:   map[refs.Target][]refs.Target{},
-		hanging:  map[refs.Target][]refs.Target{},
-	}
-	if err := walk.readSubtrees(ctx, q, []refs.Target{document}, false); err != nil {
-		return nil, err
-	}
-	tree := IssueTree{Cut: cut, Memo: -1, index: map[refs.Target]int{}}
-	walk.nodes[document] = TreeNode{Kind: document.Kind, ID: document.ID, Type: graphstore.SupertagDocument}
-	walk.take(&tree, document)
-	return tree.Nodes, nil
 }
 
 // treeWalk is what a walk has read of the issue's tree: its root, the issue's node, and the owner
@@ -549,8 +530,9 @@ func (tree IssueTree) Takes(query string) ([]int, bool) {
 // recordLeftOut are the values a record writes no field of among the node's values. It leaves out
 // a value only where another field of the record carries it: the rank, written in a field of its
 // own, and the text, written as the body, since a value written twice would let two builders write
-// two digests. Every other value - the node's visibility, its state and its placement among them -
-// is among the values, so a change of any of them moves the digest.
+// two digests. Every other value - the node's visibility, its state, its placement and its
+// text_rank among them - is among the values, so a change of any of them moves the digest, and so
+// is the text_parent among the relations.
 var recordLeftOut = []string{refs.AttributeRank, graphstore.AttributeText}
 
 // QueryRecord is the record of query over the walk: for each node the
