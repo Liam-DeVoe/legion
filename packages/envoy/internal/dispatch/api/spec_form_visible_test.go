@@ -497,8 +497,10 @@ func TestAnApprovedVersionThatDispatchCannotReadStopsNoOtherJudgment(t *testing.
 // answers a break, so the carry writes no approval.
 func TestAVersionThatTheJudgmentNamesAndDispatchCannotReadIsRefused(t *testing.T) {
 	// No settlement timer fires during the test: the version is made unreadable in place, and a
-	// settlement of the issue room after the create would version the room's text over it.
-	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1", settle: time.Hour})
+	// settlement of the issue room after the create would version the room's text over it. The root
+	// is the first issue of ACME (seedSpecFormTree), named as Dispatch names an issue.
+	root := fmt.Sprintf("%s-%d", "ACME", 1)
+	tree := newSpecFormTree(t, testServerOptions{specRoots: root, settle: time.Hour})
 	issue := createFormIssue(t, tree.handler, tree.root, "An unreadable spec", "# Spec\n\n"+formRequirement("clean", "Dispatch shows each record."))
 	storeUnreadableVersion(t, tree.database, issue.PrimaryArtifactID, 1)
 	const finding = "- document spec.md in spec.md version 1: Dispatch cannot read this version ("
@@ -525,7 +527,7 @@ func TestAVersionThatTheJudgmentNamesAndDispatchCannotReadIsRefused(t *testing.T
 	if body := decodeBody[map[string]any](t, read); read.Code != http.StatusOK || body["refuses_approval"] != true || !strings.Contains(read.Body.String(), `"rule":"unreadable"`) {
 		t.Errorf("the read route: status=%d body=%s, want 200, refuses_approval and the rule unreadable", read.Code, read.Body.String())
 	}
-	gate, err := FormGate("ACME-1", "")
+	gate, err := FormGate(root, "")
 	if err != nil {
 		t.Fatal(err)
 	}
