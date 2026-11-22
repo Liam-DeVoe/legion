@@ -1237,7 +1237,10 @@ func (w *workflowRuntime) rootTask(ctx context.Context, c supervise.Claim, d sup
 	// one from either, so the rewrite is the decisions' own there too, as it always was.
 	var task string
 	if root != nil {
-		task = workflow.NarrowRootTask(start, d.Entry, stays)
+		// The rewrite is derived from the record again, so a gate step whose document the record
+		// does not say the issue of is the bare artifact reference again, which is named from
+		// Dispatch here, after the transaction, as the outbox named it at the task's start.
+		task = workflow.NameStartDocuments(workflow.NarrowRootTask(start, d.Entry, stays), dispatchDocumentIssue(ctx, w.dispatch, w.log, c.Tree))
 	} else {
 		task = workflow.KeptDecisionsTask(c.Tree, stays)
 	}

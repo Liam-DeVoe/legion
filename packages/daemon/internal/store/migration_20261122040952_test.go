@@ -16,26 +16,33 @@ const designGateDocumentIssueVersion = 20261122040952
 
 // 20261122040952 adds design_gates.document_issue, the issue whose document a gate row is bound to
 // (record.DesignGate.DocumentIssue). Before it, a write of the column is refused: the column is not
-// there. The backfill names the old root of a carried row where the store still records it: the
-// root a hand-over created with its gate (LEGION-209, handed_over_roots at its generation with
-// gate_carried) whose handed_over_from still names the tree it left (LEGION-208), on the artifact
-// the old root holds a row of too. Every other row reads as its own issue's document: the old
-// root's own registration, the carried root's own registration of a step the carry did not bring
-// (another artifact), and the carried row of a root the promotion opened, whose handed_over_from
-// it cleared (LEGION-210). After it, a write that names no document issue keeps the one the row
-// holds on the same document, and a write on another document takes the one it names.
+// there. The backfill names, on every row of a document, the issue of that document's own
+// registration where the store holds it: the row of an issue that is no root a hand-over created
+// with its gate at its generation (LEGION-208's rows; LEGION-209, LEGION-210 and LEGION-211 are
+// such roots, handed_over_roots at their generation with gate_carried). So a carried root's copy
+// names the old root whether or not its handed_over_from still names that root (LEGION-209 does,
+// LEGION-210's promotion cleared its), and so does a copy of a copy (LEGION-211, carried from
+// LEGION-209), which names the first old root, whose document it is, not the one it was carried
+// from. A document whose rows the store cannot tell a registration from a copy of keeps null on
+// every row: one a carried root registered itself (criteria-209, which LEGION-209 and its copy on
+// LEGION-211 hold), and one rows of two issues that are no carried root hold (shared, which the
+// one-issue rule leaves to Dispatch rather than to a guess). After it, a write that names no
+// document issue keeps the one the row holds on the same document, and a write on another
+// document takes the one it names.
 func TestADesignGateRowNamesTheIssueOfItsDocumentAfter20261122040952(t *testing.T) {
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, designGateDocumentIssueVersion-1)
-	for _, seed := range []struct{ key, from string }{{"LEGION-208", ""}, {"LEGION-209", "LEGION-208"}, {"LEGION-210", ""}} {
+	for _, seed := range []struct{ key, from string }{
+		{"LEGION-208", ""}, {"LEGION-209", "LEGION-208"}, {"LEGION-210", ""}, {"LEGION-211", "LEGION-209"}, {"LEGION-212", ""}, {"LEGION-213", ""},
+	} {
 		if _, err := store.Pool().Exec(ctx, `insert into issues
 			(key, tree, project, title, phase, generation, status, rank, last_dispatch_seq, handed_over_from)
 			values ($1, $1, 'LEGION', 'a root', 'admitted', 2, 'in_progress', 'A', 1, $2)`, seed.key, seed.from); err != nil {
 			t.Fatalf("record %s: %v", seed.key, err)
 		}
 	}
-	for _, key := range []string{"LEGION-209", "LEGION-210"} {
+	for _, key := range []string{"LEGION-209", "LEGION-210", "LEGION-211"} {
 		if _, err := store.Pool().Exec(ctx, `insert into handed_over_roots (issue, generation, gate_carried) values ($1, 2, true)`, key); err != nil {
 			t.Fatalf("record %s handed over with its gate: %v", key, err)
 		}
@@ -44,6 +51,8 @@ func TestADesignGateRowNamesTheIssueOfItsDocumentAfter20261122040952(t *testing.
 		{"LEGION-208", "spec", "spec-208"}, {"LEGION-208", "criteria", "criteria-208"},
 		{"LEGION-209", "spec", "spec-208"}, {"LEGION-209", "criteria", "criteria-209"},
 		{"LEGION-210", "spec", "spec-208"},
+		{"LEGION-211", "spec", "spec-208"}, {"LEGION-211", "criteria", "criteria-209"},
+		{"LEGION-212", "spec", "shared"}, {"LEGION-213", "spec", "shared"},
 	} {
 		if _, err := store.Pool().Exec(ctx, `insert into design_gates (issue, step, artifact_id, latest_version) values ($1, $2, $3, 2)`,
 			row.issue, row.step, row.artifact); err != nil {
@@ -74,18 +83,19 @@ func TestADesignGateRowNamesTheIssueOfItsDocumentAfter20261122040952(t *testing.
 		issue    string
 		step     record.DesignStep
 		recorded string
-		of       string
 	}{
-		{"LEGION-208", record.DesignStepSpec, "", "LEGION-208"},
-		{"LEGION-208", record.DesignStepCriteria, "", "LEGION-208"},
-		{"LEGION-209", record.DesignStepSpec, "LEGION-208", "LEGION-208"},
-		{"LEGION-209", record.DesignStepCriteria, "", "LEGION-209"},
-		{"LEGION-210", record.DesignStepSpec, "", "LEGION-210"},
+		{"LEGION-208", record.DesignStepSpec, "LEGION-208"},
+		{"LEGION-208", record.DesignStepCriteria, "LEGION-208"},
+		{"LEGION-209", record.DesignStepSpec, "LEGION-208"},
+		{"LEGION-209", record.DesignStepCriteria, ""},
+		{"LEGION-210", record.DesignStepSpec, "LEGION-208"},
+		{"LEGION-211", record.DesignStepSpec, "LEGION-208"},
+		{"LEGION-211", record.DesignStepCriteria, ""},
+		{"LEGION-212", record.DesignStepSpec, ""},
+		{"LEGION-213", record.DesignStepSpec, ""},
 	} {
-		row := gates(want.issue)[want.step]
-		if row.DocumentIssue != want.recorded || row.DocumentOf() != want.of {
-			t.Errorf("the %s row of %s after the migration records document issue %q and reads as %s's document; want %q and %s",
-				want.step, want.issue, row.DocumentIssue, row.DocumentOf(), want.recorded, want.of)
+		if row := gates(want.issue)[want.step]; row.DocumentIssue != want.recorded {
+			t.Errorf("the %s row of %s after the migration records document issue %q; want %q", want.step, want.issue, row.DocumentIssue, want.recorded)
 		}
 	}
 

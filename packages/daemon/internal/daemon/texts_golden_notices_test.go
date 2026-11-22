@@ -975,6 +975,16 @@ func (s *goldenStore) GatesOf(_ context.Context, _ pgx.Tx, issue string) (map[re
 	return map[record.DesignStep]record.DesignGate{s.tree.gate.Step: s.tree.gate}, nil
 }
 
+// DocumentIssues answers as the store does for the tree's one gate row, the root's own
+// registration: its document is the root's own.
+func (s *goldenStore) DocumentIssues(_ context.Context, _ pgx.Tx, artifacts []string) (map[string]string, error) {
+	issues := map[string]string{}
+	if slices.Contains(artifacts, s.tree.gate.ArtifactID) {
+		issues[s.tree.gate.ArtifactID] = s.tree.gate.Issue
+	}
+	return issues, nil
+}
+
 func (s *goldenStore) TreeIssues(context.Context, pgx.Tx, string) ([]record.Issue, error) {
 	return slices.Clone(s.tree.members), nil
 }

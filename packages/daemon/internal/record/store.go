@@ -1820,6 +1820,41 @@ func (s *Postgres) GatesForArtifact(ctx context.Context, tx pgx.Tx, artifactID s
 	return gates, nil
 }
 
+// DocumentIssues is the issue whose document each of artifacts is, where the gate rows on it say
+// so (Store.DocumentIssues): each row that records its document's issue says that issue, and the
+// row of an issue that is no root a hand-over created with its gate at the generation it stands
+// at says its own issue, since that row is the document's own registration (register_gate
+// refuses another issue's document) and only such a hand-over writes a copy (admit's readmit). An
+// artifact whose rows say no issue, or more than one, is left out. One query, whatever the
+// number of artifacts.
+func (s *Postgres) DocumentIssues(ctx context.Context, tx pgx.Tx, artifacts []string) (map[string]string, error) {
+	issues := make(map[string]string, len(artifacts))
+	if len(artifacts) == 0 {
+		return issues, nil
+	}
+	rows, err := tx.Query(ctx, `select g.artifact_id, min(coalesce(g.document_issue, g.issue)) from design_gates g
+		left join issues i on i.key = g.issue
+		where g.artifact_id = any($1) and (g.document_issue is not null or not exists (select 1 from handed_over_roots h
+			where h.issue = g.issue and h.generation = i.generation and h.gate_carried))
+		group by g.artifact_id
+		having count(distinct coalesce(g.document_issue, g.issue)) = 1`, artifacts)
+	if err != nil {
+		return nil, fmt.Errorf("read the issue of %d gate documents: %w", len(artifacts), err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var artifact, issue string
+		if err := rows.Scan(&artifact, &issue); err != nil {
+			return nil, fmt.Errorf("read the issue of %d gate documents: %w", len(artifacts), err)
+		}
+		issues[artifact] = issue
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the issue of %d gate documents: %w", len(artifacts), err)
+	}
+	return issues, nil
+}
+
 // PutGate writes the gate of one step of one issue, which is the record's key, keeping the row's
 // shape itself: an approval's mark is written only with the approval, and a told changes request's
 // reason and mark only with its version (scanGate). It is the single writer of every gate change,

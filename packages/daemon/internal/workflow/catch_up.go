@@ -322,9 +322,10 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.Cla
 // treeCatchUp is what issue's architect owns as the record holds it. A tree root's architect owns
 // its whole tree: the catch-up says whether a hand-over created the root at this generation, and
 // whether its old root's gate came with it, and each design-gate step the root must hold open, its
-// document as a dispatch:// link (stepRef, as the start task's gateSteps names it, of the issue
-// whose document the step's row is bound to, gateDocumentIssue: the old root's for a row a carried
-// gate brought) and
+// document (stepDocuments, the start task's reading of the same rows: a dispatch:// link on the
+// issue whose document the step's row is bound to, the old root's for a row a carried gate
+// brought, or the bare artifact reference where the record does not say that issue, which the
+// outbox names from Dispatch when it sends the catch-up, NameCatchUpDocuments) and
 // how it stands. A child's architect owns the child and every issue whose recorded parent chain
 // reaches it (record.Beneath), at the child's own generation: a child registers no gate and no
 // hand-over creates one, so its catch-up states no step and is neither handed over nor carried.
@@ -352,11 +353,9 @@ func treeCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []rec
 		if err != nil {
 			return texts.CatchUpFacts{}, err
 		}
-		var carriedFrom map[record.DesignStep]record.DesignGate
-		if catchUp.Carried && issue.HandedOverFrom != "" {
-			if carriedFrom, err = store.GatesOf(ctx, tx, issue.HandedOverFrom); err != nil {
-				return texts.CatchUpFacts{}, err
-			}
+		documents, err := stepDocuments(ctx, tx, store, gates)
+		if err != nil {
+			return texts.CatchUpFacts{}, err
 		}
 		required := classify.RequiredSteps(steps)
 		catchUp.Gates = make([]texts.CatchUpGate, 0, len(required))
@@ -367,7 +366,7 @@ func treeCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []rec
 				if recorded.ApprovedVersion != nil {
 					stated.Approved = *recorded.ApprovedVersion
 				}
-				stated.Document = stepRef(gateDocumentIssue(recorded, carriedFrom), step)
+				stated.Document = documents[step]
 			} else {
 				stated.Unregistered = true
 			}
@@ -410,24 +409,63 @@ func treeCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []rec
 	return catchUp, nil
 }
 
-// gateDocumentIssue is the issue whose document row, a gate row of a root, is bound to: the one the
-// row records (record.DesignGate.DocumentIssue), which a root's own registration and a hand-over's
-// carry write. A row an older daemon wrote records none. For such a row of a carried root that
-// still names the tree it left (record.Issue.HandedOverFrom, which the promotion that opens its own
-// tree clears), carriedFrom is that old root's rows, and a row of the old root on the same
-// artifact is the row the carry copied: its own document issue, or the old root, is the copy's, as
-// the migration that added the column backfills it (20261122040952). Every other row is its own
-// issue's document, as every row read before that migration: the store records nothing else.
-func gateDocumentIssue(row record.DesignGate, carriedFrom map[record.DesignStep]record.DesignGate) string {
-	if row.DocumentIssue != "" {
-		return row.DocumentIssue
-	}
-	for _, old := range carriedFrom {
-		if old.ArtifactID == row.ArtifactID {
-			return old.DocumentOf()
+// stepDocuments is the document each of rows, a root's design gate rows by step, is bound to, by
+// step: the step's dispatch:// link (stepRef) on the issue whose document the row's artifact is.
+// That is the issue the row records (record.DesignGate.DocumentIssue), which a root's own
+// registration and a carry that knew it write, and, for a row that records none (one a daemon
+// before the column wrote, a carry of a row whose issue nothing said), the issue the store's rows
+// on the same artifact say (record.Store.DocumentIssues): the document's own registration, the
+// row of an issue that is no root carried in with its gate, and any row that records it. A row
+// neither says, a carried copy whose old root's rows are gone (a re-admission of that root
+// cleared them) or were a copy themselves, names the bare artifact reference
+// (texts.ArtifactReference) rather than a document that may be another issue's, and the daemon
+// names it from Dispatch where it sends the text (NameStartDocuments, NameCatchUpDocuments). The
+// architect-start task (ArchitectStartOf) and the catch-up (treeCatchUp) both read it, so the two
+// name one document for one row whatever daemon wrote the row.
+func stepDocuments(ctx context.Context, tx pgx.Tx, store record.Store, rows map[record.DesignStep]record.DesignGate) (map[record.DesignStep]string, error) {
+	var unnamed []string
+	for _, row := range rows {
+		if row.DocumentIssue == "" {
+			unnamed = append(unnamed, row.ArtifactID)
 		}
 	}
-	return row.Issue
+	var issues map[string]string
+	if len(unnamed) > 0 {
+		var err error
+		if issues, err = store.DocumentIssues(ctx, tx, unnamed); err != nil {
+			return nil, err
+		}
+	}
+	documents := make(map[record.DesignStep]string, len(rows))
+	for step, row := range rows {
+		issue := row.DocumentIssue
+		if issue == "" {
+			issue = issues[row.ArtifactID]
+		}
+		if issue == "" {
+			documents[step] = texts.ArtifactReference(row.ArtifactID)
+			continue
+		}
+		documents[step] = stepRef(issue, step)
+	}
+	return documents, nil
+}
+
+// NameCatchUpDocuments names, in catchUp, a catch-up as QueueCatchUp queued it, each gate step's
+// document that it gives as the bare artifact reference (stepDocuments) as the step's document of
+// the issue issueOf answers holds the artifact, where it answers one, as NameStartDocuments names
+// the start task's. issueOf is the outbox's read of Dispatch when it sends the catch-up, outside
+// any transaction; a step it answers nothing for keeps the bare reference.
+func NameCatchUpDocuments(catchUp *record.CatchUp, issueOf func(artifact string) (string, bool)) {
+	for i, gate := range catchUp.Gates {
+		artifact, bare := texts.ArtifactOfReference(gate.Document)
+		if !bare {
+			continue
+		}
+		if issue, ok := issueOf(artifact); ok {
+			catchUp.Gates[i].Document = stepRef(issue, gate.Step)
+		}
+	}
 }
 
 // unreleasedChildren is each child the Dispatch mirror shows under an issue of owned, the issues

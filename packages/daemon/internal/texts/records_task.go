@@ -1,6 +1,8 @@
 package texts
 
 import (
+	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -297,13 +299,97 @@ const (
 )
 
 // ArchitectGate is one step of a root's design gate in a start task: the step, its document as a
-// dispatch:// link, the version registered (0 where the step is not registered), and its state
-// (one of the Gate words).
+// dispatch:// link, or as the bare artifact reference (ArtifactReference) where neither the
+// daemon's record nor Dispatch named the issue that holds it, the version registered (0 where the
+// step is not registered), and its state (one of the Gate words).
 type ArchitectGate struct {
 	Step     string `json:"step"`
 	Document string `json:"document"`
 	Version  int    `json:"version"`
 	State    string `json:"state"`
+}
+
+// NameStartDocuments is task, the text of an architect-start task as Render writes it
+// (workflow's ArchitectStartTask), with the document of each gate step that it gives as an
+// artifact reference (ArtifactReference) given instead as the document name answers for that step
+// and artifact, where it answers one. It reads the gates rows of the task's own record alone: the
+// last record of the text, after the kept decisions a task can carry before it, whose blocks hold
+// a person's words. A row it names is written as Render writes a row, so a task whose gates give
+// no artifact reference, or one name answers nothing for, comes back as it was.
+func NameStartDocuments(task string, name func(step, artifact string) (string, bool)) string {
+	if !strings.Contains(task, artifactPath) {
+		return task
+	}
+	lines := strings.Split(task, "\n")
+	kind := encodeKey("kind") + ": " + encodeStringLiteral(string(ArchitectStart))
+	from := -1
+	for i, line := range lines {
+		if line == kind {
+			from = i
+		}
+	}
+	if from < 0 {
+		return task
+	}
+	for i := from + 1; i < len(lines); i++ {
+		fields, count, ok := gatesHeader(lines[i])
+		if !ok {
+			continue
+		}
+		step, document := slices.Index(fields, "step"), slices.Index(fields, "document")
+		for j := i + 1; step >= 0 && document >= 0 && j <= i+count && j < len(lines); j++ {
+			lines[j] = nameRowDocument(lines[j], len(fields), step, document, name)
+		}
+		i += count
+	}
+	return strings.Join(lines, "\n")
+}
+
+// gatesHeader is the field names and the row count of line where it is the header of a gates
+// table as formatHeader writes it (gates[2]{step,document,version,state}:).
+func gatesHeader(line string) ([]string, int, bool) {
+	rest, found := strings.CutPrefix(line, encodeKey("gates")+"[")
+	if !found {
+		return nil, 0, false
+	}
+	count, names, found := strings.Cut(rest, "]{")
+	if !found {
+		return nil, 0, false
+	}
+	rows, err := strconv.Atoi(count)
+	if err != nil {
+		return nil, 0, false
+	}
+	names, found = strings.CutSuffix(names, "}:")
+	if !found {
+		return nil, 0, false
+	}
+	return strings.Split(names, toonDelimiter), rows, true
+}
+
+// nameRowDocument is line, one row of a gates table width cells wide, with its document cell (at
+// document) named as name answers for its step cell (at step) where that cell is an artifact
+// reference written unquoted, as Render writes one whose id needs no quote. Any other row comes
+// back as it was.
+func nameRowDocument(line string, width, step, document int, name func(step, artifact string) (string, bool)) string {
+	row, indented := strings.CutPrefix(line, toonIndent)
+	if !indented {
+		return line
+	}
+	cells := strings.Split(row, toonDelimiter)
+	if len(cells) != width {
+		return line
+	}
+	artifact, bare := ArtifactOfReference(cells[document])
+	if !bare || encodeStringLiteral(ArtifactReference(artifact)) != cells[document] || encodeStringLiteral(cells[step]) != cells[step] {
+		return line
+	}
+	named, ok := name(cells[step], artifact)
+	if !ok {
+		return line
+	}
+	cells[document] = encodeStringLiteral(named)
+	return toonIndent + strings.Join(cells, toonDelimiter)
 }
 
 // KeptDecisionsRecord is the task that names what a person decided on a tree while nobody in it

@@ -1401,12 +1401,26 @@ func (a *Admission) readmit(ctx context.Context, tx pgx.Tx, stored record.Issue,
 		}
 	}
 	var gates map[record.DesignStep]record.DesignGate
+	// documents is the issue of each old row's document that the old row records none of, as the
+	// store's rows on that document say it (record.Store.DocumentIssues): read here, before this
+	// issue's own record moves to its new generation, so a copy it holds from an earlier hand-over
+	// is not read as that document's registration.
+	var documents map[string]string
 	var pr *record.PullRequest
 	var err error
 	if orphan {
 		gates, err = a.store.GatesOf(ctx, tx, oldTree)
 		if err != nil {
 			return fmt.Errorf("read gate of re-admitted orphan %s: %w", stored.Key, err)
+		}
+		var unnamed []string
+		for _, gate := range gates {
+			if gate.DocumentIssue == "" {
+				unnamed = append(unnamed, gate.ArtifactID)
+			}
+		}
+		if documents, err = a.store.DocumentIssues(ctx, tx, unnamed); err != nil {
+			return fmt.Errorf("read the document issues of the gate of re-admitted orphan %s: %w", stored.Key, err)
 		}
 		pr, err = a.store.PullRequest(ctx, tx, stored.Key)
 		if err != nil {
@@ -1529,9 +1543,15 @@ func (a *Admission) readmit(ctx context.Context, tx pgx.Tx, stored record.Issue,
 				return fmt.Errorf("read the gates of re-admitted orphan %s: %w", stored.Key, err)
 			}
 			for _, gate := range gates {
-				// The copy stays bound to the old row's document, which is the old row's own
-				// document issue, or the old root's where that row records none.
-				gate.DocumentIssue = gate.DocumentOf()
+				// The copy stays bound to the old row's document: the issue the old row records,
+				// or the one the store's rows on that document say (documents, read above), and
+				// none where they say none. The old root is that issue only where its row is the
+				// document's registration, so a copy of a copy names no old root that never held the
+				// document, and a text names a row that records none from Dispatch rather than from
+				// a guess (workflow's stepDocuments).
+				if gate.DocumentIssue == "" {
+					gate.DocumentIssue = documents[gate.ArtifactID]
+				}
 				gate.Issue = stored.Key
 				if err := a.store.PutGate(ctx, tx, gate); err != nil {
 					return fmt.Errorf("carry gate to re-admitted orphan %s: %w", stored.Key, err)

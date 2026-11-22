@@ -1557,18 +1557,23 @@ type DesignGate struct {
 	EverOpened bool
 	// DocumentIssue is the issue whose document ArtifactID is, which a person approves and by
 	// whose key Dispatch sends that document's events: Issue itself for a document its own
-	// architect registered (workflow's gateRegistered), and, for a row a hand-over carried onto a
-	// re-admitted orphan (admit's readmit), the issue whose document the carried row is bound to,
-	// which the carry knows: the old row's own DocumentOf, the old root where that row records
-	// none. "" on a row an older daemon wrote, which nothing recorded it for: such a row reads as
-	// its own issue's document (DocumentOf), as every row read before, until an artifact event of
-	// the carried document names the issue it was sent by (workflow's applyArtifact), or the
-	// migration's backfill named it (20261122040952_design_gate_document_issue.up.sql).
+	// architect registered (workflow's gateRegistered); for a row a hand-over carried onto a
+	// re-admitted orphan (admit's readmit), the issue of the old row's document as the store's
+	// rows on that document say it (Store.DocumentIssues), and none where they say none; and, on a
+	// carried row that records none, the issue that sent an approval of the document at or above
+	// the copy's version, of a step the deployment gates (workflow's applyArtifact and copyTakes).
+	// "" on such a row and on a row an older daemon wrote, where the migration that added the
+	// column did not fill it (20261122040952_design_gate_document_issue.up.sql). A text names the
+	// document of such a row from the store's rows on its artifact where they say its issue,
+	// else from Dispatch where the text is sent, else by the bare artifact reference (workflow's
+	// stepDocuments, texts.ArtifactReference).
 	DocumentIssue string
 }
 
-// DocumentOf is the issue whose document the gate row is bound to (DocumentIssue), its own issue
-// where the row records none.
+// DocumentOf is the issue whose document the gate row is bound to as the row records it
+// (DocumentIssue), its own issue where it records none: the gate-moved message's reading
+// (workflow's putGateTold), which every write of a carried row it can send records first
+// (workflow's applyArtifact).
 func (g DesignGate) DocumentOf() string {
 	if g.DocumentIssue != "" {
 		return g.DocumentIssue
@@ -2218,6 +2223,15 @@ type Store interface {
 	// GatesForArtifact is every gate registered on artifactID, in issue order: the document owner's
 	// gate and each copy a hand-over carried to a child of its tree. Each row carries its own step.
 	GatesForArtifact(ctx context.Context, tx pgx.Tx, artifactID string) ([]DesignGate, error)
+	// DocumentIssues is the issue whose document each of artifacts is, as the gate rows the store
+	// holds on it say, for each artifact they say it of: the issue a row records
+	// (DesignGate.DocumentIssue), and the issue of the document's own registration, a row of an
+	// issue that is no root a hand-over created with its gate at the generation the issue stands
+	// at (HandedOverRoot), since register_gate refuses another issue's document and only that
+	// hand-over writes a copy. An artifact whose rows say none, or say more than one issue, has no
+	// entry: the daemon asks Dispatch for it where it sends the text (workflow's
+	// NameStartDocuments and NameCatchUpDocuments).
+	DocumentIssues(ctx context.Context, tx pgx.Tx, artifacts []string) (map[string]string, error)
 	// PutGate writes one gate row, keyed by its issue and its step. A gate built with no step is
 	// written as DesignStepSpec (Postgres.PutGate).
 	PutGate(ctx context.Context, tx pgx.Tx, gate DesignGate) error

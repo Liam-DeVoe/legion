@@ -110,6 +110,25 @@ func PullRequestRef(repo string, number int) string {
 	return repo + "#" + strconv.Itoa(number)
 }
 
+// artifactPath is the path of Dispatch's API every artifact is read at by its id
+// (GET /api/v1/artifacts/{id}), whose answer names the issue that holds the artifact
+// (issue_key) and the slug a reference to its document names.
+const artifactPath = "/api/v1/artifacts/"
+
+// ArtifactReference is the bare reference of Dispatch's artifact id: its path on Dispatch's API,
+// /api/v1/artifacts/<id>, a reader reads at the server Dispatch answers on for the issue that
+// holds the artifact and its slug. A text gives it as a gate step's document where neither the
+// daemon's record nor Dispatch named the issue that holds that document, rather than a
+// dispatch:// link to a document that may be another issue's (workflow's stepDocuments).
+func ArtifactReference(id string) string { return artifactPath + id }
+
+// ArtifactOfReference is the artifact id that document names when it is an ArtifactReference,
+// and whether it is one.
+func ArtifactOfReference(document string) (string, bool) {
+	id, found := strings.CutPrefix(document, artifactPath)
+	return id, found && id != ""
+}
+
 // ListPassed is the command that lists every check of pull request number of repo, the checks
 // that passed among them: gh pr checks <number> --repo <owner>/<name>.
 func ListPassed(repo string, number int) string {

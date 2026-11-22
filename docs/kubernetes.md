@@ -2776,12 +2776,19 @@ This migration adds no key to an outbox payload.
 The migration `20261122040952_design_gate_document_issue` adds one `text` column, `design_gates.document_issue`.
 It holds the issue whose document a gate row is bound to.
 A root's own registration writes the root itself.
-A hand-over that carries a gate onto a root of its own copies each row of the old root, and the copy names the old root, or the issue that the old row names.
-The architect's `catch-up` (`gates[].document`) and the `gate-moved` message (`document`) name the document of that issue, so a carried root's texts name the old root's document, which a person approves.
-The migration fills the column for a carried row where the store records the old root: the root's hand-over row of its generation says that the gate came with it, `issues.handed_over_from` still names the tree that the root left, and the old root holds a row on the same document.
-Every other row holds null, and a row that holds null names its own issue's document, as every row named before the migration.
-The store records no old root for such a carried row: the promotion that opens a root's own tree clears `issues.handed_over_from`, and the re-admission of an old root clears that root's rows.
-An artifact event of the carried document fills the column of such a row with the issue that the event is of.
+A hand-over that carries a gate onto a root of its own copies each row of the old root, and the copy names the issue of the old row's document: the issue that the old row names, or the issue that the store's rows on that document name.
+The store names that issue on the document's own registration: the row of an issue that is no root a hand-over created with its gate at the generation that the issue stands at, since `register_gate` refuses a document of another issue and only that hand-over writes a copy.
+A row that names the issue names it too.
+Where the store's rows on the document name no issue, or more than one, the copy names none.
+An approval of a carried row's document at or above the copy's version, of a step that the deployment gates, fills the column of a carried row that names no issue with the issue that sent the approval.
+No other event of the document reaches a carried row.
+The migration fills the column on every row of a document whose own registration the store holds with the issue of that registration, the copies of a chain of hand-overs among them.
+Every other row holds null: a row of a document whose registering root's rows a re-admission cleared, or whose registering root was itself carried in with its gate.
+The architect's `architect-start` task and `catch-up` (`gates[].document`) name the document of the issue that a row names, so a carried root's texts name the old root's document, which a person approves.
+For a row that names no issue, both read the store's rows on its document when they are built, by the rule of the migration.
+Where the store names no issue, the daemon asks Dispatch which issue holds the document when it sends the text, and where Dispatch does not answer, the text gives the document's bare artifact reference, `/api/v1/artifacts/<artifact id>`.
+Neither text reads `issues.handed_over_from` for it.
+The `gate-moved` message (`document`) names the document of the issue that the row names, and each write of a carried row that can send that message names the issue first.
 An earlier image names the column in none of its reads or writes, so it reads every gate and ignores the column.
 Its writes also do not clear the column.
 When it registers a root's own document on a row that a carried copy held, the row keeps the old root.
@@ -2795,7 +2802,7 @@ update design_gates g set document_issue = null
 where not exists (select 1 from design_gates old where old.issue = g.document_issue and old.artifact_id = g.artifact_id);
 ```
 
-The statement also clears a carried row whose old root no longer holds a row on that document, and that costs one thing: until an artifact event of its document fills the column again, such a row names its own issue's document, as the earlier release named every row.
+The statement also clears a carried row whose named issue no longer holds a row on that document, and that costs one thing: until an approval of its document fills the column again, the daemon names such a row's document as it names that of every row that names no issue, from the store's rows on the document, else from Dispatch at each send, else by the bare artifact reference.
 This migration adds no key to an outbox payload.
 
 **The earlier release refuses the outbox rows that this release writes.**
@@ -3425,7 +3432,7 @@ The migrations recorded above this one are these.
 20261120042902_claim_agent_resume_generation, of dispatch://INFRA-4108, adds `claims.agent_resume_generation` at its default, 0, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header first, which deletes the queued `session-forgotten` notices no earlier release decodes, drops the column and deletes its version row.
 20261120055717_dispatch_issue_value_sequences, of dispatch://INFRA-4729, adds seven columns of `dispatch_issues`, an index on `dispatch_issues.parent` and the table `dispatch_issue_refills`, and touches none of the six, so the block holds over it and leaves all of them standing, which the earlier release names in no statement, and a rollback to a release before it runs the statement of its own section, [Rolling back the release that fences each value of the copy of Dispatch's issues](#rolling-back-the-release-that-fences-each-value-of-the-copy-of-dispatchs-issues), before the earlier image is pinned.
 20261122011615_production_check_reported_at, of dispatch://INFRA-3686 too, adds `production_checks.reported_at` and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement; a rollback past it is a roll forward in any case ([Rolling back the release that carries a person's words in the daemon's texts](#rolling-back-the-release-that-carries-a-persons-words-in-the-daemons-texts)).
-20261122040952_design_gate_document_issue, of dispatch://INFRA-3686 too, adds `design_gates.document_issue` and fills it on a carried row whose old root the store records, and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement; a rollback past it is a roll forward in any case ([Rolling back the release that carries a person's words in the daemon's texts](#rolling-back-the-release-that-carries-a-persons-words-in-the-daemons-texts)).
+20261122040952_design_gate_document_issue, of dispatch://INFRA-3686 too, adds `design_gates.document_issue` and fills it on every row of a document whose own registration the store holds, and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement; a rollback past it is a roll forward in any case ([Rolling back the release that carries a person's words in the daemon's texts](#rolling-back-the-release-that-carries-a-persons-words-in-the-daemons-texts)).
 The `20261111225552` is the identifier of `20261111225552_phase_entry.up.sql`, whose header carries this same block;
 where that file carries another identifier in the release you roll back from, use that one.
 The SQL was run on 2026-11-13 at 04:00Z against PostgreSQL 18.6, on a scratch database that `internal/store`'s own `Migrate` took to the head of the branch the run was made on, as that head stood at that time, applying 133 migrations and leaving 133 versions recorded, the highest 20261112180548, and that held four outbox rows:

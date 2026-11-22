@@ -126,9 +126,9 @@ import (
 // outbox_kind_check, so it needs no row of its own here.
 // dispatch://INFRA-3686's issue of a design gate row's document (20261122040952) stands above
 // every other version of this list and is applied after them all: it adds
-// design_gates.document_issue, null on every row of a database main migrated but a carried row
-// whose old root the store still records, and touches no outbox_kind_check, so it needs no row of
-// its own here.
+// design_gates.document_issue and fills it on every row of a document whose own registration the
+// store holds, null on every other row of a database main migrated, and touches no
+// outbox_kind_check, so it needs no row of its own here.
 var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,

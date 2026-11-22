@@ -66,8 +66,11 @@ body: |-
   document whatever the act (`document`), names no gate state for a step with no gate, and names
   whether the design gate is armed on an approval of such a step (`gate_armed`). A gate row records
   the issue whose document it is bound to (`design_gates.document_issue`, migration
-  `20261122040952_design_gate_document_issue`), so the catch-up and the gate-moved message of a
-  root that carried its old root's gate name the old root's document, and a parked decision's
+  `20261122040952_design_gate_document_issue`), so the start task, the catch-up and the gate-moved
+  message of a root that carried its old root's gate name the old root's document; for a row that
+  records none, the start task and the catch-up read it from the document's own registration in
+  the store, else from Dispatch where the daemon sends them, else give the document's bare artifact
+  reference (`/api/v1/artifacts/<id>`); and a parked decision's
   notice names when the person made it (`at`). A relaunch note and a catch-up's `relaunch` of a
   cut turn say that its tool calls in flight were never answered and that the subagents and
   background jobs of that turn are gone (`in_flight_tool_calls: never_answered`,

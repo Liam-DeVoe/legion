@@ -482,7 +482,9 @@ type CatchUpFacts struct {
 
 // CatchUpGate is one design-gate step as a catch-up states it (the shape of record.CatchUpGate):
 // the step, whether a person must approve its document, and the document as a dispatch:// link,
-// with the artifact it is registered as, its latest version and the version approved.
+// or as the bare artifact reference (ArtifactReference) where neither the daemon's record nor
+// Dispatch named the issue that holds it, with the artifact it is registered as, its latest
+// version and the version approved.
 type CatchUpGate struct {
 	Step         string `json:"step"`
 	Gated        bool   `json:"gated"`

@@ -94,6 +94,13 @@ type ArchitectStart struct {
 	// Gate is the steps the deployment gates and the design gate rows the root holds now
 	// (record.Store.GatesOf). The zero value is a root that has registered nothing.
 	Gate record.TreeGate
+	// Documents is the document each step's row of Gate is bound to (stepDocuments), as the
+	// reader read it, by step: a dispatch:// link on the issue whose document the row's artifact
+	// is, or the bare artifact reference where the record does not say that issue, which the send
+	// names from Dispatch (NameStartDocuments). It is the catch-up's reading of the same rows
+	// (treeCatchUp), so the two name one document for one row. A start built without the reader
+	// holds none, and its rows name their documents as they record them (gateSteps).
+	Documents map[record.DesignStep]string
 	// Served is the issue generation of the last confirmed task the tree's architect claim retired
 	// that carried one (record.Store.ArchitectServed), zero where that tree has no architect claim
 	// or its claim has retired no such task. It is a run, which the claim's own generation is not:
@@ -119,10 +126,10 @@ type ArchitectStart struct {
 // (ArchitectStart), all but Decided: whether a hand-over carried the root in at its generation
 // and whether it brought a design gate with it (ArchitectCarried) and, for such a root, whether
 // its phase is over by its own terminating fact (PhaseFinished), the design gate rows it holds
-// under steps, the design-gate steps the deployment gates, the run and the phase entry its tree's
-// architect claim last served, and, for a root at phase.Admitted, whether a member of its tree
-// runs. It is the one reader of them, which every derivation of a root architect's task reads
-// them through.
+// under steps and the document each of them is bound to (stepDocuments), the design-gate steps
+// the deployment gates, the run and the phase entry its tree's architect claim last served, and,
+// for a root at phase.Admitted, whether a member of its tree runs. It is the one reader of them,
+// which every derivation of a root architect's task reads them through.
 //
 // Decided is the caller's because it is what tells a task composed now from a held task narrowed.
 // A task composed now names what its tree is owed and nothing claims (ParkedDecisionTask, which
@@ -157,6 +164,9 @@ func ArchitectStartOf(ctx context.Context, tx pgx.Tx, store record.Store, steps 
 	start := ArchitectStart{Root: root, Gate: record.TreeGate{Steps: steps}}
 	var err error
 	if start.Gate.Rows, err = store.GatesOf(ctx, tx, root.Key); err != nil {
+		return ArchitectStart{}, err
+	}
+	if start.Documents, err = stepDocuments(ctx, tx, store, start.Gate.Rows); err != nil {
 		return ArchitectStart{}, err
 	}
 	if start.Served, start.ServedEntry, err = store.ArchitectServed(ctx, tx, root.Tree); err != nil {
@@ -383,7 +393,7 @@ func carriedPhase(task *texts.ArchitectStartRecord, start ArchitectStart) {
 // first phase waits for the gate. A spec is registered under those rows already, so the task asks
 // for no decomposition.
 func gateStandingShape(task *texts.ArchitectStartRecord, start ArchitectStart) {
-	task.Shape, task.Gates, task.Gated = texts.ShapeGateStanding, gateSteps(start.Root.Key, start.Gate), gatedNames(start.Gate.Steps)
+	task.Shape, task.Gates, task.Gated = texts.ShapeGateStanding, gateSteps(start), gatedNames(start.Gate.Steps)
 	task.FirstAct = []string{FirstActClaim, FirstActCarryGate, FirstActTakeUpTree}
 	task.FirstPhaseWaitsFor = []string{WaitsForGate}
 }
@@ -395,7 +405,7 @@ func gateStandingShape(task *texts.ArchitectStartRecord, start ArchitectStart) {
 // of, and the open children under it and the issues it is blocked by, which the waiting line reads
 // (blockers.waitsOf).
 func gateOpenShape(task *texts.ArchitectStartRecord, start ArchitectStart) {
-	task.Shape, task.Gates, task.Gated = texts.ShapeGateOpen, gateSteps(start.Root.Key, start.Gate), gatedNames(start.Gate.Steps)
+	task.Shape, task.Gates, task.Gated = texts.ShapeGateOpen, gateSteps(start), gatedNames(start.Gate.Steps)
 	task.FirstAct = []string{FirstActClaim, FirstActTakeUpTree}
 	task.FirstPhaseWaitsFor = []string{WaitsForSlot, WaitsForChildren, WaitsForBlockers}
 }
@@ -433,25 +443,32 @@ func gateActs(steps []record.DesignStep) []string {
 	return []string{FirstActRequestApproval, FirstActRegisterGate}
 }
 
-// gateSteps is where a root's design gate stands, one step per entry, in the deployment's order:
-// the step, its document as a dispatch:// link (of the issue the step's row records it of,
-// record.DesignGate.DocumentIssue, the old root's for a row a hand-over carried, and root's own
-// where the row records none or the step has no row), the version registered (0 where it is not),
-// and its state: unregistered, approved, changes requested or unanswered. It reads
-// record.RequiredSteps rather than the gated list, so a deployment that gates no step still
-// reports the one registration that opens its gate, whose state is registered, since under that
-// deployment no person approves anything. A changes request below the registered version is an
-// answer to a document the architect has moved past, which leaves the current version unanswered.
-func gateSteps(root string, gate record.TreeGate) []texts.ArchitectGate {
+// gateSteps is where start's root's design gate stands, one step per entry, in the deployment's
+// order: the step, its document (the one start.Documents names for the step's row, which is the
+// catch-up's reading of the same row: a dispatch:// link on the issue whose document the row's
+// artifact is, the old root's for a row a hand-over carried, or the bare artifact reference
+// where the record does not say that issue; for a step with no row, the root's own document; and,
+// in a start built without ArchitectStartOf, the document of the issue the row records, or the
+// root's own), the version registered (0 where it is not), and its state: unregistered,
+// approved, changes requested or unanswered. It reads record.RequiredSteps rather than the gated
+// list, so a deployment that gates no step still reports the one registration that opens its
+// gate, whose state is registered, since under that deployment no person approves anything. A
+// changes request below the registered version is an answer to a document the architect has
+// moved past, which leaves the current version unanswered.
+func gateSteps(start ArchitectStart) []texts.ArchitectGate {
+	gate := start.Gate
 	steps := record.RequiredSteps(gate.Steps)
 	gates := make([]texts.ArchitectGate, 0, len(steps))
 	for _, step := range steps {
 		row, registered := gate.Rows[step]
-		owner := root
-		if registered && row.DocumentIssue != "" {
-			owner = row.DocumentIssue
+		document, named := start.Documents[step]
+		switch {
+		case !registered || !named && row.DocumentIssue == "":
+			document = stepRef(start.Root.Key, step)
+		case !named:
+			document = stepRef(row.DocumentIssue, step)
 		}
-		at := texts.ArchitectGate{Step: string(step.OrSpec()), Document: stepRef(owner, step), Version: row.LatestVersion}
+		at := texts.ArchitectGate{Step: string(step.OrSpec()), Document: document, Version: row.LatestVersion}
 		switch {
 		case !registered:
 			at.State = texts.GateUnregistered
@@ -467,6 +484,24 @@ func gateSteps(root string, gate record.TreeGate) []texts.ArchitectGate {
 		gates = append(gates, at)
 	}
 	return gates
+}
+
+// NameStartDocuments is task, an architect-start task as ArchitectStartTask or NarrowRootTask
+// wrote it, with each gate step's document that the task gives as the bare artifact reference
+// (stepDocuments: a row the record does not say the document's issue of) named instead as the
+// step's document of the issue issueOf answers holds the artifact, where it answers one
+// (texts.NameStartDocuments). issueOf is the daemon's read of Dispatch where it sends the task
+// (the outbox's start, the daemon's rootTask), outside any transaction, so the workflow itself
+// asks Dispatch nothing; a step it answers nothing for keeps the bare reference, and so does every
+// step of a task that names none.
+func NameStartDocuments(task string, issueOf func(artifact string) (string, bool)) string {
+	return texts.NameStartDocuments(task, func(step, artifact string) (string, bool) {
+		issue, ok := issueOf(artifact)
+		if !ok {
+			return "", false
+		}
+		return stepRef(issue, record.DesignStep(step)), true
+	})
 }
 
 // NarrowRootTask is a root architect's held task rewritten from what it still names of its tree's

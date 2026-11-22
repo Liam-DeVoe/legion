@@ -2055,6 +2055,12 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 			return nil
 		}
 	}
+	// A catch-up that names a gate step's document by its bare artifact reference — a row the record
+	// does not say the document's issue of (workflow's stepDocuments) — names it here from Dispatch,
+	// outside any transaction, as the start task's is named at its start (supervise's "start").
+	if payload.CatchUp != nil {
+		workflow.NameCatchUpDocuments(payload.CatchUp, dispatchDocumentIssue(ctx, r.dispatch, r.log, row.Issue))
+	}
 	notice, key := payload.Published(row.ID)
 	if held := r.supervisedClaim(architect); stoppedWithTree(tree.root.Lingers(), held) {
 		if err := r.parkDecision(ctx, row.Issue, tree.root.Key, payload, key, row.ID); err != nil {
@@ -2829,6 +2835,12 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// release before this one can be, those sentences naming no commit and no entry
 		// (supervise's Delivery.message).
 		var task *supervise.RequestDeliver
+		// A root architect's start task that names a gate step's document by its bare artifact
+		// reference — a row the record does not say the document's issue of (workflow's
+		// stepDocuments) — names it here from Dispatch, outside any transaction, before the claim
+		// takes the task, as the catch-up's is named at its publish (deliverNotice). A task that
+		// names no such reference is given as the row carries it.
+		payload.Task = workflow.NameStartDocuments(payload.Task, dispatchDocumentIssue(ctx, r.dispatch, r.log, row.Issue))
 		if payload.Task != "" {
 			kept, err := keptJSON(payload.Kept)
 			if err != nil {
@@ -3921,6 +3933,32 @@ func (r *outbox) provisionIn(ctx context.Context, key string, repo ghrepo.Reposi
 		return fmt.Errorf("provision workspace for %s: %w", key, err)
 	}
 	return nil
+}
+
+// dispatchDocumentIssue is the daemon's read of which issue holds a gate step's document, for a text
+// it sends that names that document by the bare artifact reference (workflow.NameStartDocuments
+// and NameCatchUpDocuments, of issue's text): Dispatch's read of the artifact
+// (dispatch.Client.Approval, the read the gate seed and the boot catch-up make of a gate's
+// document), which names the issue that holds it. It is made where the text is sent, outside any
+// transaction, one read for each such document. A read that fails or names no issue, or a daemon
+// with no Dispatch client, answers none, and the text keeps the bare reference, which its reader
+// can follow: the text is sent rather than held on Dispatch, and names no document that may be
+// another issue's.
+func dispatchDocumentIssue(ctx context.Context, client dispatch.Client, log *slog.Logger, issue string) func(artifact string) (string, bool) {
+	return func(artifact string) (string, bool) {
+		if client == nil {
+			return "", false
+		}
+		approval, err := client.Approval(ctx, artifact)
+		if err == nil && approval.IssueKey != "" {
+			return approval.IssueKey, true
+		}
+		if log != nil {
+			log.Warn("Dispatch named no issue that holds a gate step's document, so the text names the document by its artifact reference",
+				"issue", issue, "artifact", artifact, "error", err)
+		}
+		return "", false
+	}
 }
 
 func (r *outbox) seedGate(ctx context.Context, row record.OutboxRow, payload record.GateSeed) error {
