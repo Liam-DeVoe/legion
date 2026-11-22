@@ -641,7 +641,9 @@ func (kv KeyValue) Create(key string, value []byte) (uint64, error) {
 // live value, and a client that reads with stream message gets (WithStreamMessageReads, an edge
 // listener) sends no direct get: its grant holds none. So a handle whose legacy reads are stream
 // message gets creates as streamMessageReads.Create does, its writes through the jetstream handle
-// under ctx and its read of a marker a stream message get; every other handle takes nats.go's.
+// under ctx and its read of a marker a stream message get under ctx too; every other handle takes
+// nats.go's. A read that fails is no marker, and the write's own refusal is the answer, as in
+// streamMessageReads.Create and nats.go's two Creates: a wrong last sequence is nats.ErrKeyExists.
 func (kv KeyValue) boundCreate(ctx context.Context, key string, value []byte) (uint64, error) {
 	reads, ok := kv.legacy.(streamMessageReads)
 	if !ok {
@@ -651,7 +653,7 @@ func (kv KeyValue) boundCreate(ctx context.Context, key string, value []byte) (u
 	if err == nil {
 		return revision, nil
 	}
-	if _, marker, readErr := reads.read(key, 0); readErr == nil || errors.Is(readErr, nats.ErrKeyNotFound) {
+	if _, marker, readErr := reads.read(key, 0, nats.Context(ctx)); readErr == nil || errors.Is(readErr, nats.ErrKeyNotFound) {
 		if marker > 0 {
 			return kv.watch.Update(ctx, key, value, marker)
 		}
