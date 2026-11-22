@@ -1,9 +1,12 @@
 package legion
 
 import (
+	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -109,21 +112,30 @@ func TestAFailedWholeReadSetsNoRun(t *testing.T) {
 	rig.awaitStartingRead("INFRA")
 
 	// A gap whose read the daemon refuses: the read is owed under the rig's run, and the message
-	// that called for it goes back to the stream until the read is due.
-	daemon.refuses(http.StatusServiceUnavailable)
+	// that called for it holds the read. The refused read lasts a minute on the intake's clock
+	// (lagsNext), so the read is due again once it has failed, and the message goes back to the
+	// stream for holdAtLeast alone. The read its redelivery makes waits for retry, so the cursor is
+	// checked as the refused read left it.
+	other := strings.Replace(daemonState("INFRA", 25, planning("INFRA")), rigRun, otherRun, 1)
+	other = strings.Replace(other, `"daemon":{"project":"INFRA"`, `"daemon":{"project":"LINUX"`, 1)
+	daemon.serves(other)
+	daemon.refusesFor(1, http.StatusServiceUnavailable)
+	retry := make(chan struct{})
+	release := sync.OnceFunc(func() { close(retry) })
+	t.Cleanup(release)
+	daemon.lagsNext(func() {
+		rig.clock.advance(ReadRetryAfter)
+		daemon.lagsNext(func() { <-retry })
+	})
 	rig.publish("INFRA", change(20, "INFRA-1", moved("phase", "implementing")))
 	rig.settledHolding(1)
 	if c := cursorOf(t, rig.database, "INFRA"); !c.readOwed || c.run == nil || *c.run != rigRun {
 		t.Fatalf("after the refused gap read the cursor is %+v under the run %s, want a read owed under %s", c, orNone(c.run), rigRun)
 	}
 
-	// The owed read, tried again a minute later, is answered with another project's state, which
-	// another run serves: a failed read.
-	other := strings.Replace(daemonState("INFRA", 25, planning("INFRA")), rigRun, otherRun, 1)
-	other = strings.Replace(other, `"daemon":{"project":"INFRA"`, `"daemon":{"project":"LINUX"`, 1)
-	daemon.serves(other)
-	rig.clock.advance(ReadRetryAfter + time.Second)
-	rig.intake.SettingsChanged(t.Context())
+	// The owed read, which the message's redelivery makes a minute after the refused read began,
+	// is answered with another project's state, which another run serves: a failed read.
+	release()
 	rig.awaitWholeReads(3)
 
 	reads := readRecords(t, rig.database, "INFRA")
@@ -131,5 +143,112 @@ func TestAFailedWholeReadSetsNoRun(t *testing.T) {
 	if c := cursorOf(t, rig.database, "INFRA"); c.run == nil || *c.run != rigRun || !c.readOwed {
 		t.Errorf("after a failed read served by %s the cursor follows the run %s with a read owed %v, want %s, its last good read's, and the read still owed",
 			otherRun, orNone(c.run), c.readOwed, rigRun)
+	}
+}
+
+// TestATakeOverReadsAProjectWhoseOwedReadNoMessageHolds: each take-over queues every configured
+// project's starting point (takenOver, SettingsChanged, startingPoint). Where a message holds the
+// project's owed read, that call joins the read and makes none of its own
+// (TestATakeOverDuringAHeldReadThatTimesOutKeepsTheFloorAboutElevenMinutes); where no message holds
+// it, the take-over reads. A project whose read is owed and due and that no message holds is read
+// at the take-over for retry: after a failed starting read, which no message makes, and after the
+// message that held the read went back stateMaxHolds times and was let go. A project with no
+// cursor, here one whose setting was written while no settings wake reached the intake, is read
+// whole at the take-over (ReadReasonStart). Each is read once at the take-over, and the good read
+// leaves its cursor at the read's stateSeq with nothing owed and no holder.
+func TestATakeOverReadsAProjectWhoseOwedReadNoMessageHolds(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		project string
+		reason  string
+		// before brings project to what the take-over finds, from the first intake's start on,
+		// and answers project's daemon and how many whole reads of every project are recorded by
+		// then.
+		before func(t *testing.T, rig *intakeRig) (daemon *fakeDaemon, reads int)
+	}{
+		{
+			name: "a read owed since a failed starting read", project: "INFRA", reason: ReadReasonRetry,
+			before: func(t *testing.T, rig *intakeRig) (*fakeDaemon, int) {
+				daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
+				daemon.refuses(http.StatusServiceUnavailable)
+				seedLegionProject(t, rig.database, "INFRA", daemon.URL)
+				rig.start()
+				rig.awaitWholeReads(1)
+				requireWholeRead(t, wholeReadsOf(t, rig.database, "INFRA")[0], ReadReasonStart, false)
+				requireOwedWithNoHolder(t, rig, "INFRA")
+				return daemon, 1
+			},
+		},
+		{
+			name: "a read owed since its holder was let go", project: "INFRA", reason: ReadReasonRetry,
+			before: func(t *testing.T, rig *intakeRig) (*fakeDaemon, int) {
+				// As in TestAHeldReadThatKeepsFailingLetsItsMessageGoAfterTenHandBacks: a gap's
+				// message holds the read, the daemon refuses each read the message's deliveries
+				// make, and the message is acknowledged after stateMaxHolds hand-backs.
+				daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
+				seedLegionProject(t, rig.database, "INFRA", daemon.URL)
+				rig.start()
+				rig.awaitStartingRead("INFRA")
+				daemon.refuses(http.StatusServiceUnavailable)
+				rig.clock.jumps(ReadRetryAfter - holdAtLeast)
+				rig.publish("INFRA", change(12, "INFRA-1", moved("phase", "merging")))
+				holder := rig.lastStreamSeq()
+				rig.waitFor(time.Minute, func() bool {
+					info := rig.consumerInfo()
+					return info.AckFloor.Stream >= holder && info.NumAckPending == 0 && info.NumPending == 0
+				}, func() string {
+					return fmt.Sprintf("the message that holds INFRA's read is not acknowledged after %d hand-backs", len(rig.logRecords(heldLine)))
+				})
+				rig.clock.jumps(0)
+				if released := rig.awaitLogRecords(releasedLine, 1); len(released) != 1 || released[0]["streamSeq"] != float64(holder) {
+					t.Fatalf("the release lines = %v, want one naming the message at %d", released, holder)
+				}
+				requireOwedWithNoHolder(t, rig, "INFRA")
+				return daemon, stateMaxHolds + 2
+			},
+		},
+		{
+			name: "a project with no cursor", project: "LINUX", reason: ReadReasonStart,
+			before: func(t *testing.T, rig *intakeRig) (*fakeDaemon, int) {
+				infra := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
+				seedLegionProject(t, rig.database, "INFRA", infra.URL)
+				rig.start()
+				rig.awaitStartingRead("INFRA")
+				linux := newFakeDaemon(t, daemonState("LINUX", 20, planning("LINUX")))
+				seedLegionProject(t, rig.database, "LINUX", linux.URL)
+				return linux, 1
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newIntakeRig(t)
+			daemon, reads := tc.before(t, rig)
+
+			// A minute on, so that an owed read is due, a second intake takes the durable over.
+			served := daemon.served()
+			daemon.serves(daemonState(tc.project, 30, planning(tc.project)))
+			rig.clock.advance(ReadRetryAfter + time.Second)
+			rig.stop()
+			rig.start()
+			rig.awaitWholeReads(reads + 1)
+
+			got := wholeReadsOf(t, rig.database, tc.project)
+			requireWholeRead(t, got[len(got)-1], tc.reason, true)
+			if n := daemon.served(); n != served+1 {
+				t.Errorf("%s's daemon served %d reads at the take-over, want 1", tc.project, n-served)
+			}
+			if c := cursorOf(t, rig.database, tc.project); c.readOwed || c.readHolder != nil || c.readHolds != 0 || c.lastSeq == nil || *c.lastSeq != 30 {
+				t.Errorf("after the take-over's read %s's cursor is %s, want it at the read's 30 with nothing owed and no holder", tc.project, c)
+			}
+		})
+	}
+}
+
+// requireOwedWithNoHolder fails unless project's cursor owes a read for retry alone and names no
+// message as its holder, with no hand-back counted.
+func requireOwedWithNoHolder(t *testing.T, rig *intakeRig, project string) {
+	t.Helper()
+	if c := cursorOf(t, rig.database, project); !slices.Equal(c.readReasons, []string{ReadReasonRetry}) || c.readHolder != nil || c.readHolds != 0 {
+		t.Fatalf("%s's cursor is %s, want the read owed for retry, no holder and no hand-back counted", project, c)
 	}
 }

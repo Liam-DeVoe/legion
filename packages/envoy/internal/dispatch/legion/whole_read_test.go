@@ -29,8 +29,9 @@ func TestMain(m *testing.M) { os.Exit(storetest.Run(func() int { return testnats
 // fakeDaemon is a Legion daemon stand-in whose state document and status the test moves between
 // reads, counting the reads it served. delay is how long each answer waits, as a daemon reading a
 // state of several MB does (slows), held a gate each answer waits on until the test releases it
-// (holds), refusals how many of the next reads it refuses with refusalStatus (refusesFor), and
-// stall what each read runs before it waits, never to answer, until the client hangs up (stalls).
+// (holds), refusals how many of the next reads it refuses with refusalStatus (refusesFor), stall
+// what each read runs before it waits, never to answer, until the client hangs up (stalls), and
+// lag what the next read runs before it answers as it would otherwise (lagsNext).
 type fakeDaemon struct {
 	*httptest.Server
 	mu            sync.Mutex
@@ -42,6 +43,7 @@ type fakeDaemon struct {
 	refusals      int
 	refusalStatus int
 	stall         func()
+	lag           func()
 }
 
 // refusalBody is the body of every read a fakeDaemon refuses.
@@ -56,13 +58,17 @@ func newFakeDaemon(t *testing.T, body string) *fakeDaemon {
 			return
 		}
 		daemon.mu.Lock()
-		body, status, delay, held, stall := daemon.body, daemon.status, daemon.delay, daemon.held, daemon.stall
+		body, status, delay, held, stall, lag := daemon.body, daemon.status, daemon.delay, daemon.held, daemon.stall, daemon.lag
 		if daemon.refusals > 0 {
 			daemon.refusals--
 			body, status = refusalBody, daemon.refusalStatus
 		}
 		daemon.reads++
+		daemon.lag = nil
 		daemon.mu.Unlock()
+		if lag != nil {
+			lag()
+		}
 		if stall != nil {
 			stall()
 			<-r.Context().Done()
@@ -127,6 +133,16 @@ func (d *fakeDaemon) stalls(stall func()) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.stall = stall
+}
+
+// lagsNext has the next read the daemon serves run lag first, and then answer as it would
+// otherwise: a refusal, a state or a stall. A test moves the intake's clock there, so that the
+// read lasts that long on the intake's clock, as one the daemon is slow to answer does. lag may
+// call lagsNext for the read after it; otherwise each read after it answers with no lag.
+func (d *fakeDaemon) lagsNext(lag func()) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.lag = lag
 }
 
 // holds has each answer from here on wait until release is called, which the test's end calls

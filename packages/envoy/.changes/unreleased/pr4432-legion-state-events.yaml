@@ -13,13 +13,15 @@ body: |-
   calls for the owed read is acknowledged. A read that fails sends that message back until a
   minute after that read began, at most 10 times in all, and its next delivery is then
   acknowledged. The project's cursor counts these hand-backs, so a lease take-over does not start
-  the count again. A read waits 60 s at the most, so one message holds the consumer's ack floor for
-  about 11 minutes at the most, also when the daemon does not answer its reads, and a take-over
-  replays at most that long of messages. A failed read that no message holds, a failed starting
-  read or one whose message went back 10 times, waits for the project's next message, boot,
-  settings change or take-over. So where a message holds the read, a project that goes quiet is a
-  minute behind at the most; a burst of such messages makes one read a minute and holds one
-  message of the consumer's window, and the messages of other projects are not stopped.
+  the count again, and a take-over or a settings change makes no read of a project whose owed read
+  a message holds: it joins the read that the message's redelivery makes. A read waits 60 s at the
+  most, so one message holds the consumer's ack floor for about 11 minutes at the most, also when
+  the daemon does not answer its reads or a take-over comes meanwhile, and a take-over replays at
+  most that long of messages. A failed read that no message holds, a failed starting read or one
+  whose message went back 10 times, waits for the project's next message, boot, settings change
+  or take-over. So where a message holds the read, a project that goes quiet is a minute behind at
+  the most; a burst of such messages makes one read a minute and holds one message of the
+  consumer's window, and the messages of other projects are not stopped.
   A message that goes back to the stream is logged once, as held, and with no other line. A good
   whole read takes the daemon's `daemon.stateRun` as the run of its starting point, so a boot
   message of that run that arrives after the read, at or below the read's sequence, makes no second

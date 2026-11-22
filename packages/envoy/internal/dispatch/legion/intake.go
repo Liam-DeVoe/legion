@@ -94,9 +94,11 @@ const (
 // the durable again at that floor, delivers the message again and replays every message of every
 // project after it. stateMaxHolds bounds that: the cursor counts the message's hand-backs, so a
 // take-over does not reset the count, and each hand-back after a read lasts until ReadRetryAfter
-// after that read began, holdAtLeast at the least. A read lasts RequestTimeout at the most, a
-// minute, so the message holds the floor for about 11 minutes at the most in all, whether or not
-// the daemon answers its reads, and a take-over replays at most that long of messages.
+// after that read began, holdAtLeast at the least. A take-over's own call for the project's read
+// (takenOver, startingPoint) makes no read while the message holds it, so no take-over adds a read
+// to the hold. A read lasts RequestTimeout at the most, a minute, so the message holds the floor
+// for about 11 minutes at the most in all, whether or not the daemon answers its reads and however
+// many take-overs there are, and a take-over replays at most that long of messages.
 func consumerConfig() natsgo.ConsumerConfig {
 	return natsgo.ConsumerConfig{
 		Durable:        bus.DispatchLegionStateDurable,
@@ -113,15 +115,16 @@ func consumerConfig() natsgo.ConsumerConfig {
 // every reason. A read called for inside it is owed rather than made (cursor.readFor). The first
 // message that owes it goes back to the stream unacknowledged for the time left until it is due,
 // and its redelivery makes the read; every later message is acknowledged once the cursor records
-// its reason. So where a message holds the owed read, a project that goes quiet is ReadRetryAfter
-// behind at the most. A read that fails sends that message back until ReadRetryAfter after the
-// read began, holdAtLeast at the least, so a read the daemon is slow to answer, or never answers
-// within RequestTimeout, adds no time to the minute. It does so at most stateMaxHolds times in all,
-// and then lets the message go. A failed read that no message holds - a starting read's, which no
-// message makes, or one whose message has gone back stateMaxHolds times - waits for the project's
-// next message, boot, settings change or take-over, which makes it once it is due. No timer makes
-// a read. A good starting read holds back no read after it (recordWhole), and a project with no
-// cursor has no read to wait after.
+// its reason, and a settings change or a take-over makes no read of its own while that message
+// holds the read. So where a message holds the owed read, a project that goes quiet is
+// ReadRetryAfter behind at the most. A read that fails sends that message back until
+// ReadRetryAfter after the read began, holdAtLeast at the least, so a read the daemon is slow to
+// answer, or never answers within RequestTimeout, adds no time to the minute. It does so at most
+// stateMaxHolds times in all, and then lets the message go. A failed read that no message
+// holds - a starting read's, which no message makes, or one whose message has gone back
+// stateMaxHolds times - waits for the project's next message, boot, settings change or
+// take-over, which makes it once it is due. No timer makes a read. A good starting read holds
+// back no read after it (recordWhole), and a project with no cursor has no read to wait after.
 const ReadRetryAfter = time.Minute
 
 // The reasons a whole read is made, which legion_reads.reason records and the whole read's log
@@ -238,13 +241,15 @@ const holdAtLeast = time.Second
 // the hand-backs beside the holder (cursor.readHolds): 1 when it records the message as the
 // holder, one more at each hand-back after it (owe), and 0 once it names no holder. A take-over
 // creates the durable again, which starts the message's own NumDelivered again at 1, and keeps
-// the cursor's count, so the bound holds for the message across every take-over. A holder that
-// has gone back stateMaxHolds times holds the read no more: that delivery is acknowledged, the
-// cursor names no holder from then on (readAnswer.release), and the read stays owed
-// (ReadReasonRetry) for the project's next message, boot, settings change or take-over, which
-// makes it once it is due, as R3 makes every failed read. So the message holds the durable's ack
-// floor below it for about 11 minutes at the most, and a take-over replays at most that long of
-// messages (consumerConfig).
+// the cursor's count, so the bound holds for the message across every take-over. Neither a
+// take-over's call for the read nor a settings change's makes a read while the message holds it
+// (cursor.readFor), so neither adds a read to the hold. A holder that has gone back
+// stateMaxHolds times holds the read no more: that delivery is acknowledged, the cursor names no
+// holder from then on (readAnswer.release), and the read stays owed (ReadReasonRetry) for the
+// project's next message, boot, settings change or take-over, which makes it once it is due, as
+// R3 makes every failed read. So the message holds the durable's ack floor below it for about 11
+// minutes at the most, however many take-overs there are, and a take-over replays at most that
+// long of messages (consumerConfig).
 const stateMaxHolds = 10
 
 // dropLogEvery bounds how often one line of reportEvery is logged for one project, and pruneEvery
@@ -366,11 +371,12 @@ func (in *Intake) Run(ctx context.Context) {
 // SettingsChanged queues each configured project's starting point on the project's runner
 // (startingPoint). A write of a Legion setting wakes it (SettingsChannel), and each take-over
 // queues it (takenOver): a project whose cursor is gone (PutSettings, DeleteSettings, or no read
-// yet) is read whole once, a project whose cursor owes a read that is due is read for the reasons
-// it owes it for, and every other project is not read at all. A settings read that fails queues
-// nothing: a project with no starting point is read at its next message all the same, and the
-// listener's wake fires again once it listens again. A process that does not hold the durable
-// queues nothing: the process that holds it heard the same notification.
+// yet) is read whole once, a project whose cursor owes a read that is due and that no message
+// holds is read for the reasons it owes it for, and every other project is not read at all. Where
+// a message holds the owed read, the call joins that read, which the message's redelivery makes.
+// A settings read that fails queues nothing: a project with no starting point is read at its next
+// message all the same, and the listener's wake fires again once it listens again. A process that
+// does not hold the durable queues nothing: the process that holds it heard the same notification.
 func (in *Intake) SettingsChanged(ctx context.Context) {
 	settings, err := ListSettings(ctx, in.pool)
 	if err != nil {
@@ -394,9 +400,10 @@ func (in *Intake) takenOver() {
 }
 
 // startingPoint reads project's daemon whole where its observations have no starting point
-// (ReadReasonStart), or where a read is owed and due, for the reasons it is owed for, and reads
-// nothing otherwise (cursor.readFor, with no message to hold an owed read). It takes no starting
-// point while a Dispatch process of an earlier build is in the fleet (startBlocked). It runs on the
+// (ReadReasonStart), or where a read is owed and due and no message holds it, for the reasons it
+// is owed for, and reads nothing otherwise (cursor.readFor, called with no message): where a
+// message holds the owed read, the message's redelivery makes it. It takes no starting point
+// while a Dispatch process of an earlier build is in the fleet (startBlocked). It runs on the
 // project's runner; a database step that fails is tried again in place until it succeeds or the
 // handling ends.
 func (in *Intake) startingPoint(ctx context.Context, project string) {
@@ -934,6 +941,10 @@ func (a readAnswer) of(setting Settings) owedRead {
 //     it to wait after, and each reason its cursor owes is for a daemon the setting no longer
 //     names, if it has a cursor at all.
 //   - A call with no reason, where no read is owed, makes no read and owes none.
+//   - A call no message makes, where the cursor names a holder, makes no read, due or not: it
+//     joins the holder's read, which the holder's redelivery makes, the cursor counting its
+//     hand-backs on from readHolds. So a take-over or a settings change (startingPoint) adds no
+//     read to the hold, and the hold's bound (stateMaxHolds) stands however many of them come.
 //   - A read that is due (readDue) is made now, for every reason the cursor owes it for, in the
 //     order they called for it, then for reason where it is not among them. It is recorded under
 //     the first. A delivery makes one read at the most: where it made one already, the read is
@@ -951,18 +962,20 @@ func (a readAnswer) of(setting Settings) owedRead {
 // So each project that owes a read holds one message of the durable's window. Where a message
 // holds the read, a project that goes quiet is ReadRetryAfter behind at the most, and a read that
 // fails sends the message back until ReadRetryAfter after the read began, stateMaxHolds times at
-// the most in all, across take-overs too. A failed read that no message holds, a starting point's
-// or one whose message went back stateMaxHolds times, is made at the project's next message, boot,
-// settings change or take-over, once it is due: the next message to call holds it.
+// the most in all, across take-overs too, which make no read of their own meanwhile. A failed
+// read that no message holds, a starting point's or one whose message went back stateMaxHolds
+// times, is made at the project's next message, boot, settings change or take-over, once it is
+// due: the next message to call holds it.
 func (c cursor) readFor(reason string, now time.Time, seq int64, made bool) readAnswer {
 	switch {
 	case reason == ReadReasonStart:
 		return readAnswer{read: true, reason: ReadReasonStart, joined: []string{ReadReasonStart}}
 	case reason == "" && !c.readOwed():
 		return readAnswer{}
-	case c.readDue(now) && !made:
-		// A call with no reason reaches here only where a read is owed, so the read has a reason
-		// to be recorded under: the first it was owed for, or the call's own.
+	case c.readDue(now) && !made && (seq != 0 || c.readHolder == nil):
+		// A call no message makes joins the read a holder holds rather than making it. A call
+		// with no reason reaches here only where a read is owed, so the read has a reason to be
+		// recorded under: the first it was owed for, or the call's own.
 		answer := readAnswer{read: true, reason: reason, joined: []string{reason}}
 		if c.readOwed() {
 			answer.reason, answer.joined = c.readReasons[0], c.readReasons

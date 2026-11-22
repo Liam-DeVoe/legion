@@ -1089,8 +1089,9 @@ func TestAProjectWithoutAStartingPointIsReadOnceAndNothingReadsItAgain(t *testin
 // with a state that is no starting point, or with another project's, records a failed read naming
 // why and owes the read; a state of the project's own still records its observations. The cursor
 // then holds no store, so the messages that arrive meanwhile are not applied and the cursor stays
-// where the failed read left it; neither the next message nor a settings change reads again inside
-// ReadRetryAfter, and the first message after it does. The first message inside the minute holds
+// where the failed read left it; neither a settings change nor the next message reads again inside
+// ReadRetryAfter, and the first message after it does. The settings change comes while no message
+// holds the owed read, so the minute alone holds it back. The first message inside the minute holds
 // the owed read, so it goes back to the stream until the read is due and logs only that, and the
 // second is acknowledged and its drop logged.
 func TestAFailedWholeReadIsTriedAgainAtTheNextMessageAndNoSooner(t *testing.T) {
@@ -1161,15 +1162,16 @@ func TestAFailedWholeReadIsTriedAgainAtTheNextMessageAndNoSooner(t *testing.T) {
 				t.Fatalf("the failed read's line is %v, want ok false and its error", line)
 			}
 
-			// Inside ReadRetryAfter, the next message and a settings change read nothing. No good
-			// read has said which store the daemon counts in, so neither message is applied: the
-			// first goes back to the stream until the read is due and logs that alone, and the
-			// second is acknowledged, its drop logged once.
+			// Inside ReadRetryAfter, a settings change and the next message read nothing. The
+			// settings change is queued on INFRA's runner ahead of the messages, while no message
+			// holds the owed read. No good read has said which store the daemon counts in, so
+			// neither message is applied: the first goes back to the stream until the read is due
+			// and logs that alone, and the second is acknowledged, its drop logged once.
 			before := currentValues(t, rig.database, "INFRA")
 			rig.clock.advance(ReadRetryAfter / 2)
+			rig.intake.SettingsChanged(t.Context())
 			rig.publish("INFRA", change(5, "INFRA-1", moved("phase", "implementing")))
 			rig.settledHolding(1)
-			rig.intake.SettingsChanged(t.Context())
 			rig.publish("INFRA", change(6, "INFRA-1", claimMoved("planner", "idle")))
 			rig.settledHolding(1)
 			if served := daemon.served(); served != 1 {
@@ -2257,9 +2259,9 @@ func TestARepointedSettingWhoseFirstReadFailsAppliesNoMessageOfTheDaemonItNamedB
 // daemon split over several messages whole, once every part has arrived. A whole read that fails
 // holds none of the parts' events, so it keeps the parts: here a gap's read fails, and the gap goes
 // back to the stream until the retry is due; the first part of a transaction that follows the
-// cursor is held while the read is owed, and the retry a minute on fails as well. The
-// transaction's last part then applies all of it, every row at its commit time, and no part is
-// held after it.
+// cursor is held while the read is owed, and the retry the gap's redelivery makes a minute on fails
+// as well. The transaction's last part then applies all of it, every row at its commit time, and no
+// part is held after it.
 func TestAFailedReadKeepsTheHeldPartsAndTheirTransactionIsAppliedWhole(t *testing.T) {
 	rig := newIntakeRig(t)
 	daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
@@ -2284,9 +2286,13 @@ func TestAFailedReadKeepsTheHeldPartsAndTheirTransactionIsAppliedWhole(t *testin
 		t.Fatalf("%d parts held, want the transaction's first", held)
 	}
 
-	// A minute on, a settings change makes the owed read, and the daemon refuses it again.
+	// A minute on, the gap's redelivery makes the owed read, and the daemon refuses it again. The
+	// gap went back to the stream for that minute. A take-over creates the durable again at its ack
+	// floor and delivers the gap again at once, so the test does not wait the minute out; the
+	// take-over's own call for INFRA's read joins the read the gap holds and makes none.
 	rig.clock.advance(ReadRetryAfter + time.Second)
-	rig.intake.SettingsChanged(t.Context())
+	rig.stop()
+	rig.start()
 	rig.awaitWholeReads(3)
 	reads := readRecords(t, rig.database, "INFRA")
 	requireWholeRead(t, reads[len(reads)-1], ReadReasonRetry, false)
