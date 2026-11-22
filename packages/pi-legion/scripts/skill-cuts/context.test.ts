@@ -6,8 +6,10 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  readlinkSync,
   realpathSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
@@ -28,6 +30,7 @@ import {
   type RepoSource,
   readFrontmatter,
   skillFrontmatter,
+  UnreadableDirectory,
 } from "./context";
 
 // The case context (context.ts) built from made-up repositories, read from local
@@ -1055,4 +1058,274 @@ exec ${JSON.stringify(inner.gh)} "$@"
   expect(built.record.githubRetries).toEqual({ "TLS handshake timeout": 1 });
   // The failed tree read, the tree read again and one GraphQL batch.
   expect(source.reads?.()).toMatchObject({ calls: 3, retries: { "TLS handshake timeout": 1 } });
+});
+
+/** A file of the made-up acme/deep: its path, its mode (git's: 100755 executable, 120000 a link
+ *  whose target is its text) and its bytes. */
+interface DeepFile {
+  readonly path: string;
+  readonly mode: "100644" | "100755" | "120000";
+  readonly bytes: Uint8Array;
+}
+
+const text = (value: string) => new TextEncoder().encode(value);
+
+/** acme/deep at COMMIT: a skill directory with an executable, a link, a nested directory and bytes
+ *  that are no UTF-8, beside a sibling skill and the rest of a large repository. */
+const DEEP_FILES: readonly DeepFile[] = [
+  { path: "README.md", mode: "100644", bytes: text("# Deep\n") },
+  { path: "data/proofs/p1.v", mode: "100644", bytes: text("Lemma one : True.\n") },
+  { path: "skills/other/SKILL.md", mode: "100644", bytes: text("---\nname: other\n---\n") },
+  {
+    path: "skills/deep/SKILL.md",
+    mode: "100644",
+    bytes: text("---\nname: deep\ndescription: Made-up deep.\n---\n"),
+  },
+  { path: "skills/deep/scripts/run.sh", mode: "100755", bytes: text("#!/bin/sh\necho run\n") },
+  { path: "skills/deep/link.md", mode: "120000", bytes: text("SKILL.md") },
+  { path: "skills/deep/references/a/b.md", mode: "100644", bytes: text("Reference b.\n") },
+  { path: "skills/deep/latin.bin", mode: "100644", bytes: new Uint8Array([0, 0x63, 0xe9, 255]) },
+];
+
+/** The made-up id of the tree of `dir` ("" the root) in the stand-in. */
+const treeId = (dir: string) => gitBlobId(text(`tree ${dir}`));
+
+/**
+ * A stand-in `gh` holding one made-up repository (`files`) at COMMIT under any name, whose recursive tree GitHub cuts short, a
+ * Bun script that logs each call's arguments as one JSON line to its `log` and answers as GitHub
+ * does: a tree's recursive listing, cut short with its first entry only for the commit and for
+ * each directory of `cutShort`; one level of a tree, cut short so for each directory of
+ * `cutAlone`; a blob alone; and the repository's tarball, made with `tar` from the files, so a
+ * tarball read gives the same files and only the call log tells it apart.
+ */
+function standinDeepGh(
+  name: string,
+  files: readonly DeepFile[],
+  cut: { readonly cutShort?: readonly string[]; readonly cutAlone?: readonly string[] } = {}
+): { gh: string; log: string } {
+  const root = path.join(dir, name);
+  const log = path.join(root, "calls.jsonl");
+  const gh = path.join(root, "gh");
+  // Each tree's one level, by its id.
+  const trees: Record<
+    string,
+    { name: string; mode: string; type: string; sha: string; size?: number }[]
+  > = { [treeId("")]: [] };
+  const blobs: Record<string, string> = {};
+  const top = path.join(root, "tarball", `acme-deep-${COMMIT.slice(0, 7)}`);
+  for (const file of files) {
+    const parts = file.path.split("/");
+    for (let depth = 1; depth <= parts.length; depth++) {
+      const parent = treeId(parts.slice(0, depth - 1).join("/"));
+      const here = parts.slice(0, depth).join("/");
+      const level = trees[parent] ?? [];
+      trees[parent] = level;
+      if (level.some((entry) => entry.name === parts[depth - 1])) continue;
+      if (depth < parts.length) {
+        level.push({
+          name: parts[depth - 1] ?? "",
+          mode: "040000",
+          type: "tree",
+          sha: treeId(here),
+        });
+        trees[treeId(here)] ??= [];
+      } else {
+        const sha = gitBlobId(file.bytes);
+        level.push({
+          name: parts[depth - 1] ?? "",
+          mode: file.mode,
+          type: "blob",
+          sha,
+          size: file.bytes.length,
+        });
+        blobs[sha] = Buffer.from(file.bytes).toString("base64");
+      }
+    }
+    const at = path.join(top, file.path);
+    mkdirSync(path.dirname(at), { recursive: true });
+    if (file.mode === "120000") symlinkSync(new TextDecoder().decode(file.bytes), at);
+    else {
+      writeFileSync(at, file.bytes);
+      if (file.mode === "100755") chmodSync(at, 0o755);
+    }
+  }
+  const archive = path.join(root, "repository.tar.gz");
+  const tar = Bun.spawnSync(["tar", "-czf", archive, "-C", path.dirname(top), path.basename(top)]);
+  if (tar.exitCode !== 0) throw new Error(`tar failed: ${tar.stderr.toString()}`);
+  const data = {
+    commit: COMMIT,
+    root: treeId(""),
+    trees,
+    blobs,
+    cutShort: (cut.cutShort ?? []).map(treeId),
+    cutAlone: (cut.cutAlone ?? []).map(treeId),
+  };
+  writeTree(root, {
+    gh: `#!${process.execPath}
+import { appendFileSync, readFileSync } from "node:fs";
+const data = ${JSON.stringify(data)};
+const args = process.argv.slice(2);
+appendFileSync(${JSON.stringify(log)}, JSON.stringify(args) + "\\n");
+const route = args.at(-1) ?? "";
+const notFound = () => {
+  process.stderr.write("gh: Not Found (HTTP 404)\\n");
+  process.exit(1);
+};
+const listed = (entry, at) => ({ path: at, mode: entry.mode, type: entry.type, sha: entry.sha, ...(entry.size === undefined ? {} : { size: entry.size }) });
+const tree = /^repos\\/[^/]+\\/[^/]+\\/git\\/trees\\/([0-9a-f]{40})(\\?recursive=1)?$/.exec(route);
+const blob = /^repos\\/[^/]+\\/[^/]+\\/git\\/blobs\\/([0-9a-f]{40})$/.exec(route);
+if (tree !== null) {
+  const id = tree[1] === data.commit ? data.root : tree[1];
+  const level = data.trees[id];
+  if (level === undefined) notFound();
+  if (tree[2] !== undefined) {
+    const all = [];
+    const walk = (sha, prefix) => {
+      for (const entry of data.trees[sha]) {
+        all.push(listed(entry, prefix + entry.name));
+        if (entry.type === "tree") walk(entry.sha, prefix + entry.name + "/");
+      }
+    };
+    walk(id, "");
+    const truncated = tree[1] === data.commit || data.cutShort.includes(id);
+    process.stdout.write(JSON.stringify({ sha: id, tree: truncated ? all.slice(0, 1) : all, truncated }));
+  } else {
+    const truncated = data.cutAlone.includes(id);
+    const entries = level.map((entry) => listed(entry, entry.name));
+    process.stdout.write(JSON.stringify({ sha: id, tree: truncated ? entries.slice(0, 1) : entries, truncated }));
+  }
+} else if (blob !== null && data.blobs[blob[1]] !== undefined) {
+  process.stdout.write(Buffer.from(data.blobs[blob[1]], "base64"));
+} else if (/^repos\\/[^/]+\\/[^/]+\\/tarball\\/[0-9a-f]{40}$/.test(route) && route.endsWith(data.commit)) {
+  process.stdout.write(readFileSync(${JSON.stringify(archive)}));
+} else notFound();
+`,
+  });
+  chmodSync(gh, 0o755);
+  return { gh, log };
+}
+
+/** The route of each call the stand-in logged, in order. */
+function routesOf(log: string): string[] {
+  return readFileSync(log, "utf8")
+    .split("\n")
+    .filter((line) => line !== "")
+    .map((line) => (JSON.parse(line) as string[]).at(-1) ?? "");
+}
+
+/** The routes of `log` by kind: tree reads (recursive and one level), blobs, tarballs, other. */
+function routeKinds(log: string): Record<string, number> {
+  const kinds = { recursive: 0, level: 0, blob: 0, tarball: 0, other: 0 };
+  for (const route of routesOf(log)) {
+    if (/\/git\/trees\/[0-9a-f]{40}\?recursive=1$/.test(route)) kinds.recursive++;
+    else if (/\/git\/trees\/[0-9a-f]{40}$/.test(route)) kinds.level++;
+    else if (route.includes("/git/blobs/")) kinds.blob++;
+    else if (route.includes("/tarball/")) kinds.tarball++;
+    else kinds.other++;
+  }
+  return kinds;
+}
+
+/** Each file under `root`, by its path below it: its mode as git writes it (120000 a link, its
+ *  bytes the target) and its bytes. */
+function filesUnder(root: string): Record<string, { mode: string; bytes: number[] }> {
+  const found: Record<string, { mode: string; bytes: number[] }> = {};
+  for (const name of readdirSync(root, { recursive: true, encoding: "utf8" })) {
+    const at = path.join(root, name);
+    const stat = lstatSync(at);
+    if (stat.isDirectory()) continue;
+    found[name] = stat.isSymbolicLink()
+      ? { mode: "120000", bytes: [...text(readlinkSync(at))] }
+      : { mode: (stat.mode & 0o111) !== 0 ? "100755" : "100644", bytes: [...readFileSync(at)] };
+  }
+  return found;
+}
+
+/** What `filesUnder` gives for the files of `files` under `inside`. */
+function expectedUnder(
+  files: readonly DeepFile[],
+  inside: string
+): Record<string, { mode: string; bytes: number[] }> {
+  return Object.fromEntries(
+    files
+      .filter((file) => file.path.startsWith(`${inside}/`))
+      .map((file) => [
+        file.path.slice(inside.length + 1),
+        { mode: file.mode, bytes: [...file.bytes] },
+      ])
+  );
+}
+
+// Catches: a commit whose recursive tree GitHub cuts short read from the whole repository's
+// tarball to write one directory (3.26 GB for one skill of a large proof repository, 2026-11-22).
+test("a directory of a commit whose tree GitHub cuts short is read along its path and written with its modes, links and bytes, with no tarball read", async () => {
+  const { gh, log } = standinDeepGh("gh-deep", DEEP_FILES);
+  const root = path.join(dir, "deep");
+  const { c, arm } = batchCase(root, ["skills/deep"]);
+  const source = ghSource(gh, { sleep: async () => {}, err: () => {} });
+  const options = { source, cacheDir: path.join(root, "cache"), root: path.join(root, "scratch") };
+  const built = await buildContext(c, arm, options);
+  expect(routeKinds(log)).toEqual({ recursive: 2, level: 2, blob: 5, tarball: 0, other: 0 });
+  const key = cacheKey("acme/batch", COMMIT, "skills/deep");
+  // The cache holds that one entry, and it holds exactly the directory's files.
+  expect(readdirSync(path.join(options.cacheDir, "skills"))).toEqual([key]);
+  expect(filesUnder(path.join(options.cacheDir, "skills", key))).toEqual(
+    expectedUnder(DEEP_FILES, "skills/deep")
+  );
+  expect(filesUnder(path.join(built.skillsDir, "deep"))).toEqual(
+    expectedUnder(DEEP_FILES, "skills/deep")
+  );
+  expect(source.reads?.().calls).toBe(9);
+});
+
+test("a directory whose own recursive tree GitHub cuts short too is walked one level at a time, with no tarball read", async () => {
+  const { gh, log } = standinDeepGh("gh-deep-levels", DEEP_FILES, { cutShort: ["skills/deep"] });
+  const source = ghSource(gh, { sleep: async () => {}, err: () => {} });
+  const dest = path.join(dir, "deep-levels", "out", "deep");
+  mkdirSync(path.dirname(dest), { recursive: true });
+  await source.tree("acme/deep", COMMIT, "skills/deep", dest);
+  expect(filesUnder(dest)).toEqual(expectedUnder(DEEP_FILES, "skills/deep"));
+  // Nothing beside the directory is written.
+  expect(readdirSync(path.dirname(dest))).toEqual(["deep"]);
+  // The commit's tree and the directory's, cut short; the root and skills/ to find it; then its
+  // four directories one level each: skills/deep, scripts, references and references/a.
+  expect(routeKinds(log)).toEqual({ recursive: 2, level: 6, blob: 5, tarball: 0, other: 0 });
+});
+
+test("a directory the commit does not hold, or one a level of which GitHub cuts short even read alone, fails naming the repository, the commit and the path, with no tarball read", async () => {
+  const missing = standinDeepGh("gh-deep-missing", DEEP_FILES);
+  const missingSource = ghSource(missing.gh, { sleep: async () => {}, err: () => {} });
+  const out = path.join(dir, "deep-missing");
+  mkdirSync(out, { recursive: true });
+  for (const inside of ["skills/none", "skills/deep/SKILL.md", "nowhere/deep"]) {
+    const failed = await missingSource.tree("acme/deep", COMMIT, inside, path.join(out, "x")).then(
+      () => "written",
+      (error: unknown) => error
+    );
+    expect(failed).toBeInstanceOf(UnreadableDirectory);
+    expect(failed).toMatchObject({ repo: "acme/deep", commit: COMMIT, dir: inside });
+    expect(String(failed)).toContain(`acme/deep at ${COMMIT} holds no directory ${inside}`);
+  }
+  expect(routeKinds(missing.log).tarball).toBe(0);
+  expect(existsSync(path.join(out, "x"))).toBe(false);
+
+  const cut = standinDeepGh("gh-deep-cut", DEEP_FILES, {
+    cutShort: ["skills/deep"],
+    cutAlone: ["skills/deep/references"],
+  });
+  const cutSource = ghSource(cut.gh, { sleep: async () => {}, err: () => {} });
+  const cutOut = path.join(dir, "deep-cut");
+  mkdirSync(cutOut, { recursive: true });
+  const failed = await cutSource
+    .tree("acme/deep", COMMIT, "skills/deep", path.join(cutOut, "x"))
+    .then(
+      () => "written",
+      (error: unknown) => error
+    );
+  expect(failed).toBeInstanceOf(UnreadableDirectory);
+  expect(failed).toMatchObject({ repo: "acme/deep", commit: COMMIT, dir: "skills/deep" });
+  expect(String(failed)).toContain(
+    `acme/deep at ${COMMIT}: skills/deep cannot be read: GitHub cuts the tree of skills/deep/references short even one level at a time`
+  );
+  expect(routeKinds(cut.log).tarball).toBe(0);
 });

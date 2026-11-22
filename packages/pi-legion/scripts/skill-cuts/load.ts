@@ -90,12 +90,20 @@
  * caches by that id makes it a factor of every run that sends it.
  *
  * Under `--out`: `summary.json` (the test's settings, what the host lists for the skill, each
- * task's profile file with the SHA-256 of its bytes, its loads and verdict, the skill's verdict,
- * the spend), `runs/<task id>.jsonl` (one JSON line per run, LoadRun, which names its task's
- * profile file and that SHA-256 too, its session id and its place in its send order),
- * `captures/` (each task's body, the body as the host sent it, and its record) and `sessions/`.
+ * task's profile file with the SHA-256 of its bytes, its loads and verdict and why it was dropped
+ * (null when it was not), the skill's verdict, the spend), `runs/<task id>.jsonl` (one JSON line
+ * per run, LoadRun, which names its task's profile file and that SHA-256 too, its session id and
+ * its place in its send order), `captures/` (each task's body, the body as the host sent it, and
+ * its record) and `sessions/`.
  * A task whose run file holds its runs is skipped, so a command started again goes on from what
- * was saved; an `--out` written by a test of other settings (another skill text, name, host,
+ * was saved. A task whose context needs a directory no read can give (context.ts's
+ * UnreadableDirectory: the commit holds no such directory, or GitHub cuts a level of its tree short
+ * even read alone) is dropped: its line says so, `summary.json` gives its reason as the task's
+ * `dropped` (`unreadable-directory: ` and the error, which names the repository, the commit and
+ * the path), a command started again skips it while its profile file keeps the same bytes, and
+ * the verdict rule sees it as a task with no runs. A capture that fails for another reason, a
+ * read after its retries among them, is a failure (exit 1), tried again by the next command.
+ * An `--out` written by a test of other settings (another skill text, name, host,
  * model, thinking level, run count, hint model, or one whose runs were sent before each had its
  * own session id), or holding a capture or runs of a task of the same id with another text,
  * under a profile of other bytes, or that its summary does not list (so the text they were made
@@ -153,6 +161,8 @@ import {
   type RepoSource,
   readFrontmatter,
   skillFrontmatter,
+  UNREADABLE_DIRECTORY,
+  UnreadableDirectory,
 } from "./context";
 import {
   BudgetSpent,
@@ -966,11 +976,17 @@ interface Settings {
   readonly sends: typeof SENDS;
 }
 
-/** A test's summary, as `summary.json` holds it. Only what a later command checks is read back. */
+/** A test's summary, as `summary.json` holds it. Only what a later command checks is read back:
+ *  each task's text and profile digest, and why it was dropped. */
 const SavedSummary = z.looseObject({
   settings: z.unknown(),
   tasks: z.array(
-    z.looseObject({ id: z.string(), text: z.string(), profileDigest: z.string().optional() })
+    z.looseObject({
+      id: z.string(),
+      text: z.string(),
+      profileDigest: z.string().optional(),
+      dropped: z.string().nullable().optional(),
+    })
   ),
 });
 
@@ -1709,6 +1725,9 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
   };
 
   const summaryFile = path.join(o.out, "summary.json");
+  // Each task dropped for a directory of its context no read can give, by its id, with why: one an
+  // earlier command dropped under this profile is not tried again.
+  const dropped = new Map<string, string>();
   if (existsSync(summaryFile)) {
     let raw: unknown;
     try {
@@ -1743,6 +1762,9 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
         throw new Refused(
           `${o.out} holds task ${task.id} made under a profile of other bytes (SHA-256 ${before.profileDigest ?? "not recorded"}) than ${profile.file} (SHA-256 ${profile.digest}): give the task that profile again, or use another --out`
         );
+      }
+      if (typeof before?.dropped === "string" && before.profileDigest === profile.digest) {
+        dropped.set(task.id, before.dropped);
       }
     }
   }
@@ -1801,6 +1823,7 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
           profile: profile.file,
           profileDigest: profile.digest,
           ...outcomeOf(task),
+          dropped: dropped.get(task.id) ?? null,
         })),
         verdict,
         spend: { runsUsd, hintsUsd, usd: runsUsd + hintsUsd },
@@ -1847,6 +1870,11 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
     for (const { task, profile } of profiled) {
       if (profile.file !== group.profile.file) continue;
       const saved = runsOf.get(task.id) ?? [];
+      const drop = dropped.get(task.id);
+      if (drop !== undefined) {
+        test.say(`${what(task)}: dropped before, skipped: ${drop}`);
+        continue;
+      }
       if (saved.length >= o.runs) {
         const outcome = outcomeOf(task);
         test.say(
@@ -1867,8 +1895,17 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
             `the budget is spent, so no new model call starts, and task ${task.id} has no capture; the runs so far are saved under ${o.out}`
           );
         }
-        failures.push(`task ${task.id}: ${messageFor(error)}`);
-        o.io.err(`load: ${what(task)}: ${messageFor(error)}`);
+        if (error instanceof UnreadableDirectory) {
+          // No try reads that directory: the task is dropped, kept so in the summary at once, and
+          // a command started again skips it.
+          const reason = `${UNREADABLE_DIRECTORY}: ${error.message}`;
+          dropped.set(task.id, reason);
+          writeSummary();
+          test.say(`${what(task)}: dropped: ${reason}`);
+        } else {
+          failures.push(`task ${task.id}: ${messageFor(error)}`);
+          o.io.err(`load: ${what(task)}: ${messageFor(error)}`);
+        }
       }
       readHintDollars(task);
       ownMs.set(task.id, performance.now() - startedAt);

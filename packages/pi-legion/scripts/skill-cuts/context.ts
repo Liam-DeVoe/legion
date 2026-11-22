@@ -54,8 +54,11 @@
  *   its case carries the system prompt its session recorded, which the capture sends whole.
  *
  * `source` reads the repositories: `ghSource` with read-only `gh api` calls (a directory from the
- * commit's tree and its blobs, a whole repository from its tarball), `localSource` from a
- * directory per repository and commit (the tests' made-up repositories). Repository and owner
+ * commit's tree and its blobs, read along the directory's path where GitHub cuts the commit's tree
+ * short, and a whole repository, a plugin's checkout, from its tarball), `localSource` from a
+ * directory per repository and commit (the tests' made-up repositories). A directory the commit
+ * does not hold, or one GitHub cuts short even one level at a time, is an UnreadableDirectory,
+ * which stops the context; no source reads a whole repository in its place. Repository and owner
  * names come only from the case. Every cache entry is `<cacheDir>/<kind>s/<key>` (`skills`,
  * `trees`, `plugins`, `composes`, and `files` for each single file read), made into a fresh path
  * and renamed into place. `record` says what was used: each commit and cache key, each plugin
@@ -108,7 +111,9 @@ export interface RepoSource {
    *  none, and another error when the read fails. */
   file(repo: string, commit: string, file: string): Promise<Uint8Array>;
   /** Writes each file of `repo` at `commit` under `dir` (a path inside the repository, or "" for
-   *  all of it) into `dest`, at its path below `dir`. Throws when `dir` holds no file. */
+   *  all of it) into `dest`, at its path below `dir`. Throws UnreadableDirectory when the commit
+   *  holds no file under `dir`, or `dir` cannot be read on any try; another error when a read
+   *  fails. */
   tree(repo: string, commit: string, dir: string, dest: string): Promise<void>;
   /** Reads ahead, in as few calls as it can, the files of `repo` at `commit` under each of `dirs`,
    *  so the `tree` calls for them that follow need no read of their own. What it reads is held
@@ -128,6 +133,25 @@ export interface RepoSource {
 /** What `RepoSource.file` throws when the repository holds no such file at the commit, as opposed
  *  to a read that failed. */
 export class NoSuchFile extends Error {}
+
+/** What `RepoSource.tree` throws when `repo` at `commit` holds no file under `dir`, or when GitHub
+ *  cuts a level of `dir`'s tree short even read alone, so no try can read it: a failure no retry
+ *  mends, for which a behaviour screen drops its case and a load test its task (cli.ts, load.ts),
+ *  as opposed to a read that failed. */
+export class UnreadableDirectory extends Error {
+  constructor(
+    readonly repo: string,
+    readonly commit: string,
+    readonly dir: string,
+    message: string
+  ) {
+    super(message);
+  }
+}
+
+/** How the drop of a behaviour screen's case, or of a load test's task, begins when its context
+ *  holds an UnreadableDirectory: the rest of the drop is the error's message. */
+export const UNREADABLE_DIRECTORY = "unreadable-directory";
 
 /** One build the context needed: what it is, its cache key, whether the cache held it already,
  *  and how long it took, in milliseconds. */
@@ -469,12 +493,17 @@ export interface GhOptions {
  * a directory from the commit's recursive tree and its blobs, the whole repository from its
  * tarball. A tree is read once per repository and commit while it is among the last TREE_LISTINGS
  * used, and only its blob entries' path, mode, id and size are kept; a tree read that failed is
- * not kept, so the next case at that commit reads it again. A tree GitHub cuts short (`truncated`)
- * is read from the tarball instead. `prefetch` reads the blobs of many directories of one commit in
- * GraphQL batches, `object(oid: …)` up to BLOB_BATCH blobs and BLOB_BATCH_BYTES bytes a call, with
- * `-f owner=<owner> -f name=<repo>` so the pod's gh sends it with that owner's token (as copies.ts
- * does); a blob a batch does not give whole (binary, truncated, missing, in a batch that failed,
- * or a text whose bytes are not the blob's, checked by its git blob id) is read alone over REST.
+ * not kept, so the next case at that commit reads it again. Where GitHub cuts a commit's
+ * recursive tree short (`truncated`: a repository of too many entries), a directory is read
+ * alone (`walk`): its tree found by one-level reads from the root along its path, then its own
+ * recursive tree, or each of its levels read alone where GitHub cuts that short too, and each of
+ * its blobs read alone over REST; `prefetch` reads nothing ahead for such a commit. Only
+ * `tree(repo, commit, "")`, a plugin's checkout, reads a whole repository. `prefetch` reads the
+ * blobs of many directories of one commit in GraphQL batches, `object(oid: …)` up to BLOB_BATCH
+ * blobs and BLOB_BATCH_BYTES bytes a call, with `-f owner=<owner> -f name=<repo>` so the pod's gh
+ * sends it with that owner's token (as copies.ts does); a blob a batch does not give whole
+ * (binary, truncated, missing, in a batch that failed, or a text whose bytes are not the blob's,
+ * checked by its git blob id) is read alone over REST.
  * A blob a batch gave is kept until each file of those directories that holds it is written, or
  * until the release `prefetch` gives is called (`held()` counts the blobs kept). Each read is
  * sent again after a transient failure, by the rule copies.ts's and build.ts's GitHub reads share
@@ -586,6 +615,16 @@ export function ghSource(
       rmSync(archive, { force: true });
     }
   };
+  // The tree `sha` of `repo` (a commit's id names its root tree): one level of it, or all of it
+  // when `recursive`, and whether GitHub cut the listing short.
+  const treeRead = async (
+    repo: string,
+    sha: string,
+    recursive: boolean
+  ): Promise<{ tree: TreeEntry[]; truncated: boolean }> => {
+    const route = `repos/${repo}/git/trees/${sha}${recursive ? "?recursive=1" : ""}`;
+    return JSON.parse(new TextDecoder().decode(await api(route, false)));
+  };
   // The commit's recursive tree, its blob entries only, read once while it is among the last
   // TREE_LISTINGS used. A read that failed is dropped, so the next one reads again.
   const listingOf = (repo: string, commit: string): Promise<Listing> => {
@@ -597,11 +636,7 @@ export function ghSource(
       trees.set(id, kept);
       return kept;
     }
-    const listing = api(`repos/${repo}/git/trees/${commit}?recursive=1`, false).then((bytes) => {
-      const parsed = JSON.parse(new TextDecoder().decode(bytes)) as {
-        tree: TreeEntry[];
-        truncated: boolean;
-      };
+    const listing = treeRead(repo, commit, true).then((parsed) => {
       const entries = parsed.tree
         .filter((entry) => entry.type === "blob")
         .map((entry) => ({ path: entry.path, mode: entry.mode, sha: entry.sha, size: entry.size }));
@@ -616,6 +651,61 @@ export function ghSource(
       trees.delete(old);
     }
     return listing;
+  };
+  // The blob entries under `dir` of `repo` at `commit`, a commit whose recursive tree GitHub cuts
+  // short, at their paths in the repository, with no whole repository read: `dir`'s tree found by
+  // one-level reads from the root along its path, then its own recursive tree, or, where GitHub
+  // cuts that short too, each of its levels read alone, four at once. Throws UnreadableDirectory
+  // when the commit holds no such directory, or GitHub cuts a level short even read alone.
+  const walk = async (repo: string, commit: string, dir: string): Promise<BlobEntry[]> => {
+    // One level of the tree `sha`, which is the tree of `at` ("" the root).
+    const level = async (sha: string, at: string): Promise<TreeEntry[]> => {
+      const read = await treeRead(repo, sha, false);
+      if (!read.truncated) return read.tree;
+      throw new UnreadableDirectory(
+        repo,
+        commit,
+        dir,
+        `${repo} at ${commit}: ${dir} cannot be read: GitHub cuts the tree of ${at === "" ? "the root" : at} short even one level at a time`
+      );
+    };
+    let sha = commit;
+    let at = "";
+    for (const name of dir.split("/")) {
+      const entry = (await level(sha, at)).find((each) => each.path === name);
+      if (entry?.type !== "tree") {
+        throw new UnreadableDirectory(
+          repo,
+          commit,
+          dir,
+          `${repo} at ${commit} holds no directory ${dir}`
+        );
+      }
+      sha = entry.sha;
+      at = at === "" ? name : `${at}/${name}`;
+    }
+    const whole = await treeRead(repo, sha, true);
+    if (!whole.truncated) {
+      return whole.tree
+        .filter((entry) => entry.type === "blob")
+        .map((entry) => ({ ...entry, path: `${dir}/${entry.path}` }));
+    }
+    const files: BlobEntry[] = [];
+    for (let trees = [{ sha, at: dir }]; trees.length > 0; ) {
+      const levels = await mapLimit(trees, 4, async (tree) => ({
+        parent: tree.at,
+        entries: await level(tree.sha, tree.at),
+      }));
+      trees = [];
+      for (const { parent, entries } of levels) {
+        for (const entry of entries) {
+          const where = { ...entry, path: `${parent}/${entry.path}` };
+          if (entry.type === "tree") trees.push({ sha: entry.sha, at: where.path });
+          else if (entry.type === "blob") files.push(where);
+        }
+      }
+    }
+    return files;
   };
   // Each blob a GraphQL batch gave whole, by its id: its bytes, and the files of the directories
   // read ahead still to be written from it, each as `<repo>@<commit>\0<dir>/\0<path>` (a file under
@@ -657,6 +747,7 @@ export function ghSource(
         for (const [sha, keys] of mine) for (const key of keys) done(sha, key);
       };
       const { entries, truncated } = await listingOf(repo, commit);
+      // A commit whose tree GitHub cuts short is read one directory at a time, in `tree` (`walk`).
       if (truncated) return release;
       // Each blob to read, by its id.
       const wanted = new Map<string, BlobEntry>();
@@ -706,22 +797,19 @@ export function ghSource(
     async tree(repo, commit, dir, dest) {
       if (dir === "") return tarball(repo, commit, dest);
       const { entries, truncated } = await listingOf(repo, commit);
-      const prefix = `${dir.replace(/\/+$/, "")}/`;
-      if (truncated) {
-        const whole = mkdtempSync(`${dest}.whole-`);
-        try {
-          await tarball(repo, commit, whole);
-          if (!existsSync(path.join(whole, prefix))) {
-            throw new Error(`${repo} at ${commit} holds no directory ${dir}`);
-          }
-          cpSync(path.join(whole, prefix), dest, { recursive: true, verbatimSymlinks: true });
-        } finally {
-          rmSync(whole, { recursive: true, force: true });
-        }
-        return;
+      const inside = dir.replace(/\/+$/, "");
+      const prefix = `${inside}/`;
+      const files = truncated
+        ? await walk(repo, commit, inside)
+        : entries.filter((entry) => entry.path.startsWith(prefix));
+      if (files.length === 0) {
+        throw new UnreadableDirectory(
+          repo,
+          commit,
+          inside,
+          `${repo} at ${commit} holds no file under ${inside}`
+        );
       }
-      const files = entries.filter((entry) => entry.path.startsWith(prefix));
-      if (files.length === 0) throw new Error(`${repo} at ${commit} holds no file under ${dir}`);
       await mapLimit(files, 4, async (entry) => {
         const held = blobs.get(entry.sha);
         const bytes = held?.bytes ?? (await api(`repos/${repo}/git/blobs/${entry.sha}`, true));
@@ -745,7 +833,14 @@ export function localSource(root: string): RepoSource {
     },
     async tree(repo, commit, dir, dest) {
       const where = path.join(at(repo, commit), dir);
-      if (!existsSync(where)) throw new Error(`${repo} at ${commit} holds no directory ${dir}`);
+      if (!existsSync(where)) {
+        throw new UnreadableDirectory(
+          repo,
+          commit,
+          dir,
+          `${repo} at ${commit} holds no directory ${dir}`
+        );
+      }
       cpSync(where, dest, { recursive: true, verbatimSymlinks: true });
     },
   };

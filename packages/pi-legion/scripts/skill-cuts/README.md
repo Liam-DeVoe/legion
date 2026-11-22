@@ -27,8 +27,12 @@ gateway key comes from `--key-file`, read inside the process that uses it, never
 or written. The behaviour test and the load test read the skill texts from directories and the
 cases or tasks from a file outside the repository. The repositories a context needs come from
 `--repos <dir>`, a tree of `<owner>/<name>/<commit>/` directories, each the repository at that
-commit; without `--repos` they are read from GitHub through `gh` (GET calls, tarballs and GraphQL
-queries). So `behaviour` and `load` need no GitHub token only with `--repos`. `copies`,
+commit; without `--repos` they are read from GitHub through `gh` (GET calls and GraphQL
+queries; a whole repository's tarball only for a plugin's checkout). A skill's directory is read
+from its commit's tree and its blobs; where GitHub cuts that tree short (a repository of too many
+entries), the directory alone is read, along its path from the root tree, one level at a time
+where GitHub cuts its own tree short too, never from the whole repository's tarball. So
+`behaviour` and `load` need no GitHub token only with `--repos`. `copies`,
 `build-cases` and `build-tasks --profiles-out` read GitHub through `gh`, and only read it: GET
 calls, and GraphQL queries that read file contents in batches.
 
@@ -74,11 +78,17 @@ skill's cases (`cases.ts`), one JSON object per line.
   must be no loss, or the test calls a loss where the texts are the same. A skill whose planted-loss
   control is no loss, or whose false-loss control is a loss, gets no verdict, and the report says
   which control failed.
+- In every stage, a case one of whose captures needs a directory no read can give (the commit
+  holds no such directory, or GitHub cuts a level of its tree short even read alone) is dropped
+  as `unreadable-directory`, its drop naming the repository, the commit and the path; a run
+  started again skips it, and a dropped case is never informative. A read that fails for another
+  reason, after its retries, fails the command (exit 1), and the next run reads it again.
 - `report`: each case's passes per arm and stage, the control case's passes of old, `minus` and
   `twin` and what each control says, the skill's verdict and its reason (`keeps` prints as "no
-  loss detected by the registered rule"), the drops per judge control, an estimate of the
-  procedure's false-loss chance at the cases run (exact binomial under identical old and new
-  texts, the pass rates taken from each case's own screen; its assumptions are printed with it),
+  loss detected by the registered rule"), the drops per judge control and the drops counted as
+  `model-not-served` and as `unreadable-directory`, an estimate of the procedure's false-loss
+  chance at the cases run (exact binomial under identical old and new texts, the pass rates taken
+  from each case's own screen; its assumptions are printed with it),
   a table of the chance it finds a loss of 10 to 40 points in one informative case, the spend
   at list price, the peak memory, and how many captures' system-prompt digests differ from their
   session's. It calls no model, and needs only `--config`, `--out`, `--old` and `--cases`. With
@@ -259,7 +269,11 @@ send seed and its place in the order), `<out>/captures/`, `<out>/sessions/` and
 `<out>/summary.json`; each run line and each task of the summary names its profile file and the
 SHA-256 of its bytes. A task whose run file is complete is skipped, so a run started again goes
 on from what was saved; a task whose capture or runs were made under a profile of other bytes is
-refused, and so is an `--out` whose runs were sent before each had its own session id.
+refused, and so is an `--out` whose runs were sent before each had its own session id. A task
+whose context needs a directory no read can give (as `behaviour` drops a case for) is dropped:
+its line and the summary's `dropped` give the reason (`unreadable-directory: ` and the
+repository, the commit and the path), a run started again skips it while its profile file keeps
+the same bytes, and the verdict rule counts it as a task with no runs.
 
 ### `copies`
 

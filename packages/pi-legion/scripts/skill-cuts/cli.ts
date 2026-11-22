@@ -84,10 +84,17 @@
  *   confirm and control need the screen finished, and make no run when the skill can get no verdict
  *   (fewer than MIN_INFORMATIVE_CASES informative cases, a planted-loss control that is no loss,
  *   or a false-loss control that is a loss).
+ *   In any stage, a case one of whose captures needs a directory no read can give (context.ts's
+ *   UnreadableDirectory: the commit holds no such directory, or GitHub cuts a level of its tree
+ *   short even read alone) is dropped as `unreadable-directory`, its drop naming the repository,
+ *   the commit and the path, and a run started again skips it; a dropped case is never
+ *   informative. A read that failed for another reason, after its retries, fails the command, and
+ *   the next run reads it again.
  * - `report` (no model call) prints each case's passes per arm and stage, the drops by each judge
- *   control, the skill's verdict and its reason (score.ts; `keeps` is printed "no loss detected by
- *   the registered rule"), the rule's sensitivity (`lossChance` at an old pass rate of 0.9 and 0.7
- *   and drops of 0.1 to 0.4), the estimated false-loss rate at the cases run (`falseLossChance`),
+ *   control, by `model-not-served` and by `unreadable-directory`, the skill's verdict and its
+ *   reason (score.ts; `keeps` is printed "no loss detected by the registered rule"), the rule's
+ *   sensitivity (`lossChance` at an old pass rate of 0.9 and 0.7 and drops of 0.1 to 0.4), the
+ *   estimated false-loss rate at the cases run (`falseLossChance`),
  *   the spend, the peak memory, and how many captures' system-prompt digests differ from their
  *   session's. With `--reading-models`, it prints each model of the file with its sessions and
  *   whether the gateway serves it (the file's `served`), the sessions with no model and not
@@ -194,7 +201,13 @@ import {
   writeWhole,
 } from "./common";
 import { type SkillCutsConfig, storeNamed } from "./config";
-import { ghSource, localSource, type RepoSource } from "./context";
+import {
+  ghSource,
+  localSource,
+  type RepoSource,
+  UNREADABLE_DIRECTORY,
+  UnreadableDirectory,
+} from "./context";
 import { main as copiesMain, spawnGh } from "./copies";
 import { main as countSqlMain } from "./countsql";
 import {
@@ -1011,10 +1024,13 @@ function writeResult(b: Behaviour, result: CaseResult, phases?: Phases): string 
   return file;
 }
 
-/** The run records of `results`, every stage's, as score.ts reads them. */
+/** The run records of `results`, every stage's, as score.ts reads them. A dropped case's are
+ *  none, so a case dropped after its screen (its context could not be read for a later stage) is
+ *  never informative. */
 function runRecords(results: Iterable<CaseResult>): RunRecord[] {
   const records: RunRecord[] = [];
   for (const result of results) {
+    if (result.dropped !== null) continue;
     for (const stage of Stage.options) {
       for (const { caseId, arm, verdict, reason } of result.stages[stage]?.runs ?? []) {
         records.push({ caseId, arm, stage, verdict, reason });
@@ -1301,7 +1317,10 @@ async function runRound(
  * unscreened, round by round, from the runs `result` holds already (which each caller's
  * `stageDone` has checked were made with this run's texts). Each round's runs are saved when it
  * ends; the stage's last state is returned unsaved, for `finishCase` to write. Each phase's time
- * is counted in `phases`. Throws Stopped, after saving, when the budget refused a call.
+ * is counted in `phases`. A case whose context holds a directory no read can give (context.ts's
+ * UnreadableDirectory: the commit holds no such directory, or GitHub cuts a level of it short
+ * even read alone) is returned dropped, with that reason, before any run, so a run started again
+ * skips it. Throws Stopped, after saving, when the budget refused a call.
  */
 async function runStage(
   r: Runner,
@@ -1342,10 +1361,26 @@ async function runStage(
   const arms = new Map<ArmName, { arm: Arm; capture: Capture }>();
   const captures = { ...state.captures };
   const readsBefore = r.source.reads?.() ?? { calls: 0, ms: 0 };
+  // The GitHub reads the captures made, counted into `phases`.
+  const countReads = (): void => {
+    const readsAfter = r.source.reads?.() ?? { calls: 0, ms: 0 };
+    phases.github = {
+      calls: readsAfter.calls - readsBefore.calls,
+      ms: readsAfter.ms - readsBefore.ms,
+    };
+  };
   for (const name of STAGE_ARMS[stage]) {
     const started = performance.now();
     const arm = buildArm(c, name, r.dirs, scratch);
-    const capture = await r.capture(c, arm);
+    let capture: Capture;
+    try {
+      capture = await r.capture(c, arm);
+    } catch (error) {
+      if (!(error instanceof UnreadableDirectory)) throw error;
+      phases.captureMs[name] = performance.now() - started;
+      countReads();
+      return { ...current, dropped: `${UNREADABLE_DIRECTORY}: ${error.message}` };
+    }
     phases.captureMs[name] = performance.now() - started;
     if (capture.made) phases.contextMs += capture.record.timings.contextMs;
     // Only the capture reads the arm's messages: the replays and the judge need none.
@@ -1356,11 +1391,7 @@ async function runStage(
       sessionDigest: c.sessionDigest,
     };
   }
-  const readsAfter = r.source.reads?.() ?? { calls: 0, ms: 0 };
-  phases.github = {
-    calls: readsAfter.calls - readsBefore.calls,
-    ms: readsAfter.ms - readsBefore.ms,
-  };
+  countReads();
   save({ ...state, captures });
 
   for (;;) {
@@ -1705,13 +1736,18 @@ function reportCommand(b: Behaviour): void {
   }
 
   const dropped = [...results.values()].filter((result) => result.dropped !== null);
-  const byControls = dropped.filter((result) => result.controls !== null).length;
+  // A case dropped after its judge controls held (its context could not be read) is no drop by
+  // them.
+  const byControls = dropped.filter((result) => result.controls?.hold === false).length;
   const notServed = dropped.filter((result) => result.dropped?.startsWith(MODEL_NOT_SERVED)).length;
+  const unreadable = dropped.filter((result) =>
+    result.dropped?.startsWith(UNREADABLE_DIRECTORY)
+  ).length;
   const unscreened = score.cases.filter((each) => each.screen.state === "unscreened").length;
   const flagged = score.cases.filter((each) => each.flagged).length;
   const losses = score.cases.filter((each) => each.loss).length;
   lines.push(
-    `cases: ${score.screened} screened, ${score.informative} informative, ${flagged} flagged, ${losses} confirmed losses; ${dropped.length} dropped (${byControls} by the judge controls, ${notServed} ${MODEL_NOT_SERVED}), ${unscreened} unscreened, ${b.cases.length - results.size} not run`
+    `cases: ${score.screened} screened, ${score.informative} informative, ${flagged} flagged, ${losses} confirmed losses; ${dropped.length} dropped (${byControls} by the judge controls, ${notServed} ${MODEL_NOT_SERVED}, ${unreadable} ${UNREADABLE_DIRECTORY}), ${unscreened} unscreened, ${b.cases.length - results.size} not run`
   );
   const byControl = ControlName.options.map((name) => {
     const count = dropped.filter((result) => result.controls?.failed.includes(name)).length;

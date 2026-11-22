@@ -889,7 +889,7 @@ describe("behaviour", () => {
     );
     expect(lines).toContain("case c09: not run");
     expect(lines).toContain(
-      "cases: 6 screened, 6 informative, 6 flagged, 6 confirmed losses; 2 dropped (2 by the judge controls, 0 model-not-served), 1 unscreened, 1 not run"
+      "cases: 6 screened, 6 informative, 6 flagged, 6 confirmed losses; 2 dropped (2 by the judge controls, 0 model-not-served, 0 unreadable-directory), 1 unscreened, 1 not run"
     );
     expect(lines).toContain(
       `judge controls failed, by control (a case can fail more than one): the real step not judged pass 1, the violating step not judged fail 1, the reply "${NOTHING_REPLY}" not judged fail 0`
@@ -1278,9 +1278,112 @@ describe("behaviour", () => {
       "case c-unserved: dropped: model-not-served: its model anthropic/claude-opus-5-5 is none the gateway serves"
     );
     expect(reported.stdout).toContain(
-      "; 1 dropped (0 by the judge controls, 1 model-not-served), "
+      "; 1 dropped (0 by the judge controls, 1 model-not-served, 0 unreadable-directory), "
     );
   }, 300_000);
+
+  // Catches: a case whose context holds a directory no read can give ending the whole screen, and
+  // read again by every run started again (each time from the whole repository's tarball, before
+  // 2026-11-22).
+  test("a case whose context needs a directory GitHub cuts short even read alone is dropped as unreadable-directory, with no tarball read; a run started again reads nothing for it, and report counts it", async () => {
+    const s = scenario("unreadable", LOSS_SKILL(), [{ id: "c04" }]);
+    answer = behaviourStandIn;
+    const commit = s.cases[0]?.profile.skills[1]?.commit ?? "";
+    const [skills, beta] = ["1".repeat(40), "2".repeat(40)];
+    // acme/skills at the case's commit, as GitHub lists a repository of too many entries: its
+    // recursive tree cut short, then skills/beta's, and skills/beta's one level even read alone.
+    const answers: Record<string, object> = {
+      [`repos/acme/skills/git/trees/${commit}?recursive=1`]: { tree: [], truncated: true },
+      [`repos/acme/skills/git/trees/${commit}`]: {
+        tree: [{ path: "skills", mode: "040000", type: "tree", sha: skills }],
+        truncated: false,
+      },
+      [`repos/acme/skills/git/trees/${skills}`]: {
+        tree: [{ path: "beta", mode: "040000", type: "tree", sha: beta }],
+        truncated: false,
+      },
+      [`repos/acme/skills/git/trees/${beta}?recursive=1`]: { tree: [], truncated: true },
+      [`repos/acme/skills/git/trees/${beta}`]: { tree: [], truncated: true },
+    };
+    const bin = path.join(s.dir, "bin");
+    const log = path.join(s.dir, "gh-calls.jsonl");
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(
+      path.join(bin, "gh"),
+      `#!${process.execPath}
+import { appendFileSync } from "node:fs";
+const answers = ${JSON.stringify(answers)};
+const route = process.argv.at(-1) ?? "";
+appendFileSync(${JSON.stringify(log)}, route + "\\n");
+if (answers[route] === undefined) {
+  process.stderr.write("gh: Not Found (HTTP 404)\\n");
+  process.exit(1);
+}
+process.stdout.write(JSON.stringify(answers[route]));
+`,
+      { mode: 0o755 }
+    );
+    // An Oh My Pi that answers --version: the context is built before it runs any capture.
+    const omp = path.join(bin, "omp");
+    writeFileSync(omp, "#!/bin/sh\necho 'omp 0.0.0 (stand-in)'\n", { mode: 0o755 });
+    const models = path.join(s.dir, "models.yml");
+    writeFileSync(models, "providers: {}\n");
+    // The session's head saved already, so no store is read.
+    const hash = pathHash("/sessions/c04.jsonl");
+    mkdirSync(path.join(s.out, "sessions"), { recursive: true });
+    writeFileSync(
+      path.join(s.out, "sessions", `store_a-${hash}.json`),
+      JSON.stringify({
+        store: "store_a",
+        pathHash: hash,
+        held: false,
+        cwd: null,
+        start: null,
+        firstUser: null,
+        reminders: [],
+        bytes: 0,
+        badLines: 0,
+        readAt: "2026-11-22T00:00:00.000Z",
+      })
+    );
+    const env = { ...ENV, PATH: `${bin}:${ENV.PATH ?? ""}` };
+    const args = behaviour(
+      "screen",
+      s,
+      "--models",
+      models,
+      "--omp",
+      omp,
+      "--cache-dir",
+      path.join(s.dir, "cache")
+    );
+    const routes = () => readFileSync(log, "utf8").split("\n").filter(Boolean);
+
+    const first = await cli(args, env);
+    expect({ code: first.code, stderr: first.stderr }).toEqual({ code: 0, stderr: "" });
+    const dropped = `unreadable-directory: acme/skills at ${commit}: skills/beta cannot be read: GitHub cuts the tree of skills/beta short even one level at a time`;
+    const c = result(s.out, "c04");
+    expect(c.dropped).toBe(dropped);
+    expect(c.controls?.hold).toBe(true);
+    expect(c.stages).toEqual({});
+    expect(first.stdout).toContain(`case c04: dropped: ${dropped};`);
+    expect(routes().filter((route) => route.includes("/tarball/"))).toEqual([]);
+    expect(routes()).toHaveLength(5);
+
+    const before = recorder.requests.length;
+    const again = await cli(args, env);
+    expect({ code: again.code, stderr: again.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(again.stdout).toContain(`case c04: dropped before, skipped: ${dropped}`);
+    expect(routes()).toHaveLength(5);
+    expect(requestsSince(before)).toEqual([]);
+
+    const reported = await cli(report(s));
+    expect(reported.code).toBe(0);
+    expect(reported.stdout).toContain(`case c04: dropped: ${dropped}\n`);
+    expect(reported.stdout).toContain(
+      "; 1 dropped (0 by the judge controls, 0 model-not-served, 1 unreadable-directory), "
+    );
+  }, 120_000);
 
   /** Writes `count` as the reading sessions by model of `s` (attribute's
    *  `<cut id>/models/<skill>.json`) to `name` in its directory, and returns that file. */

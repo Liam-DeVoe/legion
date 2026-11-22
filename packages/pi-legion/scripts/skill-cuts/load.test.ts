@@ -26,7 +26,7 @@ import {
 import { pathHash } from "./cases";
 import { type CliIo, main } from "./cli";
 import { Stopped } from "./common";
-import { localSource } from "./context";
+import { ghSource, localSource } from "./context";
 import {
   ContentBlock,
   createGateway,
@@ -1223,6 +1223,144 @@ test("a task's seconds count its own capture, its group's runs and its writes, a
   };
   expect(seconds("t2").capture).toBeGreaterThanOrEqual(1);
   expect(seconds("t1").other).toBeLessThan(0.5);
+}, 60_000);
+
+// Catches: a task whose context holds a directory no read can give counted as a failure that the
+// next command tries again (each time from the whole repository's tarball, before 2026-11-22).
+test("a task whose context needs a directory GitHub cuts short even read alone is dropped with its reason in its line and the summary, with no tarball read, and a command started again reads nothing for it", async () => {
+  const dir = path.join(scratch, "unreadable");
+  const made = setup(dir);
+  const skill = path.join(dir, "alpha");
+  writeTree(skill, { "SKILL.md": ALPHA_SKILL, "references/x.md": ALPHA_X });
+  const tasks = path.join(dir, "tasks.jsonl");
+  writeFileSync(
+    tasks,
+    [
+      { id: "need-1", text: NEED, label: "need", source: "written" },
+      { id: "near-1", text: NEAR, label: "near-miss", source: "written" },
+    ]
+      .map((task) => `${JSON.stringify(task)}\n`)
+      .join("")
+  );
+  const profile = path.join(dir, "profile.json");
+  writeFileSync(profile, JSON.stringify(BETA_PROFILE));
+  const [skills, beta] = ["1".repeat(40), "2".repeat(40)];
+  // acme/skills at COMMIT, as GitHub lists a repository of too many entries: its recursive tree
+  // cut short, then skills/beta's, and skills/beta's one level even read alone.
+  const answers: Record<string, object> = {
+    [`repos/acme/skills/git/trees/${COMMIT}?recursive=1`]: { tree: [], truncated: true },
+    [`repos/acme/skills/git/trees/${COMMIT}`]: {
+      tree: [{ path: "skills", mode: "040000", type: "tree", sha: skills }],
+      truncated: false,
+    },
+    [`repos/acme/skills/git/trees/${skills}`]: {
+      tree: [{ path: "beta", mode: "040000", type: "tree", sha: beta }],
+      truncated: false,
+    },
+    [`repos/acme/skills/git/trees/${beta}?recursive=1`]: { tree: [], truncated: true },
+    [`repos/acme/skills/git/trees/${beta}`]: { tree: [], truncated: true },
+  };
+  const gh = path.join(dir, "gh");
+  const log = path.join(dir, "gh-calls.jsonl");
+  writeFileSync(
+    gh,
+    `#!${process.execPath}
+import { appendFileSync } from "node:fs";
+const answers = ${JSON.stringify(answers)};
+const route = process.argv.at(-1) ?? "";
+appendFileSync(${JSON.stringify(log)}, route + "\\n");
+if (answers[route] === undefined) {
+  process.stderr.write("gh: Not Found (HTTP 404)\\n");
+  process.exit(1);
+}
+process.stdout.write(JSON.stringify(answers[route]));
+`,
+    { mode: 0o755 }
+  );
+  // An Oh My Pi that answers --version: the context is built before it runs any capture.
+  const ompStandIn = path.join(dir, "omp");
+  writeFileSync(ompStandIn, "#!/bin/sh\necho 'omp 0.0.0 (stand-in)'\n", { mode: 0o755 });
+  const models = path.join(dir, "models.yml");
+  writeFileSync(models, ANTHROPIC_MODELS);
+  const out = path.join(dir, "out");
+  const load = async () => {
+    const lines: string[] = [];
+    const result = await runLoad({
+      io: {
+        out: (line) => lines.push(line),
+        err: (line) => lines.push(line),
+        peakRssBytes: () => 0,
+      },
+      host: "omp",
+      skillDir: skill,
+      skillDigest: "a-made-up-digest",
+      tasksFile: tasks,
+      profileFile: profile,
+      runs: 3,
+      out,
+      model: LOAD_MODEL,
+      thinking: "off",
+      gateway: createGateway({
+        baseUrl: recorder.url,
+        keyFile: made.keyFile,
+        concurrency: 2,
+        timeoutMs: 60_000,
+      }),
+      hints: async () => {
+        throw new Error("no hint is written here");
+      },
+      source: ghSource(gh, { sleep: async () => {}, err: () => {} }),
+      scratch: path.join(dir, "scratch"),
+      cacheDir: path.join(dir, "cache"),
+      omp: ompStandIn,
+      models,
+      configFiles: [],
+      claude: "claude",
+      requestLog: path.join(dir, "requests.jsonl"),
+      memoryLimitBytes: 2 ** 30,
+      psqlCommand: "/nowhere/read-store",
+      stores: ["store_a"],
+    });
+    return { result, said: lines.join("") };
+  };
+  const routes = () => readFileSync(log, "utf8").split("\n").filter(Boolean);
+  const summary = () =>
+    z
+      .object({
+        tasks: z.array(
+          z.looseObject({ id: z.string(), made: z.number(), dropped: z.string().nullable() })
+        ),
+        verdict: z.looseObject({ reason: z.string() }),
+      })
+      .parse(JSON.parse(readFileSync(path.join(out, "summary.json"), "utf8")));
+  const dropped = `unreadable-directory: acme/skills at ${COMMIT}: skills/beta cannot be read: GitHub cuts the tree of skills/beta short even one level at a time`;
+
+  const before = recorder.requests.length;
+  const first = await load();
+  expect(first.result.failures).toEqual([]);
+  expect(first.said).toContain(`load: task need-1 (need, written): dropped: ${dropped}\n`);
+  expect(first.said).toContain(`load: task near-1 (near-miss, written): dropped: ${dropped}\n`);
+  expect(summary().tasks.map(({ id, made, dropped }) => ({ id, made, dropped }))).toEqual([
+    { id: "need-1", made: 0, dropped },
+    { id: "near-1", made: 0, dropped },
+  ]);
+  expect(summary().verdict.reason).toBe("no verdict yet: tasks need-1, near-1 lack runs");
+  expect(routes().filter((route) => route.includes("/tarball/"))).toEqual([]);
+  // The commit's tree once; then for each task the root, skills/ and skills/beta twice.
+  expect(routes()).toHaveLength(9);
+  expect(recorder.requests.length).toBe(before);
+
+  const again = await load();
+  expect(again.result.failures).toEqual([]);
+  expect(again.said).toContain(
+    `load: task need-1 (need, written): dropped before, skipped: ${dropped}\n`
+  );
+  expect(again.said).toContain(
+    `load: task near-1 (near-miss, written): dropped before, skipped: ${dropped}\n`
+  );
+  expect(routes()).toHaveLength(9);
+  expect(summary().tasks.map((task) => task.dropped)).toEqual([dropped, dropped]);
+  expect(recorder.requests.length).toBe(before);
 }, 60_000);
 
 describe("skill-cuts load sends a profile's tasks' runs in one order, each with its own id", () => {
