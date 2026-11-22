@@ -6,9 +6,11 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
+	natsgo "github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/sjawhar/envoy/internal/forcedorder"
@@ -56,15 +58,13 @@ func (r *protocolRig) publish(t *testing.T, subject string) []uint64 {
 	return seqs
 }
 
-// heldConsumer fetches every message of consumer name, acks the first protocolAcked, waits for its
-// o.dat to hold that floor on every host, and holds, before its I/O, the write of the next ack.
+// heldConsumer fetches every message of consumer name once the server answers it led (awaitLed),
+// acks the first protocolAcked, waits for its o.dat to hold that floor on every host, and holds,
+// before its I/O, the write of the next ack.
 func (r *protocolRig) heldConsumer(t *testing.T, name string, seqs []uint64) forcedorder.Held {
 	t.Helper()
 	ctx := context.Background()
-	consumer, err := r.live.js.Consumer(ctx, testStream, name)
-	if err != nil {
-		t.Fatal(err)
-	}
+	consumer := r.awaitLed(t, name)
 	batch, err := consumer.Fetch(protocolMessages, jetstream.FetchMaxWait(10*time.Second))
 	if err != nil {
 		t.Fatal(err)
@@ -88,6 +88,28 @@ func (r *protocolRig) heldConsumer(t *testing.T, name string, seqs []uint64) for
 	}
 	held.Reached(t)
 	return held
+}
+
+// protocolLed bounds how long a row waits for a consumer to be led (awaitLed).
+const protocolLed = 60 * time.Second
+
+// awaitLed answers consumer name once the server answers it led (led), within protocolLed. Ensure
+// can answer a consumer before its servers have applied its assignment, when it settled a create
+// that timed out with an info that found the candidate, and an unled consumer delivers nothing
+// (TestForcedOrderAConsumerEnsureAnsweredBeforeItIsLedIsFetchedOnceItIs).
+func (r *protocolRig) awaitLed(t *testing.T, name string) jetstream.Consumer {
+	t.Helper()
+	deadline := time.Now().Add(protocolLed)
+	for {
+		consumer, err := r.live.js.Consumer(context.Background(), testStream, name)
+		if err == nil && led(r.live.conn, consumer.CachedInfo()) {
+			return consumer
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("consumer %s had no leader within %s: %v", name, protocolLed, err)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 }
 
 // releaseAndRestart waits for the replacement's own first state write on every host, releases the
@@ -251,4 +273,55 @@ func TestForcedOrderADeleteThenEnsureThroughTheProtocolUnderAHeldWriteDeliversEv
 			requireEvery(t, r.delivered(t, again.Record.Current, want), want, "the consumer created again")
 		})
 	}
+}
+
+// A consumer Ensure answered before it had a leader is fetched once it has one, and delivers every
+// message. Held here, on R3: the new consumer's assignment on every member (meta.apply) past the
+// create's request timeout, so Ensure settles the create's unknown outcome with an info that finds
+// the held candidate and answers it unled; the holds are released one fetch wait (10 s) after
+// Ensure answered, plus a second. A first fetch that starts at the answer closes on nothing, as
+// TestForcedOrderADeleteThenEnsureThroughTheProtocolUnderAHeldWriteDeliversEveryMessage's R3 topology
+// did once on 2.10.29 at a load of 861 ("delivered 0 of 30"). The control in the row: the consumer
+// has no leader when Ensure answers.
+func TestForcedOrderAConsumerEnsureAnsweredBeforeItIsLedIsFetchedOnceItIs(t *testing.T) {
+	r := newProtocolRig(t, forcedorder.Topologies[2])
+	ctx := context.Background()
+	seqs := r.publish(t, "names.unled")
+	fresh := testnats.Where("a fresh session consumer", func(e testnats.Event) bool {
+		return strings.HasPrefix(e.Consumer, "session~")
+	})
+	var holds []*testnats.Hold
+	for _, srv := range r.Servers.Servers {
+		holds = append(holds, r.Hooks.Hold(testnats.MetaApply, testnats.OnServer(srv), testnats.Stream(testStream), fresh))
+	}
+	names := r.live.names("p1")
+	sel, _, err := names.Ensure(ctx, "ses-unled", CreateRequest{Create: r.live.family.create("ses-unled"), First: first(seqs[0])})
+	if err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	for _, hold := range holds {
+		t.Logf("held %s", hold.Reached(t))
+	}
+	if info, err := r.live.js.Consumer(ctx, testStream, sel.Record.Current); err != nil || led(r.live.conn, info.CachedInfo()) {
+		t.Fatalf("control: %s when Ensure answered = %v; want its info, with no leader", sel.Record.Current, err)
+	}
+	released := time.AfterFunc(10*time.Second+time.Second, func() {
+		for _, hold := range holds {
+			hold.Release()
+		}
+	})
+	t.Cleanup(func() { released.Stop() })
+	held := r.heldConsumer(t, sel.Record.Current, seqs)
+	r.ReleaseAndLand(t, held)
+}
+
+// led reports whether info, a consumer's info as the server conn is connected to answers it, shows
+// the consumer led: on a cluster, a leader in its cluster information, which a member that has not
+// applied the consumer's assignment leaves out; a lone server's consumer has no Raft group and is
+// led once it answers.
+func led(conn *natsgo.Conn, info *jetstream.ConsumerInfo) bool {
+	if conn.ConnectedClusterName() == "" {
+		return true
+	}
+	return info.Cluster != nil && info.Cluster.Leader != ""
 }
