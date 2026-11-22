@@ -16,8 +16,10 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -1046,19 +1048,18 @@ func TestRelatedCheckCarriesNoAskStateWhenTheAnswersCannotBeRead(t *testing.T) {
 	fixture := newAskStateFixture(t, "PARTIAL")
 	fixture.answer(t, "twice", "alice", map[string]any{"selected": []string{"Brass"}})
 	retractedAnswer := fixture.answer(t, "closed", "alice", map[string]any{"selected": []string{"Steel"}, "text": "Steel pilots."})
-	if _, err := fixture.database.Pool.Exec(context.Background(), `
-		update asks
-		set state = 'resolved', answer = null,
-		    resolution = jsonb_build_object(
-		      'kind', 'retracted',
-		      'reason', 'removed from the document in version 2',
-		      'actor', jsonb_build_object('kind', 'system', 'id', 'document-settlement'),
-		      'at', now()
-		    )
-		where id = $1
-	`, fixture.asks["closed"]); err != nil {
-		t.Fatalf("retract the answered ask: %v", err)
+	// The retraction a release before's document settlement wrote, as the decisions step's
+	// catch-up states it (asks.Recorded): on the ask's node, which every read of an answer reads,
+	// and on its row, with the answer left only in its ask.answered event.
+	retraction := model.AskResolution{
+		Kind:   "retracted",
+		Reason: "removed from the document in version 2",
+		Actor:  model.Actor{Kind: "system", ID: "document-settlement"},
+		At:     time.Now().UTC(),
 	}
+	retracted := asks.Recorded(asks.StateResolved, nil, &retraction)
+	retracted.Who, retracted.At, retracted.Event = retraction.Actor, retraction.At, graphstore.NoEvent
+	settleAskAsTheCatchUp(t, fixture.database, fixture.asks["closed"], retracted)
 	var results []model.SearchResult
 	for _, name := range []string{"twice", "closed"} {
 		var issueKey string
