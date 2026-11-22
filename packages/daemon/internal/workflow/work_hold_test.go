@@ -1396,11 +1396,11 @@ func TestWorkHoldShowsWhyInTheState(t *testing.T) {
 	}
 }
 
-// beforeTheWorkHold is the contract before api's workHoldContract (210), the contract whose entry
+// beforeTheWorkHold is the contract before api's workHoldContract (222), the contract whose entry
 // added `why: held`. It is pinned rather than read from api.DaemonAPIVersion, as api's own test of
 // the strip pins it, so the next contract does not make this row read a contract that is served
 // the word.
-const beforeTheWorkHold = 209
+const beforeTheWorkHold = 221
 
 // H36: a caller whose plugin is below the contract that added `why: held` reads the state without
 // it, through the state route's own narrowing, while a caller at the contract is served it. The

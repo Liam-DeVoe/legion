@@ -604,6 +604,10 @@
         "since": 46
       },
       {
+        "value": "caches",
+        "since": 213
+      },
+      {
         "value": "configuration",
         "since": 46
       }
@@ -1039,7 +1043,7 @@
       },
       {
         "value": "held",
-        "since": 210
+        "since": 222
       },
       {
         "value": "unlisted",
@@ -1919,7 +1923,7 @@
       },
       {
         "value": "held",
-        "since": 210
+        "since": 222
       },
       {
         "value": "unlisted",

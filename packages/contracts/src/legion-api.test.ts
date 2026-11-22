@@ -138,7 +138,7 @@ const schemas: Record<string, z.ZodType> = {
   // state of a paused project and carries the other key.
   "state-last-pause.json": LegionStateResponse,
   // Written by internal/api's TestStateWorkHoldGolden: the state of an issue the work hold holds
-  // (`gates.hold: work`), whose `why` is `held` (contract 210).
+  // (`gates.hold: work`), whose `why` is `held` (contract 222).
   "state-work-hold.json": LegionStateResponse,
   "register.json": LegionRegisterResponse,
   // The claim wire's `claim.ReadyRequest` with a capability report: what a session posts on
@@ -153,7 +153,7 @@ const schemas: Record<string, z.ZodType> = {
   // What a pod reads of its deployment's idle release: every release, resume and hold of the
   // window it named (`api.ReleaseRecordsResponse`).
   "release-records.json": LegionReleaseRecordsResponse,
-  // `api.ClaimApprovalResponse` (contract 210): the approval that stands for a root architect's
+  // `api.ClaimApprovalResponse` (contract 222): the approval that stands for a root architect's
   // claim, and the answer where none does, whose `approval` is null and never absent. Each is
   // written from what the route builds (internal/api's TestApprovalRoute…Golden).
   "claim-approval.json": LegionClaimApprovalResponse,
@@ -1856,7 +1856,7 @@ test("every request the plugin sends parses and names its required fields", () =
       },
     ],
     // The read a root architect's session makes before a model call of its own conversation
-    // (contract 210), authenticated by the claim as the activity report is.
+    // (contract 222), authenticated by the claim as the activity report is.
     [
       "claim approval",
       LegionClaimApprovalRequest,
@@ -2191,8 +2191,10 @@ test("the state golden carries each issue's repository and the repositories its 
 // the deployment renders each as `unchecked` with its citation (contract 21) — and the report is
 // never absent from a state. `installed` left the status set at contract 25: it was codegraph's
 // until LEGION-629, and no row has carried it since. Each deployment row carries `source`
-// (contract 25): `configuration` (what legion.yaml alone decides) or `boot` (what boot measured);
-// a live row carries none.
+// (contract 25): `configuration` (what legion.yaml alone decides) or `boot` (what boot measured),
+// or, on `repository-cache-room`, `caches` (contract 213), what the repository caches' last health
+// reads said of their room: the golden's one cache ran out of room, so that row is open too. A
+// live row carries none.
 test("the state golden carries the deployment's capability report", () => {
   const state = LegionStateResponse.parse(fixture("state.json"));
 
@@ -2237,18 +2239,34 @@ test("the state golden carries the deployment's capability report", () => {
   }
   expect(statuses).not.toContain("installed");
 
+  expect(rows["repository-cache-room"]).toMatchObject({
+    status: "open",
+    configLine: 'capabilities.decided.repository-cache-room: "<reason>"',
+    source: "caches",
+  });
+  expect(rows["repository-cache-room"].detail).toContain("acme/widgets on a 20.0 GiB volume");
+
   const deploymentRows = [
     rows.secrets,
     rows["model-fallback"],
     rows["resource-limits"],
     rows["pool-capacity"],
+    rows["repository-cache-room"],
   ];
   for (const row of deploymentRows) {
-    expect(["configuration", "boot"]).toContain(row.source ?? "");
+    expect(["configuration", "boot", "caches"]).toContain(row.source ?? "");
   }
 
   const emptied = fixture("state-stage3.json") as { capabilities: unknown[] };
   expect(emptied.capabilities).toEqual([]);
+});
+
+// `source` is a finite set, so the schema names its three words and no other: a fourth word is
+// refused with the whole state, as `caches` was before it joined the enum at contract 213.
+test("a capability row whose source is a word the schema does not name is refused", () => {
+  const unknownSource = fixture("state.json") as { capabilities: { source?: string }[] };
+  unknownSource.capabilities = [{ ...unknownSource.capabilities[0], source: "volume" }];
+  expect(LegionStateResponse.safeParse(unknownSource).success).toBeFalse();
 });
 
 test("a capability row's status is one the report renders, and the report may be left out", () => {
@@ -2599,7 +2617,9 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   // shape, and the lowest plugin contract reports the claims of the snapshot the route projected
   // the body from, a pod at 201, which `state.json`'s own fixture does not hold. No band stands
   // between 199 and 202 but the repositories block's, so the narrowing changes this one block and
-  // nothing beside it.
+  // no other key. One value strip stands above 199 as well: `caches`, the source of the
+  // repository-cache-room row, arrived at contract 213, so that row is served here without its
+  // `source`, every other field of it and every other row as the state golden holds them.
   const { daemonApiVersion } = z
     .object({ daemonApiVersion: z.number() })
     .parse(fixture("version.json"));
@@ -2616,7 +2636,16 @@ test("a reader at contract 152 parses the repositories block served below 202", 
     lowestPluginContract: _lowest,
     ...rest
   } = fixtureBody("state.json");
-  expect(narrowedRest).toEqual(rest);
+  const capabilities = z.array(z.record(z.string(), z.unknown())).parse(rest.capabilities);
+  expect(capabilities.some((row) => row.source === "caches")).toBeTrue();
+  const withoutCachesSource = capabilities.map((row) => {
+    if (row.source !== "caches") {
+      return row;
+    }
+    const { source: _source, ...kept } = row;
+    return kept;
+  });
+  expect(narrowedRest).toEqual({ ...rest, capabilities: withoutCachesSource });
 
   // What serving the current block would do, and why it is not served: the reader of 152 refuses
   // it for the three keys it requires beside the `withoutWebhookApp` and `caches` the block keeps,
@@ -2950,12 +2979,12 @@ test("the state goldens carry the pause that stands and the last pause, and both
   }
 });
 
-// The work hold (contract 210). An issue the hold holds says so on its own view: `why.state` is
+// The work hold (contract 222). An issue the hold holds says so on its own view: `why.state` is
 // `held`, with the sentence that names the version that closed its tree's design gate. The word
 // joins the enum at this contract, and a reader before it refuses the whole state for it, so a
-// caller below 210 is served the state without that `why` (the daemon's `withoutUnadmittedWhy`)
+// caller below 222 is served the state without that `why` (the daemon's `withoutUnadmittedWhy`)
 // rather than the body that reader would refuse.
-test("an issue the work hold holds says why, in a word the reader before contract 210 refuses", () => {
+test("an issue the work hold holds says why, in a word the reader before contract 222 refuses", () => {
   const state = LegionStateResponse.parse(fixture("state-work-hold.json"));
   expect(state.issues["LEGION-214"]?.why).toEqual({
     state: "held",
@@ -2964,11 +2993,11 @@ test("an issue the work hold holds says why, in a word the reader before contrac
       "stands open again: version 4 of its spec document (artifact-208) closed the design gate.",
   });
 
-  const whyBefore210 = z.strictObject({
+  const whyBefore222 = z.strictObject({
     state: z.enum(["claim_stopped", "waiting", "blocked", "unlisted"]),
     reason: z.string().min(1),
   });
-  const refused = whyBefore210.safeParse(state.issues["LEGION-214"]?.why);
+  const refused = whyBefore222.safeParse(state.issues["LEGION-214"]?.why);
   expect(refused.success).toBeFalse();
   expect(refused.error?.issues[0]?.path).toEqual(["state"]);
 
