@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
-	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -94,7 +93,7 @@ func TestASweepRefusedBusyAtALaterDocumentIsLoggedAndTheNextAskRepairFinishesIt(
 	if err := f.holder.Commit(context.Background()); err != nil {
 		t.Fatalf("let go of the second document's lock: %v", err)
 	}
-	reloading := `msg="dispatch: closed a document room whose browser's update was stored on a history replaced under it" room=` + f.second
+	reloading := replacedHistoryRoomClosed + f.second
 	testwait.Eventually(t, "the second document's room to close for its reload", func() bool {
 		return strings.Contains(logs.String(), reloading) && !slices.Contains(f.documents.ResidentRooms(), f.second)
 	})
@@ -115,11 +114,7 @@ func TestASweepRefusedBusyAtALaterDocumentIsLoggedAndTheNextAskRepairFinishesIt(
 	if stored := storedUpdateCount(t, f.database, f.first); stored != f.firstUpdates {
 		t.Fatalf("the first document holds %d stored updates, want the %d it held before: the refused sweep committed", stored, f.firstUpdates)
 	}
-	repair := repairNow(t, f.repairFixture)
-	if repair.Swept != 1 || repair.Withdrawn != 0 || repair.Restored != 0 {
-		t.Fatalf("the next repair pass = %+v, want the first document's ask block swept", repair)
-	}
-	requireLiveText(t, f.handler, f.first, unindexedAskResolved)
+	f.requireRepairSweepsFirst(t)
 }
 
 // An issue's close whose later document's fork needs more of the pool than the grant its first
@@ -130,7 +125,7 @@ func TestASweepRefusedBusyAtALaterDocumentIsLoggedAndTheNextAskRepairFinishesIt(
 func TestAnIssueCloseRefusedBusyAtALaterDocumentAnswers503AndItsRetryLands(t *testing.T) {
 	f := newCloseAsksFixtureSettlingAfter(t, time.Hour)
 	documents := []string{f.spec, f.copy}
-	sort.Strings(documents)
+	slices.Sort(documents)
 	first, later := documents[0], documents[1]
 	if err := f.documents.Evict(context.Background(), later); err != nil {
 		t.Fatalf("close the later document's room: %v", err)
@@ -154,11 +149,7 @@ func TestAnIssueCloseRefusedBusyAtALaterDocumentAnswers503AndItsRetryLands(t *te
 	}
 	t.Logf("the close answered %s after it was sent", time.Since(started).Round(time.Millisecond))
 	grown()
-	if code := decodeBody[struct {
-		Code string `json:"code"`
-	}](t, refused).Code; refused.Code != http.StatusServiceUnavailable || code != codeDocServiceUnavailable {
-		t.Fatalf("the close answered status=%d body=%s, want 503 %s", refused.Code, refused.Body.String(), codeDocServiceUnavailable)
-	}
+	requireDocServiceUnavailable(t, "the close", refused)
 	for _, ask := range f.open() {
 		if got := readBlockAsk(t, f.handler, ask); got.State != "open" {
 			t.Fatalf("ask %s reads %s once the refused close answered, want it open", ask, got.State)

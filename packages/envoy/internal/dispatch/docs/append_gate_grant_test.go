@@ -12,6 +12,7 @@ import (
 	"github.com/reearth/ygo/crdt"
 	"github.com/reearth/ygo/persistence"
 
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
@@ -160,6 +161,18 @@ func deletedHistory(characters int) (rows [][]byte, run []byte) {
 	return rows, write(func(txn *crdt.Transaction) { typed.Insert(txn, 0, "x", nil) })
 }
 
+// storeRows stores rows as artifactID's whole history, one row at each version from 1, as written
+// straight into doc_updates and decoded by nothing on the way.
+func storeRows(t *testing.T, database *store.Store, artifactID string, rows [][]byte) {
+	t.Helper()
+	for version, row := range rows {
+		if _, err := database.Pool.Exec(context.Background(), `insert into doc_updates (artifact_id, version, update, content_changed) values ($1, $2, $3, false)`,
+			artifactID, version+1, row); err != nil {
+			t.Fatalf("store row %d: %v", version+1, err)
+		}
+	}
+}
+
 // The gate's check of a history replaced under a room folds that history (storedHistoryHolds,
 // fold), and the fold builds its own document row by row before it reads anything back. That
 // document is counted in the pod's load concurrency: with the pool free, the gate's grant holds
@@ -176,12 +189,9 @@ func TestTheGatesFoldOfAReplacedHistoryIsCountedOnItsRows(t *testing.T) {
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
 	rows, run := deletedHistory(deletedCharacters)
+	storeRows(t, database, artifactID, rows)
 	var bytes, structs int64
-	for version, row := range rows {
-		if _, err := database.Pool.Exec(ctx, `insert into doc_updates (artifact_id, version, update, content_changed) values ($1, $2, $3, false)`,
-			artifactID, version+1, row); err != nil {
-			t.Fatalf("store row %d: %v", version+1, err)
-		}
+	for _, row := range rows {
 		bytes += int64(len(row))
 		structs += int64(declaredStructs(row))
 	}

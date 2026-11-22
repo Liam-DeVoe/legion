@@ -331,7 +331,8 @@ func TestAShareOfTheRoomsUnstoredUpdatesCarriesNoParkedRow(t *testing.T) {
 		return strings.Count(currentLiveMarkdown(t, service, artifactID), "a") == typed
 	})
 
-	share, err := service.unstoredShare(context.Background(), artifactID, live)
+	parts := service.unstoredParts(artifactID, live)
+	share, err := unstoredShare(context.Background(), parts, mergeWeight(parts))
 	if err != nil {
 		t.Fatalf("share the room's unstored updates: %v", err)
 	}

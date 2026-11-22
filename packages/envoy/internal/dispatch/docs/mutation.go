@@ -2446,6 +2446,7 @@ func (s *Service) storedWithUpdates(ctx context.Context, artifactID string, unst
 	defer done()
 	var tree *pmdoc.Node
 	loadWeight := int64(-1)
+	merge := mergeWeight(unstored)
 	err := slot.redoWhole(ctx, func(take func(total int64) error) error {
 		loaded, err := s.persistence.LoadDocument(ctx, artifactID)
 		if err != nil {
@@ -2465,7 +2466,6 @@ func (s *Service) storedWithUpdates(ctx context.Context, artifactID string, unst
 			loadWeight = slot.bytes
 		}
 		if len(unstored) > 0 {
-			merge := mergeWeight(unstored)
 			if merge > 0 {
 				if err := take(min(loadWeight+merge, loadSlotBytes)); err != nil {
 					return err

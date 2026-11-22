@@ -123,9 +123,10 @@ func isLifecycleWrite(ctx context.Context) bool {
 //
 // It knows every document it writes before its first fork, so it weighs them all first and its
 // first fork takes their sum of the pod's load concurrency (Service.forksAhead): each document's
-// fork after the first then takes nothing more, where it would otherwise take what it weighs past
-// the first fork's grant only at once or be refused busy, the 503 a transaction holding a fork
-// meets in place of a wait for more (loadSlots).
+// fork after the first then takes nothing more - unless its document grew meanwhile or its stored
+// history folds into more than its rows weigh, as a split-dense history does - where it would
+// otherwise take what it weighs past the first fork's grant only at once or be refused busy, the
+// 503 a transaction holding a fork meets in place of a wait for more (loadSlots).
 func (s *Service) WriteIssueAskStates(ctx context.Context, issueKey string, asks []model.Ask, actor model.Actor, markUnindexed bool) ([]BlockRef, error) {
 	tx, joined := txFromContext(ctx)
 	if !joined {

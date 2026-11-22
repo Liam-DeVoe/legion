@@ -303,19 +303,31 @@ func (f *heldSecondDocument) requireGrantGivenBack(t *testing.T) {
 	}
 }
 
+// replacedHistoryRoomClosed is the start of the line docs' closeRoomOnReplacedHistory logs as it
+// closes a room whose browser's update was stored on a history replaced under it, for its
+// reload; the room's id follows it.
+const replacedHistoryRoomClosed = `msg="dispatch: closed a document room whose browser's update was stored on a history replaced under it" room=`
+
 // requireNextRepairSweeps gives the filled bytes back (release), waits for the second document's
 // room, which stored alice's keystroke on a history replaced under it, to close for its reload
-// (docs' closeRoomOnReplacedHistory, whose line logs reads), since a write meeting that close is
-// refused for a later pass to retry, and runs the ask repair's next pass, which sweeps the closed
-// issue, its first document owing a settlement. It fails the test unless that pass marks the first
-// document's ask block resolved: the closed state the sweep writes.
+// (replacedHistoryRoomClosed), since a write meeting that close is refused for a later pass to
+// retry, and fails the test unless the ask repair's next pass then sweeps the closed issue
+// (requireRepairSweepsFirst).
 func (f *heldSecondDocument) requireNextRepairSweeps(t *testing.T, logs *storetest.LockedLog, release func()) {
 	t.Helper()
 	release()
-	closed := `msg="dispatch: closed a document room whose browser's update was stored on a history replaced under it" room=` + f.second
+	closed := replacedHistoryRoomClosed + f.second
 	testwait.Eventually(t, "the second document's room to close for its reload", func() bool {
 		return strings.Contains(logs.String(), closed)
 	})
+	f.requireRepairSweepsFirst(t)
+}
+
+// requireRepairSweepsFirst runs the ask repair's next pass, which sweeps the closed issue, its
+// first document owing a settlement. It fails the test unless that pass marks the first
+// document's ask block resolved: the closed state the sweep writes.
+func (f *heldSecondDocument) requireRepairSweepsFirst(t *testing.T) {
+	t.Helper()
 	repair := repairNow(t, f.repairFixture)
 	if repair.Swept != 1 || repair.Withdrawn != 0 || repair.Restored != 0 {
 		t.Fatalf("the next repair pass = %+v, want the first document's ask block swept", repair)

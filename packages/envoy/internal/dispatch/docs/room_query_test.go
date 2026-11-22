@@ -214,6 +214,76 @@ func TestAShareTooLargeForOneQueryAnswersTooLarge(t *testing.T) {
 	}
 }
 
+// A share whose merge waits for its grant of the pod's load concurrency waits on a goroutine of
+// its own, as a flush waits for its room's appends, so the query lane goes on to the queries
+// behind it: here task B's room holds a light update and a heavy run of keystrokes that the store
+// does not, and the pool is full, so task B's merge of them waits for its grant, for up to task
+// B's own wait, which this test makes four times task A's. Task A's holds query, sent while the
+// share waits, is answered within task A's wait all the same. Before, the share waited on the
+// lane itself, and every query behind it, for this room or any other, waited with it past its
+// asker's window.
+func TestAHoldsQueryBehindAShareWaitingForItsMergesGrantIsAnsweredWithinItsWait(t *testing.T) {
+	const window = 5 * time.Second
+	pair := newSeededProcessPair(t, lostEditDocument)
+	pair.taskA.roomQueries.wait, pair.taskB.roomQueries.wait = window, 4*window
+	pair.runRoomSync(t)
+	if err := pair.taskB.warmLiveDocument(context.Background(), pair.artifactID); err != nil {
+		t.Fatalf("load task B's room: %v", err)
+	}
+	pair.heldEditOnB(t, 1, model.Actor{Kind: "user", ID: "bob"}, appendBlocks(t, "Bob's paragraph.\n"))
+	live := pair.taskB.srv.GetDoc(pair.artifactID)
+	if live == nil {
+		t.Fatal("task B's room is not resident")
+	}
+	// Each keystroke of the run is typed one after the paragraph's first character, before the
+	// one typed just ahead of it, so none merges with its neighbour and the update the room lists
+	// holds every one as a struct: a heavy one (heavyUpdateWeight).
+	writer := copyOf(t, crdt.EncodeStateAsUpdateV1(live, nil))
+	before := writer.StateVector()
+	text := paragraphTexts(writer)[0]
+	writer.Transact(func(txn *crdt.Transaction) {
+		for range unslottedApplyStructs + 100 {
+			text.Insert(txn, 1, "x", nil)
+		}
+	})
+	if err := crdt.ApplyUpdateV1(live, crdt.EncodeStateAsUpdateV1(writer, before), "peer"); err != nil {
+		t.Fatalf("commit the run to task B's room: %v", err)
+	}
+	parts := pair.taskB.unstoredParts(pair.artifactID, live)
+	if weight := mergeWeight(parts); len(parts) < 2 || weight == 0 {
+		t.Fatalf("task B's room lists %d updates not yet stored whose merge weighs %d bytes, want a merge that takes a grant, or nothing here is tested", len(parts), weight)
+	}
+	pool, waits := poolWaits(t)
+	filler := fillPoolBut(t, pool, 0)
+	shared := make(chan error, 1)
+	go func() {
+		_, _, err := pair.taskA.roomQueries.ask(context.Background(), pair.database.Pool, pair.artifactID, roomQueryShare)
+		shared <- err
+	}()
+	select {
+	case <-waits:
+	case <-time.After(window):
+		t.Fatalf("task B's merge of its room's updates did not come to wait for the full pool within %s", window)
+	}
+	started := time.Now()
+	answers, asked, err := pair.taskA.roomQueries.ask(context.Background(), pair.database.Pool, pair.artifactID, roomQueryHolds)
+	waited := time.Since(started)
+	if err != nil || !asked {
+		t.Fatalf("task A's holds query = asked %t, %v; want task B asked", asked, err)
+	}
+	if len(answers) != 1 || answers[0].process != pair.taskB.ProcessID() || !answers[0].holds {
+		t.Fatalf("task A's holds query, sent while task B's share waited for its merge's grant, was answered %+v within its %s wait (%v): want task B's answer that it holds the room, which task B's query lane held behind the share",
+			answers, window, waited.Round(time.Millisecond))
+	}
+	filler.release()
+	if err := <-shared; err != nil {
+		t.Fatalf("task A's share: %v", err)
+	}
+	pair.gateB.release()
+	waitForLandedAppends(t, pair.taskB, pair.artifactID)
+	t.Logf("task A's holds query was answered %v after it was sent, while task B's share waited for its merge's grant", waited.Round(time.Millisecond))
+}
+
 // A member that never answers - an older build, or a process that has just died - costs a query
 // the wait and no more, and a WARN naming it. The silent member here holds the listener
 // connection's name, which is all membership reads, and listens to nothing.

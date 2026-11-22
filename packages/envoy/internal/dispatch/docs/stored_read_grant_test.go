@@ -348,7 +348,7 @@ func TestAStoredReadRaisesItsGrantForTheMergeOfARoomsUpdatesBeforeMergingThem(t 
 }
 
 // A share another process asks for (unstoredShare) merges the updates the room holds and the store
-// may not on a grant of the pod's load concurrency of its own, since the query lane answering it
+// may not on a grant of the pod's load concurrency of its own, since the goroutine answering it
 // carries none: what the heavy ones' decodes cost, summed (mergeWeight), taken before the merge
 // and given back once it is made. Where the pool does not give it before the share's context
 // ends, the share answers that context's error and merges nothing. Before, the merge took nothing,
@@ -409,7 +409,7 @@ func TestAShareAnsweredToAnotherProcessMergesOnAGrantOfItsOwn(t *testing.T) {
 	slots := useLoadSlots(t, newLoadSlots(1))
 	var taken slotsHeld
 	slots.taken = taken.record
-	share, err := service.unstoredShare(ctx, artifactID, live)
+	share, err := unstoredShare(ctx, parts, weight)
 	if err != nil {
 		t.Fatalf("share the room's updates: %v", err)
 	}
@@ -426,7 +426,7 @@ func TestAShareAnsweredToAnotherProcessMergesOnAGrantOfItsOwn(t *testing.T) {
 	holder := fillPoolBut(t, slots, 0)
 	bounded, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
 	defer cancel()
-	if _, err := service.unstoredShare(bounded, artifactID, live); !errors.Is(err, context.DeadlineExceeded) {
+	if _, err := unstoredShare(bounded, parts, weight); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("the share with the pool full answered %v, want its context's end", err)
 	}
 	if got := taken.all(); len(got) != 2 {

@@ -225,3 +225,16 @@ func storedCopyWeight(states ...[]byte) int64 {
 	}
 	return copyWeight(bytes, structs)
 }
+
+// weighUpdates is storedCopyWeight of what updates replays, read one update at a time: their
+// bytes and the structs their headers declare, summed, decoding nothing and holding no update past
+// its own weighing. The error is the source's.
+func weighUpdates(updates updateSource) (int64, error) {
+	var bytes, structs int64
+	err := updates(func(update []byte) error {
+		bytes += int64(len(update))
+		structs += int64(declaredStructs(update))
+		return nil
+	})
+	return copyWeight(bytes, structs), err
+}

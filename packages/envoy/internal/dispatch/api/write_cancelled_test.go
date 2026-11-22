@@ -123,6 +123,19 @@ func requireEditedOnce(t *testing.T, handler http.Handler, artifactID string) {
 	}
 }
 
+// requireRetryEditsOnce repeats the refused call, as the busy refusal's contract says its caller
+// may, and fails unless the retry is answered 200 and the edit then stands applied exactly once
+// (requireEditedOnce).
+func requireRetryEditsOnce(t *testing.T, handler http.Handler, artifactID string) {
+	t.Helper()
+	if retried := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+artifactID+"/edits", map[string]any{
+		"ops": []map[string]string{{"op": "replace", "find": "before", "with": "after"}},
+	}, "alice"); retried.Code != http.StatusOK {
+		t.Fatalf("the retry answered status=%d body=%s, want %d", retried.Code, retried.Body.String(), http.StatusOK)
+	}
+	requireEditedOnce(t, handler, artifactID)
+}
+
 // A write whose request ends while it waits for one of the shared pool's connections is answered
 // 503 DOC_SERVICE_UNAVAILABLE - the busy refusal whose contract is that the caller repeats the
 // same call - and not the 500 that tells a caller the server faulted. The request's own end is
@@ -176,12 +189,7 @@ func TestAWriteWhoseRequestEndsWhileItWaitsForAConnectionIsDocServiceUnavailable
 	assertUnchanged(t, "a write whose request ended while it waited for a connection", before, databaseFingerprint(t, database))
 
 	// The caller repeats the call, as the refusal's contract says it may, and the edit applies.
-	if retried := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+artifactID+"/edits", map[string]any{
-		"ops": []map[string]string{{"op": "replace", "find": "before", "with": "after"}},
-	}, "alice"); retried.Code != http.StatusOK {
-		t.Fatalf("the retry answered status=%d body=%s, want %d", retried.Code, retried.Body.String(), http.StatusOK)
-	}
-	requireEditedOnce(t, handler, artifactID)
+	requireRetryEditsOnce(t, handler, artifactID)
 }
 
 // The same refusal for a write whose request ends inside its own transaction, waiting for the
@@ -216,12 +224,7 @@ func TestAWriteWhoseRequestEndsWhileItWaitsForTheOwnersRowIsDocServiceUnavailabl
 	}
 	assertUnchanged(t, "a write whose request ended while it waited for the owner's row", before, databaseFingerprint(t, database))
 
-	if retried := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+artifactID+"/edits", map[string]any{
-		"ops": []map[string]string{{"op": "replace", "find": "before", "with": "after"}},
-	}, "alice"); retried.Code != http.StatusOK {
-		t.Fatalf("the retry answered status=%d body=%s, want %d", retried.Code, retried.Body.String(), http.StatusOK)
-	}
-	requireEditedOnce(t, handler, artifactID)
+	requireRetryEditsOnce(t, handler, artifactID)
 }
 
 // The same refusal for a write the server's own bound ends while its request is still live: Join
@@ -263,10 +266,5 @@ func TestAWriteTheWholeWriteBoundEndsWhileItsRequestIsLiveIsDocServiceUnavailabl
 	requireDocServiceUnavailable(t, "a write whose request had spent the whole-write bound", response)
 	assertUnchanged(t, "a write whose request had spent the whole-write bound", before, databaseFingerprint(t, database))
 
-	if retried := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+artifactID+"/edits", map[string]any{
-		"ops": []map[string]string{{"op": "replace", "find": "before", "with": "after"}},
-	}, "alice"); retried.Code != http.StatusOK {
-		t.Fatalf("the retry answered status=%d body=%s, want %d", retried.Code, retried.Body.String(), http.StatusOK)
-	}
-	requireEditedOnce(t, handler, artifactID)
+	requireRetryEditsOnce(t, handler, artifactID)
 }

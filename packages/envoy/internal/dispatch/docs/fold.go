@@ -258,9 +258,9 @@ const bufferedFolds = store.RoomsPoolSize
 // made while its first document's fork stands (coldFork), or a read beside that fork - takes a
 // slot only where one is free at once and is refused busy otherwise (transactionHolds,
 // errFoldSlotsBusy), the 503 its caller retries, as it takes more of its grant only at once
-// (loadSlot.take). Before, it waited here holding its grant, and where every slot was held by a
-// fold whose first take waited for the bytes it held, the two waited on each other until the
-// transaction's bound.
+// (loadSlot.take): a wait here holding its grant, with every slot held by a fold whose first take
+// waits for the bytes it holds, would have the two wait on each other until the transaction's
+// bound.
 //
 // A log of more than one update is folded under one grant of the pod's load concurrency
 // (loadSlots), the grant ctx carries - a room load's, whose fold is its first decode, or a

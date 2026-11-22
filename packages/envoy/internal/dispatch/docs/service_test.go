@@ -4510,7 +4510,7 @@ func TestBackfillDoesNotBypassClosedIssueForConcurrentApplyOps(t *testing.T) {
 			close(entered)
 			<-release
 		}
-		return service.allowInject(ctx, info)
+		return service.allowApply(ctx, info)
 	}
 	type result struct {
 		err error

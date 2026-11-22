@@ -462,16 +462,15 @@ func coldForkNear(structs uint64, fork *crdt.Doc) string {
 // errWriteBusy, the 503 its caller retries. None of the ways round a wait while holding fits it:
 // the copy's weight is the room's as the count runs, so no take before the fork could cover it,
 // and the fork the grant covers is the operation's work, which the operation cannot drop and
-// build again within this check. Before, the difference was waited for without a deadline while
-// the write held its fork, in the pool's queue behind whoever was waiting there.
+// build again within this check.
 func (s *Service) leavesRoomPastDecodeCap(ctx context.Context, write *liveWrite, fork *crdt.Doc, updates [][]byte) (bool, error) {
 	live := write.forkedFrom.Value()
 	if live == nil {
 		return structCeiling(fork) > maxUpdateItems, nil
 	}
-	transaction := append(append(make([][]byte, 0, len(write.updates)+len(updates)), write.updates...), updates...)
 	unapplied := false
 	counted := serverWrite{adds: write.updatesAdd(fork), bounded: true, apply: func(copied *crdt.Doc) {
+		transaction := append(append(make([][]byte, 0, len(write.updates)+len(updates)), write.updates...), updates...)
 		if err := applyTransactionWrites(copied, transaction); err != nil {
 			// Each update applied to the fork, a decode of the same room; one that does not
 			// apply to the copy leaves a count that cannot be trusted to hold all of it.

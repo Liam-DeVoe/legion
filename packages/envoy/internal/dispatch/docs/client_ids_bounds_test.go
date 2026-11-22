@@ -40,6 +40,17 @@ func unlandedMintsOf(t *testing.T, service *Service, artifactID, login string) i
 	return rows
 }
 
+// clientIDRowsOf is how many rows artifactID stores in document_client_ids, whoever holds them.
+func clientIDRowsOf(t *testing.T, service *Service, artifactID string) int {
+	t.Helper()
+	var rows int
+	if err := service.store.Pool.QueryRow(context.Background(),
+		`select count(*) from document_client_ids where artifact_id = $1`, artifactID).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	return rows
+}
+
 // openAndLeave opens a document socket of login's at url, reads its first frame and closes it, as
 // a page does that the person leaves at once. given is the id the frame gave the page, and busy
 // whether the room closed the socket 4503 DOC_BUSY in its place.
@@ -149,15 +160,6 @@ func TestAnUpdateWhoseMintFindsEveryUnlandedRowLiveIsRefusedBusyAndLandsOnceOneL
 	t.Cleanup(func() { presenceIntervalForTest.Store(0) })
 	service, artifactID, serverURL := clientIDRoom(t)
 	room := func() *crdt.Doc { return service.srv.GetDoc(artifactID) }
-	countRows := func() int {
-		t.Helper()
-		var n int
-		if err := service.store.Pool.QueryRow(context.Background(),
-			`select count(*) from document_client_ids where artifact_id = $1`, artifactID).Scan(&n); err != nil {
-			t.Fatal(err)
-		}
-		return n
-	}
 
 	first := openPage(t, serverURL, artifactID, "alice")
 	awaitAnswer(t, first, "alice's first tab")
@@ -170,22 +172,13 @@ func TestAnUpdateWhoseMintFindsEveryUnlandedRowLiveIsRefusedBusyAndLandsOnceOneL
 	awaitAnswer(t, replaying, "alice's next tab")
 	other := openPage(t, serverURL, artifactID, "alice")
 	awaitAnswer(t, other, "alice's other tab")
-	url := socketURL(serverURL, artifactID) + "&" + contracts.DocumentClientIdParameter + "="
-	deadline := time.Now().Add(2 * time.Minute)
-	for storedClientIDs(t, service, artifactID, a) != 0 {
-		if time.Now().After(deadline) {
-			t.Fatalf("alice's page loads never gave back the row of %d", a)
-		}
-		if _, busy := openAndLeave(t, url, "alice"); busy {
-			time.Sleep(100 * time.Millisecond)
-		}
-	}
+	rv9cFillCapUntilGone(t, service, artifactID, serverURL, a)
 	// With the lapse at its own 15 minutes again, every row she holds is live.
 	presenceIntervalForTest.Store(0)
 	if rows := unlandedMintsOf(t, service, artifactID, "alice"); rows != maxUnlandedMintsADocument {
 		t.Fatalf("alice holds %d unlanded rows in the document, want %d", rows, maxUnlandedMintsADocument)
 	}
-	rows := countRows()
+	rows := clientIDRowsOf(t, service, artifactID)
 
 	if err := replaying.Write(ygsync.EncodeUpdate(saved)); err != nil {
 		t.Fatal(err)
@@ -211,7 +204,7 @@ func TestAnUpdateWhoseMintFindsEveryUnlandedRowLiveIsRefusedBusyAndLandsOnceOneL
 	if stored := storedClientIDs(t, service, artifactID, a); stored != 0 {
 		t.Fatalf("the refused update stored %d rows for id %d", stored, a)
 	}
-	if after := countRows(); after != rows {
+	if after := clientIDRowsOf(t, service, artifactID); after != rows {
 		t.Fatalf("the refused update took the document's rows from %d to %d", rows, after)
 	}
 
@@ -247,16 +240,7 @@ func TestAReadOnlyAdmissionStoresNoRowAndItsPageKeepsItsIDOnceWritable(t *testin
 	awaitRendering(t, room, "# Title\n\nwAlice's paragraph.\n", "the room")
 	writer.Close()
 	writeIssueClosed(t, service.store, "DOC-1", true)
-	countRows := func() int {
-		t.Helper()
-		var n int
-		if err := service.store.Pool.QueryRow(context.Background(),
-			`select count(*) from document_client_ids where artifact_id = $1`, artifactID).Scan(&n); err != nil {
-			t.Fatal(err)
-		}
-		return n
-	}
-	rows := countRows()
+	rows := clientIDRowsOf(t, service, artifactID)
 
 	reader := openPage(t, serverURL, artifactID, "bob")
 	awaitAnswer(t, reader, "bob's read-only page")
@@ -276,7 +260,7 @@ func TestAReadOnlyAdmissionStoresNoRowAndItsPageKeepsItsIDOnceWritable(t *testin
 	requireGiven(t, presenting.Given)
 	kept := reopenPage(t, serverURL, artifactID, "alice", writer.Doc)
 	awaitAnswer(t, kept, "alice's page reopened read-only")
-	if after := countRows(); after != rows {
+	if after := clientIDRowsOf(t, service, artifactID); after != rows {
 		t.Fatalf("three read-only admissions took the document's rows from %d to %d", rows, after)
 	}
 	for _, page := range []*docstest.Peer{reader, presenting, kept} {

@@ -172,10 +172,11 @@ func (p *PgVersioned) Load(ctx context.Context, room string) (persistence.LoadRe
 // on a grant that already holds bytes, what one slot is past them only where the pool gives it at
 // once (loadSlot.take) - and reads the stored log again in a transaction of its own, whose fold
 // then takes nothing more. The rows' bytes past foldBufferBytes already weigh within 5% of that
-// slot (copyWeight), which is what the streamed fold took before. Before, it took that inside the
-// transaction, waiting for the pool holding its rooms connection, so a holder of the pool that
-// needed a rooms connection - a transaction's cold read of a later document - waited for it while
-// the fold waited for the bytes that holder held.
+// slot (copyWeight), so the whole slot costs the read little past its rows' own weight. A take
+// inside the transaction would wait for the pool holding its rooms connection, so a holder of the
+// pool that needs a rooms connection - a transaction's cold read of a later document - would wait
+// for it while the fold waited for the bytes that holder holds. A transaction that weighs its
+// documents before its first fork weighs such a log at that whole slot (forkWeight).
 func (p *PgVersioned) loadStored(ctx context.Context, room string, use func(ctx context.Context, head persistence.Version, updates updateSource) error) (DocumentStamp, error) {
 	if err := ctx.Err(); err != nil {
 		return DocumentStamp{}, err

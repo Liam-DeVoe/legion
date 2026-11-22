@@ -108,7 +108,8 @@ func (s *Service) readPoint(room string, live *crdt.Doc) ([]byte, roomPoint, rep
 // fork is then cloned from it like any other. A room whose load listed no replica has no
 // document to clone, nor has a copy the replica could not start from: that copy is decoded here,
 // holding no lock and under a grant of the copy-heap bound weighed by that copy (buildForkHeld),
-// as every other full-state decode is. Either way the caller is handed the document that decode
+// as every other full-state decode is, which the write's grant takes past its cover only at once,
+// refusing the write busy otherwise. Either way the caller is handed the document that decode
 // builds.
 //
 // The clone takes no grant of its own: it decodes nothing, so it holds none of the heap a decode
