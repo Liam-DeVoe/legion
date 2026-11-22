@@ -106,8 +106,8 @@ jobs:
         run: bun run build:dispatch
         working-directory: packages/contracts
       - name: Check the quarantine against 14 days of flaky rows
-        # 104 x 1.15 = 120 s of work, the longest REST reader's on 2026-11-21 and 22 (job
-        # 137021330193 of run 44961580846), and 180 s for GitHub's rate limit -> 5 min.
+        # 104 x 1.15 = 120 s of work, the longest check of 2026-11-21 and 22 (job 137021330193
+        # of run 44961580846), and 180 s for GitHub's rate limit -> 5 min.
         timeout-minutes: 5
         run: bun e2e/tools/quarantine-check.ts
         working-directory: packages/dispatch

@@ -7,91 +7,9 @@
         "event": "merge_group",
         "created_at": "2026-11-21T17:22:25Z",
         "html_url": "https://github.com/cybermonklabs/legion/actions/runs/44929688393",
-        "check_suite_id": 121601598978,
         "check_suite_node_id": "CS_kwDORFy7ds8AAAAcUAUmAg"
       },
-      "rest": {
-        "checkRuns": [{ "id": 136927666065, "output": { "annotations_count": 20 } }],
-        "annotations": {
-          "136927666065": [
-            {
-              "message": "envoy-go-docs-finalizers ended in_progress, but changes selected it (needs.changes.outputs.envoy_go_race_docs is true); a selected job must succeed, and a in_progress is no conclusion at all, so this verdict was reached before the job ended",
-              "title": ""
-            },
-            {
-              "message": "envoy-go-race-docs ended in_progress, but changes selected it (needs.changes.outputs.envoy_go_race_docs is true); a selected job must succeed, and a in_progress is no conclusion at all, so this verdict was reached before the job ended",
-              "title": ""
-            },
-            {
-              "message": "envoy-go-race-api ended in_progress, but changes selected it (needs.changes.outputs.envoy_go_race_api is true); a selected job must succeed, and a in_progress is no conclusion at all, so this verdict was reached before the job ended",
-              "title": ""
-            },
-            {
-              "message": "envoy-go-race ended in_progress, but changes selected it (needs.changes.outputs.envoy_go_race is true); a selected job must succeed, and a in_progress is no conclusion at all, so this verdict was reached before the job ended",
-              "title": ""
-            },
-            {
-              "message": "envoy-go-claim-model ended in_progress, but changes selected it (needs.changes.outputs.envoy_go_claim_model is true); a selected job must succeed, and a in_progress is no conclusion at all, so this verdict was reached before the job ended",
-              "title": ""
-            },
-            {
-              "message": "envoy-go-checks ended in_progress, but changes selected it (needs.changes.outputs.envoy_go_checks is true); a selected job must succeed, and a in_progress is no conclusion at all, so this verdict was reached before the job ended",
-              "title": ""
-            },
-            {
-              "message": "envoy-go ended in_progress, but changes selected it (needs.changes.outputs.envoy_go is true); a selected job must succeed, and a in_progress is no conclusion at all, so this verdict was reached before the job ended",
-              "title": ""
-            },
-            {
-              "message": "dispatch-browser ended failure, but changes selected it (needs.changes.outputs.dispatch_browser is true); a selected job must succeed, and this one failed: its log says what broke",
-              "title": ""
-            },
-            {
-              "message": "pi-legion ended failure, but changes selected it (needs.changes.outputs.pi_legion is true); a selected job must succeed, and this one failed: its log says what broke",
-              "title": ""
-            },
-            {
-              "message": "daemon-go ended in_progress, but changes selected it (needs.changes.outputs.daemon_go_tests is true); a selected job must succeed, and a in_progress is no conclusion at all, so this verdict was reached before the job ended",
-              "title": ""
-            },
-            { "message": "Process completed with exit code 1.", "title": "" },
-            {
-              "message": "the shard job's result is failure, which is neither success nor skipped",
-              "title": ""
-            },
-            {
-              "message": "real-stack: 1113 rows, median 2506 ms, 95th percentile 9162 ms",
-              "title": "dispatch-browser row durations"
-            },
-            {
-              "message": "stubbed: 136 rows, median 2293 ms, 95th percentile 5388 ms",
-              "title": "dispatch-browser row durations"
-            },
-            {
-              "message": "job 136924499960 (dispatch-browser / shard (2)) ended failure and uploaded no blob report, so the merged report holds none of its rows",
-              "title": "dispatch-browser leg exits"
-            },
-            {
-              "message": "board.e2e.ts:1184 [chromium] picker keeps a pick on screen: a card dragged to another priority lane while its pick is out stays in that lane",
-              "title": "dispatch-browser flaky row"
-            },
-            {
-              "message": "1 flaky rows of 1251, 0.08 per cent",
-              "title": "dispatch-browser flake rate"
-            },
-            { "message": "Process completed with exit code 1.", "title": "" },
-            {
-              "message": "no blob report arrived from: shard-2; the merged report is short of those legs' rows",
-              "title": ""
-            },
-            {
-              "message": "the merged report holds 1251 rows, against 1251 printed by the legs (alone-chromium-alone 22, alone-firefox-alone 13, alone-webkit-alone 16, shard-1 400, shard-2 0, shard-3 400, shard-4 400)",
-              "title": "dispatch-browser rows"
-            }
-          ]
-        }
-      },
-      "graphql": [
+      "checkRuns": [
         {
           "id": "CR_kwDORFy7ds8AAAAf4YZfkQ",
           "annotations": [
@@ -180,45 +98,9 @@
         "event": "merge_group",
         "created_at": "2026-11-16T05:39:23Z",
         "html_url": "https://github.com/cybermonklabs/legion/actions/runs/43811655596",
-        "check_suite_id": 118605613961,
         "check_suite_node_id": "CS_kwDORFy7ds8AAAAbnXILiQ"
       },
-      "rest": {
-        "checkRuns": [{ "id": 133118294797, "output": { "annotations_count": 7 } }],
-        "annotations": {
-          "133118294797": [
-            {
-              "message": "real-stack: 1329 rows, median 2612 ms, 95th percentile 7443 ms",
-              "title": "dispatch-browser row durations"
-            },
-            {
-              "message": "stubbed: 135 rows, median 1668 ms, 95th percentile 4118 ms",
-              "title": "dispatch-browser row durations"
-            },
-            {
-              "message": "every leg of this workflow concluded success",
-              "title": "dispatch-browser leg exits"
-            },
-            {
-              "message": "agent-rail.e2e.ts:184 [iphone] the rail row, the Agents row and the live view each unpin @phone",
-              "title": "dispatch-browser flaky row"
-            },
-            {
-              "message": "agent-rail.e2e.ts:152 [iphone] a pin from the Agents page and a pin from a live view are both under the heading @phone",
-              "title": "dispatch-browser flaky row"
-            },
-            {
-              "message": "2 flaky rows of 1467, 0.14 per cent",
-              "title": "dispatch-browser flake rate"
-            },
-            {
-              "message": "the merged report holds 1467 rows, against 1467 printed by the legs (alone-chromium-alone 22, alone-firefox-alone 13, alone-webkit-alone 16, shard-1 354, shard-2 354, shard-3 354, shard-4 354)",
-              "title": "dispatch-browser rows"
-            }
-          ]
-        }
-      },
-      "graphql": [
+      "checkRuns": [
         {
           "id": "CR_kwDORFy7ds8AAAAe_nf7DQ",
           "annotations": [
@@ -261,86 +143,9 @@
         "event": "merge_group",
         "created_at": "2026-11-15T10:33:40Z",
         "html_url": "https://github.com/cybermonklabs/legion/actions/runs/43704669128",
-        "check_suite_id": 118327049325,
         "check_suite_node_id": "CS_kwDORFy7ds8AAAAbjNd8bQ"
       },
-      "rest": {
-        "checkRuns": [{ "id": 132785907092, "output": { "annotations_count": 18 } }],
-        "annotations": {
-          "132785907092": [
-            {
-              "message": "envoy-go-docs-finalizers ended in_progress, but changes selected it (needs.changes.outputs.envoy_go_race_docs is true); a selected job must succeed, and a in_progress is no conclusion at all, so this verdict was reached before the job ended",
-              "title": ""
-            },
-            {
-              "message": "envoy-go-race-docs ended in_progress, but changes selected it (needs.changes.outputs.envoy_go_race_docs is true); a selected job must succeed, and a in_progress is no conclusion at all, so this verdict was reached before the job ended",
-              "title": ""
-            },
-            {
-              "message": "envoy-go-race-api ended in_progress, but changes selected it (needs.changes.outputs.envoy_go_race_api is true); a selected job must succeed, and a in_progress is no conclusion at all, so this verdict was reached before the job ended",
-              "title": ""
-            },
-            {
-              "message": "envoy-go-race ended in_progress, but changes selected it (needs.changes.outputs.envoy_go_race is true); a selected job must succeed, and a in_progress is no conclusion at all, so this verdict was reached before the job ended",
-              "title": ""
-            },
-            {
-              "message": "envoy-go-checks ended in_progress, but changes selected it (needs.changes.outputs.envoy_go_checks is true); a selected job must succeed, and a in_progress is no conclusion at all, so this verdict was reached before the job ended",
-              "title": ""
-            },
-            {
-              "message": "envoy-go ended in_progress, but changes selected it (needs.changes.outputs.envoy_go is true); a selected job must succeed, and a in_progress is no conclusion at all, so this verdict was reached before the job ended",
-              "title": ""
-            },
-            {
-              "message": "dispatch-browser ended failure, but changes selected it (needs.changes.outputs.dispatch_browser is true); a selected job must succeed, and this one failed: its log says what broke",
-              "title": ""
-            },
-            {
-              "message": "pi-legion ended in_progress, but changes selected it (needs.changes.outputs.pi_legion is true); a selected job must succeed, and a in_progress is no conclusion at all, so this verdict was reached before the job ended",
-              "title": ""
-            },
-            {
-              "message": "test ended in_progress, but changes selected it (needs.changes.outputs.test is true); a selected job must succeed, and a in_progress is no conclusion at all, so this verdict was reached before the job ended",
-              "title": ""
-            },
-            {
-              "message": "lint ended in_progress; lint runs on every change, so ci-ok passes only when it succeeded",
-              "title": ""
-            },
-            { "message": "Process completed with exit code 1.", "title": "" },
-            {
-              "message": "the visual job's result is failure, which is neither success nor skipped",
-              "title": ""
-            },
-            {
-              "message": "real-stack: 1310 rows, median 2714 ms, 95th percentile 8075 ms",
-              "title": "dispatch-browser row durations"
-            },
-            {
-              "message": "stubbed: 135 rows, median 2245 ms, 95th percentile 5581 ms",
-              "title": "dispatch-browser row durations"
-            },
-            {
-              "message": "job 132783137284 (dispatch-browser / visual) ended failure; it is no shard, so the merged report holds no row of it",
-              "title": "dispatch-browser leg exits"
-            },
-            {
-              "message": "agent-live-views.e2e.ts:251 [iphone] the rail reads live, live 30s and asleep for the views the person has open @phone",
-              "title": "dispatch-browser flaky row"
-            },
-            {
-              "message": "1 flaky rows of 1448, 0.07 per cent",
-              "title": "dispatch-browser flake rate"
-            },
-            {
-              "message": "the merged report holds 1448 rows, against 1448 printed by the legs (alone-chromium-alone 22, alone-firefox-alone 13, alone-webkit-alone 16, shard-1 350, shard-2 349, shard-3 349, shard-4 349)",
-              "title": "dispatch-browser rows"
-            }
-          ]
-        }
-      },
-      "graphql": [
+      "checkRuns": [
         {
           "id": "CR_kwDORFy7ds8AAAAe6qgllA",
           "annotations": [
@@ -424,86 +229,9 @@
         "event": "merge_group",
         "created_at": "2026-11-19T04:08:54Z",
         "html_url": "https://github.com/cybermonklabs/legion/actions/runs/44456291758",
-        "check_suite_id": 120339742169,
         "check_suite_node_id": "CS_kwDORFy7ds8AAAAcBM692Q"
       },
-      "rest": {
-        "checkRuns": [{ "id": 135336874302, "output": { "annotations_count": 18 } }],
-        "annotations": {
-          "135336874302": [
-            {
-              "message": "dispatch-multiprocess ended in_progress, but changes selected it (needs.changes.outputs.dispatch_multiprocess is true); a selected job must succeed, and a in_progress is no conclusion at all, so this verdict was reached before the job ended",
-              "title": ""
-            },
-            {
-              "message": "dispatch-memory ended in_progress, but changes selected it (needs.changes.outputs.dispatch_memory is true); a selected job must succeed, and a in_progress is no conclusion at all, so this verdict was reached before the job ended",
-              "title": ""
-            },
-            {
-              "message": "envoy-go-docs-finalizers ended in_progress, but changes selected it (needs.changes.outputs.envoy_go_race_docs is true); a selected job must succeed, and a in_progress is no conclusion at all, so this verdict was reached before the job ended",
-              "title": ""
-            },
-            {
-              "message": "envoy-go-race-docs ended in_progress, but changes selected it (needs.changes.outputs.envoy_go_race_docs is true); a selected job must succeed, and a in_progress is no conclusion at all, so this verdict was reached before the job ended",
-              "title": ""
-            },
-            {
-              "message": "envoy-go-race-api ended in_progress, but changes selected it (needs.changes.outputs.envoy_go_race_api is true); a selected job must succeed, and a in_progress is no conclusion at all, so this verdict was reached before the job ended",
-              "title": ""
-            },
-            {
-              "message": "envoy-go-race ended in_progress, but changes selected it (needs.changes.outputs.envoy_go_race is true); a selected job must succeed, and a in_progress is no conclusion at all, so this verdict was reached before the job ended",
-              "title": ""
-            },
-            {
-              "message": "envoy-go-checks ended in_progress, but changes selected it (needs.changes.outputs.envoy_go_checks is true); a selected job must succeed, and a in_progress is no conclusion at all, so this verdict was reached before the job ended",
-              "title": ""
-            },
-            {
-              "message": "envoy-go ended in_progress, but changes selected it (needs.changes.outputs.envoy_go is true); a selected job must succeed, and a in_progress is no conclusion at all, so this verdict was reached before the job ended",
-              "title": ""
-            },
-            {
-              "message": "dispatch-browser ended failure, but changes selected it (needs.changes.outputs.dispatch_browser is true); a selected job must succeed, and this one failed: its log says what broke",
-              "title": ""
-            },
-            {
-              "message": "daemon-go ended in_progress, but changes selected it (needs.changes.outputs.daemon_go_tests is true); a selected job must succeed, and a in_progress is no conclusion at all, so this verdict was reached before the job ended",
-              "title": ""
-            },
-            { "message": "Process completed with exit code 1.", "title": "" },
-            {
-              "message": "the multiprocess job's result is failure, which is neither success nor skipped",
-              "title": ""
-            },
-            {
-              "message": "real-stack: 1366 rows, median 2605 ms, 95th percentile 8307 ms",
-              "title": "dispatch-browser row durations"
-            },
-            {
-              "message": "stubbed: 136 rows, median 1599 ms, 95th percentile 3958 ms",
-              "title": "dispatch-browser row durations"
-            },
-            {
-              "message": "job 135332117623 (dispatch-browser / multiprocess) ended failure; it is no shard, so the merged report holds no row of it",
-              "title": "dispatch-browser leg exits"
-            },
-            {
-              "message": "threads.e2e.ts:237 [chromium] resolve, reopen, then edit leaves one comment turn in its final state",
-              "title": "dispatch-browser flaky row"
-            },
-            {
-              "message": "1 flaky rows of 1505, 0.07 per cent",
-              "title": "dispatch-browser flake rate"
-            },
-            {
-              "message": "the merged report holds 1505 rows, against 1505 printed by the legs (alone-chromium-alone 22, alone-firefox-alone 13, alone-webkit-alone 16, shard-1 364, shard-2 364, shard-3 363, shard-4 363)",
-              "title": "dispatch-browser rows"
-            }
-          ]
-        }
-      },
-      "graphql": [
+      "checkRuns": [
         {
           "id": "CR_kwDORFy7ds8AAAAfgrTRPg",
           "annotations": [
@@ -587,33 +315,9 @@
         "event": "merge_group",
         "created_at": "2026-11-08T04:18:13Z",
         "html_url": "https://github.com/cybermonklabs/legion/actions/runs/42446257887",
-        "check_suite_id": 114987075493,
         "check_suite_node_id": "CS_kwDORFy7ds8AAAAaxcOHpQ"
       },
-      "rest": {
-        "checkRuns": [{ "id": 128627375195, "output": { "annotations_count": 4 } }],
-        "annotations": {
-          "128627375195": [
-            {
-              "message": "every leg of this workflow concluded success",
-              "title": "dispatch-browser leg exits"
-            },
-            {
-              "message": "close-withdraws-asks.e2e.ts:153 [chromium] a person's Close withdraws the issue's asks, an earlier version keeps its open block, and Reopen brings the asks back",
-              "title": "dispatch-browser flaky row"
-            },
-            {
-              "message": "1 flaky rows of 1299, 0.08 per cent",
-              "title": "dispatch-browser flake rate"
-            },
-            {
-              "message": "the merged report holds 1299 rows, against 1299 printed by the legs (alone-chromium-alone 21, alone-firefox-alone 17, alone-webkit-alone 17, shard-1 311, shard-2 311, shard-3 311, shard-4 311)",
-              "title": "dispatch-browser rows"
-            }
-          ]
-        }
-      },
-      "graphql": [
+      "checkRuns": [
         {
           "id": "CR_kwDORFy7ds8AAAAd8sn8Ww",
           "annotations": [
@@ -644,11 +348,9 @@
         "event": "merge_group",
         "created_at": "2026-11-08T09:45:24Z",
         "html_url": "https://github.com/cybermonklabs/legion/actions/runs/42468519197",
-        "check_suite_id": 115043662764,
         "check_suite_node_id": "CS_kwDORFy7ds8AAAAaySL7rA"
       },
-      "rest": { "checkRuns": [], "annotations": {} },
-      "graphql": []
+      "checkRuns": []
     },
     {
       "workflow": "ci.yaml",
@@ -657,41 +359,9 @@
         "event": "merge_group",
         "created_at": "2026-11-22T01:59:10Z",
         "html_url": "https://github.com/cybermonklabs/legion/actions/runs/44973945438",
-        "check_suite_id": 121716555723,
         "check_suite_node_id": "CS_kwDORFy7ds8AAAAcVt8_yw"
       },
-      "rest": {
-        "checkRuns": [{ "id": 137066020077, "output": { "annotations_count": 6 } }],
-        "annotations": {
-          "137066020077": [
-            {
-              "message": "real-stack: 1529 rows, median 2808 ms, 95th percentile 9882 ms",
-              "title": "dispatch-browser row durations"
-            },
-            {
-              "message": "stubbed: 136 rows, median 2299 ms, 95th percentile 5716 ms",
-              "title": "dispatch-browser row durations"
-            },
-            {
-              "message": "every leg of this workflow concluded success",
-              "title": "dispatch-browser leg exits"
-            },
-            {
-              "message": "delivery-live.e2e.ts:484 [webkit-iphone] on a phone the delivery page shows a merge without a reload",
-              "title": "dispatch-browser flaky row"
-            },
-            {
-              "message": "1 flaky rows of 1668, 0.06 per cent",
-              "title": "dispatch-browser flake rate"
-            },
-            {
-              "message": "the merged report holds 1668 rows, against 1668 printed by the legs (alone-chromium-alone 22, alone-firefox-alone 13, alone-webkit-alone 16, shard-1 405, shard-2 404, shard-3 404, shard-4 404)",
-              "title": "dispatch-browser rows"
-            }
-          ]
-        }
-      },
-      "graphql": [
+      "checkRuns": [
         {
           "id": "CR_kwDORFy7ds8AAAAf6cV87Q",
           "annotations": [
@@ -730,41 +400,9 @@
         "event": "merge_group",
         "created_at": "2026-11-22T01:24:38Z",
         "html_url": "https://github.com/cybermonklabs/legion/actions/runs/44971330353",
-        "check_suite_id": 121709844666,
         "check_suite_node_id": "CS_kwDORFy7ds8AAAAcVnjYug"
       },
-      "rest": {
-        "checkRuns": [{ "id": 137056399894, "output": { "annotations_count": 6 } }],
-        "annotations": {
-          "137056399894": [
-            {
-              "message": "real-stack: 1529 rows, median 2867 ms, 95th percentile 9397 ms",
-              "title": "dispatch-browser row durations"
-            },
-            {
-              "message": "stubbed: 136 rows, median 1781 ms, 95th percentile 4394 ms",
-              "title": "dispatch-browser row durations"
-            },
-            {
-              "message": "every leg of this workflow concluded success",
-              "title": "dispatch-browser leg exits"
-            },
-            {
-              "message": "issue-page-p.e2e.ts:3120 [chromium] a change request sent from the header leaves the focus in the header",
-              "title": "dispatch-browser flaky row"
-            },
-            {
-              "message": "1 flaky rows of 1668, 0.06 per cent",
-              "title": "dispatch-browser flake rate"
-            },
-            {
-              "message": "the merged report holds 1668 rows, against 1668 printed by the legs (alone-chromium-alone 22, alone-firefox-alone 13, alone-webkit-alone 16, shard-1 405, shard-2 404, shard-3 404, shard-4 404)",
-              "title": "dispatch-browser rows"
-            }
-          ]
-        }
-      },
-      "graphql": [
+      "checkRuns": [
         {
           "id": "CR_kwDORFy7ds8AAAAf6TKyFg",
           "annotations": [
@@ -803,37 +441,9 @@
         "event": "schedule",
         "created_at": "2026-11-10T20:36:01Z",
         "html_url": "https://github.com/cybermonklabs/legion/actions/runs/42896887674",
-        "check_suite_id": 116175823612,
         "check_suite_node_id": "CS_kwDORFy7ds8AAAAbDJ5i_A"
       },
-      "rest": {
-        "checkRuns": [{ "id": 130117710258, "output": { "annotations_count": 5 } }],
-        "annotations": {
-          "130117710258": [
-            {
-              "message": "real-stack: 1188 rows, median 2517 ms, 95th percentile 7132 ms",
-              "title": "dispatch-browser row durations"
-            },
-            {
-              "message": "stubbed: 135 rows, median 1739 ms, 95th percentile 4331 ms",
-              "title": "dispatch-browser row durations"
-            },
-            {
-              "message": "every leg of this workflow concluded success",
-              "title": "dispatch-browser leg exits"
-            },
-            {
-              "message": "0 flaky rows of 1364, 0.00 per cent",
-              "title": "dispatch-browser flake rate"
-            },
-            {
-              "message": "the merged report holds 1364 rows, against 1364 printed by the legs (alone-chromium-alone 19, alone-firefox-alone 17, alone-webkit-alone 17, shard-1 328, shard-2 328, shard-3 328, shard-4 327)",
-              "title": "dispatch-browser rows"
-            }
-          ]
-        }
-      },
-      "graphql": [
+      "checkRuns": [
         {
           "id": "CR_kwDORFy7ds8AAAAeS56xsg",
           "annotations": [
@@ -868,29 +478,9 @@
         "event": "schedule",
         "created_at": "2026-11-08T09:00:31Z",
         "html_url": "https://github.com/cybermonklabs/legion/actions/runs/42465305880",
-        "check_suite_id": 115035447540,
         "check_suite_node_id": "CS_kwDORFy7ds8AAAAayKWg9A"
       },
-      "rest": {
-        "checkRuns": [{ "id": 128686086143, "output": { "annotations_count": 3 } }],
-        "annotations": {
-          "128686086143": [
-            {
-              "message": "every leg of this workflow concluded success",
-              "title": "dispatch-browser leg exits"
-            },
-            {
-              "message": "0 flaky rows of 1282, 0.00 per cent",
-              "title": "dispatch-browser flake rate"
-            },
-            {
-              "message": "the merged report holds 1282 rows, against 1282 printed by the legs (alone-chromium-alone 19, alone-firefox-alone 17, alone-webkit-alone 17, shard-1 308, shard-2 307, shard-3 307, shard-4 307)",
-              "title": "dispatch-browser rows"
-            }
-          ]
-        }
-      },
-      "graphql": [
+      "checkRuns": [
         {
           "id": "CR_kwDORFy7ds8AAAAd9knX_w",
           "annotations": [
@@ -917,11 +507,9 @@
         "event": "merge_group",
         "created_at": "2026-11-08T22:52:45Z",
         "html_url": "https://github.com/cybermonklabs/legion/actions/runs/42532405516",
-        "check_suite_id": 115208351484,
         "check_suite_node_id": "CS_kwDORFy7ds8AAAAa0vPu_A"
       },
-      "rest": { "checkRuns": [], "annotations": {} },
-      "graphql": []
+      "checkRuns": []
     }
   ]
 }

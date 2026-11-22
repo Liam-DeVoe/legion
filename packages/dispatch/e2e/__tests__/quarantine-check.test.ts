@@ -5,15 +5,14 @@
  *  stand-in for GitHub. The moment of each of those readings is the fixture's.
  *
  *  Its reads are driven against `gitHubStandIn` below, a stand-in for GitHub's REST and GraphQL
- *  API on a local port: the GraphQL reader beside the REST reader it replaced
- *  (`fixtures/quarantine-rest-reader.fixture.ts`) over the answers GitHub gave both
- *  (`fixtures/quarantine-answers.fixture.json`), what the GraphQL reader costs, its pages, and
- *  the client's waits for GitHub's rate limit, which read the clock and wait a few real seconds.
- *  Nothing here reads GitHub itself. */
+ *  API on a local port: what `readHistory` reads of the answers GitHub gave for eleven runs
+ *  (`fixtures/quarantine-answers.fixture.json`) and what `decide` and `report` say of it, what
+ *  the reading costs, its pages, and the client's waits for GitHub's rate limit, which read the
+ *  clock and wait a few real seconds. Nothing here reads GitHub itself. */
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 
-import { entryLines, quarantine } from "../quarantine";
+import { entryLines } from "../quarantine";
 import {
   annotationsPerPage,
   blame,
@@ -42,10 +41,6 @@ import {
   readAt,
   stillRows,
 } from "./fixtures/quarantine-history.fixture";
-import {
-  gitHub as restGitHub,
-  readHistory as restReadHistory,
-} from "./fixtures/quarantine-rest-reader.fixture";
 
 const pictures = "pictures.e2e.ts [chromium] a picture uploads @pr";
 
@@ -272,15 +267,14 @@ test("a blame GitHub gives no answer for is refused, naming the file", async () 
   );
 });
 
-/** A notice of a check run, as both of GitHub's APIs give it. */
+/** A notice of a check run, as GraphQL's `CheckAnnotation` gives it. */
 interface Note {
   readonly title: string | null;
   readonly message: string;
 }
 
-/** One run as the stand-in answers for it: the fields the listing gives, and its merge job's
- *  check runs, as REST's check-runs and annotations routes answer them and as GraphQL's
- *  `CheckSuite.checkRuns` does. */
+/** One run as the stand-in answers for it: the fields of the run listing the reading reads, and
+ *  its merge job's check runs as GraphQL's `CheckSuite.checkRuns` gives them. */
 interface StoodRun {
   readonly workflow: string;
   readonly run: {
@@ -288,17 +282,9 @@ interface StoodRun {
     readonly event: string;
     readonly created_at: string;
     readonly html_url: string;
-    readonly check_suite_id: number;
     readonly check_suite_node_id: string;
   };
-  readonly rest: {
-    readonly checkRuns: readonly {
-      readonly id: number;
-      readonly output: { readonly annotations_count: number };
-    }[];
-    readonly annotations: Readonly<Record<string, readonly Note[]>>;
-  };
-  readonly graphql: readonly { readonly id: string; readonly annotations: readonly Note[] }[];
+  readonly checkRuns: readonly { readonly id: string; readonly annotations: readonly Note[] }[];
 }
 
 /** An answer the stand-in gives in place of the one asked for. */
@@ -312,12 +298,11 @@ interface Refusal {
  *
  *  - `GET /repos/<repo>/actions/workflows/<workflow>/runs?event=<e>&created=<from>..<to>`: the
  *    runs of that workflow and event created in that range, both ends in it;
- *  - `GET .../check-suites/<id>/check-runs?check_name=<name>` and
- *    `GET .../check-runs/<id>/annotations`: REST's answers, for the run's merge job's name alone;
- *  - `POST /graphql`: GraphQL's, told apart by their variables - `ids` the suites of one call,
- *    `id` with `checkName` a suite's further check runs, `id` alone a check run's further notices,
- *    neither only `rateLimit` - paged at `checkRunsPerPage` and `annotationsPerPage` with the
- *    offset as the cursor, each answer costing 1 point of 4,999 left.
+ *  - `POST /graphql`: told apart by its variables - `ids` the suites of one call, `id` with
+ *    `checkName` a suite's further check runs, `id` alone a check run's further notices, neither
+ *    only `rateLimit` - a suite answering the check runs of its run's merge job alone, paged at
+ *    `checkRunsPerPage` and `annotationsPerPage` with the offset as the cursor, each answer
+ *    costing 1 point of 4,999 left.
  *
  *  Every request is recorded in `seen` with the moment it arrived, and the first requests of
  *  each kind are answered from `refuse.rest` and `refuse.graphql`, in turn, where those hold any. */
@@ -336,7 +321,7 @@ function gitHubStandIn(
     },
   });
   const checkRunsOf = (run: StoodRun, checkName: unknown) =>
-    (mergeJob(run.workflow) === checkName ? run.graphql : []).map((checkRun) => ({
+    (mergeJob(run.workflow) === checkName ? run.checkRuns : []).map((checkRun) => ({
       annotations: page(checkRun.annotations, 0, annotationsPerPage),
       id: checkRun.id,
     }));
@@ -375,8 +360,8 @@ function gitHubStandIn(
         }
         if (typeof variables.id === "string") {
           const checkRun = runs
-            .flatMap((stood) => stood.graphql)
-            .find((graphqlRun) => graphqlRun.id === variables.id);
+            .flatMap((stood) => stood.checkRuns)
+            .find((stoodCheckRun) => stoodCheckRun.id === variables.id);
           return Response.json({
             data: {
               node: {
@@ -410,22 +395,6 @@ function gitHubStandIn(
           .map(({ run }) => run);
         return Response.json({ total_count: listed.length, workflow_runs: listed });
       }
-      const checkRuns = /^\/repos\/[^/]+\/[^/]+\/check-suites\/(\d+)\/check-runs$/.exec(
-        url.pathname
-      );
-      if (checkRuns !== null) {
-        const run = runs.find((stood) => String(stood.run.check_suite_id) === checkRuns[1]);
-        const listed =
-          run !== undefined && mergeJob(run.workflow) === url.searchParams.get("check_name")
-            ? run.rest.checkRuns
-            : [];
-        return Response.json({ check_runs: listed, total_count: listed.length });
-      }
-      const notes = /^\/repos\/[^/]+\/[^/]+\/check-runs\/(\d+)\/annotations$/.exec(url.pathname);
-      if (notes !== null) {
-        const run = runs.find((stood) => stood.rest.annotations[notes[1]] !== undefined);
-        return Response.json(run?.rest.annotations[notes[1]] ?? []);
-      }
       return Response.json({ message: "Not Found" }, { status: 404 });
     },
   });
@@ -433,7 +402,7 @@ function gitHubStandIn(
 }
 
 /** Run `id` of `workflow`, created at `created`, whose merge job left one check run for each list
- *  of `checkRuns`, holding those notices, and which both APIs answer alike. */
+ *  of `checkRuns`, holding those notices. */
 function stoodRun(
   workflow: string,
   id: number,
@@ -441,16 +410,8 @@ function stoodRun(
   checkRuns: readonly (readonly Note[])[]
 ): StoodRun {
   return {
-    graphql: checkRuns.map((annotations, index) => ({ annotations, id: `CR_${id}_${index}` })),
-    rest: {
-      annotations: Object.fromEntries(checkRuns.map((notes, index) => [`${id}0${index}`, notes])),
-      checkRuns: checkRuns.map((notes, index) => ({
-        id: Number(`${id}0${index}`),
-        output: { annotations_count: notes.length },
-      })),
-    },
+    checkRuns: checkRuns.map((annotations, index) => ({ annotations, id: `CR_${id}_${index}` })),
     run: {
-      check_suite_id: id,
       check_suite_node_id: `CS_${id}`,
       created_at: created.toISOString().replace(/\.\d{3}Z$/u, "Z"),
       event: countedRuns.find((counted) => counted.workflow === workflow)?.event ?? "",
@@ -467,36 +428,201 @@ const flakyRow = (message: string): Note => ({ message, title: "dispatch-browser
 /** The answers GitHub gave on 2026-11-22 near 03:05Z, to the pod's token, for eleven runs of the
  *  fourteen days before `recordedAt`: seven merge groups whose merge job named a flaky row, one
  *  of them two, two of the nightly's scheduled runs that named none, and two merge groups whose
- *  merge job left no check run. REST's answers are those of the routes the REST reader reads
- *  (`check-suites/<id>/check-runs?check_name=...&filter=all`, `check-runs/<id>/annotations`) and
- *  GraphQL's those of `nodes(ids:)`, each read apart and trimmed to the fields either reader
- *  reads; the listing's fields are the run listing's. */
+ *  merge job left no check run. Each run holds the run listing's fields the reading reads, and its
+ *  merge job's check runs and their notices as GraphQL's `nodes(ids:)` answered them, trimmed to
+ *  the fields the reading reads. */
 const answers = JSON.parse(
   readFileSync(new URL("./fixtures/quarantine-answers.fixture.json", import.meta.url), "utf8")
 ) as { runs: StoodRun[] };
 const recordedAt = new Date("2026-11-22T02:17:00Z");
 
-test("the GraphQL reader reads what the REST reader read, over the answers GitHub gave both", async () => {
+/** What `readHistory` reads of `answers` at `recordedAt`: the nightly's runs first, then the
+ *  merge groups, each workflow's a day at a time, oldest day first. */
+const recordedReadings: RunReading[] = [
+  {
+    createdAt: "2026-11-08T09:00:31Z",
+    event: "schedule",
+    flakyRows: [],
+    id: 42465305880,
+    unread: 0,
+    url: "https://github.com/cybermonklabs/legion/actions/runs/42465305880",
+  },
+  {
+    createdAt: "2026-11-10T20:36:01Z",
+    event: "schedule",
+    flakyRows: [],
+    id: 42896887674,
+    unread: 0,
+    url: "https://github.com/cybermonklabs/legion/actions/runs/42896887674",
+  },
+  {
+    createdAt: "2026-11-08T04:18:13Z",
+    event: "merge_group",
+    flakyRows: [
+      "close-withdraws-asks.e2e.ts:153 [chromium] a person's Close withdraws the issue's asks, an earlier version keeps its open block, and Reopen brings the asks back",
+    ],
+    id: 42446257887,
+    unread: 0,
+    url: "https://github.com/cybermonklabs/legion/actions/runs/42446257887",
+  },
+  {
+    createdAt: "2026-11-08T09:45:24Z",
+    event: "merge_group",
+    flakyRows: [],
+    id: 42468519197,
+    unread: 0,
+    url: "https://github.com/cybermonklabs/legion/actions/runs/42468519197",
+  },
+  {
+    createdAt: "2026-11-08T22:52:45Z",
+    event: "merge_group",
+    flakyRows: [],
+    id: 42532405516,
+    unread: 0,
+    url: "https://github.com/cybermonklabs/legion/actions/runs/42532405516",
+  },
+  {
+    createdAt: "2026-11-15T10:33:40Z",
+    event: "merge_group",
+    flakyRows: [
+      "agent-live-views.e2e.ts:251 [iphone] the rail reads live, live 30s and asleep for the views the person has open @phone",
+    ],
+    id: 43704669128,
+    unread: 0,
+    url: "https://github.com/cybermonklabs/legion/actions/runs/43704669128",
+  },
+  {
+    createdAt: "2026-11-16T05:39:23Z",
+    event: "merge_group",
+    flakyRows: [
+      "agent-rail.e2e.ts:184 [iphone] the rail row, the Agents row and the live view each unpin @phone",
+      "agent-rail.e2e.ts:152 [iphone] a pin from the Agents page and a pin from a live view are both under the heading @phone",
+    ],
+    id: 43811655596,
+    unread: 0,
+    url: "https://github.com/cybermonklabs/legion/actions/runs/43811655596",
+  },
+  {
+    createdAt: "2026-11-19T04:08:54Z",
+    event: "merge_group",
+    flakyRows: [
+      "threads.e2e.ts:237 [chromium] resolve, reopen, then edit leaves one comment turn in its final state",
+    ],
+    id: 44456291758,
+    unread: 0,
+    url: "https://github.com/cybermonklabs/legion/actions/runs/44456291758",
+  },
+  {
+    createdAt: "2026-11-21T17:22:25Z",
+    event: "merge_group",
+    flakyRows: [
+      "board.e2e.ts:1184 [chromium] picker keeps a pick on screen: a card dragged to another priority lane while its pick is out stays in that lane",
+    ],
+    id: 44929688393,
+    unread: 0,
+    url: "https://github.com/cybermonklabs/legion/actions/runs/44929688393",
+  },
+  {
+    createdAt: "2026-11-22T01:59:10Z",
+    event: "merge_group",
+    flakyRows: [
+      "delivery-live.e2e.ts:484 [webkit-iphone] on a phone the delivery page shows a merge without a reload",
+    ],
+    id: 44973945438,
+    unread: 0,
+    url: "https://github.com/cybermonklabs/legion/actions/runs/44973945438",
+  },
+  {
+    createdAt: "2026-11-22T01:24:38Z",
+    event: "merge_group",
+    flakyRows: [
+      "issue-page-p.e2e.ts:3120 [chromium] a change request sent from the header leaves the focus in the header",
+    ],
+    id: 44971330353,
+    unread: 0,
+    url: "https://github.com/cybermonklabs/legion/actions/runs/44971330353",
+  },
+];
+
+// No entries, no fixes and no changes: no row of these runs is flaky in two of them, so nothing
+// is named, and every row read is still counted, each by the one run that named it.
+test("the recorded answers read as these eleven runs, and decide and report nothing to quarantine", async () => {
   const server = gitHubStandIn(answers.runs);
   try {
-    const rest = await restReadHistory(restGitHub(server.url, "t"), repository, recordedAt);
-    const graphql = await readHistory(gitHub(server.url, "t"), repository, recordedAt);
-    expect(graphql).toHaveLength(answers.runs.length);
-    expect(graphql.filter((run) => run.flakyRows.length > 0)).toHaveLength(7);
-    expect(graphql).toEqual(rest);
-    const findings = (runs: readonly RunReading[]) => {
-      const decision = decide(runs, quarantine, [], new Map(), recordedAt);
-      return { decision, report: report(decision, recordedAt) };
-    };
-    expect(findings(graphql)).toEqual(findings(rest));
+    const readings = await readHistory(gitHub(server.url, "t"), repository, recordedAt);
+    expect(readings).toEqual(recordedReadings);
+    const decision = decide(readings, [], [], new Map(), recordedAt);
+    expect(decision.counted).toEqual(recordedReadings);
+    expect([...decision.rows].map(([name, { runs }]) => [name, runs.map((run) => run.id)])).toEqual(
+      [
+        [
+          "close-withdraws-asks.e2e.ts [chromium] a person's Close withdraws the issue's asks, an earlier version keeps its open block, and Reopen brings the asks back",
+          [42446257887],
+        ],
+        [
+          "agent-live-views.e2e.ts [iphone] the rail reads live, live 30s and asleep for the views the person has open @phone",
+          [43704669128],
+        ],
+        [
+          "agent-rail.e2e.ts [iphone] the rail row, the Agents row and the live view each unpin @phone",
+          [43811655596],
+        ],
+        [
+          "agent-rail.e2e.ts [iphone] a pin from the Agents page and a pin from a live view are both under the heading @phone",
+          [43811655596],
+        ],
+        [
+          "threads.e2e.ts [chromium] resolve, reopen, then edit leaves one comment turn in its final state",
+          [44456291758],
+        ],
+        [
+          "board.e2e.ts [chromium] picker keeps a pick on screen: a card dragged to another priority lane while its pick is out stays in that lane",
+          [44929688393],
+        ],
+        [
+          "delivery-live.e2e.ts [webkit-iphone] on a phone the delivery page shows a merge without a reload",
+          [44973945438],
+        ],
+        [
+          "issue-page-p.e2e.ts [chromium] a change request sent from the header leaves the focus in the header",
+          [44971330353],
+        ],
+      ]
+    );
+    const { absent, leftOut, offMain, overdue, spent, toQuarantine, unparsed } = decision;
+    expect({ absent, leftOut, offMain, overdue, spent, toQuarantine, unparsed }).toEqual({
+      absent: [],
+      leftOut: [],
+      offMain: [],
+      overdue: [],
+      spent: [],
+      toQuarantine: [],
+      unparsed: [],
+    });
+    expect(report(decision, recordedAt)).toEqual({
+      annotations: [],
+      failed: false,
+      summary: [
+        "### The quarantine on 2026-11-22",
+        "",
+        "Read the merge jobs of 11 runs of the 14 days before 2026-11-22T02:17:00.000Z: 2 schedule runs of dispatch-browser-nightly.yaml and 9 merge_group runs of ci.yaml. 7 of them named a flaky row. A pull request's runs are not read: its head can carry its own defect.",
+        "",
+        "#### Flaky in 2 or more runs, and not quarantined",
+        "",
+        "No row was flaky in 2 runs after its last change that the quarantine does not hold.",
+        "",
+        "#### Held longer than 14 days",
+        "",
+        "No entry has been held longer than 14 days.",
+      ],
+    });
   } finally {
     server.stop();
   }
 });
 
 // 253 runs, a few a day: 3 of the nightly and 250 merge groups, every other one with a flaky row.
-// The REST reader read each run's check runs, and each check run's notices where it had any.
-test("the GraphQL reader reads a hundred suites a call where the REST reader read each run apart", async () => {
+test("a reading costs the listings and a GraphQL call per hundred runs of a workflow, not a call a run", async () => {
   const runs = Array.from({ length: 253 }, (_, index) =>
     stoodRun(
       index < 3 ? "dispatch-browser-nightly.yaml" : "ci.yaml",
@@ -521,9 +647,6 @@ test("the GraphQL reader reads a hundred suites a call where the REST reader rea
       .filter((request) => request.path === "/graphql")
       .map((request) => (request.variables?.ids as unknown[]).length);
     expect(batches.sort((a, b) => a - b)).toEqual([3, 50, 100, 100]);
-    const rest = restGitHub(server.url, "t");
-    expect(await restReadHistory(rest, repository, recordedAt)).toEqual(readings);
-    expect(rest.spent().calls).toBe(2 * windowDays + 253 + 127);
   } finally {
     server.stop();
   }
@@ -561,9 +684,6 @@ test("a suite's check runs past one page, and a check run's notices past one, ar
         .map((request) => request.variables?.after ?? null)
     ).toEqual([null, String(checkRunsPerPage), String(annotationsPerPage)]);
     expect(github.spent().graphqlCalls).toBe(3);
-    expect(await restReadHistory(restGitHub(server.url, "t"), repository, recordedAt)).toEqual(
-      readings
-    );
   } finally {
     server.stop();
   }

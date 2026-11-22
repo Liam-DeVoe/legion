@@ -865,10 +865,8 @@ async function readSuites(
  *  runs are then taken a day at a time, oldest first, which is the order its readings keep.
  *
  *  Each run's merge jobs are read from its check suite through GraphQL, `suitesPerCall` suites a
- *  call (`readSuites`), rather than with a REST call for the suite's check runs and another for
- *  each check run's notices: a whole check cost 1,794 REST calls for 1,166 runs that way (job
- *  137061958838 of run 44974729436, 2026-11-22), where this function alone read 1,195 runs in 34
- *  REST calls and 13 GraphQL calls costing 132 points (from this issue's pod, 2026-11-22 03:15Z). */
+ *  call (`readSuites`): on 2026-11-22 at 03:15Z, from this issue's pod, this read 1,195 runs in 34
+ *  REST calls and 13 GraphQL calls costing 132 points. */
 export async function readHistory(
   github: GitHub,
   repository: string,
