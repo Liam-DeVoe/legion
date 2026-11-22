@@ -1328,7 +1328,7 @@ mints a new credential under the same sign-in.
 **Asking Dispatch.** Each broker process keeps Dispatch's answer about a person for 30 seconds,
 asks again no sooner than 5 seconds after an ask failed, and shares one call among concurrent asks
 about one person. Each check waits at most 3 seconds for Dispatch's answer, and writes it to
-`person_standing` (migration `0044`) with 1 second more, unless the row already holds a later
+`person_standing` (migration `0045`) with 1 second more, unless the row already holds a later
 answer by Dispatch's own clock (the answer's `as_of`), so every process and a restart answer
 alike. While Dispatch cannot be asked (no answer, a timeout, a 5xx, a 404 or another 4xx but 401
 and 403, or an answer without `held`), the broker answers from the kept answer: a person last
@@ -1338,7 +1338,7 @@ never answered, is served, with one WARN line a minute for each person and
 Dispatch.
 
 **The member kind and the project answers, kept.** The same broker process keeps the member kind of
-each person answer it reads in `person_member_kind` (migration `0046`), whichever read asked (the
+each person answer it reads in `person_member_kind` (migration `0047`), whichever read asked (the
 hold's check, a request's, an enrollment's or an approver's) and whether or not the answer says if
 the person is held: Dispatch leaves `held` out while its own read of the hold fails, and still names
 the kind. Each kind is written unless the row holds one Dispatch gave later, by the answer's
@@ -1348,7 +1348,7 @@ connection, a gateway's `502`, `503` or `504`, Dispatch's own `DATABASE_UNAVAILA
 member is served as one at every enrollment, secret request, release, airlock call and approver
 route, with one WARN line a minute for each person and
 `broker_member_kind_unchecked_total{kept="full"}`. A person last answered a restricted member, one
-of whom no kind is kept (never read since migration `0046`, or never read at all), one whose kept
+of whom no kind is kept (never read since migration `0047`, or never read at all), one whose kept
 kind is older than the hold's answer kept for them, and one whose kept kind cannot be read are
 refused `503 MEMBER_KIND_UNCHECKABLE`, counted `restricted`, `none` or `unreadable`. The hold's
 answer is newer than the kind only where a broker release that keeps no kind wrote it, as one does
@@ -1357,7 +1357,7 @@ any broker process, is written and refuses from then on at every process; one it
 takes effect when it answers again. A refused account, a kind this broker does not know and a
 caller that hung up are refused as before, whatever is kept. The project answers of the request
 machine's person rule (whether a person may see each project a request's reason or credentials
-name) are kept the same way, by person and project, in `project_standing` (migration `0047`), each
+name) are kept the same way, by person and project, in `project_standing` (migration `0048`), each
 written unless the row holds one the broker asked later, since Dispatch's project answer names no
 time of its own. While Dispatch does not answer, a request whose project Dispatch last answered
 public or visible to the reader is listed and decided as before, and a key it last answered no
@@ -1389,7 +1389,7 @@ Dispatch gave; and the three of the deadline below.
 
 **The deadline.** Behind Identity-Aware Proxy, Dispatch puts a deadline on every answer that a
 person is not held (`not_held_until`, its last active Directory answer plus 24 hours). The broker
-keeps it with the answer (migration `0045`) and serves a not-held answer, fresh, cached or kept,
+keeps it with the answer (migration `0046`) and serves a not-held answer, fresh, cached or kept,
 only before it, by its own clock: at it, every new call is `503 HOLD_UNCHECKABLE` ("Dispatch's
 answer that they are not held has passed its deadline, or Dispatch has never confirmed them"), and
 the airlock cuts a call it carries.
