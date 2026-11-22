@@ -223,8 +223,7 @@ const heldWriteAttempts = 5
 
 // predecessorsHeldWriteReachesNoSuccessor is one run of the held-write row on a new hub of
 // topology, for kind's durable: its control, then the take-over. It answers whether the run
-// judged: false when the control's or the successor's late write was replaced before the restart
-// (overwritten), or the restarted replica could not be made to lead (leadOn).
+// judged: false when either one's restart judged nothing (unjudged).
 func predecessorsHeldWriteReachesNoSuccessor(t *testing.T, topology hubTopology, kind durableKind) bool {
 	hub, pool := freshRigOn(t, topology, 0)
 	hooks := testnats.Hook(t)
@@ -292,14 +291,8 @@ func predecessorsHeldWriteReachesNoSuccessor(t *testing.T, topology hubTopology,
 	write.Release()
 	lateWrite := hooks.Await(t, testnats.Point("write.done"), testnats.OnServer(server), testnats.Consumer(old), testnats.After(released))
 	restartStore(t, hub, server)
-	unjudged := ""
-	if overwritten(t, hooks, server, lateWrite, successor, mark) {
-		unjudged = fmt.Sprintf("the late write reached %s's file, %s, and a later write to that file before the server stopped replaced it", successor, lateWrite.Path)
-	} else {
-		unjudged = leadOn(t, hub, successor, server)
-	}
-	if unjudged != "" {
-		t.Logf("this run judged nothing: %s", unjudged)
+	if why := unjudged(t, hub, hooks, server, lateWrite, successor, mark); why != "" {
+		t.Logf("this run judged nothing: %s", why)
 		process.unblock()
 		return false
 	}
@@ -325,6 +318,17 @@ func predecessorsHeldWriteReachesNoSuccessor(t *testing.T, topology hubTopology,
 	process.unblock()
 	awaitHandled(t, sent[20:], process)
 	return true
+}
+
+// unjudged answers why a run, after the held server's restart, judges nothing on consumer, and ""
+// when it judges: the late write was replaced in consumer's file before the server stopped
+// (overwritten), or the restarted server could not be made to lead consumer (leadOn).
+func unjudged(t *testing.T, hub *freshHub, hooks *testnats.Hooks, server *testnats.Server, late testnats.Event, consumer string, mark int) string {
+	t.Helper()
+	if overwritten(t, hooks, server, late, consumer, mark) {
+		return fmt.Sprintf("a later write to %s's file, %s, replaced the late write before the server stopped", consumer, late.Path)
+	}
+	return leadOn(t, hub, consumer, server)
 }
 
 // overwritten reports whether the late write (late, a write.done on server) landed in consumer's
@@ -407,9 +411,8 @@ func holdTheSuccessor(t *testing.T, hub *freshHub, hooks *testnats.Hooks, kind d
 // acknowledged to 20, its write of floor 21 held, C deleted and created again at 21 under its own
 // name, its first write done, the held write released and the store restarted -- and C comes back
 // with 21 acknowledged. It shows the holds reach the order that loses a message, so the
-// treatment's clean result is no blind spot. It answers whether it judged: false when a later write
-// replaced the late one in C's file before the restart (overwritten), or the restarted server
-// could not be made to lead C (leadOn), as the row's own run can.
+// treatment's clean result is no blind spot. It answers whether it judged: false when its restart
+// judged nothing (unjudged), as the row's own run can.
 func sameNameRecreationLoses(t *testing.T, hub *freshHub, hooks *testnats.Hooks, kind durableKind) bool {
 	t.Helper()
 	conn, js := hub.admin(t)
@@ -453,14 +456,8 @@ func sameNameRecreationLoses(t *testing.T, hub *freshHub, hooks *testnats.Hooks,
 	restartStore(t, hub, server)
 	// The restart closed the admin's connection, which does not reconnect: read on a new one.
 	_, js = hub.admin(t)
-	unjudged := ""
-	if overwritten(t, hooks, server, lateWrite, name, mark) {
-		unjudged = fmt.Sprintf("a later write to %s's file, %s, replaced the late write before the server stopped", name, lateWrite.Path)
-	} else {
-		unjudged = leadOn(t, hub, name, server)
-	}
-	if unjudged != "" {
-		t.Logf("control: this run judged nothing: %s", unjudged)
+	if why := unjudged(t, hub, hooks, server, lateWrite, name, mark); why != "" {
+		t.Logf("control: this run judged nothing: %s", why)
 		if err := js.DeleteConsumer(bus.Stream, name); err != nil {
 			t.Fatalf("delete the control consumer: %v", err)
 		}
