@@ -356,11 +356,17 @@ func (s *Postgres) UnnamedIssues(ctx context.Context, tx pgx.Tx, project string)
 	return s.issuesWhere(ctx, tx, "project = $1 and repo <> '' and github_repo = ''", project, "with no GitHub spelling of their repository")
 }
 
+// HandedOffWithoutOpenOrMergedPullRequest reads each issue of project in implementing whose
+// implementer's row now holds a handoff commit and that has no open or merged pull request. The
+// row is the implementer's row now, as PhaseRowOf picks it (RaisedLater, then the first by task and
+// place): an implementer that stands at two steps of a task has a row for each, and an earlier
+// step's commit is no handoff of the step that runs.
 func (s *Postgres) HandedOffWithoutOpenOrMergedPullRequest(ctx context.Context, tx pgx.Tx, project string) ([]HandedOff, error) {
 	const what = "in implementing with a recorded handoff and no open or merged pull request"
 	rows, err := tx.Query(ctx, "select "+issueColumns+", implementer.handoff_commit from issues"+
-		" join (select issue, handoff_commit from phases where role = '"+string(claim.RoleImplementer)+"' and handoff_commit <> '')"+
-		" implementer (implementer_issue, handoff_commit) on implementer.implementer_issue = issues.key"+
+		" join (select distinct on (issue) issue, handoff_commit from phases where role = '"+string(claim.RoleImplementer)+"'"+
+		" order by issue, entry_raised_at desc nulls last, entry desc, step_task, step_place)"+
+		" implementer (implementer_issue, handoff_commit) on implementer.implementer_issue = issues.key and implementer.handoff_commit <> ''"+
 		" where project = $1 and github_repo <> '' and phase = '"+string(phase.Implementing)+"'"+
 		" and key not in (select issue from pull_requests where state = any($2))"+
 		" order by key", project, implementationMoveSQLStates)
