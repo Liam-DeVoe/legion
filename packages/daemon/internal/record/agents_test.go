@@ -96,3 +96,35 @@ func TestASecondAgentOfOneRoleGetsANameOfItsOwn(t *testing.T) {
 		}
 	}
 }
+
+// Two keys can hold one name across generations: generation 1 names key a implementer, and in
+// generation 2, where no step names key a, key b takes implementer by pass 4. A later version that
+// names both keys gives the name to one key alone, the one whose row held it last, key b, whose
+// agent ran on that name's claim last; key a gets a name of its own, implementer-2. So one name is
+// one claim and one session for one agent. The fault: pass 2 gave each key the name its first row
+// had, both implementer, two agents on one claim and one session.
+func TestTwoKeysThatHeldOneNameInTurnGetTwoNames(t *testing.T) {
+	earlier := []PlanStep{
+		{Generation: 1, Task: "t", Position: 1, Role: "implementer", AgentKey: "a", Agent: "implementer"},
+		{Generation: 1, Task: "t", Position: 2, Role: "reviewer", Agent: "reviewer"},
+		{Generation: 2, Task: "u", Position: 1, Role: "implementer", AgentKey: "b", Agent: "implementer"},
+		{Generation: 2, Task: "u", Position: 2, Role: "reviewer", Agent: "reviewer"},
+	}
+	got := NameAgents(earlier, []PlanStep{
+		{Generation: 3, Task: "v", Position: 1, Role: "implementer", AgentKey: "a"},
+		{Generation: 3, Task: "v", Position: 2, Role: "reviewer"},
+		{Generation: 3, Task: "v", Position: 3, Role: "implementer", AgentKey: "b"},
+	})
+	if got[0].Agent == got[2].Agent {
+		t.Fatalf("keys a and b both named %q, want two names", got[0].Agent)
+	}
+	if got[2].Agent != "implementer" || got[0].Agent != "implementer-2" {
+		t.Errorf("key a named %q and key b %q, want key b implementer, the key that held it last, and key a implementer-2", got[0].Agent, got[2].Agent)
+	}
+	if again := NameAgents(append(earlier, got...), []PlanStep{
+		{Generation: 3, Task: "w", Position: 1, Role: "implementer", AgentKey: "a"},
+		{Generation: 3, Task: "w", Position: 2, Role: "implementer", AgentKey: "b"},
+	}); again[0].Agent != got[0].Agent || again[1].Agent != got[2].Agent {
+		t.Errorf("a later version names key a %q and key b %q, want each the name it had, %q and %q", again[0].Agent, again[1].Agent, got[0].Agent, got[2].Agent)
+	}
+}

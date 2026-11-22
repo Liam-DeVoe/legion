@@ -23,8 +23,11 @@ const maxAgentName = 32
 //
 //  1. A step of the key owner has no name: its agent is the tree's architect, whose token names the
 //     tree and no name on the issue.
-//  2. Each other key that an earlier row names takes the name of that row. Every such key is named
-//     before any other pass gives a name.
+//  2. Each other key that an earlier row names takes the name of its latest such row. Every such
+//     key is named before any other pass gives a name. Two keys can have held one name in turn —
+//     a key the version did not name freed it, and another key took it by pass 4 — and where the
+//     version names both, the name goes to the key whose row held it last, whose agent ran on the
+//     name's claim last; the other key is named by pass 4, so no name is given twice.
 //  3. Each step with no key takes the name of the latest earlier row of its task, place and role
 //     with no key, unless pass 2 or an earlier step of this pass gave that name.
 //  4. Each agent still with no name, in the order of its first step, takes the role of that first
@@ -40,10 +43,22 @@ func NameAgents(earlier, steps []PlanStep) []PlanStep {
 		return plan.AgentOf(s.Task, s.Position, plan.Step{Role: s.Role, Key: s.AgentKey})
 	}
 	keyNames := map[string]claim.Agent{}
+	lastHolder := map[claim.Agent]string{}
 	for _, row := range earlier {
-		if agent := agentOf(row); agent.Key != "" && !agent.Owner() {
-			if _, ok := keyNames[agent.Key]; !ok && row.AgentName() != "" {
-				keyNames[agent.Key] = row.AgentName()
+		if agent := agentOf(row); agent.Key != "" && !agent.Owner() && row.AgentName() != "" {
+			keyNames[agent.Key] = row.AgentName()
+			lastHolder[row.AgentName()] = agent.Key
+		}
+	}
+	// claimants is how many keys of steps would take each name by pass 2.
+	claimants := map[claim.Agent]map[string]bool{}
+	for _, step := range named {
+		if agent := agentOf(step); agent.Key != "" && !agent.Owner() {
+			if name, ok := keyNames[agent.Key]; ok {
+				if claimants[name] == nil {
+					claimants[name] = map[string]bool{}
+				}
+				claimants[name][agent.Key] = true
 			}
 		}
 	}
@@ -58,7 +73,7 @@ func NameAgents(earlier, steps []PlanStep) []PlanStep {
 	for _, step := range named {
 		if agent := agentOf(step); agent.Owner() {
 			give(agent, "")
-		} else if name, ok := keyNames[agent.Key]; ok && agent.Key != "" {
+		} else if name, ok := keyNames[agent.Key]; ok && agent.Key != "" && (len(claimants[name]) == 1 || lastHolder[name] == agent.Key) {
 			give(agent, name)
 		}
 	}
