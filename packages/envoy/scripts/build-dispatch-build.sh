@@ -138,9 +138,11 @@ readonly src=$out/src
 # The JavaScript parts: the install, the Go contracts the server compiles (regenerated, never the
 # copy in the tree) and the contracts bundle, then the web app and the command. The install, the
 # codegen and the web app are in the order the commit's image build makes them.
-# --ignore-scripts: nothing built here loads better-sqlite3, the one package whose install script
-# fetches anything (its prebuilt binary from a GitHub release, else node-gyp and Node's headers),
-# and CI's own installs of the tree skip the scripts the same way.
+# --ignore-scripts: nothing built here needs a dependency's install script. better-sqlite3's
+# fetches its prebuilt binary from a GitHub release, else runs node-gyp@latest, which fetches
+# Node's headers, all outside the lockfile's integrity; esbuild's checks the platform binary the
+# lockfile already installs, and fetches one only when it is missing. CI's own installs of the
+# tree skip the scripts the same way.
 (cd -- "$src" && bun install --frozen-lockfile --ignore-scripts) ||
   fail "bun install --frozen-lockfile --ignore-scripts failed in the archive of $sha."
 (cd -- "$src/packages/contracts" && bun run gen:go && bun run build) ||
