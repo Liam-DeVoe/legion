@@ -297,14 +297,16 @@ func (s *server) listCredentialPending(w http.ResponseWriter, r *http.Request) {
 // revocation at a greater generation. A deny mints nothing and names no account.
 //
 // The account and the generation go only to a broker whose settings say it takes them
-// (cipher.Client.TakesApproverFields, a read at most cipher.ApproverFieldsTTL old): a broker from
-// before them refuses an approve carrying any of them 400 INVALID_DECISION, so to such a broker,
-// or when its settings cannot be read, the approve carries the approver and the code alone. The
-// read comes after the re-read, so a refused caller asks the broker nothing, and it and the relay
-// share one deadline, the client's window (cipher.New's five seconds) from the end of the re-read
-// (relayDeadline): so the approve reaches the broker within that window of its check or not at all,
-// the bound the broker's in-flight window counts (machine.ApprovalInFlightWindow), however long the
-// read takes.
+// (cipher.Client.TakesApproverFields): a broker that answers its settings without approver_fields,
+// one from before them, refuses an approve carrying any of them 400 INVALID_DECISION, so it is
+// sent the approver and the code alone. Settings that cannot be read leave that unknown, and the
+// approve is relayed to no broker (writeApproverFieldsUnread): sent without the fields to a broker
+// that takes them, it would leave that broker's account and generation checks to its 50-second
+// fallback. The read comes after the re-read, so a refused caller asks the broker nothing, and it
+// and the relay share one deadline, the client's window (cipher.New's five seconds) from the end of
+// the re-read (relayDeadline): so the approve reaches the broker within that window of its check or
+// not at all, the bound the broker's in-flight window counts (machine.ApprovalInFlightWindow),
+// however long the read takes.
 //
 // A restricted member's approve is relayed holding their approval lock (relayMachineLoginApproval).
 func (s *server) approveCredentialRecord(w http.ResponseWriter, r *http.Request) {
@@ -335,7 +337,12 @@ func (s *server) approveCredentialRecord(w http.ResponseWriter, r *http.Request)
 	}
 	relay, cancel := relayDeadline(r.Context(), client)
 	defer cancel()
-	if client.TakesApproverFields(relay) {
+	fields, err := client.TakesApproverFields(relay)
+	if err != nil {
+		writeApproverFieldsUnread(w, err)
+		return
+	}
+	if fields {
 		if account.subject != "" && s.deps.SignInIssuer != "" {
 			decision.ApproverIssuer, decision.ApproverSubject = s.deps.SignInIssuer, account.subject
 			if account.issuer != "" {
@@ -361,6 +368,22 @@ func relayDeadline(ctx context.Context, client *cipher.Client) (context.Context,
 		return context.WithDeadline(ctx, time.Now().Add(window))
 	}
 	return context.WithCancel(ctx)
+}
+
+// writeApproverFieldsUnread answers an approve whose broker settings could not be read
+// (cipher.Client.TakesApproverFields failed), which relays nothing: 500
+// AGENT_SECRETS_ACCOUNT_TOKEN_UNREADABLE when Dispatch could not read its own ServiceAccount token,
+// as relayBrokerResponse answers it, and otherwise 503 AGENT_SECRETS_SETTINGS_UNREAD, logged at
+// WARN with the read's error, for the person to approve again.
+func writeApproverFieldsUnread(w http.ResponseWriter, err error) {
+	var tokenErr *cipher.AccountTokenError
+	if errors.As(err, &tokenErr) {
+		relayBrokerResponse(w, nil, err)
+		return
+	}
+	slog.Warn("dispatch: the secrets broker's settings could not be read, so whether it takes a machine-login approve's approver fields is unknown and the approve was not relayed", "error", err)
+	writeError(w, "AGENT_SECRETS_SETTINGS_UNREAD", http.StatusServiceUnavailable,
+		"the secrets broker's settings could not be read, so the approval was not sent to it; approve again in a moment")
 }
 
 // relayMachineLoginApproval relays a restricted member's approve of their own machine login while

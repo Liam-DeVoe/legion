@@ -9,15 +9,19 @@ import (
 	"time"
 )
 
-// TestTakesApproverFieldsFollowsTheBrokerWithinItsWindow: TakesApproverFields answers from one read
-// of the broker's GET /v1/settings for ApproverFieldsTTL, on a clock the test holds, and reads again
-// once that window has passed, so a broker that starts or stops saying approver_fields true is
-// followed within the window and not before. A read that fails answers false even after a read
-// that said true, and so does a caller whose context ends before the read answers. Each step names
-// the reads it expects, so a window that never lapses, or one that lapses early, fails here.
+// TestTakesApproverFieldsFollowsTheBrokerWithinItsWindow: TakesApproverFields answers from one
+// definite read of the broker's GET /v1/settings (approver_fields true, or settings answered 200
+// without it) for ApproverFieldsTTL, on a clock the test holds, and reads again once that window has
+// passed, so a broker that starts or stops saying approver_fields true is followed within the
+// window and not before. A read that fails is an error, never an answer, even after a read that
+// said true, and is not remembered; so is a settings answer that is not a JSON object or whose
+// approver_fields is not a boolean, and a caller whose context ends before the read answers. Each
+// step names the reads it expects, so a window that never lapses, or one that lapses early, fails
+// here.
 //
-// Control: fresh answering every remembered read as fresh (its window never lapsing) fails the
+// Controls: fresh answering every remembered read as fresh (its window never lapsing) fails the
 // first flip: the broker says true, and the client goes on answering the false it read first.
+// TakesApproverFields answering a failed read as false, with no error, fails the failed-read step.
 func TestTakesApproverFieldsFollowsTheBrokerWithinItsWindow(t *testing.T) {
 	var (
 		mu      sync.Mutex
@@ -62,8 +66,18 @@ func TestTakesApproverFieldsFollowsTheBrokerWithinItsWindow(t *testing.T) {
 	step := func(at time.Duration, want bool, wantReads int, what string) {
 		t.Helper()
 		now = start.Add(at)
-		if got := client.TakesApproverFields(ctx); got != want {
-			t.Fatalf("%s (at +%s): TakesApproverFields = %t, want %t", what, at, got, want)
+		if got, err := client.TakesApproverFields(ctx); err != nil || got != want {
+			t.Fatalf("%s (at +%s): TakesApproverFields = %t, %v; want %t, no error", what, at, got, err, want)
+		}
+		if got := readCount(); got != wantReads {
+			t.Fatalf("%s (at +%s): the broker's settings were read %d times, want %d", what, at, got, wantReads)
+		}
+	}
+	unread := func(at time.Duration, wantReads int, what string) {
+		t.Helper()
+		now = start.Add(at)
+		if got, err := client.TakesApproverFields(ctx); err == nil {
+			t.Fatalf("%s (at +%s): TakesApproverFields = %t with no error, want an error: the settings could not be read", what, at, got)
 		}
 		if got := readCount(); got != wantReads {
 			t.Fatalf("%s (at +%s): the broker's settings were read %d times, want %d", what, at, got, wantReads)
@@ -81,11 +95,17 @@ func TestTakesApproverFieldsFollowsTheBrokerWithinItsWindow(t *testing.T) {
 	answer(`{"secret_type_tag":true,"approver_fields":true}`, http.StatusOK)
 	step(3*ApproverFieldsTTL, true, 4, "the broker says approver_fields again")
 	answer(`{"code":"INTERNAL","error":"down"}`, http.StatusInternalServerError)
-	step(4*ApproverFieldsTTL, false, 5, "a failed read after one that said true")
-	step(4*ApproverFieldsTTL, false, 6, "a failed read is not remembered: the next ask reads again")
+	unread(4*ApproverFieldsTTL, 5, "a failed read after one that said true")
+	unread(4*ApproverFieldsTTL, 6, "a failed read is not remembered: the next ask reads again")
+	answer(`<html>default backend</html>`, http.StatusOK)
+	unread(4*ApproverFieldsTTL, 7, "a 200 that is no JSON object")
+	answer(`null`, http.StatusOK)
+	unread(4*ApproverFieldsTTL, 8, "a 200 that is null")
+	answer(`{"approver_fields":"yes"}`, http.StatusOK)
+	unread(4*ApproverFieldsTTL, 9, "an approver_fields that is no boolean")
 
-	// A caller whose context ends before the read answers is answered false, and the read goes on:
-	// the next caller joins it, or finds what it remembered, and is answered the broker's true
+	// A caller whose context ends before the read answers is answered an error, and the read goes
+	// on: the next caller joins it, or finds what it remembered, and is answered the broker's true
 	// with no read of its own.
 	answer(`{"secret_type_tag":true,"approver_fields":true}`, http.StatusOK)
 	release := make(chan struct{})
@@ -95,18 +115,18 @@ func TestTakesApproverFieldsFollowsTheBrokerWithinItsWindow(t *testing.T) {
 	now = start.Add(5 * ApproverFieldsTTL)
 	ended, cancel := context.WithCancel(ctx)
 	cancel()
-	if client.TakesApproverFields(ended) {
-		t.Fatal("a caller whose context ended before the settings read answered was answered true, want false")
+	if got, err := client.TakesApproverFields(ended); err == nil {
+		t.Fatalf("a caller whose context ended before the settings read answered was answered %t with no error, want an error", got)
 	}
 	mu.Lock()
 	holding = nil
 	mu.Unlock()
 	close(release)
 	// The clock stays where it is: the read left running reads it.
-	if !client.TakesApproverFields(ctx) {
-		t.Fatal("the next caller, after the ended caller's read was let answer, was answered false, want the broker's true")
+	if got, err := client.TakesApproverFields(ctx); err != nil || !got {
+		t.Fatalf("the next caller, after the ended caller's read was let answer, was answered %t, %v; want the broker's true", got, err)
 	}
-	if got := readCount(); got != 7 {
-		t.Fatalf("the next caller made the broker's settings be read %d times in all, want 7: it joins the read left running, or finds what that read remembered", got)
+	if got := readCount(); got != 10 {
+		t.Fatalf("the next caller made the broker's settings be read %d times in all, want 10: it joins the read left running, or finds what that read remembered", got)
 	}
 }
