@@ -569,9 +569,12 @@ holds, clamped as a creator clamps a start past the stream's end; the reserved r
 fixed name only as its open replace's old name, with no current. Then the fixed name is deleted
 and the fresh name created at S with the fixed name's configuration (the inactive threshold
 `prepare` read, not the raised one) and published as the record's current. A failed delete of the
-fixed name stops `convert`, the fixed name retired nowhere. A name whose
-fixed name is gone gets a record with no current, starting at the lowest of the cohort's floor + 1,
-the hold token's start and the record's start. It lists again until a listing holds no fixed name,
+fixed name stops `convert`, the fixed name retired nowhere. When the fresh name is published while
+the fixed name is still on the stream, the replace stays open, the fresh name its current, until
+the server confirms the fixed name's delete; a failed delete stops `convert`, and its next run
+deletes the fixed name first, then closes the replace. A name whose fixed name is gone gets a
+record with no current, starting at the lowest of the cohort's floor + 1, the hold token's start
+and the record's start. It lists again until a listing holds no fixed name,
 then writes each family's broker cutover row `done` and its store's marker `done`: the bucket's
 with this cutover's B and hold, each daemon's with the stream's last sequence + 1 and the stream's
 identity. It prints `hold ID: converted N of M fixed names; the final listing holds no fixed name;

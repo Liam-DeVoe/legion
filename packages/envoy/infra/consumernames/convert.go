@@ -786,6 +786,9 @@ func (c convertRule) convertName(ctx context.Context, r *run, nc *nats.Conn, nam
 // settle is Step 0 for convert: it settles record's open operation, writing the record, and
 // answers selection.ErrConflict when the write was refused, so the caller reads again.
 //
+//   - a replace of the fixed name F whose candidate is already the current, published with F's
+//     delete not yet confirmed: F is deleted first, before anything else, then the operation
+//     cleared (convertFinishFixedDelete).
 //   - replace (old O, candidate N, start S): N present is published, O retired (unless it is the
 //     fixed name, which no record retires) and deleted; N absent, once the operation is
 //     convertSettleAge old: O, when it is the logical's fixed name F, is deleted first (plan §3
@@ -798,6 +801,9 @@ func (c convertRule) convertName(ctx context.Context, r *run, nc *nats.Conn, nam
 //     cleared.
 func (c convertRule) settle(ctx context.Context, r *run, nc *nats.Conn, st familyStore, m member, name convertSetName, bound *prepareCohortMember, record selection.Record, revision uint64) error {
 	op := record.Op
+	if op.Kind == selection.OpReplace && op.Candidate != "" && op.Candidate == record.Current && op.Old == m.Fixed {
+		return convertFinishFixedDelete(ctx, nc, st, m, record, revision)
+	}
 	// dropCandidate retires op's candidate and clears the operation, its start kept.
 	dropCandidate := func() error {
 		next := retire(convertClone(record), m.Fixed, op.Candidate)
@@ -974,12 +980,16 @@ func (c convertRule) launch(ctx context.Context, r *run, nc *nats.Conn, st famil
 	}
 }
 
-// publish makes the candidate info created the record's current, retires the operation's old
-// name unless it is the logical's fixed name (retire) and clears the operation, then deletes the
-// old name (retired, so cleanup deletes it if this delete fails; the fixed name, which convert's
-// rerun and final listing delete again).
+// publish makes the candidate info created the record's current. A replace of a name that is not
+// the logical's fixed name retires that old name (retire), clears the operation, then deletes the
+// old name (retired, so cleanup deletes it if this delete fails). A replace of the fixed name F, a
+// convert's own, stays open, its candidate now the current, until the server confirms F's delete
+// (convertFinishFixedDelete), as the selection library's publish keeps it: a failed delete of F
+// stops convert with F named by the open replace, never retired, so the next run's Step 0 (settle)
+// deletes F first, before anything else.
 func (c convertRule) publish(ctx context.Context, nc *nats.Conn, st familyStore, m member, record selection.Record, revision uint64, info *jetstream.ConsumerInfo) error {
 	op := record.Op
+	fixedOld := op.Kind == selection.OpReplace && op.Old == m.Fixed
 	next := convertClone(record)
 	next.Current = op.Candidate
 	if info.Config.DeliverPolicy == jetstream.DeliverByStartSequencePolicy && info.Config.OptStartSeq > 0 {
@@ -988,14 +998,36 @@ func (c convertRule) publish(ctx context.Context, nc *nats.Conn, st familyStore,
 	if op.Kind == selection.OpReplace {
 		next = retire(next, m.Fixed, op.Old)
 	}
-	next.Op, next.LastFloor, next.Restore = nil, nil, nil
-	if _, err := st.Write(ctx, m.Logical, next, revision); err != nil {
+	next.LastFloor, next.Restore = nil, nil
+	if !fixedOld {
+		next.Op = nil
+	}
+	written, err := st.Write(ctx, m.Logical, next, revision)
+	if err != nil {
 		return err
 	}
-	if op.Kind == selection.OpReplace && op.Old != "" {
+	switch {
+	case fixedOld:
+		return convertFinishFixedDelete(ctx, nc, st, m, next, written)
+	case op.Kind == selection.OpReplace && op.Old != "":
 		_ = deleteOwned(ctx, nc, m, op.Old)
 	}
 	return nil
+}
+
+// convertFinishFixedDelete ends record's published replace of the logical's fixed name F, whose
+// candidate is already the current: it deletes F (deleteOwned) and, once the server confirms the
+// delete or holds no such consumer, clears the operation. A delete that fails is convert's error,
+// naming F, and leaves the operation open, so the next run's settle deletes F again before anything
+// else.
+func convertFinishFixedDelete(ctx context.Context, nc *nats.Conn, st familyStore, m member, record selection.Record, revision uint64) error {
+	if err := deleteOwned(ctx, nc, m, record.Op.Old); err != nil {
+		return fmt.Errorf("delete %s, %s's fixed name, whose replace stays open, its candidate %s the current, until that delete is confirmed: %w", record.Op.Old, m.Logical, record.Current, err)
+	}
+	next := convertClone(record)
+	next.Op = nil
+	_, err := st.Write(ctx, m.Logical, next, revision)
+	return err
 }
 
 // convertConsumerConfig is the fresh consumer name's configuration: F's, renamed, started by start

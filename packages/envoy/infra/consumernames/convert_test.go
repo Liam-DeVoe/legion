@@ -1028,6 +1028,76 @@ func TestConvertStopsOnAFailedDeleteOfTheFixedNameAndNeverRetiresIt(t *testing.T
 	}
 }
 
+// convert's publish of a replace of K's fixed name F keeps the replace open, its candidate N now
+// K's current, until the server confirms F's delete, as the selection library's publish does: a
+// failed delete of F stops convert with the record naming F as the open replace's old name, so the
+// next run's Step 0 deletes F first, before anything else, then closes the replace. The record
+// planted is a convert's reservation whose candidate N the server holds beside F (a run cut after
+// N's create); the failed delete is the server's own, F's delete subject denied to the operator
+// (grantsNewRig). Control: 3780df9cc4's publish, which cleared the replace before its delete and
+// ignored a failed one, leaving F on the stream with no operation naming it.
+func TestAFailedDeleteOfTheFixedNameKeepsConvertsReplaceOpen(t *testing.T) {
+	ctx := context.Background()
+	fixed := sessionFixedPrefix + "ses_grant"
+	refused := convertConsumerSubject("DELETE", fixed)
+	grant := natsgrant.Operator(natsgrant.OperatorPhaseHeld)
+	grant.PublishDeny = append(slices.Clone(grant.PublishDeny), refused)
+	m, ok := classify(fixed)
+	require.True(t, ok)
+	g := grantsNewRig(t, 3, grant)
+	id := g.hold(holdrecord.WorkflowCutover, natsgrant.OperatorPhaseHeld)
+	g.notifications(3)
+	g.fixed()
+	value, err := json.Marshal(prepareCohort{Boundary: 1, Members: []prepareCohortMember{{Family: familySession, Logical: m.Logical, Fixed: fixed}}})
+	require.NoError(t, err)
+	_, err = g.records.PutRecord(ctx, id, prepareCohortKind, prepareCohortKey, 0, value)
+	require.NoError(t, err)
+	grantsSessionBucket(g, id)
+	store := selection.NewKVStore(selection.ConnRequester{Conn: g.hub.admin})
+	info, err := consumerInfo(ctx, g.hub.admin, notifications, fixed)
+	require.NoError(t, err)
+	candidate := selection.FreshName(m.Prefix)
+	_, err = writeConsumer(ctx, g.hub.admin, notifications, convertConsumerConfig(info.Config, candidate, 1, m), actionCreateConsumer)
+	require.NoError(t, err)
+	_, err = store.Write(ctx, m.Logical, selection.Record{Start: 1, Op: &selection.Op{Kind: selection.OpReplace, Old: fixed, Candidate: candidate,
+		ReservedAt: time.Now().Add(-time.Hour), Owner: convertOwner()}}, 0)
+	require.NoError(t, err)
+
+	code, _, stderr := createBucketRun(t, ctx, g.env(), actionConvert, "--hold", id)
+	require.Contains(t, stderr, `Permissions Violation for Publish to "`+refused+`"`)
+	record, _, err := store.Read(ctx, m.Logical)
+	require.NoError(t, err)
+	require.Equal(t, candidate, record.Current, "the publish made N K's current")
+	require.NotNil(t, record.Op, "the failed delete of F left K's replace closed, F named by no operation")
+	require.Equal(t, selection.OpReplace, record.Op.Kind)
+	require.Equal(t, fixed, record.Op.Old)
+	require.Equal(t, candidate, record.Op.Candidate)
+	require.NotContains(t, record.Retired, fixed, "K's record retires F")
+	require.NoError(t, checkRecordFence(familySession, m.Logical, record))
+	require.Equal(t, 1, code, "convert stops on the failed delete of F: %s", stderr)
+	require.Contains(t, stderr, "delete "+fixed+", ")
+	still, err := consumerInfo(ctx, g.hub.admin, notifications, fixed)
+	require.NoError(t, err)
+	require.NotNil(t, still, "F is gone after its refused delete")
+
+	// The next run, on a connection whose grant lets it delete F: Step 0 deletes F first, then
+	// closes the replace, and convert is done.
+	e := g.env()
+	e.connect = func(context.Context, options) (*nats.Conn, error) {
+		return nats.Connect(g.hub.url, nats.CustomInboxPrefix(natsgrant.OperatorInbox), nats.Name("envoy-infra consumer-names"), nats.Timeout(10*time.Second))
+	}
+	code, _, stderr = createBucketRun(t, ctx, e, actionConvert, "--hold", id)
+	require.Zero(t, code, "convert's next run: %s", stderr)
+	gone, err := consumerInfo(ctx, g.hub.admin, notifications, fixed)
+	require.NoError(t, err)
+	require.Nil(t, gone, "the next run left F on the stream")
+	record, _, err = store.Read(ctx, m.Logical)
+	require.NoError(t, err)
+	require.Nil(t, record.Op, "the next run left K's replace open")
+	require.Equal(t, candidate, record.Current, "the next run made K another fresh name than N")
+	require.NotContains(t, record.Retired, fixed)
+}
+
 // The runbook's procedure for a record status marks malformed, in a cutover hold: convert stops on
 // it as UNKNOWN (exit 2) after it saved its set, naming K's record; replay --key K --from SEQ then
 // writes K's record anew over the value, naming the value it replaced; and convert's rerun converts
