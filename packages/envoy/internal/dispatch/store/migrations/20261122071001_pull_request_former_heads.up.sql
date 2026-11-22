@@ -138,14 +138,17 @@
 -- stored under an old name can stay open, unread, while the row under the canonical name closes
 -- and reopens, and the head it stands at is of the lifecycle the close ended. A record of another
 -- name can commit after a record of a later place was applied; whatever the order, a row of
--- history stays only where its place is after the pull request's last end, so the settler answers
--- as it would have, had every record committed in the order of its places. An application that
--- changes the
--- history owes the issue that holds the pull request when it applies, in its own transaction,
--- not only the issue a writer saw when it recorded the change: a record's own trigger marks the
--- issue its writer saw, which may have given the pull request up, and settled, before the record
--- was applied. So apply, like the answer (below), marks owed each issue an open row of the pull
--- request is at, but the issue whose settle applies it, which reads the history next anyway.
+-- history stays only where its place is after the pull request's last end, and each commit an end
+-- drops, or a move on keeps nothing of, is left again where a result there was recorded after the
+-- end (pull_request_former_heads_leave_again: a row holds the place of what put it there first,
+-- and a later result's pending row is taken once, so a late end would otherwise drop what that
+-- result supplied), so the settler answers as it would have, had every record committed in the
+-- order of its places. An application that changes the history owes the issue that holds the
+-- pull request when it applies, in its own transaction, not only the issue a writer saw when it
+-- recorded the change: a record's own trigger marks the issue its writer saw, which may have given
+-- the pull request up, and settled, before the record was applied. So apply, like the answer
+-- (below), marks owed each issue an open row of the pull request is at, but the issue whose settle
+-- applies it, which reads the history next anyway.
 --
 -- pull_request_former_heads_resolve(name, number) is the identity of a pull request a name and a
 -- number stand for today: the identity of that name where the settler met it before, else the
@@ -353,14 +356,16 @@ create function pull_request_former_heads_pull_of(text, integer) returns integer
 $$;
 
 -- Joins identity $2 into $1: $2's names, rows of history and rows of the settler's state become
--- $1's, the later of their ends stands, and every row of history reached before it goes. The
--- joined pull request is of a generation after both, so no answer read about either before the
+-- $1's, the later of their ends stands, and every row of history reached before it goes, each
+-- left again where a result there was recorded after that end (pull_request_former_heads_leave_again).
+-- The joined pull request is of a generation after both, so no answer read about either before the
 -- join applies to it. Called by pull_request_former_heads_resolve alone, which holds the
 -- registry's lock alone, so no other transaction holds the lock of either identity.
 create function pull_request_former_heads_join(integer, integer) returns void language plpgsql as $$
 declare
   last_end bigint;
   last_generation integer;
+  gone text[];
 begin
   update pull_request_former_heads_aliases set pull = $1 where pull = $2;
   insert into pull_request_former_heads (pull, head_sha, left_at, verified, since)
@@ -379,7 +384,11 @@ begin
   delete from pull_request_former_heads_pulls where pull = $2;
   update pull_request_former_heads_pulls set ended = last_end, generation = last_generation where pull = $1;
   if last_end is not null then
-    delete from pull_request_former_heads where pull = $1 and (since is null or since < last_end);
+    with ended as (
+      delete from pull_request_former_heads former where former.pull = $1 and (former.since is null or former.since < last_end)
+      returning former.head_sha
+    ) select coalesce(array_agg(ended.head_sha), '{}') into gone from ended;
+    perform pull_request_former_heads_leave_again($1, gone);
   end if;
 end $$;
 
@@ -460,14 +469,17 @@ end $$;
 
 -- Applies the records of the pull request of an identity, the records of each of its names, in the
 -- order of their places, and deletes them (above); each close or merge it applies starts the next
--- generation. Where that changes the pull request's history, it marks owed, in the same
--- transaction, each issue that holds an open row of the pull request now, but $2, the issue whose
--- settle applies it and computes its states next: the issue a writer saw when it recorded the
--- change may hold the pull request no more, and the issue that holds it now may have settled
--- before this application. A move of the row to another issue that commits after this read marks
--- that issue owed itself (pull_request_former_heads_begin, check_states_owe_head), and that issue's
--- drain waits for this transaction's lock of the pull request, so it reads this history. The
--- caller holds the pull request's lock. Answers how many records it applied.
+-- generation. Each commit an end drops from the history, and each head an open row leaves whose
+-- visit, reached before the last end, keeps nothing, it leaves again where a result there was
+-- recorded after that end (pull_request_former_heads_leave_again), once the end is stored. Where
+-- that changes the pull request's history, it marks owed, in the same transaction, each issue that
+-- holds an open row of the pull request now, but $2, the issue whose settle applies it and computes
+-- its states next: the issue a writer saw when it recorded the change may hold the pull request no
+-- more, and the issue that holds it now may have settled before this application. A move of the
+-- row to another issue that commits after this read marks that issue owed itself
+-- (pull_request_former_heads_begin, check_states_owe_head), and that issue's drain waits for this
+-- transaction's lock of the pull request, so it reads this history. The caller holds the pull
+-- request's lock. Answers how many records it applied.
 create function pull_request_former_heads_apply(integer, text) returns integer language plpgsql as $$
 declare
   taken pull_request_former_heads_moves[];
@@ -477,6 +489,8 @@ declare
   last_generation integer;
   entered bigint;
   changed boolean := false;
+  dropped text[] := '{}';
+  gone text[];
 begin
   select coalesce(array_agg(applied order by applied.seq), '{}'), coalesce(array_agg(applied.seq), '{}')
   into taken, seqs
@@ -502,6 +516,9 @@ begin
         on conflict (pull, head_sha) do update set left_at = greatest(pull_request_former_heads.left_at, excluded.left_at),
           verified = true, since = greatest(pull_request_former_heads.since, excluded.since);
         changed := true;
+      else
+        -- Reached in a lifecycle that ended: the visit keeps nothing, a result after the end may.
+        dropped := dropped || fact.old_head;
       end if;
     elsif fact.op <> 'DELETE' and not fact.new_open and (fact.old_open or (fact.old_open is null and (last_end is null
         or exists (select 1 from pull_request_former_heads_rows open_row where open_row.pull = $1)))) then
@@ -512,8 +529,12 @@ begin
       -- a result recorded while the pull request was closed stays of the next lifecycle.
       last_end := greatest(last_end, fact.seq);
       last_generation := last_generation + 1;
-      delete from pull_request_former_heads former where former.pull = $1 and (former.since is null or former.since < last_end);
-      changed := changed or found;
+      with ended as (
+        delete from pull_request_former_heads former where former.pull = $1 and (former.since is null or former.since < last_end)
+        returning former.head_sha
+      ) select coalesce(array_agg(ended.head_sha), '{}') into gone from ended;
+      dropped := dropped || gone;
+      changed := changed or cardinality(gone) > 0;
     end if;
     if fact.op = 'DELETE' or not fact.new_open then
       delete from pull_request_former_heads_rows where pull = $1 and repo = fact.repo;
@@ -523,6 +544,9 @@ begin
     end if;
   end loop;
   update pull_request_former_heads_pulls set ended = last_end, generation = last_generation where pull = $1;
+  if pull_request_former_heads_leave_again($1, dropped) then
+    changed := true;
+  end if;
   if changed then
     perform check_states_owe(holder.issue_key) from (
       select distinct head.issue_key from pull_request_heads head
@@ -581,8 +605,11 @@ $$;
 -- holds no row of the commit yet, and only where the commit's result is of the lifecycle that has
 -- not ended: its place (pull_request_former_heads_results, of the issue given) is after the pull
 -- request's last end, or, for a result recorded before this release, which has none, no end is
--- known (above). The candidate's since is that place. Answers whether it left one. It takes no lock
--- itself: the install holds the tables, and the drain takes the pull request's lock first.
+-- known (above). The candidate's since is that place. A commit the history holds a row of keeps
+-- that row and its since, and the result's place stays in pull_request_former_heads_results, from
+-- which an end that drops the row leaves the commit again (pull_request_former_heads_leave_again).
+-- Answers whether it left one. It takes no lock itself: the install holds the tables, and the drain
+-- takes the pull request's lock first.
 create function pull_request_former_heads_leave(integer, text, text[]) returns boolean language plpgsql as $$
 begin
   insert into pull_request_former_heads (pull, head_sha, verified, since)
@@ -601,6 +628,39 @@ begin
       where alias.pull = $1 and head.state = 'open' and head.head_sha = candidate.commit_sha)
   on conflict (pull, head_sha) do nothing;
   return found;
+end $$;
+
+-- Leaves again, by pull_request_former_heads_leave, for each issue an open row of the pull request
+-- of an identity is at, each commit given: a row of history an end of its lifecycle just dropped,
+-- or a head an open row of it left whose visit, reached before the end, keeps nothing. A row of
+-- history holds one since, the place of what put it there first, and a result recorded at its
+-- commit later leaves no row of its own, its pending row taken; so where the end that drops the
+-- row is applied after that result, as when the close commits late, the result's place, kept in
+-- pull_request_former_heads_results, must leave the commit again, as it would have, had the end
+-- been applied first; and a result recorded while the commit was an open head, which left nothing
+-- then, leaves it once the head is left. Each issue's own results decide, after the end stored in
+-- pull_request_former_heads_pulls, so the history is the same whatever order the end, the result
+-- and the move are applied in. Its caller holds the pull request's lock, or the registry's alone.
+-- Answers whether it left one.
+create function pull_request_former_heads_leave_again(integer, text[]) returns boolean language plpgsql as $$
+declare
+  holder text;
+  commits text[] := array(select distinct dropped.commit_sha from unnest($2) as dropped (commit_sha));
+  left_one boolean := false;
+begin
+  if cardinality(commits) = 0 then
+    return false;
+  end if;
+  for holder in
+    select distinct head.issue_key from pull_request_heads head
+    join pull_request_former_heads_aliases alias on alias.repo = lower(head.repo) and alias.number = head.number
+    where alias.pull = $1 and head.state = 'open' and head.issue_key is not null
+  loop
+    if pull_request_former_heads_leave($1, holder, commits) then
+      left_one := true;
+    end if;
+  end loop;
+  return left_one;
 end $$;
 
 -- The snapshot of the pull request of an identity that GitHub's answer about its commits depends

@@ -729,7 +729,7 @@ func TestEveryFormerHeadsTriggerOnAWritersTableOnlyReadsAndAppends(t *testing.T)
 			t.Errorf("found no former heads trigger on %s, so this test holds nothing there to the rule", table)
 		}
 	}
-	waits := regexp.MustCompile(`(?i)\bfor\s+(no\s+key\s+update|update|key\s+share|share)\b|\block\s+table\b|\b[a-z_]*lock[a-z_]*\s*\(|\bon\s+conflict\b|\bupdate\s+[a-z_.]+\s+set\b|\bdelete\s+from\b|\bpull_request_former_heads_(fold|drain|leave|apply|resolve|join)\s*\(`)
+	waits := regexp.MustCompile(`(?i)\bfor\s+(no\s+key\s+update|update|key\s+share|share)\b|\block\s+table\b|\b[a-z_]*lock[a-z_]*\s*\(|\bon\s+conflict\b|\bupdate\s+[a-z_.]+\s+set\b|\bdelete\s+from\b|\bpull_request_former_heads_(fold|drain|leave|leave_again|apply|resolve|join)\s*\(`)
 	inserts := regexp.MustCompile(`(?i)\binsert\s+into\s+([a-z_][a-z0-9_]*)`)
 	appended := map[string]bool{}
 	for _, f := range functions {

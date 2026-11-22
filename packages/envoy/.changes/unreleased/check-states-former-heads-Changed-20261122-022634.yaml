@@ -97,7 +97,11 @@ body: |-
     result there was recorded after the last close, or, recorded before the release, where no close
     is known, so a reopen never brings back a result or a head of the lifecycle its close ended,
     however healthy the read of the commits, while a result recorded since the close, and a head the
-    reopened pull request visits, count in the new lifecycle; the delete of an
+    reopened pull request visits, count in the new lifecycle, in whatever order the close, the
+    result and a move commit and are applied: a close applied after a result at a commit the
+    history already held, or a move on from a head reached before the close, leaves that commit
+    again where a result there was recorded after the close (`pull_request_former_heads_leave_again`),
+    as applying the close first does; the delete of an
     open row stored under a repository's old name, the re-key, keeps that row's head in the one
     history, and its trigger marks the canonical row's issue owed in the delete's own transaction,
     whichever build deletes it, so that head's states are published; and every application that
