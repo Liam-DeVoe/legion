@@ -3,8 +3,11 @@ package docs
 import (
 	"context"
 	"reflect"
+	"slices"
 	"sync/atomic"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -150,10 +153,11 @@ func keptAskState(ask model.Ask, copied string) func(*pmdoc.Node) bool {
 
 // withoutUnkeptAskAttributes takes off node, an ask block, what no version written once the fleet
 // is one build holds - the answer's words and selection (answerWords), and an open state, which a
-// version keeps of no ask (keptAskState) - and reports whether it held any. It is that write for a
-// writer that reads no ask row (storableVersionTree, the decisions step's writePresent): the rest
-// stays as the live tree holds it, which every write of an ask's state keeps in step with it
-// (keptAskState).
+// version keeps of no ask (keptAskState) - and reports whether it held any. It is that write, for
+// a block that has an ask (askBlocksWithAnAsk), of a writer that reads no ask's state: a version
+// written without settling (storableVersionTree) and the decisions step's restore (writePresent).
+// The rest stays as the live tree holds it, which every write of an ask's state keeps in step with
+// it (keptAskState).
 //
 // kept for one release: stored-ask-state
 func withoutUnkeptAskAttributes(node *pmdoc.Node) bool {
@@ -366,8 +370,10 @@ func askStringItems(value any) ([]string, bool) {
 // withoutStoredAskAttributes takes the seven attributes a version can store
 // (storedAskAttributes) off node, an ask block, and reports whether it held any: the write once
 // the fleet is one build to a block whose ask no write knows - one settlement cannot read and no
-// row indexes, or one the decisions step moves that no row names - whose state is no ask's, a
-// forged state or answerer among them where a browser put them on it.
+// row indexes, one the decisions step moves that no row names, or one a version or the decisions
+// step's restore writes that has no ask row and is no copy (storableVersionTree, writePresent,
+// withoutAsklessAskAttributes) - whose state is no ask's, a forged state or answerer among them
+// where a browser put them on it.
 func withoutStoredAskAttributes(node *pmdoc.Node) bool {
 	changed := false
 	for _, name := range storedAskAttributes() {
@@ -377,6 +383,62 @@ func withoutStoredAskAttributes(node *pmdoc.Node) bool {
 		}
 	}
 	return changed
+}
+
+// holdsKeptAskAttribute reports whether node, an ask block, holds an attribute a version keeps of
+// an ask, which withoutUnkeptAskAttributes leaves on it - a state other than open, an answerer, a
+// time or a copy's provenance (keptAskState) - and which a block that has no ask row and is no
+// copy of an ask holds none of (askBlocksWithAnAsk).
+//
+// kept for one release: stored-ask-state
+func holdsKeptAskAttribute(node *pmdoc.Node) bool {
+	for _, name := range storedAskAttributes() {
+		value, held := node.Attrs[name]
+		if held && !slices.Contains(answerWords[:], name) && (name != "state" || value != asks.StateOpen) {
+			return true
+		}
+	}
+	return false
+}
+
+// askBlocksWithAnAsk is the id of each ask block of tree, the document as a write of it read it,
+// that has an ask: one an ask of document indexes (loadAskBlocks), or a readable block
+// readCopiedAskSources reads as a copy of an ask on another document of its owner, as the close's
+// final sweep tells them apart (readIssueAskStateWrites). Every other ask block of tree has no ask
+// row and is no copy of an ask, so once the fleet is one build it keeps none of the eight (R10),
+// whatever its live tree gives it: the state="resolved" a closed issue's settlement or the close's
+// sweep wrote while another build served (resolveUnindexedAskBlock), or what a browser put on it.
+// The rows are read as the caller's transaction, which holds the document owner's lock, reads
+// them, and the owner only where a block no row indexes is left to read the copies of. It opens
+// no ask from what it reads, so it takes no copy lock.
+//
+// kept for one release: stored-ask-state
+func askBlocksWithAnAsk(ctx context.Context, tx pgx.Tx, document string, tree *pmdoc.Node) (map[string]bool, error) {
+	rows, err := loadAskBlocks(ctx, tx, documentAsksOf(document))
+	if err != nil {
+		return nil, err
+	}
+	withAsk := make(map[string]bool, len(rows))
+	for id := range rows {
+		withAsk[id] = true
+	}
+	blocks, _ := readableAskBlocks(tree)
+	unindexed := unindexedAskBlockIDs(blocks, rows)
+	if len(unindexed) == 0 {
+		return withAsk, nil
+	}
+	owner, err := documentOwner(ctx, tx, document)
+	if err != nil {
+		return nil, err
+	}
+	sources, err := readCopiedAskSources(ctx, tx, document, owner, blocks, unindexed)
+	if err != nil {
+		return nil, err
+	}
+	for id := range sources {
+		withAsk[id] = true
+	}
+	return withAsk, nil
 }
 
 // askReadableWrite is settlement's write to an ask block it reads (readAskBlockStrictly), whose

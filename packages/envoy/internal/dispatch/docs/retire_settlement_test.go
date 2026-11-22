@@ -2,6 +2,7 @@ package docs
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"strings"
 	"testing"
@@ -15,9 +16,9 @@ import (
 // Typing a room holds when its document is retired (RetireDocument) is kept and versions nothing:
 // a browser types into the document's room, the retirement commits before any settlement saves
 // it, and then the room's save runs - the settlement a room's close or the process's shutdown
-// runs. The save stores the typed update, as every settlement stores what it read, and logs that
-// it writes no version of the retired document; the document holds the versions it held before
-// the typing, and no more.
+// runs. The save reads the retirement beside the owner's lock it takes (lockArtifactOwner), stores
+// the typed update, as every settlement stores what it read, and logs that it writes no version of
+// the retired document; the document holds the versions it held before the typing, and no more.
 func TestTheSaveOfARetiredDocumentsTypingKeepsItAndWritesNoVersion(t *testing.T) {
 	logs := &storetest.LockedLog{}
 	logtest.SetDefault(t, slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
@@ -51,7 +52,8 @@ func TestTheSaveOfARetiredDocumentsTypingKeepsItAndWritesNoVersion(t *testing.T)
 	settleCurrentGeneration(t, service, artifactID)
 
 	if after := versions(); after != before {
-		t.Fatalf("the save of the retired document left %d versions, want the %d it held before the typing", after, before)
+		t.Fatalf("the save of the retired document wrote version %d of it, holding %d versions, want the %d it held before the typing",
+			latestVersionNumber(t, service, artifactID), after, before)
 	}
 	stored, err := service.storedTree(ctx, roomTarget(artifactID))
 	if err != nil {
@@ -63,5 +65,47 @@ func TestTheSaveOfARetiredDocumentsTypingKeepsItAndWritesNoVersion(t *testing.T)
 	}
 	if line := logs.Lines(artifactID); !strings.Contains(line, "writes no version of it") {
 		t.Fatalf("the save logged %q, want its line naming the retired document", line)
+	}
+}
+
+// A live write into a retired document (an edit, an ask block's write, a comment's mark) is
+// refused with ErrDocumentRetired, and logged naming the document, where it takes the document
+// owner's lock (joinLiveWrite), the lock the retirement takes: it writes no version and no update.
+func TestALiveWriteIntoARetiredDocumentIsRefusedUnderItsOwnersLock(t *testing.T) {
+	logs := &storetest.LockedLog{}
+	logtest.SetDefault(t, slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	service, artifactID := newTestService(t)
+	seedServiceText(t, service, artifactID, "First.\n")
+	settleCurrentGeneration(t, service, artifactID)
+	ctx := context.Background()
+	before := latestVersionNumber(t, service, artifactID)
+	tx, err := service.store.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the retirement: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := RetireDocument(ctx, tx, artifactID, model.Actor{Kind: "user", ID: "alice"}, "The test retires it."); err != nil {
+		t.Fatalf("retire the document: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit the retirement: %v", err)
+	}
+
+	_, err = joinedReplaceText(service, artifactID, "First.\n\nWritten after the retirement.\n", model.Actor{Kind: "user", ID: "alice"})
+	if !errors.Is(err, ErrDocumentRetired) {
+		t.Fatalf("a write into the retired document answered %v, want ErrDocumentRetired", err)
+	}
+	if after := latestVersionNumber(t, service, artifactID); after != before {
+		t.Fatalf("the refused write into the retired document wrote version %d of it, past its version %d", after, before)
+	}
+	stored, err := service.storedTree(ctx, roomTarget(artifactID))
+	if err != nil {
+		t.Fatalf("read the stored document: %v", err)
+	}
+	if markdown, err := renderTree(stored); err != nil || strings.Contains(markdown, "Written after the retirement.") {
+		t.Fatalf("the stored document reads %q (%v), want nothing of the refused write", markdown, err)
+	}
+	if line := logs.Lines(artifactID); !strings.Contains(line, "refuse a write into a retired document") {
+		t.Fatalf("the refusal logged %q, want its line naming the retired document", line)
 	}
 }

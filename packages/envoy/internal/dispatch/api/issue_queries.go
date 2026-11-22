@@ -325,6 +325,12 @@ var issueMovedJoin = parkedMoveLateral("i", `$14::boolean and i.status in (`+sql
 // state = 'open' index instead of scanning asks, and the closed-issue rule stays in the select
 // list: a closed issue reports 0 open asks however many it has. The `advances` join is the one a
 // text may leave out (issueSummaryQuery's readAdvances), since nothing else reads its terms.
+//
+// The open-ask count reads the ask's row's state, not its node's: the one writer of an answer
+// state writes the two in one transaction (asks.Settle), so they differ only inside a roll's
+// window, between a process of the release before writing an answer state to the row alone and
+// the decisions step's catch-up tick that states it on the node; R3 holds the reads that show an
+// answer to the node, and a count shows none.
 func issueSummaryJoins(readAdvances bool) string {
 	joins := `left join (
 		select l.issue_key, array_agg(l.target_key order by l.target_key) as keys

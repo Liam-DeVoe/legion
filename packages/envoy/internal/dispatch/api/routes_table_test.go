@@ -205,20 +205,17 @@ func TestRoutesTablePinsEveryRegisteredRoute(t *testing.T) {
 			t.Fatalf("route %q has auth %q", key, route.Auth)
 		}
 	}
-	if got := len((&server{deps: Deps{TestHooksEnabled: true}}).routes()); got != len(routes)+len(testHookRoutes) {
-		t.Fatalf("test hooks add %d routes: got %d, want %d", len(testHookRoutes), got, len(routes)+len(testHookRoutes))
+	// The table with the test hooks is this one and the hooks, each by name, so a table that
+	// loses one row and gains another fails naming both, where a count of its rows would pass.
+	hooked := map[string]bool{}
+	for _, route := range (&server{deps: Deps{TestHooksEnabled: true}}).routes() {
+		hooked[route.Method+" "+route.Pattern] = true
 	}
-	if hooks, named := slices.Sorted(maps.Keys(openAPIHookRoutes())), slices.Sorted(slices.Values(testHookRoutes)); !slices.Equal(hooks, named) {
-		t.Fatalf("the table mounts the test hooks\n\t%s\nwant the ones testHookRoutes names\n\t%s",
-			strings.Join(hooks, "\n\t"), strings.Join(named, "\n\t"))
-	}
+	want := slices.Concat(slices.Collect(maps.Keys(seen)), testHookRoutes)
+	requireRouteNames(t, "the table mounted with Deps.TestHooksEnabled", hooked, want)
 }
 
-// testHookRoutes is every row the table mounts only with Deps.TestHooksEnabled, each named, in the
-// table's order: the fifteen main mounts and the ask-attributes hook this branch adds, which reads
-// the attributes of a live tree's ask blocks. A count alone is one number two branches that each
-// add a hook are both wrong about; a hook added or dropped on either side is a line here, which
-// such a merge holds the union of.
+// testHookRoutes is every row the table mounts only with Deps.TestHooksEnabled, by name.
 var testHookRoutes = []string{
 	"POST /api/v1/live/_test/disconnect",
 	"POST /api/v1/live/_test/rotate",
@@ -236,6 +233,25 @@ var testHookRoutes = []string{
 	"POST /api/v1/writes/_test/slow",
 	"POST /api/v1/settings/new-issue/_test",
 	"GET /api/v1/messages/_test/queued",
+}
+
+// requireRouteNames fails t naming each route of want that got, the routes what names, does not
+// hold, and each route got holds that want does not, so a set that loses one route and gains
+// another fails naming both.
+func requireRouteNames(t *testing.T, what string, got map[string]bool, want []string) {
+	t.Helper()
+	wanted := make(map[string]bool, len(want))
+	for _, name := range want {
+		wanted[name] = true
+		if !got[name] {
+			t.Errorf("%s: no %s", what, name)
+		}
+	}
+	for _, name := range slices.Sorted(maps.Keys(got)) {
+		if !wanted[name] {
+			t.Errorf("%s: %s, which the list does not name", what, name)
+		}
+	}
 }
 
 // The Inbox route's description states the rule the person a question reaches is resolved by —

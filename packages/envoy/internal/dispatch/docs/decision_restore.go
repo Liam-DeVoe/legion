@@ -1004,18 +1004,26 @@ func (r *issueRestore) askBlockOf(ask string) (issueDocument, string, bool) {
 // writeDecisionsDocument writes the decisions document: it takes out of it each ask block the
 // restore moves (shape (b), and a copy of an ask of the main shape that the document holds) and
 // each section the pass converts, as this pass reads the document's sections (planSections), and
-// writes its version. It records whether the document still holds an ask block once those are
-// taken out (decisionsHoldAsks), which keeps it from its retirement. It answers the event of that
-// version, NoEvent where it wrote none.
+// writes its version. On a fleet of one build the same write takes every attribute a version can
+// store off each ask block the document keeps that has no ask row and is no copy of an ask
+// (withoutAsklessAskAttributes), so its version holds none of the eight there (R10). It records
+// whether the document still holds an ask block once those are taken out (decisionsHoldAsks),
+// which keeps it from its retirement. It answers the event of that version, NoEvent where it
+// wrote none.
 //
 // kept for one release: decisions-step
 func (r *issueRestore) writeDecisionsDocument(ctx context.Context) (int64, error) {
+	// kept for one release: roll-window-attributes
+	twoBuilds, err := anotherBuildServes(ctx, r.tx)
+	if err != nil {
+		return graphstore.NoEvent, err
+	}
 	var drop map[string]bool
 	dropped := func(node *pmdoc.Node) bool {
 		id, _ := node.Attrs[pmdoc.BlockIDAttr].(string)
 		return drop[id]
 	}
-	err := r.service.applyLive(ctx, r.decisions.id, DecisionStepActor, func(doc liveDoc, current pmdoc.ValidDocument, _ func(func(*crdt.Transaction))) error {
+	err = r.service.applyLive(ctx, r.decisions.id, DecisionStepActor, func(doc liveDoc, current pmdoc.ValidDocument, _ func(func(*crdt.Transaction))) error {
 		tree := current.Node()
 		if tree == nil {
 			return fmt.Errorf("the decisions document of %s is outside the Proof schema, so the decisions step cannot read its sections", r.issue)
@@ -1030,12 +1038,23 @@ func (r *issueRestore) writeDecisionsDocument(ctx context.Context) (int64, error
 		if len(drop) == 0 {
 			return nil
 		}
+		// kept for one release: stored-ask-state
+		var withAsk map[string]bool
+		if !twoBuilds {
+			if withAsk, err = askBlocksWithAnAsk(ctx, r.tx, r.decisions.id, tree); err != nil {
+				return err
+			}
+		}
 		_, err = doc.rewrite(func(live *pmdoc.Node) bool {
 			next, took := withoutBlocks(live, dropped)
 			if !took {
 				return false
 			}
 			live.Children = next.Children
+			// kept for one release: stored-ask-state
+			if !twoBuilds {
+				withoutAsklessAskAttributes(live, withAsk)
+			}
 			return true
 		})
 		return err
@@ -1794,9 +1813,10 @@ func (r *issueRestore) sectionKeeps(ctx context.Context, tree *pmdoc.Node, secti
 // it. It records the pointer line it took out (pointerLine) and whether it added the heading
 // (headingAdded), which its version's mark names. On a fleet of one build - which the phase runs
 // on alone - the same write cuts every ask block of the spec to the attributes a version keeps
-// (writePresent), as the first accepted write of the document does (R10), and gives each restored
-// answered ask's block those of its row (keptAskState). It answers the event of the version it
-// wrote, NoEvent where the spec did not change.
+// (writePresent), as the first accepted write of the document does (R10), a block that has no ask
+// row and is no copy of an ask to none of them, and gives each restored answered ask's block
+// those of its row (keptAskState). It answers the event of the version it wrote, NoEvent where the
+// spec did not change.
 //
 // kept for one release: decisions-step
 func (r *issueRestore) writeSpec(ctx context.Context) (int64, error) {
@@ -1857,6 +1877,14 @@ func (r *issueRestore) writeSpec(ctx context.Context) (int64, error) {
 		if current.Node() == nil {
 			return fmt.Errorf("the spec of %s is outside the Proof schema, so the decisions step cannot write into it", r.issue)
 		}
+		// kept for one release: stored-ask-state
+		var withAsk map[string]bool
+		if !twoBuilds {
+			var err error
+			if withAsk, err = askBlocksWithAnAsk(ctx, r.tx, r.spec.id, current.Node()); err != nil {
+				return err
+			}
+		}
 		_, err := doc.rewrite(func(live *pmdoc.Node) bool {
 			for _, block := range added {
 				id, _ := block.Attrs[pmdoc.BlockIDAttr].(string)
@@ -1865,7 +1893,7 @@ func (r *issueRestore) writeSpec(ctx context.Context) (int64, error) {
 					return false
 				}
 			}
-			changed := r.writePresent(r.spec.id, live, r.present[r.spec.id], twoBuilds)
+			changed := r.writePresent(r.spec.id, live, r.present[r.spec.id], twoBuilds, withAsk)
 			pointerLine, headingAdded = "", false
 			if len(added) > 0 {
 				headingAdded = !hasDecisionsPart(live)
@@ -1934,16 +1962,18 @@ func (r *issueRestore) creditSectionAuthors(ctx context.Context, document string
 // writePresent writes edits - the shaped pointers and the readings the conversion gives the
 // answered ask blocks a document holds already - into live, the tree of document as its live
 // write holds it, and, on a fleet of one build (twoBuilds false), takes the answer's words and
-// selection, which no version then holds, off every ask block of it (withoutUnkeptAskAttributes),
-// leaving the state, answerer, time and a copy's provenance settlement keeps in step with each ask.
-// It records each pointer it gave a block that
+// selection, which no version then holds, off every ask block of it that has an ask (withAsk,
+// askBlocksWithAnAsk: withoutUnkeptAskAttributes), leaving the state, answerer, time and a copy's
+// provenance settlement keeps in step with each ask, and every attribute a version can store off
+// each other ask block, which has no ask row and is no copy of an ask and keeps none of the eight
+// (R10, withoutStoredAskAttributes). It records each pointer it gave a block that
 // the block did not hold (shapedAdded), which the version's mark names, and each reading it wrote
 // (readingsWritten), and reports whether it changed the tree. It visits every ask block of the
 // tree: pmdoc.Walk stops at the first node its visit answers false for, so the visit answers true
 // at an ask block too, and the blocks after the first are written as well.
 //
 // kept for one release: decisions-step
-func (r *issueRestore) writePresent(document string, live *pmdoc.Node, edits *presentEdits, twoBuilds bool) bool {
+func (r *issueRestore) writePresent(document string, live *pmdoc.Node, edits *presentEdits, twoBuilds bool, withAsk map[string]bool) bool {
 	changed := false
 	added := map[string][]string{}
 	written := map[string]bool{}
@@ -1977,13 +2007,37 @@ func (r *issueRestore) writePresent(document string, live *pmdoc.Node, edits *pr
 			}
 		}
 		// kept for one release: stored-ask-state
-		if !twoBuilds && withoutUnkeptAskAttributes(node) {
-			changed = true
+		if !twoBuilds {
+			strip := withoutUnkeptAskAttributes
+			if !withAsk[id] {
+				strip = withoutStoredAskAttributes
+			}
+			if strip(node) {
+				changed = true
+			}
 		}
 		return true
 	})
 	r.shapedAdded[document] = added
 	r.readingsWritten[document] = written
+	return changed
+}
+
+// withoutAsklessAskAttributes takes every attribute a version can store off each ask block of tree
+// that withAsk does not name (askBlocksWithAnAsk) - one that has no ask row and is no copy of an
+// ask, which keeps none of the eight (R10) - and reports whether it changed one.
+//
+// kept for one release: stored-ask-state
+func withoutAsklessAskAttributes(tree *pmdoc.Node, withAsk map[string]bool) bool {
+	changed := false
+	pmdoc.Walk(tree, func(node *pmdoc.Node) bool {
+		if node.Type == "ask" {
+			if id, _ := node.Attrs[pmdoc.BlockIDAttr].(string); !withAsk[id] && withoutStoredAskAttributes(node) {
+				changed = true
+			}
+		}
+		return true
+	})
 	return changed
 }
 
@@ -2031,8 +2085,16 @@ func (r *issueRestore) writePresentDocuments(ctx context.Context) error {
 			if current.Node() == nil {
 				return fmt.Errorf("%s is outside the Proof schema, so the decisions step cannot write into it", document.address)
 			}
+			// kept for one release: stored-ask-state
+			var withAsk map[string]bool
+			if !twoBuilds {
+				var err error
+				if withAsk, err = askBlocksWithAnAsk(ctx, r.tx, id, current.Node()); err != nil {
+					return err
+				}
+			}
 			_, err := doc.rewrite(func(live *pmdoc.Node) bool {
-				return r.writePresent(id, live, edits, twoBuilds)
+				return r.writePresent(id, live, edits, twoBuilds, withAsk)
 			})
 			return err
 		})
