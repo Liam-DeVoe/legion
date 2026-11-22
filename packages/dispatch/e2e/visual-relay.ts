@@ -19,8 +19,11 @@
  *
  *    node e2e/visual-relay.ts container <directory> <port>... -- <command>...
  *      in the container: 127.0.0.1:<port> for each port, each connection to it carried to the
- *      socket `<directory>/<port>`. Once every port listens it runs `<command>`, and exits as
- *      the command does.
+ *      socket `<directory>/<port>`. Once every port listens it runs `<command>`, with the ports
+ *      it listens on in `VISUAL_RELAY_PORTS` (space-separated, in the order given), and exits as
+ *      the command does. A port written `0` listens where the kernel chooses, which only that
+ *      variable names: no real run writes one (its sockets are named by real ports), and a test
+ *      of this command line takes no port it would have to free first.
  *
  *  Both halves pass bytes and nothing else, in both directions, and an end of one direction
  *  ends that direction alone (`allowHalfOpen`), so HTTP, a WebSocket and a request body that the
@@ -102,11 +105,11 @@ export async function relaySocketsToPorts(
 }
 
 /** The ports a command line names, each a port in canonical decimal, or a refusal naming the
- *  first that is not. */
-function portsOf(words: readonly string[]): number[] {
+ *  first that is not. `0` is a port where `zero` allows it (the container half's). */
+function portsOf(words: readonly string[], zero = false): number[] {
   return words.map((word) => {
     const port = Number(word);
-    if (!/^[1-9][0-9]{0,4}$/.test(word) || port > 65535) {
+    if (!(/^[1-9][0-9]{0,4}$/.test(word) || (zero && word === "0")) || port > 65535) {
       throw new Error(`e2e/visual-relay.ts: ${JSON.stringify(word)} is not a port`);
     }
     return port;
@@ -136,13 +139,20 @@ async function main(argv: readonly string[]): Promise<void> {
   const split = rest.indexOf("--");
   const command = split === -1 ? [] : rest.slice(split + 1);
   if (mode !== "container" || command.length === 0) throw new Error(usage);
-  const ports = portsOf(rest.slice(0, split));
-  await relaySocketsToPorts(
+  const ports = portsOf(rest.slice(0, split), true);
+  const servers = await relaySocketsToPorts(
     directory,
     ports.map((port) => ({ listenPort: port, socketPort: port }))
   );
+  const listening = servers.map((server) => {
+    const address = server.address();
+    return address === null || typeof address === "string" ? "" : String(address.port);
+  });
   const [program, ...args] = command;
-  const child = spawn(program ?? "", args, { stdio: "inherit" });
+  const child = spawn(program ?? "", args, {
+    env: { ...process.env, VISUAL_RELAY_PORTS: listening.join(" ") },
+    stdio: "inherit",
+  });
   for (const signal of ["SIGINT", "SIGTERM"] as const) {
     process.on(signal, () => child.kill(signal));
   }

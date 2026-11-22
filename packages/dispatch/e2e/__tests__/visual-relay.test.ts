@@ -1,32 +1,30 @@
 import { afterEach, expect, test } from "bun:test";
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 
 import { readyLine, relayPortsToSockets, relaySocketsToPorts } from "../visual-relay";
+import { rowLimit, runBounded } from "./bounded-subprocess";
 
 // The visual review's browser has no network but loopback (e2e/visual-run.sh), and reaches the
 // host's stack through the two halves of e2e/visual-relay.ts. A real run puts the halves in two
 // network namespaces on one port; these rows run both in one, so the container half listens on a
-// port of its own and names the host half's socket by the upstream's port.
+// port of its own and names the host half's socket by the upstream's port. Every listener a row
+// reads is held from the moment it binds until the row ends, and no row names a port it freed:
+// on a shared machine another program can take a freed port.
 
 const relay = join(import.meta.dir, "..", "visual-relay.ts");
 const opened: Server[] = [];
-const directories: string[] = [];
+const directory = temporaryDirectories("visual-relay");
+
+/** A loopback port nothing listens on, so every connection to it is refused: below 1024, where
+ *  no unprivileged program can bind, and port 1 (tcpmux) is served by nothing on these machines. */
+const refusedPort = 1;
 
 afterEach(() => {
   for (const server of opened.splice(0)) server.close();
-  for (const directory of directories.splice(0))
-    rmSync(directory, { force: true, recursive: true });
 });
-
-function directory(): string {
-  const made = mkdtempSync(join(tmpdir(), "visual-relay-"));
-  directories.push(made);
-  return made;
-}
 
 function portOf(server: Server): number {
   const address = server.address();
@@ -97,73 +95,69 @@ test("connections at once keep their own bytes", async () => {
 });
 
 test("a port nothing listens on closes the connection rather than holding it open", async () => {
-  // A port that was listening and is not now: nothing answers it on 127.0.0.1.
-  const gone = await upstream(() => "");
-  const closed = opened.pop();
-  const { promise, resolve } = Promise.withResolvers<void>();
-  closed?.close(() => resolve());
-  await promise;
-  expect(await exchange(await bridge(gone), "anyone there")).toBe("");
+  expect(await exchange(await bridge(refusedPort), "anyone there")).toBe("");
 });
 
-/** Runs the CLI with `args` and answers its exit status and what it printed. */
-async function cli(args: readonly string[]): Promise<{ status: number | null; out: string }> {
-  const child = spawn(process.execPath, [relay, ...args], { stdio: ["ignore", "pipe", "pipe"] });
-  let out = "";
-  child.stdout.setEncoding("utf8");
-  child.stdout.on("data", (chunk: string) => {
-    out += chunk;
+/** Runs the CLI with `args` as a bounded child of this row, and answers its exit status and what
+ *  it printed on stdout and on stderr. */
+async function cli(
+  args: readonly string[]
+): Promise<{ status: number; stdout: string; stderr: string }> {
+  const ran = await runBounded({
+    argv: [process.execPath, relay, ...args],
+    bound: "short",
+    from: import.meta.url,
   });
-  child.stderr.setEncoding("utf8");
-  child.stderr.on("data", (chunk: string) => {
-    out += chunk;
-  });
-  const { promise, resolve } = Promise.withResolvers<{ status: number | null; out: string }>();
-  child.on("exit", (status) => resolve({ out, status }));
-  return promise;
+  return { status: ran.code, stderr: ran.stderr, stdout: ran.stdout };
 }
 
-test("the container half runs its command once its ports listen, and exits as the command does", async () => {
-  const port = await upstream(() => "");
-  const listening = opened.pop();
-  const { promise, resolve } = Promise.withResolvers<void>();
-  listening?.close(() => resolve());
-  await promise;
-  // The command connects to the port the container half listens on, so it can only pass once
-  // that port listens: `exit 3` is reached after a connection the relay accepted.
-  const probe =
-    `require("node:net").createConnection(${port}, "127.0.0.1")` +
-    '.on("connect", () => process.exit(3)).on("error", () => process.exit(9))';
-  const ran = await cli([
-    "container",
-    directory(),
-    String(port),
-    "--",
-    process.execPath,
-    "-e",
-    probe,
-  ]);
-  expect(ran).toEqual({ out: "", status: 3 });
-});
+test(
+  "the container half runs its command once its ports listen, and exits as the command does",
+  async () => {
+    // The port is `0`, so the container half takes one the kernel chooses and names it to the
+    // command; the command connects to it, so it can only pass once that port listens: `exit 3`
+    // is reached after a connection the relay accepted.
+    const probe =
+      'require("node:net").createConnection(Number(process.env.VISUAL_RELAY_PORTS), "127.0.0.1")' +
+      '.on("connect", () => process.exit(3)).on("error", () => process.exit(9))';
+    const ran = await cli(["container", directory(), "0", "--", process.execPath, "-e", probe]);
+    expect(ran).toEqual({ status: 3, stderr: "", stdout: "" });
+  },
+  rowLimit("short")
+);
 
+// The host half runs until a signal ends it, so this row drives it rather than waits for it: it
+// reads the ready line, sends SIGTERM, and kills it outright in the end if it is still running.
 test("the host half prints its ready line once its sockets listen, and stops on SIGTERM", async () => {
   const port = await upstream(() => "");
   const child = spawn(process.execPath, [relay, "host", directory(), String(port)], {
     stdio: ["ignore", "pipe", "inherit"],
   });
-  child.stdout.setEncoding("utf8");
-  const first = Promise.withResolvers<string>();
-  child.stdout.once("data", (chunk: string) => first.resolve(chunk));
-  expect(await first.promise).toBe(`${readyLine}\n`);
-  const ended = Promise.withResolvers<number | null>();
-  child.on("exit", (status) => ended.resolve(status));
-  child.kill("SIGTERM");
-  expect(await ended.promise).toBe(0);
+  try {
+    child.stdout.setEncoding("utf8");
+    const first = Promise.withResolvers<string>();
+    child.stdout.once("data", (chunk: string) => first.resolve(chunk));
+    expect(await first.promise).toBe(`${readyLine}\n`);
+    const ended = Promise.withResolvers<number | null>();
+    child.on("exit", (status) => ended.resolve(status));
+    child.kill("SIGTERM");
+    expect(await ended.promise).toBe(0);
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+  }
 });
 
-test("a word that is no port is refused by name", async () => {
-  expect(await cli(["host", directory(), "80a"])).toEqual({
-    out: 'e2e/visual-relay.ts: "80a" is not a port\n',
-    status: 2,
-  });
-});
+test(
+  "a word that is no port is refused by name",
+  async () => {
+    expect(await cli(["host", directory(), "80a"])).toEqual({
+      status: 2,
+      stderr: 'e2e/visual-relay.ts: "80a" is not a port\n',
+      stdout: "",
+    });
+    expect((await cli(["host", directory(), "0"])).stderr).toBe(
+      'e2e/visual-relay.ts: "0" is not a port\n'
+    );
+  },
+  rowLimit("short", "short")
+);

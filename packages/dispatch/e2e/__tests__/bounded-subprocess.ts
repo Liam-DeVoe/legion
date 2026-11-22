@@ -22,12 +22,14 @@
  * and `plain-http-proxy.test.ts` start, the fake Envoy of `fake-envoy.test.ts`, the hosts of the
  * fake Dispatches and of the stand-in edges that `fakeHost` of `outside-path-reach-fixtures.ts`
  * starts, one for each fake a row of the four `outside-path-reach*` test files or of the three
- * `outside-edge-refusals*` ones asks for, and the processes `local-instance-support.test.ts`
- * starts through its `Supervisor`. Two subprocesses a row can wait for run outside it, as stated
- * edges. One is the psql of `e2e/psql.ts` (the rows and hooks of `psql-session.test.ts`, and the
- * scratch databases of `replace-blocks-guard.test.ts`), whose `sqlAt` `e2e/harness-postgres.ts`
- * and `e2e/local-instance.ts` call too, so bounding that psql would reach past `e2e/__tests__/`. The
- * other is the `ps` that reads the process table on a machine with no `/proc`, here
+ * `outside-edge-refusals*` ones asks for, the processes `local-instance-support.test.ts`
+ * starts through its `Supervisor`, and the relay's host half that the SIGTERM row of
+ * `visual-relay.test.ts` reads a line from and signals. Two subprocesses a row can wait for run
+ * outside it, as stated edges. One is the psql of `e2e/psql.ts` (the rows and hooks of
+ * `psql-session.test.ts`, and the scratch databases of `replace-blocks-guard.test.ts`), whose
+ * `sqlAt` `e2e/harness-postgres.ts` and `e2e/local-instance.ts` call too, so bounding that psql
+ * would reach past `e2e/__tests__/`. The other is the `ps` that reads the process table on a
+ * machine with no `/proc`, here
  * (`processTable`) and in `bounded-subprocess.test.ts`, which runs with no bound. Linux lists its
  * processes under `/proc` and never runs that `ps`.
  *
