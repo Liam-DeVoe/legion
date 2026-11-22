@@ -597,7 +597,8 @@ func TestACompactionIsRefusedForAClaimWhoseLaunchIsInFlight(t *testing.T) {
 }
 
 // A role the deployment runs on Claude Code has no Oh My Pi session to compact, and the daemon
-// knows which role runs on which harness from its own configuration (Options.Backend).
+// reads which harness a claim runs on as its launch does (Options.Backend): the role the plan of
+// the claim's issue defines runs on Oh My Pi, and every other role on what `worker_backends` names.
 func TestACompactionIsRefusedForAClaudeCodeClaim(t *testing.T) {
 	for _, door := range compactDoors() {
 		t.Run(door.name, func(t *testing.T) {
@@ -632,7 +633,7 @@ func TestTheControllersCompactRefusesTheRoleController(t *testing.T) {
 		ClaimRequest{GrantID: grant.GrantID, Issue: "LEGION-209", Role: "controller"}, nil)
 
 	refusedSaying(t, recorder, http.StatusBadRequest, "INVALID_ROLE",
-		"role must be one of architect, planner, implementer, tester, reviewer, merger, or a role of this deployment; "+
+		"role must be one of architect, planner, implementer, tester, reviewer, merger, a role of this deployment, or a role of the issue's plan; "+
 			"the project's controller is none of them, and the controller does not compact its own session")
 }
 
