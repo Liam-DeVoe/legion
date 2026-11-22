@@ -353,12 +353,12 @@ const gcloudSignInDeadline = "AGENT_SECRETS_GCLOUD_DEADLINE"
 // its Python, so nothing of that stub process watches anything and only its group's end or its
 // own parent-death signal ends it (the rows of requireGcloudEndsWithAgentSecrets). Its values:
 //   - gcloudExecs: the stub execs that process at once;
-//   - gcloudClearsDeathSignal: through TestGcloudThatClearsItsDeathSignalHelper, which clears its
-//     parent-death signal first, as the exec of a setuid or file-capability launcher does;
+//   - gcloudClearsDeathSignal: through a launcher that clears its parent-death signal first, as the
+//     exec of a setuid or file-capability launcher does (gcloudLauncherInit);
 //   - gcloudThroughSnap: through snap's own launcher, `snap run` (snap-confine), where a snap
 //     install of gcloud is there to run it;
 //   - gcloudSetpgid and gcloudSetsid: through a launcher that moves it into a process group or a
-//     session of its own, without a fork, before it execs (gcloudLeavesGroup).
+//     session of its own, without a fork, before it execs (gcloudLauncherInit).
 const gcloudLauncher = "AGENT_SECRETS_GCLOUD_LAUNCHER"
 
 const (
@@ -376,9 +376,8 @@ const gcloudPidName = "gcloud.pid"
 // gcloudSnapLauncher is snap's gcloud launcher; gcloudThroughSnap runs `snap run` for its snap.
 const gcloudSnapLauncher = "/snap/bin/gcloud"
 
-// gcloudStubPidFile is the variable that names the file a launcher of gcloudLauncher run by this
-// test binary writes the stub's pid to (TestGcloudThatClearsItsDeathSignalHelper,
-// gcloudLeavesGroup).
+// gcloudStubPidFile is the variable that names the file a launcher of gcloudLauncherInit writes the
+// stub's pid to.
 const gcloudStubPidFile = "AGENT_SECRETS_GCLOUD_PID_FILE"
 
 // gcloudStubLast is the last of the stub gcloud's lines for launcher (gcloudLauncher), its own pid
@@ -388,42 +387,45 @@ func gcloudStubLast(t *testing.T, launcher, pidFile string) string {
 	switch launcher {
 	case gcloudExecs:
 		return "echo $$ >" + shellWord(pidFile) + "\nexec sleep 3600"
-	case gcloudClearsDeathSignal:
-		return gcloudStubPidFile + "=" + shellWord(pidFile) + " exec " + shellWord(os.Args[0]) + " -test.run='^TestGcloudThatClearsItsDeathSignalHelper$'"
 	case gcloudThroughSnap:
 		return "exec snap run --shell google-cloud-cli.gcloud -c " + shellWord("echo $$ >"+shellWord(pidFile)+"; exec sleep 3600")
-	case gcloudSetpgid, gcloudSetsid:
-		return gcloudLeavesGroup + "=" + launcher + " " + gcloudStubPidFile + "=" + shellWord(pidFile) + " exec " + shellWord(os.Args[0]) + " -test.run='^$'"
+	case gcloudClearsDeathSignal, gcloudSetpgid, gcloudSetsid:
+		return gcloudLauncherInit + "=" + launcher + " " + gcloudStubPidFile + "=" + shellWord(pidFile) + " exec " + shellWord(os.Args[0]) + " -test.run='^$'"
 	}
 	t.Fatalf("%s names no launcher: %q", gcloudLauncher, launcher)
 	return ""
 }
 
-// gcloudLeavesGroup is the variable that makes a run of this test binary the launcher of
-// gcloudSetpgid or gcloudSetsid, its value one of the two: before any test, the process moves into
-// a process group (setpgid) or a session (setsid) of its own, out of reach of a kill of the group
-// it was started in, writes its pid to gcloudStubPidFile, and replaces itself with a process that
-// never answers and ignores SIGTERM, as a gcloud may: only the SIGKILL the supervisor gives gcloud
-// as its parent-death signal ends it, not a SIGTERM in its place. It does so in init, on the
-// process's main thread, which holds the parent-death signal the process was started with: neither
-// call clears that signal, nor does the exec of a plain binary, but a thread other than the main
-// one starts without it, and an exec from such a thread would leave the process without it. The
-// ignore of SIGTERM lasts across the exec.
-const gcloudLeavesGroup = "AGENT_SECRETS_GCLOUD_LEAVES_GROUP"
+// gcloudLauncherInit is the variable that makes a run of this test binary the launcher of
+// gcloudClearsDeathSignal, gcloudSetpgid or gcloudSetsid, its value one of the three. Before any
+// test, the process clears its parent-death signal (making a setuid or file-capability launcher,
+// whose exec clears it, needs root, which these tests do not have), or moves into a process group
+// (setpgid) or a session (setsid) of its own, out of reach of a kill of the group it was started
+// in. Only then does it write its pid to gcloudStubPidFile, and it then replaces itself with a
+// process that never answers and ignores SIGTERM, as a gcloud may, the ignore lasting across the
+// exec. All of it runs in init, on the process's main thread, the one thread that holds the
+// parent-death signal the process was started with; every other thread starts without one. So a
+// stub that clears the signal holds none from the moment its pid is written, and a kill that lands
+// before its exec cannot end it through that signal; one that moves out of the group keeps the
+// signal through the exec, which neither call nor the exec of a plain binary clears, so only the
+// SIGKILL the supervisor gives gcloud as that signal ends it.
+const gcloudLauncherInit = "AGENT_SECRETS_GCLOUD_LAUNCHER_INIT"
 
 func init() {
-	how := os.Getenv(gcloudLeavesGroup)
+	how := os.Getenv(gcloudLauncherInit)
 	if how == "" {
 		return
 	}
 	var err error
 	switch how {
+	case gcloudClearsDeathSignal:
+		err = unix.Prctl(unix.PR_SET_PDEATHSIG, 0, 0, 0, 0)
 	case gcloudSetpgid:
 		err = unix.Setpgid(0, 0)
 	case gcloudSetsid:
 		_, err = unix.Setsid()
 	default:
-		err = fmt.Errorf("%s names no way to leave a group: %q", gcloudLeavesGroup, how)
+		err = fmt.Errorf("%s names no launcher: %q", gcloudLauncherInit, how)
 	}
 	if err == nil {
 		err = os.WriteFile(os.Getenv(gcloudStubPidFile), []byte(strconv.Itoa(os.Getpid())+"\n"), 0o600)
@@ -437,30 +439,6 @@ func init() {
 	}
 	fmt.Fprintf(os.Stderr, "the stub gcloud's %s launcher: %v\n", how, err)
 	os.Exit(1)
-}
-
-// TestGcloudThatClearsItsDeathSignalHelper is the stub gcloud of gcloudClearsDeathSignal: it clears
-// its parent-death signal, as the kernel does at the exec of a setuid or file-capability launcher
-// such as snap-confine (making such a launcher needs root, which these tests do not have), writes its
-// own pid to gcloudStubPidFile, and replaces itself with a process that never answers. The signal
-// is a thread's, so the thread that clears it is the one that execs.
-func TestGcloudThatClearsItsDeathSignalHelper(t *testing.T) {
-	pidFile := os.Getenv(gcloudStubPidFile)
-	if pidFile == "" {
-		t.Skip("subprocess helper")
-	}
-	runtime.LockOSThread()
-	if err := unix.Prctl(unix.PR_SET_PDEATHSIG, 0, 0, 0, 0); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(pidFile, []byte(strconv.Itoa(os.Getpid())+"\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	sleep, err := exec.LookPath("sleep")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Fatal(syscall.Exec(sleep, []string{"sleep", "3600"}, os.Environ()))
 }
 
 // gcloudTestBinaryPid is the variable that names, to TestGcloudSignInSignalHelper, the pid of the
