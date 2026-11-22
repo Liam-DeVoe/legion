@@ -306,16 +306,20 @@ What a stubbed row may assert, and what only a real-stack row may:
 The clock of a unit test:
 
 - A unit test never waits on the real clock, unless a comment above the wait says why it stays
-  there, as the kept ones do (`web/src/features/margin/Margin.landing.test.tsx`'s `quiet` and its
-  500 ms long task, `web/src/features/refs/MarkdownBody.test.tsx`'s `nextTask`, and the parse
-  worker stand-in's `tick` and its `ready` in `web/src/features/refs/parse-worker-fixture.ts`).
+  there, as each kept one does: `grep -rn 'stays on the real clock' web/src` lists them.
+  Among them are `web/src/features/margin/Margin.landing.test.tsx`'s `quiet` and its 500 ms long
+  task, `web/src/features/refs/MarkdownBody.test.tsx`'s `nextTask`, the parse worker stand-in's
+  `tick` and its `ready` in `web/src/features/refs/parse-worker-fixture.ts`, and the frame waits
+  of rows that check what a frame of the page did not do, such as
+  `web/src/features/issue-page/IssueTree.test.tsx`'s `nextFrame`.
   `web/src/__tests__/real-clock-waits.test.ts` reads every unit test file and test helper with the
   TypeScript parser, and fails every call in them that starts a wait of real time,
   whatever its delay, its callback or what wraps it:
-  a `setTimeout` or a `setInterval`, global or a member of any object such as `window.setTimeout`;
-  the `setTimeout`, `setInterval` and `scheduler.wait` of `node:timers` and `node:timers/promises`
-  (or `timers` and `timers/promises`), imported by name, under another name, or reached through a
-  namespace or default import;
+  a `setTimeout`, a `setInterval`, a `setImmediate` or a `requestAnimationFrame`, global or a
+  member of any object such as `window.setTimeout` or `window.requestAnimationFrame`;
+  the `setTimeout`, `setInterval`, `setImmediate` and `scheduler.wait` of `node:timers` and
+  `node:timers/promises` (or `timers` and `timers/promises`), imported by name, under another name,
+  or reached through a namespace or default import;
   `Bun.sleep` and `Bun.sleepSync`;
   and `sleep` and `sleepSync` imported from `"bun"` under any name.
   A call passes in two ways alone.
@@ -325,9 +329,18 @@ The clock of a unit test:
   least three words of letters, which an issue key or a number is not.
   A comment that only mentions the real clock passes nothing.
   A comment or a string that spells such a call is no call, since the scan reads the parsed file.
-  A zero-delay timer is a wait of real time too: what has run by its turn depends on how loaded the
-  machine is, so a row waits for the condition its step stands for, with `waitFor` or an `expect` of
-  what it reads next, or runs the product's own zero-delay timer on the fake clock with `tick(0)`.
+  The scan reads a test's own calls: a product function that the row tests, and that sets a timer
+  itself, is the product's code, not a wait of the test's (`web/src/api/client.test.ts:147` calls
+  the product's `sleep` and aborts it at once).
+  A zero-delay timer, a frame and a turn of the loop are waits of real time too: a row that awaits
+  one waits one turn for a thing to have happened, and what has run by that turn depends on how
+  loaded the machine is, so a row waits for the condition its step stands for, with `waitFor` or an
+  `expect` of what it reads next, or runs the product's own zero-delay timer on the fake clock with
+  `tick(0)`.
+  Bun's fake clock (Bun 1.4.4) holds neither happy-dom's frame nor `setImmediate`: with it
+  installed, `jest.advanceTimersByTime(16)` and then `jest.advanceTimersByTime(100)` run no
+  `requestAnimationFrame` and no `setImmediate`, global, of `window` or of `node:timers`, and each
+  runs on the real loop's next turns, since happy-dom runs a frame as a `setImmediate`.
   Apart from the kept ones, a row uses no `Bun.sleep`, no timer of the real clock and no wait timed
   by `performance.now()`, and it asserts no `Date.now()` difference.
   A row that waits for a product timer installs the fake clock (`onFakeClock` from

@@ -15,12 +15,14 @@ import { afterOnFakeClock, onFakeClock } from "./fake-clock";
  * This reads every unit test file and test helper under `web/src` - a `*.test.ts(x)`, a file of a
  * `__tests__` folder, a `*-fixture.ts(x)` or `*-fixtures.ts(x)` helper - for every call that
  * starts a wait of real time, whatever its delay, whatever its callback is and whatever wraps the
- * call: a `setTimeout` or a `setInterval`, global or a member of any object (`window.setTimeout`,
- * `globalThis.setInterval`); the `setTimeout`, `setInterval` and `scheduler.wait` of
- * `node:timers` and `node:timers/promises` (or `timers` and `timers/promises`), named, aliased or
- * reached through a namespace or default import (`t.scheduler.wait`); a `Bun.sleep` or a
- * `Bun.sleepSync`; and every local name an import gives one of those (`import { setTimeout as
- * delay }`, `import { sleep as pause } from "bun"`). It follows no callback and no resolver: a
+ * call: a `setTimeout`, a `setInterval`, a `setImmediate` or a `requestAnimationFrame`, global or
+ * a member of any object (`window.setTimeout`, `globalThis.setInterval`,
+ * `window.requestAnimationFrame`); the `setTimeout`, `setInterval`, `setImmediate` and
+ * `scheduler.wait` of `node:timers` and `node:timers/promises` (or `timers` and
+ * `timers/promises`), named, aliased or reached through a namespace or default import
+ * (`t.scheduler.wait`); a `Bun.sleep` or a `Bun.sleepSync`; and every local name an import gives
+ * one of those (`import { setTimeout as delay }`, `import { setImmediate as nextTurn }`,
+ * `import { sleep as pause } from "bun"`). It follows no callback and no resolver: a
  * trace of a resolver through the data flow always misses a form, such as a resolver handed to a
  * helper that calls `setTimeout`, so the call is found where it starts, and so is the timer of a
  * row that stands in for a product's. A call passes in two ways alone. One is `afterOnFakeClock`
@@ -34,7 +36,14 @@ import { afterOnFakeClock, onFakeClock } from "./fake-clock";
  * and a comment or a string that spells one is none. A zero-delay timer is a wait of real time
  * too: what has run by its turn - a timer of the product's, a render, a promise of the library's -
  * depends on how loaded the machine is, so a row waits for the condition its step stands for, or
- * moves the fake clock over the product's own zero-delay timer with `tick(0)`. The act-rule inputs
+ * moves the fake clock over the product's own zero-delay timer with `tick(0)`. A frame and a turn
+ * of the loop are of the same kind (dispatch://INFRA-983, the architect's ruling): a row that
+ * awaits a `requestAnimationFrame` or a `setImmediate` waits one turn for a thing to have
+ * happened, instead of waiting for the thing. Bun's fake clock holds neither: happy-dom runs a
+ * frame as a `setImmediate` of the real loop, and `jest.advanceTimersByTime` runs neither, so a
+ * row waits for what the frame or the turn brings, and a wait that has nothing else to wait for
+ * says why it stays. The scan reads a test's own calls: a product function the row tests that sets
+ * a timer itself is the product's code, not a wait of the row's. The act-rule inputs
  * (`*.fixture.tsx`) are written to break rules and are left out. A file that imports `bun:test` or
  * Testing Library is a test file or a helper whatever its name, and the scan holds itself to
  * reading every such file.
@@ -57,7 +66,18 @@ const comment = /^\s*(?:\/\/|\/\*|\*|\{\/\*)/;
  *  none. */
 const wordOfLetters = /(?<![\w-])[A-Za-z]+(?:['’-][A-Za-z]+)*(?![\w-])/g;
 
-/** The modules whose `setTimeout`, `setInterval` and `scheduler.wait` wait real time. */
+/** The calls that start a wait of real time by their name alone, global, a member of any object,
+ *  or under the name an import gives them: the timers, the turn of `setImmediate` and the frame
+ *  of `requestAnimationFrame`. */
+const waitCalls: ReadonlySet<string> = new Set([
+  "setTimeout",
+  "setInterval",
+  "setImmediate",
+  "requestAnimationFrame",
+]);
+
+/** The modules whose `setTimeout`, `setInterval`, `setImmediate` and `scheduler.wait` wait real
+ *  time. */
 const timerModules = ["node:timers", "node:timers/promises", "timers", "timers/promises"];
 
 /** The one timer passed by its place: the `setTimeout` in the body of `afterOnFakeClock`, which
@@ -91,11 +111,12 @@ interface RealWait {
 
 /** The names a file's calls start a wait of real time through, by what its imports bind. */
 interface WaitNames {
-  /** Names whose call starts one: `setTimeout`, `setInterval`, and every local name an import
-   *  gives one of them, or `sleep` or `sleepSync` of "bun" (`delay`, `pause`). */
+  /** Names whose call starts one: each of `waitCalls`, and every local name an import gives one of
+   *  them, or `sleep` or `sleepSync` of "bun" (`delay`, `nextTurn`, `pause`). */
   readonly calls: Set<string>;
   /** Names of a timers module whole (`t` of `import * as t from "node:timers/promises"`), whose
-   *  `scheduler.wait` starts one; its `setTimeout` is a member `setTimeout`, found as any is. */
+   *  `scheduler.wait` starts one; its `setTimeout` and `setImmediate` are members of `waitCalls`,
+   *  found as any is. */
   readonly timers: Set<string>;
   /** Names of a timers module's `scheduler`, whose `wait` starts one. */
   readonly schedulers: Set<string>;
@@ -107,7 +128,7 @@ interface WaitNames {
 function waitNames(source: ts.SourceFile): WaitNames {
   const names: WaitNames = {
     buns: new Set(["Bun"]),
-    calls: new Set(["setTimeout", "setInterval"]),
+    calls: new Set(waitCalls),
     schedulers: new Set(),
     timers: new Set(),
   };
@@ -128,7 +149,7 @@ function waitNames(source: ts.SourceFile): WaitNames {
     }
     for (const element of bindings.elements) {
       const imported = (element.propertyName ?? element.name).text;
-      if (imported === "setTimeout" || imported === "setInterval") {
+      if (waitCalls.has(imported)) {
         names.calls.add(element.name.text);
       } else if (from === "bun" && (imported === "sleep" || imported === "sleepSync")) {
         names.calls.add(element.name.text);
@@ -161,7 +182,7 @@ function startsWait(callee: ts.Expression, names: WaitNames): boolean {
   const reached = member(callee);
   if (reached === undefined) return false;
   const { name, object } = reached;
-  if (name === "setTimeout" || name === "setInterval") return true;
+  if (waitCalls.has(name)) return true;
   if (name === "sleep" || name === "sleepSync") {
     return isOneOf(object, names.buns) || member(object)?.name === "Bun";
   }
@@ -390,6 +411,44 @@ test("every timer of node:timers, its promises and Bun is found, however an impo
   expect(imports.map((text) => realWaits("imports.test.ts", text).length)).toEqual(
     imports.map(() => 0)
   );
+});
+
+// A frame and a turn of the loop are waits of the kind a zero-delay timer is, by the architect's
+// ruling on dispatch://INFRA-983: a row that awaits one waits one turn for a thing to have
+// happened, instead of waiting for the thing. Each of these is found once and refused without a
+// reason: a `requestAnimationFrame` and a `setImmediate`, global, of `window` or of `globalThis`,
+// awaited or not, inside `act(...)` too; and the `setImmediate` of node:timers and its promises,
+// aliased, or reached through a namespace or a default import. Under the marker words and a
+// reason each passes, as a timer does; and a spy on the frame, a cancel of a frame or a turn, and
+// an import alone start no wait.
+test("a frame and a turn are found, global or a member, and the setImmediate of node:timers however an import names it", () => {
+  const refused = [
+    "requestAnimationFrame(run);",
+    "window.requestAnimationFrame(run);",
+    "globalThis.requestAnimationFrame(run);",
+    "await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));",
+    "await act(() => new Promise<void>((done) => window.requestAnimationFrame(() => done())));",
+    "setImmediate(run);",
+    "window.setImmediate(run);",
+    "globalThis.setImmediate(run);",
+    "await new Promise<void>((resolve) => setImmediate(resolve));",
+    'import { setImmediate as nextTurn } from "node:timers";\nnextTurn(run);',
+    'import { setImmediate as nextTurn } from "node:timers/promises";\nawait nextTurn();',
+    'import * as timers from "node:timers";\ntimers.setImmediate(run);',
+    'import timers from "timers";\ntimers.setImmediate(run);',
+  ];
+  expect(
+    refused.map((text) => realWaits("refused.test.tsx", text).map((wait) => wait.reasoned))
+  ).toEqual(refused.map(() => [false]));
+  const kept = [MARKED, "requestAnimationFrame(run);", "setImmediate(run);"].join("\n");
+  expect(realWaits("kept.test.tsx", kept).map((wait) => wait.reasoned)).toEqual([true, true]);
+  const none = [
+    'const frame = spyOn(window, "requestAnimationFrame").mockImplementation(() => 0);',
+    "cancelAnimationFrame(frame);",
+    "clearImmediate(turn);",
+    'import { setImmediate as nextTurn } from "node:timers/promises";',
+  ];
+  expect(none.map((text) => realWaits("none.test.tsx", text).length)).toEqual(none.map(() => 0));
 });
 
 // A call passes when a comment within `REASON_WINDOW` lines above it holds the words "stays on the

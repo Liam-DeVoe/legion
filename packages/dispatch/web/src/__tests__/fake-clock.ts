@@ -72,6 +72,9 @@ export async function settle(): Promise<void> {
 export async function onRealTurns(done: () => boolean, turns = 1_000): Promise<void> {
   for (let turn = 0; turn < turns && !done(); turn += 1) {
     await act(() => {
+      // This one stays on the real clock (INFRA-983): it is a wait for `done`, the thing itself,
+      // polled once a turn, and what it waits for comes on real turns while the row holds the
+      // fake clock; Bun's fake clock does not hold `setImmediate`, and `waitFor` would move it.
       const { promise, resolve } = Promise.withResolvers<void>();
       setImmediate(resolve);
       return promise;

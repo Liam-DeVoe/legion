@@ -642,6 +642,9 @@ test("a margin block focus request focuses and pulses the block once", async () 
     act(() => margin.current?.focusBlock("block-1"));
     await waitFor(() => expect(editors[0]?.focusedBlocks).toContain("block-1"));
     // The editor is reached on the next frame; one frame more lets any later request through.
+    // This one stays on the real clock (INFRA-983): the row reads that no later request focused
+    // the block again, which no state marks but the frame having come, and Bun's fake clock does
+    // not hold happy-dom's frame, a real `setImmediate` that no move of it runs.
     await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
     expect(editors[0]?.focusedBlocks).toEqual(["block-1"]);
   } finally {

@@ -749,7 +749,9 @@ async function explore(): Promise<Exploration> {
       played += 1;
       if (played % sequencesPerTurn === 0) {
         performance.clearMeasures();
-        // The turn runs the microtasks these sequences left, which lets their trees go.
+        // The turn runs the microtasks these sequences left, which lets their trees go. This one
+        // stays on the real clock (INFRA-983): the sweep reads nothing after the turn, so there is
+        // no state to wait for, and it waits for nothing but the queue the trees left to drain.
         await nextTurn();
       }
       // The next sequence takes the next event at the deepest choice that has one left.

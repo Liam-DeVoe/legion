@@ -1,11 +1,10 @@
 import { expect, test } from "bun:test";
 // biome-ignore lint/style/noRestrictedImports: the tablist's own scroll events below, which user-event has no form for
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 
 import { settle } from "../__tests__/fake-clock";
-import { nextFrame } from "../__tests__/frames";
 import {
   installResizeObserver,
   layOutScrollBox,
@@ -391,8 +390,7 @@ test("a newly selected tab settles the strip where its layout puts that tab, not
     // Activity, whole at 288 to 359 of the 528 px tablist, is selected: the strip goes to where
     // the layout puts it, 580 - (528 - 32) = 84.
     view.rerender(renderTabs("activity"));
-    await nextFrame();
-    expect(tablist.scrollLeft).toBe(84);
+    await waitFor(() => expect(tablist.scrollLeft).toBe(84));
   } finally {
     view.unmount();
     sizes.restore();
@@ -415,13 +413,14 @@ test("a tab a keystroke selects settles the strip where its layout puts that tab
     scrollTo(449);
     activity.focus();
     await user.keyboard("{ArrowLeft}");
-    await nextFrame();
 
     // Artifacts is selected and focused; the strip is where the layout puts it,
     // 505 - (300 - 32) = 237.
-    expect(artifacts).toHaveFocus();
-    expect(artifacts).toHaveAttribute("aria-selected", "true");
-    expect(tablist.scrollLeft).toBe(237);
+    await waitFor(() => {
+      expect(artifacts).toHaveFocus();
+      expect(artifacts).toHaveAttribute("aria-selected", "true");
+      expect(tablist.scrollLeft).toBe(237);
+    });
   } finally {
     view.unmount();
     sizes.restore();
@@ -451,11 +450,12 @@ test("End onto the already-selected last tab brings it back into view after the 
     scrollTo(0);
     collaborators.focus();
     await user.keyboard("{End}");
-    await nextFrame();
 
-    expect(collaborators).toHaveFocus();
-    expect(collaborators).toHaveAttribute("aria-selected", "true");
-    expect(tablist.scrollLeft).toBe(221);
+    await waitFor(() => {
+      expect(collaborators).toHaveFocus();
+      expect(collaborators).toHaveAttribute("aria-selected", "true");
+      expect(tablist.scrollLeft).toBe(221);
+    });
   } finally {
     view.unmount();
     sizes.restore();

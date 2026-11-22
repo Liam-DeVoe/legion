@@ -554,7 +554,15 @@ function cardInDetails(): HTMLElement {
   ).getByRole("button", { name: thread });
 }
 
-/** Lets the next frame come, and React draw what it changed. */
+/** Lets the next frame come, and React draw what it changed. happy-dom runs the frames in the
+ *  order they were asked for, so this one comes after every frame the page asked for before it.
+ *  This one stays on the real clock (INFRA-983): the rows that let a frame pass here read what the
+ *  page's frame did not do - a focus it left where it was, an editing it did not end, a line it
+ *  left drawn - or make their next move between two of the page's frames, as an editor that
+ *  draws a frame later does, so the frame is the thing they wait for; and Bun's fake clock does
+ *  not hold happy-dom's frame, which no move of it runs. A row that reads what a frame brings
+ *  waits for that with `waitFor`, and one that must choose which frames run holds them by hand
+ *  (`framesByHand`). */
 async function nextFrame(): Promise<void> {
   const frame = Promise.withResolvers<void>();
   requestAnimationFrame(() => frame.resolve());
@@ -6797,7 +6805,10 @@ test("the open question the page opens on is held on screen as the page grows, u
   }
 });
 
-/** Lets `count` animation frames pass, in which the opening gives any focus it has asked for. */
+/** Lets `count` animation frames pass, in which the opening gives any focus it has asked for.
+ *  This one stays on the real clock (INFRA-983): the rows read that the opening placed its focus
+ *  once and no frame after moved it, or let its frames pass before the reader acts, so the frames
+ *  are the thing they wait for, as `nextFrame`'s are. */
 async function framesPass(count = 3): Promise<void> {
   for (let frame = 0; frame < count; frame += 1) {
     await act(() => new Promise<void>((done) => requestAnimationFrame(() => done())));
@@ -7565,8 +7576,11 @@ test("a row the page lands on takes the focus in the next frame, without a scrol
       expect(focusesOf(row), `${what} took the focus in the commit that drew it`).toEqual([]);
       expect(document.body).toHaveFocus();
 
-      await nextFrame();
-      expect(focusedRow(view.container), `${what} has no focus after the next frame`).toBe(landsOn);
+      await waitFor(() =>
+        expect(focusedRow(view.container), `${what} has no focus after the next frame`).toBe(
+          landsOn
+        )
+      );
       expect(focusesOf(row), `${what} was focused with a scroll, or more than once`).toEqual([
         { preventScroll: true },
       ]);
@@ -7589,9 +7603,10 @@ test("a row the page lands on takes the focus in the next frame, without a scrol
     expect(asked?.isConnected, "the read took the first row it was asked for off the page").toBe(
       true
     );
-    await nextFrame();
-    expect(focusedRow(container), "the row first when the frame came has no focus").toBe(
-      "comment-0"
+    await waitFor(() =>
+      expect(focusedRow(container), "the row first when the frame came has no focus").toBe(
+        "comment-0"
+      )
     );
     expect(focusesOf(asked), "the row the frame was first asked for took the focus").toEqual([]);
     expect(focusesOf(rowsFor(container, "comment-0")[0])).toEqual([{ preventScroll: true }]);

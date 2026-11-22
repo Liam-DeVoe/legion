@@ -30,7 +30,11 @@ function blurWhenDisabled(): () => void {
   return () => fixup.disconnect();
 }
 
-/** Lets `count` frames pass. */
+/** Lets `count` frames pass. This one stays on the real clock (INFRA-983): the rows that let
+ *  frames pass here read that the stage's frame left a focus where it was or focused nothing, or
+ *  make their next move a frame on, as the chord's frames and a reader's move come, so the frames
+ *  are the thing they wait for; and Bun's fake clock does not hold happy-dom's frame, a real
+ *  `setImmediate` that no move of it runs. A row that reads what a frame brings waits for that. */
 async function frames(count: number): Promise<void> {
   for (let left = count; left > 0; left -= 1) {
     const { promise, resolve } = Promise.withResolvers<void>();
@@ -496,11 +500,13 @@ test("the chord that opens a view with no row brings its failed read's Retry on 
     await user.keyboard("tk");
     const retry = await page.findByRole("button", { name: "Retry" });
     await waitFor(() => expect(retry).toHaveFocus());
-    await frames(2);
     // Its top is brought 8 px below the band, which nothing publishes here (`bringOnScreen`).
-    expect(scrolled, "the Retry the chord reached was left above the screen").toHaveBeenCalledWith({
-      top: -108,
-    });
+    await waitFor(() =>
+      expect(
+        scrolled,
+        "the Retry the chord reached was left above the screen"
+      ).toHaveBeenCalledWith({ top: -108 })
+    );
   } finally {
     page.unmount();
     boxes.mockRestore();
@@ -711,11 +717,12 @@ test("a view that draws its failed read's Retry in the commit its page mounts in
       page.getByRole("main"),
       "the app's main element did not take the focus after the stage placed it"
     ).toHaveFocus();
-    await frames(1);
-    expect(
-      page.getByRole("button", { name: "Retry" }),
-      "the view drew its Retry as its page mounted, and left the focus on the app's main element"
-    ).toHaveFocus();
+    await waitFor(() =>
+      expect(
+        page.getByRole("button", { name: "Retry" }),
+        "the view drew its Retry as its page mounted, and left the focus on the app's main element"
+      ).toHaveFocus()
+    );
   } finally {
     page.unmount();
   }
@@ -736,11 +743,12 @@ test("a view that draws its rows in the commit its page mounts in takes back the
       page.getByRole("main"),
       "the app's main element did not take the focus after the stage placed it"
     ).toHaveFocus();
-    await frames(1);
-    expect(
-      page.container.querySelector(TAB_STOP_ROW),
-      "the view drew its rows as its page mounted, and left the focus on the app's main element"
-    ).toHaveFocus();
+    await waitFor(() =>
+      expect(
+        page.container.querySelector(TAB_STOP_ROW),
+        "the view drew its rows as its page mounted, and left the focus on the app's main element"
+      ).toHaveFocus()
+    );
   } finally {
     page.unmount();
   }

@@ -614,11 +614,12 @@ test("an address opened before the reads answer lands on its step once they answ
   try {
     opened.redraw(root, ANSWERED);
     await settled();
-    await aFrame();
-    expect(
-      focusedRow(),
-      "an address opened before the reads answer lands on the first bar once they answer"
-    ).toBe(D("t2"));
+    await waitFor(() =>
+      expect(
+        focusedRow(),
+        "an address opened before the reads answer lands on the first bar once they answer"
+      ).toBe(D("t2"))
+    );
   } finally {
     opened.unmount();
   }
@@ -632,11 +633,12 @@ test("an address opened before the reads answer lands on its step once they answ
     refused.redraw(root, failedAs([], [{ failure: 1, read: "plan", retrying: true }], true));
     refused.redraw(root, ANSWERED);
     await settled();
-    await aFrame();
-    expect(
-      focusedRow(),
-      "an address under a refused read lands on the first bar once a Retry has it answer"
-    ).toBe(D("t2"));
+    await waitFor(() =>
+      expect(
+        focusedRow(),
+        "an address under a refused read lands on the first bar once a Retry has it answer"
+      ).toBe(D("t2"))
+    );
   } finally {
     refused.unmount();
   }
@@ -996,7 +998,9 @@ async function settled(): Promise<void> {
   });
 }
 
-/** Lets one frame pass, in which the address's landing focuses its row (`landOnRow`). */
+/** Lets one frame pass, after which a reader's move is no longer the chord's: the stage counts a
+ *  focus moved onto the tree in the frame it gave the Retry the focus as the chord's
+ *  (`slots/stage.tsx`'s `placed`). */
 async function aFrame(): Promise<void> {
   await act(async () => {
     await nextFrame();
