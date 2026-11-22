@@ -387,7 +387,10 @@ function readIssueReference(element: Element): DrawnIssueReference {
       label: mark.getAttribute("aria-label"),
       role: mark.getAttribute("role"),
     })),
-    text: (element.textContent ?? "").replace(/\u200b/gu, "").replace(/\s+/gu, " ").trim(),
+    text: (element.textContent ?? "")
+      .replace(/\u200b/gu, "")
+      .replace(/\s+/gu, " ")
+      .trim(),
   };
 }
 
