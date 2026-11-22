@@ -2926,6 +2926,13 @@ DAEMON_RACE_IMPOSSIBLE_STEP = "Test what the race build cannot run"
 DAEMON_RACE_IMPOSSIBLE_PACKAGES = race_impossible_tests(DAEMON, daemon_race_packages())
 DAEMON_RACE_IMPOSSIBLE_SCRIPT = race_impossible_script(DAEMON_RACE_IMPOSSIBLE_PACKAGES)
 
+# daemon-go's run of internal/intake's drain test with its bound on (LEGION_TEST_DRAIN_MEASURE=1):
+# the race step runs internal/intake, and its detector would change the time the bound holds, so
+# this step runs that one test again without the detector.
+DAEMON_DRAIN_STEP = "Hold the intake's drain to its bound"
+DAEMON_DRAIN_TEXT = ("go test -v -count=1 -run '^TestABacklogOfOtherPullRequestsDrainsAndAppliesEveryLegionEvent$' "
+                     "./internal/intake/")
+
 
 # The text-check job: the three modules' text checks, and the seventeen tests of the Dispatch API's
 # nine static checks - its eight source guards and one_expression_guard_test.go. They read the
@@ -3464,6 +3471,11 @@ GATES = [
         pinned_step("daemon-go", DAEMON_RACE_IMPOSSIBLE_STEP, DAEMON, DAEMON_RACE_IMPOSSIBLE_SCRIPT, [
             (DAEMON, [f"./{under}"], f"go test -run of what the race build cannot run in ./{under}", {})
             for under in DAEMON_RACE_IMPOSSIBLE_PACKAGES
+        ]),
+        # The drain bound's step names its test in a quoted -run, which check-ci-filters.sh does
+        # not reduce, so its script is pinned too: what it compiles is internal/intake's tests.
+        pinned_step("daemon-go", DAEMON_DRAIN_STEP, DAEMON, DAEMON_DRAIN_TEXT, [
+            (DAEMON, ["./internal/intake/"], "go test -run of internal/intake's drain test with its bound on", {}),
         ]),
     ], reads=reads(
         ("scripts/e2e/stage1-skeleton.sh", at("daemon-go", "Stage 1 live proof")),
