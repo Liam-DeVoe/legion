@@ -600,7 +600,8 @@ func TestAcceptingAndAMergeGitHubMadeGetAStart(t *testing.T) {
 // and the end names the session and the model the daemon reads of that token (the start names
 // neither: startStep); so does the end of a run of accepting the release before started, which no
 // start counted. Each architect answers with a session and a model of its own, so a record that
-// named the other one would carry the other's.
+// named the other one would carry the other's. The sign-off is that architect's, the one claim the
+// acceptance's verdict is taken from (spec R5, stepCallerRefusal).
 //
 // A failed child architect is the tree's at a run the release before started: nothing starts it
 // again before the sign-off, and the start the sign-off's own move into the retro queues is the
@@ -629,7 +630,7 @@ func TestAChildsAcceptanceIsItsOwningArchitects(t *testing.T) {
 		{name: "control: the operator suspended the child's own architect", state: supervise.StateSuspended, by: supervise.SuspendedByOperator, approval: tree, before: tree},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			run := func(t *testing.T, at phase.Phase, enter func(pool *pgxpool.Pool, engine *Engine)) []record.StepRecord {
+			run := func(t *testing.T, at phase.Phase, owner string, enter func(pool *pgxpool.Pool, engine *Engine)) []record.StepRecord {
 				t.Helper()
 				pool := migratedPool(t)
 				stepRoot(t, pool, phase.Implementing)
@@ -640,7 +641,9 @@ func TestAChildsAcceptanceIsItsOwningArchitects(t *testing.T) {
 				}
 				engine := stepEngine(agent)
 				enter(pool, engine)
-				applyFacts(t, pool, engine)("sign-off", rootsSignOff(t, pool, engine, "LEGION-209"))
+				signOff := rootsSignOff(t, pool, engine, "LEGION-209")
+				signOff.By = claim.Token(owner)
+				applyFacts(t, pool, engine)("sign-off", signOff)
 				if got := issueAt(t, pool, "LEGION-209"); got != phase.Retro {
 					t.Fatalf("LEGION-209 stands at %s after the sign-off, want retro", got)
 				}
@@ -663,7 +666,7 @@ func TestAChildsAcceptanceIsItsOwningArchitects(t *testing.T) {
 			}
 
 			t.Run("the approval starts it", func(t *testing.T) {
-				writes := run(t, phase.Reviewing, func(pool *pgxpool.Pool, engine *Engine) {
+				writes := run(t, phase.Reviewing, tc.approval, func(pool *pgxpool.Pool, engine *Engine) {
 					move(t, pool, engine, "LEGION-209", TriggerReviewApproved, "", record.PhaseRow{})
 				})
 				if len(writes) != 2 || !isStart(writes[0]) || !isEnd(writes[1]) || writes[1].ID != writes[0].ID {
@@ -674,7 +677,7 @@ func TestAChildsAcceptanceIsItsOwningArchitects(t *testing.T) {
 				assertEnd(t, writes[1], "step", 5, 3, "passed", nil)
 			})
 			t.Run("a run the release before started", func(t *testing.T) {
-				writes := run(t, phase.Accepting, func(*pgxpool.Pool, *Engine) {})
+				writes := run(t, phase.Accepting, tc.before, func(*pgxpool.Pool, *Engine) {})
 				if len(writes) != 1 || writes[0].ID != StepID("LEGION-209", 3, placeOf("step", 5), 0) {
 					t.Fatalf("the writes of LEGION-209's step 5 = %+v, want one end at the count 0", writes)
 				}
