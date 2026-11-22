@@ -437,17 +437,32 @@ const BLOCK_ID_PROPERTY = "blockId";
  * (`sync-plugin.js`'s `_forceRerender`), as read in both libraries' sources. The tree lets go of
  * its hold as it goes (`useNodeEditing.ts`), on an editor the page is about to destroy, where
  * taking the plugin off drew the whole document - a spec of some 160 rows - again for nothing.
+ *
+ * A change of the document an edit of the reader's makes is reported once the editor has taken
+ * it (`onOwnEdit`): their typing, a paste, an undo, and what the editor appends to one of them
+ * (ProseMirror's `appendedTransaction`), such as a block id stamped on a block the edit made. A
+ * transaction the collaboration brings is not the reader's, nor one appended to it, nor one kept
+ * out of the undo history (`addToHistory: false`): Milkdown writes a heading's `id` that way, in
+ * a transaction of its own after any heading's words change, a collaborator's among them
+ * (`syncHeadingIdPlugin`). The hold notes each document such an edit makes, and its plugin's view
+ * reports the document the editor takes where it is one of them: a plugin's state may be worked
+ * out for a state the editor never takes, which leaves a note nobody reads. The report goes
+ * through this plugin, as a plugin of its own would change the editor's plugins (above). A hold
+ * let go reports nothing.
  */
 export function holdEditsToBlock(
   view: EditorView,
   heldBlock: () => string | undefined,
   parts: Promise<HoldParts>,
-  onHeld: () => void
+  onHeld: () => void,
+  onOwnEdit?: () => void
 ): () => void {
   let letGo = false;
   void parts.then(
     ([state, sync]) => {
       if (letGo || view.isDestroyed) return;
+      // Each document an edit of the reader's made (above).
+      const edited = new WeakSet<ProseMirrorNode>();
       const plugin: Plugin<number | undefined> = new state.Plugin<number | undefined>({
         filterTransaction: (transaction, editorState) =>
           letGo ||
@@ -458,6 +473,15 @@ export function holdEditsToBlock(
         state: {
           apply: (transaction, start, _, { doc }) => {
             if (letGo) return undefined;
+            // A transaction appended to another is read as that one.
+            const root: Transaction = transaction.getMeta("appendedTransaction") ?? transaction;
+            if (
+              root.docChanged &&
+              root.getMeta(sync.ySyncPluginKey) === undefined &&
+              root.getMeta("addToHistory") !== false
+            ) {
+              edited.add(doc);
+            }
             if (!transaction.docChanged) return start;
             return blockStart(
               doc,
@@ -467,6 +491,12 @@ export function holdEditsToBlock(
           },
           init: (_, { doc }) => blockStart(doc, heldBlock(), undefined),
         },
+        view: () => ({
+          update: (editor, before) => {
+            const { doc } = editor.state;
+            if (!letGo && doc !== before.doc && edited.has(doc)) onOwnEdit?.();
+          },
+        }),
       });
       view.updateState(view.state.reconfigure({ plugins: [...view.state.plugins, plugin] }));
       onHeld();

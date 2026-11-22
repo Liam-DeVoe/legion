@@ -186,6 +186,7 @@ export function useNodeEditing({
   artifacts,
   container,
   onEditing,
+  onOwnEdit,
   onReport,
 }: {
   /** Each artifact of the issue by its slug (`issue-artifacts.ts`). */
@@ -195,6 +196,10 @@ export function useNodeEditing({
   /** Tells the page which document a row is editing, so it draws that document's one editor and
    *  hands it to the row. */
   onEditing: OnEditing;
+  /** Called with the key of the row being edited at each edit of its editor's own that changes
+   *  the document - the reader's typing, never a collaborator's (`holdEditsToBlock`'s
+   *  `onOwnEdit`) - so the tree reads a read that then drops the row as the reader's. */
+  onOwnEdit: (row: string) => void;
   /** What a key reports when the node it was pressed on has no text to put a caret in, or its
    *  editor could not open. */
   onReport: (report: string) => void;
@@ -251,6 +256,10 @@ export function useNodeEditing({
   const letGo = useRef<(() => void) | undefined>(undefined);
   // The view of the editor the page handed over last, while the page holds it.
   const editorView = useRef<EditorView | undefined>(undefined);
+  // The row each edit of the editor's own is reported for, and what hears of it (`onOwnEdit`),
+  // read as each edit is made.
+  const ownEdit = useRef({ onOwnEdit, row: editingRow });
+  ownEdit.current = { onOwnEdit, row: editingRow };
   const onEditor = useCallback((editor: RowEditor | undefined) => {
     letGo.current?.();
     letGo.current = undefined;
@@ -266,6 +275,10 @@ export function useNodeEditing({
       () => {
         hold.current = "on";
         holdChanged.current?.();
+      },
+      () => {
+        const { onOwnEdit: heard, row } = ownEdit.current;
+        if (row !== undefined) heard(row);
       }
     );
   }, []);
