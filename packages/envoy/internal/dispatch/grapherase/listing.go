@@ -231,7 +231,6 @@ var derivedTables = map[string][]derivedRows{
 	},
 	"block_refs":           {{where: `held.node_kind = bound.kind and held.node_address = bound.id`}},
 	"document_block_texts": {{where: `held.artifact_id = nullif(bound.document, '')::uuid and (held.block_id = bound.block or exists (select 1 from unnest(bound.text_blocks, bound.text_versions) as rewritten (block_id, version) where rewritten.block_id = held.block_id and rewritten.version = held.version))`}},
-	"decision_keeps":       {{where: `held.artifact_id = nullif(bound.document, '')::uuid and held.block_id = bound.block`}},
 	"artifact_versions":    {{where: `held.artifact_id = nullif(bound.document, '')::uuid and held.number = any(bound.numbers)`}},
 	"document_search":      {{where: `held.artifact_id = nullif(bound.document, '')::uuid and cardinality(bound.numbers) > 0`}},
 	"issues":               {{columns: []string{"search"}, where: `bound.spec_issue <> '' and held.key = bound.spec_issue and cardinality(bound.numbers) > 0`}},

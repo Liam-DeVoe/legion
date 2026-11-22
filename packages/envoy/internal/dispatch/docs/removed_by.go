@@ -18,8 +18,8 @@ import (
 // dropper is who makes a write that may take an ask block out of its document: whether the write
 // is a person's own (writtenByPerson), and so may take an answered ask's block out, and, for such
 // a write, the person whose removal it records on each answered ask it takes out
-// (graphstore.TupleRemovedBy), "" where it records none - the erase's, an operator's write no
-// person made. actor is the write's own actor, which the removal's tuple names as its writer.
+// (graphstore.TupleRemovedBy), "" where it records none. actor is the write's own actor, which
+// the removal's tuple names as its writer.
 type dropper struct {
 	person  bool
 	remover string

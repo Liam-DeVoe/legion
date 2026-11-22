@@ -151,7 +151,6 @@ func ReadErasedLiveText(ctx context.Context, tx pgx.Tx, artifactID string, scope
 	if err := validateStoredAskBlocks(seeded); err != nil {
 		return nil, fmt.Errorf("the redacted text of document %s: %w", artifactID, &ErrInvalidAskBlock{Reason: err})
 	}
-	// The erase is an operator's (envoy-dispatch erase), no agent's write.
 	if err := refuseDroppedAskBlocksIn(ctx, tx, artifactID, seeded, dropper{person: true}); err != nil {
 		return nil, fmt.Errorf("the redacted text of document %s: %w", artifactID, err)
 	}
