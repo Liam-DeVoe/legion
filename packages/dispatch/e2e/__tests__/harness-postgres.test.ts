@@ -46,12 +46,12 @@ Date.now = () => real() + (ahead += 600_000);
 /** Runs `ready` against the stand-in in a child, `gone` the body of the function it is handed,
  *  aborting on the stand-in's first call where `abort` is set, and answers what it threw or that
  *  the server answered. `answerAfter` is the stand-in's `PSQL_ANSWER_AFTER`, `preload` a preload
- *  of the child. */
+ *  of the child, and `path` its PATH in place of the stand-in's directory before the caller's. */
 async function waited(
   gone: string,
   abort: boolean,
   mark: string,
-  { answerAfter, preload }: { answerAfter?: number; preload?: string } = {}
+  { answerAfter, path, preload }: { answerAfter?: number; path?: string; preload?: string } = {}
 ) {
   const script =
     `const { ready } = await import(${JSON.stringify(module("harness-postgres.ts"))});` +
@@ -68,7 +68,7 @@ async function waited(
     argv: [process.execPath, ...(preload ? ["--preload", preload] : []), "--eval", script],
     bound: "short",
     env: {
-      PATH: `${stubs}:${process.env.PATH ?? ""}`,
+      PATH: path ?? `${stubs}:${process.env.PATH ?? ""}`,
       PSQL_MARK: join(stubs, mark),
       ...(answerAfter === undefined ? {} : { PSQL_ANSWER_AFTER: String(answerAfter) }),
       TMPDIR: stubs,
@@ -85,10 +85,14 @@ async function waited(
 test(
   "a wait its caller aborts while the server refuses names the server it waited for",
   async () => {
-    const { named, read, stdout } = await waited("false", true, "aborted");
+    const { named, read, stderr, stdout } = await waited("false", true, "aborted");
     expect(read.interrupted, `${named} printed ${stdout}`).toBe(true);
     expect(read.message).toMatch(
       /^interrupted \d+\.\d s into the wait, before the stand-in's Postgres answered select 1$/
+    );
+    // The wait named what it waited for as it began, which is what a run killed outright leaves.
+    expect(stderr).toContain(
+      "e2e/harness-postgres.ts: waiting, with no bound of its own, until the stand-in's Postgres answers select 1"
     );
   },
   rowLimit("short")
@@ -103,6 +107,24 @@ test(
       "The Dispatch e2e harness cannot start: the stand-in's Postgres stopped before it answered select 1: "
     );
     expect(read.message).toContain("the database system is starting up");
+  },
+  rowLimit("short")
+);
+
+// A psql that cannot be started would fail every later try the same way, with the server up and
+// `gone` false, so the wait is refused at once, naming psql and why it could not start.
+test(
+  "a wait whose psql cannot be started is refused at once, naming why",
+  async () => {
+    const { named, read, stdout } = await waited("false", false, "no-psql", {
+      path: join(stubs, "no-such-directory"),
+    });
+    expect(read.interrupted, `${named} printed ${stdout}`).toBe(false);
+    expect(read.message).toStartWith(
+      "The Dispatch e2e harness cannot start: psql, which asks the stand-in's Postgres for select 1, could not be started: "
+    );
+    // Bun says `Executable not found in $PATH: "psql"`, and Node `spawn psql ENOENT`.
+    expect(read.message).toMatch(/Executable not found in \$PATH: "psql"|spawn psql ENOENT/);
   },
   rowLimit("short")
 );

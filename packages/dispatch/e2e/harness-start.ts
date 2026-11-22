@@ -45,11 +45,15 @@ import { fileURLToPath } from "node:url";
 import { type HarnessListener, targetedListeners } from "./harness-listeners";
 import { harnessPorts, harnessVariables } from "./harness-ports";
 import {
+  announceWait,
   Interrupted,
   interruptedBefore,
   type PipedRunning,
   Supervisor,
 } from "./local-instance-support";
+
+/** What this module's own lines are prefixed with, as every starter in `e2e/` names itself. */
+const named = "e2e/harness-start.ts";
 
 const dispatchPackage = fileURLToPath(new URL("..", import.meta.url));
 const heldPortScript = fileURLToPath(
@@ -217,6 +221,8 @@ async function serving(watched: Watched, given: number, supervisor: Supervisor):
     }
   };
   let port = watched.reported();
+  if (port === undefined)
+    announceWait(named, `${listener.name} (pid ${child.pid}) reports its port`);
   while (port === undefined) {
     await check("reported its port");
     port = watched.reported();
@@ -224,6 +230,7 @@ async function serving(watched: Watched, given: number, supervisor: Supervisor):
   if (listener.health === undefined) return port;
   const url = `http://127.0.0.1:${port}${listener.health}`;
   const answered = `answered 200 at ${url}`;
+  announceWait(named, `${listener.name} answers 200 at ${url}`);
   for (;;) {
     try {
       const response = await supervisor.untilInterrupted(
@@ -271,6 +278,7 @@ async function keepPort(
   const stderr = text(child.stderr).catch(() => "");
   text(child.stdout).catch(() => "");
   const since = Date.now();
+  announceWait(named, `${name} (pid ${child.pid}) holds a port`);
   // The keeper writes the file through a rename once it serves its socket, so a file that exists
   // holds the whole port.
   while (!existsSync(portFile)) {

@@ -34,7 +34,7 @@
  *  directory and starts every server with it preloaded, at the same path, so a row can make the
  *  disk stop answering (e2e/disk-stall.ts). */
 import { execFile } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -42,7 +42,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import { buildStallLibrary, diskStallDir, stallEnvironment } from "./disk-stall";
-import { Interrupted, interruptedBefore } from "./local-instance-support";
+import { announceWait, Interrupted, interruptedBefore } from "./local-instance-support";
 import { sqlAt } from "./psql";
 
 const execFileAsync = promisify(execFile);
@@ -244,10 +244,12 @@ async function stackOf(
  *  in e2e/harness-start.ts says why): how long a server takes to come up is the machine's, and a
  *  bound of 120 s failed a start that was only slow, under a caller whose own deadline was far
  *  away. It ends on the answer; on the server's end, which `gone` reads after each try that
- *  failed, with the last try's error; or on the caller's abort (`signal`), whose Interrupted names
- *  the server it waited for (`interruptedBefore`). A try that never returns, a server that
- *  takes the connection and never answers, is ended by that abort too, since the psql it runs
- *  takes the signal. Exported for e2e/__tests__/harness-postgres.test.ts. */
+ *  failed, with the last try's error; on a psql that cannot be started at all, such as one that
+ *  is not on PATH, which no later try can change; or on the caller's abort (`signal`), whose
+ *  Interrupted names the server it waited for (`interruptedBefore`). A try that never returns, a
+ *  server that takes the connection and never answers, is ended by that abort too, since the psql
+ *  it runs takes the signal. It names what it waits for as it begins (`announceWait`). Exported
+ *  for e2e/__tests__/harness-postgres.test.ts. */
 export async function ready(
   url: string,
   what: string,
@@ -255,6 +257,7 @@ export async function ready(
   signal?: AbortSignal
 ): Promise<void> {
   const since = Date.now();
+  announceWait("e2e/harness-postgres.ts", `${what} answers select 1`);
   for (;;) {
     try {
       await sqlAt(url, ["select 1"], signal);
@@ -262,6 +265,15 @@ export async function ready(
     } catch (error) {
       // The psql above was killed by the signal, or the one before it was.
       if (signal?.aborted === true) throw interruptedBefore(`${what} answered select 1`, since);
+      // A psql that ran and failed has a numeric exit `code`; one that could not be started has
+      // the spawn's own (ENOENT, EACCES), which every later try would meet again.
+      const code = (error as NodeJS.ErrnoException).code;
+      if (typeof code === "string" && code !== "ABORT_ERR") {
+        throw new Error(
+          `The Dispatch e2e harness cannot start: psql, which asks ${what} for select 1, could not ` +
+            `be started: ${error instanceof Error ? error.message : String(error)}`
+        );
+      }
       if (gone()) {
         throw new Error(
           `The Dispatch e2e harness cannot start: ${what} stopped before it answered select 1: ` +
@@ -305,6 +317,37 @@ function postmasterGone(data: string): () => boolean {
  *  kills the pg_ctl (`startCluster`). */
 const pgCtlStartWait = String(365 * 24 * 60 * 60);
 
+/** Kills, with SIGKILL, every process that serves the cluster in `data`: a `postgres -D <data>`,
+ *  read from `/proc/<pid>/cmdline`. `pg_ctl -w start` starts the postmaster in a session of its own,
+ *  so a caller's abort that kills the pg_ctl before the postmaster has written `postmaster.pid`
+ *  leaves `pg_ctl stop` nothing to stop, and the postmaster would serve on while the pool removes
+ *  its data directory. A postmaster's children rewrite their command lines, so this finds the
+ *  postmaster alone, and their own postmaster's death ends them. Where there is no `/proc` it kills
+ *  nothing. */
+function killServersOf(data: string): void {
+  let pids: string[];
+  try {
+    pids = readdirSync("/proc").filter((entry) => /^\d+$/.test(entry));
+  } catch {
+    return;
+  }
+  for (const pid of pids) {
+    let argv: string[];
+    try {
+      argv = readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0");
+    } catch {
+      continue;
+    }
+    const at = argv.indexOf("-D");
+    if (at < 0 || argv[at + 1] !== data || !(argv[0] ?? "").endsWith("postgres")) continue;
+    try {
+      process.kill(Number(pid), "SIGKILL");
+    } catch {
+      // gone already
+    }
+  }
+}
+
 /** Starts the cluster in `data`, with its log and its unix socket in `dir`, and returns the port
  *  it serves on. Returns or throws with no postmaster of `data` left running. `server` is the
  *  environment pg_ctl, and so the postmaster, runs with. `signal`, the caller's abort, ends the
@@ -324,6 +367,10 @@ async function startCluster(
   for (let attempt = 1; attempt <= bindAttempts; attempt++) {
     const port = await freePort();
     const options = [`-p ${port}`, "-h 127.0.0.1", `-k ${dir}`, ...started.map((s) => `-c ${s}`)];
+    announceWait(
+      "e2e/harness-postgres.ts",
+      `${what} takes connections on port ${port} (pg_ctl -w start, attempt ${attempt} of ${bindAttempts})`
+    );
     try {
       await execFileAsync(
         join(bin, "pg_ctl"),
@@ -353,7 +400,10 @@ async function startCluster(
       await execFileAsync(join(bin, "pg_ctl"), ["-D", data, "-m", "immediate", "-w", "stop"]).catch(
         () => {}
       );
-      if (signal?.aborted === true) throw interruptedBefore(`${what} took connections`, since);
+      if (signal?.aborted === true) {
+        killServersOf(data);
+        throw interruptedBefore(`${what} took connections`, since);
+      }
     }
   }
   throw new Error(
