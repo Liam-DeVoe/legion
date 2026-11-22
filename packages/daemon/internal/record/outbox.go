@@ -3089,13 +3089,13 @@ func controllerOnlyNoticeKind(kind NoticeKind) bool {
 	}
 }
 
+// superviseOps is every op a supervise row may carry (SuperviseOp), listed once: the validator
+// reads it, and so does the first boot's conversion, which stamps the fence of a release before's
+// row of each op that stops (FencedKinds).
+var superviseOps = []SuperviseOp{"start", "suspend", "release", "tree_close", "issue_close", "retire_task", "pause_stop"}
+
 func validSuperviseOp(op SuperviseOp) bool {
-	switch op {
-	case "start", "suspend", "release", "tree_close", "issue_close", "retire_task", "pause_stop":
-		return true
-	default:
-		return false
-	}
+	return slices.Contains(superviseOps, op)
 }
 
 // validWakeKind says whether kind is one of the pods wake kinds a resume records, the one

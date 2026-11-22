@@ -277,11 +277,16 @@ func TestThePlanRatingsWayBackLeavesWhatTheReleaseBeforeReads(t *testing.T) {
 		case !stands:
 			continue
 		}
+		// What the row was queued with: this release queues every effect with the fence of its
+		// issue's run and phase entry (record.Fenced), which the release that rates each plan
+		// names on none of these rows, so the rows here stand at the first fence, and this way
+		// back leaves it on them. The way back of the later 20261120095128 takes it off, before
+		// this one runs, at a rollback across both; this test holds this one alone.
 		decoded, err := record.DecodeOutboxPayload(row)
-		if err != nil {
+		if want := record.Fenced(q.payload, record.FirstFence); err != nil {
 			t.Errorf("this release's decode of %s after the way back: %v", q.name, err)
-		} else if !reflect.DeepEqual(decoded, q.payload) {
-			t.Errorf("%s reads %#v after the way back, want %#v as it was queued", q.name, decoded, q.payload)
+		} else if !reflect.DeepEqual(decoded, want) {
+			t.Errorf("%s reads %#v after the way back, want %#v as it was queued", q.name, decoded, want)
 		}
 		if want := inserted[i]; s.attempts != want.attempts || !s.nextAt.Equal(want.nextAt) || s.lastError != want.lastError {
 			t.Errorf("%s stands after the way back with %d attempts, due at %s, after %q; want its %d, %s and %q as they were",

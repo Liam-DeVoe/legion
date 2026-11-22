@@ -210,6 +210,44 @@ func entryFenced(payload OutboxPayload) bool {
 	return carries
 }
 
+// FenceKeys is what a row of one kind carries of its fence (FenceOf), by the parts a row the
+// release before queued may lack: its run, its phase entry and the pod it acts on. A supervise
+// row is fenced only by the ops that stop (SuperviseRequest.Stops), which Ops names; every other
+// kind carries its fence whatever its payload says, and its Ops is nil.
+type FenceKeys struct {
+	Kind                      OutboxKind
+	Ops                       []SuperviseOp
+	Generation, Entry, PodUID bool
+}
+
+// fencedPayloads is a zero payload of each kind FenceOf fences whatever its payload says. The
+// record's tests hold it to the kinds whose fence the fence inventory decides, so a kind fenced
+// later is listed here before any row of it is stamped (FencedKinds).
+var fencedPayloads = []OutboxPayload{
+	StatusWrite{}, MessagePost{}, Notice{}, ControllerNotice{}, GateSeed{}, PendingBasisSeed{}, RetentionEnd{},
+	IssueSuspend{}, IssueBundle{}, IssueRelease{}, IssueBranch{}, CheckWakeDue{}, CheckLook{}, CheckBound{},
+	RoleMessage{}, PhaseEnded{}, HookPrompt{}, UpdateAsk{}, MergeForwardMessage{}, MergeQueueRemoval{}, ClaimRelease{},
+}
+
+// FencedKinds is every kind whose rows carry a fence, with the parts of it each carries, read off
+// FenceOf, entryFenced and actsOnPod, the one statement of each: what the first boot's conversion
+// stamps on a row the release before queued without its fence (StampReleaseBeforeFences), so a
+// decoder reads every row afterwards with its fence.
+func FencedKinds() []FenceKeys {
+	keys := make([]FenceKeys, 0, len(fencedPayloads)+1)
+	for _, payload := range fencedPayloads {
+		keys = append(keys, FenceKeys{Kind: payload.OutboxKind(), Generation: true, Entry: entryFenced(payload), PodUID: actsOnPod(payload)})
+	}
+	var stops []SuperviseOp
+	for _, op := range superviseOps {
+		if (SuperviseRequest{Op: op}).Stops() {
+			stops = append(stops, op)
+		}
+	}
+	stop := SuperviseRequest{Op: stops[0]}
+	return append(keys, FenceKeys{Kind: OutboxKindSupervise, Ops: stops, Generation: true, Entry: entryFenced(stop), PodUID: actsOnPod(stop)})
+}
+
 // fenceStamp is what Fenced filled of a payload's fence: the entry, and the generation where
 // the payload named none, which a fact's settle sets again to the fence the issue stands at when
 // the fact commits (Postgres.RefenceFactRows).

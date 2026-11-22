@@ -291,6 +291,12 @@ type overrides struct {
 	// the decision would hold the machine's lock, which an agent's request waits on at its grant
 	// check (supervise.Machine.Claim).
 	beforeDecision func(claim.Token, supervise.Event)
+	// afterConversionStep is told the number of each step of the first boot's conversion of what
+	// the release before stored once that step commits (workflowRuntime.runConversionSteps); an
+	// error it answers stops the boot there, as a crash after that step would, and the daemon's
+	// next boot starts at the step after it. nil, in production, tells no one. It is the seam the
+	// live proof of the cut-over stops the daemon at after each step in turn.
+	afterConversionStep func(step int) error
 }
 
 // Run is the daemon. It refuses what it cannot run on before it touches anything — the
@@ -483,6 +489,19 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		boot, cancelAfterMint = bootBudget(ctx)
 		defer cancelAfterMint()
 		workflow.controllerFirstWake, workflow.idleTick, workflow.mergeStateRetry, workflow.entrySweep = o.controllerFirstWake, o.idleTick, o.mergeStateRetry, o.entrySweep
+		workflow.afterConversionStep = o.afterConversionStep
+		// The first boot on this release converts what the release before stored (decision 21 of
+		// dispatch://INFRA-4730): its steps that read the store alone run here, once the store has
+		// migrated and before anything decodes a row that release queued — supervision's restore,
+		// the open of the uncounted runs below, every fact — since the first of them gives those
+		// rows the fence every decoder reads. The steps that read the listing run in the boot's
+		// reconcile (workflowRuntime.reconcile), before its first admission pass. A boot whose
+		// conversion is finished runs nothing here.
+		if err := workflow.convertStore(boot); err != nil {
+			workflow.stop()
+			st.Close()
+			return err
+		}
 		plan.identity = workflow.identity
 		plan.repository, plan.launchRepository = workflow.issueRepository, workflow.launchRepository
 		plan.ensureWorkspace = workflow.ensureWorkspace
@@ -656,10 +675,11 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		// first (blockers.Reconcile) and runs the first admission pass on them, in one
 		// transaction, so a child the event stream has not applied yet is in the copy before any
 		// parent's start or sign_off is decided. No ancestry is read: every decision reads the
-		// chain from the copy (record.Chains). The first boot's conversion of what the release
-		// before stored (decision 21 of dispatch://INFRA-4730) belongs here for its steps that read
-		// the listing and the copy, under this probe's retry, and before openUncountedRuns above for
-		// its steps that read the store alone, so all of it is done before attach.
+		// chain from the copy (record.Chains). On the first boot on this release the reconcile
+		// also runs the steps of its conversion that read the listing and the copy, under this
+		// probe's retry: the fill, those steps and the first admission pass then each commit on
+		// their own (workflowRuntime.convertListed), so all of the conversion is done before
+		// attach.
 		if err == nil {
 			err = bootprobe.Run(probing, "list Dispatch issues for admission", readinessRetry, log,
 				readinessAttempt(workflow.reconcile, bootTimeout, dispatch.Unreachable))

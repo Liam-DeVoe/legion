@@ -126,6 +126,14 @@ type workflowRuntime struct {
 	// would otherwise repeat the same (ack floor, idle) pairs and have its own releases swallowed
 	// as duplicates of the previous boot's.
 	bootID string
+	// converting says the boot found its project's conversion of what the release before stored
+	// unfinished (convertStore), so its reconcile runs the rest of the conversion before its first
+	// admission pass (convertListed), which clears it. The boot alone writes it, from its one
+	// goroutine. afterConversionStep is overrides.afterConversionStep, told the number of each
+	// step of the conversion once it commits; an error it answers stops the boot there. nil, in
+	// production, tells no one.
+	converting          bool
+	afterConversionStep func(step int) error
 	// caughtUp names each root (key and generation) the boot's catch-up finished, so a retry of the
 	// catch-up resumes after it rather than reading it again (catchUpAwaiting), and the reconcile's
 	// retry does not hold it again (holdForCatchUp). The boot alone writes it, from its one
@@ -1394,28 +1402,63 @@ func (w *workflowRuntime) reconcile(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("list Dispatch issues for admission: %w", err)
 	}
+	// The first boot on this release fills the copy, finishes its conversion and only then makes
+	// its first admission pass, each in a transaction of its own (convertListed); every later boot
+	// does all three of the listing's writes in one.
+	if w.converting {
+		return w.convertListed(ctx, issues)
+	}
 	return w.reconcileListing(ctx, issues, nil, true)
+}
+
+// preparedListing is a Dispatch listing of the project as reconcileListing applies it: the
+// summaries in scope, which the copy of Dispatch's issues takes, and each one's fact as admission
+// reads it.
+type preparedListing struct {
+	scope  []dispatch.IssueSummary
+	listed []intake.DispatchIssue
 }
 
 // reconcileListing applies issues, a Dispatch listing of the project, as reconcile says: the
 // boot's whole listing (keep nil, boot set, which also holds the roots the boot's catch-up reads
 // out of admission's decision and refills the project's rows of the copy of Dispatch's issues
 // where its mark asks for it), or a recovery's (recoverRepositories), scoped to the summaries
-// keep keeps, judged against every record.
+// keep keeps, judged against every record. The copy's fill and admission's pass are one
+// transaction (fillCopy, then admitListed).
 func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatch.IssueSummary, keep func(records map[string]*record.Issue, summary dispatch.IssueSummary) bool, boot bool) error {
-	// The transaction performs no I/O: what admission reads of a todo issue's repository, and who
-	// set the label of a labelled triage root the workflow does not record, are read now, against
-	// the records read once (listingRecords); each listed issue's fact carries that repository, or
-	// that setter, to admission.
+	prepared, err := w.prepareListing(ctx, issues, keep, boot)
+	if err != nil {
+		return err
+	}
+	target, position, err := w.dispatchPositions(ctx)
+	if err != nil {
+		return err
+	}
+	if err := w.listingTx(ctx, func(scoped context.Context, tx pgx.Tx) error {
+		if err := w.fillCopy(scoped, tx, prepared.scope, boot); err != nil {
+			return err
+		}
+		return w.admitListed(scoped, tx, prepared, target, position, boot)
+	}); err != nil {
+		return fmt.Errorf("reconcile admission: %w", err)
+	}
+	return nil
+}
+
+// prepareListing reads, before any transaction, what admission's pass needs of each summary of
+// issues that keep keeps (every one, where keep is nil): what admission reads of a todo issue's
+// repository, and who set the label of a labelled triage root the workflow does not record, read
+// against the records read once (listingRecords). Each listed issue's fact carries that
+// repository, or that setter, to admission, so the transaction that applies them performs no I/O.
+func (w *workflowRuntime) prepareListing(ctx context.Context, issues []dispatch.IssueSummary, keep func(records map[string]*record.Issue, summary dispatch.IssueSummary) bool, boot bool) (preparedListing, error) {
 	var records map[string]*record.Issue
 	var err error
 	if keep != nil {
 		if records, err = w.listingRecords(ctx); err != nil {
-			return err
+			return preparedListing{}, err
 		}
 	}
-	scope := make([]dispatch.IssueSummary, 0, len(issues))
-	listed := make([]intake.DispatchIssue, 0, len(issues))
+	prepared := preparedListing{scope: make([]dispatch.IssueSummary, 0, len(issues)), listed: make([]intake.DispatchIssue, 0, len(issues))}
 	for _, summary := range issues {
 		if keep != nil && !keep(records, summary) {
 			continue
@@ -1424,112 +1467,148 @@ func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatc
 		labelledTriageRoot := fact.LabelledTriageRoot()
 		if (fact.Status == "todo" || labelledTriageRoot) && records == nil {
 			if records, err = w.listingRecords(ctx); err != nil {
-				return err
+				return preparedListing{}, err
 			}
 		}
 		switch {
 		case fact.Status == "todo":
-			prepared, err := w.prepareListed(ctx, records, fact, boot)
+			repository, err := w.prepareListed(ctx, records, fact, boot)
 			if err != nil {
-				return fmt.Errorf("prepare the repository of %s for admission: %w", summary.Key, err)
+				return preparedListing{}, fmt.Errorf("prepare the repository of %s for admission: %w", summary.Key, err)
 			}
 			// What the preparation read: the refusal GitHub answered for the repository the issue
 			// resolves to, which this listing's own apply says on the issue
 			// (intake.DispatchIssue.RepositoryRefusal).
-			fact.RepositoryRefusal = prepared.RepositoryRefusal
+			fact.RepositoryRefusal = repository.RepositoryRefusal
 		case labelledTriageRoot && records[summary.Key] == nil:
 			// The listing carries no actor, so the setter is read from the log as an event's is;
 			// a recorded root a person moved back to triage is never queued again, so its log is
 			// not read.
 			if fact.LabelSetter, err = w.labelSetter(ctx, summary.Key); err != nil {
-				return fmt.Errorf("prepare who set the label of %s for admission: %w", summary.Key, err)
+				return preparedListing{}, fmt.Errorf("prepare who set the label of %s for admission: %w", summary.Key, err)
 			}
 		}
-		scope = append(scope, summary)
-		listed = append(listed, fact)
+		prepared.scope = append(prepared.scope, summary)
+		prepared.listed = append(prepared.listed, fact)
 	}
+	return prepared, nil
+}
+
+// dispatchPositions reads the notification stream's own current position (target), then the
+// Dispatch consumer's own, after the listing: a message published between the listing and target
+// would land in the listing but go uncounted by target, and reading the consumer's position last
+// catches it up as far as this call can before admission decides what a record behind target must
+// still wait for (reconcile).
+func (w *workflowRuntime) dispatchPositions(ctx context.Context) (int64, intake.DispatchConsumerPosition, error) {
 	target, err := w.consumers.DispatchTarget(ctx)
 	if err != nil {
-		return fmt.Errorf("read notification stream target: %w", err)
+		return 0, intake.DispatchConsumerPosition{}, fmt.Errorf("read notification stream target: %w", err)
 	}
 	position, err := w.consumers.DispatchPosition(ctx)
 	if err != nil {
-		return fmt.Errorf("read Dispatch consumer position: %w", err)
+		return 0, intake.DispatchConsumerPosition{}, fmt.Errorf("read Dispatch consumer position: %w", err)
 	}
-	// The reconcile is its own transaction, so it owns the commit hooks its admission and workflow
-	// changes register (intake.OnCommit), as ApplyFact does for a fact, and it records issues, so it
-	// takes the lock every fact applies under: a read of the live records for the repository
-	// caches (refreshLive) never publishes over an issue it is recording. It settles the runs its
-	// writes end as a fact does (intake.OpenSettlers), before it commits.
+	return target, position, nil
+}
+
+// listingTx runs write in a transaction of the listing's own. It owns the commit hooks its
+// admission and workflow changes register (intake.OnCommit), as ApplyFact does for a fact, and it
+// records issues, so it takes the lock every fact applies under: a read of the live records for
+// the repository caches (refreshLive) never publishes over an issue it is recording. It settles
+// the runs its writes end as a fact does (intake.OpenSettlers), before it commits.
+func (w *workflowRuntime) listingTx(ctx context.Context, write func(scoped context.Context, tx pgx.Tx) error) error {
 	scoped, committed := intake.WithCommitHooks(ctx)
 	scoped, settle := intake.OpenSettlers(scoped, w.handlers...)
 	if err := pgx.BeginFunc(scoped, w.pool, func(tx pgx.Tx) error {
 		if err := intake.SerializeFacts(scoped, tx); err != nil {
 			return fmt.Errorf("serialize the reconcile with every fact: %w", err)
 		}
-		// The boot's whole listing refills the project's rows of the copy of Dispatch's issues
-		// where the project's mark asks for it (record.Store.TakeDispatchRefill): the first boot
-		// of a project on the release of 20261120055717_dispatch_issue_value_sequences empties
-		// the project's rows here, and the mirror below fills them from this listing, so the
-		// empty, the fill and the mark's stamp commit together, under the fact lock and before
-		// admission's pass, the boot's first decision. A transaction that fails leaves the mark,
-		// and the next attempt refills. A recovery's listing is a part of the project, and it
-		// never refills. Dispatch deletes no issue and moves none to another project, and the
-		// listing is unpaged, so a key the refill removes that the listing does not hold is an
-		// anomaly the line below names.
-		if boot {
-			removed, refilled, err := w.records.TakeDispatchRefill(scoped, tx, w.dispatchProject)
-			if err != nil {
-				return err
-			}
-			if refilled {
-				inListing := make(map[string]bool, len(scope))
-				for _, summary := range scope {
-					inListing[summary.Key] = true
-				}
-				unlisted := make([]string, 0, len(removed))
-				for _, key := range removed {
-					if !inListing[key] {
-						unlisted = append(unlisted, key)
-					}
-				}
-				intake.OnCommit(scoped, func() {
-					w.log.Info("workflow: the first boot on this release refilled the copy of Dispatch's issues from the listing",
-						"project", w.dispatchProject, "removed", len(removed), "written", len(scope), "removedUnlisted", unlisted)
-				})
-			}
-		}
-		// The mirror takes every summary, before admission decides anything from it — including a
-		// summary admission defers to the Dispatch consumer: a deferred key's listed status is
-		// still the freshest thing the daemon holds about it. Each value a summary carries
-		// replaces the copy's only where an older reading wrote it or none did
-		// (record.Store.PutDispatchIssue), so a listing no newer than an event already applied
-		// changes nothing that event wrote. At the boot that refills, no reading of this boot has
-		// reached the copy before this listing: the durable consumers start only in serve, after
-		// the catch-up that follows this listing, and the API serves only from serve too (run), so
-		// the rows the refill emptied are filled from this listing alone.
-		if err := blockers.Reconcile(scoped, tx, w.records, w.dispatchProject, scope); err != nil {
-			return err
-		}
-		// Every root the boot's catch-up will read is held out of the decision whether it waits on
-		// a person before admission's pass here, until its catch-up has applied what Dispatch
-		// recorded while the daemon was down (catchUpAwaiting).
-		if boot {
-			if err := w.holdForCatchUp(scoped, tx); err != nil {
-				return err
-			}
-			if err := w.releaseParkedClaims(scoped, tx, scope); err != nil {
-				return err
-			}
-		}
-		if err := w.admission.Reconcile(scoped, tx, listed, target, position); err != nil {
+		if err := write(scoped, tx); err != nil {
 			return err
 		}
 		return settle(scoped, tx)
 	}); err != nil {
-		return fmt.Errorf("reconcile admission: %w", err)
+		return err
 	}
 	committed()
+	return nil
+}
+
+// fillCopy writes scope, the summaries of a listing, to the copy of Dispatch's issues in tx.
+//
+// The boot's whole listing (boot) refills the project's rows of the copy where the project's mark
+// asks for it (record.Store.TakeDispatchRefill): the first boot of a project on the release of
+// 20261120055717_dispatch_issue_value_sequences empties the project's rows here, and the mirror
+// below fills them from this listing, so the empty, the fill and the mark's stamp commit together,
+// under the fact lock and before admission's pass, the boot's first decision. A transaction that
+// fails leaves the mark, and the next attempt refills. A recovery's listing is a part of the
+// project, and it never refills. Dispatch deletes no issue and moves none to another project, and
+// the listing is unpaged, so a key the refill removes that the listing does not hold is an anomaly
+// the line below names.
+func (w *workflowRuntime) fillCopy(scoped context.Context, tx pgx.Tx, scope []dispatch.IssueSummary, boot bool) error {
+	if boot {
+		removed, refilled, err := w.records.TakeDispatchRefill(scoped, tx, w.dispatchProject)
+		if err != nil {
+			return err
+		}
+		if refilled {
+			inListing := make(map[string]bool, len(scope))
+			for _, summary := range scope {
+				inListing[summary.Key] = true
+			}
+			unlisted := make([]string, 0, len(removed))
+			for _, key := range removed {
+				if !inListing[key] {
+					unlisted = append(unlisted, key)
+				}
+			}
+			intake.OnCommit(scoped, func() {
+				w.log.Info("workflow: the first boot on this release refilled the copy of Dispatch's issues from the listing",
+					"project", w.dispatchProject, "removed", len(removed), "written", len(scope), "removedUnlisted", unlisted)
+			})
+		}
+	}
+	// The mirror takes every summary, before admission decides anything from it — including a
+	// summary admission defers to the Dispatch consumer: a deferred key's listed status is still
+	// the freshest thing the daemon holds about it. Each value a summary carries replaces the
+	// copy's only where an older reading wrote it or none did (record.Store.PutDispatchIssue), so a
+	// listing no newer than an event already applied changes nothing that event wrote. At the boot
+	// that refills, no reading of this boot has reached the copy before this listing: the durable
+	// consumers start only in serve, after the catch-up that follows this listing, and the API
+	// serves only from serve too (run), so the rows the refill emptied are filled from this listing
+	// alone.
+	return blockers.Reconcile(scoped, tx, w.records, w.dispatchProject, scope)
+}
+
+// admitListed is admission's pass over prepared, a listing the copy already holds, in tx, at the
+// notification stream's target and the Dispatch consumer's position (dispatchPositions). At the
+// boot, every root the boot's catch-up will read is held out of the decision whether it waits on
+// a person before admission's pass here, until its catch-up has applied what Dispatch recorded
+// while the daemon was down (catchUpAwaiting).
+func (w *workflowRuntime) admitListed(scoped context.Context, tx pgx.Tx, prepared preparedListing, target int64, position intake.DispatchConsumerPosition, boot bool) error {
+	if boot {
+		if err := w.holdForCatchUp(scoped, tx); err != nil {
+			return err
+		}
+		if err := w.releaseParkedClaims(scoped, tx, prepared.scope); err != nil {
+			return err
+		}
+	}
+	return w.admission.Reconcile(scoped, tx, prepared.listed, target, position)
+}
+
+// admitListing is admission's pass over prepared in a transaction of its own (admitListed), at
+// the positions read now: the first boot's pass, which follows its conversion (convertListed).
+func (w *workflowRuntime) admitListing(ctx context.Context, prepared preparedListing, boot bool) error {
+	target, position, err := w.dispatchPositions(ctx)
+	if err != nil {
+		return err
+	}
+	if err := w.listingTx(ctx, func(scoped context.Context, tx pgx.Tx) error {
+		return w.admitListed(scoped, tx, prepared, target, position, boot)
+	}); err != nil {
+		return fmt.Errorf("reconcile admission: %w", err)
+	}
 	return nil
 }
 

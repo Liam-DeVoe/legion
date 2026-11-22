@@ -52,6 +52,86 @@
 -- and refuses no retention_end row at the database, since this list admits the kind, and runs
 -- none: none of its outbox lanes lists it (record.LaneKinds). There is no down file: migrations
 -- here are forward-only.
+--
+-- A rollback of one project to the release before first runs, with its daemon stopped, the way
+-- back below (R22 of dispatch://INFRA-3320, decision 15 of dispatch://INFRA-4730), and only then
+-- the way back of each earlier migration a rollback across them names. The release before decodes
+-- an outbox payload strictly (record.DecodeOutboxPayload, DisallowUnknownFields) and refuses a
+-- kind and a notice kind it does not know, at every attempt. So the way back deletes the rows
+-- that release cannot run: each retention_end row (the release before's own linger serves the
+-- deadline it carries, from the linger_until the conversion left), each reparented notice and each
+-- status-scope controller notice (told again by no one), and each status write that carries an
+-- option of Dispatch's status-change route (written without its option it would break R24; a
+-- person makes that write again). It takes off each payload key this release adds to a kind that
+-- release reads, so those effects run after the rollback: the run and the phase entry each effect
+-- names, the pod a stop, a cleanup, a save or a release names, the architect a notice names, the
+-- row a status write waits for and the controller that asked for it, and the parts of R18's seed
+-- beside the parent, the tree and the words that release requires of it. It gives each issue the
+-- first boot's conversion made a root of its own from a hand-over that had landed (a record with
+-- carried_generation set whose stored tree is another issue's) what the release before's own
+-- re-admission and promotion would have written, since that release re-admits only a record whose
+-- key is its tree: the issue stores its own key as its tree, the tree it left where it still stands
+-- at admitted and no tree where it has started (handed_over_from), its claims name that tree and
+-- are bound to an open lifecycle of it, a handed_over_roots row says what it carried, and its
+-- unfinished rows name that tree, at the issue's generation where they name a tree's generation.
+-- It deletes the project's record of the conversion, which clears the state's daemon.convertedAt,
+-- so the next boot on this release converts what the release before wrote in between. Last it
+-- prints each issue that has a claim not retired with the tree it stores: a Sandbox whose
+-- legion.dev/tree label differs from that tree is relabelled with it before the release before
+-- boots, since that release deletes a Sandbox by its tree label and sweeps one whose label is not
+-- its issue's stored tree. Daemons of several projects can share the database, and each runs only
+-- its own project's rows (split_part(issue, '-', 1)), so each statement names the project,
+-- <PROJECT>, which the operator replaces with its key; the claims and the lifecycles name it by
+-- its claim token, the key in lower case (claim.ProjectToken). The way back is the last paragraph
+-- of this header (migrations.WayBack), and internal/store's
+-- TestTheConversionsWayBackLeavesWhatTheReleaseBeforeReads runs it.
+--
+-- -- The rows of one project the release before cannot run.
+-- delete from outbox where split_part(issue, '-', 1) = '<PROJECT>' and (kind = 'retention_end'
+--   or (kind = 'notice' and payload->>'kind' = 'reparented')
+--   or (kind = 'controller_notice' and payload->>'kind' = 'status-scope')
+--   or (kind = 'dispatch_status' and (payload ? 'includeChildren' or payload ? 'unlinkChildren' or payload ? 'includeParent')));
+-- -- The keys this release adds to the payloads of the kinds the release before reads.
+-- update outbox set payload = payload - 'generation' - 'entry' - 'after' - 'controller'
+--   where kind = 'dispatch_status' and split_part(issue, '-', 1) = '<PROJECT>';
+-- update outbox set payload = payload - 'generation' - 'entry' - 'to'
+--   where kind in ('notice', 'controller_notice') and split_part(issue, '-', 1) = '<PROJECT>';
+-- update outbox set payload = payload - 'generation' - 'entry'
+--   where kind in ('dispatch_message', 'role_message', 'phase_ended', 'hook_prompt', 'update_ask', 'merge_forward',
+--     'merge_queue_removal', 'claim_release') and split_part(issue, '-', 1) = '<PROJECT>';
+-- update outbox set payload = payload - 'generation'
+--   where kind in ('check_wake', 'check_look', 'check_bound') and split_part(issue, '-', 1) = '<PROJECT>';
+-- update outbox set payload = payload - 'entry' - 'podUid'
+--   where kind in ('issue_suspend', 'issue_bundle', 'issue_release') and split_part(issue, '-', 1) = '<PROJECT>';
+-- update outbox set payload = payload - 'podUid' where kind = 'supervise' and split_part(issue, '-', 1) = '<PROJECT>';
+-- update outbox set payload = payload - 'generation' - 'entry' - 'oldParent' - 'phase' - 'slot' - 'steps'
+--   where kind = 'reparent_seed' and split_part(issue, '-', 1) = '<PROJECT>';
+-- -- Each root the conversion made of a hand-over that had landed, as the release before's re-admission leaves one.
+-- insert into handed_over_roots (issue, generation, gate_carried)
+--   select key, carried_generation, carried_gate from issues
+--   where project = '<PROJECT>' and carried_generation <> 0 and tree <> key
+--   on conflict (issue) do update set generation = excluded.generation, gate_carried = excluded.gate_carried;
+-- insert into tree_lifecycles (project, tree, epoch, authority)
+--   select lower('<PROJECT>'), key, 1, 'workflow' from issues
+--   where project = '<PROJECT>' and carried_generation <> 0 and tree <> key
+--   on conflict (project, tree) do update set epoch = tree_lifecycles.epoch + 1, authority = 'workflow',
+--     cleanup_started = false, cleanup_confirmed_at = null, updated_at = now()
+--   where tree_lifecycles.cleanup_started and tree_lifecycles.cleanup_confirmed_at is not null;
+-- update claims c set tree = i.key, tree_epoch = l.epoch from issues i
+--   join tree_lifecycles l on l.project = lower('<PROJECT>') and l.tree = i.key
+--   where c.project = lower('<PROJECT>') and c.issue = i.key
+--     and i.project = '<PROJECT>' and i.carried_generation <> 0 and i.tree <> i.key;
+-- update outbox o set payload = o.payload || jsonb_build_object('tree', i.key)
+--     || case when o.payload ? 'treeGeneration' then jsonb_build_object('treeGeneration', i.generation) else '{}'::jsonb end
+--   from issues i where o.issue = i.key and o.payload ? 'tree'
+--     and i.project = '<PROJECT>' and i.carried_generation <> 0 and i.tree <> i.key;
+-- update issues set handed_over_from = case when phase = 'admitted' then tree else '' end, tree = key
+--   where project = '<PROJECT>' and carried_generation <> 0 and tree <> key;
+-- -- The record of the conversion of one project.
+-- delete from tree_conversions where project = '<PROJECT>';
+-- -- Each issue of one project with a claim not retired, and the tree it stores, for the relabel of its Sandbox.
+-- select key, tree from issues where project = '<PROJECT>'
+--   and exists (select 1 from claims c where c.issue = issues.key and c.state <> 'retired') order by key;
 alter table issues
     add column retained_until timestamptz,
     add column carried_generation bigint not null default 0 check (carried_generation >= 0),

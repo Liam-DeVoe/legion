@@ -56,6 +56,34 @@ func (e *Engine) tellParentChange(ctx context.Context, tx pgx.Tx, issue *record.
 	return e.enqueue(ctx, tx, issue.Key, seed)
 }
 
+// TellParentAtFirstBoot is the first boot's notice of a root under a parent at work (step 9 of
+// the conversion, decision 21 of dispatch://INFRA-4730; R21 of dispatch://INFRA-3320): the
+// release before ran issue as a root of its own, and the copy its boot filled shows it under
+// parent, an issue in Legion's work. That release's own notice of the parent already set the
+// once-mark (record.Issue.ToldParent), so the mark is cleared and R18's notice is told through
+// the path a change of parent takes: one re-parent seed naming parent as the new parent and no
+// old parent, queued as the parent is written into told_parent, so the issue's own architect and
+// the one above it are told once, and a later listing or event that repeats the parent tells
+// nobody again (tellParentChange). Nothing is told of an issue not in Legion's work. It answers
+// whether it queued a seed.
+func (e *Engine) TellParentAtFirstBoot(ctx context.Context, tx pgx.Tx, issue record.Issue, parent string) (bool, error) {
+	if parent == "" || !record.InLegionsWork(issue) {
+		return false, nil
+	}
+	issue.ToldParent = ""
+	seed, err := e.reparentSeed(ctx, tx, issue, "", parent)
+	if err != nil {
+		return false, err
+	}
+	issue.ToldParent = parent
+	if err := e.store.PutIssue(ctx, tx, issue); err != nil {
+		return false, err
+	}
+	e.logOnCommit(ctx, "workflow: the first boot tells the architects of a root the release before ran under a parent in Legion's work",
+		"issue", issue.Key, "parent", parent, "gate_root", seed.Tree, "phase", issue.Phase)
+	return true, e.enqueue(ctx, tx, issue.Key, seed)
+}
+
 // reparentSeed is the seed of issue's move from oldParent to newParent as the record holds the
 // issue now: its run and the phase entry of the role that works its phase (0 where that role has
 // entered none), the phase under way, whether it holds an admission slot, each design-gate step

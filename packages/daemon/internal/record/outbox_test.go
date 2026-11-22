@@ -690,6 +690,29 @@ func TestEveryOutboxKindNamesItsRunOrSaysWhyNot(t *testing.T) {
 			}
 		}
 	}
+	// The first boot's conversion stamps a row the release before queued with each part of its
+	// fence its kind carries (FencedKinds, StampReleaseBeforeFences), so that list names each kind
+	// whose delivery is fenced (FenceOf) with the parts decided here, and no other: a kind fenced
+	// later fails here until its rows are stamped too.
+	stamped := map[OutboxKind]FenceKeys{}
+	for _, keys := range FencedKinds() {
+		stamped[keys.Kind] = keys
+	}
+	for _, kind := range slices.Sorted(maps.Keys(decided)) {
+		fence := decided[kind]
+		fenced := false
+		if fence.payload != nil {
+			_, fenced = FenceOf(fence.payload)
+		}
+		keys, listed := stamped[kind]
+		switch {
+		case fenced != listed:
+			t.Errorf("%s: its delivery is fenced %t, and the conversion stamps it %t", kind, fenced, listed)
+		case listed && (!keys.Generation || keys.Entry != (fence.entry.field != "") || keys.PodUID != (fence.target.field == podUIDField)):
+			t.Errorf("%s: the conversion stamps %+v, want the generation, the entry %t and the pod %t decided here", kind, keys,
+				fence.entry.field != "", fence.target.field == podUIDField)
+		}
+	}
 }
 
 func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
