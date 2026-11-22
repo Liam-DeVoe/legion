@@ -268,7 +268,7 @@ func TestConcurrentAttemptsUnderOneKeyRunOnce(t *testing.T) {
 	}
 	testwait.Eventually(t, "every attempt but the running one to be answered", func() bool { return len(responses) == attempts-1 })
 	release()
-	wait.Wait()
+	testwait.Returns(t, "every attempt under the one key to answer once the running one was released", wait.Wait)
 	close(responses)
 	fresh := 0
 	for response := range responses {

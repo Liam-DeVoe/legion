@@ -66,7 +66,7 @@ func TestConcurrentAnchoredWritesDoNotWedgeTheirPool(t *testing.T) {
 						}, "alice").Code
 				}(index)
 			}
-			group.Wait()
+			testwait.Returns(t, fmt.Sprintf("the %d concurrent anchored writes to answer (a wedged pool never does)", writers), group.Wait)
 
 			for index, status := range statuses {
 				if status != http.StatusCreated {
@@ -173,7 +173,7 @@ func TestSettlementsBehindAnAnchoredWriteDoNotWedgeThePool(t *testing.T) {
 	waitForAcquiredConns(t, database, maxConns)
 
 	release()
-	writes.Wait()
+	testwait.Returns(t, "the held anchored write and the write queued behind it to answer once released (a wedged pool never does)", writes.Wait)
 
 	for index, status := range statuses {
 		if status != http.StatusCreated {

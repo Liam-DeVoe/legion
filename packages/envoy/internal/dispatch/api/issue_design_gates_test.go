@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -556,7 +557,7 @@ func TestTwoDesignGatePublishesOfOneIssueAtOnceLeaveOneWholeSet(t *testing.T) {
 			}()
 		}
 		start.Done()
-		done.Wait()
+		testwait.Returns(t, fmt.Sprintf("round %d's two design-gate publishes of one issue to answer", round+1), done.Wait)
 		stored := recordedDesignGates(t, handler, issue)
 		if !slices.Equal(stored, sets[0]) && !slices.Equal(stored, sets[1]) {
 			t.Errorf("round %d: the issue records %v, want exactly %v or %v", round+1, stored, sets[0], sets[1])

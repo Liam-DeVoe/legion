@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"math/rand/v2"
 	"net/http"
 	"net/http/httptest"
@@ -308,7 +309,7 @@ func TestTwoPublicationsOfOneIssueAtOnceLeaveOneWholeSet(t *testing.T) {
 				}()
 			}
 			start.Done()
-			done.Wait()
+			testwait.Returns(t, fmt.Sprintf("%s, round %d: the two role-holder publications to answer", shape.name, round+1), done.Wait)
 			stored := sortedPairs(readRoleHolders(t, handler, issue).Holders)
 			if !slices.Equal(stored, shape.a) && !slices.Equal(stored, shape.b) {
 				t.Errorf("%s, round %d: the issue stores %v, want exactly %v or %v", shape.name, round+1, stored, shape.a, shape.b)

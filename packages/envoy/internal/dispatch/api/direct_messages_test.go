@@ -15,6 +15,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // directConversation is a human's direct message to s1 on a fresh handler whose fake listener
@@ -1355,7 +1356,7 @@ func TestOverlappingRepliesReadByIDInOppositeOrdersBothLand(t *testing.T) {
 			}()
 		}
 		close(start)
-		writes.Wait()
+		testwait.Returns(t, fmt.Sprintf("round %d's two read-by-id writes in opposite orders to answer", round), writes.Wait)
 		close(answered)
 		for response := range answered {
 			if response.Code != http.StatusOK {

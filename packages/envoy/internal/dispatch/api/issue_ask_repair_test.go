@@ -388,7 +388,7 @@ func TestTwoRepairsAtOnceWithdrawEachAskOnce(t *testing.T) {
 		}()
 	}
 	close(start)
-	wait.Wait()
+	testwait.Returns(t, "both repairs started together to return (two that wait on each other never do)", wait.Wait)
 	for index, err := range failures {
 		if err != nil {
 			t.Fatalf("repair %d: %v", index, err)

@@ -40,12 +40,16 @@ func (c *heldFiring) AfterFunc(d time.Duration, f func()) clock.Timer {
 
 // fireHeld moves the fake to at on a goroutine of its own, since a move waits for the function of
 // each timer it fires to return, and waits until the firing of the timer due there waits. It
-// answers a channel that closes once the move has returned, and that function with it.
-func (c *heldFiring) fireHeld(t *testing.T, at time.Time) <-chan struct{} {
+// answers a channel that receives once the move has returned, and that function with it: nil, or
+// what the move panicked with when its wait for that function gave up (clocktest). That wait gives
+// up before any wait of the test's (testwait.ReceiveInHelper), so its panic is recovered on its
+// goroutine and handed to the test, which fails by name, as startArmedSettlement's is
+// (live_write_test.go): unrecovered, it would end the test binary naming no test.
+func (c *heldFiring) fireHeld(t *testing.T, at time.Time) <-chan any {
 	t.Helper()
-	moved := make(chan struct{})
+	moved := make(chan any, 1)
 	go func() {
-		defer close(moved)
+		defer func() { moved <- recover() }()
 		c.Set(at)
 	}()
 	testwait.Receive(t, "the read deadline's timer to fire at "+at.Format(time.RFC3339Nano)+" and its function to wait", c.fired)
@@ -89,7 +93,9 @@ func TestAReadDeadlineFiringThatAMoveOvertookEndsNoReads(t *testing.T) {
 		awaitArmedAt(t, deadlines.Fake, "the drain's own deadline, liveSocketCloseWait on", pongBy.Add(liveSocketCloseWait))
 		socket.drainReading(t)
 		deadlines.let()
-		testwait.Receive(t, "the function of the pong deadline's firing, overtaken by the drain, to return", moved)
+		if gaveUp := testwait.Receive(t, "the function of the pong deadline's firing, overtaken by the drain, to return", moved); gaveUp != nil {
+			t.Fatalf("the move that fired the pong deadline gave up waiting for its function, overtaken by the drain: %v", gaveUp)
+		}
 		socket.endFrame(t, "the pong deadline's firing, overtaken by the drain, ended the drain before the frame's end")
 		rig.sockets(t, 0)
 	})
@@ -101,13 +107,15 @@ func TestAReadDeadlineFiringThatAMoveOvertookEndsNoReads(t *testing.T) {
 		moved := deadlines.fireHeld(t, pongBy)
 
 		// The pong's write ends where the shared wait gives up (none under -timeout 0).
-		writeBy, _ := testwait.Context(t).Deadline()
+		writeBy, _ := testwait.GiveUpAt(t)
 		if err := client.conn.WriteControl(gws.PongMessage, nil, writeBy); err != nil {
 			t.Fatalf("send a pong: %v", err)
 		}
 		awaitArmedAt(t, deadlines.Fake, "the pong deadline the page's pong armed, two heartbeats on", pongBy.Add(2*drainHeartbeat))
 		deadlines.let()
-		testwait.Receive(t, "the function of the pong deadline's firing, overtaken by the pong, to return", moved)
+		if gaveUp := testwait.Receive(t, "the function of the pong deadline's firing, overtaken by the pong, to return", moved); gaveUp != nil {
+			t.Fatalf("the move that fired the pong deadline gave up waiting for its function, overtaken by the pong: %v", gaveUp)
+		}
 		client.send(t, LiveUnsubscribe{Type: "unsubscribe"})
 		frame := client.next(t, "the socket's answer to the page's next frame: the pong deadline's firing, overtaken by the pong, must not have cut it")
 		if refusal, ok := frame.(LiveError); !ok || refusal.Code != "INVALID_FRAME" {

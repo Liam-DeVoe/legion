@@ -418,7 +418,7 @@ func TestConcurrentAgentsListsAndIssueReadsLeaveTheSharedListAsTheListenerSentIt
 		}()
 	}
 	close(start)
-	done.Wait()
+	testwait.Returns(t, "every concurrent agents list and issue read to answer", done.Wait)
 
 	type agentRow struct {
 		SessionID string `json:"session_id"`

@@ -263,9 +263,11 @@ func TestTheDeliverySweepFinishesEveryDeliveringRouteOnce(t *testing.T) {
 			clock.Set(backoff)
 			// The dead sender is the write's keyed handler or the broadcast's delivery, both the
 			// server's detached work, or a comment's lane on the mention sender, which this stops:
-			// the test writes nothing more.
-			served.detached.wait()
-			served.mentions.wait()
+			// the test writes nothing more. Both joins wait on work whose budgets run on this clock,
+			// which nothing moves past the backoff, so each goes through the shared wait: a sender
+			// that armed a second backoff, or waited on a window, fails the row naming the join.
+			testwait.Returns(t, "the dead sender's detached work to end once its take-over backoff passed", served.detached.wait)
+			testwait.Returns(t, "the dead sender's mention lanes to end once its take-over backoff passed", served.mentions.wait)
 			if sent := listener.answered(key); sent != 1 {
 				t.Fatalf("after the dead sender's late outcome the listener answered %d sends under %s, want the one resume", sent, key)
 			}

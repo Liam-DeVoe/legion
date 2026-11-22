@@ -392,7 +392,7 @@ func TestConcurrentReadsOnAColdCacheMakeOneListenerCall(t *testing.T) {
 		return waits, waits == readers
 	})
 	release()
-	done.Wait()
+	testwait.Returns(t, fmt.Sprintf("all %d reads to answer once the listener's one fetch was released", readers), done.Wait)
 	if got := calls.Load(); got != 1 {
 		t.Fatalf("%d concurrent reads on a cold cache made %d listener calls, want 1", readers, got)
 	}

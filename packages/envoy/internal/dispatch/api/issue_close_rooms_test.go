@@ -75,7 +75,7 @@ func runDocumentRoomSyncDialing(
 	}()
 	t.Cleanup(func() {
 		cancel()
-		running.Wait()
+		testwait.Returns(t, "the document room sync and its listener hub to return once cancelled", running.Wait)
 	})
 	return connected
 }

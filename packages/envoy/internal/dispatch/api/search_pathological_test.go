@@ -3,13 +3,10 @@ package api
 import (
 	"context"
 	"fmt"
-	"maps"
 	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
-	"regexp"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -39,13 +36,22 @@ import (
 //	16 KiB   8.1 s       96 ms                 22 hit, 0 read
 //	32 KiB   36.3 s      178 ms                22 hit, 0 read
 //
-// So the fix is held by its structure: every trigger that builds a search vector reads its text
-// through search_text (searchTriggers, read from pg_proc's source), and search_text leaves no run
-// of more than searchTextRun underscore-joined segments in any body saved here
-// (requireShortSearchRuns), which is what keeps the parser's rescans short. Beside them each save's
-// indexing statement is counted in the shared buffers it reads (indexingBuffers) and held to
-// linear growth (growsLinearly), which bounds the statement's own reads of the text: its TOAST,
-// its index entries and its document_search copy.
+// So the fix is held by what search_text leaves and by what each search trigger stores. search_text
+// leaves no run of more than searchTextRun underscore-joined segments in any body saved here
+// (requireShortSearchRuns), which is what keeps the parser's rescans short. Every trigger that
+// builds a search vector is saved, through a write a caller makes, a text that opens with a run
+// the parser reads as one token (searchProbe), and the vector it stored must hold that run broken
+// where search_text breaks it (requireShortVectorRuns): a trigger that hands the parser its text
+// without search_text stores the run whole. That reads what the trigger did, so it fails a trigger
+// that names search_text only in a comment, which a read of the function's source passes, and it
+// reads no source text. Beside them each save's indexing statement is counted in the shared buffers
+// it reads (indexingBuffers) and held to linear growth (growsLinearly), which bounds the statement's
+// own reads of the text: its TOAST and its index entries. A trigger that runs after its statement
+// does its work past the plan whose buffers EXPLAIN counts, so the two that do are held by what
+// they store alone: artifact_versions_document_search copies the vector artifact_versions_search
+// built, which the document rungs count, and artifact_versions_issues_search stores the issue's
+// vector over its spec, which issues_search builds the same way before its statement, where the
+// issue's row counts it.
 //
 // Written as paragraph text, the larger runs make more elements than one write may
 // (TestUploadRefusesADocumentTooLargeToStore), so each run is a code block's text: the document
@@ -62,8 +68,8 @@ import (
 // bound fails this test rather than waiting for a reader to notice. An issue title is capped at
 // 1,000 (contracts.IssueTitleMax), too short to ladder; the title's ladders, and the duplicate
 // check's against a stored title, went with the title cap
-// (TestIssueTitlesAreCappedOnCreateAndRetitle). Every one of these texts is indexed through the
-// search_text the search triggers are read for.
+// (TestIssueTitlesAreCappedOnCreateAndRetitle). Every one of these texts is indexed through
+// search_text, which each trigger's row holds by the vector it stores.
 //
 // Replacing a document of many short blocks with as many others, every block changing type, also
 // took work that grew with the square of its blocks (LEGION-465): pmdoc wrote each new block at its
@@ -81,22 +87,149 @@ import (
 func TestSavingAPathologicalBodyIsBounded(t *testing.T) {
 	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 	issue := createArtifactIssue(t, handler)
-	t.Run("search triggers", func(t *testing.T) {
-		triggers := searchTriggers(t, database)
-		// The two the rungs below fire, so a reading of pg_proc that found none cannot pass.
-		for _, fired := range []string{"artifact_versions_search", "comments_search"} {
-			if _, read := triggers[fired]; !read {
-				t.Fatalf("%s is not among the trigger functions read as building a search vector: %v", fired, triggers)
-			}
-		}
-		for _, name := range slices.Sorted(maps.Keys(triggers)) {
-			if !triggers[name] {
-				t.Errorf("%s builds a search vector from text that no search_text reads first, in its own source or in a vector function it calls: Postgres's parser reads an underscore-joined run in time that grows with the square of its length (0056_search_text)", name)
-			}
-		}
-		t.Logf("trigger functions that build a search vector, each read for the search_text its text passes through: %v", slices.Sorted(maps.Keys(triggers)))
-	})
 	documents := 0
+	// Each search trigger is held by what it stores: its row saves, through a write a caller makes
+	// to the trigger's table, a text that opens with searchProbe and runs on in `a_`, then reads the
+	// vector the trigger built of it (requireShortVectorRuns) and the runs search_text leaves in the
+	// text (requireShortSearchRuns). Where the trigger's text can be long enough to ladder, the row
+	// ladders it as the rungs after them do, its indexing statement held to linear growth. An
+	// issue's title is checked at its cap alone, and each trigger that runs after its statement at
+	// one size, for the reason the header gives. The rows run first: see the check after them.
+	createIssue := func(t *testing.T, title, spec string) string {
+		t.Helper()
+		input := map[string]any{"project": "TEST", "title": title, "force": true}
+		if spec != "" {
+			input["spec"] = spec
+		}
+		response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", input, "alice")
+		if response.Code != http.StatusCreated {
+			t.Fatalf("create the issue %q: status=%d body=%.200s", title, response.Code, response.Body.String())
+		}
+		return decodeBody[model.Issue](t, response).Key
+	}
+	retitle := func(t *testing.T, key, title string) {
+		t.Helper()
+		response := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+key, map[string]any{"title": title}, "alice")
+		if response.Code != http.StatusOK {
+			t.Fatalf("retitle %s: status=%d body=%.200s", key, response.Code, response.Body.String())
+		}
+	}
+	uploadProbe := func(t *testing.T) string {
+		t.Helper()
+		documents++
+		response := multipartRequest(t, handler, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]string{
+			"name": fmt.Sprintf("pathological-%d.md", documents),
+		}, "body.md", "text/markdown", []byte(probedDocument(1<<10)), "alice")
+		if response.Code != http.StatusCreated {
+			t.Fatalf("upload a document holding the probe: status=%d body=%.200s", response.Code, response.Body.String())
+		}
+		return decodeBody[struct {
+			Artifact model.Artifact `json:"artifact"`
+		}](t, response).Artifact.ID
+	}
+	const (
+		issueVector = `select search from issues where key = $1`
+		issueSpec   = `select v.markdown from artifact_versions v join artifacts a on a.id = v.artifact_id
+			where a.issue_key = $1 and a.is_primary order by v.number desc limit 1`
+		documentText = `select markdown from artifact_versions where artifact_id = $1`
+	)
+	t.Run("trigger issues_search", func(t *testing.T) {
+		// The title, at its cap, through a retitle: the one write whose vector issues_search alone
+		// stores. The trigger stores the title's lexemes beside the vector.
+		key := createIssue(t, "A title to probe", "")
+		title := probedRun(contracts.IssueTitleMax)
+		retitle(t, key, title)
+		requireShortSearchRuns(t, database, "an issue title of "+sizeText(len(title)), `select title from issues where key = $1`, key)
+		requireShortVectorRuns(t, database, "an issue retitled with the probe", issueVector, key)
+		requireShortVectorRuns(t, database, "the title lexemes of an issue retitled with the probe", `select array_to_tsvector(title_lexemes) from issues where key = $1`, key)
+		// The spec, which issues_search reads into the issue's vector too (issue_embedding_spec),
+		// laddered as a document is: each rung's retitle stores the vector issues_search built
+		// over it, and its indexing statement is the issue's own write of its title. The vector the
+		// spec's first version stored (artifact_versions_issues_search) is read first, at every
+		// rung: a spec indexed without search_text would take hours at the top rung.
+		growsLinearly(t, "indexing an issue's spec of `a_`", "buffers", []int{1 << 10, 16 << 10, 256 << 10}, func(size int) uint64 {
+			key := createIssue(t, "A spec of "+sizeText(size)+" to probe", probedDocument(size))
+			requireShortSearchRuns(t, database, "an issue spec of "+sizeText(size), issueSpec, key)
+			requireShortVectorRuns(t, database, "an issue whose first spec of "+sizeText(size)+" holds the probe", issueVector, key)
+			retitle(t, key, "A spec of "+sizeText(size)+" to probe, indexed again")
+			requireShortVectorRuns(t, database, "an issue retitled over a spec of "+sizeText(size)+" holding the probe", issueVector, key)
+			return indexingBuffers(t, database, `update issues set title = title where key = $1`, key)
+		})
+	})
+	t.Run("trigger artifact_versions_issues_search", func(t *testing.T) {
+		// An issue's spec, its primary document's first version: once the version is in, the
+		// trigger stores the issue's vector over it, and no later write of the issue does.
+		size := 1 << 10
+		key := createIssue(t, "A first spec to probe", probedDocument(size))
+		requireShortSearchRuns(t, database, "an issue spec of "+sizeText(size), issueSpec, key)
+		requireShortVectorRuns(t, database, "an issue whose first spec holds the probe", issueVector, key)
+	})
+	t.Run("trigger artifact_versions_search", func(t *testing.T) {
+		id := uploadProbe(t)
+		requireShortSearchRuns(t, database, "a document holding the probe", documentText, id)
+		requireShortVectorRuns(t, database, "a document holding the probe", `select search from artifact_versions where artifact_id = $1`, id)
+	})
+	t.Run("trigger artifact_versions_document_search", func(t *testing.T) {
+		id := uploadProbe(t)
+		requireShortSearchRuns(t, database, "a document holding the probe", documentText, id)
+		requireShortVectorRuns(t, database, "the document_search row of a document holding the probe", `select search from document_search where artifact_id = $1`, id)
+	})
+	t.Run("trigger comments_search", func(t *testing.T) {
+		// The comment rung after the rows ladders a comment's indexing; this is the vector one
+		// stores.
+		size := contracts.DispatchBlockUnits / 32
+		response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments", map[string]any{
+			"body": probedRun(size),
+		}, "alice")
+		if response.Code != http.StatusCreated {
+			t.Fatalf("comment holding the probe: status=%d body=%.200s", response.Code, response.Body.String())
+		}
+		comment := decodeBody[model.Comment](t, response)
+		requireShortSearchRuns(t, database, "a comment of "+sizeText(size)+" holding the probe", `select body from comments where id = $1`, comment.ID)
+		requireShortVectorRuns(t, database, "a comment of "+sizeText(size)+" holding the probe", `select search from comments where id = $1`, comment.ID)
+	})
+	t.Run("trigger asks_search", func(t *testing.T) {
+		// An ask's question and its options share one bound, so the last rung leaves room for
+		// the one option.
+		const option = "Yes"
+		sizes := []int{contracts.DispatchEventBodyMax / 32, contracts.DispatchEventBodyMax / 4, contracts.DispatchEventBodyMax - len(option)}
+		growsLinearly(t, "indexing an ask of `a_`", "buffers", sizes, func(size int) uint64 {
+			response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/asks", map[string]any{
+				"question": probedRun(size), "options": []map[string]string{{"label": option}},
+			}, "alice")
+			if response.Code != http.StatusCreated {
+				t.Fatalf("ask of %s holding the probe: status=%d body=%.200s", sizeText(size), response.Code, response.Body.String())
+			}
+			ask := decodeBody[model.Ask](t, response)
+			requireShortSearchRuns(t, database, "an ask's question of "+sizeText(size)+" holding the probe", `select question from asks where id = $1`, ask.ID)
+			requireShortVectorRuns(t, database, "an ask whose question of "+sizeText(size)+" holds the probe", `select search from asks where id = $1`, ask.ID)
+			return indexingBuffers(t, database, `update asks set question = question where id = $1`, ask.ID)
+		})
+	})
+	t.Run("trigger messages_search", func(t *testing.T) {
+		sizes := []int{contracts.DispatchBlockUnits / 32, contracts.DispatchBlockUnits / 4, contracts.DispatchBlockUnits}
+		growsLinearly(t, "indexing a message of `a_`", "buffers", sizes, func(size int) uint64 {
+			response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/messages", map[string]any{
+				"body": probedRun(size),
+			}, "alice")
+			if response.Code != http.StatusCreated {
+				t.Fatalf("message of %s holding the probe: status=%d body=%.200s", sizeText(size), response.Code, response.Body.String())
+			}
+			message := decodeBody[model.Message](t, response)
+			requireShortSearchRuns(t, database, "a message of "+sizeText(size)+" holding the probe", `select body from messages where id = $1`, message.ID)
+			requireShortVectorRuns(t, database, "a message of "+sizeText(size)+" holding the probe", `select search from messages where id = $1`, message.ID)
+			return indexingBuffers(t, database, `update messages set body = body where id = $1`, message.ID)
+		})
+	})
+
+	// The rungs below ladder texts up to a mebibyte. A trigger that hands Postgres's parser its
+	// text whole reads such a text in time that grows with the square of its length, hours at the
+	// top rungs, so the run would end at the binary's deadline naming no row: once a trigger's row
+	// above has failed, they do not run.
+	if t.Failed() {
+		return
+	}
+
 	for _, test := range []struct {
 		shape string
 		sizes []int
@@ -199,57 +332,51 @@ func requireShortSearchRuns(t *testing.T, database *store.Store, what, stored st
 	}
 }
 
-// searchTriggers is each function a trigger runs that builds a text-search vector - one whose
-// source calls a function returning tsvector - and whether it reads its text through search_text,
-// in its own source or in the source of one of those vector functions it calls (issues_search
-// builds its vector in issue_search_vector). It reads pg_proc's source text, so a function that
-// names search_text only in a comment counts as reading through it.
-func searchTriggers(t *testing.T, database *store.Store) map[string]bool {
+// searchProbe opens the text of each trigger's row: 64 underscore-joined segments of `a.b`, a run
+// Postgres's parser reads whole as one token (a file name), so the vector a trigger stores of it
+// shows how long a run the trigger handed the parser. Through search_text its longest lexeme is
+// searchTextRun segments; handed the text itself, the parser makes one lexeme of all 64. A run of
+// `a_` leaves no such mark: the parser reads its one-letter words apart at each underscore and the
+// english configuration drops them as stop words, so its vector is the same whether search_text
+// broke the run or not.
+var searchProbe = strings.Repeat("a.b_", 64)
+
+// probedRun is a text of at most size characters: searchProbe, a space, and a run of `a_` that
+// fills the rest.
+func probedRun(size int) string {
+	return searchProbe + " " + strings.Repeat("a_", (size-len(searchProbe)-1)/2)
+}
+
+// probedDocument is a document of at most size bytes whose one code block holds probedRun: a code
+// block's text is stored whole, as the document rungs' is.
+func probedDocument(size int) string {
+	const fence = "```\n"
+	return fence + probedRun(size-2*len(fence)-1) + "\n" + fence
+}
+
+// requireShortVectorRuns fails t unless the vector stored selects - one a search trigger built of a
+// text holding searchProbe, what being its name - holds a lexeme of the probe's underscore-joined
+// run, and none of more than searchTextRun segments. Its longest lexeme is the longest run the
+// trigger handed Postgres's parser, so a trigger that reads its text through search_text passes,
+// and one that hands the parser the text itself fails, whatever its source says. A vector that
+// holds none of the run shows nothing, so that fails too: the parser drops a token past 2,047
+// characters, which a long enough run handed it whole would be.
+func requireShortVectorRuns(t *testing.T, database *store.Store, what, stored string, args ...any) {
 	t.Helper()
-	rows, err := database.Pool.Query(context.Background(), `
-		select p.proname, p.prosrc, p.prorettype = 'tsvector'::regtype,
-		       exists (select 1 from pg_trigger tr where tr.tgfoid = p.oid and not tr.tgisinternal)
-		  from pg_proc p
-		 where p.prorettype = 'tsvector'::regtype
-		    or exists (select 1 from pg_trigger tr where tr.tgfoid = p.oid and not tr.tgisinternal)`)
-	if err != nil {
-		t.Fatalf("read the trigger and vector functions: %v", err)
+	var longest int
+	if err := database.Pool.QueryRow(context.Background(), `
+		select coalesce(max(length(u.lexeme) - length(replace(u.lexeme, '_', ''))), 0)::int
+		  from (`+stored+`) s(vector), unnest(s.vector) u
+	`, args...).Scan(&longest); err != nil {
+		t.Fatalf("read the longest run in the vector stored for %s: %v", what, err)
 	}
-	type function struct {
-		name, source    string
-		vector, trigger bool
+	switch {
+	case longest == 0:
+		t.Fatalf("the vector stored for %s holds no lexeme of the probe's underscore-joined run, so it shows nothing of what its trigger handed Postgres's parser", what)
+	case longest > searchTextRun:
+		t.Fatalf("the vector stored for %s holds a run of %d underscore-joined segments, past the %d search_text breaks a run at (0056_search_text): its trigger handed Postgres's parser text no search_text read first, so the `a_` run after the probe reached the parser whole too, which reads such a run in time that grows with the square of its length",
+			what, longest, searchTextRun)
 	}
-	var functions []function
-	for rows.Next() {
-		var f function
-		if err := rows.Scan(&f.name, &f.source, &f.vector, &f.trigger); err != nil {
-			t.Fatalf("read a function's source: %v", err)
-		}
-		functions = append(functions, f)
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("read the trigger and vector functions: %v", err)
-	}
-	calls := func(source, name string) bool {
-		return regexp.MustCompile(`\b` + regexp.QuoteMeta(name) + `\s*\(`).MatchString(source)
-	}
-	triggers := map[string]bool{}
-	for _, f := range functions {
-		if !f.trigger {
-			continue
-		}
-		builds, through := false, calls(f.source, "search_text")
-		for _, vector := range functions {
-			if vector.vector && calls(f.source, vector.name) {
-				builds = true
-				through = through || calls(vector.source, "search_text")
-			}
-		}
-		if builds {
-			triggers[f.name] = through
-		}
-	}
-	return triggers
 }
 
 // TestGrowsLinearlyRejectsQuadraticFinalRung proves the final rung's bound stays anchored to the

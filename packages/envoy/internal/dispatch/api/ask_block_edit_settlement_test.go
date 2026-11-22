@@ -729,42 +729,38 @@ func TestDocumentEditOfAnAskBlockStillUpdatesTheRow(t *testing.T) {
 
 // Editing takes the document's locks after the ask row while settlement takes them the other way
 // round. They are ordered by the owner row both hold first; if that ever stops being true this
-// deadlocks rather than fails, so it runs under its own deadline.
+// deadlocks rather than fails, so each round's pair is joined through the shared wait, which then
+// fails naming the round.
 func TestConcurrentBlockAskEditsAndSettlementsDoNotDeadlock(t *testing.T) {
 	handler, _ := blockAskHandler(t)
 	issue, askID := seedBlockAsk(t, handler, "Block ask concurrency", "decision", transportAsk, "Which transport?")
 
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		var wg sync.WaitGroup
-		for round := range 6 {
-			wg.Add(2)
-			go func(round int) {
-				defer wg.Done()
-				edited := sessionRequest(t, handler, http.MethodPatch, "/api/v1/asks/"+askID, map[string]any{
-					"question": fmt.Sprintf("Which transport, round %d?", round), "actor": sessionActor(),
-				})
-				if edited.Code != http.StatusOK {
-					t.Errorf("round %d edit: status=%d body=%s", round, edited.Code, edited.Body.String())
-				}
-			}(round)
-			go func(round int) {
-				defer wg.Done()
-				settling := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/edits", map[string]any{
-					"ops": []map[string]string{{
-						"op": "insert", "after": "end",
-						"markdown": fmt.Sprintf("Paragraph %d.\n", round),
-					}},
-				}, "alice")
-				if settling.Code != http.StatusOK {
-					t.Errorf("round %d document edit: status=%d body=%s", round, settling.Code, settling.Body.String())
-				}
-			}(round)
-			wg.Wait()
-		}
-	}()
-	testwait.Receive(t, "concurrent block-ask edits and document settlements to finish", done)
+	var wg sync.WaitGroup
+	for round := range 6 {
+		wg.Add(2)
+		go func(round int) {
+			defer wg.Done()
+			edited := sessionRequest(t, handler, http.MethodPatch, "/api/v1/asks/"+askID, map[string]any{
+				"question": fmt.Sprintf("Which transport, round %d?", round), "actor": sessionActor(),
+			})
+			if edited.Code != http.StatusOK {
+				t.Errorf("round %d edit: status=%d body=%s", round, edited.Code, edited.Body.String())
+			}
+		}(round)
+		go func(round int) {
+			defer wg.Done()
+			settling := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/edits", map[string]any{
+				"ops": []map[string]string{{
+					"op": "insert", "after": "end",
+					"markdown": fmt.Sprintf("Paragraph %d.\n", round),
+				}},
+			}, "alice")
+			if settling.Code != http.StatusOK {
+				t.Errorf("round %d document edit: status=%d body=%s", round, settling.Code, settling.Body.String())
+			}
+		}(round)
+		testwait.Returns(t, fmt.Sprintf("round %d's block-ask edit and document edit to finish (a deadlock between them never does)", round), wg.Wait)
+	}
 
 	settleDocument(t, handler, issue.PrimaryArtifactID, issue.Key, "after-concurrency")
 	ask := readBlockAsk(t, handler, askID)

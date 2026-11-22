@@ -825,13 +825,20 @@ func TestBroadcastAnswersBeforeDeliveringAndStillReachesEveryRecipient(t *testin
 		}
 	}))
 	defer listener.Close()
+	// Deferred after the listener's Close, so it runs first: a row that fails while a send is held
+	// lets it go, and the Close, which waits for every handler in flight, returns.
+	letGo := sync.OnceFunc(func() { close(release) })
+	defer letGo()
 	handler, _ := newTargetedMessageHandler(t, listener.URL)
 
 	// Every listener send is blocked, so a handler that delivered inside the request could not
 	// answer at all.
-	response := postBroadcast(t, handler, map[string]any{
-		"body": "Status?", "delivery": "btw", "session_ids": []string{"planner", "tester"},
-	}, "alice")
+	var response *httptest.ResponseRecorder
+	testwait.Returns(t, "the create to answer while every listener send is held (a create that delivered inside its request never does)", func() {
+		response = postBroadcast(t, handler, map[string]any{
+			"body": "Status?", "delivery": "btw", "session_ids": []string{"planner", "tester"},
+		}, "alice")
+	})
 	if response.Code != http.StatusCreated {
 		t.Fatalf("create broadcast: status=%d body=%s", response.Code, response.Body.String())
 	}
@@ -858,7 +865,7 @@ func TestBroadcastAnswersBeforeDeliveringAndStillReachesEveryRecipient(t *testin
 		}
 	}
 
-	close(release)
+	letGo()
 	delivered := awaitBroadcastDeliveries(t, handler, created.ID)
 	if len(delivered.Recipients) != 2 {
 		t.Fatalf("recipients = %#v", delivered.Recipients)

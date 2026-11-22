@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A comment list is answered under a validator read before its body is built: the watermark three
@@ -457,7 +458,7 @@ func TestOverlappingCommitsEachAddToTheWatermark(t *testing.T) {
 			failures[writer] = tx.Commit(ctx)
 		}()
 	}
-	wait.Wait()
+	testwait.Returns(t, "every writer's commit to return (a writer that waits on another's bump never does)", wait.Wait)
 	for writer, err := range failures {
 		if err != nil {
 			t.Fatalf("writer %d's commit: %v", writer, err)
