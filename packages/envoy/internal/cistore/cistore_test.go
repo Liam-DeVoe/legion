@@ -30,12 +30,14 @@ func connectNATS(t testing.TB) (*natsgo.Conn, func()) {
 
 // recordWaitMargin is how long before the test binary's deadline a wait that ends at the test's
 // end (testEnd) gives up, as testwait's waits do: the time the failing test's cleanups and its
-// failure have to run in before Go's alarm panics the binary.
+// failure have to run in before Go's alarm panics the binary. It is longer than any bound it
+// replaces (recordWait, and the 5 s and 10 s the helpers waited before), so a wait never has less
+// time than it had then.
 const recordWaitMargin = 30 * time.Second
 
-// testEnd is the moment a wait of t gives up (endBefore of t's own deadline), and false under
-// -timeout 0 and for a benchmark, which has no deadline: only the fact a wait waits for ends it
-// then.
+// testEnd is the moment a wait of t that begins now gives up (endBefore of t's own deadline), and
+// false under -timeout 0 and for a benchmark, which has no deadline: only the fact a wait waits for
+// ends it then.
 func testEnd(t testing.TB) (time.Time, bool) {
 	timed, ok := t.(interface{ Deadline() (time.Time, bool) })
 	if !ok {
@@ -49,10 +51,15 @@ func testEnd(t testing.TB) (time.Time, bool) {
 }
 
 // endBefore is when a wait that begins at now gives up, for a test binary whose deadline is
-// deadline: the deadline less recordWaitMargin, or less half of what is left when that is the
-// smaller, so a run with a short -timeout still waits.
+// deadline: the deadline less recordWaitMargin while more than twice the margin is left, so the
+// wait still has more than the margin; with less left, as under a short -timeout, the deadline
+// itself, where Go's alarm names the test. Either way the wait has at least the time it had
+// before, or all that is left.
 func endBefore(deadline, now time.Time) time.Time {
-	return deadline.Add(-min(recordWaitMargin, deadline.Sub(now)/2))
+	if deadline.Sub(now) > 2*recordWaitMargin {
+		return deadline.Add(-recordWaitMargin)
+	}
+	return deadline
 }
 
 // untilTheTestEnds is ctx bounded by the test's end (testEnd).

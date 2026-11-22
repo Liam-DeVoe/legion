@@ -29,16 +29,19 @@ func TestARecordWaitsRecordWaitUnlessATestArmedAnother(t *testing.T) {
 	}
 }
 
-// A wait of a store's test ends recordWaitMargin before the binary's deadline, or half of what is
-// left before it when that is less: a short -timeout still leaves a wait room to wait.
-func TestAWaitOfAStoresTestEndsItsMarginOrHalfOfWhatIsLeftBeforeTheDeadline(t *testing.T) {
+// A wait of a store's test ends recordWaitMargin before the binary's deadline while more than twice
+// that is left, and at the deadline itself with less: it never has less time than the 4 s, 5 s and
+// 10 s bounds it replaces gave it, under any -timeout.
+func TestAWaitOfAStoresTestEndsItsMarginBeforeTheDeadlineWhileTwiceItIsLeft(t *testing.T) {
 	now := time.Date(2026, 11, 22, 16, 0, 0, 0, time.UTC)
 	for _, tc := range []struct {
 		left, want time.Duration
 	}{
 		{10 * time.Minute, 10*time.Minute - recordWaitMargin},
-		{2 * recordWaitMargin, recordWaitMargin},
-		{20 * time.Second, 10 * time.Second},
+		{2*recordWaitMargin + time.Second, recordWaitMargin + time.Second},
+		{2 * recordWaitMargin, 2 * recordWaitMargin},
+		{20 * time.Second, 20 * time.Second},
+		{3 * time.Second, 3 * time.Second},
 	} {
 		if got := endBefore(now.Add(tc.left), now).Sub(now); got != tc.want {
 			t.Errorf("with %s left the wait ends %s from now, want %s", tc.left, got, tc.want)

@@ -12,23 +12,30 @@ import (
 
 // issuerWaitMargin is how long before the test binary's deadline a flow untilTheTestEnds bounds
 // gives up on its issuer, as testwait's waits give up: the time the failing test's cleanups and its
-// failure have to run in before Go's alarm panics the binary.
+// failure have to run in before Go's alarm panics the binary. It is longer than the product's
+// bounds it replaces (10 s), so a read or a call never has less time than the product gave it.
 const issuerWaitMargin = 30 * time.Second
 
-// issuerWaitEnd is the moment, for a test binary whose deadline is deadline, at which a flow
-// untilTheTestEnds bounds at now gives up on its issuer: the deadline less issuerWaitMargin, or
-// less half of what is left when that is the smaller, so a run with a short -timeout still waits.
+// issuerWaitEnd is the moment at which a read or a call that a flow untilTheTestEnds bounds, begun
+// at now, gives up, for a test binary whose deadline is deadline: the deadline less
+// issuerWaitMargin while more than twice the margin is left, so the read or call still has more
+// than the margin; with less left, as under a short -timeout, the deadline itself, where Go's alarm
+// names the test. Either way it has at least what the product's own bound gave it, or all that is
+// left.
 func issuerWaitEnd(deadline, now time.Time) time.Time {
-	return deadline.Add(-min(issuerWaitMargin, deadline.Sub(now)/2))
+	if deadline.Sub(now) > 2*issuerWaitMargin {
+		return deadline.Add(-issuerWaitMargin)
+	}
+	return deadline
 }
 
-// untilTheTestEnds makes flow wait for its issuer until one moment, the test's end
-// (issuerWaitEnd), in place of the product's ten seconds for each read of the discovery document
-// (discoveryAttemptTimeout) and each call to the token or revocation endpoint (TokenTimeout). Those
-// bounds are for an issuer that accepts a call and never answers. The test's own issuer answers in
-// the machine's time, which on a loaded machine can be longer, and a test of how a call fails then
-// reads the bound's timeout as the issuer's answer. Under -timeout 0, which sets no deadline, only
-// the issuer's answer ends a read or a call.
+// untilTheTestEnds makes flow wait for its issuer until the test's end (issuerWaitEnd, read when
+// each read or call starts), in place of the product's ten seconds for each read of the discovery
+// document (discoveryAttemptTimeout) and each call to the token or revocation endpoint
+// (TokenTimeout). Those bounds are for an issuer that accepts a call and never answers. The test's
+// own issuer answers in the machine's time, which on a loaded machine can be longer, and a test of
+// how a call fails then reads the bound's timeout as the issuer's answer. Under -timeout 0, which
+// sets no deadline, only the issuer's answer ends a read or a call.
 func untilTheTestEnds(t *testing.T, flow *CodeFlow) {
 	t.Helper()
 	flow.http.Timeout = 0
@@ -39,26 +46,25 @@ func untilTheTestEnds(t *testing.T, flow *CodeFlow) {
 		}
 		return
 	}
-	end := issuerWaitEnd(deadline, time.Now())
 	flow.discovery.armAttempt = func(ctx context.Context) (context.Context, context.CancelFunc) {
-		return context.WithDeadline(ctx, end)
+		return context.WithDeadline(ctx, issuerWaitEnd(deadline, time.Now()))
 	}
 	base := flow.http.Transport
 	if base == nil {
 		base = http.DefaultTransport
 	}
-	flow.http.Transport = endingAt{base: base, end: end}
+	flow.http.Transport = endingAt{base: base, deadline: deadline}
 }
 
-// endingAt is a transport whose every request ends at end, one moment whenever the request starts,
-// where a client's Timeout counts from each request's own start.
+// endingAt is a transport whose every request ends at the test's end (issuerWaitEnd of deadline,
+// read when the request starts), where a client's Timeout is one span for every request.
 type endingAt struct {
-	base http.RoundTripper
-	end  time.Time
+	base     http.RoundTripper
+	deadline time.Time
 }
 
 func (e endingAt) RoundTrip(request *http.Request) (*http.Response, error) {
-	ctx, cancel := context.WithDeadline(request.Context(), e.end)
+	ctx, cancel := context.WithDeadline(request.Context(), issuerWaitEnd(e.deadline, time.Now()))
 	response, err := e.base.RoundTrip(request.WithContext(ctx))
 	if err != nil {
 		cancel()
@@ -117,7 +123,7 @@ func TestADiscoveryReadRunsUnderItsAttemptBound(t *testing.T) {
 }
 
 // A code flow waits for its issuer under the product's bounds, discoveryAttemptTimeout and
-// TokenTimeout, until a test moves both to one moment, the test's end (untilTheTestEnds).
+// TokenTimeout, until a test moves both to the test's end (untilTheTestEnds).
 func TestACodeFlowWaitsForItsIssuerUnderTheProductsBoundsUntilATestMovesThem(t *testing.T) {
 	flow := NewCodeFlow("https://issuer.example", flowClientID, flowClientSecret, "")
 	if flow.discovery.armAttempt != nil {
@@ -142,21 +148,24 @@ func TestACodeFlowWaitsForItsIssuerUnderTheProductsBoundsUntilATestMovesThem(t *
 		return
 	}
 	call, ok := flow.http.Transport.(endingAt)
-	if !ok || !readBounded || !call.end.Equal(readEnd) || !readEnd.Before(testDeadline) {
-		t.Fatalf("the discovery read ends at %v (bounded %t) and the token client's transport is %T, want both ending at one moment before the test's deadline %v", readEnd, readBounded, flow.http.Transport, testDeadline)
+	if !ok || !call.deadline.Equal(testDeadline) || !readBounded || readEnd.After(testDeadline) {
+		t.Fatalf("the discovery read ends at %v (bounded %t) and the token client's transport is %T, want both ending at the test's end, by its deadline %v", readEnd, readBounded, flow.http.Transport, testDeadline)
 	}
 }
 
-// The test's end leaves the failing test issuerWaitMargin before the binary's deadline, or half of
-// what is left when that is less: a short -timeout still leaves a wait room to wait.
-func TestTheTestsEndLeavesItsMarginOrHalfOfWhatIsLeft(t *testing.T) {
+// A wait that untilTheTestEnds bounds ends issuerWaitMargin before the binary's deadline while more
+// than twice that is left, and at the deadline itself with less: it never has less time than the
+// product's 10 s bounds gave it, under any -timeout.
+func TestTheTestsEndLeavesItsMarginWhileTwiceItIsLeft(t *testing.T) {
 	now := time.Date(2026, 11, 22, 16, 0, 0, 0, time.UTC)
 	for _, tc := range []struct {
 		left, want time.Duration
 	}{
 		{10 * time.Minute, 10*time.Minute - issuerWaitMargin},
-		{2 * issuerWaitMargin, issuerWaitMargin},
-		{20 * time.Second, 10 * time.Second},
+		{2*issuerWaitMargin + time.Second, issuerWaitMargin + time.Second},
+		{2 * issuerWaitMargin, 2 * issuerWaitMargin},
+		{20 * time.Second, 20 * time.Second},
+		{3 * time.Second, 3 * time.Second},
 	} {
 		if got := issuerWaitEnd(now.Add(tc.left), now).Sub(now); got != tc.want {
 			t.Errorf("with %s left the issuer wait ends %s from now, want %s", tc.left, got, tc.want)
@@ -176,7 +185,7 @@ func TestACallThroughTheTestsTransportEndsAtItsEnd(t *testing.T) {
 	}))
 	defer silent.Close()
 	defer close(release)
-	client := &http.Client{Transport: endingAt{base: http.DefaultTransport, end: time.Now().Add(100 * time.Millisecond)}}
+	client := &http.Client{Transport: endingAt{base: http.DefaultTransport, deadline: time.Now().Add(100 * time.Millisecond)}}
 	response, err := client.Get(silent.URL)
 	if err == nil {
 		response.Body.Close()
@@ -190,7 +199,7 @@ func TestACallThroughTheTestsTransportEndsAtItsEnd(t *testing.T) {
 		_, _ = io.WriteString(w, "the whole answer")
 	}))
 	defer answering.Close()
-	client = &http.Client{Transport: endingAt{base: http.DefaultTransport, end: time.Now().Add(time.Hour)}}
+	client = &http.Client{Transport: endingAt{base: http.DefaultTransport, deadline: time.Now().Add(time.Hour)}}
 	response, err = client.Get(answering.URL)
 	if err != nil {
 		t.Fatalf("a call to an issuer that answers: %v", err)

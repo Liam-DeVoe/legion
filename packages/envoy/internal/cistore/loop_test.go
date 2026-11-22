@@ -81,7 +81,7 @@ func cachedState(s *Store, key string) (State, bool) {
 // awaitCache waits until read holds, asking every testwait.Poll, until the test's end (testEnd),
 // and fails the test there with what it waited for and the last value read. It is testwait.Until
 // with the test's end in place of Until's own: under a -timeout of 30 s or less Until asks once
-// and gives up, where a wait that ends at the test's end still has half of what is left.
+// and gives up, where a wait that ends at the test's end has all that is left.
 func awaitCache[T any](t *testing.T, what string, read func() (T, bool)) {
 	t.Helper()
 	var last T
