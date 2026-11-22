@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test"
+import { afterAll, afterEach, expect, test } from "bun:test"
 import { randomUUID } from "node:crypto"
 import { mkdir, mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
@@ -6,6 +6,8 @@ import { join, resolve } from "node:path"
 import type { SessionAnswer } from "@legion/contracts"
 import { renderSessionAnswers } from "@legion/envoy-client/session-answers"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
+import { loopbackHost } from "@legion/test-fixtures/loopback-host"
+import { readStandinBody } from "@legion/test-fixtures/standin-body"
 
 // What people wrote to a session, on the real Claude Code (hooks/session-hook.ts
 // `answers`): Claude Code keeps a hook's additionalContext where only the requests it
@@ -26,6 +28,38 @@ const binary = (): string => {
 }
 
 const packageRoot = resolve(import.meta.dir, "..")
+
+/** The scratch directory of the plugin build, removed after the last case. */
+let pluginScratch: string | undefined
+let pluginBuild: Promise<string> | undefined
+
+/**
+ * The plugin Claude Code loads, built once by the first case that runs: a fresh
+ * `scripts/build.ts --out` build of this tree, as legion-phase-hook-claude.test.ts builds its
+ * own. The hooks the plugin's `hooks/hooks.json` names run `dist/session-hook.js`, and nothing
+ * commits `dist/`: run from the package itself, a checkout with no `dist/` fails every case, as
+ * one did on a dev box, and one with an old `dist/` runs old hooks. CI's job happens to build
+ * `dist/` into its checkout first.
+ */
+function builtPlugin(): Promise<string> {
+  pluginBuild ??= (async () => {
+    pluginScratch = await mkdtemp(join(tmpdir(), "claude-envoy-answers-plugin-"))
+    const out = join(pluginScratch, "plugin")
+    const build = Bun.spawn(
+      [process.execPath, join(packageRoot, "scripts", "build.ts"), "--out", out],
+      { cwd: tmpdir(), stdout: "ignore", stderr: "pipe" },
+    )
+    const [exitCode, stderr] = await Promise.all([build.exited, new Response(build.stderr).text()])
+    if (exitCode !== 0) throw new Error(`scripts/build.ts --out exited ${exitCode}: ${stderr}`)
+    return out
+  })()
+  return pluginBuild
+}
+
+afterAll(async () => {
+  if (pluginScratch !== undefined) await rm(pluginScratch, { recursive: true, force: true })
+})
+
 /** What a case waits for at most: a process's exit, or a turn's result line. */
 const WAIT_MS = 60_000
 /** The assignment the stand-in's Agent call hands the subagent, which tells its requests apart. */
@@ -210,18 +244,19 @@ function serveStandin(session: string): Standin {
     }
     return [{ type: "text", text: "Noted." }]
   }
+  // The stand-in listens at an address of its own, out of reach on Linux of a client of another
+  // test that still dials its port at 127.0.0.1, and refuses by name a POST body to its Messages
+  // route that is no JSON object (`loopbackHost`, `readStandinBody`).
   const server = Bun.serve({
     port: 0,
-    hostname: "127.0.0.1",
+    hostname: loopbackHost(),
     async fetch(request) {
       const index = served++
       const url = new URL(request.url)
       if (url.pathname === "/v1/messages") {
-        const seen: Seen = {
-          index,
-          path: url.pathname,
-          body: (await request.json()) as Record<string, unknown>,
-        }
+        const { body, refusal } = await readStandinBody(request)
+        if (refusal !== undefined) return refusal
+        const seen: Seen = { index, path: url.pathname, body }
         standin.messages.push(seen)
         const blocks = reply(seen)
         if (seen.body["stream"] !== true) {
@@ -267,7 +302,7 @@ function serveStandin(session: string): Standin {
   cleanup.push(async () => {
     await server.stop(true)
   })
-  standin.base = `http://127.0.0.1:${server.port}`
+  standin.base = server.url.origin
   return standin
 }
 
@@ -276,8 +311,10 @@ async function setUp(): Promise<{
   readonly session: string
   readonly standin: Standin
   readonly work: string
+  readonly plugin: string
   readonly env: Record<string, string>
 }> {
+  const plugin = await builtPlugin()
   const root = await mkdtemp(join(tmpdir(), "claude-envoy-answers-claude-"))
   cleanup.push(() => rm(root, { recursive: true, force: true }))
   const [home, config, work, state] = ["home", "claude", "work", "state"].map((name) =>
@@ -291,6 +328,7 @@ async function setUp(): Promise<{
     session,
     standin,
     work: work as string,
+    plugin,
     env: {
       PATH: process.env["PATH"] ?? "",
       HOME: home as string,
@@ -305,21 +343,27 @@ async function setUp(): Promise<{
   }
 }
 
-const CLAUDE_FLAGS = ["--plugin-dir", packageRoot, "--permission-mode", "bypassPermissions"]
+/** The flags every run of Claude Code here takes: the plugin built from this tree. */
+function claudeFlags(plugin: string): string[] {
+  return ["--plugin-dir", plugin, "--permission-mode", "bypassPermissions"]
+}
 
 /** One `claude -p` run to its exit; a failed run throws with what Claude Code printed. */
 async function print(
-  setup: { readonly work: string; readonly env: Record<string, string> },
+  setup: { readonly work: string; readonly plugin: string; readonly env: Record<string, string> },
   args: readonly string[],
 ): Promise<void> {
-  const run = Bun.spawn([binary(), ...CLAUDE_FLAGS, "-p", "--output-format", "json", ...args], {
-    cwd: setup.work,
-    env: setup.env,
-    stdin: "ignore",
-    stdout: "pipe",
-    stderr: "pipe",
-    timeout: WAIT_MS,
-  })
+  const run = Bun.spawn(
+    [binary(), ...claudeFlags(setup.plugin), "-p", "--output-format", "json", ...args],
+    {
+      cwd: setup.work,
+      env: setup.env,
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+      timeout: WAIT_MS,
+    },
+  )
   const [exitCode, stdout, stderr] = await Promise.all([
     run.exited,
     new Response(run.stdout).text(),
@@ -335,13 +379,13 @@ async function print(
 /** A `claude -p` session in stream-json, the way `legion claude-bridge` drives one: each user
  *  message one line on stdin, each turn's end a `result` line on stdout. */
 function streamSession(
-  setup: { readonly work: string; readonly env: Record<string, string> },
+  setup: { readonly work: string; readonly plugin: string; readonly env: Record<string, string> },
   args: readonly string[],
 ): { readonly turn: (text: string) => Promise<void>; readonly end: () => Promise<void> } {
   const run = Bun.spawn(
     [
       binary(),
-      ...CLAUDE_FLAGS,
+      ...claudeFlags(setup.plugin),
       "-p",
       "--input-format",
       "stream-json",

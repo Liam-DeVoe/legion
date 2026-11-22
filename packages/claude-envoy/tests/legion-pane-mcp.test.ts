@@ -6,6 +6,8 @@ import { join, resolve } from "node:path"
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
 import { envoyToolSpecs } from "@legion/envoy-client/tool-contract"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
+import { loopbackHost } from "@legion/test-fixtures/loopback-host"
+import { readStandinBody } from "@legion/test-fixtures/standin-body"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { legion } from "../package.json" with { type: "json" }
@@ -32,14 +34,17 @@ test("a Legion pane's server registers on its transcript, claims its role, serve
   const registered = await daemonFixture("register.json")
   const claimToken = String(registered["claimToken"])
   const daemonCalls: { path: string; body: unknown }[] = []
+  // Each stand-in listens at an address of its own, out of reach on Linux of a client of another
+  // test that still dials its port at 127.0.0.1, and refuses by name a POST body that is no JSON
+  // object before it records the request (`loopbackHost`, `readStandinBody`).
   const daemon = Bun.serve({
     port: 0,
+    hostname: loopbackHost(),
     fetch: async (request) => {
       const path = new URL(request.url).pathname
-      daemonCalls.push({
-        path,
-        body: request.method === "GET" ? undefined : await request.json(),
-      })
+      const { body, refusal } = await readStandinBody(request)
+      if (refusal !== undefined) return refusal
+      daemonCalls.push({ path, body: request.method === "GET" ? undefined : body })
       if (path === "/legion/v1/claims/register") return Response.json(registered)
       if (path === "/legion/v1/claims/ready") return new Response(null, { status: 204 })
       if (path === "/legion/v1/state") return Response.json(await daemonFixture("state.json"))
@@ -59,11 +64,14 @@ test("a Legion pane's server registers on its transcript, claims its role, serve
   const holders = new Map<string, string>()
   const listener = Bun.serve({
     port: 0,
+    hostname: loopbackHost(),
     fetch: async (request) => {
       const url = new URL(request.url)
       const interest = { session_id: SESSION, machine_id: "test", dir: root, topics: [] }
       if (request.method === "POST" && url.pathname === "/v1/interests/subscribe") {
-        const registration = (await request.json()) as {
+        const read = await readStandinBody(request)
+        if (read.refusal !== undefined) return read.refusal
+        const registration = read.body as {
           readonly capabilities?: unknown
           readonly client_instance_id?: string
         }
@@ -76,7 +84,9 @@ test("a Legion pane's server registers on its transcript, claims its role, serve
         })
       }
       if (request.method === "POST" && url.pathname === "/v1/roles/set") {
-        const claim = (await request.json()) as { session_id: string; role: string }
+        const read = await readStandinBody(request)
+        if (read.refusal !== undefined) return read.refusal
+        const claim = read.body as { session_id: string; role: string }
         roles.push(claim)
         holders.set(claim.role, claim.session_id)
         return Response.json(interest)
@@ -121,12 +131,12 @@ test("a Legion pane's server registers on its transcript, claims its role, serve
       PATH: process.env["PATH"] ?? "",
       HOME: root,
       ENVOY_NATS_URL: broker.url,
-      ENVOY_URL: `http://127.0.0.1:${listener.port}`,
+      ENVOY_URL: listener.url.origin,
       CLAUDE_CODE_SESSION_ID: SESSION,
       CLAUDE_CONFIG_DIR: configDir,
       CLAUDE_PLUGIN_DATA: join(root, "plugin-data"),
       LEGION_BOOT_TOKEN_FILE: tokenFile,
-      LEGION_DAEMON_URL: `http://127.0.0.1:${daemon.port}`,
+      LEGION_DAEMON_URL: daemon.url.origin,
       LEGION_CLAUDE_INBOX: inboxPath,
       // Ten minutes, so the role below can only have been claimed by the turn this case
       // submits and never by the claim's own bound (INFRA-1573).

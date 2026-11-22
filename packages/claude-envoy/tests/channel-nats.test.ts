@@ -10,6 +10,7 @@ import {
   brokerNatsCredential,
 } from "@legion/envoy-client/nats-credential"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
+import { loopbackHost } from "@legion/test-fixtures/loopback-host"
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories"
 import {
   type Authenticator,
@@ -38,12 +39,15 @@ afterEach(() => {
   for (const server of servers.splice(0)) server.stop(true)
 })
 
-/** A broker whose token exchange mints a random token that lives two seconds, kept in `minted`. */
+/** A broker whose token exchange mints a random token that lives two seconds, kept in `minted`.
+ *  Each broker of this file listens at an address of its own, out of reach on Linux of a client of
+ *  another test that still dials its port at 127.0.0.1 (`loopbackHost`), so `minted` counts only
+ *  this case's trades. None reads a body: a trade is a form POST. */
 function shortTokenBroker() {
   const minted: string[] = []
   const server = Bun.serve({
     port: 0,
-    hostname: "127.0.0.1",
+    hostname: loopbackHost(),
     fetch: () => {
       const token = fixtureSecret("channel")
       minted.push(token)
@@ -56,7 +60,7 @@ function shortTokenBroker() {
     },
   })
   servers.push(server)
-  return { url: `http://127.0.0.1:${server.port}`, minted }
+  return { url: server.url.origin, minted }
 }
 
 /** One turn of the real event loop, which the fake clock does not hold: every promise the code
@@ -167,7 +171,7 @@ test("a pod session registered past the trade deadline still comes up, admitted"
   const minted: string[] = []
   const server = Bun.serve({
     port: 0,
-    hostname: "127.0.0.1",
+    hostname: loopbackHost(),
     fetch: () => {
       if (refusals === 0) {
         refusals += 1
@@ -197,7 +201,7 @@ test("a pod session registered past the trade deadline still comes up, admitted"
   const credential = brokerNatsCredential(
     {
       HOME: home,
-      AGENT_SECRETS_URL: `http://127.0.0.1:${server.port}`,
+      AGENT_SECRETS_URL: server.url.origin,
       AGENT_SECRETS_MACHINE_IDENTITY: "kubernetes",
       AGENT_SECRETS_MACHINE_TOKEN_FILE: tokenFile,
     },
@@ -236,7 +240,10 @@ test("a channel server's start waits through a broker that refuses connections, 
   // fast. The broker's port is closed at the first trade, and a broker listens there once the
   // retry loop has failed once: once the token client says so, at the wait after that trade.
   const SESSION = "ses_channel_broker_down"
-  const probe = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response() })
+  // The probe, the URL and the broker share one address of their own (`loopbackHost`), so the
+  // port the probe frees there is taken back by the broker, not by another test's server.
+  const host = loopbackHost()
+  const probe = Bun.serve({ port: 0, hostname: host, fetch: () => new Response() })
   const port = probe.port as number
   probe.stop(true)
   const minted: string[] = []
@@ -246,7 +253,7 @@ test("a channel server's start waits through a broker that refuses connections, 
   const credential = brokerNatsCredential(
     {
       HOME: home,
-      AGENT_SECRETS_URL: `http://127.0.0.1:${port}`,
+      AGENT_SECRETS_URL: `http://${host}:${port}`,
       AGENT_SECRETS_MACHINE_IDENTITY: "kubernetes",
       AGENT_SECRETS_MACHINE_TOKEN_FILE: tokenFile,
     },
@@ -262,7 +269,7 @@ test("a channel server's start waits through a broker that refuses connections, 
     servers.push(
       Bun.serve({
         port,
-        hostname: "127.0.0.1",
+        hostname: host,
         fetch: () => {
           const token = fixtureSecret("channel")
           minted.push(token)
@@ -309,7 +316,7 @@ test("a first dial whose broker token the hub refuses twice drops it, presents t
   const minted: string[] = []
   const server = Bun.serve({
     port: 0,
-    hostname: "127.0.0.1",
+    hostname: loopbackHost(),
     fetch: () => {
       const token = fixtureSecret("channel")
       minted.push(token)
@@ -328,7 +335,7 @@ test("a first dial whose broker token the hub refuses twice drops it, presents t
   const credential = brokerNatsCredential(
     {
       HOME: home,
-      AGENT_SECRETS_URL: `http://127.0.0.1:${server.port}`,
+      AGENT_SECRETS_URL: server.url.origin,
       AGENT_SECRETS_MACHINE_IDENTITY: "kubernetes",
       AGENT_SECRETS_MACHINE_TOKEN_FILE: tokenFile,
     },
