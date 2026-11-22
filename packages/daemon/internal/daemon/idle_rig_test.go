@@ -1073,8 +1073,7 @@ func (r *idleWakeRig) loggedEntries(msg string) []map[string]any {
 
 // idleRigDeadlineMargin is how long before the test binary's own deadline a wait of the rig
 // gives up, so a failure names what it waited for rather than arriving as the binary's panic. It
-// is the second testwait.Eventually leaves (internal/testwait), widened for the launchers' log
-// and the daemon's, which this rig prints on its way out.
+// leaves time for the launchers' log and the daemon's, which this rig prints on its way out.
 const idleRigDeadlineMargin = 5 * time.Second
 
 // Every wait of this rig carries a span of its own, one of those below, and idleRigWaiting

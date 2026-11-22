@@ -25,13 +25,19 @@ const Poll = 10 * time.Millisecond
 func Eventually(t *testing.T, what string, condition func() bool) {
 	t.Helper()
 	start := time.Now()
-	end := start.Add(unboundedRemaining)
-	if deadline, bounded := t.Deadline(); bounded {
-		end = deadline.Add(-margin)
-	}
-	if !waitUntil(end, Poll, condition) {
+	if !waitUntil(eventuallyEnd(t, start), Poll, condition) {
 		gaveUp(t, what, time.Since(start))
 	}
+}
+
+// eventuallyEnd is when a wait of Eventually that begins at start in t gives up: the test
+// binary's deadline less margin, and under -timeout 0, which sets no deadline, a moment no wait
+// reaches (unboundedRemaining after start).
+func eventuallyEnd(t *testing.T, start time.Time) time.Time {
+	if deadline, bounded := t.Deadline(); bounded {
+		return deadline.Add(-margin)
+	}
+	return start.Add(unboundedRemaining)
 }
 
 // Bounded is bound, or what is left of the test binary's own deadline less margin when that is

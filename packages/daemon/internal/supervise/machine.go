@@ -926,7 +926,8 @@ type Timeouts struct {
 	// connection's own patience: every other event for the claim queues behind the decision in
 	// flight, and a machine whose lock is held through an outage decides nothing at all. No
 	// setting names it, because the bound answers a question about the write rather than about a
-	// deployment, and no caller in internal/daemon sets it. Zero takes defaultClaimWrite.
+	// deployment, and internal/daemon's run sets it only for a whole-daemon test whose machines
+	// run on a clock the test moves (its overrides.claimWrite). Zero takes defaultClaimWrite.
 	ClaimWrite time.Duration
 }
 

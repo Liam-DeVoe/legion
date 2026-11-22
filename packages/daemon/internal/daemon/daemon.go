@@ -170,6 +170,12 @@ type overrides struct {
 	runtime runtimeFactory
 	// clock is the machines' time; nil is the wall clock.
 	clock supervise.Clock
+	// claimWrite is the machines' claim-write bound (supervise.Timeouts.ClaimWrite); zero, in
+	// production, is supervise's own default. A write that bound cuts is tried again at the probe
+	// interval on the machines' clock, so a test whose clock moves only to the turns it reads sets
+	// it to a hang guard (testwait.Remaining): a write a loaded database answers late is then a
+	// late write, as in production, rather than a launch that never comes.
+	claimWrite time.Duration
 	// getenv is the environment the OMP invocation is resolved against; nil is the process's.
 	getenv func(string) string
 	// environ is the environment provider keys are resolved under (`secrets get`) and the NATS
@@ -966,6 +972,8 @@ type plan struct {
 	modelFallback func(ctx context.Context) string
 	clock         supervise.Clock
 	orphanSweep   time.Duration
+	// claimWrite is overrides.claimWrite, the machines' claim-write bound; zero is supervise's.
+	claimWrite time.Duration
 	// controllerRetry is the controller keeper's first wait before it retries a failed controller.
 	controllerRetry time.Duration
 	// stopBudget is how long the stop waits for the daemon's own work once it begins (stopBudget).
@@ -1135,7 +1143,7 @@ func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
 		repositories: newRepositories(cfg.Project, cfg.RepositoryRenames), installed: appauth.NewInstalled(), left: appauth.NewLeftOut(),
 		project: reads.project, operatorToken: reads.operatorToken, secrets: reads.secrets, nats: reads.nats, instructions: instructions,
 		dispatchToken: reads.dispatchToken, hookPrompts: reads.hookPrompts, prompts: composer, roleReferences: prompts.RoleReferences(),
-		tools: reads.tmux.tools, clock: clock, orphanSweep: orphanSweep, controllerRetry: controllerRetry, stopBudget: stop,
+		tools: reads.tmux.tools, clock: clock, claimWrite: o.claimWrite, orphanSweep: orphanSweep, controllerRetry: controllerRetry, stopBudget: stop,
 		secretsEnroller: secretsEnroller, secretsRegistrar: secretsRegistrar, secretsLogin: secretsLogin, strandedReported: o.strandedReported,
 		beforeServingLatched: o.beforeServingLatched,
 		pluginRelaunchable:   pluginRelaunchable, plugins: plugins, pluginsSource: pluginsSource, checkLaunch: o.checkLaunch,
@@ -1824,6 +1832,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 			Probe:                 cfg.ProbeInterval,
 			Stop:                  cfg.WorkerStopTimeout,
 			LaunchBackoff:         launchBackoffFirst,
+			ClaimWrite:            p.claimWrite,
 		},
 		WakePace: supervise.WakePace{
 			Reserve: reserve,

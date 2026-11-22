@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+	"time"
 )
 
 // eventuallyChildEnv tells the re-executed test binary to run the child tests below, which skip in
@@ -23,6 +24,22 @@ func TestEventuallyReturnsOnceItsConditionHolds(t *testing.T) {
 	Eventually(t, "the third answer", func() bool { asks++; return asks == 3 })
 	if asks != 3 {
 		t.Fatalf("Eventually asked its condition %d times, want 3: the third answer is the first that held", asks)
+	}
+}
+
+// Eventually gives up at the test binary's deadline less the margin, and no sooner: under go
+// test's own -timeout, ten minutes unless a run sets another, that end is minutes past the one
+// minute main's Eventually stopped at, and this row's read of it waits for nothing.
+func TestEventuallyEndsAtTheDeadlineLessTheMargin(t *testing.T) {
+	deadline, bounded := t.Deadline()
+	if !bounded {
+		t.Skip("-timeout 0 sets no deadline: TestUnderNoTimeoutEventuallyHasNoEnd reads that end")
+	}
+	start := time.Now()
+	if end := eventuallyEnd(t, start); !end.Equal(deadline.Add(-margin)) {
+		t.Fatalf("a wait that begins at %s with the deadline %s gives up at %s, want %s, the margin %s before it",
+			start.Format(time.RFC3339Nano), deadline.Format(time.RFC3339Nano), end.Format(time.RFC3339Nano),
+			deadline.Add(-margin).Format(time.RFC3339Nano), margin)
 	}
 }
 
@@ -87,5 +104,10 @@ func TestEventuallyNoDeadlineChild(t *testing.T) {
 	Eventually(t, "the third answer", func() bool { asks++; return asks == 3 })
 	if asks != 3 {
 		t.Errorf("under -timeout 0 Eventually asked its condition %d times, want 3: it returned before the third answer, the first that held", asks)
+	}
+	start := time.Now()
+	if end := eventuallyEnd(t, start); !end.Equal(start.Add(unboundedRemaining)) {
+		t.Errorf("under -timeout 0 a wait that begins at %s gives up at %s, want %s after it, a span no wait reaches",
+			start.Format(time.RFC3339Nano), end.Format(time.RFC3339Nano), unboundedRemaining)
 	}
 }
