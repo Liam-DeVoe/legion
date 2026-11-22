@@ -231,9 +231,10 @@ type Deps struct {
 	// Clock is the clock every timer of this package that a test asserts runs on: the heartbeat on
 	// which a socket resolves its caller again (whileCallerResolves), the listener lookups'
 	// windows (mentionLookupTimeout, the listener client's window), the take-over's tries
-	// (takeoverRetry), the related-item check's allowance (relatedBounds) and an agent view's wait
-	// for its replay (agentStreamReplayTimeout). Nil, which every deployment leaves it, is
-	// clock.Real(); a test passes a clocktest.Fake and moves it.
+	// (takeoverRetry), the related-item check's allowance (relatedBounds), an agent view's wait
+	// for its replay (agentStreamReplayTimeout) and the time each access-log line records
+	// (accesslog.HandlerOn), which a test hands AnswersLatency's clock too. Nil, which every
+	// deployment leaves it, is clock.Real(); a test passes a clocktest.Fake and moves it.
 	Clock clock.Clock
 }
 
@@ -893,8 +894,8 @@ func register(mux RouteMux, lifetime context.Context, deps Deps) *server {
 		// The document service admits a socket by its sign-in cookie alone, so its heartbeat
 		// re-checks that cookie and nothing the request carries beside it (signInStillResolves).
 		const pattern = "/ws/doc/{room}"
-		mux.Handle("GET "+pattern, accesslog.Handler(pattern, s.whileCallerResolves(s.signInStillResolves,
-			trackTransactions(s.refuseUnstorableParameters(pattern, websocket.ServeHTTP)))))
+		mux.Handle("GET "+pattern, accesslog.HandlerOn(pattern, s.whileCallerResolves(s.signInStillResolves,
+			trackTransactions(s.refuseUnstorableParameters(pattern, websocket.ServeHTTP))), s.clock))
 	}
 	mux.Handle("GET "+liveSocketPattern, s.liveSocketHandler(s.serveLiveSocket))
 	return s
@@ -985,10 +986,12 @@ func (s *server) routeHandler(route apiRoute, replay keyedReplay) http.HandlerFu
 	served := compressAnswers(s.decideBrokerToken(trackTransactions(handler)))
 	if route.Method+" "+route.Pattern == sessionAnswersRoute && s.deps.AnswersLatency != nil {
 		// Just inside the access-log line, so the time of an answers read the keyword fill
-		// pauses on is the time the line records for it, every layer of the chain included.
+		// pauses on is the time the line records for it, every layer of the chain included. The
+		// line is timed on the server's clock, which a test hands the Latency too, so the two read
+		// one clock.
 		served = timedAnswersReads(s.deps.AnswersLatency, served)
 	}
-	return accesslog.HandlerFunc(route.Pattern, served)
+	return accesslog.HandlerFuncOn(route.Pattern, served, s.clock)
 }
 
 // liveSocketPattern is the path of the live socket, which register mounts beside the table.
@@ -1005,8 +1008,8 @@ const liveSocketPattern = "/ws/live"
 // token or a sign-in cookie - so its heartbeat resolves that same credential again
 // (callerStillResolves).
 func (s *server) liveSocketHandler(serve http.HandlerFunc) http.Handler {
-	return accesslog.Handler(liveSocketPattern, s.whileCallerResolves(s.callerStillResolves, s.decideBrokerToken(
-		s.refuseReadOnlyToken(false, trackTransactions(s.refuseUnstorableParameters(liveSocketPattern, serve))))))
+	return accesslog.HandlerOn(liveSocketPattern, s.whileCallerResolves(s.callerStillResolves, s.decideBrokerToken(
+		s.refuseReadOnlyToken(false, trackTransactions(s.refuseUnstorableParameters(liveSocketPattern, serve))))), s.clock)
 }
 
 func trackTransactions(handler http.HandlerFunc) http.HandlerFunc {
