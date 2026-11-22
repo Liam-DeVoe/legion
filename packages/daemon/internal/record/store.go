@@ -2401,14 +2401,23 @@ var liveClaimStates = []string{
 	string(supervise.StateRegistered), string(supervise.StateReady), string(supervise.StateWorking), string(supervise.StateIdle),
 }
 
-// RoleHolder is one live role of an issue and the session that holds it.
+// RoleHolder is one live claim of an issue, the role it holds and the session that holds it:
+// Claim is the claim's token, and WorksStep whether the claim is the worker on its role's step
+// (WorkerClaim), the claim the record gives the step. Two claims of one issue can hold one role —
+// the agent of a key on a step of another role, beside that role's own claim of an earlier version
+// of the plan — and each is a holder of its own.
 type RoleHolder struct {
-	Role    claim.Role
-	Session string
+	Role      claim.Role
+	Session   string
+	Claim     claim.Token
+	WorksStep bool
 }
 
-// LiveRoleHolders is the session of each live claim of issue, by role: a claim in one of
-// liveClaimStates that records a session it holds. It is what a role-holder publication sends.
+// LiveRoleHolders is the session of each live claim of issue, with the claim's role and token, by
+// role and then token: a claim in one of liveClaimStates that records a session it holds. It is
+// what a role-holder publication sends, one holder per claim, so two claims of one role are two
+// holders of it. Each says whether it is the worker on its role's step, read over the issue's
+// phases rows (WorkerClaim).
 //
 // A claim holds its session when claim_sessions holds every name its record gives the session
 // (supervise.RecordedHolds: the id, the file's name, the id an Oh My Pi file name gives, and the
@@ -2424,18 +2433,18 @@ type RoleHolder struct {
 // spelled again in SQL, and the holds of an issue's few claims are read in one statement.
 func (s *Postgres) LiveRoleHolders(ctx context.Context, tx pgx.Tx, issue string) ([]RoleHolder, error) {
 	type candidate struct {
-		token, project, file string
-		holder               RoleHolder
+		project, file string
+		holder        RoleHolder
 	}
 	rows, err := tx.Query(ctx, `select c.token, c.project, c.role, c.session, c.session_file from claims c
 		where c.issue = $1 and c.session <> '' and c.state = any($2)
-		order by c.role`, issue, liveClaimStates)
+		order by c.role, c.token`, issue, liveClaimStates)
 	if err != nil {
 		return nil, fmt.Errorf("read the live role holders of %s: %w", issue, err)
 	}
 	candidates, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (candidate, error) {
 		var c candidate
-		err := row.Scan(&c.token, &c.project, &c.holder.Role, &c.holder.Session, &c.file)
+		err := row.Scan(&c.holder.Claim, &c.project, &c.holder.Role, &c.holder.Session, &c.file)
 		return c, err
 	})
 	if err != nil {
@@ -2444,7 +2453,7 @@ func (s *Postgres) LiveRoleHolders(ctx context.Context, tx pgx.Tx, issue string)
 	var claims, projects, kinds, names []string
 	for _, c := range candidates {
 		for _, h := range supervise.RecordedHolds(c.holder.Session, c.file) {
-			claims, projects, kinds, names = append(claims, c.token), append(projects, c.project), append(kinds, string(h.Kind)), append(names, h.Name)
+			claims, projects, kinds, names = append(claims, string(c.holder.Claim)), append(projects, c.project), append(kinds, string(h.Kind)), append(names, h.Name)
 		}
 	}
 	held := map[string]map[supervise.Hold]bool{}
@@ -2471,6 +2480,10 @@ func (s *Postgres) LiveRoleHolders(ctx context.Context, tx pgx.Tx, issue string)
 			return nil, fmt.Errorf("read the holds of %s's live role holders: %w", issue, err)
 		}
 	}
+	phases, err := s.Phases(ctx, tx, issue)
+	if err != nil {
+		return nil, fmt.Errorf("read the phases rows of %s's live role holders: %w", issue, err)
+	}
 	var holders []RoleHolder
 	for _, c := range candidates {
 		names := supervise.RecordedHolds(c.holder.Session, c.file)
@@ -2479,11 +2492,14 @@ func (s *Postgres) LiveRoleHolders(ctx context.Context, tx pgx.Tx, issue string)
 		}
 		holds := true
 		for _, h := range names {
-			holds = holds && held[c.token][h]
+			holds = holds && held[string(c.holder.Claim)][h]
 		}
-		if holds {
-			holders = append(holders, c.holder)
+		if !holds {
+			continue
 		}
+		worker, err := WorkerClaim(c.project, issue, c.holder.Role, phases)
+		c.holder.WorksStep = err == nil && worker == c.holder.Claim
+		holders = append(holders, c.holder)
 	}
 	return holders, nil
 }

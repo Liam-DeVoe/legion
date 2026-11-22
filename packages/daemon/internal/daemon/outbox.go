@@ -1431,11 +1431,15 @@ func (r *outbox) publishDesignGates(ctx context.Context, payload record.DesignGa
 	return nil
 }
 
-// publishRoleHolders writes the session of each live Legion role of the issue onto the issue's
-// Dispatch row. The set is read from the claims now, in a transaction of its own, not when the row
-// was queued: a claim that ended after the queue is gone from it, and two claim changes of one
-// issue never publish a stale set. It is sent whole, empty included, since it replaces what
-// Dispatch holds, so a role whose claim ended leaves the set with no delete route.
+// publishRoleHolders writes the session of each live Legion claim of the issue onto the issue's
+// Dispatch row, with the claim's role and token and whether it works its role's step. The set is
+// read from the claims now, in a transaction of its own, not when the row was queued: a claim that
+// ended after the queue is gone from it, and two claim changes of one issue never publish a stale
+// set. It is sent whole, empty included, since it replaces what Dispatch holds, so a role whose
+// claim ended leaves the set with no delete route. Two claims of one issue can hold one role, and
+// each is a holder of it: a Dispatch before 20261122130956 refuses such a set (400
+// INVALID_ROLE_HOLDER), which ends the row, and the set lands at the next publication once
+// Dispatch has that release.
 //
 // A Dispatch that has not got the route yet answers its router's 404, which execute makes a wait,
 // so the daemon and Dispatch deploy in either order. Every other answer is decided by
@@ -1456,7 +1460,8 @@ func (r *outbox) publishRoleHolders(ctx context.Context, payload record.RoleHold
 	}
 	holders := make([]dispatch.RoleHolder, len(live))
 	for i, holder := range live {
-		holders[i] = dispatch.RoleHolder{Role: string(holder.Role), Session: holder.Session}
+		holders[i] = dispatch.RoleHolder{Role: string(holder.Role), Session: holder.Session, Claim: string(holder.Claim),
+			WorksStep: holder.WorksStep}
 	}
 	if err := r.dispatch.PutRoleHolders(ctx, payload.Issue, holders); err != nil {
 		return fmt.Errorf("publish the role holders of %s: %w", payload.Issue, err)

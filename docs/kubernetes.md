@@ -2433,6 +2433,10 @@ After such a release is live, an earlier daemon publishes nothing, and each new 
 So roll Dispatch back first, to the release before that one, and then roll back the daemon.
 The kind check keeps the name after the rollback, and the rollback needs no statement for it: an earlier release never writes the kind, so the check refuses nothing that release writes.
 
+The release that names each role holder's claim publishes each live claim of an issue with its token and whether it works its role's step, two claims of one role among them, and Dispatch's migration `20261122130956_issue_role_holders_by_session` keys `issue_role_holders` by session so that both are stored.
+A Dispatch before that migration refuses a set that names a role twice (`400 INVALID_ROLE_HOLDER`), and that daemon ends the publication, so roll Dispatch forward first.
+Rolling Dispatch back past it runs the way back its header gives first, with Dispatch stopped, newest first before the way back of any earlier migration: it keeps one session of each role, the session whose claim works the role's step, else the newest, and puts the key on `(issue_key, role)` back.
+
 #### Rolling back the broker release that holds a pod's grants to the daemon that enrolled it
 
 This release's broker migration `0037_pod_carry_launcher` rewrites, once, the `carry_principal` of every pod enrollment that carries the pod's account alone and that a token login which proved an account enrolled: to the pair of that account and the login's account, `account:<pod account> launched-by account:<login account>` (`exchange.PodLaunchPrincipal`).
