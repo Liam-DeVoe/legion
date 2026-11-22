@@ -116,6 +116,24 @@ func agentOf(token claim.Token) claim.Agent {
 	return agent
 }
 
+// handoffView is the copy of issue a completion is read on (fact, intake.HandoffComplete): for a
+// plan of several tasks, the copy read for the task the route named, the task of the step the
+// claim's agent runs (fact.Task), or, for a fact that names none, the task the claim's agent runs a
+// step of now (viewOfAgent); for a plan of one task, or none, the issue itself. ok is false where
+// the plan holds several tasks and neither names one of them: the completion is of no step.
+func (e *Engine) handoffView(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.HandoffComplete) (record.Issue, bool, error) {
+	if fact.Task == "" {
+		view, _, ok, err := e.viewOfAgent(ctx, tx, issue, agentOf(fact.Claim))
+		return view, ok, err
+	}
+	stored, err := e.store.Plan(ctx, tx, issue.Key, issue.Generation)
+	if err != nil {
+		return record.Issue{}, false, err
+	}
+	view, _, ok, err := viewOn(issue, stored, fact.Task)
+	return view, ok, err
+}
+
 // heldView is the copy of issue read for the held task an owner's decision on a hold is of
 // (retryOrEscalate): the task it names; else the task whose step the claim it names runs, the
 // operator's retry of one claim; else the one held task of the plan. With none held, it is the

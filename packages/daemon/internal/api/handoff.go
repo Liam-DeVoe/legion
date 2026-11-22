@@ -183,7 +183,7 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 		s.writeFailure(w, r, http.StatusConflict, "HANDOFF_NO_CLAIM", "the daemon supervises no claim for this grant")
 		return
 	}
-	position, err := s.handoffPosition(r.Context(), grant.Issue, grant.Role)
+	position, err := s.handoffPosition(r.Context(), grant.Issue, grant.Role, grant.Claim)
 	if err != nil {
 		s.writeFailure(w, r, http.StatusInternalServerError, "RECORD_UNAVAILABLE", "could not read the issue record")
 		return
@@ -227,6 +227,14 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 		s.writeFailure(w, r, http.StatusConflict, "CHECK_LOOK_NOT_SERVED", fmt.Sprintf(
 			"%s is done: no phase of it is open, and this session works no look of its production check. This completion reported on nothing and recorded nothing: %s.",
 			grant.Issue, whose))
+		return
+	}
+	// A completion of a plan of several tasks is of the task of the step its claim's agent runs
+	// (handoffPosition), and issue stands in that task's own phase from here on. An agent that runs
+	// no step of such a plan completes no phase of it, and nothing is recorded.
+	if position.noStep {
+		refusal := intake.NotCurrentPhase(grant.Role, issue.Phase, grant.Issue)
+		s.writeFailure(w, r, refusal.Status, refusal.Code, refusal.Message)
 		return
 	}
 	// A role the deployment defines reports its step as a tester does: with the verdict pass or
@@ -410,8 +418,10 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	//
 	// For an issue with plan rows the pass is its running task's (completionPosition), and the
 	// task is in the key before it, so a new task at pass 0 takes no key an earlier task of the
-	// issue used. An issue with no plan rows keeps today's key, so a completion retried across the
-	// upgrade keeps its key.
+	// issue used. Of a plan of several tasks that task is the one the claim's agent runs a step of,
+	// and the phase in the key is that task's own, so two tasks' completions of one role and one
+	// pass take two keys. An issue with no plan rows keeps today's key, so a completion retried
+	// across the upgrade keeps its key.
 	//
 	// The step a fail names its task's return to (returnTo) ends the key when the completion
 	// names one, for the reason the verdict is in it: the workflow commits its refusal of a step it
@@ -434,7 +444,7 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	// The phase's last handoff is stored text, so what this completion reports is compared as the
 	// store would keep it (storetext.Text).
 	if grant.Role == claim.RoleImplementer && issue.Phase == phase.Implementing && !position.lingers && storetext.Text(reported) != position.lastHandoff {
-		if !s.implementationPullRequest(w, r, issue, position.pullRequest, eventID) {
+		if !s.implementationPullRequest(w, r, issue, position.branch, position.pullRequest, eventID) {
 			return
 		}
 	}
@@ -443,7 +453,7 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	// is: the first completion the workflow took is what stands, so a retry that rates again is
 	// answered already received and the first rating stands, and a completion the workflow
 	// refused for its rating leaves the key unspent, so the same completion, corrected, applies.
-	result, err := s.apply(r.Context(), "api", eventID, intake.HandoffComplete{Generation: serving, Issue: grant.Issue, Role: grant.Role, Claim: grant.Claim,
+	result, err := s.apply(r.Context(), "api", eventID, intake.HandoffComplete{Generation: serving, Issue: grant.Issue, Role: grant.Role, Claim: grant.Claim, Task: position.ofTask,
 		Summary: req.Summary, Verdict: req.Verdict, Commit: req.Commit,
 		HandoffRecord: req.HandoffID, HandoffVersion: req.HandoffVersion, PlanRating: rating, MustRate: c.PluginContract >= PlanRatingContract,
 		ReturnTo: returnTo, Entry: entry})
@@ -629,7 +639,8 @@ func staleCompletion(issue string, current, serving uint64, pending *supervise.D
 // completion moves its issue to testing only on a pull request recorded open or merged for it
 // (workflow's TriggerImplementationReady), and only the opened webhook, or the daemon's per-issue
 // read standing in for one that webhook lost (readIssuePullRequest), records one open. So before
-// the completion is applied, the open pull request on the issue's branch (claim.IssueBranch) is
+// the completion is applied, the open pull request on branch, the branch of the completion's task
+// (the issue's own, claim.IssueBranch, but for a task of a plan of several, completionPosition), is
 // read as the implement App, minted for the owner of the issue's repository in GitHub's spelling
 // (record.Issue.GitHubRepo, which the webhook's facts name it by), and it says whether the
 // completion goes on:
@@ -655,7 +666,7 @@ func staleCompletion(issue string, current, serving uint64, pending *supervise.D
 // for one that is not already applied (eventID, its key, read with intake.Applied), whose tree does
 // not linger and whose handoff record is not the one the implementer named for its previous phase
 // (workflow's HANDOFF_NOT_NEW). It returns false when it wrote the answer.
-func (s *server) implementationPullRequest(w http.ResponseWriter, r *http.Request, issue *record.Issue, recorded *record.PullRequest, eventID string) bool {
+func (s *server) implementationPullRequest(w http.ResponseWriter, r *http.Request, issue *record.Issue, branch string, recorded *record.PullRequest, eventID string) bool {
 	ctx := r.Context()
 	applied, err := intake.Applied(ctx, s.pool, "api", []string{eventID})
 	if err != nil {
@@ -670,7 +681,6 @@ func (s *server) implementationPullRequest(w http.ResponseWriter, r *http.Reques
 		s.writeFailure(w, r, http.StatusInternalServerError, "GITHUB_TOKEN_SOURCE_UNAVAILABLE", "GitHub token source is unavailable")
 		return false
 	}
-	branch := claim.IssueBranch(issue.Key)
 	logUnread := func(err error) {
 		attributes := []any{"issue", issue.Key, "repo", issue.GitHubRepo, "branch", branch, "error", err}
 		var answer *githubrest.Answer

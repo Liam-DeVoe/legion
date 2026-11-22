@@ -978,6 +978,12 @@ type HandoffComplete struct {
 	Issue string
 	Role  claim.Role
 	Claim claim.Token
+	// Task is the task of the issue's plan the completion is of: of a plan of several tasks, the
+	// task of the step the claim's agent runs (record.Issue.StepOfAgent), which the route reads;
+	// "" for a plan of one task and for an issue with no plan rows, whose completion is of the
+	// issue's one task as before. The workflow reads the completion on the copy of the issue read
+	// for that task (workflow's handoffView).
+	Task string
 	// Generation is the run whose task the worker took, which the daemon reads from the claim —
 	// the delivery whose turn is running, or the run the claim is left serving once that turn
 	// ends. A child taken back to todo can leave the prior run's worker live: its completion names

@@ -1093,6 +1093,18 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 	if fact.Role == claim.RoleArchitect {
 		return refused("ACCEPTANCE_IS_SIGN_OFF", fmt.Sprintf("the architect accepts %s with sign_off, not handoff_complete; this completion changed nothing", issue.Key)), nil
 	}
+	// A completion of a plan of several tasks is of one task's step (handoffView): the rest of
+	// this handler reads the copy of the issue read for that task, which stands in its own phase,
+	// and moves that task alone. A completion of an agent that runs no step of such a plan is of no
+	// phase of it.
+	view, ok, err := e.handoffView(ctx, tx, *issue, fact)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	if !ok {
+		return intake.Result{Refusal: intake.NotCurrentPhase(fact.Role, issue.Phase, issue.Key)}, nil
+	}
+	issue = &view
 	// A role can still be mid-turn in a phase the issue has left: the review event moves reviewing
 	// on, so a reviewer's own request for changes starts the implementer before the reviewer's
 	// handoff lands. Its completion is recorded on its own row and moves nothing (leftItsPhase),
@@ -1137,7 +1149,7 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 	if err != nil {
 		return intake.Result{}, err
 	}
-	pr, err := e.store.PullRequest(ctx, tx, fact.Issue)
+	pr, err := e.pullRequestOf(ctx, tx, *issue)
 	if err != nil {
 		return intake.Result{}, err
 	}

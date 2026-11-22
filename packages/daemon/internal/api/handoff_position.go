@@ -3,10 +3,12 @@ package api
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
@@ -21,11 +23,21 @@ import (
 // (record.PhaseRow.Entry, 0 on a row no start has stamped) and whether the start that raised it
 // moved the issue back (record.PhaseRow.EntryMovedBack), its pull request record, nil while none
 // is recorded, and its production check, nil while none was ever opened.
+//
+// Of a plan of several tasks the task is the one whose step the completing claim's agent runs
+// (record.Issue.StepOfAgent), named in ofTask, and the position is that task's: issue stands in
+// that task's own phase and hold, the pass is that task's, the pull request is that task's own
+// row (record.Store.PullRequestOfTask) and branch its branch (record.PlanTask.BranchOf). noStep says
+// the agent runs no step of such a plan, whose completion is of no phase of it. Of a plan of one
+// task, or none, ofTask is "" and branch the issue's own, as before tasks.
 type completionPosition struct {
 	issue          *record.Issue
 	treeGeneration uint64
 	lingers        bool
 	task           string
+	ofTask         string
+	noStep         bool
+	branch         string
 	pass           int
 	entry          int64
 	entryMovedBack bool
@@ -34,10 +46,10 @@ type completionPosition struct {
 	check          *record.ProductionCheck
 }
 
-// handoffPosition reads key's position (completionPosition) for the completing role, whose phases
-// row names the entry it was last raised to; an issue the workflow does not record is a position
-// with no issue and no error.
-func (s *server) handoffPosition(ctx context.Context, key string, role claim.Role) (completionPosition, error) {
+// handoffPosition reads key's position (completionPosition) for the completing role and the claim
+// that completes, whose phases row names the entry it was last raised to; an issue the workflow
+// does not record is a position with no issue and no error.
+func (s *server) handoffPosition(ctx context.Context, key string, role claim.Role, completing claim.Token) (completionPosition, error) {
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly, IsoLevel: pgx.RepeatableRead})
 	if err != nil {
 		return completionPosition{}, err
@@ -60,29 +72,49 @@ func (s *server) handoffPosition(ctx context.Context, key string, role claim.Rol
 	if err != nil {
 		return completionPosition{}, err
 	}
-	completing := record.PhaseRowOf(rows, role)
+	row := record.PhaseRowOf(rows, role)
 	stored, err := s.records.Plan(ctx, tx, key, issue.Generation)
 	if err != nil {
 		return completionPosition{}, err
 	}
-	var task string
+	position := completionPosition{issue: issue, treeGeneration: root.Generation, lingers: root.Lingers(), branch: claim.IssueBranch(key),
+		lastHandoff: record.PhaseRowOf(rows, claim.RoleImplementer).LastHandoff, entry: row.Entry, entryMovedBack: row.EntryMovedBack}
 	counts := record.ImplementerCounts(rows)
-	if stored != nil {
+	switch {
+	case stored != nil && len(stored.Tasks) > 1:
+		_, agent, _ := completing.Cut()
+		step, ok := issue.StepOfAgent(agent)
+		at := slices.IndexFunc(stored.Tasks, func(task record.PlanTask) bool { return ok && task.Task == step.Task })
+		if at < 0 {
+			position.noStep = true
+			break
+		}
+		task := stored.Tasks[at]
+		standing := *issue
+		standing.Phase, standing.Hold = step.Phase, nil
+		if task.State == record.TaskHeld {
+			standing.Phase, standing.Hold = phase.Held, &record.Hold{From: step.Phase, Reason: task.HoldReason}
+		}
+		position.issue, position.task, position.ofTask, position.branch = &standing, task.Task, task.Task, task.BranchOf(key)
+		counts = task.Counts
+		if position.pullRequest, err = s.records.PullRequestOfTask(ctx, tx, key, task.Task); err != nil {
+			return completionPosition{}, err
+		}
+	case stored != nil:
 		running, err := stored.Task()
 		if err != nil {
 			return completionPosition{}, err
 		}
-		task, counts = running.Task, running.Counts
+		position.task, counts = running.Task, running.Counts
 	}
-	pr, err := s.records.PullRequest(ctx, tx, key)
-	if err != nil {
+	position.pass = counts.Pass
+	if position.ofTask == "" && !position.noStep {
+		if position.pullRequest, err = s.records.PullRequest(ctx, tx, key); err != nil {
+			return completionPosition{}, err
+		}
+	}
+	if position.check, err = s.records.ProductionCheck(ctx, tx, key); err != nil {
 		return completionPosition{}, err
 	}
-	check, err := s.records.ProductionCheck(ctx, tx, key)
-	if err != nil {
-		return completionPosition{}, err
-	}
-	return completionPosition{issue: issue, treeGeneration: root.Generation, lingers: root.Lingers(), task: task, pass: counts.Pass,
-		lastHandoff: record.PhaseRowOf(rows, claim.RoleImplementer).LastHandoff, entry: completing.Entry, entryMovedBack: completing.EntryMovedBack,
-		pullRequest: pr, check: check}, tx.Commit(ctx)
+	return position, tx.Commit(ctx)
 }
