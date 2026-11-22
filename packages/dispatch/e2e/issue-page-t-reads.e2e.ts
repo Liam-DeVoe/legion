@@ -37,7 +37,7 @@ import {
   viewCount,
   viewNodeIds,
 } from "./issue-page-t-tree";
-import { decisionsViewServedGate, idReadsOf } from "./issue-page-u";
+import { decisionsViewServedGate, heldDecisionsRead, idReadsOf } from "./issue-page-u";
 import { expect, test } from "./test";
 import { expectLoadSettled, watchApiRequests } from "./traffic";
 
@@ -219,10 +219,12 @@ test("each filter draws its view read's rows", async ({ browser }) => {
   }
 });
 
-// c-views' decision lines, owed until the page draws the decisions from the tree read's nodes,
-// once decisions are nodes of the tree read on this branch's base (`partUGate`): each decision
-// whose `shaped` tie names a statement under Spec is a line on that statement's row, never a row
-// of its own.
+// c-views' decision lines, owed until the server serves the tree read's Decisions view
+// (`decisionsViewServedGate`) and the page draws the decisions from the tree read's nodes, once
+// decisions are nodes of the tree read on this branch's base (`partUGate`, over
+// `heldDecisionsRead`'s decisions read: the load sends none, so where the page received none it
+// is the Decisions view the row reads itself): each decision whose `shaped` tie names a statement
+// under Spec is a line on that statement's row, never a row of its own.
 // SLOW(>=2s): two seeded issues, each load waited out, and Spec pressed and read until it holds
 // still.
 test("each filter draws its view read's rows, and each decision that shaped a statement is a line on its row @owed", async ({
@@ -232,12 +234,18 @@ test("each filter draws its view read's rows, and each decision that shaped a st
   for (const [, seed] of VIEW_SEEDS) {
     await phase(browser, seed, async (page, seeded) => {
       owedUnless(await treeReadGate(page, seeded.key));
+      owedUnless(await decisionsViewServedGate(page, seeded.key));
       const tree = treeAnswerOf(page);
       const decisions = decisionsReadOf(page, seeded.key);
       const spec = viewAnswerOf(page, "spec");
       const traffic = watchApiRequests(page);
       await firstLoad(page, traffic, seeded.key);
-      owedUnless(partUGate(await heldAnswer(tree, "the tree read"), decisions.read()));
+      owedUnless(
+        partUGate(
+          await heldAnswer(tree, "the tree read"),
+          await heldDecisionsRead(seeded.key, decisions)
+        )
+      );
       const reads = await idReadsOf(seeded.key);
       const drawn = await pressFilter(page, traffic, "spec");
       const answer = await heldAnswer(spec, "the Spec view read");
