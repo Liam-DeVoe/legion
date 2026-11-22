@@ -42,7 +42,13 @@ func newProtocolRig(t *testing.T, topo forcedorder.Topology) *protocolRig {
 	servers := forcedorder.Start(t, topo)
 	// No boundary: a boundary would start each first create no later than it, before the row's own
 	// messages.
-	return &protocolRig{Servers: servers, live: newLiveStoreAt(t, servers.URL, &StoreState{Cutover: CutoverDone}, topo.Replicas)}
+	live := newLiveStoreAt(t, servers.URL, &StoreState{Cutover: CutoverDone}, topo.Replicas)
+	// No read of the bucket until the meta leader has applied it, which can be after its create
+	// answered (testnats.Cluster.AwaitStreamApplied).
+	if servers.Cluster != nil {
+		servers.Cluster.AwaitStreamApplied(t, "$G", "KV_"+SessionBucket)
+	}
+	return &protocolRig{Servers: servers, live: live}
 }
 
 func (r *protocolRig) publish(t *testing.T, subject string) []uint64 {
