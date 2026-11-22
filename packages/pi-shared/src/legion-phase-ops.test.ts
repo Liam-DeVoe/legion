@@ -1110,7 +1110,7 @@ test("read_record and handoff_complete ask for their own issue's record and neve
   const project = Buffer.byteLength(JSON.stringify(daemonFixture("state.json")));
 
   await executePhaseOp(ops, { op: "read_record", issue: "LEGION-208" });
-  await executePhaseOp(ops, { op: "handoff_complete", summary: "Done.", verdict: "pass" });
+  await executePhaseOp(ops, { op: "handoff_complete", summary: "Done." });
 
   expect(routes).not.toContain("/legion/v1/state");
   const records = bytes.filter(({ route }) => route.endsWith("/record"));
