@@ -36,9 +36,11 @@ import (
 // answers like a refusal (`malformed overlay` on stderr, exit 1) once a SIGTERM reaches it, as the
 // probe's deadline sends one; otherwise it says the setting is false, or true under
 // $LEGION_TEST_FALLBACK_ON, or fails with a message on stderr and exit 1 under
-// $LEGION_TEST_FALLBACK_FAIL. With $LEGION_TEST_SEEN set, each run appends the
-// environment it saw there: PI_CONFIG_FILES, whether the first overlay it names exists, and
-// OMP_SESSION_STORAGE; with $LEGION_TEST_KEY_SEEN, the provider key TEST_PROVIDER_KEY.
+// $LEGION_TEST_FALLBACK_FAIL. With $LEGION_TEST_OVERLAY_READS set, a read under a `slow` or
+// `refuses-late` overlay appends `config get <overlay>` there once it waits: under `refuses-late`,
+// once its trap is set. With $LEGION_TEST_SEEN set, each run appends the environment it saw there:
+// PI_CONFIG_FILES, whether the first overlay it names exists, and OMP_SESSION_STORAGE; with
+// $LEGION_TEST_KEY_SEEN, the provider key TEST_PROVIDER_KEY.
 func imageOmp(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "omp")
@@ -49,6 +51,7 @@ if [ -n "${LEGION_TEST_SEEN:-}" ]; then
   printf '%s %s %s\n' "${PI_CONFIG_FILES:-none}" "$written" "${OMP_SESSION_STORAGE:-unset}" >>"$LEGION_TEST_SEEN"
 fi
 [ -z "${LEGION_TEST_KEY_SEEN:-}" ] || printf '%s\n' "${TEST_PROVIDER_KEY:-unset}" >>"$LEGION_TEST_KEY_SEEN"
+reading() { [ -z "${LEGION_TEST_OVERLAY_READS:-}" ] || printf 'config get %s\n' "$overlay" >>"$LEGION_TEST_OVERLAY_READS"; }
 case "$*" in
 "models --extension "*" --extension "*" --extension "*" --json")
   envoy=$(cd "$3" && pwd -P)
@@ -70,8 +73,8 @@ case "$*" in
     case "$overlay" in
     *malformed*)
       printf '%s\n          ^\nerror: Failed to parse config overlay %s: SyntaxError: YAML Parse error\n' "` + strings.Repeat("x", 400) + `" "$overlay" >&2; exit 1 ;;
-    *refuses-late*) trap 'echo "malformed overlay" >&2; exit 1' TERM; sleep 30 & wait ;;
-    *slow*) exec sleep 30 ;;
+    *refuses-late*) trap 'echo "malformed overlay" >&2; exit 1' TERM; reading; sleep 30 & wait ;;
+    *slow*) reading; exec sleep 30 ;;
     esac
   done
   unset IFS
@@ -752,8 +755,10 @@ func TestProbeImageReadsEachRolesOwnOverlaysAsTheRoleStarts(t *testing.T) {
 	}
 }
 
-// shortProbeBudget is a --probe-budget that outlasts the steps a stubbed image's probe makes before
-// its role overlays, with room to spare under load, and ends while a step still waits on it.
+// shortProbeBudget is the --probe-budget a test that cuts a probe gives it, which turns the
+// probe's deadline on (newProbeDeadline). Every such test puts that deadline at a moment of a
+// stand-in's own run (probeDeadlineOnceLogged), so this length ends nothing: a deadline counted
+// from the probe's start passes wherever a loaded machine has got to by then.
 const shortProbeBudget = "4s"
 
 // c-slow-probe-passes case (6): the steps after the TLS check still run, and each answer is judged
@@ -763,6 +768,11 @@ const shortProbeBudget = "4s"
 // deadline's own doing: each exits 75 naming the role's overlays, never exit 1. An overlay Oh My
 // Pi refuses before the deadline (`malformed`) fails the probe, exit 1, beside a TLS run with no
 // verdict.
+//
+// In the two rows the deadline cuts, it passes once the overlay read itself has logged that it
+// waits (probeDeadlineOnceLogged), after its trap is set where it has one: before that read the
+// probe runs Oh My Pi four times, each a shell a loaded machine can start late, and a deadline
+// counted from the probe's start passed before the read began and cut it before it started.
 func TestTLSProbeJudgesAStepAfterTheTLSCheckByTheDeadline(t *testing.T) {
 	omp := imageOmp(t)
 	img := inImage(t, thisBinarysContract, omp)
@@ -777,26 +787,34 @@ func TestTLSProbeJudgesAStepAfterTheTLSCheckByTheDeadline(t *testing.T) {
 	}
 	slow, late, malformed := overlay("slow.yml"), overlay("refuses-late.yml"), overlay("malformed.yml")
 	slowTLS := shTLSClient("node", t.TempDir(), tlsSleepsAtEmSign, nodeAnswer)
-	budget := []string{"--probe-budget", shortProbeBudget}
 	for _, tc := range []struct {
 		name, file string
-		args       []string
-		clients    func(string, []string, string) []tlsClient
-		code       int
+		// cut is whether the probe's deadline cuts the overlay read, which then runs under
+		// --probe-budget with the deadline at the read's own line.
+		cut     bool
+		clients func(string, []string, string) []tlsClient
+		code    int
 		// noVerdict are what the no-verdict line holds, and refusal what the refusal line's reason
 		// holds; each is empty where the line must not be printed.
 		noVerdict []string
 		refusal   string
 	}{
-		{name: "a read the deadline cuts with no answer", file: slow, args: budget, clients: passingImageTLSClients, code: bootprobe.NoVerdictExit,
+		{name: "a read the deadline cuts with no answer", file: slow, cut: true, clients: passingImageTLSClients, code: bootprobe.NoVerdictExit,
 			noVerdict: []string{"role overlays: implementer: ", "signal: terminated"}},
-		{name: "a read that answers like a refusal once the deadline's SIGTERM reaches it", file: late, args: budget, clients: passingImageTLSClients, code: bootprobe.NoVerdictExit,
+		{name: "a read that answers like a refusal once the deadline's SIGTERM reaches it", file: late, cut: true, clients: passingImageTLSClients, code: bootprobe.NoVerdictExit,
 			noVerdict: []string{"role overlays: implementer: Oh My Pi refuses " + late + ": exited 1: malformed overlay"}},
 		{name: "an overlay refused before the deadline beside a TLS run with no verdict", file: malformed, clients: theseTLSClients(slowTLS), code: 1,
 			refusal: "Oh My Pi refuses " + malformed + ": "},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			code, stdout, stderr := probeImageWith(tc.clients, passingTLSPositiveControls, img.flags(append([]string{"--role-config-files", "implementer=" + tc.file}, tc.args...)...)...)
+			args := []string{"--role-config-files", "implementer=" + tc.file}
+			if tc.cut {
+				reads := standInLogAt(filepath.Join(t.TempDir(), "reads"))
+				t.Setenv("LEGION_TEST_OVERLAY_READS", reads.path)
+				probeDeadlineOnceLogged(t, reads, "config get "+tc.file)
+				args = append(args, "--probe-budget", shortProbeBudget)
+			}
+			code, stdout, stderr := probeImageWith(tc.clients, passingTLSPositiveControls, img.flags(args...)...)
 
 			if code != tc.code || strings.Contains(stdout, bootprobe.OKPrefix) {
 				t.Fatalf("probe-image = %d, stdout %q, stderr %q; want exit %d and no OK line", code, stdout, stderr, tc.code)
