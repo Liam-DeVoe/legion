@@ -211,6 +211,17 @@ forbidden() {
   echo "Error from server (Forbidden): $1 is forbidden: User \"reader@example-project.iam.gserviceaccount.com\" cannot $2 at the cluster scope: requires one of [\"$3\"] permission(s)." >&2
   exit 1
 }
+# A world marked token-secret-data gives each token Secret data, as a real API server holds it;
+# every call then looks under the run's work directories ($TMPDIR/operator-token-minters.*) for
+# that data, and records where it finds it (row cp).
+secret_data_b64="$(printf '%s' SECRET-DATA-CANARY-7f3a | base64)"
+if [ -e "$dir/token-secret-data" ]; then
+  for work in "${TMPDIR:-/tmp}"/operator-token-minters.*/; do
+    [ -d "$work" ] || continue
+    found="$(grep -rlF -e "$secret_data_b64" -e SECRET-DATA-CANARY-7f3a "$work" 2>/dev/null || true)"
+    [ -z "$found" ] || printf '%s\n' "$found" >>"$dir/secret-data-in-work"
+  done
+fi
 case "${args[*]}" in
   "create -f - -o json")
     [ ! -e "$dir/refuse-sar" ] || forbidden subjectaccessreviews.authorization.k8s.io 'create resource "subjectaccessreviews" in API group "authorization.k8s.io"' container.subjectAccessReviews.create
@@ -261,11 +272,23 @@ case "${args[*]}" in
       "$dir/grants.json"
     ;;
   "get secrets -n "*" --field-selector type=kubernetes.io/service-account-token -o json")
-    # A namespace's token Secrets: the world's token-secrets.json entries ({namespace, name}) there.
+    # A namespace's token Secrets whole: the world's token-secrets.json entries ({namespace, name})
+    # there, each with its data in a world marked token-secret-data. The check never asks this
+    # (row cp), and the fake records it when it is asked.
+    [ ! -e "$dir/refuse-token-secrets" ] || forbidden secrets 'list resource "secrets" in API group ""' container.secrets.list
+    printf '%s\n' "kubectl ${args[*]}" >>"$dir/secret-data-asked"
+    { if [ -e "$dir/token-secrets.json" ]; then cat "$dir/token-secrets.json"; else echo '[]'; fi; } |
+      jq --arg ns "${args[3]}" --arg data "$([ -e "$dir/token-secret-data" ] && echo "$secret_data_b64")" '{apiVersion: "v1", kind: "List", items: [.[] | select(.namespace == $ns)
+        | {apiVersion: "v1", kind: "Secret", type: "kubernetes.io/service-account-token", metadata: {namespace: .namespace, name: .name}}
+        + (if $data == "" then {} else {data: {token: $data}} end)]}'
+    ;;
+  "get secrets -n "*" --field-selector type=kubernetes.io/service-account-token -o jsonpath="*)
+    # A namespace's token Secrets by name, one a line, as kubectl prints the jsonpath the check asks.
+    [ "${args[7]}" = 'jsonpath={range .items[*]}{.metadata.name}{"\n"}{end}' ] ||
+      { echo "fake kubectl: unexpected jsonpath: ${args[7]}" >&2; exit 2; }
     [ ! -e "$dir/refuse-token-secrets" ] || forbidden secrets 'list resource "secrets" in API group ""' container.secrets.list
     { if [ -e "$dir/token-secrets.json" ]; then cat "$dir/token-secrets.json"; else echo '[]'; fi; } |
-      jq --arg ns "${args[3]}" '{apiVersion: "v1", kind: "List", items: [.[] | select(.namespace == $ns)
-        | {apiVersion: "v1", kind: "Secret", type: "kubernetes.io/service-account-token", metadata: {namespace: .namespace, name: .name}}]}'
+      jq -r --arg ns "${args[3]}" '.[] | select(.namespace == $ns) | .name'
     ;;
   "get service -n "*" -o json")
     # One Service: the world's services.json entry for <namespace>/<name>, or a ClusterIP Service

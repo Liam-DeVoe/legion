@@ -446,7 +446,11 @@ done
 PROJECT="" CLUSTER="" LOCATION="" POOL_PROJECT="" NAMESPACE=envoy-operator KSA=envoy-operator GSA="" BROKER="" BROKER_WORKLOAD=""
 SQL_INSTANCE="" DB_SECRET="" BROKER_STATE="" SIGNING_SECRET="" SECRET=ENVOY_OPERATOR ANALYSIS_SCOPE="" REPORT="" FLEET=""
 AGENT_NAMESPACES=() RBAC_RENDERS=() IAM_PREVIEWS=() CREDENTIALS_ARGS=() GUARDED_FLAGS=() RBAC_ONLY_MEMBERS=() SERVICE_AGENTS=()
+# A usage error names the flag, or an argument's place, and never the text given: a value pasted in
+# the wrong place may be a credential.
+total_args=$#
 while [ "$#" -gt 0 ]; do
+  place=$((total_args - $# + 1))
   flag="$1"
   shift
   case "$flag" in
@@ -462,7 +466,12 @@ while [ "$#" -gt 0 ]; do
       value="$1"
       shift
       ;;
-    *) usage_error "unknown argument $flag" ;;
+    *)
+      if [[ "$flag" =~ ^--[a-z][a-z0-9-]*$ ]]; then
+        usage_error "unknown flag $flag"
+      fi
+      usage_error "argument $place is no flag this check takes"
+      ;;
   esac
   case "$flag" in
     --project) PROJECT="$value" ;;
@@ -492,12 +501,12 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 [ -n "$POOL_PROJECT" ] || POOL_PROJECT="$PROJECT"
-case "$FLEET" in "" | none) ;; *) usage_error "--fleet takes none, not $FLEET" ;; esac
+case "$FLEET" in "" | none) ;; *) usage_error "--fleet takes none and nothing else" ;; esac
 # --service-agent allows a Google-managed service agent alone, of the gcp-sa-<product> form: any other
 # account, which a principal of the project can act as, would turn a minter into a pass.
 for agent in ${SERVICE_AGENTS[@]+"${SERVICE_AGENTS[@]}"}; do
   [[ "$agent" =~ ^service-[0-9]+@gcp-sa-[a-z0-9-]+\.iam\.gserviceaccount\.com$ ]] ||
-    usage_error "--service-agent takes a Google service agent, service-<number>@gcp-sa-<product>.iam.gserviceaccount.com, not $agent"
+    usage_error "--service-agent takes a Google service agent, service-<number>@gcp-sa-<product>.iam.gserviceaccount.com; one of its values is not one"
 done
 # allowances_json: the JSON array of each allowance the run was given, {flag, value}: each
 # --service-agent, each --rbac-only-member and --fleet none, which let a principal or a reading pass,
@@ -516,15 +525,15 @@ allowances_json() {
 GUARDED=("$NAMESPACE/$KSA")
 pair_name='^[a-z0-9]([-a-z0-9]*[a-z0-9])?/[a-z0-9]([-.a-z0-9]*[a-z0-9])?$'
 if [ -n "$BROKER_WORKLOAD" ]; then
-  [[ "$BROKER_WORKLOAD" =~ $pair_name ]] || usage_error "--broker-workload is <namespace>/<name>, each a Kubernetes name, not $BROKER_WORKLOAD"
+  [[ "$BROKER_WORKLOAD" =~ $pair_name ]] || usage_error "--broker-workload is <namespace>/<name>, each a Kubernetes name; its value is not"
   [ "$BROKER_WORKLOAD" = "${GUARDED[0]}" ] || GUARDED+=("$BROKER_WORKLOAD")
 fi
 for pair in ${GUARDED_FLAGS[@]+"${GUARDED_FLAGS[@]}"}; do
-  [[ "$pair" =~ $pair_name ]] || usage_error "--guarded is <namespace>/<serviceaccount>, each a Kubernetes name, not $pair"
+  [[ "$pair" =~ $pair_name ]] || usage_error "--guarded is <namespace>/<serviceaccount>, each a Kubernetes name; one of its values is not"
   case " ${GUARDED[*]} " in *" $pair "*) ;; *) GUARDED+=("$pair") ;; esac
 done
-case "$DB_SECRET" in "" | */*) ;; *) usage_error "--db-secret is <namespace>/<name>, not $DB_SECRET" ;; esac
-case "$BROKER_STATE" in "" | gs://?*) ;; *) usage_error "--broker-state is gs://<bucket>[/<path>], not $BROKER_STATE" ;; esac
+case "$DB_SECRET" in "" | */*) ;; *) usage_error "--db-secret is <namespace>/<name>; its value is not" ;; esac
+case "$BROKER_STATE" in "" | gs://?*) ;; *) usage_error "--broker-state is gs://<bucket>[/<path>]; its value is not" ;; esac
 case "$ANALYSIS_SCOPE" in "" | organizations/?* | folders/?* | projects/?*) ;; *) usage_error "--analysis-scope is organizations/N, folders/N or projects/ID" ;; esac
 command -v jq >/dev/null || usage_error "jq is not on PATH"
 

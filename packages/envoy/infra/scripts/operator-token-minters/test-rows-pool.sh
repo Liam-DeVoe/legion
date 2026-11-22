@@ -454,7 +454,8 @@ fleet_none_row() {
     bad)
       run --fleet some
       want_status 2 "--fleet some"
-      want_text "operator-token-minters: --fleet takes none, not some" "--fleet some"
+      want_text "operator-token-minters: --fleet takes none and nothing else" "--fleet some"
+      ! has_prefix "some" || fail "the usage error printed the value given to --fleet"
       ;;
   esac
 }
