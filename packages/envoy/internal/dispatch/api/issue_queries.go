@@ -75,15 +75,6 @@ var issueListTextsBySort = map[issueSort]issueListTexts{
 	issueSortClosedAtDescending: issueListTextsOrderedBy(`i.closed_at desc nulls last, ` + issueListOrder),
 }
 
-// The listing's own order's four texts by name, which the plan, equality, timing and speed tests
-// read.
-var (
-	listIssuesQuery           = issueListTextsBySort[issueSortListing].unpaged
-	listPinnedIssuesQuery     = issueListTextsBySort[issueSortListing].pinned
-	listIssuesPageQuery       = issueListTextsBySort[issueSortListing].paged
-	listPinnedIssuesPageQuery = issueListTextsBySort[issueSortListing].pinnedPaged
-)
-
 // issueSummaryQuery writes one listing statement. `filtered` applies every filter to `issues i`
 // alone, so `total` is a count over it with no join and the paged text orders and cuts it before
 // anything else is resolved: the six joins then run for the page's rows alone, and a listing of
