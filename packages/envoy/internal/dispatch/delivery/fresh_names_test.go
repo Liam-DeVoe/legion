@@ -649,6 +649,55 @@ func everyInterruptionOfAFreshTakeOverIsFinishedByTheNextHolder(t *testing.T, to
 	}
 }
 
+// Dispatch's durable creator names as the family table does: its Config's prefix and fixed name
+// are the table's for Dispatch's store (consumernames.FamilyNaming of DispatchFamily), both the
+// durable's own name, and on these cases its own fence (Names.Check) and consumernames.CheckFamily
+// give the same answer, the one each case pins. The control, run with a fault and seen failing: a
+// creator whose prefix is not the table's fails the naming check.
+func TestTheDispatchDurableCreatorNamesAsTheFamilyTable(t *testing.T) {
+	for i, kind := range durableKinds {
+		other := durableKinds[len(durableKinds)-1-i].logical
+		t.Run(kind.logical, func(t *testing.T) {
+			store, err := consumernames.NewPGStore(consumernames.DispatchFamily, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			d := &heldDurable{name: kind.logical}
+			d.nameFreshly(store, nil, nil)
+			names := d.fresh.names
+			table, err := consumernames.FamilyNaming(consumernames.DispatchFamily, kind.logical)
+			if err != nil {
+				t.Fatal(err)
+			}
+			creator := names.Naming()
+			if got, want := creator.Prefix(kind.logical), table.Prefix(kind.logical); got != want || got != kind.logical {
+				t.Errorf("the creator's prefix of %s is %q, the table's %q; want both %q", kind.logical, got, want, kind.logical)
+			}
+			if got := creator.Fixed(kind.logical); got != kind.logical {
+				t.Errorf("the creator's fixed name of %s is %q, want the durable's own", kind.logical, got)
+			}
+			reserved := time.Unix(1_700_000_000, 0)
+			for _, c := range []struct {
+				name   string
+				record consumernames.Record
+				served bool
+			}{
+				{"its own current", consumernames.Record{Current: kind.logical + "~A", Start: 3}, true},
+				{"an open replace of its fixed name", consumernames.Record{Start: 3, Op: &consumernames.Op{Kind: consumernames.OpReplace, Old: kind.logical, Candidate: kind.logical + "~B", ReservedAt: reserved}}, true},
+				{"a current of the session prefix", consumernames.Record{Current: "session~A", Start: 3}, false},
+				{"the other durable's current", consumernames.Record{Current: other + "~A", Start: 3}, false},
+				{"the other durable's old name", consumernames.Record{Start: 3, Op: &consumernames.Op{Kind: consumernames.OpReplace, Old: other, Candidate: kind.logical + "~B", ReservedAt: reserved}}, false},
+			} {
+				own := names.Check(kind.logical, c.record)
+				family := consumernames.CheckFamily(consumernames.DispatchFamily, kind.logical, c.record)
+				if (own == nil) != c.served || (family == nil) != c.served {
+					t.Errorf("%s: the creator's fence = %v, CheckFamily = %v; want both served %t", c.name, own, family, c.served)
+				}
+			}
+		})
+	}
+}
+
 // An adopted candidate is held to its durable's own create, by the listener's check
 // (bus.Client.ConsumerAdoptable). A take-over killed after its create answered leaves its candidate
 // for the next holder's Step 0 to adopt; here that candidate is made again under its name, at its

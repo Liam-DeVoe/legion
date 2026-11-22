@@ -273,16 +273,20 @@ const generationConnectWithin = 5 * time.Second
 // nameFreshly puts the intake's durable in the fresh mode: its selection records in store, each
 // generation's connection opened by connect, and each step counted on steps. The intake's own
 // client becomes the stream's reader (freshNaming.reader), and d.nats is nil until the first
-// take-over sets it to the connection of the generation it delivers from.
+// take-over sets it to the connection of the generation it delivers from. Its naming is the family
+// table's for Dispatch's store (consumernames.LogicalNaming, FamilyNaming's for DispatchFamily),
+// the one an operator's reader judges the record by (consumernames.CheckFamily).
 func (d *heldDurable) nameFreshly(store consumernames.Store, connect func(string) (*bus.Client, error), steps *metrics.Counter) {
 	fresh := &freshNaming{
 		logical: d.name, store: store, connect: connect, reader: d.nats,
 		candidates: map[string]*candidateConn{}, read: map[string]*natsgo.ConsumerInfo{},
 	}
+	naming := consumernames.LogicalNaming()
 	fresh.names = consumernames.New(consumernames.Config{
 		Store:    store,
 		Server:   freshServer{d},
-		Prefix:   func(logical string) string { return logical },
+		Prefix:   naming.Prefix,
+		Fixed:    naming.Fixed,
 		Floor:    func(info *jetstream.ConsumerInfo) uint64 { return info.AckFloor.Stream },
 		StreamID: fresh.streamID,
 		MissingRecord: func(_ context.Context, logical string) error {
