@@ -536,7 +536,8 @@ function heldUnder(rows: readonly Write[], mutationKey: MutationKey): HeldSend |
 /** `detail`, the record of a refused send whose refusal is `refusal`, carried to `to` by the
  *  reader's own move (`HeldSends.carry`): the request goes there, unless the send was stopped,
  *  whose key is used only at its own address. The statement it is on is `to`'s, so a send the
- *  issue page's box carries off a statement is on none. `at` is the words and kind of a margin
+ *  issue page's box carries off a statement is on none, and it keeps none of the mentions the box
+ *  wrote for the reply it leaves (`SentRequest.seeds`). `at` is the words and kind of a margin
  *  compose the reader takes the draft into (`carryInto`), which is another address of the same
  *  owner. */
 function carriedTo(
@@ -545,7 +546,7 @@ function carriedTo(
   to: CarriedAddress,
   at?: Pick<SentRequest, "anchor" | "kind">
 ): ComposerSend {
-  const carried = { ...detail.request, ...to, statement: to.statement, ...at };
+  const carried = { ...detail.request, ...to, seeds: undefined, statement: to.statement, ...at };
   const stopped = stoppedSend ?? (refusal instanceof SendStoppedError ? detail.request : undefined);
   if (stopped === undefined) return { ...detail, request: carried };
   if (sameAddress(stopped, carried)) return { ...detail, request: stopped };
@@ -642,18 +643,18 @@ export class HeldSends {
     return held !== undefined && this.#writes.discard(held.id);
   }
 
-  /** Keeps what the reader wrote over a refusal, as its composer unmounts. The issue page's box
-   *  keeps its mentions as it holds them with it (`HeldDraft.seeds`): they replace the request's
-   *  (`SentRequest.seeds`), none where it holds none, so a box that mounts again over the send
-   *  takes out those and no link the reader wrote. A keep that carries no mentions - every other
-   *  composer's - leaves the request as it was. */
+  /** Keeps what the reader wrote over a refusal, as its composer unmounts, with the mentions the
+   *  issue page's box holds then (`HeldDraft.seeds`): they replace the request's
+   *  (`SentRequest.seeds`), so a box that mounts again over the send takes out those and no link
+   *  the reader wrote. A keep that carries none leaves the request none. The box alone writes
+   *  them, so every other composer's request holds none before the keep and after it. */
   keep(mutationKey: MutationKey, { seeds, ...draft }: HeldDraft): void {
     const held = this.get(mutationKey);
     if (held?.status !== "refused") return;
     this.#writes.amend(held.id, composerSend, (detail) => {
-      if (seeds === undefined) return { ...detail, draft };
       const { seeds: _held, ...request } = detail.request;
-      return { ...detail, draft, request: seeds.length === 0 ? request : { ...request, seeds } };
+      const kept = seeds === undefined || seeds.length === 0 ? request : { ...request, seeds };
+      return { ...detail, draft, request: kept };
     });
   }
 

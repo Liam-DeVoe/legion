@@ -118,7 +118,8 @@ export interface SentRequest {
   /** The mentions the issue page's box wrote in front of the draft for the reply it answers and
    *  that still open it as the reader left it (`openingSeeds`), each the party and the link
    *  written for it (`partyMention`); absent where none do, and from every other send. What the
-   *  reader writes over a refusal keeps them as the box then holds them (`HeldSends.keep`). A box
+   *  reader writes over a refusal keeps them as the box then holds them (`HeldSends.keep`), and
+   *  the reader's own move off the reply carries the send with none (`HeldSends.carry`). A box
    *  that mounts again over the held send - after a reload, or after the reader left the issue -
    *  takes these back out when the reply ends or moves, as the box that wrote them would, and
    *  never a link the reader wrote. They are the page's own: no request carries them
@@ -136,10 +137,10 @@ export interface SentRequest {
 
 /** The mentions the issue page's box wrote for the reply `request` answers (`SentRequest.seeds`),
  *  which a box over that held send takes out when the reply ends or moves; none where it holds no
- *  send, or holds one that answers no reply - one the box let go of, its mentions taken out as it
- *  went. */
+ *  send. One the box let go of answers no reply and holds none, its mentions taken out of the
+ *  draft as it went (`HeldSends.carry`). */
 export function heldSeeds(request: SentRequest | undefined): readonly SeededMention[] {
-  return request?.replyTo ? (request.seeds ?? []) : [];
+  return request?.seeds ?? [];
 }
 
 /** The command, at the start of a body, that sends it in a mode other than the plain one (Send,
