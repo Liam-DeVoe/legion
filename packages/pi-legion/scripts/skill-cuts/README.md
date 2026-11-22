@@ -526,6 +526,42 @@ In a load run, a read of another source's copy of the name (`skill://<namespace>
 path under `namespaced/<namespace>/skills/`, where a capture installs it) is no load of the tested
 skill; a read of `skill://<name>` or of the tested copy's path is.
 
+A skill can reach a session other than by its listing line and a read, and each arm then gives the
+session its own text of it there too (`arms.ts`). The Envoy plugin puts dispatch-first into every
+request of a session with Dispatch: a user message after the leading compaction summaries, built
+from the plugin's own `skills/dispatch-first/SKILL.md`, which it reads as it loads. No transcript
+keeps that block, and a capture runs with Dispatch off, so each arm but `none` puts the block, built
+from its own SKILL.md by the plugin's own function, where the plugin puts it; `none` puts none, and
+gets a hidden stand-in of the file (`hide: true`), so the plugin still loads and the listing names
+nothing more. A case does not record whether its session had Dispatch; the runner takes it that it
+did. Oh My Pi gives a subagent each skill its agent definition's `autoloadSkills` names as a
+`skill-prompt` message before its task (task/executor.ts, lines 5573-5607), and the transcript
+keeps it: each arm but `none` rebuilds that message from its own SKILL.md under the recorded path,
+as Oh My Pi renders it (the body, a blank line, `---`, a blank line and `Skill: <path>`, put through
+Oh My Pi's prompt format, which takes the padding out of a table's cells), and `none` leaves it
+out. A case that holds such a block in a form the runner cannot rebuild (a `/skill:` prompt the
+user typed, a block with arguments, a dispatch-first block away from where the plugin puts it, or a
+subagent whose agent autoloads the skill but whose messages hold no block of it and open with no
+compaction summary) is refused (exit 2), naming the case. Each capture's record lists the blocks
+it carries (`injections`), and a saved capture of such an arm made before these rules is refused.
+
+In the load test such a skill gets the same block under every name it is tested under, so its runs
+measure whether the agent reads a skill whose text it already holds. Under another name a
+dispatch-first in a profile that installs the Envoy plugin is captured with the plugin's block of
+the tested text and the hidden stand-in, and a profile that also installs a copy under its own name
+is refused: the plugin would put that copy in. The load test refuses dispatch-first on Claude Code,
+whose Envoy plugin puts it into a session from a session-start hook the test does not run, and a
+subagent profile whose agent definition (read from the profile's plugins at their commits)
+autoloads the tested skill: the subagent has its text before its task whatever the listing says.
+In any other profile such a skill is listed and tested like any other.
+
+On 2026-11-22 the commits of cybermonklabs/legion the cases use (155 of them) have one skill a
+plugin puts into the session, dispatch-first (the Envoy plugin), and two an agent definition
+autoloads, `thermonuclear-code-quality` and `thermonuclear-deep-review` (each by the agent of its
+name in `packages/pi-legion/agents/`). Both set `disable-model-invocation`, so no host lists them,
+and the load test refuses them. The other plugins the profiles install hold skills, and one of them
+agents, but inject and autoload none, and no agent of Oh My Pi's own autoloads a skill.
+
 A subagent's profile (a session that recorded its prompt) is read at two times. Oh My Pi 18.18.6
 gives a subagent the skills its parent loaded (task/structured-subagent.ts, lines 806-818 and
 895-902), a subagent of a subagent its parent's, and the subagent rescans only the skill

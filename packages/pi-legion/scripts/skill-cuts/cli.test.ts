@@ -1707,6 +1707,47 @@ describe("refusals before any model call", () => {
     const reported = await cli(report(s).map((arg) => (arg === s.out ? inCheckout : arg)));
     expect({ code: reported.code, stderr: reported.stderr }).toEqual({ code: 0, stderr: "" });
   }, 60_000);
+
+  // Catches: a case run with the recorded text of its skill in every arm because its messages
+  // hold a block of it the arms do not rebuild.
+  test("behaviour refuses a cases file with a case whose messages hold a block of its skill the arms cannot each rebuild (exit 2), naming the case, before any model call", async () => {
+    const s = scenario("invoked-block", LOSS_SKILL(), [{ id: "c-invoked" }, { id: "c-plain" }]);
+    const [invoked, plain] = s.cases;
+    // A `/skill:alpha` prompt the user typed: a skill-prompt message in the user's form.
+    const typed: SessionMessage = {
+      role: "custom",
+      customType: "skill-prompt",
+      content: [{ type: "text", text: "# Alpha\n\nThe user's prompt." }],
+      display: true,
+      details: { name: "alpha", path: "/skills/alpha/SKILL.md" },
+      attribution: "user",
+      timestamp: 1795139983600,
+    };
+    writeFileSync(
+      s.casesFile,
+      [
+        {
+          ...invoked,
+          messages: [typed, ...(invoked?.messages ?? [])],
+          skillReads: (invoked?.skillReads ?? []).map((index) => index + 1),
+        },
+        plain,
+      ]
+        .map((c) => `${JSON.stringify(c)}\n`)
+        .join("")
+    );
+    answer = behaviourStandIn;
+    const from = recorder.requests.length;
+    const ran = await cli(behaviour("screen", s));
+    expect(ran.code).toBe(2);
+    expect(ran.stderr).toContain(
+      `${s.casesFile} is refused: case c-invoked: its message 0 is a skill-prompt message of alpha, one the user invoked, not in the form of Oh My Pi's autoloaded block`
+    );
+    expect(ran.stderr).not.toContain("c-plain");
+    expect(requestsSince(from)).toHaveLength(0);
+    expect(existsSync(caseResultFile(s.out, "c-invoked"))).toBe(false);
+    expect(existsSync(caseResultFile(s.out, "c-plain"))).toBe(false);
+  }, 60_000);
 });
 
 /** The run records of `informative` cases screened as informative (old and new pass each run,

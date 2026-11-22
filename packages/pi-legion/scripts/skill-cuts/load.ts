@@ -63,6 +63,29 @@
  *   `off` sets `CLAUDE_CODE_DISABLE_THINKING`, a level of `claude --effort` goes as that flag,
  *   and `auto` leaves Claude Code's own default.
  *
+ * A skill that reaches a session other than by its listing line and a read (arms.ts's
+ * `Injection`) is in that session's context whatever its listing says, so for it a load test
+ * measures whether the agent reads a skill whose text it already holds. Each name it is tested
+ * under gets the same block:
+ *
+ * - The Envoy plugin's dispatch-first (arms.ts's PLUGIN_INJECTED), in a profile that installs the
+ *   plugin, on Oh My Pi: each capture's messages carry the plugin's block before the task's text,
+ *   built from the tested directory as the plugin builds it (`withPluginBlock`; its frontmatter,
+ *   which holds the name, is not in it), and under another name a hidden stand-in of the file the
+ *   plugin reads keeps it loading (context.ts). A profile that also installs a copy under the
+ *   skill's own name while it is tested under another is refused: the plugin would put that copy
+ *   into the requests, not the tested text. On Claude Code it is refused: Claude Code's Envoy
+ *   plugin puts it into a session with Dispatch from its session-start hook
+ *   (packages/claude-envoy/hooks/session-hook.ts), which a load test's Claude Code does not run,
+ *   and a profile does not say whether its session had that plugin.
+ * - A skill a subagent's agent definition autoloads (`autoloadSkills`, read from the profile's
+ *   plugins at their commits, context.ts's `subagentDefinition`): a `subagent:<agent>` profile
+ *   whose agent autoloads the skill is refused on Oh My Pi, before any model call. The subagent
+ *   gets the skill's text before its task whatever the listing says, and under another name its
+ *   agent would autoload none.
+ *
+ * In any other profile such a skill is listed like any other and tested as one.
+ *
  * Then that one body is sent `--runs` times to the gateway (gateway.ts), with the `anthropic-*`
  * headers the host sent beside it, on the route of its API: an `anthropic/<id>` model's body goes
  * to the Messages route, and an `openai/<id>` model's (Oh My Pi only; its hints still come from an
@@ -98,6 +121,8 @@
  * per run, LoadRun, which names its task's profile file and that SHA-256 too, its session id and
  * its place in its send order), `captures/` (each task's body, the body as the host sent it, and
  * its record) and `sessions/`.
+ * The refusals above for a skill a plugin or an agent definition puts into the session are made
+ * before any model call, each naming the profile.
  * A task whose run file holds its runs is skipped, so a command started again goes on from what
  * was saved. A task whose context needs a directory no read can give (context.ts's
  * UnreadableDirectory: the commit holds no such directory, or GitHub cuts a level of its tree short
@@ -131,7 +156,7 @@ import {
 import path from "node:path";
 import { messageFor } from "@legion/envoy-client/errors";
 import { z } from "zod";
-import type { Arm } from "./arms";
+import { type Arm, type Injection, PLUGIN_INJECTED, withPluginBlock } from "./arms";
 import {
   anthropicHeaders,
   type CaptureCase,
@@ -158,12 +183,14 @@ import {
 import { Case, listedName, Profile, type ProfileSkill, type Thinking } from "./cases";
 import { json, Refused, Stopped, schemaFaults, writeWhole } from "./common";
 import {
+  type AgentDefinition,
   buildContext,
   type ContextRecord,
   cacheKey,
   type RepoSource,
   readFrontmatter,
   skillFrontmatter,
+  subagentDefinition,
   UNREADABLE_DIRECTORY,
   UnreadableDirectory,
 } from "./context";
@@ -537,6 +564,69 @@ function taskProfiles(
     );
   }
   return profiled;
+}
+
+/** Whether the plugin of arms.ts's PLUGIN_INJECTED puts the skill `own` (the tested skill's own
+ *  name) into each request of a session of `profile` on Oh My Pi: `own` is the skill it reads, and
+ *  the profile installs the plugin. */
+function pluginInjects(profile: Profile, own: string): boolean {
+  return (
+    own === PLUGIN_INJECTED.skill &&
+    profile.plugins.some((plugin) => plugin.name === PLUGIN_INJECTED.plugin)
+  );
+}
+
+/**
+ * Why a load test of the skill `own`, tested under `name`, cannot be made in the context of a
+ * profile of `profiled` (see the file's header), or undefined when it can in each: on Claude Code,
+ * a skill the Envoy plugin puts into its session; on Oh My Pi, a profile that installs that plugin
+ * and a copy under `own` while the skill is tested under another name, and a `subagent:<agent>`
+ * profile whose agent autoloads `own`. A profile whose plugins' repositories cannot be read here is
+ * left to its tasks' captures, which read the same repositories and report that by their rules.
+ */
+async function injectedRefusal(
+  profiled: readonly ProfiledTask[],
+  o: Pick<LoadOptions, "host" | "source" | "cacheDir">,
+  own: string,
+  name: string
+): Promise<string | undefined> {
+  if (o.host === "claude" && own === PLUGIN_INJECTED.skill) {
+    return `${own} cannot be load tested on Claude Code: Claude Code's Envoy plugin puts it into each session with Dispatch from its session-start hook (packages/claude-envoy/hooks/session-hook.ts), which a load test's Claude Code does not run, and a profile does not say whether its session had that plugin`;
+  }
+  if (o.host !== "omp") return undefined;
+  const faults: string[] = [];
+  const read = new Set<string>();
+  for (const { profile } of profiled) {
+    if (read.has(profile.file)) continue;
+    read.add(profile.file);
+    const { context } = profile.profile;
+    if (
+      name !== own &&
+      pluginInjects(profile.profile, own) &&
+      profile.profile.skills.some((skill) => listedName(skill) === own)
+    ) {
+      faults.push(
+        `${profile.file}: it installs ${own} beside the skill tested under ${name}, and the ${PLUGIN_INJECTED.plugin} plugin would put that copy into each request, not the tested text`
+      );
+    }
+    if (!context.startsWith("subagent:")) continue;
+    let agent: AgentDefinition | null;
+    try {
+      agent = await subagentDefinition({ id: profile.file, context, profile: profile.profile }, o);
+    } catch {
+      // Each task's capture reads the same repositories, and reports the failure by its rules.
+      continue;
+    }
+    if (agent?.autoloadSkills.includes(own) === true) {
+      const renamed = name === own ? "" : `, and under the name ${name} it would autoload none`;
+      faults.push(
+        `${profile.file}: its agent ${agent.name} (${agent.path} of ${agent.repo} at ${agent.commit}) autoloads ${own}, so the subagent gets its text before its task whatever its listing says${renamed}`
+      );
+    }
+  }
+  return faults.length === 0
+    ? undefined
+    : `${own} cannot be load tested in the context of each profile, since a plugin or an agent definition puts it into the session there: ${faults.join("; ")}`;
 }
 
 /** The frontmatter `name` of the skill in `dir`, read as Oh My Pi reads a skill's frontmatter
@@ -1057,6 +1147,7 @@ class LoadTest {
    *  context.ts installs an arm's own skill from `skillDir` and reads no repository for it. */
   caseOf(id: string, text: string, profile: LoadProfile): { c: CaptureCase; arm: Arm } {
     const { name, renamedFrom, model, thinking } = this.settings;
+    const ownName = renamedFrom ?? name;
     const own: ProfileSkill = {
       repo: "local/skill-directory",
       commit: this.settings.skillText,
@@ -1073,6 +1164,22 @@ class LoadTest {
       ...(recorded === undefined ? {} : { systemPrompt: recorded }),
       skills: [...profile.skills, own],
     };
+    const task = {
+      role: "user",
+      content: [{ type: "text", text }],
+      attribution: "user",
+      timestamp: Date.now(),
+    };
+    // The Envoy plugin's block of the tested text before the task's, under every name, where the
+    // profile installs the plugin (see the file's header).
+    const placed =
+      this.o.host === "omp" && pluginInjects(profile, ownName)
+        ? withPluginBlock([task], this.skillDir)
+        : undefined;
+    const injections: Injection[] =
+      placed === undefined
+        ? []
+        : [{ by: "plugin", plugin: PLUGIN_INJECTED.plugin, name: ownName, at: placed.at }];
     return {
       c: {
         id,
@@ -1088,15 +1195,9 @@ class LoadTest {
         skill: name,
         skillDir: this.skillDir,
         installedDir: path.join("/skills", name),
-        messages: [
-          {
-            role: "user",
-            content: [{ type: "text", text }],
-            attribution: "user",
-            timestamp: Date.now(),
-          },
-        ],
+        messages: placed?.messages ?? [task],
         profileSkills: caseProfile.skills,
+        injections,
       },
     };
   }
@@ -1153,9 +1254,9 @@ class LoadTest {
   async ompCapture(task: Task, profile: TaskProfile): Promise<Captured> {
     const files = loadCapturePaths(this.o.out, "omp", task.id);
     const { models } = this.o;
-    let capture = savedCapture(files);
+    const { c, arm } = this.caseOf(task.id, task.text, profile.profile);
+    let capture = savedCapture(files, arm);
     if (capture === undefined && models !== undefined) {
-      const { c, arm } = this.caseOf(task.id, task.text, profile.profile);
       capture = await captureBody(c, arm, {
         omp: this.o.omp,
         outDir: path.dirname(files.body),
@@ -1713,6 +1814,8 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
   }
   const tasks = loadTasks(o.tasksFile);
   const profiled = taskProfiles(tasks, o, name);
+  const injected = await injectedRefusal(profiled, o, own, name);
+  if (injected !== undefined) throw new Refused(injected);
   // With no --hint-model the hint model is the model itself, and Oh My Pi's hints are written on
   // the Messages route only, so each capture to be made would fail.
   if (
@@ -1866,6 +1969,11 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
     test.say(
       `${ids.length === 1 ? "task" : "tasks"} ${ids.join(", ")} run in the context ${profile.profile.context} of the profile ${profile.file} (SHA-256 ${profile.digest})`
     );
+    if (o.host === "omp" && pluginInjects(profile.profile, own)) {
+      test.say(
+        `the ${PLUGIN_INJECTED.plugin} plugin puts ${own} into each request in the context of ${profile.file}: each capture carries its block, built from the tested text, before the task's text${name === own ? "" : `, the same under the name ${name}`}, so its runs measure whether the agent reads a skill whose text it already holds`
+      );
+    }
   }
   if (settings.renamedFrom !== null) {
     test.say(

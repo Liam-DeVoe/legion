@@ -10,6 +10,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
+import { readDispatchFirstContext } from "@legion/envoy-client/dispatch-first";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { z } from "zod";
@@ -733,6 +734,23 @@ const SUBAGENT = z
       .find((entry) => z.looseObject({ type: z.literal("session_init") }).safeParse(entry).success)
   );
 
+/** A made-up dispatch-first, which the Envoy plugin reads as it loads and puts into each request
+ *  of a session with Dispatch; its entry in a profile; and the Envoy plugin's entry. */
+const DISPATCH_FIRST_SKILL =
+  "---\nname: dispatch-first\ndescription: Use when a task of the made-up project needs its tracker searched first.\n---\n\n# Dispatch first\n\nSearch the made-up tracker before you act.\n";
+const DISPATCH_FIRST_ENTRY = {
+  repo: "acme/skills",
+  commit: COMMIT,
+  path: "skills/dispatch-first",
+  name: "dispatch-first",
+};
+const ENVOY_ENTRY = {
+  repo: "acme/legion",
+  commit: COMMIT,
+  path: "packages/pi-envoy",
+  name: "pi-envoy",
+};
+
 describe("skill-cuts load with saved captures", () => {
   const dir = path.join(scratch, "saved");
   const out = path.join(dir, "out");
@@ -1120,6 +1138,92 @@ describe("skill-cuts load refuses or stops on its own rules", () => {
     ]) {
       expect(ran.stderr).toContain(fault);
     }
+    expect(recorder.requests.length).toBe(before);
+  });
+
+  // Catches: a load test of a skill a plugin or an agent definition puts into the session made
+  // where the test cannot give each name the block the session had, or where the copy the plugin
+  // would put in is not the tested text.
+  test("a skill a plugin or an agent definition puts into the session is refused where it cannot be load tested, naming the profile, before any model call", async () => {
+    const dir = path.join(scratch, "injected-refusals");
+    const { common } = hostInputs(dir, undefined, { "SKILL.md": DISPATCH_FIRST_SKILL });
+    const before = recorder.requests.length;
+    // dispatch-first on Claude Code, whose Envoy plugin puts it in from a hook no load test runs.
+    const claudeProfile = path.join(dir, "claude.json");
+    writeFileSync(
+      claudeProfile,
+      JSON.stringify({
+        ...BETA_PROFILE,
+        claude: {
+          marketplace: "acme-market",
+          plugins: [{ name: "acme-tools", skills: ["beta"] }],
+          skillPlugin: "acme-tools",
+        },
+      })
+    );
+    const onClaude = await cli([
+      "load",
+      ...common,
+      ...["--host", "claude", "--profile", claudeProfile, "--claude", "/nowhere/claude"],
+    ]);
+    expect(onClaude.code).toBe(2);
+    expect(onClaude.stderr).toContain(
+      "dispatch-first cannot be load tested on Claude Code: Claude Code's Envoy plugin puts it into each session with Dispatch from its session-start hook"
+    );
+    // dispatch-first under another name, beside a copy of its own name the plugin would read.
+    const both = path.join(dir, "both.json");
+    writeFileSync(
+      both,
+      JSON.stringify({
+        ...BETA_PROFILE,
+        skills: [...BETA_PROFILE.skills, DISPATCH_FIRST_ENTRY],
+        plugins: [ENVOY_ENTRY],
+      })
+    );
+    const renamed = await cli([
+      "load",
+      ...common,
+      ...["--host", "omp", "--profile", both, "--name", "omega"],
+    ]);
+    expect(renamed.code).toBe(2);
+    expect(renamed.stderr).toContain(
+      `${both}: it installs dispatch-first beside the skill tested under omega, and the pi-envoy plugin would put that copy into each request, not the tested text`
+    );
+
+    // alpha in a subagent profile whose agent definition autoloads it.
+    const agentDir = path.join(scratch, "injected-agent");
+    const agent = hostInputs(agentDir);
+    writeTree(path.join(agentDir, "repos", "acme", "legion", COMMIT), {
+      "packages/agents-pack/agents/alpha-reviewer.md":
+        "---\nname: alpha-reviewer\ndescription: Reviews with alpha.\nautoloadSkills: [alpha]\n---\n\nReview.\n",
+    });
+    const subagent = path.join(agentDir, "subagent.json");
+    writeFileSync(
+      subagent,
+      JSON.stringify({
+        ...BETA_PROFILE,
+        plugins: [
+          {
+            repo: "acme/legion",
+            commit: COMMIT,
+            path: "packages/agents-pack",
+            name: "agents-pack",
+          },
+        ],
+        context: "subagent:alpha-reviewer",
+        systemPrompt: SUBAGENT.systemPrompt,
+        tools: SUBAGENT.tools,
+      })
+    );
+    const autoloaded = await cli([
+      "load",
+      ...agent.common,
+      ...["--host", "omp", "--profile", subagent, "--name", "omega"],
+    ]);
+    expect(autoloaded.code).toBe(2);
+    expect(autoloaded.stderr).toContain(
+      `${subagent}: its agent alpha-reviewer (packages/agents-pack/agents/alpha-reviewer.md of acme/legion at ${COMMIT}) autoloads alpha, so the subagent gets its text before its task whatever its listing says, and under the name omega it would autoload none`
+    );
     expect(recorder.requests.length).toBe(before);
   });
 
@@ -1763,6 +1867,33 @@ function hostInputs(
   return { out, common };
 }
 
+/** Builds the Envoy plugin of this checkout into the made-up acme/legion at COMMIT under `repos`,
+ *  as the worker image ships it: its bundle in `dist/`, and a manifest that names the bundle and
+ *  `dist/skills`, where it reads dispatch-first as it loads. */
+function writeEnvoyPlugin(repos: string): void {
+  const dest = path.join(repos, "acme/legion", COMMIT, "packages/pi-envoy");
+  const externals = ["pi-ai", "pi-coding-agent", "pi-tui", "pi-utils"];
+  const built = Bun.spawnSync(
+    [
+      ...["bun", "build", "extensions/envoy.ts", "--outdir", path.join(dest, "dist")],
+      ...["--target", "bun", "--format", "esm"],
+      ...externals.flatMap((name) => ["--external", `@oh-my-pi/${name}`]),
+    ],
+    { cwd: path.resolve(import.meta.dir, "../../../pi-envoy"), stderr: "pipe" }
+  );
+  expect({
+    code: built.exitCode,
+    stderr: built.exitCode === 0 ? "" : built.stderr.toString(),
+  }).toEqual({ code: 0, stderr: "" });
+  writeTree(dest, {
+    "package.json": JSON.stringify({
+      name: "@acme/pi-envoy",
+      files: ["dist"],
+      omp: { extensions: ["dist/envoy.js"], skills: ["dist/skills"] },
+    }),
+  });
+}
+
 describe.skipIf(omp === undefined)("skill-cuts load on the pinned Oh My Pi", () => {
   test(
     "captures the first request of a one-message history, lists the renamed skill under its hint, and counts a read of skill://<name> as a load",
@@ -1810,6 +1941,51 @@ describe.skipIf(omp === undefined)("skill-cuts load on the pinned Oh My Pi", () 
       ]);
       expect(ran.stdout).toContain(
         "no verdict: the load test's rule takes 3 runs a task, and this test runs 1"
+      );
+    },
+    HOST_ROW_TIMEOUT_MS
+  );
+
+  // Catches: a load test of dispatch-first under another name whose capture fails as the Envoy
+  // plugin finds no file of that name to read, or that lists the skill under its own name, or
+  // sends no block of it though the plugin puts one into each request.
+  test(
+    "a skill the Envoy plugin puts into each request is captured under another name with the plugin's block of the tested text, the plugin loading on a hidden stand-in of its file, and listed under that name only",
+    async () => {
+      const dir = path.join(scratch, "omp-dispatch-first");
+      const { out, common } = hostInputs(dir, undefined, { "SKILL.md": DISPATCH_FIRST_SKILL });
+      writeEnvoyPlugin(path.join(dir, "repos"));
+      const models = path.join(dir, "models.yml");
+      writeFileSync(models, ANTHROPIC_MODELS);
+      const profile = path.join(dir, "profile.json");
+      writeFileSync(profile, JSON.stringify({ ...BETA_PROFILE, plugins: [ENVOY_ENTRY] }));
+      answer = () => TEXT;
+      const ran = await cli([
+        "load",
+        ...common,
+        ...["--name", "omega", "--host", "omp", "--profile", profile],
+        ...["--omp", String(omp), "--models", models],
+      ]);
+      expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+      const files = loadCapturePaths(out, "omp", "need-1");
+      const body = JSON.parse(readFileSync(files.body, "utf8"));
+      const record = JSON.parse(readFileSync(files.record, "utf8")) as CaptureRecord;
+      // The plugin loaded, reading the hidden stand-in, which the listing does not name.
+      expect(record.extensionErrors).toEqual([]);
+      expect(record.pluginTools.envoy).toContain("envoy_send");
+      expect(record.context.skills).toContainEqual({ name: "dispatch-first", from: "stand-in" });
+      expect([...skillListing(body).keys()].sort()).toEqual(["beta", "omega"]);
+      // The block is the plugin's of the tested text, the same as under the skill's own name: its
+      // frontmatter, which holds the name, is not in it.
+      const block = readDispatchFirstContext(path.join(dir, "tested", "SKILL.md"));
+      expect(body.messages[0]?.role).toBe("user");
+      expect(texts(body.messages[0]?.content)).toContain(block);
+      expect(texts(body.messages).some((text) => text.includes(NEED))).toBe(true);
+      expect(record.injections).toEqual([
+        { by: "plugin", plugin: "pi-envoy", name: "dispatch-first", at: 0 },
+      ]);
+      expect(ran.stdout).toContain(
+        `load: the pi-envoy plugin puts dispatch-first into each request in the context of ${profile}: each capture carries its block, built from the tested text, before the task's text, the same under the name omega`
       );
     },
     HOST_ROW_TIMEOUT_MS

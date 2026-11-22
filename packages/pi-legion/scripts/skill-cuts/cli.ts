@@ -90,7 +90,12 @@
  *   short even read alone) is dropped as `unreadable-directory`, its drop naming the repository,
  *   the commit and the path, and a run started again skips it; a dropped case is never
  *   informative. A read that failed for another reason, after its retries, fails the command, and
- *   the next run reads it again.
+ *   the next run reads it again. A cases file with a case that holds a block of its skill its arms
+ *   cannot each give their own text (arms.ts's `injectionFault`: one the plugin or Oh My Pi's
+ *   autoload did not write in the form the runner rebuilds) is refused before any model call,
+ *   naming each such case; so is a case whose capture finds its subagent's agent autoloads the
+ *   skill and its messages hold no block of it (capture.ts's InjectionRefused), when the capture
+ *   is made.
  * - `report` (no model call) prints each case's passes per arm and stage, the drops by each judge
  *   control, by `model-not-served` and by `unreadable-directory`, the skill's verdict and its
  *   reason (score.ts; `keeps` is printed "no loss detected by the registered rule"), the rule's
@@ -176,7 +181,14 @@ import { messageFor } from "@legion/envoy-client/errors";
 import { z } from "zod";
 import { MessagesApiError } from "../skill-scenarios/messages-api";
 import { outRefusal } from "../skill-scenarios/production-dispatch";
-import { type Arm, type ArmDirs, type ArmName, buildArm } from "./arms";
+import {
+  type Arm,
+  type ArmDirs,
+  type ArmName,
+  buildArm,
+  InjectionRefused,
+  injectionFault,
+} from "./arms";
 import { main as attributeMain, type ModelCount, ModelCountFile, modelId } from "./attribute";
 import { main as buildMain } from "./build";
 import {
@@ -1377,6 +1389,7 @@ async function runStage(
     try {
       capture = await r.capture(c, arm);
     } catch (error) {
+      if (error instanceof InjectionRefused) throw new Refused(error.message);
       if (!(error instanceof UnreadableDirectory)) throw error;
       phases.captureMs[name] = performance.now() - started;
       countReads();
@@ -1910,6 +1923,17 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
     reportCommand(behaviour);
     return EXIT.ok;
   }
+  // A case whose arms cannot each give the session their own text of a block of its skill would
+  // send the recorded text in every arm.
+  const unrebuilt = cases.flatMap((c) => {
+    const fault = injectionFault(c);
+    return fault === undefined ? [] : [`case ${c.id}: ${fault}`];
+  });
+  if (unrebuilt.length > 0) {
+    throw new Refused(
+      `${given.cases} is refused: ${unrebuilt.join("; ")}; each arm would send the recorded text`
+    );
+  }
   if (command === "screen" && behaviour.readingModels !== undefined) {
     const refusal = servedScreeningRefusal(behaviour.readingModels.count);
     if (refusal !== undefined) {
@@ -1968,7 +1992,7 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
     source,
     capture: async (c, arm) => {
       const outDir = armCaptureDir(given.out, arm, texts);
-      const saved = savedCapture(capturePaths(outDir, c.id, arm.name));
+      const saved = savedCapture(capturePaths(outDir, c.id, arm.name), arm);
       if (saved !== undefined) return saved;
       if (models === undefined || omp === undefined) {
         throw new Error(

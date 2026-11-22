@@ -1398,3 +1398,252 @@ test("a directory the commit does not hold, or one a level of which GitHub cuts 
   );
   expect(routeKinds(cut.log).tarball).toBe(0);
 });
+
+/** What `filesUnder` gives for each of `files`, at its whole path. */
+function expectedAll(
+  files: readonly DeepFile[]
+): Record<string, { mode: string; bytes: number[] }> {
+  return Object.fromEntries(
+    files.map((file) => [file.path, { mode: file.mode, bytes: [...file.bytes] }])
+  );
+}
+
+/** A case of alpha whose profile also installs the skill at the root of acme/batch as `rooted`,
+ *  and its old arm, under `root`. */
+function rootedCase(root: string): { c: Case; arm: Arm } {
+  const c = aCase("devbox", {
+    skills: [
+      { repo: "acme/skills", commit: COMMIT, path: "skills/alpha", name: "alpha" },
+      { repo: "acme/batch", commit: COMMIT, path: ".", name: "rooted" },
+    ],
+    contextFiles: [],
+  });
+  writeTree(path.join(root, "old"), { "SKILL.md": ALPHA_ARM });
+  const arm = buildArm(
+    c,
+    "old",
+    { old: path.join(root, "old"), new: path.join(root, "old") },
+    root
+  );
+  return { c, arm };
+}
+
+// Catches: a skill at its repository's root (a profile path of ".", build.ts) read as a
+// directory named "." that the commit does not hold, or from the whole repository's tarball.
+test("a skill at its repository's root is the root's files at their whole paths, read from the commit's tree and read ahead, or walked from the root where GitHub cuts the tree short, with no tarball read", async () => {
+  const files: StandinFile[] = [
+    { path: "SKILL.md", bytes: text("---\nname: rooted\ndescription: Made-up rooted.\n---\n") },
+    { path: "references/r.md", bytes: text("Reference of the root skill.\n") },
+  ];
+  const { gh, log } = standinRepoGh("gh-root", files);
+  const root = path.join(dir, "root-skill");
+  const { c, arm } = rootedCase(root);
+  const built = await buildContext(c, arm, {
+    source: ghSource(gh, { sleep: async () => {}, err: () => {} }),
+    cacheDir: path.join(root, "cache"),
+    root: path.join(root, "scratch"),
+  });
+  for (const file of files) {
+    expect([...readFileSync(path.join(built.skillsDir, "rooted", file.path))]).toEqual([
+      ...file.bytes,
+    ]);
+  }
+  expect(built.skills.map((skill) => skill.name)).toEqual(["alpha", "rooted"]);
+  // One tree read and one GraphQL batch; no blob alone, no tarball (`other`).
+  expect(callsOf(log)).toEqual({ tree: 1, graphql: 1, blob: 0, other: 0 });
+
+  const deep = standinDeepGh("gh-root-deep", DEEP_FILES);
+  const dest = path.join(dir, "root-deep", "out", "rooted");
+  mkdirSync(path.dirname(dest), { recursive: true });
+  await ghSource(deep.gh, { sleep: async () => {}, err: () => {} }).tree(
+    "acme/deep",
+    COMMIT,
+    ".",
+    dest
+  );
+  expect(filesUnder(dest)).toEqual(expectedAll(DEEP_FILES));
+  // The commit's tree, cut short, then each of the root's nine levels alone: the root, data,
+  // data/proofs, skills, skills/other, skills/deep and its scripts, references and references/a.
+  expect(routeKinds(deep.log)).toEqual({ recursive: 1, level: 9, blob: 8, tarball: 0, other: 0 });
+});
+
+// Catches: a "skill" at the root of a large repository read whole, file by file.
+test("a skill at a root of more than 200 files is refused, naming the repository, the commit and the count, with no blob or tarball read, from the commit's tree or a walk cut short", async () => {
+  const many: StandinFile[] = [
+    { path: "SKILL.md", bytes: text("---\nname: rooted\ndescription: Made-up rooted.\n---\n") },
+    ...Array.from({ length: 200 }, (_, index) => ({
+      path: `notes/n${index}.md`,
+      bytes: text(`Note ${index}.\n`),
+    })),
+  ];
+  const { gh, log } = standinRepoGh("gh-root-large", many);
+  const root = path.join(dir, "root-large");
+  const { c, arm } = rootedCase(root);
+  const failed = await buildContext(c, arm, {
+    source: ghSource(gh, { sleep: async () => {}, err: () => {} }),
+    cacheDir: path.join(root, "cache"),
+    root: path.join(root, "scratch"),
+  }).then(
+    () => "built",
+    (error: unknown) => error
+  );
+  expect(failed).toBeInstanceOf(UnreadableDirectory);
+  expect(failed).toMatchObject({ repo: "acme/batch", commit: COMMIT, dir: "." });
+  expect(String(failed)).toContain(
+    `acme/batch at ${COMMIT}: its root holds 201 files, more than the 200 a skill at a repository's root is read with`
+  );
+  expect(callsOf(log)).toEqual({ tree: 1, graphql: 0, blob: 0, other: 0 });
+
+  const deep = standinDeepGh(
+    "gh-root-deep-large",
+    many.map((file) => ({ path: file.path, mode: "100644" as const, bytes: file.bytes }))
+  );
+  const walked = await ghSource(deep.gh, { sleep: async () => {}, err: () => {} })
+    .tree("acme/deep", COMMIT, ".", path.join(dir, "root-deep-large", "x"))
+    .then(
+      () => "written",
+      (error: unknown) => error
+    );
+  expect(walked).toBeInstanceOf(UnreadableDirectory);
+  expect(String(walked)).toContain(
+    `acme/deep at ${COMMIT}: its root holds 201 files, more than the 200 a skill at a repository's root is read with`
+  );
+  // The commit's tree, cut short, then the root and notes/, one level each: no blob read.
+  expect(routeKinds(deep.log)).toEqual({ recursive: 1, level: 2, blob: 0, tarball: 0, other: 0 });
+  expect(existsSync(path.join(dir, "root-deep-large", "x"))).toBe(false);
+});
+
+/** A made-up dispatch-first, which the Envoy plugin reads as it loads. */
+const DISPATCH_FIRST =
+  "---\nname: dispatch-first\ndescription: Use when the made-up session has Dispatch.\n---\n\n# Dispatch first\n\nSearch before you act.\n";
+
+// Catches: a none arm of dispatch-first that removes the file the Envoy plugin reads as it loads,
+// so the plugin fails to load and every such case fails at its first run.
+test("a none arm of a skill the Envoy plugin reads as it loads installs a hidden stand-in of its file, so the plugin's skills hold it and nothing more is listed; an arm with the skill installs its own copy", async () => {
+  const root = path.join(dir, "stand-in");
+  writeRepositories(path.join(root, "repos"));
+  writeTree(path.join(root, "repos", "acme", "legion", COMMIT), {
+    "packages/pi-envoy/package.json": JSON.stringify({
+      name: "pi-envoy",
+      files: ["dist"],
+      scripts: { build: "bun build extensions/envoy.ts --outdir dist --target bun" },
+      omp: { extensions: ["extensions/envoy.ts"], skills: ["dist/skills"] },
+    }),
+    "packages/pi-envoy/extensions/envoy.ts": "export default function plugin(): void {}\n",
+  });
+  writeTree(path.join(root, "repos", "acme", "skills", COMMIT), {
+    "skills/dispatch-first/SKILL.md": DISPATCH_FIRST,
+  });
+  writeTree(path.join(root, "old"), { "SKILL.md": DISPATCH_FIRST });
+  const read: SessionMessage[] = [
+    { role: "user", content: [{ type: "text", text: "Plan the made-up change." }] },
+    {
+      role: "assistant",
+      content: [
+        {
+          type: "toolCall",
+          id: "toolu_df",
+          name: "read",
+          arguments: { path: "skill://dispatch-first" },
+        },
+      ],
+    },
+    {
+      role: "toolResult",
+      toolCallId: "toolu_df",
+      toolName: "read",
+      content: [
+        {
+          type: "text",
+          text: `[Skill file: /skills/dispatch-first/SKILL.md]\n${DISPATCH_FIRST.trimEnd()}`,
+        },
+      ],
+      isError: false,
+    },
+  ];
+  const base = aCase("devbox", {
+    skills: [
+      { repo: "acme/skills", commit: COMMIT, path: "skills/beta", name: "beta" },
+      {
+        repo: "acme/skills",
+        commit: COMMIT,
+        path: "skills/dispatch-first",
+        name: "dispatch-first",
+      },
+    ],
+    plugins: [{ repo: "acme/legion", commit: COMMIT, path: "packages/pi-envoy", name: "pi-envoy" }],
+    contextFiles: [],
+  });
+  const c: Case = {
+    ...base,
+    skill: "dispatch-first",
+    line: { text: "Search before you act.", lineNumber: 8, lineCount: 8 },
+    messages: read,
+    skillReads: [2],
+  };
+  const dirs = { old: path.join(root, "old"), new: path.join(root, "old") };
+  const options = {
+    source: localSource(path.join(root, "repos")),
+    cacheDir: path.join(root, "cache"),
+    root: path.join(root, "scratch"),
+  };
+  const none = await buildContext(c, buildArm(c, "none", dirs, root), options);
+  expect(none.record.plugins.map((plugin) => [plugin.name, plugin.as])).toEqual([
+    ["pi-envoy", "extension"],
+  ]);
+  // The plugin's skills are the context's, and hold the file it reads as it loads.
+  const pluginFile = path.join(none.extensions[0] ?? "", "dist/skills/dispatch-first/SKILL.md");
+  expect(readFrontmatter(readFileSync(pluginFile, "utf8"))).toMatchObject({
+    name: "dispatch-first",
+    hide: true,
+  });
+  expect(none.skills.map((skill) => [skill.name, skill.hidden])).toEqual([
+    ["beta", false],
+    ["dispatch-first", true],
+  ]);
+  expect(none.record.skills.map((skill) => skill.from)).toContainEqual("stand-in");
+  const old = await buildContext(c, buildArm(c, "old", dirs, root), options);
+  expect(readFileSync(path.join(old.skillsDir, "dispatch-first/SKILL.md"), "utf8")).toBe(
+    DISPATCH_FIRST
+  );
+  expect(old.skills.map((skill) => [skill.name, skill.hidden])).toEqual([
+    ["beta", false],
+    ["dispatch-first", false],
+  ]);
+  expect(old.record.skills.map((skill) => skill.from)).not.toContainEqual("stand-in");
+}, 120_000);
+
+// Catches: a subagent case of a skill its agent autoloads, read as if only its listing line and
+// its reads carried the skill.
+test("a subagent's context names the agent definition of the profile's plugins it ran, with the skills its autoloadSkills names; another context names none", async () => {
+  const root = path.join(dir, "agents");
+  const agents = {
+    "packages/agents-pack/agents/reviewer.md":
+      "---\nname: alpha-reviewer\ndescription: Reviews with alpha.\nautoloadSkills: [alpha, beta]\n---\n\nReview.\n",
+    "packages/agents-pack/agents/listed.md":
+      "---\nname: listed\ndescription: Lists.\nautoload-skills: beta, gamma\n---\n\nList.\n",
+    "packages/agents-pack/agents/nameless.md": "---\nname: nameless\n---\n\nNo description.\n",
+  };
+  const plugins = [
+    { repo: "acme/legion", commit: COMMIT, path: "packages/agents-pack", name: "agents-pack" },
+  ];
+  const agentOf = async (context: string) => {
+    const c = aCase(context, { plugins, contextFiles: [] });
+    const where = path.join(root, context.replace(/\W/g, "-"));
+    const { options, arm } = setUp(where, c);
+    writeTree(path.join(where, "repos", "acme", "legion", COMMIT), agents);
+    return (await buildContext(c, arm, options)).record.agent;
+  };
+  expect(await agentOf("subagent:alpha-reviewer")).toEqual({
+    name: "alpha-reviewer",
+    repo: "acme/legion",
+    commit: COMMIT,
+    path: "packages/agents-pack/agents/reviewer.md",
+    autoloadSkills: ["alpha", "beta"],
+  });
+  expect((await agentOf("subagent:listed"))?.autoloadSkills).toEqual(["beta", "gamma"]);
+  // An agent with no description is none Oh My Pi loads; one no plugin defines is null.
+  expect(await agentOf("subagent:nameless")).toBeNull();
+  expect(await agentOf("subagent:task")).toBeNull();
+  expect(await agentOf("devbox")).toBeNull();
+}, 120_000);

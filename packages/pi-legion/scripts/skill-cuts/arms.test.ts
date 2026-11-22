@@ -1,6 +1,7 @@
 import { beforeAll, expect, test } from "bun:test";
 import { lstatSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { readDispatchFirstContext } from "@legion/envoy-client/dispatch-first";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import {
   SessionEntry,
@@ -392,4 +393,315 @@ test("twin is the old arm again: the old directory, the same messages and profil
   expect(twin.profileSkills).toEqual(old.profileSkills);
   expect(twin.installedDir).toBe(old.installedDir);
   expect(f1Case).toEqual(original);
+});
+
+// A skill that reaches a session other than by its listing line and its reads (arms.ts's header).
+
+/** Where the made-up subagent's Oh My Pi autoloaded alpha from. */
+const AUTOLOADED_PATH = `${INSTALLED}/SKILL.md`;
+
+/** The text of Oh My Pi's autoloaded block of the SKILL.md text `skill`, for a text its prompt
+ *  format leaves as it is (F1's alpha): the text less its frontmatter, trimmed, a blank line,
+ *  `---`, a blank line and `Skill: <path>` (prompts/skills/autoload.md at the pin). */
+function autoloadedOf(skill: string): string {
+  return `${skill.slice(skill.indexOf("\n---", 3) + 4).trim()}\n\n---\n\nSkill: ${AUTOLOADED_PATH}`;
+}
+
+/** Alpha autoloaded into a made-up subagent before its task, as Oh My Pi's task executor sends
+ *  it (a `skill-prompt` custom message the user did not invoke), from the text F1 read. */
+const autoloaded: SessionMessage = {
+  role: "custom",
+  customType: "skill-prompt",
+  content: [{ type: "text", text: autoloadedOf(f1File(2)) }],
+  display: false,
+  details: { name: "alpha", path: AUTOLOADED_PATH },
+  attribution: "agent",
+  timestamp: 1795139983600,
+};
+
+/** F1's case with that block before its messages, in a subagent's context. */
+function autoloadCase(id: string, block: SessionMessage = autoloaded): Case {
+  return {
+    ...structuredClone(f1Case),
+    id,
+    context: "subagent:alpha-runner",
+    messages: [block, ...structuredClone(f1Case.messages)],
+    skillReads: f1Case.skillReads.map((index) => index + 1),
+  };
+}
+
+// Catches: an arm that changes only the listing line and the read results of a skill Oh My Pi
+// autoloads into a subagent, so every arm sends the recorded text of it.
+test("an autoloaded block of the skill carries each arm's own text under its recorded path, and none leaves it out", () => {
+  const dirs = { old: oldDir, new: newDir };
+  const c = autoloadCase("c-autoload");
+  // new and minus first: the old arm's text is the recorded one.
+  for (const name of ["new", "minus", "old", "twin"] as const) {
+    const built = buildArm(c, name, dirs, path.join(scratch, `autoload-${name}`));
+    const text = readFileSync(path.join(built.skillDir ?? "", "SKILL.md"), "utf8");
+    expect(built.messages[0]).toEqual({
+      ...autoloaded,
+      content: [{ type: "text", text: autoloadedOf(text) }],
+    });
+    // Every other message is the arm's of the case without the block.
+    const without = buildArm(f1Case, name, dirs, path.join(scratch, `autoload-${name}-without`));
+    expect(built.messages.slice(1)).toEqual(without.messages);
+    expect(built.injections).toEqual([{ by: "autoload", path: AUTOLOADED_PATH, at: 0 }]);
+  }
+  const fresh = buildArm(c, "new", dirs, path.join(scratch, "autoload-new"));
+  expect(textOf(fresh.messages[0])).toContain("2. Put each step's result on a line of its own.");
+  expect(textOf(fresh.messages[0])).not.toContain(LINE);
+  const minus = buildArm(c, "minus", dirs, path.join(scratch, "autoload-minus"));
+  expect(textOf(minus.messages[0])).not.toContain(LINE);
+  const none = buildArm(c, "none", dirs, path.join(scratch, "autoload-none"));
+  expect(none.messages).toEqual(arm("none").messages);
+  expect(JSON.stringify(none.messages)).not.toContain(`Skill: ${AUTOLOADED_PATH}`);
+  expect(none.injections).toEqual([{ by: "autoload", path: AUTOLOADED_PATH, at: null }]);
+  expect(c.messages[0]).toEqual(autoloaded);
+});
+
+// Catches: an autoloaded block rebuilt from the file's text as it is, where Oh My Pi renders it
+// through its prompt format (a table of thermonuclear-deep-review's SKILL.md, 2026-11-22).
+test("an autoloaded block's text is the SKILL.md as Oh My Pi's prompt format leaves it: a table's cells unpadded, a run of blank lines dropped, no blank line before a closing tag, a fence's lines kept", () => {
+  const formatted = skillDir("formatted", {
+    "SKILL.md": [
+      "---",
+      "name: alpha",
+      "description: Use for the made-up alpha table.",
+      "---",
+      "",
+      "# Alpha   ",
+      "",
+      "",
+      "",
+      "Rules:",
+      "",
+      "| Step | What |",
+      "| :--- | ---: |",
+      "|  1  |  Read  |",
+      "",
+      "<rules>",
+      "Keep it.",
+      "",
+      "</rules>",
+      "",
+      "```",
+      "kept   ",
+      "",
+      "",
+      "",
+      "as is",
+      "```",
+      "",
+    ].join("\n"),
+  });
+  const built = buildArm(
+    autoloadCase("c-format"),
+    "new",
+    { old: oldDir, new: formatted },
+    path.join(scratch, "format")
+  );
+  expect(textOf(built.messages[0])).toBe(
+    [
+      "# Alpha",
+      "Rules:",
+      "",
+      "|Step|What|",
+      "|:---|---:|",
+      "|1|Read|",
+      "",
+      "<rules>",
+      "Keep it.",
+      "</rules>",
+      "",
+      "```",
+      "kept",
+      "",
+      "",
+      "",
+      "as is",
+      "```",
+      "",
+      "---",
+      "",
+      `Skill: ${AUTOLOADED_PATH}`,
+    ].join("\n")
+  );
+});
+
+/** A made-up dispatch-first, as the Envoy plugin reads it, and the cut of it. */
+const DISPATCH_FIRST =
+  "---\nname: dispatch-first\ndescription: Use when the made-up session has Dispatch.\n---\n\n# Dispatch first\n\nSearch before you act.\nAsk only what no search answers.\n";
+const DISPATCH_FIRST_CUT = DISPATCH_FIRST.replace(
+  "Search before you act.",
+  "Search the made-up tracker before you act."
+);
+const dispatchScratch = temporaryDirectory("skill-cuts-arms-dispatch", { real: true });
+
+/** A case of dispatch-first in a profile that installs the Envoy plugin, whose session read the
+ *  skill once; `before` goes before its messages. */
+function dispatchCase(id: string, before: SessionMessage[] = [], plugin = "pi-envoy"): Case {
+  const messages: SessionMessage[] = [
+    ...before,
+    {
+      role: "user",
+      content: [{ type: "text", text: "Plan the made-up change." }],
+      attribution: "user",
+      timestamp: 1,
+    },
+    {
+      role: "assistant",
+      content: [
+        {
+          type: "toolCall",
+          id: "toolu_df",
+          name: "read",
+          arguments: { path: "skill://dispatch-first" },
+        },
+      ],
+      timestamp: 2,
+    },
+    {
+      role: "toolResult",
+      toolCallId: "toolu_df",
+      toolName: "read",
+      content: [
+        {
+          type: "text",
+          text: `[Skill file: /skills/dispatch-first/SKILL.md]\n${DISPATCH_FIRST.trimEnd()}`,
+        },
+      ],
+      isError: false,
+      timestamp: 3,
+    },
+  ];
+  return {
+    ...structuredClone(f1Case),
+    id,
+    skill: "dispatch-first",
+    line: { text: "Search before you act.", lineNumber: 8, lineCount: 9 },
+    profile: {
+      skills: [
+        {
+          repo: "acme/skills",
+          commit: "0123456789abcdef",
+          path: "skills/dispatch-first",
+          name: "dispatch-first",
+        },
+        { repo: "acme/skills", commit: "0123456789abcdef", path: "skills/beta", name: "beta" },
+      ],
+      plugins: [
+        {
+          repo: "acme/legion",
+          commit: "0123456789abcdef",
+          path: `packages/${plugin}`,
+          name: plugin,
+        },
+      ],
+      contextFiles: [],
+    },
+    messages,
+    skillReads: [before.length + 2],
+  };
+}
+
+// Catches: a dispatch-first case whose arms differ only in its listing line and read results,
+// though the Envoy plugin puts the skill's text into every request of the session, and no
+// transcript keeps that block.
+test("the Envoy plugin's dispatch-first block, which no transcript holds, carries each arm's own text where the plugin puts it, and none has none", () => {
+  const dirs = {
+    old: path.join(dispatchScratch, "old"),
+    new: path.join(dispatchScratch, "new"),
+  };
+  mkdirSync(dirs.old, { recursive: true });
+  mkdirSync(dirs.new, { recursive: true });
+  writeFileSync(path.join(dirs.old, "SKILL.md"), DISPATCH_FIRST);
+  writeFileSync(path.join(dirs.new, "SKILL.md"), DISPATCH_FIRST_CUT);
+  const c = dispatchCase("c-dispatch");
+  const blocks = new Map<string, string>();
+  for (const name of ["old", "new", "minus", "twin"] as const) {
+    const built = buildArm(c, name, dirs, path.join(dispatchScratch, name));
+    const text = readDispatchFirstContext(path.join(built.skillDir ?? "", "SKILL.md"));
+    expect(built.messages[0]).toEqual({
+      role: "user",
+      content: [{ type: "text", text }],
+      timestamp: 0,
+    });
+    expect(built.messages).toHaveLength(c.messages.length + 1);
+    expect(built.messages.slice(1).map((message) => message.role)).toEqual(
+      c.messages.map((message) => message.role)
+    );
+    expect(built.injections).toEqual([
+      { by: "plugin", plugin: "pi-envoy", name: "dispatch-first", at: 0 },
+    ]);
+    blocks.set(name, text);
+  }
+  expect(blocks.get("old")).toStartWith("<dispatch-first-skill>\n");
+  expect(blocks.get("old")).toContain("Search before you act.");
+  expect(blocks.get("new")).toContain("Search the made-up tracker before you act.");
+  expect(blocks.get("minus")).not.toContain("Search before you act.");
+  expect(blocks.get("twin")).toBe(blocks.get("old") ?? "");
+  const none = buildArm(c, "none", dirs, path.join(dispatchScratch, "none"));
+  expect(JSON.stringify(none.messages)).not.toContain("<dispatch-first-skill>");
+  expect(none.injections).toEqual([
+    { by: "plugin", plugin: "pi-envoy", name: "dispatch-first", at: null },
+  ]);
+  expect(none.profileSkills.map((skill) => skill.name)).toEqual(["beta"]);
+  // After the leading compaction summary, where the plugin puts it.
+  const summary: SessionMessage = { role: "compactionSummary", summary: "Earlier work." };
+  const compacted = buildArm(
+    dispatchCase("c-compacted", [summary]),
+    "old",
+    dirs,
+    path.join(dispatchScratch, "compacted")
+  );
+  expect(compacted.messages.map((message) => message.role).slice(0, 3)).toEqual([
+    "compactionSummary",
+    "user",
+    "user",
+  ]);
+  expect(textOf(compacted.messages[1])).toBe(blocks.get("old") ?? "");
+  // A profile without the plugin gets no block.
+  const without = buildArm(
+    dispatchCase("c-no-plugin", [], "pi-other"),
+    "old",
+    dirs,
+    path.join(dispatchScratch, "no-plugin")
+  );
+  expect(JSON.stringify(without.messages)).not.toContain("<dispatch-first-skill>");
+  expect(without.injections).toEqual([]);
+});
+
+// Catches: a case run with the recorded text in every arm because its block of the skill is in a
+// form the arms do not rebuild.
+test("a case whose messages hold a block of its skill in a form the arms cannot rebuild is refused, naming the case", () => {
+  const dirs = { old: oldDir, new: newDir };
+  const invoked = { ...autoloaded, attribution: "user", display: true };
+  expect(() =>
+    buildArm(autoloadCase("c-invoked", invoked), "old", dirs, path.join(scratch, "invoked"))
+  ).toThrow(
+    "case c-invoked: its message 0 is a skill-prompt message of alpha, one the user invoked, not in the form of Oh My Pi's autoloaded block"
+  );
+  const withArgs = {
+    ...autoloaded,
+    content: [{ type: "text", text: `${autoloadedOf(f1File(2))}\nUser: focus on step 2` }],
+  };
+  expect(() =>
+    buildArm(autoloadCase("c-args", withArgs), "new", dirs, path.join(scratch, "args"))
+  ).toThrow("case c-args: its message 0 is a skill-prompt message of alpha not in the form");
+  const quoted: SessionMessage = {
+    role: "user",
+    content: [{ type: "text", text: "<dispatch-first-skill>\nA quoted block." }],
+  };
+  const c = dispatchCase("c-quoted");
+  expect(() =>
+    buildArm(
+      { ...c, messages: [...c.messages, quoted] },
+      "none",
+      dirs,
+      path.join(dispatchScratch, "quoted")
+    )
+  ).toThrow(
+    "case c-quoted: its message 3 opens with <dispatch-first-skill> away from where the pi-envoy plugin puts its block (message 0, after the leading compaction summaries)"
+  );
 });

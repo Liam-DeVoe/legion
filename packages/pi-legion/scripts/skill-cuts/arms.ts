@@ -27,6 +27,39 @@
  * `skillFile(arm, file)` answers one new read the same way, at the arm's `installedDir`, and is
  * what replay.ts answers a reply's read with; cases.ts's `skillReadFile(arm.skill, target)` says
  * which file a read reads.
+ *
+ * A skill can reach a session other than by its listing line and its reads, and each arm puts its
+ * own text there too (`Injection`, `arm.injections`):
+ *
+ * - **A plugin's block.** The Envoy plugin puts dispatch-first into every request of a session
+ *   with Dispatch (PLUGIN_INJECTED; packages/pi-envoy/extensions/envoy.ts): a user message of one
+ *   text part, stamped 0, after the leading compaction summaries, unless the message there already
+ *   opens with the marker (pi-envoy's `withDispatchFirst`), its text `readDispatchFirstContext` of
+ *   the plugin's own `skills/dispatch-first/SKILL.md` (packages/envoy-client/src/dispatch-first.ts),
+ *   read as the plugin loads, so a plugin that finds no such file does not load. Oh My Pi stores
+ *   nothing a `context` handler returns, so no transcript holds the block, and a capture runs with
+ *   Dispatch off (capture.ts). So for a case of dispatch-first whose profile installs the plugin,
+ *   each arm but `none` puts the block, from the arm's SKILL.md through the plugin's own function,
+ *   at that place in its messages (taking out any block there), and `none` puts none. A case does
+ *   not record whether its session had Dispatch: the runner takes it that it did. context.ts
+ *   installs a hidden stand-in of the file where the arm has no copy under that name (`none`), so
+ *   the plugin loads in every arm and lists nothing more.
+ * - **An autoloaded block.** Oh My Pi gives a subagent each skill its agent definition's
+ *   `autoloadSkills` names as a `custom` message of type `skill-prompt` (SKILL_PROMPT) before its
+ *   task, `display: false`, its details the skill's name and path (packages/coding-agent/src/task/
+ *   executor.ts lines 5573-5607 at the pin, the tag v18.18.6-sami.20261119-162325 of
+ *   cybermonklabs/oh-my-pi), its text `prompt.render` of prompts/skills/autoload.md trimmed
+ *   (extensibility/skills.ts lines 968-976): the SKILL.md less its frontmatter, trimmed (lines
+ *   901-906), a blank line, `---`, a blank line and `Skill: <path>`, all of it then put through
+ *   Oh My Pi's `format` (packages/utils/src/prompt.ts lines 192-308 and 544-548; `formatPrompt`).
+ *   The transcript keeps that message, so the case's messages hold it: each arm but `none`
+ *   rebuilds its text from the arm's SKILL.md under the recorded path (`autoloadedText`), and
+ *   `none` leaves the message out.
+ *
+ * A case whose messages hold a block of its skill that the runner cannot rebuild for each arm
+ * (`injectionFault`: a `skill-prompt` message of the skill in another form, such as one the user
+ * invoked with `/skill:`, or a message that opens with the plugin's marker away from where the
+ * plugin puts its block) is refused: buildArm throws InjectionRefused naming it.
  */
 import {
   cpSync,
@@ -39,6 +72,10 @@ import {
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
+import {
+  DISPATCH_FIRST_MARKER,
+  readDispatchFirstContext,
+} from "@legion/envoy-client/dispatch-first";
 import {
   readTargets,
   type SessionMessage,
@@ -59,6 +96,37 @@ import type { Arm as ScoreArm } from "./score";
 /** The name of an arm, as run records carry it. */
 export type ArmName = ScoreArm;
 
+/** The name a profile gives the Envoy plugin: its directory's (build.ts names each plugin after
+ *  its directory, `packages/pi-envoy` in cybermonklabs/legion). */
+export const ENVOY_PLUGIN = "pi-envoy";
+
+/** The skill a plugin puts into a session's requests itself, under the name the plugin reads its
+ *  file by, and that plugin (see the file's header). */
+export const PLUGIN_INJECTED = { skill: "dispatch-first", plugin: ENVOY_PLUGIN } as const;
+
+/** The custom message type of a skill's text Oh My Pi puts into a session
+ *  (SKILL_PROMPT_MESSAGE_TYPE, packages/tui/src/chat/messages.ts line 21 at the pin). */
+export const SKILL_PROMPT = "skill-prompt";
+
+/** A block of the case's skill that reaches its session beside the listing line and the reads,
+ *  and where the arm's messages hold it (`at`; null for `none`, which holds none): one a plugin
+ *  puts into each request (`plugin`, as a profile names it; `name`, the skill's name the plugin
+ *  reads its file under), or one Oh My Pi autoloads into a subagent (`path`, the SKILL.md path the
+ *  block names, as recorded). */
+export type Injection =
+  | {
+      readonly by: "plugin";
+      readonly plugin: string;
+      readonly name: string;
+      readonly at: number | null;
+    }
+  | { readonly by: "autoload"; readonly path: string; readonly at: number | null };
+
+/** What buildArm, and a capture, throw for a case that holds a block of its skill the runner
+ *  cannot give each arm's text, its message naming the case: behaviour refuses the case on it
+ *  (cli.ts). */
+export class InjectionRefused extends Error {}
+
 /** One arm of a case. */
 export interface Arm {
   readonly name: ArmName;
@@ -76,6 +144,9 @@ export interface Arm {
   /** The skills the arm's profile installs: the case's own, less each copy of the case's skill's
    * source for `none` (cases.ts's `testedCopy`). Each such copy is installed from `skillDir`. */
   readonly profileSkills: ProfileSkill[];
+  /** Each block of the skill that reaches the session beside its listing line and its reads, and
+   *  where this arm holds it (Injection). Absent, or empty, when the case has none. */
+  readonly injections?: readonly Injection[];
 }
 
 /** The directories the arms are built from: each is the skill's own directory, SKILL.md at its
@@ -202,10 +273,268 @@ function minusDirectory(c: Case, dirs: ArmDirs, scratch: string): string {
   return dir;
 }
 
+/** A table row and a table's separator row, as Oh My Pi's `format` finds them. */
+const TABLE_ROW = /^\|.*\|$/;
+const TABLE_SEP = /^\|[-:\s|]+\|$/;
+
+/** A table separator row with each cell `---`, `:---`, `---:` or `:---:`, as `format` writes it. */
+function compactSeparator(line: string): string {
+  const cells = line
+    .split("|")
+    .filter((cell) => cell.trim() !== "")
+    .map((cell) => {
+      const trimmed = cell.trim();
+      const left = trimmed.startsWith(":");
+      const right = trimmed.endsWith(":");
+      return left && right ? ":---:" : left ? ":---" : right ? "---:" : "---";
+    });
+  return `|${cells.join("|")}|`;
+}
+
+/**
+ * `content` as Oh My Pi's `format` leaves a rendered prompt (packages/utils/src/prompt.ts lines
+ * 192-308 at the pin, with its defaults: no ASCII-symbol or RFC 2119 rewrite): each line less its
+ * trailing whitespace; a line that opens a ``` or ~~~ fence, and each line inside one, kept as it
+ * is; elsewhere a run of two or more blank lines dropped whole, a single blank line dropped where
+ * it opens the text, the blank lines before a closing tag line (`</name>`) dropped, and a table
+ * row's cells less their padding (a separator row's each `---`, `:---`, `---:` or `:---:`); then
+ * the text's last blank lines dropped.
+ */
+export function formatPrompt(content: string): string {
+  const lines = content.split("\n");
+  const result: string[] = [];
+  const dropBlanks = () => {
+    while (result.length > 0 && result.at(-1) === "") result.pop();
+  };
+  const blank = (line: string | undefined) => line !== undefined && !/\S/.test(line);
+  let fenced = false;
+  for (let i = 0; i < lines.length; i++) {
+    let line = (lines[i] ?? "").trimEnd();
+    // The indent: spaces and tabs, or any leading whitespace where a character above ASCII
+    // follows them, as `format` measures it.
+    let s = 0;
+    let first = line.charCodeAt(0);
+    while (first === 32 || first === 9) first = line.charCodeAt(++s);
+    if (first >= 128) {
+      s = line.length - line.trimStart().length;
+      first = line.charCodeAt(s);
+    }
+    if (
+      (first === 96 || first === 126) &&
+      (line.startsWith("```", s) || line.startsWith("~~~", s))
+    ) {
+      fenced = !fenced;
+      result.push(line);
+      continue;
+    }
+    if (fenced) {
+      result.push(line);
+      continue;
+    }
+    const rest = line.slice(s);
+    // A closing tag line, `</name>` of `a`-`z`, `-` and `_`.
+    const closing = first === 60 && /^<\/[a-z_-]+>$/.test(rest);
+    if (first === 124 && TABLE_SEP.test(rest)) {
+      line = `${line.slice(0, s)}${compactSeparator(rest)}`;
+    } else if (first === 124 && TABLE_ROW.test(rest)) {
+      line = `${line.slice(0, s)}${rest
+        .split("|")
+        .map((cell) => cell.trim())
+        .join("|")}`;
+    }
+    if (s >= line.length) {
+      const next = lines[i + 1];
+      if (next === undefined || blank(next)) {
+        dropBlanks();
+        while (blank(lines[i + 1])) i++;
+        continue;
+      }
+      if (result.length === 0 || result.at(-1) === "") continue;
+    }
+    if (closing) dropBlanks();
+    result.push(line);
+  }
+  dropBlanks();
+  return result.join("\n");
+}
+
+/** The body of a SKILL.md's text as Oh My Pi reads it for an autoloaded block
+ *  (`loadSkillPromptBody`: `parseFrontmatter` with `repair: false`, packages/utils/src/
+ *  frontmatter.ts lines 148-163 at the pin): CRLF as LF, the text after the first `\n---` past
+ *  an opening `---` (the whole text when it opens with none, or has no such line), trimmed. */
+function skillBody(content: string): string {
+  const text = content.replace(/\r\n?/g, "\n");
+  const end = text.startsWith("---") ? text.indexOf("\n---", 3) : -1;
+  return (end === -1 ? text : text.slice(end + 4)).trim();
+}
+
+/** The text of Oh My Pi's autoloaded block of the SKILL.md in `skillDir`, naming `file` as its
+ *  path: prompts/skills/autoload.md rendered with no arguments (`<body>`, a blank line, `---`, a
+ *  blank line, `Skill: <file>`), put through `formatPrompt` and trimmed. */
+export function autoloadedText(skillDir: string, file: string): string {
+  const body = skillBody(readFileSync(path.join(skillDir, "SKILL.md"), "utf8"));
+  return formatPrompt(`${body}\n\n---\n\nSkill: ${file}\n`).trim();
+}
+
+/** `details.name` and `details.path` of a message, where they are strings. */
+function detailsOf(message: SessionMessage): { name?: string; path?: string } {
+  const { details } = message;
+  if (typeof details !== "object" || details === null) return {};
+  const name: unknown = Reflect.get(details, "name");
+  const file: unknown = Reflect.get(details, "path");
+  return {
+    ...(typeof name === "string" ? { name } : {}),
+    ...(typeof file === "string" ? { path: file } : {}),
+  };
+}
+
+/** Whether `message` is a `skill-prompt` message of `skill`, in any form. */
+function isSkillPrompt(message: SessionMessage, skill: string): boolean {
+  return (
+    message.role === "custom" &&
+    message.customType === SKILL_PROMPT &&
+    detailsOf(message).name === skill
+  );
+}
+
+/** The SKILL.md path an autoloaded block of `skill` names, when `message` is one in the form Oh My
+ *  Pi writes it (see the file's header): a `skill-prompt` message of the skill the user did not
+ *  invoke, of one text part that ends `Skill: <its details.path>` after a blank line, `---` and a
+ *  blank line. Else undefined. */
+function autoloadedPath(message: SessionMessage, skill: string): string | undefined {
+  if (!isSkillPrompt(message, skill) || message.attribution === "user") return undefined;
+  const file = detailsOf(message).path;
+  const [part, ...more] = message.content ?? [];
+  if (file === undefined || file === "" || more.length > 0 || part?.type !== "text") {
+    return undefined;
+  }
+  return part.text?.endsWith(`\n\n---\n\nSkill: ${file}`) === true ? file : undefined;
+}
+
+/** Where the Envoy plugin puts its block among `messages`: after the leading compaction
+ *  summaries (pi-envoy's `withDispatchFirst`). */
+function blockPlace(messages: readonly SessionMessage[]): number {
+  const at = messages.findIndex((message) => message.role !== "compactionSummary");
+  return at === -1 ? messages.length : at;
+}
+
+/** Whether `message` opens with the plugin's marker: a user or custom message whose first part's
+ *  text does, as the plugin finds its own block (pi-envoy's `leadingText`). */
+function opensWithMarker(message: SessionMessage | undefined): boolean {
+  return (
+    (message?.role === "user" || message?.role === "custom") &&
+    message.content?.[0]?.text?.startsWith(DISPATCH_FIRST_MARKER) === true
+  );
+}
+
+/** Whether the plugin of PLUGIN_INJECTED puts the case's skill into its session's requests: the
+ *  case's skill is the one it reads, listed under that bare name, and the profile installs it. */
+function pluginInjects(c: Pick<Case, "skill" | "profile">): boolean {
+  return (
+    c.skill === PLUGIN_INJECTED.skill &&
+    c.profile.plugins.some((plugin) => plugin.name === PLUGIN_INJECTED.plugin)
+  );
+}
+
+/** `messages` with the plugin's block (see the file's header) of the skill in `skillDir` at its
+ *  place, less any block there already, or with none when `skillDir` is undefined; and where the
+ *  block went (null for none). */
+export function withPluginBlock(
+  messages: readonly SessionMessage[],
+  skillDir: string | undefined
+): { messages: SessionMessage[]; at: number | null } {
+  const at = blockPlace(messages);
+  const kept =
+    messages[at]?.role === "user" && opensWithMarker(messages[at])
+      ? messages.toSpliced(at, 1)
+      : [...messages];
+  if (skillDir === undefined) return { messages: kept, at: null };
+  const text = readDispatchFirstContext(path.join(skillDir, "SKILL.md"));
+  const block: SessionMessage = { role: "user", content: [{ type: "text", text }], timestamp: 0 };
+  return { messages: kept.toSpliced(at, 0, block), at };
+}
+
+/** Why the arms of `c` cannot each give the session their own text of its skill, or undefined
+ *  when they can: each `skill-prompt` message of the skill that is not an autoloaded block in the
+ *  form Oh My Pi writes one (one the user invoked with `/skill:`, one with arguments or another
+ *  shape), and, where the plugin puts the skill into the requests, each message that opens with
+ *  its marker away from where it puts its block. */
+export function injectionFault(
+  c: Pick<Case, "skill" | "profile" | "messages">
+): string | undefined {
+  const faults: string[] = [];
+  for (const [index, message] of c.messages.entries()) {
+    if (isSkillPrompt(message, c.skill) && autoloadedPath(message, c.skill) === undefined) {
+      const invoked = message.attribution === "user" ? ", one the user invoked," : "";
+      faults.push(
+        `its message ${index} is a ${SKILL_PROMPT} message of ${c.skill}${invoked} not in the form of Oh My Pi's autoloaded block (one text part that ends "Skill: <its details.path>")`
+      );
+    }
+  }
+  if (pluginInjects(c)) {
+    const at = blockPlace(c.messages);
+    for (const [index, message] of c.messages.entries()) {
+      if (index === at && message.role === "user") continue;
+      if (opensWithMarker(message)) {
+        faults.push(
+          `its message ${index} opens with ${DISPATCH_FIRST_MARKER} away from where the ${PLUGIN_INJECTED.plugin} plugin puts its block (message ${at}, after the leading compaction summaries)`
+        );
+      }
+    }
+  }
+  return faults.length === 0 ? undefined : faults.join("; ");
+}
+
+/** `messages`, an arm's, with each block of `c`'s skill that reaches the session beside its
+ *  listing line and its reads given the text of the skill in `skillDir`, or left out when it is
+ *  undefined (`none`): each autoloaded block rebuilt under its recorded path, and the plugin's
+ *  block put in where the plugin puts it into the case's session. */
+function withInjections(
+  c: Case,
+  messages: readonly SessionMessage[],
+  skillDir: string | undefined
+): { messages: SessionMessage[]; injections: Injection[] } {
+  const injections: Injection[] = [];
+  // Each autoloaded block the arm holds, by its message, with the path it names.
+  const rebuilt = new Map<SessionMessage, string>();
+  let out: SessionMessage[] = [];
+  for (const message of messages) {
+    const file = autoloadedPath(message, c.skill);
+    if (file === undefined) out.push(message);
+    else if (skillDir === undefined) injections.push({ by: "autoload", path: file, at: null });
+    else {
+      const block = {
+        ...message,
+        content: [{ type: "text", text: autoloadedText(skillDir, file) }],
+      };
+      rebuilt.set(block, file);
+      out.push(block);
+    }
+  }
+  if (pluginInjects(c)) {
+    const placed = withPluginBlock(out, skillDir);
+    out = placed.messages;
+    injections.push({
+      by: "plugin",
+      plugin: PLUGIN_INJECTED.plugin,
+      name: PLUGIN_INJECTED.skill,
+      at: placed.at,
+    });
+  }
+  for (const [index, message] of out.entries()) {
+    const file = rebuilt.get(message);
+    if (file !== undefined) injections.push({ by: "autoload", path: file, at: index });
+  }
+  return { messages: out, injections };
+}
+
 /** The arm `name` of case `c`, from the skill directories `dirs`. `minus` writes its copy of the
  * old directory to `<scratch>/minus`, replacing one there. Throws naming the case when a
- * skillReads index is not a read of a `skill://<skill>` file. */
+ * skillReads index is not a read of a `skill://<skill>` file, and InjectionRefused when the case
+ * holds a block of its skill the arms cannot each give their text (`injectionFault`). */
 export function buildArm(c: Case, name: ArmName, dirs: ArmDirs, scratch: string): Arm {
+  const fault = injectionFault(c);
+  if (fault !== undefined) throw new InjectionRefused(`case ${c.id}: ${fault}`);
   const targets = readTargets(c.messages);
   const reads = new Map(
     c.skillReads
@@ -247,7 +576,7 @@ export function buildArm(c: Case, name: ArmName, dirs: ArmDirs, scratch: string)
       skill: c.skill,
       skillDir: undefined,
       installedDir,
-      messages,
+      ...withInjections(c, messages, undefined),
       profileSkills: structuredClone(c.profile.skills.filter((skill) => !tested(skill))),
     };
   }
@@ -271,5 +600,5 @@ export function buildArm(c: Case, name: ArmName, dirs: ArmDirs, scratch: string)
     const shown = read.header ?? path.join(installedDir, read.file);
     return structuredClone(answered(message, arm, { ...read, shown }));
   });
-  return { ...arm, messages };
+  return { ...arm, ...withInjections(c, messages, skillDir) };
 }
