@@ -667,7 +667,8 @@ const BLOCKS = historyBlocks(
 );
 
 /** The lines the history draws of `events` with the blocks `blocks`, newest first: each line's
- *  text, and the block it names by its node's words. */
+ *  text, and the block it names by its node's words, whose part of the line it checks holds
+ *  those words. */
 function blockLines(
   blocks: HistoryInput["blocks"],
   events: readonly DispatchEvent[]
@@ -683,18 +684,21 @@ function blockLines(
       messages: [],
       today: "2026-11-15",
     })
-  ).flatMap((entry) =>
-    entry.kind === "event"
-      ? [
-          {
-            block: entry.block,
-            text: entry.description
-              .filter((part): part is string => typeof part === "string")
-              .join(""),
-          },
-        ]
-      : []
-  );
+  ).flatMap((entry) => {
+    if (entry.kind !== "event") return [];
+    if (entry.block !== undefined) {
+      expect(
+        entry.description[entry.block.part],
+        "the block's part of the line is not its words"
+      ).toBe(entry.block.block.words);
+    }
+    return [
+      {
+        block: entry.block?.block,
+        text: entry.description.filter((part): part is string => typeof part === "string").join(""),
+      },
+    ];
+  });
 }
 
 test("a repaired block is named by its question's first words, never by its id", () => {

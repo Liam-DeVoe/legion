@@ -42,11 +42,11 @@ import { DetailsErrorLine, retryRead } from "./details-error";
 import { HistoryHandoff } from "./HistoryHandoff";
 import {
   buildHistory,
-  type HistoryBlock,
   type HistoryDay,
   type HistoryEntry,
   type HistoryTurn,
   historyBlocks,
+  type NamedBlock,
 } from "./history-model";
 import { useMarginDrawer } from "./margin-slot";
 import { useOutlineWriter } from "./outline-writer";
@@ -888,23 +888,23 @@ function DocumentLine({
 }
 
 /** The line of a block repaired or found invalid that names the block by its node's words
- *  (`HistoryEntry.block`), as `DocumentLine` draws a document's: its words, with the block's a
- *  link to its node in the page's ink and its rows' underline, where its address reads as one. */
+ *  (`HistoryEntry.block`), as `DocumentLine` draws a document's: its words, with the block's -
+ *  the part of the line `block.part` names - a link to its node in the page's ink and its rows'
+ *  underline, where its address reads as one. */
 function BlockLine({
   block,
   description,
 }: {
-  block: HistoryBlock;
+  block: NamedBlock;
   description: readonly AgentPart[];
 }): ReactNode {
-  const { path, words } = block;
-  const linked = path === undefined ? -1 : description.lastIndexOf(words);
+  const { path } = block.block;
   return (
     <span>
       <AgentParts
         parts={description}
         text={(part, index) =>
-          index !== linked || path === undefined ? (
+          index !== block.part || path === undefined ? (
             part
           ) : (
             <Link

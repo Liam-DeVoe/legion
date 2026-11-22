@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { Fragment, type ReactNode, useRef } from "react";
+import { type ReactNode, useRef } from "react";
 
 import { issueStepsQuery } from "../../api/queries";
 import {
@@ -12,7 +12,7 @@ import {
   pageStatusProgressText,
 } from "../../theme/classes";
 import { standsFailed } from "../refs/reference-target";
-import { useCatchUp } from "../steps/StepsTab";
+import { Identifier, Time, useCatchUp } from "../steps/StepsTab";
 import { type StepRow, stepTasks } from "../steps/steps-model";
 import { DetailsErrorLine, retryRead, useRetryHandOff } from "./details-error";
 import { authorText, pageChrome } from "./page-structure";
@@ -33,115 +33,27 @@ function None(): ReactNode {
   );
 }
 
-/** A run's start and end are read against each other, down the runs, so each is the instant
- *  itself (`Nov 16 8:00 AM`), as the Steps tab draws it, rather than a distance from now. The
- *  date and the time each stay whole, so a narrow column puts the time under the date and never
- *  splits either; the year shows when it is not this one, and the whole date and time is the
- *  title. */
-const day = new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short" });
-const dayOfAnotherYear = new Intl.DateTimeFormat(undefined, {
-  day: "numeric",
-  month: "short",
-  year: "numeric",
-});
-const timeOfDay = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
+/** The colour each result Details has a word for is drawn in, as Details' other states are
+ *  drawn: a run that runs in the in-progress blue, one that passed in the passed green, one that
+ *  failed in the failed red, and one that stopped in the ink every value of a run is drawn in
+ *  (`Field`). Each is a state of `StepEnd` but `other`, so a state `StepEnd` adds fails to
+ *  compile until it has a colour here. */
+const RESULT_COLOURS: Record<"running" | "passed" | "failed" | "stopped", string> = {
+  failed: pageStateText.failed,
+  passed: pageStateText.passed,
+  running: pageStatusProgressText,
+  stopped: "",
+};
 
-function Time({ at }: { at: string | null }): ReactNode {
-  if (at === null) return <None />;
-  const date = new Date(at);
-  if (Number.isNaN(date.getTime())) return <time {...authorText}>{at}</time>;
-  const dayFormat = date.getFullYear() === new Date().getFullYear() ? day : dayOfAnotherYear;
+/** How the run ended, or that it runs, in its colour (`RESULT_COLOURS`). A result this build has
+ *  no word for shows the server's own. */
+function Result({ row }: { row: StepRow }): ReactNode {
+  if (row.state === "other") return <span {...authorText}>{row.result}</span>;
   return (
-    <time dateTime={at} title={date.toLocaleString()} {...authorText}>
-      <span className="whitespace-nowrap">{dayFormat.format(date)}</span>{" "}
-      <span className="whitespace-nowrap">{timeOfDay.format(date)}</span>
-    </time>
-  );
-}
-
-/** A part of an id that cannot stand on a line alone: a number (`2`, `3570`, `6.1`) or one
- *  character. It stays with the part before it, so `core-2` and `gpt-6.1` never break. */
-const CLINGS = /^(?:[\d.]+|.)$/u;
-
-/** One `/`-free piece of an id: its hyphen-joined parts in groups, a group being a part and every
- *  clinging part after it. The hyphen between two groups is where a line may break; inside a
- *  group it may not. Each group is keyed by its first part's place in the piece. */
-function HyphenGroups({ piece }: { piece: string }): ReactNode {
-  const groups: { at: number; parts: string[] }[] = [];
-  for (const [at, part] of piece.split("-").entries()) {
-    const last = groups.at(-1);
-    if (last !== undefined && CLINGS.test(part)) last.parts.push(part);
-    else groups.push({ at, parts: [part] });
-  }
-  return groups.map(({ at, parts }, index) => (
-    <Fragment key={at}>
-      {index === 0 ? null : "-"}
-      {parts.length === 1 ? parts[0] : <span className="whitespace-nowrap">{parts.join("-")}</span>}
-    </Fragment>
-  ));
-}
-
-/** An agent token or a model id, the Steps tab's rule for one: a token breaks at its hyphens,
- *  and a model id (`anthropic/claude-opus-5`) is also offered a break after each slash, so
- *  neither runs past the width Details gives it; a number or a single letter keeps to the part
- *  before it, so no line holds it alone. */
-function Identifier({ value }: { value: string }): ReactNode {
-  if (value === "") return <None />;
-  const pieces = value.split("/");
-  return (
-    <span className="font-mono" {...authorText}>
-      {/* Each piece is keyed by the text up to and including it, which no other piece shares. */}
-      {pieces.map((piece, index) => {
-        const through = pieces.slice(0, index + 1).join("/");
-        return (
-          <Fragment key={through}>
-            {index === 0 ? null : (
-              <>
-                <wbr />/
-              </>
-            )}
-            <HyphenGroups piece={piece} />
-          </Fragment>
-        );
-      })}
+    <span className={`font-medium ${RESULT_COLOURS[row.state]}`} {...pageChrome}>
+      {RESULTS[row.state]}
     </span>
   );
-}
-
-/** How the run ended, or that it runs, in the colour Details' other states are drawn in: a run
- *  that runs in the in-progress blue, one that passed in the passed green, one that failed in
- *  the failed red. A result this build has no word for shows the server's own. A state
- *  `StepEnd` adds fails to compile until it is drawn here. */
-function Result({ row }: { row: StepRow }): ReactNode {
-  switch (row.state) {
-    case "running":
-      return (
-        <span className={`font-medium ${pageStatusProgressText}`} {...pageChrome}>
-          {RESULTS.running}
-        </span>
-      );
-    case "passed":
-      return (
-        <span className={`font-medium ${pageStateText.passed}`} {...pageChrome}>
-          {RESULTS.passed}
-        </span>
-      );
-    case "failed":
-      return (
-        <span className={`font-medium ${pageStateText.failed}`} {...pageChrome}>
-          {RESULTS.failed}
-        </span>
-      );
-    case "stopped":
-      return (
-        <span className="font-medium" {...pageChrome}>
-          {RESULTS.stopped}
-        </span>
-      );
-    case "other":
-      return <span {...authorText}>{row.result}</span>;
-  }
-  return row satisfies never;
 }
 
 /** One labelled value of a run: its label in the quiet grey, as Details labels its rows, and the
@@ -167,8 +79,10 @@ function Field({
 }
 
 /** One run of one step, as a list of labelled values rather than a row of a table, so each
- *  value has the width of Details to wrap in. A failed or stopped run that sent its task back
- *  names where it sent it (`StepEnd.returnedTo`). */
+ *  value has the width of Details to wrap in. Its agent, model, start and end are drawn as the
+ *  Steps tab draws them (`Identifier`, `Time`), as text the page did not author, and one the
+ *  record does not hold reads None. A failed or stopped run that sent its task back names where
+ *  it sent it (`StepEnd.returnedTo`). */
 function Run({ row }: { row: StepRow }): ReactNode {
   return (
     <li
@@ -188,10 +102,22 @@ function Run({ row }: { row: StepRow }): ReactNode {
           {row.type === "" ? <None /> : <span {...authorText}>{row.type}</span>}
         </Field>
         <Field field="agent" label={FIELDS.agent}>
-          <Identifier value={row.agent} />
+          {row.agent === "" ? (
+            <None />
+          ) : (
+            <span className="font-mono" {...authorText}>
+              <Identifier value={row.agent} />
+            </span>
+          )}
         </Field>
         <Field field="model" label={FIELDS.model}>
-          <Identifier value={row.model} />
+          {row.model === "" ? (
+            <None />
+          ) : (
+            <span className="font-mono" {...authorText}>
+              <Identifier value={row.model} />
+            </span>
+          )}
         </Field>
         <Field field="attempt" label={FIELDS.attempt}>
           <span className="tabular-nums" {...authorText}>
@@ -199,10 +125,22 @@ function Run({ row }: { row: StepRow }): ReactNode {
           </span>
         </Field>
         <Field field="started" label={FIELDS.started}>
-          <Time at={row.started} />
+          {row.started === null ? (
+            <None />
+          ) : (
+            <span {...authorText}>
+              <Time at={row.started} />
+            </span>
+          )}
         </Field>
         <Field field="ended" label={FIELDS.ended}>
-          <Time at={row.ended} />
+          {row.ended === null ? (
+            <None />
+          ) : (
+            <span {...authorText}>
+              <Time at={row.ended} />
+            </span>
+          )}
         </Field>
         <Field field="result" label={FIELDS.result}>
           <Result row={row} />

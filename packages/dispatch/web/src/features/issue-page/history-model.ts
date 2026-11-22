@@ -74,10 +74,10 @@ export type HistoryEntry =
       /** `main`'s line of the event, in the page's words where it names a delivery's agent, a
        *  status or a block (`historyLine`). */
       readonly description: AgentPart[];
-      /** The block the line names by its node's words, where it names one (`historyLine`):
-       *  those words are a part of `description` of their own, which the panel draws as a link
-       *  to the node. */
-      readonly block?: HistoryBlock;
+      /** The block the line names by its node's words, where it names one, and which part of
+       *  `description` those words are, a part of their own, which the panel draws as a link to
+       *  the node (`historyLine`). */
+      readonly block?: NamedBlock;
       readonly event: DispatchEvent;
       readonly seq: number;
     }
@@ -117,6 +117,13 @@ export interface UploadedFile {
 export interface HistoryBlock {
   readonly path: string | undefined;
   readonly words: string;
+}
+
+/** A block a line of the history names by its node's words (`withBlock`): the block, and the
+ *  place in the line's `description` of the part that holds those words and nothing else. */
+export interface NamedBlock {
+  readonly block: HistoryBlock;
+  readonly part: number;
 }
 
 export interface HistoryInput {
@@ -233,6 +240,10 @@ const OUTLINE_EVENTS: Readonly<Record<string, true>> = {
 
 type Dated = Exclude<HistoryEntry, { kind: "unread" }>;
 
+/** A line of the history (`historyLine`): its parts, and the block it names by its node's words,
+ *  where it names one. */
+type HistoryLine = Pick<Extract<Dated, { kind: "event" }>, "block" | "description">;
+
 /** The issue's history by day, newest first (`HistoryDay`). */
 export function buildHistory(input: HistoryInput): HistoryDay[] {
   const artifacts = new Map(input.artifacts.map((artifact) => [artifact.id, artifact]));
@@ -263,12 +274,10 @@ export function buildHistory(input: HistoryInput): HistoryDay[] {
       uploads.push({ event, file: upload });
       continue;
     }
-    const block = namedBlock(event, input.blocks);
     entries.push({
       at: event.created_at,
       author: event.actor,
-      ...(block === undefined ? {} : { block }),
-      description: historyLine(event, previousStatus, input.blocks),
+      ...historyLine(event, previousStatus, input.blocks),
       event,
       id: `event:${event.id}`,
       kind: "event",
@@ -452,38 +461,46 @@ function threadEntry(
  * quotes, an approval request's question or the reason it was resolved with, by its plain words,
  * as the outline names an ask (`plainWords`), never the markup its author typed or a
  * bare `dispatch://` address, which reads as its short form; and a block it names by a UUID by
- * the words of the node that carries it, from `blocks`, never by that id (`withBlock`). Every
- * other text a line of the history holds is a name, a key or the server's own words, none of
- * which is markdown.
+ * the words of the node that carries it, from `blocks`, never by that id, with that block and
+ * the part of the line its words are (`withBlock`). Every other text a line of the history holds
+ * is a name, a key or the server's own words, none of which is markdown.
  */
 function historyLine(
   event: DispatchEvent,
   previousStatus: string | undefined,
   blocks: ReadonlyMap<string, HistoryBlock> | undefined
-): AgentPart[] {
+): HistoryLine {
   const line = activityDescription(event, previousStatus);
   switch (event.type) {
     case "comment.delivery":
-      return withPart(
-        line,
-        event.payload.target,
-        recipient(event.payload.session_id, undefined, event.payload.target)
-      );
+      return {
+        description: withPart(
+          line,
+          event.payload.target,
+          recipient(event.payload.session_id, undefined, event.payload.target)
+        ),
+      };
     // Only a queued message's line names where it went.
     case "message.delivery":
-      return event.payload.state === "queued"
-        ? withPart(
-            line,
-            event.payload.target ?? `session:${event.payload.session_id}`,
-            recipient(event.payload.session_id, event.payload.title, event.payload.target)
-          )
-        : line;
+      return {
+        description:
+          event.payload.state === "queued"
+            ? withPart(
+                line,
+                event.payload.target ?? `session:${event.payload.session_id}`,
+                recipient(event.payload.session_id, event.payload.title, event.payload.target)
+              )
+            : line,
+      };
     // The line names a status only for a reopen, which `activityDescription` tells by the
     // status before it.
     case "issue.updated":
-      return previousStatus === "done" && event.payload.status !== "done"
-        ? withPart(line, event.payload.status, issueStatusWord(event.payload.status))
-        : line;
+      return {
+        description:
+          previousStatus === "done" && event.payload.status !== "done"
+            ? withPart(line, event.payload.status, issueStatusWord(event.payload.status))
+            : line,
+      };
     // Every ask event the history keeps is an approval request's (`ofOutlineRow`), whose
     // question is markdown its agent wrote, citing addresses.
     case "ask.opened":
@@ -492,9 +509,9 @@ function historyLine(
     case "ask.handed_back":
     case "ask.asked_of":
     case "ask.answered":
-      return withWords(line, event.payload.question);
+      return { description: withWords(line, event.payload.question) };
     case "ask.resolved":
-      return withWords(line, askResolutionReason(event.payload.resolution));
+      return { description: withWords(line, askResolutionReason(event.payload.resolution)) };
     // `main`'s line names a block by its id after its word for the block: a question's block is
     // a decision there, and a check's block a check.
     case "block.repaired":
@@ -507,7 +524,7 @@ function historyLine(
         blocks
       );
     default:
-      return line;
+      return { description: line };
   }
 }
 
@@ -517,14 +534,35 @@ function withPart(
   token: string | undefined,
   ...parts: AgentPart[]
 ): AgentPart[] {
-  if (token === undefined || token === "") return line;
-  return line.flatMap((piece) => {
-    if (typeof piece !== "string") return [piece];
-    const at = piece.lastIndexOf(token);
-    return at < 0
-      ? [piece]
-      : [piece.slice(0, at), ...parts, piece.slice(at + token.length)].filter((one) => one !== "");
-  });
+  return placed(line, token, parts).line;
+}
+
+/** `line` with each reading of `token` in its text, the last of each part, drawn as `parts`
+ *  (`withPart`), and the place in that new line where the parts drawn for the first reading
+ *  begin, or -1 where `token` reads nowhere. An empty text, of `parts` or either side of a
+ *  reading, is drawn as no part. */
+function placed(
+  line: AgentPart[],
+  token: string | undefined,
+  parts: readonly AgentPart[]
+): { readonly at: number; readonly line: AgentPart[] } {
+  if (token === undefined || token === "") return { at: -1, line };
+  const drawn: AgentPart[] = [];
+  let first = -1;
+  for (const piece of line) {
+    const at = typeof piece === "string" ? piece.lastIndexOf(token) : -1;
+    if (typeof piece !== "string" || at < 0) {
+      drawn.push(piece);
+      continue;
+    }
+    const before = piece.slice(0, at);
+    if (before !== "") drawn.push(before);
+    if (first < 0) first = drawn.length;
+    for (const part of [...parts, piece.slice(at + token.length)]) {
+      if (part !== "") drawn.push(part);
+    }
+  }
+  return { at: first, line: drawn };
 }
 
 /** `line` with the stored text `stored` it quotes drawn by its plain words (`plainWords`). */
@@ -537,35 +575,28 @@ function withWords(line: AgentPart[], stored: string | undefined): AgentPart[] {
 /** `line` with its mention of the block `id`, which is `noun`, `main`'s word for the block, then
  *  the id, in the page's words where the id is a UUID (`UUID_BLOCK_ID`): that word and the words
  *  of the node that carries the block, in quotes as `main` quotes a question, where a node of the
- *  issue carries it (`blocks`); the page's words for a block that is gone where none does; and
- *  that word alone after "a", as in "a block", while the blocks are not known, since whether the
- *  block is gone is not known then either. A block id that reads as words stays as `main`
- *  writes it. */
+ *  issue carries it (`blocks`), with that block and the part of the line its words are; the
+ *  page's words for a block that is gone where none does; and that word alone after "a", as in
+ *  "a block", while the blocks are not known, since whether the block is gone is not known then
+ *  either. A block id that reads as words stays as `main` writes it. */
 function withBlock(
   line: AgentPart[],
   noun: string,
   id: string,
   blocks: ReadonlyMap<string, HistoryBlock> | undefined
-): AgentPart[] {
-  if (!UUID_BLOCK_ID.test(id)) return line;
+): HistoryLine {
+  if (!UUID_BLOCK_ID.test(id)) return { description: line };
   const mention = `${noun} ${id}`;
-  if (blocks === undefined) return withPart(line, mention, `a ${noun}`);
+  if (blocks === undefined) return { description: withPart(line, mention, `a ${noun}`) };
   const block = blocks.get(id);
-  return block === undefined
-    ? withPart(line, mention, CONTROL_LABELS.history_gone_block)
-    : withPart(line, mention, `${noun} “`, block.words, "”");
-}
-
-/** The block `event`'s line names by its node's words (`withBlock`): a block repaired, or one
- *  settlement found invalid, whose id is a UUID that a node of the issue carries. */
-function namedBlock(
-  event: DispatchEvent,
-  blocks: ReadonlyMap<string, HistoryBlock> | undefined
-): HistoryBlock | undefined {
-  if (blocks === undefined) return undefined;
-  if (event.type !== "block.repaired" && event.type !== "block.invalid") return undefined;
-  const id = event.payload.block_id;
-  return UUID_BLOCK_ID.test(id) ? blocks.get(id) : undefined;
+  if (block === undefined) {
+    return { description: withPart(line, mention, CONTROL_LABELS.history_gone_block) };
+  }
+  const named = placed(line, mention, [`${noun} “`, block.words, "”"]);
+  // The words are the part after the word for the block and its opening quote.
+  return named.at < 0
+    ? { description: named.line }
+    : { block: { block, part: named.at + 1 }, description: named.line };
 }
 
 /** Who a delivery went to, as the page names an agent (`AgentName`): the session the attempt
