@@ -146,7 +146,7 @@ func (c *Fake) Advance(d time.Duration) {
 		panic(fmt.Sprintf("clocktest: Advance(%v): a fake moves back only by Set", d))
 	}
 	c.mu.Lock()
-	c.moveLocked(c.nowLocked().Add(d), false, nil)
+	c.moveLocked(c.nowLocked().Add(d), false, sharedWait)
 }
 
 // Set moves the fake to at, earlier or later, firing every timer due by then. A timer keeps the
@@ -166,23 +166,22 @@ func (c *Fake) SetWhen(to func(now time.Time, armed []time.Time) (time.Time, boo
 		c.mu.Unlock()
 		return armed, false
 	}
-	c.moveLocked(target, true, nil)
+	c.moveLocked(target, true, sharedWait)
 	return armed, true
 }
 
 func (c *Fake) moveTo(target time.Time) {
 	c.mu.Lock()
-	c.moveLocked(target, true, nil)
+	c.moveLocked(target, true, sharedWait)
 }
 
 // moveLocked is moveTo begun under the hold of the lock its caller took: each later pass takes
 // the lock again (the loop's post statement), and the last lets it go. back is whether the move
 // may end before the fake's present, as a Set may; a move that may not ends at target only when
 // target is ahead, since another move can take the fake past it while a timer of this one fires.
-// started is the move StartMove started, which waits for each timer's function with no bound of
-// its own (startedMove.waitFor), and nil for any other move, which waits through the shared wait
-// and panics at its give-up.
-func (c *Fake) moveLocked(target time.Time, back bool, started *startedMove) {
+// wait waits for done, which closes once the AfterFunc's function what names has returned: a move
+// on the test goroutine passes sharedWait, and the move StartMove started passes its waitFor.
+func (c *Fake) moveLocked(target time.Time, back bool, wait func(what string, done <-chan struct{})) {
 	for ; ; c.mu.Lock() {
 		next := c.dueLocked(target)
 		if next == nil {
@@ -220,13 +219,15 @@ func (c *Fake) moveLocked(target time.Time, back bool, started *startedMove) {
 		}()
 		what := fmt.Sprintf("the function of the AfterFunc due at %s, which a move to %s fired, to return",
 			due.Format(time.RFC3339Nano), target.Format(time.RFC3339Nano))
-		if started != nil {
-			started.waitFor(what, done)
-			continue
-		}
-		if _, err := testwait.ReceiveInHelper("clocktest", what, done); err != nil {
-			panic(err)
-		}
+		wait(what, done)
+	}
+}
+
+// sharedWait waits for done, which closes once the function what names has returned, through the
+// wait the tests share (testwait.ReceiveInHelper), and panics with that wait's text at its give-up.
+func sharedWait(what string, done <-chan struct{}) {
+	if _, err := testwait.ReceiveInHelper("clocktest", what, done); err != nil {
+		panic(err)
 	}
 }
 
@@ -254,7 +255,7 @@ func (c *Fake) StartMove(what string, target time.Time) (join func(t testing.TB)
 	go func() {
 		defer close(started.returned)
 		c.mu.Lock()
-		c.moveLocked(target, false, started)
+		c.moveLocked(target, false, started.waitFor)
 	}()
 	return func(t testing.TB) {
 		t.Helper()
