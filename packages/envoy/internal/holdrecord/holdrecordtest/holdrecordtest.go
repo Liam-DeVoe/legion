@@ -122,6 +122,14 @@ func (b *Broker) Restart() {
 	b.routes.Store(mux)
 }
 
+// RestartListing is Restart with BROKER_NATS_HOLD_SIGNING_KEYS the rig's key followed by keys, as
+// a broker redeployed with retired keys kept in the list, verify-only: the first replica's routes
+// verify every later request, and every stored record, against that list.
+func (b *Broker) RestartListing(keys ...ed25519.PublicKey) {
+	b.deps.NATSHold.Keys = append([]ed25519.PublicKey{b.VerifyKey}, keys...)
+	b.Restart()
+}
+
 // depsWith is b's routes' Deps with floor the process's floor of the hold row.
 func (b *Broker) depsWith(floor *signedrecord.Floor) api.Deps {
 	deps := b.deps

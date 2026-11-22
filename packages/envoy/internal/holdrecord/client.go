@@ -119,11 +119,17 @@ type CutoverRow struct {
 // HoldID is, on a `hold_mismatch`, the hold id the broker's row or log names, which the refused
 // call must name instead (a restore after a prepare entry names that entry's hold): no route lists
 // the log, so this field is where the operator learns it. It is not in Error's text.
+// Message is the broker's text for the refusal, which names what it refused: the hold whose
+// journal holds a restore and whether a held restore is admitted, or the rows a database admin
+// repairs by hand; the key id of a signature no listed key verifies; the times a `clock_skew`
+// compared. It is not in Error's text either: part of what it names (a record's hold id) is a
+// database writer's choice, so a caller prints it as data, quoted.
 type RouteError struct {
-	Status int
-	Code   string
-	Row    *Row
-	HoldID string
+	Status  int
+	Code    string
+	Row     *Row
+	HoldID  string
+	Message string
 	// The request's method and route, which Error names.
 	method, path string
 }
@@ -945,16 +951,18 @@ func withoutURL(err error) error {
 }
 
 // refusal is the error a refused request answers: a *RouteError for an answer coded with one of
-// routeCodes, with the verified current row it carries, and otherwise a plain error naming the
-// method, the route, the status and "an unrecognized body". No text of the body reaches the error,
-// the code apart, and only a code the client knows: an answer it cannot read may hold anything, a
-// record's value among it, and an error is printed and logged. A current row that does not verify
-// is ErrUnknown beside the route's code, and so is any `below_floor`, the broker's refusal of a
-// row or record it reads as an older one put back or another at the gen it served.
+// routeCodes, with the verified current row it carries and the broker's message, and otherwise a
+// plain error naming the method, the route, the status and "an unrecognized body". No text of the
+// body reaches the error, the code apart, and only a code the client knows: an answer it cannot
+// read may hold anything, a record's value among it, and an error is printed and logged. A coded
+// answer's message is kept in RouteError.Message, outside the error's text. A current row that
+// does not verify is ErrUnknown beside the route's code, and so is any `below_floor`, the broker's
+// refusal of a row or record it reads as an older one put back or another at the gen it served.
 func (c *Client) refusal(method, path string, status int, data []byte) error {
 	var answer struct {
 		Error   string   `json:"error"`
 		Code    string   `json:"code"`
+		Message string   `json:"message"`
 		Current *rowWire `json:"current"`
 		HoldID  string   `json:"hold_id"`
 	}
@@ -969,7 +977,7 @@ func (c *Client) refusal(method, path string, status int, data []byte) error {
 	if code == "" {
 		return fmt.Errorf("holdrecord: %s %s answered %d with an unrecognized body", method, path, status)
 	}
-	refusal := &RouteError{Status: status, Code: code, method: method, path: path}
+	refusal := &RouteError{Status: status, Code: code, Message: answer.Message, method: method, path: path}
 	if code == "hold_mismatch" {
 		refusal.HoldID = answer.HoldID
 	}

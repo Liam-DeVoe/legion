@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -42,7 +44,7 @@ func putJournalBack(t *testing.T, r rig, holdID string, j savedJournal) {
 
 // endedHoldRows are TestTheHoldJournal's rows of a released restore beside the journals of holds
 // the verified log shows ended: a hold's journal holds no restore once the log shows a released
-// entry naming it, at any gen, or a later hold's prepare after its entries. Every other hold's
+// entry naming it, at any gen; a later hold's prepare shows nothing (forkRows). Every other hold's
 // journal is judged against this replica's record floor and its signature: an older version, or
 // one that does not verify, is unknown (409 below_floor). A hold_mismatch names only a hold a
 // verified row or log entry names.
@@ -104,9 +106,13 @@ func endedHoldRows(t *testing.T) {
 		restoresReleased(t, r, "after the cut release and the later hold")
 	})
 
-	t.Run("a release cut before its done entry, its released entry deleted, then a later hold: the released restore stores", func(t *testing.T) {
-		// The later hold's prepare after the cut hold's entries shows the cut hold ended. Fails
-		// while the log must name the hold released: every released restore is refused.
+	t.Run("a release cut before its done entry, its released entry deleted, then a later hold: refused, naming the hand repair", func(t *testing.T) {
+		// A later hold's prepare says nothing about the cut hold (N-E: gen order and signing order
+		// disagree across histories), so with its released entry deleted, which takes a database
+		// writer, the cut hold's journal holds every released restore, and no held restore of it
+		// is admitted either: the refusal names the hold and the hand repair. Fails while the
+		// later prepare ends the cut hold (released is stored), or while the refusal advises the
+		// held restore the route refuses.
 		r := newRig(t)
 		c := r.client(t)
 		released := cutRelease(t, c, "h-cut-unlogged")
@@ -120,7 +126,14 @@ func endedHoldRows(t *testing.T) {
 			t.Fatal(err)
 		}
 		r.Restart()
-		restoresReleased(t, r, "after the cut release, its released entry deleted, and the later hold")
+		fresh := r.client(t)
+		got := restoreRefusal(t, fresh, restoreGen(t, fresh), natsgrant.OperatorPhaseReleased, "")
+		if !refusedWith(got, http.StatusBadRequest, "bad_transition", "hold h-cut-unlogged's journal", handRepair) || strings.Contains(got.Message, "restore the row held") {
+			t.Errorf("the released restore answered %s; want 400 bad_transition naming h-cut-unlogged's journal and the hand repair", refusalText(got))
+		}
+		if gen, phase := stored(t, r); gen != 0 {
+			t.Errorf("after the refused restore the table holds %s at gen %d, want no row", phase, gen)
+		}
 	})
 
 	t.Run("an earlier hold's journal from mid-hold put back after a restart: the released restore stores", func(t *testing.T) {

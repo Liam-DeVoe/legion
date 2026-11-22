@@ -869,7 +869,13 @@ type Config struct {
 	// BROKER_NATS_HOLD_SIGNING_KEYS is the operator's Ed25519 public keys, a list for rotation,
 	// parted by whitespace or commas, each the unpadded base64url of its 32 bytes and refused by its
 	// place in the list, never its text: every write of the /v1/nats-hold routes must be signed by
-	// one of them, and so must every row the auth service reads. BROKER_NATS_HOLD_POOL_SIZE is the
+	// one of them, and so must every row the auth service reads. It is the one list a hold record
+	// verifies against: the operator signs only with the newest key, and a retired key stays in the
+	// list, verify-only, while any stored hold row, record, log entry, record delete or cutover row
+	// it signed remains, since a record whose key leaves the list reads as unknown and a journal
+	// that does then refuses every released restore. Each signature names its key's id
+	// (signedrecord.KeyID), which such a refusal names; infra/README.md gives the rotation's steps
+	// and the read that shows a key's records gone. BROKER_NATS_HOLD_POOL_SIZE is the
 	// connections of the hold read's own Postgres pool, which it uses rather than the broker's, so
 	// a slow hold read takes no connection a secret request waits on.
 	NATS NATSCallout
@@ -1074,8 +1080,8 @@ type NATSCallout struct {
 	// every decision.
 	HoldRead bool
 	// HoldSigningKeys is BROKER_NATS_HOLD_SIGNING_KEYS, in the list's order: the operator's public
-	// keys, one of which must have signed every hold row, record and cutover row a route stores
-	// and the auth service reads.
+	// keys, retired ones kept verify-only among them, one of which must have signed every hold row,
+	// record and cutover row a route stores and the auth service reads.
 	HoldSigningKeys []ed25519.PublicKey
 	// HoldPoolSize is BROKER_NATS_HOLD_POOL_SIZE, the connections of the hold read's own pool.
 	HoldPoolSize int

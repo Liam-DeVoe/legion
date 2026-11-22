@@ -668,9 +668,10 @@ func routes() []apiRoute {
 		// signed journal shows it ended (400 bad_transition otherwise, so no restore frees the
 		// clients mid-hold, and a hold the log shows ended is not held again); and, whatever the
 		// latest entry, never while a hold the verified log does not show ended (by a released
-		// entry naming it, or a later hold's prepare) has a journal that shows hold set done and no
-		// end (400 bad_transition), or one below the record floor or that does not verify (409
-		// below_floor); at one above the highest gen nats_hold_log holds (1 for an empty log),
+		// entry naming it) has a journal that shows hold set done and no end (400 bad_transition),
+		// or one below the record floor or that does not verify (409 below_floor), each naming
+		// the hold, and the key id of a signature whose key the list no longer holds; at one
+		// above the highest gen nats_hold_log holds (1 for an empty log),
 		// signed over that gen. Another gen is 409 gen_mismatch naming restore_gen, the gen to sign
 		// afresh, since the operator's commands cannot read the log; a row that is there is 409
 		// row_exists.
