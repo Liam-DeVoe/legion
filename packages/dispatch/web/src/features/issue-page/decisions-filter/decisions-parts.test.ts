@@ -8,7 +8,7 @@ import type { TreeNode } from "../issue-tree";
 import { NODE_TYPE_NAMES } from "../page-words";
 import { presetView } from "../presets";
 import { treeContext } from "../tree-drafts";
-import { treeNode, treeParent } from "../tree-read/tree-fixtures";
+import { treeNode } from "../tree-read/tree-fixtures";
 import type { TreeAnswerNode } from "../tree-read/tree-read";
 import { changesOf } from "./decisions-entries";
 import {
@@ -832,6 +832,12 @@ test("what waits is each open question of the reader's, then each decision to re
   expect(waitingOrder(partsOf([openAsk("q-agent", false)]))).toEqual([]);
 });
 
+/** The parent a case names by `name`, as `tree-fixtures.ts`'s `treeParent` gives it: written
+ *  here, since this part's spec lets it add lines to this file but change none of its imports. */
+function parentNamed(name: string): NonNullable<TreeAnswerNode["parent"]> {
+  return { first_line: "", id: name, kind: "", supertag: "" };
+}
+
 // An overtaken decision is in none of the parts, though the decisions view answers it waiting for
 // review and tied to a statement, and neither is any node under it - a question whose turn is the
 // reader's, a decision the read hangs under it: a later node took their place, so the Decisions
@@ -854,7 +860,7 @@ test("an overtaken decision waiting for review is in no part", () => {
   };
   const made = [
     decision("old", tied),
-    { ...decision("inner", tied), parent: treeParent("old") },
+    { ...decision("inner", tied), parent: parentNamed("old") },
     decision("review", tied),
   ];
 
