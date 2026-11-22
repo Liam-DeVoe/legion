@@ -55,8 +55,9 @@ type roleForReader struct {
 // while RoleFor named no role (phase.Of, and the completion route's answerCompletion, which reads
 // the phase LeftBy answers where the role does not work the issue's), or reads only the places of
 // a plan's steps, which admitted never is (reportsBefore, Walk.RoleAt, and Engine.restartTask,
-// which reads its task's first step: a planner's, an implementer's or a role of the deployment's,
-// as plan.Supported takes the acceptance only after an implementer), or reads the retro's own
+// Engine.restartViewed and Engine.startReady, which read their task's first step: a planner's, an
+// implementer's or a role of the deployment's, as plan.Supported takes the acceptance only after
+// an implementer), or reads the retro's own
 // phase (retroHeldNotice and Engine.startHeldRetro, which run only for a parent held before its
 // retro for the issues beneath it), or answers the running steps' roles to the readers this list
 // holds (record.RunningOf), or reads the phase a held issue's retry restores only past the refusal
@@ -131,6 +132,11 @@ var roleForReaders = map[roleForSite]roleForReader{
 		"TestAParentWithNoAcceptanceIsHeldBeforeItsRetro", "TestAHeldRetroAfterADeploymentStepGetsItsReport"}},
 	{file: "internal/workflow/retro_hold.go", fn: "retroHeldNotice"}: {calls: 1, tests: []string{"TestAParentWithNoAcceptanceIsHeldBeforeItsRetro"}},
 	{file: "internal/workflow/standing.go", fn: "reportsBefore"}:     {calls: 1, tests: []string{"TestATaskNamesItsWorkingCopyItsStepAndTheReportsBeforeIt"}},
+	// The role of the first step of a task whose needs are done, and of a stopped task's first step
+	// where it starts again.
+	{file: "internal/workflow/tasks.go", fn: "Engine.restartViewed"}: {calls: 1, tests: []string{
+		"TestAStoppedTaskStartsAgainOnlyWhereItsNeedsAreDone"}},
+	{file: "internal/workflow/tasks.go", fn: "Engine.startReady"}: {calls: 1, tests: []string{"TestEachTaskStartsWhenItsNeedsAreDone"}},
 	{file: "internal/workflow/steps.go", fn: "Engine.startAgent"}: {calls: 1, tests: []string{
 		"TestAnIssueAtAdmittedRunsNoStep", "TestTheStartOfADeploymentStepNamesItsAgent"}},
 	{file: "internal/workflow/steps.go", fn: "Engine.upgradedStart"}: {calls: 2, tests: []string{
