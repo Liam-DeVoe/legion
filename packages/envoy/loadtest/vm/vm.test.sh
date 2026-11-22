@@ -2637,7 +2637,7 @@ kinds_filters=(
   ".nul jq" ".o jq" ".o.a jq" ".o.arr jq" ".o.e jq" ".arr jq" ".f.deeper jq" ".t.deeper jq"
   ".s.deeper jq" ".n1.deeper jq" ".arr.a jq" ".o.a.b.c jq" '."k-dash".x jq' '.o["a"] jq'
   ".arr2[3] jq" ".arr2[01] jq" ".arr2[-1] jq" ".o[0] jq" ".arr2.x jq" '.["s"] jq'
-  '.o2["k\"q"] jq' ".z.deeper[ jq" ". jq"
+  '.o2["k\"q"] jq' ".z.deeper[ jq" ". jq" '["s"] jq' '["z"].deeper jq'
 )
 # cfg_answers FILE FILTER...: one line per FILTER: whether cfg_read answered it from the reading
 # (read) or left it to jq (jq), then cfg's own answer with that reading and without it, each its
@@ -2689,6 +2689,14 @@ for entry in "${kinds_filters[@]}"; do
   [ "${took[$filter]-}" = "$want" ] ||
     fail "cfg_read took ${took[$filter]:-nothing} for $filter of $kinds, where it must take $want"
 done
+
+# A file of two documents, an object and then a number, is no reading: a jq of its own refuses a
+# name of the second document, so cfg refuses it too.
+printf '{"s": "x"} 123\n' >"$tmp/two-documents.json"
+answers=$(cfg_answers "$tmp/two-documents.json" .s)
+IFS=$'\t' read -r filter by from_reading from_jq <<<"$answers"
+[ "$by" = jq ] && [ "$from_reading" = "$from_jq" ] && [[ $from_jq == 1:* ]] ||
+  fail "cfg answered .s of a file of two documents with [$from_reading] (${by}), where jq refuses it: [$from_jq]"
 
 # And an up and a step run no jq of their own for one value: such a jq is given the deployment file
 # last and a filter ending `// empty` (cfg's, container_vm_configured's, load_listener_port's), so

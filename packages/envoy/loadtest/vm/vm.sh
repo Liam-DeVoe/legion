@@ -512,9 +512,11 @@ declare -A CFG_TYPE=() CFG_VALUE=()
 # any other key, [N] for an index), the value's jq type, and what `jq -r` prints of it, empty for
 # null and false since `// empty` drops them. A string that holds a NUL is typed `nul`, which
 # cfg_read leaves to jq: no shell variable holds a NUL. The last field is `end`, so a reading cut
-# short is no reading, and a file whose top level is not an object gives none.
+# short is no reading. The file is read whole (--slurp), and only a file of exactly one document,
+# an object, gives any: a jq of its own runs once per document, so a second document after the
+# object (`{...} 123`) is one jq refuses at the read of a name, and that stays jq's to refuse.
 # shellcheck disable=SC2016 # a jq program, not a shell expansion
-CFG_DUMP='if type == "object" then
+CFG_DUMP='if length == 1 and (.[0] | type) == "object" then .[0] | (
   (. as $doc
     | paths
     | . as $p
@@ -526,7 +528,7 @@ CFG_DUMP='if type == "object" then
       $t,
       (if $t == "string" then $v elif $t == "number" or $v == true then ($v | tojson) else "" end)
     | ., "\u0000"),
-  "end", "\u0000"
+  "end", "\u0000")
 else empty end'
 
 # cfg_load: the deployment file read, once, into CFG_TYPE and CFG_VALUE (above). A file this cannot
@@ -534,7 +536,7 @@ else empty end'
 cfg_load() {
   local fields=() i
   CFG_LOADED="" CFG_TYPE=() CFG_VALUE=()
-  mapfile -d '' -t fields < <(jq -j "$CFG_DUMP" "$CONFIG" 2>/dev/null)
+  mapfile -d '' -t fields < <(jq -s -j "$CFG_DUMP" "$CONFIG" 2>/dev/null)
   ((${#fields[@]} % 3 == 1)) && [ "${fields[-1]}" = end ] || return 0
   for ((i = 0; i + 3 < ${#fields[@]}; i += 3)); do
     CFG_TYPE[${fields[i]}]=${fields[i + 1]}
@@ -553,7 +555,8 @@ cfg_read() {
   local name_re='^\.([A-Za-z_][A-Za-z0-9_]*)(.*)$' key_re='^\["([^"\\]*)"\](.*)$'
   local index_re='^\[(0|[1-9][0-9]*)\](.*)$' ident_re='^[A-Za-z_][A-Za-z0-9_]*$'
   CFG_READ=""
-  [ -n "$CFG_LOADED" ] && [ "$CFG_LOADED" = "$CONFIG" ] && [ -n "$rest" ] || return 1
+  # A filter that opens with [ is jq's array constructor, not a step: it is jq's to answer.
+  [ -n "$CFG_LOADED" ] && [ "$CFG_LOADED" = "$CONFIG" ] && [[ $rest == .* ]] || return 1
   while [ -n "$rest" ]; do
     if [[ $rest =~ $name_re ]]; then
       step=.${BASH_REMATCH[1]} kind=name rest=${BASH_REMATCH[2]}
