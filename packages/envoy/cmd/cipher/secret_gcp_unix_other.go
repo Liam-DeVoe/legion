@@ -5,7 +5,10 @@
 // How gcloud's process is started where there are process groups and no parent-death signal.
 package main
 
-import "syscall"
+import (
+	"os/exec"
+	"syscall"
+)
 
 // gcloudProcAttr starts gcloud in a process group of its own (killGroupOnCancel). These platforms
 // have no parent-death signal, so a gcloud still running when this command ends by a SIGKILL runs
@@ -13,3 +16,7 @@ import "syscall"
 func gcloudProcAttr() *syscall.SysProcAttr {
 	return &syscall.SysProcAttr{Setpgid: true}
 }
+
+// superviseGcloud leaves cmd as it is: a supervisor (secret_gcp_linux.go) needs the parent-death
+// signal these platforms do not have.
+func superviseGcloud(*exec.Cmd) {}

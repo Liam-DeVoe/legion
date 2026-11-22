@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"golang.org/x/oauth2"
+	"golang.org/x/sys/unix"
 
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -342,15 +343,70 @@ const gcloudSignalAt = "AGENT_SECRETS_GCLOUD_SIGNAL_AT"
 // store call (storeCallDeadline), 60s where it is unset.
 const gcloudSignInDeadline = "AGENT_SECRETS_GCLOUD_DEADLINE"
 
-// gcloudExecs is the variable that makes TestGcloudSignInSignalHelper's stub gcloud, once it has
-// started its child, write its own pid beside the child's (gcloudPidName) and replace itself with
-// a process that never answers (exec), as gcloud's own script replaces itself with its Python:
-// nothing of that stub process then watches anything, so only its parent-death signal ends it
-// (gcloudProcAttr, TestGcloudEndsWhenAgentSecretsIsKilled).
-const gcloudExecs = "AGENT_SECRETS_GCLOUD_EXECS"
+// gcloudLauncher is the variable that picks how TestGcloudSignInSignalHelper's stub gcloud, once
+// it has started its child, goes on: it writes its own pid beside the child's (gcloudPidName), then
+// replaces itself with a process that never answers, as gcloud's own script replaces itself with
+// its Python, so nothing of that stub process watches anything and only its group's end ends it
+// (the rows of requireGcloudEndsWithAgentSecrets). Its values:
+//   - gcloudExecs: the stub execs that process at once;
+//   - gcloudClearsDeathSignal: through TestGcloudThatClearsItsDeathSignalHelper, which clears its
+//     parent-death signal first, as the exec of a setuid or file-capability launcher does;
+//   - gcloudThroughSnap: through snap's own launcher, `snap run` (snap-confine), where a snap
+//     install of gcloud is there to run it.
+const gcloudLauncher = "AGENT_SECRETS_GCLOUD_LAUNCHER"
 
-// gcloudPidName is the file, beside the child's pid file, the stub of gcloudExecs writes its own pid to.
+const (
+	gcloudExecs             = "exec"
+	gcloudClearsDeathSignal = "clears-death-signal"
+	gcloudThroughSnap       = "snap"
+)
+
+// gcloudPidName is the file, beside the child's pid file, the stub of gcloudLauncher writes its own
+// pid to.
 const gcloudPidName = "gcloud.pid"
+
+// gcloudSnapLauncher is snap's gcloud launcher; gcloudThroughSnap runs `snap run` for its snap.
+const gcloudSnapLauncher = "/snap/bin/gcloud"
+
+// gcloudStubLast is the last of the stub gcloud's lines for launcher (gcloudLauncher), its own pid
+// written to pidFile.
+func gcloudStubLast(t *testing.T, launcher, pidFile string) string {
+	t.Helper()
+	switch launcher {
+	case gcloudExecs:
+		return "echo $$ >" + shellWord(pidFile) + "\nexec sleep 3600"
+	case gcloudClearsDeathSignal:
+		return "AGENT_SECRETS_GCLOUD_PID_FILE=" + shellWord(pidFile) + " exec " + shellWord(os.Args[0]) + " -test.run='^TestGcloudThatClearsItsDeathSignalHelper$'"
+	case gcloudThroughSnap:
+		return "exec snap run --shell google-cloud-cli.gcloud -c " + shellWord("echo $$ >"+shellWord(pidFile)+"; exec sleep 3600")
+	}
+	t.Fatalf("%s names no launcher: %q", gcloudLauncher, launcher)
+	return ""
+}
+
+// TestGcloudThatClearsItsDeathSignalHelper is the stub gcloud of gcloudClearsDeathSignal: it clears
+// its parent-death signal, as the kernel does at the exec of a setuid or file-capability launcher
+// such as snap-confine (making such a launcher needs root, which these tests do not have), writes its
+// own pid to AGENT_SECRETS_GCLOUD_PID_FILE, and replaces itself with a process that never answers.
+// The signal is a thread's, so the thread that clears it is the one that execs.
+func TestGcloudThatClearsItsDeathSignalHelper(t *testing.T) {
+	pidFile := os.Getenv("AGENT_SECRETS_GCLOUD_PID_FILE")
+	if pidFile == "" {
+		t.Skip("subprocess helper")
+	}
+	runtime.LockOSThread()
+	if err := unix.Prctl(unix.PR_SET_PDEATHSIG, 0, 0, 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(pidFile, []byte(strconv.Itoa(os.Getpid())+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sleep, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Fatal(syscall.Exec(sleep, []string{"sleep", "3600"}, os.Environ()))
+}
 
 // TestGcloudSignInSignalHelper is the process the gcloud sign-in signal rows signal: `secret list`
 // against a fake broker serving the GCP store, with no other source of a Google credential, so
@@ -383,8 +439,8 @@ func TestGcloudSignInSignalHelper(t *testing.T) {
 	if at == gcloudWaited {
 		last = "exit 0"
 	}
-	if os.Getenv(gcloudExecs) != "" {
-		last = "echo $$ >" + shellWord(filepath.Join(filepath.Dir(pidFile), gcloudPidName)) + "\nexec sleep 3600"
+	if launcher := os.Getenv(gcloudLauncher); launcher != "" {
+		last = gcloudStubLast(t, launcher, filepath.Join(filepath.Dir(pidFile), gcloudPidName))
 	}
 	gcloud, child := gcloudStubIn(t, filepath.Dir(pidFile), last)
 	if at != "" {
@@ -528,16 +584,35 @@ func TestGcloudSignInEndedByASignalKillsGcloudsChild(t *testing.T) {
 }
 
 // TestGcloudEndsWhenAgentSecretsIsKilled: a gcloud still running when agent-secrets ends by a
-// SIGKILL, which runs none of agent-secrets' code, ends with it (gcloudProcAttr's parent-death
-// signal), and is not left running in its group of its own until it ends by itself. The stub
-// gcloud replaces itself with a process that never answers (gcloudExecs), as gcloud's own script
-// replaces itself with its Python, so nothing of it watches agent-secrets: only that signal can
-// end it. The wait for its end is bounded only by the moment the waits of these tests give up.
+// SIGKILL, which runs none of agent-secrets' code, ends with it, and is not left running in its
+// group of its own until it ends by itself: its supervisor kills the group (superviseGcloud). Each
+// row's stub gcloud replaces itself with a process that never answers (gcloudLauncher), so nothing
+// of it watches agent-secrets. The second row's clears its parent-death signal first, as a setuid or
+// file-capability launcher's exec does, which a gcloud carrying that signal itself would survive;
+// the third runs through snap's own launcher where a snap install of gcloud is there, and is skipped
+// where it is not.
 func TestGcloudEndsWhenAgentSecretsIsKilled(t *testing.T) {
+	t.Run("gcloud execs", func(t *testing.T) { requireGcloudEndsWithAgentSecrets(t, gcloudExecs) })
+	t.Run("a launcher that clears the parent-death signal", func(t *testing.T) {
+		requireGcloudEndsWithAgentSecrets(t, gcloudClearsDeathSignal)
+	})
+	t.Run("snap's launcher", func(t *testing.T) {
+		if _, err := os.Stat(gcloudSnapLauncher); err != nil {
+			t.Skipf("no snap install of gcloud here (%v)", err)
+		}
+		requireGcloudEndsWithAgentSecrets(t, gcloudThroughSnap)
+	})
+}
+
+// requireGcloudEndsWithAgentSecrets starts the sign-in helper with its stub gcloud going on through
+// launcher (gcloudLauncher), waits until that stub names itself running, SIGKILLs the helper, and
+// fails t unless the stub is gone by the moment the waits of these tests give up, killing it then.
+func requireGcloudEndsWithAgentSecrets(t *testing.T, launcher string) {
+	t.Helper()
 	child := gcloudChild{pidFile: filepath.Join(t.TempDir(), "child.pid")}
 	gcloud := gcloudChild{pidFile: filepath.Join(filepath.Dir(child.pidFile), gcloudPidName), envFile: child.pidFile}
 	t.Cleanup(func() { child.cleanUp(t) })
-	helper := startSignInHelper(t, child, gcloudSignInDeadline+"=1h", gcloudExecs+"=1")
+	helper := startSignInHelper(t, child, gcloudSignInDeadline+"=1h", gcloudLauncher+"="+launcher)
 	var pid int
 	seen := heldBeforeGiveUp(t, func() bool {
 		if pid = gcloud.pid(); pid == 0 {
