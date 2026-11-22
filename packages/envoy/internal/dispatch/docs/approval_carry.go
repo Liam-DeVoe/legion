@@ -1259,3 +1259,28 @@ func answerApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, ar
 		return nil
 	})
 }
+
+// WithoutAskBlocks is a copy of node's tree with every ask block left out, wherever it stands, for
+// a reader that compares two versions apart from their ask blocks, as the change set of two
+// versions does (GET /api/v1/artifacts/{id}/changes). A container the cut empties - a blockquote
+// or a callout that held only ask blocks - is left holding one empty paragraph, which is what both
+// parsers read an empty container as. Each container on the way is a fresh node with its own
+// children; the nodes below the last container - text, inline nodes, leaves - are the parsed
+// tree's own, which nothing here changes.
+func WithoutAskBlocks(node *pmdoc.Node) *pmdoc.Node {
+	if node.Type == "text" || len(node.Children) == 0 {
+		return node
+	}
+	copied := *node
+	copied.Children = make([]*pmdoc.Node, 0, len(node.Children))
+	for _, child := range node.Children {
+		if child.Type == "ask" {
+			continue
+		}
+		copied.Children = append(copied.Children, WithoutAskBlocks(child))
+	}
+	if len(copied.Children) == 0 {
+		copied.Children = append(copied.Children, &pmdoc.Node{Type: "paragraph", Attrs: pmdoc.Attrs{}})
+	}
+	return &copied
+}
