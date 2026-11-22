@@ -34,13 +34,14 @@ const (
 // order, or with project empty the same issues of every project, in project then number order
 // (the prototype's collector/src/collector/dispatch.py:157-170 unowned_p0, without its fetch of
 // three named projects). The delivery measures read every project's. It follows neither the
-// measures' window nor their facets; how many there are is the length of the list.
-func ListUnownedP0(ctx context.Context, pool *store.Pool, project string) ([]UnownedIssue, error) {
+// measures' window nor their facets; how many there are is the length of the list. It reads in
+// q, the pool or a transaction whose snapshot an answer reads.
+func ListUnownedP0(ctx context.Context, q Querier, project string) ([]UnownedIssue, error) {
 	query, arguments := unownedP0Query, []any{}
 	if project != "" {
 		query, arguments = projectUnownedP0Query, []any{project}
 	}
-	rows, err := pool.Query(ctx, query, arguments...)
+	rows, err := q.Query(ctx, query, arguments...)
 	if err != nil {
 		return nil, err
 	}

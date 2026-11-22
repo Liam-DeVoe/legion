@@ -2155,3 +2155,47 @@ func TestAPullRequestLeavingTheDaysBeforeItsRepositorysHistoryRewritesTheDeployT
 	live.expectSameAsWalk(t, "the pull request merged inside the history again", walk)
 	t.Logf("the pass wrote %v", report.sorted())
 }
+
+// TestTheReadsSettingsMoveWithTheCommitThatBringsTheRowsToThem: over a settled history, a save of
+// the delivery settings that moves the deploy repository alone, which moves no row, and one that
+// moves the production rule, whose rewrite moves rows, each leave the settings a read of the evals
+// takes (DeployRepoIn's deploy repository, BuiltSettingsIn's every field eval_days_settings
+// records) at the old settings until the refresher's pass commits, and at the new ones once it
+// has: the record moves in the commit that brings the rows to the settings, not at the save.
+func TestTheReadsSettingsMoveWithTheCommitThatBringsTheRowsToThem(t *testing.T) {
+	r, deliveries := newSettingsRig(t, walkBatch)
+	read := func(what string) (string, delivery.DeliverySettings) {
+		t.Helper()
+		repo, err := DeployRepoIn(t.Context(), r.database.Pool)
+		if err != nil {
+			t.Fatalf("%s: %v", what, err)
+		}
+		built, err := BuiltSettingsIn(t.Context(), r.database.Pool)
+		if err != nil || built == nil {
+			t.Fatalf("%s: the settings a read takes are %v (%v)", what, built, err)
+		}
+		return repo, *built
+	}
+	settings := deliveries.Settings
+	for _, change := range []struct {
+		name   string
+		change func(*delivery.DeliverySettings)
+	}{
+		{"the deploy repository moved alone", func(s *delivery.DeliverySettings) { s.DeployRepo = deliveries.Repos[1] }},
+		{"the production rule moved", func(s *delivery.DeliverySettings) { s.ProductionJobNames = []string{"release / a job no run holds"} }},
+		{"both moved back", func(s *delivery.DeliverySettings) { *s = deliveries.Settings }},
+	} {
+		was := settings
+		change.change(&settings)
+		r.putSettings(t, settings, alice)
+		if repo, built := read(change.name + ", before the pass"); repo != was.DeployRepo || !sameBuiltSettings(built, was) {
+			t.Errorf("%s: before the pass a read takes the deploy repository %s and the production jobs %v, want the old ones, %s and %v",
+				change.name, repo, built.ProductionJobNames, was.DeployRepo, was.ProductionJobNames)
+		}
+		r.pass(t)
+		if repo, built := read(change.name + ", after the pass"); repo != settings.DeployRepo || !sameBuiltSettings(built, settings) {
+			t.Errorf("%s: after the pass a read takes the deploy repository %s and the production jobs %v, want the new ones, %s and %v",
+				change.name, repo, built.ProductionJobNames, settings.DeployRepo, settings.ProductionJobNames)
+		}
+	}
+}

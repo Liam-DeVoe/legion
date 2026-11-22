@@ -15,6 +15,26 @@ import (
 // each repository the rows are kept for as the deploy repository), so a route and a day row count
 // the same rows by the same rules, and a deploy's shipped pull requests by the same rule
 // (Deploys.ShippedBy).
+//
+// The reads an answer makes from the evals' day rows (api's evals items) take q, the pool or a
+// read-only transaction whose one snapshot the answer reads (evals.Store.BeginSnapshot). A read of
+// several statements runs them side by side on the pool and one after the other in a transaction
+// (readAll).
+
+// readAll runs reads, the reads of one answer in q: on the pool side by side, each on a connection
+// of its own (store.ReadSideBySide), and in a transaction one after the other, since its one
+// connection runs one statement at a time and every read then reads its one snapshot.
+func readAll(ctx context.Context, q Querier, reads ...func(ctx context.Context) error) error {
+	if _, pooled := q.(*store.Pool); pooled {
+		return store.ReadSideBySide(ctx, reads...)
+	}
+	for _, read := range reads {
+		if err := read(ctx); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
 // MergedRows is the population pull requests merged in a window and the deploy runs that can have
 // shipped them.
@@ -35,23 +55,23 @@ type MergedRows struct {
 	ApplyJobs map[int64][]DeliveryRunJob
 }
 
-// ReadMergedRows reads MergedRows for [from, to): the pull requests, and every apply run followed
-// by their production jobs, side by side.
-func ReadMergedRows(ctx context.Context, pool *store.Pool, settings DeliverySettings, from, to time.Time) (MergedRows, error) {
-	return readMergedRows(ctx, pool, settings, from, to, nil)
+// ReadMergedRows reads MergedRows for [from, to) in q: the pull requests, and every apply run
+// followed by their production jobs, side by side on the pool (readAll).
+func ReadMergedRows(ctx context.Context, q Querier, settings DeliverySettings, from, to time.Time) (MergedRows, error) {
+	return readMergedRows(ctx, q, settings, from, to, nil)
 }
 
 // readMergedRows is ReadMergedRows, and with createdBefore set only the apply runs GitHub created
 // before it.
-func readMergedRows(ctx context.Context, pool *store.Pool, settings DeliverySettings, from, to time.Time, createdBefore *time.Time) (MergedRows, error) {
+func readMergedRows(ctx context.Context, q Querier, settings DeliverySettings, from, to time.Time, createdBefore *time.Time) (MergedRows, error) {
 	var rows MergedRows
-	err := store.ReadSideBySide(ctx,
+	err := readAll(ctx, q,
 		func(ctx context.Context) (err error) {
-			rows.PullRequests, err = ListPullRequestsInWindow(ctx, pool, from, to)
+			rows.PullRequests, err = ListPullRequestsInWindow(ctx, q, from, to)
 			return err
 		},
 		func(ctx context.Context) error {
-			applies, err := readApplyRows(ctx, pool, settings, from, createdBefore)
+			applies, err := readApplyRows(ctx, q, settings, from, createdBefore)
 			rows.ApplyRuns, rows.ApplyJobs = applies.Runs, applies.Jobs
 			return err
 		})
@@ -74,13 +94,13 @@ type ApplyRows struct {
 // ReadApplyRows reads the apply runs and their production jobs (the jobs a deploy is judged by)
 // of every window starting at or after from: MergedRows.ApplyRuns and ApplyJobs as ReadMergedRows
 // reads them for a window from from.
-func ReadApplyRows(ctx context.Context, pool *store.Pool, settings DeliverySettings, from time.Time) (ApplyRows, error) {
-	return readApplyRows(ctx, pool, settings, from, nil)
+func ReadApplyRows(ctx context.Context, q Querier, settings DeliverySettings, from time.Time) (ApplyRows, error) {
+	return readApplyRows(ctx, q, settings, from, nil)
 }
 
 // readApplyRows is ReadApplyRows, with createdBefore as readMergedRows takes it.
-func readApplyRows(ctx context.Context, pool *store.Pool, settings DeliverySettings, from time.Time, createdBefore *time.Time) (ApplyRows, error) {
-	runs, err := listRuns(ctx, pool, settings.DeployRepo, DeliveryRunKindDeploy, "main", from, createdBefore)
+func readApplyRows(ctx context.Context, q Querier, settings DeliverySettings, from time.Time, createdBefore *time.Time) (ApplyRows, error) {
+	runs, err := listRuns(ctx, q, settings.DeployRepo, DeliveryRunKindDeploy, "main", from, createdBefore)
 	if err != nil {
 		return ApplyRows{}, err
 	}
@@ -88,7 +108,7 @@ func readApplyRows(ctx context.Context, pool *store.Pool, settings DeliverySetti
 	for i, run := range runs {
 		runIDs[i] = run.RunID
 	}
-	jobs, err := ListRunJobsForRuns(ctx, pool, settings.DeployRepo, runIDs, settings.Production().JudgedJobNames())
+	jobs, err := ListRunJobsForRuns(ctx, q, settings.DeployRepo, runIDs, settings.Production().JudgedJobNames())
 	if err != nil {
 		return ApplyRows{}, err
 	}
@@ -246,29 +266,29 @@ type Deploys struct {
 	Earlier MergedRows
 }
 
-// ReadDeploys reads Deploys for [from, to). The earlier rows start at since: the latest creation
-// among the deploys that succeeded before the first of Applies completed (ReadLatestShipBefore; the
-// beginning of time where none did), since a pull request merged before it had shipped by then
-// and so ships with none of Applies; or the creation of one of Applies, where one was created
-// earlier still, so that run is among the apply runs. Nothing earlier is read where the window
-// holds no deploy, or since is not before from.
-func ReadDeploys(ctx context.Context, pool *store.Pool, settings DeliverySettings, from, to time.Time) (Deploys, error) {
-	started, err := listRunsWithJobsStartedIn(ctx, pool, settings.DeployRepo, DeliveryRunKindDeploy, "main", "", from, to, settings.Production().JudgedJobNames())
+// ReadDeploys reads Deploys for [from, to) in q. The earlier rows start at since: the latest
+// creation among the deploys that succeeded before the first of Applies completed
+// (ReadLatestShipBefore; the beginning of time where none did), since a pull request merged before
+// it had shipped by then and so ships with none of Applies; or the creation of one of Applies,
+// where one was created earlier still, so that run is among the apply runs. Nothing earlier is
+// read where the window holds no deploy, or since is not before from.
+func ReadDeploys(ctx context.Context, q Querier, settings DeliverySettings, from, to time.Time) (Deploys, error) {
+	started, err := listRunsWithJobsStartedIn(ctx, q, settings.DeployRepo, DeliveryRunKindDeploy, "main", "", from, to, settings.Production().JudgedJobNames())
 	if err != nil {
 		return Deploys{}, err
 	}
-	return deploysOf(ctx, pool, settings, from, started)
+	return deploysOf(ctx, q, settings, from, started)
 }
 
 // deploysOf is the Deploys of a window from from whose deploy runs, with the jobs each is judged by,
-// are started: the deploys among them, and the earlier rows ReadDeploys reads.
-func deploysOf(ctx context.Context, pool *store.Pool, settings DeliverySettings, from time.Time, started RunsWithJobs) (Deploys, error) {
+// are started: the deploys among them, and the earlier rows ReadDeploys reads, in q.
+func deploysOf(ctx context.Context, q Querier, settings DeliverySettings, from time.Time, started RunsWithJobs) (Deploys, error) {
 	production := settings.Production()
 	deploys := Deploys{Started: started, Applies: ProductionApplies(started.Runs, started.Jobs, production).Applies}
 	if len(deploys.Applies) == 0 {
 		return deploys, nil
 	}
-	since, err := ReadLatestShipBefore(ctx, pool, settings.DeployRepo, production, deploys.Applies[0].CompletedAt)
+	since, err := ReadLatestShipBefore(ctx, q, settings.DeployRepo, production, deploys.Applies[0].CompletedAt)
 	if err != nil {
 		return Deploys{}, err
 	}
@@ -280,7 +300,7 @@ func deploysOf(ctx context.Context, pool *store.Pool, settings DeliverySettings,
 	if !since.Before(from) {
 		return deploys, nil
 	}
-	if deploys.Earlier, err = readMergedRows(ctx, pool, settings, since, from, &from); err != nil {
+	if deploys.Earlier, err = readMergedRows(ctx, q, settings, since, from, &from); err != nil {
 		return Deploys{}, err
 	}
 	return deploys, nil
@@ -323,17 +343,17 @@ type CIRows struct {
 	Checks, Deploys RunsWithJobs
 }
 
-// ReadCIRows reads CIRows for [from, to) of the deploy repository, the two reads side by side;
-// deployJobNames is every job name the deploy cards follow.
-func ReadCIRows(ctx context.Context, pool *store.Pool, deployRepo string, from, to time.Time, deployJobNames []string) (CIRows, error) {
+// ReadCIRows reads CIRows for [from, to) of the deploy repository in q, the two reads side by side
+// on the pool (readAll); deployJobNames is every job name the deploy cards follow.
+func ReadCIRows(ctx context.Context, q Querier, deployRepo string, from, to time.Time, deployJobNames []string) (CIRows, error) {
 	var rows CIRows
-	err := store.ReadSideBySide(ctx,
+	err := readAll(ctx, q,
 		func(ctx context.Context) (err error) {
-			rows.Checks, err = listRunsWithEveryJobStartedIn(ctx, pool, deployRepo, DeliveryRunKindPRChecks, "", "pull_request", from, to)
+			rows.Checks, err = listRunsWithEveryJobStartedIn(ctx, q, deployRepo, DeliveryRunKindPRChecks, "", "pull_request", from, to)
 			return err
 		},
 		func(ctx context.Context) (err error) {
-			rows.Deploys, err = listRunsWithJobsStartedIn(ctx, pool, deployRepo, DeliveryRunKindDeploy, "main", "push", from, to, deployJobNames)
+			rows.Deploys, err = listRunsWithJobsStartedIn(ctx, q, deployRepo, DeliveryRunKindDeploy, "main", "push", from, to, deployJobNames)
 			return err
 		})
 	if err != nil {

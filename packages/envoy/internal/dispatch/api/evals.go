@@ -17,7 +17,6 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
-	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -632,11 +631,14 @@ func parseEvalRepos(query url.Values) ([]string, error) {
 }
 
 // evalListRequest is one read of the eval list: what every eval read reads of its query, the
-// projects it reads, in order, and the kind it keeps, "" for every kind.
+// projects it reads, in order, and the kind it keeps, "" for every kind. projectsIn, where it is
+// set, reads those projects in the answer's snapshot in place of projects: the project route's
+// project, found (loadProject), and the cross-project read's (evalProjectsIn).
 type evalListRequest struct {
 	evalReadQuery
-	projects []string
-	kind     string
+	projects   []string
+	kind       string
+	projectsIn func(ctx context.Context, tx pgx.Tx) ([]string, error)
 }
 
 // parseEvalListQuery reads the list read's query, every key but `project`, which only the
@@ -670,18 +672,21 @@ func (s *server) listProjectEvals(w http.ResponseWriter, r *http.Request) {
 }
 
 // readProjectEvalList is the body of GET /api/v1/projects/{key}/evals for query, as of now: the
-// list read of project's evals (readEvalList), after the query is read (parseEvalListQuery) and
-// the project is found, 404 PROJECT_NOT_FOUND for a project no row holds (loadProject). The live
-// hub's evals view reads its body through this too, so the two answer one query alike.
+// list read of project's evals (readEvalList), after the query is read (parseEvalListQuery), the
+// project found in the answer's snapshot, 404 PROJECT_NOT_FOUND for a project no row holds
+// (loadProject). The live hub's evals view reads its body through this too, so the two answer one
+// query alike.
 func (s *server) readProjectEvalList(ctx context.Context, query url.Values, project string, now time.Time) (evalListResponse, error) {
 	request, err := parseEvalListQuery(query, evalListQueryKeys)
 	if err != nil {
 		return evalListResponse{}, err
 	}
-	if _, err := s.loadProject(ctx, s.deps.Store.Pool, project); err != nil {
-		return evalListResponse{}, err
+	request.projectsIn = func(ctx context.Context, tx pgx.Tx) ([]string, error) {
+		if _, err := s.loadProject(ctx, tx, project); err != nil {
+			return nil, err
+		}
+		return []string{project}, nil
 	}
-	request.projects = []string{project}
 	return s.readEvalList(ctx, request, now)
 }
 
@@ -704,12 +709,9 @@ func (s *server) listEvals(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "INVALID_QUERY", http.StatusBadRequest, "project names a project, and an empty project names none")
 		return
 	}
-	projects, err := s.evalProjects(r.Context(), named)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+	request.projectsIn = func(ctx context.Context, tx pgx.Tx) ([]string, error) {
+		return evalProjectsIn(ctx, tx, named)
 	}
-	request.projects = projects
 	answer, err := s.readEvalList(r.Context(), request, time.Now().UTC())
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -718,11 +720,11 @@ func (s *server) listEvals(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, answer)
 }
 
-// evalProjects is the projects a cross-project read reads: those named, each once in the order
-// first named, or every project by key where none is named. A name no project holds is 404
-// PROJECT_NOT_FOUND naming it.
-func (s *server) evalProjects(ctx context.Context, named []string) ([]string, error) {
-	keys, err := s.registry().Projects(ctx)
+// evalProjectsIn is the projects a cross-project read reads, read in tx, the answer's snapshot:
+// those named, each once in the order first named, or every project by key where none is named
+// (evals.ProjectsIn). A name no project holds is 404 PROJECT_NOT_FOUND naming it.
+func evalProjectsIn(ctx context.Context, tx pgx.Tx, named []string) ([]string, error) {
+	keys, err := evals.ProjectsIn(ctx, tx)
 	if err != nil {
 		return nil, err
 	}
@@ -748,25 +750,33 @@ func (s *server) evalProjects(ctx context.Context, named []string) ([]string, er
 // both list routes, which the live hub's view of the evals reads too. Each of its reads reads
 // every project at once, so a read of many projects makes as many statements as a read of one.
 //
-// One answer, one snapshot: every read it makes (the page, the deploy repository its values read,
-// evalDeployRepo, and the reads its values are stated from, readEvalValues) runs in one read-only
+// One answer, one snapshot: every read it makes (its projects, request.projectsIn, the page, the
+// deploy repository its values read, the one recorded with the stored rows, evals.DeployRepoIn,
+// and the reads its values are stated from, readEvalValues) runs in one read-only
 // repeatable-read transaction on one connection (evals.Store.BeginSnapshot), committed before the
 // folds (evalValues.items). A write that commits while the answer reads, as a settings rewrite
-// commits its day rows and their stored figures, is in the whole answer or in none of it, so the
-// live evals view, which sends what moved between two answers, sends it as one delta of the whole
-// new state, never as an eval's old window figures beside its new days. The transaction holds
-// ctx's connection mark, so a read of the pool made under it is refused (store.ErrNestedAcquire).
+// commits its day rows, their stored figures and the settings they stand built under, is in the
+// whole answer or in none of it, so the live evals view, which sends what moved between two
+// answers, sends it as one delta of the whole new state, never as an eval's old window figures
+// beside its new days, nor the new deploy repository's rows as the old production rule built
+// them. The transaction holds ctx's connection mark, so a read of the pool made under it is
+// refused (store.ErrNestedAcquire).
 func (s *server) readEvalList(ctx context.Context, request evalListRequest, now time.Time) (evalListResponse, error) {
 	tx, err := s.registry().BeginSnapshot(ctx)
 	if err != nil {
 		return evalListResponse{}, fmt.Errorf("begin the read of the evals of %v: %w", request.projects, err)
 	}
 	defer tx.Rollback(ctx)
+	if request.projectsIn != nil {
+		if request.projects, err = request.projectsIn(ctx, tx); err != nil {
+			return evalListResponse{}, err
+		}
+	}
 	page, err := evals.CurrentIn(ctx, tx, request.projects, request.kind, request.limit, request.offset)
 	if err != nil {
 		return evalListResponse{}, err
 	}
-	deployRepo, err := evalDeployRepo(ctx, tx)
+	deployRepo, err := evals.DeployRepoIn(ctx, tx)
 	if err != nil {
 		return evalListResponse{}, err
 	}
@@ -806,8 +816,8 @@ type evalValues struct {
 
 // readEvalValues reads in tx, one answer's snapshot (readEvalList), the refresher's age at now
 // (evals.RefresherAgeIn) and what each of entries' values over ranges is stated from. Each eval
-// that reads the deploy repository is stated from the rows kept for deployRepo, the repository the
-// delivery settings name now (evals.DeployRepoOf, evalDeployRepo), so a move of the deploy
+// that reads the deploy repository is stated from the rows kept for deployRepo, the repository
+// recorded with the stored rows (evals.DeployRepoOf, evals.DeployRepoIn), so a move of the deploy
 // repository is this selection and rewrites nothing. It reads each series' first day
 // (evals.FirstDaysIn), and for an offered range (evals.FiguresOffered: a window and a compare range
 // each of a length the Evals tab offers, of the projects' own rows or one repository's) the stored
@@ -905,17 +915,6 @@ func (v *evalValues) items() ([]evalItem, evalFreshness) {
 	return items, freshness
 }
 
-// evalDeployRepo is the deploy repository the delivery settings name, read in tx, whose rows a read
-// of an eval that reads it folds (evals.DeployRepoOf), "" where the deployment has set none; an
-// eval that reads no deploy repository reads the rows of none whatever it answers.
-func evalDeployRepo(ctx context.Context, tx pgx.Tx) (string, error) {
-	settings, err := delivery.GetSettings(ctx, tx)
-	if errors.Is(err, delivery.ErrNoSettings) {
-		return "", nil
-	}
-	return settings.DeployRepo, err
-}
-
 // evalProjects is the projects entries are evals of, in the order they first appear.
 func evalProjects(entries []evals.Entry) []string {
 	var projects []string
@@ -935,11 +934,12 @@ func evalOwnerOf(definition evals.Definition) evalOwner {
 // newest first, read with its current definition and series (evals.EvalVersionsIn, which reads the
 // page's versions alone), the newest stating the window's values as the list read states them
 // (readEvalValues), and the method its section of the project's `evals-md` holds
-// (evals.Store.Method). One answer, one snapshot, as the list read's (readEvalList): the eval, its
-// versions, the deploy repository (evalDeployRepo) and the values' reads run in one read-only
-// repeatable-read transaction, committed before the folds. It is begun on a connection mark of its
-// own (store.ForConcurrentRead), so the method, which reads the document the definition names, is
-// read beside the values. A query key the route does not take is 400 INVALID_QUERY
+// (evals.Store.Method). One answer, one snapshot, as the list read's (readEvalList): the project,
+// the eval, its versions, the deploy repository (evals.DeployRepoIn) and the values' reads run in
+// one read-only repeatable-read transaction, committed before the folds. It is begun on a
+// connection mark of its own (store.ForConcurrentRead), so the method is read beside the values:
+// the documents service answers it from the document's room where one is open, not from a
+// database moment a snapshot can hold. A query key the route does not take is 400 INVALID_QUERY
 // (undeclaredQueryKey), 404 PROJECT_NOT_FOUND for a project no row holds, 404 EVAL_NOT_FOUND for a
 // slug no eval of it holds.
 func (s *server) getProjectEval(w http.ResponseWriter, r *http.Request) {
@@ -953,10 +953,6 @@ func (s *server) getProjectEval(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := r.Context()
 	project, slug := r.PathValue("key"), r.PathValue("slug")
-	if _, err := s.loadProject(ctx, s.deps.Store.Pool, project); err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
 	registry := s.registry()
 	evalID := evals.EvalID(project, slug)
 	snapshot, err := store.ForConcurrentRead(ctx)
@@ -970,6 +966,10 @@ func (s *server) getProjectEval(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(snapshot)
+	if _, err := s.loadProject(snapshot, tx, project); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	entry, versions, found, err := evals.EvalVersionsIn(snapshot, tx, evalID, read.limit, read.offset)
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -979,7 +979,7 @@ func (s *server) getProjectEval(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, evalNotFound(project, slug))
 		return
 	}
-	deployRepo, err := evalDeployRepo(snapshot, tx)
+	deployRepo, err := evals.DeployRepoIn(snapshot, tx)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -1027,22 +1027,6 @@ func (s *server) getProjectEval(w http.ResponseWriter, r *http.Request) {
 		answer.DocText = &method
 	}
 	WriteJSON(w, http.StatusOK, answer)
-}
-
-// loadEval reads the eval slug names in project, current definition and series: 404
-// PROJECT_NOT_FOUND for a project no row holds, 404 EVAL_NOT_FOUND for a slug no eval of it holds.
-func (s *server) loadEval(ctx context.Context, project, slug string) (evals.Entry, error) {
-	if _, err := s.loadProject(ctx, s.deps.Store.Pool, project); err != nil {
-		return evals.Entry{}, err
-	}
-	entry, found, err := s.registry().Eval(ctx, evals.EvalID(project, slug))
-	if err != nil {
-		return evals.Entry{}, err
-	}
-	if !found {
-		return evals.Entry{}, evalNotFound(project, slug)
-	}
-	return entry, nil
 }
 
 // evalNotFound is the 404 EVAL_NOT_FOUND of a slug no eval of project holds.

@@ -506,9 +506,9 @@ func latestShipBefore(repo, jobNames, applyStep, at string) string {
 // deploy reaches back to (ReadDeploys reads a window's shipped sets from it; the day-row refresher
 // asks it whether a deploy can have been the first of its repository to complete, evals'
 // shippedNeighbours).
-func ReadLatestShipBefore(ctx context.Context, pool *store.Pool, deployRepo string, production Production, at time.Time) (time.Time, error) {
+func ReadLatestShipBefore(ctx context.Context, q Querier, deployRepo string, production Production, at time.Time) (time.Time, error) {
 	var created time.Time
-	err := pool.QueryRow(ctx, latestShipBefore("$1", "$2", "$3", "$4"), deployRepo, production.JobNames, production.ApplyStep, at).Scan(&created)
+	err := q.QueryRow(ctx, latestShipBefore("$1", "$2", "$3", "$4"), deployRepo, production.JobNames, production.ApplyStep, at).Scan(&created)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return time.Time{}, nil
 	}
@@ -973,11 +973,11 @@ const everyRunJobForRunsQuery = `select ` + JobColumns + ` from delivery_run_job
 //
 // Returns a map keyed by run id for a caller to index directly, each run's jobs in ListRunJobs'
 // order; a run holding none of the names has no entry.
-func ListRunJobsForRuns(ctx context.Context, pool *store.Pool, repo string, runIDs []int64, names []string) (map[int64][]DeliveryRunJob, error) {
+func ListRunJobsForRuns(ctx context.Context, q Querier, repo string, runIDs []int64, names []string) (map[int64][]DeliveryRunJob, error) {
 	if len(names) == 0 {
 		return make(map[int64][]DeliveryRunJob), nil
 	}
-	return runJobsByRun(ctx, pool, runIDs, runJobsNamedForRunsQuery, repo, runIDs, names)
+	return runJobsByRun(ctx, q, runIDs, runJobsNamedForRunsQuery, repo, runIDs, names)
 }
 
 // listRunJobsFailedForRuns lists, of every run in runIDs on repo, every job that failed and is not
@@ -1025,8 +1025,8 @@ func namedAndFailedJobs(runs []DeliveryRun, named, failed map[int64][]DeliveryRu
 // lists the named ones, for the callers that read every job a run ran: the Pipeline's PR checks
 // time every job of every run and tally every job that failed (measures.PRChecks), and the jobs
 // they report are whichever the runs hold, so no list of names can stand in for them.
-func listEveryRunJobForRuns(ctx context.Context, pool *store.Pool, repo string, runIDs []int64) (map[int64][]DeliveryRunJob, error) {
-	return runJobsByRun(ctx, pool, runIDs, everyRunJobForRunsQuery, repo, runIDs)
+func listEveryRunJobForRuns(ctx context.Context, q Querier, repo string, runIDs []int64) (map[int64][]DeliveryRunJob, error) {
+	return runJobsByRun(ctx, q, runIDs, everyRunJobForRunsQuery, repo, runIDs)
 }
 
 // runJobsByRun runs query, a read of delivery_run_jobs over the runs runIDs, and answers its jobs
@@ -1035,19 +1035,19 @@ func listEveryRunJobForRuns(ctx context.Context, pool *store.Pool, repo string, 
 // primary key in (run_id, ...) order for `run_id = any($2)`, so an order by sorts the whole 28-day
 // read (about 50,000 rows), on disk past work_mem, where sorting each run's few jobs costs a few
 // milliseconds.
-func runJobsByRun(ctx context.Context, pool *store.Pool, runIDs []int64, query string, arguments ...any) (map[int64][]DeliveryRunJob, error) {
+func runJobsByRun(ctx context.Context, q Querier, runIDs []int64, query string, arguments ...any) (map[int64][]DeliveryRunJob, error) {
 	if len(runIDs) == 0 {
 		return make(map[int64][]DeliveryRunJob), nil
 	}
-	return collectJobsByRun(ctx, pool, len(runIDs), query, arguments...)
+	return collectJobsByRun(ctx, q, len(runIDs), query, arguments...)
 }
 
 // collectJobsByRun runs query, a read of delivery_run_jobs, and answers its jobs keyed by run id,
 // each run's sorted into ListRunJobs' order; runs is how many runs the caller expects, a capacity
 // hint (0 for none).
-func collectJobsByRun(ctx context.Context, pool *store.Pool, runs int, query string, arguments ...any) (map[int64][]DeliveryRunJob, error) {
+func collectJobsByRun(ctx context.Context, q Querier, runs int, query string, arguments ...any) (map[int64][]DeliveryRunJob, error) {
 	byRun := make(map[int64][]DeliveryRunJob, runs)
-	rows, err := pool.Query(ctx, query, arguments...)
+	rows, err := q.Query(ctx, query, arguments...)
 	if err != nil {
 		return nil, err
 	}
@@ -1084,12 +1084,12 @@ const maxRunsPerWindow = 50_000
 // delivery_runs_kind_created indexes (repo, kind, runCreatedAt) to match this exact
 // filter/order. The bound is written into the statement only when it is set, so the plan of the
 // read with no bound keeps no test of an empty parameter.
-func listRuns(ctx context.Context, pool *store.Pool, repo string, kind DeliveryRunKind, branch string, since time.Time, until *time.Time) ([]DeliveryRun, error) {
+func listRuns(ctx context.Context, q Querier, repo string, kind DeliveryRunKind, branch string, since time.Time, until *time.Time) ([]DeliveryRun, error) {
 	bound, arguments := "", []any{repo, string(kind), since, branch, maxRunsPerWindow}
 	if until != nil {
 		bound, arguments = ` and `+runCreatedAt+` < $6`, append(arguments, *until)
 	}
-	rows, err := pool.Query(ctx, `
+	rows, err := q.Query(ctx, `
 		select `+RunColumns+`
 		from delivery_runs r
 		where r.repo = $1 and r.kind = $2 and `+runCreatedAt+` >= $3`+bound+` and ($4 = '' or r.head_branch = $4)
@@ -1203,8 +1203,8 @@ type windowRuns struct {
 // "pull_request"): the prototype's `withinWindow(run.started_at)`, `branch=main` and
 // `event=pull_request` listings. Bounded by maxRunsPerWindow, as listRuns is;
 // delivery_runs_kind_started_at serves the filter and order.
-func listRunsStartedIn(ctx context.Context, pool *store.Pool, repo string, kind DeliveryRunKind, branch, event string, from, to time.Time) ([]DeliveryRun, error) {
-	rows, err := pool.Query(ctx, `
+func listRunsStartedIn(ctx context.Context, q Querier, repo string, kind DeliveryRunKind, branch, event string, from, to time.Time) ([]DeliveryRun, error) {
+	rows, err := q.Query(ctx, `
 		select `+RunColumns+`
 		from delivery_runs
 		where repo = $1 and kind = $2 and started_at >= $3 and started_at < $4
@@ -1268,24 +1268,24 @@ type RunsWithJobs struct {
 // of them: the Pipeline page's deploy runs of its shown days, read for the jobs its deploy cards
 // follow (measures.DeployJobs reads no other), and the measures' deploys of a window, read for the
 // jobs a deploy is judged by (ReadDeploys).
-func listRunsWithJobsStartedIn(ctx context.Context, pool *store.Pool, repo string, kind DeliveryRunKind, branch, event string, from, to time.Time, names []string) (RunsWithJobs, error) {
-	return runsWithJobsStartedIn(ctx, pool, repo, kind, branch, event, from, to, func(runIDs []int64) (map[int64][]DeliveryRunJob, error) {
-		return ListRunJobsForRuns(ctx, pool, repo, runIDs, names)
+func listRunsWithJobsStartedIn(ctx context.Context, q Querier, repo string, kind DeliveryRunKind, branch, event string, from, to time.Time, names []string) (RunsWithJobs, error) {
+	return runsWithJobsStartedIn(ctx, q, repo, kind, branch, event, from, to, func(runIDs []int64) (map[int64][]DeliveryRunJob, error) {
+		return ListRunJobsForRuns(ctx, q, repo, runIDs, names)
 	})
 }
 
 // listRunsWithEveryJobStartedIn is listRunsStartedIn's runs with listEveryRunJobForRuns' jobs of
 // them: the Pipeline page's PR-checks runs of its shown days, whose job timings and failing jobs
 // read every job a run ran.
-func listRunsWithEveryJobStartedIn(ctx context.Context, pool *store.Pool, repo string, kind DeliveryRunKind, branch, event string, from, to time.Time) (RunsWithJobs, error) {
-	return runsWithJobsStartedIn(ctx, pool, repo, kind, branch, event, from, to, func(runIDs []int64) (map[int64][]DeliveryRunJob, error) {
-		return listEveryRunJobForRuns(ctx, pool, repo, runIDs)
+func listRunsWithEveryJobStartedIn(ctx context.Context, q Querier, repo string, kind DeliveryRunKind, branch, event string, from, to time.Time) (RunsWithJobs, error) {
+	return runsWithJobsStartedIn(ctx, q, repo, kind, branch, event, from, to, func(runIDs []int64) (map[int64][]DeliveryRunJob, error) {
+		return listEveryRunJobForRuns(ctx, q, repo, runIDs)
 	})
 }
 
 // runsWithJobsStartedIn is listRunsStartedIn's runs with the jobs jobs reads of them.
-func runsWithJobsStartedIn(ctx context.Context, pool *store.Pool, repo string, kind DeliveryRunKind, branch, event string, from, to time.Time, jobs func(runIDs []int64) (map[int64][]DeliveryRunJob, error)) (RunsWithJobs, error) {
-	runs, err := listRunsStartedIn(ctx, pool, repo, kind, branch, event, from, to)
+func runsWithJobsStartedIn(ctx context.Context, q Querier, repo string, kind DeliveryRunKind, branch, event string, from, to time.Time, jobs func(runIDs []int64) (map[int64][]DeliveryRunJob, error)) (RunsWithJobs, error) {
+	runs, err := listRunsStartedIn(ctx, q, repo, kind, branch, event, from, to)
 	if err != nil {
 		return RunsWithJobs{}, err
 	}
@@ -1313,8 +1313,8 @@ const maxPullRequestsPerWindow = 50_000
 // timeline window and the facet computations that run over it. A partial row (merged_at still
 // null) is never in range and so never appears here — exactly right, since its lead time and
 // shipped status are not yet knowable.
-func ListPullRequestsInWindow(ctx context.Context, pool *store.Pool, from, to time.Time) ([]DeliveryPullRequest, error) {
-	rows, err := pool.Query(ctx, `
+func ListPullRequestsInWindow(ctx context.Context, q Querier, from, to time.Time) ([]DeliveryPullRequest, error) {
+	rows, err := q.Query(ctx, `
 		select `+PullRequestColumns+`
 		from delivery_pull_requests
 		where merged_at >= $1 and merged_at < $2

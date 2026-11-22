@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"maps"
 	"net/http"
@@ -11,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
@@ -37,6 +38,13 @@ import (
 //
 // A row of the compare range carries range `compare`. The page runs across the row kinds in the
 // order above, each range's after the window's, and a row kind's rows in its own order.
+//
+// One answer, one snapshot (dispatch://INFRA-2916, point 6): every read an answer makes, the
+// project and the eval, the settings the rows stand built under, the day rows, the items they
+// counted and the delivery, CI, Legion and readings rows behind them, runs in one read-only
+// repeatable-read transaction (evals.Store.BeginSnapshot, readEvalItems), so a refresher pass
+// that commits a day's rows, members and figures while the answer reads is in the whole answer
+// or in none of it, and a page's items never mix the rows before it with those after it.
 
 // evalItemRow is one row of an items answer, the same fields for every row kind (R7): its key and
 // kind, its columns (cols, whose names are the row kind's own), when it was measured, the source
@@ -128,9 +136,11 @@ type evalItemsRange struct {
 }
 
 // evalItemsRead is what a reader of one row kind reads for one range: the eval, the request and
-// the range, the delivery settings the delivery and CI rows are read under, nil where the
-// deployment has set none, which leaves no such row to read, and the reads the range's readers
-// share (evalRangeReads).
+// the range, the delivery settings the delivery and CI rows are read under (evals.BuiltSettingsIn:
+// those the stored rows stand built under, so the items a row's value counts are read by the rule
+// that counted them), nil where the deployment has set none, which leaves no such row to read,
+// the reads the range's readers share (evalRangeReads), and tx, the answer's one snapshot, which
+// every read of the answer reads in.
 type evalItemsRead struct {
 	project  string
 	entry    evals.Entry
@@ -138,6 +148,7 @@ type evalItemsRead struct {
 	rng      evalItemsRange
 	settings *delivery.DeliverySettings
 	shared   *evalRangeReads
+	tx       pgx.Tx
 }
 
 // evalRangeReads is the reads two readers of one range make alike, each made once a range and
@@ -198,8 +209,8 @@ func listedSource(rows []evalItemRow) evalItemSource {
 
 // listProjectEvalItems answers GET /api/v1/projects/{key}/evals/{slug}/items: one page of the rows
 // behind the eval's numbers over the window and the compare range, filtered by series, row_kind,
-// row and repo, and for pr-ci's jobs ranked by sort. 404 PROJECT_NOT_FOUND and EVAL_NOT_FOUND as
-// the detail read answers them.
+// row and repo, and for pr-ci's jobs ranked by sort (readEvalItems). 404 PROJECT_NOT_FOUND and
+// EVAL_NOT_FOUND as the detail read answers them.
 func (s *server) listProjectEvalItems(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -209,17 +220,42 @@ func (s *server) listProjectEvalItems(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	ctx := r.Context()
-	project := r.PathValue("key")
-	entry, err := s.loadEval(ctx, project, r.PathValue("slug"))
+	answer, err := s.readEvalItems(r.Context(), r.PathValue("key"), r.PathValue("slug"), request)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	sources, err := s.evalItemSources(ctx, project, entry, request)
+	WriteJSON(w, http.StatusOK, answer)
+}
+
+// readEvalItems is one items answer of slug's eval of project for request, read in one snapshot
+// (evals.Store.BeginSnapshot): the project (404 PROJECT_NOT_FOUND where no row holds it), the eval
+// (404 EVAL_NOT_FOUND), the settings the rows stand built under, and every source's page, in the
+// order the page runs across them. The transaction holds ctx's connection mark, so a read of the
+// pool made under it is refused (store.ErrNestedAcquire). A source's rows are built as it reads
+// them: the readings' page and the Legion issues' repositories and titles are read for the rows
+// the page holds of them, which the totals of the sources before them place, so no read can wait
+// for the builds. It commits before the answer is encoded.
+func (s *server) readEvalItems(ctx context.Context, project, slug string, request evalItemsRequest) (evalItemsResponse, error) {
+	evalID := evals.EvalID(project, slug)
+	tx, err := s.registry().BeginSnapshot(ctx)
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		return evalItemsResponse{}, fmt.Errorf("begin the read of the items of eval %s: %w", evalID, err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := s.loadProject(ctx, tx, project); err != nil {
+		return evalItemsResponse{}, err
+	}
+	entry, found, err := evals.EvalIn(ctx, tx, evalID)
+	if err != nil {
+		return evalItemsResponse{}, err
+	}
+	if !found {
+		return evalItemsResponse{}, evalNotFound(project, slug)
+	}
+	sources, err := s.evalItemSources(ctx, tx, project, entry, request)
+	if err != nil {
+		return evalItemsResponse{}, err
 	}
 	answer := evalItemsResponse{
 		Items: []evalItemRow{}, Limit: request.limit, Offset: request.offset,
@@ -229,29 +265,31 @@ func (s *server) listProjectEvalItems(w http.ResponseWriter, r *http.Request) {
 	for _, source := range sources {
 		rows, total, err := source(ctx, skip, want)
 		if err != nil {
-			s.writeHandlerError(w, err)
-			return
+			return evalItemsResponse{}, err
 		}
 		answer.Total += total
 		skip = max(0, skip-total)
 		rows = rows[:min(len(rows), want)]
 		answer.Items, want = append(answer.Items, rows...), want-len(rows)
 	}
-	WriteJSON(w, http.StatusOK, answer)
+	if err := tx.Commit(ctx); err != nil {
+		return evalItemsResponse{}, fmt.Errorf("end the read of the items of eval %s: %w", evalID, err)
+	}
+	return answer, nil
 }
 
-// evalItemSources is the sources of one items read, in the order its page runs across them: for
-// the window and then the compare range, the computed rows of each kind the eval's source answers
-// (evalComputedItems), its readings and its day rows, each kept where row_kind names it or names
-// none. A request naming sort reads pr-ci's job rows alone.
-func (s *server) evalItemSources(ctx context.Context, project string, entry evals.Entry, request evalItemsRequest) ([]evalItemSource, error) {
+// evalItemSources is the sources of one items read in tx, the answer's snapshot, in the order its
+// page runs across them: for the window and then the compare range, the computed rows of each
+// kind the eval's source answers (evalComputedItems), its readings and its day rows, each kept
+// where row_kind names it or names none. A request naming sort reads pr-ci's job rows alone.
+func (s *server) evalItemSources(ctx context.Context, tx pgx.Tx, project string, entry evals.Entry, request evalItemsRequest) ([]evalItemSource, error) {
 	ranges := []evalItemsRange{{days: request.ranges.window, start: request.ranges.from, end: request.ranges.to, label: evals.RangeWindow}}
 	if request.ranges.compare != nil {
 		ranges = append(ranges, evalItemsRange{
 			days: *request.ranges.compare, start: request.ranges.compareFrom, end: request.ranges.compareTo, label: evals.RangeCompare,
 		})
 	}
-	settings, err := s.evalDeliverySettings(ctx)
+	settings, err := evals.BuiltSettingsIn(ctx, tx)
 	if err != nil {
 		return nil, err
 	}
@@ -261,11 +299,10 @@ func (s *server) evalItemSources(ctx context.Context, project string, entry eval
 		}
 		return request.rowKind == "" || request.rowKind == kind
 	}
-	registry := s.registry()
 	definition := entry.Definition
 	var sources []evalItemSource
 	for _, rng := range ranges {
-		read := evalItemsRead{project: project, entry: entry, request: request, rng: rng, settings: settings, shared: &evalRangeReads{}}
+		read := evalItemsRead{project: project, entry: entry, request: request, rng: rng, settings: settings, shared: &evalRangeReads{}, tx: tx}
 		if definition.Computed() {
 			for _, kind := range evalComputedItems[definition.Source] {
 				if !kept(kind.kind) {
@@ -295,7 +332,7 @@ func (s *server) evalItemSources(ctx context.Context, project string, entry eval
 		// A reading's row kind is the one its writer gave it, so row_kind keeps the readings of that
 		// kind, as the store reads them.
 		sources = append(sources, func(ctx context.Context, skip, want int) ([]evalItemRow, int, error) {
-			page, err := registry.Items(ctx, definition.EvalID, request.series, request.rowKind, request.row, request.repos, rng.days, max(want, 1), skip)
+			page, err := evals.ItemsIn(ctx, tx, definition.EvalID, request.series, request.rowKind, request.row, request.repos, rng.days, max(want, 1), skip)
 			if err != nil {
 				return nil, 0, err
 			}
@@ -323,12 +360,12 @@ func (s *server) evalItemSources(ctx context.Context, project string, entry eval
 	return sources, nil
 }
 
-// evalDaysOf is the eval's day rows of read's range (evals.Store.EvalDays, of the request's series
-// and repositories, and of the deploy repository the settings name where the eval reads it), read
-// once a range (evalRangeReads): the day-row source and pr-ci's job rows both read them.
+// evalDaysOf is the eval's day rows of read's range (evals.EvalDaysIn, of the request's series
+// and repositories, and of the deploy repository recorded with the rows where the eval reads it),
+// read once a range (evalRangeReads): the day-row source and pr-ci's job rows both read them.
 func (s *server) evalDaysOf(ctx context.Context, read evalItemsRead) ([]evals.DayRow, error) {
 	if !read.shared.read {
-		days, err := s.registry().EvalDays(ctx, read.entry.Definition, read.deployRepo(), read.request.series, read.request.repos, read.rng.days)
+		days, err := evals.EvalDaysIn(ctx, read.tx, read.entry.Definition, read.deployRepo(), read.request.series, read.request.repos, read.rng.days)
 		if err != nil {
 			return nil, err
 		}
@@ -337,8 +374,9 @@ func (s *server) evalDaysOf(ctx context.Context, read evalItemsRead) ([]evals.Da
 	return read.shared.days, nil
 }
 
-// deployRepo is the deploy repository the settings name, "" where the deployment has set none:
-// the repository whose rows and items a read of an eval that reads it reads (evals.DeployRepoOf).
+// deployRepo is the deploy repository the rows stand recorded under, "" where the deployment has
+// set none: the repository whose rows and items a read of an eval that reads it reads
+// (evals.DeployRepoOf, evals.BuiltSettingsIn).
 func (read evalItemsRead) deployRepo() string {
 	if read.settings == nil {
 		return ""
@@ -351,25 +389,13 @@ func (read evalItemsRead) deployRepo() string {
 // (evalRangeReads): change-fail-rate's pull requests and its deploys both read them.
 func (s *server) mergedRowsOf(ctx context.Context, read evalItemsRead) (delivery.MergedRows, error) {
 	if read.shared.merged == nil {
-		merged, err := delivery.ReadMergedRows(ctx, s.deps.Store.Pool, *read.settings, read.rng.days.From, read.rng.days.To)
+		merged, err := delivery.ReadMergedRows(ctx, read.tx, *read.settings, read.rng.days.From, read.rng.days.To)
 		if err != nil {
 			return delivery.MergedRows{}, err
 		}
 		read.shared.merged = &merged
 	}
 	return *read.shared.merged, nil
-}
-
-// evalDeliverySettings is the deployment's delivery settings, nil where it has set none.
-func (s *server) evalDeliverySettings(ctx context.Context) (*delivery.DeliverySettings, error) {
-	settings, err := delivery.GetSettings(ctx, s.deps.Store.Pool)
-	if errors.Is(err, delivery.ErrNoSettings) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	return &settings, nil
 }
 
 // readingItemRow is a stored reading as an items row: its own row key and row kind, its columns
@@ -453,14 +479,13 @@ func evalItemsPath(project, slug string) string {
 // built, where a read of every page made all three over every issue of the range. A repo filter
 // resolves every issue's repository, which the total then counts by.
 func (s *server) legionItemSource(ctx context.Context, read evalItemsRead) (evalItemSource, error) {
-	pool := s.deps.Store.Pool
 	base, cut := metrics.SplitCutSeries(read.request.series)
 	class, filedSeries := strings.CutPrefix(base, metrics.FilingSeriesPrefix)
 	splitting := read.entry.Definition.Slug == evals.SlugLegionSplitting
 	var filings []legionfacts.Filing
 	var closed []legionfacts.Row
 	if splitting && (read.request.series == "" || filedSeries) {
-		filed, err := legionfacts.ReadFilingsIn(ctx, pool, read.project, read.rng.days.From, read.rng.days.To)
+		filed, err := legionfacts.ReadFilingsIn(ctx, read.tx, read.project, read.rng.days.From, read.rng.days.To)
 		if err != nil {
 			return nil, err
 		}
@@ -470,7 +495,7 @@ func (s *server) legionItemSource(ctx context.Context, read evalItemsRead) (eval
 		})
 	}
 	if !filedSeries {
-		stored, err := legionfacts.ReadClosedIn(ctx, pool, read.project, read.rng.days.From, read.rng.days.To, time.Now().UTC())
+		stored, err := legionfacts.ReadClosedIn(ctx, read.tx, read.project, read.rng.days.From, read.rng.days.To, time.Now().UTC())
 		if err != nil {
 			return nil, err
 		}
@@ -491,7 +516,7 @@ func (s *server) legionItemSource(ctx context.Context, read evalItemsRead) (eval
 	var repos map[string]string
 	if len(read.request.repos) > 0 {
 		var err error
-		if repos, err = legionfacts.ReadRepos(ctx, pool, keysOf(filings, closed)); err != nil {
+		if repos, err = legionfacts.ReadRepos(ctx, read.tx, keysOf(filings, closed)); err != nil {
 			return nil, err
 		}
 		filings = slices.DeleteFunc(filings, func(filing legionfacts.Filing) bool { return !slices.Contains(read.request.repos, repos[filing.Key]) })
@@ -507,11 +532,11 @@ func (s *server) legionItemSource(ctx context.Context, read evalItemsRead) (eval
 		pageRepos := repos
 		if pageRepos == nil {
 			var err error
-			if pageRepos, err = legionfacts.ReadRepos(ctx, pool, keys); err != nil {
+			if pageRepos, err = legionfacts.ReadRepos(ctx, read.tx, keys); err != nil {
 				return nil, 0, err
 			}
 		}
-		issues, err := legionfacts.ReadItemIssues(ctx, pool, keys)
+		issues, err := legionfacts.ReadItemIssues(ctx, read.tx, keys)
 		if err != nil {
 			return nil, 0, err
 		}
@@ -534,7 +559,7 @@ func (s *server) unownedItemRows(ctx context.Context, read evalItemsRead) ([]eva
 	if read.rng.label != evals.RangeWindow {
 		return nil, nil
 	}
-	issues, err := delivery.ListUnownedP0(ctx, s.deps.Store.Pool, read.project)
+	issues, err := delivery.ListUnownedP0(ctx, read.tx, read.project)
 	if err != nil {
 		return nil, err
 	}
@@ -559,7 +584,7 @@ func (s *server) counted(ctx context.Context, read evalItemsRead, family string,
 	if keys, held := read.shared.counted[family]; ranged && held {
 		return keys, nil
 	}
-	items, err := s.registry().CountedIn(ctx, read.project, family, evals.DeployRepoOf(read.entry.Definition, read.deployRepo()), read.request.repos, days)
+	items, err := evals.CountedIn(ctx, read.tx, read.project, family, evals.DeployRepoOf(read.entry.Definition, read.deployRepo()), read.request.repos, days)
 	if err != nil {
 		return nil, err
 	}
@@ -642,12 +667,12 @@ func (s *server) deployItemRows(ctx context.Context, read evalItemsRead) ([]eval
 	if read.settings == nil {
 		return nil, nil
 	}
-	settings, pool := *read.settings, s.deps.Store.Pool
+	settings := *read.settings
 	members, err := s.counted(ctx, read, evals.KindDelivery, read.rng.days)
 	if err != nil {
 		return nil, err
 	}
-	deploys, err := delivery.ReadDeploys(ctx, pool, settings, read.rng.days.From, read.rng.days.To)
+	deploys, err := delivery.ReadDeploys(ctx, read.tx, settings, read.rng.days.From, read.rng.days.To)
 	if err != nil {
 		return nil, err
 	}
@@ -702,7 +727,7 @@ func (s *server) runItemRows(ctx context.Context, read evalItemsRead) ([]evalIte
 		return nil, err
 	}
 	cards := measures.DeployCards(settings)
-	ci, err := delivery.ReadCIRows(ctx, s.deps.Store.Pool, settings.DeployRepo, read.rng.days.From, read.rng.days.To, measures.DeployCardJobNames(cards))
+	ci, err := delivery.ReadCIRows(ctx, read.tx, settings.DeployRepo, read.rng.days.From, read.rng.days.To, measures.DeployCardJobNames(cards))
 	if err != nil {
 		return nil, err
 	}
@@ -854,7 +879,7 @@ func (s *server) failingJobRows(ctx context.Context, read evalItemsRead) ([]eval
 	if err != nil {
 		return nil, err
 	}
-	ci, err := delivery.ReadCIRows(ctx, s.deps.Store.Pool, settings.DeployRepo, span.From, span.To,
+	ci, err := delivery.ReadCIRows(ctx, read.tx, settings.DeployRepo, span.From, span.To,
 		measures.DeployCardJobNames(measures.DeployCards(settings)))
 	if err != nil {
 		return nil, err

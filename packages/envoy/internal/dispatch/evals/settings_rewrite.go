@@ -32,15 +32,15 @@ import (
 // A change that moves no eval writes nothing and begins no walk. One of a setting no day row reads
 // (a workflow path, the population rule's authors and excluded repositories, the roll-up job), a
 // move of the deploy repository (the evals that read it are kept for every repository that holds
-// a delivery run, and a read chooses among them: deploy_repos.go), or one that leaves the
-// production rule and every deploy card following the same names with the same step (the order of
-// the production names, a staging job renamed between two names the production rule follows),
-// moves no eval by settingsMoves, and the pass reads nothing. A production job name no run holds
-// moves the rule's names but its verdict on no run and no card's part, so the rewrite reads the
-// history and, once the running build's delivery walk has written today, builds no day: it builds
-// only the days whose rows the change can move (movedDeliveryDays). Until then it builds every
-// day (rewriteSettings says why). Each of its writes sends a row, a member or a figure only where
-// its value moved.
+// a delivery run, and a read chooses among them by the repository recorded with the rows:
+// deploy_repos.go, DeployRepoIn), or one that leaves the production rule and every deploy card
+// following the same names with the same step (the order of the production names, a staging job
+// renamed between two names the production rule follows), moves no eval by settingsMoves, and the
+// pass reads nothing. A production job name no run holds moves the rule's names but its verdict
+// on no run and no card's part, so the rewrite reads the history and, once the running build's
+// delivery walk has written today, builds no day: it builds only the days whose rows the change
+// can move (movedDeliveryDays). Until then it builds every day (rewriteSettings says why). Each
+// of its writes sends a row, a member or a figure only where its value moved.
 
 // settingsMoves is the delivery and CI evals (by slug) whose day rows a change of the delivery
 // settings from prev to next can move, and the families of eval_day_members it can move, read from
@@ -62,7 +62,7 @@ import (
 //   - deploy_repo: none. Every read of a day names it (the deploys, the apply runs, the CI runs),
 //     and containment ships its pull requests alone, but the evals those reads build are kept for
 //     every repository that holds a delivery run, each as if it were the deploy repository, and
-//     the eval list reads those of the repository the settings name (DeployRepoOf).
+//     the eval list reads those of the repository recorded with the rows (DeployRepoIn).
 //   - deploy_workflow_path, pr_checks_workflow_path, population_authors, excluded_repos and
 //     pr_checks_rollup_job_name: none. The first four decide what the intake and the reconcile
 //     store, each store a change of its own, and no read of a day names them; the roll-up job is
@@ -125,13 +125,13 @@ func cardParts(settings delivery.DeliverySettings) map[measures.DeployJobCardID]
 	return parts
 }
 
-// sameBuiltSettings reports whether a and b agree on every delivery setting a day row reads, the
-// fields eval_days_settings records, each exactly as stored. The deploy repository is none of
-// them: the rows of the evals that read it are kept for every repository that holds a run.
+// sameBuiltSettings reports whether a and b agree on every delivery setting eval_days_settings
+// records, each exactly as stored: the four a day row reads, and the deploy repository, which
+// moves no row but is the one whose rows a read answers (DeployRepoIn).
 func sameBuiltSettings(a, b delivery.DeliverySettings) bool {
 	return slices.Equal(a.ProductionJobNames, b.ProductionJobNames) &&
 		sameName(a.ProductionApplyStepName, b.ProductionApplyStepName) && sameName(a.StagingE2EJobName, b.StagingE2EJobName) &&
-		sameName(a.StagingApplyJobName, b.StagingApplyJobName)
+		sameName(a.StagingApplyJobName, b.StagingApplyJobName) && a.DeployRepo == b.DeployRepo
 }
 
 // sameName reports whether two optional names are one.
@@ -143,17 +143,25 @@ func sameName(a, b *string) bool {
 }
 
 // readBuiltUnder reads the delivery settings the stored delivery and CI rows stand built under
-// (eval_days_settings), the fields a day row reads alone, nil where none are recorded, and the
-// repositories that hold a delivery run they stand built for, each with its start (kept_repos,
-// kept_since).
+// (builtUnderIn), nil where none are recorded, and the repositories that hold a delivery run they
+// stand built for, each with its start (kept_repos, kept_since).
 func (s *Store) readBuiltUnder(ctx context.Context) (*delivery.DeliverySettings, []keptRepo, error) {
+	return builtUnderIn(ctx, s.database.Pool)
+}
+
+// builtUnderIn reads, in q, the delivery settings the stored delivery and CI rows stand built
+// under (eval_days_settings), the fields recorded there alone (sameBuiltSettings), nil where none
+// are recorded, and the repositories that hold a delivery run they stand built for.
+func builtUnderIn(ctx context.Context, q delivery.Querier) (*delivery.DeliverySettings, []keptRepo, error) {
 	var built delivery.DeliverySettings
 	var names []string
 	var since []time.Time
-	err := s.database.Pool.QueryRow(ctx, `
-		select production_job_names, production_apply_step_name, staging_e2e_job_name, staging_apply_job_name, kept_repos, kept_since
+	err := q.QueryRow(ctx, `
+		select production_job_names, production_apply_step_name, staging_e2e_job_name, staging_apply_job_name, deploy_repo,
+			kept_repos, kept_since
 		from eval_days_settings where singleton
-	`).Scan(&built.ProductionJobNames, &built.ProductionApplyStepName, &built.StagingE2EJobName, &built.StagingApplyJobName, &names, &since)
+	`).Scan(&built.ProductionJobNames, &built.ProductionApplyStepName, &built.StagingE2EJobName, &built.StagingApplyJobName,
+		&built.DeployRepo, &names, &since)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		return nil, nil, nil
@@ -169,19 +177,47 @@ func (s *Store) readBuiltUnder(ctx context.Context) (*delivery.DeliverySettings,
 	return &built, kept, nil
 }
 
+// BuiltSettingsIn is, read in q, the delivery settings an eval's stored delivery and CI rows
+// answer under: the saved settings (delivery.GetSettings), with each field eval_days_settings
+// records (sameBuiltSettings: the four a day row reads and the deploy repository) as the refresher
+// recorded it with the rows (recordBuiltUnder), nil where the deployment has set none. Between a
+// save of the settings and the refresher's commit that brings the rows to them, a reader of the
+// evals then reads the rows and the settings they were built under together, the old ones whole,
+// and from that commit on the new ones whole. Where no pass has recorded the rows' settings (a
+// walk that begins again builds every day under the saved ones), it is the saved settings.
+func BuiltSettingsIn(ctx context.Context, q delivery.Querier) (*delivery.DeliverySettings, error) {
+	settings, err := delivery.GetSettings(ctx, q)
+	if errors.Is(err, delivery.ErrNoSettings) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	built, _, err := builtUnderIn(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	if built != nil {
+		settings.ProductionJobNames, settings.ProductionApplyStepName = built.ProductionJobNames, built.ProductionApplyStepName
+		settings.StagingE2EJobName, settings.StagingApplyJobName = built.StagingE2EJobName, built.StagingApplyJobName
+		settings.DeployRepo = built.DeployRepo
+	}
+	return &settings, nil
+}
+
 // recordBuiltUnder records, in q, settings as the delivery settings the stored delivery and CI rows
-// stand built under (eval_days_settings).
+// stand built under (eval_days_settings), the fields sameBuiltSettings compares.
 func recordBuiltUnder(ctx context.Context, q pgx.Tx, settings delivery.DeliverySettings) error {
 	if _, err := q.Exec(ctx, `
-		insert into eval_days_settings (production_job_names, production_apply_step_name, staging_e2e_job_name, staging_apply_job_name)
-		values ($1, $2, $3, $4)
+		insert into eval_days_settings (production_job_names, production_apply_step_name, staging_e2e_job_name, staging_apply_job_name, deploy_repo)
+		values ($1, $2, $3, $4, $5)
 		on conflict (singleton) do update
 		set production_job_names = excluded.production_job_names,
 			production_apply_step_name = excluded.production_apply_step_name,
 			staging_e2e_job_name = excluded.staging_e2e_job_name, staging_apply_job_name = excluded.staging_apply_job_name,
-			updated_at = now()
+			deploy_repo = excluded.deploy_repo, updated_at = now()
 	`, nonNil(settings.ProductionJobNames), settings.ProductionApplyStepName,
-		settings.StagingE2EJobName, settings.StagingApplyJobName); err != nil {
+		settings.StagingE2EJobName, settings.StagingApplyJobName, settings.DeployRepo); err != nil {
 		return fmt.Errorf("record the delivery settings the day rows stand built under: %w", err)
 	}
 	return nil
@@ -192,7 +228,7 @@ func recordBuiltUnder(ctx context.Context, q pgx.Tx, settings delivery.DeliveryS
 // settings the rows do not stand built under:
 //
 //   - where the recorded settings (eval_days_settings, read once a pass) agree with them on every
-//     field a day row reads, nothing;
+//     field recorded there (sameBuiltSettings), nothing;
 //   - where they differ, it rewrites the days of the evals the difference moves whose rows it can
 //     move (settingsMoves, rewriteSettings), which records the settings in its own transaction,
 //     or, where the difference moves no eval, has the page record them with its cursors (w.built);
@@ -201,8 +237,9 @@ func recordBuiltUnder(ctx context.Context, q pgx.Tx, settings delivery.DeliveryS
 //     which builds every day under the settings it reads, and has the page record them with the
 //     walk it begins, in one transaction.
 //
-// A move of the deploy repository alone agrees with the record, so it writes nothing at all, and
-// is read at read time (DeployRepoOf).
+// A move of the deploy repository alone moves no eval, so it writes no row: the page records the
+// new repository with its cursors, in the commit that says the rows stand at the settings
+// (markSettingsApplied), from which on a read chooses its rows (DeployRepoIn).
 func (r *refresh) syncSettings(ctx context.Context, w *pageWork) error {
 	if r.settings == nil {
 		return nil

@@ -1,10 +1,12 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/url"
 	"slices"
+	"strconv"
 	"testing"
 	"time"
 
@@ -14,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/legionfacts"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // The tests of GET /api/v1/projects/{key}/evals/{slug}/items (evals_items.go). The tests of the
@@ -229,4 +232,89 @@ func TestEveryCatalogueSourceAnswersItsRows(t *testing.T) {
 		t.Fatal("the seeded project holds no computed eval, so the check checked nothing")
 	}
 	t.Logf("%d seeded computed evals, each with its rows", computed)
+}
+
+// TestOneEvalItemsAnswerReadsItsRowsFromOneSnapshot (point 6 of dispatch://INFRA-2916, one answer,
+// one snapshot): an items answer of deploy-frequency, its deploy runs, beside the items its day
+// rows counted (eval_day_members), and its day rows, is one database moment. A deploy's production
+// job fails and the refresher's pass rewrites the day rows of its day, their members and the
+// stored figures they fold, all of it committed, on another connection, the moment the answer's
+// first statement of the counted items ends. The answer the commit landed in is the answer before
+// it, byte for byte, and the next answer is the new state, in which the deploy no longer reached
+// production. A read whose statements read several moments answers, in the answer the commit lands
+// in, the counted items before it beside the deploy runs and the day rows after it.
+func TestOneEvalItemsAnswerReadsItsRowsFromOneSnapshot(t *testing.T) {
+	database := storetest.Open(t)
+	commits := storetest.NewCommitBetweenReads("eval_day_members")
+	handler, _, deps, _ := newRegisteredTestServer(t, testServerOptions{store: storetest.TracedStore(t, database, commits)})
+	fixture, windows := seedEvalHistories(t, database, deps, 30)
+	end := windows[0].Spec.Now
+	if fixture.To.After(end) {
+		end = fixture.To
+	}
+	now := end.Add(-time.Minute)
+	registry := evals.New(database, deps.Docs, deps.Events)
+	window := evalDaysEnding(7, measures.Midnight(now))
+	target := evalItemsPath(fixture.Project, evals.SlugDeployFrequency) + "?" + url.Values{
+		"from": {window.From.Format(time.RFC3339)}, "to": {window.To.Format(time.RFC3339)}, "limit": {"200"},
+	}.Encode()
+	var runID int64
+	for _, apply := range fixture.Applies {
+		if !apply.CompletedAt.Before(window.From) && apply.CompletedAt.Before(window.To) {
+			runID = apply.RunID
+		}
+	}
+	repo := ""
+	for _, run := range fixture.Runs {
+		if run.RunID == runID {
+			repo = run.Repo
+		}
+	}
+	if repo == "" {
+		t.Fatalf("no production apply of the history completed in %s..%s", window.From, window.To)
+	}
+	before := getBody(t, handler, target)
+	reached := func(body json.RawMessage) (bool, bool) {
+		t.Helper()
+		var answer evalItemsResponse
+		if err := json.Unmarshal(body, &answer); err != nil {
+			t.Fatalf("decode the items answer: %v", err)
+		}
+		for _, row := range answer.Items {
+			if row.RowKind == evalRowDeploy && row.RowKey == repo+"/"+strconv.FormatInt(runID, 10) {
+				value, _ := row.Cols["reached_production"].(bool)
+				return value, true
+			}
+		}
+		return false, false
+	}
+	if was, listed := reached(before); !listed || !was {
+		t.Fatalf("before the commit the items list run %d as a deploy that reached production %t (listed %t), and the check needs it listed as one", runID, was, listed)
+	}
+
+	commits.Arm(func() {
+		if _, err := database.Pool.Exec(t.Context(), `update delivery_run_jobs set conclusion = 'failure' where repo = $1 and run_id = $2 and name = any($3)`,
+			repo, runID, fixture.Settings.ProductionJobNames); err != nil {
+			t.Errorf("fail the production job of run %d: %v", runID, err)
+		}
+		refreshEvalDays(t, registry, database, now)
+	})
+	during := getBody(t, handler, target)
+	if !commits.Fired() {
+		t.Fatal("no statement of the items read read eval_day_members, so no commit landed during it")
+	}
+	if !bytes.Equal(during, before) {
+		was, _ := reached(during)
+		t.Errorf("the answer the commit landed in differs from the answer before it at byte %d of %d: run %d reached production %t in it",
+			firstDifference(during, before), len(before), runID, was)
+	}
+
+	after := getBody(t, handler, target)
+	if bytes.Equal(after, before) {
+		t.Errorf("after the commit the items answer what they answered before it: the failed production job of run %d moved nothing", runID)
+	}
+	if was, listed := reached(after); listed && was {
+		t.Errorf("after the commit the items list run %d as a deploy that reached production", runID)
+	}
+	t.Logf("the answer the commit landed in is the %d bytes of the answer before it; the next answer moved run %d", len(before), runID)
 }

@@ -73,15 +73,16 @@ func (s *Store) ReadStoredFigures(ctx context.Context, projects []string, entrie
 
 // ReadStoredFiguresIn reads in q the stored figures a read of window and compare (nil for none) of
 // repo (the empty string for the projects' own rows) folds for entries, evals of projects, where
-// the delivery settings name deployRepo ("" where none are set): of an eval keyed by the deploy
-// repository the fold of that repository's rows, and of every other the fold of the rows of none
-// (DeployRepoOf). It reads, one after the other: the range rows of the window and of the compare
-// range, the `union all` of two ranges of eval_range_figures' primary key; how far each project's
-// figures are built (figuresThrough); and the day rows of the window of the evals with a headline
-// series, one range of eval_day_figures' primary key for each project. A refresher pass rewrites
-// the three in one transaction, so in one answer's snapshot (BeginSnapshot), as the eval list
-// reads them, an eval's window figures are the fold of the days read beside them; on the pool each
-// statement reads the rows that stand when it runs. The read is FiguresOffered's to make.
+// the rows are recorded under deployRepo ("" where none is set; DeployRepoIn): of an eval keyed
+// by the deploy repository the fold of that repository's rows, and of every other the fold of the
+// rows of none (DeployRepoOf). It reads, one after the other: the range rows of the window and of
+// the compare range, the `union all` of two ranges of eval_range_figures' primary key; how far
+// each project's figures are built (figuresThrough); and the day rows of the window of the evals
+// with a headline series, one range of eval_day_figures' primary key for each project. A
+// refresher pass rewrites the three in one transaction, so in one answer's snapshot
+// (BeginSnapshot), as the eval list reads them, an eval's window figures are the fold of the days
+// read beside them; on the pool each statement reads the rows that stand when it runs. The read
+// is FiguresOffered's to make.
 func ReadStoredFiguresIn(ctx context.Context, q delivery.Querier, projects []string, entries []Entry, deployRepo, repo string, window Range, compare *Range) (StoredFigures, error) {
 	read := StoredFigures{window: map[string]storedRange{}, compare: map[string]storedRange{}, days: map[string][]storedDay{}}
 	evalIDs := make([]string, len(entries))

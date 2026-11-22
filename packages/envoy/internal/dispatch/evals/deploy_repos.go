@@ -17,10 +17,11 @@ import (
 // (dispatch://INFRA-2916, R14): once for every repository that holds a delivery run, each
 // repository's rows computed as if it were the deploy repository and keyed by it
 // (eval_days.deploy_repo, migration 20261117100006), with their stored figures and their members.
-// A read folds the rows of the repository the delivery settings name (DeployRepoOf), so a move of
-// the deploy repository is a selection at read time: it rewrites no row and begins no walk, and a
-// move back reads the old repository's rows as they stand, which every write of a day keeps
-// beside the others.
+// A read folds the rows of the repository recorded with them as the deploy repository
+// (DeployRepoIn), so a move of the deploy repository is a selection at read time: it rewrites no
+// row and begins no walk, the refresher's page records it in the commit that says the rows stand
+// at the settings, and a move back reads the old repository's rows as they stand, which every
+// write of a day keeps beside the others.
 //
 // What reads the deploy repository is what a day reads of it (readDeliveryDay): its deploy runs
 // (delivery.ReadDeploys), its apply runs, under which containment ships its pull requests alone
@@ -76,14 +77,37 @@ func KeyedByDeployRepo(definition Definition) bool {
 }
 
 // DeployRepoOf is the deploy repository whose day rows, stored figures and members a read of
-// definition's eval reads, where the delivery settings name deployRepo ("" where none are set):
-// deployRepo for an eval keyed by it (KeyedByDeployRepo), and "" for every other, whose rows no
-// deploy repository moves.
+// definition's eval reads, where the rows are recorded under deployRepo (DeployRepoIn, "" where
+// none is set): deployRepo for an eval keyed by it (KeyedByDeployRepo), and "" for every other,
+// whose rows no deploy repository moves.
 func DeployRepoOf(definition Definition, deployRepo string) string {
 	if KeyedByDeployRepo(definition) {
 		return deployRepo
 	}
 	return ""
+}
+
+// DeployRepoIn is, read in q, the deploy repository whose rows a read of the evals that read it
+// answers: the one recorded with the stored rows (eval_days_settings.deploy_repo,
+// recordBuiltUnder), or, where no pass has recorded the rows' settings, the one the delivery
+// settings name; "" where neither names one. The delivery settings name the new repository from
+// their save on, while the rows of the evals whose rule the same save moved stand under the old
+// rule until the refresher's rewrite commits, so a read by the saved one would answer a state
+// between the two; the record moves in the commit that brings the rows to the settings
+// (rewriteSettings, or the page's commit where no row moved), so a read in one snapshot answers
+// the old settings whole or the new ones whole (BuiltSettingsIn says the same of every field).
+// One statement, two primary-key reads.
+func DeployRepoIn(ctx context.Context, q delivery.Querier) (string, error) {
+	var repo string
+	if err := q.QueryRow(ctx, `
+		select coalesce(
+			(select deploy_repo from eval_days_settings where singleton),
+			(select deploy_repo from delivery_settings where singleton),
+			'')
+	`).Scan(&repo); err != nil {
+		return "", fmt.Errorf("read the deploy repository the day rows stand recorded under: %w", err)
+	}
+	return repo, nil
 }
 
 // keyedEvals is the ids of entries' evals keyed by the deploy repository (KeyedByDeployRepo): the

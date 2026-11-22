@@ -42,7 +42,7 @@ import (
 //
 // Each is kept for the rows of each deploy repository apart, as the day rows are (deploy_repos.go):
 // a fold of the evals that read the deploy repository for each repository whose rows of them are
-// kept, and a read looks up the fold of the repository the delivery settings name.
+// kept, and a read looks up the fold of the repository recorded with the rows (DeployRepoIn).
 //
 // A range exists for every length of FigureLengths and every end day from the day after the
 // eval's first row through FigureLead days after today, for the project's own rows and for each

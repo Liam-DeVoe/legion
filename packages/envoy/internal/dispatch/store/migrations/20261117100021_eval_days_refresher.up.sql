@@ -47,14 +47,21 @@
 -- eval_days_settings holds at most one row (singleton, as delivery_settings is keyed): the delivery
 -- settings the stored delivery and CI day rows stand built under, the four a day row reads
 -- (production_job_names, production_apply_step_name, staging_e2e_job_name and
--- staging_apply_job_name; evals.settingsMoves says which evals each moves). The deploy repository
--- is none of them: the rows of the evals that read it are kept for every repository that holds a
--- delivery run (eval_days.deploy_repo, 20261117100006), and a read chooses among them. A pass that
+-- staging_apply_job_name; evals.settingsMoves says which evals each moves), and the deploy
+-- repository (deploy_repo) whose rows a read of the evals that read it answers. A pass that
 -- reads delivery settings other than these rewrites, before it writes a day under them, the days
 -- of the evals the difference moves whose rows it can move (evals.movedDeliveryDays), every day
 -- of them where the delivery walk still has days to write, in one transaction that records the
 -- settings it read here (evals.rewriteSettings); a pass that finds no row begins the delivery walk
 -- again, which builds every day under the settings it reads, and records them.
+--   deploy_repo  the deploy repository the settings named when the row was recorded, '' for none.
+--              It moves no row: the rows of the evals that read it are kept for every repository
+--              that holds a delivery run (eval_days.deploy_repo, 20261117100006), and a read
+--              chooses among them. A read chooses by this column rather than by delivery_settings
+--              (evals.DeployRepoIn), with the four above (evals.BuiltSettingsIn), so a read between
+--              a save of the settings and the commit that brings the rows to them answers the old
+--              settings whole, and one after it the new: a move of the deploy repository alone is
+--              recorded in the refresher's page commit that says the rows stand at the settings.
 --   kept_repos and kept_since  the repositories that hold a delivery run, whose rows of the evals
 --              that read the deploy repository the stored rows are kept for, in the byte order of
 --              their names, and each one's start (the UTC day of its first deploy or PR-checks
@@ -93,6 +100,7 @@ create table eval_days_settings (
     production_apply_step_name text,
     staging_e2e_job_name text,
     staging_apply_job_name text,
+    deploy_repo text not null default '',
     kept_repos text[] not null default '{}',
     kept_since date[] not null default '{}',
     updated_at timestamptz not null default now()

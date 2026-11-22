@@ -1300,31 +1300,9 @@ func (r *hubRig) quiesce(t *testing.T, frame DeliveryLiveView) {
 // rewrite; nothing follows it.
 func TestAPutThatMovesTheDeployRepositoryAndAJudgedJobSendsTheEvalsPageOneDelta(t *testing.T) {
 	var other string
-	page := newRefreshedEvalsPage(t, nil, func(database *store.Store, fixture deliverytest.Fixture) {
-		other = fixture.Repos[1]
-		for _, statement := range []string{`
-			insert into delivery_runs
-			select (jsonb_populate_record(null::delivery_runs, to_jsonb(run) || jsonb_build_object('repo', $2::text))).*
-			from delivery_runs run where run.repo = $1 and run.kind = 'deploy' and run.started_at >= $3`, `
-			insert into delivery_run_jobs
-			select (jsonb_populate_record(null::delivery_run_jobs, to_jsonb(job) || jsonb_build_object('repo', $2::text))).*
-			from delivery_run_jobs job join delivery_runs run on run.repo = job.repo and run.run_id = job.run_id
-			where job.repo = $1 and run.kind = 'deploy' and run.started_at >= $3`,
-		} {
-			if _, err := database.Pool.Exec(t.Context(), statement, fixture.DeployRepo, other, fixture.From.AddDate(0, 0, 12)); err != nil {
-				t.Fatalf("copy the deploy repository's deploy runs to %s: %v", other, err)
-			}
-		}
-	})
+	page := newRefreshedEvalsPage(t, nil, deployRunsInTheSecondRepository(t, &other))
 	before := page.route(t)
-	settings, err := delivery.GetSettings(t.Context(), page.rig.database.Pool)
-	if err != nil {
-		t.Fatalf("read the delivery settings: %v", err)
-	}
-	settings.DeployRepo, settings.ProductionJobNames = other, []string{"release / a job no run holds"}
-	if _, err := delivery.PutSettings(t.Context(), page.rig.database.Pool, settings, model.Actor{Kind: "user", ID: "alice"}); err != nil {
-		t.Fatalf("save the delivery settings: %v", err)
-	}
+	page.moveDeployRepoAndRule(t, other)
 	page.rig.hub.catchUpNow()
 	page.rig.clock.Advance(viewMaxWait)
 	page.conn.none(t, time.Second, "the settings save alone, before the refresher has rewritten the days it moves")
@@ -1345,6 +1323,139 @@ func TestAPutThatMovesTheDeployRepositoryAndAJudgedJobSendsTheEvalsPageOneDelta(
 	}
 	t.Logf("one save that moved the deploy repository to %s and the production rule sent the page one delta, after the rewrite, which upserts %v and lands on the route's body",
 		other, liveUpsertIDs(t, delta, "items"))
+}
+
+// deployRunsInTheSecondRepository is a prepare of newRefreshedEvalsPage: it copies the deploy
+// repository's deploy runs started from the history's thirteenth day on, with their jobs, into the
+// history's second repository, which so holds deploy runs of its own, and sets other to it.
+func deployRunsInTheSecondRepository(t *testing.T, other *string) func(*store.Store, deliverytest.Fixture) {
+	return func(database *store.Store, fixture deliverytest.Fixture) {
+		*other = fixture.Repos[1]
+		for _, statement := range []string{`
+			insert into delivery_runs
+			select (jsonb_populate_record(null::delivery_runs, to_jsonb(run) || jsonb_build_object('repo', $2::text))).*
+			from delivery_runs run where run.repo = $1 and run.kind = 'deploy' and run.started_at >= $3`, `
+			insert into delivery_run_jobs
+			select (jsonb_populate_record(null::delivery_run_jobs, to_jsonb(job) || jsonb_build_object('repo', $2::text))).*
+			from delivery_run_jobs job join delivery_runs run on run.repo = job.repo and run.run_id = job.run_id
+			where job.repo = $1 and run.kind = 'deploy' and run.started_at >= $3`,
+		} {
+			if _, err := database.Pool.Exec(t.Context(), statement, fixture.DeployRepo, *other, fixture.From.AddDate(0, 0, 12)); err != nil {
+				t.Fatalf("copy the deploy repository's deploy runs to %s: %v", *other, err)
+			}
+		}
+	}
+}
+
+// moveDeployRepoAndRule saves, in one save of the delivery settings, other as the deploy
+// repository and a production job name no run holds as the production rule's only one.
+func (p *refreshedEvalsPage) moveDeployRepoAndRule(t *testing.T, other string) {
+	t.Helper()
+	settings, err := delivery.GetSettings(t.Context(), p.rig.database.Pool)
+	if err != nil {
+		t.Fatalf("read the delivery settings: %v", err)
+	}
+	settings.DeployRepo, settings.ProductionJobNames = other, []string{"release / a job no run holds"}
+	if _, err := delivery.PutSettings(t.Context(), p.rig.database.Pool, settings, model.Actor{Kind: "user", ID: "alice"}); err != nil {
+		t.Fatalf("save the delivery settings: %v", err)
+	}
+}
+
+// withoutFreshness is a JSON body decoded, without its top-level freshness, which states the
+// refresher's age at the moment of the read.
+func withoutFreshness(t *testing.T, body json.RawMessage) map[string]any {
+	t.Helper()
+	var decoded map[string]any
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		t.Fatalf("decode %s: %v", body, err)
+	}
+	delete(decoded, "freshness")
+	return decoded
+}
+
+// listItemsByID is each item of an evals list body by its id.
+func listItemsByID(t *testing.T, body json.RawMessage) map[string]any {
+	t.Helper()
+	items := map[string]any{}
+	for _, item := range withoutFreshness(t, body)["items"].([]any) {
+		items[item.(map[string]any)["id"].(string)] = item
+	}
+	return items
+}
+
+// TestAMarkBetweenASettingsSaveAndItsRewriteSendsTheOldStateWhole: as in
+// TestAPutThatMovesTheDeployRepositoryAndAJudgedJobSendsTheEvalsPageOneDelta, one save moves the
+// deploy repository to the history's second repository and the production rule to a job no run
+// holds. Before the refresher's pass rewrites the days under the new rule, every read of the evals
+// answers the old settings whole: the list route, an eval's detail and its items answer what they
+// answered before the save, since each reads the deploy repository and the rule recorded with the
+// stored rows (evals.DeployRepoIn, evals.BuiltSettingsIn) and not those the settings name from the
+// save on, which would answer the new repository's rows as the old rule built them. A reading of a
+// logged eval, which is no change of the settings, then marks the page's view: its recompute sends
+// a delta that upserts the logged eval alone, every other eval as the page held it before the
+// save. The refresher's pass then rewrites the days, and the next delta lands the page on the
+// route's body after the rewrite, which states the new settings whole; nothing follows it.
+func TestAMarkBetweenASettingsSaveAndItsRewriteSendsTheOldStateWhole(t *testing.T) {
+	var other string
+	page := newRefreshedEvalsPage(t, nil, deployRunsInTheSecondRepository(t, &other))
+	project := page.fixture.Project
+	list := evalsTarget(t, project, page.held, "")
+	query := list[strings.Index(list, "?"):]
+	detail := "/api/v1/projects/" + project + "/evals/" + evals.SlugDeployFrequency + query
+	items := "/api/v1/projects/" + project + "/evals/" + evals.SlugDeployFrequency + "/items" + query + "&limit=200"
+	before := map[string]json.RawMessage{"list": page.route(t), "detail": getBody(t, page.rig.handler, detail), "items": getBody(t, page.rig.handler, items)}
+	page.moveDeployRepoAndRule(t, other)
+	for what, target := range map[string]string{"list": list, "detail": detail, "items": items} {
+		if got, want := withoutFreshness(t, getBody(t, page.rig.handler, target)), withoutFreshness(t, before[what]); !reflect.DeepEqual(got, want) {
+			t.Errorf("after the save, before the rewrite, GET %s answers otherwise than before the save:\ngot:  %v\nwant: %v", target, got, want)
+		}
+	}
+	page.rig.hub.catchUpNow()
+	page.rig.clock.Advance(viewMaxWait)
+	page.conn.none(t, time.Second, "the settings save alone, before the refresher has rewritten the days it moves")
+
+	logged := evals.EvalID(project, "pr-size")
+	written := evalRequest(t, page.rig.handler, http.MethodPost, "/api/v1/projects/"+project+"/evals/pr-size/readings",
+		map[string]any{"readings": []any{reading("lines", 120, page.now.Add(-time.Hour))}}, "between-save-and-rewrite")
+	if written.Code != http.StatusCreated {
+		t.Fatalf("log the reading: status %d, body %s", written.Code, written.Body.String())
+	}
+	page.rig.hub.catchUpNow()
+	page.rig.clock.Advance(viewMaxWait)
+	between := page.conn.delta(t, 10*time.Second, "e")
+	if got := liveUpsertIDs(t, between, "items"); !slices.Equal(got, []string{logged}) {
+		t.Errorf("the reading's delta, before the rewrite, upserts %v, want %s alone", got, logged)
+	}
+	page.held = applyLiveDelta(t, evalsView, page.held, between)
+	held, was := listItemsByID(t, page.held), listItemsByID(t, before["list"])
+	if _, found := held[logged]; !found {
+		t.Errorf("the page holds no item %s after the reading's delta", logged)
+	}
+	delete(held, logged)
+	if !reflect.DeepEqual(held, was) {
+		t.Errorf("after the reading's delta, before the rewrite, the page's evals other than %s are not those it held before the save:\nheld:   %v\nbefore: %v", logged, held, was)
+	}
+	page.requireAtRoute(t, "the reading's delta before the rewrite")
+
+	page.refresh(t)
+	page.rig.hub.catchUpNow()
+	after := page.conn.delta(t, 10*time.Second, "e")
+	page.held = applyLiveDelta(t, evalsView, page.held, after)
+	page.requireAtRoute(t, "the rewrite's delta")
+	moved := listItemsByID(t, page.held)
+	delete(moved, logged)
+	if reflect.DeepEqual(moved, was) {
+		t.Fatal("the route answers after the rewrite what it answered before the save, and the check needs a save that moves it")
+	}
+	for what, target := range map[string]string{"detail": detail, "items": items} {
+		if reflect.DeepEqual(withoutFreshness(t, getBody(t, page.rig.handler, target)), withoutFreshness(t, before[what])) {
+			t.Errorf("after the rewrite GET %s answers what it answered before the save, and the check needs a save that moves it", target)
+		}
+	}
+	page.rig.clock.Advance(viewMaxWait)
+	page.conn.none(t, time.Second, "the rewrite's one delta, past every quiet")
+	t.Logf("the reading's delta before the rewrite upserted %v alone; the rewrite's delta upserted %v and landed on the route's body",
+		liveUpsertIDs(t, between, "items"), liveUpsertIDs(t, after, "items"))
 }
 
 // figureScopeReads is a tracer that calls before ahead of each read of how far a project's stored
