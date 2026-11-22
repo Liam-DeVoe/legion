@@ -121,13 +121,16 @@ func TestAStartOfAnotherStepsRoleFinishesWithoutActing(t *testing.T) {
 // at entry 3 waited on its row's backoff:
 //   - while the task went back to step 1, whose row, key a's, was raised above every row of its
 //     role, to 4: the outbox finishes it without acting, and no claim is made or handed a task;
-//   - while a new generation's clear folded the implementer's rows into the one of no step, at
-//     entry 3: it starts key b, the claim it was queued for, with its task. Before, the start named
-//     no claim and acted on the claim the row now gave the role, its own token, which is key a's.
+//   - while the implementer's row stood on no step at entry 3, naming key b's claim: it starts key
+//     b, the claim it was queued for, with its task. A start that named no claim acted on the
+//     claim the row gave the role, its own token, which is key a's. The record leaves such a row
+//     for no issue standing at step 3, since the clear of a tree keeps the steps of a member whose
+//     generation it keeps (record.Store.ClearTreeGeneration); the case holds the outbox to the
+//     claim a start names whatever row it reads.
 //
 // The controls: key b's start with the task at its step 3 starts key b, and a start the release
 // before wrote, which names no claim, starts the claim of the row now: key b's at step 3, and
-// after the clear the role's own token, key a's.
+// on the row of no step the role's own token, key a's.
 func TestAStartActsOnTheClaimItWasQueuedFor(t *testing.T) {
 	const key = stepStartKey
 	keyA, keyB := mustClaimToken(t, key, claim.RoleImplementer), mustClaimToken(t, key, claim.RoleReviewer)
@@ -149,10 +152,10 @@ func TestAStartActsOnTheClaimItWasQueuedFor(t *testing.T) {
 		starts claim.Token
 	}{
 		{"key b's start of step 3 with the task back at key a's step 1", 1, []record.PhaseRow{stepOne(4, later), stepThree(earlier)}, keyB, ""},
-		{"key b's start of step 3 after a new generation's clear", 3, []record.PhaseRow{cleared}, keyB, keyB},
+		{"key b's start of step 3 with the role's row on no step", 3, []record.PhaseRow{cleared}, keyB, keyB},
 		{"the control: key b's start with the task at its step 3", 3, []record.PhaseRow{stepOne(1, earlier), stepThree(later)}, keyB, keyB},
 		{"a start the release before wrote with the task at step 3", 3, []record.PhaseRow{stepOne(1, earlier), stepThree(later)}, "", keyB},
-		{"a start the release before wrote after the clear", 3, []record.PhaseRow{cleared}, "", keyA},
+		{"a start the release before wrote with the role's row on no step", 3, []record.PhaseRow{cleared}, "", keyA},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()

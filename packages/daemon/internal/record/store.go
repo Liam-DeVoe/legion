@@ -1475,15 +1475,19 @@ func (s *Postgres) ClearGeneration(ctx context.Context, tx pgx.Tx, issue string,
 
 // ClearTreeGeneration empties them for every issue of the tree. A root set back to todo starts a
 // new generation of the whole tree, and its children carried the old one's pull request, gate and
-// handoffs into it — a child re-entered at the new generation read a handoff of the last.
+// handoffs into it — a child re-entered at the new generation read a handoff of the last. The
+// re-admission raises the generation of the root alone (admit's readmit), whose key is tree: every
+// other member keeps its generation, its plan and its task's place, so its phases rows keep the
+// steps they ran (clearGeneration).
 func (s *Postgres) ClearTreeGeneration(ctx context.Context, tx pgx.Tx, tree string, now time.Time) error {
 	return s.clearGeneration(ctx, tx, "issue in (select key from issues where tree = $1)", "tree = $1", tree,
 		fmt.Sprintf("clear the generation of tree %s", tree), now)
 }
 
 // clearGeneration runs each statement with key as $1: where selects the cleared issues' rows by
-// their issue column, and issues selects the same issues in the issues table. The design gates go
-// with them, in a statement of their own (clearGates).
+// their issue column, and issues selects the same issues in the issues table. The issue keyed $1 is
+// the one whose generation the clear raises, whose phases rows alone leave their steps. The design
+// gates go with them, in a statement of their own (clearGates).
 func (s *Postgres) clearGeneration(ctx context.Context, tx pgx.Tx, where, issues, key, describe string, now time.Time) error {
 	for _, statement := range []string{
 		"delete from pull_requests where " + where + " and state <> 'open'",
@@ -1506,14 +1510,27 @@ func (s *Postgres) clearGeneration(ctx context.Context, tx pgx.Tx, where, issues
 		"update pull_requests set " +
 			"head_run = null, planned_red = false, checked_head = '', failing = '[]'::jsonb, cancelled = '[]'::jsonb, " +
 			"check_runs = '[]'::jsonb, statuses = '[]'::jsonb, merge_forward = null where " + where,
-		// A role that stood at two steps has a row for each, and the clear below gives every row of
-		// the role the same step, ('', 0), so the rows of one role fold first into the one whose
-		// entry is the highest: the number the role's next entry rises from, which is never reset.
-		// The other rows are the last generation's steps, whose reports go with the generation. A
-		// claim whose rows go keeps the entry it was last given on its claims row, which its next
-		// step's entry also rises above (workflow's enter).
-		"delete from phases p where " + where + " and exists (select 1 from phases q where q.issue = p.issue and q.role = p.role " +
+		// The step each phases row ran (step_task, step_place) is a step of the plan of its issue's
+		// generation, so it goes only for the issue whose generation the clear raises, $1: the issue
+		// a rerun or an adoption takes to its next generation, or the root of a re-admitted tree. The
+		// new generation's plan need not share the last one's task ids, and its first entry of each
+		// role moves the role's row of no step to its step (workflow's enter). Every other member of a
+		// re-admitted tree keeps its generation, its plan and its task's place, so its rows keep their
+		// steps, a row for each step a role ran, each naming the claim of the step's agent its entry
+		// wrote, which every reader of the role's worker reads (WorkerClaim) and every start of that
+		// step names (workflow's startClaim). A row of no step would be read as the role's own token
+		// while the member's step is a keyed agent's, so a retry of a held member's phase would queue
+		// the step's work for its agent and every reader would send it to another.
+		//
+		// A role of that issue that stood at two steps has a row for each, and the statement after
+		// the fold gives every row of the role the same step, ('', 0), so the rows of one role fold
+		// first into the one whose entry is the highest: the number the role's next entry rises
+		// from, which is never reset. The other rows are the last generation's steps, whose reports
+		// go with the generation. A claim whose rows go keeps the entry it was last given on its
+		// claims row, which its next step's entry also rises above (workflow's enter).
+		"delete from phases p where p.issue = $1 and exists (select 1 from phases q where q.issue = p.issue and q.role = p.role " +
 			"and (q.entry, q.step_task, q.step_place) > (p.entry, p.step_task, p.step_place))",
+		"update phases set step_task = '', step_place = 0 where issue = $1",
 		// The entry's task goes with the run, and the entry itself stays where it stands: the
 		// number is never reset, so a worker still holding the old entry's task is behind the row
 		// rather than level with it, and the re-admitted tree's promotion raises the entry again
@@ -1521,19 +1538,17 @@ func (s *Postgres) clearGeneration(ctx context.Context, tx pgx.Tx, where, issues
 		// number is never reset is also what keeps a review of the old entry from moving the
 		// reviewer's commit after the promotion: its footer names a number the row has left
 		// (PhaseRow.ReviewedHead), and until the promotion the row holds no entry's task. The mark
-		// that the task is sent as written goes with the task it was about, and so does the step
-		// the row ran (step_task, step_place), a step of the last generation's plan, whose task ids
-		// the new generation's plan need not share. The time the entry was raised stays with the
-		// number it belongs to, and so does the move that raised it (entry_moved_back), which that
-		// same promotion writes again. The counts go with the rounds: the new generation counts its
-		// moves back from nothing, and the cap mark goes with them, so the architect is told again
-		// at the new generation's own first crossing of the cap. The commit the daemon recorded for
-		// the reviewer's own review goes with the decision, and so does the commit a review step of a
-		// role the deployment defines read (the workflow's recordStepReview): the new generation's first
-		// review reads the whole change.
+		// that the task is sent as written goes with the task it was about. The time the entry was
+		// raised stays with the number it belongs to, and so does the move that raised it
+		// (entry_moved_back), which that same promotion writes again. The counts go with the
+		// rounds: the new generation counts its moves back from nothing, and the cap mark goes with
+		// them, so the architect is told again at the new generation's own first crossing of the
+		// cap. The commit the daemon recorded for the reviewer's own review goes with the decision,
+		// and so does the commit a review step of a role the deployment defines read (the
+		// workflow's recordStepReview): the new generation's first review reads the whole change.
 		"update phases set handoff_commit = '', handoff_record = '', handoff_version = 0, rounds = 0, conflict_rounds = 0, " +
 			"backward_moves = '{}'::jsonb, cap_told = 0, verdict = '', summary = '', decision = null, reviewed_head = '', " +
-			"entry_task = '', entry_verbatim = false, step_task = '', step_place = 0 where " + where,
+			"entry_task = '', entry_verbatim = false where " + where,
 	} {
 		if _, err := tx.Exec(ctx, statement, key); err != nil {
 			return fmt.Errorf("%s: %w", describe, err)
