@@ -89,14 +89,14 @@ async function tagTimedPolls(page: Page): Promise<void> {
         return setIntervalOf(timed, timeout, ...rest);
       }) as typeof window.setInterval;
       const fetchOf = window.fetch;
-      window.fetch = (input, init) => {
+      window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
         if (running === 0) return fetchOf(input, init);
         const headers = new Headers(
           init?.headers ?? (input instanceof Request ? input.headers : undefined)
         );
         headers.set(header, "1");
         return fetchOf(input, { ...init, headers });
-      };
+      }) as typeof window.fetch;
     },
     { count: TIMED_POLL_COUNT, delays: POLL_INTERVALS_MS, header: TIMED_POLL_HEADER }
   );
