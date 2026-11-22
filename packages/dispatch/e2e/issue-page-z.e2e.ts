@@ -11,6 +11,7 @@ import { marginSection } from "./issue-page-h";
 import { withIssuePage } from "./issue-page-option";
 import {
   follows,
+  listedEdgesOf,
   listedRowsOf,
   mainContent,
   notFoundText,
@@ -51,10 +52,12 @@ import { asUser } from "./users";
 // alice's, hers again with the tree read refused until its retries run out, and bob's in a
 // context of his own.
 // The run alice asked that changed the issue is a row of her Referenced by, after the list's own
-// row, in the page's words and none of the graph's, read from the outline's tree read with no
-// request of its own and counted in the control; a tree read that fails leaves the list's own
-// row drawn with the failure and its Retry under it; and bob, who asked no run, reads the list's
-// own row alone.
+// rows, in the page's words and none of the graph's, read from the outline's tree read with no
+// request of its own and counted in the control with the list's own rows; a tree read that fails
+// leaves the list's own rows drawn with the failure and its Retry under them; and bob, who asked
+// no run, reads the list's own rows alone. Which rows the list's own read holds is the server's
+// and the list's to say (`listedEdgesOf`): the row reads that the citing issue's comment is one
+// of them, and counts them as each reader's list draws them.
 test("a command bar run that changed the issue is a reference for the person who ran it", async ({
   browser,
 }) => {
@@ -77,12 +80,16 @@ test("a command bar run that changed the issue is a reference for the person who
       RUN_WORD,
     ]);
     const listed = listedRowsOf(page);
-    await expect(
-      listed,
-      "the list's own rows are not the citing issue's comment alone"
-    ).toHaveCount(1);
-    await expect(listed).toContainText(seeded.citing);
-    expect(await follows(listed, runRow), "the run's row stands before the list's own").toBe(true);
+    await expect(listed, "the list's own rows hold no row of the citing issue").toContainText([
+      seeded.citing,
+    ]);
+    // The list's own rows are drawn together from its one read, which has answered once the
+    // citing issue's row stands, so this count reads them settled (`listedEdgesOf`).
+    const own = await listedEdgesOf(page).count();
+    expect(
+      await follows(listed.last(), runRow),
+      "the run's row stands before the last of the list's own rows"
+    ).toBe(true);
     // The run's row's "Only you" mark is drawn by later work, so no assertion reads it yet.
     await expect(runRow).toContainText(RUN_QUESTION);
     await expect(runRow).toContainText(NODE_REFERENCES_WORDS.edges.changed_by_run);
@@ -110,15 +117,15 @@ test("a command bar run that changed the issue is a reference for the person who
       "the page read references beside the list's and Blocks'"
     ).toEqual([]);
     await expect(
-      referencesControl(page, 2),
-      "Referenced by does not count the run's row with the list's own"
+      referencesControl(page, own + 1),
+      "Referenced by does not count the run's row with the list's own rows"
     ).toBeVisible();
     const drawn = await marginSection(page, "references").innerText();
     for (const token of ["interaction", "changed_by_run", seeded.run]) {
       expect(drawn, `Details' references read "${token}"`).not.toContain(token);
     }
 
-    // The tree read refused: the list's own row stands, with the failure and its Retry under it.
+    // The tree read refused: the list's own rows stand, with the failure and its Retry under them.
     await page.route("**/api/v1/issues/*/tree*", (route) =>
       route.fulfill({
         body: JSON.stringify({ code: "INTERNAL", error: "refused" }),
@@ -130,17 +137,22 @@ test("a command bar run that changed the issue is a reference for the person who
     await issueRead(page);
     await openDetails(page);
     await referencesControl(page).click();
-    await expect(listed, "a refused tree read took the list's own row with it").toHaveCount(1);
-    await expect(listed).toContainText(seeded.citing);
+    await expect(
+      listedEdgesOf(page),
+      `the list's own rows are not the ${own} it drew before the tree read was refused`
+    ).toHaveCount(own);
+    await expect(listed, "the list's own rows hold no row of the citing issue").toContainText([
+      seeded.citing,
+    ]);
     const failure = treeReadFailure(page);
     await expect(failure, "Details does not say the tree read failed").toBeVisible();
     expect(
-      await follows(listed, failure),
-      "the tree read's failure stands before the list's own row"
+      await follows(listed.last(), failure),
+      "the tree read's failure stands before the last of the list's own rows"
     ).toBe(true);
     await expect(retryBeside(failure)).toBeVisible();
 
-    // Bob asked no run: his list holds its own row alone, and its control counts that one.
+    // Bob asked no run: his list holds its own rows alone, and its control counts those.
     const bob = await asUser(browser, "bob");
     try {
       await withIssuePage(bob, "bob");
@@ -151,12 +163,14 @@ test("a command bar run that changed the issue is a reference for the person who
       await referencesControl(his).click();
       await expect(
         listedRowsOf(his),
-        "bob's list is not the citing issue's comment alone"
-      ).toHaveCount(1);
-      await expect(listedRowsOf(his)).toContainText(seeded.citing);
+        "bob's list's own rows hold no row of the citing issue"
+      ).toContainText([seeded.citing]);
+      // His list's own rows are drawn together from its one read, which has answered once the
+      // citing issue's row stands, so this count reads them settled (`listedEdgesOf`).
+      const bobsOwn = await listedEdgesOf(his).count();
       await expect(
-        referencesControl(his, 1),
-        "bob's Referenced by counts a row beside the list's own"
+        referencesControl(his, bobsOwn),
+        "bob's Referenced by counts a row beside the list's own rows"
       ).toBeVisible();
       await expect(
         marginSection(his, "references").locator("[data-extra-references]"),

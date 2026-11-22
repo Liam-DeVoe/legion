@@ -141,9 +141,12 @@ function commentInRun(
 
 /**
  * The issue a command bar run changed, as alice: she opens it, opens a second issue whose
- * comment cites the first by its reference, so the list's own read of the first holds one row,
- * and then asks the command bar `RUN_QUESTION`. At once, inside the run's 30 s window and before
- * any browser step, the run changes the first issue's labels twice and writes one comment on it.
+ * comment cites the first by its reference, so that comment is one of the rows of the list's own
+ * read of the first, and then asks the command bar `RUN_QUESTION`. What else that read holds -
+ * the first issue's own spec, which the server answers as attached to it - is the server's to
+ * answer, so a row counts the list's own rows as the list draws them (`listedEdgesOf`). At once,
+ * inside the run's 30 s window and before any browser step, the run changes the first issue's
+ * labels twice and writes one comment on it.
  */
 export async function seedRunIssue(): Promise<RunSeed> {
   await createProject({ key: PROJECT, name: "Core" });
@@ -191,6 +194,18 @@ function referencesList(page: Page): Locator {
 /** The rows of the list's own read of the issue's references: one for each citing source. */
 export function listedRowsOf(page: Page): Locator {
   return referencesList(page).locator(":scope > ul:not([data-extra-references]) > li");
+}
+
+/**
+ * The edges the list's own rows draw, one line apiece inside the row of the source that cites by
+ * it: `listedEdges` of the server's answer as Details reads it, which is what Referenced by's
+ * control counts of the list's own. A row counts them as the list draws them, not from the
+ * server's answer: `listedEdges` (`refs/ReferencedBy.tsx`) reaches the document schema's JSON,
+ * which Playwright's Node does not load (`issue-page/details-names.ts`), and which edges that
+ * answer holds is the server's and the list's to say, not these rows'.
+ */
+export function listedEdgesOf(page: Page): Locator {
+  return listedRowsOf(page).locator(":scope > ul > li");
 }
 
 /** The rows of the reader's command bar runs, after the list's own. */
