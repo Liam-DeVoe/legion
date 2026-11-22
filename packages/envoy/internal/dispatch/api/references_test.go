@@ -299,13 +299,13 @@ func TestIssueReferencesRejectUnauthenticatedRequest(t *testing.T) {
 //     and the budget is spent (errClosureBudgetSpent) only with less than a millisecond left. A
 //     loaded machine only lengthens that clock, so it cannot fail a read that keeps its bound.
 //   - On the server's own statements on the read's connection (requireReadEndedAtItsBudget): its
-//     first budget statement gives no more than the bound; from its last budget statement to the
-//     rollback boundedClosure sends once the read has ended, the read runs at least the budget
-//     that statement gave, less a millisecond; from its first budget statement to that rollback,
-//     no longer than the bound and the second boundedClosure's context adds; and it ends on
-//     Postgres's statement timeout, which the budget sets, not on the context. Every budget
-//     statement comes after the read starts, so the span is no longer than the read itself, and
-//     the test's own setup and scheduling count for nothing.
+//     first budget statement gives no more than the bound; each later budget statement gives no
+//     more than what is left of the bound once the read has run from its first budget statement
+//     to the end of the statement before; from its last budget statement to the rollback
+//     boundedClosure sends once the read has ended, the read runs at least the budget that
+//     statement gave, less a millisecond; and it ends on Postgres's statement timeout, which the
+//     budget sets, not on the context. Each of these holds however late this process runs the
+//     product's goroutines, so the test's own setup and scheduling count for nothing.
 //
 // A read ended sooner or later than its bound fails. The control is the first read, before the
 // lock: the same request answers 200.
@@ -348,31 +348,35 @@ func TestIssueReferencesRefuseAtTheClosureBound(t *testing.T) {
 	})
 }
 
-// requestSpan is a tracer on the server's pool (testServerOptions.tracer) that times one bounded
+// requestSpan is a tracer on the server's pool (testServerOptions.tracer) that reads one bounded
 // closure read on the server's own statements, from the hooks pgx calls as each starts and ends:
-// from the start of the read's first budget statement after arm (setStatementBudget, which
-// closureBudget sends before each statement of the read, starting it with refs.ClosureTag) to the
-// start of the rollback boundedClosure sends on that same connection once the read has ended. It
-// keeps the first budget the read gave and the last, each with when its statement started, and
-// the error of the first statement to fail on that connection, the one the bound cut. Statements
-// of other connections, the server's background work among them, count for nothing.
+// from the read's first budget statement after arm (setStatementBudget, which closureBudget sends
+// before each statement of the read, starting it with refs.ClosureTag) to the start of the
+// rollback boundedClosure sends on that same connection once the read has ended. It keeps the
+// first budget the read gave and the last, each with when its statement started and when the
+// statement before it on that connection ended, and the error of the first statement to fail on
+// that connection, the one the bound cut. Statements of other connections, the server's
+// background work among them, count for nothing.
 type requestSpan struct {
 	mu    sync.Mutex
 	armed bool
 	// conn is the read's connection; first and last are its first and its latest budget
-	// statements; ended is when the rollback started, and err the first error a statement on conn
-	// answered.
+	// statements; lastEnd is when the latest statement on conn ended; ended is when the rollback
+	// started, and err the first error a statement on conn answered.
 	conn        *pgx.Conn
 	first, last spanBudget
+	lastEnd     time.Time
 	ended       time.Time
 	err         error
 }
 
 // spanBudget is one budget statement of the read: the statement_timeout it gave, as set_config
-// takes it ("1998ms"), and when it started.
+// takes it ("1998ms"), when it started, and when the statement before it on the read's connection
+// ended (zero for the read's first budget statement).
 type spanBudget struct {
 	gave    string
 	started time.Time
+	after   time.Time
 }
 
 // arm starts the span at the next budget statement the server's pool starts.
@@ -388,7 +392,7 @@ func (s *requestSpan) TraceQueryStart(ctx context.Context, conn *pgx.Conn, data 
 	budget := strings.HasPrefix(data.SQL, refs.ClosureTag) && strings.Contains(data.SQL, "set_config('statement_timeout'")
 	switch {
 	case budget && s.armed && (s.conn == nil || conn == s.conn) && s.ended.IsZero():
-		statement := spanBudget{started: time.Now()}
+		statement := spanBudget{started: time.Now(), after: s.lastEnd}
 		if len(data.Args) == 1 {
 			statement.gave, _ = data.Args[0].(string)
 		}
@@ -405,7 +409,11 @@ func (s *requestSpan) TraceQueryStart(ctx context.Context, conn *pgx.Conn, data 
 func (s *requestSpan) TraceQueryEnd(_ context.Context, conn *pgx.Conn, data pgx.TraceQueryEndData) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.conn != nil && conn == s.conn && s.ended.IsZero() && s.err == nil && data.Err != nil {
+	if s.conn == nil || conn != s.conn || !s.ended.IsZero() {
+		return
+	}
+	s.lastEnd = time.Now()
+	if s.err == nil && data.Err != nil {
 		s.err = data.Err
 	}
 }
@@ -426,13 +434,16 @@ func (s *requestSpan) read() spanReading {
 
 // requireReadEndedAtItsBudget requires the bounded closure read span timed, which what names, to
 // have kept its budget, on the server's own statements on the read's connection: its first budget
-// statement gave no more than referencesClosureBound; from its last budget statement to its
+// statement gave no more than referencesClosureBound; its last budget statement gave no more than
+// what was left of the bound once the read had run from its first budget statement to the end of
+// the statement before the last (the read started before the first, and closureBudget reads the
+// time left only after the statement before has ended, so on the one clock of this process the
+// product had spent at least that span, whenever it ran); from its last budget statement to its
 // rollback it ran at least the budget that statement gave, less a millisecond, since the statement
-// that budget was for starts after it; from its first budget statement to its rollback it ran no
-// longer than the bound and the second boundedClosure's context adds; and it ended on Postgres's
-// statement timeout (57014), which the budget sets. Under pgx's default context handler a
-// statement the context ends answers an error of pgx's own, so a read the context ended fails
-// here.
+// that budget was for starts after it; and it ended on Postgres's statement timeout (57014), which
+// the budget sets. Under pgx's default context handler a statement the context ends answers an
+// error of pgx's own, so a read the context ended fails here. No check reads how long the read
+// took: a process that runs the product late only widens the margins these checks leave.
 func requireReadEndedAtItsBudget(t *testing.T, span *requestSpan, what string) {
 	t.Helper()
 	read := span.read()
@@ -451,8 +462,11 @@ func requireReadEndedAtItsBudget(t *testing.T, span *requestSpan, what string) {
 	if kept := time.Duration(ms)*time.Millisecond - time.Millisecond; err != nil || read.ended.Sub(read.last.started) < kept {
 		t.Errorf("%s ended its read (%v) %s after its last budget statement, which gave %q: it did not keep that budget, less a millisecond", what, read.err, read.ended.Sub(read.last.started), read.last.gave)
 	}
-	if ran, upper := read.ended.Sub(read.first.started), referencesClosureBound+time.Second; ran > upper {
-		t.Errorf("%s ended its read (%v) %s after its first budget statement, past %s, its %s bound and the second its context adds", what, read.err, ran, upper, referencesClosureBound)
+	if !read.last.after.IsZero() {
+		spent := read.last.after.Sub(read.first.started)
+		if left := referencesClosureBound - spent; time.Duration(ms)*time.Millisecond > left {
+			t.Errorf("%s gave its last budget statement %q after its read had run at least %s, more than the %s left of its %s bound: its statements do not share the one bound", what, read.last.gave, spent, left, referencesClosureBound)
+		}
 	}
 	var timeout *pgconn.PgError
 	if !errors.As(read.err, &timeout) || timeout.Code != "57014" || !strings.Contains(timeout.Message, "statement timeout") {
