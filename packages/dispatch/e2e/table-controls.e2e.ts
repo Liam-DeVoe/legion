@@ -54,8 +54,10 @@ import {
 } from "./api";
 import { recordClipboard } from "./clipboard";
 import {
+  FIXTURE_WINDOW,
   PIPELINE_AT,
   seedDeliveryFixture,
+  seedMeasuresFixture,
   seedPipelineFixture,
   seedSessionGroupsFixture,
   TIMELINE_FIXTURE_QUERY,
@@ -7662,3 +7664,40 @@ test("at 390 px chips over one line scroll nothing in the row sideways and move 
  *  and the last 20.5 px, which the table's collapsed borders give it: both within the 0.5 px the
  *  row allows. */
 const MEASURES_ROW_HEIGHT = 21;
+
+// INFRA-3135, round 24 (the tester's, from the architect's goal red team of 2026-11-22T11:06Z;
+// measured in builds Jobs infra-3135-s-h-z2mdn at 3fce6150 and infra-3135-s-b-h4hh4 at
+// 143b57a7): the measures table of `features/delivery/MeasuresPanel.tsx`, in the Delivery page's
+// Definitions & alternatives fold, is drawn through `components/TableShell.tsx`'s compact recipe,
+// whose cells are `py-1` where main's own were `py-0.5`. Over the measures fixture at 1440x900
+// in Chromium, rows 1 to 28 of 29 are 25 px tall and the last 24.5 px at 3fce6150, against 21
+// and 20.5 px at 143b57a7, with 4 px above and below each cell's 16 px line against 2 px, and
+// the table is 749 px tall against 633 px inside its box held at 192 px. Spec v8, R8: "The rows,
+// the cards, the reading pane and the panes' widths do not change", and of the measures table,
+// "each draws the shared table markup with its behaviour unchanged".
+test("the Delivery page's measures table keeps the height of its rows from before the shared table markup, at 1440", async ({
+  page,
+}) => {
+  await seedMeasuresFixture();
+  await page.setViewportSize({ height: 900, width: 1440 });
+  await page.goto(
+    `/delivery?mode=list&from=${encodeURIComponent(FIXTURE_WINDOW.from)}&to=${encodeURIComponent(FIXTURE_WINDOW.to)}`
+  );
+  await expect(page.getByLabel("KPI targets")).toBeVisible();
+  await page.getByRole("button", { name: "Definitions & alternatives" }).click();
+  const table = page.getByRole("table").filter({ hasText: "Reached production" });
+  await expect(table.locator("tbody tr").first()).toHaveText(/^2026-09-27 \(partial\)/);
+  // One read is the answer: the fold has drawn every row, and nothing redraws it.
+  const heights = await table
+    .locator("tbody tr")
+    .evaluateAll((rows) => rows.map((row) => row.getBoundingClientRect().height));
+  expect(heights.length, "the measures table drew no rows").toBeGreaterThan(0);
+  const wrong = heights.flatMap((height, index) =>
+    Math.abs(height - MEASURES_ROW_HEIGHT) > 0.5
+      ? [
+          `row ${index + 1} of ${heights.length} is ${height} px tall, not ${MEASURES_ROW_HEIGHT} px`,
+        ]
+      : []
+  );
+  expect(wrong, wrong.join("; ")).toEqual([]);
+});
