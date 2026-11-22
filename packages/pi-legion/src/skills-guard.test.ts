@@ -987,7 +987,7 @@ test("each duty a role skill routes to a reference stands in that reference", ()
 test("the skills' sentences that held only in the default steps hold for every order", () => {
   expect([
     ...lacks("legion-architect/SKILL.md", [
-      /offer them a running build before the reviewer step, or the last step if none/,
+      /offer a running build before the reviewer step, or the last if none/,
       /^(?![\s\S]*a running build before the review;)/,
     ]),
     ...lacks("legion-architect/references/plan.md", [
