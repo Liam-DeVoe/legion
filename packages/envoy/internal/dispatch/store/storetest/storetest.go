@@ -24,6 +24,11 @@
 // drops. Dropping a database forces a checkpoint and waits for it, and every package testing
 // against the same server queues on its one checkpointer: a test that waited for its own drop
 // spent that queue's time on its clock.
+//
+// Each database's name carries the run of the binary that made it, and the binary holds a lock
+// keyed by that run for as long as it runs (openAdmin). A database a binary leaves on the server,
+// because its teardown stopped waiting for its drop (Run), is dropped by the next storetest
+// binary on that server once that lock is free (sweepOrphans).
 package storetest
 
 import (
@@ -35,6 +40,9 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -59,10 +67,16 @@ var shared struct {
 	err    error
 	server url.URL
 	admin  *pgxpool.Pool
+	// run names this binary's databases (randomName), and owner is the connection that holds
+	// the lock keyed by it for as long as the binary runs (claimRun).
+	run   string
+	owner *pgx.Conn
 
 	drops     sync.WaitGroup
 	dropMu    sync.Mutex
 	dropFails []string
+	// pending are the databases whose drop has started and not returned, under dropMu.
+	pending map[string]bool
 }
 
 // openKey is the key of the template Open clones, which this tree's runner migrates
@@ -177,7 +191,7 @@ func OpenFrom(t testing.TB, key string, migrate func(databaseURL string) error) 
 			entry.err = err
 			return
 		}
-		name := "dispatch_template_" + suffix
+		name := "dispatch_template_" + shared.run + "_" + suffix
 		ctx := context.Background()
 		// The template is a file copy of template1, for the reason each clone of it is one.
 		if _, err := shared.admin.Exec(ctx, "create database "+name+" strategy file_copy"); err != nil {
@@ -210,9 +224,9 @@ func cloneStatement(name, template string) string {
 	return "create database " + name + " template " + template + " strategy file_copy"
 }
 
-// Main runs the package's tests, waits for their databases to drop, then drops every template
-// they were cloned from. A package whose tests call Open uses it as its TestMain:
-// func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }.
+// Main runs the package's tests, then drops every template they were cloned from and waits for
+// the drops, the tests' own and the templates'. A package whose tests call Open uses it as its
+// TestMain: func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }.
 func Main(m *testing.M) int { return Run(m.Run) }
 
 // Run is Main for a package whose tests also need another harness's Main, which runs m.Run
@@ -222,14 +236,21 @@ func Main(m *testing.M) int { return Run(m.Run) }
 //
 // The teardown is bounded (teardownDeadline), because a drop can wait for a reason outside this
 // process. DROP DATABASE waits until every backend of the server, in any database, has accepted
-// the barrier it raises (wait event IPC/ProcSignalBarrier), and neither statement_timeout nor a
-// cancel request ends that wait: measured on PostgreSQL 18.6, a drop with a 25 s
-// statement_timeout went on waiting for the whole nine minutes that one backend of another
-// database stayed stopped. So a backend that cannot run holds every drop on the server for as
-// long as it cannot. A drop still waiting at the bound is left to the server: Run stops waiting,
-// names the database and what its drop waits on, so a database the server keeps can be dropped by
-// hand, and keeps the tests' exit code, since every test has reported by then and the wait is
-// another backend's. A drop that fails is still reported, and fails the run, as before.
+// the barrier it raises (wait event IPC/ProcSignalBarrier). Measured on PostgreSQL 18.6, a
+// backend the machine does not run (stopped with SIGSTOP), or one blocked writing to a client
+// that does not read (wait event Client/ClientWrite), holds every drop on the server for as long
+// as it stays so. A cancel request ends that wait and leaves the database where it was, and pgx
+// sends one when a statement's context ends; a drop whose client goes away without one goes on,
+// and the server finishes it once the barrier is accepted. So no drop here has a deadline: each
+// runs on context.Background(), and the bound is Run's alone.
+//
+// At the bound Run stops waiting. It writes a line for each database still being dropped
+// (leftLine) and one naming the server's other client backends, among them what the drops wait
+// on (othersLine), and returns the tests' exit code, since every test has reported by then and
+// the wait is another backend's. The process then ends without a cancel request: a drop the
+// server is running is finished by the server, and a database whose drop never reached it (the
+// drop waited for one of the admin pool's connections) stays until the next storetest binary on
+// the server drops it (sweepOrphans). A drop that fails is reported, and fails the run.
 func Run(run func() int) int {
 	shared.main = true
 	started := time.Now()
@@ -237,42 +258,33 @@ func Run(run func() int) int {
 	if shared.admin == nil {
 		return code
 	}
-	ctx, cancel := context.WithDeadline(context.Background(), teardownDeadline(started))
-	defer cancel()
+	// Every test has ended, so no clone is made from a template again: the templates' drops
+	// start now, beside whatever drops of the tests' own databases still run.
+	for _, name := range templateNames() {
+		dropDatabase(name)
+	}
 	dropped := make(chan struct{})
 	go func() {
 		shared.drops.Wait()
 		close(dropped)
 	}()
+	bound := time.NewTimer(time.Until(teardownDeadline(started)))
+	defer bound.Stop()
 	select {
 	case <-dropped:
-	case <-ctx.Done():
-		// The templates' drops would wait on the same server, so none is started. The admin pool
-		// is not closed: Close waits for every connection it lent, and the drops still in flight
-		// hold theirs. The process ends with them.
-		fmt.Fprintf(os.Stderr, "storetest: the tests' own databases were still being dropped at the teardown's bound, %s after the tests began; those drops are left to the server, and the templates %s are not dropped: %s\n",
-			time.Since(started).Round(time.Second), strings.Join(templateNames(), ", "), waitingOn("drop database dispatch_test_"))
+	case <-bound.C:
+		// The admin pool is not closed: Close waits for every connection it lent, and the drops
+		// still running hold theirs. The process ends with it, and with the owner connection,
+		// which frees this binary's run for the next sweep.
+		reportLeftDrops(time.Since(started))
 		return code
 	}
-	defer shared.admin.Close()
+	shared.admin.Close()
+	_ = shared.owner.Close(context.Background())
 	for _, failure := range shared.dropFails {
 		fmt.Fprintf(os.Stderr, "storetest: %s\n", failure)
 		if code == 0 {
 			code = 1
-		}
-	}
-	names := templateNames()
-	for _, name := range names {
-		if _, err := shared.admin.Exec(ctx, "drop database "+name); err != nil {
-			if ctx.Err() != nil {
-				fmt.Fprintf(os.Stderr, "storetest: drop template database %s: still waiting at the teardown's bound, %s after the tests began, so the drop is left to the server: %s\n",
-					name, time.Since(started).Round(time.Second), waitingOn("drop database "+name))
-				continue
-			}
-			fmt.Fprintf(os.Stderr, "storetest: drop template database %s: %v\n", name, err)
-			if code == 0 {
-				code = 1
-			}
 		}
 	}
 	return code
@@ -312,53 +324,144 @@ func teardownDeadline(started time.Time) time.Time {
 	return time.Now().Add(teardownUnbounded)
 }
 
-// waitingOn says what the server's backend running the statement that begins with prefix waits on,
-// and lists the server's other client backends, by pid, database, state and wait, from a
-// pg_stat_activity read on a connection of its own (the admin pool's may all be held by drops),
-// bounded by waitingOnBound. A backend that holds a drop is among them, though nothing the server
-// shows says which.
-func waitingOn(prefix string) string {
-	ctx, cancel := context.WithTimeout(context.Background(), waitingOnBound)
+// reportLeftDrops writes Run's lines for the databases still being dropped at the teardown's
+// bound, elapsed after the tests began: one for each (leftLine) and one for the server's other
+// client backends (othersLine), from one read of the server (readActivity).
+func reportLeftDrops(elapsed time.Duration) {
+	names := pendingDrops()
+	read, err := readActivity(names)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "storetest: drop database %s: still running at the teardown's bound, %s after the tests began; the server could not be read: %v\n",
+			strings.Join(names, ", "), elapsed.Round(time.Second), err)
+		return
+	}
+	for _, name := range names {
+		fmt.Fprintln(os.Stderr, leftLine(name, elapsed, read))
+	}
+	fmt.Fprintln(os.Stderr, othersLine(read))
+}
+
+// pendingDrops are the databases whose drop has started and not returned, by name.
+func pendingDrops() []string {
+	shared.dropMu.Lock()
+	defer shared.dropMu.Unlock()
+	names := make([]string, 0, len(shared.pending))
+	for name := range shared.pending {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// leftLine is Run's line for name, a database still being dropped at the teardown's bound,
+// elapsed after the tests began: what becomes of it, as the server shows it (read).
+func leftLine(name string, elapsed time.Duration, read activity) string {
+	head := fmt.Sprintf("storetest: drop database %s: still running at the teardown's bound, %s after the tests began", name, elapsed.Round(time.Second))
+	if read.gone[name] {
+		return head + ", and the database is gone: its drop ended as the bound passed"
+	}
+	if drop, running := read.drops[name]; running {
+		return head + ", so the drop is left to the server, which finishes it once what it waits on lets it, since this process ends without a cancel request: the drop: " + drop.String()
+	}
+	return head + ", and its drop is not on the server (it waits for one of the admin pool's connections, or between its tries), so the database stays until the next storetest binary on this server drops it"
+}
+
+// othersLine is Run's line naming the server's other client backends at the teardown's bound.
+// What the drops wait on is among them: a backend the machine does not run (it shows the state it
+// stopped in), or one waiting on Client/ClientWrite for a client that does not read.
+func othersLine(read activity) string {
+	return "storetest: the server's other client backends at the teardown's bound, among them what the drops wait on: " + listOrNone(read.others)
+}
+
+// backend is one client backend of the server, as pg_stat_activity shows it.
+type backend struct {
+	pid                          int
+	database, state, wait, query string
+}
+
+func (b backend) String() string {
+	return fmt.Sprintf("pid %d in %q, %s, waiting on %s, %q", b.pid, b.database, b.state, b.wait, b.query)
+}
+
+// activity is what the server shows of the drops of some databases: the backend running each
+// one's drop, the databases that are gone, and the server's other client backends.
+type activity struct {
+	drops  map[string]backend
+	gone   map[string]bool
+	others []backend
+}
+
+// readActivity reads pg_stat_activity and pg_database for the drops of names, on a connection of
+// its own (the admin pool's may all be held by drops), bounded by readActivityBound. A backend is
+// a name's drop while it runs one of dropStatements(name); one that ran it and is idle is not.
+func readActivity(names []string) (activity, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), readActivityBound)
 	defer cancel()
 	conn, err := pgx.Connect(ctx, databaseURL(shared.server, "postgres"))
 	if err != nil {
-		return fmt.Sprintf("pg_stat_activity could not be read: %v", err)
+		return activity{}, fmt.Errorf("connect: %w", err)
 	}
-	defer conn.Close(context.Background())
-	rows, err := conn.Query(ctx, `select pid, coalesce(datname, ''), coalesce(state, ''), coalesce(wait_event_type, ''),
-		coalesce(wait_event, ''), left(coalesce(query, ''), 60), starts_with(coalesce(query, ''), $1)
-		from pg_stat_activity where backend_type = 'client backend' and pid <> pg_backend_pid() order by pid`, prefix)
+	defer func() { _ = conn.Close(context.Background()) }()
+	dropping := map[string]string{}
+	for _, name := range names {
+		for _, statement := range dropStatements(name) {
+			dropping[statement] = name
+		}
+	}
+	rows, err := conn.Query(ctx, `select pid, coalesce(datname, ''), coalesce(state, ''),
+		coalesce(wait_event_type || '/' || wait_event, 'nothing'), coalesce(query, '')
+		from pg_stat_activity where backend_type = 'client backend' and pid <> pg_backend_pid() order by pid`)
 	if err != nil {
-		return fmt.Sprintf("pg_stat_activity could not be read: %v", err)
+		return activity{}, fmt.Errorf("read pg_stat_activity: %w", err)
 	}
-	defer rows.Close()
-	var drops, others []string
-	for rows.Next() {
-		var pid int
-		var database, state, waitType, wait, query string
-		var isDrop bool
-		if err := rows.Scan(&pid, &database, &state, &waitType, &wait, &query, &isDrop); err != nil {
-			return fmt.Sprintf("pg_stat_activity could not be read: %v", err)
+	backends, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (backend, error) {
+		var b backend
+		err := row.Scan(&b.pid, &b.database, &b.state, &b.wait, &b.query)
+		return b, err
+	})
+	if err != nil {
+		return activity{}, fmt.Errorf("read pg_stat_activity: %w", err)
+	}
+	read := activity{drops: map[string]backend{}, gone: map[string]bool{}}
+	for _, b := range backends {
+		if name, ok := dropping[b.query]; ok && b.state == "active" {
+			read.drops[name] = b
+			continue
 		}
-		line := fmt.Sprintf("pid %d in %q, %s, waiting on %s/%s, %q", pid, database, state, waitType, wait, query)
-		if isDrop {
-			drops = append(drops, line)
-		} else {
-			others = append(others, line)
-		}
+		read.others = append(read.others, b)
 	}
-	if err := rows.Err(); err != nil {
-		return fmt.Sprintf("pg_stat_activity could not be read: %v", err)
+	rows, err = conn.Query(ctx, "select datname from pg_database where datname = any($1)", names)
+	if err != nil {
+		return activity{}, fmt.Errorf("read pg_database: %w", err)
 	}
-	return fmt.Sprintf("the drop: %s; the server's other client backends: %s", listOrNone(drops), listOrNone(others))
+	present, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return activity{}, fmt.Errorf("read pg_database: %w", err)
+	}
+	for _, name := range names {
+		read.gone[name] = true
+	}
+	for _, name := range present {
+		delete(read.gone, name)
+	}
+	return read, nil
 }
 
-// waitingOnBound bounds waitingOn's read of pg_stat_activity.
-const waitingOnBound = 10 * time.Second
+// readActivityBound bounds readActivity.
+const readActivityBound = 10 * time.Second
 
-func listOrNone(lines []string) string {
-	if len(lines) == 0 {
+// dropStatements are the statements that drop name: dropDatabase's two and sweepOrphans' one.
+func dropStatements(name string) []string {
+	return []string{"drop database " + name, "drop database " + name + " with (force)", "drop database if exists " + name}
+}
+
+func listOrNone(backends []backend) string {
+	if len(backends) == 0 {
 		return "none"
+	}
+	lines := make([]string, len(backends))
+	for i, b := range backends {
+		lines[i] = b.String()
 	}
 	return strings.Join(lines, "; ")
 }
@@ -370,8 +473,8 @@ const (
 	dropPause  = 200 * time.Millisecond
 )
 
-// dropDatabase drops name without waiting for it; Main waits for every drop. Drops in flight
-// together share one checkpoint.
+// dropDatabase drops name without waiting for it; Run waits for every drop. Drops in flight
+// together share one checkpoint. No drop has a deadline (Run says why).
 //
 // `with (force)` terminates whatever is still connected, which needs pg_signal_backend: a login
 // that is only the database's owner is refused `permission denied to terminate process`. The
@@ -382,7 +485,15 @@ const (
 // whatever words it puts on the message, up to dropWindow; `force` is the last attempt, for a
 // connection that really is somebody else's.
 func dropDatabase(name string) {
+	shared.dropMu.Lock()
+	shared.pending[name] = true
+	shared.dropMu.Unlock()
 	shared.drops.Go(func() {
+		defer func() {
+			shared.dropMu.Lock()
+			delete(shared.pending, name)
+			shared.dropMu.Unlock()
+		}()
 		deadline := time.Now().Add(dropWindow)
 		var err error
 		for {
@@ -403,13 +514,15 @@ func dropDatabase(name string) {
 		// plain drop's says what the force was for.
 		shared.dropMu.Lock()
 		shared.dropFails = append(shared.dropFails,
-			fmt.Sprintf("drop isolated database %s: %v, after the plain drop answered: %v", name, forced, err))
+			fmt.Sprintf("drop database %s: %v, after the plain drop answered: %v", name, forced, err))
 		shared.dropMu.Unlock()
 	})
 }
 
-// openAdmin opens the admin pool, on the server raw names, that every database and template is
-// created and dropped through.
+// openAdmin claims this binary's run (claimRun), opens the admin pool, on the server raw names,
+// that every database and template is created and dropped through, and starts the sweep of the
+// databases on the server that gone binaries left (sweepInBackground). The run is claimed first,
+// so it is held before any database of this binary is made.
 func openAdmin(raw string) error {
 	server, err := url.Parse(raw)
 	if err != nil {
@@ -417,8 +530,13 @@ func openAdmin(raw string) error {
 	}
 	shared.server = *server
 	ctx := context.Background()
+	owner, run, err := claimRun(ctx)
+	if err != nil {
+		return err
+	}
 	config, err := pgxpool.ParseConfig(databaseURL(shared.server, "postgres"))
 	if err != nil {
+		_ = owner.Close(ctx)
 		return fmt.Errorf("parse admin database URL: %w", err)
 	}
 	// Drops run concurrently on this pool. Its default size is the CPU count, and on a large
@@ -426,10 +544,108 @@ func openAdmin(raw string) error {
 	config.MaxConns = 4
 	admin, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
+		_ = owner.Close(ctx)
 		return fmt.Errorf("open admin pool: %w", err)
 	}
-	shared.admin = admin
+	shared.owner, shared.run, shared.admin = owner, run, admin
+	shared.pending = map[string]bool{}
+	go sweepInBackground()
 	return nil
+}
+
+// claimRun opens the owner connection and takes on it the session advisory lock of a new run, a
+// random name every database of this binary carries (randomName): the lock is held for as long as
+// the connection is open, which is as long as the binary runs, so a sweep never takes a database
+// of a binary that runs (sweepOrphans). A run whose lock is already held is drawn again.
+func claimRun(ctx context.Context) (*pgx.Conn, string, error) {
+	owner, err := pgx.Connect(ctx, databaseURL(shared.server, "postgres"))
+	if err != nil {
+		return nil, "", fmt.Errorf("open the owner connection: %w", err)
+	}
+	for range 3 {
+		run, err := randomSuffix()
+		if err != nil {
+			_ = owner.Close(ctx)
+			return nil, "", err
+		}
+		var held bool
+		if err := owner.QueryRow(ctx, "select pg_try_advisory_lock($1)", runKey(run)).Scan(&held); err != nil {
+			_ = owner.Close(ctx)
+			return nil, "", fmt.Errorf("take the owner lock: %w", err)
+		}
+		if held {
+			return owner, run, nil
+		}
+	}
+	_ = owner.Close(ctx)
+	return nil, "", errors.New("take the owner lock: the locks of three random runs were all held")
+}
+
+// runName matches the name of a database a storetest binary made: its kind, its binary's run and
+// a random part of its own (randomName, OpenFrom). Postgres reads it as a regular expression too.
+var runName = regexp.MustCompile(`^dispatch_(?:test|template)_([0-9a-f]{16})_[0-9a-f]{16}$`)
+
+// runKey is the advisory lock key of run, sixteen hex digits (randomSuffix, runName).
+func runKey(run string) int64 {
+	key, _ := strconv.ParseUint(run, 16, 64)
+	return int64(key)
+}
+
+// sweepInBackground runs sweepOrphans on a connection of its own, so a drop that waits holds no
+// admin connection and no test, and reports what it could not drop. Nothing waits for it: a
+// database it leaves is the next sweep's.
+func sweepInBackground() {
+	ctx := context.Background()
+	conn, err := pgx.Connect(ctx, databaseURL(shared.server, "postgres"))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "storetest: sweep the databases gone binaries left: %v\n", err)
+		return
+	}
+	defer func() { _ = conn.Close(ctx) }()
+	if _, err := sweepOrphans(ctx, conn); err != nil {
+		fmt.Fprintf(os.Stderr, "storetest: sweep the databases gone binaries left: %v\n", err)
+	}
+}
+
+// sweepOrphans drops, through conn and one at a time, every database on the server that a
+// storetest binary made (runName) and left: one whose run's lock no session holds, so its binary
+// is gone. Each binary holds its run's lock from before its first database is made until it ends
+// (claimRun). The drop is `if exists`, so a database another sweep removed first costs nothing,
+// and one whose drop the server still runs is waited for. It returns the databases it dropped.
+func sweepOrphans(ctx context.Context, conn *pgx.Conn) ([]string, error) {
+	rows, err := conn.Query(ctx, "select datname from pg_database where datname ~ $1 order by datname", runName.String())
+	if err != nil {
+		return nil, fmt.Errorf("list the databases: %w", err)
+	}
+	names, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, fmt.Errorf("list the databases: %w", err)
+	}
+	gone := map[string]bool{}
+	var dropped []string
+	var failures []error
+	for _, name := range names {
+		run := runName.FindStringSubmatch(name)[1]
+		if run == shared.run {
+			continue
+		}
+		free, read := gone[run]
+		if !read {
+			if err := conn.QueryRow(ctx, "select case when pg_try_advisory_lock($1) then pg_advisory_unlock($1) else false end", runKey(run)).Scan(&free); err != nil {
+				return dropped, fmt.Errorf("read the lock of run %s: %w", run, err)
+			}
+			gone[run] = free
+		}
+		if !free {
+			continue
+		}
+		if _, err := conn.Exec(ctx, "drop database if exists "+name); err != nil {
+			failures = append(failures, fmt.Errorf("drop %s: %w", name, err))
+			continue
+		}
+		dropped = append(dropped, name)
+	}
+	return dropped, errors.Join(failures...)
 }
 
 func databaseURL(server url.URL, database string) string {
@@ -437,13 +653,15 @@ func databaseURL(server url.URL, database string) string {
 	return server.String()
 }
 
+// randomName is a new database name of the kind prefix names: prefix, this binary's run and a
+// random part (runName).
 func randomName(t testing.TB, prefix string) string {
 	t.Helper()
 	suffix, err := randomSuffix()
 	if err != nil {
 		t.Fatalf("%v", err)
 	}
-	return prefix + suffix
+	return prefix + shared.run + "_" + suffix
 }
 
 func randomSuffix() (string, error) {
