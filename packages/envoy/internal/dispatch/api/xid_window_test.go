@@ -611,8 +611,12 @@ func xidWindowIssueCreateWithSpec(t *testing.T, f *xidFixture) {
 }
 
 // A create naming a GitHub issue Dispatch already tracks answers that issue
-// (respondWithExistingExternalIssue), with its advice. It writes nothing: today its row lock gives
-// it an xid, and once the owner lock is advisory (plan M1) it may hold none at all.
+// (respondWithExistingExternalIssue), with its advice. The answer writes nothing: today its row
+// lock gives it an xid, and once the owner lock is advisory (plan M1) it may hold none at all. The
+// advice's related-item check records its row after the answer, in a transaction of its own under
+// the request's marked context (insertRelatedChecks): the insert, sent with the lock_timeout it
+// sets for itself, and its COMMIT, a window of two statements, the widest the measured request
+// holds.
 func xidWindowExistingExternalIssue(t *testing.T, f *xidFixture) {
 	if mapped := dispatchRequest(t, f.handler, http.MethodPut, "/api/v1/settings/repo-projects/owner/repo", map[string]string{
 		"project": xidProject,
@@ -625,8 +629,8 @@ func xidWindowExistingExternalIssue(t *testing.T, f *xidFixture) {
 	}
 	f.mayHoldNoXid = true
 	defer func() { f.mayHoldNoXid = false }()
-	f.measureAdvised(t, http.StatusOK, storetest.XidWindowOf(1,
-		"its COMMIT alone: the answer writes nothing and locks no row, so no statement of it holds a transaction id"), func(h http.Handler) *httptest.ResponseRecorder {
+	f.measureAdvised(t, http.StatusOK, storetest.XidWindowOf(2,
+		"the related-item check's record: its insert, with the lock_timeout it sets, and its COMMIT (insertRelatedChecks); the answer itself writes nothing and locks no row"), func(h http.Handler) *httptest.ResponseRecorder {
 		return sessionRequest(t, h, http.MethodPost, "/api/v1/issues", body)
 	})
 }
