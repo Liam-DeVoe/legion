@@ -243,9 +243,12 @@ func cleanupGoneConsumer(t *testing.T, nc *nats.Conn, name, logical string) {
 // deletes every consumer whose logical name is the daemon's, fixed or fresh, declared or not,
 // names each removal, and its done entry names the store and each consumer it removed; another
 // daemon's consumer stays. A run with --final then removes nothing more and completes the hold's
-// record, and hold release follows. Controls, before it and in the same hold: --gone against a
-// live store refuses, and so does --gone against a store whose server answers 57P01, a PgError
-// that is no 3D000; each removes nothing and its stop records the run unchanged.
+// record, and hold release follows; the gone daemon's broker cutover row still reads done after it,
+// as cleanup --gone removes consumers and writes no cutover row. Controls, before it and in the
+// same hold: --gone against a live store refuses, and so does --gone against a store whose server
+// answers 57P01, a PgError that is no 3D000; each removes nothing and its stop records the run
+// unchanged. The cutover row's control is a cleanup --gone --final that writes the row
+// rolled_back, which fails it.
 func TestTheCleanupGoneRemovesAGoneStoresConsumers(t *testing.T) {
 	h := newStack(t)
 	ctx := t.Context()
@@ -329,6 +332,9 @@ func TestTheCleanupGoneRemovesAGoneStoresConsumers(t *testing.T) {
 	require.Equal(t, 0, code, "cleanup --gone GONE --final: %s%s", stdout, stderr)
 	require.Contains(t, stdout, "cleanup --gone daemon/GONE: 0 consumers removed")
 	require.True(t, h.journal(id).Complete, "the run with --final completes the hold's record")
+	row, ok := h.cutoverRow(daemonFamily("GONE"))
+	require.True(t, ok, "the broker holds no %s cutover row after cleanup --gone --final", daemonFamily("GONE"))
+	require.Equal(t, selection.CutoverDone, row.State, "cleanup --gone --final changed the %s cutover row", daemonFamily("GONE"))
 	require.NoError(t, h.release(id))
 	require.True(t, slices.Contains(consumers(), live))
 }
