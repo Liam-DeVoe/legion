@@ -1640,13 +1640,14 @@ reaches it:
 
 The hub's own NetworkPolicy `<n>` admits this pod to NATS's 4222 beside the hosts.
 
-How it is updated. A change of the listener's image, size or environment rolls the one pod with
-`maxUnavailable: 0` and `maxSurge: 1`, so the new pod starts before the old one stops. The new pod
-is Ready only once its `/v1` serves and its interest copy has completed its first read of the
-bucket, since its readiness probe passes only then (below), and `/v1` opens without waiting for
-the delivery lease or the durable, which the old pod holds until it stops, so the new pod's `/v1`
-cannot wait on the old pod: the new pod is ready as a standby while
-it waits for the lease, and the rolling update never waits for the lease. The old pod is sent
+How it is updated. With the listener's `replaceUnderHold` unset or false, a change of the
+listener's image, size or environment rolls the one pod with `maxUnavailable: 0` and
+`maxSurge: 1`, so the new pod starts before the old one stops. The new pod is Ready only once its
+`/v1` serves and its interest copy has completed its first read of the bucket, since its
+readiness probe passes only then (below), and `/v1` opens without waiting for the delivery lease
+or the durable, which the old pod holds until it stops, so the new pod's `/v1` cannot wait on the
+old pod: the new pod is ready as a standby while it waits for the lease, and the rolling update
+never waits for the lease. The old pod is sent
 SIGTERM only once the new pod is Ready, and its stop then takes 33 seconds in all: it keeps
 answering for 5 seconds, the time its removal from the Service's endpoints takes to reach every
 node's proxy, and then stops in 28 seconds, inside its grace period of 40. That is a margin of 7
@@ -1667,6 +1668,11 @@ through it. Setting, changing or removing the listener's `senderMessagesPerMinut
 `senderMessageBurst` is a change of the listener's environment, so it rolls the pod the same way.
 The new pod's listener starts with every sender's count full (the docs site's Envoy page, "The
 sender limit").
+
+With the listener's `replaceUnderHold: true` the Deployment is recreated instead, with no
+`rollingUpdate` block: the old pod stops before the new one starts, and the apply does not wait for
+the new pod, which the hold keeps from connecting to NATS
+([The consumer-name mode and the writer hold's update rule](../README.md#the-consumer-name-mode-and-the-writer-holds-update-rule)).
 
 What is watched. The startup and liveness probes read `/livez` with `curl -sS`, which the
 listener answers 204 from its first answer without reading the bus, and which exits 0 whatever
