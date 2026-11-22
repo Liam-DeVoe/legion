@@ -12048,6 +12048,32 @@ async function escapeToStatement(
   );
 }
 
+/** Escape in the statement's editor, then three reads that draw the statement with `words`, which
+ *  leave the focus on its row, and another session's read that drops the row: checks the editing
+ *  ends with the focus on the page's body. `when` names what came before Escape. */
+async function escapeThreeReadsThenDrop(
+  user: UserEvent,
+  view: {
+    readonly container: HTMLElement;
+    readonly edited: readonly (string | undefined)[];
+    readonly reread: (next: TreeNode) => void;
+  },
+  words: string,
+  when: string
+): Promise<void> {
+  await escapeToStatement(user, view);
+  for (let read = 0; read < 3; read += 1) {
+    await act(async () => view.reread(statementRead(words)));
+  }
+  expect(
+    rowsFor(view.container, "spec#b-r1")[0],
+    "a read that drew the statement as it is took the focus off its row"
+  ).toHaveFocus();
+  await act(async () => view.reread(statementRead()));
+  expect(rowsFor(view.container, "spec#b-r1"), "the read did not drop the statement").toEqual([]);
+  await expectEditingEndedOnBody(view, `after ${when}, Escape and three other reads`);
+}
+
 // An edit's note lasts no longer than the read that draws the words the edit left, and Escape
 // brings nothing back. Here that read comes while the reader still edits the statement, then
 // they press Escape, and three reads that draw the statement as it is come - a comment's, a read
@@ -12060,29 +12086,19 @@ test("the reader's edit, the read that draws it, Escape and three other reads le
   await select(wordsOf(editable, "r1"), 2);
   typeInEditor(editor, "new ");
   await act(async () => view.reread(statementRead("A new statement of the spec.")));
-  await escapeToStatement(user, view);
-
-  for (let read = 0; read < 3; read += 1) {
-    await act(async () => view.reread(statementRead("A new statement of the spec.")));
-  }
-  expect(
-    focusedRow(view.container),
-    "a read that drew the statement as it is took the focus off its row"
-  ).toBe("spec#b-r1");
-  await act(async () => view.reread(statementRead()));
-  expect(rowsFor(view.container, "spec#b-r1"), "the read did not drop the statement").toEqual([]);
-  await expectEditingEndedOnBody(
+  await escapeThreeReadsThenDrop(
+    user,
     view,
-    "after the reader's edit, its read, Escape and three other reads"
+    "A new statement of the spec.",
+    "the reader's edit, its read"
   );
 });
 
 // An edit's note ends at the first tree drawn after the reader leaves the row, though no tree has
-// drawn the words the edit left. Here a collaborator's letter, saved
-// before the read of the reader's edit, is drawn merged with it, so no read draws the reader's
-// words alone. The reader presses Escape, three reads that draw the statement as it is come, and
-// then another session's read drops the row the focus is back on: the focus stays on the page's
-// body.
+// drawn the words the edit left. Here a collaborator's letter, saved before the read of the
+// reader's edit, is drawn merged with it, so no read draws the reader's words alone. The reader
+// presses Escape, three reads that draw the statement as it is come, and then another session's
+// read drops the row the focus is back on: the focus stays on the page's body.
 test("the reader's edit, a collaborator's drawn with it, Escape and three other reads leave a read that then drops the focused row another session's", async () => {
   setViewport(1440);
   const user = userEvent.setup();
@@ -12096,29 +12112,20 @@ test("the reader's edit, a collaborator's drawn with it, Escape and three other 
     withWords(before, "r1", "A new statement of the specs.")
   );
   await act(async () => view.reread(statementRead("A new statement of the specs.")));
-  await escapeToStatement(user, view);
-
-  for (let read = 0; read < 3; read += 1) {
-    await act(async () => view.reread(statementRead("A new statement of the specs.")));
-  }
-  expect(
-    rowsFor(view.container, "spec#b-r1")[0],
-    "a read that drew the statement as it is took the focus off its row"
-  ).toHaveFocus();
-  await act(async () => view.reread(statementRead()));
-  expect(rowsFor(view.container, "spec#b-r1"), "the read did not drop the statement").toEqual([]);
-  await expectEditingEndedOnBody(
+  await escapeThreeReadsThenDrop(
+    user,
     view,
-    "after the reader's edit, a collaborator's drawn with it, Escape and three other reads"
+    "A new statement of the specs.",
+    "the reader's edit, a collaborator's drawn with it"
   );
 });
 
 // The one tree drawn after the reader leaves the row still reads the edit's note, as the read of
 // their last edit may come just after they leave, so a drop there is theirs. A collaborator's
-// change that drops the row in that one tree is counted so too, which the rule
-// accepts: the focus moves on to the row now in the statement's place, which loses the reader
-// nothing. Here the reader types, presses Escape, and the very next read, of a collaborator's
-// edit that takes the filter's word out, drops the row.
+// change that drops the row in that one tree is counted so too, which decision 409 accepts: the
+// focus moves on to the row now in the statement's place, which loses the reader nothing. Here the
+// reader types, presses Escape, and the very next read, of a collaborator's edit that takes the
+// filter's word out, drops the row.
 test("the reader's edit, Escape and the very next read, a collaborator's that drops the focused row, hand the focus to the row now in its place", async () => {
   setViewport(1440);
   const user = userEvent.setup();

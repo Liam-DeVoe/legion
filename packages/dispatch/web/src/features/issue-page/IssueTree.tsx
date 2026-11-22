@@ -277,10 +277,11 @@ export function IssueTree({
   }, []);
   // The node the reader last acted on themselves, by its id, with the tree drawn as it was noted:
   // a read that drops that node's row is theirs (`heldRow`, below). A Keep of a decision notes
-  // the node as that tree draws it. An edit in a row's editor notes the words it left in the
-  // row's block, and the row it was made in: the note ends at the first tree drawn after the
-  // editing of that row ends, and the row is how the tree tells that
-  // end (`editing.row`). `ended` says the end has been seen.
+  // the node as that tree draws it. An edit in a row's editor notes the words it left in the row's
+  // block, and the row it was made in. The note ends at the first tree that draws the node with the
+  // words the edit left, or at the first tree drawn after the editing of its row ends, whichever
+  // comes first. The row is how the tree tells that end (`editing.row`), and `ended` says it has
+  // been seen.
   const ownAct = useRef<
     | {
         readonly id: string;
@@ -1093,22 +1094,22 @@ export function IssueTree({
   // never as a write, and one that takes a filter's words out of the row drops it then. Its note
   // ends at the first tree drawn after the editing of its row ends, or at the first tree drawn
   // after the edit that draws the node with the words the edit left (`drawnWords`, by the rule
-  // the edit's own are read by), whichever comes first. Each render
-  // reads the note for a drop before it ends the note, so the tree that ends it can still count a
-  // drop as the reader's. While the reader edits the row, a tree that draws the node with other
+  // the edit's own are read by), whichever comes first (decision 409). Each render reads the
+  // note for a drop before it ends the note, so the tree that ends it can still count a drop
+  // as the reader's. While the reader edits the row, a tree that draws the node with other
   // words keeps the note: a save lands between two of the reader's keys, so the read that draws
-  // an earlier edit comes before the one that drops the row. The tree that draws the edit's words
-  // is the edit's own read, so a drop in a later tree - a version a collaborator wrote, another
-  // session's change - is not the reader's. The edit's words may never be drawn: a collaborator's
-  // change to the block, saved before the read of the reader's words, is drawn merged with them.
-  // So the editing's end bounds the note, or it would last until the row left the tree and count
-  // any later drop of the row as the reader's. The tree drawn after the reader leaves the row
-  // still reads the note, as the read of their last edit may come just after they leave. That
-  // errs in one narrow case, which the rule accepts: a collaborator's change that drops the
-  // row in that one tree counts as the reader's, and the focus moves on to the nearest row rather
-  // than to the page's body, which loses the reader nothing. A tree that draws the node nowhere
-  // ends either note, and a drop of the node's row uses it up. A write's landing alone tells
-  // nothing of this tree: the page's store of writes is the app's one store
+  // an earlier edit comes before the one that drops the row. The tree that draws the edit's
+  // words is the edit's own read, so a drop in a later tree - a version a collaborator wrote,
+  // another session's change - is not the reader's. The edit's words may never be drawn: a
+  // collaborator's change to the block, saved before the read of the reader's words, is drawn
+  // merged with them. So the editing's end bounds the note, or it would last until the row left
+  // the tree and count any later drop of the row as the reader's. The tree drawn after the reader
+  // leaves the row still reads the note, as the read of their last edit may come just after they
+  // leave. That errs in one narrow case, which decision 409 accepts: a collaborator's change
+  // that drops the row in that one tree counts as the reader's, and the focus moves on to the
+  // nearest row rather than to the page's body, which loses the reader nothing. A tree that
+  // draws the node nowhere ends either note, and a drop of the node's row uses it up. A write's
+  // landing alone tells nothing of this tree: the page's store of writes is the app's one store
   // (`write-store.ts`), and a pin or a write on another issue lands there too. The loss is theirs
   // too where a write of theirs from the line at the foot put the focus on the row with its
   // landing, with no key or press of theirs since (`landedOn`, `READER_PRESSES`): the write's read
@@ -1208,12 +1209,10 @@ export function IssueTree({
     // (above).
     const noted = ownAct.current;
     if (noted !== undefined && noted.root !== root) {
-      const now = pathTo(root, noted.id)?.at(-1);
+      const now = noted.kind === "edit" && noted.ended ? undefined : pathTo(root, noted.id)?.at(-1);
       const lasts =
         now !== undefined &&
-        (noted.kind === "keep"
-          ? sameOwnFields(noted.node, now)
-          : !noted.ended && drawnWords(now) !== noted.words);
+        (noted.kind === "keep" ? sameOwnFields(noted.node, now) : drawnWords(now) !== noted.words);
       ownAct.current = lasts ? { ...noted, root } : undefined;
     }
     // A render that finds the editing of an edit's row over marks the note ended, held to the

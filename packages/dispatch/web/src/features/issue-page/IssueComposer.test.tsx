@@ -1234,8 +1234,8 @@ test("the look keeps the hint and the targets off screen, and a picker row has n
   const parties = await within(composerBox()).findByRole("listbox", { name: "References" });
   const session = await within(parties).findByRole("option", { name: /^Planner/ });
   expect(parties.querySelectorAll("[title]")).toHaveLength(0);
-  expect(session).toHaveAccessibleDescription("planner-session");
-  expect(within(parties).getByText("planner-session")).toHaveClass("sr-only");
+  expect(session).toHaveAccessibleDescription(PLANNER.id);
+  expect(within(parties).getByText(PLANNER.id)).toHaveClass("sr-only");
 });
 
 // The Design's "focused row": the box publishes how far up from the screen's foot it reaches
