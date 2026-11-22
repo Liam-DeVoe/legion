@@ -912,6 +912,7 @@ func TestARefusalWritesNoControlByteOfAPathRaw(t *testing.T) {
 		"bidi\u202edm.x.txt",
 		`back\x1b.md`,
 		"bad\xffz.md",
+		"tag\U000e0041.md",
 	}
 	records := make([]Record, 0, len(labels))
 	lines := make([]string, 0, len(labels))
@@ -931,6 +932,7 @@ func TestARefusalWritesNoControlByteOfAPathRaw(t *testing.T) {
 		"\n  bidi\\u202edm.x.txt: ",
 		"\n  back\\x1b.md: ",
 		"\n  bad\\xffz.md: ",
+		"\n  tag\\U000e0041.md: ",
 	} {
 		if !strings.Contains(written, want+theClass) {
 			t.Errorf("the refusal is %q, want it to hold %q", written, want+theClass)
