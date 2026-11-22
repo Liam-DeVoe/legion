@@ -53,6 +53,6 @@ Name them in the day's report and take nothing for them.
 | `children_first` | An open child under it | The last open child leaving the workflow |
 | `accepted_ancestor` | An ancestor's reviewed head is accepted | That ancestor's close |
 | `children_before_retro` | A parent without `acceptance:owner` is held before retro while its children run | The last `heldBy` issue leaves the workflow, then Legion starts retro |
-| `task_stopped` | A task is stopped and no step of it runs | A later `register_plan` version that changes the task, or a root's `todo`, starts its first step; an issue whose experiment's group runs the default steps takes no later version (`PLAN_NOT_TAKEN`), so a root's `todo`, or a child's restart (`backlog`, then `rerun_child`), starts it again |
+| `task_stopped` | A task is stopped and no step of it runs | A later `register_plan` version that changes the task, a root's `todo`, or a child's restart (`backlog`, then `rerun_child`) starts its first step, and an issue whose experiment's group runs the project's default steps takes no later version |
 | `at_work` | Past its review, not `held`, on no slot | Its own sign-off, retro and merge |
 | `unclassified` | None of the above | Nothing of yours: name it with its `phase` and `status` |
