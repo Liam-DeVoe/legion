@@ -11,10 +11,11 @@ import (
 )
 
 // A hold lets a client's handshake PING, the first operation after its CONNECT, through and waits
-// for it, so the client gets its PONG while the hold is in force. A client held between the two
-// would have its CONNECT processed and its first PONG unsent, and nats-server sends such a client
-// a PING of its own when Connz reads its round-trip time 2 s after it connected (relay.hold), which
-// its handshake reads where it waits for the PONG.
+// for it, so the client gets its PONG while the hold is in force, and the hold returns only once
+// that PING has reached the server. A client held between the two would have its CONNECT processed
+// and its first PONG unsent, and nats-server's first-PING timer sends such a client a PING of its
+// own 2 to 2.4 s after its CONNECT (relay.hold), which its handshake reads where it waits for the
+// PONG. The row writes the PING only once the hold is in force.
 func TestAHoldLetsAClientsHandshakePingThrough(t *testing.T) {
 	server, uri := Start(t)
 	conn, err := net.Dial("tcp", strings.TrimPrefix(uri, "nats://"))
@@ -42,12 +43,25 @@ func TestAHoldLetsAClientsHandshakePingThrough(t *testing.T) {
 	type held struct {
 		release func()
 		err     error
+		// pings is how many PINGs of the client the relay had written when the hold returned.
+		pings int64
 	}
 	holding := make(chan held, 1)
 	go func() {
 		release, err := server.relay.hold()
-		holding <- held{release, err}
+		server.relay.mu.Lock()
+		var pings int64
+		for j := range server.relay.joins {
+			pings += j.sent.pings
+		}
+		server.relay.mu.Unlock()
+		holding <- held{release, err, pings}
 	}()
+	testwait.Until(t, "the hold to be in force", func() (bool, bool) {
+		server.relay.mu.Lock()
+		defer server.relay.mu.Unlock()
+		return server.relay.holds > 0, server.relay.holds > 0
+	})
 	if _, err := conn.Write([]byte("PING\r\n")); err != nil {
 		t.Fatal(err)
 	}
@@ -63,6 +77,9 @@ func TestAHoldLetsAClientsHandshakePingThrough(t *testing.T) {
 	defer h.release()
 	if h.err != nil {
 		t.Fatalf("hold: %v", h.err)
+	}
+	if h.pings != 1 {
+		t.Fatalf("the hold returned with %d of the client's PINGs written to the server, want 1: it did not wait for the handshake's PING", h.pings)
 	}
 }
 

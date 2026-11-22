@@ -285,9 +285,8 @@ func (r *relay) freeze() func() {
 // reaching the client. A client that has sent its CONNECT and nothing after it is not stopped
 // there: its handshake's PING goes through (enter), and hold waits for it (protocolStream.settled),
 // so no client is held with its CONNECT processed and its first PONG unsent. nats-server sends
-// such a client a PING of its own once its connection is 2 s old when anything reads its
-// round-trip time, as Connz does (getRTT and sendRTTPingLocked, monitor.go:659-665 and
-// client.go:2736-2750 in v2.15.1, through Server.ordered), and the client's handshake reads that
+// such a client a PING of its own 2 to 2.4 s after its CONNECT, from the first-PING timer that
+// processConnect starts (client.go:2351-2353 in v2.15.1), and the client's handshake reads that
 // PING where it waits for its PONG ("nats: expected 'PONG', got 'PING'"). Within connectTimeout,
 // hold fails on a frozen relay, whose PONGs barrier could not read, on a connection the relay
 // cannot read as NATS protocol, and on one that stays part-way through an operation or sends no

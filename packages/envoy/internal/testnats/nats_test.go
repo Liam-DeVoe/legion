@@ -422,37 +422,40 @@ const directGetReloads = 25
 
 // directGetForm is one way a client's direct get reaches a stream: config is the server's
 // configuration, and getter opens the bucket "direct" on conn, creating it with key "k" when
-// create is set, and returns one direct get of that key. Each request may wait as long as a
-// reload's hold may last (reloadWait).
+// create is set, and returns one direct get of that key. Each request may wait until the test's
+// deadline, its wait taken when it starts (reloadWait).
 type directGetForm struct {
 	name   string
 	config string
 	getter func(t testing.TB, conn *natsgo.Conn, create bool) (func() error, error)
 }
 
-// kvGetter is the getter of a KV get, through a JetStream context with opts: nats.go gets a key of
-// a bucket that allows direct gets, as every bucket it creates does, by a direct get.
+// kvGetter is the getter of a KV get, through a JetStream context with opts: the direct get of
+// the bucket's key that kv.Get sends for a bucket that allows direct gets, as every bucket nats.go
+// creates does. Each get takes its wait when it starts: a JetStream context's MaxWait is a span
+// fixed when the context is made, and nats.go times every request of the context from that span
+// (jsm.go:1833-1838 in v1.55.0), so a get started late would wait past the test's deadline.
 func kvGetter(opts ...natsgo.JSOpt) func(testing.TB, *natsgo.Conn, bool) (func() error, error) {
 	return func(t testing.TB, conn *natsgo.Conn, create bool) (func() error, error) {
 		js, err := conn.JetStream(append(opts, natsgo.MaxWait(reloadWait(t)))...)
 		if err != nil {
 			return nil, err
 		}
-		var kv natsgo.KeyValue
 		if create {
+			var kv natsgo.KeyValue
 			if kv, err = js.CreateKeyValue(&natsgo.KeyValueConfig{Bucket: "direct"}); err == nil {
 				_, err = kv.Put("k", []byte("v"))
 			}
 		} else {
-			kv, err = js.KeyValue("direct")
+			_, err = js.KeyValue("direct")
 		}
 		if err != nil {
 			return nil, err
 		}
 		return func() error {
-			entry, err := kv.Get("k")
-			if err == nil && string(entry.Value()) != "v" {
-				err = fmt.Errorf("the get answered %q, want v", entry.Value())
+			msg, err := js.GetLastMsg("KV_direct", "$KV.direct.k", natsgo.DirectGet(), natsgo.MaxWait(reloadWait(t)))
+			if err == nil && string(msg.Data) != "v" {
+				err = fmt.Errorf("the get answered %q, want v", msg.Data)
 			}
 			return err
 		}, nil
@@ -619,7 +622,7 @@ func TestAReloadUnderStreamCreatesAnswersEveryOne(t *testing.T) {
 
 // createInBursts sends stream creates on one connection of client c in bursts of
 // streamCreateBurst, each burst's answers read before the next, until stop. Its connect and each
-// answer may wait as long as a reload's hold may last (reloadWait).
+// answer may wait until the test's deadline (reloadWait).
 func createInBursts(t *testing.T, uri string, c int, stop <-chan struct{}, created *atomic.Int64) error {
 	conn, err := natsgo.Connect(uri, natsgo.NoReconnect(), natsgo.Timeout(reloadWait(t)))
 	if err != nil {
@@ -660,9 +663,8 @@ func createInBursts(t *testing.T, uri string, c int, stop <-chan struct{}, creat
 }
 
 // createOnFreshClients connects client c afresh for each stream create, its first request, until
-// stop. Each connect and create may wait as long as a reload's hold may last (reloadWait): a
-// connect made while a hold stands has its CONNECT and PING held, and its handshake waits out the
-// hold.
+// stop. Each connect and create may wait until the test's deadline (reloadWait): a connect made
+// while holds stand has its CONNECT and PING held, and its handshake waits them out.
 func createOnFreshClients(t *testing.T, uri string, c int, stop <-chan struct{}, created *atomic.Int64) error {
 	for n := 0; ; n++ {
 		select {
