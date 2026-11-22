@@ -609,42 +609,51 @@ func (r *Runtime) slotsDrift(ctx context.Context, token claim.Token, u *unstruct
 	return []string{"slots " + runtime.JoinRoles(held) + ", now " + runtime.JoinRoles(now)}, nil
 }
 
-// PodLacksRole satisfies runtime.IssuePodRoles: the uid of the issue's live pod (livePod) whose
-// template was built without role (templateRoles), and true; "" and false where the issue has
-// no Sandbox, no live pod, or a pod built with role. It reads the informers' stores alone and
-// makes no API call.
+// PodLacksSlot satisfies runtime.IssuePodRoles: podLacks of the slot token's claim runs in
+// (slotOf, the one place that picks a slot): the slot of its agent, which can be a name no role
+// has, such as the second implementer of a plan, `implementer-2`.
+func (r *Runtime) PodLacksSlot(issue string, token claim.Token) (string, bool) {
+	return r.podLacks(issue, slotOf(token))
+}
+
+// PodLacksRole satisfies runtime.IssuePodRoles: podLacks of role, the role of a start's step,
+// whose own resources (its role_config_files overlays among them) a pod built before the
+// deployment defined it lacks as it lacks a slot of that name. It stands beside PodLacksSlot
+// because a claim's slot and its step's role can be two names, a keyed agent's on the step of
+// another role, and the claim's token names the slot alone.
 func (r *Runtime) PodLacksRole(issue string, role claim.Role) (string, bool) {
-	name, err := issueSandboxName(r.project, issue)
+	return r.podLacks(issue, role)
+}
+
+// podLacks is the uid of the issue's live pod (livePod) whose template was built without name
+// (templateRoles), and true; "" and false where the issue has no Sandbox, no live pod, or a pod
+// built with name, and for a template no launcher of this layout wrote, which binds none. It reads
+// the informers' stores alone and makes no API call.
+func (r *Runtime) podLacks(issue string, name claim.Role) (string, bool) {
+	sandbox, err := issueSandboxName(r.project, issue)
 	if err != nil {
 		return "", false
 	}
-	s, err := r.storedSandbox(name)
+	s, err := r.storedSandbox(sandbox)
 	if err != nil || s == nil {
 		return "", false
 	}
-	pod := r.storedPod(name)
+	pod := r.storedPod(sandbox)
 	if !livePod(s, pod) {
 		return "", false
 	}
-	if held := templateRoles(s); len(held) == 0 || slices.Contains(held, role) {
+	if held := templateRoles(s); len(held) == 0 || slices.Contains(held, name) {
 		return "", false
 	}
 	return string(pod.UID), true
 }
 
-// SlotWaitsForCredential satisfies runtime.IssuePodRoles: the uid of the issue's pod whose
-// launcher of slot is connected and said in its hello no credential wait (launchers.credentialWaits),
+// SlotWaitsForCredential satisfies runtime.IssuePodRoles: the uid of the pod whose launcher of
+// token's slot is connected and said in its hello no credential wait (launchers.credentialWaits),
 // and false; "" and true where that launcher waits, or where no launcher of the slot is connected.
-// It reads the launchers this runtime accepted and makes no API call.
-func (r *Runtime) SlotWaitsForCredential(issue string, slot claim.Role) (string, bool) {
-	project, err := claim.ProjectToken(r.project)
-	if err != nil {
-		return "", true
-	}
-	token, err := issuePod{}.claimToken(project, issue, slot)
-	if err != nil {
-		return "", true
-	}
+// The launchers are held by the claim of their slot (LauncherResolver), so token is the key. It
+// reads the launchers this runtime accepted and makes no API call.
+func (r *Runtime) SlotWaitsForCredential(token claim.Token) (string, bool) {
 	pod, waits := r.launchers.credentialWaits(token)
 	if waits {
 		return "", true

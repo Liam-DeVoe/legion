@@ -42,7 +42,7 @@ func TestTheIdleViewCountsAStartThatWaitsForItsPodAsNoDelivery(t *testing.T) {
 	ctx := context.Background()
 	openRunningTree(t, st)
 	suspendedImplementer(t, st, supervise.SuspendedByOperator)
-	queueStart(t, st, 31, "checker", pods.StartWaitsForPodPrefix+"checker of LEGION-208: the pod pod-1 was built before the deployment defined checker")
+	queueStart(t, st, 31, "checker", pods.StartWaitsForPodPrefix+"checker of LEGION-208: the pod pod-1 was built without checker")
 
 	view := idleViewOf(t, st, rootIssue)
 	if view.Waiting {
@@ -87,7 +87,7 @@ func TestAReleaseIsNotOvertakenByAStartThatWaitsForItsPod(t *testing.T) {
 			ctx := context.Background()
 			openRunningTree(t, st)
 			suspendedImplementer(t, st, supervise.SuspendedByReleased)
-			queueStart(t, st, first-2, "checker", pods.StartWaitsForPodPrefix+"checker of LEGION-208: the pod pod-1 was built before the deployment defined checker")
+			queueStart(t, st, first-2, "checker", pods.StartWaitsForPodPrefix+"checker of LEGION-208: the pod pod-1 was built without checker")
 			if tc.other {
 				queueStart(t, st, first-1, claim.RoleTester, "Dispatch is down")
 			}

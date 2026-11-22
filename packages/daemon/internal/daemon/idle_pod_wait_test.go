@@ -20,7 +20,7 @@ func (r *idleRig) startWaitsForPod(t *testing.T, role claim.Role) {
 		values ('supervise', $1, jsonb_build_object('op', 'start', 'tree', $2::text, 'role', $3::text, 'generation', 1), 1,
 			now() + interval '1 hour', $4)`,
 		r.issue.Key, r.issue.Tree, string(role),
-		pods.StartWaitsForPodPrefix+string(role)+" of "+r.issue.Key+": the pod pod-1 was built before the deployment defined "+string(role)); err != nil {
+		pods.StartWaitsForPodPrefix+string(role)+" of "+r.issue.Key+": the pod pod-1 was built without "+string(role)); err != nil {
 		t.Fatalf("queue the waiting start of %s: %v", role, err)
 	}
 }
