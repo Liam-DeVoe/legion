@@ -716,7 +716,7 @@ func (s *server) documentMentionExcerpts(ctx context.Context, who model.Actor, q
 // before, which read them alone. Each member carries its kind and address: artifact and the
 // document's own, or lens and the lens's where a link names the address of a document the
 // pre-mortem conversion moved to a lens, its artifact then the retired document. The read runs
-// under referencesClosureBound (boundedClosure); loadIssue before it and loadArtifactsByRefKey
+// under referencesClosureBound (inClosureRead); loadIssue before it and loadArtifactsByRefKey
 // after it read by key on the pool, outside the bound. ?versions=latest leaves each member's
 // artifact.versions holding only its latest version, under its own ETag; absent, empty or all is
 // the full answer. A repeated versions is refused rather than read by its first value.
@@ -746,7 +746,9 @@ func (s *server) getIssueReferences(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	closure, err := s.boundedClosure(r.Context(), who, issue.Key)
+	closure, err := s.inClosureRead(r.Context(), func(ctx context.Context, q refs.Queryer) (refs.References, error) {
+		return refs.Closure(ctx, q, who, issue.Key)
+	})
 	if err != nil {
 		if closureBoundHit(err) {
 			s.writeHandlerError(w, errorf(http.StatusServiceUnavailable, "REFERENCES_TIMEOUT",

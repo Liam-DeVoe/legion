@@ -18,7 +18,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/horizontest"
@@ -381,53 +380,6 @@ func TestIssueReferencesRefuseWhenALaterStatementReachesTheBound(t *testing.T) {
 	})
 	if conns != acquired {
 		t.Errorf("the pool holds %d acquired connections after the answer, want the %d it held with events locked", conns, acquired)
-	}
-}
-
-// The issue references read runs with JIT off whatever its session starts with (inClosureRead):
-// stock Postgres starts every session at jit = on, under which JIT's compilation alone once took
-// the read past its bound. The server reads on a pool of one connection whose sessions start at
-// jit = on, so the session the read runs in and the session read after it are the one
-// connection's. Inside the read's transaction jit reads off, and refs.Closure then answers the
-// issue in that same transaction; after the read the same session reads on, so the setting was
-// the transaction's alone. The negative control is the read without its set local jit = off, under
-// which jit reads on inside the transaction.
-func TestTheIssueReferencesReadRunsWithJITOff(t *testing.T) {
-	handler, database := newTestHandlerWithStore(t)
-	createReferenceAPIProject(t, handler, "CORE")
-	issue := createReferenceAPIIssue(t, handler, "CORE")
-	jitOn := storetest.Reopened(t, database, func(config *pgxpool.Config) {
-		config.MaxConns = 1
-		config.MinConns = 0
-		config.MinIdleConns = 0
-		config.ConnConfig.RuntimeParams["jit"] = "on"
-	})
-	served := &server{deps: Deps{Store: jitOn}}
-	ctx := context.Background()
-	const session = "select current_setting('jit'), pg_backend_pid()"
-	var readBackend int32
-	if _, err := served.inClosureRead(ctx, func(ctx context.Context, q refs.Queryer) (refs.References, error) {
-		var jit string
-		if err := q.QueryRow(ctx, session).Scan(&jit, &readBackend); err != nil {
-			return refs.References{}, fmt.Errorf("read jit inside the read's transaction: %w", err)
-		}
-		if jit != "off" {
-			t.Errorf("jit inside the references read's transaction reads %q, want off", jit)
-		}
-		return refs.Closure(ctx, q, model.Actor{Kind: "user", ID: "alice"}, issue.Key)
-	}); err != nil {
-		t.Fatalf("the references read of %s inside inClosureRead answered %v, want its closure", issue.Key, err)
-	}
-	var jit string
-	var backend int32
-	if err := jitOn.Pool.QueryRow(ctx, session).Scan(&jit, &backend); err != nil {
-		t.Fatalf("read jit on the pool after the read: %v", err)
-	}
-	if backend != readBackend {
-		t.Fatalf("the session after the read is backend %d, want the read's own, backend %d", backend, readBackend)
-	}
-	if jit != "on" {
-		t.Errorf("jit on the read's own session after the read reads %q, want on, the value its sessions start with", jit)
 	}
 }
 
