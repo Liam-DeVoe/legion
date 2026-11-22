@@ -29,6 +29,8 @@ Your role prompt gives the workspace, the push, the handoff, `handoff_complete`,
   - retro on the architect's answer to a defect it reported;
   - a pushing role whose second push still did not carry the pull request onto its commit.
 - Send any other decision someone else owns (product, scope, design, lifecycle, another phase's) to the owning architect with what you observed, what you tried and the decision needed, then go on.
+- **Ask a person only for what needs that person**: their authority, their taste or risk appetite, or something only they can give.
+- **Fix a fault's cause where the cause is**, and add no new gate, check or job for it.
 - No surface reaches the changed path: report it to the architect, never complete (`skill://legion-worker/references/pr-body.md`).
 - A released pod is not a stop. Your session, phase and task are kept, and the next pod restores your unpushed tracked work; nothing else of the disk survives.
 - When another role's topic answers 404, read its handoff with `dispatch handoff-read`.
@@ -43,7 +45,7 @@ Your role prompt gives the workspace, the push, the handoff, `handoff_complete`,
 ## Pull request and merge gate
 
 - The implementer opens the pull request with the line `Dispatch: <KEY>` in its body. Later phases push to that branch and edit that pull request.
-- No deferrals. A finding that changes behaviour, hides an error, or breaks a gate is fixed in this pull request. So is a wording nit or any clear fix in a file it touches: a later round costs a CI pass and a review. `Fast-follow:` reads `none` or names cleanup in files the pull request does not touch.
+- No deferrals. A finding that changes behaviour, hides an error, or breaks a gate is fixed in this pull request. So is any clear fix in a file it touches: a later round costs a CI pass and a review. `Fast-follow:` reads `none` or names cleanup in files the pull request does not touch.
 - The merge gate, in order: the tester's evidence green → the reviewer's approval of the head → the architect's acceptance → retro, which commits nothing → the merger's merge of the head it read, which closes the issue → the production check after the close, the tester's unless the project's `production_check` is `off`. Only the merger runs `gh pr merge`; nobody turns auto-merge on.
 - End every pull-request comment you post with `<!-- legion: {"session":"<session-id>","phase":"<phase>"} -->`.
 - A Dispatch comment or message never carries the `<!-- legion: … -->` footer. Dispatch records the session that wrote it, and only a pull-request comment or review needs the footer.

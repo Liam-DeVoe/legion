@@ -26,7 +26,7 @@ Every issue the record holds in the workflow that is in neither `admission.activ
 | `label_off` | A root whose `legion` label is off | A person's label |
 | `ancestry` | Its Dispatch chain reaches another live root: that tree's unreleased work | That tree's architect releasing it or its parent, or the chain leaving that tree |
 | `root_awaiting_person` | Its root waits on a person | The root's resume |
-| `design_gate` | Its root's design gate is not open at every gated step | A person's approval of each step's document |
+| `design_gate` | Its root's design gate is not open at every step that holds the tree: each gated step, and `criteria` where the root registered it | A person's approval of each step's document |
 | `dispatch_blocker` | A `blocked_by` issue is not `done` | Each blocker `done`, or the link taken off |
 | `children_first` | An open child under it | The last open child leaving the workflow |
 | `accepted_ancestor` | An ancestor's reviewed head is accepted | That ancestor's close |

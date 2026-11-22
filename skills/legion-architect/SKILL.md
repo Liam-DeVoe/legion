@@ -21,21 +21,24 @@ skill the procedures. Where it disagrees with the code or a `--help`, follow tho
 - Message a role with `envoy_publish` to `notifications.role.<token>`, with a token from your
   addressing line or from `roleToken` in `@legion/contracts`: a typed token may reach nobody.
 - The deployment instructions override this skill where they conflict.
+- Ask a person only for what needs that person: their authority, their taste or risk appetite, or
+  something only they can give.
+- Fix a fault's cause where the cause is, and add no new gate, check or job for it.
 
 ## 1. Decompose or adopt
 
 1. Read `STRATEGY.md` where the repository has one, and its design principles (`AGENTS.md` here).
    Find the standard solution (a web search, and how two or three well-regarded projects solve it)
    and cite it in the spec's `Design`. Ask a person only what neither settles, with a recommendation.
-2. Before you write a design, state the problem and the design principles, with no design of
-   yours, to `task(agent="design-outsider")`, and read its answer with `wait`. Record it on the
-   issue or in `plan.md`, with your reason wherever you do not follow it. Run it again when a
-   push-back or a review changes what the design is for.
+2. Where you doubt that a design is the right thing to build, state the problem to
+   `task(agent="design-outsider")` and read its answer with `wait`: it asks whether the thing
+   should exist at all, what the smallest thing that gives the person what they asked for is, and
+   what to delete.
 3. A root: write and edit the spec as `skill://legion-architect/references/design-gate.md` says,
    since any new version closes the gate. A child: as
    `skill://legion-architect/references/decomposition.md`, "Creating children", says.
 4. Decompose, adopt, split across repositories or record a wait on outside work as
-   `skill://legion-architect/references/decomposition.md` says, red-team check first.
+   `skill://legion-architect/references/decomposition.md` says.
 5. File every child before `dispatch request-approval` (or `register_gate` where your line gates no
    step): the gate's opening starts the root's own first phase, and a later child runs beside it.
 
@@ -97,7 +100,7 @@ Run the `goal-red-team` read your role prompt names. Accept only when a pass sta
 `before_merge` check at the approved head, every requirement has a check, and none is unmet or read
 narrower than written: post a `dispatch comment` naming each check and its result, then
 `legion({ op: "sign_off", issue: "<KEY>" })`. Otherwise `request_backward_move` with `to`
-(`implementing` or `testing`) and a `reason` naming the check's block id. Wait for a `ci_check` run
+(`planning`, `implementing` or `testing`) and a `reason` naming the check's block id. Wait for a `ci_check` run
 still going; a name no run answers is yours to correct in the check. Finding asks, refusals and
 what follows: `skill://legion-architect/references/acceptance.md`.
 
@@ -114,8 +117,8 @@ Handle each delivered wake by its row in `skill://legion-architect/references/wa
 
 - Send the controller (its topic is on your addressing line) a child that serves no criterion of
   the root, a need for admission slots, and two trees changing the same code.
-- A clear defect the controller gives you is this tree's work: an open pull request, or a child
-  after the red-team check; reply under its evidence comment with the issue that carries it. It
+- A clear defect the controller gives you is this tree's work: an open pull request, or a child;
+  reply under its evidence comment with the issue that carries it. It
   changes the root spec only where it changes the Summary, a requirement, a check or the scope
   (`skill://legion-architect/references/design-gate.md`, "After approval").
 - A tool a worker cannot get is a pull request to the worker image
