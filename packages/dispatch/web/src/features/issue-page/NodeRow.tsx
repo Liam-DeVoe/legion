@@ -1062,11 +1062,10 @@ export function RowActs({
  * to mark it in, and what they wrote, whole (R9, ruling 1). The reader's own answer carries the
  * ink rule their own words carry (R34).
  *
- * What they wrote is drawn as the row draws its node's words (`RowText`): from the server's
- * reading of it, by the renderer, and where the read sent none as stored, character for
- * character, keeping the line breaks they typed. What they chose is drawn by the renderer from
- * the reading of each option's name the answer carries, as the Answers page draws it (the
- * reading list's `answers-chosen-options`).
+ * What they wrote is drawn as the row draws its node's words (`RowText`): by the renderer, from
+ * the server's reading of it, and where the read sent none from the page's own parse of it. What
+ * they chose is drawn by the renderer from the reading of each option's name the answer carries,
+ * as the Answers page draws it (the reading list's `answers-chosen-options`).
  */
 export function AskAnswer({
   answerer,
@@ -1201,12 +1200,13 @@ export function NodeEdges({
  * One tie of the node that is not the spine, on the node's own line (ruling 5): the page's word
  * for the tie where it has one, then the target by its name, cut as a chip's words are
  * (`chipName`): a block's first line, and at a word within 32 characters, as the link a reader
- * follows to it; a whole document by the page's word for one, because today's model holds no
- * title for a document and its name is its file name (`documentWord`, part G's R4). No address,
- * slug or document name is drawn in its place (R22), save one: a short reference that two or
- * more targets answer to (`ambiguous`) names no one target, so it is drawn as its author wrote
- * it, as words with no link, and never as a target deleted (decision 62). A target nothing
- * answers to now says so.
+ * follows to it; a whole document by the page's word for it (`ReferenceNameReading.chipWord`),
+ * since a chip never draws a document's file name (decision 39), though the page publishes the
+ * document's name as a link to it reads it, for every plain line (`tree-drafts.ts`'s
+ * `treeContext`). No address, slug or document name is drawn in its place (R22), save one: a
+ * short reference that two or more targets answer to (`ambiguous`) names no one target, so it
+ * is drawn as its author wrote it, as words with no link, and never as a target deleted
+ * (decision 62). A target nothing answers to now says so.
  *
  * The name is the chip's address as the shared plain-text projection reads it standing alone:
  * its target's current name (R8), which for a target the page's batched read answered is the
@@ -1214,10 +1214,11 @@ export function NodeEdges({
  * projected from the target's own words in plain words with no list or block reading, so "1.
  * Stand the harness up." keeps its number (decisions 66 and 88); a party by its own name (R5),
  * its role read by the issue the node's record is on (`issue`); and an issue by its key and
- * title. A block is the one target a chip names by other words than a link does: by the first
- * block of its words that holds any, the line the names store projects beside the block's name
- * from the reading the page published for it (`KnownReferences.lines`), as a block drawn as a
- * chip in place in a node's words reads it (`RowText.tsx`), so a decision's chip is its heading. A
+ * title. A whole document and a block are the targets a chip names by other words than a link
+ * does: a document by the page's word for it, above; a block by the first block of its words
+ * that holds any, the line the names store projects beside the block's name from the reading
+ * the page published for it (`KnownReferences.lines`), as a block drawn as a chip in place in a
+ * node's words reads it (`RowText.tsx`), so a decision's chip is its heading. A
  * chip whose target has no name yet draws nothing until it has one - "the names come last and
  * all at once" (`useIssueTree.ts`) - which the projection's own answer says
  * (`MarkdownHeadline.named`): a chip draws no address.
@@ -1240,12 +1241,10 @@ function Chip({
   const ambiguous = chip.ambiguous === true;
   const gone = chip.gone && !ambiguous;
   const target = parseNodeReference(chip.ref);
-  // A whole document by the page's word for it, which the chip carries (`tree-drafts.ts`'s
-  // `documentWord`), and the word for any document where it carries none.
+  // A whole document by the page's word for it, which the chip's reading carries (`chipWord`),
+  // and the word for any document where it carries none.
   const anyDocument = ambiguous ? undefined : documentWord(target);
-  const carried =
-    chip.reading !== undefined && "words" in chip.reading ? chip.reading.words : undefined;
-  const word = anyDocument === undefined ? undefined : (carried ?? anyDocument);
+  const word = anyDocument === undefined ? undefined : (chip.reading?.chipWord ?? anyDocument);
   // A block by its first block of words, the line the store projected from the reading the page
   // published for it, which the chip carries: such a chip waits on that line and reads nothing.
   const { lines } = useKnownReferences();

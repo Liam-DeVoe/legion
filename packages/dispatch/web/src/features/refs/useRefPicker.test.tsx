@@ -1,6 +1,6 @@
 import { afterEach, beforeAll, expect, type Mock, spyOn } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
@@ -8,7 +8,7 @@ import { MemoryRouter } from "react-router-dom";
 import { displayTree } from "../../__tests__/display-trees";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { plannerAgent, searchResponse } from "../../__tests__/search-fixture";
-import { ApiError, api } from "../../api/client";
+import { AGENT_LIST_REFILLING, ApiError, api } from "../../api/client";
 import type {
   Agent,
   ArchitectureTree,
@@ -28,6 +28,7 @@ import {
   REF_PICKER_KIND_NAMES,
   REF_PICKER_KINDS,
   REF_PICKER_PARTS_WORDS,
+  REF_PICKER_PARTY_WORDS,
   REF_PICKER_WORDS,
   type RefPickerInsertion,
   type RefPickerKind,
@@ -164,6 +165,7 @@ const shot: ArtifactWithTrees = {
 };
 
 interface Pane {
+  client: QueryClient;
   getArchitecture: Mock<typeof api.getArchitecture>;
   getIssueCollaborators: Mock<typeof api.getIssueCollaborators>;
   getReferences: Mock<typeof api.getReferences>;
@@ -241,16 +243,16 @@ function renderHost({
   const getReferences = spyOn(api, "getReferences").mockResolvedValue(blocks);
   const listAgentArtifacts = spyOn(api, "listAgentArtifacts").mockResolvedValue([shot]);
   const search = spyOn(api, "search").mockImplementation(searchAnswer);
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = render(
     <MemoryRouter>
-      <QueryClientProvider
-        client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
-      >
+      <QueryClientProvider client={client}>
         <Host issueKey={noIssue ? undefined : "CORE-1"} />
       </QueryClientProvider>
     </MemoryRouter>
   );
   pane = {
+    client,
     getArchitecture,
     getIssueCollaborators,
     getReferences,
@@ -847,6 +849,128 @@ test("the list says it is loading, that nothing matches, and that Dispatch is un
       REF_PICKER_WORDS.unreachable
     )
   );
+});
+
+// The case the roles nobody runs are offered for: every agent of the issue has stopped, so the
+// live list answers with no agent and the picker holds those roles alone, as not running. It must
+// not say that nothing matches under the rows it is showing.
+test("a picker holding only stopped roles does not say no agent matches", async () => {
+  const user = userEvent.setup();
+  const page = renderHost({ agents: [] });
+  page.getIssueCollaborators.mockResolvedValue({ ...collaborators, people: [] });
+  page.getArchitecture.mockRejectedValue(new ApiError(404, { code: "SOURCE_NOT_FOUND" }));
+
+  const comment = await field();
+  await user.click(comment);
+  await user.keyboard("@");
+
+  await waitFor(() => expect(drawnRows()).toEqual(["Roles: reviewer"]));
+  expect(screen.getByRole("option")).toHaveTextContent(
+    "Reviewer · reviewer · not running, not told"
+  );
+  expect(screen.queryByTestId("ref-picker-empty")).not.toBeInTheDocument();
+  expect(screen.queryByTestId("agent-list-unreachable")).not.toBeInTheDocument();
+});
+
+// A role is offered as not running only where a live list that answered names nobody holding
+// it: a list whose read failed says nothing of who is absent. So while it has failed, the picker
+// offers none of the roles the issue records, and says the list could not load where the agent
+// and role rows would be.
+test("the picker adds no stopped option while the live agents list failed", async () => {
+  const user = userEvent.setup();
+  const page = renderHost();
+  page.listAgents.mockRejectedValue(new Error("listener down"));
+
+  const comment = await field();
+  await user.click(comment);
+  await user.keyboard("@");
+
+  await waitFor(() =>
+    expect(screen.getByTestId("agent-list-unreachable").textContent).toBe(
+      REF_PICKER_PARTY_WORDS.unreachable
+    )
+  );
+  expect(page.getIssueCollaborators).toHaveBeenCalledWith("CORE-1");
+  await waitFor(() =>
+    expect(drawnRows()).toEqual(["People: alice@example.com", "Components: The relay"])
+  );
+});
+
+// A refilling agent list keeps the rows an earlier read gave and never says that nothing
+// matches: it says the list is refilling instead, where the agent and role rows are read from,
+// under a query that matches no row as under none.
+test("mention suggestions say the agent list is refilling instead of that no agent matches", async () => {
+  const user = userEvent.setup();
+  const page = renderHost();
+  const comment = await field();
+  await user.click(comment);
+  await user.keyboard("@");
+  await waitFor(() => expect(drawnRows()).toContain("Agents: Planner"));
+  page.listAgents.mockRejectedValue(
+    new ApiError(503, { code: "ENVOY_REFILLING", error: "The agent list is refilling." })
+  );
+  await act(async () => {
+    await page.client.refetchQueries({ queryKey: ["agents"] });
+  });
+  await waitFor(() =>
+    expect(screen.getByTestId("agent-list-refilling").textContent).toBe(AGENT_LIST_REFILLING)
+  );
+  expect(drawnRows()).toContain("Agents: Planner");
+  expect(screen.queryByTestId("ref-picker-empty")).not.toBeInTheDocument();
+
+  await user.keyboard("nobody");
+  await waitFor(() => expect(page.search).toHaveBeenCalledWith("nobody", expect.anything()));
+  await waitFor(() => expect(screen.queryAllByRole("option")).toHaveLength(0));
+  expect(screen.getByTestId("agent-list-refilling")).toBeInTheDocument();
+  expect(screen.queryByTestId("ref-picker-empty")).not.toBeInTheDocument();
+});
+
+// A row is an option inside a listbox, which owns only options, so the agent in it is drawn with
+// its running state and no link: a session's row by its name, and a role's row by its holder.
+test("the mention picker draws each agent with its state and no link", async () => {
+  const user = userEvent.setup();
+  renderHost();
+  const comment = await field();
+  await user.click(comment);
+  await user.keyboard("@plann");
+  await waitFor(() => expect(drawnRows()).toEqual(["Agents: Planner", "Roles: planner"]));
+  const list = screen.getByRole("listbox", { name: "References" });
+  for (const option of within(list).getAllByRole("option")) {
+    const agent = option.querySelector('[data-agent-name="planner-session"]');
+    expect(agent?.textContent, option.textContent ?? "").toBe("Planner");
+    await waitFor(() => expect(agent?.getAttribute("data-agent-state")).toBe("running"));
+  }
+  expect(list.querySelector("a")).toBeNull();
+});
+
+// A session's row is named by the session's name, which for a session with no title is the short
+// form `session:<8>…` that two sessions may share, so the row carries the session's full id as
+// its tooltip and accessible description. A role's row is named by its role, and carries none.
+test("a session's row has its full id as its title and description, and a role's row has none", async () => {
+  const user = userEvent.setup();
+  const twins = ["twin-session-one", "twin-session-two"];
+  renderHost({
+    agents: twins.map((session_id, index) => ({
+      ...worker,
+      roles: index === 0 ? ["planner"] : [],
+      session_id,
+      title: "",
+    })),
+  });
+  const comment = await field();
+  await user.click(comment);
+  await user.keyboard("@");
+  const list = await screen.findByRole("listbox", { name: "References" });
+  const sessions = await within(list).findAllByRole("option", { name: /^session:twin-ses…/ });
+  expect(sessions.map((option) => option.title).sort()).toEqual(twins);
+  for (const option of sessions) {
+    // The title is the id of the session the row draws.
+    expect(option.querySelector(`[data-agent-name="${option.title}"]`)).not.toBeNull();
+    expect(option).toHaveAccessibleDescription(option.title);
+  }
+  const role = within(list).getByRole("option", { name: /^planner/ });
+  expect(role).not.toHaveAccessibleDescription();
+  expect(role.hasAttribute("title")).toBe(false);
 });
 
 /** A comment's hit whose snippet is `snippet`, with the tree the server read it into where the

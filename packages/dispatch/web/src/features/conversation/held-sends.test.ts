@@ -186,6 +186,54 @@ test("a refusal survives a reload with the draft written over it, until it is di
   }
 });
 
+// A keep of what a refused send holds already - the same text and the same ask, built afresh as
+// a composer builds each keep - writes nothing: it tells no listener of the store and leaves the
+// entry as it was. A composer keeps its draft a short wait after it mounts, so one that mounts
+// over a refusal keeps that very draft, and everything that reads the store would draw again for
+// no change. A keep of a changed draft still writes it and tells them.
+test("a keep of the draft a refused send holds already writes nothing, and a changed one writes it", async () => {
+  const tab = keptTab();
+  const createAsk = spyOn(api, "createAsk").mockRejectedValue(verdict);
+  const asked: SentRequest = {
+    ...request,
+    ask: {
+      multiple: true,
+      options: [{ description: "Before the cut", label: "Ship it" }, { label: "Hold it" }],
+      urgency: "high",
+    },
+    draft: { body: "Ship the relay?", replacement: "" },
+    kind: "ask",
+    sendKey: "send-ask",
+  };
+  const name: MutationKey = ["conversation-composer", "CORE-1"];
+  const changed = { ask: asked.ask, draft: { body: "Ship the relay today?", replacement: "" } };
+  const told = jest.fn();
+  const store = heldOf(tab).held;
+  const stop = store.subscribe(told);
+  try {
+    store.send(name, asked);
+    await waitFor(() => expect(store.get(name)?.status).toBe("refused"));
+    const refused = store.get(name);
+    told.mockClear();
+    store.keep(name, {
+      ask: { ...asked.ask, options: asked.ask.options.map((option) => ({ ...option })) },
+      draft: { ...asked.draft },
+    });
+    expect(told).not.toHaveBeenCalled();
+    expect(store.get(name)).toBe(refused);
+
+    store.keep(name, changed);
+    expect(told).toHaveBeenCalledTimes(1);
+    expect(store.get(name)).toMatchObject({ draft: changed, status: "refused" });
+    const kept = tab.kept("send-ask") as { detail: { draft: object } };
+    expect(kept.detail.draft).toEqual(changed);
+  } finally {
+    stop();
+    createAsk.mockRestore();
+    tab.close();
+  }
+});
+
 // A reply to a thread is resumed whole: the reply it answers and the mode it was picked in, so a
 // reload sends the same message to the same place.
 test("a reply to a thread is kept and resumed whole", async () => {
@@ -516,12 +564,11 @@ test("a keep over a refused reply writes the mentions its box holds into the req
   }
 });
 
-// A keep of what a refused send holds already - the same text and ask, and the same mentions of
-// the box's, where none and an empty list are alike - writes nothing. It tells no listener of the
-// store and leaves the entry as it was. A composer keeps its draft a short wait after it mounts,
-// so one that mounts over a refusal keeps that very draft, and everything that reads the store
-// would draw again for no change. A keep of a changed draft still writes it and tells them.
-test("a keep of the draft a refused send holds already writes nothing, and a changed one writes it", async () => {
+// A keep by the issue page's box over a refused reply writes nothing where the request holds its
+// mentions already, none and an empty list being alike: it tells no listener of the store and
+// leaves the entry as it was. The same draft kept with other mentions still writes them, as the
+// draft's own change does (#3125's case above holds the draft and the ask).
+test("a keep of the mentions a refused reply holds already writes nothing, and the same draft with other mentions writes them", async () => {
   const tab = keptTab();
   const createComment = spyOn(api, "createComment").mockRejectedValue(verdict);
   const link = "[@Planner](dispatch://agent/planner-session)";
@@ -539,7 +586,9 @@ test("a keep of the draft a refused send holds already writes nothing, and a cha
   };
   const keyOf = (sendKey: string): MutationKey => ["issue-composer", sendKey];
   const held = { ask: reply.ask, draft: reply.draft };
-  const changed = { ask: reply.ask, draft: { body: `${link} hello again`, replacement: "" } };
+  const others = [
+    { target: "session:other-session", text: "[@Other](dispatch://agent/other-session)" },
+  ];
   const told = jest.fn();
   const store = heldOf(tab).held;
   const stop = store.subscribe(told);
@@ -557,12 +606,12 @@ test("a keep of the draft a refused send holds already writes nothing, and a cha
     expect(store.get(keyOf("send-seeded"))).toBe(seeded);
     expect(store.get(keyOf("send-unseeded"))).toBe(unseeded);
 
-    store.keep(keyOf("send-seeded"), { ...changed, seeds });
+    store.keep(keyOf("send-seeded"), { ...held, seeds: others });
     expect(told).toHaveBeenCalledTimes(1);
-    expect(store.get(keyOf("send-seeded"))).toMatchObject({ draft: changed, status: "refused" });
-    expect(store.get(keyOf("send-seeded"))?.request.seeds).toEqual(seeds);
-    const kept = tab.kept("send-seeded") as { detail: { draft: object } };
-    expect(kept.detail.draft).toEqual(changed);
+    expect(store.get(keyOf("send-seeded"))).toMatchObject({ draft: held, status: "refused" });
+    expect(store.get(keyOf("send-seeded"))?.request.seeds).toEqual(others);
+    const kept = tab.kept("send-seeded") as { detail: { request: { seeds?: unknown } } };
+    expect(kept.detail.request.seeds).toEqual(others);
   } finally {
     stop();
     createComment.mockRestore();

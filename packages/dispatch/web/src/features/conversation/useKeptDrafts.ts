@@ -522,13 +522,15 @@ export function useKeptDrafts({
   // What the reader wrote over a refusal goes back to the held send (`keep`, which a send still
   // out ignores), so the composer that mounts next shows it - and so a reload does: a refusal's
   // draft is the only copy of that message, and the entry it is kept in is what survives the
-  // page (`write-storage.ts`). It is written as this composer unmounts, a short wait after each
-  // keystroke, and as the page goes, which no unmount follows. The issue page's box keeps its
-  // mentions with it as it holds them then (`seedsField`), so a box that mounts again over the send
-  // takes out none the reader's edits let go of. A refusal the host has moved the composer off
-  // (`elsewhere`) keeps the draft it was written with: what is typed over it there is for that
-  // other address. So does an edit's refusal while it waits beside a newer body (`changed`): the
-  // field shows that body, not the reader's edit.
+  // page (`write-storage.ts`). It is written as this composer unmounts, a short wait after it
+  // mounts and after each keystroke, and as the page goes, which no unmount follows. A composer
+  // that mounts over a refusal so keeps the very draft the send holds, and a keep of what the
+  // send holds already writes nothing (`holdsAlready`). A refusal the host has moved the
+  // composer off (`elsewhere`) keeps the draft it was written with: what is typed over it there
+  // is for that other address. So does an edit's refusal while it waits beside a newer body
+  // (`changed`): the field shows that body, not the reader's edit.
+  // The issue page's box keeps its mentions with the draft as it holds them then (`seedsField`),
+  // so a box that mounts again over the send takes out none the reader's edits let go of.
   const keepDraft = useRef(() => {});
   keepDraft.current = () => {
     if (elsewhere !== undefined || changed !== undefined) return;

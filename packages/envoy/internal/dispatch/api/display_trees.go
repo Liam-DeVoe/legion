@@ -572,6 +572,57 @@ type graphReferencesRead struct {
 	UnknownKinds []string `json:"unknown_kinds,omitempty"`
 }
 
+// referenceLinkRead is one row of an issue's references read as the dashboard reads it: the row,
+// with the tree of its name. It declares model.ReferenceLink's fields in the row's own order, as
+// graphEdgeRead declares the edge's, and the tree after them, so an answer without the trees
+// header is the bytes model.ReferenceLink writes, and one with it differs only by the `name_tree`
+// that closes each row.
+type referenceLinkRead struct {
+	Node     model.GraphNode    `json:"node"`
+	Name     string             `json:"name"`
+	Kinds    []string           `json:"kinds"`
+	Via      model.ReferenceVia `json:"via"`
+	NameTree model.DisplayTree  `json:"name_tree,omitempty"`
+}
+
+// issueReferencesRead is what GET /api/v1/issues/{key}/references answers: model.IssueReferences'
+// fields in its own order, each row of links and linked_from shaped to carry its name's tree.
+type issueReferencesRead struct {
+	Members    []model.ReferenceMember `json:"members"`
+	Truncated  bool                    `json:"truncated"`
+	Links      []referenceLinkRead     `json:"links"`
+	LinkedFrom []referenceLinkRead     `json:"linked_from"`
+}
+
+// newIssueReferencesRead is an issue's references read shaped for the dashboard, each row's name
+// read into its tree where it stands for a caller that asked for the trees (shapeBuilt). A name
+// is the words the graph read shows for the far node (refs.Closure): a document's name, an
+// issue's title, or the head of an item's text, a cut no writer stores a tree of. So it is read
+// as graphEdgeReads reads an excerpt, and stored nowhere.
+func newIssueReferencesRead(references model.IssueReferences, trees bool) issueReferencesRead {
+	read := issueReferencesRead{Members: references.Members, Truncated: references.Truncated}
+	shapeBuilt(trees, func(reader *displayTreeReader) {
+		read.Links = referenceLinkReads(references.Links, reader)
+		read.LinkedFrom = referenceLinkReads(references.LinkedFrom, reader)
+	})
+	return read
+}
+
+// referenceLinkReads is rows shaped to carry each name's tree, an absent list staying absent and
+// an empty one empty. The list is made whole before any name is registered, since each tree field
+// must stand where it will still stand when reader resolves.
+func referenceLinkReads(rows []model.ReferenceLink, reader *displayTreeReader) []referenceLinkRead {
+	if rows == nil {
+		return nil
+	}
+	reads := make([]referenceLinkRead, len(rows))
+	for index, row := range rows {
+		reads[index] = referenceLinkRead{Node: row.Node, Name: row.Name, Kinds: row.Kinds, Via: row.Via}
+		reader.text(&reads[index].NameTree, row.Name)
+	}
+	return reads
+}
+
 // architectureComponentRead is one component of the model with the tree of the prose its
 // source's files declare it with.
 type architectureComponentRead struct {

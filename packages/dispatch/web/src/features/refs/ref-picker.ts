@@ -159,6 +159,18 @@ export type RefPickerParts =
   | { readonly kind: "blocks"; readonly address: string }
   | { readonly kind: "documents"; readonly session: string };
 
+/** The session a party's row names: a session's row its own, and a role's row the session that
+ *  holds the role. The list draws it through `AgentName`, with its running state, in place of
+ *  `words` (`RefRowLabel`, `RefRowDetail`). */
+export interface RefPickerAgent {
+  readonly sessionId: string;
+  /** The session's title as the agent list gave it: its name when the registry has none. */
+  readonly storedTitle: string;
+  /** The row's own words for the session, as `useAgentText` names it: the whole label of a
+   *  session's row, and the head of a role's detail. */
+  readonly words: string;
+}
+
 /** One row of the picker. `id` is unique within one open: it is the row's React key and the
  *  value a host puts in `aria-activedescendant`. */
 export interface RefPickerRow {
@@ -183,6 +195,8 @@ export interface RefPickerRow {
     readonly tree: DisplayTree;
     readonly source: TextSource | undefined;
   };
+  /** For a party's row that names an agent, that agent (`RefPickerAgent`). */
+  readonly agent?: RefPickerAgent;
 }
 
 /** One kind's rows, under that kind's heading. */
