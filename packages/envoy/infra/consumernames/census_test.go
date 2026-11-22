@@ -374,8 +374,9 @@ func censusHeldOperator(t *testing.T, identity string) (*nats.Conn, nats.JetStre
 
 // The census's writer of the daemon stores' stream identity (ReconcileDaemonStreamIDs), as the
 // operator under exactly natsgrant.Operator(held), reads ENVOY_NOTIFICATIONS' identity and every
-// daemon store the census names, each at the address its Deployment names, and rewrites, by a
-// write conditional on its revision, each sentinel whose stream_id differs from it: a stale one
+// daemon store the census names, each at the address its one source names (its Deployment, or a
+// retired project's entry), and rewrites, by a write conditional on its revision, each sentinel
+// whose stream_id differs from it: a stale one
 // and one that recorded none are rewritten, every other field kept, and each is named in the
 // result's Changed; an equal one is left at its revision, named in Reconciled with its identity;
 // a store with no sentinel yet (a store enrol has not written) is left without one, named in

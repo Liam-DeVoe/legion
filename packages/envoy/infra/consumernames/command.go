@@ -321,7 +321,7 @@ func (o options) usageProblem() string {
 	case actionCleanup:
 		if o.gone != "" {
 			if _, ok := o.daemonDatabase(o.gone); !ok {
-				add("--daemon-database " + o.gone + "=<file> is required: cleanup --gone reads that store at the address its Deployment names")
+				add("--daemon-database " + o.gone + "=<file> is required: cleanup --gone reads that store at the address its Deployment, or its retired-stores entry, names")
 			}
 		}
 	case actionReplace:

@@ -208,7 +208,7 @@ func TestTheConsumerCleanupFlags(t *testing.T) {
 		{"replace with --final", []string{"replace", "--hold", "h1", "--listener", "hub", "--final"}, 1, ""},
 		{"cleanup --gone with its store's file", []string{"cleanup", "--hold", "h1", "--gone", "P", "--daemon-database", "P=/dev/null"}, 1, ""},
 		{"cleanup --gone without its store's file", []string{"cleanup", "--hold", "h1", "--gone", "P"}, 2,
-			"envoy-infra consumer-names cleanup: --daemon-database P=<file> is required: cleanup --gone reads that store at the address its Deployment names"},
+			"envoy-infra consumer-names cleanup: --daemon-database P=<file> is required: cleanup --gone reads that store at the address its Deployment, or its retired-stores entry, names"},
 		{"--gone on another word", []string{"replace", "--hold", "h1", "--listener", "hub", "--gone", "P"}, 2,
 			"envoy-infra consumer-names replace: --gone is cleanup's alone"},
 		{"--final on another word", []string{"convert", "--hold", "h1", "--final"}, 2,
