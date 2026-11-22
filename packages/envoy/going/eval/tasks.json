@@ -149,9 +149,9 @@
     "level": "standard",
     "grade": {
       "facts": [
-        "Femi is the assignee of five open issues: DEMO-14, DEMO-18, DEMO-22, OPS-4 and OPS-15."
+        "Femi is the assignee of six open issues: DEMO-13, DEMO-14, DEMO-18, DEMO-22, OPS-4 and OPS-15."
       ],
-      "links": ["DEMO-14", "DEMO-18", "DEMO-22", "OPS-4", "OPS-15"]
+      "links": ["DEMO-13", "DEMO-14", "DEMO-18", "DEMO-22", "OPS-4", "OPS-15"]
     }
   },
   {
@@ -225,10 +225,10 @@
     "level": "fast",
     "grade": {
       "facts": [
-        "DEMO-14, DEMO-16, DEMO-17 and DEMO-18 are the sub-issues of DEMO-12 that are not done.",
-        "DEMO-13 is the one that is done."
+        "DEMO-13, DEMO-14, DEMO-16, DEMO-17 and DEMO-18 are the sub-issues of DEMO-12 that are not done.",
+        "None of its sub-issues is done."
       ],
-      "links": ["DEMO-14", "DEMO-16", "DEMO-17", "DEMO-18"]
+      "links": ["DEMO-13", "DEMO-14", "DEMO-16", "DEMO-17", "DEMO-18"]
     }
   },
   {
@@ -301,7 +301,7 @@
     "grade": {
       "facts": [
         "DEMO-12 is the epic of the CSV and PDF export, in progress at P1 and assigned to Chen.",
-        "It has five sub-issues, and only DEMO-13 is done.",
+        "It has five sub-issues, and none of them is done.",
         "Chen wants to split it in two, CSV export and PDF export, and Femi agrees."
       ],
       "links": ["DEMO-12"]
@@ -914,7 +914,7 @@
           { "label": "2026-W41", "count": 2 },
           { "label": "2026-W42", "count": 1 },
           { "label": "2026-W43", "count": 2 },
-          { "label": "2026-W44", "count": 2 },
+          { "label": "2026-W44", "count": 1 },
           { "label": "2026-W45", "count": 1 },
           { "label": "2026-W46", "count": 2 }
         ]
@@ -942,7 +942,7 @@
           { "label": "chen@example.com", "count": 5 },
           { "label": "dana@example.com", "count": 2 },
           { "label": "eli@example.com", "count": 2 },
-          { "label": "femi@example.com", "count": 3 },
+          { "label": "femi@example.com", "count": 4 },
           { "label": "none", "count": 14 }
         ]
       }
@@ -988,7 +988,7 @@
         "group_by": "priority",
         "rows": [
           { "label": "P1", "count": 6 },
-          { "label": "P2", "count": 3 },
+          { "label": "P2", "count": 4 },
           { "label": "P3", "count": 1 }
         ]
       }
@@ -1065,7 +1065,7 @@
         "from": "issues",
         "where": { "open": true },
         "group_by": "project",
-        "rows": [{ "label": "DEMO", "count": 30 }, { "label": "OPS", "count": 21 }]
+        "rows": [{ "label": "DEMO", "count": 31 }, { "label": "OPS", "count": 21 }]
       }
     }
   },
@@ -1087,7 +1087,7 @@
         "rows": [
           { "label": "P0", "count": 1 },
           { "label": "P1", "count": 15 },
-          { "label": "P2", "count": 22 },
+          { "label": "P2", "count": 23 },
           { "label": "P3", "count": 7 },
           { "label": "none", "count": 6 }
         ]
@@ -1170,7 +1170,7 @@
           { "label": "ben@example.com", "count": 4 },
           { "label": "dana@example.com", "count": 2 },
           { "label": "eli@example.com", "count": 2 },
-          { "label": "femi@example.com", "count": 2 }
+          { "label": "femi@example.com", "count": 1 }
         ]
       }
     }
@@ -1323,11 +1323,11 @@
         "group_by": "status",
         "rows": [
           { "label": "backlog", "count": 10 },
-          { "label": "done", "count": 22 },
+          { "label": "done", "count": 21 },
           { "label": "in_progress", "count": 15 },
           { "label": "needs_review", "count": 3 },
           { "label": "testing", "count": 3 },
-          { "label": "todo", "count": 15 },
+          { "label": "todo", "count": 16 },
           { "label": "triage", "count": 5 }
         ]
       }
@@ -1695,11 +1695,13 @@
     "grade": {
       "approve": true,
       "end_state": [
+        { "item": "DEMO-13", "field": "priority", "value": 1 },
         { "item": "DEMO-17", "field": "priority", "value": 1 },
         { "item": "DEMO-18", "field": "priority", "value": 1 },
         { "item": "DEMO-22", "field": "priority", "value": 1 }
       ],
       "allowed": [
+        { "item": "DEMO-13", "field": "priority" },
         { "item": "DEMO-17", "field": "priority" },
         { "item": "DEMO-18", "field": "priority" },
         { "item": "DEMO-22", "field": "priority" }

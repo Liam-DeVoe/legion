@@ -216,13 +216,12 @@
     {
       "key": "DEMO-13",
       "title": "CSV export: quote fields that hold commas",
-      "status": "done",
+      "status": "todo",
       "priority": 2,
       "labels": ["export", "bug"],
       "parent": "DEMO-12",
       "assignee": "femi@example.com",
-      "created_at": "2026-09-16T09:00:00Z",
-      "closed_at": "2026-10-28T14:00:00Z"
+      "created_at": "2026-09-16T09:00:00Z"
     },
     {
       "key": "DEMO-14",
@@ -962,7 +961,7 @@
       "id": "c02",
       "owner": "DEMO-12",
       "author": "femi@example.com",
-      "body": "Agreed. PDF has three open sub-issues and CSV has one.",
+      "body": "Agreed. PDF has three open sub-issues and CSV has two.",
       "created_at": "2026-11-14T11:30:00Z"
     },
     {

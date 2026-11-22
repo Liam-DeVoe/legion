@@ -219,10 +219,10 @@ func TestAChartShowsItsRowsByTheWeeksItDraws(t *testing.T) {
 		}
 		return []json.RawMessage{block}
 	}
-	if missing := MissingChartRows(chart.Rows, "", drawn(2, 2, 1, 2, 2, 1, 2)); len(missing) != 0 {
+	if missing := MissingChartRows(chart.Rows, "", drawn(2, 2, 1, 2, 1, 1, 2)); len(missing) != 0 {
 		t.Errorf("the drawn chart of every week's count misses %v; want none", missing)
 	}
-	if missing := MissingChartRows(chart.Rows, "", drawn(2, 2, 1, 2, 2, 1, 3)); len(missing) != 1 || missing[0] != "2026-W46=2" {
+	if missing := MissingChartRows(chart.Rows, "", drawn(2, 2, 1, 2, 1, 1, 3)); len(missing) != 1 || missing[0] != "2026-W46=2" {
 		t.Errorf("the drawn chart with 3 closed in the week of 9 November misses %v; want 2026-W46=2", missing)
 	}
 }
@@ -248,13 +248,13 @@ func TestAChartShowsItsPriorityRowsByTheNumberItDraws(t *testing.T) {
 		}
 		return []json.RawMessage{block}
 	}
-	if missing := MissingChartRows(chart.Rows, "", drawn("priority", [2]int{1, 6}, [2]int{2, 3}, [2]int{3, 1})); len(missing) != 0 {
+	if missing := MissingChartRows(chart.Rows, "", drawn("priority", [2]int{1, 6}, [2]int{2, 4}, [2]int{3, 1})); len(missing) != 0 {
 		t.Errorf("the drawn chart of each priority's count misses %v; want none", missing)
 	}
-	if missing := MissingChartRows(chart.Rows, "", drawn("priority", [2]int{1, 6}, [2]int{2, 4}, [2]int{3, 1})); len(missing) != 1 || missing[0] != "P2=3" {
-		t.Errorf("the drawn chart with 4 bugs at P2 misses %v; want P2=3", missing)
+	if missing := MissingChartRows(chart.Rows, "", drawn("priority", [2]int{1, 6}, [2]int{2, 5}, [2]int{3, 1})); len(missing) != 1 || missing[0] != "P2=4" {
+		t.Errorf("the drawn chart with 5 bugs at P2 misses %v; want P2=4", missing)
 	}
-	if missing := MissingChartRows(chart.Rows, "", drawn("estimate", [2]int{1, 6}, [2]int{2, 3}, [2]int{3, 1})); len(missing) != 3 {
+	if missing := MissingChartRows(chart.Rows, "", drawn("estimate", [2]int{1, 6}, [2]int{2, 4}, [2]int{3, 1})); len(missing) != 3 {
 		t.Errorf("the drawn chart by estimate misses %v; want every row, since no field of it is the priority", missing)
 	}
 }

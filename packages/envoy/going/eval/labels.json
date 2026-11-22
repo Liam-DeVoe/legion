@@ -120,16 +120,16 @@
       "labels": [
         {
           "by": "claude",
-          "label": "pass",
-          "why": "It lists exactly five open issues assigned to femi: DEMO-14, DEMO-18, DEMO-22, OPS-4 and OPS-15."
+          "label": "fail",
+          "why": "It lists five open issues assigned to femi: DEMO-14, DEMO-18, DEMO-22, OPS-4 and OPS-15; the fact names six, and DEMO-13 is missing."
         },
         {
           "by": "gpt",
-          "label": "pass",
-          "why": "States that Femi has five open assigned issues and lists DEMO-14, DEMO-18, DEMO-22, OPS-4, and OPS-15."
+          "label": "fail",
+          "why": "The answer lists five open issues instead of six and omits DEMO-13."
         }
       ],
-      "label": "pass"
+      "label": "fail"
     },
     {
       "task": "find-13",
@@ -171,16 +171,16 @@
       "labels": [
         {
           "by": "claude",
-          "label": "pass",
-          "why": "It lists DEMO-14, DEMO-16, DEMO-17 and DEMO-18 as not done, and DEMO-13 as the one done."
+          "label": "fail",
+          "why": "It lists DEMO-14, DEMO-16, DEMO-17 and DEMO-18 as not done but calls DEMO-13 done; the facts say DEMO-13 is not done either, and none of the five is done."
         },
         {
           "by": "gpt",
-          "label": "pass",
-          "why": "Lists DEMO-14, DEMO-16, DEMO-17, and DEMO-18 as unfinished children of DEMO-12 and identifies DEMO-13 as the sole completed child."
+          "label": "fail",
+          "why": "The answer incorrectly says DEMO-13 is done and lists only four unfinished children, whereas all five children are not done."
         }
       ],
-      "label": "pass"
+      "label": "fail"
     },
     {
       "task": "find-18",
@@ -241,12 +241,12 @@
         {
           "by": "claude",
           "label": "fail",
-          "why": "Facts 1 and 2 are stated (in progress, P1, Chen; five children, DEMO-13 done), but fact 3, Chen wanting to split it in two and Femi agreeing, is missing."
+          "why": "Fact 1 is stated (in progress, P1, Chen), but it says DEMO-13 is done where fact 2 says none of the five is, and fact 3, Chen wanting to split it in two and Femi agreeing, is missing."
         },
         {
           "by": "gpt",
           "label": "fail",
-          "why": "States DEMO-12’s export scope, in-progress status, P1 priority, Chen assignment, and five children with only DEMO-13 done. It omits Chen’s proposal to split CSV and PDF export and Femi’s agreement."
+          "why": "The answer incorrectly says one child is done and omits that Chen wants to split the epic into CSV export and PDF export and Femi agrees."
         }
       ],
       "label": "fail"
