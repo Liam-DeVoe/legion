@@ -103,9 +103,10 @@ type Config struct {
 	SettleAge time.Duration
 	// Poll is how often a call waiting on such an operation reads again: 50 ms when 0.
 	Poll time.Duration
-	// CheckKey refuses a logical name before anything is written: CheckKey when nil. A family
-	// whose keys are made by a rule of its own (DurableKey) passes that rule's check
-	// (CheckDurableKey).
+	// CheckKey refuses a logical name before anything is written: CheckKey when nil. A
+	// creator takes it from its family's Naming (FamilyNaming), whose rule is the family's own:
+	// CheckDurableKey for a family keyed by DurableKey, Dispatch's two durables, a daemon's
+	// legion-go-<project>-<kind>.
 	CheckKey func(logical string) error
 	// NativeFirstCreate keeps a family's native first create (CreateRequest.First answering a
 	// Start with Native set) for a logical name with no record, whatever the cutover boundary: the

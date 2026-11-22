@@ -114,12 +114,14 @@ const ExceptionTopicPrefix = NotificationTopicPrefix + "envoy.exceptions."
 const LegionWakeTopic = NotificationTopicPrefix + "legion.wake"
 
 // DispatchDeliveryDurable is the stream's durable consumer Dispatch's delivery intake binds, over
-// every GitHub notification (internal/dispatch/delivery).
-const DispatchDeliveryDurable = "delivery-events"
+// every GitHub notification (internal/dispatch/delivery): the family table's
+// (consumernames.DispatchDeliveryDurable), one of the two keys of Dispatch's selection store.
+const DispatchDeliveryDurable = consumernames.DispatchDeliveryDurable
 
 // DispatchJobDurable is the stream's durable consumer Dispatch's job intake binds, over a deploy
-// run's job events (internal/dispatch/delivery).
-const DispatchJobDurable = "delivery-jobs"
+// run's job events (internal/dispatch/delivery): the family table's
+// (consumernames.DispatchJobDurable), the other key of Dispatch's selection store.
+const DispatchJobDurable = consumernames.DispatchJobDurable
 
 // ListenerDurable is the durable consumer of the stream that the listener of machine machineID
 // binds. A space in the machine id is a hyphen in the name.
