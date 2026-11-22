@@ -191,7 +191,8 @@ decides, not the journal.
 - The broker refuses `released` after a `held` row of a hold that has not ended, a row lost
   mid-hold. With `--hold ID` the row then comes back `held` with its id, and the hold's way out
   works as before: set's rerun, `hold abort` after a stop, or `hold release` with nothing changed.
-  With no `--hold` the refusal names `--hold`, and no row is written.
+  With no `--hold` the refusal names `--hold` and the route's answer, and no row is written; the
+  route's 400 names no hold id, so neither can the refusal.
 - After any other entry the row comes back `released`: with the hold's id when `--hold` names a hold
   that has not ended (a row lost in `prepare`, before `hold set`'s move, after an abort from
   `prepare`, or before the hold's journal was written), and the output says whether the hold's
@@ -199,8 +200,8 @@ decides, not the journal.
   that has ended, or with no `--hold`. An id with neither a journal nor a cohort record is refused
   before anything is written, since the broker would take it after a `released` entry and no hold
   of it is left to end: restore with no `--hold`. After a `prepare` entry the broker stores
-  `released` only with that entry's hold id (409 `hold_mismatch` otherwise), and the refusal says
-  to name it with `--hold`.
+  `released` only with that entry's hold id (409 `hold_mismatch` otherwise), and the refusal names
+  the hold the route's 409 names, with the `--hold` that restores it.
 - `--bootstrap` writes the first row, and only into an empty log.
 - A restore the broker refuses 409 `clock_skew` (this machine's clock and the broker's differ by
   more than the allowance, or the row would be signed before the latest row the broker accepted)

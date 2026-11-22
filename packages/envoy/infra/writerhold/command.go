@@ -373,20 +373,24 @@ func restore(ctx context.Context, records *holdrecord.Client, o options, stdout 
 	row, gen, err := restoreAt(ctx, records, natsgrant.OperatorPhaseReleased, holdID, o.reason)
 	if errors.As(err, &refused) && refused.Code == "bad_transition" {
 		if holdID == "" {
-			return refusef(StepPreflight, "the log's latest entry is a held row, so the row was lost mid-hold and is not restored released: restore it with `hold restore --hold <its hold id>`")
+			// The route's 400 names no hold id for this code, so the line can name only its answer.
+			return refusef(StepPreflight, "the log's latest entry is a held row, so the row was lost mid-hold and is not restored released (%v): restore it with `hold restore --hold <its hold id>`", err)
 		}
 		// The route's log holds a held row of this hold, which has not ended: the row was lost
 		// mid-hold, and comes back held at the gen the route named for the released one.
 		row, err = records.RestoreRow(ctx, gen, natsgrant.OperatorPhaseHeld, holdID, o.reason)
 	}
 	if errors.As(err, &refused) && refused.Code == "hold_mismatch" {
-		// After a prepare entry the broker restores released only with that entry's hold id; its
-		// 409 names no id, so neither can this line.
+		// After a prepare entry the broker restores released only with that entry's hold id, which
+		// its 409 names (RouteError.HoldID), since no route lists the log.
+		if refused.HoldID != "" {
+			return refusef(StepPreflight, "the log's latest entry is a prepare row of hold %s, and the broker restores released after it only with that hold's id: restore it with `hold restore --hold %s`", refused.HoldID, refused.HoldID)
+		}
 		other := ""
 		if holdID != "" {
 			other = " of a hold other than " + holdID
 		}
-		return refusef(StepPreflight, "the log's latest entry is a prepare row%s, and the broker restores released after it only with that hold's id: restore it with `hold restore --hold <its hold id>`", other)
+		return refusef(StepPreflight, "the log's latest entry is a prepare row%s, and the broker restores released after it only with that hold's id, which its answer does not name (%v): restore it with `hold restore --hold <its hold id>`", other, err)
 	}
 	if err != nil {
 		return restoreUnknown(err)
