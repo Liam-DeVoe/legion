@@ -488,20 +488,16 @@ func (w *workflowRuntime) decideVerdict(ctx context.Context, entry config.Verdic
 	return decided, err
 }
 
-// legionInputs is what the record holds of head of issue's pull request pr: the tester's
-// completion, the reviewer's verdict at the head (store.Verdict, workflow's recordVerdict), and
-// every review of the pull request delivered by webhook (store.VerdictReview).
+// legionInputs is what the record holds of head of issue's pull request pr: the tester's result,
+// which is no pass until legion-verdict decides a testing step by Dispatch's check states at the
+// head (verdict.NoTestingPass), the reviewer's verdict at the head (store.Verdict, workflow's
+// recordVerdict), and every review of the pull request delivered by webhook (store.VerdictReview).
 func (w *workflowRuntime) legionInputs(ctx context.Context, tx pgx.Tx, issue record.Issue, pr record.PullRequest, head string) (verdict.Inputs, error) {
 	repository, err := ghrepo.Parse("the repository of "+issue.Key+"'s pull request", pr.Repo)
 	if err != nil {
 		return verdict.Inputs{}, err
 	}
-	rows, err := w.records.Phases(ctx, tx, issue.Key)
-	if err != nil {
-		return verdict.Inputs{}, err
-	}
-	tester := record.PhaseRowOf(rows, claim.RoleTester)
-	in := verdict.Inputs{Head: head, Legion: true, Tester: verdict.Tester{Verdict: tester.Verdict, Commit: tester.HandoffCommit}}
+	in := verdict.Inputs{Head: head, Legion: true, Tester: verdict.NoTestingPass}
 	given, found, err := store.VerdictTx(ctx, tx, repository, pr.Number, head)
 	if err != nil {
 		return verdict.Inputs{}, err

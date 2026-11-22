@@ -27,9 +27,10 @@ func reviewCompletion(t *testing.T, reviewer liveClaim, verdict, commit, tested 
 // The reviewer's verdict reaches the daemon as the verdict of its completion of reviewing: approve
 // or changes, at the head its review record names, with testedCommit where the verdict carries
 // the tester's pass to that head. The route hands each to the workflow as the reviewer sent it. A
-// reviewer's word that is not one of the two is refused REVIEWER_VERDICT_REQUIRED, a tester's or a
-// reviewer's verdict that names no commit VERDICT_COMMIT_REQUIRED, and another role's verdict, and
-// testedCommit from any role but the reviewer, VERDICT_ROLE_FORBIDDEN; each refusal is written
+// reviewer's word that is not one of the two is refused REVIEWER_VERDICT_REQUIRED, a reviewer's
+// verdict that names no commit VERDICT_COMMIT_REQUIRED, every other role's verdict, the tester's
+// among them, VERDICT_NOT_TAKEN (206's refusal, narrowed to the steps that are no review), and
+// testedCommit from any role but the reviewer VERDICT_ROLE_FORBIDDEN; each refusal is written
 // before the fact, so nothing is recorded.
 func TestHandoffReviewerVerdict(t *testing.T) {
 	for _, tc := range []struct {
@@ -69,11 +70,11 @@ func TestHandoffReviewerVerdict(t *testing.T) {
 			status: http.StatusBadRequest, code: "VERDICT_COMMIT_REQUIRED", says: []string{"reviewer", "`head`", "nothing was recorded"},
 		},
 		{
-			name: "a tester's verdict that names no commit", role: claim.RoleTester, at: phase.Testing,
+			name: "a tester's verdict", role: claim.RoleTester, at: phase.Testing,
 			send: func(t *testing.T, c liveClaim) HandoffCompleteRequest {
-				return HandoffCompleteRequest{GrantID: c.grant(t), Summary: "tests pass", Verdict: "pass", HandoffID: c.writeHandoff("test", 1), HandoffVersion: 1}
+				return HandoffCompleteRequest{GrantID: c.grant(t), Summary: "tests pass", Verdict: "pass", Commit: headSHA, HandoffID: c.writeHandoff("test", 1), HandoffVersion: 1}
 			},
-			status: http.StatusBadRequest, code: "VERDICT_COMMIT_REQUIRED", says: []string{"tester", "`head`", "nothing was recorded"},
+			status: http.StatusBadRequest, code: "VERDICT_NOT_TAKEN", says: []string{"only a reviewer's completion carries one", "nothing was recorded"},
 		},
 		{
 			name: "a reviewer's pass", role: claim.RoleReviewer, at: phase.Reviewing,
@@ -99,7 +100,7 @@ func TestHandoffReviewerVerdict(t *testing.T) {
 			send: func(t *testing.T, c liveClaim) HandoffCompleteRequest {
 				return HandoffCompleteRequest{GrantID: c.grant(t), Summary: "implemented", Verdict: "approve", Commit: headSHA, HandoffID: c.writeHandoff("implement", 1), HandoffVersion: 1}
 			},
-			status: http.StatusBadRequest, code: "VERDICT_ROLE_FORBIDDEN", says: []string{"tester", "reviewer"},
+			status: http.StatusBadRequest, code: "VERDICT_NOT_TAKEN", says: []string{"only a reviewer's completion carries one", "nothing was recorded"},
 		},
 		{
 			name: "an implementer's completion that names testedCommit", role: claim.RoleImplementer, at: phase.Implementing,
@@ -111,7 +112,7 @@ func TestHandoffReviewerVerdict(t *testing.T) {
 		{
 			name: "a tester's completion that names testedCommit", role: claim.RoleTester, at: phase.Testing,
 			send: func(t *testing.T, c liveClaim) HandoffCompleteRequest {
-				return HandoffCompleteRequest{GrantID: c.grant(t), Summary: "tests pass", Verdict: "pass", Commit: headSHA, TestedCommit: testedSHA, HandoffID: c.writeHandoff("test", 1), HandoffVersion: 1}
+				return HandoffCompleteRequest{GrantID: c.grant(t), Summary: "tests pass", Commit: headSHA, TestedCommit: testedSHA, HandoffID: c.writeHandoff("test", 1), HandoffVersion: 1}
 			},
 			status: http.StatusBadRequest, code: "VERDICT_ROLE_FORBIDDEN", says: []string{"testedCommit", "reviewer"},
 		},

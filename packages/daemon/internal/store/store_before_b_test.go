@@ -66,7 +66,7 @@ func beforeBDatabase(t *testing.T, dsn string) (database, url string) {
 	return database, url
 }
 
-// beforeBTables are the five tables B's migration 20261120185521_verdicts adds, which no build
+// beforeBTables are the five tables B's migration 20261122045825_verdicts adds, which no build
 // before B names in any statement. The test reads them only to know that the database is the one
 // TestRowsForTheBuildBeforeB wrote.
 var beforeBTables = []string{"outside_pull_requests", "verdict_reviews", "side_reviewers", "verdicts", "verdict_writes"}

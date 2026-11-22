@@ -15,7 +15,7 @@ import (
 
 // returnToNeedsFail is the refusal of a returnTo on what names it, as returnToRefusal writes it.
 func returnToNeedsFail(what string) string {
-	return what + " names returnTo, and only the completion of a step that failed, with the verdict fail, names the step its task returns to: send it again without returnTo; nothing was recorded"
+	return what + " names returnTo, and only a tester's completion names the step its task returns to, should the check states at the head it tested fail its step: send it again without returnTo; nothing was recorded"
 }
 
 // completionKeys is the key of each completion of key the intake processed, in order.
@@ -40,12 +40,13 @@ func completionKeys(t *testing.T, h *harness, key string) []string {
 	return keys
 }
 
-// A step that failed names the step its task returns to with returnTo, by its place in the
-// task, 1 for its first. Only a tester's completion with the verdict fail names one: a pass,
-// another role's completion and a place below 1 are refused before anything is recorded, each
-// with its reason. A fail naming a step carries it on the fact, and its key names the place, so a
-// fail naming another step, after the workflow refused the first, is a fact of its own; a fail
-// naming none keeps today's key.
+// A step that fails names the step its task returns to with returnTo, by its place in the task, 1
+// for its first. Only a tester's completion names one, with no verdict, since Dispatch's check
+// states at the head it tested decide its step: a tester's completion naming a verdict is refused
+// for the verdict (VERDICT_NOT_TAKEN), and another role's completion and a place below 1 are
+// refused before anything is recorded, each with its reason. A completion naming a step carries it
+// on the fact, and its key names the place, so a completion naming another step, after the
+// workflow refused the first, is a fact of its own; one naming none keeps today's key.
 func TestAFailedStepNamesTheStepItReturnsTo(t *testing.T) {
 	h, facts := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
 	seedIssueAt(t, h, "LEGION-208", phase.Testing)
@@ -53,18 +54,16 @@ func TestAFailedStepNamesTheStepItReturnsTo(t *testing.T) {
 	written := tester.writeHandoff("test", 1)
 	report := func(verdict string, returnTo *int) *httptest.ResponseRecorder {
 		t.Helper()
-		return h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests " + verdict, Verdict: verdict, Commit: headSHA,
+		return h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tested", Verdict: verdict, Commit: headSHA,
 			HandoffID: written, HandoffVersion: 1, ReturnTo: returnTo})
 	}
 	needsFail := returnToNeedsFail("this completion of phase testing of LEGION-208")
 
-	if message := refused(t, report("pass", new(1)), http.StatusBadRequest, "RETURN_TO_NEEDS_FAIL"); message != needsFail {
-		t.Fatalf("a pass naming returnTo was refused with %q, want %q", message, needsFail)
-	}
+	refused(t, report("fail", new(1)), http.StatusBadRequest, "VERDICT_NOT_TAKEN")
 	for _, place := range []int{0, -1} {
 		want := fmt.Sprintf("returnTo is %d, and it names a step of the task by its place, 1 for its first; nothing was recorded", place)
-		if message := refused(t, report("fail", new(place)), http.StatusBadRequest, "INVALID_RETURN_TO"); message != want {
-			t.Fatalf("a fail naming returnTo %d was refused with %q, want %q", place, message, want)
+		if message := refused(t, report("", new(place)), http.StatusBadRequest, "INVALID_RETURN_TO"); message != want {
+			t.Fatalf("a completion naming returnTo %d was refused with %q, want %q", place, message, want)
 		}
 	}
 	implementer := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
@@ -76,9 +75,9 @@ func TestAFailedStepNamesTheStepItReturnsTo(t *testing.T) {
 		t.Fatalf("facts after the refusals = %#v, want none", got)
 	}
 
-	completion(t, report("fail", new(1)))
-	completion(t, report("fail", new(2)))
-	completion(t, report("fail", nil))
+	completion(t, report("", new(1)))
+	completion(t, report("", new(2)))
+	completion(t, report("", nil))
 	var named []int
 	for _, fact := range facts.recorded() {
 		completed, ok := fact.(intake.HandoffComplete)
@@ -90,7 +89,7 @@ func TestAFailedStepNamesTheStepItReturnsTo(t *testing.T) {
 	if want := []int{1, 2, 0}; !reflect.DeepEqual(named, want) {
 		t.Fatalf("the completions' ReturnTo = %v, want %v", named, want)
 	}
-	today := "handoff:LEGION-208:1:1:1:tester:testing:0:" + written + ":fail"
+	today := "handoff:LEGION-208:1:1:1:tester:testing:0:" + written + ":"
 	if got, want := completionKeys(t, h, "LEGION-208"), []string{today, today + ":1", today + ":2"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("the completion keys = %q, want %q", got, want)
 	}

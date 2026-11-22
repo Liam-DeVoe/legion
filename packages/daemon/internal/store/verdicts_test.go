@@ -12,7 +12,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 )
 
-// The five tables of the daemon's writes of legion-verdict (migration 20261120185521_verdicts) keep
+// The five tables of the daemon's writes of legion-verdict (migration 20261122045825_verdicts) keep
 // what the store writes in them. Each row written through the store's write reads back through
 // its read with every field as it was written, the id the write answered and the repository's own
 // spelling included. A read keyed on a pull request, a pull request's head or a repository's head
@@ -202,7 +202,7 @@ func TestTheVerdictTablesRoundTrip(t *testing.T) {
 	}
 }
 
-// The verdict tables keep the shape their migration gives them (20261120185521_verdicts): no table
+// The verdict tables keep the shape their migration gives them (20261122045825_verdicts): no table
 // holds a key, a check or another constraint, none has a unique index, and every column a row must
 // fill has a default. A daemon build from before them then runs on them however it inserts. The
 // five tables and their columns are counted first, so a catalog read that finds none of them fails
@@ -246,7 +246,7 @@ func TestTheVerdictTablesHoldNoConstraintAndNoUniqueIndex(t *testing.T) {
 
 // A write of the verdict tables refuses a row that leaves out what the row is about, or that
 // carries a word the table's reader does not know: the tables hold no constraint of their own
-// (20261120185521_verdicts says why), so the write's own refusal is what keeps such a row out. A
+// (20261122045825_verdicts says why), so the write's own refusal is what keeps such a row out. A
 // write that let one through records it, and the test names the row it wrote.
 func TestTheVerdictTableWritesRefuseAnIncompleteRow(t *testing.T) {
 	st := migratedStore(t)

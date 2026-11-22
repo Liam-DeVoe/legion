@@ -1997,20 +1997,23 @@ export function legionPlanRatingLoneField(
  * against), which is what a completion of an earlier phase entry is taken at. The plugin refuses
  * the implementer's completion before it goes when its `implement` record names no head, when the
  * commit its workspace stands on (`@-`) is not on `legion/<issue>@origin`, and when the record's
- * head is not that pushed `@-`; a record naming no head leaves the planner's, the tester's and
- * the reviewer's completion without one, which the daemon refuses for the tester's and the
- * reviewer's verdict (`VERDICT_COMMIT_REQUIRED`). Retro and every completion of a phase its
+ * head is not that pushed `@-`, and the tester's when its `test` record names no head, since the
+ * testing move reads the check states at that head alone and the daemon refuses a tester's
+ * completion naming none (`TESTED_HEAD_REQUIRED`); a record naming no head leaves the planner's
+ * and the reviewer's completion without one, which the daemon refuses for the reviewer's verdict
+ * (`VERDICT_COMMIT_REQUIRED`). Retro and every completion of a phase its
  * role does not work report the commit the workspace stands on instead, the merger's reports the
  * head the merger merged, and a check report carries neither commit nor record (the look pushed
  * nothing), so all three are optional here, and the daemon requires each where it applies.
- * `verdict` is `pass` or `fail` for the tester's completion, `approve` or `changes` for the
- * reviewer's (`LEGION_REVIEWER_VERDICTS`, `REVIEWER_VERDICT_REQUIRED`; contract 200), `pass`,
- * `pending` or `fail` for a check report (`CHECK_VERDICT_REQUIRED`), and the empty string for
- * every other completion (`VERDICT_ROLE_FORBIDDEN`); it stays a string on the wire, as the Go
- * field is. `testedCommit` is the reviewer's alone (contract 200; `VERDICT_ROLE_FORBIDDEN` from
- * every other role): the commit of the tester's pass its verdict carries to `commit`, where no
- * commit since that one changes code that runs. `wakeAt` is the check report's alone (contract
- * 54): when the
+ * `verdict` is `approve` or `changes` for the reviewer's completion (`LEGION_REVIEWER_VERDICTS`,
+ * `REVIEWER_VERDICT_REQUIRED`; contract 225, before which a reviewer's `pass` is read as approve
+ * and its `fail` as changes), `pass`, `pending` or `fail` for a check report
+ * (`CHECK_VERDICT_REQUIRED`), and the empty string for every other phase completion: one that
+ * names a verdict is refused (`VERDICT_NOT_TAKEN`), since Dispatch's check states at the tested
+ * head decide the testing phase. It stays a string on the wire, as the Go field is.
+ * `testedCommit` is the reviewer's alone (contract 225; `VERDICT_ROLE_FORBIDDEN` from every other
+ * role): the commit of the tester's pass its verdict carries to `commit`, where no commit since
+ * that one changes code that runs. `wakeAt` is the check report's alone (contract 54): when the
  * checking agent asks to be woken for its next look, which a pending report on a look that is not
  * the check's last must name (`CHECK_WAKE_REQUIRED`) and which no other verdict and no phase
  * completion may carry (`CHECK_WAKE_UNEXPECTED`). It is a `LegionInstant`, not a `timestamp`:
@@ -2019,11 +2022,13 @@ export function legionPlanRatingLoneField(
  * ends the retro carries and no other completion does (`PLAN_RATING_UNEXPECTED`): a whole number
  * from 1 (the plan cost the work) to 5 (the plan fit the work), and why, the two together
  * (`PLAN_RATING_INPUT`). A plugin at contract 168 or later must send both on its retro
- * (`PLAN_RATING_REQUIRED`). `returnTo` (contract 219) is the step a step that failed names for its
- * task to return to, by its place in the issue's running task, 1 for its first: a whole number of
- * 1 or more (`INVALID_RETURN_TO`), carried only by a completion with the verdict `fail`
- * (`RETURN_TO_NEEDS_FAIL`, which the daemon also answers a production check's report that names
- * one, whatever its verdict). Which step the task then runs is the workflow's to decide. */
+ * (`PLAN_RATING_REQUIRED`). `returnTo` (contract 219) is the step a tester's completion names for
+ * its task to return to, should the check states at the head it tested fail its step, by its
+ * place in the issue's running task, 1 for its first: a whole number of 1 or more
+ * (`INVALID_RETURN_TO`). Only a tester's completion names one, and it carries no verdict, so a
+ * completion naming a verdict names no `returnTo` (`RETURN_TO_NEEDS_FAIL`, which the daemon also
+ * answers every other role's completion that names one). Which step the task then runs is the
+ * workflow's to decide. */
 export const LegionHandoffCompleteRequest = z
   .strictObject({
     grantId: nonEmptyString,
@@ -2042,17 +2047,17 @@ export const LegionHandoffCompleteRequest = z
     (request) => legionPlanRatingLoneField(request.planRating, request.planReason) === undefined,
     { message: "planRating and planReason appear together" }
   )
-  .refine((request) => request.returnTo === undefined || request.verdict === "fail", {
-    message: "returnTo is carried only by a completion with the verdict fail",
+  .refine((request) => request.returnTo === undefined || request.verdict === "", {
+    message: "returnTo is carried only by a tester's completion, which names no verdict",
   });
 
-/** The reviewer's verdict on the head it reviewed (contract 200): `approve`, the head may merge,
+/** The reviewer's verdict on the head it reviewed (contract 225): `approve`, the head may merge,
  * or `changes`, the head needs changes. The daemon takes no other word of a reviewer on that
  * contract (`REVIEWER_VERDICT_REQUIRED`). */
 export const LEGION_REVIEWER_VERDICTS = ["approve", "changes"] as const;
 
 /** `api.ReviewVerdictRequest`, the reviewer's verdict past review (`POST
- * /legion/v1/review-verdict`, contract 200): the round's recorded reviewer's `verdict` on
+ * /legion/v1/review-verdict`, contract 225): the round's recorded reviewer's `verdict` on
  * `commit`, the head its issue's pull request moved to while the issue stands in accepting, retro
  * or merging, with `testedCommit` where the verdict carries the tester's pass to that head, and
  * `summary`. It writes no handoff and ends no phase. The daemon refuses a caller that is not that

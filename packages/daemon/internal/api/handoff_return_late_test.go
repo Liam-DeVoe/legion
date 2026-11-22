@@ -51,7 +51,7 @@ func TestALateFailNamingAStepOffItsTasksLineIsRefusedNotFailed(t *testing.T) {
 	tester := newLiveClaim(t, h, root, claim.RoleTester)
 	written := tester.writeHandoff("test", 1)
 	fail := func(returnTo *int) HandoffCompleteRequest {
-		return HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "the widget does not render", Verdict: "fail", Commit: headSHA,
+		return HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "the widget does not render", Commit: headSHA,
 			HandoffID: written, HandoffVersion: 1, ReturnTo: returnTo}
 	}
 

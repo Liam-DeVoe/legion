@@ -30,6 +30,7 @@ import type {
 import type {
   CheckResultEventPayload,
   CheckResultRetractedEventPayload,
+  CheckStateChangedEventPayload,
   ChildEventPayload,
   ChildStatusEventPayload,
   IssueClaimEventPayload,
@@ -250,6 +251,10 @@ export type DispatchEvent =
       readonly payload: CheckResultRetractedEventPayload;
     })
   | (DispatchEventBase & {
+      readonly type: "check.state_changed";
+      readonly payload: CheckStateChangedEventPayload;
+    })
+  | (DispatchEventBase & {
       readonly type: "issue.pull_request_attribution_changed";
       readonly payload: IssuePullRequestAttributionEventPayload;
     })
@@ -359,6 +364,7 @@ const EVENT_TYPE_MEMBERS: Record<EventType, true> = {
   "ask.resolved": true,
   "block.invalid": true,
   "block.repaired": true,
+  "check.state_changed": true,
   "child.added": true,
   "child.removed": true,
   "child.status": true,

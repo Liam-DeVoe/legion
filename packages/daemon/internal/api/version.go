@@ -3022,6 +3022,39 @@ package api
 // 2026-11-21T12:31:48Z, found 205 declared by no other, so this entry kept 205. Read the base's own
 // number and every open pull request again at every forward merge rather than from this line.)
 //
+// 206: a phase completion carries no verdict. `POST /legion/v1/handoff/complete`
+// (`api.HandoffCompleteRequest`, contracts' `LegionHandoffCompleteRequest`) keeps `verdict` for a
+// production check's report alone: a phase completion that names one from a plugin at this
+// contract or a later one is refused 400 `VERDICT_NOT_TAKEN`, "a phase completion carries no
+// verdict: Dispatch's check states at the tested head decide the testing phase; send it again
+// without verdict; nothing was recorded", and the refusals `TESTER_VERDICT_REQUIRED` and
+// `VERDICT_ROLE_FORBIDDEN` go. The states Dispatch publishes of the issue's `before_merge` checks
+// as `check.state_changed` decide the testing phase: the tester completes with no verdict, naming
+// its `test` record, whose `check_states_serial` the daemon waits to hold every state event
+// through; at the head that record names, the move waits while a check of the head's set has no
+// state, or no result while its CI run goes on, whatever the other checks read; then the issue
+// goes to `reviewing` when each check passes, and otherwise back to `implementing` with a task
+// naming each check that does not pass with its state and reason, a state Dispatch could not read
+// (`read_failed`) among them (workflow's decideTesting). A tester's plugin below this contract, in
+// a turn when its daemon was upgraded, still sends `pass` or `fail`: the route takes its
+// completion and ignores the verdict, which no longer makes the completion's key, and any other
+// role's verdict below it is refused as above (`api.CheckStatesContract`). The reviewer's task no
+// longer names `Tester's verdict:`, and a `phase-finished` notice loses `verdict`: from the
+// tester's phase its `reason` names each check that does not pass at the tested head, or what the
+// move waits for. The instruction a `HANDOFF_STALE_ENTRY` refusal ends with, which the `legion`
+// tool's description repeats, names no verdict: it ends "never this completion's record or
+// commit". `POST /legion/v1/phase/backward` refuses the tester's move out of `testing`, to any
+// target a backward row serves, `BACKWARD_REFUSED`, since the testing step ends by its checks'
+// states: the tester records each check's result and completes instead, and the `legion` tool's
+// description says so. A tester's phase completion names the head it tested: the route refuses
+// one that names no commit 400 `TESTED_HEAD_REQUIRED`, before anything is recorded, from a plugin
+// at this contract or below it, since the move reads the states at that head and at no other; the
+// `legion` tool refuses a `test` record naming no head before it posts. No shape of
+// `GET /legion/v1/state` moves.
+// (This entry takes 206, above main's 202: a reading of `const DaemonAPIVersion` at
+// refs/pull/<n>/head for each of the 358 open pull requests of cybermonklabs/legion, made on
+// 2026-11-21 at 07:29Z, found 203, 204, 205, 207, 208 and 209 declared, and none declaring 206.)
+//
 // 219: the owner of an issue gives Legion a plan with one task, and the plan picks which of
 // today's steps run. Two architect routes are new. `POST /legion/v1/plans/register`
 // (`api.PlanRegisterRequest`: `grantId`, `issue`, `artifactId`, `version` from 1) reads that
@@ -3119,7 +3152,7 @@ package api
 // and 202. Read the base's own number and every open pull request again at the next merge rather
 // than from this line.)
 //
-// 221: the reviewer's own clone. A reviewer works in a git clone of its own rather than in the
+// 225: the reviewer's own clone. A reviewer works in a git clone of its own rather than in the
 // issue's workspace, and its git runs no program a configuration names. Every launch of a reviewer
 // is told LEGION_WORKSPACE at that clone: under tmux `<state_dir>/reviews/<owner>/<repo>/<issue>`,
 // and in a pod `/legion/reviews/<owner>/<repo>/<issue>` (workspace.ReviewLocation), which the
@@ -3155,6 +3188,11 @@ package api
 // reviewer claim (VERDICT_REVIEWER_NOT_LIVE); both refuse a malformed repository name
 // (INVALID_REPOSITORY), and answer GitHub's refusal of their pull request read as
 // GITHUB_RATE_LIMITED, GITHUB_READ_REFUSED or PULL_REQUEST_READ_FAILED.
+// Beside 206's rule that a phase completion carries no verdict, this entry keeps the reviewer's:
+// `VERDICT_NOT_TAKEN` refuses a verdict on every phase completion but the reviewer's, whose
+// `approve` or `changes` stands as above, and a tester's completion, which names no verdict, may
+// name 219's `returnTo`, the step its task returns to should the check states at the head it
+// tested fail its step; on any other completion `returnTo` is `400 RETURN_TO_NEEDS_FAIL`.
 // (This entry took 200 at first, at a reading of `const DaemonAPIVersion` at main and at
 // refs/pull/<n>/head for each open pull request of cybermonklabs/legion, made with
 // .github/scripts/check-daemon-api-contract.sh at 2026-11-20T21:14:22Z, which found main at 193 and
@@ -3163,7 +3201,20 @@ package api
 // script reads them, from 2026-11-22T01:49:44Z to 01:52:54Z, found main at 205 and 220 (#4930) the
 // highest number any open pull request declares, 219 held by #4611 and #4805, so this entry moved
 // to 221, the lowest number above every one of them. The forward merge of the owner's steps change
-// (#4611, 219) kept it there: a reading from 2026-11-22T03:05:02Z to 03:08:39Z found the same. Read
-// main's own number and every open pull request again at every forward merge rather than from
-// this line.)
-const DaemonAPIVersion = 221
+// (#4611, 219) kept it there: a reading from 2026-11-22T03:05:02Z to 03:08:39Z found the same. The
+// forward merge of the check states change (206) read main and every open pull request again,
+// from 2026-11-22T05:55:14Z to 05:59:36Z: main at 205, 221 held by #4960 and 223 by #4805, the
+// highest any open pull request declared, so this entry moved to 224. A second reading before its
+// commit, from 2026-11-22T07:20:45Z to 07:24:44Z, found #4960 moved to 224, the highest any open
+// pull request declares, and main still at 205, so this entry moved to 225, the lowest number
+// above every one of them. Read main's own number and every open pull request again at every
+// forward merge rather than from this line.)
+const DaemonAPIVersion = 225
+
+// CheckStatesContract is the daemon contract at which a phase completion carries no verdict (the
+// entry of 206 above): a plugin at it or above has its completion naming one refused
+// VERDICT_NOT_TAKEN, and a tester's plugin below it has its verdict ignored, so a worker mid-turn
+// across the upgrade still completes and Dispatch's check states decide its phase. A later bump
+// of DaemonAPIVersion leaves it where it is. Under the reviewer's verdict (ReviewerVerdictContract)
+// the refusal holds on every completion but the reviewer's.
+const CheckStatesContract = 206

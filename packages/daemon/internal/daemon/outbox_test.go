@@ -2361,8 +2361,11 @@ func TestAResidentWorkerIsHandedItsNewPhaseNotATaskLeftPendingFromTheLast(t *tes
 					got.State, got.Pending, len(rt.CallsOf("Suspend")))
 			}
 
-			// The tester passes, and the reviewer decides with its verdict.
-			apply("handoff:tester:testing:2", intake.HandoffComplete{Generation: 1, Issue: issue.Key, Role: claim.RoleTester, Claim: tester, Commit: head, HandoffRecord: "test-round-2", HandoffVersion: 1, Verdict: "pass"})
+			// The tester's check passes at the head, the tester completes, and the reviewer decides
+			// with its verdict.
+			passed, id := testedFact(t, pool, issue.Key, head, true)
+			apply(id, passed)
+			apply("handoff:tester:testing:2", intake.HandoffComplete{Generation: 1, Issue: issue.Key, Role: claim.RoleTester, Claim: tester, Commit: head, HandoffRecord: "test-round-2", HandoffVersion: 1})
 			due("the move to reviewing")
 			apply("handoff:reviewer:reviewing:2", intake.HandoffComplete{Generation: 1, Issue: issue.Key, Role: claim.RoleReviewer,
 				Claim: reviewerClaim, Summary: tc.summary, Verdict: tc.verdict, Commit: head, HandoffRecord: "review-round-2", HandoffVersion: 2})

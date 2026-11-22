@@ -11,13 +11,13 @@ import (
 )
 
 // ReviewerVerdictContract is the daemon contract that gave the reviewer a verdict of its own
-// (version.go's 221): its completion of reviewing names approve or changes on the head its review
+// (version.go's 225): its completion of reviewing names approve or changes on the head its review
 // record names, with testedCommit where that verdict carries the tester's pass to the head, and
 // `POST /legion/v1/review-verdict` takes its verdict on a head that moved past review. A reviewer
 // whose plugin declared an earlier contract knows the tester's words alone, and the daemon still
 // serves its claim while its turn runs and while its pod is in an update round (staleClaim), so
 // its completion is read in those words (reviewerVerdictOf).
-const ReviewerVerdictContract = 221
+const ReviewerVerdictContract = 225
 
 // reviewerVerdictOf is the verdict a reviewer's word sent is, for a claim whose plugin declared
 // contract, and the sentence of its refusal REVIEWER_VERDICT_REQUIRED where the word is none of

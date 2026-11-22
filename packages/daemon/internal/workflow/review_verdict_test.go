@@ -77,7 +77,7 @@ func TestReviewRoundFromTheReviewersVerdict(t *testing.T) {
 			t.Fatalf("review rounds = %d, want 1: the reviewer's changes ends a round", got)
 		}
 		task := startTask(t, pool, claim.RoleImplementer)
-		if !strings.Contains(task, " Reviewer's verdict: changes.") || strings.Contains(task, testerVerdictLabel) {
+		if !strings.Contains(task, " Reviewer's verdict: changes.") || strings.Contains(task, "Tester's verdict") {
 			t.Fatalf("the implementer's task %q, want it to name the reviewer's verdict as the reviewer's and no tester's verdict", task)
 		}
 	})

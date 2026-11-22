@@ -381,7 +381,7 @@ func verdictReviews(t *testing.T, pool *store.Pool, number int) []store.VerdictR
 // The rows of CAPTURE-1's phases these rigs seed: the tester's pass at code, and a reviewer that
 // has given no verdict yet.
 var (
-	testerPassAtCode = record.PhaseRow{Issue: "CAPTURE-1", Role: claim.RoleTester, Claim: "test-claim", Verdict: "pass", HandoffCommit: "code"}
+	testerPassAtCode = record.PhaseRow{Issue: "CAPTURE-1", Role: claim.RoleTester, Claim: "test-claim", HandoffCommit: "code"}
 	reviewerWithout  = record.PhaseRow{Issue: "CAPTURE-1", Role: claim.RoleReviewer, Claim: "review-claim"}
 )
 

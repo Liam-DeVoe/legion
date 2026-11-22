@@ -665,7 +665,7 @@ func (r *mergeWaitReadableLive) recordApproval(key string, number int, head stri
 	handoff := fmt.Sprintf("review-%s-%d", key, r.seq)
 	r.write("the reviewer's verdict approve of "+head, func(tx pgx.Tx) error {
 		return r.records.PutPhase(context.Background(), tx, record.PhaseRow{Issue: key, Role: claim.RoleReviewer, Claim: r.token(key, claim.RoleReviewer),
-			HandoffRecord: handoff, HandoffVersion: 1, LastHandoff: handoff, Summary: "the work holds", Verdict: "approve", HandoffCommit: head,
+			HandoffRecord: handoff, HandoffVersion: 1, LastHandoff: handoff, Summary: "the work holds", HandoffCommit: head,
 			CompletedAt: time.Now(), ReviewedHead: head, Decision: &record.ReviewDecision{State: "approved", Body: "the work holds", Head: head}})
 	})
 	r.reviewID++

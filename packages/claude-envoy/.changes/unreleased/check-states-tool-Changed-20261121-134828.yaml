@@ -1,0 +1,15 @@
+kind: Changed
+body: |-
+  The plugin speaks daemon API contract 206. The `legion` MCP tool's `handoff_complete` sends no
+  verdict on a phase completion but the reviewer's `approve` or `changes`: Dispatch's check states
+  at the tested head decide the testing phase. Any other role's phase completion that names one is
+  refused once the daemon's record shows it is a phase's, before the handoff record is read or a
+  grant minted, with `handoff_complete carries no verdict on a phase completion but the reviewer's:
+  Dispatch's check states decide the testing phase`. A tester's completion may name `return_to`
+  with no verdict; a `return_to` beside a verdict is refused. `verdict` pass, pending or fail
+  belongs to a production check report alone, and the tool's description says so. The
+  description's `HANDOFF_STALE_ENTRY` instruction names no verdict either: it ends "never this
+  completion's record or commit", as the daemon's refusal does.
+time: 2026-11-21T13:48:28Z
+custom:
+    Issue: check-states-tool

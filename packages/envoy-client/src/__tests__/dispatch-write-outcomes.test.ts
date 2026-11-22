@@ -1,10 +1,11 @@
 // packages/envoy-client/src/__tests__/dispatch-write-outcomes.test.ts
 //
 // Every way a Dispatch write can go, against the rule the client states: once an attempt may have
-// landed, only a 2xx whose body was read whole or a final refusal settles the write; every other
-// end is `DispatchWriteUnsettledError` carrying the key. Before anything may have landed, a write
-// that ends is told the event's own error. A redirect is never followed, and every attempt of the
-// write carries one key.
+// landed, only a 2xx whose body was read whole and is the write's row, or a final refusal, settles
+// the write; every other end is `DispatchWriteUnsettledError` carrying the key, but where the
+// asking is spent after a 2xx that named the key back and gave no row, which is a landing whose
+// answer was lost. Before anything may have landed, a write that ends is told the event's own
+// error. A redirect is never followed, and every attempt of the write carries one key.
 //
 // The rule is written here on its own (`oracle`), from what Dispatch and the secrets broker do,
 // not read from the client's table, and the client is driven through its public surface
@@ -34,6 +35,7 @@ import {
   IDEMPOTENCY_KEY_IN_FLIGHT,
   IDEMPOTENCY_KEY_REUSED,
 } from "@legion/contracts";
+import { routeAnswer } from "../../test/route-answers";
 import type { RequestCredential } from "../bearer";
 import {
   DispatchClient,
@@ -49,9 +51,13 @@ const ELSEWHERE = "http://elsewhere.test/api/v1/issues/DSP-1/comments";
 
 const actor = { kind: "session" as const, id: "session-1" };
 const comment = { body: "Shipped.", actor };
-const posted = {
-  comment: { id: "comment-1", body: "Shipped." },
-} as unknown as CommentWriteResponse;
+/** A comment posted on DSP-1 as its route answers it, the row its callers read
+ *  (`dispatch-write-rows.ts`): a 2xx of other JSON is not the write's answer. */
+const posted = routeAnswer<CommentWriteResponse>("POST /api/v1/issues/{key}/comments", {
+  id: "comment-1",
+  issue_key: "DSP-1",
+  body: "Shipped.",
+});
 
 /** The candidates of a `409 POSSIBLE_DUPLICATE`, as the dispatch command's issue create reads them. */
 const duplicates = [
@@ -70,6 +76,8 @@ const duplicates = [
  * - `applied`: a 2xx whose body arrives whole;
  * - `refusal`: a refusal Dispatch or something in its place made, which a repeat does not change;
  * - `committed`: `409 KEY_COMMITTED`, a write Dispatch made whose answer is gone;
+ * - `unkept`: a 401 the keyed layer echoed, a handler's, which can come after the handler
+ *   committed and which the layer never stores, so the write may have landed;
  * - `redirect`: a 3xx;
  * - `repeatable`: an answer or failure the keyed protocol says to ask again after under the key
  *   (a 5xx, a 408 or 429, `409 KEY_IN_FLIGHT`, a silence cut, a reset, a refused connection, a 2xx
@@ -85,6 +93,7 @@ type Role =
   | "applied"
   | "refusal"
   | "committed"
+  | "unkept"
   | "redirect"
   | "repeatable"
   | "dead-token"
@@ -111,8 +120,13 @@ interface Kind {
   /** Where it happens: an attempt's answer or failure, a credential's presentation, or a wait (a
    *  pause, the rolling-release wait, or the presentation that comes first). */
   readonly at: "attempt" | "credential" | "wait";
-  /** How the response's `Idempotency-Key` relates to this request's key. */
+  /** How the response's `Idempotency-Key` relates to this request's key: exactly this request's
+   *  (`exact`), or another request's (`different`), which a keyed layer gave not for this request,
+   *  so it is no answer of Dispatch's to this write whatever came before it. */
   readonly keyEcho?: "exact" | "different";
+  /** Whether it is a 2xx that carried the key back and whose body is not the write's row: once the
+   *  asking under the key is spent after it, the write landed with its answer lost. */
+  readonly answerLost?: boolean;
   /** Whether it is a 2xx whose body is empty or not JSON-typed: no answer Dispatch writes to a
    *  keyed write, whatever the process knows of the layer. */
   readonly notJson?: boolean;
@@ -255,6 +269,13 @@ const KINDS: readonly Kind[] = [
     respond: () => json(posted, 201),
   },
   {
+    name: "201 another key",
+    role: "applied",
+    at: "attempt",
+    keyEcho: "different",
+    respond: (key) => json(posted, 201, `${key}-another`),
+  },
+  {
     name: "200 portal page",
     role: "applied",
     at: "attempt",
@@ -269,30 +290,41 @@ const KINDS: readonly Kind[] = [
     respond: () =>
       new Response("", { status: 200, headers: { "Content-Type": "application/json" } }),
   },
+  // A comment's callers read its row, which no bodiless 2xx carries: Dispatch's keyed layer
+  // answered (the key echoed), so it is asked again under the key, and, the asking spent, a
+  // landing whose answer was lost.
   {
     name: "204",
-    role: "applied",
+    role: "repeatable",
     at: "attempt",
+    followsCommit: true,
     keyEcho: "exact",
+    answerLost: true,
     respond: (key) => new Response(null, { status: 204, headers: { "Idempotency-Key": key } }),
   },
   {
     name: "205",
-    role: "applied",
+    role: "repeatable",
     at: "attempt",
+    followsCommit: true,
     keyEcho: "exact",
+    answerLost: true,
     respond: (key) => new Response(null, { status: 205, headers: { "Idempotency-Key": key } }),
   },
   {
     name: "201 body outlives deadline",
     role: "stop-in-flight",
     at: "attempt",
+    keyEcho: "exact",
+    answerLost: true,
     respond: (key, init, run) => partBody(key, init, run, "deadline"),
   },
   {
     name: "201 body stopped",
     role: "stop-in-flight",
     at: "attempt",
+    keyEcho: "exact",
+    answerLost: true,
     respond: (key, init, run) => partBody(key, init, run, "stop"),
   },
   {
@@ -301,6 +333,7 @@ const KINDS: readonly Kind[] = [
     at: "attempt",
     followsCommit: true,
     keyEcho: "exact",
+    answerLost: true,
     respond: (key, init, run) => partBody(key, init, run, "broken"),
   },
   {
@@ -309,11 +342,21 @@ const KINDS: readonly Kind[] = [
     at: "attempt",
     followsCommit: true,
     keyEcho: "exact",
+    answerLost: true,
     respond: (key) =>
       new Response(JSON.stringify(posted).slice(0, 11), {
         status: 201,
         headers: { "Content-Type": "application/json", "Idempotency-Key": key },
       }),
+  },
+  {
+    name: "201 not the row",
+    role: "repeatable",
+    at: "attempt",
+    followsCommit: true,
+    keyEcho: "exact",
+    answerLost: true,
+    respond: (key) => json({ unexpected: true }, 201, key),
   },
   {
     // Every resend of one write carries identical bytes (writeRequestFields), so a key held
@@ -367,6 +410,20 @@ const KINDS: readonly Kind[] = [
     respond: (key) => refused(409, IDEMPOTENCY_KEY_COMMITTED, "this key's write landed", key),
   },
   {
+    name: "409 KEY_COMMITTED un-echoed",
+    role: "committed",
+    at: "attempt",
+    respond: () => refused(409, IDEMPOTENCY_KEY_COMMITTED, "this key's write landed"),
+  },
+  {
+    name: "409 KEY_COMMITTED another key",
+    role: "committed",
+    at: "attempt",
+    keyEcho: "different",
+    respond: (key) =>
+      refused(409, IDEMPOTENCY_KEY_COMMITTED, "this key's write landed", `${key}-another`),
+  },
+  {
     name: "401 auth",
     role: "refusal",
     at: "attempt",
@@ -374,6 +431,16 @@ const KINDS: readonly Kind[] = [
     code: "UNAUTHORIZED",
     writer: "before-claim",
     respond: () => refused(401, "UNAUTHORIZED", "a token is required"),
+  },
+  {
+    name: "401 echoed",
+    role: "unkept",
+    at: "attempt",
+    status: 401,
+    code: "UNAUTHENTICATED",
+    writer: "handler",
+    keyEcho: "exact",
+    respond: (key) => refused(401, "UNAUTHENTICATED", "the session lapsed in the write", key),
   },
   {
     name: "413 REQUEST_TOO_LARGE before claim",
@@ -497,7 +564,9 @@ const KINDS: readonly Kind[] = [
   },
   {
     name: "401 handler fresh exact echo",
-    role: "refusal",
+    // A handler's 401 that names the key back can come after the handler committed, and the
+    // keyed layer stores no 401, so it is no verdict on the write in either state.
+    role: "unkept",
     at: "attempt",
     status: 401,
     code: "UNAUTHORIZED",
@@ -565,11 +634,14 @@ const KINDS: readonly Kind[] = [
     status: 304,
     respond: () => new Response(null, { status: 304 }),
   },
+  // Dispatch's check of a broker token answers before any handler runs, so nothing of the write
+  // ran (`TOKEN_NOT_CHECKED`): asked again as a 429 is, and told as its own refusal where the
+  // asking ends with nothing landed.
   {
     name: "503 BROKER_UNAVAILABLE",
     role: "repeatable",
     at: "attempt",
-    followsCommit: true,
+    own: { as: "refusal", status: 503 },
     respond: () =>
       refused(
         503,
@@ -831,7 +903,14 @@ function oracle(events: readonly Kind[]): Decision[] {
   // Whether the last presentation could not present while its trade goes on, and no attempt went
   // out after it: a wait's stop before a landing then ends with the credential's failure.
   let credentialFailed = false;
-  const end = (ending: Ending): Decision => ({ asks: false, ending });
+  // Whether a 2xx that named the key back came, whose body did not give the row: Dispatch
+  // answers a write's 2xx only after it committed, so every end of the write after it that is no
+  // answer the write settles on is a landing whose answer was lost.
+  let committed = false;
+  const end = (ending: Ending): Decision => ({
+    asks: false,
+    ending: committed && ending.as === "unsettled" ? { as: "landed" } : ending,
+  });
   const endAfter = (own: Ending): Decision => end(landed ? UNSETTLED : own);
   return events.map((event): Decision => {
     const refusal: Ending = { as: "refusal", status: event.status ?? 0 };
@@ -840,14 +919,27 @@ function oracle(events: readonly Kind[]): Decision[] {
     if (event.keyEcho === "exact") echoed = true;
     switch (event.role) {
       case "applied":
-        // A 2xx whose body is empty or not JSON is no answer of Dispatch's; nor is one without
-        // exactly the key once an answer of the call carried it.
-        if (event.notJson || (echoed && event.keyEcho !== "exact")) return end(UNSETTLED);
+        // A 2xx whose body is empty or not JSON is no answer of Dispatch's; nor is one naming
+        // another request's key, whatever came before it; nor one without exactly the key once an
+        // answer of the call carried it.
+        if (
+          event.notJson ||
+          event.keyEcho === "different" ||
+          (echoed && event.keyEcho !== "exact")
+        ) {
+          return end(UNSETTLED);
+        }
         return end({ as: "resolved" });
       case "refusal":
         return finalAfterLanding(event) ? end(refusal) : endAfter(refusal);
       case "committed":
+        // The same two grounds make a `409 KEY_COMMITTED` no landing of this write's.
+        if (event.keyEcho === "different" || (echoed && event.keyEcho !== "exact")) {
+          return end(UNSETTLED);
+        }
         return end({ as: "landed" });
+      case "unkept":
+        return end(UNSETTLED);
       case "redirect":
         return endAfter(refusal);
       case "credential-final":
@@ -856,6 +948,7 @@ function oracle(events: readonly Kind[]): Decision[] {
           name: (event.fails as () => Error)().constructor.name,
         });
       case "stop-in-flight":
+        if (event.answerLost) committed = true;
         return end(UNSETTLED);
       case "stop-wait":
         return endAfter(credentialFailed ? { as: "credential" } : (event.own as Ending));
@@ -875,6 +968,7 @@ function oracle(events: readonly Kind[]): Decision[] {
       case "repeatable": {
         if (event.followsCommit) landed = true;
         if (event.running) running = true;
+        if (event.answerLost) committed = true;
         const allowed = pauses < LIMITS.pauses && (running || roundPauses === 0);
         if (!allowed) return endAfter(event.own ?? UNSETTLED);
         pauses += 1;
@@ -1179,6 +1273,7 @@ const ASKING_AGAIN: readonly (readonly Kind[])[] = [
 const ENDINGS: readonly Kind[] = [
   kind("201"),
   kind("201 un-echoed"),
+  kind("201 another key"),
   kind("200 portal page"),
   kind("200 empty"),
   kind("204"),
@@ -1188,7 +1283,10 @@ const ENDINGS: readonly Kind[] = [
   kind("422 KEY_REUSED exact echo"),
   kind("409 handler POSSIBLE_DUPLICATE fresh exact echo for the issue candidate list"),
   kind("409 KEY_COMMITTED"),
+  kind("409 KEY_COMMITTED un-echoed"),
+  kind("409 KEY_COMMITTED another key"),
   kind("401 auth"),
+  kind("401 echoed"),
   kind("403 page"),
   kind("308 redirect"),
   kind("304"),

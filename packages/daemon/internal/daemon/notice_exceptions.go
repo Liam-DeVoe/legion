@@ -501,12 +501,24 @@ func (r *outbox) exceptionNotice(exception roleLaneException) (reportedNotice, b
 	if (!legacy && project != r.dispatchProject) || !strings.HasPrefix(token, "legion-"+r.project+"-") || !strings.HasSuffix(token, "-"+string(claim.RoleArchitect)) {
 		return reportedNotice{}, false
 	}
-	var notice record.Notice
+	// A notice the release before this one published can name the tester's verdict under the key
+	// verdict, which record.Notice no longer has. Migration 20261121074614_phase_verdict_gone
+	// strips the key from every notice still queued, but a listener reports a failed forward with
+	// the payload as it went out, so a phase-finished notice published before the upgrade and
+	// reported failed after it carries the key. The decode reads the key and drops it, so that
+	// notice is queued again with the rest of what it says, as the migration leaves a queued one;
+	// every other key Notice does not have still refuses the report. Once no listener can report a
+	// publish of the release before, Verdict can go.
+	var published struct {
+		record.Notice
+		Verdict json.RawMessage `json:"verdict"`
+	}
 	decoder := json.NewDecoder(strings.NewReader(exception.Payload))
 	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&notice); err != nil {
+	if err := decoder.Decode(&published); err != nil {
 		return reportedNotice{}, false
 	}
+	notice := published.Notice
 	kind, issue, found := parseNoticeSummary(exception.PayloadSummary)
 	if !found || kind != notice.Kind || !claim.IsIssueKey(issue) || !strings.HasPrefix(issue, r.dispatchProject+"-") {
 		return reportedNotice{}, false

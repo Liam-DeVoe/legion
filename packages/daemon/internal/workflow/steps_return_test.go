@@ -333,7 +333,68 @@ func TestAReturnWithNoImplementationStepStopsTheTask(t *testing.T) {
 // its handoff record.
 func failedTest(key string, returnTo int, handoff string) intake.HandoffComplete {
 	return intake.HandoffComplete{Generation: 1, Issue: key, Role: claim.RoleTester, Claim: "test-claim", Summary: "the widget does not render",
-		Verdict: "fail", HandoffRecord: handoff, HandoffVersion: 1, ReturnTo: returnTo}
+		Commit: stepRootHead, HandoffRecord: handoff, HandoffVersion: 1, ReturnTo: returnTo}
+}
+
+// stepRootHead is the head failedTest's completion names as the one it tested: a commit as Dispatch
+// writes one in a check state (40 lower-case hex digits), which the testing move reads the states at.
+const stepRootHead = headOne
+
+// failsAtTheHead applies, through apply, a check state of key that fails at stepRootHead, as
+// Dispatch's event of the tester's result puts it in the store: the completion of a tester there
+// then fails its step, since Dispatch's check states at the tested head decide the testing step
+// (decideTesting) and no completion carries a verdict.
+func failsAtTheHead(t *testing.T, pool *pgxpool.Pool, apply func(string, intake.Fact) intake.Result, key string) {
+	t.Helper()
+	state, id := testedFact(t, pool, key, stepRootHead, false)
+	if result := apply(id, state); result.Refusal != nil {
+		t.Fatalf("apply the failing check state of %s at %s: %+v", key, stepRootHead, result.Refusal)
+	}
+}
+
+// testingAtStepThree is LEGION-208 walking the steps planner implementer tester, standing in
+// testing at step 3, its implementer started once.
+func testingAtStepThree(t *testing.T) (*pgxpool.Pool, *Engine, record.Issue) {
+	t.Helper()
+	pool := migratedPool(t)
+	engine := returnEngine()
+	root := stepRoot(t, pool, phase.Admitted)
+	seedStepsPlan(t, pool, root.Key, root.Generation, "planner", "implementer", "tester")
+	move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerPlannerCompleted, "", record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
+	assertWalksAt(t, pool, engine, root.Key, phase.Testing, record.TaskPlace{Kind: record.PlaceStep, Position: 3})
+	return pool, engine, root
+}
+
+// A tester's completion names the step its task returns to (returnTo) while Dispatch's check
+// states at the head it tested decide its step. When those states already fail the step as the
+// completion lands, the move made at that completion returns the task to the step named. When
+// the states arrive after it, the move a later state event makes returns to the step the steps'
+// types give: no record keeps the completion's returnTo, which is a hardening ledger row of the
+// merge that brought the two changes together (a nullable phases.return_to, or main's own fix).
+// The control of the first case: a decideTesting that drops returnTo at the completion returns
+// the task to the implementer, step 2, and the first case fails.
+func TestReturnToIsFollowedWhenTheStatesFailAtTheCompletion(t *testing.T) {
+	t.Run("the states fail the step at the completion: the task returns to the step named", func(t *testing.T) {
+		pool, engine, root := testingAtStepThree(t)
+		apply := applyFacts(t, pool, engine)
+		failsAtTheHead(t, pool, apply, root.Key)
+		if result := apply("fail-1", failedTest(root.Key, 1, "test-1")); result.Refusal != nil {
+			t.Fatalf("the tester's completion naming step 1 was refused: %+v", result.Refusal)
+		}
+		assertWalksAt(t, pool, engine, root.Key, phase.Planning, record.TaskPlace{Kind: record.PlaceStep, Position: 1})
+	})
+	t.Run("the states fail the step after the completion: the task returns to the step the types give", func(t *testing.T) {
+		pool, engine, root := testingAtStepThree(t)
+		apply := applyFacts(t, pool, engine)
+		if result := apply("fail-1", failedTest(root.Key, 1, "test-1")); result.Refusal != nil {
+			t.Fatalf("the tester's completion naming step 1 was refused: %+v", result.Refusal)
+		}
+		assertWalksAt(t, pool, engine, root.Key, phase.Testing, record.TaskPlace{Kind: record.PlaceStep, Position: 3})
+		failsAtTheHead(t, pool, apply, root.Key)
+		assertWalksAt(t, pool, engine, root.Key, phase.Implementing, record.TaskPlace{Kind: record.PlaceStep, Position: 2})
+	})
 }
 
 // recordAt is what a refused completion must leave as it found: the issue, its task where it has
@@ -375,24 +436,13 @@ func assertRefusedReturnTo(t *testing.T, pool *pgxpool.Pool, engine *Engine, key
 // refused today. An issue with no plan rows has no step to name: a report naming one is refused,
 // and the same report naming none returns to implementing as today.
 func TestReturnToNamesAnEarlierStep(t *testing.T) {
-	// planned is LEGION-208 walking the steps planner implementer tester, standing in testing at
-	// step 3, its implementer started once.
-	planned := func(t *testing.T) (*pgxpool.Pool, *Engine, record.Issue) {
-		pool := migratedPool(t)
-		engine := returnEngine()
-		root := stepRoot(t, pool, phase.Admitted)
-		seedStepsPlan(t, pool, root.Key, root.Generation, "planner", "implementer", "tester")
-		move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
-		move(t, pool, engine, root.Key, TriggerPlannerCompleted, "", record.PhaseRow{})
-		move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
-		assertWalksAt(t, pool, engine, root.Key, phase.Testing, record.TaskPlace{Kind: record.PlaceStep, Position: 3})
-		return pool, engine, root
-	}
+	planned := testingAtStepThree
 
 	t.Run("returnTo 1 returns the task to the planner, which gets the tester's report", func(t *testing.T) {
 		pool, engine, root := planned(t)
 		planners, implementers := len(roleStartsOf(t, pool, root.Key, claim.RolePlanner)), len(roleStartsOf(t, pool, root.Key, claim.RoleImplementer))
 
+		failsAtTheHead(t, pool, applyFacts(t, pool, engine), root.Key)
 		if result := applyFacts(t, pool, engine)("fail-1", failedTest(root.Key, 1, "test-1")); result.Refusal != nil {
 			t.Fatalf("the tester's fail naming step 1 was refused: %+v", result.Refusal)
 		}
@@ -402,7 +452,7 @@ func TestReturnToNamesAnEarlierStep(t *testing.T) {
 		if len(starts) != planners+1 {
 			t.Fatalf("the return wrote %d starts of the planner, want one", len(starts)-planners)
 		}
-		report := "Handoff: test version 1 (dispatch handoff-read --issue LEGION-208 --phase test --version 1). " + testerVerdictLabel + ": fail."
+		report := "Handoff: test version 1 (dispatch handoff-read --issue LEGION-208 --phase test --version 1). Handoff commit: " + stepRootHead + "."
 		if start := starts[len(starts)-1]; start.FreshSession || start.Phase != phase.Planning || !strings.Contains(start.Task, report) {
 			t.Fatalf("the planner's start = %+v, want a start of planning in its own session whose task holds the tester's report %q", start, report)
 		}
@@ -442,8 +492,9 @@ func TestReturnToNamesAnEarlierStep(t *testing.T) {
 			assertRefusedReturnTo(t, pool, engine, root.Key, apply("fail-refused", failedTest(root.Key, tc.returnTo, "test-1")), tc.want, before)
 
 			// The refusal recorded nothing, its handoff record among it, so the tester reports
-			// again with the same record, and the report naming no step returns to the
-			// implementer, the step of the type implementation before it.
+			// again with the same record at a head whose check fails, and the report naming no
+			// step returns to the implementer, the step of the type implementation before it.
+			failsAtTheHead(t, pool, apply, root.Key)
 			if result := apply("fail-again", failedTest(root.Key, 0, "test-1")); result.Refusal != nil {
 				t.Fatalf("the tester's fail sent again without returnTo was refused: %+v", result.Refusal)
 			}
@@ -461,6 +512,7 @@ func TestReturnToNamesAnEarlierStep(t *testing.T) {
 		assertRefusedReturnTo(t, pool, engine, root.Key, apply("fail-refused", failedTest(root.Key, 1, "test-1")),
 			"returnTo is 1, and LEGION-208 has no plan of tasks in Legion's record, so it has no step to name; send the fail again without returnTo; nothing was recorded", before)
 
+		failsAtTheHead(t, pool, apply, root.Key)
 		if result := apply("fail-again", failedTest(root.Key, 0, "test-1")); result.Refusal != nil {
 			t.Fatalf("the tester's fail sent again without returnTo was refused: %+v", result.Refusal)
 		}

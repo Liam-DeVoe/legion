@@ -163,21 +163,23 @@ func TestOwnerStepsClientLive(t *testing.T) {
 		}
 	})
 
-	// handoff_complete with returnTo from a failed tester returns the task to that step.
+	// handoff_complete with returnTo from a tester whose check fails at the head it tested returns
+	// the task to that step: the completion carries no verdict, and the check state decides.
 	l.check("client-return-to", func() {
 		l.runStep("implementer", answerPass, phase.Testing)
 		tester := l.worker(claim.RoleTester)
 		tester.take()
-		outcome := l.client(l.root, tester, "handoff_complete", map[string]any{"summary": "a criterion fails", "verdict": "fail", "return_to": 1}, l.report(tester))
+		testedAs(t, l.st.Pool(), l.key, stepRecordsHead, false)
+		outcome := l.client(l.root, tester, "handoff_complete", map[string]any{"summary": "a criterion fails", "return_to": 1}, l.report(tester))
 		if !outcome.OK {
-			t.Fatalf("the tester's handoff_complete with verdict fail and return_to 1 %s, want it taken", outcome)
+			t.Fatalf("the tester's handoff_complete with return_to 1 at a head whose check fails %s, want it taken", outcome)
 		}
 		tester.endTurn()
 		l.waitPhase(phase.Implementing)
 		if starts := l.stepStarts(); !slices.ContainsFunc(starts, func(s string) bool { return strings.HasPrefix(s, "a step 1 starts 2 ") }) {
 			t.Fatalf("%s's step starts after the return are %v, want task a's step 1 started a second time", planned, starts)
 		}
-		l.note("executePhaseOp handoff_complete {verdict fail, return_to 1} by the tester: %s; %s stands in implementing, task a's step 1 started again (%v)",
+		l.note("executePhaseOp handoff_complete {return_to 1} by the tester, its check failing at the head: %s; %s stands in implementing, task a's step 1 started again (%v)",
 			outcome, planned, l.stepStarts())
 	})
 
@@ -192,15 +194,17 @@ func TestOwnerStepsClientLive(t *testing.T) {
 		l.runStep("implementer", answerPass, phase.Testing)
 		tester := l.worker(claim.RoleTester)
 		tester.take()
-		outcome := l.client(l.root, tester, "handoff_complete", map[string]any{"summary": "a criterion fails", "verdict": "fail", "return_to": 2}, l.report(tester))
+		testedAs(t, l.st.Pool(), l.key, stepRecordsHead, false)
+		outcome := l.client(l.root, tester, "handoff_complete", map[string]any{"summary": "a criterion fails", "return_to": 2}, l.report(tester))
 		if err := refused(outcome, http.StatusConflict, "RETURN_REFUSED"); err != nil {
 			t.Fatalf("return_to 2, the tester's own place: %v", err)
 		}
 		if got := phase.Phase(l.d.state().Issues[returnRefused].Phase); got != phase.Testing {
 			t.Fatalf("%s stands in %s after the refused return, want testing", returnRefused, got)
 		}
-		l.note("control: handoff_complete {verdict fail, return_to 2} %s; %s still stands in testing, so the check of client-return-to fails on it", outcome, returnRefused)
-		taken = l.client(l.root, tester, "handoff_complete", map[string]any{"summary": "every criterion holds", "verdict": "pass"}, l.report(tester))
+		l.note("control: handoff_complete {return_to 2} %s; %s still stands in testing, so the check of client-return-to fails on it", outcome, returnRefused)
+		testedAs(t, l.st.Pool(), l.key, stepRecordsHead, true)
+		taken = l.client(l.root, tester, "handoff_complete", map[string]any{"summary": "every criterion holds"}, l.report(tester))
 		if !taken.OK {
 			t.Fatalf("the tester's pass after the refused return %s, want it taken", taken)
 		}
@@ -297,7 +301,7 @@ func TestOwnerStepsClientLive(t *testing.T) {
 	})
 	l.check("client-stopped-report-refused", func() {
 		tester := l.worker(claim.RoleTester)
-		outcome := l.client(l.root, tester, "handoff_complete", map[string]any{"summary": "every criterion holds", "verdict": "pass"}, l.report(tester))
+		outcome := l.client(l.root, tester, "handoff_complete", map[string]any{"summary": "every criterion holds"}, l.report(tester))
 		if err := refused(outcome, http.StatusConflict, "TASK_STOPPED"); err != nil {
 			t.Fatalf("the stopped task's report: %v", err)
 		}
@@ -463,12 +467,17 @@ func (l *ownerStepsClientLive) client(tree string, c *stepClaimant, call string,
 }
 
 // report is what c's pane's handoff record answers for its completion: a record of its phase
-// written to Dispatch under its own session now.
+// written to Dispatch under its own session now, and for the tester the head it tested, which the
+// completion names (api's TESTED_HEAD_REQUIRED).
 func (l *ownerStepsClientLive) report(c *stepClaimant) map[string]any {
 	l.t.Helper()
 	word := map[claim.Role]string{claim.RoleTester: "test", claim.RoleImplementer: "implement"}[c.role]
 	id, version := l.writeHandoff(c.session, word)
-	return map[string]any{"handoffId": id, "handoffVersion": version}
+	report := map[string]any{"handoffId": id, "handoffVersion": version}
+	if c.role == claim.RoleTester {
+		report["commit"] = stepRecordsHead
+	}
+	return report
 }
 
 // waitHeld waits for key to stand held with holdReason reason in the state this contract serves.

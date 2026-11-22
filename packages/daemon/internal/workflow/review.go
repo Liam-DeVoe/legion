@@ -1039,8 +1039,12 @@ func (e *Engine) settleRound(ctx context.Context, tx pgx.Tx, issue record.Issue,
 		// approved, and an approve beside that request's reason would tell the implementer the
 		// opposite of what sent the work back.
 		handoff := row
-		if handoff.Verdict != string(store.VerdictChanges) {
-			handoff.Verdict = ""
+		own, err := e.reviewerVerdictAt(ctx, tx, issue.Key, pr, row.Decision.Head)
+		if err != nil {
+			return false, err
+		}
+		if own != store.VerdictChanges {
+			handoff.Decision = nil
 		}
 		return true, e.transition(ctx, tx, issue, TriggerReviewRejected, "", handoff, pr, row.Decision.Body)
 	case roundApproved:
@@ -1193,22 +1197,13 @@ func (e *Engine) askMergeState(ctx context.Context, tx pgx.Tx, fact intake.Fact)
 	case intake.HandoffComplete:
 		// The reviewer's verdict decides the round with its completion, so its approval is the
 		// fact that leaves the round waiting on GitHub's answer for the head; no other role's
-		// completion changes what GitHub answers, and the tester's alone changes a verdict.
-		switch fact.Role {
-		case claim.RoleReviewer:
-			if fact.Verdict != "" {
-				verdict = fact.Commit
-			}
-		case claim.RoleTester:
-			if fact.Verdict == "" {
-				return nil
-			}
-			if pr, err = e.store.PullRequest(ctx, tx, fact.Issue); err != nil || pr == nil {
-				return err
-			}
-			return e.askVerdictWrite(ctx, tx, pr, fact.Commit)
-		default:
+		// completion changes what GitHub answers or a verdict: the tester's carries none, since
+		// Dispatch's check states at the tested head decide the testing phase.
+		if fact.Role != claim.RoleReviewer {
 			return nil
+		}
+		if fact.Verdict != "" {
+			verdict = fact.Commit
 		}
 		pr, err = e.store.PullRequest(ctx, tx, fact.Issue)
 	case intake.ReviewVerdict:
@@ -1306,6 +1301,25 @@ func (e *Engine) recordVerdict(ctx context.Context, tx pgx.Tx, issue string, pr 
 	_, err = store.RecordVerdictTx(ctx, tx, store.Verdict{Repository: repository, Number: pr.Number, Head: commit, Issue: issue,
 		Verdict: store.VerdictWord(word), TestedCommit: tested, Session: string(by), RecordedAt: e.now()})
 	return err
+}
+
+// reviewerVerdictAt is the verdict issue's reviewer recorded on pr at commit (recordVerdict), ""
+// where none is recorded or pr is not recorded yet. A round's decision can be a person's request
+// for changes, which replaces the reviewer's (record.PhaseRow.Decision), so the move a rejected
+// round makes reads this row to tell whether the reviewer's own verdict rejected it (settleRound).
+func (e *Engine) reviewerVerdictAt(ctx context.Context, tx pgx.Tx, issue string, pr *record.PullRequest, commit string) (store.VerdictWord, error) {
+	if pr == nil || commit == "" {
+		return "", nil
+	}
+	repository, err := ghrepo.Parse("the repository of "+issue+"'s pull request", pr.Repo)
+	if err != nil {
+		return "", err
+	}
+	given, found, err := store.VerdictTx(ctx, tx, repository, pr.Number, commit)
+	if err != nil || !found || given.Issue != issue {
+		return "", err
+	}
+	return given.Verdict, nil
 }
 
 // recordPass counts task one more pass through the implementing, testing and reviewing stretch,

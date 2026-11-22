@@ -601,8 +601,8 @@ func (c *HTTPClient) request(ctx context.Context, method, path string, body, int
 // dispatchBase's scheme check (internal/config) catches a typo in the scheme itself before boot,
 // but not a correct https:// whose port does not serve TLS. transportFailure keeps each of these
 // out of TransientError, Unreachable reads it first so it wins over an outage it is joined with,
-// and the boot's catch-up of the roots that run or wait on a person (internal/daemon's
-// catchUpWithRetries) stops the start on one rather than skip the root.
+// and the boot's catch-ups, of the roots that run or wait on a person and of check states
+// (internal/daemon's readWithRetries), stop the start on one rather than skip the root or the issue.
 func TransportRefusal(err error) bool {
 	var certErr *tls.CertificateVerificationError
 	var record tls.RecordHeaderError
@@ -771,24 +771,30 @@ type approvalResponse struct {
 }
 
 // handoffResponse is a handoff record as Dispatch answers it, its body left undecoded: Handoff's
-// callers hold a completion to who wrote which record, never to what it says.
+// callers hold a completion to who wrote which record, never to what it says. CheckStatesSerial is
+// absent on every record but a test record Dispatch stored a serial on.
 type handoffResponse struct {
-	ID       string `json:"id"`
-	IssueKey string `json:"issue_key"`
-	Phase    string `json:"phase"`
-	Version  int    `json:"version"`
-	Author   actor  `json:"author"`
+	ID                string `json:"id"`
+	IssueKey          string `json:"issue_key"`
+	Phase             string `json:"phase"`
+	Version           int    `json:"version"`
+	Author            actor  `json:"author"`
+	CheckStatesSerial *int64 `json:"check_states_serial"`
 }
 
 // handoff is the record without its body.
 func (r handoffResponse) handoff() Handoff {
-	return Handoff{
+	handoff := Handoff{
 		ID:       r.ID,
 		IssueKey: r.IssueKey,
 		Phase:    r.Phase,
 		Version:  r.Version,
 		Author:   HandoffAuthor{Kind: r.Author.Kind, ID: r.Author.ID},
 	}
+	if r.CheckStatesSerial != nil {
+		handoff.CheckStatesSerial = *r.CheckStatesSerial
+	}
+	return handoff
 }
 
 type actor struct {

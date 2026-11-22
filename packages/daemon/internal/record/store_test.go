@@ -3,6 +3,7 @@ package record
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"reflect"
 	"sort"
 	"strings"
@@ -394,7 +395,7 @@ func TestStoreRoundTripsEveryRecord(t *testing.T) {
 		},
 	}
 	phase := PhaseRow{Issue: issue.Key, Role: claim.RoleImplementer, Claim: "legion-208-implementer", HandoffCommit: "aabbcc",
-		HandoffRecord: "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b", HandoffVersion: 3, Pass: 3, Rounds: 2, Verdict: "pass",
+		HandoffRecord: "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b", HandoffVersion: 3, Pass: 3, Rounds: 2, StatesSerial: 7,
 		// The counts of two kinds of move and the cap the row told for read back as they were
 		// written: the map keeps a count for each pair it holds, and nothing of either is lost to
 		// the column the other rides in.
@@ -981,14 +982,14 @@ func TestClearGenerationKeepsThePassAndResetsTheRounds(t *testing.T) {
 	inTx(t, st, func(tx pgx.Tx) {
 		must(t, records.PutIssue(ctx, tx, issue))
 		must(t, records.PutPhase(ctx, tx, PhaseRow{Issue: issue.Key, Role: claim.RoleImplementer, Claim: "legion-286-implementer",
-			HandoffCommit: "handoff-4", Pass: 4, Rounds: 2, Verdict: "pass"}))
+			HandoffCommit: "handoff-4", Pass: 4, Rounds: 2, StatesSerial: 4}))
 		must(t, records.ClearGeneration(ctx, tx, issue.Key, time.Now().UTC()))
 	})
 	inTx(t, st, func(tx pgx.Tx) {
 		phases, err := records.Phases(ctx, tx, issue.Key)
 		must(t, err)
-		if len(phases) != 1 || phases[0].Pass != 4 || phases[0].Rounds != 0 || phases[0].HandoffCommit != "" {
-			t.Fatalf("phases after ClearGeneration = %#v, want one row with pass 4, no rounds and no handoff", phases)
+		if len(phases) != 1 || phases[0].Pass != 4 || phases[0].Rounds != 0 || phases[0].HandoffCommit != "" || phases[0].StatesSerial != 0 {
+			t.Fatalf("phases after ClearGeneration = %#v, want one row with pass 4, no rounds, no handoff and no check states serial", phases)
 		}
 	})
 }
@@ -1005,7 +1006,7 @@ func TestClearGenerationClearsTheHandoffRecordAndKeepsTheLastNamed(t *testing.T)
 	issue := issueFixture("LEGION-286")
 	inTx(t, st, func(tx pgx.Tx) {
 		must(t, records.PutIssue(ctx, tx, issue))
-		must(t, records.PutPhase(ctx, tx, PhaseRow{Issue: issue.Key, Role: claim.RoleTester, Claim: "tester", HandoffRecord: "test-record", HandoffVersion: 2, LastHandoff: "test-record", Verdict: "pass"}))
+		must(t, records.PutPhase(ctx, tx, PhaseRow{Issue: issue.Key, Role: claim.RoleTester, Claim: "tester", HandoffRecord: "test-record", HandoffVersion: 2, LastHandoff: "test-record", StatesSerial: 5}))
 		must(t, records.PutPhase(ctx, tx, PhaseRow{Issue: issue.Key, Role: claim.RoleImplementer, Claim: "implementer", HandoffCommit: "head", HandoffRecord: "implement-record", HandoffVersion: 1, LastHandoff: "implement-record", Rounds: 1,
 			BackwardMoves: map[string]int{"testing-implementing": 1}, CapTold: 3}))
 		must(t, records.ClearGeneration(ctx, tx, issue.Key, time.Now().UTC()))
@@ -1018,8 +1019,8 @@ func TestClearGenerationClearsTheHandoffRecordAndKeepsTheLastNamed(t *testing.T)
 			t.Fatalf("phases after ClearGeneration = %#v, want both rows kept", rows)
 		}
 		for _, row := range rows {
-			if row.Completed() || row.HandoffVersion != 0 || row.LastHandoff != want[row.Role] {
-				t.Fatalf("the %s row after ClearGeneration = %#v, want no commit, record or version, and %q kept as the record it last named", row.Role, row, want[row.Role])
+			if row.Completed() || row.HandoffVersion != 0 || row.StatesSerial != 0 || row.LastHandoff != want[row.Role] {
+				t.Fatalf("the %s row after ClearGeneration = %#v, want no commit, record, version or check states serial, and %q kept as the record it last named", row.Role, row, want[row.Role])
 			}
 			if len(row.BackwardMoves) != 0 || row.CapTold != 0 {
 				t.Fatalf("the %s row after ClearGeneration counts %#v moves back and told cap %d, want no count and no cap told", row.Role, row.BackwardMoves, row.CapTold)
@@ -1074,8 +1075,8 @@ func TestAPhaseRowKeepsTheReviewedCommitUntilANewGeneration(t *testing.T) {
 		inTx(t, st, func(tx pgx.Tx) {
 			must(t, NewStore().PutIssue(ctx, tx, issue))
 			// The release before names each column it writes, and reviewed_head is none of them.
-			_, err := tx.Exec(ctx, `insert into phases (issue, role, claim, handoff_commit, rounds, verdict, decision)
-				values ($1, 'reviewer', 'reviewer', '', 0, '', '{"state": "approved", "head": "bbb222"}')`, issue.Key)
+			_, err := tx.Exec(ctx, `insert into phases (issue, role, claim, handoff_commit, rounds, decision)
+				values ($1, 'reviewer', 'reviewer', '', 0, '{"state": "approved", "head": "bbb222"}')`, issue.Key)
 			must(t, err)
 		})
 		row := reviewerOf(t, st, issue.Key)
@@ -2309,8 +2310,8 @@ func TestRecordMigrationCreatesTheRequiredColumns(t *testing.T) {
 			"default_branch", "github_repo", "awaiting_ask", "awaiting_gate_version", "awaiting_artifact", "awaiting_answered_at", "awaiting_answered_by",
 			"awaiting_answered_detail", "awaiting_since_seq", "awaiting_since", "handout_seq", "declared_seq", "declared_at", "caught_up_seq",
 			"ancestry", "handed_over_from", "told_parent", "memory_group", "memory_draw_mode", "memory_drawn_at", "memory_carried",
-			"moved_at", "tree_stalled_told_at", "released_for_wait_at"},
-		"phases":            {"issue", "role", "claim", "handoff_commit", "pass", "rounds", "conflict_rounds", "backward_moves", "cap_told", "verdict", "summary", "last_handoff", "decision", "completed_at", "merge_note", "entry", "entry_task", "entry_verbatim", "entry_raised_at", "entry_moved_back", "handoff_record", "handoff_version", "reviewed_head", "step_task", "step_place"},
+			"moved_at", "tree_stalled_told_at", "released_for_wait_at", "check_states_seq"},
+		"phases":            {"issue", "role", "claim", "handoff_commit", "pass", "rounds", "conflict_rounds", "backward_moves", "cap_told", "states_serial", "summary", "last_handoff", "decision", "completed_at", "merge_note", "entry", "entry_task", "entry_verbatim", "entry_raised_at", "entry_moved_back", "handoff_record", "handoff_version", "reviewed_head", "step_task", "step_place"},
 		"pull_requests":     {"issue", "repo", "number", "branch", "base", "base_moved", "head_sha", "head_updated_at", "failing", "cancelled", "fix_attempts", "blocked_attempts", "check_runs", "generation", "snapshot", "statuses", "pushes", "head_moves", "head_counted", "head_run", "planned_red", "review_seen", "review_seen_at", "state", "checked_head", "required", "required_workflows", "required_workflows_head", "mergeability", "merge_state", "state_read_at", "conflicting_head", "merge_sha", "conflict_read", "merge_forward"},
 		"issue_plans":       {"issue", "generation", "version", "source", "artifact_id", "given_by", "given_at"},
 		"plan_tasks":        {"issue", "generation", "task", "plan_version", "block_text", "needs", "part_of", "owner_role", "merges", "steps_by_default", "state", "stopped_reason", "running_kind", "position", "pass", "rounds", "conflict_rounds", "backward_moves", "cap_told"},
@@ -2324,6 +2325,9 @@ func TestRecordMigrationCreatesTheRequiredColumns(t *testing.T) {
 		"dispatch_claims":        {"key", "claimed_by", "claim_seq"},
 		"slots":                  {"issue", "index", "admitted_at"},
 		"processed_events":       {"source", "event_id", "processed_at"},
+		"check_states":           {"issue", "repo", "head", "check_id", "state", "reason", "roles", "ci_case", "dispatch_seq"},
+		"check_state_sets":       {"issue", "repo", "head", "checks", "dispatch_seq"},
+		"check_state_serials":    {"issue", "serial"},
 		"outbox":                 {"id", "kind", "issue", "payload", "attempts", "next_at", "last_error", "created_at", "lease_token", "lease_until", "write_mark", "held_by_pause"},
 	}
 	inTx(t, st, func(tx pgx.Tx) {
@@ -2529,6 +2533,77 @@ func TestResidentRolesMigrationDropsOnlyTheQueuedPhaseEndSuspends(t *testing.T) 
 		}
 		if !reflect.DeepEqual(kept, want) {
 			t.Fatalf("supervise rows after 0035 = %+v, want %+v: the phase-end suspend deleted and every other row kept", kept, want)
+		}
+	})
+}
+
+// phaseVerdictGoneVersion is the migration that takes the tester's verdict out of the daemon's
+// record: it drops phases.verdict, adds phases.states_serial, and strips the key verdict from every
+// queued notice.
+const phaseVerdictGoneVersion = 20261121074614
+
+// A phase-finished notice the release before queued names the tester's verdict, which the notice
+// no longer has, and the outbox decodes rows strictly, so such a row would fail on every attempt.
+// The migration strips the key from each stored notice: the release before's notice with the
+// verdict pass and the same notice with none both decode after it, the first holding no verdict,
+// and each keeps its kind, role, phase, summary and version.
+func TestPhaseVerdictGoneMigrationStripsTheVerdictFromStoredNotices(t *testing.T) {
+	ctx := context.Background()
+	st := emptyStore(t)
+	all, err := migrations.All()
+	must(t, err)
+	for _, migration := range all {
+		if migration.Version >= phaseVerdictGoneVersion {
+			break
+		}
+		inTx(t, st, func(tx pgx.Tx) {
+			must(t, func() error {
+				if _, err := tx.Exec(ctx, migration.SQL); err != nil {
+					return err
+				}
+				// A version past int4 needs the column store.apply widens before its first such row.
+				if migration.Version > math.MaxInt32 {
+					if _, err := tx.Exec(ctx, "alter table schema_version alter column version type bigint"); err != nil {
+						return err
+					}
+				}
+				_, err := tx.Exec(ctx, "insert into schema_version (version) values ($1::bigint)", migration.Version)
+				return err
+			}())
+		})
+	}
+	queued := map[string]string{
+		"with a verdict": `{"kind": "phase-finished", "role": "tester", "phase": "testing", "summary": "Every check passes.", "verdict": "pass", "version": 3}`,
+		"with none":      `{"kind": "phase-finished", "role": "tester", "phase": "testing", "summary": "Every check passes.", "version": 3}`,
+	}
+	inTx(t, st, func(tx pgx.Tx) {
+		for name, payload := range queued {
+			_, err := tx.Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error) values ('notice', 'LEGION-208', $1, 0, now(), $2)`, payload, name)
+			must(t, err)
+		}
+	})
+
+	_, err = st.Migrate(ctx)
+	must(t, err)
+	inTx(t, st, func(tx pgx.Tx) {
+		rows, err := NewStore().DueRows(ctx, tx, "LEGION", "", nil, time.Now().Add(time.Hour))
+		must(t, err)
+		kept := map[string]Notice{}
+		for _, row := range rows {
+			payload, err := DecodeOutboxPayload(row)
+			if err != nil {
+				t.Fatalf("the notice %s after the migration does not decode: %v", row.LastError, err)
+			}
+			kept[row.LastError] = payload.(Notice)
+		}
+		notice := Notice{Kind: "phase-finished", Role: claim.RoleTester, Phase: phase.Testing, Summary: "Every check passes.", Version: 3}
+		if want := map[string]Notice{"with a verdict": notice, "with none": notice}; !reflect.DeepEqual(kept, want) {
+			t.Fatalf("notices after the migration = %+v, want %+v: each kept, with its kind, role, phase, summary and version", kept, want)
+		}
+		var verdicts int
+		must(t, tx.QueryRow(ctx, `select count(*) from outbox where kind = 'notice' and payload ? 'verdict'`).Scan(&verdicts))
+		if verdicts != 0 {
+			t.Fatalf("%d stored notices still hold the key verdict after the migration, want none", verdicts)
 		}
 	})
 }

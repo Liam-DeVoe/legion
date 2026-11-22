@@ -1,6 +1,6 @@
 import type { Actor, DispatchEvent } from "../../api/types";
 import { queuedWait } from "../conversation/delivery";
-import { blockInvalidDescription } from "../issue/event-description";
+import { blockInvalidDescription, checkStateSentence } from "../issue/event-description";
 import { type AgentPart, askResolutionParts } from "../refs/AgentName";
 
 export function dateKey(iso: string): string {
@@ -231,6 +231,8 @@ function describe(event: DispatchEvent, previousStatus: string | undefined): str
       return `recorded ${event.payload.verdict} for check ${event.payload.check_block_id} at ${event.payload.commit_sha} as ${event.payload.role}`;
     case "result.retracted":
       return `retracted the result of check ${event.payload.check_block_id} at ${event.payload.commit_sha}: ${event.payload.reason}`;
+    case "check.state_changed":
+      return `reported that ${checkStateSentence(event.payload)}`;
     case "issue.pull_request_attribution_changed":
       return `moved pull request ${event.payload.repo}#${event.payload.number} from ${event.payload.from ?? "no issue"} to ${event.payload.to ?? "no issue"}, decided by ${event.payload.source}`;
   }

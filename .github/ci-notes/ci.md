@@ -358,10 +358,17 @@ Before these the job's filter carried one pattern, '.github/scripts/*', for all 
 them: a change to any one script ran every harness, and 28 of the 66 commits that
 touched that directory since 2026-10-01 changed no Go file (dispatch://INFRA-1413).
 
-## priorities_seed_check_test: The one harness of the job outside .github/scripts
+## priorities_seed_check_test: A harness of the job outside .github/scripts
 
-The one harness of the job outside .github/scripts: it carries its own helpers
-and sources no test-lib.sh.
+A harness of the job outside .github/scripts, as red_at_base_test's is: it
+carries its own helpers and sources no test-lib.sh.
+
+## red_at_base_test: A harness of the job outside .github/scripts
+
+A harness of the job outside .github/scripts, as priorities_seed_check_test's
+is: it carries its own helpers and sources no test-lib.sh. Its step runs after
+the job's setup-go, since the scratch repository it makes runs go test, and
+bun test, at a base commit.
 
 ## test: The test job: the Claude Code plugin build, the changelog
 
@@ -438,10 +445,11 @@ names scripts/sessions for.
 
 src/skills-guard.test.ts spawns packages/claude-envoy/scripts/build.ts (PLUGIN_BUILDER) and
 asserts an exact file list over the tree it writes, so this job reads that whole
-package and the one entry of its BUNDLE_ENTRYPOINTS (scripts/build.ts:39-44) that
-lives outside it. A spawn carries no import, so no derivation of this repository
-sees the reach: both patterns are hand-kept, with their declared reads in
-ci_job_reads.py.
+package and the one entry of its BUNDLE_ENTRYPOINTS (scripts/build.ts:39-48) that
+lives outside it; scripts/skill-scenarios/gate-search.ts's buildGenerated, which
+gate-search.test.ts runs, spawns that script too and reads the legion/ it writes. A
+spawn carries no import, so no derivation of this repository sees the reach: both
+patterns are hand-kept, with their declared reads in ci_job_reads.py.
 
 ## pi_legion: The Dispatch e2e client that scripts/skill-scenarios/seed.ts imports
 
@@ -1712,9 +1720,9 @@ container-backed NATS matrix and the integration suite), is one of the ten slow 
 which run in the merge queue and on a pull request labelled `full-ci`, while these checks
 must come back on every push. No Postgres service: nothing here opens a database. It
 restores go-envoy rather than go-envoy-test, the family of the slow half (the test binary of
-every package of the envoy module) and of dispatch-browser.yaml's Go-building jobs. It also
-runs the guard that no CI file of this repository compares the spec files with the approved
-spec.
+every package of the envoy module) and of dispatch-browser.yaml's Go-building jobs. The guard
+that no CI file of this repository compares the spec files runs in the ci-filters job
+(.github/ci-notes/ci-job-ci-filters.md).
 
 ## What the envoy-go job runs
 
@@ -2010,10 +2018,12 @@ packages/envoy-client/**, so the suite brings no new path into this job's closur
 
 Holds every filter in `changes` to every file its job reads, recomputing each Go job's closure
 with go list (.github/scripts/check-ci-filters.sh). go list runs with GOPROXY=off over an empty
-module cache, so the job needs Go but downloads no module and restores no cache. It also holds
-every workflow file to 64,000 bytes and to what GitHub's own parser reads
-(.github/scripts/check-workflow-files.sh), which .github/workflows/workflow-files.yaml runs a
-second time, in a file small enough to start when this one is too large to.
+module cache of its own, so that check downloads no module. It also holds every workflow file to
+64,000 bytes and to what GitHub's own parser reads (.github/scripts/check-workflow-files.sh),
+which .github/workflows/workflow-files.yaml runs a second time, in a file small enough to start
+when this one is too large to. The job also runs the guard that no CI file of this repository
+compares the spec files with the approved spec (.github/ci-notes/ci-job-ci-filters.md), whose
+`go run` downloads the modules ./cmd/spec-check imports; the job restores no cache.
 
 ## What the proof editor's offline proof shows
 

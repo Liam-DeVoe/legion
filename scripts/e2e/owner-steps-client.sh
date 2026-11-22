@@ -15,10 +15,10 @@
 #     not hold fails the same check;
 #   - client-phase-worker-refused: planRegister and taskStop with the implementer's grant throw
 #     LegionDaemonApiError 403 ARCHITECT_REQUIRED; the architect's answer fails the same check;
-#   - client-return-to: the phase op handoff_complete {verdict fail, return_to 1} of a tester
-#     (executePhaseOp) is taken and returns task a to its step 1;
+#   - client-return-to: the phase op handoff_complete {return_to 1} of a tester (executePhaseOp),
+#     with no verdict at a head whose check state fails, is taken and returns task a to its step 1;
 #   - control-client-return-to-refused: return_to 2, the tester's own place, throws 409
-#     RETURN_REFUSED and moves nothing; the tester's pass after it is taken;
+#     RETURN_REFUSED and moves nothing; the tester's completion after its check passes is taken;
 #   - older-client-reads: a tester's claim whose recorded contract is set to the release before's
 #     while no daemon runs (a pane registered under that release that outlives the upgrade, within
 #     its turn; this daemon refuses a new registration at any other contract and relaunches such a

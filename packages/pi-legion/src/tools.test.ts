@@ -25,8 +25,8 @@ import {
   pluginBuildOf,
 } from "@legion/pi-shared/legion-phase-ops";
 import type { PiApi, RegisteredTool, SessionContext } from "@legion/pi-shared/pi-types";
-import { toolFailure, toolSuccess } from "@legion/pi-shared/tool-result";
 import { withImageManifest } from "@legion/pi-shared/test/image-manifest";
+import { toolFailure, toolSuccess } from "@legion/pi-shared/tool-result";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { z } from "zod";
 import pkg from "../package.json";
@@ -199,25 +199,27 @@ const OMP_LEGION_TOOL_DESCRIPTION_BEFORE_STOP_TASK =
   "the daemon accepts a completion only from the role working the issue's current phase, " +
   "or a role's first completion of the phase it left, which it records and which moves nothing, " +
   "and the checking role's report on a look of its closed issue's production check) reports this phase complete: `summary` (two sentences for the " +
-  "architect), `verdict` on a phase completion is the tester's pass|fail and the reviewer's approve|changes (approve: the head you " +
-  "reviewed may merge; changes: it needs changes), each on the head your record names, and `testedCommit`, from the reviewer alone, " +
+  "architect), `verdict` on a phase completion is the reviewer's alone, approve|changes (approve: the head you " +
+  "reviewed may merge; changes: it needs changes), on the head your record names, and `testedCommit`, from the reviewer alone, " +
   "names the commit of the tester's pass that the reviewer's verdict carries to that head, where no commit since that one changes code " +
-  "that runs. The daemon refuses a verdict from any other role there and a testedCommit from any role but the reviewer " +
-  "(VERDICT_ROLE_FORBIDDEN), a tester's or a reviewer's verdict with no head (VERDICT_COMMIT_REQUIRED), and a reviewer's word that " +
+  "that runs. Every other phase completion carries no verdict (the daemon refuses one, VERDICT_NOT_TAKEN): Dispatch's check states " +
+  "at the tested head decide the testing phase. The daemon refuses a testedCommit from any role but the reviewer " +
+  "(VERDICT_ROLE_FORBIDDEN), a reviewer's verdict with no head (VERDICT_COMMIT_REQUIRED), and a reviewer's word that " +
   "is neither approve nor changes (REVIEWER_VERDICT_REQUIRED). `verdict` is pass|pending|fail on a production check report (pending: " +
   "production does not carry the merge yet, or carries it with a requirement only the deploy can show still unobserved and a look " +
   "still to follow; on the check's last look, only for an issue with no such requirement). " +
-  "A tester's fail may name `return_to`, the place of a step of the task its issue runs, 1 for its first: the step the task goes back " +
-  "to; without it, the task goes back to the first implementation step before the step that failed. Only a completion with the verdict " +
-  "fail names it (RETURN_TO_NEEDS_FAIL), a place below 1 is refused (INVALID_RETURN_TO), and so is a step the task cannot go back to " +
-  "(RETURN_REFUSED). " +
+  "A tester's completion may name `return_to`, the place of a step of the task its issue runs, 1 for its first: the step the task goes back " +
+  "to should the check states at the head it tested fail its step; without it, the task goes back to the first implementation step before " +
+  "the step that failed. Only a tester's completion names it (RETURN_TO_NEEDS_FAIL), a place below 1 is refused (INVALID_RETURN_TO), and " +
+  "so is a step the task cannot go back to (RETURN_REFUSED). " +
   "A planning, implementing, testing or reviewing phase ends with a handoff record on the " +
   "Dispatch issue: write it with `dispatch handoff-write --issue <issue> --phase <plan|implement|test|review> --body-file <file>` before " +
   "calling. This call reads from Dispatch the newest record of the phase your role works or, once the issue has moved on, of the phase it left, " +
   "and reports it with `commit`, the head that record's body names " +
   "(`head`, the 40-character lower-case commit the work it reports was done against); in implementing, the implementer's must be the commit its " +
   "workspace stands on, `@-`, pushed to `legion/<issue>@origin`, so push the branch first; retro, the merger's completion and a phase you left with no record, or with an implement record naming no head, report the commit the workspace stands on. It " +
-  "refuses, posting nothing, a phase you work with no record, a Dispatch that does not answer, and, in implementing, an implement record naming no head, an " +
+  "refuses, posting nothing, a phase you work with no record, a Dispatch that does not answer, a test record naming no head, since the daemon " +
+  "reads the check states at the head it names and refuses a tester's completion naming none (TESTED_HEAD_REQUIRED), and, in implementing, an implement record naming no head, an " +
   "implementer's `@-` not yet on `legion/<issue>@origin`, or an implement record whose head is not that pushed `@-`, each naming the remedy. A production check report " +
   "(the task whose first line is `Production check of <KEY>`, handed once the merge closed the issue to the role the check records) needs no " +
   "handoff and no commit: it carries its verdict and summary alone. A pending report also names `wake_at`, an RFC 3339 time: when you want the " +
@@ -233,7 +235,7 @@ const OMP_LEGION_TOOL_DESCRIPTION_BEFORE_STOP_TASK =
   "HANDOFF_STALE_ENTRY (this completion is of a phase entry behind the one your role's phases row names, because the phase was entered " +
   "again while your turn ran, and nothing was recorded. End this turn without completing. The task of the entry the phase is on is owed to " +
   "this claim, and the daemon sends it by itself. That task is work of its own: do what it asks at the head it names and complete it with a " +
-  "handoff of its own, never this completion's record, commit or verdict), the implementer's completion of implementing with no open " +
+  "handoff of its own, never this completion's record or commit), the implementer's completion of implementing with no open " +
   "pull request on `legion/<issue>` and none recorded " +
   "merged (HANDOFF_NO_PULL_REQUEST: open it; one naming a closed pull request is the architect's to decide); a refused completion changed " +
   "nothing, so fix what it names and complete again. " +
@@ -246,6 +248,8 @@ const OMP_LEGION_TOOL_DESCRIPTION_BEFORE_STOP_TASK =
   "job finishes after you answer, commit and push what it made. Then call ready_for_update again with the same round. " +
   "The call ends no phase. The daemon holds your next task until your process comes back on the new pod, in this same session. " +
   "request_backward_move returns an issue to an earlier phase (`to`, `reason`). A phase worker moves its own issue. " +
+  "The daemon refuses the tester's move out of testing (BACKWARD_REFUSED), since a testing step ends by its checks' states: the tester " +
+  "records each check's result with `dispatch result`, a fail with its evidence for a check it cannot verify, and completes. " +
   "The architect that owns an issue in accepting moves it, named by `issue`, back to implementing or testing. That move " +
   "counts a review round. " +
   "review_verdict is the reviewer's alone: when the head of the pull request moves while its issue stands past its review " +
@@ -1088,10 +1092,10 @@ test("read_release_records reads the window with this session's claim, and repor
   });
 });
 
-// Every role reads one description, and the daemon accepts the tester's two words from the tester
-// and the reviewer's two from the reviewer alone (VERDICT_ROLE_FORBIDDEN,
-// REVIEWER_VERDICT_REQUIRED): it may not leave a role to infer from its own instructions which
-// word is its own.
+// Every role reads one description, and the daemon takes the reviewer's two words from the
+// reviewer alone (REVIEWER_VERDICT_REQUIRED) and no verdict on any other phase completion
+// (VERDICT_NOT_TAKEN): it may not leave a role to infer from its own instructions which word is
+// its own, or that its phase completion reports one.
 test("the legion tool's description says who sends which verdict word", () => {
   const tool = createLegionTool({
     pi,
@@ -1102,11 +1106,14 @@ test("the legion tool's description says who sends which verdict word", () => {
     handoffReport: noHandoffReport,
     branchHead: noBranchHead,
     resolveDocument: noDocumentLookup,
-    session: () => claimSession("reviewer"),
+    session: () => claimSession("tester"),
   });
   expect(tool.description).toContain(
-    "`verdict` on a phase completion is the tester's pass|fail and the reviewer's approve|changes"
+    "`verdict` on a phase completion is the reviewer's alone, approve|changes"
   );
+  expect(tool.description).toContain("`verdict` is pass|pending|fail on a production check report");
+  expect(tool.description).toContain("Every other phase completion carries no verdict");
+  expect(tool.description).not.toContain("tester's pass|fail");
   expect(tool.description).not.toContain("from the tester alone");
   expect(tool.description).not.toContain("when your role's instructions require one");
 });
@@ -1556,17 +1563,17 @@ test("handoff_complete finds the phase's handoff record and the pushed tip, post
   expect(completed).toEqual(["ses_208"]);
 
   // A role that does not work the issue's phase reports its own newest record of the phase it
-  // left: the tester at implementing its test record and the head it names, with the verdict as
-  // given. A role whose left phase writes no record reports the commit the workspace stands on and
+  // left: the tester at implementing its test record and the head it names, with no verdict. A
+  // role whose left phase writes no record reports the commit the workspace stands on and
   // no record: the merger, and a sub-architect, which leaves no phase, each posting @- (the daemon
   // then refuses the sub-architect's, ACCEPTANCE_IS_SIGN_OFF; this stand-in daemon records it).
-  await run(claimSession("tester"), { op: "handoff_complete", summary: "Red.", verdict: "fail" });
+  await run(claimSession("tester"), { op: "handoff_complete", summary: "Red." });
   expect(calls.at(-1)).toEqual([
     "handoffComplete",
     {
       grantId: "grant-208",
       summary: "Red.",
-      verdict: "fail",
+      verdict: "",
       commit: TIP,
       handoffId: RECORD.id,
       handoffVersion: RECORD.version,
@@ -1614,9 +1621,25 @@ test("handoff_complete finds the phase's handoff record and the pushed tip, post
   expect(calls).toHaveLength(before);
   expect(completed).toHaveLength(4);
 
-  // `pending` is a production check's verdict: on a phase completion it is refused once the record
-  // says the completion is a phase's, with nothing minted or posted.
-  const pendingOnPhase = await run(claimSession("tester"), {
+  // A verdict on a phase completion is the reviewer's alone: any other role's is refused once the
+  // record says the completion is a phase's, and so is the reviewer's pending, a production check
+  // report's word, with nothing minted or posted.
+  for (const verdict of ["pass", "pending"]) {
+    const verdictOnPhase = await run(claimSession("tester"), {
+      op: "handoff_complete",
+      summary: "Tested.",
+      verdict,
+    });
+    expect(verdictOnPhase.isError).toBe(true);
+    expect(verdictOnPhase.content).toEqual([
+      {
+        type: "text",
+        text: "handoff_complete carries no verdict on a phase completion but the reviewer's: Dispatch's check states decide the testing phase",
+      },
+    ]);
+    expect(calls.at(-1)).toEqual(["record", { issue: "LEGION-208" }]);
+  }
+  const pendingOnPhase = await run(claimSession("reviewer"), {
     op: "handoff_complete",
     summary: "Waiting on the deploy.",
     verdict: "pending",
@@ -1625,7 +1648,7 @@ test("handoff_complete finds the phase's handoff record and the pushed tip, post
   expect(pendingOnPhase.content).toEqual([
     {
       type: "text",
-      text: "handoff_complete's verdict on a phase completion is the tester's pass or fail or the reviewer's approve or changes; pending is a production check's",
+      text: "handoff_complete's verdict on the reviewer's completion is approve or changes; pending is a production check's",
     },
   ]);
   expect(calls.at(-1)).toEqual(["record", { issue: "LEGION-208" }]);
@@ -1708,17 +1731,7 @@ test("the planner, the tester and the reviewer post their phase's handoff record
       branchHead: noBranchHead,
       resolveDocument: noDocumentLookup,
       session: () => claimSession(role),
-    }).execute(
-      "",
-      {
-        op: "handoff_complete",
-        summary: "Done.",
-        ...(role === "tester" ? { verdict: "pass" } : {}),
-      },
-      undefined,
-      undefined,
-      context()
-    );
+    }).execute("", { op: "handoff_complete", summary: "Done." }, undefined, undefined, context());
     expect(result.isError).toBeUndefined();
     expect(reads).toEqual([`LEGION-208 ${word}`]);
     expect(calls.at(-1)).toEqual([
@@ -1726,7 +1739,7 @@ test("the planner, the tester and the reviewer post their phase's handoff record
       {
         grantId: "grant-208",
         summary: "Done.",
-        verdict: role === "tester" ? "pass" : "",
+        verdict: "",
         commit: TIP,
         handoffId: RECORD.id,
         handoffVersion: RECORD.version,
@@ -1816,17 +1829,7 @@ test("a completion once the issue moved on posts the role's own newest record of
       branchHead: noBranchHead,
       resolveDocument: noDocumentLookup,
       session: () => claimSession(role, issue),
-    }).execute(
-      "",
-      {
-        op: "handoff_complete",
-        summary: "Done.",
-        ...(role === "tester" ? { verdict: "pass" } : {}),
-      },
-      undefined,
-      undefined,
-      context()
-    );
+    }).execute("", { op: "handoff_complete", summary: "Done." }, undefined, undefined, context());
     expect(result.isError).toBeUndefined();
     expect(reads).toEqual([...read]);
     expect(calls.at(-1)).toEqual([
@@ -1834,7 +1837,7 @@ test("a completion once the issue moved on posts the role's own newest record of
       {
         grantId: "grant-208",
         summary: "Done.",
-        verdict: role === "tester" ? "pass" : "",
+        verdict: "",
         ...report,
       },
     ]);
@@ -1927,7 +1930,7 @@ test("a tester with no record on a held issue posts @-, and the daemon's answer 
     session: () => claimSession("tester"),
   }).execute(
     "",
-    { op: "handoff_complete", summary: "Tests pass.", verdict: "pass" },
+    { op: "handoff_complete", summary: "Tests pass." },
     undefined,
     undefined,
     context()
@@ -1935,7 +1938,7 @@ test("a tester with no record on a held issue posts @-, and the daemon's answer 
   expect(reads).toEqual(["LEGION-208 test"]);
   expect(calls.at(-1)).toEqual([
     "handoffComplete",
-    { grantId: "grant-208", summary: "Tests pass.", verdict: "pass", commit: STANDING },
+    { grantId: "grant-208", summary: "Tests pass.", verdict: "", commit: STANDING },
   ]);
   expect(result).toMatchObject({
     isError: true,

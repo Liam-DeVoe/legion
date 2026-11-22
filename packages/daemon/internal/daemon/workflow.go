@@ -130,11 +130,15 @@ type workflowRuntime struct {
 	// retry does not hold it again (holdForCatchUp). The boot alone writes it, from its one
 	// readiness goroutine.
 	caughtUp map[string]struct{}
-	// catchUpRootTimeout bounds the boot's catch-up of one root; zero means bootTimeout. A test
-	// shortens it.
+	// checkStatesCaughtUp names each issue the boot's catch-up of check states finished, caught up
+	// or passed over, so a retry of that catch-up resumes after it rather than reading its log
+	// again (catchUpCheckStates). The boot alone writes it, from its one readiness goroutine.
+	checkStatesCaughtUp map[string]struct{}
+	// catchUpRootTimeout bounds each attempt of a boot catch-up of one issue, a root's or an
+	// issue's check states (readWithRetries); zero means bootTimeout. A test shortens it.
 	catchUpRootTimeout time.Duration
-	// catchUpRetryDelay is the wait between two reads of one root Dispatch refused with an error it
-	// may stop giving; zero means catchUpRetryDelay's default. A test shortens it.
+	// catchUpRetryDelay is the wait between two reads of one issue Dispatch refused with an error
+	// it may stop giving; zero means catchUpRetryDelay's default. A test shortens it.
 	catchUpRetryDelay time.Duration
 	// holdPollInterval is pollHoldRelease's ticker period; zero means the production default. A
 	// test shortens it to bound how long a release takes to observe.

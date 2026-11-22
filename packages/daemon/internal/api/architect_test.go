@@ -103,6 +103,15 @@ type statusRecorder struct {
 	// reads is every issue and document read, in order: `issue:<key>`, `approval:<id>` and
 	// `plan:<id>@<version>`.
 	reads []string
+	// requests is every request the fake answered, in order, each as the route Dispatch serves it
+	// (`GET /api/v1/handoffs/<id>`), whatever it answered: the log of what the daemon asked of
+	// Dispatch, where the fake keeps nothing of what it was told.
+	requests []string
+}
+
+// asked logs one request the fake answers (requests).
+func (r *statusRecorder) asked(format string, args ...any) {
+	r.requests = append(r.requests, fmt.Sprintf(format, args...))
 }
 
 // planVersion keys statusRecorder.plans: one version of one document.
@@ -126,7 +135,8 @@ func (r *statusRecorder) PlanDocument(_ context.Context, artifactID string, vers
 
 // ListIssues answers Dispatch's project listing: every issue the fake knows, in key order, as the
 // listing summarizes it.
-func (r *statusRecorder) ListIssues(context.Context, string, []string) ([]dispatch.IssueSummary, error) {
+func (r *statusRecorder) ListIssues(_ context.Context, project string, _ []string) ([]dispatch.IssueSummary, error) {
+	r.asked("GET /api/v1/issues?project=%s", project)
 	r.reads = append(r.reads, "listing")
 	if r.listFails != nil {
 		return nil, r.listFails
@@ -147,6 +157,7 @@ func (r *statusRecorder) ListIssues(context.Context, string, []string) ([]dispat
 }
 
 func (r *statusRecorder) GetIssue(_ context.Context, key string) (dispatch.Issue, error) {
+	r.asked("GET /api/v1/issues/%s", key)
 	r.reads = append(r.reads, "issue:"+key)
 	if err, fails := r.readFails[key]; fails {
 		return dispatch.Issue{}, err
@@ -162,6 +173,7 @@ func (r *statusRecorder) GetIssue(_ context.Context, key string) (dispatch.Issue
 // by the one event every status write makes, the issue's own status included. The fake keeps the
 // written issue, so a later read sees the write.
 func (r *statusRecorder) SetStatus(_ context.Context, issue, status string) (dispatch.Issue, error) {
+	r.asked("PATCH /api/v1/issues/%s status=%s", issue, status)
 	if r.err != nil {
 		return dispatch.Issue{}, r.err
 	}
@@ -181,24 +193,47 @@ func (r *statusRecorder) SetStatus(_ context.Context, issue, status string) (dis
 
 // SetStatusAt is the fenced write, which no architect route makes: the daemon's own queued writes
 // take it, and they run in the outbox.
-func (r *statusRecorder) SetStatusAt(context.Context, dispatch.Issue, string) (dispatch.Issue, error) {
+func (r *statusRecorder) SetStatusAt(_ context.Context, issue dispatch.Issue, status string) (dispatch.Issue, error) {
+	r.asked("PATCH /api/v1/issues/%s status=%s at %d", issue.Key, status, issue.LastSeq)
 	return dispatch.Issue{}, errors.New("the architect routes write no status at a sequence")
 }
 
-func (r *statusRecorder) HandOver(context.Context, dispatch.Issue, string) error {
+func (r *statusRecorder) HandOver(_ context.Context, issue dispatch.Issue, status string) error {
+	r.asked("PATCH /api/v1/issues/%s hand over status=%s", issue.Key, status)
 	return errors.New("the architect routes hand nothing over")
 }
 
-func (r *statusRecorder) ReleaseClaim(context.Context, string) error {
+func (r *statusRecorder) ReleaseClaim(_ context.Context, key string) error {
+	r.asked("DELETE /api/v1/issues/%s/claim", key)
 	return errors.New("the architect routes release no claim")
 }
 
-func (r *statusRecorder) PostMessage(context.Context, string, string) error { return nil }
-func (r *statusRecorder) MessageBodiesSince(context.Context, string, time.Time) ([]string, error) {
+func (r *statusRecorder) PostMessage(_ context.Context, key, _ string) error {
+	r.asked("POST /api/v1/issues/%s/messages", key)
+	return nil
+}
+func (r *statusRecorder) MessageBodiesSince(_ context.Context, key string, _ time.Time) ([]string, error) {
+	r.asked("GET /api/v1/issues/%s/messages", key)
 	return nil, nil
 }
-func (r *statusRecorder) EventsAfter(context.Context, string, int64) ([]json.RawMessage, error) {
+func (r *statusRecorder) EventsAfter(_ context.Context, key string, after int64) ([]json.RawMessage, error) {
+	r.asked("GET /api/v1/issues/%s/events?after=%d", key, after)
 	return nil, nil
+}
+
+// ArtifactSlugs, UploadArtifact and PutRoleHolders answer as noArtifacts does, logging the
+// request.
+func (r *statusRecorder) ArtifactSlugs(ctx context.Context, key string) ([]string, error) {
+	r.asked("GET /api/v1/issues/%s/artifacts", key)
+	return noArtifacts{}.ArtifactSlugs(ctx, key)
+}
+func (r *statusRecorder) UploadArtifact(ctx context.Context, key, name, content string) (string, error) {
+	r.asked("POST /api/v1/issues/%s/artifacts %s", key, name)
+	return noArtifacts{}.UploadArtifact(ctx, key, name, content)
+}
+func (r *statusRecorder) PutRoleHolders(ctx context.Context, key string, holders []dispatch.RoleHolder) error {
+	r.asked("PUT /api/v1/issues/%s/role-holders", key)
+	return noArtifacts{}.PutRoleHolders(ctx, key, holders)
 }
 
 // Approval answers Dispatch's document read. A document this fake knows that the case under test
@@ -206,6 +241,7 @@ func (r *statusRecorder) EventsAfter(context.Context, string, int64) ([]json.Raw
 // the design gate binds to and what nearly every registration here registers; a case that drives
 // another step says so by setting the role or the slug it gave the document.
 func (r *statusRecorder) Approval(_ context.Context, artifactID string) (dispatch.Approval, error) {
+	r.asked("GET /api/v1/artifacts/%s", artifactID)
 	r.reads = append(r.reads, "approval:"+artifactID)
 	issue, ok := r.documents[artifactID]
 	if !ok {
@@ -226,6 +262,7 @@ func (r *statusRecorder) Approval(_ context.Context, artifactID string) (dispatc
 }
 
 func (r *statusRecorder) Handoff(_ context.Context, id string) (dispatch.Handoff, error) {
+	r.asked("GET /api/v1/handoffs/%s", id)
 	if r.handoffErr != nil {
 		return dispatch.Handoff{}, r.handoffErr
 	}
@@ -236,24 +273,30 @@ func (r *statusRecorder) Handoff(_ context.Context, id string) (dispatch.Handoff
 	return handoff, nil
 }
 
-func (r *statusRecorder) WebhookAppInstalled(context.Context, string) (bool, error) {
+func (r *statusRecorder) WebhookAppInstalled(_ context.Context, repo string) (bool, error) {
+	r.asked("GET /api/v1/github/installations/%s", repo)
 	return true, nil
 }
 
-func (r *statusRecorder) PutGatedSteps(context.Context, string, []string) error {
+func (r *statusRecorder) PutGatedSteps(_ context.Context, project string, _ []string) error {
+	r.asked("PUT /api/v1/projects/%s/gated-steps", project)
 	return nil
 }
 
-func (r *statusRecorder) PutStep(context.Context, string, string, dispatch.StepWrite) error {
+func (r *statusRecorder) PutStep(_ context.Context, key, id string, _ dispatch.StepWrite) error {
+	r.asked("PUT /api/v1/issues/%s/steps/%s", key, id)
 	return nil
 }
-func (r *statusRecorder) PutStepRating(context.Context, string, string, dispatch.StepWrite, dispatch.PlanRating) error {
+func (r *statusRecorder) PutStepRating(_ context.Context, key, id string, _ dispatch.StepWrite, _ dispatch.PlanRating) error {
+	r.asked("PUT /api/v1/issues/%s/steps/%s/rating", key, id)
 	return nil
 }
-func (r *statusRecorder) PutPlan(context.Context, string, string, dispatch.PlanWrite) error {
+func (r *statusRecorder) PutPlan(_ context.Context, key, id string, _ dispatch.PlanWrite) error {
+	r.asked("PUT /api/v1/issues/%s/plans/%s", key, id)
 	return nil
 }
-func (r *statusRecorder) PutDesignGates(context.Context, string, []dispatch.DesignGateDocument) error {
+func (r *statusRecorder) PutDesignGates(_ context.Context, key string, _ []dispatch.DesignGateDocument) error {
+	r.asked("PUT /api/v1/issues/%s/design-gates", key)
 	return nil
 }
 

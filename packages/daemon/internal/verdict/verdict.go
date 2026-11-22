@@ -66,6 +66,15 @@ type Tester struct {
 	Commit  string
 }
 
+// NoTestingPass is the tester's result that every reader of a Legion head takes until legion-verdict
+// decides a testing step by Dispatch's check states at the head: no pass. The record keeps no
+// tester's verdict since store migration 20261121074614_phase_verdict_gone dropped
+// phases.verdict (a tester's completion carries none, and the states decide the testing phase), so
+// no testing step reads as passed at any head, no Legion head concludes success, and no reviewer's
+// approve sends its issue back to testing. The writer (the daemon's legionInputs) and the
+// workflow's carry (uncarried) read it in place of the tester's row.
+var NoTestingPass = Tester{}
+
 // Reviewer is a Legion issue's reviewer's verdict: its word, the commit it reviewed, and the commit
 // of the tester's pass it carries to that commit ("" for none).
 type Reviewer struct {

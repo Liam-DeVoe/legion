@@ -1,0 +1,9 @@
+kind: Changed
+body: |-
+  `LegionHandoffCompleteRequest` says what the daemon takes: `verdict` is `approve` or `changes` on
+  the reviewer's completion, `pass`, `pending` or `fail` on a production check report, and the
+  empty string on every other phase completion, which the daemon refuses `VERDICT_NOT_TAKEN` when
+  it names one. `returnTo`, the tester's alone, is carried only beside the empty verdict.
+time: 2026-11-21T13:48:28Z
+custom:
+    Issue: check-states-tool

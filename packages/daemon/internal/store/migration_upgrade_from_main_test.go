@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/store/migrations"
@@ -67,8 +68,9 @@ import (
 // dispatch://INFRA-1997's commit statuses of the checked head (20261117112334) are named here too:
 // that version stands above every other of this list but dispatch://INFRA-4109's 20261117200337,
 // dispatch://INFRA-4374's 20261119003157, dispatch://INFRA-3178's 20261120012547,
-// dispatch://INFRA-4108's 20261120042902, dispatch://INFRA-4729's 20261120055717 and the verdict
-// records (20261120185521), so an upgrade of a database main migrated applies it just before them.
+// dispatch://INFRA-4108's 20261120042902, dispatch://INFRA-4729's 20261120055717, the check
+// states' two (20261121065041, 20261121074614) and the verdict records (20261122045825), so an
+// upgrade of a database main migrated applies it just before them.
 // It adds pull_requests.statuses at its default, the empty list, and it touches no
 // outbox_kind_check.
 // The reviewer's reviewed commit (20261116234034, `phases.reviewed_head`) is named here for the
@@ -116,11 +118,19 @@ import (
 // 20261120055717 and the verdict records'; it adds claims.agent_resume_generation at its default,
 // 0, on every row it finds, and touches no outbox_kind_check, so it needs no row of its own here.
 // dispatch://INFRA-4729's sequence of each value of the copy of Dispatch's issues (20261120055717)
-// is applied after all of these but the verdict records and touches no outbox_kind_check: it adds
-// columns to dispatch_issues at their defaults, an index on its parent, and a refill mark for each
-// project the copy holds rows of.
-// The verdict records (20261120185521) stand above every other version of this list: they create
-// five tables and their indexes and touch no outbox_kind_check, so an upgrade of a database main
+// is applied after all of these but the check states, the phase verdict's removal and the verdict
+// records, and touches no outbox_kind_check: it adds columns to dispatch_issues at their defaults,
+// an index on its parent, and a refill mark for each project the copy holds rows of.
+// The check states the daemon keeps of Dispatch's check.state_changed (20261121065041) are applied
+// after all of these but the phase verdict's removal and the verdict records, and touch no
+// outbox_kind_check: the migration creates check_states, check_state_sets and
+// check_state_serials, empty, and adds issues.check_states_seq at 0.
+// The phase verdict's removal (20261121074614) is applied after it and touches no
+// outbox_kind_check: it drops phases.verdict, adds phases.states_serial at 0, and takes the key
+// verdict out of each queued notice.
+// The verdict records (20261122045825) stand above every other version of this list, the check
+// states' two included (TestTheVerdictRecordsStandAboveEveryOtherMigration): they create five
+// tables and their indexes and touch no outbox_kind_check, so an upgrade of a database main
 // migrated applies them last and they need no row of their own here (verdicts_test.go writes and
 // reads each table).
 var thisBranchsMigrations = []int{
@@ -132,8 +142,8 @@ var thisBranchsMigrations = []int{
 	20261113090512, 20261113110610, 20261113181500, 20261113182000, 20261114020537, 20261114031356,
 	20261114061900, 20261115194357, 20261116144907, 20261116165926, 20261116234034, 20261117000528,
 	20261117004117, 20261117023932, 20261117034837, 20261117064152, 20261117112334, 20261117200337,
-	20261119003157, 20261120012547, 20261120042902, 20261120055717,
-	20261120185521,
+	20261119003157, 20261120012547, 20261120042902, 20261120055717, 20261121065041, 20261121074614,
+	20261122045825,
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its
@@ -152,8 +162,10 @@ var thisBranchsMigrations = []int{
 // 20261117200337, dispatch://INFRA-4374's 20261119003157, dispatch://INFRA-3178's 20261120012547,
 // dispatch://INFRA-4108's 20261120042902 and dispatch://INFRA-4729's 20261120055717. That is why
 // the loop below holds the list rather than counting it, so that a version added above any of them
-// is named here rather than read as main's. The verdict records' 20261120185521 stands above all
-// of them, and the list names it too.
+// is named here rather than read as main's. The check states' 20261121065041 and the phase
+// verdict's removal, 20261121074614, which came after them, stand above main's newest too, and are
+// named in that list with the rest. The verdict records' 20261122045825 stands above all of them,
+// and the list names it too.
 const mainsNewestMigration = 20261111212544
 
 // mainsKindCheck is the constraint main's own 20261110235320 wrote, which is what a database main
@@ -365,5 +377,33 @@ func TestADatabaseTodaysMainMigratedTakesTheClaimSessionsMigrationBelowItsNewest
 	}
 	if version, err := store.SchemaVersion(ctx); err != nil || version != newest {
 		t.Errorf("after the upgrade the store reports version %d (%v), want the newest embedded, %d", version, err, newest)
+	}
+}
+
+// The verdict records are this branch's own, written on top of the changes it carries, the check
+// states' two among them (20261121065041 and 20261121074614), so their version stands above every
+// other embedded version: an upgrade of a database any of those changes migrated applies them
+// last, as thisBranchsMigrations' comment says. The migration's first name, 20261120185521,
+// stood below the check states' two, which came after it; a name that falls below a version of a
+// change it is built on again fails here, naming the file to rename.
+func TestTheVerdictRecordsStandAboveEveryOtherMigration(t *testing.T) {
+	all, err := migrations.All()
+	if err != nil {
+		t.Fatalf("read the embedded migrations: %v", err)
+	}
+	var verdicts *migrations.Migration
+	for i := range all {
+		if strings.HasSuffix(all[i].Name, "_verdicts.up.sql") {
+			verdicts = &all[i]
+		}
+	}
+	if verdicts == nil {
+		t.Fatalf("the embedded set has no verdict records migration (a file named *_verdicts.up.sql), so this test holds nothing")
+	}
+	for _, migration := range all {
+		if migration.Version > verdicts.Version {
+			t.Errorf("%s stands below %s: rename %s with git mv to a timestamp after %d, so the verdict records stand above every migration this branch is built on",
+				verdicts.Name, migration.Name, verdicts.Name, migration.Version)
+		}
 	}
 }

@@ -895,7 +895,7 @@ primary_issue() {
   pass
 
   begin primary-tester-pass
-  send_agent "$root_issue" tester "Stage 3 proof test operation: inspect the implementer's actual one-file change and pull request #$pr_number, run a focused observable check, record the required test handoff with verdict pass, then call the legion tool's handoff_complete with verdict pass."
+  send_agent "$root_issue" tester "Stage 3 proof test operation: inspect the implementer's actual one-file change and pull request #$pr_number, run a focused observable check, record the required test handoff, then call the legion tool's handoff_complete with no verdict."
   wait_for_phase "$root_issue" reviewing
   assert_handoff_record "$root_issue" tester testing 0
   wait_for_worker "$root_issue" reviewer
@@ -960,7 +960,7 @@ primary_issue() {
     assert_round_handoff "$root_issue" "$round"
     assert_handoff_record "$root_issue" implementer implementing "$round"
     wait_for_worker "$root_issue" tester
-    send_agent "$root_issue" tester "Stage 3 proof retest round $round: verify the correction on pull request #$pr_number, write the tester handoff with verdict pass, and complete the phase."
+    send_agent "$root_issue" tester "Stage 3 proof retest round $round: verify the correction on pull request #$pr_number, write the tester handoff, and complete the phase with no verdict."
     wait_for_phase "$root_issue" reviewing
     assert_handoff_record "$root_issue" tester testing "$round"
     wait_for_worker "$root_issue" reviewer

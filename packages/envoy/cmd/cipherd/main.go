@@ -508,7 +508,7 @@ func main() {
 	// project an operator's entry maps a pod's or a machine's account to from the same entries
 	// the exchange mints from (exchange.Set.MappedProjects), so a token and a release cannot
 	// disagree on a credential's project.
-	exchangePolicy, err := exchange.NewSet(cfg.ExchangeAccounts, cfg.ExchangeReadAccounts, cfg.ExchangeWorkflows, cfg.ExchangeGoogleAccounts, cfg.SignIn.Domain)
+	exchangePolicy, err := exchange.NewSet(cfg.ExchangeAccounts, cfg.ExchangeReadAccounts, cfg.ExchangeWorkflows, cfg.ExchangeResultWorkflows, cfg.ExchangeGoogleAccounts, cfg.SignIn.Domain)
 	fatal(err)
 	// The broker's one read of Dispatch, where BROKER_JUDGE_DISPATCH_URL names one: the request
 	// machine and the model judge share it, its token cache and its client.
@@ -585,7 +585,7 @@ func main() {
 		slog.Info("token exchange", "state", "unconfigured", "detail", "no subject token issuer is set, so no pod, workflow run or machine exchanges")
 	} else {
 		slog.Info("token exchange", "state", "on", "kubernetes", cfg.ExchangeK8sAudience != "", "github", cfg.ExchangeGitHubIssuer != "",
-			"accounts", len(cfg.ExchangeAccounts), "read_accounts", len(cfg.ExchangeReadAccounts), "workflows", len(cfg.ExchangeWorkflows), "machines", len(cfg.ExchangeGoogleAccounts))
+			"accounts", len(cfg.ExchangeAccounts), "read_accounts", len(cfg.ExchangeReadAccounts), "workflows", len(cfg.ExchangeWorkflows), "result_workflows", len(cfg.ExchangeResultWorkflows), "machines", len(cfg.ExchangeGoogleAccounts))
 	}
 	logPodRegistrars(cfg)
 	// Every claim on a session name, the exchange's and an enrollment's alike, is BindSession's,

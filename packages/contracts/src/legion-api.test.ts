@@ -323,7 +323,7 @@ const schemas: Record<string, z.ZodType> = {
   // case "the rated completion the daemon reads parses under the contract's names" below.
   "handoff-complete-request-rated.json": LegionHandoffCompleteRequest,
   // `api.HandoffCompleteRequest` as the reviewer's completion of reviewing sends it (contract
-  // 200): its verdict approve on the head its record names, carrying the tester's pass from
+  // 225): its verdict approve on the head its record names, carrying the tester's pass from
   // `testedCommit`. Written by `internal/api`'s TestReviewerVerdictBodiesGolden, with the two
   // below: the reviewer's verdict past review (`api.ReviewVerdictRequest`) and its empty answer.
   "handoff-complete-request-reviewer.json": LegionHandoffCompleteRequest,
@@ -1225,8 +1225,9 @@ test("the state golden carries the rounds waiting on GitHub's merge state", () =
 });
 
 // The checking role's report carries no commit (the look pushed nothing) and a verdict the
-// daemon holds to pass, pending or fail; a phase completion keeps its commit. A pending report
-// names when the agent asks to be woken for its next look, an offset timestamp.
+// daemon holds to pass, pending or fail; a phase completion keeps its commit and, from contract
+// 206, carries the empty verdict. A pending report names when the agent asks to be woken for its
+// next look, an offset timestamp.
 test("a check report is a completion without a commit", () => {
   const report = { grantId: "grant-207", summary: "Driven in production." };
   for (const verdict of ["pass", "pending", "fail"]) {
@@ -1281,9 +1282,10 @@ test("wakeAt refuses a time with no seconds, as the daemon's decode does", () =>
   }
 });
 
-// A file-backed phase's completion names the Dispatch handoff record the worker wrote: the
-// planner, tester and reviewer report it alone, the implementer with the commit it pushed. A record
-// is named by a non-empty id and a positive version.
+// A file-backed phase's completion names the Dispatch handoff record the worker wrote, and
+// carries the empty verdict: the planner, tester and reviewer report the record alone, the
+// implementer with the commit it pushed. A record is named by a non-empty id and a positive
+// version.
 test("a phase completion names its handoff record", () => {
   const planner = {
     grantId: "grant-208",
@@ -1369,20 +1371,21 @@ test("the request schema takes exactly the ratings the daemon takes", () => {
   expect(parted).toEqual([]);
 });
 
-// Contract 219: a step that failed names the step its task returns to, `returnTo`, by its place in
-// the task, 1 for its first. Only a completion with the verdict fail names one
-// (RETURN_TO_NEEDS_FAIL), and a place below 1 is none (INVALID_RETURN_TO). A completion that
-// names none stays what it was.
-test("a failed step's completion names the step its task returns to", () => {
-  const failed = { grantId: "g", summary: "s", verdict: "fail", returnTo: 2 };
-  expect(LegionHandoffCompleteRequest.parse(failed)).toEqual(failed);
-  expect(LegionHandoffCompleteRequest.safeParse({ ...failed, returnTo: 1 }).success).toBeTrue();
+// Contract 219: a tester's completion names the step its task returns to, should the check states
+// at the head it tested fail its step, `returnTo`, by its place in the task, 1 for its first, and a
+// place below 1 is none (INVALID_RETURN_TO). The tester's completion carries no verdict, so a
+// completion naming a verdict, the reviewer's or a production check's report, names no returnTo
+// (RETURN_TO_NEEDS_FAIL). A completion that names none stays what it was.
+test("a tester's completion names the step its task returns to", () => {
+  const tested = { grantId: "g", summary: "s", verdict: "", commit: "c".repeat(40), returnTo: 2 };
+  expect(LegionHandoffCompleteRequest.parse(tested)).toEqual(tested);
+  expect(LegionHandoffCompleteRequest.safeParse({ ...tested, returnTo: 1 }).success).toBeTrue();
   for (const returnTo of [0, -1, 1.5]) {
-    expect(LegionHandoffCompleteRequest.safeParse({ ...failed, returnTo }).success).toBeFalse();
+    expect(LegionHandoffCompleteRequest.safeParse({ ...tested, returnTo }).success).toBeFalse();
   }
-  for (const verdict of ["pass", "pending", ""]) {
-    expect(LegionHandoffCompleteRequest.safeParse({ ...failed, verdict }).success).toBeFalse();
-    const { returnTo: _, ...without } = { ...failed, verdict };
+  for (const verdict of ["pass", "pending", "fail", "approve", "changes"]) {
+    expect(LegionHandoffCompleteRequest.safeParse({ ...tested, verdict }).success).toBeFalse();
+    const { returnTo: _, ...without } = { ...tested, verdict };
     expect(LegionHandoffCompleteRequest.safeParse(without).success).toBeTrue();
   }
 });

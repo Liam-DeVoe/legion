@@ -22,14 +22,14 @@ import (
 
 // testerPassAt is LEGION-208's tester row as its pass at commit leaves it.
 func testerPassAt(commit string) record.PhaseRow {
-	return record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleTester, Claim: "test-claim", Verdict: "pass", HandoffCommit: commit,
+	return record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleTester, Claim: "test-claim", HandoffCommit: commit,
 		HandoffRecord: "test-1", HandoffVersion: 1, Summary: "tested"}
 }
 
 // reviewedRow is LEGION-208's reviewer row as the reviewer's approve of headOne, carrying nothing,
 // left it when it ended the round under reviewClaim.
 func reviewedRow() record.PhaseRow {
-	return record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: reviewClaim, Verdict: "approve", HandoffCommit: headOne,
+	return record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: reviewClaim, HandoffCommit: headOne,
 		HandoffRecord: "review-1", HandoffVersion: 1, Summary: "reviewed", CompletedAt: time.Date(2026, 9, 22, 23, 0, 0, 0, time.UTC),
 		Decision: &record.ReviewDecision{State: "approved", Body: "reviewed", Head: headOne}}
 }
@@ -80,7 +80,7 @@ func recordedVerdict(t *testing.T, pool *pgxpool.Pool, head string) (store.Verdi
 
 // handoffFields is what of a phase row a completion writes and a verdict past review does not.
 func handoffFields(row record.PhaseRow) []any {
-	return []any{row.Claim, row.HandoffCommit, row.HandoffRecord, row.HandoffVersion, row.Verdict, row.Summary, row.CompletedAt.UTC()}
+	return []any{row.Claim, row.HandoffCommit, row.HandoffRecord, row.HandoffVersion, row.Summary, row.CompletedAt.UTC()}
 }
 
 // The review-verdict route queues one intake.ReviewVerdict (api's reviewVerdict), and Engine.Apply
@@ -149,7 +149,7 @@ func TestAReviewVerdictPastReviewMovesTheIssueOnlyWhereItCarriesNoPass(t *testin
 					if got := issuePhase(t, pool); got != stand.at {
 						t.Fatalf("after the verdict the issue is in %s, want %s: a verdict past review moves no phase", got, stand.at)
 					}
-					if tester.Verdict != "pass" || tester.HandoffCommit != headOne {
+					if tester.HandoffCommit != headOne {
 						t.Fatalf("the tester's row = %+v, want its pass at %s kept", tester, headOne)
 					}
 					return
@@ -157,7 +157,7 @@ func TestAReviewVerdictPastReviewMovesTheIssueOnlyWhereItCarriesNoPass(t *testin
 				if got := issuePhase(t, pool); got != phase.Testing {
 					t.Fatalf("after the verdict the issue is in %s, want testing: the approve carries no tester's pass to %s", got, headTwo)
 				}
-				if tester.Verdict != "" || tester.HandoffCommit != "" {
+				if tester.HandoffCommit != "" {
 					t.Fatalf("the tester's row = %+v, want its pass cleared, so nothing writes success on %s", tester, headTwo)
 				}
 				task := startTask(t, pool, claim.RoleTester)
@@ -290,7 +290,7 @@ func TestAVerdictTakenWhileHeldIsAppliedWhenTheHoldEnds(t *testing.T) {
 				}
 				return
 			}
-			if tester := roleRow(t, pool, claim.RoleTester); tester.Verdict != "" || tester.HandoffCommit != "" {
+			if tester := roleRow(t, pool, claim.RoleTester); tester.HandoffCommit != "" {
 				t.Fatalf("the tester's row = %+v, want its pass cleared", tester)
 			}
 			if task := startTask(t, pool, claim.RoleTester); !strings.Contains(task, "test "+headTwo) {
@@ -362,7 +362,7 @@ func TestTheReviewersApproveInReviewingCarriesOnlyTheTestersRecordedPass(t *test
 			if tc.want != phase.Testing {
 				return
 			}
-			if tester := roleRow(t, pool, claim.RoleTester); tester.Verdict != "" {
+			if tester := roleRow(t, pool, claim.RoleTester); tester.HandoffCommit != "" {
 				t.Fatalf("the tester's row = %+v, want its pass cleared", tester)
 			}
 			if task := startTask(t, pool, claim.RoleTester); !strings.Contains(task, "test "+tc.head) {

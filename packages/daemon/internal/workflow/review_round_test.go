@@ -102,7 +102,7 @@ func TestEachTaskOfTheReviewerInReviewingEndsNamingItsEntry(t *testing.T) {
 			walk: func(t *testing.T, _ bool) (*pgxpool.Pool, string) {
 				pool, _, _ := reviewRoundOne(t)
 				return pool, "Continue root. Issue: LEGION-208. Phase: reviewing. Working copy: branch legion/LEGION-208. Handoff: test version 1 (dispatch handoff-read --issue LEGION-208 --phase test --version 1)." +
-					" Handoff commit: " + headOne + ". Tester's verdict: pass. Pull request: #42."
+					" Handoff commit: " + headOne + ". Pull request: #42."
 			},
 		},
 		{
@@ -115,7 +115,7 @@ func TestEachTaskOfTheReviewerInReviewingEndsNamingItsEntry(t *testing.T) {
 					}
 				}
 				return pool, "Continue root. Issue: LEGION-208. Phase: reviewing. Working copy: branch legion/LEGION-208. Handoff: test version 2 (dispatch handoff-read --issue LEGION-208 --phase test --version 2)." +
-					" Tester's verdict: pass. Pull request: #42."
+					" Handoff commit: " + headOne + ". Pull request: #42."
 			},
 		},
 		{
@@ -286,7 +286,7 @@ func reviewRoundTwoNaming(t *testing.T, noCommit bool) (*pgxpool.Pool, *Engine, 
 	if _, err := pool.Exec(context.Background(), "update phases set reviewed_head = '' where issue = 'LEGION-208' and role = 'reviewer'"); err != nil {
 		t.Fatalf("take the commit off the reviewer's row: %v", err)
 	}
-	backToReviewing(t, apply, 2)
+	backToReviewing(t, pool, apply, 2)
 	if got := issuePhase(t, pool); got != phase.Reviewing {
 		t.Fatalf("after the tester passed round 2 the issue is in %s, want reviewing", got)
 	}
@@ -433,7 +433,7 @@ func TestAReviewOfTheEntryTheBootsResumeNamesRecordsItsHead(t *testing.T) {
 	pool, engine, apply := reviewRoundOne(t)
 	apply("request-changes-1", reviewAt(1, "changes_requested", headOne))
 	mergesForward(t, pool, engine, headOne, headTwo, reviewTestedAt.Add(time.Hour))
-	backToReviewing(t, apply, 2)
+	backToReviewing(t, pool, apply, 2)
 	if got := reviewerRow(t, pool).ReviewedHead; got != headOne {
 		t.Fatalf("round 2's reviewer row reads the reviewed commit %q, want %s", got, headOne)
 	}
@@ -647,7 +647,7 @@ func TestAWokenReviewersReviewOfTheEntryItsWakeNamesMovesTheCommit(t *testing.T)
 	pool, engine, apply := reviewRoundOne(t)
 	apply("request-changes-1", reviewAt(1, "changes_requested", headOne))
 	mergesForward(t, pool, engine, headOne, headTwo, reviewTestedAt.Add(time.Hour))
-	backToReviewing(t, apply, 2)
+	backToReviewing(t, pool, apply, 2)
 	outboxRan(t, pool)
 	releasesTheReviewer(t, pool, engine)
 	wakes(t, pool, engine, claim.RoleReviewer, "ses-reviewer", headTwo, pods.WakeChecks)

@@ -5,6 +5,7 @@ import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { composeRolePrompt, DAEMON_MODULE, RIG_GH_TOKEN, workerPane } from "./daemon-pane";
+import { RIG_OWNER } from "./rig-world";
 
 // Every row below asks the daemon's own functions for a pane environment or a role's prompt, which
 // `go run` compiles and runs, so a host with no go runs none of them.
@@ -73,7 +74,7 @@ test.skipIf(skip)(
     expect(workerEnv).not.toHaveProperty("LEGION_JJ_PATH");
     expect(workerEnv).not.toHaveProperty("OMP_SESSION_EXCLUSIVE");
     const ghRoot = `${rig}/state/secrets/legion-skillsrig-lweval-1-tester-gh`;
-    const ghConfigDir = `${ghRoot}/skills-rig`;
+    const ghConfigDir = `${ghRoot}/${RIG_OWNER}`;
     expect(workerEnv).toMatchObject({
       GEMINI_API_KEY: GEMINI_KEY,
       OPENAI_API_KEY: OPENAI_KEY,
@@ -219,21 +220,26 @@ test.skipIf(skip)(
   600_000
 );
 
-// The rig's stand-in daemon serves a phase worker's routes alone, none of a tree architect's (its
-// design gate's among them), so the rig builds no pane prompt for one; `composeRolePrompt` below
-// composes that architect's prompt for a reader of it.
+// A tree's root architect's pane is told the design gate steps after its addressing, as the daemon
+// tells a deployment that gates no step ("Design gate steps: none."), in the prompt file the pane's
+// one system prompt argument names; `composeRolePrompt` below composes the prompt of a deployment
+// that leaves the gate unset.
 test.skipIf(skip)(
-  "refuses the pane prompt of a tree architect",
+  "gives a tree's root architect's pane the design gate steps of a deployment that gates none",
   () => {
-    expect(() =>
-      workerPane(
-        { rig, port: 13399, profile: "rig-profile" },
-        inherited,
-        { project: "skillsrig", issue: "LWEVAL-1", role: "architect" },
-        { daemonModule: DAEMON_MODULE, systemPrompt: true }
-      )
-    ).toThrow(
-      "a tree architect is also told its design gate policy, which the rig does not stand in for"
+    const pane = workerPane(
+      { rig, port: 13399, profile: "rig-profile" },
+      inherited,
+      { project: "skillsrig", issue: "LWEVAL-1", role: "architect" },
+      { daemonModule: DAEMON_MODULE, systemPrompt: true }
+    );
+    const promptFile = `${rig}/state/secrets/legion-skillsrig-lweval-1-architect-system-prompt.md`;
+    expect(pane.systemPromptArgument).toStartWith("--append-system-prompt ");
+    expect(pane.systemPromptArgument).toContain(promptFile);
+    const prompt = readFileSync(promptFile, "utf8");
+    expect(prompt.startsWith(promptPart("roles/architect-root.md"))).toBe(true);
+    expect(prompt).toMatch(
+      /\n\nLegion addressing: your role topic is [^\n]* Design gate steps: none\.$/
     );
   },
   600_000

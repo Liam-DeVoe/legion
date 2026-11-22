@@ -169,7 +169,7 @@ func TestLegionVerdictCarry(t *testing.T) {
 
 // reviewerApprovedCode is CAPTURE-1's reviewer row as its approve of code, which ended the round,
 // left it under the claim review-claim.
-var reviewerApprovedCode = record.PhaseRow{Issue: "CAPTURE-1", Role: claim.RoleReviewer, Claim: "review-claim", Verdict: "approve",
+var reviewerApprovedCode = record.PhaseRow{Issue: "CAPTURE-1", Role: claim.RoleReviewer, Claim: "review-claim",
 	HandoffCommit: "code", HandoffRecord: "review-1", HandoffVersion: 1, Summary: "reviewed",
 	Decision: &record.ReviewDecision{State: "approved", Body: "reviewed", Head: "code"}}
 

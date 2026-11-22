@@ -77,8 +77,8 @@ release under an open root gate, so the agent of its first step may already be r
 each requirement of that spec as a `requirement` block, and write the child's Verification
 document (`verification.md`) with it: one `check` block per thing that must be proved, each with
 `serves`, `surface`, `run`, `when` and `negative_control`, since a reviewer step approves only on
-this issue's own checks, your acceptance reads them, and the retro sends the issue back for one
-with no pass standing. A check carrying `ci_check` is CI's and takes no `run`
+this issue's own checks, and your acceptance and the retro read them too.
+A check carrying `ci_check` is CI's and takes no `run`
 (`skill://legion-architect/references/design-gate.md`). A child issue's spec is never gated: the
 architect above you reviews each version of this child's spec and Verification document instead
 (`skill://legion-architect/references/decomposition.md`, "Reviewing a child's spec"). So do not
@@ -147,7 +147,11 @@ Then accept with `sign_off`, which moves the child to retro, or send it back wit
 or `testing` where the task has a tester step, and `reason`).
 The gate is the `before_merge` checks of the issue's own Verification document, read at the
 issue's own head: each needs a pass standing at that head, which
-`dispatch results --issue <issue>` shows. A result one of its children recorded against one of
+`dispatch results --issue <issue>` shows. A pass and a fail at any open head make the check not known: send
+the issue back at once, naming the check, do not accept it, and do not wait for a later result, a CI run still going or GitHub that Dispatch could not read.
+At acceptance, read each CI-proved check's derived result and each result its CI job recorded.
+To give a check to CI, write a new check block under a new id; retracting a result does not lift the old rule.
+A result one of its children recorded against one of
 its checks proves nothing for it, and a child that carries part of its requirement proves that
 part with a check on the child's own Verification document whose `serves` names the requirement.
 An issue with no Verification document, or with one that holds no `before_merge` check, is a gap
@@ -164,11 +168,12 @@ last step passes (on a parent, once the issues beneath it have left, `retro-held
 session until its issue closes, so an `envoy_publish` to a role that finished its phase still
 reaches that session, and wakes the role when the daemon released its idle pod. The merge closes
 the child: where the project opens a production check, it follows the close in the tester's own
-session and on the pull request, and asks nothing of you. A tester completion that rejects the
-implementer's results goes back to the implementer, or to the earlier step its completion names;
-a worker that reports
-no surface reaches the changed path gets the surface built in this tree
-(`skill://legion-architect`, wake routing,
+session and on the pull request, and asks nothing of you. The tester's completion carries no
+verdict: the daemon decides the move by the state of each check at the head the tester's record
+names, once each has a state there that it ends at, sending the issue to the reviewer when each
+reads yes; otherwise the issue goes back to the implementer, or to the earlier step its completion
+names, with a task naming each check that does not pass; a worker that reports no surface reaches
+the changed path gets the surface built in this tree (`skill://legion-architect`, wake routing,
 `phase-finished`), and waits, with its phase and its task kept, until you tell it to continue
 (`envoy_publish` to its role topic, which wakes it when its idle pod was released): once that
 child closes, or at once when the surface folds into an open pull request of this tree and a

@@ -425,14 +425,15 @@ test("posts every Stage 3 workflow request through its matching route", async ()
       },
       "review-verdict.json",
     ],
-    // A tester's fail names the step its task returns to (contract 219).
+    // A tester's completion names the step its task returns to should the check states at the
+    // head it tested fail its step (contract 219), and carries no verdict (VERDICT_NOT_TAKEN).
     [
       "handoffComplete",
       "/legion/v1/handoff/complete",
       {
         grantId: "grant-209",
         summary: "the proof is thin",
-        verdict: "fail",
+        verdict: "",
         commit: "abc123",
         handoffId: "5b1f0c2e-9d7a-4c3b-8e61-2f4a9d0c7b13",
         handoffVersion: 3,
@@ -644,15 +645,16 @@ test("a refused plan surfaces its code and every reason in its sentence", async 
   expect(requests).toHaveLength(1);
 });
 
-// The daemon refuses a returnTo on a completion that fails no step (RETURN_TO_NEEDS_FAIL); the
-// request's schema refuses it the same, so it never leaves the pane.
-test("a completion naming returnTo without the verdict fail is refused before it goes", async () => {
+// Only a tester's completion, which carries no verdict, names returnTo; the daemon refuses one on
+// a completion carrying a verdict, the reviewer's or a production check's report
+// (RETURN_TO_NEEDS_FAIL). The request's schema refuses it the same, so it never leaves the pane.
+test("a completion naming returnTo beside a verdict is refused before it goes", async () => {
   const { fetch, requests } = daemon(() => Response.json({}));
   const client = createLegionDaemonClient("http://daemon.test", {
     pluginContract: CONTRACT,
     fetch,
   });
-  for (const verdict of ["pass", ""]) {
+  for (const verdict of ["pass", "pending", "fail", "approve", "changes"]) {
     const refused = await (async () =>
       client.handoffComplete({ grantId: "grant-209", summary: "done", verdict, returnTo: 1 }))()
       .then(() => undefined)

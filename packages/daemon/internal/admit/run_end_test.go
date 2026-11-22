@@ -387,6 +387,12 @@ func TestEveryWayOutOfAStepEndsItsRun(t *testing.T) {
 			{name: "the recorded reviewer's changes keeps the accepting child in its step", arrange: reviewedAccepting,
 				fact: intake.ReviewVerdict{Issue: inAccepting, Claim: "review-claim", Verdict: "changes", Commit: "head-6", Summary: "the push breaks it"}, keeps: inAccepting},
 		},
+		// A check state of an issue out of testing is held and moves nothing: only the tester's
+		// completed testing phase is decided by the states (workflow's decideTesting).
+		"DispatchCheckState": {{name: "a failing check of an issue in accepting is held and keeps it there", arrange: none, source: "dispatch",
+			fact: intake.DispatchCheckState{Key: inAccepting, Mark: record.EventMark{Seq: 9, At: fixedNow}, Repo: "acme/widgets", Head: "head-5",
+				Checks: []string{"k1"}, Check: "k1", CheckVersion: 1, State: "no", Reason: "fail", Roles: []string{}, Serial: 1},
+			keeps: inAccepting}},
 	}
 	kinds := appliedFactKinds(t)
 	for _, kind := range kinds {
@@ -476,8 +482,8 @@ func reviewedAccepting(t *testing.T, pool *pgxpool.Pool, _ *Admission, _ intake.
 			t.Fatalf("seed the pull request of %s: %v", inAccepting, err)
 		}
 		for _, row := range []record.PhaseRow{
-			{Issue: inAccepting, Role: claim.RoleTester, Claim: "test-claim", Verdict: "pass", HandoffCommit: "head-5"},
-			{Issue: inAccepting, Role: claim.RoleReviewer, Claim: "review-claim", Verdict: "approve", HandoffCommit: "head-5",
+			{Issue: inAccepting, Role: claim.RoleTester, Claim: "test-claim", HandoffCommit: "head-5"},
+			{Issue: inAccepting, Role: claim.RoleReviewer, Claim: "review-claim", HandoffCommit: "head-5",
 				Decision: &record.ReviewDecision{State: "approved", Head: "head-5"}},
 		} {
 			if err := records.PutPhase(context.Background(), tx, row); err != nil {

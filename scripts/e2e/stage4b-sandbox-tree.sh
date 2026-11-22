@@ -4773,7 +4773,7 @@ note "$tree1 is still in testing at the head the merge left; the tester is in it
 pass
 
 begin tree-reviewed
-send_agent "$tree1" tester "Stage 4b proof test operation: inspect the implementer's actual one-file change and pull request #$pr_number, run a focused observable check, record the required test handoff with verdict pass, then call the legion tool's handoff_complete with verdict pass."
+send_agent "$tree1" tester "Stage 4b proof test operation: inspect the implementer's actual one-file change and pull request #$pr_number, run a focused observable check, record the required test handoff, then call the legion tool's handoff_complete with no verdict."
 on_tree "$tree1" wait_for_phase "$tree1" reviewing 1200
 # No move back has counted the implementer a round yet: the conflict of conflict-no-takeover moved
 # nothing (dispatch://INFRA-4374), and a move back is what counts one, as every move back does
@@ -4814,7 +4814,7 @@ review_thread "$thread_id" >"$evidence/review-thread-after-correction.json" ||
   fail "read the reviewer's thread $thread_id after the correction round"
 note "after the correction round the reviewer's thread reads isResolved $(jq -r .isResolved "$evidence/review-thread-after-correction.json"), newest comment by $(jq -r '[.comments[] | select(.state == "SUBMITTED")] | last | .author' "$evidence/review-thread-after-correction.json")"
 on_tree "$tree1" wait_for_worker "$tree1" tester
-on_tree "$tree1" send_agent "$tree1" tester "Stage 4b proof retest round 1: verify the correction on pull request #$pr_number, write the tester handoff with verdict pass, and complete the phase."
+on_tree "$tree1" send_agent "$tree1" tester "Stage 4b proof retest round 1: verify the correction on pull request #$pr_number, write the tester handoff, and complete the phase with no verdict."
 on_tree "$tree1" wait_for_phase "$tree1" reviewing 1200
 assert_handoff_record "$tree1" tester testing 1
 on_tree "$tree1" wait_for_worker "$tree1" reviewer

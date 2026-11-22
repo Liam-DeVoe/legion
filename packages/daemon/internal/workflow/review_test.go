@@ -936,10 +936,12 @@ func TestAReviewFromAnEarlierRoundDeliveredAgainRecordsNothing(t *testing.T) {
 	engine := testEngine(config.DesignGateRootIssues, nil)
 	requestChanges := intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 10, State: "changes_requested", CommitID: headOne,
 		Author: "a-writer", AuthorCanWrite: true, Body: "round 1", SubmittedAt: reviewTestedAt}
+	passed, _ := testedFact(t, pool, "LEGION-208", headOne, true)
 	for i, fact := range []intake.Fact{
 		requestChanges,
 		intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: "implement-claim", Summary: "fixed", Commit: "round-2", HandoffRecord: "implement-2", HandoffVersion: 2},
-		intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleTester, Claim: "test-claim", Summary: "tested", Verdict: "pass", Commit: headOne, HandoffRecord: "test-2", HandoffVersion: 2},
+		passed,
+		intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleTester, Claim: "test-claim", Summary: "tested", Commit: headOne, HandoffRecord: "test-2", HandoffVersion: 2},
 		requestChanges,
 		reviewAt(2, "approved", headOne),
 	} {
@@ -949,7 +951,7 @@ func TestAReviewFromAnEarlierRoundDeliveredAgainRecordsNothing(t *testing.T) {
 		switch got := issuePhase(t, pool); {
 		case i == 0 && got != phase.Implementing:
 			t.Fatalf("after round 1 the issue is in %s, want implementing", got)
-		case i == 3 && got != phase.Reviewing:
+		case i == 4 && got != phase.Reviewing:
 			t.Fatalf("after round 1's request for changes delivered again the issue is in %s, want reviewing", got)
 		}
 	}
@@ -1024,7 +1026,8 @@ func TestAReviewWhileHeldFromReviewingDecidesTheRound(t *testing.T) {
 
 // Reviews are ordered across the pull request's whole life: reopening it keeps the newest deciding
 // review it has had, so a person's request for changes delivered again after the reopen records
-// nothing, and the round that stands waits for the reviewer's verdict.
+// nothing, and the round that stands waits for the reviewer's verdict. The tester's step passes
+// on the check state at the head it tested, which the store holds before its completion.
 func TestAReopenedPullRequestKeepsItsNewestReview(t *testing.T) {
 	pool := migratedPool(t)
 	ctx := context.Background()
@@ -1032,10 +1035,12 @@ func TestAReopenedPullRequestKeepsItsNewestReview(t *testing.T) {
 	engine := testEngine(config.DesignGateRootIssues, nil)
 	requestChanges := intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 11, State: "changes_requested", CommitID: headOne,
 		Author: "a-writer", AuthorCanWrite: true, Body: "rename it", SubmittedAt: reviewTestedAt}
+	passed, _ := testedFact(t, pool, "LEGION-208", headOne, true)
 	for i, fact := range []intake.Fact{
 		requestChanges,
 		intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: "implement-claim", Summary: "fixed", Commit: "round-2", HandoffRecord: "implement-2", HandoffVersion: 2},
-		intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleTester, Claim: "test-claim", Summary: "tested", Verdict: "pass", HandoffRecord: "test-2", HandoffVersion: 2},
+		passed,
+		intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleTester, Claim: "test-claim", Summary: "tested", Commit: headOne, HandoffRecord: "test-2", HandoffVersion: 2},
 		intake.PullRequestOpened{Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: headOne},
 		requestChanges,
 	} {

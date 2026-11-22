@@ -55,14 +55,18 @@ func reviewAt(id int64, state, head string) intake.HandoffComplete {
 }
 
 // backToReviewing takes LEGION-208 from implementing through testing into reviewing again, as the
-// implementer's and the tester's completions of round n do.
-func backToReviewing(t *testing.T, apply func(string, intake.Fact) intake.Result, round int) {
+// implementer's and the tester's completions of round n do, the tester's naming the head the pull
+// request on record stands at as the head it tested.
+func backToReviewing(t *testing.T, pool *pgxpool.Pool, apply func(string, intake.Fact) intake.Result, round int) {
 	t.Helper()
 	n := strconv.Itoa(round)
 	apply("implementer-"+n, intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: "implement-claim",
 		Summary: "fixed", Commit: "round-" + n, HandoffRecord: "implement-" + n, HandoffVersion: round})
+	head := recordedPR(t, pool, "LEGION-208").HeadSHA
+	state, id := testedFact(t, pool, "LEGION-208", head, true)
+	apply(id, state)
 	apply("tester-"+n, intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleTester, Claim: "test-claim",
-		Summary: "tested", Verdict: "pass", HandoffRecord: "test-" + n, HandoffVersion: round})
+		Summary: "tested", Commit: head, HandoffRecord: "test-" + n, HandoffVersion: round})
 }
 
 // The reviewer's verdict of the round writes the commit it names on the reviewer's row beside the
@@ -80,7 +84,7 @@ func TestADecidingReviewRecordsTheCommitItRead(t *testing.T) {
 		t.Fatalf("the reviewer's row reads the reviewed commit %q, want %s, the commit its verdict names", got, headOne)
 	}
 
-	backToReviewing(t, apply, 2)
+	backToReviewing(t, pool, apply, 2)
 	if got := issuePhase(t, pool); got != phase.Reviewing {
 		t.Fatalf("after the tester passed round 2 the issue is in %s, want reviewing", got)
 	}
@@ -115,7 +119,7 @@ func decidedAtHeadOne(t *testing.T, pool *pgxpool.Pool, engine *Engine, state st
 	if state != "changes_requested" {
 		return
 	}
-	backToReviewing(t, applyFacts(t, pool, engine), 2)
+	backToReviewing(t, pool, applyFacts(t, pool, engine), 2)
 	task := reviewerRow(t, pool).EntryTask
 	readsReviewingTask(t, "round 2", task, 2)
 	if !strings.Contains(task, reviewedPartOf(headOne)) || strings.Contains(task, headEarlier) {
@@ -186,7 +190,7 @@ func TestAReviewThatDecidesNothingKeepsTheCommitAnEarlierReviewRecorded(t *testi
 			apply := applyFacts(t, pool, engine)
 			apply("request-changes", reviewAt(1, "changes_requested", headOne))
 			mergesForward(t, pool, engine, headOne, headTwo, reviewTestedAt.Add(time.Hour))
-			backToReviewing(t, apply, 2)
+			backToReviewing(t, pool, apply, 2)
 			if got := issuePhase(t, pool); got != phase.Reviewing {
 				t.Fatalf("after the tester passed round 2 the issue is in %s, want reviewing", got)
 			}
@@ -217,7 +221,7 @@ func TestAPersonsReviewDoesNotMoveTheReviewersCommit(t *testing.T) {
 	seedReviewOf(t, pool, headOne, "green")
 	apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
 	apply("reviewer-requests-changes", reviewAt(1, "changes_requested", headOne))
-	backToReviewing(t, apply, 2)
+	backToReviewing(t, pool, apply, 2)
 	if got := issuePhase(t, pool); got != phase.Reviewing {
 		t.Fatalf("after the tester passed round 2 the issue is in %s, want reviewing", got)
 	}
@@ -235,7 +239,7 @@ func TestAPersonsReviewDoesNotMoveTheReviewersCommit(t *testing.T) {
 		t.Fatalf("the reviewer's row reads the reviewed commit %q, want %s: the person's review is no review the reviewer read", row.ReviewedHead, headOne)
 	}
 
-	backToReviewing(t, apply, 3)
+	backToReviewing(t, pool, apply, 3)
 	if got := issuePhase(t, pool); got != phase.Reviewing {
 		t.Fatalf("after the tester passed round 3 the issue is in %s, want reviewing", got)
 	}
@@ -284,15 +288,19 @@ func reviewRoundOne(t *testing.T) (*pgxpool.Pool, *Engine, func(string, intake.F
 	return pool, engine, apply
 }
 
-// entersRoundOne is the tester's pass at headOne that takes LEGION-208, seeded in testing, into its
-// first review round. It names the commit it tested, as the completion route requires of every
-// tester's verdict (api's VERDICT_COMMIT_REQUIRED), so the reviewer's approve of headOne counts it.
+// entersRoundOne is the tester's completion that takes LEGION-208, seeded in testing, into its
+// first review round, at the head the pull request on record stands at: the check states there
+// pass, and the completion names that head, as the completion route requires of every tester's
+// completion (api's TESTED_HEAD_REQUIRED).
 func entersRoundOne(t *testing.T, pool *pgxpool.Pool) (*Engine, func(string, intake.Fact) intake.Result) {
 	t.Helper()
 	engine := testEngine(config.DesignGateRootIssues, nil)
 	apply := applyFacts(t, pool, engine)
+	head := recordedPR(t, pool, "LEGION-208").HeadSHA
+	state, id := testedFact(t, pool, "LEGION-208", head, true)
+	apply(id, state)
 	apply("round-one-tester", intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleTester, Claim: "test-claim",
-		Summary: "tested", Verdict: "pass", Commit: headOne, HandoffRecord: "test-1", HandoffVersion: 1})
+		Summary: "tested", Commit: head, HandoffRecord: "test-1", HandoffVersion: 1})
 	if got := issuePhase(t, pool); got != phase.Reviewing {
 		t.Fatalf("after the tester passed round 1 the issue is in %s, want reviewing", got)
 	}
@@ -304,7 +312,7 @@ func entersRoundOne(t *testing.T, pool *pgxpool.Pool) (*Engine, func(string, int
 func reviewedTwice(t *testing.T, apply func(string, intake.Fact) intake.Result, pool *pgxpool.Pool) {
 	t.Helper()
 	apply("request-changes", reviewAt(1, "changes_requested", headOne))
-	backToReviewing(t, apply, 2)
+	backToReviewing(t, pool, apply, 2)
 	if got := issuePhase(t, pool); got != phase.Reviewing {
 		t.Fatalf("after the tester passed round 2 the issue is in %s, want reviewing", got)
 	}
@@ -368,7 +376,7 @@ func TestALaterReviewRoundIsToldTheCommitTheReviewBeforeItRead(t *testing.T) {
 		t.Fatalf("round 2's reviewer row is on entry %d, want one above round 1's %d: round 2 started", second.Entry, first.Entry)
 	}
 	want := "Continue root. Issue: LEGION-208. Phase: reviewing. Working copy: branch legion/LEGION-208. Handoff: test version 2 (dispatch handoff-read --issue LEGION-208 --phase test --version 2)." +
-		" Tester's verdict: pass. Pull request: #42." + reviewedPartOf(headOne) + reviewEntryPartOf(second.Entry)
+		" Handoff commit: " + headOne + "." + " Pull request: #42." + reviewedPartOf(headOne) + reviewEntryPartOf(second.Entry)
 	if second.EntryTask != want {
 		t.Fatalf("round 2's task = %q, want %q", second.EntryTask, want)
 	}
@@ -405,7 +413,7 @@ func TestALaterRoundNamesTheCommitOfTheReviewersNewestDecidingReview(t *testing.
 	if got := recordedHead(t, pool); got != headTwo {
 		t.Fatalf("after the implementer's push the record holds the head %s, want %s", got, headTwo)
 	}
-	backToReviewing(t, apply, 2)
+	backToReviewing(t, pool, apply, 2)
 	second := reviewerRow(t, pool).EntryTask
 	readsReviewingTask(t, "round 2", second, 2)
 	if !strings.Contains(second, reviewedPartOf(headOne)) {
@@ -419,7 +427,7 @@ func TestALaterRoundNamesTheCommitOfTheReviewersNewestDecidingReview(t *testing.
 	if got := reviewerRow(t, pool).ReviewedHead; got != headTwo {
 		t.Fatalf("after round 2's review the reviewer's row reads the reviewed commit %q, want %s, the head that newer review read", got, headTwo)
 	}
-	backToReviewing(t, apply, 3)
+	backToReviewing(t, pool, apply, 3)
 	third := reviewerRow(t, pool).EntryTask
 	readsReviewingTask(t, "round 3", third, 3)
 	if !strings.Contains(third, reviewedPartOf(headTwo)) || strings.Contains(third, headOne) {
@@ -430,7 +438,9 @@ func TestALaterRoundNamesTheCommitOfTheReviewersNewestDecidingReview(t *testing.
 // The commit a later round names is the commit the reviewer's verdict names, never the head the
 // pull request stands at when the verdict lands: here the head moves to headTwo while the
 // reviewer reads headOne, and its request for changes names headOne. A commit taken from the
-// pull request would hand round 2 a range from a head the reviewer never read.
+// pull request would hand round 2 a range from a head the reviewer never read. The tester's
+// completion of round 2 names headTwo, the head it tested, as its handoff commit, so the task
+// names headTwo there and only there: the reviewed commit it names is headOne.
 func TestALaterRoundNamesTheCommitTheVerdictNamesAndNotThePullRequestsHead(t *testing.T) {
 	pool, engine, apply := reviewRoundOne(t)
 	mergesForward(t, pool, engine, headOne, headTwo, reviewTestedAt.Add(time.Hour))
@@ -438,11 +448,11 @@ func TestALaterRoundNamesTheCommitTheVerdictNamesAndNotThePullRequestsHead(t *te
 	if got := issuePhase(t, pool); got != phase.Implementing {
 		t.Fatalf("after round 1's request for changes the issue is in %s, want implementing", got)
 	}
-	backToReviewing(t, apply, 2)
+	backToReviewing(t, pool, apply, 2)
 	second := reviewerRow(t, pool).EntryTask
 	readsReviewingTask(t, "round 2", second, 2)
-	if !strings.Contains(second, reviewedPartOf(headOne)) || strings.Contains(second, headTwo) {
-		t.Fatalf("round 2's task = %q, want it to name %s, the commit round 1's verdict names, and not %s, the pull request's head", second, headOne, headTwo)
+	if !strings.Contains(second, reviewedPartOf(headOne)) || strings.Contains(second, reviewedPartOf(headTwo)) {
+		t.Fatalf("round 2's task = %q, want it to name %s as the reviewed commit, the commit round 1's verdict names, and not %s, the pull request's head", second, headOne, headTwo)
 	}
 }
 
@@ -464,7 +474,7 @@ func TestTheReviewedCommitSurvivesEachWayBackIntoReviewing(t *testing.T) {
 		if result := apply("move-back", rootsMoveBack(t, pool, engine, "LEGION-208", phase.Implementing, "the API needs another shape")); result.Refusal != nil {
 			t.Fatalf("the architect's move back was refused: %+v", result.Refusal)
 		}
-		backToReviewing(t, apply, 2)
+		backToReviewing(t, pool, apply, 2)
 		task := reviewerRow(t, pool).EntryTask
 		readsReviewingTask(t, "round 2", task, 2)
 		if !strings.Contains(task, reviewedPartOf(headOne)) {
@@ -481,7 +491,7 @@ func TestTheReviewedCommitSurvivesEachWayBackIntoReviewing(t *testing.T) {
 			t.Fatalf("after the reviewer's move back the issue is in %s, want implementing", got)
 		}
 		mergesForward(t, pool, engine, headOne, headTwo, reviewTestedAt.Add(2*time.Hour))
-		backToReviewing(t, apply, 3)
+		backToReviewing(t, pool, apply, 3)
 		task := reviewerRow(t, pool).EntryTask
 		readsReviewingTask(t, "round 3", task, 3)
 		if !strings.Contains(task, reviewedPartOf(headOne)) {
@@ -599,8 +609,11 @@ func testsIntoReviewing(t *testing.T, pool *pgxpool.Pool, apply func(string, int
 	}
 	issue.Phase, issue.Status = phase.Testing, "testing"
 	seedIssue(t, pool, *issue)
+	head := recordedPR(t, pool, "LEGION-208").HeadSHA
+	state, id := testedFact(t, pool, "LEGION-208", head, true)
+	apply(id, state)
 	apply("generation-2-tester", intake.HandoffComplete{Generation: 2, Issue: "LEGION-208", Role: claim.RoleTester, Claim: "test-claim",
-		Summary: "tested", Verdict: "pass", HandoffRecord: "test-9", HandoffVersion: 9})
+		Summary: "tested", Commit: head, HandoffRecord: "test-9", HandoffVersion: 9})
 	if got := issuePhase(t, pool); got != phase.Reviewing {
 		t.Fatalf("after the tester passed generation 2 the issue is in %s, want reviewing", got)
 	}
@@ -692,7 +705,7 @@ func TestALaterReviewRoundWithItsRecordRemovedIsToldNoCommit(t *testing.T) {
 					t.Fatalf("remove the reviewed commit: %v", err)
 				}
 			}
-			backToReviewing(t, apply, 2)
+			backToReviewing(t, pool, apply, 2)
 			second := reviewerRow(t, pool)
 			if second.Entry <= first.Entry {
 				t.Fatalf("round 2's reviewer row is on entry %d, want one above round 1's %d: round 2 started", second.Entry, first.Entry)

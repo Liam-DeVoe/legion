@@ -414,7 +414,7 @@ Then:
   So a connect that failed with lines of its own failed in the server, and the log names why;
   a fork the postmaster could not make logs `could not fork new process for connection` instead, with no `connection received` line;
   and a connect with neither line never reached the postmaster.
-  The listen queue Postgres asks for is twice `max_connections`, 966, below the 1,024 gVisor allows (`net.core.somaxconn`), and gVisor's network stack drops a burst past it while the postmaster is still forking, with no line at all.
+  The listen queue Postgres asks for is twice `max_connections`, 974, below the 1,024 gVisor allows (`net.core.somaxconn`), and gVisor's network stack drops a burst past it while the postmaster is still forking, with no line at all.
   Measured on 2026-11-17 against a server whose queue was 40, a burst of 2,500 connects ended some in EOF, which libpq reports as `server closed the connection unexpectedly`, and left the rest waiting until the client's own timeout, while the postmaster stayed up and served the next connect at once;
   under that burst a fork took 20 ms at the median and 109 ms at the 95th percentile.
   No server setting widens the queue past the runtime's 1,024, so a suite that opens more connections than that at once has to open them in smaller steps or retry them.
@@ -2765,6 +2765,53 @@ Several projects' daemons can share one database ([Daemon-launched controller](#
 A daemon of the earlier release writes rows whose sequences fall behind their values, in its own project and in the rows of other projects that its controller tick reads for blockers.
 Upgrade, and roll back, every daemon of one database in the same change.
 
+#### Rolling back the release whose testing move follows Dispatch's check states
+
+This release moves an issue out of `testing` by the states Dispatch publishes of the issue's `before_merge` checks, the `check.state_changed` events, and a phase completion carries no verdict (daemon API contract 206, the entry of `packages/daemon/internal/api/version.go` that names `CheckStatesContract`).
+A tester completes naming its `test` record, and the move waits until the daemon holds every state event of the issue through the record's `check_states_serial`.
+At the head that record names, a check with no state, or with no result while its CI run still goes, holds the move whatever the other checks read; then every check passing moves the issue to `reviewing`, and otherwise it goes back to `implementing` with a task naming each check that does not pass, a state Dispatch could not read (`read_failed`) among them.
+
+**Deploy envoy-dispatch first, then the daemon.**
+The daemon of this release waits for states that only an envoy-dispatch of the same change publishes, and for the serial that only such a Dispatch stores on a `test` record.
+A daemon deployed before it holds no state of any check, so each tester's completion waits in `testing`, telling the architect once that the move waits for Dispatch's states at the tested head.
+An envoy-dispatch deployed first publishes the events to a daemon of the release before, which takes them as no fact, and the boot catch-up of the daemon that follows reads each issue's log from the start.
+A tester's plugin of the release before, in a turn when the daemon is upgraded, still sends `pass` or `fail`: this daemon takes the completion and ignores the verdict, and the states decide.
+Such a completion is taken only with the head its `test` record names: one that names no commit is refused `TESTED_HEAD_REQUIRED`, since the move reads the states at that head alone, and the tester writes a new record naming it and completes again.
+An issue standing in `testing` at the upgrade has no tester's completion recorded: the release before moved each one at once on its verdict, so every move this daemon makes reads a head a completion of its own named.
+
+**The way back is two transactions, run with this release's daemon stopped, before the earlier image is pinned.**
+Run the newer migration's first.
+`20261121074614_phase_verdict_gone` drops `phases.verdict`, which every earlier release reads and writes by name, so the earlier daemon cannot read a phase row while the column is gone.
+Its header's way back adds the column again at its default, drops `phases.states_serial` and deletes the migration's own row, so the roll-forward's `Migrate` runs the file again:
+
+```sh
+psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
+begin;
+alter table phases add column if not exists verdict text not null default '';
+alter table phases drop column if exists states_serial;
+delete from schema_version where version = 20261121074614;
+commit;
+SQL
+```
+
+Each tester's row that this release completed then reads as a completion with no verdict, which moves no issue in the earlier release: a tester whose issue is still in `testing` completes again under that release.
+The queued notices need nothing: the earlier release decodes a notice with no `verdict`, since its field is omitted when empty.
+Then run the way back in the header of `20261121065041_check_states`, which drops the tables `check_states`, `check_state_sets` and `check_state_serials` and the column `issues.check_states_seq` and deletes that migration's row:
+
+```sh
+psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
+begin;
+drop table if exists check_states;
+drop table if exists check_state_sets;
+drop table if exists check_state_serials;
+alter table issues drop column if exists check_states_seq;
+delete from schema_version where version = 20261121065041;
+commit;
+SQL
+```
+
+The earlier release names none of the three tables and not the column, so this second transaction is owed to the roll-forward alone: its first catch-up of each issue reads the event log from the start again and applies each state event in it, whether or not `processed_events`, which the way back leaves standing, records the event, so each state event this release held before the rollback is held again, and each one the earlier release took as no fact is held as well.
+
 #### Rolling back below the release that trims an issue pod's volume
 
 The release that added the cache trimmer added one architect notice kind, `volume-near-full`, and one member of the notice payload, `volume`.
@@ -3302,7 +3349,9 @@ The migrations recorded above this one are these.
 20261120012547_set_back_observed_seq, of dispatch://INFRA-3178, changes no table, runs no statement and touches none of the six, so the block holds over it, and a rollback to a release before it takes the steps of its own section, [Rolling back the release that lets the owning architect's status stand](#rolling-back-the-release-that-lets-the-owning-architects-status-stand).
 20261120042902_claim_agent_resume_generation, of dispatch://INFRA-4108, adds `claims.agent_resume_generation` at its default, 0, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header first, which deletes the queued `session-forgotten` notices no earlier release decodes, drops the column and deletes its version row.
 20261120055717_dispatch_issue_value_sequences, of dispatch://INFRA-4729, adds seven columns of `dispatch_issues`, an index on `dispatch_issues.parent` and the table `dispatch_issue_refills`, and touches none of the six, so the block holds over it and leaves all of them standing, which the earlier release names in no statement, and a rollback to a release before it runs the statement of its own section, [Rolling back the release that fences each value of the copy of Dispatch's issues](#rolling-back-the-release-that-fences-each-value-of-the-copy-of-dispatchs-issues), before the earlier image is pinned.
-20261120185521_verdicts adds the tables `outside_pull_requests`, `verdict_reviews`, `side_reviewers`, `verdicts` and `verdict_writes` and their indexes, and touches none of the six, so the block holds over it and leaves the tables standing, which the earlier release names in no statement; it has no down file, and nothing of it need come off for a rollback.
+20261121065041_check_states adds the tables `check_states`, `check_state_sets` and `check_state_serials` and the column `issues.check_states_seq`, and touches none of the six, so the block holds over it and leaves all of them standing, which the earlier release names in no statement; the way back in its own header drops them.
+20261121074614_phase_verdict_gone drops `phases.verdict`, adds `phases.states_serial` and takes the key `verdict` out of each queued notice, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back of its own section, [Rolling back the release whose testing move follows Dispatch's check states](#rolling-back-the-release-whose-testing-move-follows-dispatchs-check-states), first, since every earlier release reads and writes `phases.verdict`.
+20261122045825_verdicts adds the tables `outside_pull_requests`, `verdict_reviews`, `side_reviewers`, `verdicts` and `verdict_writes` and their indexes, and touches none of the six, so the block holds over it and leaves the tables standing, which the earlier release names in no statement; it has no down file, and nothing of it need come off for a rollback.
 The `20261111225552` is the identifier of `20261111225552_phase_entry.up.sql`, whose header carries this same block;
 where that file carries another identifier in the release you roll back from, use that one.
 The SQL was run on 2026-11-13 at 04:00Z against PostgreSQL 18.6, on a scratch database that `internal/store`'s own `Migrate` took to the head of the branch the run was made on, as that head stood at that time, applying 133 migrations and leaving 133 versions recorded, the highest 20261112180548, and that held four outbox rows:
@@ -4056,9 +4105,9 @@ reconnected`, covers that gap: first after 3 minutes down, then every 3 minutes 
 — usually empty during a plain refused dial, since nats.go clears it on every failed attempt, and naming the failure's own cause while a handshake keeps failing, since nats.go leaves that one in place until the connection succeeds.
 At boot an unreachable NATS or Dispatch delays the boot instead of exiting, retried one second doubling to one minute, forever, logged at warn as `boot probe failed
 transiently; waiting to run it again` with its `probe` (naming which:
-`connect Envoy NATS`, `list Dispatch issues for admission`, or `catch up the roots that run or wait on a person`), `attempt`, `retryIn` and `detail`.
+`connect Envoy NATS`, `list Dispatch issues for admission`, `catch up the roots that run or wait on a person`, or `catch up the check states the daemon missed`), `attempt`, `retryIn` and `detail`.
 A TLS alert from NATS or Dispatch, such as a server that demands a client certificate or speaks no TLS version the daemon does, is an answer and not an outage, so it refuses the boot at once (`tlsalert.In`, `packages/daemon/internal/tlsalert`).
-So does a certificate the daemon cannot verify, from NATS or Dispatch; a NATS URL whose port answers first with a line that is not INFO, such as an SSH server's; and an `https` Dispatch URL on a plain-HTTP port or on a port that answers in neither TLS nor HTTP (`dispatch.TransportRefusal`), at every boot probe of Dispatch, the catch-up of the roots that run or wait on a person included, which stops rather than skip the root.
+So does a certificate the daemon cannot verify, from NATS or Dispatch; a NATS URL whose port answers first with a line that is not INFO, such as an SSH server's; and an `https` Dispatch URL on a plain-HTTP port or on a port that answers in neither TLS nor HTTP (`dispatch.TransportRefusal`), at every boot probe of Dispatch, the catch-up of the roots that run or wait on a person and the catch-up of check states included, which stop rather than skip the root or the issue.
 The two NATS refusals hold for one `nats_urls` entry: with several, nats.go answers with the last server's error, so a refusal from an earlier server followed by a refused dial on the last one reads as no servers available, and the boot waits (the LEGION-580 limit below).
 
 The store opens outside the 30-second budget the boot's first steps share, and the steps after the open get a budget of their own.
@@ -8783,17 +8832,21 @@ An issued token carries these claims and no others:
 - `machine` — the machine a person signed in on acted through, the Google account its actor token named.
   Every other kind of subject token carries none.
 
-- `project_scope` — `named`, `person` or `none`, which says what `projects` means.
+- `project_scope` — `named`, `person`, `none` or `results`, which says what `projects` means.
   Only a read entry's token carries `none`, and that token writes no project.
+  Only a result entry's token carries `results`, and that token writes only the results of its own run, of its project's spec checks and of each check CI proves whose `ci_check` names the job of that run.
 
-- `projects` — the token's list of projects: for a `named` token, the one project key its operator's entry names, or none for a `BROKER_EXCHANGE_ACCOUNTS` entry that names none (`<account>==<person>`, the shared public-session account's); for a `person` token, the keys its trade asked for in the `projects` form parameter, each one Dispatch said the token's person may see.
+- `projects` — the token's list of projects: for a `named` token, the one project key its operator's entry names, or none for a `BROKER_EXCHANGE_ACCOUNTS` entry that names none (`<account>==<person>`, the shared public-session account's); for a `person` token, the keys its trade asked for in the `projects` form parameter, each one Dispatch said the token's person may see; for a `results` token, the one project key its result entry names, whose results alone it may write.
   A token whose trade named none, and a token that names a service and no person, a read entry's `none` token among them, carry none.
 
 - `project` — for a `named` token naming one project, that project again, under the name a broker before the list stored it by.
   No reader of this release reads it and introspection never answers it: it is there so an older broker replica answering introspection beside this one answers `"project":"<key>"`, which this release's readers refuse, rather than a named token naming no project.
   Every other token carries none.
 
-- `scope` — the OAuth scope the token holds, RFC 7662's `scope` member: `read` for a read entry's token, which holds no other scope.
+- `scope` — the OAuth scope the token holds, RFC 7662's `scope` member: `read` for a read entry's token and `results` for a result entry's token, each of which holds no other scope.
+  Every other token carries none.
+
+- `ci` — the GitHub Actions run a result entry's token was minted for: its `repository`, `workflow_ref`, `ref`, `sha`, `event_name`, `run_id`, `run_attempt`, `runner_environment` and `check_run_id`, as the run's own GitHub token names them (`CIRun`, `packages/envoy/internal/broker/oauthwire`).
   Every other token carries none.
 
 - `credential_id` — the launcher credential the exchange minted for a machine presenting its Google identity token, which that machine enrols its session under.
@@ -8807,8 +8860,14 @@ The token it mints holds the scope `read` and the project scope `none`, names th
 That token reads the whole answer of `GET /api/v1/projects/{key}/architecture` for every project that has an architecture source: each source, each component, and every issue of the project, closed and iceboxed ones included.
 No setting holds a read entry to some projects.
 The broker refuses to start on an account that both settings list, because one account mints one kind of token.
-The entry decides the scope, and the exchange request never does: the broker refuses a request that names the scope `read` with `invalid_scope`, under every entry.
+The entry decides the scope, and the exchange request never does: the broker refuses a request that names the scope `read` or `results` with `invalid_scope`, under every entry.
 A workflow run's token needs an entry for its repository, its workflow path and its ref (`Set.Workflow`).
+The path is the token's `workflow_ref` without its repository and without `@` and its `ref` claim (`oauthwire.WorkflowPath`), since a workflow file's name and a branch's name can each hold an `@`, and a `workflow_ref` of any other form is refused.
+A result entry (`BROKER_EXCHANGE_RESULT_WORKFLOWS`, `<repository>=<workflow path>=<ref pattern>=<project>=<person>`) lists a workflow by its repository, its path and a pattern of refs in its place, such as `refs/heads/*`, where a `*` stands for one segment of the ref.
+The token it mints holds the scope `results` and the project scope `results`, names that person and that project, writes under the session `ci-results:<repository>/<workflow path>`, and carries the run as `ci`.
+The person is the entry's configuration and ran no test, so Dispatch writes that person on no result and in no answer: a result names its run as the recorder.
+The run's token must carry every claim of the run, the `check_run_id` of its job among them, and a run whose ref two patterns match is refused.
+The broker refuses to start on a workflow that both settings list, because one workflow mints one kind of token.
 A machine's Google identity token needs an entry for the account its `email` claim names (`BROKER_VM_SERVICES`, `Set.Google`), which gives the service, may pin the Compute Engine project and instance names the machine may carry (`BROKER_VM_PROJECTS`, `BROKER_VM_INSTANCES`), and may give a person and a project as a pod's entry does (`BROKER_VM_EXCHANGE_ACCOUNTS`);
 an entry that gives neither mints a token that names its service and no person at all.
 A request under an entry may name that entry's project or nothing, and is refused when it names any other; a token that names no person is refused any project.
@@ -8831,7 +8890,7 @@ The grant issues no refresh token, so each renewal is a fresh trade that Dispatc
 A restricted member's token reaches Envoy and Dispatch and no secret: with `BROKER_PROJECT_ACCESS_URL` set, an enrollment under a machine login or a pod login whose person Dispatch calls a restricted member is refused `403 RESTRICTED_MEMBER_ENROLLS_NOTHING`, and a session such a person already had is denied every secret `restricted-member` (`packages/envoy/internal/cipher/enroll`, `packages/envoy/internal/cipher/requests`).
 While Dispatch cannot say what kind of member a person is, every enrollment under that person's login and every secret request and release of their sessions is refused `503 MEMBER_KIND_UNCHECKABLE`, and nothing is released.
 
-A session name belongs to one principal — the service account, the workflow, the Google account, or the person
+A session name belongs to one principal — the service account, the workflow, the result entry's workflow whatever its ref, the Google account, or the person
 — and the broker refuses `invalid_grant` to another principal that names it (`claimSession`, `packages/envoy/internal/cipher/oauth/exchange.go`), but for a service account `BROKER_SESSION_ACCOUNT_PAIRS` pairs with a holding service account:
 that account's claim takes the name, which the broker logs at WARN as `broker: the token exchange took a session name from the account paired with its own` (the item on moving the daemon's pods in [Operator configuration](#operator-configuration)).
 A claim, a pair's take among them, holds the name for `oauthstore.SessionRetention`, 90 days, past the expiry of the token the claim was made for (`BindSession`, `packages/envoy/internal/cipher/oauthstore/exchange.go`).
@@ -8844,7 +8903,7 @@ It authenticates with its own Kubernetes service-account token, or, on a machine
 The answer carries `active` and, for a live token, those claims, `exp`, `client_id` and `jkt` (`Introspection`, `packages/envoy/internal/cipher/oauth/introspect.go`).
 
 A broker that sets none of `BROKER_EXCHANGE_K8S_AUDIENCE`, `BROKER_EXCHANGE_GITHUB_ISSUER` and `BROKER_GOOGLE_OIDC_AUDIENCE` accepts no pod's token, no workflow run's token and no machine's identity token, and says so at boot with the log line `token exchange state=unconfigured`.
-With any one of them set it logs `token exchange state=on`, naming which issuers it accepts and how many entries it holds, read entries (`read_accounts`) and machine entries included (`packages/envoy/cmd/cipherd/main.go`).
+With any one of them set it logs `token exchange state=on`, naming which issuers it accepts and how many entries it holds, read entries (`read_accounts`), result entries (`result_workflows`) and machine entries included (`packages/envoy/cmd/cipherd/main.go`).
 A machine login's access token is exchanged in both cases, because its subject type is always registered (`ExchangeConfig.tokenTypes`, `packages/envoy/internal/cipher/oauth/exchange.go`).
 For the settings themselves, read the broker's generated configuration reference, which `docs/site/generators/broker-reference.sh` writes from the doc comments in `packages/envoy/internal/cipher/config/config.go`, and the walk-through in `docs/site/src/content/docs/broker/guides/run-locally.md`, its section "Exchange a pod's token".
 
@@ -8855,6 +8914,8 @@ Dispatch decides a broker token wherever `DISPATCH_AGENT_SECRETS_URL` names the 
 A `person` token's list of projects limits no Dispatch write at this release.
 It serves a read entry's token on the routes its read list names (`readScopeRoutes` in `packages/envoy/internal/dispatch/api/routes_table.go`), today `GET /api/v1/projects/{key}/architecture` alone, and answers it `403 READ_ONLY_TOKEN` on every other route of its route table and on `GET /ws/live`.
 The Envoy listener answers that token `401`, because a verifier accepts it only where its service asks for it (`ciphertoken.Options.ServesReadOnly`), and the listener does not ask.
+It serves a result entry's token on the routes its results list names (`resultsScopeRoutes` in the same file), today `POST /api/v1/projects/{key}/results` alone, and answers it `403 RESULTS_ONLY_TOKEN` on every other route and on `GET /ws/live`.
+The Envoy listener answers a result entry's token `401`, because its verifier does not ask for it (`ciphertoken.Options.ServesResults`).
 `dispatch://INFRA-267` is where Legion's pods and its daemon get tokens of their own, and the daemon hands none out.
 
 #### Network shares

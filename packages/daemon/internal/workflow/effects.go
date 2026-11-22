@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -347,15 +348,15 @@ func refusedLingering(issue record.Issue, request string) intake.Result {
 }
 
 // clearHandoff empties the handoff a role reported for its previous phase — its commit, the
-// Dispatch handoff record it named, its verdict and summary, and the review round's decision,
-// which ends with the round — keeping its claim, the record it last named (LastHandoff) and the
-// review rounds, when a transition starts it on a new phase. A role's recorded handoff is then
-// always its current phase's: the implementer's round-1 commit cannot advance round 2, a reviewer
-// starting round 2 or a tester starting a new round reads as not completed until it completes
-// again (record.PhaseRow.Completed), a merger sent back has no summary until its next one, and no
-// round inherits an earlier decision. The architect reports no handoff, so it has none to clear:
-// its phases row holds only the entry it was handed work on (EnterArchitect), which no move
-// between phases clears.
+// Dispatch handoff record it named and that record's check states serial, its summary, and the
+// review round's decision, which ends with the round — keeping its claim, the record it last named
+// (LastHandoff) and the review rounds, when a transition starts it on a new phase. A role's
+// recorded handoff is then always its current phase's: the implementer's round-1 commit cannot
+// advance round 2, a reviewer starting round 2 or a tester starting a new round reads as not
+// completed until it completes again (record.PhaseRow.Completed), a merger sent back has no
+// summary until its next one, and no round inherits an earlier decision. The architect reports no
+// handoff, so it has none to clear: its phases row holds only the entry it was handed work on
+// (EnterArchitect), which no move between phases clears.
 func (e *Engine) clearHandoff(ctx context.Context, tx pgx.Tx, issue string, role claim.Role) error {
 	if role == "" || role == claim.RoleArchitect {
 		return nil
@@ -383,7 +384,7 @@ type phaseHandoff struct {
 	commit         string
 	dispatchRecord string
 	version        int
-	verdict        string
+	statesSerial   int64
 	summary        string
 	decision       *record.ReviewDecision
 	completedAt    time.Time
@@ -392,7 +393,7 @@ type phaseHandoff struct {
 // handoffOf is the handoff row carries.
 func handoffOf(row record.PhaseRow) phaseHandoff {
 	return phaseHandoff{commit: row.HandoffCommit, dispatchRecord: row.HandoffRecord, version: row.HandoffVersion,
-		verdict: row.Verdict, summary: row.Summary, decision: row.Decision, completedAt: row.CompletedAt,
+		statesSerial: row.StatesSerial, summary: row.Summary, decision: row.Decision, completedAt: row.CompletedAt,
 	}
 }
 
@@ -400,7 +401,7 @@ func handoffOf(row record.PhaseRow) phaseHandoff {
 // named, its rounds and their counts — left as it stands.
 func (h phaseHandoff) onto(row record.PhaseRow) record.PhaseRow {
 	row.HandoffCommit, row.HandoffRecord, row.HandoffVersion = h.commit, h.dispatchRecord, h.version
-	row.Verdict, row.Summary, row.Decision = h.verdict, h.summary, h.decision
+	row.StatesSerial, row.Summary, row.Decision = h.statesSerial, h.summary, h.decision
 	row.CompletedAt = h.completedAt
 	return row
 }
@@ -410,24 +411,29 @@ func (e *Engine) suspend(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 	return e.enqueue(ctx, tx, issue.Key, record.SuperviseRequest{Op: "suspend", Tree: issue.Tree, Role: role, Generation: issue.Generation, Reason: reason})
 }
 
-// testerVerdictLabel labels the tester's verdict a started worker's task carries. The reviewer's
-// prompt names it as the tester's result rather than its own (prompts/go/reviewer.md), which a test
-// ties to it. reviewerVerdictLabel labels the reviewer's, approve or changes, which the task the
-// implementer is started with after the reviewer's changes carries (verdictLabel).
-const (
-	testerVerdictLabel   = "Tester's verdict"
-	reviewerVerdictLabel = "Reviewer's verdict"
-)
+// reviewerVerdictLabel labels the reviewer's verdict, approve or changes, which the task a worker is
+// started with after the reviewer's round carries (reviewerVerdictOf): the implementer started on
+// the reviewer's changes reads it as the reviewer's. No other role's completion carries a verdict
+// (api/handoff.go, VERDICT_NOT_TAKEN): Dispatch's check states at the tested head decide the
+// testing step, so no task names a tester's verdict.
+const reviewerVerdictLabel = "Reviewer's verdict"
 
-// verdictLabel is the label of the verdict role's completion carries: the tester's and the
-// reviewer's each under its own, so no worker reads one role's verdict as the other's. The daemon
-// takes a verdict on a phase completion from no other role (api/handoff.go,
-// VERDICT_ROLE_FORBIDDEN), so any other role's row carries none to label.
-func verdictLabel(role claim.Role) string {
-	if role == claim.RoleReviewer {
-		return reviewerVerdictLabel
+// reviewerVerdictOf is the reviewer's verdict that handoff, the row a worker is started on, carries
+// for its task: approve or changes, from the round's decision on the reviewer's row, and "" for any
+// other role's row and for a reviewer's row with no decision. The decision of a rejected round can
+// be a person's request for changes, so the move that rejects it clears the decision where the
+// reviewer's own verdict did not reject the round (settleRound).
+func reviewerVerdictOf(handoff record.PhaseRow) string {
+	if handoff.Role != claim.RoleReviewer || handoff.Decision == nil {
+		return ""
 	}
-	return testerVerdictLabel
+	switch handoff.Decision.State {
+	case "approved":
+		return string(store.VerdictApprove)
+	case "changes_requested":
+		return string(store.VerdictChanges)
+	}
+	return ""
 }
 
 // start starts the phase worker of the issue's current phase, a start stamped with that phase and
@@ -1057,8 +1063,8 @@ func (e *Engine) EnterArchitect(ctx context.Context, tx pgx.Tx, root record.Issu
 // text before the colon of one of the task's lines. Every line of the task is built from its
 // label here, and TestEachTaskLabelIsOneThePromptsName ties each one to the prompts and the
 // skills that tell the worker to read it, so a label renamed on one side alone fails there.
-// testerVerdictLabel, above, and reviewround's CommitLabel and EntryLabel are three more, tied by
-// tests of their own.
+// reviewround's CommitLabel and EntryLabel are two more, tied by tests of their own, and so is
+// reviewerVerdictLabel, above.
 const (
 	phaseLabel       = "Phase"
 	workingCopyLabel = "Working copy"
@@ -1081,12 +1087,12 @@ const (
 // accepted, whatever was written to the phase since; a commit is named, as `Handoff commit:`,
 // whenever the completion reported one: the head the planner's, the implementer's, the tester's or
 // the reviewer's record names, and the commit retro and the merger stand on.
-// A handoff's verdict is the tester's pass or fail, or the reviewer's approve or changes, since the
-// daemon accepts one from no other role on a phase completion (api/handoff.go,
-// VERDICT_ROLE_FORBIDDEN; the implementer's check report is no phase completion and starts
-// nobody), and the line names whose it is (verdictLabel): the reviewer started on a pass reads it
-// as the tester's report, never as a field of its own completion, and the implementer started on
-// the reviewer's changes reads it as the reviewer's.
+// No handoff carries the tester's verdict: the tester's pass or fail is the check states at the
+// tested head (decideTesting), which a fail's reason names, and the reviewer started on a pass
+// reads the state of each check at its head from Dispatch. A handoff of the reviewer's carries its
+// verdict, approve or changes (reviewerVerdictOf), which the line names as the reviewer's
+// (reviewerVerdictLabel): the implementer started on the reviewer's changes reads it as the
+// reviewer's.
 //
 // A merger started in merging at a head that moved past the review, a merge forward's landing or
 // any other push, is told to merge that head only once legion-verdict at that head is success:
@@ -1105,8 +1111,8 @@ func task(issue record.Issue, at Standing, handoff record.PhaseRow, pr *record.P
 	if handoff.HandoffCommit != "" {
 		text += " Handoff commit: " + handoff.HandoffCommit + "."
 	}
-	if handoff.Verdict != "" {
-		text += " " + verdictLabel(handoff.Role) + ": " + handoff.Verdict + "."
+	if word := reviewerVerdictOf(handoff); word != "" {
+		text += " " + reviewerVerdictLabel + ": " + word + "."
 	}
 	if pr != nil && pr.Number != 0 {
 		text += fmt.Sprintf(" %s: #%d.", pullRequestLabel, pr.Number)

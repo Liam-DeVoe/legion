@@ -621,7 +621,12 @@ type PhaseRow struct {
 	// A new generation clears it (ClearGeneration), so a tree sent back to the start tells again
 	// from its own first crossing.
 	CapTold int
-	Verdict string
+	// StatesSerial is, on the tester's row, the check states serial of the record its completion
+	// of testing named (intake.HandoffComplete.StatesSerial): the testing move decides once the
+	// daemon holds every state event of the issue through it (Store.StatesFenceReached), and 0, a
+	// record that carries none, passes that fence at once. Every other row holds 0. The next phase's
+	// start clears it with the rest of the handoff (workflow's clearHandoff).
+	StatesSerial int64
 	// Summary is what the role reported with its completion, which the architect is told when the
 	// phase ends.
 	Summary string
@@ -1908,6 +1913,29 @@ type Store interface {
 	// transition has ever handed work on.
 	PhaseEntries(ctx context.Context, tx pgx.Tx, issues []string) (map[PhaseRole]PhaseEntry, error)
 	PutPhase(ctx context.Context, tx pgx.Tx, phase PhaseRow) error
+	// PutCheckState keeps state as the newest state of its check at its head of its issue, over a
+	// state of a lower Dispatch sequence only, and answers whether it changed the row: a state
+	// event delivered late, behind a newer one of the same check at the same head, changes nothing.
+	PutCheckState(ctx context.Context, tx pgx.Tx, state CheckState) (bool, error)
+	// PutCheckSet keeps checks as the set of checks of issue at head of repo, behind the same
+	// guard as PutCheckState, and answers whether it changed the row. A nil set is a head with no
+	// check.
+	PutCheckSet(ctx context.Context, tx pgx.Tx, issue, repo, head string, checks []string, seq int64) (bool, error)
+	// HeadStates is what the store holds of issue's checks at head of repo: the head's set, nil
+	// where none is held, and the newest state of each check it holds a state of.
+	HeadStates(ctx context.Context, tx pgx.Tx, issue, repo, head string) (HeadStates, error)
+	// DeleteCheckStates deletes every state, set and serial the store holds of issue, which the
+	// merge that closes it ends the use of.
+	DeleteCheckStates(ctx context.Context, tx pgx.Tx, issue string) error
+	// PutCheckStateSerial records that the daemon applied the issue's state event of serial,
+	// refusing a serial below 1.
+	PutCheckStateSerial(ctx context.Context, tx pgx.Tx, issue string, serial int64) error
+	// StatesFenceReached says whether a tester's handoff at serial may be judged on the states the
+	// store holds: true where serial is 0, a handoff that carries none, or where the daemon holds
+	// every serial of the issue from the lowest it holds through serial. A serial below the lowest
+	// held is reached, since its event came before the first the daemon applied; with none held,
+	// no serial above 0 is.
+	StatesFenceReached(ctx context.Context, tx pgx.Tx, issue string, serial int64) (bool, error)
 	PullRequest(ctx context.Context, tx pgx.Tx, issue string) (*PullRequest, error)
 	PullRequestByBranch(ctx context.Context, tx pgx.Tx, repo, branch string) (*PullRequest, error)
 	PullRequestByNumber(ctx context.Context, tx pgx.Tx, repo string, number int) (*PullRequest, error)
@@ -2080,7 +2108,7 @@ type Store interface {
 	// ClearGeneration drops the facts one generation of an issue owns: a merged or closed pull
 	// request, the last generation's reading of a still-open one (the next generation runs on the
 	// same branch and pull request), its design gate, and each role's handoff, review rounds,
-	// verdict and summary. Each role keeps its claim and its last handoff, so a
+	// check states serial and summary. Each role keeps its claim and its last handoff, so a
 	// commit an earlier generation reported is never new again. An issue whose gate rows it
 	// deletes has the empty set of design-gate documents queued for it, due at now, since the set
 	// Dispatch holds for that issue is the one those rows recorded.
@@ -2202,6 +2230,13 @@ type Store interface {
 	// RestartCaughtUp sets issue's catch-up cursor back to 0, so its next catch-up reads from its
 	// last handout: a re-admission's new generation, whose old generation's events are not its own.
 	RestartCaughtUp(ctx context.Context, tx pgx.Tx, issue string) error
+	// CheckStatesSeqs is the cursor of the boot's catch-up of check states of each of issues the
+	// store records, by key: the sequence of the issue's Dispatch event log through which that
+	// catch-up has read its state events, 0 for an issue it has never read.
+	CheckStatesSeqs(ctx context.Context, tx pgx.Tx, issues []string) (map[string]int64, error)
+	// SetCheckStatesSeq raises issue's cursor of the catch-up of check states to seq; it is never
+	// lowered.
+	SetCheckStatesSeq(ctx context.Context, tx pgx.Tx, issue string, seq int64) error
 	// PutAssignments records rows, the answers drawn for issue, and reports how many rows it
 	// wrote. Each is written once: an experiment issue already holds a row for keeps that row
 	// whatever is passed for it now, so a later pass under another mode leaves a unit on the arm

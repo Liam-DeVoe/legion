@@ -1,4 +1,4 @@
--- 20261120185521_verdicts.up.sql — the records of the daemon's writes of the required check
+-- 20261122045825_verdicts.up.sql — the records of the daemon's writes of the required check
 -- legion-verdict: the pull requests of a verdict repository that no Legion issue owns, with their
 -- heads; the reviews of a verdict repository's pull requests; the reviewer session a controller
 -- names for such a pull request at a head; the verdicts reviewers give on a head; and each check

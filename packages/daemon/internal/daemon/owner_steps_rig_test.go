@@ -286,7 +286,10 @@ func (r *ownerStepsRig) runStep(step string, answer stepAnswer, next phase.Phase
 		}
 		r.work(claim.RoleImplementer, "implement", api.HandoffCompleteRequest{Summary: "implemented", Commit: stepRecordsHead}, next)
 	case step == "tester":
-		r.work(claim.RoleTester, "test", api.HandoffCompleteRequest{Summary: "the criteria read " + string(answer), Verdict: string(answer), Commit: stepRecordsHead}, next)
+		// The tester's completion carries no verdict: the check state at the head it tested decides
+		// the step, which the store holds before its completion (finish), as Dispatch's event of the
+		// tester's result puts it there.
+		r.work(claim.RoleTester, "test", api.HandoffCompleteRequest{Summary: "the criteria read " + string(answer), Commit: stepRecordsHead}, next)
 	case step == "reviewer":
 		state := "APPROVED"
 		if answer == answerFail {

@@ -34,8 +34,8 @@ writes it for them. For each step, a fresh agent or the agent of an earlier step
 | `reviewer` | review | `reviewing` | No review: on a base whose rules require an approving review, the merger waits and tells you. |
 | `acceptance:owner` | review | `accepting` | Your step. Without it the last step's pass starts the retro, and nothing waits for you to read the evidence. |
 
-Without `acceptance:owner`, two steps still hold the checks:
-a reviewer step approves only once a pass stands for every `before_merge` check at the head, and retro's first step sends back a check with no pass standing there, except a `ci_check` whose run has not concluded or cannot be read, which moves nothing back (`skill://legion-retro`).
+Without `acceptance:owner`, two steps still hold the checks, each as its own text says:
+a reviewer step gates its `approve` on them (its role prompt), and retro's first step sends back the ones `skill://legion-retro` names, except a `ci_check` whose run has not concluded or cannot be read, which moves nothing back.
 So on a task with no reviewer step and no `acceptance:owner`, such a check holds the merge only where it is among the checks the base branch requires.
 
 ## What Legion refuses

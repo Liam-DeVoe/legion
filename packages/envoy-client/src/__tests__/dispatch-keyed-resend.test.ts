@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { routeAnswer } from "../../test/route-answers";
 import { bearerCredential } from "../bearer";
 import { DISPATCH_WRITE_RETRY, DispatchClient, type DispatchWriteRetry } from "../dispatch-http";
 
@@ -6,7 +7,9 @@ import { DISPATCH_WRITE_RETRY, DispatchClient, type DispatchWriteRetry } from ".
 // (`keyedWrites`, packages/envoy/internal/dispatch/api/request_keys.go): it stores a keyed write once and
 // answers a repeat under the same key with the first write's answer. So a keyed write whose answer
 // was lost after Dispatch stored it is sent again under its key, and lands once, whatever `/healthz`
-// answers: the client asks it nothing first.
+// answers: the client asks it nothing first. Each stand-in answers a write with its route's
+// declared answer (`routeAnswer`), since the client reads a write's 2xx into the row its callers
+// read (`dispatch-write-rows.ts`), and a 2xx that is not that row is no answer of the write's.
 
 /** How the first attempt's answer is lost after Dispatch stored the write. */
 type Cut = "the client's silence cut" | "a gateway's 502 page";
@@ -30,7 +33,7 @@ afterEach(() => {
   for (const made of opened.splice(0)) made.stop();
 });
 
-type Comment = { readonly id: string; readonly body: string };
+type Comment = { readonly id: string; readonly issue_key: string; readonly body: string };
 
 /**
  * The keyed comment store the two Bun stand-ins below keep. Like Dispatch's keyed layer, a request
@@ -62,7 +65,11 @@ function keyedStore() {
         };
       }
       const input = (await request.json()) as { body: string };
-      const made = { id: `comment-${comments.length + 1}`, body: input.body };
+      const made = routeAnswer<Comment>("POST /api/v1/issues/{key}/comments", {
+        id: `comment-${comments.length + 1}`,
+        issue_key: "DSP-1",
+        body: input.body,
+      });
       comments.push(made);
       posts.push({ key, stored: true });
       if (key !== null) answers.set(key, made);
@@ -386,7 +393,9 @@ function rollingUploads() {
         });
       }
       uploads += 1;
-      const made = { artifact: { id: `artifact-${uploads}`, issue_key: "DSP-1" } };
+      const made = routeAnswer("POST /api/v1/issues/{key}/artifacts", {
+        artifact: { id: `artifact-${uploads}`, issue_key: "DSP-1" },
+      });
       posts.push({ key, stored: true, bytes });
       if (key !== null) answers.set(key, made);
       if (posts.length === 1) {

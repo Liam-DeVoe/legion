@@ -259,14 +259,14 @@ func TestARollbackAndItsRollForwardKeepEveryRecordOfTheWalk(t *testing.T) {
 	implementer.endTurnUnseen()
 	earlierStart := time.Now().UTC().Truncate(time.Millisecond)
 	r.exec(`update issues set phase = 'testing' where key = $1`, r.key)
-	r.exec(`update phases set handoff_commit = '', handoff_record = '', handoff_version = 0, verdict = '', summary = '', decision = null,
+	r.exec(`update phases set handoff_commit = '', handoff_record = '', handoff_version = 0, states_serial = 0, summary = '', decision = null,
 		completed_at = $3, entry = entry + 1, entry_raised_at = $2 where issue = $1 and role = 'tester'`, r.key, earlierStart, time.Time{})
 	// A transition into testing clears the handoff the tester reported for its last round
 	// (workflow's clearHandoff, which empties what its phaseHandoff lists) before it raises the
 	// tester's entry, so the new entry reads as not completed; the claim, the record the tester
 	// last named and the rounds stand.
 	if got := r.phaseOf(claim.RoleTester); got.HandoffCommit != "" || got.HandoffRecord != "" || got.HandoffVersion != 0 ||
-		got.Verdict != "" || got.Summary != "" || got.Decision != nil || !got.CompletedAt.IsZero() ||
+		got.StatesSerial != 0 || got.Summary != "" || got.Decision != nil || !got.CompletedAt.IsZero() ||
 		got.Claim != testerRow.Claim || got.LastHandoff != testerRow.LastHandoff || got.Rounds != testerRow.Rounds || got.Pass != testerRow.Pass ||
 		got.Entry != testerRow.Entry+1 || !got.EntryRaisedAt.Equal(earlierStart) {
 		t.Fatalf("the tester's row the earlier release moved into testing is %+v, want its last round's handoff cleared and its entry raised at %s, the rest of %+v kept",
@@ -494,7 +494,7 @@ func (r *stepRecordsRig) approveChild(child string, number int) {
 	ctx := context.Background()
 	if err := r.st.Tx(ctx, func(tx pgx.Tx) error {
 		return r.records.PutPhase(ctx, tx, record.PhaseRow{Issue: child, Role: claim.RoleReviewer, Claim: r.tokenOf(child, claim.RoleReviewer),
-			HandoffRecord: "review-" + child, HandoffVersion: 1, LastHandoff: "review-" + child, Summary: "the work holds", Verdict: "approve",
+			HandoffRecord: "review-" + child, HandoffVersion: 1, LastHandoff: "review-" + child, Summary: "the work holds",
 			HandoffCommit: stepRecordsHead, CompletedAt: time.Now(), Decision: &record.ReviewDecision{State: "approved", Body: "the work holds", Head: stepRecordsHead}})
 	}); err != nil {
 		t.Fatalf("record the approval of %s's reviewer: %v", child, err)

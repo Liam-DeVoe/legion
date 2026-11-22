@@ -41,7 +41,7 @@ func seedRecordedReviewer(t *testing.T, h *harness, key string, reviewer claim.T
 	t.Helper()
 	err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
 		return record.NewStore().PutPhase(context.Background(), tx, record.PhaseRow{Issue: key, Role: claim.RoleReviewer, Claim: reviewer,
-			HandoffCommit: reviewedSHA, HandoffRecord: "review-1", HandoffVersion: 1, Verdict: "approve", Summary: "reviewed",
+			HandoffCommit: reviewedSHA, HandoffRecord: "review-1", HandoffVersion: 1, Summary: "reviewed",
 			Decision: &record.ReviewDecision{State: "approved", Head: reviewedSHA}})
 	})
 	if err != nil {
@@ -88,7 +88,7 @@ func seedTesterPass(t *testing.T, h *harness, key, commit string) {
 	t.Helper()
 	err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
 		return record.NewStore().PutPhase(context.Background(), tx, record.PhaseRow{Issue: key, Role: claim.RoleTester, Claim: "test-claim",
-			Verdict: "pass", HandoffCommit: commit, HandoffRecord: "test-1", HandoffVersion: 1, Summary: "tested"})
+			HandoffCommit: commit, HandoffRecord: "test-1", HandoffVersion: 1, Summary: "tested"})
 	})
 	if err != nil {
 		t.Fatalf("seed the tester's pass of %s: %v", key, err)
@@ -268,13 +268,13 @@ func TestReviewVerdictPastReviewTakesOnlyTheRecordedReviewer(t *testing.T) {
 				tester := phaseRowOf(t, h, "LEGION-208", claim.RoleTester)
 				if !tc.moves {
 					assertIssuePhase(t, h, at)
-					if tester.Verdict != "pass" || tester.HandoffCommit != testedSHA {
+					if tester.HandoffCommit != testedSHA {
 						t.Fatalf("the tester's row = %+v, want its pass at %s kept", tester, testedSHA)
 					}
 					return
 				}
 				assertIssuePhase(t, h, phase.Testing)
-				if tester.Verdict != "" || tester.HandoffCommit != "" {
+				if tester.HandoffCommit != "" {
 					t.Fatalf("the tester's row = %+v, want its pass cleared, so nothing writes success on %s", tester, headSHA)
 				}
 			})

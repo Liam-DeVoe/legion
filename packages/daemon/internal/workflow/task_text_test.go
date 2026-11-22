@@ -214,6 +214,7 @@ func TestATaskNamesTheNewReportOfAStepThatRanAgain(t *testing.T) {
 		move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
 		completes(t, pool, engine, claim.RolePlanner, "plan", 1)
 		completes(t, pool, engine, claim.RoleImplementer, "implement", 1)
+		failsAtTheHead(t, pool, applyFacts(t, pool, engine), root.Key)
 		if result := applyFacts(t, pool, engine)("fail-1", failedTest(root.Key, 1, "test-1")); result.Refusal != nil {
 			t.Fatalf("the tester's fail naming step 1 was refused: %+v", result.Refusal)
 		}
@@ -322,7 +323,7 @@ func TestEachTaskLabelIsOneThePromptsName(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tester := record.PhaseRow{Role: claim.RoleTester, HandoffRecord: "test-1", HandoffVersion: 1, Verdict: "pass"}
+	tester := record.PhaseRow{Role: claim.RoleTester, HandoffRecord: "test-1", HandoffVersion: 1}
 	written := task(issue, at, tester, &record.PullRequest{Number: 42}, "the reviewer asked again", "")
 
 	labels := map[string]string{
@@ -339,7 +340,7 @@ func TestEachTaskLabelIsOneThePromptsName(t *testing.T) {
 		}
 	}
 	for _, match := range readersNameALine.FindAllStringSubmatch(readers, -1) {
-		if _, ok := labels[match[1]]; !ok && match[1] != testerVerdictLabel && match[1] != reviewround.CommitLabel && match[1] != reviewround.EntryLabel {
+		if _, ok := labels[match[1]]; !ok && match[1] != reviewerVerdictLabel && match[1] != reviewround.CommitLabel && match[1] != reviewround.EntryLabel {
 			t.Errorf("a prompt or a skill names the task's %q line (%q), and the task writes no such label", match[1], match[0])
 		}
 	}

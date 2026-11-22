@@ -92,7 +92,7 @@ func (e *Engine) reviewVerdict(ctx context.Context, tx pgx.Tx, fact intake.Revie
 	if err != nil {
 		return intake.Result{}, err
 	}
-	back := uncarried(tester, fact.Verdict, fact.Commit, fact.TestedCommit)
+	back := uncarried(fact.Verdict, fact.Commit, fact.TestedCommit)
 	reviewer.Decision = decision
 	if err := e.store.PutPhase(ctx, tx, reviewer); err != nil {
 		return intake.Result{}, err
@@ -135,7 +135,7 @@ func (e *Engine) applyHeldVerdict(ctx context.Context, tx pgx.Tx, issue record.I
 		return false, err
 	}
 	tester, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleTester)
-	if err != nil || !uncarried(tester, string(given.Verdict), pr.HeadSHA, given.TestedCommit) {
+	if err != nil || !uncarried(string(given.Verdict), pr.HeadSHA, given.TestedCommit) {
 		return false, err
 	}
 	e.logOnCommit(ctx, heldVerdictApplied, "issue", issue.Key, "tree", issue.Tree, "phase", issue.Phase,
@@ -144,14 +144,16 @@ func (e *Engine) applyHeldVerdict(ctx context.Context, tx pgx.Tx, issue record.I
 }
 
 // uncarried is whether word, a reviewer's verdict at commit carrying the tester's pass at tested,
-// is an approve that the tester's recorded pass does not count at (verdict.PassCounts, the rule
-// the writer of legion-verdict decides by). Only an issue whose record holds a tester's pass is
-// judged: none reaches reviewing without one, and a pass recorded with no commit counts at no
-// head, since nothing says which code it tested. A changes is a refusal whatever it carries, and
-// ends the round as one.
-func uncarried(tester record.PhaseRow, word, commit, tested string) bool {
-	return store.VerdictWord(word) == store.VerdictApprove && tester.Verdict == verdict.TesterPass &&
-		!verdict.PassCounts(verdict.Tester{Verdict: tester.Verdict, Commit: tester.HandoffCommit}, commit, tested)
+// is an approve that the tester's pass does not count at (verdict.PassCounts, the rule the writer
+// of legion-verdict decides by). Only a tester's pass is judged, and the carry reads none
+// (verdict.NoTestingPass): the record keeps no tester's verdict, since Dispatch's check states at
+// the tested head decide the testing phase, so no approve is sent back to testing for want of one
+// until a testing step is decided by its check states at the head. A changes is a refusal
+// whatever it carries, and ends the round as one.
+func uncarried(word, commit, tested string) bool {
+	pass := verdict.NoTestingPass
+	return store.VerdictWord(word) == store.VerdictApprove && pass.Verdict == verdict.TesterPass &&
+		!verdict.PassCounts(pass, commit, tested)
 }
 
 // testAgain sends issue, in reviewing, back to testing where the reviewer's completion is an
@@ -160,7 +162,7 @@ func uncarried(tester record.PhaseRow, word, commit, tested string) bool {
 // the completion left it, which the move hands on as the reviewer's request.
 func (e *Engine) testAgain(ctx context.Context, tx pgx.Tx, issue record.Issue, by record.PhaseRow, pr *record.PullRequest, word, commit, tested string) (bool, error) {
 	tester, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleTester)
-	if err != nil || !uncarried(tester, word, commit, tested) {
+	if err != nil || !uncarried(word, commit, tested) {
 		return false, err
 	}
 	return true, e.moveBackToTesting(ctx, tx, issue, by, pr, tester, commit, tested)

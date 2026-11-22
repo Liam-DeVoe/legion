@@ -1119,6 +1119,7 @@ func outsideFact(spec ConsumerSpec, fact Fact) (Fact, bool) {
 	}
 	return nil, false
 }
+
 // prepareRepository runs ConsumerSpec.PrepareRepository for a Dispatch issue fact, within AckWait,
 // and is the fact to apply. Every other fact passes through untouched.
 func prepareRepository(ctx context.Context, spec ConsumerSpec, fact Fact) (Fact, error) {

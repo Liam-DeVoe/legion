@@ -481,7 +481,7 @@ Legion uses GitHub's own review mechanisms rather than labels:
   names, from a role whose phase the issue is no longer in, is answered
   `HANDOFF_NOT_CURRENT_PHASE` as well, before anything is recorded: the task of that entry was
   queued for the phase the issue has left, so the daemon drops it unsent and owes the claim none.
-  One completion behind its entry goes on all the same: a verdict on the head the record holds,
+  One completion behind its entry goes on all the same: one at the head the record holds,
   of a phase that ends with the role's own handoff record. The phase was entered again at that
   head, so the work the new entry's task asks for is the work that completion reports; taking it
   moves the issue on, so the same completion sent again, or one naming a newer record, is

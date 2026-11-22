@@ -117,7 +117,7 @@ func TestAVerdictAfterThePromotionRecordsItsCommit(t *testing.T) {
 	if got := issuePhase(t, pool); got != phase.Implementing {
 		t.Fatalf("after the person's request for changes the issue is in %s, want implementing", got)
 	}
-	backToReviewing(t, apply, 3)
+	backToReviewing(t, pool, apply, 3)
 	task := reviewerRow(t, pool).EntryTask
 	readsReviewingTask(t, "the next round", task, 3)
 	if !strings.Contains(task, reviewedPartOf(headOne)) {

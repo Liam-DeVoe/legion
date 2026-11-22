@@ -115,7 +115,7 @@ func TestRowsForTheBuildBeforeB(t *testing.T) {
 	}{
 		{key, record.OrdinaryStatusWrite("in_progress", "testing", "")},
 		{key, record.MessagePost{Body: fmt.Sprintf("Pull request %s#%d: legion-verdict is success at %s.", repo, number, head)}},
-		{key, record.Notice{Kind: "phase-finished", Role: claim.RoleReviewer, Phase: phase.Reviewing, Summary: summary, Verdict: "approve", Version: 1}},
+		{key, record.Notice{Kind: "phase-finished", Role: claim.RoleReviewer, Phase: phase.Reviewing, Summary: summary, Version: 1}},
 		{key, record.ControllerNotice{Kind: "held", Role: claim.RoleImplementer, Phase: phase.Implementing, Reason: "escalated"}},
 		{key, record.SuperviseRequest{Op: "start", Tree: key, Role: claim.RoleReviewer, Generation: 1, Task: "Review pull request #" + fmt.Sprint(number) + "."}},
 		{key, record.GateSeed{ArtifactID: "artifact-spec", Version: 1}},
@@ -176,11 +176,11 @@ func TestRowsForTheBuildBeforeB(t *testing.T) {
 			return err
 		}
 		if err := records.PutPhase(ctx, tx, record.PhaseRow{Issue: key, Role: claim.RoleTester, Claim: claim.Token("legion-acme-" + strings.ToLower(key) + "-tester"),
-			HandoffCommit: tested, Verdict: "pass", Summary: "Every check passes.", CompletedAt: at}); err != nil {
+			HandoffCommit: tested, Summary: "Every check passes.", CompletedAt: at}); err != nil {
 			return err
 		}
 		if err := records.PutPhase(ctx, tx, record.PhaseRow{Issue: key, Role: claim.RoleReviewer, Claim: reviewerClaim,
-			HandoffCommit: head, Verdict: string(VerdictApprove), Summary: summary, CompletedAt: at, ReviewedHead: head,
+			HandoffCommit: head, Summary: summary, CompletedAt: at, ReviewedHead: head,
 			Entry: 1, EntryTask: "Review pull request #" + fmt.Sprint(number) + ".",
 			Decision: &record.ReviewDecision{State: "approved", Body: summary, Head: head, TestedCommit: tested}}); err != nil {
 			return err
