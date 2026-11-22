@@ -114,7 +114,7 @@ How it reads a step:
     the background, a trailing `&&` the next line continues, a `|| name=$?` that keeps its
     status, its redirections to files, and the braces of a `{ …; }` group are taken off before
     the line is read. The steps that keep a `go test -json` stream (ci_job_reads.py's
-    json_stream_script, and envoy-go's unit step, nine of whose ten calls run at once) are
+    json_stream_script, and envoy-go's unit step, eight of whose ten calls run at once) are
     written so;
   * a line that starts no go command and opens with one of the commands the streaming steps write
     around their go commands (STEP_PLUMBING: `mkdir`, the `jq` replay, `echo`, `cat`, `wait`,

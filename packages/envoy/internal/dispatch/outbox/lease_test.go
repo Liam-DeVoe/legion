@@ -519,9 +519,10 @@ func TestOnlyOneOutboxPublishesAtATime(t *testing.T) {
 // A process that stops gracefully releases the publisher hold, and the other takes it over at once
 // rather than when the hold would have lapsed.
 //
-// Serial: its assertion is a time - the standby must publish within publisherHoldOptions.TTL less
-// its Renew of the stop's start, the span a lapsed hand-over cannot fit, and a parallel batch's
-// load spends that span on the stop and the take, besides starving the holder's renewals.
+// Serial: its assertions are times - the standby must publish within 1 s of the holder's stop
+// returning, and the event written after the hand-over be published within 1 s (main's bounds) -
+// and a parallel batch's load spends that second on the take and the publish, besides starving the
+// holder's renewals.
 func TestAStoppedOutboxHandsThePublisherToTheOtherAtOnce(t *testing.T) {
 	url := testnats.URL(t)
 	database := storetest.Open(t)
@@ -535,21 +536,12 @@ func TestAStoppedOutboxHandsThePublisherToTheOtherAtOnce(t *testing.T) {
 		standby = second
 	}
 
-	// The span this wait proves, read from before the stop: a take-over that waited for the hold
-	// to lapse could not come before publisherHoldOptions.TTL less its Renew after the stop
-	// began, since the lapse falls one TTL after a renewal and the last renewal was at most one
-	// Renew before it. The release instead deletes the hold's row and notifies the standbys in
-	// one transaction (duty.Hold.Release), so the hand-over takes milliseconds. Taking the time
-	// after stop returned would hand a slow stop - closing its LISTEN connection is allowed
-	// seconds - to a lapsed hand-over as slack, and the span could then no longer tell the two
-	// apart.
-	stopping := time.Now()
 	holder.stop()
-	waitFor(t, publisherHoldOptions.TTL-publisherHoldOptions.Renew-time.Since(stopping),
-		"the standby publishing within publisherHoldOptions.TTL less its Renew of the holder's stop", standby.outbox.Publishing)
-	t.Logf("the standby took the publisher hold %s after the holder began to stop", time.Since(stopping).Round(time.Millisecond))
+	stopped := time.Now()
+	waitFor(t, time.Second, "the standby publishing once the holder stopped", standby.outbox.Publishing)
+	t.Logf("the standby took the publisher hold %s after the holder stopped", time.Since(stopped).Round(time.Millisecond))
 	event := writeMessage(t, standby, "after the hand-over")
-	waitForPublished(t, eventWait, database, counter, event)
+	waitForPublished(t, time.Second, database, counter, event)
 }
 
 // A holder whose NATS connection is cut releases the publisher hold once it has been without NATS

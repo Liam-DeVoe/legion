@@ -657,6 +657,10 @@ A table test's rows follow the same rules one by one: a row that is independent 
 
 Serial tests of one binary still meet every other binary's transactions, which is why CI gives `internal/dispatch/routes`, `internal/dispatch/events` and `cmd/dispatch`'s `TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument`, the three whose horizon waits other packages' transactions held past their deadlines, Postgres services of their own (the `envoy-go` job's `postgres_routes`, `postgres_events` and `postgres_shutdown` in `.github/workflows/ci-job-envoy-go.yaml`).
 
+They also run beside every other binary's load, which stretches a time a test measures with its own clock.
+So CI runs a test whose assertion is such a time apart from that load once its bound is under twice its slowest reading in `envoy-go`'s package list: the unit step leaves it out of the package list and runs it after its other calls, one package and one test at a time (`UNIT_ALONE_TESTS` in `.github/scripts/ci_job_reads.py`, which states the rule and holds the list).
+A test that comes to fit the rule joins that list; one whose bound is at or above twice its slowest reading stays in the package list.
+
 ## A Go test that opens a NATS client
 
 The daemon's NATS tests share one server per test binary, and `packages/daemon/internal/testnats`
