@@ -1,14 +1,19 @@
-import { afterEach, expect, spyOn, test } from "bun:test";
+import { afterEach, expect, jest, spyOn, test } from "bun:test";
 import { ISSUE_TITLE_MAX } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the click below leaves the page with the focus still in the title's field, which user-event has no form for: its click moves the focus first, and the field's blur would write before the page goes.
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { Link, MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
+import { BeforeEffectsOfRead, stepBeforeEffects } from "../../__tests__/before-effects";
 import { onFakeClock, settle } from "../../__tests__/fake-clock";
 import { keptWrites } from "../../__tests__/kept-sends-harness";
 import { recordedEditors, selectText, writeAtEnd } from "../../__tests__/recorded-editors";
-import { answerPriorityPatches, PRIORITY_TITLE_CHANGED } from "../../__tests__/send-answers";
+import {
+  answerPriorityPatches,
+  PRIORITY_DESCRIPTION_CHANGED,
+  PRIORITY_TITLE_CHANGED,
+} from "../../__tests__/send-answers";
 import { ApiError, api, priorityPatchRequest } from "../../api/client";
 import { prioritiesQuery } from "../../api/queries";
 import type { IssueSummary, Priorities, Priority, PriorityRow } from "../../api/types";
@@ -16,6 +21,7 @@ import { DocumentRuntime } from "../doc/runtime";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { PendingWritesIndicator } from "../writes/PendingWritesIndicator";
 import { writesOf } from "../writes/write-store";
+import { SAVE_AFTER_MS } from "./InPlaceField";
 import { PriorityPage } from "./PriorityPage";
 import { PRIORITIES_PATH } from "./priority-routes";
 
@@ -163,10 +169,13 @@ function page(id = "rocq-lean", issues: IssueSummary[] = [], writer = true) {
   };
   // The description is drawn in the documents' own editor, whose handles a test edits through.
   const editors = recordedEditors();
+  // What runs in the commit the next read the page takes draws, before the page's effects: after
+  // the page's render of it, before the page's effects take it in (`beforeEffects`).
+  const { beforeEffects, step } = stepBeforeEffects();
   // The page, the priorities page its link leads to - a stand-in with a way back - the shell's
-  // line of pending writes, which stands above the router as the app's does, a way to another
-  // priority's page, which the router draws on the same page, and where any other link or key
-  // the page follows lands.
+  // line of pending writes, which stands above the router as the app's does, the step a test runs
+  // as a read of the priorities lands (`step`), a way to another priority's page, which the router
+  // draws on the same page, and where any other link or key the page follows lands.
   const draw = (app: QueryClient) =>
     render(
       <MemoryRouter initialEntries={[`/priorities/${id}`]}>
@@ -182,6 +191,7 @@ function page(id = "rocq-lean", issues: IssueSummary[] = [], writer = true) {
                 <Route element={<Landed />} path="*" />
               </Routes>
               <PendingWritesIndicator />
+              <BeforeEffectsOfRead read={prioritiesQuery()} step={step} />
               <Link to="/priorities/runbook">The runbook's page</Link>
             </KeymapProvider>
           </DocumentRuntime.Provider>
@@ -215,7 +225,17 @@ function page(id = "rocq-lean", issues: IssueSummary[] = [], writer = true) {
     act(() => writesOf(client).resume("alice"));
     return client;
   };
-  return { client, editors, listing, patch, priorities, reload, view, writtenElsewhere };
+  return {
+    beforeEffects,
+    client,
+    editors,
+    listing,
+    patch,
+    priorities,
+    reload,
+    view,
+    writtenElsewhere,
+  };
 }
 
 /** The page's own heading, the priority's title, in its header: the description is drawn as the
@@ -626,9 +646,7 @@ test("a description a reload took up and another person's change refused is kept
       version: 1,
     })
   );
-  patch.mockRejectedValueOnce(
-    new ApiError(409, { code: "PRIORITY_CHANGED", error: "the description was written meanwhile" })
-  );
+  patch.mockRejectedValueOnce(PRIORITY_DESCRIPTION_CHANGED);
   act(() => writesOf(client).resume("alice"));
   const notice = await screen.findByRole("alert", {
     name: "Description, changed by another person",
@@ -854,5 +872,84 @@ test("a title typed while a refused one waits for its read is on the shell's lin
       .getAllByRole("note", { name: "Your text:" })
       .map((note) => note.textContent)
   ).toEqual([`${ROWS[1]?.title}, mine`, `${ROWS[1]?.title}, mine, more`]);
+  expect(patch).toHaveBeenCalledTimes(1);
+});
+
+// The page reads another person's title while the reader's typing waits, and the typing comes to
+// rest once the page drew that title and before the field's effects took it in. The rename names
+// the title the field started from, never the page's read, which holds the other person's by
+// then: Dispatch refuses it, and the page offers the reader's text once, beside their title - the
+// text the field kept as their title arrived and the refused write's are one.
+test("a title written once the page read another person's, before the field took it in, names the title the field started from, and is offered once", async () => {
+  const user = userEvent.setup({ delay: null });
+  const { beforeEffects, client, patch, writtenElsewhere } = page();
+  const title = await openTitle(user);
+  patch.mockRejectedValueOnce(PRIORITY_TITLE_CHANGED);
+  await onFakeClock(async () => {
+    await user.type(title, ", mine");
+    beforeEffects(() => jest.advanceTimersByTime(SAVE_AFTER_MS));
+    writtenElsewhere({ title: "Theirs" });
+    // The write goes out, and its refusal comes back, before the clock comes back.
+    await act(async () => {
+      await settle();
+    });
+  });
+  const mine = `${ROWS[1]?.title}, mine`;
+  await waitFor(() => expect(patch).toHaveBeenCalledTimes(1));
+  expect(patch.mock.calls[0]?.slice(0, 2)).toEqual([
+    "rocq-lean",
+    { expected: { title: ROWS[1]?.title }, title: mine },
+  ]);
+  await waitFor(() =>
+    expect(writesOf(client).rows()).toMatchObject([
+      { claimed: true, detail: { text: mine }, sent: true, status: "refused" },
+    ])
+  );
+  const notices = await screen.findAllByRole("alert", { name: "Title, changed by another person" });
+  expect(notices).toHaveLength(1);
+  expect(within(notices[0] as HTMLElement).getAllByText(mine)).toHaveLength(1);
+  expect(title).toHaveValue("Theirs");
+  expect(patch).toHaveBeenCalledTimes(1);
+});
+
+// The same for the description: the typing in its editor comes to rest once the page drew
+// another person's description and before the editor's effects took it in. The write names the
+// description the editor started from, as the server stores it, and the page offers the reader's
+// text once, beside theirs.
+test("a description written once the page read another person's, before the editor took it in, names the description the editor started from, and is offered once", async () => {
+  const { beforeEffects, client, editors, patch, writtenElsewhere } = page();
+  const { box, handle } = await editors.named("Description");
+  handle.view.focus();
+  patch.mockRejectedValueOnce(PRIORITY_DESCRIPTION_CHANGED);
+  await onFakeClock(async () => {
+    writeAtEnd(handle, " Mine.");
+    beforeEffects(() => jest.advanceTimersByTime(SAVE_AFTER_MS));
+    writtenElsewhere({ description: "Written elsewhere." });
+    await act(async () => {
+      await settle();
+    });
+  });
+  const mine = "# Rocq and Lean speed work restarted\n\nSpeedruns run again. Mine.\n";
+  await waitFor(() => expect(patch).toHaveBeenCalledTimes(1));
+  expect(patch.mock.calls[0]?.slice(0, 2)).toEqual([
+    "rocq-lean",
+    {
+      description: mine,
+      expected: { description: "# Rocq and Lean speed work restarted\n\nSpeedruns run again." },
+    },
+  ]);
+  await waitFor(() =>
+    expect(writesOf(client).rows()).toMatchObject([
+      { claimed: true, detail: { text: mine }, sent: true, status: "refused" },
+    ])
+  );
+  const notices = await screen.findAllByRole("alert", {
+    name: "Description, changed by another person",
+  });
+  expect(notices).toHaveLength(1);
+  expect(
+    within(notices[0] as HTMLElement).getAllByText(/Speedruns run again\. Mine\./)
+  ).toHaveLength(1);
+  expect(box.textContent).toBe("Written elsewhere.");
   expect(patch).toHaveBeenCalledTimes(1);
 });

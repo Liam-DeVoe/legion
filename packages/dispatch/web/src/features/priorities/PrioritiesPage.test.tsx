@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, expect, mock, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, expect, jest, mock, spyOn, test } from "bun:test";
 import { ISSUE_TITLE_MAX } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
@@ -13,8 +13,14 @@ import {
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { BrowserRouter, MemoryRouter, useLocation, useNavigationType } from "react-router-dom";
+import { BeforeEffectsOfRead, stepBeforeEffects } from "../../__tests__/before-effects";
+import { onFakeClock, settle } from "../../__tests__/fake-clock";
 import { recordedEditors, writeAtEnd } from "../../__tests__/recorded-editors";
-import { answerPriorityPatches, PRIORITY_TITLE_CHANGED } from "../../__tests__/send-answers";
+import {
+  answerPriorityPatches,
+  PRIORITY_DESCRIPTION_CHANGED,
+  PRIORITY_TITLE_CHANGED,
+} from "../../__tests__/send-answers";
 import { api, priorityPatchRequest } from "../../api/client";
 import { prioritiesQuery } from "../../api/queries";
 import type { DisplayTree, IssueSummary, Priorities, Priority, PriorityRow } from "../../api/types";
@@ -23,6 +29,7 @@ import { DocumentRuntime } from "../doc/runtime";
 import { loadedEngine, warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { writesOf } from "../writes/write-store";
+import { SAVE_AFTER_MS } from "./InPlaceField";
 import { PrioritiesPage } from "./PrioritiesPage";
 
 // A closed row's excerpt is the projection the markdown engine makes of its description
@@ -206,12 +213,16 @@ function page(
   client.setQueryData(["whoami"], whoami);
   // An open row's description is drawn in the documents' own editor, which a test edits through.
   const editors = recordedEditors();
+  // What runs in the commit the next read the page takes draws, before the page's effects: after
+  // the page's render of it, before the page's effects take it in (`beforeEffects`).
+  const { beforeEffects, step } = stepBeforeEffects();
   const tree = (
     <QueryClientProvider client={client}>
       <DocumentRuntime.Provider value={editors.runtime}>
         <KeymapProvider>
           <PrioritiesPage />
           <Address />
+          <BeforeEffectsOfRead read={prioritiesQuery()} step={step} />
         </KeymapProvider>
       </DocumentRuntime.Provider>
     </QueryClientProvider>
@@ -251,7 +262,17 @@ function page(
     view.unmount();
     view = render(routed());
   };
-  return { client, create, editors, listing, patch, priorities, redraw, writtenElsewhere };
+  return {
+    beforeEffects,
+    client,
+    create,
+    editors,
+    listing,
+    patch,
+    priorities,
+    redraw,
+    writtenElsewhere,
+  };
 }
 
 const FIFTEEN = body({
@@ -1029,6 +1050,47 @@ test("the reader's description kept beside a row outlives the row leaving the ta
   ]);
 });
 
+// The page reads another person's description of a row open in the table while the reader's
+// typing waits, and the typing comes to rest once the page drew that description and before the
+// editor's effects took it in. The write names the description the editor started from, never the
+// page's read, which holds the other person's by then: Dispatch refuses it, and the page offers
+// the reader's text once, beside the row's description.
+test("a description written on an open row once the page read another person's, before the editor took it in, names the description the editor started from, and is offered once", async () => {
+  const user = userEvent.setup();
+  const { beforeEffects, client, editors, patch, writtenElsewhere } = page(FIFTEEN);
+  await screen.findByRole("row", { name: "#2 Linkage closure eval" });
+  await user.click(screen.getByRole("button", { name: "Open #2 Linkage closure eval" }));
+  const { box, handle } = await editors.named("Description of #2");
+  handle.view.focus();
+  patch.mockRejectedValueOnce(PRIORITY_DESCRIPTION_CHANGED);
+  await onFakeClock(async () => {
+    writeAtEnd(handle, "Mine.");
+    beforeEffects(() => jest.advanceTimersByTime(SAVE_AFTER_MS));
+    writtenElsewhere("linkage-closure", { description: "Written elsewhere." });
+    // The write goes out, and its refusal comes back, before the clock comes back.
+    await act(async () => {
+      await settle();
+    });
+  });
+  await waitFor(() => expect(patch).toHaveBeenCalledTimes(1));
+  expect(patch.mock.calls[0]?.slice(0, 2)).toEqual([
+    "linkage-closure",
+    { description: "Mine.\n", expected: { description: "" } },
+  ]);
+  await waitFor(() =>
+    expect(writesOf(client).rows()).toMatchObject([
+      { claimed: true, detail: { text: "Mine.\n" }, sent: true, status: "refused" },
+    ])
+  );
+  const notices = await screen.findAllByRole("alert", {
+    name: "Description of #2, changed by another person",
+  });
+  expect(notices).toHaveLength(1);
+  expect(within(notices[0] as HTMLElement).getAllByText(/Mine\./)).toHaveLength(1);
+  expect(box.textContent).toBe("Written elsewhere.");
+  expect(patch).toHaveBeenCalledTimes(1);
+});
+
 /** Keeps in the tab, for a reload to take up, a write of `#2`'s `attribute` as `text` that
  *  Dispatch refused, another person having written over `expected` first. */
 function keepRefused(key: string, attribute: "description" | "title", text: string, expected = "") {
@@ -1056,7 +1118,7 @@ function keepRefused(key: string, attribute: "description" | "title", text: stri
           message:
             attribute === "title"
               ? PRIORITY_TITLE_CHANGED.message
-              : "the description was written meanwhile",
+              : PRIORITY_DESCRIPTION_CHANGED.message,
           status: 409,
         },
         status: "refused",

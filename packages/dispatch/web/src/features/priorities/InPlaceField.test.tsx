@@ -1,8 +1,13 @@
-import { expect, test } from "bun:test";
+import { expect, jest, test } from "bun:test";
 // biome-ignore lint/style/noRestrictedImports: the Enter that ends an input method's composition below, which user-event cannot mark as one
 import { act, fireEvent, render, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
+import {
+  BeforeEffects,
+  type StepBeforeEffects,
+  stepBeforeEffects,
+} from "../../__tests__/before-effects";
 import { jump, onFakeClock, settle } from "../../__tests__/fake-clock";
 import { userOnFakeClock } from "../../__tests__/user";
 import { createApiClient, priorityPatchRequest } from "../../api/client";
@@ -100,26 +105,39 @@ test("a text changed after the typing rested is written when the field is left",
 });
 
 /** The field as a page holds it while another person's write lands: every write the field sends
- *  is kept in `writes`, and `land.write` stands for the server's answer moving `value` under the
- *  field, as a refresh of the row does, without taking the focus from it. */
+ *  is kept in `writes`, and in `froms`, where given, the text its edit started from, which a
+ *  priority's page names to Dispatch (`expected`). `land.write` stands for the server's answer
+ *  moving `value` under the field, as a refresh of the row does, without taking the focus from
+ *  it; `step`, where given, runs in the commit that draws it, after the field's render and before
+ *  its effects (`BeforeEffects`). */
 function HeldField({
+  froms,
   land,
   required,
+  step,
   writes,
 }: {
+  froms?: string[];
   land: { write?: (text: string) => void };
   required?: boolean;
+  step?: StepBeforeEffects;
   writes: string[];
 }): ReactNode {
   const [value, setValue] = useState("Old name");
   land.write = setValue;
   return (
-    <InPlaceField
-      label="Title"
-      onSave={(next) => writes.push(next)}
-      required={required}
-      value={value}
-    />
+    <>
+      <InPlaceField
+        label="Title"
+        onSave={(next, from) => {
+          writes.push(next);
+          froms?.push(from);
+        }}
+        required={required}
+        value={value}
+      />
+      {step === undefined ? null : <BeforeEffects step={step} />}
+    </>
   );
 }
 
@@ -540,4 +558,36 @@ test("a field given no place for its notice draws it beside itself, and names it
   expect(notice.id).not.toBe("");
   expect(field.getAttribute("aria-describedby")).toBe(notice.id);
   view.unmount();
+});
+
+// The page draws another person's title while the reader's typing waits, and the typing comes to
+// rest after that render and before the field's effects take the title in. The write names the
+// text the field started from - never the page's read, which holds the other person's title by
+// then - so Dispatch refuses it rather than writing the reader's edit over theirs, and the field
+// takes their title in and keeps the reader's beside it, as it does where theirs arrives first.
+test("a write made once the page drew another person's title, and before the field took it in, names the text the field started from", async () => {
+  const user = userEvent.setup({ delay: null });
+  const writes: string[] = [];
+  const froms: string[] = [];
+  const land: { write?: (text: string) => void } = {};
+  const { beforeEffects, step } = stepBeforeEffects();
+  const view = render(<HeldField froms={froms} land={land} step={step} writes={writes} />);
+  const page = within(view.container);
+  const field = page.getByRole("textbox", { name: "Title" }) as HTMLInputElement;
+  await onFakeClock(async () => {
+    await user.type(field, ", mine");
+    beforeEffects(() => jest.advanceTimersByTime(SAVE_AFTER_MS));
+    act(() => land.write?.("Written elsewhere"));
+    await jump(SAVE_AFTER_MS);
+  });
+  expect(writes).toEqual(["Old name, mine"]);
+  expect(froms).toEqual(["Old name"]);
+  expect(field.value).toBe("Written elsewhere");
+  const notice = page.getByRole("alert", { name: "Title, changed by another person" });
+  expect(within(notice).getByText("Old name, mine")).toBeDefined();
+  // Leaving the field writes nothing more: it holds the other person's title.
+  await user.tab();
+  view.unmount();
+  expect(writes).toEqual(["Old name, mine"]);
+  expect(froms).toEqual(["Old name"]);
 });

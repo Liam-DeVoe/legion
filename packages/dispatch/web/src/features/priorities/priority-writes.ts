@@ -5,6 +5,7 @@ import { prioritiesQuery } from "../../api/queries";
 import type { CreatePriorityInput, PatchPriorityInput } from "../../api/types";
 import { useIsHuman } from "../../hooks/useIsHuman";
 import { isConflict } from "../writes/conflicts";
+import { refusedByDispatch, WriteDiscardedError } from "../writes/keyed-write";
 import { type Shape, shape } from "../writes/tab-storage";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import {
@@ -43,49 +44,118 @@ export interface TextChain {
   readonly id: number;
   /** The writes pressed here that have not settled. */
   readonly out: number;
-  /** Whether one of them was refused: the server holds none of their texts then. */
+  /** Whether Dispatch refused one of them, or the reader discarded one before it went: the
+   *  server holds none of the texts pressed from the refused one on. A refused chain stays until
+   *  the next press, so a write from one of those texts names what the server holds (`startOf`). */
   readonly refused: boolean;
   /** The text of the last write pressed. */
   readonly last: string;
-  /** What the page's read may show while it catches up with these writes: the text it held at
-   *  the first press, and each text written since. A read of any of them is the server's answer
-   *  to these writes arriving late, not another person's write. */
+  /** The text the server holds as these writes left it, so far as the chain knows: the text the
+   *  first press started from, as the server holds it (`startOf`), and then the text of each
+   *  write that landed (`landedText`). */
+  readonly holds: string;
+  /** How many of `known` the server took, in press order: the start, then each text written up
+   *  to the last that landed. */
+  readonly taken: number;
+  /** The texts of writes that ended with no verdict of Dispatch's - the reader stopped one, or
+   *  its key ran out - that the store has not said since landed: each may have landed, so the
+   *  chain does not know what the server holds (`startOf`). A Discard on the shell's line drops
+   *  the store's record of such a write and sends nothing, so it settles none of that doubt. */
+  readonly unsure: readonly string[];
+  /** The texts a field's edit may start from while these writes go on: the text the first press
+   *  started from, as the server holds it (`startOf`), and each text written since. An edit
+   *  started from any of them goes after these writes - a field drawn again takes in the text the
+   *  page reads, which may not have caught up with them yet - or, once they went as far as they
+   *  go, from what the server holds; one started from any other text started from another
+   *  person's. */
   readonly known: readonly string[];
 }
 
+/** How a press of a chain ended, as the press hears it (`settledText`): Dispatch took it - the
+ *  store told the chain of the landing before the press heard it (`landedText`) - or it wrote
+ *  nothing - Dispatch refused it (`refusedByDispatch`), or the reader discarded it before it
+ *  went - or it ended with no verdict, so it may have landed. */
+export type TextEnding = "landed" | "nothing" | "unknown";
+
 /** Whether a write pressed now goes after the writes of `chain`: none of them was refused, and
- *  the page's read shows a text they know, so it has not moved to another person's. Not once
- *  the read shows the last text written with none out, which ends the chain. */
-function continues(chain: TextChain | undefined, held: string): chain is TextChain {
-  if (chain === undefined || chain.refused || !chain.known.includes(held)) return false;
-  return chain.out > 0 || chain.last !== held;
+ *  the field's edit started from a text they know (`from`), so not from another person's. Not
+ *  once it started from the last text written with none out, which ends the chain. */
+function continues(chain: TextChain | undefined, from: string): chain is TextChain {
+  if (chain === undefined || chain.refused || !chain.known.includes(from)) return false;
+  return chain.out > 0 || chain.last !== from;
 }
 
-/** What a write pressed now names as `expected`, where the page reads `held`: the text of the last
- *  write pressed here while the chain goes on, and else `held`. */
-export function expectedText(chain: TextChain | undefined, held: string): string {
-  return continues(chain, held) ? chain.last : held;
+/** The text an edit started from `from` started from as the server holds it, where the write
+ *  does not go after the writes of `chain`: what the server holds as they left it (`holds`) where
+ *  `from` is a text of theirs the server never took, and else `from` - the chain's start or a
+ *  text that landed, which the server took, or another person's. A field's edit goes on from the
+ *  text it wrote, and a write Dispatch refused, or the reader discarded before it went, wrote
+ *  nothing, so a write naming its text would be refused as though another person had written;
+ *  after one another person's text refused, `holds` is refused too, by the same text. While a
+ *  write of the chain that ended with no verdict may have landed (`unsure`), the chain does not
+ *  know what the server holds, and the edit names `from`, the text the field took as the
+ *  server's. */
+function startOf(chain: TextChain | undefined, from: string): string {
+  if (chain === undefined || chain.unsure.length > 0) return from;
+  return chain.known.indexOf(from, chain.taken) === -1 ? from : chain.holds;
 }
 
-/** The chain once a write of `text` is pressed where the page reads `held`: `chain` gone on, or
- *  a new one, `fresh` its id. */
+/** What a write pressed now names as `expected`, where the field's edit started from `from`: the
+ *  text of the last write pressed here while the chain goes on, and else the text the edit
+ *  started from as the server holds it (`startOf`). */
+export function expectedText(chain: TextChain | undefined, from: string): string {
+  return continues(chain, from) ? chain.last : startOf(chain, from);
+}
+
+/** The chain once a write of `text` is pressed, its edit started from `from`: `chain` gone on, or
+ *  a new one, `fresh` its id, from the text the edit started from as the server holds it. */
 export function pressedText(
   chain: TextChain | undefined,
   text: string,
-  held: string,
+  from: string,
   fresh: number
 ): TextChain {
-  if (continues(chain, held)) {
+  if (continues(chain, from)) {
     return { ...chain, known: [...chain.known, text], last: text, out: chain.out + 1 };
   }
-  return { id: fresh, known: [held, text], last: text, out: 1, refused: false };
+  const start = startOf(chain, from);
+  return {
+    holds: start,
+    id: fresh,
+    known: [start, text],
+    last: text,
+    out: 1,
+    refused: false,
+    taken: 1,
+    unsure: [],
+  };
 }
 
-/** The chain once one of its writes settled, `refused` or landed; none once a refusal leaves no
- *  write out, so the next write names the text the page reads. */
-export function settledText(chain: TextChain, refused: boolean): TextChain | undefined {
-  const next = { ...chain, out: Math.max(0, chain.out - 1), refused: chain.refused || refused };
-  return next.out === 0 && next.refused ? undefined : next;
+/** The chain once a press of it, a write of `text`, ended as `ending` says. */
+export function settledText(chain: TextChain, text: string, ending: TextEnding): TextChain {
+  return {
+    ...chain,
+    out: Math.max(0, chain.out - 1),
+    refused: chain.refused || ending === "nothing",
+    unsure: ending === "unknown" ? [...chain.unsure, text] : chain.unsure,
+  };
+}
+
+/** The chain once the store says a write of `text`, which named `expected`, landed
+ *  (`Writes.onOutcome`): a press's own, told before the press hears it, or a write that ended
+ *  with no verdict that the shell's Retry made again. Each press of a chain names the text before
+ *  its own in `known` (`expectedText`), so the landing is the chain's write of `text` that
+ *  follows `expected`, among those it has yet to see land. The server holds it, and took every
+ *  text of the chain up to it, so a write that ended with no verdict before it is no longer in
+ *  doubt. A landing that is none of those - one of a chain a press replaced, whose write named
+ *  another text - changes nothing. */
+export function landedText(chain: TextChain, text: string, expected: string): TextChain {
+  let at = chain.known.indexOf(text, chain.taken);
+  while (at !== -1 && chain.known[at - 1] !== expected) at = chain.known.indexOf(text, at + 1);
+  if (at === -1) return chain;
+  const taken = at + 1;
+  const unsure = chain.unsure.filter((one) => chain.known.indexOf(one, taken) !== -1);
+  return { ...chain, holds: text, taken, unsure };
 }
 
 /** One write of a priority's title or description as the write store holds it, and a reload
@@ -253,6 +323,23 @@ function textKey(attribute: EditedText, id: string): string {
   return `${attribute}:${id}`;
 }
 
+/** Ends `chain`, the chain `chains` holds at `key`, once every write of it landed: once `read()`,
+ *  a read of the priorities started after the last of them landed, has answered - unless a press
+ *  or the store changed the chain meanwhile. The page reads what the writes wrote then, so a
+ *  field drawn again starts from it, and an edit that starts from a text of theirs later starts
+ *  from somebody else's. */
+function endOnceLanded(
+  chains: Map<string, TextChain>,
+  key: string,
+  chain: TextChain,
+  read: () => Promise<void>
+): void {
+  if (chain.out > 0 || chain.refused || chain.unsure.length > 0) return;
+  void read().then(() => {
+    if (chains.get(key) === chain) chains.delete(key);
+  });
+}
+
 const NO_PRIORITIES: readonly string[] = [];
 
 /**
@@ -264,11 +351,22 @@ const NO_PRIORITIES: readonly string[] = [];
  * out one after another, in the order they were pressed, as the request a reload makes again.
  *
  * A title or a description is written through `rename` and `describe`, which name the text the
- * reader's edit started from (`expected`, `expectedText`): where somebody else wrote the text
- * meanwhile the server refuses the write `409 PRIORITY_CHANGED` and writes nothing, so nobody's
- * text is written over unseen. A write that would change nothing is not sent. A chain of writes
- * that all landed ends once the refresh the last of them started has answered: the page reads
- * what they wrote then, and a text of theirs it reads again later is somebody else's.
+ * reader's edit started from (`expected`, `expectedText`) as the field hands it (`from`), never
+ * the page's own read: the page draws another person's text before the field takes it in, and a
+ * write the field makes in between would else name their text, and go over it. Where somebody
+ * else wrote the text meanwhile the server refuses the write `409 PRIORITY_CHANGED` and writes
+ * nothing, so nobody's text is written over unseen. A write that would change nothing is not
+ * sent. A chain of writes that all landed ends once a read of the priorities started after the
+ * last of them landed has answered (`endOnceLanded`), whether a press of the page awaited that
+ * landing or the shell's Retry made it, which the store tells of (`Writes.onOutcome`). A chain
+ * one of whose writes Dispatch refused, or the reader discarded before it went, stays until the
+ * next press: the field goes on from the text it wrote, which the server never took, so a write
+ * from it names what the server holds as the chain left it (`startOf`) - the text that stands
+ * where the refusal was for the body (`400`, `403`), and one refused in turn where it was for
+ * another person's text. A write that ended with no verdict - stopped, or its key run out - may
+ * have landed, so until the store says it landed, or the next press replaces the chain, the
+ * chain claims nothing of what the server holds, and a write names the text its edit started
+ * from. A Discard of such a write on the shell's line sends nothing and says nothing of that.
  *
  * The reader's own texts a title or a description keeps beside itself while it shows another
  * person's (`ChangedMeanwhile`) are writes of the store, by priority and attribute (`kept`,
@@ -355,23 +453,50 @@ export function usePriorityWrites(
     onSettled: (_data, error, press) => {
       const key = textKey(press.write.attribute, press.write.id);
       const chain = chains.current.get(key);
-      let landed: TextChain | undefined;
+      let settled: TextChain | undefined;
       if (chain !== undefined && chain.id === press.chain) {
-        const next = settledText(chain, error !== null);
-        if (next === undefined) chains.current.delete(key);
-        else chains.current.set(key, next);
-        if (next?.out === 0) landed = next;
+        // Only Dispatch's verdict, or a discard before the write went, says it wrote nothing:
+        // one the reader stopped, or whose key ran out, may have landed, and the store says so
+        // if the shell's Retry of it lands (`landedText`). A refused chain stays until a press
+        // replaces it, so a write from one of its texts names what the server holds (`startOf`).
+        let ending: TextEnding = "landed";
+        if (error !== null) {
+          const nothing = refusedByDispatch(error) || error instanceof WriteDiscardedError;
+          ending = nothing ? "nothing" : "unknown";
+        }
+        settled = settledText(chain, press.write.text, ending);
+        chains.current.set(key, settled);
       }
       // A conflict wrote nothing, for anyone: the page that took it reads the priorities itself
       // (`takeWrites`), and one no page took has nothing on the page to read again for.
       if (isConflict(error)) return;
       const refreshed = refresh();
-      if (landed === undefined) return;
-      void refreshed.then(() => {
-        if (chains.current.get(key) === landed) chains.current.delete(key);
-      });
+      if (settled !== undefined) endOnceLanded(chains.current, key, settled, () => refreshed);
     },
   });
+  // The store tells of every landing of a write, whoever awaits it, and so the chain learns of
+  // each landing here: a press's own, told before the press hears it - whose press then only
+  // counts itself settled (`settledText`) - and one of a write that ended with no verdict that
+  // the shell's Retry made again, which no press awaits. That one ends its chain once the page
+  // reads it, as a press's own landing does; a press's own comes while its press is out, so it
+  // ends nothing here.
+  useEffect(
+    () =>
+      writes.onOutcome((outcome) => {
+        if (outcome.kind !== "landed") return;
+        const write = ofKind(outcome.write, priorityTextWrite);
+        if (write === undefined) return;
+        const { attribute, expected, id, text } = write.detail;
+        const key = textKey(attribute, id);
+        const chain = chains.current.get(key);
+        if (chain === undefined) return;
+        const next = landedText(chain, text, expected);
+        if (next === chain) return;
+        chains.current.set(key, next);
+        endOnceLanded(chains.current, key, next, refresh);
+      }),
+    [refresh, writes]
+  );
   /** Takes `ids`, writes of the store a conflict refused, to settle with the reader: each one's
    *  text is kept beside its priority's field, newest first by when the write was pressed, but
    *  waits until `settled` - a read of the priorities started for it - answers: until then the
@@ -514,10 +639,10 @@ export function usePriorityWrites(
   }, [claimMarks, conflicts, letGo, stored]);
   const { mutate } = text;
   const writeText = useCallback(
-    (id: string, attribute: EditedText, written: string, held: string, label: string) => {
+    (id: string, attribute: EditedText, written: string, from: string, label: string) => {
       const key = textKey(attribute, id);
       const chain = chains.current.get(key);
-      const expected = expectedText(chain, held);
+      const expected = expectedText(chain, from);
       if (written === expected) return;
       const holding = heldAt(conflicts, claimMarks, { attribute, id });
       if (holding.some((write) => claimMarks.get(write.id) !== null)) {
@@ -528,24 +653,26 @@ export function usePriorityWrites(
         return;
       }
       made.current += 1;
-      const next = pressedText(chain, written, held, made.current);
+      const next = pressedText(chain, written, from, made.current);
       chains.current.set(key, next);
       mutate({ chain: next.id, label, write: { attribute, expected, id, text: written } });
     },
     [claimMarks, conflicts, holdText, mutate, refresh]
   );
-  /** Writes `title` as priority `id`'s title, where the page reads `held`. A title with nothing
-   *  in it is refused by the server, so none is sent. */
+  /** Writes `title` as priority `id`'s title, over `from`, the text the title's edit started
+   *  from as its field hands it. A title with nothing in it is refused by the server, so none is
+   *  sent. */
   const rename = useCallback(
-    (id: string, title: string, held: string, label: string) => {
-      if (title !== "") writeText(id, "title", title, held, label);
+    (id: string, title: string, from: string, label: string) => {
+      if (title !== "") writeText(id, "title", title, from, label);
     },
     [writeText]
   );
-  /** Writes `description` as priority `id`'s description, where the page reads `held`. */
+  /** Writes `description` as priority `id`'s description, over `from`, the text the
+   *  description's edit started from as its editor hands it. */
   const describe = useCallback(
-    (id: string, description: string, held: string, label: string) =>
-      writeText(id, "description", description, held, label),
+    (id: string, description: string, from: string, label: string) =>
+      writeText(id, "description", description, from, label),
     [writeText]
   );
   /** The reader's texts kept beside priority `id`'s `attribute`, newest first, where the page

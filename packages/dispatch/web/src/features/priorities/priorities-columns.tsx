@@ -35,7 +35,9 @@ export interface PriorityRowActions {
   /** The priority whose row is open, which shows its whole description. */
   readonly openId: string | undefined;
   readonly onOpen: (item: PriorityItem) => void;
-  readonly onDescribe: (item: PriorityItem, description: string) => void;
+  /** Writes `description` as the priority's description, over `from`, the text the description's
+   *  edit started from, which the write names as the text it goes over (`describe`). */
+  readonly onDescribe: (item: PriorityItem, description: string, from: string) => void;
   /** The reader's texts kept beside a priority's description while it shows another person's,
    *  where the page reads `held`, and the change of them: held in the write store
    *  (`usePriorityWrites`) rather than by the editor, which a row scrolling away takes with it.
@@ -200,7 +202,7 @@ function TitleCell({ item }: { item: PriorityItem }) {
           kept={keptDescription}
           label={`Description of ${item.order}`}
           onKeptChange={(texts) => actions.onKeep(id, texts)}
-          onSave={(next) => actions.onDescribe(item, next)}
+          onSave={(next, from) => actions.onDescribe(item, next, from)}
         />
       ) : excerpt === undefined || excerpt.text === "" ? null : (
         // Muted, in at most two lines that end in '…' where it runs on; the whole excerpt is its

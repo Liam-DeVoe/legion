@@ -141,11 +141,11 @@ export function PrioritiesTable({ rows }: { rows: readonly PriorityRow[] }): Rea
     [order, patch.mutate]
   );
   const onDescribe = useCallback(
-    (item: PriorityItem, description: string) =>
+    (item: PriorityItem, description: string, from: string) =>
       describe(
         item.priority.id,
         description,
-        item.priority.description,
+        from,
         textWriteLabel("description", item.priority.title, description)
       ),
     [describe]
@@ -198,7 +198,8 @@ export function PrioritiesTable({ rows }: { rows: readonly PriorityRow[] }): Rea
   );
   // The reader's descriptions kept beside a priority the table no longer draws - one the other
   // person's change took out of the search, or onto another page - which no row shows, so they
-  // are shown above the table, each as its editor would show it.
+  // are shown above the table, each as its editor would show it. One the reader uses there is
+  // written over the description the page reads, which no editor stands over: they chose it.
   const undrawn = keeping.flatMap(({ id }) => {
     const item = drawn.includes(id) ? undefined : items.find((one) => one.priority.id === id);
     if (item === undefined) return [];
@@ -240,7 +241,7 @@ export function PrioritiesTable({ rows }: { rows: readonly PriorityRow[] }): Rea
             onKeepTheirs={() => keepDescription(item.priority.id, NOTHING_KEPT)}
             onUse={(text) => {
               keepDescription(item.priority.id, NOTHING_KEPT);
-              onDescribe(item, text);
+              onDescribe(item, text, item.priority.description);
             }}
           />
         ))}

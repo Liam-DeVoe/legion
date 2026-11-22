@@ -159,6 +159,12 @@ export const FIELD_CHIP = `inline-flex min-h-11 max-w-full items-center gap-1 ro
  * those texts (`kept`, `onKeptChange`) - a priority's title, whose texts the write store holds
  * (`usePriorityWrites`) - they outlive the field, the page and a reload, and a field drawn again
  * shows them again. Else the field holds them itself, and they go with it: the owner's field.
+ * Each write hands on, with the text written, the text the reader's edit started from (`onSave`'s
+ * `from`), which a title's write names as the text it goes over (`expected`), and never the
+ * page's own read of the text: the page draws another person's text before the field takes it
+ * in, and a write made in between - the typing at rest, the field left, Enter, the page going -
+ * names the text the reader edited, so Dispatch refuses it, and the reader's text is kept beside
+ * the other person's as it is where that text arrives first.
  *
  * Drawn `closed`, the field reads as its text until the reader opens it, and closes as they leave
  * it; what it writes, and when, is the same. A heading (`closed="heading"`) is the page's heading,
@@ -199,7 +205,9 @@ export function InPlaceField({
    *  field, after a heading's heading. */
   noticeAt?: HTMLElement | null;
   onKeptChange?: (kept: readonly string[]) => void;
-  onSave: (next: string) => void;
+  /** Writes `next`, the reader's text, over `from`, the text their edit started from, which a
+   *  title's write names as the text it goes over (`expected`); the owner's names none. */
+  onSave: (next: string, from: string) => void;
   /** What other rows already hold, offered beside the field: a reader picks one of the owners
    *  the deployment uses, or writes a new one, since nothing bounds what an owner may be. */
   options?: readonly string[];
@@ -230,9 +238,10 @@ export function InPlaceField({
   latest.current = { draft, kept, onSave, required, setKept };
 
   const write = (text: string) => {
+    const from = base.current;
     base.current = text;
     sent.current = [...sent.current, text];
-    latest.current.onSave(text);
+    latest.current.onSave(text, from);
   };
   const save = () => {
     stopTimer(timer);

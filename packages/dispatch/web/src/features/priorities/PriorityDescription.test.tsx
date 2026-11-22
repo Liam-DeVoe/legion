@@ -4,6 +4,7 @@ import { act, render, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
+import { BeforeEffects, stepBeforeEffects } from "../../__tests__/before-effects";
 import { displayTree } from "../../__tests__/display-trees";
 import { jump, onFakeClock } from "../../__tests__/fake-clock";
 import { recordedEditors, selectText, writeAtEnd } from "../../__tests__/recorded-editors";
@@ -33,10 +34,11 @@ afterEach(() => {
  * The description as a page holds it, in the documents' own editor: `description` is the text
  * the server answered with, `tree` the reading the server sent of it and `exact` whether it said
  * its parser takes the text whole (`description_tree_exact`), which `rerender` moves, and every
- * write lands in `onSave`. `imports` is the length of each text the editor took in as markdown
- * (`setMarkdown`), its own parse of a text, which the browser spec counts as a parse of the page
- * (`e2e/parse-counting.ts`). Queries are scoped to this render's container, since bun runs every
- * test file in one document.
+ * write lands in `onSave`, with the text its edit started from. `imports` is the length of each
+ * text the editor took in as markdown (`setMarkdown`), its own parse of a text, which the browser
+ * spec counts as a parse of the page (`e2e/parse-counting.ts`). `beforeEffects` runs a step in
+ * the next commit `rerender` makes, before the editor's effects take in what it drew. Queries
+ * are scoped to this render's container, since bun runs every test file in one document.
  */
 function described(description: string, canWrite = true, tree?: DisplayTree, exact?: boolean) {
   const editors = recordedEditors();
@@ -51,9 +53,12 @@ function described(description: string, canWrite = true, tree?: DisplayTree, exa
     return handle;
   };
   const runtime = { ...editors.runtime, createEditor };
-  const onSave = mock((_next: string) => {});
+  const onSave = mock((_next: string, _from: string) => {});
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
+  // What runs in the next commit `rerender` makes: after the editor's render, before its effects
+  // take in the text that render drew (`beforeEffects`).
+  const { beforeEffects, step } = stepBeforeEffects();
   const page = (
     text: string,
     writer: boolean,
@@ -71,6 +76,7 @@ function described(description: string, canWrite = true, tree?: DisplayTree, exa
             label="Description of P1"
             onSave={onSave}
           />
+          <BeforeEffects step={step} />
         </DocumentRuntime.Provider>
       </QueryClientProvider>
     </MemoryRouter>
@@ -81,6 +87,7 @@ function described(description: string, canWrite = true, tree?: DisplayTree, exa
     client.clear();
   });
   return {
+    beforeEffects,
     /** The editor once it holds the description, and its handle. */
     editor: () => editors.named("Description of P1", view.container),
     imports,
@@ -143,6 +150,7 @@ test("an edit is written as markdown once the typing rests, once, with no Save b
   expect(onSave.mock.calls).toEqual([
     [
       "# Why\n\n* Every machine runs the daemon\n* Nothing waits on the old build and is **gone**\n",
+      OUTLINE,
     ],
   ]);
   expect(within(view.container).queryByRole("button", { name: /save/i })).toBeNull();
@@ -157,7 +165,7 @@ test("leaving the editor writes what it holds at once", async () => {
   handle.view.focus();
   writeAtEnd(handle, " More.");
   act(() => handle.view.dom.blur());
-  expect(onSave.mock.calls).toEqual([["Speedruns run again. More.\n"]]);
+  expect(onSave.mock.calls).toEqual([["Speedruns run again. More.\n", "Speedruns run again."]]);
 });
 
 test("the editor's own reading of the text is no edit, and writes nothing", async () => {
@@ -175,7 +183,7 @@ test("closing the editor while a write waits for the typing to rest writes it", 
   const { handle } = await editor();
   writeAtEnd(handle, " More.");
   view.unmount();
-  expect(onSave.mock.calls).toEqual([["Speedruns run again. More.\n"]]);
+  expect(onSave.mock.calls).toEqual([["Speedruns run again. More.\n", "Speedruns run again."]]);
 });
 
 test("the server's text replaces the editor's; under the reader's unwritten change it is shown, and theirs kept beside it until they use it", async () => {
@@ -195,10 +203,10 @@ test("the server's text replaces the editor's; under the reader's unwritten chan
   // Leaving writes nothing: the editor holds the server's text.
   act(() => handle.view.dom.blur());
   expect(onSave).not.toHaveBeenCalled();
-  // Using the reader's text puts it back and writes it at once.
+  // Using the reader's text puts it back and writes it at once, over the text the editor shows.
   await userEvent.setup().click(within(notice).getByRole("button", { name: "Use my text" }));
   expect(box.textContent).toBe("Written elsewhere. Mine.");
-  expect(onSave.mock.calls).toEqual([["Written elsewhere. Mine.\n"]]);
+  expect(onSave.mock.calls).toEqual([["Written elsewhere. Mine.\n", "Written elsewhere, again."]]);
   expect(scope.queryByRole("alert", { name: /changed by another person/ })).toBeNull();
   // The round trip of that write answers with what the editor wrote, which it holds already.
   rerender("Written elsewhere. Mine.\n");
@@ -220,7 +228,7 @@ test("leaving the editor with nothing written takes in the text written elsewher
   handle.view.focus();
   writeAtEnd(handle, " Mine.");
   act(() => handle.view.dom.blur());
-  expect(onSave.mock.calls).toEqual([["Written elsewhere. Mine.\n"]]);
+  expect(onSave.mock.calls).toEqual([["Written elsewhere. Mine.\n", "Written elsewhere."]]);
 });
 
 test("keeping the other person's text lets the reader's go, and writes nothing", async () => {
@@ -247,7 +255,7 @@ test("the page going while a write waits for the typing to rest writes it, once"
     act(() => {
       window.dispatchEvent(new Event("pagehide"));
     });
-    expect(onSave.mock.calls).toEqual([["Speedruns run again. More.\n"]]);
+    expect(onSave.mock.calls).toEqual([["Speedruns run again. More.\n", "Speedruns run again."]]);
     // That was the write waiting for the typing to rest: none goes once the typing has rested.
     await jump(SAVE_AFTER_MS);
   });
@@ -293,13 +301,17 @@ test("the server's text in the editor's own reading of the text the edit started
   handle.view.focus();
   writeAtEnd(handle, " Mine.");
   // Another writer's editor wrote back the text it read, in the editor's own form: no change of
-  // the text, so nothing of the reader's is taken from the editor and kept beside it.
+  // the text, so nothing of the reader's is taken from the editor and kept beside it. The server
+  // holds that form now, so the reader's write names it.
   rerender(OUTLINE_READ_BACK);
   expect(scope.queryByRole("alert", { name: /changed by another person/ })).toBeNull();
   expect(box.textContent).toContain("old build Mine.");
   act(() => handle.view.dom.blur());
   expect(onSave.mock.calls).toEqual([
-    ["# Why\n\n* Every machine runs the daemon\n* Nothing waits on the old build Mine.\n"],
+    [
+      "# Why\n\n* Every machine runs the daemon\n* Nothing waits on the old build Mine.\n",
+      OUTLINE_READ_BACK,
+    ],
   ]);
 });
 
@@ -476,7 +488,7 @@ test("a writer's editor takes in, as its markdown, a description the server's pa
   handle.view.focus();
   writeAtEnd(handle, " Done.");
   act(() => handle.view.dom.blur());
-  expect(onSave.mock.calls).toEqual([[PLAN_WRITTEN]]);
+  expect(onSave.mock.calls).toEqual([[PLAN_WRITTEN, PLAN]]);
 });
 
 test("an answer that says nothing of its reading, a pod's of the build before this one, fills a writer's editor from the markdown and a reader's who may not write from the tree", async () => {
@@ -490,7 +502,7 @@ test("an answer that says nothing of its reading, a pod's of the build before th
   handle.view.focus();
   writeAtEnd(handle, " Done.");
   act(() => handle.view.dom.blur());
-  expect(writer.onSave.mock.calls).toEqual([[PLAN_WRITTEN]]);
+  expect(writer.onSave.mock.calls).toEqual([[PLAN_WRITTEN, PLAN]]);
   writer.view.unmount();
 
   const reader = described(PLAN, false, PLAN_AS_TEXT);
@@ -517,7 +529,7 @@ test("an editor drawn from the reading of a text the server said it cannot read 
   handle.view.focus();
   writeAtEnd(handle, " Done.");
   act(() => handle.view.dom.blur());
-  expect(onSave.mock.calls).toEqual([[PLAN_WRITTEN]]);
+  expect(onSave.mock.calls).toEqual([[PLAN_WRITTEN, PLAN]]);
 });
 
 test("a description the reader has just written is drawn from its own text, never from the tree of the stored one", async () => {
@@ -536,7 +548,7 @@ test("a description the reader has just written is drawn from its own text, neve
     view.state.tr.replaceSelectionWith(view.state.schema.text("new", [emphasis.create()]), false)
   );
   act(() => handle.view.dom.blur());
-  expect(onSave.mock.calls).toEqual([["The *new* plan.\n"]]);
+  expect(onSave.mock.calls).toEqual([["The *new* plan.\n", stored]]);
   // The server still answers the old text and its tree, and the editor shows what was written.
   expect(within(box).getByText("new").tagName).toBe("EM");
   expect(within(box).queryByText("old")).toBeNull();
@@ -550,7 +562,7 @@ test("a writer's write answered after the server said it cannot read the old tex
     // The writer types, and the typing at rest writes it.
     writeAtEnd(handle, " Done.");
     await jump(SAVE_AFTER_MS);
-    expect(onSave.mock.calls).toEqual([[PLAN_WRITTEN]]);
+    expect(onSave.mock.calls).toEqual([[PLAN_WRITTEN, PLAN]]);
     // Before the write's answer, the stored text comes back from a server that says it cannot
     // read it as markdown: a pod of another build answering in turn during a rolling deploy.
     // Then the write's answer comes, with the same word on it, and then another person's text.
@@ -565,7 +577,7 @@ test("a writer's write answered after the server said it cannot read the old tex
       act(() => within(offered).getByRole("button", { name: "Use my text" }).click());
     }
     expect(onSave.mock.calls.flat().filter((written) => /\\[#*-]/.test(written))).toEqual([]);
-    expect(onSave.mock.calls).toEqual([[PLAN_WRITTEN]]);
+    expect(onSave.mock.calls).toEqual([[PLAN_WRITTEN, PLAN]]);
     expect(offered).toBeNull();
     // The editor draws the latest answer's reading, never the stale one, and writes nothing from
     // it as the writer leaves it, the page goes, or the editor closes.
@@ -593,7 +605,7 @@ test("a writer's editor draws the reading of a text the server cannot read as ma
     expect(onSave).not.toHaveBeenCalled();
     // The typing at rest is written as typed, and its answer says the same of it.
     await jump(SAVE_AFTER_MS);
-    expect(onSave.mock.calls).toEqual([[PLAN_WRITTEN]]);
+    expect(onSave.mock.calls).toEqual([[PLAN_WRITTEN, PLAN]]);
     rerender(PLAN_WRITTEN, true, asText(PLAN_WRITTEN), false);
     drawsReading(box, PLAN_WRITTEN);
     act(() => handle.view.dom.blur());
@@ -609,7 +621,7 @@ test("a writer's write answered after the editor drew another person's reading i
   await onFakeClock(async () => {
     writeAtEnd(handle, " Done.");
     await jump(SAVE_AFTER_MS);
-    expect(onSave.mock.calls).toEqual([[PLAN_WRITTEN]]);
+    expect(onSave.mock.calls).toEqual([[PLAN_WRITTEN, PLAN]]);
     // Before the write's answer, the server says it cannot read the stored text as markdown, and
     // then another person's text comes, which it cannot read either: the editor draws that reading.
     rerender(PLAN, true, PLAN_AS_TEXT, false);
@@ -627,5 +639,40 @@ test("a writer's write answered after the editor drew another person's reading i
     drawsReading(box, PLAN_WRITTEN);
     expect(scope.queryByRole("alert", { name: /changed by another person/ })).toBeNull();
   });
-  expect(onSave.mock.calls).toEqual([[PLAN_WRITTEN]]);
+  expect(onSave.mock.calls).toEqual([[PLAN_WRITTEN, PLAN]]);
+});
+
+// The page draws another person's text while the writer's typing waits, and a write goes before
+// the editor's effects take that text in: the typing at rest, as here, or the editor left as the
+// same commit turns it read-only for a text the server's parser does not take whole. The write
+// names the text the editor started from, as the server stores it - never the page's read, which
+// holds the other person's text by then - so Dispatch refuses it rather than writing the writer's
+// edit over theirs, and the editor takes their text in and keeps the writer's beside it, as it
+// does where their text arrives first.
+test.each([
+  ["one the server's parser takes whole", true],
+  ["one the server's parser does not take whole", false],
+] as const)("a write made once the page drew another person's text, %s, and before the editor took it in, names the text the editor started from", async (_text, exact) => {
+  const { beforeEffects, editor, onSave, rerender, scope } = described(
+    PLAN,
+    true,
+    displayTree(PLAN),
+    true
+  );
+  const { box, handle } = await editor();
+  handle.view.focus();
+  await onFakeClock(async () => {
+    writeAtEnd(handle, " Done.");
+    beforeEffects(() => jest.advanceTimersByTime(SAVE_AFTER_MS));
+    rerender(ELSEWHERE, true, exact ? displayTree(ELSEWHERE) : asText(ELSEWHERE), exact);
+    await jump(SAVE_AFTER_MS);
+  });
+  expect(onSave.mock.calls).toEqual([[PLAN_WRITTEN, PLAN]]);
+  expect(box.textContent).toContain("Ship one host first.");
+  expect(box.textContent).not.toContain("Done.");
+  const notice = scope.getByRole("alert", { name: "Description of P1, changed by another person" });
+  expect(notice.textContent).toContain(PLAN_WRITTEN);
+  // Nothing more is written: the editor holds the other person's text.
+  act(() => handle.view.dom.blur());
+  expect(onSave).toHaveBeenCalledTimes(1);
 });

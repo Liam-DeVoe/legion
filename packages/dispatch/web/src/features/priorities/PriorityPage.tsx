@@ -186,7 +186,9 @@ function PriorityShown({
         <BackLink />
         <header className={`min-w-0 rounded-xl border p-3 ${card}`} data-testid="priority-header">
           {/* The title's notice of the reader's kept texts stands under the heading, outside it:
-              drawn in it, it would be read as part of the heading's name. */}
+              drawn in it, it would be read as part of the heading's name. Each field's write
+              names the text the field's edit started from (`from`), never the page's read, which
+              may hold another person's text the field has not taken in yet. */}
           {canWrite ? (
             <InPlaceField
               closed="heading"
@@ -194,7 +196,7 @@ function PriorityShown({
               label="Title"
               maxLength={ISSUE_TITLE_MAX}
               onKeptChange={(texts) => keep(id, "title", texts)}
-              onSave={(next) => rename(id, next, title, textWriteLabel("title", title, next))}
+              onSave={(next, from) => rename(id, next, from, textWriteLabel("title", title, next))}
               required
               value={title}
             />
@@ -252,8 +254,8 @@ function PriorityShown({
                 kept={keptDescription}
                 label="Description"
                 onKeptChange={(texts) => keep(id, "description", texts)}
-                onSave={(next) =>
-                  describe(id, next, description, textWriteLabel("description", title, next))
+                onSave={(next, from) =>
+                  describe(id, next, from, textWriteLabel("description", title, next))
                 }
               />
             </div>

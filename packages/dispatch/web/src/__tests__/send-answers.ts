@@ -153,6 +153,14 @@ export const PRIORITY_TITLE_CHANGED = new ApiError(409, {
   error: "the title was written meanwhile",
 });
 
+/** Dispatch's refusal of a priority's description written over one another person wrote since
+ *  the reader's edit started (`409 PRIORITY_CHANGED`), which an answer of `answerPriorityPatches`
+ *  rejects with. */
+export const PRIORITY_DESCRIPTION_CHANGED = new ApiError(409, {
+  code: "PRIORITY_CHANGED",
+  error: "the description was written meanwhile",
+});
+
 /** `PUT /api/v1/me/issues/{key}/state` (`issueStateRequest`). */
 export const answerIssueStates = () =>
   answerRoute<

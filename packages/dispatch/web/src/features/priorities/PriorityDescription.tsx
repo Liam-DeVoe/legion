@@ -34,6 +34,13 @@ interface Held {
    *  the editor reads a text back in its own form (`* ` for `- `, a soft break as a space, a
    *  closing newline), and that is no change the reader made. */
   base: string;
+  /** The server's text `base` stands for, as the server holds it rather than as the editor reads
+   *  it back: the text the editor took in or was last drawn to, or the last text it wrote. It is
+   *  the text the reader's edit started from, which each write hands on with what it writes
+   *  (`save`), for the write to name as the text it goes over (`expected`). So a write made after
+   *  the page drew another person's text, and before the editor took that text in, names the
+   *  text the reader edited, never theirs, and Dispatch refuses it rather than writing over it. */
+  from: string;
   /** The texts written that the server has not answered with yet, oldest first: its answer
    *  with one of them is the reader's own write coming back, not another person's text. */
   sent: readonly string[];
@@ -52,7 +59,7 @@ interface Held {
  *  markdown in), and where a write goes. */
 interface Latest {
   readonly description: string;
-  readonly onSave: (next: string) => void;
+  readonly onSave: (next: string, from: string) => void;
   readonly reading: DisplayTree | undefined;
 }
 
@@ -73,16 +80,18 @@ function heldText(held: Held): string {
   return held.fromTree ? held.base : held.handle.getMarkdown();
 }
 
-/** Writes what the editor holds, at once, where it differs from the server's text. An editor that
- *  holds the server's reading of the text (`fromTree`) writes nothing, ever: a reading is a thing
- *  to draw, never a text to store. */
-function save(held: Held, onSave: (next: string) => void): void {
+/** Writes what the editor holds, at once, where it differs from the server's text, with the text
+ *  the edit started from (`from`). An editor that holds the server's reading of the text
+ *  (`fromTree`) writes nothing, ever: a reading is a thing to draw, never a text to store. */
+function save(held: Held, onSave: Latest["onSave"]): void {
   stop(held);
   const markdown = heldText(held);
   if (markdown === held.base) return;
+  const from = held.from;
   held.base = markdown;
+  held.from = markdown;
   held.sent = [...held.sent, markdown];
-  onSave(markdown);
+  onSave(markdown, from);
 }
 
 /** Draws a text in the editor: from the tree the server read it into where one is given
@@ -101,13 +110,15 @@ function draw(held: Held, markdown: string, tree: DisplayTree | undefined): void
 function take(held: Held, markdown: string, tree: DisplayTree | undefined): void {
   if (held.handle.getMarkdown() !== markdown) draw(held, markdown, tree);
   held.base = held.handle.getMarkdown();
+  held.from = markdown;
 }
 
 /** Draws the server's text in an editor already open (`draw`), held then as the text the editor
- *  matches. A text it cannot take in leaves what the editor holds in it, held all the same as
- *  the text it matches, so that is not written over the text it could not draw as the editor
- *  closes, and `fail` is told why. Either way it stops the write waiting for the typing to rest,
- *  which would write over the server's text, and the save the redraw's own Yjs update scheduled. */
+ *  matches, and as the text the reader's edit starts from (`from`). A text it cannot take in
+ *  leaves what the editor holds in it, held all the same as the text it matches, so that is not
+ *  written over the text it could not draw as the editor closes, and `fail` is told why. Either
+ *  way it stops the write waiting for the typing to rest, which would write over the server's
+ *  text, and the save the redraw's own Yjs update scheduled. */
 function redraw(
   held: Held,
   markdown: string,
@@ -115,6 +126,7 @@ function redraw(
   fail: (failure: Failure) => void
 ): void {
   held.base = held.handle.getMarkdown();
+  held.from = markdown;
   try {
     draw(held, markdown, tree);
     held.base = held.handle.getMarkdown();
@@ -169,6 +181,12 @@ function rest(held: Held, latest: Latest, fail: (failure: Failure) => void): voi
  * reload: a row of the table scrolled away, or the page left, and an editor drawn again shows
  * them again, and the page draws the editor while it holds any, a closed disclosure included.
  * Else the editor holds them itself, and they go with it.
+ * Each write hands on, with the text written, the server's text the reader's edit started from
+ * (`onSave`'s `from`), which the page names as the text the write goes over (`expected`), and
+ * never the page's own read of the text: the page draws another person's text before the editor
+ * takes it in, and a write made in between - the typing at rest, the editor left as it turns
+ * read-only, the page going - names the text the reader edited, so Dispatch refuses it, and the
+ * reader's text is kept beside the other person's as it is where that text arrives first.
  * A reader who may not write reads it in the same editor, read-only; with none written, they
  * read that none is, and a writer reads it above the empty editor.
  *
@@ -240,7 +258,9 @@ export function PriorityDescription({
    *  #3". The editor carries it as its accessible name. */
   label: string;
   onKeptChange?: (kept: readonly string[]) => void;
-  onSave: (next: string) => void;
+  /** Writes `next`, the reader's text, over `from`, the server's text their edit started from,
+   *  which the write names as the text it goes over (`expected`). */
+  onSave: (next: string, from: string) => void;
 }): ReactNode {
   const root = useRef<HTMLDivElement>(null);
   const held = useRef<Held | undefined>(undefined);
@@ -327,6 +347,7 @@ export function PriorityDescription({
       }
       const current: Held = {
         base: "",
+        from: "",
         fromTree: false,
         handle: created,
         sent: [],
@@ -394,7 +415,10 @@ export function PriorityDescription({
       sent: current.sent,
     });
     current.sent = next.sent;
+    // Each text `arrival` leaves as the edit's start is one the server holds, or will once the
+    // write of it still out lands, as the server holds it: the text a write names from here.
     current.base = next.base;
+    current.from = next.base;
     if (next.kept !== mine) keep(next.kept);
     if (next.take) redraw(current, description, latest.current.reading, setFailure);
   }, [description]);
@@ -421,14 +445,15 @@ export function PriorityDescription({
   }, []);
 
   // One of the reader's kept texts, put back in the editor from its markdown, since the server
-  // holds no reading of it, and written at once. With no editor the reader writes in - another
-  // person's text it could not draw, or one the server cannot read as markdown, drawn read-only -
-  // it is written as it is, and the server's text stays drawn until the answer replaces it.
+  // holds no reading of it, and written at once, over the text the editor shows: the reader chose
+  // it over that. With no editor the reader writes in - another person's text it could not draw,
+  // or one the server cannot read as markdown, drawn read-only - it is written as it is, over the
+  // text the editor last took in, and the server's text stays drawn until the answer replaces it.
   const putBack = (text: string) => {
     setKept(NOTHING_KEPT);
     const current = held.current;
     if (current === undefined || !writes) {
-      onSave(text);
+      onSave(text, current?.from ?? seen.current);
       return;
     }
     draw(current, text, undefined);
