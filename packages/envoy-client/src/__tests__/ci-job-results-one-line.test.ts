@@ -55,9 +55,10 @@ async function run(
 }
 
 /** A CI job's command as `agent-secrets result-grant` starts it: the airlock's placeholder of its
- *  run, which the command presents alone. */
+ *  run in its variable, which the command presents alone. The command reads only that the variable
+ *  is set (`isJobResult`), and holds its value as a secret, so the value is a random fixture. */
 const asJob = (): Record<string, string> => ({
-  DISPATCH_RESULTS_TOKEN: `agent-secrets-placeholder-result-${fixtureSecret("run")}`,
+  DISPATCH_RESULTS_TOKEN: fixtureSecret("result"),
 });
 
 const record = (check: string) => [
