@@ -10,6 +10,7 @@ import {
 import { join } from "node:path";
 import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { libRowBoundMs, rowWaits } from "./row-waits";
 
 // claude-backend-tmux.sh's prerequisites on a box whose own `secrets` store holds no App credential
 // (the devbox once its local copies of another deployment's keys were removed): the run must reach
@@ -22,6 +23,10 @@ import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 // PATH, and then the stand-in `gh` acts as no account for the proof human, which ends the run.
 const script = join(import.meta.dir, "..", "claude-backend-tmux.sh");
 const dir = temporaryDirectory("claude-backend-key-runner-test");
+// The row's one bound is the directory's (lib/row-waits.ts): the run below ends at the end of the
+// row's waits, 20 s before it, so a run that hangs fails here with its output, and how long the
+// prerequisites take on a loaded host decides nothing short of that.
+const waits = rowWaits(libRowBoundMs);
 
 const bin = join(dir, "bin");
 const scratch = join(dir, "tmp");
@@ -155,7 +160,9 @@ test.skipIf(skip)(
       },
       stdout: "pipe",
       stderr: "pipe",
-      timeout: 60_000,
+      // The run ends before the row's bound, so a run that hangs fails here with its output.
+      // spawnSync takes whole milliseconds, and reads 0 as no bound at all.
+      timeout: Math.max(1, Math.floor(waits.end() - performance.now())),
     });
     const output = run.stdout.toString() + run.stderr.toString();
     // read_app_logins passed, so every assertion below is about a run that resolved both App
@@ -172,6 +179,5 @@ test.skipIf(skip)(
     expect(readFileSync(keyRead, "utf8")).toBe(keyCommandPrints);
     expect(readFileSync(tokenRead, "utf8")).toBe("{}");
     expect(existsSync(asked) ? readFileSync(asked, "utf8") : "").toBe("");
-  },
-  90_000
+  }
 );
