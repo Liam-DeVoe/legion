@@ -3,6 +3,7 @@ package workflow
 import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/reviewround"
 )
@@ -40,15 +41,20 @@ import (
 // naming the commit it was stored with, or `none`, though the row's commit has moved since, so
 // the record holds exactly what the worker is sent.
 //
-// A role the deployment defines whose step at step is of the type review gets one sentence, the
-// commit its own step's newest run read, ` Last reviewed commit: <sha>.`, which its row holds
-// (record.PhaseRow.ReviewedHead, written by the workflow's recordStepReview for a review step
-// alone; a role runs at most one step of an issue), and none where its row holds no commit, as in
-// the step's first run of a generation. Such a step reports with its verdict and submits no review
-// of GitHub's, so it gets no entry's sentence.
+// Any other role whose step is of the type review gets one sentence, the commit its own step's
+// newest run read, ` Last reviewed commit: <sha>.`, which its row holds (record.PhaseRow.ReviewedHead),
+// in the phase its step runs as (plan.RunsAs): a role the deployment defines, at step, and the role
+// acceptance, at accepting, whether the fresh agent of acceptance or the owner does it. Only a
+// review step's run writes the row's commit (the workflow's recordStepReview, from the step's
+// completion; recordOwnersReview, the head the owner's acceptance read; a role runs at most one
+// step of an issue), so a role with no review step never has one, and none is named where the row
+// holds no commit, as in the step's first run of a generation. Such a step reports with its verdict
+// and submits no review of GitHub's, so it gets no entry's sentence. A review step of the role
+// reviewer the owner does gets the reviewer's two sentences, as the reviewer does: its row is the
+// reviewer's.
 func namingTheReviewRound(task string, role claim.Role, at phase.Phase, row record.PhaseRow) string {
 	if role != claim.RoleReviewer {
-		if at == phase.Step && !claim.IsBuiltin(role) && row.ReviewedHead != "" {
+		if row.ReviewedHead != "" && plan.RunsAs(string(role)) == at {
 			return task + " " + reviewround.CommitLabel + ": " + row.ReviewedHead + "."
 		}
 		return task

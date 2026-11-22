@@ -2476,7 +2476,38 @@ func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMo
 	if err != nil {
 		return intake.Result{}, err
 	}
+	if err := e.recordOwnersReview(ctx, tx, *issue, pr); err != nil {
+		return intake.Result{}, err
+	}
 	return intake.Result{}, e.transition(ctx, tx, *issue, TriggerBackward, target, row, pr, fact.Reason)
+}
+
+// recordOwnersReview writes the head of issue's pull request the record holds, pr's, onto the row
+// of the step of the type review the owner does at the place issue's task stands at
+// (record.PhaseRow.ReviewedHead): the commit the owner's acceptance read when it signs the step off
+// or moves the work back, which the next run of that step is told (namingTheReviewRound), as a
+// review step's completion keeps the commit it read (recordStepReview). The owner's sign_off and
+// request_backward_move name no commit of their own, so the commit is the head they acted on. A
+// place the owner does not work, a step of another type, and an issue with no pull request or no
+// plan rows write nothing.
+func (e *Engine) recordOwnersReview(ctx context.Context, tx pgx.Tx, issue record.Issue, pr *record.PullRequest) error {
+	if pr == nil || pr.HeadSHA == "" {
+		return nil
+	}
+	w, err := e.walk(ctx, tx, issue)
+	if err != nil {
+		return err
+	}
+	step, ok := w.planStepAt(w.Place)
+	if !w.Stored || !ok || !w.OwnerAt(w.Place) || step.Type != plan.TypeReview {
+		return nil
+	}
+	row, err := e.phaseRow(ctx, tx, issue.Key, claim.Role(step.Role))
+	if err != nil {
+		return err
+	}
+	row.ReviewedHead = pr.HeadSHA
+	return e.store.PutPhase(ctx, tx, row)
 }
 
 // staleBackwardMove is the 409 BACKWARD_REFUSED refusal of requester's move of issue back from p,
@@ -2525,6 +2556,13 @@ func (e *Engine) signOff(ctx context.Context, tx pgx.Tx, fact intake.SignOff) (i
 	}
 	if refusal, err := e.signOffRefusal(ctx, tx, *issue); err != nil || refusal != nil {
 		return intake.Result{Refusal: refusal}, err
+	}
+	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	if err := e.recordOwnersReview(ctx, tx, *issue, pr); err != nil {
+		return intake.Result{}, err
 	}
 	return intake.Result{}, e.accept(ctx, tx, *issue)
 }
