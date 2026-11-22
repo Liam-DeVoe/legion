@@ -84,7 +84,9 @@ func TestTheAddressingNamesTheIssuesOwnArchitect(t *testing.T) {
 	// The whole sentence a child's planner is told, so nothing but the architect it names moved.
 	want := "Legion addressing: your role topic is `" + notify.RoleTopicPrefix + string(mustClaimToken(t, child, claim.RolePlanner)) + "`" + owns(child) +
 		"the project's controller is `" + notify.RoleTopicPrefix + string(claim.ControllerToken("legion")) + "`; " +
-		"a sibling role on your issue is your topic with the trailing `-<role>` replaced."
+		"your issue had no plan rows when you were started, so each of its roles is its own agent until it runs a plan: " +
+		"a sibling role on your issue is your topic with the trailing `-<role>` replaced, " +
+		"and once your issue runs a plan, `dispatch steps --issue " + child + "` gives the agent of each of its steps."
 	if got := addressing(child, claim.RolePlanner); got != want {
 		t.Errorf("the child's planner, while the child's architect works, is told %q; want %q", got, want)
 	}
@@ -110,7 +112,9 @@ func TestTheAddressingNamesTheIssuesOwnArchitect(t *testing.T) {
 // implementer's step and on the tester's, so the addressing the reviewer is told names the
 // tester's step on `…-implementer`, each step on its agent's topic, and says what a role's own
 // topic reaches. The token is the one claim.AgentToken spells from the step's agent's name
-// (record.PlanStep.AgentName). An issue with no plan rows is told the rule it was always told.
+// (record.PlanStep.AgentName). An issue with no plan rows is told the rule it was always told,
+// with the case it holds in (each role its own agent until the issue runs a plan) and the read
+// that names the agent of each step of a plan it runs later.
 func TestTheAddressingNamesTheAgentOfEachStep(t *testing.T) {
 	steps := []record.PlanStep{
 		{Issue: "LEGION-209", Generation: 1, Task: "a", Position: 1, Role: "implementer", Type: "implementation", AgentKey: "a", Agent: "implementer"},
@@ -135,7 +139,9 @@ func TestTheAddressingNamesTheAgentOfEachStep(t *testing.T) {
 		}
 	}
 	if bare := addressingFragment("legion", reviewer, architect, nil, ghrepo.Repository{}, "", nil); !strings.HasSuffix(bare,
-		"a sibling role on your issue is your topic with the trailing `-<role>` replaced.") {
-		t.Errorf("an issue with no plan rows is told %q; want the rule it was always told", bare)
+		"your issue had no plan rows when you were started, so each of its roles is its own agent until it runs a plan: "+
+			"a sibling role on your issue is your topic with the trailing `-<role>` replaced, "+
+			"and once your issue runs a plan, `dispatch steps --issue LEGION-209` gives the agent of each of its steps.") {
+		t.Errorf("an issue with no plan rows is told %q; want the rule it was always told, its case and where a later plan's agents are read", bare)
 	}
 }

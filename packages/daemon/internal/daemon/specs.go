@@ -605,7 +605,10 @@ func AddressingFragment(project string, c supervise.Claim, repo ghrepo.Repositor
 // so a topic spelled from a role reaches the agent named for that role, which need not be the one
 // that works the role's step: the sentence names the topic of each step's agent, and says what a
 // role's own topic reaches. An issue with no plan rows names no step, and keeps the rule that
-// spells a sibling's topic from its role.
+// spells a sibling's topic from its role, saying the case it holds in: with no plan rows, each role
+// of the issue is its own agent. The line is written at the launch, and the issue can run a plan
+// later, so it bounds the rule to the time before one and names `dispatch steps`, which gives the
+// agent of each step of that plan.
 //
 // The copy of the claim a launch is built from (supervise's spawnSpec) can carry two marks, and
 // each adds a sentence. A launch that follows a forget (c.SessionLost) starts a fresh session on a
@@ -624,7 +627,9 @@ func addressingFragment(project string, c supervise.Claim, architect claim.Token
 	if c.Role == claim.RoleArchitect && !claim.IsTreeRoot(c.Issue, c.Tree) {
 		owner = "the architect above you is"
 	}
-	siblings := "a sibling role on your issue is your topic with the trailing `-<role>` replaced."
+	siblings := "your issue had no plan rows when you were started, so each of its roles is its own agent until it runs a plan: " +
+		"a sibling role on your issue is your topic with the trailing `-<role>` replaced, " +
+		"and once your issue runs a plan, `dispatch steps --issue " + c.Issue + "` gives the agent of each of its steps."
 	if len(workers) > 0 {
 		steps := make([]string, len(workers))
 		for i, w := range workers {
