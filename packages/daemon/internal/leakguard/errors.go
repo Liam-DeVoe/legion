@@ -1,6 +1,10 @@
 package leakguard
 
-import "strings"
+import (
+	"strings"
+	"unicode"
+	"unicode/utf8"
+)
 
 // RefusedBy is the check a refusal names. Its two values are the two constants below: a named
 // type rather than a bare string, so a reader of a Refusal sees which values the field holds. An
@@ -30,10 +34,11 @@ type Refusal struct {
 	Lines []string
 }
 
-// Error is the refusal as a log or a terminal shows it. Each line of the report has every byte
-// below 0x20 and the byte 0x7f written as \x and two hex digits (writeTerminalSafe): a line names a
-// path, which the push's author chose, and a path's control bytes written raw could move the
-// cursor, erase the line that names the file, or start a line of their own.
+// Error is the refusal as a log or a terminal shows it. Each line of the report is written by
+// writeTerminalSafe, which escapes every character a terminal could act on or display as something
+// else: a line names a path, which the push's author chose, and a path's control characters
+// written raw could move the cursor, erase the line that names the file, start a line of their
+// own, or reverse how the rest of the path reads.
 func (r *Refusal) Error() string {
 	var b strings.Builder
 	b.WriteString("LEAK CHECK: refusing ")
@@ -47,20 +52,36 @@ func (r *Refusal) Error() string {
 	return b.String()
 }
 
-// writeTerminalSafe writes s to b with every byte below 0x20 and the byte 0x7f, the control
-// bytes a terminal acts on, written as \x and two lower-case hex digits; every other byte as it
-// is.
+// writeTerminalSafe writes s to b with every character that is not printable escaped: a byte
+// below 0x80 that is not printable (a C0 control or DEL) as \x and two hex digits, any other rune
+// unicode.IsPrint refuses (a C1 control, a format character such as U+202E, a space other than
+// U+0020) as \u and four hex digits or \U and eight, and a byte that is not valid UTF-8 as \x and
+// two hex digits. Every other character, a backslash included, is written as it is: the shared
+// check's report lines, already escaped by its own printer, then pass unchanged, and the text
+// "\x1b" in a path reads as an escaped ESC would, which misleads a reader but acts on nothing.
 func writeTerminalSafe(b *strings.Builder, s string) {
 	const hex = "0123456789abcdef"
-	for i := range len(s) {
-		c := s[i]
-		if c >= 0x20 && c != 0x7f {
-			b.WriteByte(c)
-			continue
+	writeHex := func(prefix string, v rune, digits int) {
+		b.WriteString(prefix)
+		for shift := 4 * (digits - 1); shift >= 0; shift -= 4 {
+			b.WriteByte(hex[(v>>shift)&0xf])
 		}
-		b.WriteString(`\x`)
-		b.WriteByte(hex[c>>4])
-		b.WriteByte(hex[c&0xf])
+	}
+	for i := 0; i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		switch {
+		case r == utf8.RuneError && size == 1:
+			writeHex(`\x`, rune(s[i]), 2)
+		case unicode.IsPrint(r):
+			b.WriteString(s[i : i+size])
+		case r < 0x80:
+			writeHex(`\x`, r, 2)
+		case r <= 0xffff:
+			writeHex(`\u`, r, 4)
+		default:
+			writeHex(`\U`, r, 8)
+		}
+		i += size
 	}
 }
 

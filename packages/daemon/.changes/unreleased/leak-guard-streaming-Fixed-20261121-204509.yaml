@@ -18,9 +18,11 @@ body: |-
   the path-scoped allowlist matched against those forms; they now match the real path, as for a
   path with no space.
 
-  A refusal written to a log or a terminal now writes each byte below 0x20 and the byte 0x7f of
-  its lines as `\x` and two hex digits, so a file name built with an escape sequence or a line
-  break cannot act on the terminal that shows the refusal or start a line of its own.
+  A refusal written to a log or a terminal now escapes each character of its lines that is not
+  printable: a C0 control or DEL as `\x` and two hex digits, a C1 control or a format character
+  such as U+202E as `\u` and four, and a byte that is not UTF-8 as `\x`. So a
+  file name built with an escape sequence, a line break or a direction override cannot act on the
+  terminal that shows the refusal, start a line of its own, or reverse how the path reads.
 time: 2026-11-21T20:45:09Z
 custom:
     Issue: leak-guard-streaming
