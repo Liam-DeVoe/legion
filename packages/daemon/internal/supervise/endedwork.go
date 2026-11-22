@@ -224,14 +224,21 @@ func endNeverReady(never string) string { return "its agent " + never + ", so th
 // A record written here is new words, so only a take accepted from here on tells it (accept): a
 // take accepted before it carried none of this record's words.
 //
-// Before anything else it gives back what an accepted take that awaits its turn told
-// (untellUnstarted): the worker never ran that take's text, so the record that take had marked
-// told is untold again and the record written here joins it.
+// Before anything else it reads whether a take awaiting its turn may have had that turn run with
+// no frame of it reaching the machine (turnMayHaveRunUnseen: the claim's connection not showing
+// every frame of its turns), and keeps that as the take's mark (Machine.turnUnseen), so the
+// take-back of the let-go — made after this, by a death or a displacement (died, displaced), and
+// after letGo has made the view whole for the next process, by a retirement or a suspension
+// (takeBackUnstarted) — takes it back as a turn cut off, as the record here says it was. Then it
+// gives back what an accepted take that awaits its turn told (untellUnstarted): the worker never
+// ran that take's text, so the record that take had marked told is untold again and the record
+// written here joins it.
 //
 // It writes nothing itself: the record is a field of the claim, and the let-go's own write — the
 // launch's, the suspension's, the failure's, the retirement's, or the death's charge — carries
 // it, and the untelling with it. So it costs the relaunch one read and waits for nothing else.
 func (m *Machine) recordEnd(ctx context.Context, cause string) {
+	m.turnUnseen = m.turnMayHaveRunUnseen()
 	m.untellUnstarted()
 	if cause == noEnd || m.claim.Locator == nil {
 		return
@@ -244,17 +251,18 @@ func (m *Machine) recordEnd(ctx context.Context, cause string) {
 	// The pending task's turn was cut off where this let-go's own decision takes the task back
 	// from its turn (interrupted, cutTurnOf), whatever the claim's state, and where the turn that
 	// was running was the turn of the task's accepted take (Delivery.turnStarted). A take that
-	// awaits its turn is in no turn cut off: the worker ran nothing of it. Nor is a take of a
-	// plugin below TaskTakeContract whose turn ended with its report still to come, which a
-	// let-go finishes rather than take back (interrupted), the take of the turn whose end runs a
-	// held suspension (suspendHeldAtEnd) and that of an idle claim's let-go that takes nothing
-	// back (suspendNow) among them, whose task settle finishes. Such a take of a plugin that
-	// names its number is in no turn cut off either where the let-go records before its take-back
-	// (died, displaced); where the let-go's own decision takes it back first, as a held
-	// suspension's deadline and a stale-plugin relaunch's bound do, the mark says it was
-	// (cutTurnOf).
+	// awaits its turn is in no turn cut off: the worker ran nothing of it, unless that turn may
+	// have run with no frame of it reaching the machine (turnMayHaveRunUnseen), which the take-back
+	// that follows reads as a turn cut off. Nor is a take of a plugin below TaskTakeContract whose
+	// turn ended with its report still to come, which a let-go finishes rather than take back
+	// (interrupted), the take of the turn whose end runs a held suspension (suspendHeldAtEnd) and
+	// that of an idle claim's let-go that takes nothing back (suspendNow) among them, whose task
+	// settle finishes. Such a take of a plugin that names its number is in no turn cut off either
+	// where the let-go records before its take-back (died, displaced); where the let-go's own
+	// decision takes it back first, as a held suspension's deadline and a stale-plugin relaunch's
+	// bound do, the mark says it was (cutTurnOf).
 	if p := m.claim.Pending; p != nil {
-		ended.TaskTurn = (m.cutTurnOf != "" && p.ID == m.cutTurnOf) || (ended.Turn && p.turnStarted())
+		ended.TaskTurn = (m.cutTurnOf != "" && p.ID == m.cutTurnOf) || (ended.Turn && p.turnStarted()) || m.turnUnseen
 	}
 	// A claim idle or working has run a turn in this process: idle is reached only by a turn's
 	// end, and a relaunched process comes up through ready. A claim working for a compaction in

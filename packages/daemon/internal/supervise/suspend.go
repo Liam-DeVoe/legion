@@ -584,7 +584,7 @@ func (m *Machine) runHeldAtEnd(ctx context.Context, back ClaimState, armFinish f
 		return m.persist(ctx)
 	}
 	p := m.claim.Pending
-	finishes := p != nil && p.turnStarted()
+	finishes := m.takesTurnRan()
 	err := m.suspendHeldAtEnd(ctx, back)
 	if err == nil || m.held == nil {
 		return err

@@ -572,9 +572,10 @@ func (m *Machine) queue(ctx context.Context, request RequestDeliver) error {
 				}
 				return &RefusedError{State: m.claim.State, Request: "deliver", Err: ErrDeliveryPending}
 			}
-		case pending.awaitsTurn():
-			// The take is in the worker's hands and its turn has not started: the task is not
-			// over, and a newer one waits behind it as behind any task its worker has not done.
+		case m.takeAwaitsTurn():
+			// The take is in the worker's hands and its turn has not run: the task is not over, and
+			// a newer one waits behind it as behind any task its worker has not done. A take whose
+			// report came, its finish owed, has run (takesTurnRan), and is finished below.
 			return &RefusedError{State: m.claim.State, Request: "deliver", Err: ErrDeliveryPending}
 		default:
 			m.log.Info("supervise: the pending task's turn has run, so the newer task takes its place",
@@ -751,7 +752,15 @@ func (m *Machine) phaseHolds(ctx context.Context, d Delivery) (bool, error) {
 // back that a newer one replaces; and runParkedLaunchNow, for the task whose take's turn has run
 // that an operator's task replaces before the launch it runs (retireTask, which every end of a
 // delivery goes through).
+//
+// A task whose report's finish the store refused (takePhase, waitFinish) is finished by that
+// report instead (finishTask), whichever turn its take awaits: the report decided it, and dropped
+// unfinished the claim would record no finish of it. Its value goes with the finish, before the
+// newer task's is written.
 func (m *Machine) retirePending(ctx context.Context) error {
+	if m.takePhase() == waitFinish {
+		return m.finishTask(ctx, finishedByReport)
+	}
 	return m.retireTask(ctx, false)
 }
 
@@ -764,10 +773,12 @@ func (m *Machine) retirePending(ctx context.Context) error {
 // task it finished (Claim.TaskFinished) and the session that finished it (TaskFinishedSession),
 // in the same write.
 //
-// A task of a run whose take's turn started leaves the run behind it, and its phase entry and its
+// A task of a run whose take's turn ran leaves the run behind it, and its phase entry and its
 // check look with it: the worker goes on working it in whatever turn comes next — one an Envoy
 // notice starts, with no delivery of its own — and its completion belongs to that run, that entry
-// and that look. Only a delivery whose take's turn started moves them, and only a task that
+// and that look. A take's turn ran where it started, or where a report named the take's number and
+// the store refused its finish, which that report decides whichever turn the take awaits
+// (takesTurnRan). Only a delivery whose take's turn ran moves them, and only a task that
 // carries them: an operator's task carries no generation, no entry and no look, a resume that
 // raised no entry and a production check's look no entry, and a phase task no look, and each
 // leaves what the claim is serving alone. Every such retire writes the row, the second task of one
@@ -777,7 +788,7 @@ func (m *Machine) retirePending(ctx context.Context) error {
 // answered while that delivery was pending.
 //
 // A task of an entry no turn of a take ran goes the other way — untaken, or taken and retired
-// before its turn started, which never ran its text: Claim.GivenEntry is put back to
+// before its turn ran, which never ran its text: Claim.GivenEntry is put back to
 // Claim.ServedEntry, so the entry stands above what this claim was given again, the admission
 // pass reads this role as owed that entry's work (record.PhaseRow.Entry), and the daemon queues
 // that entry's task a second time. It is put back only when the retired delivery's Entry is the
@@ -844,7 +855,7 @@ func (m *Machine) retireTask(ctx context.Context, finished bool) error {
 	}
 	p := m.claim.Pending
 	retired := m.stored()
-	if p.turnStarted() {
+	if m.takesTurnRan() {
 		retired.ServingGeneration, retired.ServedEntry, retired.ServingCheckLook =
 			m.claim.ServingRun(), m.claim.ServingEntry(), m.claim.ServingCheck()
 	} else if p.Entry != 0 && p.Entry == m.claim.GivenEntry {
@@ -1058,7 +1069,7 @@ func (m *Machine) settle(ctx context.Context) error {
 			}
 		}
 	}
-	if !SaidReady(m.claim.State) && (p.turnStarted() || m.takePhase() == waitFinish) {
+	if !SaidReady(m.claim.State) && m.takesTurnRan() {
 		if by, finishes := m.overTurnFinish(); finishes {
 			return m.finishTask(ctx, by)
 		}
@@ -1163,12 +1174,14 @@ const outOfMemoryTask = "Your pod ran out of memory. Kubernetes ended the contai
 // outOfMemoryTask, and it is written on every such call, true or false, so a second interruption
 // of the same task for another reason clears a note that no longer describes it. A take whose
 // turn had not started goes back with no note, since the worker ran nothing of it, except one
-// whose turn may have run with no frame of it reaching the machine (Machine.turnUnseen): it goes
-// back as a turn cut off, since the worker may have run it whole. The task is neither retired nor
-// its run marked served, since the turn never finished; the claim's TaskTaken stays, since the
-// worker read it. A task no take holds is left as it is. An older daemon's ask of an update round
-// is the one task no take is accepted for again: it keeps its delivery id, which names its round,
-// and the next take of it drops it (takeable).
+// whose turn may have run with no frame of it reaching the machine (Machine.turnUnseen: marked so
+// by the reconnect deadline, by a stale relaunch decided behind a cut backlog, or by the record of
+// a death or a displacement the claim met while its connection did not show every frame of its
+// turns, recordEnd): it goes back as a turn cut off, since the worker may have run it whole. The
+// task is neither retired nor its run marked served, since the turn never finished; the claim's
+// TaskTaken stays, since the worker read it. A task no take holds is left as it is. An older
+// daemon's ask of an update round is the one task no take is accepted for again: it keeps its
+// delivery id, which names its round, and the next take of it drops it (takeable).
 //
 // A take whose report named its number and whose finish the store refused (Machine.finishOwed) is
 // not taken back but finished, by that report, whichever turn it awaits and whether or not a turn
@@ -1326,26 +1339,32 @@ func (m *Machine) untell(p *Delivery) bool {
 // untellUnstarted is recordEnd's give-back of an accepted take that awaits its turn: the worker
 // never ran that take's text, so what it told goes back to untold (untell) before the let-go
 // records its end, and the record of this let-go joins the record the take had marked told
-// (joined). A take whose turn started keeps what it told, since that turn ran the text. It writes
+// (joined). A take whose turn ran keeps what it told, since that turn ran the text: one whose turn
+// started, and one whose report came with its finish owed (takeAwaitsTurn, takesTurnRan). It writes
 // nothing: the let-go's own write carries the claim.
 func (m *Machine) untellUnstarted() {
-	if p := m.claim.Pending; p != nil && p.awaitsTurn() {
-		m.untell(p)
+	if m.takeAwaitsTurn() {
+		m.untell(m.claim.Pending)
 	}
 }
 
 // takeBackUnstarted takes back the accepted take of the pending task whose turn has not started,
 // for a let-go that stops the claim's process and keeps the task pending: a retirement (retire)
-// and a suspension (suspended). The process that took it is the one the claim no longer runs, so
-// that turn never starts and the worker ran nothing of the take's text. What the take told and
-// the handshake's confirmation of its entry go back with it (giveBackTake), and the next process's
-// take of the number is decided afresh, its text composed again (Delivery.message) behind the
-// records that tell then, this let-go's own among them; a take answered from the record instead
-// (answerAgain) would hand the next process the text the stopped one was given, which carries none
-// of what this let-go recorded and marks nothing told. The task keeps its number, as every
-// take-back does. It writes nothing and reports whether it took a take back, so the caller's own
-// write carries the delivery with the claim (putClaimAndPendingOwed). cause is the take-back's
-// line's (takenBackLine).
+// and a suspension (suspended), a held suspension's deadline among them. The process that took it
+// is the one the claim no longer runs, so that turn never starts and the worker ran nothing of the
+// take's text. What the take told and the handshake's confirmation of its entry go back with it
+// (giveBackTake), and the next process's take of the number is decided afresh, its text composed
+// again (Delivery.message) behind the records that tell then, this let-go's own among them; a
+// take answered from the record instead (answerAgain) would hand the next process the text the
+// stopped one was given, which carries none of what this let-go recorded and marks nothing told.
+// The task keeps its number, as every take-back does. It writes nothing and reports whether it
+// took a take back, so the caller's own write carries the delivery with the claim
+// (putClaimAndPendingOwed). cause is the take-back's line's (takenBackLine).
+//
+// A take whose turn may have run with no frame of it reaching the machine goes back as a turn cut
+// off instead (Delivery.Interrupted), as the reconnect deadline takes it back: the let-go that
+// came first found the claim's connection not showing every frame of its turns, and kept that
+// for this take-back (turnMayHaveRunUnseen, letGo), so the worker may have run it whole.
 //
 // A take whose report's finish the store refused (takePhase, waitFinish) is not taken back but
 // finished, by that report, which writes the claim with the retirement; a finish the store
@@ -1358,7 +1377,11 @@ func (m *Machine) takeBackUnstarted(ctx context.Context, cause string) (bool, er
 	if m.takePhase() == waitFinish {
 		return false, m.finishTask(ctx, finishedByReport)
 	}
+	cut := m.turnMayHaveRunUnseen()
 	m.clearTake(p, cause)
+	if cut {
+		p.Interrupted, p.OutOfMemory = true, ordinaryEnd
+	}
 	return true, nil
 }
 

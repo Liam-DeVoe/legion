@@ -346,8 +346,9 @@ func compactStart(m *Machine, ctx context.Context, _ Event) error {
 	}
 	if p := m.claim.Pending; p != nil && p.awaitsTurn() {
 		// A take whose report's finish the store refused is finished by that report instead
-		// (takeBack, waitFinish): no turn of it is aborted.
-		if m.takePhase() == waitTake {
+		// (takeBack, waitFinish): no turn of it is aborted. Any other take awaiting its turn is
+		// taken back, a migrated worker's (waitNone) among them, and the line says so.
+		if m.takePhase() != waitFinish {
 			m.log.Info("supervise: the compaction aborts the turn this task's take was to start; the task goes back to waiting",
 				"task", p.Number)
 		}
@@ -451,7 +452,7 @@ func compactEnded(m *Machine, ctx context.Context, ev Event) error {
 	// again by the end-frame bound, which that refusal armed for no working claim: armed here, as
 	// the end of a turn arms it (turnEnded), and only where none stands, so a plugin's bound armed
 	// at its turn's end keeps its time.
-	if p := m.claim.Pending; p != nil && p.turnStarted() {
+	if p := m.claim.Pending; m.takesTurnRan() {
 		m.armEndFrameBoundUnlessArmed(p.ID)
 	}
 	return m.afterTurn(ctx, false)

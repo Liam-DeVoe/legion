@@ -742,13 +742,15 @@ func (m *Machine) dropWakeFor(ev Event) *wake {
 // other, on the one path.
 //
 // The third is a task a take holds whose turn has run, over a claim in no turn (ready or idle):
-// the take's turn is over and no report has finished the task. queue retires such a task and
-// queues the newer one in its place (its last case), so the claim takes an operator's task over
-// it, and the launch runs for it. The retirement is made here, before that launch, as queue makes
-// it, under a line of its own, so the row's queue finds no delivery. Left to the row it could not
-// be: where only a report finishes the task (endFrameFinishes), the launch would take it back as a
-// cut turn (settle, interrupted), and queue, reading the claim the launch leaves, would refuse the
-// operator's task behind the task taken back, which the next process would then run again.
+// the take's turn is over and no report has finished the task, or a report came and the store
+// refused its finish, which the retirement makes (takesTurnRan, retirePending). queue retires such
+// a task and queues the newer one in its place (its last case), so the claim takes an operator's
+// task over it, and the launch runs for it. The retirement is made here, before that launch, as
+// queue makes it, under a line of its own, so the row's queue finds no delivery. Left to the row
+// it could not be: where only a report finishes the task (endFrameFinishes), the launch would take
+// it back as a cut turn (settle, interrupted), and queue, reading the claim the launch leaves,
+// would refuse the operator's task behind the task taken back, which the next process would then
+// run again.
 //
 // Each of the three is made only once the launch's lifecycle recheck has passed, and that recheck
 // is made here, first, with the wake still waiting, rather than at the launch's own first step
@@ -789,7 +791,7 @@ func (m *Machine) runParkedLaunchNow(ctx context.Context, ev Event) error {
 		return nil
 	}
 	pending := m.claim.Pending
-	if pending != nil && (pending.awaitsTurn() || (pending.taken() && m.busy())) {
+	if pending != nil && (m.takeAwaitsTurn() || (pending.taken() && m.busy())) {
 		return nil
 	}
 	// A plugin-refresh wake whose fact is gone launches nothing, so no recheck is made for it: the

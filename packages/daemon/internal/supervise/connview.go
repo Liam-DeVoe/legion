@@ -47,9 +47,15 @@ import (
 // pending task arms nothing and is asked nothing, so an idle worker whose shim reconnects late is
 // treated as before.
 //
-// After a daemon start every claim reconnects with a hello, so a machine NewMachine restores ready,
-// idle or working starts with no connection (viewNoHello): a first act that reaches the daemon
-// before the hello over HTTP, a take or a report, arms none of the three bounds.
+// After a daemon start every claim reconnects with a hello, so a machine NewMachine restores with a
+// process — launching, shim-connected, registered, ready, idle or working — starts with no
+// connection (viewNoHello): a first act that reaches the daemon before the hello over HTTP, a take,
+// a report or the agent's ready, arms none of the three bounds.
+//
+// The agent's ready over HTTP over a view that is not whole keeps the reconnect deadline rather
+// than end it, as the ready ends the registration deadline over a whole one (readyView): nothing
+// else bounds a shim that never comes back once its agent is ready, so a take it holds would wait
+// for ever.
 //
 // One case is stated, not closed: a connection that closes again before each bound passes
 // postpones the bounds, each time to a whole bound after its next hello. The reconnect deadline
@@ -61,8 +67,9 @@ const (
 	// the process, or a reconnect hello the agent's answer or a turn frame followed, or a reconnect
 	// hello of a claim that held no pending task. The three bounds run.
 	viewWhole connView = iota
-	// viewNoHello is a claim a daemon start restored ready, idle or working, its shim's first hello
-	// to this daemon still to come (NewMachine).
+	// viewNoHello is a claim a daemon start restored with a process — launching, shim-connected,
+	// registered, ready, idle or working — its shim's first hello to this daemon still to come
+	// (NewMachine).
 	viewNoHello
 	// viewClosed is a claim whose connection closed, its shim's next hello still to come (closeView).
 	viewClosed
@@ -98,11 +105,45 @@ func (m *Machine) reconnectBound() time.Duration {
 // the end of this decision (armWaits). A live process whose agent said it is ready and whose claim
 // holds a pending task is given the reconnect deadline, whole from the close, unless one stands
 // already: the deadline of a hello's ask still unanswered, or of a daemon start's own. A claim not
-// ready keeps the registration deadline it runs under, and one holding no pending task is given
-// none.
+// ready keeps the registration deadline it runs under, and its ready, with no hello since, keeps a
+// reconnect deadline whole from this close (readyView); one holding no pending task is given none.
 func (m *Machine) closeView() {
-	m.connSeen = viewClosed
+	m.connSeen, m.closedAt = viewClosed, m.deps.Clock.Now()
 	if !SaidReady(m.claim.State) || m.claim.Locator == nil || m.claim.Pending == nil {
+		return
+	}
+	if _, armed := m.timers[TimerRegistration]; !armed {
+		m.arm(TimerRegistration, m.reconnectBound(), "")
+	}
+}
+
+// readyView is the agent's ready (ready) read against the claim's connection. Over a whole view
+// the ready ends the registration deadline, as it always has. Over a view that is not whole the
+// deadline stays as the reconnect deadline (reconnectDeadline), since nothing else bounds a shim
+// that never comes back once its agent is ready:
+//
+//   - a close before the ready (viewClosed) of a live process holding a pending task is given the
+//     later of the deadline standing and the close plus the reconnect bound, the deadline closeView
+//     gives a ready claim, so a hello inside either finds nothing retired; a close of a claim
+//     holding no pending task is given none, as closeView gives none;
+//   - any other view not whole — a daemon start's before the shim's first hello (viewNoHello) —
+//     keeps the deadline standing, or is given one whole from now where none stands, as a claim the
+//     start restored ready is.
+func (m *Machine) readyView() {
+	switch m.connSeen {
+	case viewWhole:
+		m.disarm(TimerRegistration)
+		return
+	case viewClosed:
+		if m.claim.Locator == nil || m.claim.Pending == nil {
+			m.disarm(TimerRegistration)
+			return
+		}
+		due := m.closedAt.Add(m.reconnectBound())
+		if a, armed := m.timers[TimerRegistration]; armed && !a.due.Before(due) {
+			return
+		}
+		m.arm(TimerRegistration, max(due.Sub(m.deps.Clock.Now()), 0), "")
 		return
 	}
 	if _, armed := m.timers[TimerRegistration]; !armed {
@@ -150,6 +191,18 @@ func (m *Machine) seeView() {
 	if asked && !m.askTurn {
 		m.disarm(TimerRegistration)
 	}
+}
+
+// turnMayHaveRunUnseen is whether the pending take, awaiting its turn (takeAwaitsTurn), may have
+// had that turn run with no frame of it reaching the machine: the view is not whole (connSeen) —
+// no hello since a daemon start or a close, or since the hello neither the agent's answer nor a
+// turn frame — or the take is marked so (Machine.turnUnseen). The record of a let-go reads it
+// into the mark and the record alike (recordEnd: letGo, died, displaced), so the take-back of that
+// let-go takes the take back as a turn cut off and its next text carries that note, as the
+// reconnect deadline takes it back (interrupted; takeBackUnstarted for a retirement, a suspension
+// and a held suspension's deadline).
+func (m *Machine) turnMayHaveRunUnseen() bool {
+	return (m.turnUnseen || m.connSeen != viewWhole) && m.takeAwaitsTurn()
 }
 
 // answerView is the agent's answer to whether it is in a turn, over a view a reconnect hello left

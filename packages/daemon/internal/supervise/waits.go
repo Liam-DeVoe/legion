@@ -302,9 +302,10 @@ func turnStartBoundOver(m *Machine, ctx context.Context, _ Event) error {
 
 // reconnectDeadline is the reconnect deadline (connview.go): of a claim a daemon start restored
 // with its agent ready, idle or working (NewMachine), or whose connection closed while it held a
-// pending task (closeView), its shim not having said hello since; or of a reconnect hello of a
-// claim holding a pending task whose agent has not answered whether it is in a turn, nor sent a
-// turn frame, since (askView).
+// pending task (closeView), or whose agent said it is ready over a connection whose view was not
+// whole (readyView), its shim not having said hello since; or of a reconnect hello of a claim
+// holding a pending task whose agent has not answered whether it is in a turn, nor sent a turn
+// frame, since (askView).
 //
 // With no hello, it probes and retires as the registration deadline does (registrationDeadline,
 // retireNeverReady). A process found gone takes the death path (judge, died). A process found

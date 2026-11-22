@@ -207,6 +207,26 @@ func (m *Machine) takePhase() waitPhase {
 	return waitReport
 }
 
+// takesTurnRan is whether the pending take's turn ran, as the one rule of where the take stands
+// reads it (takePhase): its turn started, or a report naming its number came and the store refused
+// its finish (waitFinish), whichever turn the take awaits, since that report decides. Every reader
+// of whether the take's turn ran asks it: the serving credit a finish earns (retireTask), the
+// settle of a claim no turn runs in (settle), and the end-frame bound armed again at the end of a
+// turn or a compaction (turnEnded, runHeldAtEnd, compactEnded).
+func (m *Machine) takesTurnRan() bool {
+	p := m.claim.Pending
+	return p != nil && (p.turnStarted() || m.takePhase() == waitFinish)
+}
+
+// takeAwaitsTurn is whether the pending take awaits its turn, as the one rule of where the take
+// stands reads it: accepted, and its turn not run (takesTurnRan). The turn start given to a take
+// (turnStarted), a newer task that waits behind a take (queue, runParkedLaunchNow) and what a
+// let-go gives back of what the take told (untellUnstarted) ask it.
+func (m *Machine) takeAwaitsTurn() bool {
+	p := m.claim.Pending
+	return p != nil && p.taken() && !m.takesTurnRan()
+}
+
 // reportToCome is whether the report that settles the take is still to come in phase w: its turn
 // over (waitReport), or the take awaiting its turn, whose own turn's report is (waitTake).
 func (w waitPhase) reportToCome() bool { return w == waitReport || w == waitTake }

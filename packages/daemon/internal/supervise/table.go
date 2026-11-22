@@ -1658,13 +1658,15 @@ func (m *Machine) askTurnOver(ctx context.Context, ev Event) error {
 	return turnEnded(m, ctx, ev)
 }
 
-// closed is the claim's connection closing: its process is probed, and the connection's view of
-// the worker's turns is cut, which disarms the bounds that read it and, over a pending task, arms
-// the reconnect deadline (closeView, connview.go).
+// closed is the claim's connection closing: the connection's view of the worker's turns is cut,
+// which disarms the bounds that read it and, over a pending task, arms the reconnect deadline
+// (closeView, connview.go), and its process is probed. The view is cut first, so a death the
+// probe finds reads it: a take awaiting its turn may have had that turn start with its start frame
+// lost in the closed connection, and goes back as a turn cut off (turnMayHaveRunUnseen,
+// interrupted).
 func closed(m *Machine, ctx context.Context, _ Event) error {
-	err := m.probe(ctx, nothing, TimerProbe, m.deps.Timeouts.Probe)
 	m.closeView()
-	return err
+	return m.probe(ctx, nothing, TimerProbe, m.deps.Timeouts.Probe)
 }
 
 func reprobe(m *Machine, ctx context.Context, _ Event) error {
@@ -1672,13 +1674,15 @@ func reprobe(m *Machine, ctx context.Context, _ Event) error {
 }
 
 // turnStarted is a turn starting in a ready or idle claim. The first turn that starts after a
-// take of the pending task was accepted is that task's turn (Delivery.awaitsTurn): the worker
+// take of the pending task was accepted is that task's turn (takeAwaitsTurn): the worker
 // starts it on the take's answer. Its start records the take's turn started (startTakesTurn),
 // which a report naming no task can undo (notTheTakesTurn); its line names the task's number. Any
 // other turn is a foreign one — an Envoy notice's, a person's steer, a background result's — and
-// is no task's. Either way the claim records when this turn began (Claim.LastTurnStart), which is
-// persisted with it: the time is a reader's only handle on how long the agent has been in the
-// turn it is in.
+// is no task's. A take whose report came and whose finish the store refused is given no start
+// either, whichever turn it awaits (takePhase, waitFinish): that report decides, and the end-frame
+// bound makes its finish again at this turn's end (turnEnded). Either way the claim records when
+// this turn began (Claim.LastTurnStart), which is persisted with it: the time is a reader's only
+// handle on how long the agent has been in the turn it is in.
 //
 // Any turn's start puts the claim's prompt budgets back to zero, in the same write (R5: a turn
 // start or a turn end resets the count, a take does not): the worker acted, so the charges R5's
@@ -1728,7 +1732,7 @@ func turnStarted(m *Machine, ctx context.Context, _ Event) error {
 	switch {
 	case ahead.task != 0:
 		m.reportedAhead, task = aheadReport{}, ahead.task
-	case p != nil && p.awaitsTurn():
+	case m.takeAwaitsTurn():
 		count.take = 0
 		switch {
 		case count.known:
@@ -1969,7 +1973,7 @@ func turnEnded(m *Machine, ctx context.Context, _ Event) error {
 		return m.runHeldAtEnd(ctx, StateIdle, m.armEndFrameBound)
 	}
 	p := m.claim.Pending
-	finishes := p != nil && p.turnStarted()
+	finishes := m.takesTurnRan()
 	m.claim.State = StateIdle
 	if err := m.persist(ctx); err != nil {
 		return err
@@ -2280,7 +2284,10 @@ func reregister(m *Machine, ctx context.Context, ev Event) error {
 
 // ready is the agent saying it can be prompted. The time is kept on the claim (Claim.LastReady),
 // since it is what dates the two causes beside it — a death and a failed start are both older
-// than the agent that is running now (machine.go's Claim).
+// than the agent that is running now (machine.go's Claim). The registration deadline ends here
+// over a connection whose view is whole; over one that is not — a daemon start's before the
+// shim's first hello, or a close before this ready — it stays as the reconnect deadline
+// (readyView, connview.go).
 func ready(m *Machine, ctx context.Context, _ Event) error {
 	m.claim.State = StateReady
 	// The cause of a forget is kept for the launches of the fresh agent until it comes up
@@ -2290,7 +2297,7 @@ func ready(m *Machine, ctx context.Context, _ Event) error {
 	// The pending cause goes with the launch failures it names: the episode they measure ended
 	// when this agent came up (Claim.PendingCause).
 	m.claim.Budgets.LaunchFailures, m.claim.PendingCause = 0, ""
-	m.disarm(TimerRegistration)
+	m.readyView()
 	if m.held != nil {
 		return m.suspendHeld(ctx)
 	}
