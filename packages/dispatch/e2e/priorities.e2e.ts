@@ -2752,10 +2752,12 @@ test("a person reads a description nested 4,000 deep on its priority's page and 
     const soft = expect.configure({ soft: true });
     const drawnWhole = async (editor: Locator, where: string) => {
       await soft(editor, `${where} draws the description`).toBeVisible({ timeout: 30_000 });
+      // The server's reading holds the text nested past its bound as its own characters, every
+      // one of them; the browser's own parse of it would draw 16,001 and lose the stars.
       soft(
         (await editor.allTextContents()).join("").length,
-        `${where} draws every word of it`
-      ).toBeGreaterThan(8_000);
+        `${where} draws every character of the server's reading of it`
+      ).toBe(nested.length);
       await soft(
         page.getByText(/could not be drawn/),
         `${where} says nothing of a description it could not draw`
@@ -2772,6 +2774,84 @@ test("a person reads a description nested 4,000 deep on its priority's page and 
       page.getByRole("textbox", { exact: true, name: "Description of #1" }),
       "its open row"
     );
+  } finally {
+    await context.close();
+  }
+});
+
+// INFRA-2947 check 3bca8d03 (review round 4): a writer's editor is filled only from a reading
+// that loses nothing. A description Parse refuses - nested past its bound, or holding one block
+// it will not store - is drawn read-only to a person who may write it, and a keystroke there
+// writes nothing; a description Parse takes keeps its heading, its list and its stars through a
+// one-word edit, where a reading of it as literal text would write each back escaped.
+// SLOW(>=2s): three priorities written, three pages read, and two writes awaited.
+test("a writer's keystroke on a description the editor cannot keep whole writes nothing, and a one-word edit keeps the rest", async ({
+  browser,
+}) => {
+  const nested = `${"*a ".repeat(4_000)}b${" c*".repeat(4_000)}`;
+  const withHtml = "## Plan\n\n<div>held as HTML</div>\n\n- first host\n- second host";
+  const plain = "## Plan\n\n- first host\n- second host\n\nShip **every** host, *then* check.";
+  const deep = await createPriority({ description: nested, owner: "alice", title: "Nested deep" });
+  const held = await createPriority({ description: withHtml, owner: "alice", title: "Holds HTML" });
+  const kept = await createPriority({ description: plain, owner: "alice", title: "Plain plan" });
+  const stored = async (id: string) =>
+    (await listPriorities()).priorities?.find((row) => row.id === id)?.description;
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    const soft = expect.configure({ soft: true });
+    // The text a reader sees of `words`, and whether any of it can be typed into: no part of the
+    // page that holds those words is editable.
+    const readOnly = async (words: string, where: string) => {
+      await expect(page.getByText(words, { exact: false }).first()).toBeVisible({
+        timeout: 30_000,
+      });
+      await soft(
+        page.locator('[contenteditable="true"]', { hasText: words }),
+        `${where} offers its description to no keystroke`
+      ).toHaveCount(0);
+    };
+    // A person's click into the description and a key there, then the focus taken away.
+    const typeInto = async (words: string) => {
+      await page.getByText(words, { exact: false }).first().click();
+      await page.keyboard.press("End");
+      await page.keyboard.type("x");
+      await page.keyboard.press("Tab");
+    };
+
+    // A description Parse takes: one word at its end, and the rest read back as it was written,
+    // its blocks of the same kinds and no character of it escaped.
+    await page.goto(`/priorities/${kept.id}`);
+    const editor = page.getByRole("textbox", { exact: true, name: "Description" });
+    await expect(editor).toBeVisible();
+    await editor.click();
+    await page.keyboard.press("ControlOrMeta+End");
+    await page.keyboard.type(" Done.");
+    await editor.blur();
+    await expect.poll(() => stored(kept.id), { timeout: 15_000 }).not.toBe(plain);
+    const written = (await stored(kept.id)) ?? "";
+    soft(written, "the edit escapes no character").not.toContain("\\");
+    soft(written, "the heading is still a heading").toMatch(/^## Plan$/m);
+    soft(written, "the list's items are still a list's").toMatch(
+      /^[-*] first host\n[-*] second host$/m
+    );
+    soft(written, "the stars are still stars").toContain(
+      "Ship **every** host, *then* check. Done."
+    );
+
+    for (const [priority, text, words, where] of [
+      // Drawn as the server reads it, its own characters, stars and all.
+      [deep, nested, "*a *a *a", "a description nested 4,000 deep"],
+      [held, withHtml, "first host", "a description holding a block of HTML"],
+    ] as const) {
+      await page.goto(`/priorities/${priority.id}`);
+      await readOnly(words, where);
+      await typeInto(words);
+      // A save starts on the blur at once and lands within a second here; five seconds after
+      // it, a write that was coming has landed, so its absence is read once the wait is over.
+      await page.waitForTimeout(5_000);
+      soft(await stored(priority.id), `a keystroke in ${where} writes nothing`).toBe(text);
+    }
   } finally {
     await context.close();
   }
