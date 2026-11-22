@@ -16,8 +16,10 @@ import { KeymapProvider } from "../features/shell/KeymapProvider";
 // where that report landed was the machine's doing: after the file's last check on a quiet run,
 // and in the next check on a loaded one. The module is loaded here, with the test file, as
 // `app.test.tsx` and `responsive-shell.test.tsx` load theirs, so it arrives in the microtasks
-// after the commit that asked for it, which `firstCommitAt`'s `act` waits through.
+// after the commit that asked for it, which `firstCommitAt`'s `act` waits through. The app's lazy
+// parts beyond its pages load through `app-chunks.ts` the same way.
 import "../features/agents/AgentsPage";
+import "./app-chunks";
 
 /**
  * What the shell's first commit holds, on a route that draws a margin and on one that does not.

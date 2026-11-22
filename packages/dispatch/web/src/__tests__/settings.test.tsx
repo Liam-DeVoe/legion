@@ -10,8 +10,10 @@ import { ApiError, api } from "../api/client";
 import type { CreatedProject, Project, ProjectDefaultAssignee, RepoProject } from "../api/types";
 import { App } from "../app";
 // The Settings page is a lazy route of the app. Its module's first compile is not what a wait is
-// for, so the module is loaded here, with the test file, and no wait measures that load.
+// for, so the module is loaded here, with the test file, and no wait measures that load; the
+// app's lazy parts beyond its pages load through `app-chunks.ts` the same way.
 import "../features/settings/SettingsPage";
+import "./app-chunks";
 import { keyedAttempt } from "./keyed-attempt";
 
 /** The mapping routes' server state as the Settings page reaches it: a read answers what the writes

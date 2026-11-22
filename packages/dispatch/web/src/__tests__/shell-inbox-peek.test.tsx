@@ -6,6 +6,9 @@ import { MemoryRouter } from "react-router-dom";
 
 import { api } from "../api/client";
 import { AuthGate } from "../app";
+// The app's lazy parts beyond its pages, the Inbox drawer among them, load with the test file
+// (`app-chunks.ts`).
+import "./app-chunks";
 import { installInboxApiMocks, issueAsk, mockAskReads } from "../features/inbox/inbox-fixture";
 
 // The peek's latch is the shell's, not the drawer's: from a reader's first peek `app.tsx` keeps

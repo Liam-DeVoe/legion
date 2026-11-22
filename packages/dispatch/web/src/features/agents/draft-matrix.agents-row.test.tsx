@@ -91,6 +91,8 @@ import { AuthGate } from "../../app";
 import type { ReplyTarget } from "../conversation/composer-model";
 import type { SentRequest } from "../conversation/send-request";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
+// The app's lazy parts beyond its pages load with the test file (`__tests__/app-chunks.ts`).
+import "../../__tests__/app-chunks";
 
 // The composer draws the quote of the message it answers through the Markdown engine, a module
 // loaded on first use (`markdown-engine.ts`). A cell reads what the composer quotes in the commit

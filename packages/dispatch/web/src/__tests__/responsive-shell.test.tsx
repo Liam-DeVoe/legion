@@ -10,14 +10,14 @@ import { AuthGate } from "../app";
 import { liveViewsOf } from "../features/agent-view/live-views";
 import { jump, onFakeClock } from "./fake-clock";
 import { answerAgentStates } from "./send-answers";
-// The issue page is a lazy route of the app, and the live view's page and the margin lazy parts
-// of the shell (`MountedLiveViews.tsx`, `MarginColumn.tsx`, which mounts the margin on every
-// route). A module's first compile is not what a wait is for, and a load a row starts and ends
-// before lands in a later row as React's report of a suspended resource outside `act`. So the
-// three modules are loaded here, with the test file, and no row starts or waits for that load.
+// The issue page is a lazy route of the app, and the live view's page a lazy part of the shell
+// (`MountedLiveViews.tsx`). A module's first compile is not what a wait is for, and a load a row
+// starts and ends before lands in a later row as React's report of a suspended resource outside
+// `act`. So both modules are loaded here, with the test file, and no row starts or waits for that
+// load; the app's lazy parts beyond its pages load through `app-chunks.ts` the same way.
 import "../features/agent-view/AgentConversationPage";
 import "../features/issue-page/IssuePage";
-import "../features/margin/Margin";
+import "./app-chunks";
 import type { MarginProps } from "../features/margin/Margin";
 import { ReservedMarginColumn } from "../features/margin/MarginColumn";
 import { DEFAULT_MARGIN_WIDTH } from "../features/margin/margin-width";

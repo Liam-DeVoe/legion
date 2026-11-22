@@ -336,12 +336,14 @@ and each command runs there.
   for it (`warmMarkdownRenderer()` from `web/src/features/refs/markdown-engine.ts`, or a `findBy*`
   query), because the earlier row that loaded it may run after it. A lazily loaded part is anything
   that renders from a module that `import()` or `lazy()` loads, not the Markdown engine alone. A
-  test file whose rows mount a lazily loaded part that no row reads, such as the shell's margin,
-  imports that module at its top: a load that a row starts can arrive between two of that row's
-  `act` scopes or in a later row, where React reports a suspended resource outside `act`
-  (`web/src/app-sign-out.test.tsx`, `web/src/app.test.tsx`,
-  `web/src/__tests__/responsive-shell.test.tsx` and `web/src/features/agents/AgentsPage.test.tsx`
-  do).
+  test file whose rows mount a lazily loaded part that no row reads imports that module at its
+  top: a load that a row starts can arrive between two of that row's `act` scopes or in a later
+  row, where React reports a suspended resource outside `act`.
+  A test module that renders the app's shell (`AuthGate`, `App` or `AppShell`) imports
+  `web/src/__tests__/app-chunks.ts`, which loads every part the app loads lazily beyond a route's
+  own page, and the file that opens a route imports that route's page itself
+  (`web/src/app.test.tsx` and `web/src/app-sign-out-fixture.tsx` do).
+  A part the app starts loading lazily is added to `app-chunks.ts`.
 
 - A harness test drops a database it made with `dropDatabase` from `e2e/psql.ts`, never with
   `drop database … with (force)`, which refuses a login that is not a superuser, as CI's is not,
