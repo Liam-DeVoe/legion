@@ -10,9 +10,10 @@
 //     the listener of the checkout's own commit (testenvoy.RigBinary), with production's 5-minute
 //     session age, its own NATS user, and a front every pane and the daemon reach it through
 //     (rigFront, rig_runtime_live_test.go).
-//   - The daemon: run, the function `legion start` calls, over a PostgreSQL of the run's own
-//     (takeOwnDatabase), its own NATS user, and the rig's runtime (rigRuntime), each worker the
-//     real `legion worker-shim` around a real Oh My Pi with this head's two plugins.
+//   - The daemon: run, the function `legion start` calls, over the package's run database
+//     (testDSN, testdb.RunDatabaseFor), its own NATS user, and the rig's runtime (rigRuntime),
+//     each worker the real `legion worker-shim` around a real Oh My Pi with this head's two
+//     plugins.
 //   - The model: the gateway the operator names (rigModelBaseEnv and the key's), or, for a check
 //     whose claims must each do what it names, a scripted stand-in (rigOptions.standin).
 //   - Dispatch: the stand-in the other proofs use, and, where a check needs a workflow issue, a
@@ -129,7 +130,6 @@ func startRig(t *testing.T, opts rigOptions) *rig {
 	}
 	model := r.modelInputs(t)
 
-	takeOwnDatabase(t)
 	grants := readRigGrants(t, grantsFile)
 	if grants.Revision != listener.Revision {
 		t.Fatalf("the rig's grants were read at %s and its listener was built from %s: both come from one tree", grants.Revision, listener.Revision)

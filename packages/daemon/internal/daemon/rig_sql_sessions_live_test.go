@@ -49,9 +49,9 @@ type rigSQLSessions struct {
 
 // startRigSQLSessions makes the run's session database on the server LEGION_TEST_PG_DSN names,
 // writes the file naming it, and points every launch of r's runtime at it: each launch is told the
-// two variables (extraEnv), and each resume reads the session's row (sessionKept). It runs after
-// startRig, whose own database LEGION_TEST_PG_DSN then names (takeOwnDatabase); testdb.DatabaseURL
-// keeps that URL's server and changes only the database. The database is dropped at the end.
+// two variables (extraEnv), and each resume reads the session's row (sessionKept). testdb.DatabaseURL
+// keeps the server LEGION_TEST_PG_DSN names and changes only the database. The database is
+// dropped at the end.
 func startRigSQLSessions(t *testing.T, r *rig) *rigSQLSessions {
 	t.Helper()
 	named := os.Getenv("LEGION_TEST_PG_DSN")
