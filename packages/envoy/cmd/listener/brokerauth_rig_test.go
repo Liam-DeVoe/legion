@@ -435,7 +435,7 @@ func TestAPIAuthRefusesAReadOnlyTokenOnEveryV1Route(t *testing.T) {
 // two listeners.
 func TestSpentProofsRefuseAProofTheBucketAlreadyHolds(t *testing.T) {
 	client := setupPublishTestClient(t)
-	js, err := client.Conn.JetStream()
+	js, err := client.Conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}

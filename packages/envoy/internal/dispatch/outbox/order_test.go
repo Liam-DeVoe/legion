@@ -154,7 +154,7 @@ func holdsBackASessionRouteTheStreamRefuses(t *testing.T) {
 	}
 	t.Cleanup(client.Close)
 	reader := testnats.Connect(t, url)
-	js, err := reader.JetStream()
+	js, err := reader.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}
@@ -368,7 +368,7 @@ func newSessionOrderRig(t *testing.T) sessionOrderRig {
 	}
 	t.Cleanup(client.Close)
 	reader := testnats.Connect(t, url)
-	js, err := reader.JetStream()
+	js, err := reader.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}

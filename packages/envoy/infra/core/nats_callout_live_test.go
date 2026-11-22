@@ -208,7 +208,7 @@ func TestAuthCalloutOnTheHubServer(t *testing.T) {
 		// Every first connect of this rig goes through connectWhenUp, which retries; the second
 		// container's connects below follow the auth service's own, which does the same (serve).
 		conn := connectWhenUp(t, uri, rig.staticSeed)
-		js, err := conn.JetStream()
+		js, err := conn.JetStream(testnats.MaxWait(t))
 		require.NoError(t, err)
 		_, err = js.AddStream(&natsgo.StreamConfig{Name: exampleStream, Subjects: []string{"example.>"}})
 		require.NoError(t, err)
@@ -225,7 +225,7 @@ func TestAuthCalloutOnTheHubServer(t *testing.T) {
 		conn, err = testnats.ConnectSeed(t, uri, rig.staticSeed)
 		require.NoError(t, err)
 		t.Cleanup(conn.Close)
-		js, err = conn.JetStream()
+		js, err = conn.JetStream(testnats.MaxWait(t))
 		require.NoError(t, err)
 		info, err := js.StreamInfo(exampleStream)
 		require.NoError(t, err)

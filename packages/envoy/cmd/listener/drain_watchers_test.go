@@ -35,7 +35,7 @@ func TestTheListenerShutdownEndsItsKVWatchersBeforeTheDrain(t *testing.T) {
 
 			admin := testnats.Connect(t, uri)
 			t.Cleanup(admin.Close)
-			js, err := admin.JetStream()
+			js, err := admin.JetStream(testnats.MaxWait(t))
 			if err != nil {
 				t.Fatalf("admin JetStream: %v", err)
 			}

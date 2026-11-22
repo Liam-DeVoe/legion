@@ -690,7 +690,7 @@ func TestTheKeeperOfABackgroundClientRunsNoPassBeforeItsFirstReconcile(t *testin
 	const replaced, replacing = "notifications.github.*", "notifications.github.>"
 	srv, uri := testnats.Start(t)
 	deploy := testnats.Connect(t, uri)
-	js, err := deploy.JetStream()
+	js, err := deploy.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("JetStream context: %v", err)
 	}
@@ -714,7 +714,7 @@ func TestTheKeeperOfABackgroundClientRunsNoPassBeforeItsFirstReconcile(t *testin
 
 	reader := testnats.Connect(t, uri)
 	t.Cleanup(reader.Close)
-	if js, err = reader.JetStream(); err != nil {
+	if js, err = reader.JetStream(testnats.MaxWait(t)); err != nil {
 		t.Fatalf("JetStream context: %v", err)
 	}
 	reconciled := func(info *nats.StreamInfo) bool {

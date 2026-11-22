@@ -103,7 +103,7 @@ func TestTheEdgeGrantsConsumerCallsReachPastItsPublishList(t *testing.T) {
 	require.NoError(t, err, "the shared listener's user creates its durable")
 	reader, _ := grantedConnection(t, uri, readerSeed)
 	edgeConn, edgeErrs := grantedConnection(t, uri, edgeSeed, natsgo.CustomInboxPrefix(natsgrant.EdgeInboxPrefix("m")))
-	edgeJS, err := edgeConn.JetStream()
+	edgeJS, err := edgeConn.JetStream(testnats.MaxWait(t))
 	require.NoError(t, err)
 
 	t.Run("a push consumer delivers on a subject the grant does not publish", func(t *testing.T) {
@@ -249,7 +249,7 @@ func TestTheEdgeCannotSetABucketToRepublishIntoTheJetStreamAPI(t *testing.T) {
 		testnats.StaticUser{NKey: adminKey, Publish: []string{">"}, Subscribe: []string{">"}},
 	), []string{"-js"}, false)
 	adminConn, _ := grantedConnection(t, uri, adminSeed)
-	admin, err := adminConn.JetStream()
+	admin, err := adminConn.JetStream(testnats.MaxWait(t))
 	require.NoError(t, err)
 	for _, name := range []string{"SCRATCH_VICTIM", "SCRATCH_VICTIM_ADMIN", "SCRATCH_VICTIM_HEADERS"} {
 		_, err := admin.AddStream(&natsgo.StreamConfig{Name: name, Subjects: []string{"scratch." + strings.ToLower(name) + ".>"}, Storage: natsgo.MemoryStorage})
@@ -338,7 +338,7 @@ func TestTheEdgeHoldsNoDirectGetWhoseAnswerReachesTheJetStreamAPI(t *testing.T) 
 		testnats.StaticUser{NKey: adminKey, Publish: []string{">"}, Subscribe: []string{">"}},
 	), []string{"-js"}, false)
 	adminConn, _ := grantedConnection(t, uri, adminSeed)
-	admin, err := adminConn.JetStream()
+	admin, err := adminConn.JetStream(testnats.MaxWait(t))
 	require.NoError(t, err)
 	streams := []string{"SCRATCH_DG", "SCRATCH_DG_DELETE", "SCRATCH_DG_MSG_GET", "SCRATCH_DG_INFO", "SCRATCH_DG_PUBACK"}
 	for _, name := range append([]string{"SCRATCH_DG_CONTROL", "SCRATCH_DG_GONE"}, streams...) {
@@ -495,10 +495,10 @@ func TestTheEdgeGrantsPushConsumerReachesItsAccountsJetStreamAPI(t *testing.T) {
 	require.NoError(t, err, "the shared listener's user creates the stream")
 	t.Cleanup(owner.Close)
 	adminConn, _ := grantedConnection(t, uri, adminSeed)
-	admin, err := adminConn.JetStream()
+	admin, err := adminConn.JetStream(testnats.MaxWait(t))
 	require.NoError(t, err)
 	otherConn, _ := grantedConnection(t, uri, otherSeed)
-	other, err := otherConn.JetStream()
+	other, err := otherConn.JetStream(testnats.MaxWait(t))
 	require.NoError(t, err)
 	scratch := func(js natsgo.JetStreamContext, name string) {
 		t.Helper()
@@ -546,7 +546,7 @@ func TestTheEdgeGrantsPushConsumerReachesItsAccountsJetStreamAPI(t *testing.T) {
 	var received atomic.Int64
 	const kept, keptEmpty = "kept, 1 messages, max_msgs -1", "kept, 0 messages, max_msgs -1"
 	edgeConn, edgeErrs := grantedConnection(t, uri, edgeSeed, natsgo.CustomInboxPrefix(natsgrant.EdgeInboxPrefix("m")))
-	edgeJS, err := edgeConn.JetStream()
+	edgeJS, err := edgeConn.JetStream(testnats.MaxWait(t))
 	require.NoError(t, err)
 
 	for i, delivery := range []struct {
@@ -668,7 +668,7 @@ func TestAPushConsumersHeartbeatOnTheAPIDeletesAStreamWhileAClientSubscribesIt(t
 	require.NoError(t, err, "the shared listener's user creates the stream")
 	t.Cleanup(owner.Close)
 	adminConn, _ := grantedConnection(t, uri, adminSeed)
-	admin, err := adminConn.JetStream()
+	admin, err := adminConn.JetStream(testnats.MaxWait(t))
 	require.NoError(t, err)
 	for _, name := range []string{"SCRATCH_HB", "SCRATCH_HB_UNSUBSCRIBED"} {
 		_, err := admin.AddStream(&natsgo.StreamConfig{Name: name, Subjects: []string{"scratch." + strings.ToLower(name) + ".>"}, Storage: natsgo.MemoryStorage})
@@ -680,7 +680,7 @@ func TestAPushConsumersHeartbeatOnTheAPIDeletesAStreamWhileAClientSubscribesIt(t
 	require.NoError(t, adminConn.Flush())
 
 	edgeConn, _ := grantedConnection(t, uri, edgeSeed, natsgo.CustomInboxPrefix(natsgrant.EdgeInboxPrefix("m")))
-	edgeJS, err := edgeConn.JetStream()
+	edgeJS, err := edgeConn.JetStream(testnats.MaxWait(t))
 	require.NoError(t, err)
 	for name, deliver := range map[string]string{"edge-hb": target, "edge-hb-unsubscribed": "$JS.API.STREAM.DELETE.SCRATCH_HB_UNSUBSCRIBED"} {
 		_, err := edgeJS.AddConsumer(bus.Stream, &natsgo.ConsumerConfig{Name: name, FilterSubject: "notifications.agent.ses_edge_hb_" + name, DeliverSubject: deliver, AckPolicy: natsgo.AckNonePolicy, Heartbeat: time.Second})
@@ -728,7 +728,7 @@ func TestAPullStatusAndAnAckAnswerOnTheAPIDeleteAStream(t *testing.T) {
 	require.NoError(t, err, "the shared listener's user creates the stream")
 	t.Cleanup(owner.Close)
 	adminConn, _ := grantedConnection(t, uri, adminSeed)
-	admin, err := adminConn.JetStream()
+	admin, err := adminConn.JetStream(testnats.MaxWait(t))
 	require.NoError(t, err)
 	for _, name := range []string{"SCRATCH_PULL", "SCRATCH_ACK", "SCRATCH_CONTROL"} {
 		_, err := admin.AddStream(&natsgo.StreamConfig{Name: name, Subjects: []string{"scratch." + strings.ToLower(name) + ".>"}, Storage: natsgo.MemoryStorage})
@@ -736,7 +736,7 @@ func TestAPullStatusAndAnAckAnswerOnTheAPIDeleteAStream(t *testing.T) {
 	}
 
 	edgeConn, edgeErrs := grantedConnection(t, uri, edgeSeed, natsgo.CustomInboxPrefix(natsgrant.EdgeInboxPrefix("m")))
-	edgeJS, err := edgeConn.JetStream()
+	edgeJS, err := edgeConn.JetStream(testnats.MaxWait(t))
 	require.NoError(t, err)
 	inbox := natsgrant.EdgeInboxPrefix("m") + ".probe"
 	replies, err := edgeConn.SubscribeSync(inbox)

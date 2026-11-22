@@ -393,7 +393,7 @@ func issueSubjectOrder(t *testing.T, url string) (map[string][]int, []int64) {
 		t.Fatalf("connect the reader: %v", err)
 	}
 	defer reader.Close()
-	js, err := reader.JetStream()
+	js, err := reader.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}
@@ -450,7 +450,7 @@ func TestABatchCutOffInFlightKeepsItsOrder(t *testing.T) {
 		t.Fatalf("connect the reader: %v", err)
 	}
 	defer reader.Close()
-	js, err := reader.JetStream()
+	js, err := reader.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}

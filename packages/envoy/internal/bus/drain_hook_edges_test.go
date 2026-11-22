@@ -38,7 +38,7 @@ func watchedBucket(t *testing.T, client *bus.Client, uri, bucket string) (*kvwat
 		t.Fatalf("wait for the watcher: %v", err)
 	}
 	admin := testnats.Connect(t, uri)
-	adminJS, err := admin.JetStream()
+	adminJS, err := admin.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("admin JetStream: %v", err)
 	}

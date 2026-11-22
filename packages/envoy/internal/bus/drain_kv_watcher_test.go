@@ -57,7 +57,7 @@ func TestADrainEndsTheKVWatchersBeforeTheConnection(t *testing.T) {
 			client.AddDrainHook(watcher.End)
 
 			admin := testnats.Connect(t, uri)
-			adminJS, err := admin.JetStream()
+			adminJS, err := admin.JetStream(testnats.MaxWait(t))
 			if err != nil {
 				t.Fatalf("admin JetStream: %v", err)
 			}
