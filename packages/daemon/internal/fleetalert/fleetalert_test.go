@@ -269,6 +269,8 @@ func TestCloseEndedEndsTheLinesWhoseCaseNoLongerHolds(t *testing.T) {
 
 // An open whose record the store refused is kept again at the case's next open, which writes no
 // second line, so the daemon that boots next reads the case as open and writes nothing for it.
+// The refused put logs a warning of its own, which is no alert line, so the count reads the lines
+// that start with the fixed text alone.
 func TestAnOpenTheStoreRefusedIsKeptAtTheCasesNextOpen(t *testing.T) {
 	held := &heldLines{open: map[Line]bool{}, refusePut: errors.New("the database is restarting")}
 	w, buf := boot(t, held)
@@ -285,13 +287,26 @@ func TestAnOpenTheStoreRefusedIsKeptAtTheCasesNextOpen(t *testing.T) {
 	if !held.open[line] {
 		t.Fatal("the case's next open did not keep the line in the store")
 	}
-	if got := len(lines(t, buf)); got != 1 {
-		t.Fatalf("the daemon wrote %d lines, want the one", got)
+	if got := len(alertLines(t, buf)); got != 1 {
+		t.Fatalf("the daemon wrote %d alert lines, want the one", got)
 	}
 	next, nextLog := boot(t, held)
-	if wrote := next.Open(ClaimRelaunchRefused, "claim-1"); wrote || len(lines(t, nextLog)) != 0 {
+	if wrote := next.Open(ClaimRelaunchRefused, "claim-1"); wrote || len(alertLines(t, nextLog)) != 0 {
 		t.Fatal("the daemon that booted next wrote the line of a case still open")
 	}
+}
+
+// alertLines is each entry of buf that is an alert line, the fixed text first, as the policy
+// matches it.
+func alertLines(t *testing.T, buf *testlog.Buffer) []map[string]any {
+	t.Helper()
+	var out []map[string]any
+	for _, entry := range lines(t, buf) {
+		if msg, _ := entry["msg"].(string); strings.HasPrefix(msg, Prefix+": ") {
+			out = append(out, entry)
+		}
+	}
+	return out
 }
 
 // A line CloseEnded closed whose delete the store refused is deleted again by the next
