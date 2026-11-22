@@ -60,7 +60,7 @@ type KeyValue struct {
 	streams jetstream.JetStream
 	// owner is the client that owns the connection streams is on, found once when the handle is
 	// built (clientOwning), whose record of the server's refusals the handle's calls read
-	// (refusedOn, refusedAfterOn); nil on a connection no client owns.
+	// (refusedOn, refusedAfterOn, watchRefused); nil on a connection no client owns.
 	owner *Client
 }
 
@@ -181,12 +181,32 @@ func NewKeyValue(kv nats.KeyValue, watch jetstream.KeyValue, streams jetstream.J
 	return KeyValue{legacy: kv, watch: watch, streams: streams, owner: owner}
 }
 
-// refusedOn is call, a request kv makes once in a while of its bucket's stream (a watch's create,
-// a read of the stream), read for the server's refusal of subjects as it arrives (refusedBy), in
-// the record of the client that owns kv's connection, found when kv was built. A handle on a
-// connection no client owns sends as call does.
+// refusedOn is call, a request kv makes once in a while of its bucket's stream (a read of the
+// stream), read for the server's refusal of subjects as it arrives (refusedBy), in the record of
+// the client that owns kv's connection, found when kv was built. A handle on a connection no
+// client owns sends as call does.
 func refusedOn[T any](kv KeyValue, subjects []string, call func() (T, error)) (T, error) {
 	return refusedBy(kv.owner, subjects, call)
+}
+
+// watchRefused is watch, the construction of a watcher whose consumer create has the shape create
+// describes, read for the server's refusal of a create of that shape as it arrives
+// (refusedByRecord), in the record of the client that owns kv's connection: a watch the grant
+// refuses ends at once naming its refusal, and one the grant allows returns its own watcher
+// whatever other request on the connection the server refuses meanwhile. A refusal that answers
+// the watch before its construction returns leaves that construction running to its own end, and
+// a watcher it then builds is stopped and read until it closes, since no caller holds it (a grant
+// that refuses a consumer by name is the one way to get there: watchCreate.matches). A handle on a
+// connection no client owns watches as watch does.
+func (kv KeyValue) watchRefused(create watchCreate, watch func() (jetstream.KeyWatcher, error)) (jetstream.KeyWatcher, error) {
+	if kv.owner == nil {
+		return watch()
+	}
+	denied := func(sentAt time.Time) error { return kv.owner.deniedPublishMatching(create.matches, sentAt) }
+	return refusedByRecord(kv.owner, denied, watch, func(watcher jetstream.KeyWatcher) {
+		_ = watcher.Stop()
+		DrainWatcher(watcher)
+	})
 }
 
 // refusedAfterOn is call, a read or a write of one key, which the bus makes on every request it
@@ -222,10 +242,51 @@ func (kv KeyValue) revisionSubjects() []string {
 	return []string{jsAPI("DIRECT.GET", stream), jsAPI("STREAM.MSG.GET", stream)}
 }
 
-// watchSubjects are the requests a watch sends to create its consumer, whose name nats.go picks as
-// it sends (jetstream ordered consumers): every consumer create under the bucket's stream.
-func (kv KeyValue) watchSubjects() []string {
-	return []string{jsAPI("CONSUMER.CREATE", "KV_"+kv.Bucket(), ">")}
+// watchCreate is the shape of the request a watch sends to create its consumer, as nats.go builds
+// it (nats.go@v1.55.0 jetstream/kv.go:1356-1361, js.go:1877 and 1963-1969, jsm.go:505-525):
+// prefix, `$JS.API.CONSUMER.CREATE.KV_<bucket>.`, then the consumer's name, then, for a watch of
+// one key, a dot and filter, `$KV.<bucket>.<key>` (every key, `$KV.<bucket>.>`, for a watch given
+// none, jetstream/kv.go:1268-1274). A watch of several keys sends their filters in the request's
+// body and none in its subject, so its filter is empty.
+type watchCreate struct {
+	prefix, filter string
+}
+
+// watchCreate is the shape of the create a watch of keys through kv sends.
+func (kv KeyValue) watchCreate(keys []string) watchCreate {
+	create := watchCreate{prefix: jsAPI("CONSUMER.CREATE", "KV_"+kv.Bucket()) + "."}
+	switch len(keys) {
+	case 0:
+		create.filter = "$KV." + kv.Bucket() + "." + jetstream.AllKeys
+	case 1:
+		create.filter = "$KV." + kv.Bucket() + "." + keys[0]
+	}
+	return create
+}
+
+// matches reports whether subject is a create of this shape: prefix, one token for the name, and
+// then a dot and the filter, or nothing after the name when there is no filter. nats.go picks the
+// name at random as it sends the create (getHash(nuid.Next()), js.go:1968), so a grant cannot
+// tell two creates of one shape apart by it: the refusal of a create of this shape is the refusal
+// this watch's own create meets. A create of the bucket's stream of another shape -- a watch of
+// another key, or a watch of one key beside one of several -- is another request, which a grant can
+// refuse while it allows this watch's, so it never answers this watch. The one exception is a grant
+// that refuses one consumer by name, as it can a durable's: the refusal of that consumer's create
+// answers a watch of the same shape too, before the watch's own create, which the grant allows, has
+// built its watcher, and watchRefused stops that watcher.
+func (create watchCreate) matches(subject string) bool {
+	rest, ok := strings.CutPrefix(subject, create.prefix)
+	if !ok {
+		return false
+	}
+	name, filter, filtered := strings.Cut(rest, ".")
+	if name == "" {
+		return false
+	}
+	if create.filter == "" {
+		return !filtered
+	}
+	return filtered && filter == create.filter
 }
 
 // Legacy is the legacy handle kv's checked reads and writes go through, for a test that wraps it to
@@ -269,7 +330,7 @@ func (kv KeyValue) WatchKeys(ctx context.Context, keys string, opts ...jetstream
 	if err := kv.check(keys, watchOverhead(kv.Bucket())); err != nil {
 		return nil, err
 	}
-	watcher, err := refusedOn(kv, kv.watchSubjects(), func() (jetstream.KeyWatcher, error) { return kv.watch.Watch(ctx, keys, opts...) })
+	watcher, err := kv.watchRefused(kv.watchCreate([]string{keys}), func() (jetstream.KeyWatcher, error) { return kv.watch.Watch(ctx, keys, opts...) })
 	return watcher, invalidKey(keys, err)
 }
 
@@ -283,7 +344,7 @@ func (kv KeyValue) WatchFilteredKeys(ctx context.Context, keys []string, opts ..
 			return nil, err
 		}
 	}
-	watcher, err := refusedOn(kv, kv.watchSubjects(), func() (jetstream.KeyWatcher, error) { return kv.watch.WatchFiltered(ctx, keys, opts...) })
+	watcher, err := kv.watchRefused(kv.watchCreate(keys), func() (jetstream.KeyWatcher, error) { return kv.watch.WatchFiltered(ctx, keys, opts...) })
 	return watcher, invalidKey(keys, err)
 }
 
@@ -491,8 +552,30 @@ func (kv KeyValue) Delete(key string, opts ...nats.DeleteOpt) error {
 	return invalidKey(key, err)
 }
 
-// DeleteAtRead deletes key at the revision it reads, so a write that lands in between is kept, and
-// returns that revision, 0 when there was none to read.
+// ReadStored is key's newest record, read by a direct get and read again from the stream's leader
+// (GetFromLeader) when readable refuses its value. A value that is no record of key can be a copy
+// the server stored from another key's record, which carries its source's Nats-Sequence header
+// ahead of its own, so the revision a direct get reports for it is the source's, and a write or a
+// delete fenced on that revision is refused at every attempt; the leader's read reports the
+// sequence the value is really stored at. A nil readable takes every value, and so never reads
+// the leader. Its errors are Get's, and GetFromLeader's for the second read, whose answer is
+// returned whether readable takes it or not.
+func (kv KeyValue) ReadStored(ctx context.Context, key string, readable func(value []byte) bool) (nats.KeyValueEntry, error) {
+	entry, err := kv.Get(key)
+	if err != nil || readable == nil || readable(entry.Value()) {
+		return entry, err
+	}
+	return kv.GetFromLeader(ctx, key)
+}
+
+// DeleteAtRead deletes key at the revision it reads (ReadStored, with readable), so a write that
+// lands in between is kept, and returns that revision, 0 when there was none to read. A value
+// readable refuses is deleted at the revision the stream's leader reports for it, the one it is
+// stored at. A delete the bucket refuses at the revision a direct get reported is followed by one
+// read of the key from the stream's leader: a record the server wrote (ReadFromLeader, LeaderServerWritten), which a
+// direct get can report at another stream's sequence however its value reads, is deleted at the
+// sequence it is stored at, and any other answer leaves the refusal standing, a write that
+// landed in between being kept.
 //
 // A key the read finds missing is deleted at no revision at all, which fences nothing: nats.go
 // sends no expected-last-subject-sequence header for revision 0, so that delete would take
@@ -504,12 +587,11 @@ func (kv KeyValue) Delete(key string, opts ...nats.DeleteOpt) error {
 // bound and nats.go refuses a key outside its alphabet everywhere, so nothing can land in between:
 // that key is deleted at no revision, which removes a key an earlier build stored past the write
 // bound, and a key outside the alphabet is refused by the delete too.
-func (kv KeyValue) DeleteAtRead(key string) (uint64, error) {
-	entry, err := kv.Get(key)
+func (kv KeyValue) DeleteAtRead(ctx context.Context, key string, readable func(value []byte) bool) (uint64, error) {
+	entry, err := kv.ReadStored(ctx, key, readable)
 	switch {
 	case err == nil:
-		revision := entry.Revision()
-		return revision, kv.Delete(key, nats.LastRevision(revision))
+		return kv.DeleteAt(ctx, key, entry.Revision())
 	case errors.Is(err, nats.ErrKeyNotFound):
 		return 0, nil
 	case errors.Is(err, ErrRefused):
@@ -517,6 +599,30 @@ func (kv KeyValue) DeleteAtRead(key string) (uint64, error) {
 	default:
 		return 0, err
 	}
+}
+
+// DeleteAt deletes key fenced on revision, the revision a read of the key reported, and returns the
+// revision the delete landed at. A delete the bucket refuses as a compare-and-swap conflict
+// (IsCASConflict - a wrong last sequence, reported as ErrKeyExists for a key holding a value and as
+// a wrong-last-sequence error otherwise) is followed by one read of the key from the stream's
+// leader: a record the server wrote (ReadFromLeader, LeaderServerWritten), which a direct get reports at another
+// stream's sequence however its value reads, is deleted at the sequence it is stored at and that
+// sequence returned; any other compare-and-swap refusal is returned as its error with revision, a
+// write that landed between the read and the delete being kept. A delete refused for any other
+// reason is that error.
+func (kv KeyValue) DeleteAt(ctx context.Context, key string, revision uint64) (uint64, error) {
+	err := kv.Delete(key, nats.LastRevision(revision))
+	if err == nil || !IsCASConflict(err) {
+		return revision, err
+	}
+	// A record the server wrote, which a direct get reports at another stream's sequence however
+	// its value reads (ReadFromLeader, LeaderServerWritten), is deleted at the sequence the leader
+	// reports it stored at, fenced there. Any other newest message - a writer's record, a marker,
+	// none - and a leader read that failed, leave the refusal standing for the caller to answer.
+	if leader, readErr := kv.ReadFromLeader(ctx, key); readErr == nil && leader.WrittenByServer() {
+		return leader.Revision, kv.Delete(key, nats.LastRevision(leader.Revision))
+	}
+	return revision, err
 }
 
 func (kv KeyValue) Purge(key string, opts ...nats.DeleteOpt) error {

@@ -212,16 +212,22 @@ func TestARelaySocketForwardsNoFrameWhoseReceiptNamesAnotherSession(t *testing.T
 	client.subscribeOwn(session)
 
 	publisher := testnats.Connect(t, rig.owner.url)
+	// The strays carry the same relay header subject of the token's project as the session's own
+	// frame, so the frame rule passes them and only the receipt check (relayReceiptOf) keeps them
+	// from the client: without it the strays would be withheld by the frame rule whether or not
+	// their receipt named another session, and the control below could not fail.
+	strayHeader := natsgo.Header{relayHeaderSubject: {"notifications.dispatch.issue." + relaySocketProject + "." + relaySocketProject + "-1.comment.created"}}
 	for _, reply := range []string{
 		relayFrameReceipt(other),
 		bus.RelayReplyPrefix + "edge-rows.rows." + session,
 		relayFrameReceipt(session) + ".more",
 	} {
-		if err := publisher.PublishMsg(&natsgo.Msg{Subject: bus.DeliverSubject(session), Reply: reply, Data: []byte(`{"stray":true}`)}); err != nil {
+		if err := publisher.PublishMsg(&natsgo.Msg{Subject: bus.DeliverSubject(session), Reply: reply, Header: strayHeader, Data: []byte(`{"stray":true}`)}); err != nil {
 			t.Fatalf("publish a frame whose receipt is %s: %v", reply, err)
 		}
 	}
-	own := &natsgo.Msg{Subject: bus.DeliverSubject(session), Reply: relayFrameReceipt(session), Data: []byte(`{"own":true}`)}
+	own := &natsgo.Msg{Subject: bus.DeliverSubject(session), Reply: relayFrameReceipt(session), Data: []byte(`{"own":true}`),
+		Header: natsgo.Header{relayHeaderSubject: {"notifications.dispatch.issue." + relaySocketProject + "." + relaySocketProject + "-1.comment.created"}}}
 	if err := publisher.PublishMsg(own); err != nil {
 		t.Fatalf("publish the session's own frame: %v", err)
 	}

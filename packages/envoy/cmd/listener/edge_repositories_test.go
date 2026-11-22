@@ -9,6 +9,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -241,6 +242,197 @@ func TestARepositoryGapOutlivesAMoveToAnotherListener(t *testing.T) {
 	testwait.Eventually(t, "the sent mark to be cleared from the session's entry", func() bool {
 		return storedEdgeSessionEntry(t, rig, sessionID).RepositoryGap == ""
 	})
+}
+
+// The gap mark a later withheld event owes outlives another relay's clear of an earlier mark:
+// while the session moves, its old relay (A) noted a mark for a GitHub event it withheld while no
+// repository answer stood, the new relay (B) adopted the mark the entry carries
+// (owedRepositoryGap) and published a frame carrying it, and before B clears that mark A withholds
+// a later event. A's mark for the later event is an id of its own (noteRepositoryGap), so B's
+// clear, which removes only the mark its frame carried (session.SessionRegistry.ClearRepositoryGap),
+// leaves it on the entry for the next frame to send. The relays' marks are every listener's, so
+// the row passes with edge mode off by design. Control: with noteRepositoryGap writing the mark it
+// noted before again, B's clear removes the later event's mark and the row fails.
+func TestAClearAfterAHandoverLeavesTheMarkOfALaterWithheldEvent(t *testing.T) {
+	rig := newEdgeRig(t)
+	const sessionID = "ses_edge_gap_handed_over"
+	requireStatus(t, rig.subscribe(t, rig.personToken(sessionID, "PRIV"), sessionID), http.StatusOK, "the registration")
+	ctx := t.Context()
+	relayA := rig.relays
+	relayB := &sessionRelays{sessions: rig.deps.sessions, logger: rig.harness.config.logger}
+	first, err := relayA.noteRepositoryGap(ctx, sessionID)
+	if err != nil {
+		t.Fatalf("relay A's mark of the first withheld event: %v", err)
+	}
+	carried := relayB.owedRepositoryGap(sessionID)
+	if carried != first {
+		t.Fatalf("UNKNOWN: relay B owes the mark %q, not relay A's %q on the entry, so its frame carries no adopted mark", carried, first)
+	}
+	later, err := relayA.noteRepositoryGap(ctx, sessionID)
+	if err != nil {
+		t.Fatalf("relay A's mark of the later withheld event: %v", err)
+	}
+	relayB.repositoryGapSent(ctx, sessionID, carried)
+	if stored := storedEdgeSessionEntry(t, rig, sessionID).RepositoryGap; stored == "" || stored != later {
+		t.Fatalf("after relay B cleared the mark its frame carried (%q) the entry carries %q, not relay A's mark of the later withheld event (%q): the later event's gap, which no frame has carried, is lost",
+			carried, stored, later)
+	}
+	if owed := relayA.owedRepositoryGap(sessionID); owed != later {
+		t.Fatalf("relay A owes %q after relay B's clear, want its mark of the later withheld event, %q", owed, later)
+	}
+}
+
+// A relay's write of the gap mark, and its clear of one, end at their deadline
+// (repositoryGapWriteTimeout) while the session bucket does not answer them, whatever the relay
+// run's own context allows, so a bucket that stops answering holds the session's frames no longer
+// than that: the mark's write is then the error, on which the relay gives the withheld event back
+// (giveBackWithheld), and the clear's is logged. Here the bucket's direct get and conditional write
+// of the session's entry stall until the test ends (stalledSessionEntryKV): the mark and the clear
+// read the entry from the stream's leader (session.SessionRegistry.SetRepositoryGap and
+// ClearRepositoryGap), a read no bucket handle carries, so their write is where a bucket that
+// stopped answering holds them. The row's minute decides nothing at the head: it only ends the wait
+// for a write with no deadline. The relays' writes are every listener's, so the row passes with
+// edge mode off by design. Control: with both written under the relay run's context, which has no
+// deadline (noteRepositoryGap and repositoryGapSent before this row), the mark's write is still
+// waiting a minute later and the row fails.
+func TestARelaysGapMarkWritesEndWhileTheSessionBucketDoesNotAnswer(t *testing.T) {
+	rig := newEdgeRig(t)
+	const sessionID = "ses_edge_gap_unanswered"
+	requireStatus(t, rig.subscribe(t, rig.personToken(sessionID, "PRIV"), sessionID), http.StatusOK, "the registration")
+	// The clear reads the bucket only for an entry this listener's copy holds marked.
+	if err := rig.deps.sessions.SetRepositoryGap(t.Context(), sessionID, "an-earlier-mark"); err != nil {
+		t.Fatalf("mark %s's entry: %v", sessionID, err)
+	}
+	released := make(chan struct{})
+	t.Cleanup(func() { close(released) })
+	swapSessionBucket(t, rig.deps.sessions, func(kv natsgo.KeyValue) natsgo.KeyValue {
+		return stalledSessionEntryKV{stalledSessionGetKV{KeyValue: kv, key: sessionID, released: released}}
+	})
+	ends := func(what string, write func()) {
+		t.Helper()
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			write()
+		}()
+		select {
+		case <-done:
+		case <-time.After(time.Minute):
+			t.Fatalf("%s while the session bucket does not answer is still waiting a minute later: it holds the session's frames for as long as the bucket does not answer", what)
+		}
+	}
+	var markErr error
+	ends("the relay's mark of a withheld event", func() { _, markErr = rig.relays.noteRepositoryGap(t.Context(), sessionID) })
+	if !errors.Is(markErr, context.DeadlineExceeded) {
+		t.Errorf("the relay's mark of a withheld event while the session bucket does not answer ended with %v, want its deadline", markErr)
+	}
+	ends("the relay's clear of the mark a frame carried", func() { rig.relays.repositoryGapSent(t.Context(), sessionID, "an-earlier-mark") })
+}
+
+// stalledSessionEntryKV is stalledSessionGetKV whose conditional write of key does not answer
+// either until released is closed, as a bucket that stopped answering the entry's reads and
+// writes; every other call is the bucket's own.
+type stalledSessionEntryKV struct {
+	stalledSessionGetKV
+}
+
+func (kv stalledSessionEntryKV) Update(key string, value []byte, last uint64) (uint64, error) {
+	if key != kv.key {
+		return kv.stalledSessionGetKV.Update(key, value, last)
+	}
+	<-kv.released
+	return 0, errors.New("the session bucket's write of the entry never answered")
+}
+
+// A gap mark another relay of the session writes on the entry while this listener's relay run is
+// live, for a GitHub event it withheld after this run started, rides the first frame this run
+// sends once this listener's copy of the entry shows the mark: the run reads the mark it owes
+// from that copy before each frame (owedRepositoryGap), not only when it starts, and clears the
+// mark once that frame is published. Here the mark is written through this listener's own
+// registry, so its copy shows it at once and the next frame carries it.
+// The relays' marks are every listener's, so the row passes with edge mode off by design.
+// Control: with the run reading the entry's mark only when it starts (relayNATS before this row),
+// the next frame carries no gap mark and the entry keeps the mark for a later run, and the row
+// fails.
+func TestAMarkAnotherRelayWritesDuringARunReachesTheRunsNextFrame(t *testing.T) {
+	rig := newEdgeRig(t)
+	const sessionID = "ses_edge_gap_live_run"
+	standIn := startSessionStandIn(t, rig.url, sessionID, answerDone)
+	requireStatus(t, rig.call(t, http.MethodPost, rig.personToken(sessionID, "PRIV"), "/v1/interests/subscribe",
+		consumerRegistration(sessionID, "epoch-1", "notifications.dispatch.issue.PRIV.>")), http.StatusOK, "the registration")
+	first, _ := rig.storeEvent(t, "notifications.dispatch.issue.PRIV.PRIV-1.comment.created")
+	requireFrames(t, standIn.collect(t, 1, 10*time.Second), first)
+	other := &sessionRelays{sessions: rig.deps.sessions, logger: rig.harness.config.logger}
+	mark, err := other.noteRepositoryGap(t.Context(), sessionID)
+	if err != nil {
+		t.Fatalf("the other relay's mark: %v", err)
+	}
+	next, _ := rig.storeEvent(t, "notifications.dispatch.issue.PRIV.PRIV-2.comment.created")
+	frames := standIn.collect(t, 1, 10*time.Second)
+	requireFrames(t, frames, next)
+	if gap, reason := frames[0].msg.Header.Get(relayHeaderGap), frames[0].msg.Header.Get(relayHeaderGapReason); gap != "true" || reason != relayGapRepositoryWithheld {
+		t.Fatalf("the live run's frame after the other relay's mark %q carries %s %q and %s %q, want true and %s; the entry holds %q for a later run",
+			mark, relayHeaderGap, gap, relayHeaderGapReason, reason, relayGapRepositoryWithheld, storedEdgeSessionEntry(t, rig, sessionID).RepositoryGap)
+	}
+	testwait.Eventually(t, "the mark the frame carried to be cleared from the session's entry", func() bool {
+		return storedEdgeSessionEntry(t, rig, sessionID).RepositoryGap == ""
+	})
+}
+
+// A relay run carries a mark once: a mark its frame carried is not taken again from this
+// listener's copy of the entry while the copy trails the clear, which would send the session the
+// same gap notice twice. Here another listener's relay sent the mark and cleared it on the bucket
+// while this listener's copy, whose watch is stopped, still holds it, so this run's own clear finds
+// nothing to clear and the copy keeps the mark. The run's first frame after the mark carries it, a
+// notice the copy cannot yet tell is the other relay's, and its next frame carries none. The
+// relays' marks are every listener's, so the row passes with edge mode off by design. Control:
+// with the run taking any mark the copy shows before each frame (relayNATS before this row), the
+// next frame carries the same mark again, and the row fails.
+func TestARelayRunCarriesAMarkOnceWhileItsCopyTrailsTheClear(t *testing.T) {
+	rig := newEdgeRig(t)
+	const sessionID, mark = "ses_edge_gap_carried_once", "the-other-listeners-mark"
+	standIn := startSessionStandIn(t, rig.url, sessionID, answerDone)
+	requireStatus(t, rig.call(t, http.MethodPost, rig.personToken(sessionID, "PRIV"), "/v1/interests/subscribe",
+		consumerRegistration(sessionID, "epoch-1", "notifications.dispatch.issue.PRIV.>")), http.StatusOK, "the registration")
+	first, _ := rig.storeEvent(t, "notifications.dispatch.issue.PRIV.PRIV-1.comment.created")
+	requireFrames(t, standIn.collect(t, 1, 10*time.Second), first)
+
+	other, err := session.OpenSessionRegistry(t.Context(), rig.harness.client.Conn, session.WithSessionReplicas(1))
+	if err != nil {
+		t.Fatalf("open the other listener's session registry: %v", err)
+	}
+	t.Cleanup(other.StopWatch)
+	if err := other.SetRepositoryGap(t.Context(), sessionID, mark); err != nil {
+		t.Fatalf("the other listener's mark: %v", err)
+	}
+	testwait.Eventually(t, "this listener's copy of the entry to show the other listener's mark", func() bool {
+		entry, _ := rig.deps.sessions.Lookup(sessionID)
+		return entry.RepositoryGap == mark
+	})
+	rig.deps.sessions.StopWatch()
+	if err := other.ClearRepositoryGap(t.Context(), sessionID, mark); err != nil {
+		t.Fatalf("the other listener's clear: %v", err)
+	}
+	if stored := storedEdgeSessionEntry(t, rig, sessionID).RepositoryGap; stored != "" {
+		t.Fatalf("UNKNOWN: the bucket's entry carries %q after the other listener's clear, want none", stored)
+	}
+
+	carried, _ := rig.storeEvent(t, "notifications.dispatch.issue.PRIV.PRIV-2.comment.created")
+	frames := standIn.collect(t, 1, 10*time.Second)
+	requireFrames(t, frames, carried)
+	if gap := frames[0].msg.Header.Get(relayHeaderGap); gap != "true" {
+		t.Fatalf("UNKNOWN: the frame after the other listener's mark carries %s %q, not the mark this listener's copy shows, so the row tests nothing", relayHeaderGap, gap)
+	}
+	if entry, _ := rig.deps.sessions.Lookup(sessionID); entry.RepositoryGap != mark {
+		t.Fatalf("UNKNOWN: this listener's copy of the entry carries %q after the run's clear, not the mark %q it trails the clear of", entry.RepositoryGap, mark)
+	}
+	next, _ := rig.storeEvent(t, "notifications.dispatch.issue.PRIV.PRIV-3.comment.created")
+	frames = standIn.collect(t, 1, 10*time.Second)
+	requireFrames(t, frames, next)
+	if gap, reason := frames[0].msg.Header.Get(relayHeaderGap), frames[0].msg.Header.Get(relayHeaderGapReason); gap != "" || reason != "" {
+		t.Fatalf("the run's frame after the one that carried mark %q carries %s %q and %s %q: the same gap notice is sent twice while this listener's copy trails the clear",
+			mark, relayHeaderGap, gap, relayHeaderGapReason, reason)
+	}
 }
 
 // A registration keeps the gap mark another listener set on the session's entry after this
