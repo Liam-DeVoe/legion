@@ -1,0 +1,13 @@
+kind: Fixed
+body: |-
+  A daemon that connects to NATS with its service token (`nats_daemon_service_token_file`) now
+  presents that token on each fresh consumer generation's connection too, through one dial that
+  its own connection uses. Before, each generation's connection presented no credential, the NATS
+  auth service refused it, and a daemon with `consumer_names: fresh` stopped at its boot with the
+  ERROR line's `op` `connect`. The service token's connection also keeps no reconnect buffer now,
+  as the seed's does: a publish made while it is cut fails at once and is not sent after the
+  reconnect. Each generation's connection is named by the auth service's own rule
+  (`legion-go-<project>-<kind>/<generation>`).
+time: 2026-11-22T08:40:14Z
+custom:
+    Issue: pr4970
