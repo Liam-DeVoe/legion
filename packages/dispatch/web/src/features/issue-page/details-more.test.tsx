@@ -9,6 +9,7 @@ import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { nextFrame } from "../../__tests__/frames";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { ApiError, api } from "../../api/client";
+import { prependEventToLog } from "../../api/event-feed";
 import { issueResultsQuery, issueStepsQuery, userStateQuery } from "../../api/queries";
 import type {
   Comment,
@@ -2256,3 +2257,142 @@ for (const [landing, landingName] of SWEEP_LANDINGS) {
     }
   }
 }
+
+/** How the reader comes to read an entry of the history after `t v`, in the cases below. */
+type ReaderOnEntry = "keys" | "pointer";
+
+/** What happens above the reader's entry, in the cases below. */
+type AboveTheEntry = "arrives" | "grows";
+
+const READER_ON_ENTRY: readonly (readonly [ReaderOnEntry, string])[] = [
+  ["pointer", "the pointer resting on the fourth entry under the heading"],
+  ["keys", "a scroll the reader's keys make with the focus left on the history"],
+];
+const ABOVE_THE_ENTRY: readonly (readonly [AboveTheEntry, string])[] = [
+  ["arrives", "a new event arrives at the head of the log"],
+  ["grows", "the entry above the reader's grows"],
+];
+
+/** The entry of the history the reader reads after `t v`: the fourth line of its list. */
+const ENTRY_UNDER_HEADING = 3;
+
+// `t v` lands the history's heading at the top of Details' view and holds the history's place
+// there, claiming Details' box from the history's anchor (`claimBox`). The reader then reads an
+// entry of the history: the pointer moves onto it, or their keys scroll Details while the focus
+// stays on the history. That act names their place in the history: the hold ends, and the
+// history's anchor keeps the entry from then on, the one under the pointer or the one in the
+// middle of the view. An event that arrives at the head of the log, or an entry above the
+// reader's that grows, then leaves the reader's entry where they see it. While the hold kept the
+// history's top for the whole read, the anchor kept nothing, and the entry went down by the new
+// line, or by the growth.
+for (const [reader, readerName] of READER_ON_ENTRY) {
+  for (const [above, aboveName] of ABOVE_THE_ENTRY) {
+    test(`after t v and ${readerName}, the reader's entry keeps its place when ${aboveName}`, async () => {
+      const client = readsHeld();
+      const log = claimsNewestFirst(30);
+      const page = drawPeopleInDrawer(`/issues/${KEY}`, {
+        client,
+        heldClock: true,
+        log: Promise.resolve(log),
+      });
+      try {
+        act(() => page.hold.open?.(true));
+        await waitFor(() =>
+          expect(page.box.querySelectorAll("[data-history-entry]")).toHaveLength(log.length)
+        );
+        await userEvent.keyboard("tv");
+        const history = screen.getByTestId("issue-history");
+        await waitFor(() =>
+          expect(document.activeElement, "t v did not focus the history").toBe(history)
+        );
+        await nextFrames(2);
+        // The frame that reports the landing's own scroll.
+        page.frame();
+        expect(
+          history.querySelector("h2")?.getBoundingClientRect().top,
+          "t v did not land the history's heading at the top of Details"
+        ).toBe(BOX_TOP);
+        const entry = page.box
+          .querySelectorAll<HTMLElement>(HISTORY_UNITS)
+          .item(ENTRY_UNDER_HEADING);
+        if (reader === "pointer") {
+          const seen = entry.getBoundingClientRect();
+          act(() => {
+            const at = { bubbles: true, clientX: 50, clientY: seen.top + seen.height / 2 };
+            entry.dispatchEvent(new PointerEvent("pointerover", at));
+            entry.dispatchEvent(new PointerEvent("pointermove", at));
+          });
+        } else {
+          // The arrow key scrolls Details down by a line of the browser's, the focus left on the
+          // history.
+          await userEvent.keyboard("{ArrowDown}");
+          readerScrolls(page.box, 2 * HISTORY_LINE);
+        }
+        page.frame();
+        const seen = entry.getBoundingClientRect();
+        expect(whollyInBox(seen), "the reader's entry is not in the view").toBe(true);
+
+        if (above === "arrives") {
+          act(() => prependEventToLog(client, claimMade(log.length + 1, 1)));
+          await waitFor(() =>
+            expect(page.box.querySelectorAll("[data-history-entry]")).toHaveLength(log.length + 1)
+          );
+        } else {
+          const over = entry.previousElementSibling?.getAttribute("data-history-entry");
+          if (typeof over !== "string") throw new Error("no entry above the reader's");
+          page.grow(over, GROWTH);
+          page.heightsChanged();
+        }
+        page.frame();
+
+        expect(entry.getBoundingClientRect().top, "the reader's entry moved").toBe(seen.top);
+        expect(document.activeElement, "the focus moved").toBe(history);
+      } finally {
+        page.restore();
+      }
+    });
+  }
+}
+
+// `t o` holds the place of the focused Collaborators control, outside the history, and claims
+// Details' box for it: a key or a turn of the wheel that names no place leaves that hold on. The
+// pointer moving onto an entry of the history names the reader's place there: the hold ends, and
+// the history's anchor keeps that entry, so an entry above it that grows leaves it where the
+// reader sees it. While the hold kept the control instead, the growth pushed the entry down by as
+// much.
+test("after t o and the pointer resting on an entry of the history, the reader's entry keeps its place when the entry above the reader's grows", async () => {
+  const log = claimsNewestFirst(30);
+  const page = drawPeopleInDrawer(`/issues/${KEY}`, { heldClock: true, log: Promise.resolve(log) });
+  try {
+    act(() => page.hold.open?.(true));
+    await waitFor(() =>
+      expect(page.box.querySelectorAll("[data-history-entry]")).toHaveLength(log.length)
+    );
+    await userEvent.keyboard("to");
+    await page.focused("t o");
+    page.frame();
+    const entry = page.box.querySelectorAll<HTMLElement>(HISTORY_UNITS).item(ENTRY_UNDER_HEADING);
+    const seen = entry.getBoundingClientRect();
+    expect(
+      whollyInBox(seen),
+      "t o left the entry out of the view, so the case proves nothing"
+    ).toBe(true);
+    act(() => {
+      const at = { bubbles: true, clientX: 50, clientY: seen.top + seen.height / 2 };
+      entry.dispatchEvent(new PointerEvent("pointerover", at));
+      entry.dispatchEvent(new PointerEvent("pointermove", at));
+    });
+    page.frame();
+
+    const over = entry.previousElementSibling?.getAttribute("data-history-entry");
+    if (typeof over !== "string") throw new Error("no entry above the reader's");
+    page.grow(over, GROWTH);
+    page.heightsChanged();
+    page.frame();
+
+    expect(entry.getBoundingClientRect().top, "the reader's entry moved").toBe(seen.top);
+    expect(document.activeElement, "the focus moved").toBe(page.control());
+  } finally {
+    page.restore();
+  }
+});

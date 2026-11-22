@@ -36,7 +36,7 @@ import { buildIssuePath, buildReferencePath, documentRoute } from "../refs/route
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
 import { PHONE_VIEWPORT_QUERY, useMediaQuery } from "../shell/useDialog";
-import { scrollingAncestor, ViewportAnchor } from "../shell/ViewportAnchor";
+import { ViewportAnchor } from "../shell/ViewportAnchor";
 import { CutWords } from "./CutWords";
 import { DetailsErrorLine } from "./details-error";
 import { HistoryHandoff } from "./HistoryHandoff";
@@ -53,6 +53,7 @@ import { useOutlineWriter } from "./outline-writer";
 import { authorText, pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
 import { ROW_LINK } from "./row-references";
+import { scrollingAncestor } from "./scroll-box";
 
 /** How many events a page of the log holds, as the server answers it. */
 const PAGE = 200;

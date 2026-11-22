@@ -9,7 +9,7 @@ import type { Page } from "@playwright/test";
  * scroll, and scrolling the window instead moves the history not at all. The box is the nearest
  * ancestor of the history whose `overflow-y` is `auto` or `scroll` and whose content is taller
  * than it, searched up to the root, or the window where there is none. The page's own search
- * (`scrollingAncestor` in `features/shell/ViewportAnchor.tsx`, by which the history's
+ * (`scrollingAncestor` in `features/issue-page/scroll-box.ts`, by which the history's
  * `ViewportAnchor` and Details' landing hold find the box they keep a place in) differs: it
  * takes the nearest such box whether or not its content is taller than it, and stops below
  * `body`. The two find the same box where that nearest box below `body` has content to scroll.

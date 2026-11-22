@@ -17,14 +17,7 @@ import { stateForIssue } from "../issue/pins";
 import { SubscribedAgents } from "../issue/SubscribedAgents";
 import { buildIssuePath, type IssueRoute, parseIssuePath } from "../refs/routes";
 import { useKeymap } from "../shell/keymap";
-import {
-  claimBox,
-  overlaps,
-  ownScrollMark,
-  rewatch,
-  scrollingAncestor,
-  watchedIn,
-} from "../shell/ViewportAnchor";
+import { claimBox, overlaps, ownScrollMark, rewatch, watchedIn } from "../shell/ViewportAnchor";
 import { outlineItemRoute, useAddressFallback, useAddressTarget } from "./address-target";
 import { DetailsSteps } from "./DetailsSteps";
 import { DetailsErrorLine, useSaidFailure } from "./details-error";
@@ -38,6 +31,7 @@ import { DETAILS_ATTRIBUTE, useMarginDrawer } from "./margin-slot";
 import { useOutlineReads } from "./outline-reads";
 import { authorText, PROPERTY_LABELS, pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS, issueStatusWord, STATE_LINES } from "./page-words";
+import { scrollingAncestor } from "./scroll-box";
 import { useIssueSubscribers } from "./useIssueSubscribers";
 
 /** What each of Details' three places below is handed: the issue as the details slot reads it,
@@ -503,6 +497,16 @@ function useLandedPlaceHold(open: boolean | undefined): (target: string, frames:
  * anchor keeps places again by its own rules from the next one it records: an act of the
  * reader's, the history's own `keepRow`, a scroll.
  *
+ * The reader's first act that names a place in the history ends the hold, and its claim with it,
+ * and the history's anchor keeps that place from then on (`claimBox`'s `end`): the pointer moving
+ * onto an entry, a scroll of theirs, made by an act since the claim began, while the pointer rests
+ * on an entry, or the focus moving into one. Where the focused element holds the history's list,
+ * as the history `t v` focuses does, the reader's first such scroll ends it too, wherever the
+ * pointer rests: the reader then reads the list, and the anchor keeps the entry the pointer rests
+ * on, or else the one in the middle of the view (`ViewportAnchor`). So an event that arrives above
+ * the reader's entry, or an entry above it that grows, leaves that entry where the reader sees it,
+ * where the hold of the history's top would keep the heading and let the entry move.
+ *
  * One move is the place the key asked for rather than one to make good: `t v` often reaches the
  * history while its list is still the loading line, at the end of what Details holds, and once
  * the list is drawn the history's own landing brings its heading to the top of Details' view
@@ -510,10 +514,11 @@ function useLandedPlaceHold(open: boolean | undefined): (target: string, frames:
  * history (`HISTORY_HEADING_LANDED_EVENT`), and the top kept from then on is the one that landing
  * left.
  *
- * The hold lasts while the focus stays on the element: a key, a press, the wheel or a touch that
- * leaves it there leaves the hold on. The focus leaving the element ends it, and so
- * (`useLandedPlaceHold`) do Details closing, the page going and the next landing. Returns what
- * ends the hold.
+ * The hold lasts while the focus stays on the element and the reader names no place in the
+ * history: a key, a press, the wheel or a touch that leaves the focus there and names none leaves
+ * the hold on. The focus leaving the element ends it, and so do the reader's act that names a
+ * place in the history and (`useLandedPlaceHold`) Details closing, the page going and the next
+ * landing. Returns what ends the hold.
  */
 function holdLandedPlace(target: string, frames: number): () => void {
   let frame = 0;
@@ -545,14 +550,15 @@ function holdLandedPlace(target: string, frames: number): () => void {
       return;
     }
     // The control's top as the place to keep, or null while it lies wholly outside the view; and
-    // the claim of the box (`claimBox`) while a top is kept.
+    // the claim of the box (`claimBox`) while a top is kept, which the history's anchor ends, and
+    // the hold with it, at the reader's first act that names a place in the history.
     let kept: number | null = null;
     let claim: (() => void) | undefined;
     const keepTop = () => {
       const at = control.getBoundingClientRect();
       kept = overlaps(at, scroller.getBoundingClientRect()) ? at.top : null;
       if (kept !== null) {
-        claim ??= claimBox(scroller);
+        claim ??= claimBox(scroller, release);
         return;
       }
       claim?.();
