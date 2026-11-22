@@ -1049,9 +1049,18 @@ const repositoriesLiveContract = 202
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
 // that constant, and the contract these keys and values arrived at stays where it is. It moves
-// only with this change's own number, and it is the last number of answers.go's
-// SupportedContracts, which names the constant rather than its number for that reason.
+// only with this change's own number, and answers.go's SupportedContracts names the constant
+// rather than its number for that reason.
 const deploymentRolesContract = 221
+
+// strandedTokenContract is the daemon contract that added each stranded claim's token to the
+// state (version.go's 222, `strandedClaims.*.token`): two claims of one issue can hold one role,
+// so the issue and the role no longer name one claim.
+//
+// It is a literal of its own and never DaemonAPIVersion, for the reason deploymentRolesContract
+// gives, and it is the last number of answers.go's SupportedContracts, which names the constant
+// rather than its number for that reason.
+const strandedTokenContract = 222
 
 // withoutDeploymentRoles is the issue as a caller below deploymentRolesContract reads it: an issue
 // at step is at work, so it is served as implementing — its Dispatch status is in_progress, as
