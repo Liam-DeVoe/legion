@@ -150,8 +150,9 @@ export function useIssueTableActions({
     setNotice({ kind: "error", text: refused });
     return false;
   };
-  /** The rank writes of a start-next action, sent in order, stopping the moment the reader
-   *  dismisses it. One loop and one guard serve the first attempt and the resume; `failure`
+  /** The rank writes of a start-next action, sent in order, stopping the moment the action is
+   *  no longer the one in hand: the table went, or, in a browser with no lock manager, another
+   *  tab dismissed it. One loop and one guard serve the first attempt and the resume; `failure`
    *  is how the attempt names what did not move. The answer says whether the action is still
    *  the one in hand when the last write landed. */
   const runStartNext = async (
@@ -191,25 +192,23 @@ export function useIssueTableActions({
       });
       return;
     }
-    // Refused here too: another tab can begin a move while the confirm is open.
-    const begun = recovery.begin({ kind: "startNext", keys: queued });
-    if (begun.kind === "refused") {
-      setNotice({ kind: "error", text: begun.text });
-      return;
-    }
-    const { record } = begun;
     void perform(
       `${named(queued)} now ${queued.length === 1 ? "starts" : "start"} next.`,
       async () => {
-        const ran = await runStartNext(
-          record,
-          items,
-          (remaining, error) =>
-            `Did not move up: ${remaining.join(", ")}. ${error instanceof Error ? error.message : String(error)}`
-        );
-        if (!ran) return undefined;
-        recovery.dismiss();
-        return queued;
+        // Refused here too: another tab can begin a move while the confirm is open.
+        const begun = await recovery.begin({ kind: "startNext", keys: queued }, async (record) => {
+          const ran = await runStartNext(
+            record,
+            items,
+            (remaining, error) =>
+              `Did not move up: ${remaining.join(", ")}. ${error instanceof Error ? error.message : String(error)}`
+          );
+          // Ended while this tab still holds the record's lock, so no tab finds it left behind.
+          if (ran) recovery.end();
+          return ran;
+        });
+        if (begun.kind === "refused") throw new Error(begun.text);
+        return begun.moved ? queued : undefined;
       }
     );
   };
@@ -260,23 +259,28 @@ export function useIssueTableActions({
       },
     },
   };
+  /** Finishes the record left behind, while this tab holds its lock (`recovery.resume`): no
+   *  other tab runs that move meanwhile, and none offers to end it. */
   const finish = () => {
     const interrupted = recovery.current.current;
     if (!interrupted) return;
-    void perform("Finished the interrupted action.", async () => {
-      await recovery.settle(interrupted);
-      if (!recovery.active(interrupted.id)) return undefined;
-      const record = recovery.current.current;
-      if (!record) return undefined;
-      const current = await listOpen();
-      if (!recovery.active(record.id)) return undefined;
-      await kinds[record.kind].resume(record, current);
-      if (!recovery.active(record.id)) return undefined;
-      recovery.dismiss();
-      return record.keys;
-    });
+    void perform("Finished the interrupted action.", () =>
+      recovery.resume(interrupted.id, async () => {
+        await recovery.settle(interrupted);
+        if (!recovery.active(interrupted.id)) return undefined;
+        const record = recovery.current.current;
+        if (!record) return undefined;
+        const current = await listOpen();
+        if (!recovery.active(record.id)) return undefined;
+        await kinds[record.kind].resume(record, current);
+        if (!recovery.active(record.id)) return undefined;
+        recovery.end();
+        return record.keys;
+      })
+    );
   };
-  const interrupted = busy ? undefined : recovery.action;
+  // Offered only where no tab runs its move: a move another tab still runs is that tab's.
+  const interrupted = busy ? undefined : recovery.leftBehind;
   return {
     busy,
     notice,

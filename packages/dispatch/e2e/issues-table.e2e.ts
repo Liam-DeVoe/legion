@@ -93,7 +93,8 @@ test("the table sorts, searches facets and fuzzy text, groups, pages and receive
     await chooseDisplay(page, "Group by", "status", "Group by");
     await page.keyboard.press("Escape");
     await expect(page.getByRole("button", { name: /^Collapse Todo, 30 issues/ })).toBeVisible();
-    await expect(page.getByText(/next in queue #1/)).toBeVisible();
+    // The Issues tab gives the queue one name, the Legion queue, in its group headings too.
+    await expect(page.getByText(/next in Legion queue #1/)).toBeVisible();
     await page.getByRole("combobox", { name: "Rows per page" }).selectOption("25");
     await page.getByRole("button", { name: "Next ›", exact: true }).click();
     await expect(page.getByText("Page 2 of 2", { exact: true })).toBeVisible();

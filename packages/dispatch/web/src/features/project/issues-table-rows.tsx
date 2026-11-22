@@ -75,6 +75,7 @@ export function GroupRow({
   columns,
   continued,
   index,
+  legionQueue,
   measure,
   shown,
   viewportWidth,
@@ -84,6 +85,10 @@ export function GroupRow({
   /** How many of the group's rows this page holds, when that is fewer than the group has. */
   shown?: number;
   index: number;
+  /** Whether the heading names the first Place in the Legion queue, the Queue column's number,
+   *  as the Issues tab does. A table another page draws keeps today's words and the number
+   *  Start next reads. */
+  legionQueue: boolean;
   measure: (element: Element | null) => void;
   row: Row<Item>;
   grouping: string;
@@ -102,9 +107,11 @@ export function GroupRow({
     here === leaves.length
       ? `${leaves.length} ${leaves.length === 1 ? "issue" : "issues"}`
       : `${here} of ${leaves.length} issues`;
+  // The first place among the group's rows, whether or not its issue is labelled legion.
   let next = Number.POSITIVE_INFINITY;
   for (const { original } of leaves) {
-    if (original.queue !== undefined && original.queue < next) next = original.queue;
+    const number = legionQueue ? original.place : original.queue;
+    if (number !== undefined && number < next) next = number;
   }
   const byStatus = statusSegments(countStatuses(leaves.map((leaf) => leaf.original.issue.status)));
   return (
@@ -119,7 +126,9 @@ export function GroupRow({
           ) : null}
           <span className={`font-normal ${textMutedOnSurfaceMuted}`}>
             {count}
-            {Number.isFinite(next) ? ` · next in queue #${next}` : ""}
+            {Number.isFinite(next)
+              ? ` · next in ${legionQueue ? "Legion queue" : "queue"} #${next}`
+              : ""}
           </span>
         </>
       }

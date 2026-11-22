@@ -1848,6 +1848,52 @@ test("a collapsed group keeps its heading and reopens", async () => {
   expect(await screen.findByRole("row", { name: "CORE-2 Bravo" })).toBeDefined();
 });
 
+// R1 and the Design's columns: the group heading's next in Legion queue names the Place, the
+// Queue column's number, and not Start next's own count of the Todo issues labelled legion. So
+// it names the first Place among the group's rows, labelled or not.
+test("the Todo group's heading names the first Place in the Legion queue, labelled or not", async () => {
+  const sockets = liveSockets(restores);
+  table(
+    [issue("CORE-1", { labels: ["legion"] }), issue("CORE-2"), issue("CORE-3")],
+    "?group=status",
+    {},
+    {},
+    Promise.resolve(DAEMON)
+  );
+  await screen.findByRole("button", { name: /^Collapse Todo, 3 issues/ });
+  await answerBoard(sockets, {
+    ...legionBoard(),
+    columns: [
+      {
+        id: "queue",
+        label: "Queue",
+        cards: [
+          { ...waitingCard("CORE-3"), waiting_place: 2 },
+          { ...waitingCard("CORE-2"), waiting_place: 3 },
+        ],
+      },
+    ],
+  });
+  await waitFor(() =>
+    expect(screen.getByRole("button", { name: /^Collapse Todo,/ }).textContent).toContain(
+      "3 issues · next in Legion queue #2"
+    )
+  );
+});
+
+// A priority's table keeps the group heading's words of today, and the number Start next reads.
+test("a priority's table names the next issue in Start next's queue in its group heading", async () => {
+  const advancing = { advances: [{ id: "PRI-7", inherited: false }] };
+  table(
+    [issue("CORE-1", advancing), issue("CORE-2", { ...advancing, labels: ["legion"] })],
+    "?w.group=status",
+    undefined,
+    { listing: { advances: "PRI-7" }, stateKey: "w" }
+  );
+  const heading = await screen.findByRole("button", { name: /^Collapse Todo, 2 issues/ });
+  expect(heading.textContent).toContain("2 issues · next in queue #1");
+});
+
 /** The issue keys the table is listing, in the order the rows stand in. */
 function listedKeys(): string[] {
   return screen

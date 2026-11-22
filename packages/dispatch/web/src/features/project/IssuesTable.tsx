@@ -1587,6 +1587,7 @@ function IssueTableBody({
                 continued={entry.continued}
                 grouping={grouping[0] ?? ""}
                 index={index}
+                legionQueue={tab !== undefined}
                 measure={measure}
                 shown={entry.shown}
                 row={entry.row}
