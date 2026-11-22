@@ -84,18 +84,20 @@ type Record struct {
 	// Retired are names never selected again; cleanup deletes only these (Names.Cleanup).
 	Retired []string `json:"retired,omitempty"`
 	// Abandoned are the retired candidates whose create may still have been in flight when they
-	// were retired (Step 0's or a retry's), each with the time until which it can still land: the
-	// retirement and the create's own bound (Op.CreateWithin), on the retirer's clock. Cleanup drops
-	// one the server does not hold only once it reads it absent at or after that time and its own
-	// settle age (Config.SettleAge, the clock skew it allows), so a create that lands after the
-	// candidate was retired leaves a consumer the record still names, which the next cleanup
-	// deletes. Each is also in Retired.
+	// were retired (Step 0's or a retry's), each with the time until which its client still waits
+	// for it: the retirement and the create's own bound (Op.CreateWithin), on the retirer's clock.
+	// Cleanup drops one the server does not hold only once it reads it absent at or after that time
+	// and its own settle age (Config.SettleAge, the clock skew it allows), so a create that lands
+	// within its bound, after the candidate was retired, leaves a consumer the record still names,
+	// which the next cleanup deletes. One the server applies past that bound, which is only the
+	// client's deadline, leaves a consumer no record names: a stated limit (README, "Lifetime").
+	// Each is also in Retired.
 	Abandoned []Abandoned `json:"abandoned,omitempty"`
 	// Restore is a rollback in progress, which the rollback command writes; Names never writes it.
 	Restore *Restore `json:"restore,omitempty"`
 }
 
-// Abandoned is a retired candidate whose create may still land until Until.
+// Abandoned is a retired candidate whose create its client may still wait for until Until.
 type Abandoned struct {
 	Name  string    `json:"name"`
 	Until time.Time `json:"until"`
@@ -190,10 +192,11 @@ func (r Record) abandon(candidate string, until time.Time) Record {
 // names itself (the operator's cleanup), so the record it writes stays one the stores read (each
 // abandoned name is also retired). deleted says the caller deleted the consumer, else it read the
 // name absent. An abandoned candidate read absent while now is before its until (Abandoned.Until)
-// and the settle age after it (defaultSettleAge, 2 s) can still land, and the consumer it makes
-// must stay named, so it is kept: the answer is then r as it was and false, as it is for a name r
-// does not retire. The settle age is the skew allowed between the clock that wrote until, the
-// retirer's, and now's, the dropper's, which can be another host's. r itself is never changed.
+// and the settle age after it (defaultSettleAge, 2 s) is one whose create its client may still
+// wait for, and the consumer that create makes must stay named, so it is kept: the answer is then
+// r as it was and false, as it is for a name r does not retire. The settle age is the skew allowed
+// between the clock that wrote until, the retirer's, and now's, the dropper's, which can be
+// another host's. r itself is never changed.
 func (r Record) DropRetired(name string, deleted bool, now time.Time) (Record, bool) {
 	return r.dropRetired(name, deleted, now, defaultSettleAge)
 }
@@ -218,8 +221,8 @@ func (r Record) dropRetired(name string, deleted bool, now time.Time, skew time.
 	return r, true
 }
 
-// abandonedUntil is the time until which r's retired name can still land, and false for a name
-// no create of which was in flight when it was retired.
+// abandonedUntil is the time until which the client of r's retired name's create may still wait
+// for it, and false for a name no create of which was in flight when it was retired.
 func (r Record) abandonedUntil(name string) (time.Time, bool) {
 	for _, a := range r.Abandoned {
 		if a.Name == name {

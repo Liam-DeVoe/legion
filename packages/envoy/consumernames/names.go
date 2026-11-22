@@ -110,7 +110,10 @@ type Config struct {
 	// passed since the operation's reservation, the Reserved hook's time included, and sends none
 	// past it (boundedCreate); it records it in each operation it reserves (Op.CreateWithin), so a
 	// process that retires the candidate without seeing its create end keeps the name in the record
-	// until the create can no longer land (Record.Abandoned, Cleanup). Required.
+	// until the client's wait for that create has ended (Record.Abandoned, Cleanup). It is the
+	// client's deadline only: nats-server serves a queued API request whenever it reaches it, so a
+	// create the server applies past it leaves a consumer no record names, a stated limit (README,
+	// "Lifetime"). Required.
 	CreateBound time.Duration
 	// CheckKey refuses a logical name before anything is written: CheckKey when nil. A
 	// creator takes it from its family's Naming (FamilyNaming), whose rule is the family's own:
@@ -536,14 +539,14 @@ func (n *Names) Replace(ctx context.Context, sel Selection, start uint64, create
 // launch creates sel's open operation's candidate and publishes it. No name is sent to the
 // server's create twice: each retry reserves a fresh candidate. A create whose outcome is unknown
 // is settled with an info: a candidate the server holds is adopted, and one it does not is
-// retired, kept named while its create can still land (rereserve), with a fresh candidate tried
-// once in its place, by start sequence. At the stream's max_consumers the retired names the server
-// holds are deleted and those it does not hold dropped (settleRetired), and a fresh candidate tried
-// in place of the refused one, then a replace's predecessor, whose start is saved; a family that
-// cannot delete (Config.NoDelete) is answered the cap at once. A candidate the server refused at
-// the cap is not retired: the server answered its create, so it names no consumer, now or later,
-// and a key whose every call meets the cap keeps a record of one size. A refusal the server
-// answered leaves the operation open for Step 0.
+// retired, kept named while its client may still wait for its create (rereserve), with a fresh
+// candidate tried once in its place, by start sequence. At the stream's max_consumers the retired
+// names the server holds are deleted and those it does not hold dropped (settleRetired), and a
+// fresh candidate tried in place of the refused one, then a replace's predecessor, whose start is
+// saved; a family that cannot delete (Config.NoDelete) is answered the cap at once. A candidate the
+// server refused at the cap is not retired: the server answered its create, so it names no
+// consumer, now or later, and a key whose every call meets the cap keeps a record of one size. A
+// refusal the server answered leaves the operation open for Step 0.
 func (n *Names) launch(ctx context.Context, sel Selection, create CreateFunc, operation Operation) (Selection, error) {
 	predecessorDeleted, retried := false, false
 	for attempt := 0; ; attempt++ {
@@ -631,11 +634,12 @@ func (n *Names) boundedCreate(ctx context.Context, create CreateFunc, op Op, sta
 
 // rereserve retires sel's open operation's candidate, whose create may still be in flight, and
 // reserves a fresh one, keeping native as the operation's native policy, then runs Config.Reserved
-// on it. The retired candidate is kept named until its create can no longer land
+// on it. The retired candidate is kept named until its client's wait for the create has ended
 // (abandonCandidate). The write also drops each retired name the server no longer holds, by
 // DropRetired's rule (settleRetired), so a key whose every call retires a candidate (Step 0's
 // settlement of the operation the call before left open, at a full cap or under a create the
-// server keeps refusing) names only those that can still land, and each call reads only those.
+// server keeps refusing) names only those whose create its client may still wait for, and each
+// call reads only those.
 func (n *Names) rereserve(ctx context.Context, sel Selection, native Native) (Selection, error) {
 	record := n.settleRetired(ctx, sel.Logical, sel.Record.clone(), false)
 	return n.reserveFresh(ctx, sel, n.abandonCandidate(record, *sel.Record.Op), native)
@@ -655,10 +659,10 @@ func (n *Names) reserveFresh(ctx context.Context, sel Selection, record Record, 
 	return next, n.reserved(ctx, next)
 }
 
-// abandonCandidate is record with op's candidate retired and kept until the candidate's create can
-// no longer land: now, on this process's clock, and the bound the reserving process's create ran
-// under (op.CreateWithin), or this family's own (Config.CreateBound) for an operation that records
-// none.
+// abandonCandidate is record with op's candidate retired and kept until its client's wait for the
+// candidate's create has ended: now, on this process's clock, and the bound the reserving
+// process's create ran under (op.CreateWithin), or this family's own (Config.CreateBound) for an
+// operation that records none.
 func (n *Names) abandonCandidate(record Record, op Op) Record {
 	within := op.CreateWithin
 	if within <= 0 {
@@ -877,8 +881,8 @@ func (n *Names) RecordLastFloor(ctx context.Context, logical, name string, floor
 // retired name the server no longer holds. It answers how many it deleted. Only retired names are
 // deleted, never the current, never by name pattern, and never a consumer of another key (Owns),
 // which refuses the call as a malformed record. A retired candidate whose create may still land
-// (Record.Abandoned) is dropped only once it is read absent at or after the time its create can
-// no longer land and this process's settle age after it (Config.SettleAge, the skew it allows
+// (Record.Abandoned) is dropped only once it is read absent at or after the time its client's wait
+// for the create ends and this process's settle age after it (Config.SettleAge, the skew it allows
 // between the retirer's clock, which wrote that time, and its own); until then it stays named, so
 // a create that lands within its bound leaves a consumer the record names, which a later cleanup
 // deletes. A refused write of the record leaves the names for the next cleanup, which finds them

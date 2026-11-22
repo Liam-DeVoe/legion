@@ -11,12 +11,12 @@ import (
 // Record.DropRetired is the one rule for dropping a retired name, Names.Cleanup's and a reader's
 // that deletes retired names itself (the operator's cleanup): it drops the name from Retired and
 // Abandoned together, so the record stays one the stores read; it keeps an abandoned candidate read
-// absent while its create can still land, now before its until and the settle age after it (the
-// clock skew allowed between the retirer, which wrote until, and the dropper); and it drops a name
-// the caller deleted at once. Each answer is decoded as the stores decode it (DecodeKVValue). The
-// control is the rule a reader would copy, dropping the name from Retired alone, whose record every
-// read refuses as malformed. Before, the library held this rule only inside Names.Cleanup, so a
-// reader could only copy it.
+// absent while its client may still wait for its create, now before its until and the settle age
+// after it (the clock skew allowed between the retirer, which wrote until, and the dropper); and it
+// drops a name the caller deleted at once. Each answer is decoded as the stores decode it
+// (DecodeKVValue). The control is the rule a reader would copy, dropping the name from Retired
+// alone, whose record every read refuses as malformed. Before, the library held this rule only
+// inside Names.Cleanup, so a reader could only copy it.
 func TestDropRetiredDropsARetiredNameFromBothListsAsCleanupDoes(t *testing.T) {
 	const key = "ses-1"
 	now := testEpoch.Add(time.Hour)
