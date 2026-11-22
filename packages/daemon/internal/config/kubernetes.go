@@ -593,9 +593,11 @@ func readPluginSource(value *yaml.Node, key string) (string, error) {
 // plugins' own scope (runtime.PluginScope). That is where a token holding a "/", "?" or "#"
 // written as the user lands (`https://<head>/<tail>@cache/x.tgz` parses with <head> as the host),
 // and where one ending in "/" leaves a segment that opens with "@" (`https://<head>/@cache/x.tgz`),
-// which the daemon's boot log and the state's settings print. The path is read decoded, so a
-// "%40" in it is an "@" too. A registry tarball URL of a plugin holds the scope as a segment of
-// its own (`/@sjawhar/pi-legion/-/pi-legion-9.6.1.tgz`, Artifactory's `/api/npm/<repo>/@sjawhar/…`,
+// which the daemon's boot log and the state's settings print. The path and the fragment are read
+// decoded, so a "%40" in either is an "@" too; the query is read as written (u.RawQuery), so a
+// "%40" there loads, and it is no userinfo a credential lands in. A registry tarball URL of a
+// plugin holds the scope as a segment of its own (`/@sjawhar/pi-legion/-/pi-legion-9.6.1.tgz`,
+// Artifactory's `/api/npm/<repo>/@sjawhar/…`,
 // GitHub Packages' `/download/@sjawhar/…`), and is kept; natsurl.UserinfoPastHost, which refuses
 // any "@" in the path, is for URLs that name a server, never a package. Each reason says what the
 // operator changes.
