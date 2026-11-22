@@ -72,9 +72,9 @@ const (
 	// scopeProjectInBody is a write that belongs to one project the request's body names rather
 	// than its path: the issue create, whose project comes from the body, or from the
 	// repository an external ref names. There is no object to resolve before the handler runs,
-	// so createIssue makes the check itself once that project is settled
-	// (refuseWriteOutsideProjectScope), and withinProjectScope passes the row through by this
-	// class rather than by a name it compares.
+	// so createIssueFrom, the create both versions make, makes the check itself once that project
+	// is settled (refuseWriteOutsideProjectScope), and withinProjectScope passes the row through by
+	// this class rather than by a name it compares.
 	scopeProjectInBody writeScope = "project-in-body"
 	// scopeNoWrite is a row that writes nothing and reads no row: its answer is computed from
 	// its own body alone. There is no object whose project could be resolved and no session the

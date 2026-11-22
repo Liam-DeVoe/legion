@@ -85,9 +85,9 @@ func actorPerson(actor model.Actor) (string, bool) {
 // The last step is the stored column as it stands, which every project names
 // (store/migrations/20261111210103_projects_default_assignee_not_null.up.sql): a shared token
 // creating a root issue lands on that person rather than on nobody. The create's own update of
-// the project row returns it (see the `returning` in createIssue), so no extra round trip runs
-// under the project row lock, and a default left stale by a restore or a direct write is used
-// as it stands rather than refusing the create.
+// the project row returns it (see the `returning` in createIssueFrom, the create both versions of
+// POST issues make), so no extra round trip runs under the project row lock, and a default left
+// stale by a restore or a direct write is used as it stands rather than refusing the create.
 func defaultAssignee(actor model.Actor, parent *string, projectDefault string) *string {
 	if login, acts := actorPerson(actor); acts {
 		return &login

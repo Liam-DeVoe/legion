@@ -376,8 +376,9 @@ type DeliveryRunJobDetailView struct {
 	Conclusion  *DeliveryJobConclusion `json:"conclusion"`
 }
 
-// DeliveryRunDetailView is `GET /api/v1/delivery/runs/{id}`: one run of the deploy repository with
-// every job it ran, ordered by when each started (a job that never started last, then by name).
+// DeliveryRunDetailView is `GET /api/v1/delivery/runs/{id}` and `GET /api/v2/deploy-runs/{id}`:
+// one run of the deploy repository with every job it ran, ordered by when each started (a job that
+// never started last, then by name).
 type DeliveryRunDetailView struct {
 	ID   int64                      `json:"id"`
 	URL  string                     `json:"url"`

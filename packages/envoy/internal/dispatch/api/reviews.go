@@ -581,7 +581,8 @@ type approvalRequestInput struct {
 
 // approvalRequestResponse is the body POST /api/v1/artifacts/{id}/approval-requests answers, and
 // what requestApproval hands POST /api/v2/artifacts/{id}/approval-requests to copy into its own
-// shape (approvalRequestV2).
+// shape (approvalRequestV2), all but the ask, which that route answers as an /api/v2 ask read on
+// the write's transaction (writtenAskV2).
 type approvalRequestResponse struct {
 	Ask        *shapedAsk           `json:"ask"`
 	ArtifactID string               `json:"artifact_id"`

@@ -66,7 +66,7 @@ func (s *server) listProjects(w http.ResponseWriter, r *http.Request) {
 // createProjectInput is the body of POST /api/v1/projects and of POST /api/v2/projects.
 // DefaultAssignee is optional in the body and never optional in the row: a call that names none
 // takes the person creating the project, and only a caller acting for nobody has to name one
-// (createProject below).
+// (createProjectFrom below).
 type createProjectInput struct {
 	Key             string       `json:"key" required:"true"`
 	Name            string       `json:"name" required:"true"`

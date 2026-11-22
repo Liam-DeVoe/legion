@@ -37,8 +37,9 @@ import (
 // could name another session here exactly as it could on any other write; what makes a claim
 // trustworthy is that `dispatch claim` fills `actor` from the host's own runtime, so no model
 // chooses it, and that the request has no second parameter for claiming on someone's behalf.
-// A member the body does not declare is ignored, as on every route (decodeJSON), and an ignored
-// member claims nothing on anyone's behalf: the claimant still comes from the request's actor.
+// A member the body does not declare is ignored, as on every route (decodeJSON, and readJSON under
+// /api/v2), and an ignored member claims nothing on anyone's behalf: the claimant still comes from
+// the request's actor.
 //
 // Which writes a holder blocks is claimBlockedBy's alone, and what it asks about the holder is
 // judgeClaim, a test of that session's registry record and never of any list's membership: a
@@ -60,7 +61,7 @@ import (
 // reads the holder and takes the liveness snapshot with nothing held, then claimWrite locks
 // the row, re-reads it, and decides with claimBlockedBy under that lock; a holder that
 // changed in between sends the write around the cycle once more. claimCycle is that pair and
-// the answer both routes make of it.
+// the answer the claim and the release routes of both versions make of it.
 
 // claimHolder names a holder in one phrase for an error message: a human by login, a session
 // by its id and the title it is running under. It is not the dashboard's label (which shows

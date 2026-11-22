@@ -351,8 +351,9 @@ type PriorityAct struct {
 // written no priority yet is not a failed read. It is absent as soon as one priority is live,
 // however the two faults read.
 //
-// `?summary=true` answers the two fault counts alone: Priorities is then empty, and each fault
-// carries its Count with no list beside it, which is what the navigation rail reads.
+// /api/v1's `?summary=true`, and /api/v2's limit=0 with no include=fault_issues, answer the two
+// fault counts alone: Priorities is then empty, and each fault carries its Count with no list
+// beside it, which is what the navigation rail reads.
 type Priorities struct {
 	Priorities          []PriorityRow       `json:"priorities"`
 	WorkUnderNoPriority WorkUnderNoPriority `json:"work_under_no_priority"`
@@ -976,9 +977,10 @@ type Suggestions struct {
 
 // RelatedChecksReport is GET /api/v1/related-checks, and the report GET /api/v2/related-check-stats
 // answers as api.relatedCheckStatsV2: how the related-item checks recorded in related_checks within
-// one window went, so a deploy's checks can be counted against its targets. Project, SourceKind,
-// From and To echo the filters, each null when not given (every project, every source kind, no
-// lower or upper bound); From is inclusive and To exclusive.
+// one window went, so a deploy's checks can be counted against its targets. On /api/v1, Project,
+// SourceKind, From and To echo the filters, each null when not given (every project, every source
+// kind, no lower or upper bound); /api/v2 echoes project as the list project= names, [] for none
+// (api.relatedCheckStatsV2). From is inclusive and To exclusive.
 //
 // BySourceKind, ByOutcome, BySearch and ByReason count the checks by each column; BySearch counts
 // a check not made under "not_made", and ByReason leaves out the checks that had no reason (those
@@ -3369,10 +3371,12 @@ const (
 
 // UserThreadStateEventPayload is `user_thread_state.updated`: one viewer's read of the Inbox's
 // threads moved. It names the viewer so their other open tabs and devices drop the row, and the
-// thread when one thread was marked (PUT /api/v1/me/threads/{id}/read, or a thread mark's write
-// under /api/v2); a mark-all (POST /api/v1/me/inbox/read, or PATCH /api/v2/me/marks by filter)
-// names no thread, since one event stands for every thread it marked in that project. It is owned
-// by the thread's project, like `user_state.updated`, and never notifies.
+// thread when one thread's read mark moved (PUT /api/v1/me/threads/{id}/read, or a thread mark's
+// read_through under /api/v2). A mark-all (POST /api/v1/me/inbox/read, or PATCH /api/v2/me/marks
+// by filter), and a dismissal or a restore (POST /api/v1/me/inbox/dismiss, or a thread mark's
+// dismissed under /api/v2), name no thread, since one event stands for every thread it changed in
+// that project. It is owned by the thread's project, like `user_state.updated`, and never
+// notifies.
 type UserThreadStateEventPayload struct {
 	Login    string `json:"login"`
 	ThreadID string `json:"thread_id,omitempty"`

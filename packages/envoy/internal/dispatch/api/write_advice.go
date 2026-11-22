@@ -551,7 +551,7 @@ type decisionBlockCheck struct {
 // new approval of the new version restores it. A person's review restores the approval of a
 // document that is not a plan; a plan's comes back through a plan review recorded with
 // `dispatch plan-approve`, since Dispatch refuses a request for a person's approval of any plan
-// (requestArtifactApproval, PLAN_APPROVED_BY_REVIEW), whoever approved it. Every write that
+// (requestApproval, PLAN_APPROVED_BY_REVIEW), whoever approved it. Every write that
 // supersedes an approval is reported, whatever the document is: the approval it made stale is a
 // fact about that document and nothing else. The writer is the only one who can be told in time,
 // and only the write that superseded the approval is told: a write on a document whose approval

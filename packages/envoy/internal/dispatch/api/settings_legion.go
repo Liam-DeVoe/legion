@@ -130,8 +130,8 @@ func (s *server) deleteLegionSetting(w http.ResponseWriter, r *http.Request) {
 // legionProject is the {key} of the path, once it is a project key and a project of that key
 // exists. Every Legion route of one project is under /api/v1/projects/{key}/legion/ and
 // /api/v2/projects/{key}/legion/, the three daemon routes and the board alike, so each reads its
-// project here and answers as every project route does: a badly spelled key is 400
-// INVALID_PROJECT, and an unknown project loadProject's 404 PROJECT_NOT_FOUND.
+// project here and answers alike in both versions: a badly spelled key is 400 INVALID_PROJECT,
+// and an unknown project loadProject's 404 PROJECT_NOT_FOUND.
 func (s *server) legionProject(w http.ResponseWriter, r *http.Request) (string, bool) {
 	project := strings.TrimSpace(r.PathValue("key"))
 	if !projectKeyPattern.MatchString(project) {

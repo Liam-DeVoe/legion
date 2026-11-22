@@ -2563,7 +2563,9 @@ func lockProjectArtifacts(ctx context.Context, tx pgx.Tx, project string) error 
 // Both writes are mounted on an artifact's id alone, /api/v1/artifacts/{id} (routes_table.go) and
 // /api/v2/artifacts/{id} (v2_documents.go), so the id the request names is what each read takes,
 // and each takes the row alone (loadArtifactRowByID): the versions and the approval an artifact
-// read carries cost a second round trip, and neither handler reads them.
+// read carries cost a second round trip, which neither read here needs. The removal reads them
+// nowhere, and the correction reads them once, of the row it wrote, for its answer
+// (loadArtifactDetails in renameArtifactTo).
 //
 // The owner's own refusals come first, as every write to an owner takes them: a closed issue is
 // refused once the document's row says which owner it hangs from, and before anything else of

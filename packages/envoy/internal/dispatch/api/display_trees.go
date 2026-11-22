@@ -509,8 +509,9 @@ type architectureComponentRead struct {
 	ProseTree model.DisplayTree `json:"prose_tree,omitempty"`
 }
 
-// architectureTreeRead is what GET /api/v1/projects/{key}/architecture answers: the tree, with
-// every component shaped to carry that tree. The side lists name issues and carry no prose.
+// architectureTreeRead is what GET /api/v1/projects/{key}/architecture and GET
+// /api/v2/projects/{key}/architecture answer (getArchitectureTreeV2): the tree, with every
+// component shaped to carry that tree. The side lists name issues and carry no prose.
 type architectureTreeRead struct {
 	model.ArchitectureTree
 	Components []architectureComponentRead `json:"components"`

@@ -37,11 +37,13 @@ import (
 // one: it is excluded before anything is written, and named in the create response. The mode
 // a human picked is part of what they said - a steer interrupts an agent and a btw waits for
 // an answer - so silently downgrading it would deliver a different message than the one the
-// sender composed. Exclusions are not stored: the browser excludes them at compose time from
-// the same capability list, and the response covers the race where a session's capabilities
-// or liveness changed in between. What persists is who was actually sent to.
+// sender composed. Exclusions are not stored with the broadcast, only in a keyed send's recovery
+// point for its repeat (broadcastRecovery): the browser excludes them at compose time from the
+// same capability list, and the response covers the race where a session's capabilities or
+// liveness changed in between. What the broadcast persists is who was actually sent to.
 //
-// Broadcasting needs the person scope (routeScopes), like the one-session route it is built from.
+// Broadcasting needs the person scope (routeScopes at /api/v1, the row's OAuthScopes at /api/v2),
+// like the one-session route it is built from.
 
 // broadcastDeliveryWorkers is how many recipients are delivered to at once, once the create
 // request has already answered. Each worker takes a tracking context of its own
