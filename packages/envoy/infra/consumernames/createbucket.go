@@ -1268,10 +1268,10 @@ func createBucketReconnect(ctx context.Context, nc *nats.Conn) error {
 // createBucketDeleteLeftover deletes what a cut restore of the selection bucket left (plan §3a,
 // "One rerun"): on a clustered hub STREAM.INFO answers 10059 for about 10 s after the cut, then an
 // empty stream appears and stays, so it waits for the stream to appear, deletes it, and reads
-// STREAM.INFO 10059 after the delete. A read the hub does not answer right after the delete, while
-// its meta leader settles the removal, is read again within the same wait. A leftover that does
-// not appear within the wait is UNKNOWN on a clustered hub, naming the bucket; a lone server
-// leaves none.
+// STREAM.INFO 10059 after the delete. A read right after the delete that the hub does not answer,
+// or that still finds the stream while its meta group applies the removal, is read again within the
+// same wait (createBucketAwaitGone). A leftover that does not appear within the wait is UNKNOWN on
+// a clustered hub, naming the bucket; a lone server leaves none.
 func createBucketDeleteLeftover(ctx context.Context, nc *nats.Conn) error {
 	clustered := nc.ConnectedClusterName() != ""
 	deadline := time.Now().Add(createBucketLeftoverWait)
