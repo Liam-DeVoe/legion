@@ -1107,29 +1107,61 @@ func TestCensusAdmitsTheSplitProjectKeyMigrationsAndRefusesTheOldIndexShape(t *t
 	}
 }
 
-// TestCensusAdmitsTheReplyIndexesTheEraseReadsThrough holds the census to admitting this release's
-// three concurrent indexes - the two the erase's reads under its owner locks probe (20261119020000
-// on comment_deliveries.reply_id, 20261119020100 on asks.handed_back_reply_id) and the one an
-// address's personal tokens are read through (20261119020200 on canonical_login(agent_tokens.owner))
-// - over a database at 20261118200651, the version before them, with every later migration pending
-// and the limit at one byte, where each table is over it. Each is one concurrent, non-unique index
-// of its own migration, which the limit never applies to at any size, but only while no earlier
-// pending migration runs a DO block: one voids the exemption of every later pending migration
-// (pgmigrate.Census, laterEventTrigger). The base stands for production before this release: the
-// DO blocks of earlier releases (20261111210103 among them) are applied there, and no migration
-// of this release before the three runs one; the release's first DO block is 20261119021826, after
-// them, so its deploy census admits them whatever their tables hold. Control: the first of them
-// renamed to sort after 20261119021826 fails its entry. Only each entry is read, never the
-// verdict of the whole set, for the reason
-// TestCensusAdmitsTheSplitProjectKeyMigrationsAndRefusesTheOldIndexShape gives.
+// TestCensusAdmitsTheReplyIndexesTheEraseReadsThrough holds the census to admitting the two indexes
+// the erase's reads under its owner locks probe (20261119020000 on comment_deliveries.reply_id,
+// 20261119020100 on asks.handed_back_reply_id) and the one an address's personal tokens are read
+// through (20261119020200 on canonical_login(agent_tokens.owner)), over production before this
+// release (requireCensusAdmitsConcurrentIndexes).
 func TestCensusAdmitsTheReplyIndexesTheEraseReadsThrough(t *testing.T) {
+	requireCensusAdmitsConcurrentIndexes(t, 20261119020000, 20261119020100, 20261119020200)
+}
+
+// TestCensusAdmitsTheRelatedCheckIndexesTheEraseReadsThrough holds the census to admitting three
+// indexes: the two the erase's reads of a block's related-item checks probe (20261119020300 on
+// related_checks.source_block_id, 20261119020400 on the source_issue_key of the issues' own
+// checks), and the one the record of a check probes graph_erasures through for an erase of its
+// source (20261119020500 on the document of each erased block), over production before this
+// release (requireCensusAdmitsConcurrentIndexes).
+func TestCensusAdmitsTheRelatedCheckIndexesTheEraseReadsThrough(t *testing.T) {
+	requireCensusAdmitsConcurrentIndexes(t, 20261119020300, 20261119020400, 20261119020500)
+}
+
+// TestCensusAdmitsTheProvedSessionOwnerIndexTheEraseReadsThrough holds the census to admitting the
+// index a person's erase reads comments through for the comments a session the server proved
+// theirs wrote (20261119020600, on user_threads_login(author->>'owner') of those comments), over
+// production before this release (requireCensusAdmitsConcurrentIndexes).
+func TestCensusAdmitsTheProvedSessionOwnerIndexTheEraseReadsThrough(t *testing.T) {
+	requireCensusAdmitsConcurrentIndexes(t, 20261119020600)
+}
+
+// productionBeforeThisRelease is the version that stands for production before this release:
+// the DO blocks of earlier releases (20261111210103 among them) are applied there, and every later
+// migration is pending in this release's deploy census.
+const productionBeforeThisRelease = 20261118200651
+
+// requireCensusAdmitsConcurrentIndexes holds the census, over a database at
+// productionBeforeThisRelease with every later migration pending and the limit at one byte, where
+// each table is over it, to admitting each of versions as one concurrent, non-unique index of its
+// own migration, which the limit never applies to at any size, but only while no earlier pending
+// migration runs a DO block: one voids the exemption of every later pending migration
+// (pgmigrate.Census, laterEventTrigger). This release's first DO block is 20261119021826, so each
+// of its concurrent indexes sorts before it, and its deploy census admits them whatever their
+// tables hold. Control: an index renamed to sort after 20261119021826 fails its entry. Only each
+// entry is read, never the verdict of the whole set, for the reason
+// TestCensusAdmitsTheSplitProjectKeyMigrationsAndRefusesTheOldIndexShape gives.
+func requireCensusAdmitsConcurrentIndexes(t *testing.T, versions ...int) {
+	t.Helper()
+	before := productionBeforeThisRelease
 	store := openEmptyTestStore(t)
-	migrateThrough(t, store, 20261118200651)
+	migrateThrough(t, store, before)
 	report, err := census(context.Background(), store.Pool.Config().ConnString(), migrationFiles, pgmigrate.CensusOptions{TableLimit: 1})
 	if err != nil {
 		t.Fatalf("census: %v", err)
 	}
-	found := map[int]bool{20261119020000: false, 20261119020100: false, 20261119020200: false}
+	found := map[int]bool{}
+	for _, version := range versions {
+		found[version] = false
+	}
 	for _, entry := range report.Pending {
 		if _, wanted := found[entry.Migration.Version]; !wanted {
 			continue
@@ -1141,7 +1173,7 @@ func TestCensusAdmitsTheReplyIndexesTheEraseReadsThrough(t *testing.T) {
 	}
 	for version, present := range found {
 		if !present {
-			t.Errorf("migration %d was not pending in the census over a database at 20261118200651", version)
+			t.Errorf("migration %d was not pending in the census over a database at %d", version, before)
 		}
 	}
 }

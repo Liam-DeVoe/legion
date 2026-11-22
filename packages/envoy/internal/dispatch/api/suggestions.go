@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"slices"
 	"strings"
@@ -47,6 +48,18 @@ const (
 	// records exist to count. Thirty seconds is well past the five a migration waits for a lock
 	// (pgmigrate.LockTimeout), and the retry runs in the background, so no write waits on it.
 	relatedRecordRetryTimeout = 30 * time.Second
+	// relatedRecordLockWait bounds a related_checks record's wait for the owner locks of its
+	// sources (writeRelatedChecks), as a lock_timeout set for that one statement. The record takes
+	// those locks so that it is ordered against an erase of a source's text, which holds them until
+	// it commits, as every writer of that issue or document holds them for its own write. A first
+	// attempt never reaches the bound: its relatedRecordTimeout ends its wait at one second, and the
+	// record is tried again. The retry runs detached, once the request has answered, within
+	// relatedRecordRetryTimeout, and twenty of its thirty seconds leaves it ten for its insert and
+	// commit behind the locks. A hold longer than that ends the wait with lock_not_available, and
+	// the retry logs the row and drops it, as it drops one it could not write for any other reason:
+	// the row only counts how the check went, and no connection of the shared pool should wait on
+	// it for longer.
+	relatedRecordLockWait = 20 * time.Second
 	// relatedRecordRetryLimit is the most record retries that run at once, of both kinds. Each
 	// holds, or waits for, a connection of the shared pool for up to relatedRecordRetryTimeout,
 	// and a lock that holds up the first attempts holds up every check's: without a bound, those
@@ -197,7 +210,7 @@ func (s *server) decisionBlockChecks(
 	var overflow []relatedCheckRecord
 	var running sync.WaitGroup
 	for index, block := range blocks {
-		source := suggestionSource{kind: "decision_block", blockID: block.ID, actor: actor}
+		source := suggestionSource{kind: "decision_block", blockID: block.ID, blockDocument: artifact.ID, actor: actor}
 		if artifact.IssueKey != nil {
 			source.issueKey = *artifact.IssueKey
 		} else {
@@ -247,7 +260,12 @@ type suggestionSource struct {
 	artifactID string // an ask or decision block on an unlinked project document
 	askID      string // set for an ask source alone
 	blockID    string // set for a decision block source alone
-	actor      model.Actor
+	// blockDocument is the document a decision block stands in, set for a decision block source
+	// alone, whether its issue or the document keys it: the record reads the document's ref_key,
+	// which with the block id names the block's node, so as to write no row for a block an erase
+	// took (relatedCheckInsert).
+	blockDocument string
+	actor         model.Actor
 }
 
 // relatedInput is one related-item check's question.
@@ -1055,14 +1073,72 @@ type relatedCheckRecord struct {
 	record      relatedRecord
 }
 
-// relatedCheckInsert writes one related_checks row; a row whose id exists is left as it is.
+// relatedCheckInsert writes one related_checks row, unless an erase took the text its terms would
+// be read from; a row whose id exists is left as it is. Its parameters are the row's columns in
+// their order and then, as $18, the document a decision block stands in (blockDocument).
+//
+// The record takes the owner locks of its sources before it (writeRelatedChecks), and an erase
+// holds them from before its read under its locks until it commits, so a record that queued behind
+// an erase runs this statement with that commit in its snapshot. It writes no row holding terms
+// for a decision block whose node graph_erasures names - the document's ref_key, '#' and the
+// block's id, the address an erase names a block by (refs.BlockNodeKind) - and none for an issue's
+// own check once a block of the issue's spec has been erased: that check picks its terms from the
+// issue's title and spec together, so any of them may be the erased block's words. A row holding
+// no terms, as a check its route decided not to make writes (relatedCheckNotRun), holds nothing of
+// any text and is written whatever was erased, as the erase leaves such a row as it is. A record
+// that commits before the erase takes its locks is read by that erase under them, and its terms
+// emptied (grapherase's readRelatedChecks).
+//
+// graph_erasures grows with every erase, so neither test may read it whole under the owner locks:
+// each probes graph_erasures_block_document (20261119020500), which keys a block's erasure by its
+// document, the part of its node before the first '#'. Each names that part as the index writes
+// it, `split_part(e.node_id, '#', 1) = a.ref_key`. The decision block's test names it beside the
+// block's whole node, which implies it, since a ref_key holds no '#', but which the index cannot
+// be probed by (TestTheRelatedCheckRecordProbesTheErasuresOfItsDocument).
 const relatedCheckInsert = `
 	insert into related_checks
 		(id, project_key, source_kind, source_issue_key, source_artifact_id, source_ask_id, source_block_id,
 		 actor_kind, actor_id, outcome, search, reason, terms, keyword_ms, meaning_ms, total_ms, related_count)
-	values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+	select $1::uuid, $2::text, $3::text, $4::text, $5::uuid, $6::uuid, $7::text, $8::text, $9::text, $10::text,
+	       $11::text, $12::text, $13::text[], $14::integer, $15::integer, $16::integer, $17::integer
+	where cardinality($13::text[]) = 0
+	   or (not exists (select 1 from artifacts a
+	                   join graph_erasures e on e.node_kind = '` + refs.BlockNodeKind + `' and split_part(e.node_id, '#', 1) = a.ref_key
+	                                        and e.node_id = a.ref_key || '#' || $7::text
+	                   where a.id = $18::uuid)
+	       and not exists (select 1 from artifacts a
+	                       join graph_erasures e on e.node_kind = '` + refs.BlockNodeKind + `' and split_part(e.node_id, '#', 1) = a.ref_key
+	                       where $3::text = 'issue' and a.issue_key = $4::text and a.is_primary))
 	on conflict (id) do nothing
 `
+
+// relatedCheckWrite is one related_checks row as the record writes it: the owner it is written
+// under, its source's issue or else its document, and the insert's arguments (relatedCheckInsert).
+type relatedCheckWrite struct {
+	owner store.Owner
+	args  []any
+}
+
+// relatedCheckWriteOf is the related_checks row recordRelatedChecks writes for row, with a new id,
+// and false where it writes none: a check whose project could not be resolved, since the row
+// belongs to a project, or whose source names neither an issue nor a document, under whose owner
+// the row is written.
+func relatedCheckWriteOf(row relatedCheckRecord) (relatedCheckWrite, bool) {
+	source, record, suggestions := row.source, row.record, row.suggestions
+	if record.project == "" || (source.issueKey == "" && source.artifactID == "") {
+		return relatedCheckWrite{}, false
+	}
+	owner, artifactID := store.ArtifactOwner(source.artifactID), source.artifactID
+	if source.issueKey != "" {
+		owner, artifactID = store.IssueOwner(source.issueKey), ""
+	}
+	return relatedCheckWrite{owner: owner, args: []any{
+		uuid.New(), record.project, source.kind, nullableText(source.issueKey), nullableText(artifactID),
+		nullableText(source.askID), nullableText(source.blockID), source.actor.Kind, source.actor.ID,
+		suggestions.Outcome, nullableText(suggestions.Search), nullableText(record.reason), record.terms,
+		record.keywordMS, record.meaningMS, record.totalMS, len(suggestions.Related), nullableText(source.blockDocument),
+	}}, true
+}
 
 // recordRelatedChecks writes what each check offered and how it went, on a context of its own
 // taken from context.WithoutCancel(ctx) and bounded by relatedRecordTimeout: a check that ran out
@@ -1073,8 +1149,9 @@ const relatedCheckInsert = `
 // (persistSuggestions). Every source with a project and an owner gets one related_checks row: its
 // outcome, search mode, reason, the lexemes it searched for, the stages' and the whole check's
 // times and how many items it listed. A check whose project could not be resolved has no row to
-// write, since the row belongs to a project. The rows go in one round trip (store.Pool.SendBatch),
-// so an edit's decision blocks beyond decisionBlockCheckLimit, however many, cost one.
+// write, since the row belongs to a project. The rows go in one transaction of the same few round
+// trips however many there are (insertRelatedChecks), so an edit's decision blocks beyond
+// decisionBlockCheckLimit, however many, cost no more than one.
 //
 // related_checks rows the first attempt could not write are tried once more in the background
 // (retryRecord). Each row's id is chosen here and the insert does nothing where it exists, since
@@ -1082,35 +1159,24 @@ const relatedCheckInsert = `
 func (s *server) recordRelatedChecks(ctx context.Context, rows ...relatedCheckRecord) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), relatedRecordTimeout)
 	defer cancel()
-	var inserts [][]any
+	var writes []relatedCheckWrite
 	for _, row := range rows {
-		source, record, suggestions := row.source, row.record, row.suggestions
-		if source.kind == "issue" || source.kind == "ask" {
-			s.persistSuggestions(ctx, source, suggestions)
+		if row.source.kind == "issue" || row.source.kind == "ask" {
+			s.persistSuggestions(ctx, row.source, row.suggestions)
 		}
-		if record.project == "" || (source.issueKey == "" && source.artifactID == "") {
-			continue
+		if write, ok := relatedCheckWriteOf(row); ok {
+			writes = append(writes, write)
 		}
-		artifactID := source.artifactID
-		if source.issueKey != "" {
-			artifactID = ""
-		}
-		inserts = append(inserts, []any{
-			uuid.New(), record.project, source.kind, nullableText(source.issueKey), nullableText(artifactID),
-			nullableText(source.askID), nullableText(source.blockID), source.actor.Kind, source.actor.ID,
-			suggestions.Outcome, nullableText(suggestions.Search), nullableText(record.reason), record.terms,
-			record.keywordMS, record.meaningMS, record.totalMS, len(suggestions.Related),
-		})
 	}
-	if len(inserts) == 0 {
+	if len(writes) == 0 {
 		return
 	}
-	err := s.insertRelatedChecks(ctx, inserts)
+	err := s.insertRelatedChecks(ctx, writes)
 	if err == nil {
 		return
 	}
-	s.retryRecord(err, func(ctx context.Context) error { return s.insertRelatedChecks(ctx, inserts) },
-		"dispatch: related-item check not recorded", "rows", len(inserts))
+	s.retryRecord(err, func(ctx context.Context) error { return s.insertRelatedChecks(ctx, writes) },
+		"dispatch: related-item check not recorded", "rows", len(writes))
 }
 
 // retryRecord tries a record's write once more in the background, when its first attempt failed
@@ -1147,17 +1213,57 @@ func (s *server) retryRecord(err error, write func(context.Context) error, messa
 	})
 }
 
-// insertRelatedChecks writes inserts' related_checks rows in one round trip. A batch is built for
-// each attempt: pgx keeps what it learned of a statement on the batch's queued queries, which
-// belongs to the connection that sent it. The rows are no write of the request that ran the
-// check: they record a write that has already committed and marked its key, so they are made
-// outside its transaction, and a failure is only logged.
-func (s *server) insertRelatedChecks(ctx context.Context, inserts [][]any) error {
-	batch := &pgx.Batch{}
-	for _, args := range inserts {
-		batch.Queue(relatedCheckInsert, args...)
+// insertRelatedChecks writes the related_checks rows of writes in a transaction of its own
+// (writeRelatedChecks), which it commits. The rows are no write of the request that ran the check:
+// they record a write that has already committed and marked its key, so they are made outside its
+// transaction, under a context with the request's commit step taken off
+// (store.WithoutBeforeCommit), so that the record never marks the request's Idempotency-Key, and a
+// failure is only logged.
+func (s *server) insertRelatedChecks(ctx context.Context, writes []relatedCheckWrite) error {
+	tx, err := s.deps.Store.Pool.Begin(store.WithoutBeforeCommit(ctx))
+	if err != nil {
+		return fmt.Errorf("begin the related_checks rows: %w", err)
 	}
-	return s.deps.Store.Pool.SendBatch(ctx, batch).Close()
+	defer tx.Rollback(context.WithoutCancel(ctx))
+	if err := writeRelatedChecks(ctx, tx, writes); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// writeRelatedChecks writes the related_checks rows of writes in tx, in the store's lock order
+// (markInboxReadThreads): first the owner locks of their sources, each once and in key order
+// (store.LockOwners), under a lock_timeout of relatedRecordLockWait set for that statement alone,
+// as the setting before it is restored after it; then the inserts, in one round trip. A batch is
+// built for each attempt: pgx keeps what it learned of a statement on the batch's queued queries,
+// which belongs to the connection that sent it.
+//
+// The owner locks are what order a row against an erase of its source's text (relatedCheckInsert).
+// A wait past the bound fails with lock_not_available, which relatedRecordRetryable reads as one a
+// retry may cure, and the retry takes the locks the same way.
+func writeRelatedChecks(ctx context.Context, tx pgx.Tx, writes []relatedCheckWrite) error {
+	owners := make([]store.Owner, len(writes))
+	for index, write := range writes {
+		owners[index] = write.owner
+	}
+	var previous string
+	bound := &pgx.Batch{}
+	bound.Queue(`select current_setting('lock_timeout')`).QueryRow(func(row pgx.Row) error {
+		return row.Scan(&previous)
+	})
+	bound.Queue(`select set_config('lock_timeout', $1, true)`, fmt.Sprintf("%dms", relatedRecordLockWait.Milliseconds()))
+	if err := tx.SendBatch(ctx, bound).Close(); err != nil {
+		return fmt.Errorf("bound the related_checks rows' wait for their owners: %w", err)
+	}
+	if err := store.LockOwners(ctx, tx, owners...); err != nil {
+		return fmt.Errorf("take the owners of the related_checks rows: %w", err)
+	}
+	batch := &pgx.Batch{}
+	batch.Queue(`select set_config('lock_timeout', $1, true)`, previous)
+	for _, write := range writes {
+		batch.Queue(relatedCheckInsert, write.args...)
+	}
+	return tx.SendBatch(ctx, batch).Close()
 }
 
 // relatedRecordRetryable says whether a related_checks insert that failed may succeed when tried

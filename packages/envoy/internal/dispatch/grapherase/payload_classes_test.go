@@ -136,13 +136,15 @@ func fullArtifactVersionPayload() map[string]any {
 	})
 }
 
-// TestEveryEventTypeIsSortedForTheErase holds the erase's payload classification to every event
-// type there is: each member of contracts.DispatchEventTypes, the DispatchEvent union of
+// TestEveryEventTypeIsSortedForTheErase holds the erase's lists of event types to every event type
+// there is: each member of contracts.DispatchEventTypes, the DispatchEvent union of
 // packages/contracts, is either a type the erase reads (erasedEventPayloads) or one it never
 // reads (unreadEventTypes), and is in exactly one of the two; neither names a type the union
-// lacks; and the types the erase reads are the types the classification holds
-// (payloadClassification), so a type that starts to name a comment or a document's version the
-// erase reads is classified before its payload is redacted by the fallback alone.
+// lacks; and the types the erase reads are the types the payload classification holds
+// (payloadClassification). So a member the union gains fails it until it is put on one list, and
+// a type put on the list the erase reads fails it until it is classified. Which list a type
+// belongs on - whether its payload names a comment or a document's version the erase reads - is
+// the reason unreadEventTypes records for it, and no check here reads a payload to test it.
 func TestEveryEventTypeIsSortedForTheErase(t *testing.T) {
 	members := make(map[string]bool, len(contracts.DispatchEventTypes))
 	var neither, both []string
@@ -190,7 +192,7 @@ func TestEveryEventTypeIsSortedForTheErase(t *testing.T) {
 // the erase reads (erasedEventPayloads) and holds the payload classification to it: each string
 // path the walk reaches is in exactly one class of the type's classification
 // (payloadClassification), each path the classification names is one the walk reaches, so none
-// is stale, and each legacy path (legacyIdentityPaths) is reached by no walk, since a Go field
+// is stale, and each legacy path (payloadPaths.legacy) is reached by no walk, since a Go field
 // that writes it again belongs in the classification. A value the walk cannot read - an
 // interface, a map, a json.RawMessage or a type that encodes itself - fails the test, so no field
 // passes unread.
@@ -216,9 +218,6 @@ func TestEveryStringOfAnEventPayloadTheEraseReadsHasAClass(t *testing.T) {
 			t.Errorf("%s: the erase reads it, and its payload classification holds no classes for it", typ)
 			continue
 		}
-		if shape.content != ownWords && shape.content != quotedWords {
-			t.Errorf("%s: its content class is %d, want the node's own words or quoted words", typ, shape.content)
-		}
 		classes := map[string][]payloadClass{}
 		for class, paths := range map[payloadClass][]string{ownWords: shape.own, quotedWords: shape.quoted, identity: shape.identity} {
 			for _, path := range paths {
@@ -238,25 +237,15 @@ func TestEveryStringOfAnEventPayloadTheEraseReadsHasAClass(t *testing.T) {
 				t.Errorf("%s: %s (%s) is in no class of the erase's payload classification", typ, path, walk.strings[path])
 			}
 		}
-		for _, legacy := range legacyIdentityPaths {
-			if !slices.Contains(legacy.types, typ) {
-				continue
-			}
+		for _, legacy := range shape.legacy {
 			if declaring, reached := walk.strings[legacy.path]; reached {
 				t.Errorf("%s: the legacy path %s is written by a field of %s again: move it into the classification", typ, legacy.path, declaring)
 			}
 			if _, classified := classes[legacy.path]; classified {
-				t.Errorf("%s: the legacy path %s is in the classification as well as in legacyIdentityPaths", typ, legacy.path)
+				t.Errorf("%s: the legacy path %s is in a class of the classification as well as in its legacy list", typ, legacy.path)
 			}
-		}
-	}
-	for _, legacy := range legacyIdentityPaths {
-		if legacy.seen == "" || legacy.why == "" {
-			t.Errorf("the legacy path %s does not say where it was seen and why no field writes it", legacy.path)
-		}
-		for _, typ := range legacy.types {
-			if _, read := erasedEventPayloads[typ]; !read {
-				t.Errorf("the legacy path %s names %s, a type the erase does not read", legacy.path, typ)
+			if legacy.seen == "" || legacy.why == "" {
+				t.Errorf("%s: the legacy path %s does not say where it was seen and why no field writes it", typ, legacy.path)
 			}
 		}
 	}
@@ -279,6 +268,14 @@ var (
 	jsonMarshaler  = reflect.TypeFor[json.Marshaler]()
 	textMarshaler  = reflect.TypeFor[encoding.TextMarshaler]()
 )
+
+// scalarKinds are the kinds of a number or a bool, which encodes as no string, and as one only
+// under the `string` option (payloadWalk.fields). A byte is one: a field of one encodes as a
+// number, and a slice or an array of bytes is what encodes as a string (payloadWalk.walkType).
+var scalarKinds = []reflect.Kind{
+	reflect.Bool, reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+	reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Float32, reflect.Float64,
+}
 
 // value walks v, which stands at path and is declared by declaring: a map with string keys is
 // walked key by key through the value each key holds, since its type names no key, and any other
@@ -319,18 +316,17 @@ func (w *payloadWalk) walkType(typ reflect.Type, path, declaring string) {
 		w.refuse(path, declaring, typ.String()+", which encodes itself")
 		return
 	}
-	switch typ.Kind() {
-	case reflect.String:
+	switch kind := typ.Kind(); {
+	case kind == reflect.String:
 		w.strings[path] = declaring
-	case reflect.Bool, reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
-		reflect.Uint, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Float32, reflect.Float64:
-	case reflect.Slice, reflect.Array:
+	case slices.Contains(scalarKinds, kind):
+	case kind == reflect.Slice, kind == reflect.Array:
 		if typ.Elem().Kind() == reflect.Uint8 {
 			w.refuse(path, declaring, "bytes, which encode as a string the walk cannot classify by its type")
 			return
 		}
 		w.walkType(typ.Elem(), path+"[]", declaring)
-	case reflect.Struct:
+	case kind == reflect.Struct:
 		if slices.Contains(w.within, typ) {
 			w.refuse(path, declaring, typ.String()+", which holds itself")
 			return
@@ -339,7 +335,7 @@ func (w *payloadWalk) walkType(typ reflect.Type, path, declaring string) {
 		w.fields(typ, path)
 		w.within = w.within[:len(w.within)-1]
 	default:
-		w.refuse(path, declaring, "a "+typ.Kind().String()+" ("+typ.String()+"), whose keys or encoding the walk cannot read")
+		w.refuse(path, declaring, "a "+kind.String()+" ("+typ.String()+"), whose keys or encoding the walk cannot read")
 	}
 }
 
@@ -371,14 +367,10 @@ func (w *payloadWalk) fields(typ reflect.Type, path string) {
 			name = field.Name
 		}
 		at := keyPath(path, name)
-		if slices.Contains(strings.Split(options, ","), "string") {
+		if slices.Contains(strings.Split(options, ","), "string") && slices.Contains(scalarKinds, field.Type.Kind()) {
 			// The string option encodes a number or a bool as a JSON string.
-			switch field.Type.Kind() {
-			case reflect.Bool, reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
-				reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Float32, reflect.Float64:
-				w.strings[at] = typ.String()
-				continue
-			}
+			w.strings[at] = typ.String()
+			continue
 		}
 		w.walkType(field.Type, at, typ.String())
 	}

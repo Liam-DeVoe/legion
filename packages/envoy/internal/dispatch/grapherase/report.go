@@ -106,9 +106,9 @@ type Erasure struct {
 	Rows []ErasedRows `json:"rows"`
 	// RedactedRows are the rows that derive from the node and that the run rewrote where it may
 	// take no row away: an excerpt of a block holding it, the append-only event log, the one
-	// stored update its document's replaced history is seeded with, and the search vectors and
-	// embedding rows written again from the latest version left. Each that held the bytes holds
-	// the marker where they were.
+	// stored update its document's replaced history is seeded with, the search vectors and
+	// embedding rows written again from the latest version left, and the related-item checks
+	// whose terms it emptied. Each text that held the bytes holds the marker where they were.
 	RedactedRows []ErasedRows `json:"redacted"`
 	// Versions and Reviews are the versions of the node's own document whose markdown holds the
 	// erased text and the approvals whose digest covered those bytes.
@@ -162,19 +162,6 @@ type Erasure struct {
 	// one a read that began before the commit stored back inside the window it waits out, or one
 	// holding a text node of an erased text that was stored after the search before the locks.
 	Swept int64 `json:"-"`
-	// sums are the keys of the display trees the run deleted in its transaction: those of its
-	// texts (treeSums) and those the search before the locks found holding a text node of the
-	// node's (erasedRead.heldTrees). They are held here and nowhere else - no row, no record, no
-	// log - since each is the digest of an erased text, and they go with the process once the
-	// sweep has read them.
-	sums [][]byte
-	// needles are the text nodes of the erased texts as a stored display tree spells them, by
-	// which the sweep after the commit deletes trees where an event of the node carried a body it
-	// cut (treeNeedles). They are held as the sums are, and for the same reason.
-	needles [][]byte
-	// underLocks bounds the read of the events about the node that a confirmed run makes under its
-	// locks (readEvents); nil for every other read, which reads every event.
-	underLocks *eventsUnderLocks
 }
 
 // Mismatch reports whether a confirmed run read a listing other than the one its --confirm

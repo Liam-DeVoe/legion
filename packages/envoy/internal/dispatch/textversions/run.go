@@ -93,7 +93,9 @@ type Config struct {
 // Before each batch it asks the answers reads' pause (pauser), and each batch checks in its own
 // transaction that the hold is still this holder's (filler.batch). Once the hold is lost it
 // writes nothing more and stands by again. A pass that fails is tried again 1 s later, doubling
-// to a minute, with its error logged each time.
+// to a minute, with its error logged each time. A pass held back at the cursor row by another
+// transaction, as an erase holds it until it commits (HoldFillBack), is no failure: it says so at
+// Info and is tried again 1 s later each time.
 //
 // When ctx ends the batch in flight commits or rolls back, and the holder releases its hold, so
 // a standby takes it at once, before Run returns. Run answers an error only for a Config it cannot
@@ -140,13 +142,14 @@ func newRunner(cfg Config) (*runner, error) {
 	return &runner{cfg: cfg, fill: fill}, nil
 }
 
-// The lines the hold logs.
+// The lines the fill logs under its hold.
 const (
 	tookHoldMessage     = "dispatch: the keyword fill took its hold; this process fills the keyword table"
 	standingByMessage   = "dispatch: another process holds the keyword fill's hold; standing by"
 	lostHoldMessage     = "dispatch: the keyword fill's hold is lost; it writes nothing more and stands by"
 	releasedHoldMessage = "dispatch: the keyword fill released its hold"
 	caughtUpMessage     = "dispatch: the keyword fill is caught up"
+	heldBackMessage     = "dispatch: the keyword fill waits for a transaction that holds its cursor, such as an erase; it tries again"
 )
 
 // run waits for the process to serve, then stands by and fills under the hold in turn until ctx
@@ -215,8 +218,13 @@ func (r *runner) tryHold(ctx context.Context) (*duty.Hold, error) {
 // then one each time cfg.Events is signalled, and while the horizon stands below an id a read of
 // it saw (filler.heldBelow) one 1 s later, doubling to 8 s, as FillToHorizon reads it. A pass that
 // fails is followed by another 1 s later, doubling to failRetryMax, and the events do not hurry
-// it. Everything runs on a context the hold's loss ends, so a batch in flight as the hold is lost
-// rolls back, and a pause or a rest ends there.
+// it. A pass whose batch waited past its lock_timeout at the cursor row (errCursorHeld) is held
+// back by a transaction that holds the row, as an erase does until it commits: that is no
+// failure, so it is logged at Info and followed by another rereadFirst later each time, with no
+// doubling, since a wait doubled toward failRetryMax would leave the fill up to a minute behind
+// an erase once it ends; the events do not hurry it either, since a pass they start waits at the
+// same row. Everything runs on a context the hold's loss ends, so a batch in flight as the hold
+// is lost rolls back, and a pause or a rest ends there.
 func (r *runner) fillUnder(ctx context.Context, hold *duty.Hold) {
 	held, stop := context.WithCancel(ctx)
 	defer stop()
@@ -240,11 +248,15 @@ func (r *runner) fillUnder(ctx context.Context, hold *duty.Hold) {
 		}
 		var due time.Duration
 		woken := true
-		if err != nil {
+		switch {
+		case errors.Is(err, errCursorHeld):
+			r.fill.logger.Info(heldBackMessage, "retry_in", rereadFirst, "error", err)
+			due, woken = rereadFirst, false
+		case err != nil:
 			r.fill.logger.Error("dispatch: the keyword fill's pass failed; it tries again", "retry_in", failWait, "error", err)
 			due, woken = failWait, false
 			failWait = min(2*failWait, failRetryMax)
-		} else {
+		default:
 			failWait = rereadFirst
 			r.caughtUp(held)
 			if r.fill.heldBelow(safe) {

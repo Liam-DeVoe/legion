@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/textversions/textversionstest"
+	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/pglisten"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -203,6 +204,71 @@ func TestACaughtUpFillSendsNoStatement(t *testing.T) {
 	storetest.RequireNoStatements(t, &tracer.others, 10*time.Second, "a fill caught up with nothing written")
 	if tracer.renewals.Load() == renewed {
 		t.Errorf("the hold was not renewed over 10 s; want its renewal every %v", holdOptions.Renew)
+	}
+}
+
+// TestAFillHeldAtItsCursorWaitsAtInfoAndWritesOnceTheHoldEnds holds the fill's cursor row in a
+// transaction of the test's own, as an erase holds it until it commits (HoldFillBack), with a
+// comment written and the fill woken. Each batch takes that row `for update` under a 5 s
+// lock_timeout (batchBoundsQuery), so each pass gives up there. The fill must say at Info that it
+// waits for a transaction holding its cursor and try again rereadFirst later, twice in a row with
+// no doubling, log no error, and write no row of the comment while the hold stands. Once the hold
+// ends the comment's row comes within 10 s. A fill that read the lock's timeout as a failure would
+// log it at ERROR and wait 1 s, then 2 s, doubling toward a minute.
+func TestAFillHeldAtItsCursorWaitsAtInfoAndWritesOnceTheHoldEnds(t *testing.T) {
+	database := storetest.Open(t)
+	textversionstest.SeedIssue(t, database)
+	broker := events.NewBroker()
+	fill := startFill(t, storetest.SecondProcess(t, database), nil, true)
+	awaitLiveHolder(t, database, 10*time.Second)
+	// The fill writes a first comment, so its cursor row stands for the hold to take.
+	first := commitComment(t, database, broker, textversionstest.Issue).id
+	fill.Wake()
+	textversionstest.AwaitRows(t, database, []int64{first}, 30*time.Second, nil)
+
+	ctx := context.Background()
+	hold, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the transaction that holds the fill back: %v", err)
+	}
+	defer func() { _ = hold.Rollback(context.Background()) }()
+	if err := HoldFillBack(ctx, hold); err != nil {
+		t.Fatalf("hold the fill back: %v", err)
+	}
+	held := commitComment(t, database, broker, textversionstest.Issue).id
+	fill.Wake()
+	// Each pass waits out the 5 s lock_timeout, and the next starts rereadFirst after the one
+	// before gave up, so two lines come within about 12 s.
+	if !testwait.Holds(30*time.Second, 50*time.Millisecond, func() bool { return len(fill.Lines(t, heldBackMessage)) >= 2 }) {
+		t.Fatalf("while a transaction held its cursor for 30 s the fill logged %d %q lines, want at least 2:\n%s",
+			len(fill.Lines(t, heldBackMessage)), heldBackMessage, fill.Log())
+	}
+	requireHeldBackAtInfo(t, fill)
+	if rows := textversionstest.RowsOf(t, database, held); rows != 0 {
+		t.Fatalf("while a transaction held its cursor the fill wrote %d rows of event %d, want none", rows, held)
+	}
+
+	if err := hold.Rollback(ctx); err != nil {
+		t.Fatalf("end the transaction that holds the fill back: %v", err)
+	}
+	textversionstest.AwaitRows(t, database, []int64{held}, 10*time.Second, nil)
+	requireHeldBackAtInfo(t, fill)
+}
+
+// requireHeldBackAtInfo holds the lines fill logged to no error, and each line that says the fill
+// waits for a transaction holding its cursor to Info and a retry rereadFirst later, which slog's
+// JSON handler writes as nanoseconds.
+func requireHeldBackAtInfo(t *testing.T, fill *fillProcess) {
+	t.Helper()
+	for _, line := range logtest.JSONLines(t, fill.Log()) {
+		switch {
+		case line["level"] == slog.LevelError.String():
+			t.Errorf("while a transaction held its cursor the fill logged an error: %v", line)
+		case line["msg"] != heldBackMessage:
+		case line["level"] != slog.LevelInfo.String() || line["retry_in"] != float64(rereadFirst):
+			t.Errorf("the fill logged %q at %v with a retry in %v ns, want Info and %d ns (rereadFirst)",
+				heldBackMessage, line["level"], line["retry_in"], rereadFirst.Nanoseconds())
+		}
 	}
 }
 

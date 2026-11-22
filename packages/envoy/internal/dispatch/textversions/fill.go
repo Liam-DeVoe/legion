@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
@@ -252,9 +253,10 @@ type batchResult struct {
 
 // The statements of a batch's transaction (filler.batch) but its read of the events.
 const (
-	// batchBoundsQuery bounds the batch's transaction: a lock it waits 5 s for at most, a pause
-	// between its statements of 10 s at most, which ends the transaction of a holder frozen
-	// inside a batch and so frees the cursor row, and each statement's time ($1).
+	// batchBoundsQuery bounds the batch's transaction: a lock it waits 5 s for at most, which at
+	// the cursor row reads as the fill held back (errCursorHeld), a pause between its statements
+	// of 10 s at most, which ends the transaction of a holder frozen inside a batch and so frees
+	// the cursor row, and each statement's time ($1).
 	batchBoundsQuery = `select set_config('lock_timeout', '5s', true),
 	       set_config('idle_in_transaction_session_timeout', '10s', true),
 	       set_config('statement_timeout', $1, true)`
@@ -533,24 +535,28 @@ func RestateIssueVectors(ctx context.Context, tx pgx.Tx, issue, artifact string,
 // flight commits before HoldFillBack returns, and every batch after it waits at the row until tx
 // ends. The erase calls it before it reads the rows it removes, so it reads every row a batch
 // committed, and no batch that read the erased text before the erase commits writes it back after.
-// Where no row is, it creates one at no event with no holder (createCursorQuery), as a batch would:
-// with no row, a first batch and the erase would lock nothing. A row a reset emptied and wrote
-// again while the lock waited is gone from the lock's snapshot, so it is read again, as lockCursor
-// reads it.
+// It takes the row as lockCursor does (takeCursor): where no row is, it creates one at no event
+// with no holder, as a batch would, since with no row a first batch and the erase would lock
+// nothing. A batch that waits at the row past its lock_timeout reads as held back, not as a
+// failure (errCursorHeld).
 func HoldFillBack(ctx context.Context, tx pgx.Tx) error {
-	for attempt := 0; ; attempt++ {
-		var cursor int64
-		err := tx.QueryRow(ctx, holdCursorQuery).Scan(&cursor)
-		switch {
-		case err == nil:
-			return nil
-		case !errors.Is(err, pgx.ErrNoRows) || attempt > 0:
-			return fmt.Errorf("keyword fill: hold the fill back at its cursor: %w", err)
-		}
-		if _, err := tx.Exec(ctx, createCursorQuery, nil, rulesVersion); err != nil {
-			return fmt.Errorf("keyword fill: create the cursor to hold the fill back at: %w", err)
-		}
+	var cursor int64
+	if err := takeCursor(ctx, tx, holdCursorQuery, nil, &cursor); err != nil {
+		return fmt.Errorf("keyword fill: hold the fill back at its cursor: %w", err)
 	}
+	return nil
+}
+
+// WritesRowsOf reports whether the fill writes rows of the keyword table of an item of kind, each
+// row keyed by the item's kind and id (version.Kind, version.ID): an issue, a comment, a message
+// or an ask. The table holds no row of any other kind, so an erase of a node of another kind
+// deletes no row of its own there.
+func WritesRowsOf(kind string) bool {
+	switch kind {
+	case kindIssue, kindComment, kindMessage, kindAsk:
+		return true
+	}
+	return false
 }
 
 // insertVersions writes versions as rows of the keyword table in tx, in one statement
@@ -583,20 +589,42 @@ func insertVersions(ctx context.Context, tx pgx.Tx, versions []version) error {
 	return nil
 }
 
-// lockCursor locks the cursor row for tx, creating it at no event where none is, and answers the
-// cursor, the created_at of the event at it, and the reach stored. A row a reset emptied and wrote
-// again while this lock waited is gone from the lock's snapshot, so it is read again.
+// errCursorHeld is a batch's lock of the cursor row that the batch's lock_timeout ended
+// (lock_not_available, SQLSTATE 55P03; batchBoundsQuery): another transaction holds the row, as
+// an erase holds it `for share` until it commits (HoldFillBack). The fill is held back, not
+// failing, and tries again once the holder may have ended (runner.fillUnder).
+var errCursorHeld = errors.New("a transaction holds the cursor, as an erase does until it commits")
+
+// lockCursor locks the cursor row for tx, creating it at no event where none is (takeCursor), and
+// answers the cursor, the created_at of the event at it, and the reach stored. A lock that waited
+// past the batch's lock_timeout, at the row or at the create of one another transaction created
+// and has not committed, answers errCursorHeld beside Postgres's error.
 func (f *filler) lockCursor(ctx context.Context, tx pgx.Tx) (cursor int64, cursorAt, reach *time.Time, err error) {
+	err = takeCursor(ctx, tx, lockCursorQuery, f.holderArg(), &cursor, &cursorAt, &reach)
+	if pgErr := (*pgconn.PgError)(nil); errors.As(err, &pgErr) && pgErr.Code == "55P03" {
+		return 0, nil, nil, fmt.Errorf("keyword fill: lock the cursor: %w: %w", errCursorHeld, err)
+	}
+	if err != nil {
+		return 0, nil, nil, fmt.Errorf("keyword fill: lock the cursor: %w", err)
+	}
+	return cursor, cursorAt, reach, nil
+}
+
+// takeCursor reads the cursor row in tx with query, which locks it, into dest, creating the row
+// at no event for holder where none is (createCursorQuery), as a first batch does. A row a reset
+// emptied and wrote again while the lock waited is gone from the lock's snapshot, so it is read
+// again, once. lockCursor and HoldFillBack both take the row through it, each with its own lock.
+func takeCursor(ctx context.Context, tx pgx.Tx, query string, holder any, dest ...any) error {
 	for attempt := 0; ; attempt++ {
-		err = tx.QueryRow(ctx, lockCursorQuery).Scan(&cursor, &cursorAt, &reach)
+		err := tx.QueryRow(ctx, query).Scan(dest...)
 		switch {
 		case err == nil:
-			return cursor, cursorAt, reach, nil
+			return nil
 		case !errors.Is(err, pgx.ErrNoRows) || attempt > 0:
-			return 0, nil, nil, fmt.Errorf("keyword fill: lock the cursor: %w", err)
+			return err
 		}
-		if _, err := tx.Exec(ctx, createCursorQuery, f.holderArg(), rulesVersion); err != nil {
-			return 0, nil, nil, fmt.Errorf("keyword fill: create the cursor: %w", err)
+		if _, err := tx.Exec(ctx, createCursorQuery, holder, rulesVersion); err != nil {
+			return fmt.Errorf("create the cursor: %w", err)
 		}
 	}
 }

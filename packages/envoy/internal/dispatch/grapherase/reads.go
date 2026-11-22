@@ -78,12 +78,11 @@ type erasedRead struct {
 	// under them by key, so no read of every tree runs while the run holds its owners' writers.
 	heldTrees [][]byte
 	embedded  []embeddingRow
-	owners    events.OwnerRows
-	// termTotals are the projects whose term statistics totals row a confirmed run took before
-	// its owner locks (ownerProjects, api.TakeErasedTermTotalsTx), which api.ForgetErasedTermsTx
-	// then takes no wait for.
-	termTotals []string
-	listing    listing
+	// relatedChecks are the ids of the related-item checks whose terms derive from the node and
+	// that apply clears (readRelatedChecks, clearRelatedCheckTerms).
+	relatedChecks []string
+	owners        events.OwnerRows
+	listing       listing
 }
 
 // read reads the node as the erase would remove it and every row that derives from it
@@ -93,7 +92,7 @@ type erasedRead struct {
 // reads it in two: the search first, in a read-only transaction of its own that takes no lock
 // (searchLeft), and the rest once it holds its locks (lockOwnersThenNode).
 func (e *Erasure) read(ctx context.Context, tx pgx.Tx) (erasedRead, error) {
-	read, err := e.readDerived(ctx, tx)
+	read, err := e.readDerived(ctx, tx, nil)
 	if err != nil {
 		return erasedRead{}, err
 	}
@@ -106,17 +105,21 @@ func (e *Erasure) read(ctx context.Context, tx pgx.Tx) (erasedRead, error) {
 
 // readDerived reads the node as the erase would remove it and every row that derives from it,
 // with the owner rows those stand under: all of the listing but the rows the run leaves. It
-// locks nothing and writes nothing.
+// locks nothing and writes nothing. bound bounds its read of the events about the node
+// (readEvents): the one a confirmed run makes under its locks passes it, and every other read
+// passes nil and reads every event.
 //
 // What derives from a node is fixed by the node, never by a search for its bytes: its tuples,
 // its projection rows and the rows that cannot exist without them, its own embedding rows and
 // keyword versions and the events about it, for a block its own document's versions, editing
-// state, search rows and windows and the excerpts cut from it, and for a comment the editing state
-// of every document whose margin record holds its body (marginDocuments). A row anywhere else
-// that holds the same bytes derives from another node - another issue's spec quoting a comment's
-// `Yes`, another person's comment, a sibling block of the same document - and is that node's text:
-// the run lists it (readLeft) and changes nothing in it.
-func (e *Erasure) readDerived(ctx context.Context, tx pgx.Tx) (erasedRead, error) {
+// state, search rows and windows and the excerpts cut from it, for a comment the editing state
+// of every document whose margin record holds its body (marginDocuments), for a decision block
+// the terms of its related-item checks, and for a block of an issue's spec those of the issue's
+// own check (readRelatedChecks). A row anywhere else that holds the same bytes derives from another
+// node - another issue's spec quoting a comment's `Yes`, another person's comment, a sibling block
+// of the same document - and is that node's text: the run lists it (readLeft) and changes nothing
+// in it.
+func (e *Erasure) readDerived(ctx context.Context, tx pgx.Tx, bound *eventsUnderLocks) (erasedRead, error) {
 	var read erasedRead
 	if err := tx.QueryRow(ctx, `select supertag from graph_nodes where kind = $1 and id = $2`,
 		e.Kind, e.ID).Scan(&e.Supertag); err != nil {
@@ -151,9 +154,12 @@ func (e *Erasure) readDerived(ctx context.Context, tx pgx.Tx) (erasedRead, error
 	if read.project, err = e.nodeProject(ctx, tx, read.document); err != nil {
 		return erasedRead{}, err
 	}
+	readEvents := func(ctx context.Context, tx pgx.Tx, read *erasedRead) error {
+		return e.readEvents(ctx, tx, read, bound)
+	}
 	for _, step := range []func(context.Context, pgx.Tx, *erasedRead) error{
 		e.readTuples, e.readRows, e.readAncestors, e.readVersions, e.readReviews, e.readEmbeddings,
-		e.readSearch, e.readExcerpts, e.readEvents, e.readHistory, e.readBlockers,
+		e.readSearch, e.readRelatedChecks, e.readExcerpts, readEvents, e.readHistory, e.readBlockers,
 	} {
 		if err := step(ctx, tx, &read); err != nil {
 			return erasedRead{}, err
@@ -721,6 +727,81 @@ func (e *Erasure) readReviews(ctx context.Context, tx pgx.Tx, read *erasedRead) 
 	return nil
 }
 
+// readRelatedChecks lists the related-item checks whose terms derive from the node, each of which
+// apply rewrites with no terms (clearRelatedCheckTerms). A check of a decision block records in
+// related_checks.terms the lexemes its keyword search picked from the block's question (api's
+// decisionBlockChecks), so those lexemes are the block's text, stemmed. A search for the erased
+// bytes finds them only where a text is spelled inside a lexeme - `approv` is no part of
+// `approved` - so they are read by the check's source, which names the block. The row stays: its
+// other columns are the check's outcome, its counts and its times, which the records route
+// reports, and none of them holds text of the node. A check that holds no terms, as one its route
+// decided not to make holds none (relatedCheckNotRun), holds nothing of the node and is not
+// listed.
+//
+// A decision block's check is keyed by the block's id and by its document's issue, or by the
+// document where no issue owns it (api's recordRelatedChecks). The read takes a row keyed by
+// either, since a row keyed by the document is a check of this document's block. The issue's key
+// names no document, so a block of another document of the same issue with the same block id is
+// read as well, and the run clears that check's terms too: it errs toward erasing, as R5's rule
+// for an ambiguous value does. A block whose document no row holds any longer reads none: a check
+// keyed by that document went with it (the key cascades), and the issue the document belonged to
+// is not known.
+//
+// An issue's own check, made when the issue was created (api's createIssue), picks its terms from
+// the issue's title and its spec together, so no lexeme of it can be told to come from one block
+// of the spec: a block of the issue's spec - a document that is its issue's primary one
+// (ownDocument.spec) - empties that check's terms as well. A check of another issue, and the
+// issue's check where the block's document is not its spec, derive from other text, and stay.
+//
+// No ask's check is read: an ask is no node this erase takes, and a check of an ask goes with the
+// ask's row, since its key cascades.
+//
+// The reads probe related_checks by the block's id (related_checks_source_block) and, among the
+// issues' own checks, by the issue's key (related_checks_source_issue), so neither reads the table
+// whole under the run's locks (TestTheRelatedChecksReadsProbeTheirSourceIndexes).
+func (e *Erasure) readRelatedChecks(ctx context.Context, tx pgx.Tx, read *erasedRead) error {
+	if read.document == nil {
+		return nil
+	}
+	// checksOf is one source whose checks the run empties, as a predicate over a related_checks row
+	// named held and the arguments it binds.
+	type checksOf struct {
+		where string
+		args  []any
+	}
+	sources := []checksOf{{
+		where: `held.source_kind = 'decision_block' and held.source_block_id = $1
+		  and (held.source_issue_key = $2 or held.source_artifact_id = $3::uuid)`,
+		args: []any{read.blockID, read.document.issue, read.document.artifact},
+	}}
+	if issue := read.document.specIssue(); issue != "" {
+		sources = append(sources, checksOf{where: `held.source_kind = 'issue' and held.source_issue_key = $1`, args: []any{issue}})
+	}
+	for _, source := range sources {
+		rows, err := tx.Query(ctx, `
+			select held.id::text, 'rewrite related_checks.terms of ' || held.source_kind || ' check ' || held.id::text
+			from related_checks held
+			where `+source.where+` and cardinality(held.terms) > 0
+			order by held.created_at, held.id`, source.args...)
+		if err != nil {
+			return fmt.Errorf("read the related-item checks of %s:%s: %w", e.Kind, e.ID, err)
+		}
+		checks, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) ([2]string, error) {
+			var check [2]string
+			err := row.Scan(&check[0], &check[1])
+			return check, err
+		})
+		if err != nil {
+			return fmt.Errorf("read the related-item checks of %s:%s: %w", e.Kind, e.ID, err)
+		}
+		for _, check := range checks {
+			read.relatedChecks = append(read.relatedChecks, check[0])
+			read.listing.search = append(read.listing.search, check[1])
+		}
+	}
+	return nil
+}
+
 // readHistory lists the stored history of every document the run replaces whole with one seed of
 // its live state (docs.ErasedLiveText): the node's own document, and for a comment every document
 // whose margin record holds its body (marginDocuments). A text typed piece by piece can be stored
@@ -808,246 +889,5 @@ func (e *Erasure) readLiveTexts(ctx context.Context, tx pgx.Tx, read erasedRead)
 		document.Held, document.Left = live.Held, live.Left
 		document.AnchorMarks, document.MarginRecords = live.AnchorMarks, live.MarginRecords
 	}
-	return nil
-}
-
-// ownerRows reads the owner row of every row the erase writes that another writer writes under an
-// owner: the node's projection rows stand under their owner (nodeOwners), a block's own
-// document - its versions and reviews, its search rows, its history, its windows, its excerpts -
-// under that document's issue, or the document's own artifacts row where no issue owns it, and
-// every document whose margin holds a comment's body under its own owner the same way, since the
-// run replaces that document's history. The rest of what the erase writes is owed no owner row,
-// since none of its other writers takes one: an event payload already written (the outbox's
-// record of what it published takes no owner row), a tuple, which is appended once and never
-// written again, the keyword versions, whose writer, the keyword fill, the run holds back by its
-// cursor row instead (textversions.HoldFillBack), the term statistics, the display trees, and the
-// node's own row. It reads no graph_nodes, graph_tuples or events row, so lockOwnersThenNode reads
-// it before it holds anything. Beside the owners it answers the id of every document it read
-// those through, every owner document among them, whose projects ownerProjects reads.
-func (e *Erasure) ownerRows(ctx context.Context, tx pgx.Tx) (events.OwnerRows, []string, error) {
-	owners, documents, err := nodeOwners(ctx, tx, e.Kind, e.ID)
-	if err != nil {
-		return nil, nil, err
-	}
-	document, _, err := e.ownDocument(ctx, tx)
-	if err != nil {
-		return nil, nil, err
-	}
-	if document != nil {
-		owners.Add(document.issue, document.artifact, "document "+document.refKey)
-		documents = append(documents, document.artifact)
-	}
-	margins, err := e.marginDocuments(ctx, tx)
-	if err != nil {
-		return nil, nil, err
-	}
-	for _, margin := range margins {
-		owners.Add(margin.issue, margin.artifact, "document "+margin.refKey)
-		documents = append(documents, margin.artifact)
-	}
-	return owners, documents, nil
-}
-
-// ownerProjects reads, in key order, the projects whose term statistics totals row a confirmed
-// run takes before its owner locks (api.TakeErasedTermTotalsTx): the project of each owner issue
-// (issues.project_key) and of each document ownerRows read (artifacts.project_key), every owner
-// document among them. Those are the projects of every item the run changes, which the term
-// statistics count by the item's issue else its document.
-//
-// A document's own project is read beside its issue's because nothing in the schema holds the
-// two equal. Every writer of this tree writes a document of an issue with its issue's project
-// (api's storeArtifact and createIssue, cmd/dispatch-seed) and nothing moves either one
-// (api/project_scope.go), but artifacts carries no constraint or trigger tying its project_key to
-// its issue's, so a row written by any other path can name another project, and a comment on that
-// document, or its search row, is counted in that project's statistics.
-func (e *Erasure) ownerProjects(ctx context.Context, tx pgx.Tx, owners events.OwnerRows, documents []string) ([]string, error) {
-	issues, _ := owners.Owners()
-	rows, err := tx.Query(ctx, `
-		select project_key from issues where key = any($1::text[])
-		union
-		select project_key from artifacts where id = any($2::uuid[]) and project_key is not null
-		order by 1`, issues, documents)
-	if err != nil {
-		return nil, fmt.Errorf("read the projects of the owners of %s:%s: %w", e.Kind, e.ID, err)
-	}
-	projects, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
-		return nil, fmt.Errorf("read the projects of the owners of %s:%s: %w", e.Kind, e.ID, err)
-	}
-	return projects, nil
-}
-
-// nodeOwners reads the owner row each projection row of the node stands under: an issue's own
-// comment stands under the issue, and every other row under the owner of the document it belongs
-// to, which is that document's issue or, for a document no issue owns, the document's own
-// artifacts row - the owner docs' lockArtifactOwner finds and events.LockOwnerRows takes. A node
-// no row projects stands under none. Beside the owners it answers the id of each document a
-// projection row belongs to.
-func nodeOwners(ctx context.Context, tx pgx.Tx, kind, id string) (events.OwnerRows, []string, error) {
-	arms := make([]string, len(graphstore.ProjectedTables))
-	for index, held := range graphstore.ProjectedTables {
-		issue := "null::text"
-		if held.Issue != "" {
-			issue = held.Issue
-		}
-		arms[index] = `select ` + issue + `, artifact_id from ` + held.Table + ` where node_kind = $1 and node_address = $2`
-	}
-	rows, err := tx.Query(ctx, `
-		select coalesce(held.issue_key, a.issue_key, ''), coalesce(a.id::text, '')
-		from (`+strings.Join(arms, " union all ")+`) as held (issue_key, artifact_id)
-		left join artifacts a on a.id = held.artifact_id`, kind, id)
-	if err != nil {
-		return nil, nil, fmt.Errorf("read the owners of %s:%s: %w", kind, id, err)
-	}
-	held, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) ([2]string, error) {
-		var owner [2]string
-		err := row.Scan(&owner[0], &owner[1])
-		return owner, err
-	})
-	if err != nil {
-		return nil, nil, fmt.Errorf("read the owners of %s:%s: %w", kind, id, err)
-	}
-	owners := events.OwnerRows{}
-	var documents []string
-	for _, owner := range held {
-		owners.Add(owner[0], owner[1], kind+":"+id)
-		if owner[1] != "" {
-			documents = append(documents, owner[1])
-		}
-	}
-	return owners, documents, nil
-}
-
-// referencingColumn is one foreign key pointing at a projected table: the table and column that
-// hold the reference, the column they hold, and whether that reference can be null.
-type referencingColumn struct {
-	Table, Column, Referenced string
-	Required                  bool
-}
-
-// referencesTo reads every single-column foreign key pointing at one table. The composite key a
-// projection carries to graph_nodes is not one of them, which is why the read binds a key of one
-// column: that pair is the node's own address and goes with the node.
-func referencesTo(ctx context.Context, tx pgx.Tx, table string) ([]referencingColumn, error) {
-	rows, err := tx.Query(ctx, `
-		select c.conrelid::regclass::text, child.attname, parent.attname, child.attnotnull
-		from pg_constraint c
-		join pg_attribute child on child.attrelid = c.conrelid and child.attnum = c.conkey[1]
-		join pg_attribute parent on parent.attrelid = c.confrelid and parent.attnum = c.confkey[1]
-		where c.contype = 'f' and c.confrelid = $1::regclass and array_length(c.conkey, 1) = 1
-		order by 1, 2`, table)
-	if err != nil {
-		return nil, fmt.Errorf("read the foreign keys into %s: %w", table, err)
-	}
-	references, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (referencingColumn, error) {
-		var reference referencingColumn
-		err := row.Scan(&reference.Table, &reference.Column, &reference.Referenced, &reference.Required)
-		return reference, err
-	})
-	if err != nil {
-		return nil, fmt.Errorf("read the foreign keys into %s: %w", table, err)
-	}
-	return references, nil
-}
-
-// projectionRows is the select of one projection's key column, which every delete against a row
-// that points at it is written over.
-func projectionRows(reference referencingColumn, table string) string {
-	return `select held.` + reference.Referenced + ` from ` + table +
-		` held where held.node_kind = $1 and held.node_address = $2`
-}
-
-// readBlockers names every live row of another node that states something about this one, each
-// of which refuses the run, so an operator erases or edits those first and the store census
-// still reads zero once the erase runs.
-//
-// Three kinds of row do. A row that points at this node's projection through a nullable
-// reference: a reply whose reply_to names an erased comment is somebody else's words, and an ask
-// handed back through it is the ask's own history, so the erase neither deletes one nor rewrites
-// the other. A projection row of another live node whose node states a tuple into this one now: a
-// block inside an erased block (its part_of and its parent_block_id), a block that cites it (its
-// mentions or pointer tuple and its block_refs row), a comment its author is (its authored_by and
-// its author). The erase deletes the tuples into the node, so such a row would go on stating a
-// tuple the store no longer holds, which is a difference `census --store` reads. And, for a
-// person, a comments row that names them as the owner of the session the server proved that wrote
-// it (graphcensus.ProvedSessionComments, the census's own reading of that row): its authored_by
-// names the session and only the session's alias_of names the person, and a session has no
-// projection row, so the read before finds no such row, but the census names the person from the
-// comment's row and would read her node gone while that row stands.
-//
-// Each node stating a tuple into this one probes its own row through graph_nodes' primary key,
-// in a subquery behind an offset 0 the planner cannot flatten, so no plan reads graph_nodes
-// again for each such tuple. The tuples are read through graph_tuples_as_of_in, whose predicate
-// the read proves by naming `to_kind <> 'value'` (a value is no node, so nothing points into
-// one), so a plan cached without the node's kind still reaches that index
-// (TestTheBlockersReadProbesEachStatingNodeOnce).
-func (e *Erasure) readBlockers(ctx context.Context, tx pgx.Tx, read *erasedRead) error {
-	for _, held := range graphstore.ProjectedTables {
-		references, err := referencesTo(ctx, tx, held.Table)
-		if err != nil {
-			return err
-		}
-		for _, reference := range references {
-			if reference.Required {
-				continue
-			}
-			var rows int64
-			if err := tx.QueryRow(ctx, `select count(*) from `+reference.Table+` child where child.`+
-				reference.Column+` in (`+projectionRows(reference, held.Table)+`)`, e.Kind, e.ID).Scan(&rows); err != nil {
-				return fmt.Errorf("count the %s.%s rows at %s:%s: %w", reference.Table, reference.Column, e.Kind, e.ID, err)
-			}
-			if rows > 0 {
-				e.Blockers = append(e.Blockers, fmt.Sprintf("%d %s row(s) point at this node through %s.%s",
-					rows, reference.Table, reference.Table, reference.Column))
-			}
-		}
-	}
-	projected := make([]string, len(graphstore.ProjectedTables))
-	for index, held := range graphstore.ProjectedTables {
-		projected[index] = `exists (select 1 from ` + held.Table + ` p where p.node_kind = t.from_kind and p.node_address = t.from_id)`
-	}
-	rows, err := tx.Query(ctx, `
-		select t.from_kind, t.from_id, t.kind from (
-			`+graphstore.CurrentTupleRead(`t.from_kind, t.from_id, t.kind`, `t.from_kind, t.from_id, t.kind, t.asserted`,
-		`t.to_kind = $1 and t.to_id = $2 and t.to_kind <> '`+graphstore.KindValue+`'
-			and not (t.from_kind = $1 and t.from_id = $2)`)+`
-		) t
-		cross join lateral (
-			select n.state from graph_nodes n
-			where n.kind = t.from_kind and n.id = t.from_id
-			offset 0
-		) n
-		where n.state = $3 and t.asserted and (`+strings.Join(projected, " or ")+`)
-		order by 1, 2, 3`, e.Kind, e.ID, graphstore.StateLive)
-	if err != nil {
-		return fmt.Errorf("read the nodes stating a tuple into %s:%s: %w", e.Kind, e.ID, err)
-	}
-	stating, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (string, error) {
-		var fromKind, fromID, kind string
-		err := row.Scan(&fromKind, &fromID, &kind)
-		return fmt.Sprintf("%s:%s states %s into this node, and its own row says so: erase or edit it first",
-			fromKind, fromID, kind), err
-	})
-	if err != nil {
-		return fmt.Errorf("read the nodes stating a tuple into %s:%s: %w", e.Kind, e.ID, err)
-	}
-	e.Blockers = append(e.Blockers, stating...)
-	if e.Kind == graphstore.KindPerson {
-		rows, err := tx.Query(ctx, graphcensus.ProvedSessionComments, e.ID)
-		if err != nil {
-			return fmt.Errorf("read the comments naming %s:%s as the owner of the session that wrote them: %w", e.Kind, e.ID, err)
-		}
-		naming, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (string, error) {
-			var comment string
-			err := row.Scan(&comment)
-			return fmt.Sprintf("%s:%s was written by a session the server proved this person's, and its own row names this person as that session's owner: erase it first",
-				graphstore.KindComment, comment), err
-		})
-		if err != nil {
-			return fmt.Errorf("read the comments naming %s:%s as the owner of the session that wrote them: %w", e.Kind, e.ID, err)
-		}
-		e.Blockers = append(e.Blockers, naming...)
-	}
-	read.listing.blockers = e.Blockers
 	return nil
 }

@@ -451,7 +451,11 @@ var commentWriterPeople = `
 // within the store's bound. Its `owner`, where it names one, is then the person the session
 // belongs to, whom the write that stored the actor ties to the session by an alias_of tuple and
 // makes a node of (graphstore.AuthorFacts). It is commentWriterPeople's second arm, spelled once
-// here so that the census and the erase (ProvedSessionComments) read one rule.
+// here so that the census and the erase (ProvedSessionComments) read one rule. Over c.author it is
+// also the predicate of comments_proved_session_owner (migration 20261119020600), which the
+// erase's read reaches comments through only where the read's own clauses prove that predicate:
+// a change that drops or widens one of these clauses needs a migration that changes the index
+// with it, and TestTheProvedSessionCommentsReadProbesThePersonsComments fails until one does.
 func provedSessionOwner(actor string) string {
 	return actor + `->>'kind' = 'session' and coalesce(` + actor + `->>'id', '') <> ''
 		  and ` + actor + `->'act'->>'session' = ` + actor + `->>'id'
@@ -466,6 +470,13 @@ func provedSessionOwner(actor string) string {
 // projects states a tuple into her: the comment's authored_by names the session, and only the
 // session's alias_of names her. The erase refuses a person while such a row stands (grapherase's
 // readBlockers), since the census would go on naming her from it once her node was gone.
+//
+// The erase reads it under its locks, so it reads comments through comments_proved_session_owner
+// (migration 20261119020600) by the person, and not the whole table: the index is partial on
+// provedSessionOwner's clauses and keys user_threads_login(author->>'owner'), the expression the
+// read compares with $1, written here as the index writes it. Postgres inlines that SQL function
+// on both sides, the query's and the index's, so the two still match
+// (TestTheProvedSessionCommentsReadProbesThePersonsComments).
 var ProvedSessionComments = `
 	select c.id::text from comments c` + refs.CommentStoreJoins + `
 	where ` + refs.CommentInTheStore + `

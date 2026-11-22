@@ -61,8 +61,10 @@ func ParseNode(value string) (kind, id string, err error) {
 // document - the versions at which its own block held the text and the approvals over them, the
 // document's editing state, its search rows, the keyword versions of its issue that name one of
 // those versions where it is the issue's spec, and its windows - and the excerpts cut from its
-// text, and for a comment the editing state of every document whose margin record holds its body.
-// The run deletes those, or rewrites them with the marker where it may take no row away. Every
+// text, for a comment the editing state of every document whose margin record holds its body, for
+// a decision block the terms of its related-item checks (related_checks.terms), and for a block of
+// an issue's spec the terms of the issue's own check. The run deletes those, or rewrites them with
+// the marker where it may take no row away, and empties a check's terms, keeping its row. Every
 // other row that holds the same bytes derives from another node and is that node's text - a
 // sibling block of the same document among them: the run lists it with its address and changes
 // nothing in it. An operator erases a comment's or a block's text by a run over that node; an
@@ -180,7 +182,8 @@ func Erase(ctx context.Context, databaseURL, kind, id, confirm string, treeStore
 	if len(erasure.Unredacted()) > 0 {
 		return erasure, nil
 	}
-	if err := erasure.apply(ctx, tx, read); err != nil {
+	trees, err := erasure.apply(ctx, tx, read)
+	if err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -189,7 +192,7 @@ func Erase(ctx context.Context, databaseURL, kind, id, confirm string, treeStore
 	erasure.Applied = true
 	erasure.recountTermStats(ctx, conn)
 	searched := erasure.searchLeftAfterCommit(ctx, conn, read)
-	swept := erasure.sweepTrees(ctx, conn, treeStoreBound)
+	swept := erasure.sweepTrees(ctx, conn, treeStoreBound, trees)
 	return erasure, errors.Join(searched, swept)
 }
 
@@ -201,40 +204,41 @@ func Erase(ctx context.Context, databaseURL, kind, id, confirm string, treeStore
 // on. Then it rewrites what it may not remove - the blocks holding the node's block and the
 // mentions whose excerpt was cut from it, the events about it, the search vectors that stood on
 // a version that went and the keyword vectors of its spec issue that did, once the node's own
-// keyword versions have gone (restateKeywordVersions), the embedding rows of what it leaves
+// keyword versions have gone (restateKeywordVersions), the terms of its related-item checks,
+// which it empties (clearRelatedCheckTerms), the embedding rows of what it leaves
 // (restateEmbeddings), and the live state of every document whose history it replaces - takes
 // out of the term statistics of every project whose items moved the lexemes the run removed
 // (api.ForgetErasedTermsTx, which reads no item but the ones the run changed, and waits on no
-// totals row the run took before its owner locks: counting those projects again is
-// recountTermStats's, after the commit), and deletes the display trees of the texts that went.
-// Last go the tuples the listing named and the node (graphstore.EraseNode), which refuses the run
-// where a tuple landed since, and the record of what the run did goes in.
-// Every row it writes is one the read under its locks listed (erasedRead).
-func (e *Erasure) apply(ctx context.Context, tx pgx.Tx, read erasedRead) error {
+// totals row the run took before its owner locks, which its transaction holds already: counting
+// those projects again is recountTermStats's, after the commit), and deletes the display trees of
+// the texts that went. Last go the tuples the listing named and the node (graphstore.EraseNode),
+// which refuses the run where a tuple landed since, and the record of what the run did goes in.
+// Every row it writes is one the read under its locks listed (erasedRead). It answers the keys and
+// the text nodes of the display trees it deleted, which the sweep after the commit deletes by once
+// more (treesToSweep).
+func (e *Erasure) apply(ctx context.Context, tx pgx.Tx, read erasedRead) (treesToSweep, error) {
 	sums, err := e.treeSums(ctx, tx, read)
 	if err != nil {
-		return err
+		return treesToSweep{}, err
 	}
 	// The keys the search before the locks found by text node go by key here, and the sweep
 	// after the commit reads every tree for those text nodes once more (treeKeysHolding).
 	sums = append(sums, read.heldTrees...)
-	e.sums = sums
 	needles, err := treeNeedles(read)
 	if err != nil {
-		return err
+		return treesToSweep{}, err
 	}
-	e.needles = needles
 	forgotten, err := e.forgetEmbeddings(ctx, tx, read)
 	if err != nil {
-		return err
+		return treesToSweep{}, err
 	}
 	if err := e.eraseBlockTexts(ctx, tx, read); err != nil {
-		return err
+		return treesToSweep{}, err
 	}
 	for _, held := range graphstore.ProjectedTables {
 		references, err := referencesTo(ctx, tx, held.Table)
 		if err != nil {
-			return err
+			return treesToSweep{}, err
 		}
 		for _, reference := range references {
 			if !reference.Required {
@@ -243,13 +247,13 @@ func (e *Erasure) apply(ctx context.Context, tx pgx.Tx, read erasedRead) error {
 			tag, err := tx.Exec(ctx, `delete from `+reference.Table+` child where child.`+reference.Column+
 				` in (`+projectionRows(reference, held.Table)+`)`, e.Kind, e.ID)
 			if err != nil {
-				return fmt.Errorf("delete the %s rows of %s:%s: %w", reference.Table, e.Kind, e.ID, err)
+				return treesToSweep{}, fmt.Errorf("delete the %s rows of %s:%s: %w", reference.Table, e.Kind, e.ID, err)
 			}
 			e.removed(reference.Table, tag.RowsAffected())
 		}
 		tag, err := tx.Exec(ctx, `delete from `+held.Table+` where node_kind = $1 and node_address = $2`, e.Kind, e.ID)
 		if err != nil {
-			return fmt.Errorf("delete the %s rows of %s:%s: %w", held.Table, e.Kind, e.ID, err)
+			return treesToSweep{}, fmt.Errorf("delete the %s rows of %s:%s: %w", held.Table, e.Kind, e.ID, err)
 		}
 		e.removed(held.Table, tag.RowsAffected())
 	}
@@ -259,7 +263,7 @@ func (e *Erasure) apply(ctx context.Context, tx pgx.Tx, read erasedRead) error {
 			where doomed.artifact = artifact_reviews.artifact_id and doomed.number = artifact_reviews.version)`,
 			read.artifacts, read.numbers)
 		if err != nil {
-			return fmt.Errorf("delete the reviews over the erased bytes: %w", err)
+			return treesToSweep{}, fmt.Errorf("delete the reviews over the erased bytes: %w", err)
 		}
 		e.removed("artifact_reviews", tag.RowsAffected())
 		tag, err = tx.Exec(ctx, `delete from artifact_versions where exists (
@@ -267,57 +271,60 @@ func (e *Erasure) apply(ctx context.Context, tx pgx.Tx, read erasedRead) error {
 			where doomed.artifact = artifact_versions.artifact_id and doomed.number = artifact_versions.number)`,
 			read.artifacts, read.numbers)
 		if err != nil {
-			return fmt.Errorf("delete the versions holding the erased text: %w", err)
+			return treesToSweep{}, fmt.Errorf("delete the versions holding the erased text: %w", err)
 		}
 		e.removed("artifact_versions", tag.RowsAffected())
 	}
 	if err := e.redactBlocks(ctx, tx, read); err != nil {
-		return err
+		return treesToSweep{}, err
 	}
 	if err := e.clearExcerpts(ctx, tx, read); err != nil {
-		return err
+		return treesToSweep{}, err
 	}
 	if err := e.redactEvents(ctx, tx, read.events); err != nil {
-		return err
+		return treesToSweep{}, err
 	}
 	if err := e.restateSearch(ctx, tx, read.artifacts); err != nil {
-		return err
+		return treesToSweep{}, err
 	}
 	if err := e.restateKeywordVersions(ctx, tx, read); err != nil {
-		return err
+		return treesToSweep{}, err
+	}
+	if err := e.clearRelatedCheckTerms(ctx, tx, read); err != nil {
+		return treesToSweep{}, err
 	}
 	if err := e.restateEmbeddings(ctx, tx, forgotten); err != nil {
-		return err
+		return treesToSweep{}, err
 	}
 	if err := e.replaceLiveTexts(ctx, tx); err != nil {
-		return err
+		return treesToSweep{}, err
 	}
-	recounted, queued, err := api.ForgetErasedTermsTx(ctx, tx, read.artifacts, read.termTotals)
+	recounted, queued, err := api.ForgetErasedTermsTx(ctx, tx, read.artifacts)
 	if err != nil {
-		return fmt.Errorf("take the erased words out of the term statistics: %w", err)
+		return treesToSweep{}, fmt.Errorf("take the erased words out of the term statistics: %w", err)
 	}
 	e.removed("search_term_queue", queued)
 	e.Recounted = recounted
 	if err := e.forgetTrees(ctx, tx, sums); err != nil {
-		return err
+		return treesToSweep{}, err
 	}
 	if err := graphstore.EraseNode(ctx, tx, e.Kind, e.ID, read.tupleSeqs); err != nil {
-		return err
+		return treesToSweep{}, err
 	}
 	removed, err := json.Marshal(e)
 	if err != nil {
-		return fmt.Errorf("render the erasure record: %w", err)
+		return treesToSweep{}, fmt.Errorf("render the erasure record: %w", err)
 	}
 	ranBy, err := json.Marshal(e.RanBy)
 	if err != nil {
-		return fmt.Errorf("render who ran the erase: %w", err)
+		return treesToSweep{}, fmt.Errorf("render who ran the erase: %w", err)
 	}
 	if _, err := tx.Exec(ctx, `
 		insert into graph_erasures (node_kind, node_id, removed, ran_by, ran_at)
 		values ($1, $2, $3, $4, $5)`, e.Kind, e.ID, removed, ranBy, e.RanAt); err != nil {
-		return fmt.Errorf("record the erase: %w", err)
+		return treesToSweep{}, fmt.Errorf("record the erase: %w", err)
 	}
-	return nil
+	return treesToSweep{sums: sums, needles: needles}, nil
 }
 
 // recountTermStats counts again, once the run has committed and so outside its locks, the term
@@ -357,6 +364,22 @@ func (e *Erasure) eraseBlockTexts(ctx context.Context, tx pgx.Tx, read erasedRea
 		return fmt.Errorf("delete the texts of the block %s:%s: %w", e.Kind, e.ID, err)
 	}
 	e.removed("document_block_texts", tag.RowsAffected())
+	return nil
+}
+
+// clearRelatedCheckTerms empties the terms of every related-item check the read under the locks
+// listed (readRelatedChecks), by id, and keeps each row: its terms are the lexemes the check
+// picked from the node's text, and the rest of it is the check's outcome, counts and times, which
+// hold none of that text. A check written after that read is not one of them.
+func (e *Erasure) clearRelatedCheckTerms(ctx context.Context, tx pgx.Tx, read erasedRead) error {
+	if len(read.relatedChecks) == 0 {
+		return nil
+	}
+	tag, err := tx.Exec(ctx, `update related_checks set terms = '{}' where id = any($1::uuid[])`, read.relatedChecks)
+	if err != nil {
+		return fmt.Errorf("clear the terms of the related-item checks of %s:%s: %w", e.Kind, e.ID, err)
+	}
+	e.redacted("related_checks", tag.RowsAffected())
 	return nil
 }
 

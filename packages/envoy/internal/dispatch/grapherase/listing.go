@@ -231,9 +231,9 @@ type derivedRows struct {
 // of it that do. It is the same derivation apply writes by, row set for row set: the node's own
 // rows, its tuples, its projections, its own document's rows, its embedding rows, its keyword
 // versions and the search vector of each keyword version of its spec issue that names a version
-// the run deletes, the events about it and its project's term statistics, which the run counts
-// again. The rows that cannot exist without a projection row are added by leftDerived, from the
-// foreign keys into the projections.
+// the run deletes, the terms of its related-item checks, the events about it and its project's
+// term statistics, which the run counts again. The rows that cannot exist without a projection
+// row are added by leftDerived, from the foreign keys into the projections.
 var derivedTables = map[string][]derivedRows{
 	"graph_nodes":  {{where: `held.kind = bound.kind and held.id = bound.id`}},
 	"graph_tuples": {{where: `(held.from_kind = bound.kind and held.from_id = bound.id) or (held.to_kind = bound.kind and held.to_id = bound.id)`}},
@@ -261,14 +261,19 @@ var derivedTables = map[string][]derivedRows{
 	"refs":              {{where: `bound.document <> '' and held.from_kind = 'artifact' and held.from_id = bound.document and (held.excerpt_block_id = bound.block or held.excerpt_block_id = any(bound.ancestors))`}},
 	"events":            {{where: `held.id = any(bound.events)`}},
 	"search_term_stats": {{where: `bound.project <> '' and held.project_key = bound.project`}},
+	// A check's terms are lexemes, which the search for the erased bytes finds only where a text
+	// is spelled inside one, as a text of one word the parser keeps as written is its own lexeme:
+	// without this set the search would list a check the run empties as a row it leaves. The
+	// check's other columns hold no text of the node, and a match in one is listed as left.
+	"related_checks": {{columns: []string{"terms"}, where: `held.id = any(bound.related_checks)`}},
 }
 
 // leftBound is the one row of values every statement of readLeft reads its derivation from, so
-// each binds the same sixteen parameters whichever of them its table's predicate names.
+// each binds the same seventeen parameters whichever of them its table's predicate names.
 const leftBound = `with bound as (select $1::text as kind, $2::text as id, $3::text[] as texts, $4::text as document,
 	$5::text as block, $6::text[] as ancestors, $7::bigint[] as events, $8::int[] as numbers, $9::text as window_kind,
 	$10::text as owner_key, $11::text as spec_issue, $12::text as project, $13::text[] as histories,
-	$14::text[] as text_blocks, $15::int[] as text_versions, $16::text[] as excerpt_blocks)`
+	$14::text[] as text_blocks, $15::int[] as text_versions, $16::text[] as excerpt_blocks, $17::uuid[] as related_checks)`
 
 // readLeft searches every column of every table a text can be written into for the erased texts,
 // and lists each row it finds that does not derive from the node - by its table, its primary key
@@ -329,7 +334,8 @@ func (e *Erasure) readLeft(ctx context.Context, tx pgx.Tx, read *erasedRead) err
 		histories = append(histories, replaced.document.artifact)
 	}
 	args := []any{e.Kind, e.ID, read.texts, document, read.blockID, read.ancestors, eventIDs, read.numbers,
-		windowKind, ownerKey, read.document.specIssue(), read.project, histories, textBlocks, textVersions, excerptBlocks}
+		windowKind, ownerKey, read.document.specIssue(), read.project, histories, textBlocks, textVersions, excerptBlocks,
+		read.relatedChecks}
 	held := map[string][]string{}
 	for _, column := range columns {
 		if column.schema == "public" && (column.table == "text_trees" || column.table == "graph_erasures") {
