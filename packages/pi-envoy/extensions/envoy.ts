@@ -43,6 +43,7 @@ import {
   inboundRestoredNoticeText,
   inboundUnavailable,
   inboundUnavailableNoticeText,
+  isGitHubWithheld,
   isUnrecordedRegistration,
 } from "@legion/envoy-client/consumer-delivery";
 import {
@@ -3558,29 +3559,46 @@ export default function envoyExtension(hostApi: PiApi): void {
   // Said once per outage: the listener refused this session's registration or may not have
   // recorded it, or the session holds no relay subject. The session still runs, and the heartbeat
   // registers again every tick until one is accepted. `why` is the error's message: for a
-  // refusal, the listener's own, with a reason `ErrorWireSchema.reason` lists.
-  // `inboundUnavailableNoticeText` words it for every host. A refusal leaves the session no
-  // consumer. After a bus-outage 503 (`isUnrecordedRegistration`) the consumer may still deliver,
+  // refusal, the listener's own, with a reason `ErrorWireSchema.reason` lists. `reason` is that
+  // reason alone. `inboundUnavailableNoticeText` words them for every host. A refusal leaves the
+  // session no consumer, with one exception: an edge listener's 503 `repositories_unknown`
+  // (`isGitHubWithheld`) withholds the messages of the session's GitHub topics. Where the
+  // listener already held the session's registration, it kept that registration and the
+  // consumer, which goes on delivering the rest; where it held none, the session receives
+  // nothing until a registration is accepted. The client cannot tell which, so the log line and
+  // the pane note say both.
+  // After a bus-outage 503 (`isUnrecordedRegistration`) the consumer may still deliver,
   // and a retry after it may have landed, so the log line and the pane note say only that the
   // registration is not recorded for certain. A first relay open still being tried at the start,
   // or a run of bus-outage 503s, is told only once `INBOUND_FIRST_OPEN_BOUND_MS` has passed. The
   // log does not wait for the start race: the first registration that found no relay subject is
   // logged at once, at warn (`held`). That line says only what the registration found, and why,
   // and makes no claim about what the session receives. The notice, its card, its pane note and
-  // the warning that the session receives nothing wait for the bound. A told bus-outage 503 says
-  // that the consumer may still deliver, so a refusal or a lost relay subject after it is said
-  // once more.
+  // the warning that the session receives nothing wait for the bound. A failure that lets less
+  // reach the session than the told one is said once more: a refusal or a lost relay subject
+  // after a told bus-outage 503 or a told `repositories_unknown`, and a `repositories_unknown`
+  // after a told bus-outage 503.
   // An accepted registration after a told outage tells the session once, by the same path, worded
-  // for the last `why` it was told. A session whose stop has begun is told neither (`stopping`):
-  // the stop closed the relay on purpose, and the record is deleted next. This report is the one
-  // choke point of those notices, and each of its tells goes through the tell gate as well.
+  // for the last `why` and `reason` it was told. A session whose stop has begun is told neither
+  // (`stopping`): the stop closed the relay on purpose, and the record is deleted next. This
+  // report is the one choke point of those notices, and each of its tells goes through the tell
+  // gate as well.
   const inboundOutage = inboundUnavailable(
-    (why) => {
+    (why, reason) => {
       if (isUnrecordedRegistration(why)) {
         logger.warn(`envoy: this session's registration is not recorded for certain: ${why}`);
         notify(
           activeSessionContext,
           `envoy: this session's registration is not recorded for certain (${why}), and the session registers again at every heartbeat`,
+          "warning"
+        );
+      } else if (isGitHubWithheld(reason)) {
+        logger.warn(
+          `envoy: the listener follows none of this session's GitHub topics now; the session's other messages still reach it if the listener already held its registration, and none reach it until a registration is accepted if it held none: ${why}`
+        );
+        notify(
+          activeSessionContext,
+          `envoy: GitHub messages are withheld (${why}); other messages still arrive if the listener already held this session's registration, and none arrive until a registration is accepted if it held none; registering again every heartbeat`,
           "warning"
         );
       } else {
@@ -3591,10 +3609,10 @@ export default function envoyExtension(hostApi: PiApi): void {
           "warning"
         );
       }
-      sendNotice(inboundUnavailableNoticeText(why));
+      sendNotice(inboundUnavailableNoticeText(why, reason));
     },
     {
-      restored: (toldWhy) => {
+      restored: (toldWhy, toldReason) => {
         if (isUnrecordedRegistration(toldWhy)) {
           logger.info("envoy: the listener recorded a registration of this session");
           notify(
@@ -3602,11 +3620,20 @@ export default function envoyExtension(hostApi: PiApi): void {
             "envoy: the listener recorded a registration of this session",
             "info"
           );
+        } else if (isGitHubWithheld(toldReason)) {
+          logger.info(
+            "envoy: the listener follows this session's GitHub topics again: a registration was accepted"
+          );
+          notify(
+            activeSessionContext,
+            "envoy: the listener follows this session's GitHub topics again",
+            "info"
+          );
         } else {
           logger.info("envoy: this session receives again: a registration was accepted");
           notify(activeSessionContext, "envoy: inbound messages are back", "info");
         }
-        sendNotice(inboundRestoredNoticeText(toldWhy));
+        sendNotice(inboundRestoredNoticeText(toldWhy, toldReason));
       },
       held: (relayMissing) => {
         logger.warn(

@@ -104,8 +104,8 @@ export function relaySocketFixtures(prefix: string) {
 }
 
 /** One registration of `ses_a` through `outage`, as a host makes one: refused 503
- *  `repositories_unknown` (the edge could not read its projects' repositories) while `refuse()`
- *  holds, accepted otherwise. Answers once it settled, either way. */
+ *  `consumer_error` (the listener could not give the session a consumer, so the session receives
+ *  nothing) while `refuse()` holds, accepted otherwise. Answers once it settled, either way. */
 export async function registerOnce(
   outage: InboundUnavailable,
   refuse: () => boolean
@@ -127,8 +127,8 @@ export async function registerOnce(
               url: "http://listener.example/v1/interests/subscribe",
               status: 503,
               responseBody: JSON.stringify({
-                error: "the project's repositories could not be read",
-                reason: "repositories_unknown",
+                error: "the session consumer of ses_a could not be read or created",
+                reason: "consumer_error",
               }),
             })
           )

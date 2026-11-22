@@ -123,8 +123,15 @@ message from Dispatch's Agents page as that person's own turn.
   listener refuses with a reason, such as `consumer_limit`, is told at once as Envoy inbound
   unavailable. A refusal or a lost relay subject after that notice is told once more, as Envoy
   inbound unavailable, and the accepted registration after it says that Envoy inbound is
-  restored. A session whose shutdown has begun registers nothing, and is told neither that Envoy
-  inbound is unavailable nor that it is restored.
+  restored. An edge listener's 503 `repositories_unknown` (it could not read the repositories of
+  the session's projects) is told at once as Envoy GitHub topics withheld: the listener withholds
+  the messages of the session's GitHub topics. If the listener already held the session's
+  registration, it kept that registration and the session's consumer, so the session receives its
+  other messages; if it held none, the session receives nothing until a registration is accepted.
+  The notice and the stderr line say both. The accepted registration after it says that the
+  listener follows those topics again. A refusal or a lost relay subject after that notice is told
+  once more, as Envoy inbound unavailable. A session whose shutdown has begun registers nothing,
+  and is told neither that Envoy inbound is unavailable nor that it is restored.
 - No receipt is published. A role message reaches this session as a forward the listener stored on
   the session's own subject, which its consumer relays and whose `done` answers for it; the
   listener waits only for the stream's acknowledgement that it stored the forward. A frame's reply

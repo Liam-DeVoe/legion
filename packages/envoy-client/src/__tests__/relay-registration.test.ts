@@ -220,7 +220,7 @@ describe("one registration", () => {
     refuse = false;
     await register();
     expect(told).toEqual(["no_grant", "restored", "no_grant", "restored"]);
-    expect(inboundRestoredNoticeText("no_grant")).toContain("Envoy inbound restored");
+    expect(inboundRestoredNoticeText("no_grant", undefined)).toContain("Envoy inbound restored");
   });
 
   test("any other refusal is a refusal as before: nothing dropped, nothing sent again", async () => {
@@ -568,7 +568,7 @@ describe("a relay socket", () => {
     const tradeFails = { count: 0 };
     const relay = await opened(server, "ses_a", { outage, tradeFails });
     await registerOnce(outage, () => true);
-    expect(told).toEqual([expect.stringContaining("repositories_unknown")]);
+    expect(told).toEqual([expect.stringContaining("consumer_error")]);
 
     tradeFails.count = 1;
     server.close(4401, "credential_expired");

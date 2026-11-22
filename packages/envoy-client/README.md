@@ -506,7 +506,14 @@ registration waited is not put back, and the relay forgets only the refused topi
 (`ConsumerDelivery.unfollow`), so one another registration added meanwhile stays followed. Once the
 host's `stopping` answers true, a project refusal drops nothing, tells nothing and sends nothing
 again, and a registration not yet sent is not sent. Its 503 `repositories_unknown` and 403
-`token_not_admitted` drop nothing.
+`token_not_admitted` drop nothing. The 503 `repositories_unknown` says that the edge could not
+read the repositories of the session's projects: it withholds the messages of the session's
+GitHub topics. Where the edge already held the session's registration, it keeps that registration
+and the session's consumer, so the session's other messages still reach it; where it held none,
+it creates none, and the session receives nothing until a registration is accepted. The client
+cannot tell which. So `inboundUnavailable` hands the host that reason beside the message, and
+`inboundUnavailableNoticeText` words it as "Envoy GitHub topics withheld", which says both cases,
+not as a session that receives nothing (`isGitHubWithheld`).
 
 ## envoy.json
 

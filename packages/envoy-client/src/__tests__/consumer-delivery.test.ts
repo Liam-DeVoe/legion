@@ -11,6 +11,7 @@ import {
   decodeRelayFrame,
   deliverSubject,
   FOLLOW_CLOCK_ALLOWANCE_MS,
+  type InboundUnavailable,
   inboundRestoredNoticeText,
   inboundUnavailable,
   inboundUnavailableNoticeText,
@@ -19,7 +20,12 @@ import {
   type RelayMessage,
   type RelayReply,
 } from "../consumer-delivery";
-import { createDeliveryLedger, type DeliveryLedger, type LedgerSnapshot } from "../delivery-ledger";
+import {
+  createDeliveryLedger,
+  type DeliveryLedger,
+  envoyNoticeText,
+  type LedgerSnapshot,
+} from "../delivery-ledger";
 import { registerWithRelay } from "../relay-registration";
 import { type DeliveryAnswer, EnvoyApiError } from "../transport";
 
@@ -1459,7 +1465,7 @@ describe("one registration", () => {
     expect(report.told).toEqual([UNRECORDED]);
 
     // Every host words what it was told with this one text.
-    const notice = inboundUnavailableNoticeText(report.told[0] ?? "");
+    const notice = inboundUnavailableNoticeText(report.told[0] ?? "", undefined);
     expect(notice).toMatch(/not record/i);
     expect(notice).not.toContain("no durable consumer");
     expect(notice).not.toContain("receives none");
@@ -1481,9 +1487,9 @@ describe("one registration", () => {
     const outage = inboundUnavailable((why) => told.push(why), {
       now: () => clock,
       firstOpenBoundMs: BOUND,
-      restored: (why) => {
+      restored: (why, reason) => {
         restored.push(why);
-        notices.push(inboundRestoredNoticeText(why));
+        notices.push(inboundRestoredNoticeText(why, reason));
       },
     });
     return {
@@ -1606,5 +1612,265 @@ describe("one registration", () => {
     report.outage.accepted();
     expect(report.restored).toEqual([NO_RELAY]);
     expect(report.notices[0]).toContain("so the session receives Envoy messages again");
+  });
+
+  // R24 of dispatch://INFRA-3589, after main's #4810: an edge listener that could not read the
+  // repositories of the session's projects refuses the registration 503 `repositories_unknown`
+  // (the listener's `answerRepositoryOutage`), and it withholds the messages of the session's
+  // GitHub topics. Where it already held the session's registration, it renews that entry and
+  // keeps the session's consumer; where it held none, it creates none (`renewThroughOutage`). The
+  // client cannot tell which. So the session is told that its GitHub topics are withheld, and
+  // what it receives in each case, and never that it has no durable consumer. The accepted
+  // registration after it says that the listener follows the GitHub topics again, and not that
+  // the session receives again.
+  const WITHHELD_ERROR =
+    "the repositories of PRIV's issues could not be read, so no GitHub topic is followed now; register again shortly";
+  const WITHHELD = `${WITHHELD_ERROR} (reason: repositories_unknown)`;
+  const repositoriesUnknown = () =>
+    new EnvoyApiError({
+      method: "POST",
+      url: "http://listener/v1/interests/subscribe",
+      status: 503,
+      responseBody: JSON.stringify({ error: WITHHELD_ERROR, reason: "repositories_unknown" }),
+    });
+  /** The listener's 503 `no_grant`: it can give the session no consumer at all. */
+  const NO_GRANT_ERROR =
+    "this listener may not manage session consumers, so it can give ses_a none";
+  const NO_GRANT = `${NO_GRANT_ERROR} (reason: no_grant)`;
+  const noGrant = () =>
+    new EnvoyApiError({
+      method: "POST",
+      url: "http://listener/v1/interests/subscribe",
+      status: 503,
+      responseBody: JSON.stringify({ error: NO_GRANT_ERROR, reason: "no_grant" }),
+    });
+
+  /** The `notice:` value of a notice's text. */
+  const noticeName = (text: string) => /notice: (.*)/.exec(text)?.[1];
+
+  /**
+   * One session's outage report on a clock the row moves (`at`), whose `tell` and `restored`
+   * word what they are handed as every host does (`inboundUnavailableNoticeText`,
+   * `inboundRestoredNoticeText`), with each reason it handed them; and one registration whose
+   * send answers what `answer` returns.
+   */
+  function reportWording() {
+    let clock = 0;
+    const notices: string[] = [];
+    const reasons: (string | undefined)[] = [];
+    const outage = inboundUnavailable(
+      (why, reason) => {
+        reasons.push(reason);
+        notices.push(inboundUnavailableNoticeText(why, reason));
+      },
+      {
+        now: () => clock,
+        firstOpenBoundMs: BOUND,
+        restored: (why, reason) => {
+          reasons.push(reason);
+          notices.push(inboundRestoredNoticeText(why, reason));
+        },
+      }
+    );
+    return {
+      outage,
+      notices,
+      reasons,
+      at: (ms: number) => {
+        clock = ms;
+      },
+      register: (answer: () => Promise<string>) =>
+        registerWithRelay({
+          relay: fakeRelay(),
+          ownAgentSubject: AGENT,
+          followed: () => [TEAM],
+          outage,
+          send: () => answer(),
+          answered: () => undefined,
+          ...quiet,
+        }).catch(() => undefined),
+    };
+  }
+
+  test("an edge listener's 503 repositories_unknown is told at once and once, as GitHub topics withheld with what the session receives where the listener held its registration and where it held none, and never as a session with no durable consumer", async () => {
+    const report = reportWording();
+
+    await report.register(() => Promise.resolve("registered"));
+    report.at(1_000);
+    await report.register(() => Promise.reject(repositoriesUnknown()));
+    // The next heartbeat's refusal tells nothing more.
+    report.at(16_000);
+    await report.register(() => Promise.reject(repositoriesUnknown()));
+
+    expect(report.notices).toHaveLength(1);
+    const notice = report.notices[0] ?? "";
+    expect(noticeName(notice)).toBe("Envoy GitHub topics withheld");
+    expect(notice).toContain(WITHHELD);
+    expect(notice).toContain(
+      "The listener could not read the repositories of this session's projects. So it follows none of this session's GitHub topics now, and it withholds their messages. It refused this registration. If the listener already held a registration of this session, it kept that registration and the session's consumer, so the session receives the messages of every other topic the listener follows for it; a topic the session began to follow after its last accepted registration is followed only once a registration is accepted. If the listener held no registration of this session, the session receives nothing until a registration is accepted. The session registers again at every heartbeat."
+    );
+    // Nothing says outright that the consumer was kept, or that the session receives none.
+    expect(notice).not.toContain("but it kept the session's consumer");
+    expect(notice).not.toContain("Envoy inbound unavailable");
+    expect(notice).not.toContain("no durable consumer");
+    expect(notice).not.toContain("receives none");
+    expect(report.reasons).toEqual(["repositories_unknown"]);
+  });
+
+  test("the accepted registration after a told 503 repositories_unknown says that the listener follows the session's GitHub topics again, and never that the session receives again", async () => {
+    const report = reportWording();
+
+    await report.register(() => Promise.reject(repositoriesUnknown()));
+    report.at(15_000);
+    await report.register(() => Promise.resolve("registered"));
+    // A later accepted registration tells nothing more.
+    report.at(30_000);
+    await report.register(() => Promise.resolve("registered"));
+
+    expect(report.notices).toHaveLength(2);
+    const restored = report.notices[1] ?? "";
+    expect(noticeName(restored)).toBe("Envoy GitHub topics followed again");
+    expect(restored).toContain(
+      "The listener accepted a registration of this session, so it follows this session's GitHub topics again, and their messages reach the session again. A GitHub message the listener withheld meanwhile may be missing."
+    );
+    expect(restored).not.toContain("Envoy inbound restored");
+    expect(restored).not.toContain("receives Envoy messages again");
+    expect(restored).not.toMatch(/received? nothing/);
+    expect(report.reasons).toEqual(["repositories_unknown", "repositories_unknown"]);
+  });
+
+  test("a bus-outage 503 and a 503 no_grant are handed to the host with the reason each carries, and keep their texts", async () => {
+    const report = reportWording();
+
+    await report.register(() => Promise.reject(unrecorded()));
+    report.at(BOUND);
+    await report.register(() => Promise.reject(unrecorded()));
+    report.at(BOUND + 15_000);
+    await report.register(() => Promise.resolve("registered"));
+    report.at(BOUND + 30_000);
+    await report.register(() => Promise.reject(noGrant()));
+    report.at(BOUND + 45_000);
+    await report.register(() => Promise.resolve("registered"));
+
+    // The bus-outage 503 names no reason, and the refusal names its own.
+    expect(report.reasons).toEqual([undefined, undefined, "no_grant", "no_grant"]);
+    expect(report.notices).toEqual([
+      envoyNoticeText({
+        notice: "Envoy inbound unavailable",
+        error: UNRECORDED,
+        detail:
+          "This session's registration is not recorded for certain: the listener's message bus did not answer in time, so the listener may or may not have recorded it. Envoy messages may still reach the session, but nothing confirms it until a registration is accepted. Everything else works, and the session registers again at every heartbeat.",
+      }),
+      envoyNoticeText({
+        notice: "Envoy inbound restored",
+        detail:
+          "The listener recorded a registration of this session. A message the stream stored that has not reached the session arrives now.",
+      }),
+      envoyNoticeText({
+        notice: "Envoy inbound unavailable",
+        error: NO_GRANT,
+        detail:
+          "The listener gave this session no durable consumer, which is the only path an Envoy message reaches it by, so it receives none. Everything else works, and the session registers again at every heartbeat; what the stream stored meanwhile arrives once a registration is accepted.",
+      }),
+      envoyNoticeText({
+        notice: "Envoy inbound restored",
+        detail:
+          "The listener accepted a registration of this session, so the session receives Envoy messages again. What the stream stored while it received nothing arrives now.",
+      }),
+    ]);
+  });
+
+  // A told 503 repositories_unknown says that the session's other messages still reach it where
+  // the listener already held its registration. A refusal that leaves the session no consumer, or
+  // a lost relay subject, says that it receives nothing, so it is told once more, and the accepted
+  // registration after it is worded for it.
+  test("a 503 no_grant or a lost relay subject after a told 503 repositories_unknown is told once more, as a session that receives nothing, and the restore after it says the session receives again", () => {
+    for (const [failure, reason] of [
+      [(outage: InboundUnavailable) => outage.refused(noGrant()), "no_grant"],
+      [(outage: InboundUnavailable) => outage.noRelay(new Error(NO_RELAY)), undefined],
+    ] as const) {
+      const report = reportWording();
+
+      report.outage.accepted();
+      report.at(1_000);
+      report.outage.refused(repositoriesUnknown());
+      report.at(16_000);
+      failure(report.outage);
+      // Once more, and no more: the same failure again, or a 503 repositories_unknown, tells
+      // nothing.
+      report.at(31_000);
+      failure(report.outage);
+      report.outage.refused(repositoriesUnknown());
+      report.at(46_000);
+      report.outage.accepted();
+
+      expect(report.notices.map(noticeName)).toEqual([
+        "Envoy GitHub topics withheld",
+        "Envoy inbound unavailable",
+        "Envoy inbound restored",
+      ]);
+      expect(report.notices[1]).toContain(reason === undefined ? NO_RELAY : NO_GRANT);
+      expect(report.notices[1]).toContain("so it receives none");
+      expect(report.notices[2]).toContain("so the session receives Envoy messages again");
+      expect(report.reasons).toEqual(["repositories_unknown", reason, reason]);
+    }
+  });
+
+  // A told bus-outage 503 says that the consumer may still deliver everything, so a 503
+  // repositories_unknown after it, which says that the GitHub messages are withheld, is told. A
+  // bus-outage 503 after a told 503 repositories_unknown says that no less reaches the session,
+  // so it tells nothing.
+  test("a 503 repositories_unknown after a told bus-outage 503 is told once more, and a bus-outage 503 after a told 503 repositories_unknown is not", () => {
+    const afterUnrecorded = reportWording();
+    afterUnrecorded.outage.refused(unrecorded());
+    afterUnrecorded.at(BOUND);
+    afterUnrecorded.outage.refused(unrecorded());
+    afterUnrecorded.at(BOUND + 15_000);
+    afterUnrecorded.outage.refused(repositoriesUnknown());
+    afterUnrecorded.at(BOUND + 30_000);
+    afterUnrecorded.outage.accepted();
+
+    expect(afterUnrecorded.notices.map(noticeName)).toEqual([
+      "Envoy inbound unavailable",
+      "Envoy GitHub topics withheld",
+      "Envoy GitHub topics followed again",
+    ]);
+    expect(afterUnrecorded.reasons).toEqual([
+      undefined,
+      "repositories_unknown",
+      "repositories_unknown",
+    ]);
+
+    const afterWithheld = reportWording();
+    afterWithheld.outage.refused(repositoriesUnknown());
+    afterWithheld.at(15_000);
+    afterWithheld.outage.refused(unrecorded());
+    afterWithheld.at(15_000 + BOUND);
+    afterWithheld.outage.refused(unrecorded());
+    afterWithheld.at(30_000 + BOUND);
+    afterWithheld.outage.accepted();
+
+    expect(afterWithheld.notices.map(noticeName)).toEqual([
+      "Envoy GitHub topics withheld",
+      "Envoy GitHub topics followed again",
+    ]);
+    expect(afterWithheld.reasons).toEqual(["repositories_unknown", "repositories_unknown"]);
+  });
+
+  test("isGitHubWithheld is true only of the reason repositories_unknown", () => {
+    // A namespace read, so this file still loads where the module lacks the export.
+    const { isGitHubWithheld } = consumerDeliveryModule;
+
+    expect(isGitHubWithheld("repositories_unknown")).toBe(true);
+    for (const reason of [
+      undefined,
+      "no_grant",
+      "consumer_error",
+      "repository_not_in_project",
+      "topic_not_in_project",
+      "token_not_admitted",
+    ]) {
+      expect(isGitHubWithheld(reason)).toBe(false);
+    }
   });
 });

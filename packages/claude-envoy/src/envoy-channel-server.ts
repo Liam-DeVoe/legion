@@ -19,6 +19,7 @@ import {
   inboundRestoredNoticeText,
   inboundUnavailable,
   inboundUnavailableNoticeText,
+  isGitHubWithheld,
   isUnrecordedRegistration,
 } from "@legion/envoy-client/consumer-delivery"
 import {
@@ -1363,44 +1364,53 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
    * Said once per outage: the listener refused this session's registration or may not have
    * recorded it, or the session holds no relay subject. The session still runs, and the heartbeat
    * registers again every tick until one is accepted. `why` is the error's message: for a refusal,
-   * the listener's own, with a reason `ErrorWireSchema.reason` lists.
-   * `inboundUnavailableNoticeText` words it for every host. A refusal leaves the session no
-   * consumer. After a bus-outage 503 (`isUnrecordedRegistration`) the consumer may still deliver,
-   * and a retry after it may have landed, so the stderr lines say only that the registration is
-   * not recorded for certain, and a refusal or a lost relay subject after it is said once more.
+   * the listener's own, with a reason `ErrorWireSchema.reason` lists. `reason` is that reason
+   * alone. `inboundUnavailableNoticeText` words them for every host. A refusal leaves the session
+   * no consumer, with one exception: an edge listener's 503 `repositories_unknown`
+   * (`isGitHubWithheld`) withholds the messages of the session's GitHub topics. Where the listener
+   * already held the session's registration, it kept that registration and the consumer, which
+   * goes on delivering the rest; where it held none, the session receives nothing until a
+   * registration is accepted. The client cannot tell which, so the stderr line says both. After a
+   * bus-outage 503 (`isUnrecordedRegistration`) the consumer may still deliver, and a retry after
+   * it may have landed, so the stderr lines say only that the registration is not recorded for
+   * certain. A failure that lets less reach the session than the told one is said once more.
    * An accepted registration after a told outage tells the session once, by the same path,
-   * worded for the last `why` it was told. A session whose shutdown has begun is told neither
-   * (`stopping`): the shutdown closed the relay on purpose, and the record is deleted next.
+   * worded for the last `why` and `reason` it was told. A session whose shutdown has begun is
+   * told neither (`stopping`): the shutdown closed the relay on purpose, and the record is
+   * deleted next.
    */
   const inboundOutage = inboundUnavailable(
-    (why) => {
-      const unrecorded = isUnrecordedRegistration(why)
-      gates.stderr(
-        unrecorded
-          ? `envoy-channel: this session's registration is not recorded for certain (${why}), and the session registers again at every heartbeat\n`
-          : `envoy-channel: this session receives nothing (${why}); registering again every heartbeat\n`,
-      )
-      const told = unrecorded
-        ? "that its registration is not recorded for certain"
-        : "that it receives nothing"
-      showNotice(inboundUnavailableNoticeText(why)).catch((noticeError: unknown) => {
+    (why, reason) => {
+      let line = `envoy-channel: this session receives nothing (${why}); registering again every heartbeat\n`
+      let told = "that it receives nothing"
+      if (isUnrecordedRegistration(why)) {
+        line = `envoy-channel: this session's registration is not recorded for certain (${why}), and the session registers again at every heartbeat\n`
+        told = "that its registration is not recorded for certain"
+      } else if (isGitHubWithheld(reason)) {
+        line = `envoy-channel: the listener follows none of this session's GitHub topics now (${why}); the session's other messages still reach it if the listener already held its registration, and none reach it until a registration is accepted if it held none; registering again every heartbeat\n`
+        told = "that its GitHub messages are withheld"
+      }
+      gates.stderr(line)
+      showNotice(inboundUnavailableNoticeText(why, reason)).catch((noticeError: unknown) => {
         gates.stderr(
           `envoy-channel: the session could not be told ${told} — ${messageFor(noticeError)}\n`,
         )
       })
     },
     {
-      restored: (toldWhy) => {
-        const unrecorded = isUnrecordedRegistration(toldWhy)
-        gates.stderr(
-          unrecorded
-            ? "envoy-channel: the listener recorded a registration of this session\n"
-            : "envoy-channel: this session receives again: a registration was accepted\n",
-        )
-        const told = unrecorded
-          ? "that the listener recorded its registration"
-          : "that it receives again"
-        showNotice(inboundRestoredNoticeText(toldWhy)).catch((noticeError: unknown) => {
+      restored: (toldWhy, toldReason) => {
+        let line = "envoy-channel: this session receives again: a registration was accepted\n"
+        let told = "that it receives again"
+        if (isUnrecordedRegistration(toldWhy)) {
+          line = "envoy-channel: the listener recorded a registration of this session\n"
+          told = "that the listener recorded its registration"
+        } else if (isGitHubWithheld(toldReason)) {
+          line =
+            "envoy-channel: the listener follows this session's GitHub topics again: a registration was accepted\n"
+          told = "that the listener follows its GitHub topics again"
+        }
+        gates.stderr(line)
+        showNotice(inboundRestoredNoticeText(toldWhy, toldReason)).catch((noticeError: unknown) => {
           gates.stderr(
             `envoy-channel: the session could not be told ${told} — ${messageFor(noticeError)}\n`,
           )

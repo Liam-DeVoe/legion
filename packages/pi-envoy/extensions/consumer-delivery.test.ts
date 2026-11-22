@@ -856,6 +856,64 @@ describe("consumer delivery", () => {
     ).toHaveLength(1);
   });
 
+  // R24 of dispatch://INFRA-3589, after main's #4810: an edge listener that could not read the
+  // repositories of the session's projects refuses the registration 503 `repositories_unknown`,
+  // and it withholds the GitHub messages. Where it already held the session's registration, it
+  // kept that registration and the consumer; where it held none, the session receives nothing.
+  // The client cannot tell which, so the card, the pane note and the log line say both, at once,
+  // and none says outright that the session receives nothing. The accepted registration after it
+  // says that the listener follows the GitHub topics again, and none says that the session
+  // receives again or that its inbound messages are back.
+  test("a 503 repositories_unknown is told at once as GitHub topics withheld in the card, the pane and the log, each with what the session receives where the listener held its registration and where it held none, and the accepted registration after it as GitHub topics followed again", async () => {
+    const logged: string[] = [];
+    const stopSink = logger.registerLogSink((entry) => {
+      if (entry.message.startsWith("envoy: ")) logged.push(`${entry.level} ${entry.message}`);
+    });
+    const error =
+      "the repositories of PRIV's issues could not be read, so no GitHub topic is followed now; register again shortly";
+    const why = `${error} (reason: repositories_unknown)`;
+    const session = await bootConsumer("consumer-repositories-unknown", {
+      refuse: { status: 503, reason: "repositories_unknown", error },
+    });
+    const claims = /receive[sd]? (nothing|again)|inbound messages are/;
+    try {
+      const told = session.cards("Envoy GitHub topics withheld");
+      expect(told).toHaveLength(1);
+      expect(told[0]?.content).toContain(why);
+      expect(told[0]?.content).toContain(
+        "If the listener already held a registration of this session, it kept that registration and the session's consumer, so the session receives the messages of every other topic the listener follows for it"
+      );
+      expect(told[0]?.content).toContain(
+        "If the listener held no registration of this session, the session receives nothing until a registration is accepted."
+      );
+      expect(session.cards("Envoy inbound unavailable")).toEqual([]);
+      expect(session.notifications).toContain(
+        `envoy: GitHub messages are withheld (${why}); other messages still arrive if the listener already held this session's registration, and none arrive until a registration is accepted if it held none; registering again every heartbeat`
+      );
+      expect(logged).toContain(
+        `warn envoy: the listener follows none of this session's GitHub topics now; the session's other messages still reach it if the listener already held its registration, and none reach it until a registration is accepted if it held none: ${why}`
+      );
+
+      session.accept();
+      await session.tick();
+      const restored = session.cards("Envoy GitHub topics followed again");
+      expect(restored).toHaveLength(1);
+      expect(restored[0]?.content).toContain("it follows this session's GitHub topics again");
+      expect(session.cards("Envoy inbound restored")).toEqual([]);
+      expect(session.notifications).toContain(
+        "envoy: the listener follows this session's GitHub topics again"
+      );
+      expect(logged).toContain(
+        "info envoy: the listener follows this session's GitHub topics again: a registration was accepted"
+      );
+      expect(session.notifications.filter((message) => claims.test(message))).toEqual([]);
+      expect(logged.filter((line) => claims.test(line))).toEqual([]);
+    } finally {
+      await session.stop();
+      stopSink();
+    }
+  });
+
   // Row (e) of check l23, for this plugin (R24 of dispatch://INFRA-3589, against R26): the
   // listener answers its bus-outage 503 to a registration whose known-session record did not
   // land, after it made the session's consumer, so what the stream stores still reaches the

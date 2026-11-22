@@ -431,6 +431,79 @@ test("(e) past the bound a bus-outage 503 is written to stderr as a registration
   }
 })
 
+// R24 of dispatch://INFRA-3589, after main's #4810, for this server: an edge listener that could
+// not read the repositories of the session's projects refuses the registration 503
+// `repositories_unknown`, and it withholds the GitHub messages. Where it already held the
+// session's registration, it kept that registration and the consumer; where it held none, the
+// session receives nothing. The client cannot tell which, so the notice and stderr say both, at
+// once, and no line says outright that the session receives nothing. The accepted registration
+// after it says that the listener follows the GitHub topics again, and no line says that the
+// session receives again.
+test("a 503 repositories_unknown is told and written to stderr as GitHub topics withheld, each with what the session receives where the listener held its registration and where it held none, and the accepted registration after it as GitHub topics followed again", async () => {
+  const error =
+    "the repositories of PRIV's issues could not be read, so no GitHub topic is followed now; register again shortly"
+  const why = `${error} (reason: repositories_unknown)`
+  const directory = scratchState()
+  const nats = new FakeNats()
+  const notifier = heldNotifier()
+  let refusing = true
+  const { client } = listener(() => {
+    if (!refusing) return { ...noInterest(), delivery: CONSUMER }
+    throw new EnvoyApiError({
+      method: "POST",
+      url: "http://127.0.0.1:4000/v1/interests/subscribe",
+      status: 503,
+      responseBody: JSON.stringify({ error, reason: "repositories_unknown" }),
+    })
+  })
+  const written: string[] = []
+  const stderr = spyOn(process.stderr, "write").mockImplementation((chunk) => {
+    written.push(String(chunk))
+    return true
+  })
+  const session = await startChannelSession(
+    sessionOptions(new SessionIdentity(SESSION, "/tmp"), directory, {
+      connection: nats,
+      notifier: notifier.notifier,
+      client,
+      heartbeatMs: 10,
+    }),
+  )
+  // A notice this server writes for itself is the one write that names no Envoy event.
+  const notices = () => notifier.written.filter((write) => write.eventId === undefined)
+  try {
+    await waitFor(async () => notices().length === 1, "the notice")
+    expect(notices()[0]?.content).toContain("Envoy GitHub topics withheld")
+    expect(notices()[0]?.content).toContain(why)
+    expect(notices()[0]?.content).toContain(
+      "If the listener already held a registration of this session, it kept that registration and the session's consumer, so the session receives the messages of every other topic the listener follows for it",
+    )
+    expect(notices()[0]?.content).toContain(
+      "If the listener held no registration of this session, the session receives nothing until a registration is accepted.",
+    )
+    expect(notices()[0]?.content).not.toContain("Envoy inbound unavailable")
+    expect(written).toContain(
+      `envoy-channel: the listener follows none of this session's GitHub topics now (${why}); the session's other messages still reach it if the listener already held its registration, and none reach it until a registration is accepted if it held none; registering again every heartbeat\n`,
+    )
+
+    refusing = false
+    await waitFor(async () => {
+      for (const write of notifier.pending) write.resolve()
+      return notices().length === 2
+    }, "the notice that the listener follows the GitHub topics again")
+    expect(notices()[1]?.content).toContain("Envoy GitHub topics followed again")
+    expect(notices()[1]?.content).not.toContain("Envoy inbound restored")
+    expect(written).toContain(
+      "envoy-channel: the listener follows this session's GitHub topics again: a registration was accepted\n",
+    )
+    expect(written.filter((line) => /receives (nothing|again)/.test(line))).toEqual([])
+  } finally {
+    for (const write of notifier.pending) write.resolve()
+    await session.shutdown()
+    stderr.mockRestore()
+  }
+})
+
 // R24 of dispatch://INFRA-3589, for this server: a session whose first relay open fails at its
 // start holds no relay subject, and it receives once a later try opens the relay. That start race
 // is held for the bound (`INBOUND_FIRST_OPEN_BOUND_MS`): inside it the session is told nothing.

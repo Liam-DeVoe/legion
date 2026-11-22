@@ -13,6 +13,7 @@ import { subjectsOverlap } from "./stream-topics";
 import {
   type DeliveryAnswer,
   type DeliveryRequest,
+  EnvoyApiError,
   expandSubscriptionTopics,
   isBusUnanswered,
   type ResumePoint,
@@ -854,11 +855,50 @@ export function isUnrecordedRegistration(why: string): boolean {
 }
 
 /**
+ * The reason an edge listener refuses a registration 503 with when it could not read the
+ * repositories of the session's projects (`ErrorWireSchema.reason`; the listener's
+ * `edgeRepositoriesUnknown`).
+ */
+const REPOSITORIES_UNKNOWN = "repositories_unknown";
+
+/**
+ * Whether `reason`, the listener's machine-readable reason of the failure `inboundUnavailable`
+ * told a session (`EnvoyApiError.reason`), is an edge listener's 503 `repositories_unknown`. The
+ * edge could not read the repositories of the session's projects. So it follows none of the
+ * session's GitHub topics and withholds their messages. It refuses the registration. Where it
+ * already held a registration of the session, it renews that entry and keeps the session's
+ * consumer, which goes on delivering the session's other messages. Where it held none, it
+ * creates none, and the session receives nothing (the listener's `answerRepositoryOutage` and
+ * `renewThroughOutage`). The client cannot tell which case it is in. Each host picks the words
+ * of its own one-line texts by this, so no host tests the reason itself.
+ */
+export function isGitHubWithheld(reason: string | undefined): boolean {
+  return reason === REPOSITORIES_UNKNOWN;
+}
+
+/**
+ * How little reaches a session by an outage it was told of, read from the `why` and the `reason`
+ * that `inboundUnavailable`'s `tell` took. A registration that is not recorded for certain
+ * (`isUnrecordedRegistration`) is 0: its consumer may still deliver everything. An edge
+ * listener's 503 `repositories_unknown` (`isGitHubWithheld`) is 1: the session's GitHub messages
+ * are withheld, and its other messages still reach it where the listener already held its
+ * registration. Every other refusal or failure, and a lost relay subject, is 2: the session
+ * receives nothing.
+ */
+function outageDepth(why: string, reason: string | undefined): number {
+  if (isUnrecordedRegistration(why)) return 0;
+  if (isGitHubWithheld(reason)) return 1;
+  return 2;
+}
+
+/**
  * What a session is told when the listener can give it no consumer, worded once for every host:
  * its registration was refused, by one of the reasons `ErrorWireSchema.reason` lists
  * (`transport.ts`), or it failed, so nothing reaches it until a later registration is accepted.
- * `why` is the listener's own message, which carries its machine-readable reason. Each host
- * shows it where it shows a gap notice and says once per outage.
+ * `why` is the listener's own message, which carries its machine-readable reason. `reason` is that
+ * reason alone (`EnvoyApiError.reason`), undefined when the failure carries none. `tell` of
+ * `inboundUnavailable` takes both. Each host shows it where it shows a gap notice and says once
+ * per outage.
  *
  * A `why` that begins with the bus-outage prefix (`isUnrecordedRegistration`) is a registration
  * the listener may not have recorded, because its message bus did not answer in time
@@ -866,14 +906,29 @@ export function isUnrecordedRegistration(why: string): boolean {
  * that got no answer after that 503 may have landed (`busUnansweredStands`), and the session's
  * consumer may well exist and deliver. So that notice says that the registration is not recorded
  * for certain, and not that the session has no consumer.
+ *
+ * A `reason` of `repositories_unknown` (`isGitHubWithheld`) is no certain outage of the
+ * session's inbound. The edge listener withholds the messages of the session's GitHub topics.
+ * Where it already held a registration of the session, it kept that registration and the
+ * session's consumer, which goes on delivering the rest. Where it held none, the session receives
+ * nothing. The client cannot tell which, so that notice is named for the GitHub topics, and it
+ * says what the session receives in each case.
  */
-export function inboundUnavailableNoticeText(why: string): string {
+export function inboundUnavailableNoticeText(why: string, reason: string | undefined): string {
   if (isUnrecordedRegistration(why)) {
     return envoyNoticeText({
       notice: "Envoy inbound unavailable",
       error: why,
       detail:
         "This session's registration is not recorded for certain: the listener's message bus did not answer in time, so the listener may or may not have recorded it. Envoy messages may still reach the session, but nothing confirms it until a registration is accepted. Everything else works, and the session registers again at every heartbeat.",
+    });
+  }
+  if (isGitHubWithheld(reason)) {
+    return envoyNoticeText({
+      notice: "Envoy GitHub topics withheld",
+      error: why,
+      detail:
+        "The listener could not read the repositories of this session's projects. So it follows none of this session's GitHub topics now, and it withholds their messages. It refused this registration. If the listener already held a registration of this session, it kept that registration and the session's consumer, so the session receives the messages of every other topic the listener follows for it; a topic the session began to follow after its last accepted registration is followed only once a registration is accepted. If the listener held no registration of this session, the session receives nothing until a registration is accepted. The session registers again at every heartbeat.",
     });
   }
   return envoyNoticeText({
@@ -887,19 +942,33 @@ export function inboundUnavailableNoticeText(why: string): string {
 /**
  * What a session is told when a registration is accepted after an outage it was told of
  * (`inboundUnavailableNoticeText`), worded once for every host and shown where that notice was
- * shown. `why` is the message that notice told. After a registration that is not recorded for
- * certain (`isUnrecordedRegistration`), the consumer may have delivered all along. So that notice
- * says that the listener recorded a registration, and not that the session receives again. An
- * accepted registration is answered only once the listener wrote its record, so that is true,
- * except on a listener whose known-session store is not open, which records nothing and answers
- * 200 all the same (the listener's `knownRecordWriteTimeout`).
+ * shown. `why` and `reason` are the message and the reason that notice told. After a
+ * registration that is not recorded for certain (`isUnrecordedRegistration`), the consumer may
+ * have delivered all along. So that notice says that the listener recorded a registration, and
+ * not that the session receives again. An accepted registration is answered only once the
+ * listener wrote its record, so that is true, except on a listener whose known-session store is
+ * not open, which records nothing and answers 200 all the same (the listener's
+ * `knownRecordWriteTimeout`).
+ *
+ * After an edge listener's 503 `repositories_unknown` (`isGitHubWithheld`), the session may have
+ * received its other messages all along, where the listener already held its registration. So
+ * that notice says that the listener follows the session's GitHub topics again, and not that the
+ * session receives again. The edge acknowledged each GitHub message it withheld without
+ * delivering it, so such a message may be missing.
  */
-export function inboundRestoredNoticeText(why: string): string {
+export function inboundRestoredNoticeText(why: string, reason: string | undefined): string {
   if (isUnrecordedRegistration(why)) {
     return envoyNoticeText({
       notice: "Envoy inbound restored",
       detail:
         "The listener recorded a registration of this session. A message the stream stored that has not reached the session arrives now.",
+    });
+  }
+  if (isGitHubWithheld(reason)) {
+    return envoyNoticeText({
+      notice: "Envoy GitHub topics followed again",
+      detail:
+        "The listener accepted a registration of this session, so it follows this session's GitHub topics again, and their messages reach the session again. A GitHub message the listener withheld meanwhile may be missing.",
     });
   }
   return envoyNoticeText({
@@ -934,9 +1003,9 @@ export interface InboundUnavailable {
    * No registration was sent, because the session holds no relay subject. Before the session's
    * first accepted registration this is the start race, held until the bound passes; after it,
    * a relay that was open was lost, which tells the session at once. Either way it is told once
-   * per outage, and once more after a told registration that is not recorded for certain. The
-   * first call of the start race goes to the host's `held` at once, so the host can log it while
-   * the session's notice waits.
+   * per outage, and once more after a told outage that let more reach the session
+   * (`inboundUnavailable`). The first call of the start race goes to the host's `held` at once,
+   * so the host can log it while the session's notice waits.
    */
   noRelay(error: unknown): void;
   /**
@@ -944,14 +1013,16 @@ export interface InboundUnavailable {
    * unless this outage already told it. A registration the listener answered with the bus-outage
    * 503 (`isBusUnanswered`) is held instead, as the start race is: the first such refusal since
    * the last accepted registration starts the bound, and only one at or after its end tells the
-   * session. Any other refusal after a told bus-outage 503 is told once more: that 503 said the
-   * consumer may still deliver, and the refusal says the session receives nothing.
+   * session. A refusal that lets less reach the session than the told outage is told once more
+   * (`inboundUnavailable`): a told bus-outage 503 said the consumer may still deliver, and a told
+   * 503 `repositories_unknown` (`isGitHubWithheld`) said that the session's other messages still
+   * reach it where the listener already held its registration.
    */
   refused(error: unknown): void;
   /**
    * A registration was accepted: an outage the session was told of ends with `restored`, which
-   * takes the last `why` that was told, and the next outage tells the session again. An outage
-   * held and never told ends with nothing said.
+   * takes the last `why` and `reason` that were told, and the next outage tells the session
+   * again. An outage held and never told ends with nothing said.
    */
   accepted(): void;
 }
@@ -967,9 +1038,10 @@ export interface InboundUnavailableOptions {
   readonly firstOpenBoundMs?: number;
   /**
    * Tells the session once that an outage it was told of has ended, because a registration was
-   * accepted. `toldWhy` is the last message `tell` took for that outage.
+   * accepted. `toldWhy` and `toldReason` are the last message and reason `tell` took for that
+   * outage.
    */
-  readonly restored?: (toldWhy: string) => void;
+  readonly restored?: (toldWhy: string, toldReason: string | undefined) => void;
   /**
    * Called once, at once, when the start race's hold begins: the first registration before the
    * session's first accepted one that found no relay subject. `relayMissing` is why the relay
@@ -993,10 +1065,11 @@ export interface InboundUnavailableOptions {
  * registration was accepted after that. The listener refuses a registration it can give no
  * consumer, and the host registers again at every heartbeat, so a host that told the session each
  * time would tell it every tick for as long as the outage lasts; one that never told it again
- * would leave a second outage silent. `tell` takes the listener's own message (`messageFor`),
- * which each host words with `inboundUnavailableNoticeText` and shows where it shows a gap notice.
- * `restored` takes that same message, and the host words it with `inboundRestoredNoticeText` in
- * the same place.
+ * would leave a second outage silent. `tell` takes the listener's own message (`messageFor`) and
+ * its machine-readable reason (`EnvoyApiError.reason`, undefined when the failure carries none).
+ * Each host words them with `inboundUnavailableNoticeText` and shows that where it shows a gap
+ * notice. `restored` takes that same message and reason, and the host words them with
+ * `inboundRestoredNoticeText` in the same place.
  *
  * A session whose first relay open is still being tried holds no relay subject for a while at
  * its start, and it receives once the relay opens. So until the session's first accepted
@@ -1008,13 +1081,20 @@ export interface InboundUnavailableOptions {
  * heartbeat's registration is usually accepted, so the first such refusal since the last
  * accepted registration starts the bound and an accepted registration inside it ends the hold
  * with nothing said. Any other refusal is told at once, as is an outage with no relay subject
- * after the first accepted registration. Each outage is told once, with one exception. A told
- * bus-outage 503 says the consumer may still deliver, so a refusal or a lost relay subject after
- * it is told once more, and `restored` takes that later message. A session that has begun to
- * stop (`stopping`) is told nothing at all.
+ * after the first accepted registration.
+ *
+ * Each outage is told once, with one exception: a failure that lets less reach the session than
+ * the told one is told once more, and `restored` takes that later message (`outageDepth`). A told
+ * bus-outage 503 says the consumer may still deliver everything. A told 503
+ * `repositories_unknown` (`isGitHubWithheld`) says that the session's GitHub messages are
+ * withheld, and that its other messages still reach it where the listener already held its
+ * registration. Any other refusal, and a lost relay subject, says that the session receives
+ * nothing. So a 503 `repositories_unknown` after a told bus-outage 503 is told once more, and so
+ * is any other refusal or a lost relay subject after either. A session that has begun to stop
+ * (`stopping`) is told nothing at all.
  */
 export function inboundUnavailable(
-  tell: (why: string) => void,
+  tell: (why: string, reason: string | undefined) => void,
   {
     now = () => Date.now(),
     firstOpenBoundMs = INBOUND_FIRST_OPEN_BOUND_MS,
@@ -1023,22 +1103,22 @@ export function inboundUnavailable(
     stopping = () => false,
   }: InboundUnavailableOptions = {}
 ): InboundUnavailable {
-  // The message this outage told the session last, until a registration is accepted.
-  let toldWhy: string | undefined;
+  // The message and the reason this outage told the session last, until a registration is
+  // accepted.
+  let told: { readonly why: string; readonly reason: string | undefined } | undefined;
   let everAccepted = false;
   let heldSince: number | undefined;
   let unansweredSince: number | undefined;
-  // A told registration that is not recorded for certain says that the consumer may still
-  // deliver, so a refusal or a lost relay subject after it is told once more.
+  // A failure that lets less reach the session than the told one is told once more.
   const say = (error: unknown) => {
     if (stopping()) return;
     const why = messageFor(error);
-    const toldNow =
-      toldWhy === undefined ||
-      (isUnrecordedRegistration(toldWhy) && !isUnrecordedRegistration(why));
-    if (!toldNow) return;
-    toldWhy = why;
-    tell(why);
+    const reason = error instanceof EnvoyApiError ? error.reason : undefined;
+    if (told !== undefined && outageDepth(why, reason) <= outageDepth(told.why, told.reason)) {
+      return;
+    }
+    told = { why, reason };
+    tell(why, reason);
   };
   return {
     noRelay(error) {
@@ -1066,10 +1146,10 @@ export function inboundUnavailable(
     accepted() {
       everAccepted = true;
       unansweredSince = undefined;
-      const why = toldWhy;
-      if (why === undefined || stopping()) return;
-      toldWhy = undefined;
-      restored?.(why);
+      const last = told;
+      if (last === undefined || stopping()) return;
+      told = undefined;
+      restored?.(last.why, last.reason);
     },
   };
 }

@@ -166,10 +166,18 @@ recorded for certain, since the retry may have landed, and, when one is accepted
 listener recorded one. A retry the listener refuses with a reason, such as `consumer_limit`, is
 told at once as Envoy inbound unavailable. A refusal or a lost relay subject after that
 notice is told once more, as Envoy inbound unavailable, and the accepted registration after it
-says that Envoy inbound is restored. At the session's start the first NATS dial can fail: the
-start warns in the pane that the session is not registered and keeps trying in the background,
-but the session is told that Envoy inbound is unavailable only when no registration is accepted
-within two minutes. The log does not wait: the first registration that finds no relay subject
+says that Envoy inbound is restored. An edge listener's 503 `repositories_unknown` (it could not
+read the repositories of the session's projects) is told at once as Envoy GitHub topics withheld:
+the listener withholds the messages of the session's GitHub topics. If the listener already held
+the session's registration, it kept that registration and the session's consumer, so the session
+receives its other messages; if it held none, the session receives nothing until a registration
+is accepted. The notice, the pane note and the log line say both. The accepted registration after
+it says that the listener follows those topics again. A refusal or a lost relay subject after that
+notice is told once more, as Envoy inbound unavailable. At the session's start the first NATS
+dial can fail: the start warns in the pane that the session is not registered and keeps trying in
+the background, but the session is told that Envoy inbound is unavailable only when no
+registration is accepted within two minutes. The log does not wait: the first registration that
+finds no relay subject
 writes a warning at once, `envoy: a registration found that this session holds no relay subject`,
 with why the relay subject could not be opened, and a later one of the same outage writes no
 second one. A session whose stop has begun registers nothing, and is told neither that
