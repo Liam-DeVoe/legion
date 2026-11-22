@@ -919,7 +919,7 @@ test("each measure names its method in the words of the Design's table", () => {
     "Dispatch shows the time since Legion first recorded the issue in its current Legion phase."
   );
   expect(MEASURE_METHODS.review_rounds).toBe(
-    "Dispatch counts each start of the Reviewing phase, or each move to Needs review status for an issue with no recorded Legion phases."
+    "Dispatch counts each start of the Reviewing phase. For an issue with no recorded Legion phases, it counts each move to Needs review."
   );
 });
 

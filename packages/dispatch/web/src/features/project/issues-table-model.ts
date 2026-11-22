@@ -266,19 +266,21 @@ export function ageOf(iso: string): string {
 }
 
 /**
- * How each of the five measures is taken, in the words of the Design's method table: the one or
- * two sentences its header's tooltip, a Board card's fact and the Columns menu's muted line say.
- * Each says what the server computes (`legion/metrics` and `api/legion_board.go` on #3578).
+ * How each of the five measures is taken, in the words of the Design's method table: the
+ * sentences its header's tooltip, a Board card's fact and the Columns menu's muted line say.
+ * Each says what the server computes (`legion/metrics` and `api/legion_board.go` on #3578). Time
+ * per phase, Review rounds and Time waiting split the table's longer sentences, so no sentence
+ * has more than 20 words (R9).
  */
 export const MEASURE_METHODS: Readonly<Partial<Record<ColumnId, string>>> = {
   work_hours:
     "Dispatch counts the hours from the first Legion worker event until the issue closes, or until Dispatch last read it. It does not count Backlog or Icebox hours, or hours when Legion has admitted the issue but not started it.",
   phase_hours:
-    "Work time goes to Waiting on a person while the issue's ask or root waits, else to its phase or Other. A root does not count the hours it waits on its children.",
+    "Work time goes to Waiting on a person while the issue's ask or root waits. The rest goes to the issue's Legion phase, or to Other. A root does not count the hours it waits on its children.",
   review_rounds:
-    "Dispatch counts each start of the Reviewing phase, or each move to Needs review status for an issue with no recorded Legion phases.",
+    "Dispatch counts each start of the Reviewing phase. For an issue with no recorded Legion phases, it counts each move to Needs review.",
   waited:
-    "Dispatch shows the time since Legion asked a person, when the issue waits on a person, or else since its Legion phase started.",
+    "Dispatch shows the time since Legion asked a person, when the issue waits on a person. If it does not wait on a person, it shows the time since its Legion phase started.",
   time_in_phase:
     "Dispatch shows the time since Legion first recorded the issue in its current Legion phase.",
 };

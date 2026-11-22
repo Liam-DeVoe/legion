@@ -96,16 +96,17 @@ const LEGION_HEADERS = [
   "Time per phase",
 ];
 
-/** The five measures' methods, word for word as the Design's columns table gives them. */
+/** The five measures' methods, as the Design's columns table gives them, its longer sentences
+ *  split to 20 words or fewer (R9, k11). */
 const METHODS: Readonly<Record<string, string>> = {
   "Work time":
     "Dispatch counts the hours from the first Legion worker event until the issue closes, or until Dispatch last read it. It does not count Backlog or Icebox hours, or hours when Legion has admitted the issue but not started it.",
   "Time per phase":
-    "Work time goes to Waiting on a person while the issue's ask or root waits, else to its phase or Other. A root does not count the hours it waits on its children.",
+    "Work time goes to Waiting on a person while the issue's ask or root waits. The rest goes to the issue's Legion phase, or to Other. A root does not count the hours it waits on its children.",
   "Review rounds":
-    "Dispatch counts each start of the Reviewing phase, or each move to Needs review status for an issue with no recorded Legion phases.",
+    "Dispatch counts each start of the Reviewing phase. For an issue with no recorded Legion phases, it counts each move to Needs review.",
   "Time waiting":
-    "Dispatch shows the time since Legion asked a person, when the issue waits on a person, or else since its Legion phase started.",
+    "Dispatch shows the time since Legion asked a person, when the issue waits on a person. If it does not wait on a person, it shows the time since its Legion phase started.",
   "Time in Legion phase":
     "Dispatch shows the time since Legion first recorded the issue in its current Legion phase.",
 };
