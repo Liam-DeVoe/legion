@@ -6,6 +6,7 @@
         "id": 44929688393,
         "event": "merge_group",
         "created_at": "2026-11-21T17:22:25Z",
+        "head_sha": "de5e0974062c5412453919c3895f254f3dfa1be5",
         "html_url": "https://github.com/cybermonklabs/legion/actions/runs/44929688393",
         "check_suite_node_id": "CS_kwDORFy7ds8AAAAcUAUmAg"
       },
@@ -97,6 +98,7 @@
         "id": 43811655596,
         "event": "merge_group",
         "created_at": "2026-11-16T05:39:23Z",
+        "head_sha": "a45e5b588d0ec9ff16de5bddd1123a65135fa685",
         "html_url": "https://github.com/cybermonklabs/legion/actions/runs/43811655596",
         "check_suite_node_id": "CS_kwDORFy7ds8AAAAbnXILiQ"
       },
@@ -142,6 +144,7 @@
         "id": 43704669128,
         "event": "merge_group",
         "created_at": "2026-11-15T10:33:40Z",
+        "head_sha": "bfa772d9c8ee945da6382bd34e7e25a96a8052a0",
         "html_url": "https://github.com/cybermonklabs/legion/actions/runs/43704669128",
         "check_suite_node_id": "CS_kwDORFy7ds8AAAAbjNd8bQ"
       },
@@ -228,6 +231,7 @@
         "id": 44456291758,
         "event": "merge_group",
         "created_at": "2026-11-19T04:08:54Z",
+        "head_sha": "5076299e506d64981a56bfad5dcfe42f3f567bdf",
         "html_url": "https://github.com/cybermonklabs/legion/actions/runs/44456291758",
         "check_suite_node_id": "CS_kwDORFy7ds8AAAAcBM692Q"
       },
@@ -314,6 +318,7 @@
         "id": 42446257887,
         "event": "merge_group",
         "created_at": "2026-11-08T04:18:13Z",
+        "head_sha": "dc24fe189dba3a1dda7aab28673db0edc5ba335f",
         "html_url": "https://github.com/cybermonklabs/legion/actions/runs/42446257887",
         "check_suite_node_id": "CS_kwDORFy7ds8AAAAaxcOHpQ"
       },
@@ -347,6 +352,7 @@
         "id": 42468519197,
         "event": "merge_group",
         "created_at": "2026-11-08T09:45:24Z",
+        "head_sha": "c23e213ad7a94a71e9c963cfc99187497460aee7",
         "html_url": "https://github.com/cybermonklabs/legion/actions/runs/42468519197",
         "check_suite_node_id": "CS_kwDORFy7ds8AAAAaySL7rA"
       },
@@ -358,6 +364,7 @@
         "id": 44973945438,
         "event": "merge_group",
         "created_at": "2026-11-22T01:59:10Z",
+        "head_sha": "30329f7a459fea33d910e54149b7a44237f5fff6",
         "html_url": "https://github.com/cybermonklabs/legion/actions/runs/44973945438",
         "check_suite_node_id": "CS_kwDORFy7ds8AAAAcVt8_yw"
       },
@@ -399,6 +406,7 @@
         "id": 44971330353,
         "event": "merge_group",
         "created_at": "2026-11-22T01:24:38Z",
+        "head_sha": "b51ed995546544a42280a5e370cc04bdb882a993",
         "html_url": "https://github.com/cybermonklabs/legion/actions/runs/44971330353",
         "check_suite_node_id": "CS_kwDORFy7ds8AAAAcVnjYug"
       },
@@ -440,6 +448,7 @@
         "id": 42896887674,
         "event": "schedule",
         "created_at": "2026-11-10T20:36:01Z",
+        "head_sha": "f15619830b5a560c677c2470dd12f5abbd362088",
         "html_url": "https://github.com/cybermonklabs/legion/actions/runs/42896887674",
         "check_suite_node_id": "CS_kwDORFy7ds8AAAAbDJ5i_A"
       },
@@ -477,6 +486,7 @@
         "id": 42465305880,
         "event": "schedule",
         "created_at": "2026-11-08T09:00:31Z",
+        "head_sha": "7c7e6e9ba158eb4496b20c3fcdadf70f66abae43",
         "html_url": "https://github.com/cybermonklabs/legion/actions/runs/42465305880",
         "check_suite_node_id": "CS_kwDORFy7ds8AAAAayKWg9A"
       },
@@ -506,6 +516,7 @@
         "id": 42532405516,
         "event": "merge_group",
         "created_at": "2026-11-08T22:52:45Z",
+        "head_sha": "667a74db44fca8f2f405ced10505284b653bf9ef",
         "html_url": "https://github.com/cybermonklabs/legion/actions/runs/42532405516",
         "check_suite_node_id": "CS_kwDORFy7ds8AAAAa0vPu_A"
       },

@@ -1,15 +1,16 @@
 /** The nightly's half of the quarantine, `e2e/tools/quarantine-check.ts`, driven through its pure
  *  part with the planted history of `fixtures/quarantine-history.fixture.ts`: what `decide`
- *  names, the lines `report` gives for each, and how a row's own last change and its fix move
- *  what counts, and the refusal `blame` gives an answer that holds no blame, read from a
- *  stand-in for GitHub. The moment of each of those readings is the fixture's.
+ *  names, the lines `report` gives for each, and how whether a run's head holds a row's own last
+ *  change and its fix moves what counts, and the refusal `blame` gives an answer that holds no
+ *  blame, read from a stand-in for GitHub. The moment of each of those readings is the fixture's.
  *
  *  Its reads are driven against `gitHubStandIn` below, a stand-in for GitHub's REST and GraphQL
  *  API on a local port: what `readHistory` reads of the answers GitHub gave for eleven runs
  *  (`fixtures/quarantine-answers.fixture.json`) and what `decide` and `report` say of it, what
- *  the reading costs, its pages, and the client's waits for GitHub's rate limit, which read the
- *  clock and wait a few real seconds. The deadline those waits are held to is read off a stand-in
- *  `/proc` (`readDeadline`). Nothing here reads GitHub itself. */
+ *  the reading costs, its pages, the compares `readHolds` reads and what it says of each answer,
+ *  and the client's waits for GitHub's rate limit, which read the clock and wait a few real
+ *  seconds. The deadline those waits are held to is read off a stand-in `/proc`
+ *  (`readDeadline`). Nothing here reads GitHub itself. */
 import { expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -24,11 +25,14 @@ import {
   decide,
   type FixReading,
   gitHub,
+  type Holds,
   lastChange,
+  pairKey,
   type RowChange,
   type RunReading,
   readDeadline,
   readHistory,
+  readHolds,
   report,
   rowLines,
   suitesPerCall,
@@ -38,6 +42,7 @@ import {
   blames,
   eighteenDays,
   fourteenDays,
+  head,
   history,
   picturesEntry,
   picturesFix,
@@ -60,14 +65,37 @@ function withPicturesBlame(ranges: (typeof blames)[string]): Map<string, RowChan
   ]);
 }
 
-const named = (changes: ReadonlyMap<string, RowChange>, fixes: readonly FixReading[] = []) =>
-  decide(history, [], fixes, changes, readAt).toQuarantine.map(({ row, runs }) => [
+/** Whether each head of `history` holds each commit of `changes` and of `fixReadings`, by
+ *  `pairKey`: every one does, but where `except` says otherwise. */
+function held(
+  changes: ReadonlyMap<string, RowChange>,
+  fixReadings: readonly FixReading[] = [],
+  except: Readonly<Record<string, boolean | string>> = {}
+): Holds {
+  const commits = [
+    ...[...changes.values()].map((change) => change.oid),
+    ...fixReadings.map((reading) => reading.entry.fixed),
+  ];
+  return new Map<string, boolean | string>([
+    ...history.flatMap((run) =>
+      commits.map((commit): [string, boolean] => [pairKey(commit, run.headSha), true])
+    ),
+    ...Object.entries(except),
+  ]);
+}
+
+const named = (
+  changes: ReadonlyMap<string, RowChange>,
+  fixes: readonly FixReading[] = [],
+  holds: Holds = held(changes, fixes)
+) =>
+  decide(history, [], fixes, changes, readAt, holds).toQuarantine.map(({ row, runs }) => [
     `${row.file} ${row.title}`,
     runs.map((run) => run.id),
   ]);
 
 test("a row flaky in two runs of the fourteen days is named, with its runs and the lines to add", () => {
-  const decision = decide(history, [], [], stillRows, readAt);
+  const decision = decide(history, [], [], stillRows, readAt, held(stillRows));
   expect(decision.toQuarantine.map(({ row, runs }) => [row, runs.map((run) => run.id)])).toEqual([
     [{ file: "pictures.e2e.ts", project: "chromium", title: "a picture uploads @pr" }, [101, 102]],
   ]);
@@ -75,8 +103,9 @@ test("a row flaky in two runs of the fourteen days is named, with its runs and t
   const { annotations, failed, summary } = report(decision, readAt);
   expect(failed).toBe(true);
   expect(summary).toContain(
-    "- `pictures.e2e.ts [chromium] a picture uploads @pr`, flaky in 2 runs after its own lines " +
-      "(pictures.e2e.ts:1-40) last changed, in 1111111111111111111111111111111111111111 at " +
+    "- `pictures.e2e.ts [chromium] a picture uploads @pr`, flaky in 2 runs whose heads hold the " +
+      "last change of its own lines (pictures.e2e.ts:1-40), " +
+      "1111111111111111111111111111111111111111 at " +
       "2026-10-01T00:00:00Z: [run 101](https://github.com/cybermonklabs/legion/actions/runs/101) " +
       "of 2026-11-08 (schedule), [run 102](https://github.com/cybermonklabs/legion/actions/runs/102) " +
       "of 2026-11-12 (merge_group)."
@@ -100,7 +129,7 @@ test("a row flaky in two runs of the fourteen days is named, with its runs and t
 });
 
 test("the same history names nothing once that row is quarantined", () => {
-  const decision = decide(history, [picturesEntry], [], stillRows, readAt);
+  const decision = decide(history, [picturesEntry], [], stillRows, readAt, held(stillRows));
   expect(decision.toQuarantine).toEqual([]);
   const { annotations, failed, summary } = report(decision, readAt);
   expect(failed).toBe(false);
@@ -111,7 +140,7 @@ test("the same history names nothing once that row is quarantined", () => {
 // `keyed-writes.e2e.ts`'s row is named by two attempts of run 102 and by no other run, and
 // `mermaid.e2e.ts`'s by run 103 and by a nightly 18 days before the reading: each is one run.
 test("a row flaky in one run is not named, however many attempts of it named the row", () => {
-  const decision = decide(history, [picturesEntry], [], stillRows, readAt);
+  const decision = decide(history, [picturesEntry], [], stillRows, readAt, held(stillRows));
   expect(decision.toQuarantine).toEqual([]);
   expect(decision.counted.map((run) => run.id)).toEqual([101, 102, 103, 106]);
 });
@@ -123,33 +152,50 @@ test("a pull request's flaky row does not count", () => {
     run.id === 104 ? { ...run, event: "merge_group" } : run
   );
   expect(
-    decide(asMergeGroup, [picturesEntry], [], stillRows, readAt).toQuarantine.map(
+    decide(asMergeGroup, [picturesEntry], [], stillRows, readAt, held(stillRows)).toQuarantine.map(
       ({ row, runs }) => [`${row.file} ${row.title}`, runs.map((run) => run.id)]
     )
   ).toEqual([["deep-links.e2e.ts a held chunk lands @firefox", [103, 104]]]);
 });
 
-// The row's own lines are 10 to 30: from its line to the line before the file's next row.
-test("a row flaky twice before its own lines changed is not named, and the runs left out say why", () => {
+// The row's own lines are 10 to 30: from its line to the line before the file's next row. Their
+// last change, 2222…, is of 2026-11-13, after both runs that named the row.
+test("a row flaky twice in runs whose heads do not hold its own lines' last change is not named, and the runs left out say why", () => {
   const changes = withPicturesBlame(blames.ownLinesAfter);
-  expect(named(changes)).toEqual([]);
-  const decision = decide(history, [], [], changes, readAt);
-  expect(decision.leftOut.map(({ run, why }) => [run.id, why])).toEqual([
+  const holds = held(changes, [], {
+    [pairKey("2".repeat(40), head(101))]: false,
+    [pairKey("2".repeat(40), head(102))]: false,
+  });
+  expect(named(changes, [], holds)).toEqual([]);
+  const decision = decide(history, [], [], changes, readAt, holds);
+  expect(decision.leftOut.map(({ missing, run, why }) => [run.id, missing, why])).toEqual([
     [
       101,
-      `created before its own lines last changed, in ${"2".repeat(40)} at 2026-11-13T09:00:00Z`,
+      "change",
+      `its head ${head(101)} does not hold its own lines' last change, ${"2".repeat(40)} at ` +
+        "2026-11-13T09:00:00Z",
     ],
     [
       102,
-      `created before its own lines last changed, in ${"2".repeat(40)} at 2026-11-13T09:00:00Z`,
+      "change",
+      `its head ${head(102)} does not hold its own lines' last change, ${"2".repeat(40)} at ` +
+        "2026-11-13T09:00:00Z",
     ],
   ]);
   expect(report(decision, readAt).summary).toContain(
     "- `pictures.e2e.ts [chromium] a picture uploads @pr` in " +
       "[run 101](https://github.com/cybermonklabs/legion/actions/runs/101) of 2026-11-08 " +
-      `(schedule): created before its own lines last changed, in ${"2".repeat(40)} at ` +
-      "2026-11-13T09:00:00Z."
+      `(schedule): its head ${head(101)} does not hold its own lines' last change, ` +
+      `${"2".repeat(40)} at 2026-11-13T09:00:00Z.`
   );
+});
+
+// The same change of 2026-11-13, after both runs, and both heads hold it: a run's time decides
+// nothing.
+test("a row flaky twice in runs created before its own lines last changed, whose heads hold that change, is named", () => {
+  expect(named(withPicturesBlame(blames.ownLinesAfter))).toEqual([
+    ["pictures.e2e.ts a picture uploads @pr", [101, 102]],
+  ]);
 });
 
 test("a row flaky twice after a change elsewhere in its file is named", () => {
@@ -158,28 +204,157 @@ test("a row flaky twice after a change elsewhere in its file is named", () => {
   ]);
 });
 
-test("a row flaky once before its own lines changed and once after is not named", () => {
+// The change is of 2026-11-10, between run 101 of 11-08 and run 102 of 11-12, and the heads say
+// the opposite of the times: 101's holds the change, and 102's does not.
+test("a row flaky in one run whose head holds its own lines' last change, and in one whose head does not, is not named", () => {
   const changes = withPicturesBlame(blames.ownLinesBetween);
-  expect(named(changes)).toEqual([]);
-  expect(decide(history, [], [], changes, readAt).leftOut.map(({ run }) => run.id)).toEqual([101]);
+  const holds = held(changes, [], { [pairKey("4".repeat(40), head(102))]: false });
+  expect(named(changes, [], holds)).toEqual([]);
+  expect(decide(history, [], [], changes, readAt, holds).leftOut.map(({ run }) => run.id)).toEqual([
+    102,
+  ]);
 });
 
-test("a row flaky twice before its fix is not named, and flaky twice after it is", () => {
-  expect(named(stillRows, [{ committedDate: "2026-11-13T09:00:00Z", entry: picturesFix }])).toEqual(
-    []
+// The fix's commit time says the opposite of the heads: it is before both runs where their heads
+// do not hold it, and after both where they do.
+test("a row flaky twice in runs whose heads do not hold its fix is not named, and flaky twice in runs whose heads hold it is", () => {
+  const fix = "5".repeat(40);
+  const before = [{ committedDate: "2026-11-06T09:00:00Z", entry: picturesFix }];
+  const holds = held(stillRows, before, {
+    [pairKey(fix, head(101))]: false,
+    [pairKey(fix, head(102))]: false,
+  });
+  expect(named(stillRows, before, holds)).toEqual([]);
+  expect(
+    decide(history, [], before, stillRows, readAt, holds).leftOut.map(({ missing, run, why }) => [
+      run.id,
+      missing,
+      why,
+    ])
+  ).toEqual([
+    [101, "fix", `its head ${head(101)} does not hold its fix, ${fix}`],
+    [102, "fix", `its head ${head(102)} does not hold its fix, ${fix}`],
+  ]);
+  const after = [{ committedDate: "2026-11-13T09:00:00Z", entry: picturesFix }];
+  expect(named(stillRows, after)).toEqual([["pictures.e2e.ts a picture uploads @pr", [101, 102]]]);
+});
+
+// Nightly 45045453036, started by hand at this branch's head ff963910, blamed the row's own lines
+// (96-147) there: their last change is c2a88d81, this branch's own commit of 2026-11-20T04:41:21Z.
+// The two merge groups that named the row were created after that time, but their heads, on main,
+// do not hold c2a88d81 (GitHub's compare of each with it answers 2bec2c65 as the merge base), so
+// both ran the old lines. Their ids, times and heads are GitHub's; the line in each notice is the
+// row's line at ff963910.
+test("two merge groups created after a row's own lines last changed, whose heads do not hold that change, do not name the row, and say why", () => {
+  const title =
+    "reference: a title written while the reference's read is in flight shows after leaving the " +
+    "page and coming back";
+  const change = {
+    committedDate: "2026-11-20T04:41:21Z",
+    lines: "refresh-freshness.e2e.ts:96-147",
+    oid: "c2a88d81460fd2aad180969d9a04dc1515076732",
+  };
+  const runs: RunReading[] = [
+    {
+      createdAt: "2026-11-22T03:44:29Z",
+      event: "merge_group",
+      flakyRows: [`refresh-freshness.e2e.ts:96 [chromium] ${title}`],
+      headSha: "2cdf3b82dbd479d6ab47492eab168339b9cd7ea4",
+      id: 44981988875,
+      unread: 0,
+      url: "https://github.com/cybermonklabs/legion/actions/runs/44981988875",
+    },
+    {
+      createdAt: "2026-11-22T14:51:48Z",
+      event: "merge_group",
+      flakyRows: [`refresh-freshness.e2e.ts:96 [chromium] ${title}`],
+      headSha: "bdca57750421d2a68cafebf29bcdbb7cd3d107f9",
+      id: 45035113291,
+      unread: 0,
+      url: "https://github.com/cybermonklabs/legion/actions/runs/45035113291",
+    },
+  ];
+  const at = new Date("2026-11-22T16:43:50Z");
+  const decision = decide(
+    runs,
+    [],
+    [],
+    new Map([[`refresh-freshness.e2e.ts [chromium] ${title}`, change]]),
+    at,
+    new Map(runs.map((run) => [pairKey(change.oid, run.headSha), false]))
   );
-  expect(named(stillRows, [{ committedDate: "2026-11-06T09:00:00Z", entry: picturesFix }])).toEqual(
-    [["pictures.e2e.ts a picture uploads @pr", [101, 102]]]
+  expect(decision.toQuarantine).toEqual([]);
+  expect(decision.leftOut.map(({ missing, run, why }) => [run.id, missing, why])).toEqual([
+    [
+      44981988875,
+      "change",
+      "its head 2cdf3b82dbd479d6ab47492eab168339b9cd7ea4 does not hold its own lines' last " +
+        "change, c2a88d81460fd2aad180969d9a04dc1515076732 at 2026-11-20T04:41:21Z",
+    ],
+    [
+      45035113291,
+      "change",
+      "its head bdca57750421d2a68cafebf29bcdbb7cd3d107f9 does not hold its own lines' last " +
+        "change, c2a88d81460fd2aad180969d9a04dc1515076732 at 2026-11-20T04:41:21Z",
+    ],
+  ]);
+  const { failed, summary } = report(decision, at);
+  expect(failed).toBe(false);
+  expect(summary).toContain(
+    `- \`refresh-freshness.e2e.ts [chromium] ${title}\` in ` +
+      "[run 45035113291](https://github.com/cybermonklabs/legion/actions/runs/45035113291) of " +
+      "2026-11-22 (merge_group): its head bdca57750421d2a68cafebf29bcdbb7cd3d107f9 does not " +
+      "hold its own lines' last change, c2a88d81460fd2aad180969d9a04dc1515076732 at " +
+      "2026-11-20T04:41:21Z."
+  );
+});
+
+// GitHub's compare of run 101's head with the row's last change answered nothing, so whether the
+// run ran the row's current lines cannot be told.
+test("a run whose head cannot be placed against its row's last change is counted, and the summary names it with the reason", () => {
+  const reason =
+    "GitHub has no compare of the two (a 404 or a 422), so one of them is a commit it does not have";
+  const holds = held(stillRows, [], { [pairKey("1".repeat(40), head(101))]: reason });
+  const decision = decide(history, [], [], stillRows, readAt, holds);
+  expect(decision.toQuarantine.map(({ runs }) => runs.map((run) => run.id))).toEqual([[101, 102]]);
+  const because =
+    `counted, though it cannot be told whether its head ${head(101)} holds its own lines' last ` +
+    `change, ${"1".repeat(40)} at 2026-10-01T00:00:00Z: ${reason}`;
+  const { summary } = report(decision, readAt);
+  const section = summary.indexOf("#### Flakes counted from runs that could not be placed");
+  expect(summary.slice(section, section + 4)).toEqual([
+    "#### Flakes counted from runs that could not be placed",
+    "",
+    "- `pictures.e2e.ts [chromium] a picture uploads @pr` in " +
+      "[run 101](https://github.com/cybermonklabs/legion/actions/runs/101) of 2026-11-08 " +
+      `(schedule): ${because}.`,
+    "",
+  ]);
+  expect(decision.unplaced.map(({ run, why }) => [run.id, why])).toEqual([[101, because]]);
+});
+
+// Run 101's head does not hold the row's last change, and run 102's does not hold its fix.
+test("the summary's count of the runs read says how many flakes it set aside for a head without the row's last change, and for one without its fix", () => {
+  const fixes = [{ committedDate: "2026-11-06T09:00:00Z", entry: picturesFix }];
+  const holds = held(stillRows, fixes, {
+    [pairKey("1".repeat(40), head(101))]: false,
+    [pairKey("5".repeat(40), head(102))]: false,
+  });
+  const { summary } = report(decide(history, [], fixes, stillRows, readAt, holds), readAt);
+  expect(summary[2]).toBe(
+    "Read the merge jobs of 4 runs of the 14 days before 2026-11-19T02:17:00.000Z: 1 schedule runs of dispatch-browser-nightly.yaml and 3 merge_group runs of ci.yaml. 3 of them named a flaky row. Flakes set aside because the run's head did not hold the row's last change: 1; because it did not hold the row's fix: 1. A pull request's runs are not read: its head can carry its own defect."
   );
 });
 
 test("a fix whose commit is not on main fails the check", () => {
+  const fixReadings = [{ committedDate: undefined, entry: picturesFix }];
   const decision = decide(
     history,
     [picturesEntry],
-    [{ committedDate: undefined, entry: picturesFix }],
+    fixReadings,
     stillRows,
-    readAt
+    readAt,
+    held(stillRows, fixReadings)
   );
   expect(decision.offMain).toEqual([picturesFix]);
   const { annotations, failed } = report(decision, readAt);
@@ -191,12 +366,14 @@ test("a fix whose commit is not on main fails the check", () => {
 });
 
 test("a fix older than fourteen days is named for its owner to delete, and fails nothing", () => {
+  const fixReadings = [{ committedDate: "2026-10-20T09:00:00Z", entry: picturesFix }];
   const decision = decide(
     history,
     [picturesEntry],
-    [{ committedDate: "2026-10-20T09:00:00Z", entry: picturesFix }],
+    fixReadings,
     stillRows,
-    readAt
+    readAt,
+    held(stillRows, fixReadings)
   );
   expect(decision.spent).toEqual([{ committedDate: "2026-10-20T09:00:00Z", entry: picturesFix }]);
   const { failed, summary } = report(decision, readAt);
@@ -210,7 +387,8 @@ test("an entry held longer than fourteen days is named with its issue and the li
     [picturesEntry, fourteenDays, eighteenDays],
     [],
     stillRows,
-    readAt
+    readAt,
+    held(stillRows)
   );
   expect(decision.overdue).toEqual([{ days: 18, entry: eighteenDays }]);
   const { annotations, failed, summary } = report(decision, readAt);
@@ -234,7 +412,10 @@ test("an entry held longer than fourteen days is named with its issue and the li
 
 test("flaky rows a run counted and no row notice named are reported as unread", () => {
   const short = history.map((run) => (run.id === 106 ? { ...run, unread: 3 } : run));
-  const { annotations } = report(decide(short, [picturesEntry], [], stillRows, readAt), readAt);
+  const { annotations } = report(
+    decide(short, [picturesEntry], [], stillRows, readAt, held(stillRows)),
+    readAt
+  );
   expect(annotations).toEqual([
     "::warning title=dispatch-browser quarantine::run 106 counts 3 flaky rows that no row " +
       "notice names, and they are not counted",
@@ -285,6 +466,7 @@ interface StoodRun {
     readonly id: number;
     readonly event: string;
     readonly created_at: string;
+    readonly head_sha: string;
     readonly html_url: string;
     readonly check_suite_node_id: string;
   };
@@ -298,10 +480,12 @@ interface Refusal {
   readonly body: unknown;
 }
 
-/** A stand-in for GitHub's API on a local port, answering from `runs`:
+/** A stand-in for GitHub's API on a local port, answering from `runs` and `compares`:
  *
  *  - `GET /repos/<repo>/actions/workflows/<workflow>/runs?event=<e>&created=<from>..<to>`: the
  *    runs of that workflow and event created in that range, both ends in it;
+ *  - `GET /repos/<repo>/compare/<range>`: the status and body `compares` holds for that range,
+ *    and a 404 for a range it does not hold;
  *  - `POST /graphql`: told apart by its variables - `ids` the suites of one call, `id` with
  *    `checkName` a suite's further check runs, `id` alone a check run's further notices, neither
  *    only `rateLimit` - a suite answering the check runs of its run's merge job alone, paged at
@@ -312,7 +496,8 @@ interface Refusal {
  *  each kind are answered from `refuse.rest` and `refuse.graphql`, in turn, where those hold any. */
 function gitHubStandIn(
   runs: readonly StoodRun[],
-  refuse: { rest?: Refusal[]; graphql?: Refusal[] } = {}
+  refuse: { rest?: Refusal[]; graphql?: Refusal[] } = {},
+  compares: Readonly<Record<string, { readonly status: number; readonly body: unknown }>> = {}
 ) {
   const seen: { at: number; path: string; variables?: Record<string, unknown> }[] = [];
   const mergeJob = (workflow: string) =>
@@ -399,6 +584,9 @@ function gitHubStandIn(
           .map(({ run }) => run);
         return Response.json({ total_count: listed.length, workflow_runs: listed });
       }
+      const compared = /^\/repos\/[^/]+\/[^/]+\/compare\/([^/]+)$/.exec(url.pathname);
+      const answer = compared === null ? undefined : compares[compared[1]];
+      if (answer !== undefined) return Response.json(answer.body, { status: answer.status });
       return Response.json({ message: "Not Found" }, { status: 404 });
     },
   });
@@ -419,6 +607,7 @@ function stoodRun(
       check_suite_node_id: `CS_${id}`,
       created_at: created.toISOString().replace(/\.\d{3}Z$/u, "Z"),
       event: countedRuns.find((counted) => counted.workflow === workflow)?.event ?? "",
+      head_sha: id.toString(16).padStart(40, "0"),
       html_url: `https://github.com/cybermonklabs/legion/actions/runs/${id}`,
       id,
     },
@@ -434,7 +623,8 @@ const flakyRow = (message: string): Note => ({ message, title: "dispatch-browser
  *  of them two, two of the nightly's scheduled runs that named none, and two merge groups whose
  *  merge job left no check run. Each run holds the run listing's fields the reading reads, and its
  *  merge job's check runs and their notices as GraphQL's `nodes(ids:)` answered them, trimmed to
- *  the fields the reading reads. */
+ *  the fields the reading reads. Each run's `head_sha`, which the reading reads too now, was read
+ *  later on 2026-11-22 from that run's page of the REST API: a run's head does not change. */
 const answers = JSON.parse(
   readFileSync(new URL("./fixtures/quarantine-answers.fixture.json", import.meta.url), "utf8")
 ) as { runs: StoodRun[] };
@@ -447,6 +637,7 @@ const recordedReadings: RunReading[] = [
     createdAt: "2026-11-08T09:00:31Z",
     event: "schedule",
     flakyRows: [],
+    headSha: "7c7e6e9ba158eb4496b20c3fcdadf70f66abae43",
     id: 42465305880,
     unread: 0,
     url: "https://github.com/cybermonklabs/legion/actions/runs/42465305880",
@@ -455,6 +646,7 @@ const recordedReadings: RunReading[] = [
     createdAt: "2026-11-10T20:36:01Z",
     event: "schedule",
     flakyRows: [],
+    headSha: "f15619830b5a560c677c2470dd12f5abbd362088",
     id: 42896887674,
     unread: 0,
     url: "https://github.com/cybermonklabs/legion/actions/runs/42896887674",
@@ -465,6 +657,7 @@ const recordedReadings: RunReading[] = [
     flakyRows: [
       "close-withdraws-asks.e2e.ts:153 [chromium] a person's Close withdraws the issue's asks, an earlier version keeps its open block, and Reopen brings the asks back",
     ],
+    headSha: "dc24fe189dba3a1dda7aab28673db0edc5ba335f",
     id: 42446257887,
     unread: 0,
     url: "https://github.com/cybermonklabs/legion/actions/runs/42446257887",
@@ -473,6 +666,7 @@ const recordedReadings: RunReading[] = [
     createdAt: "2026-11-08T09:45:24Z",
     event: "merge_group",
     flakyRows: [],
+    headSha: "c23e213ad7a94a71e9c963cfc99187497460aee7",
     id: 42468519197,
     unread: 0,
     url: "https://github.com/cybermonklabs/legion/actions/runs/42468519197",
@@ -481,6 +675,7 @@ const recordedReadings: RunReading[] = [
     createdAt: "2026-11-08T22:52:45Z",
     event: "merge_group",
     flakyRows: [],
+    headSha: "667a74db44fca8f2f405ced10505284b653bf9ef",
     id: 42532405516,
     unread: 0,
     url: "https://github.com/cybermonklabs/legion/actions/runs/42532405516",
@@ -491,6 +686,7 @@ const recordedReadings: RunReading[] = [
     flakyRows: [
       "agent-live-views.e2e.ts:251 [iphone] the rail reads live, live 30s and asleep for the views the person has open @phone",
     ],
+    headSha: "bfa772d9c8ee945da6382bd34e7e25a96a8052a0",
     id: 43704669128,
     unread: 0,
     url: "https://github.com/cybermonklabs/legion/actions/runs/43704669128",
@@ -502,6 +698,7 @@ const recordedReadings: RunReading[] = [
       "agent-rail.e2e.ts:184 [iphone] the rail row, the Agents row and the live view each unpin @phone",
       "agent-rail.e2e.ts:152 [iphone] a pin from the Agents page and a pin from a live view are both under the heading @phone",
     ],
+    headSha: "a45e5b588d0ec9ff16de5bddd1123a65135fa685",
     id: 43811655596,
     unread: 0,
     url: "https://github.com/cybermonklabs/legion/actions/runs/43811655596",
@@ -512,6 +709,7 @@ const recordedReadings: RunReading[] = [
     flakyRows: [
       "threads.e2e.ts:237 [chromium] resolve, reopen, then edit leaves one comment turn in its final state",
     ],
+    headSha: "5076299e506d64981a56bfad5dcfe42f3f567bdf",
     id: 44456291758,
     unread: 0,
     url: "https://github.com/cybermonklabs/legion/actions/runs/44456291758",
@@ -522,6 +720,7 @@ const recordedReadings: RunReading[] = [
     flakyRows: [
       "board.e2e.ts:1184 [chromium] picker keeps a pick on screen: a card dragged to another priority lane while its pick is out stays in that lane",
     ],
+    headSha: "de5e0974062c5412453919c3895f254f3dfa1be5",
     id: 44929688393,
     unread: 0,
     url: "https://github.com/cybermonklabs/legion/actions/runs/44929688393",
@@ -532,6 +731,7 @@ const recordedReadings: RunReading[] = [
     flakyRows: [
       "delivery-live.e2e.ts:484 [webkit-iphone] on a phone the delivery page shows a merge without a reload",
     ],
+    headSha: "30329f7a459fea33d910e54149b7a44237f5fff6",
     id: 44973945438,
     unread: 0,
     url: "https://github.com/cybermonklabs/legion/actions/runs/44973945438",
@@ -542,6 +742,7 @@ const recordedReadings: RunReading[] = [
     flakyRows: [
       "issue-page-p.e2e.ts:3120 [chromium] a change request sent from the header leaves the focus in the header",
     ],
+    headSha: "b51ed995546544a42280a5e370cc04bdb882a993",
     id: 44971330353,
     unread: 0,
     url: "https://github.com/cybermonklabs/legion/actions/runs/44971330353",
@@ -555,7 +756,7 @@ test("the recorded answers read as these eleven runs, and decide and report noth
   try {
     const readings = await readHistory(gitHub(server.url, "t"), repository, recordedAt);
     expect(readings).toEqual(recordedReadings);
-    const decision = decide(readings, [], [], new Map(), recordedAt);
+    const decision = decide(readings, [], [], new Map(), recordedAt, new Map());
     expect(decision.counted).toEqual(recordedReadings);
     expect([...decision.rows].map(([name, { runs }]) => [name, runs.map((run) => run.id)])).toEqual(
       [
@@ -593,8 +794,8 @@ test("the recorded answers read as these eleven runs, and decide and report noth
         ],
       ]
     );
-    const { absent, leftOut, offMain, overdue, spent, toQuarantine, unparsed } = decision;
-    expect({ absent, leftOut, offMain, overdue, spent, toQuarantine, unparsed }).toEqual({
+    const { absent, leftOut, offMain, overdue, spent, toQuarantine, unparsed, unplaced } = decision;
+    expect({ absent, leftOut, offMain, overdue, spent, toQuarantine, unparsed, unplaced }).toEqual({
       absent: [],
       leftOut: [],
       offMain: [],
@@ -602,6 +803,7 @@ test("the recorded answers read as these eleven runs, and decide and report noth
       spent: [],
       toQuarantine: [],
       unparsed: [],
+      unplaced: [],
     });
     expect(report(decision, recordedAt)).toEqual({
       annotations: [],
@@ -609,11 +811,11 @@ test("the recorded answers read as these eleven runs, and decide and report noth
       summary: [
         "### The quarantine on 2026-11-22",
         "",
-        "Read the merge jobs of 11 runs of the 14 days before 2026-11-22T02:17:00.000Z: 2 schedule runs of dispatch-browser-nightly.yaml and 9 merge_group runs of ci.yaml. 7 of them named a flaky row. A pull request's runs are not read: its head can carry its own defect.",
+        "Read the merge jobs of 11 runs of the 14 days before 2026-11-22T02:17:00.000Z: 2 schedule runs of dispatch-browser-nightly.yaml and 9 merge_group runs of ci.yaml. 7 of them named a flaky row. Flakes set aside because the run's head did not hold the row's last change: 0; because it did not hold the row's fix: 0. A pull request's runs are not read: its head can carry its own defect.",
         "",
         "#### Flaky in 2 or more runs, and not quarantined",
         "",
-        "No row was flaky in 2 runs after its last change that the quarantine does not hold.",
+        "No row the quarantine does not hold was flaky in 2 runs whose heads hold its last change.",
         "",
         "#### Held longer than 14 days",
         "",
@@ -688,6 +890,107 @@ test("a suite's check runs past one page, and a check run's notices past one, ar
         .map((request) => request.variables?.after ?? null)
     ).toEqual([null, String(checkRunsPerPage), String(annotationsPerPage)]);
     expect(github.spent().graphqlCalls).toBe(3);
+  } finally {
+    server.stop();
+  }
+});
+
+// Rows a and b of one file are each flaky in runs 1 and 2, and row a in run 3 too. The last
+// change of both rows' lines is one commit, `change`, and row a's fix is `fix`. Row c is flaky in
+// run 3 alone, so it is no candidate and its change is never compared. GitHub answers the pairs
+// each its own way: the commit as the merge base, another commit as it, no compare at all (404),
+// an answer that names no merge base, and a refusal.
+test("readHolds compares each commit of a candidate row with each head once, and says why where a compare cannot tell", async () => {
+  const change = "c".repeat(40);
+  const fix = "d".repeat(40);
+  const heads = ["1", "2", "3"].map((digit) => digit.repeat(40));
+  const rowA = "a.e2e.ts:1 [chromium] row a";
+  const rowC = "c.e2e.ts:1 [chromium] row c";
+  const runs = [
+    [rowA, "a.e2e.ts:9 [chromium] row b"],
+    [rowA, "a.e2e.ts:9 [chromium] row b"],
+    [rowA, rowC],
+  ].map(
+    (flakyRows, index): RunReading => ({
+      createdAt: new Date(recordedAt.getTime() - (index + 1) * 3_600_000).toISOString(),
+      event: "merge_group",
+      flakyRows,
+      headSha: heads[index],
+      id: index + 1,
+      unread: 0,
+      url: `https://github.com/cybermonklabs/legion/actions/runs/${index + 1}`,
+    })
+  );
+  const changes = new Map<string, RowChange>([
+    [
+      "a.e2e.ts [chromium] row a",
+      { committedDate: "2026-11-01T00:00:00Z", lines: "a.e2e.ts:1-8", oid: change },
+    ],
+    [
+      "a.e2e.ts [chromium] row b",
+      { committedDate: "2026-11-01T00:00:00Z", lines: "a.e2e.ts:9-20", oid: change },
+    ],
+    [
+      "c.e2e.ts [chromium] row c",
+      { committedDate: "2026-11-01T00:00:00Z", lines: "c.e2e.ts:1-20", oid: "e".repeat(40) },
+    ],
+  ]);
+  const fixes = [
+    {
+      file: "a.e2e.ts",
+      project: "chromium",
+      title: "row a",
+      issue: "dispatch://INFRA-2001",
+      fixed: fix,
+    },
+  ];
+  const server = gitHubStandIn(
+    [],
+    {},
+    {
+      [pairKey(change, heads[0])]: { body: { merge_base_commit: { sha: change } }, status: 200 },
+      [pairKey(change, heads[1])]: {
+        body: { merge_base_commit: { sha: "0".repeat(40) } },
+        status: 200,
+      },
+      [pairKey(fix, heads[0])]: { body: {}, status: 200 },
+      [pairKey(fix, heads[1])]: {
+        body: { message: "Resource not accessible by integration" },
+        status: 403,
+      },
+      [pairKey(fix, heads[2])]: { body: { merge_base_commit: { sha: fix } }, status: 200 },
+    }
+  );
+  try {
+    const github = gitHub(server.url, "t");
+    const holds = await readHolds(github, repository, runs, changes, fixes, recordedAt);
+    expect(Object.fromEntries(holds)).toEqual({
+      [pairKey(change, heads[0])]: true,
+      [pairKey(change, heads[1])]: false,
+      [pairKey(change, heads[2])]:
+        "GitHub has no compare of the two (a 404 or a 422), so one of them is a commit it does " +
+        "not have",
+      [pairKey(fix, heads[0])]: "GitHub's compare of the two names no merge base",
+      [pairKey(fix, heads[1])]:
+        `GitHub refused ${server.url}/repos/${repository}/compare/${pairKey(fix, heads[1])} ` +
+        'with HTTP 403: {"message":"Resource not accessible by integration"}, which names no ' +
+        "time it may be asked again (no retry-after, and x-ratelimit-remaining not 0), so it was " +
+        "not asked again",
+      [pairKey(fix, heads[2])]: true,
+    });
+    expect(server.seen.map((request) => request.path).sort()).toEqual(
+      [change, fix]
+        .flatMap((commit) =>
+          heads.map((head) => `/repos/${repository}/compare/${pairKey(commit, head)}`)
+        )
+        .sort()
+    );
+    // A day whose rows are each flaky in one run has no candidate, and compares nothing.
+    const quiet = [runs[0], { ...runs[2], flakyRows: [rowC] }];
+    expect(await readHolds(github, repository, quiet, changes, fixes, recordedAt)).toEqual(
+      new Map()
+    );
+    expect(server.seen).toHaveLength(6);
   } finally {
     server.stop();
   }

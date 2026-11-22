@@ -289,14 +289,14 @@ When a row may be added to the browser suite:
   days or held in the quarantine longer than 14 days, is a defect: that run's quarantine check
   fails the run and names the row in its summary. The run posts no check, files no issue and
   sends no message; GitHub tells only the person who last edited the workflow's cron line (the
-  workflow's own header says so). The check counts a flaky run only when it was made
-  after the last change to the row's own lines. `e2e/quarantine.ts` holds two kinds of entry, each
+  workflow's own header says so). The check counts a flaky run only when the commit the run tested
+  holds the last change to the row's own lines. `e2e/quarantine.ts` holds two kinds of entry, each
   naming the row and the issue that owns it. A quarantine entry, with the date it was added, takes
   the row out of the pull-request lane and the merge queue, and the row keeps running in the
   scheduled run, where it gates nothing. A fix entry names the commit on `main` that fixed the row
-  elsewhere than in its own lines: the row stays in every lane, and the check counts only its
-  flaky runs made after that commit. `e2e/__tests__/quarantine.test.ts` holds the file to at most
-  10 quarantine entries, each with its issue and its date.
+  elsewhere than in its own lines: the row stays in every lane, and the check counts only the
+  flaky runs whose tested commit holds that one. `e2e/__tests__/quarantine.test.ts` holds the file
+  to at most 10 quarantine entries, each with its issue and its date.
 
 What a stubbed row may assert, and what only a real-stack row may:
 

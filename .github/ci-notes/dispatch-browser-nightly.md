@@ -34,9 +34,12 @@ writes nothing to GitHub. For a row flaky in two runs it reads the row's own lin
 listing of this checkout and their last change from the file's blame at this commit (one
 GraphQL request per file, which the tool sends itself with the job's token), so it needs the
 install and the contracts build the listing loads; it reads no git history, so the checkout
-stays shallow. It counts a flake only from a run created after that change and after the row's
-fix, where e2e/quarantine.ts's `fixes` names one, and it reads each fix's commit against this
-one through GitHub's compare.
+stays shallow.
+It counts a flake only from a run whose head, the commit the run tested, holds that change, and holds the row's fix too where e2e/quarantine.ts's `fixes` names one.
+GitHub's compare of each such commit with each head says whether the head holds it.
+A run's time does not say it: a nightly started by hand at a branch head blames the branch's own commits, and a merge group of main created after them holds none of them until the branch lands.
+A compare that cannot tell leaves its run counted, and the summary names the run with the reason.
+It reads each fix's commit against this one through GitHub's compare too.
 
 ## The quarantine check's measured steps and its budget
 
@@ -47,7 +50,9 @@ nightly jobs took 24 to 28 s on 2026-11-22: jobs 137090407550 (04:12:26Z to 04:1
 the four after them, 137148928893, 137198886464, 137203993375 and 137215767381 (the last at
 `54a60643`, 12:58:36Z to 12:59:04Z), 27 or 28 s, as the runs it reads grew from 1,198 to 1,347. On
 2026-11-22 at 03:15Z, from this issue's pod, the tool's reads of the same 14 days took 22 s: 1,195
-runs in 34 REST calls and 13 GraphQL calls costing 132 points. Before that, the REST reader's 37
+runs in 34 REST calls and 13 GraphQL calls costing 132 points.
+To those the tool adds a REST call, GitHub's compare, for each pair of a candidate row's commit (its last change, and its fix where `fixes` names one) and the head of a flaky run that named the row, and none on a day with no candidate.
+Before `0d9a0258`, the REST reader's 37
 steps that succeeded on 2026-11-21 and 22 took 68 to 104 s, the longest job 137021330193 of run
 44961580846, 23:28:02Z to 23:29:46Z on 2026-11-21. Seven steps of one day are no fortnight's
 maximum, so the budget keeps the REST reader's, 104 x 1.15 = 120 s, until a fortnight of GraphQL

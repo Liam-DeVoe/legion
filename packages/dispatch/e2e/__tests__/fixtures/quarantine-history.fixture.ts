@@ -15,10 +15,14 @@ import type { BlameRange, RowChange, RunReading } from "../../tools/quarantine-c
 
 export const readAt = new Date("2026-11-19T02:17:00Z");
 
+/** The head of run `id` of `history`: a planted commit that ends in the run's id. */
+export const head = (id: number) => `${"f".repeat(37)}${id}`;
+
 const run = (id: number, event: string, createdAt: string, flakyRows: string[]): RunReading => ({
   createdAt,
   event,
   flakyRows,
+  headSha: head(id),
   id,
   unread: 0,
   url: `https://github.com/cybermonklabs/legion/actions/runs/${id}`,

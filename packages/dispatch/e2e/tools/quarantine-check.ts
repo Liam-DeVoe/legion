@@ -12,13 +12,16 @@
  *  A fix entry older than `windowDays` days, by its commit's time, is named too, for its owner
  *  to delete, and fails nothing: every flake the window holds is after it.
  *
- *  R4's "flaky twice" counts the row as it stands. A flake counts only from a run created after
- *  the row's own lines last changed on main - the row's lines run from its line in the listing
- *  of the checkout to the line before the next row of its file there, or to the file's end, and
- *  their last change is the newest commit of the file's blame at the checkout that overlaps them
- *  - and after its fix, where `fixes` names one. A merge-group or scheduled run created after a
- *  commit landed holds that commit, so time is the comparison and no history is read. A change
- *  elsewhere in the file moves nothing. The summary names each run it left out, and why.
+ *  R4's "flaky twice" counts the row as it stands. A flake counts only from a run whose head -
+ *  the commit the run tested, its `head_sha` - holds the commit that last changed the row's own
+ *  lines, and holds the row's fix too where `fixes` names one. The row's lines run from its line
+ *  in the listing of the checkout to the line before the next row of its file there, or to the
+ *  file's end, and their last change is the newest commit of the file's blame at the checkout
+ *  that overlaps them. A run's time does not say which commits its head holds: a nightly started
+ *  by hand at a branch head blames the branch's own commits, and a merge group of main created
+ *  after them holds none of them until the branch lands. A run whose head GitHub's compare cannot
+ *  place is counted, and the summary names it with the reason. A change elsewhere in the file
+ *  moves nothing. The summary names each run it left out, and why, and counts them.
  *
  *  The runs it reads are the scheduled runs of the nightly and the merge-group runs of ci.yaml,
  *  and no other: a pull request's head can carry its own defect. What it reads of each is the
@@ -28,16 +31,19 @@
  *  each run's check suite with their annotations (`checks: read`) through GraphQL, 100 suites a
  *  call and a call more for any page beyond the first (`readSuites`). For a row flaky in two runs
  *  it also reads a listing of its file in this checkout and the file's blame, one GraphQL request
- *  per file. It sends every request itself with the job's token, through one client and its retry
- *  ladder (`gitHub`); a refused blame fails the check, naming the file. For each fix it reads
- *  GitHub's compare of the checkout with the fix's commit.
+ *  per file, and GitHub's compare of each of the row's commits, its last change and its fix, with
+ *  the head of each run that named it, one REST call a pair (`readHolds`). It sends every request
+ *  itself with the job's token, through one client and its retry ladder (`gitHub`); a refused
+ *  blame fails the check, naming the file, and a refused compare leaves its run counted, and
+ *  named. For each fix it reads GitHub's compare of the checkout with the fix's commit.
  *
  *  Those reads are the adapter's, below `report`, and they decide nothing; `flakyRows`,
- *  `rowLines`, `lastChange`, `decide` and `report` are pure over what was read and the moment
- *  given them, which is how `e2e/__tests__/quarantine-check.test.ts` drives them. It drives
- *  `blame` against a stand-in for GitHub's answer, `readDeadline` against a stand-in for `/proc`,
- *  and `gitHub` and `readHistory` against a local stand-in for GitHub's API. Only the command
- *  line, `readDeadline` and `gitHub`'s wait for a rate limit read the clock or the processes.
+ *  `rowLines`, `lastChange`, `pairKey`, `decide` and `report` are pure over what was read and the
+ *  moment given them, which is how `e2e/__tests__/quarantine-check.test.ts` drives them. It
+ *  drives `blame` against a stand-in for GitHub's answer, `readDeadline` against a stand-in for
+ *  `/proc`, and `gitHub`, `readHistory` and `readHolds` against a local stand-in for GitHub's
+ *  API. Only the command line, `readDeadline` and `gitHub`'s wait for a rate limit read the clock
+ *  or the processes.
  *
  *  Environment: GITHUB_REPOSITORY (`owner/name`), GH_TOKEN or GITHUB_TOKEN, GITHUB_SHA (the
  *  commit checked out; `main` when unset), GITHUB_API_URL (https://api.github.com when unset),
@@ -90,6 +96,9 @@ export interface RunReading {
   readonly event: string;
   /** When the run was created, as GitHub gives it. */
   readonly createdAt: string;
+  /** The commit the run tested, the run listing's `head_sha`: a merge group's merge commit, or
+   *  the commit of main a scheduled run checked out. */
+  readonly headSha: string;
   /** The run's page. */
   readonly url: string;
   /** The message of every `dispatch-browser flaky row` notice of its merge jobs, one merge job
@@ -130,14 +139,24 @@ export interface FlakyRows {
 
 /** What the readings say of the quarantine. */
 export interface Decision extends FlakyRows {
-  /** Each row flaky in enough runs after its last change that the quarantine does not hold. */
+  /** Each row flaky in enough runs whose heads hold its last change, and its fix where `fixes`
+   *  names one, that the quarantine does not hold. */
   readonly toQuarantine: readonly {
     readonly row: QuarantineRow;
     readonly runs: readonly RunReading[];
     readonly change: RowChange;
   }[];
-  /** Each run a row flaky in enough runs was not counted in, and why. */
+  /** Each run a row flaky in enough runs was not counted in, what its head does not hold
+   *  (`missing`: the row's last change, or its fix), and why. */
   readonly leftOut: readonly {
+    readonly row: QuarantineRow;
+    readonly run: RunReading;
+    readonly missing: "change" | "fix";
+    readonly why: string;
+  }[];
+  /** Each run counted for a row flaky in enough runs though it cannot be told whether its head
+   *  holds the row's last change or its fix, and why. */
+  readonly unplaced: readonly {
     readonly row: QuarantineRow;
     readonly run: RunReading;
     readonly why: string;
@@ -215,22 +234,37 @@ export function lastChange(
     .sort((a, b) => Date.parse(b.committedDate) - Date.parse(a.committedDate))[0];
 }
 
+/** Whether a run's head holds a commit, by `pairKey`: `true` or `false` as GitHub's compare of
+ *  the two answers, or, where the compare cannot tell, why. */
+export type Holds = ReadonlyMap<string, boolean | string>;
+
+/** The key of `Holds` for whether `head` holds `commit`: the range of their compare. */
+export function pairKey(commit: string, head: string): string {
+  return `${commit}...${head}`;
+}
+
 /** What `runs` say of `entries` and `fixReadings` at `now`, with `changes` the last change of
- *  each row flaky in `flakyRunsToQuarantine` runs, by `rowName`; a row it holds no change for is
- *  one the checkout's listing does not hold. Such a row counts a run created after its change
- *  and, where a fix on main names it, after that fix too. A quarantine entry is overdue when more
- *  than `windowDays` calendar days (UTC) lie between the day it was added and the day of `now`. */
+ *  each row flaky in `flakyRunsToQuarantine` runs, by `rowName`, and `holds` whether the head of
+ *  each run that named such a row holds the row's last change and its fix; a row it holds no
+ *  change for is one the checkout's listing does not hold. Such a row counts a run whose head
+ *  holds its last change and, where `fixes` names a fix of it, that fix too. A run whose head
+ *  `holds` cannot place against one of those commits - GitHub could not tell, or the pair was
+ *  not read - is counted, and named in `unplaced` with the reason. A quarantine entry is overdue
+ *  when more than `windowDays` calendar days (UTC) lie between the day it was added and the day
+ *  of `now`. */
 export function decide(
   runs: readonly RunReading[],
   entries: readonly QuarantineEntry[],
   fixReadings: readonly FixReading[],
   changes: ReadonlyMap<string, RowChange>,
-  now: Date
+  now: Date,
+  holds: Holds
 ): Decision {
   const flaky = flakyRows(runs, now);
   const held = new Set(entries.map(rowName));
   const toQuarantine: { row: QuarantineRow; runs: RunReading[]; change: RowChange }[] = [];
-  const leftOut: { row: QuarantineRow; run: RunReading; why: string }[] = [];
+  const leftOut: Decision["leftOut"][number][] = [];
+  const unplaced: Decision["unplaced"][number][] = [];
   const absent: QuarantineRow[] = [];
   for (const [name, { row, runs: named }] of [...flaky.rows].sort(([a], [b]) =>
     a.localeCompare(b)
@@ -241,30 +275,46 @@ export function decide(
       absent.push(row);
       continue;
     }
-    const fix = fixReadings.find(
-      (reading) => rowName(reading.entry) === name && reading.committedDate !== undefined
-    );
-    const changed = Date.parse(change.committedDate);
-    const fixedAt =
-      fix?.committedDate === undefined ? Number.NEGATIVE_INFINITY : Date.parse(fix.committedDate);
+    const fix = fixReadings.find((reading) => rowName(reading.entry) === name)?.entry;
+    // The commits the head of a run that counts holds: the row's last change, and its fix.
+    const commits: { missing: "change" | "fix"; oid: string; what: string }[] = [
+      {
+        missing: "change",
+        oid: change.oid,
+        what: `its own lines' last change, ${change.oid} at ${change.committedDate}`,
+      },
+    ];
+    if (fix !== undefined) {
+      commits.push({ missing: "fix", oid: fix.fixed, what: `its fix, ${fix.fixed}` });
+    }
     const counting: RunReading[] = [];
     for (const run of named) {
-      const created = Date.parse(run.createdAt);
-      if (created <= changed) {
+      const placed = commits.map((commit) => ({
+        ...commit,
+        holds: holds.get(pairKey(commit.oid, run.headSha)) ?? "the pair was not compared",
+      }));
+      const lacking = placed.find((commit) => commit.holds === false);
+      if (lacking !== undefined) {
         leftOut.push({
+          missing: lacking.missing,
           row,
           run,
-          why: `created before its own lines last changed, in ${change.oid} at ${change.committedDate}`,
+          why: `its head ${run.headSha} does not hold ${lacking.what}`,
         });
-      } else if (created <= fixedAt) {
-        leftOut.push({
-          row,
-          run,
-          why: `created before its fix, ${fix?.entry.fixed} at ${fix?.committedDate}`,
-        });
-      } else {
-        counting.push(run);
+        continue;
       }
+      for (const commit of placed) {
+        if (typeof commit.holds === "string") {
+          unplaced.push({
+            row,
+            run,
+            why:
+              `counted, though it cannot be told whether its head ${run.headSha} holds ` +
+              `${commit.what}: ${commit.holds}`,
+          });
+        }
+      }
+      counting.push(run);
     }
     if (counting.length >= flakyRunsToQuarantine && !held.has(name)) {
       toQuarantine.push({ change, row, runs: counting });
@@ -296,6 +346,7 @@ export function decide(
     overdue,
     spent,
     toQuarantine,
+    unplaced,
   };
 }
 
@@ -315,6 +366,8 @@ export function report(
   const runLink = (run: RunReading) =>
     `[run ${run.id}](${run.url}) of ${run.createdAt.slice(0, 10)} (${run.event})`;
   const flaky = decision.counted.filter((run) => run.flakyRows.length > 0);
+  const setAside = { change: 0, fix: 0 };
+  for (const { missing } of decision.leftOut) setAside[missing] += 1;
   const summary = [
     `### The quarantine on ${today}`,
     "",
@@ -327,8 +380,10 @@ export function report(
             `${counted.event} runs of ${counted.workflow}`
         )
         .join(" and ") +
-      `. ${flaky.length} of them named a flaky row. A pull request's runs are not read: its ` +
-      "head can carry its own defect.",
+      `. ${flaky.length} of them named a flaky row. Flakes set aside because the run's head did ` +
+      `not hold the row's last change: ${setAside.change}; because it did not hold the row's ` +
+      `fix: ${setAside.fix}. A pull request's runs are not read: its head can carry its own ` +
+      "defect.",
     "",
     `#### Flaky in ${flakyRunsToQuarantine} or more runs, and not quarantined`,
     "",
@@ -336,14 +391,14 @@ export function report(
   const annotations: string[] = [];
   if (decision.toQuarantine.length === 0) {
     summary.push(
-      `No row was flaky in ${flakyRunsToQuarantine} runs after its last change that the ` +
-        "quarantine does not hold."
+      `No row the quarantine does not hold was flaky in ${flakyRunsToQuarantine} runs whose ` +
+        "heads hold its last change."
     );
   }
   for (const { change, row, runs } of decision.toQuarantine) {
     summary.push(
-      `- \`${rowName(row)}\`, flaky in ${runs.length} runs after its own lines ` +
-        `(${change.lines}) last changed, in ${change.oid} at ${change.committedDate}: ` +
+      `- \`${rowName(row)}\`, flaky in ${runs.length} runs whose heads hold the last change of ` +
+        `its own lines (${change.lines}), ${change.oid} at ${change.committedDate}: ` +
         `${runs.map(runLink).join(", ")}.`,
       "",
       `  The controller files the issue that owns it. Add these lines to \`quarantine\` in ` +
@@ -363,6 +418,12 @@ export function report(
   }
   for (const row of decision.absent) {
     summary.push(`- \`${rowName(row)}\`: no row of the checkout's listing, so it does not stand.`);
+  }
+  if (decision.unplaced.length > 0) {
+    summary.push("", "#### Flakes counted from runs that could not be placed", "");
+  }
+  for (const { row, run, why } of decision.unplaced) {
+    summary.push(`- \`${rowName(row)}\` in ${runLink(run)}: ${why}.`);
   }
   summary.push("", `#### Held longer than ${windowDays} days`, "");
   if (decision.overdue.length === 0) {
@@ -783,6 +844,7 @@ interface ListedRun {
   readonly check_suite_node_id: string;
   readonly created_at: string;
   readonly event: string;
+  readonly head_sha: string;
   readonly html_url: string;
   readonly id: number;
 }
@@ -1049,6 +1111,7 @@ export async function readHistory(
         createdAt: run.created_at,
         event: run.event,
         flakyRows: flakyMessages,
+        headSha: run.head_sha,
         id: run.id,
         unread,
         url: run.html_url,
@@ -1206,6 +1269,65 @@ async function readFixes(
   );
 }
 
+/** Whether the head of each run that named a candidate row - a row of `changes` flaky in
+ *  `flakyRunsToQuarantine` runs - holds the row's last change, and its fix where `fixEntries`
+ *  names one, by `pairKey`. GitHub's compare of the commit with the head answers the commit as
+ *  the merge base exactly when the head holds it, as `readFixes` reads it. Each pair is read
+ *  once, a REST call, four at a time (`inTurn`), and none is read on a day with no candidate. A
+ *  compare GitHub refuses, does not have (a 404 or a 422: one of the two is a commit it does not
+ *  have) or answers with no merge base tells nothing: the pair holds why, and `decide` counts the
+ *  run and names it. */
+export async function readHolds(
+  github: Pick<GitHub, "one">,
+  repository: string,
+  runs: readonly RunReading[],
+  changes: ReadonlyMap<string, RowChange>,
+  fixEntries: readonly FixEntry[],
+  now: Date
+): Promise<Map<string, boolean | string>> {
+  const pairs = new Map<string, { commit: string; head: string }>();
+  for (const [name, { runs: named }] of flakyRows(runs, now).rows) {
+    const change = changes.get(name);
+    if (named.length < flakyRunsToQuarantine || change === undefined) continue;
+    const fix = fixEntries.find((entry) => rowName(entry) === name);
+    for (const commit of fix === undefined ? [change.oid] : [change.oid, fix.fixed]) {
+      for (const run of named) {
+        pairs.set(pairKey(commit, run.headSha), { commit, head: run.headSha });
+      }
+    }
+  }
+  return new Map(
+    await inTurn(
+      [...pairs],
+      4,
+      async ([key, { commit, head }]): Promise<[string, boolean | string]> => {
+        let compare: unknown;
+        try {
+          compare = await github.one(`/repos/${repository}/compare/${commit}...${head}`);
+        } catch (error) {
+          // `gitHub`'s refusal says the whole reading failed; a refused compare fails only its
+          // pair, whose run counts.
+          const refusal = (error as Error).message.replace(` ${failedRead}`, "");
+          return [key, refusal.replace(/\.$/u, "")];
+        }
+        if (compare === undefined) {
+          return [
+            key,
+            "GitHub has no compare of the two (a 404 or a 422), so one of them is a commit it " +
+              "does not have",
+          ];
+        }
+        const base = (compare as { merge_base_commit?: { sha?: unknown } } | null)
+          ?.merge_base_commit?.sha;
+        if (typeof base !== "string") {
+          return [key, "GitHub's compare of the two names no merge base"];
+        }
+        return [key, base === commit];
+      }
+    )
+  );
+}
+
 if (import.meta.main) {
   const repository = process.env.GITHUB_REPOSITORY ?? "";
   const token = process.env.GH_TOKEN || process.env.GITHUB_TOKEN || "";
@@ -1234,7 +1356,8 @@ if (import.meta.main) {
       .filter((seen) => seen.runs.length >= flakyRunsToQuarantine)
       .map((seen) => seen.row);
     const changes = await readChanges(github, candidates, repository, expression);
-    decision = decide(runs, quarantine, fixReadings, changes, now);
+    const holds = await readHolds(github, repository, runs, changes, fixes, now);
+    decision = decide(runs, quarantine, fixReadings, changes, now, holds);
   } catch (error) {
     console.error(`::error title=dispatch-browser quarantine::${(error as Error).message}`);
     process.exit(1);
