@@ -82,7 +82,7 @@ func (r *Runtime) refreshGitHubCredentials(ctx context.Context) {
 	if r.gitHubCredential == nil {
 		return
 	}
-	bundles := appauth.NewBundles(r.gitHubCredential, r.deploymentApps)
+	bundles := appauth.NewBundles(r.gitHubCredential, r.roleApps)
 	for _, entry := range r.trackedProcesses() {
 		token := entry.locator.Claim
 		role, ok, err := r.paneRole(ctx, entry)

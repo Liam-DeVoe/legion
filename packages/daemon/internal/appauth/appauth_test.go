@@ -340,28 +340,30 @@ func TestARoleOfAPlansBundleIsMintedAsTheAppOfItsType(t *testing.T) {
 	}
 }
 
-// One walk's memo builds a role of a plan once for each issue that asks: two issues can define
-// one name with two types, so coder of LEGION-43 (implementation) and coder of LEGION-45 (review)
-// on one repository are two bundles of two Apps, while a role of Legion's, and a role of the
-// deployment (the checker), which acts as one App on every issue, is one bundle for every issue
-// of the repository.
+// One walk's memo builds a role that is none of Legion's once for each App it acts as on the
+// repository: two issues can define one name with two types, so coder of LEGION-43
+// (implementation) and coder of LEGION-45 (review) on one repository are two bundles of two Apps,
+// while a role of Legion's, and a role of the deployment (the checker), which acts as one App on
+// every issue whose plan does not define its name, is one bundle for every such issue of the
+// repository. LEGION-46's plan defines checker of the type review, which wins over the
+// deployment's for that issue, so its checker is a bundle of the review App of its own.
 func TestAWalksBundlesOfARoleOfAPlanAreTheirIssues(t *testing.T) {
 	repo := ghrepo.MustParse("sjawhar/legion")
 	plans := func(ctx context.Context, issue string, role claim.Role) (Planned, error) {
-		if issue == "LEGION-45" && role == "coder" {
+		if (issue == "LEGION-45" && role == "coder") || (issue == "LEGION-46" && role == "checker") {
 			return Planned{Defines: true, Type: plan.TypeReview}, nil
 		}
 		return planOf43(ctx, issue, role)
 	}
-	deployed := DeploymentApps{"checker": Implement}
+	apps := RoleApps{Deployed: DeploymentApps{"checker": Implement}, Plan: plans}
 	var built []string
 	credential := GitHubCredential(sourceOf(ownerTokens{}, installedEverywhere("sjawhar/legion")), servesOneOf("sjawhar/legion"), ghrepo.Renames{}, nil, nil,
-		RoleApps{Deployed: deployed, Plan: plans}, quietBundleLog())
+		apps, quietBundleLog())
 	counting := func(ctx context.Context, issue string, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
 		built = append(built, issue+"/"+string(role))
 		return credential(ctx, issue, role, repo)
 	}
-	bundles := NewBundles(counting, deployed)
+	bundles := NewBundles(counting, apps)
 	for _, ask := range []struct {
 		issue string
 		role  claim.Role
@@ -374,6 +376,7 @@ func TestAWalksBundlesOfARoleOfAPlanAreTheirIssues(t *testing.T) {
 		{"LEGION-45", claim.RoleTester, "review"},
 		{"LEGION-43", "checker", "implement"},
 		{"LEGION-45", "checker", "implement"},
+		{"LEGION-46", "checker", "review"},
 	} {
 		bundle, err := bundles.Bundle(context.Background(), ask.issue, ask.role, repo)
 		if err != nil {
@@ -383,8 +386,8 @@ func TestAWalksBundlesOfARoleOfAPlanAreTheirIssues(t *testing.T) {
 			t.Errorf("%s on %s is rendered for the %q App, want %q", ask.role, ask.issue, rendered.App, ask.app)
 		}
 	}
-	if want := []string{"LEGION-43/coder", "LEGION-45/coder", "LEGION-43/tester", "LEGION-43/checker"}; !slices.Equal(built, want) {
-		t.Errorf("the walk built %v, want %v: a role of a plan once for each issue, a role of Legion's and one of the deployment once for the repository", built, want)
+	if want := []string{"LEGION-43/coder", "LEGION-45/coder", "LEGION-43/tester", "LEGION-43/checker", "LEGION-46/checker"}; !slices.Equal(built, want) {
+		t.Errorf("the walk built %v, want %v: a role of a plan once for each App it acts as, a role of Legion's and one of the deployment once for the repository", built, want)
 	}
 }
 

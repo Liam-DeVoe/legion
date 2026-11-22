@@ -16,18 +16,18 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// The tmux runtime holds the App each role of the deployment acts as (tmux.Options.DeploymentApps),
-// the map its gh bundle function reads, so one walk of its panes builds a role of the
-// deployment's bundle once for every issue (appauth.NewBundles) and builds a role of a plan for
-// each issue that asks.
+// The tmux runtime holds the App each role of the deployment acts as (tmux.Options.RoleApps), the
+// reader its gh bundle function reads, so one walk of its panes builds a role of the deployment's
+// bundle once for every issue whose plan does not define its name (appauth.NewBundles) and builds
+// a role of a plan once for each App it acts as.
 func TestTheTmuxRuntimeHoldsTheAppOfEachRoleOfTheDeployment(t *testing.T) {
 	cfg := config.Config{Runtime: config.Runtime{Name: "tmux"}, Roles: []config.Role{
 		{Name: "checker", Type: "testing", GitHubApp: config.RoleAppImplement},
 		{Name: "critic", Type: "review", GitHubApp: config.RoleAppReview},
 	}}
 	want := appauth.DeploymentApps{"checker": appauth.Implement, "critic": appauth.Review}
-	if got := tmuxOptions(cfg, "test", nil, "", "", quietLogger()).DeploymentApps; !maps.Equal(got, want) {
-		t.Errorf("tmux DeploymentApps = %v, want %v", got, want)
+	if got := tmuxOptions(cfg, "test", nil, "", "", quietLogger()).RoleApps.Deployed; !maps.Equal(got, want) {
+		t.Errorf("tmux RoleApps.Deployed = %v, want %v", got, want)
 	}
 }
 

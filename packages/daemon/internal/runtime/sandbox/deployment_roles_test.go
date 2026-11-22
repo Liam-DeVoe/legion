@@ -24,23 +24,23 @@ var deploymentImplementer = claim.Token("legion-legion-legion-208-implementer")
 
 // deploymentRig is the sandbox rig of a deployment that defines two roles of its own, the
 // checker acting as the implement App and the critic as the review App, with the daemon's own gh
-// answers built over that map (withProjectTokens reads Options.DeploymentApps, so the rig sets the
+// answers built over that map (withProjectTokens reads Options.RoleApps, so the rig sets the
 // map first).
 func deploymentRig(t *testing.T) *rig {
 	t.Helper()
 	return newRig(t, nil,
 		withOptions(func(o *Options) {
-			o.DeploymentApps = appauth.DeploymentApps{"checker": appauth.Implement, "critic": appauth.Review}
+			o.RoleApps.Deployed = appauth.DeploymentApps{"checker": appauth.Implement, "critic": appauth.Review}
 		}),
 		withProjectTokens(refusingOwnerTokens{refuse: new(atomic.Bool)}))
 }
 
-// The runtime holds the roles of its deployment (Options.DeploymentApps) as a field of its own:
+// The runtime holds the roles of its deployment (Options.RoleApps.Deployed) as a field of its own:
 // an overlay of a role the deployment defines is taken, the image probe is told it, and two
 // runtimes built in one process each keep their own list, so no package variable holds it.
 func TestTheRuntimeTakesADeploymentRolesOverlays(t *testing.T) {
 	withChecker := testOptions()
-	withChecker.DeploymentApps = appauth.DeploymentApps{"checker": appauth.Review}
+	withChecker.RoleApps.Deployed = appauth.DeploymentApps{"checker": appauth.Review}
 	withChecker.RoleConfigFiles = map[claim.Role][]string{"checker": {"/etc/checker.yml"}}
 	a, err := configure(withChecker)
 	if err != nil {
@@ -153,7 +153,7 @@ func TestAPodsLogAndBoundCountItsDeploymentsRoles(t *testing.T) {
 		t.Fatal(err)
 	}
 	deployed := testOptions()
-	deployed.DeploymentApps = appauth.DeploymentApps{"checker": appauth.Review}
+	deployed.RoleApps.Deployed = appauth.DeploymentApps{"checker": appauth.Review}
 	withChecker, err := configure(deployed)
 	if err != nil {
 		t.Fatal(err)
@@ -183,7 +183,7 @@ func TestAnOperatorVolumeMayNotTakeADeploymentRolesVolumeName(t *testing.T) {
 // Sandbox, as each of Legion's roles' does: no deleted Sandbox's role keeps a credential cached.
 func TestTheLauncherCredentialOfADeploymentRoleIsForgottenWithItsSandbox(t *testing.T) {
 	opts := testOptions()
-	opts.DeploymentApps = appauth.DeploymentApps{"checker": appauth.Review}
+	opts.RoleApps.Deployed = appauth.DeploymentApps{"checker": appauth.Review}
 	r, err := configure(opts)
 	if err != nil {
 		t.Fatal(err)

@@ -92,12 +92,12 @@ type Runtime struct {
 	tools                          Tools
 	pod                            Pod
 	// issueRoles are the runtime's issue roles: Legion's six (claim.Roles), then each role the
-	// deployment defines, sorted by name (issueRolesOf over Options.DeploymentApps).
-	// deploymentApps is that map, the App each role of the deployment acts as. Both are set once
-	// in configureProber and only read after, and no package variable holds either: two runtimes
-	// of one process keep their own.
+	// deployment defines, sorted by name (issueRolesOf over Options.RoleApps.Deployed). roleApps
+	// is Options.RoleApps, whose Deployed holds the App each role of the deployment acts as. Both
+	// are set once in configureProber and only read after, and no package variable holds either:
+	// two runtimes of one process keep their own.
 	issueRoles      []claim.Role
-	deploymentApps  appauth.DeploymentApps
+	roleApps        appauth.RoleApps
 	roleConfigFiles map[claim.Role][]string
 	// experimentVariants are every arm of every experiment the project declares
 	// (Options.ExperimentVariants), and variantFiles their overlay files as one list, in that
@@ -400,7 +400,7 @@ func configureProber(opts Options) (*Runtime, error) {
 			return refuse("agent secrets: the exchange audience is the Workload Identity pool's, %q, which the metadata endpoint's token holds; the cluster projects one volume per audience", workloadPool)
 		}
 	}
-	issueRoles := issueRolesOf(opts.DeploymentApps)
+	issueRoles := issueRolesOf(opts.RoleApps.Deployed)
 	if err := CheckPod(opts.Pod, append(slices.Clone(issueRoles), claim.RoleController), opts.ProviderKeys, opts.Tools, opts.LaunchSecrets, opts.ProvidersSecrets, opts.SessionStore,
 		opts.AgentSecrets != nil && opts.AgentSecrets.ExchangeAudience != ""); err != nil {
 		return refuse("%v", err)
@@ -432,7 +432,7 @@ func configureProber(opts Options) (*Runtime, error) {
 		volumeSize: opts.IssueVolume, scheduling: opts.Scheduling, sandboxConfig: opts.Sandbox, resources: opts.Resources,
 		streamURL: opts.StreamURL, daemonURL: opts.DaemonURL, envoyURL: opts.EnvoyURL, dispatchURL: opts.DispatchURL,
 		dispatchToken: opts.DispatchToken, natsURLs: opts.NATSURLs, tools: opts.Tools, agentSecrets: opts.AgentSecrets,
-		pod: opts.Pod, issueRoles: issueRoles, deploymentApps: opts.DeploymentApps,
+		pod: opts.Pod, issueRoles: issueRoles, roleApps: opts.RoleApps,
 		roleConfigFiles: opts.RoleConfigFiles, experimentVariants: opts.ExperimentVariants,
 		variantFiles: runtime.VariantOverlays(opts.ExperimentVariants),
 		providerKeys: opts.ProviderKeys, providersSecrets: slices.Sorted(slices.Values(opts.ProvidersSecrets)), natsUser: opts.NATSUser,

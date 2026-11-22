@@ -33,10 +33,12 @@ const roleAcceptance claim.Role = "acceptance"
 // reads the whole of a task's work, which both act as the review App (neither writes an issue
 // branch, and a review never comes from the App that wrote the change). Roles that can write an
 // issue branch use implement; every verdict-only role uses review. Neither the deployment's map
-// nor a plan overrides one of these. Every other role acts as the App deployed names for it; a
-// role deployed does not name acts as the App of its type in the issue's plan (planned): the
-// implement App for the type implementation, the review App for every other type, no type among
-// them. A role none of the three defines is ErrRoleNotDefined.
+// nor a plan overrides one of these. Every other role that the issue's plan defines (planned)
+// acts as the App of its type there: the implement App for the type implementation, the review App
+// for every other type, no type among them. The plan wins over a role of the deployment of the
+// same name, which the deployment took after the plan defined it, so the issue keeps its plan's
+// role until a version of its plan changes it. A role the plan does not define acts as the App
+// deployed names for it. A role none of the three defines is ErrRoleNotDefined.
 func AppRoleFor(role claim.Role, deployed DeploymentApps, planned Planned) (AppRole, error) {
 	switch role {
 	case claim.RoleArchitect, claim.RolePlanner, claim.RoleTester, claim.RoleReviewer, claim.RoleController, roleAcceptance:
@@ -44,14 +46,14 @@ func AppRoleFor(role claim.Role, deployed DeploymentApps, planned Planned) (AppR
 	case claim.RoleImplementer, claim.RoleMerger:
 		return Implement, nil
 	}
-	if app, ok := deployed[role]; ok {
-		return app, nil
-	}
 	if planned.Defines {
 		if planned.Type == plan.TypeImplementation {
 			return Implement, nil
 		}
 		return Review, nil
+	}
+	if app, ok := deployed[role]; ok {
+		return app, nil
 	}
 	return "", fmt.Errorf("the role %s is none of Legion's, and %w", role, ErrRoleNotDefined)
 }
@@ -66,17 +68,21 @@ type RoleApps struct {
 	Plan func(ctx context.Context, issue string, role claim.Role) (Planned, error)
 }
 
-// Of is the App of role for a claim of issue: AppRoleFor, with the plan read only for a role that
-// is none of Legion's and none of the deployment's. A role of a plan is its issue's alone, since
-// two issues can define one name with two types, so a reader names the claim's issue.
+// Of is the App of role for a claim of issue: AppRoleFor, with the plan of issue read for every
+// role that is none of Legion's, a role of the deployment's too, since the plan wins over the
+// deployment for a name it defines. A role of a plan is its issue's alone, since two issues can
+// define one name with two types, so a reader names the claim's issue. A claim of no issue ("")
+// reads no plan.
 func (a RoleApps) Of(ctx context.Context, issue string, role claim.Role) (AppRole, error) {
-	app, err := AppRoleFor(role, a.Deployed, Planned{})
-	if err == nil || !errors.Is(err, ErrRoleNotDefined) || a.Plan == nil {
-		return app, err
+	if app, err := AppRoleFor(role, nil, Planned{}); err == nil {
+		return app, nil
 	}
-	planned, err := a.Plan(ctx, issue, role)
-	if err != nil {
-		return "", fmt.Errorf("the plan of %s for the role %s: %w", issue, role, err)
+	var planned Planned
+	if a.Plan != nil && issue != "" {
+		var err error
+		if planned, err = a.Plan(ctx, issue, role); err != nil {
+			return "", fmt.Errorf("the plan of %s for the role %s: %w", issue, role, err)
+		}
 	}
 	return AppRoleFor(role, a.Deployed, planned)
 }

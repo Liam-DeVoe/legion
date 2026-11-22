@@ -77,14 +77,15 @@ func TestASlotOfARoleOfAPlanHoldsTheAppOfItsType(t *testing.T) {
 	held("after a refresh of the stale slots")
 }
 
-// A role of the deployment acts as one App on every issue, so one tick builds its bundle once for
-// the repository however many issue pods hold its slot (Options.DeploymentApps,
-// appauth.NewBundles): the checker's slot in the pods of two issues of one repository is one build.
+// A role of the deployment acts as one App on every issue whose plan does not define its name, so
+// one tick builds its bundle once for the repository however many issue pods hold its slot
+// (Options.RoleApps, appauth.NewBundles): the checker's slot in the pods of two issues of one
+// repository is one build.
 func TestATickBuildsARoleOfTheDeploymentOnceForEveryIssuePod(t *testing.T) {
 	var mu sync.Mutex
 	built := map[claim.Role][]string{}
 	g := newRig(t, nil, withOptions(func(o *Options) {
-		o.DeploymentApps = appauth.DeploymentApps{"checker": appauth.Implement}
+		o.RoleApps.Deployed = appauth.DeploymentApps{"checker": appauth.Implement}
 		o.GitHubCredential = func(ctx context.Context, issue string, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
 			mu.Lock()
 			built[role] = append(built[role], issue)

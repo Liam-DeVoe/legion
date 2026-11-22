@@ -96,7 +96,7 @@ func (r *Runtime) refreshGitHubCredentials(ctx context.Context) {
 		token string
 		ok    bool
 	}
-	bundles := appauth.NewBundles(r.gitHubCredential, r.deploymentApps)
+	bundles := appauth.NewBundles(r.gitHubCredential, r.roleApps)
 	mints := map[string]mint{}
 	provisioning := func(repo ghrepo.Repository) (string, bool) {
 		key := strings.ToLower(repo.String())
@@ -487,7 +487,7 @@ func (r *Runtime) writeLaunchCredential(ctx context.Context, pod *corev1.Pod, sp
 		return nil, err
 	}
 	repo, _ := fetchRepository(pod)
-	held, err := r.writeSlotCredential(ctx, pod, owner.UID, slot, repo, appauth.NewBundles(r.gitHubCredential, r.deploymentApps), slotWrite{
+	held, err := r.writeSlotCredential(ctx, pod, owner.UID, slot, repo, appauth.NewBundles(r.gitHubCredential, r.roleApps), slotWrite{
 		role:     func(context.Context, *corev1.Secret) (claim.Role, error) { return role, nil },
 		launched: launchedRecord(spec.Generation, spec.Role),
 	})

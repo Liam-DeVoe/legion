@@ -23,7 +23,7 @@ const podWaitRigRole = claim.Role("checker")
 
 // defineChecker gives the rig's configuration the role checker and restarts the daemon on it, as a
 // deployment that adds a role to its settings restarts: the restarted daemon's runtime runs the
-// role in every issue pod it builds from then on (sandboxOptions' DeploymentApps), and none it
+// role in every issue pod it builds from then on (sandboxOptions' RoleApps), and none it
 // built before. The checker launches with its own prompt file (prompt_file), as every role of the
 // deployment does (prompts.Composer.ComposeStep).
 func (r *idleWakeRig) defineChecker(issue idleRigIssue) {

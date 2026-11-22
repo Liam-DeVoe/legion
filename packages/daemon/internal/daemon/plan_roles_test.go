@@ -15,11 +15,14 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
@@ -128,6 +131,98 @@ func TestARoleOfTheDeploymentListsItsModel(t *testing.T) {
 	if status != http.StatusConflict || !strings.Contains(body, "PLAN_REFUSED") || !strings.Contains(body, want) {
 		t.Errorf("register_plan of critic on other-model = %d %s, want 409 PLAN_REFUSED saying %q", status, body, want)
 	}
+}
+
+// The plan in force of issue A defines prober, and A's implementer is at work, when the operator
+// adds a role prober to the deployment and restarts: the deployment's prober has a prompt of its
+// own, the model deployment-prober-model and the implement App. A's plan keeps its definition for
+// A: once A's implementer passes, A's prober launches with the plan's prompt, the plan's model and
+// the review App of the plan's type testing. Issue B, whose plan defines no role, takes the
+// deployment's prober: its prompt, its model and the implement App. The boot logs one line naming
+// prober and A, and not B.
+//
+// The control is the order this replaces, run by hand: the deployment's role read before the
+// plan's for every issue (specs.rolePromptPaths, appauth.AppRoleFor). A's prober then launches on
+// the deployment's model, and the check of A's launch fails.
+func TestARoleOfAPlanInForceKeepsItsDefinitionWhenTheDeploymentTakesItsName(t *testing.T) {
+	const deploymentProberModel = "deployment-prober-model"
+	const deploymentProberPrompt = "You are the deployment's prober: probe the deployed service and report pass or fail."
+	proof := newLiveProofOn(t, workflowNATS(t))
+	proof.cfg.Models = []string{planProberModel}
+	r := newDeploymentRolesRig(t, proof, startScratchDispatchOn(t, scratchDispatchOptions{}), nil,
+		[]string{"Plan's prober keeps its definition", "Deployment's prober serves another issue"})
+	kept, other := r.issues[0].key, r.issues[1].key
+
+	r.on(kept)
+	if status, body := r.registerPlan(r.document("plan.md", planWithProber(planProberModel, true)), 1); status != http.StatusOK {
+		t.Fatalf("register_plan of %s's plan with the role block prober = %d %s, want 200", kept, status, body)
+	}
+	if first := r.openGate(); first != phase.Implementing {
+		t.Fatalf("%s's gate opened at %s, want implementing, the first step of its plan", kept, first)
+	}
+	implementer := r.worker(claim.RoleImplementer)
+	implementer.take()
+
+	prompt := filepath.Join(t.TempDir(), "prober.md")
+	if err := os.WriteFile(prompt, []byte(deploymentProberPrompt+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	logs := filepath.Join(t.TempDir(), "daemon.log")
+	t.Setenv(liveDaemonLogEnv, logs)
+	r.restartWith([]config.Role{{Name: planProber, Type: "testing", PromptFile: prompt, Model: deploymentProberModel, GitHubApp: config.RoleAppImplement}},
+		kept, other)
+	// A restarted daemon knows no model until the agent answers again (supervise.StreamAnswered).
+	implementer.ownTurn()
+	r.finish(implementer, "implement", api.HandoffCompleteRequest{Summary: "implemented", Commit: stepRecordsHead}, phase.Step)
+	if err := r.proberLaunched(planProberModel, planProberPrompt, "legion-review[bot]"); err != nil {
+		t.Fatalf("%s, whose plan in force defines prober: %v", kept, err)
+	}
+
+	r.on(other)
+	r.givePlan("implementer", string(planProber))
+	if first := r.openGate(); first != phase.Implementing {
+		t.Fatalf("%s's gate opened at %s, want implementing, the first step of its plan", other, first)
+	}
+	r.work(claim.RoleImplementer, "implement", api.HandoffCompleteRequest{Summary: "implemented", Commit: stepRecordsHead}, phase.Step)
+	if err := r.proberLaunched(deploymentProberModel, deploymentProberPrompt, "legion-implement[bot]"); err != nil {
+		t.Fatalf("%s, whose plan defines no role: %v", other, err)
+	}
+
+	written, err := os.ReadFile(logs)
+	if err != nil {
+		t.Fatalf("read the daemon's log: %v", err)
+	}
+	var lines []string
+	for line := range strings.Lines(string(written)) {
+		if strings.Contains(line, "has the name of a role the plan in force") {
+			lines = append(lines, line)
+		}
+	}
+	if len(lines) != 1 || !strings.Contains(lines[0], "role=prober") || !strings.Contains(lines[0], kept) || strings.Contains(lines[0], other) {
+		t.Fatalf("the boot logged %q, want one line naming the role prober and %s alone", lines, kept)
+	}
+}
+
+// proberLaunched says whether the latest launch of prober on the walk's issue names model, holds
+// prompt in its launch prompt, and commits as bot, the bot of the App it acts as. The error names
+// the first of them that does not hold.
+func (r *deploymentRolesRig) proberLaunched(model, prompt, bot string) error {
+	r.t.Helper()
+	spec := lastLaunch(r.t, r.rt, r.worker(planProber).token)
+	if spec.Model != model {
+		return fmt.Errorf("the prober's spawn spec names the model %q, want %s", spec.Model, model)
+	}
+	composed, err := runtime.ComposePrompt(spec.Prompt)
+	if err != nil {
+		return fmt.Errorf("compose the prober's launch prompt: %w", err)
+	}
+	if !strings.Contains(composed, prompt) {
+		return fmt.Errorf("the prober's launch prompt lacks %q:\n%s", prompt, composed)
+	}
+	if got := spec.Env["GIT_AUTHOR_NAME"]; got != bot {
+		return fmt.Errorf("the prober commits as %q, want %s", got, bot)
+	}
+	return nil
 }
 
 // R20: an issue that ran before a plan could define a role goes on under this release. The store

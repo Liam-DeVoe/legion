@@ -10,11 +10,11 @@ import (
 )
 
 // One function answers the App of every role from the role's definition: Legion's roles and the
-// role acceptance by the switch, which nothing overrides; a role of the deployment by its
-// github_app; a role of the issue's plan by its type, the implement App for the type
-// implementation and the review App for every other type, no type among them. A role none of the
-// three defines acts as no App. RoleApps.Of reads the plan of the claim's own issue, and only for
-// a role that is neither Legion's nor the deployment's.
+// role acceptance by the switch, which nothing overrides; a role of the issue's plan by its type,
+// the implement App for the type implementation and the review App for every other type, no type
+// among them; and a role of the deployment by its github_app, where the issue's plan does not
+// define its name. A role none of the three defines acts as no App. RoleApps.Of reads the plan of
+// the claim's own issue for every role that is not Legion's, a role of the deployment's too.
 func TestTheAppOfARoleIsItsDefinitions(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -27,7 +27,8 @@ func TestTheAppOfARoleIsItsDefinitions(t *testing.T) {
 		{"a role of a plan of the type testing", "prober", nil, Planned{Defines: true, Type: plan.TypeTesting}, Review},
 		{"a role of a plan of a type no list holds", "odd", nil, Planned{Defines: true, Type: "fuzzing"}, Review},
 		{"a role of a plan of no type", "blank", nil, Planned{Defines: true}, Review},
-		{"a role of the deployment over the plan", "checker", DeploymentApps{"checker": Implement}, Planned{Defines: true, Type: plan.TypeTesting}, Implement},
+		{"a role of the plan over the deployment's of its name", "checker", DeploymentApps{"checker": Implement}, Planned{Defines: true, Type: plan.TypeTesting}, Review},
+		{"a role of the deployment the plan does not define", "checker", DeploymentApps{"checker": Implement}, Planned{}, Implement},
 		{"Legion's implementer over the plan", claim.RoleImplementer, nil, Planned{Defines: true, Type: plan.TypeTesting}, Implement},
 		{"the role acceptance", "acceptance", nil, Planned{}, Review},
 	} {
@@ -50,7 +51,10 @@ func TestTheAppOfARoleIsItsDefinitions(t *testing.T) {
 	var calls []asked
 	apps := RoleApps{Deployed: DeploymentApps{"checker": Review}, Plan: func(_ context.Context, issue string, role claim.Role) (Planned, error) {
 		calls = append(calls, asked{issue, role})
-		if issue == "LEGION-43" && role == "coder" {
+		switch {
+		case issue == "LEGION-43" && role == "coder":
+			return Planned{Defines: true, Type: plan.TypeImplementation}, nil
+		case issue == "LEGION-46" && role == "checker":
 			return Planned{Defines: true, Type: plan.TypeImplementation}, nil
 		}
 		return Planned{}, nil
@@ -63,14 +67,20 @@ func TestTheAppOfARoleIsItsDefinitions(t *testing.T) {
 		t.Errorf("Of(LEGION-44, coder) = %v; want ErrRoleNotDefined: the role is LEGION-43's alone", err)
 	}
 	if got, err := apps.Of(ctx, "LEGION-43", "checker"); err != nil || got != Review {
-		t.Errorf("Of(LEGION-43, checker) = %q, %v; want review", got, err)
+		t.Errorf("Of(LEGION-43, checker) = %q, %v; want review, the deployment's", got, err)
+	}
+	if got, err := apps.Of(ctx, "LEGION-46", "checker"); err != nil || got != Implement {
+		t.Errorf("Of(LEGION-46, checker) = %q, %v; want implement, the App of the type its plan gives checker", got, err)
 	}
 	if got, err := apps.Of(ctx, "LEGION-43", "acceptance"); err != nil || got != Review {
 		t.Errorf("Of(LEGION-43, acceptance) = %q, %v; want review", got, err)
 	}
+	if got, err := apps.Of(ctx, "", "checker"); err != nil || got != Review {
+		t.Errorf("Of of no issue, checker = %q, %v; want review, the deployment's", got, err)
+	}
 	for _, call := range calls {
-		if call.role == "checker" || call.role == "acceptance" {
-			t.Errorf("Of read the plan for %s, which the deployment or Legion defines", call.role)
+		if call.role == "acceptance" || call.issue == "" {
+			t.Errorf("Of read the plan of %q for %s, want no read for a role of Legion's or a claim of no issue", call.issue, call.role)
 		}
 	}
 }

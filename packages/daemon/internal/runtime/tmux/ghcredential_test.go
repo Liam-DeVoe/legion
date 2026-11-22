@@ -884,9 +884,11 @@ func TestAPaneOfARoleOfAPlanHoldsTheAppOfItsType(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	apps := appauth.RoleApps{Plan: planOf43}
 	r := &Runtime{
 		stateDir:             t.TempDir(),
-		gitHubCredential:     appauth.GitHubCredential(appLeaseTokens{}, servesOneOf(widgets), ghrepo.Renames{}, nil, nil, appauth.RoleApps{Plan: planOf43}, slog.Default()),
+		gitHubCredential:     appauth.GitHubCredential(appLeaseTokens{}, servesOneOf(widgets), ghrepo.Renames{}, nil, nil, apps, slog.Default()),
+		roleApps:             apps,
 		controllerCredential: staticControllerCredential,
 		claimRepository:      acmeWidgets,
 		claimRole:            func(context.Context, claim.Token) (claim.Role, error) { return "prober", nil },
@@ -911,27 +913,28 @@ func TestAPaneOfARoleOfAPlanHoldsTheAppOfItsType(t *testing.T) {
 	}
 }
 
-// A role of the deployment acts as one App on every issue, so one walk of the panes builds its
-// bundle once for the repository however many issues' panes run it (Options.DeploymentApps,
-// appauth.NewBundles), while a role of a plan is built for each issue that asks, since each
-// issue's plan decides its App.
+// A role of the deployment acts as one App on every issue whose plan does not define its name, so
+// one walk of the panes builds its bundle once for the repository however many issues' panes run
+// it (Options.RoleApps, appauth.NewBundles), while a role of a plan is built once for each App it
+// acts as, since each issue's plan decides its App: coder of LEGION-43 (implementation) and coder
+// of LEGION-45 (review) are two builds.
 func TestAWalkBuildsARoleOfTheDeploymentOnceForEveryIssue(t *testing.T) {
 	ctx := context.Background()
 	widgets := ghrepo.MustParse("acme/widgets")
 	plans := func(ctx context.Context, issue string, role claim.Role) (appauth.Planned, error) {
-		if role == "coder" {
-			return appauth.Planned{Defines: true, Type: plan.TypeImplementation}, nil
+		if issue == "LEGION-45" && role == "coder" {
+			return appauth.Planned{Defines: true, Type: plan.TypeReview}, nil
 		}
 		return planOf43(ctx, issue, role)
 	}
-	deployed := appauth.DeploymentApps{"checker": appauth.Implement}
-	credential := appauth.GitHubCredential(appLeaseTokens{}, servesOneOf(widgets), ghrepo.Renames{}, nil, nil, appauth.RoleApps{Deployed: deployed, Plan: plans}, slog.Default())
+	apps := appauth.RoleApps{Deployed: appauth.DeploymentApps{"checker": appauth.Implement}, Plan: plans}
+	credential := appauth.GitHubCredential(appLeaseTokens{}, servesOneOf(widgets), ghrepo.Renames{}, nil, nil, apps, slog.Default())
 	var built []string
 	counting := func(ctx context.Context, issue string, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
 		built = append(built, issue+"/"+string(role))
 		return credential(ctx, issue, role, repo)
 	}
-	f := newFakeServerRuntimeWith(t, counting, slog.New(slog.NewTextHandler(io.Discard, nil)), func(o *Options) { o.DeploymentApps = deployed })
+	f := newFakeServerRuntimeWith(t, counting, slog.New(slog.NewTextHandler(io.Discard, nil)), func(o *Options) { o.RoleApps = apps })
 	for i, pane := range []struct {
 		issue string
 		role  claim.Role

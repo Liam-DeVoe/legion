@@ -148,48 +148,44 @@ func GitHubCredential(source Source, served func(ghrepo.Repository) bool, rename
 // all: a controller pod and a controller pane hold the one role.
 type Bundles struct {
 	credential runtime.GitHubCredential
-	deployed   DeploymentApps
+	apps       RoleApps
 	built      map[bundleKey]ghconfig.Bundle
 }
 
-// bundleKey is what one bundle of a walk is held under: the App role it is minted as, or, for a
-// role that is none of Legion's, that role itself, with the issue it was asked on for a role
-// that is none of the deployment's either; and the repository it is built for, lowercased as
+// bundleKey is what one bundle of a walk is held under: the App role it is minted as, with the role
+// itself for a role that is none of Legion's, and the repository it is built for, lowercased as
 // GitHub compares a repository's two halves.
 type bundleKey struct {
-	app   AppRole
-	role  claim.Role
-	issue string
-	repo  string
+	app  AppRole
+	role claim.Role
+	repo string
 }
 
 // NewBundles is one walk's memo over credential, the runtime's own bundle function
-// (sandbox.Options.GitHubCredential, tmux.Options.GitHubCredential), and deployed, the roles the
-// deployment defines, the map credential reads (internal/daemon's deploymentApps of the same
-// settings): a role it names acts as one App on every issue, so its bundle is shared by every
-// issue of the walk.
-func NewBundles(credential runtime.GitHubCredential, deployed DeploymentApps) *Bundles {
-	return &Bundles{credential: credential, deployed: deployed, built: map[bundleKey]ghconfig.Bundle{}}
+// (sandbox.Options.GitHubCredential, tmux.Options.GitHubCredential), and apps, the reader of a
+// role's App that credential reads (internal/daemon's roleApps of the same settings and store).
+func NewBundles(credential runtime.GitHubCredential, apps RoleApps) *Bundles {
+	return &Bundles{credential: credential, apps: apps, built: map[bundleKey]ghconfig.Bundle{}}
 }
 
 // Bundle is role's gh bundle for repo on issue, the claim's issue key, built once per App role
-// and repository of the walk. A role that is none of Legion's is held under its own name: the
-// App it acts as is a setting credential reads and the memo does not decide — the deployment's
-// github_app, or the role's type in the issue's plan (RoleApps.Of) — so it shares no build with
-// another role, and a role nothing defines fails at credential, naming itself. A role of the
-// deployment acts as one App on every issue, so it is held for every issue of the walk. Any other
-// role is held for its issue alone: it can be only a role of that issue's plan, and two issues
-// can define one name with two types, so a bundle built for coder of one issue may be the other
-// App than coder of the next one needs. A walk is one goroutine, so the memo needs no lock of its
-// own.
+// and repository of the walk. A role that is none of Legion's is held under its own name and the
+// App it acts as on issue (RoleApps.Of): that App is the deployment's github_app or the role's
+// type in the issue's plan, which wins for a name it defines, so one name can act as two Apps on
+// two issues. A role of the deployment that no plan in force defines acts as one App on every
+// issue, so its bundle is shared by every issue of the walk, and so is a role two plans define
+// with types of one App. A role nothing defines fails here, naming itself, and builds nothing. A
+// walk is one goroutine, so the memo needs no lock of its own.
 func (b *Bundles) Bundle(ctx context.Context, issue string, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
 	key := bundleKey{repo: strings.ToLower(repo.String())}
 	if app, err := AppRoleFor(role, nil, Planned{}); err == nil {
 		key.app = app
-	} else if _, deployed := b.deployed[role]; deployed {
-		key.role = role
 	} else {
-		key.role, key.issue = role, issue
+		app, err := b.apps.Of(ctx, issue, role)
+		if err != nil {
+			return ghconfig.Bundle{}, err
+		}
+		key.app, key.role = app, role
 	}
 	if built, held := b.built[key]; held {
 		return built, nil

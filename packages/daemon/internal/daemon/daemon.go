@@ -1328,6 +1328,9 @@ func tmuxRuntime(cfg config.Config, project string, launchers map[runtime.Backen
 		repository func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, _ func() []ghrepo.Repository) (runtime.Runtime, error) {
 		opts := tmuxOptions(cfg, project, launchers, providerEnvDir, dispatchTokenFile, log)
 		opts.StreamAddress, opts.Conns = streamAddress, listener
+		// The one reader of a role's App, which the credential and each walk's memo of bundles
+		// read alike: the deployment's roles, and a role of an issue's plan from the store.
+		opts.RoleApps = roleApps(opts.RoleApps.Deployed, planRoleOf(st))
 		if tokens != nil {
 			// The two records the credentials write, shared by both as the Kubernetes runtime's
 			// three share them (appauth.Installed and appauth.LeftOut, kubernetes.go's
@@ -1336,9 +1339,9 @@ func tmuxRuntime(cfg config.Config, project string, launchers map[runtime.Backen
 			// projects nothing and nothing compares one against left — a directory left out
 			// of one pane's bundle is left out of the next pane's by the mint, not by a
 			// record — so the addressing is this runtime's one reader of it. The credential
-			// reads the deployment's roles the runtime's walks hold (opts.DeploymentApps), one
-			// map for both.
-			opts.GitHubCredential, opts.GH = appauth.GitHubCredential(tokens, served, cfg.RepositoryRenames, installed, left, roleApps(opts.DeploymentApps, planRoleOf(st)), log), gh
+			// reads the roles' Apps the runtime's walks hold (opts.RoleApps), one reader for
+			// both.
+			opts.GitHubCredential, opts.GH = appauth.GitHubCredential(tokens, served, cfg.RepositoryRenames, installed, left, opts.RoleApps, log), gh
 			opts.ControllerCredential = appauth.ControllerCredential(tokens, served, cfg.RepositoryRenames, installed, left, log)
 			opts.ClaimRepository = claimRepository(st.ClaimIssue, repository)
 			opts.ClaimRole = st.ClaimRole
@@ -1400,7 +1403,7 @@ func tmuxOptions(cfg config.Config, project string, launchers map[runtime.Backen
 		AdoptTimeout:            cfg.SlowCommandTimeout,
 		ProviderEnvDir:          providerEnvDir,
 		RoleConfigFiles:         cfg.RoleConfigFiles,
-		DeploymentApps:          deploymentApps(cfg.Roles),
+		RoleApps:                appauth.RoleApps{Deployed: deploymentApps(cfg.Roles)},
 		LeakCheckManifestSHA256: cfg.LeakCheck.ManifestSHA256,
 		Log:                     log,
 	}

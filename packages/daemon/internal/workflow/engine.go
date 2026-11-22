@@ -2843,11 +2843,18 @@ func (e *Engine) stopLostRole(ctx context.Context, tx pgx.Tx, issue record.Issue
 // (planHold) has nothing to stop. A task whose stop cannot stand where its issue stands now (a root
 // that waits on a person before its first step) is passed over with one log line: the move into
 // its first step stops it then (transition's lostAt).
+//
+// A restart is also where the deployment can take the name of a role the plan in force of an
+// issue defines. That issue keeps its plan's role until a version of its plan changes it
+// (appauth.AppRoleFor, the daemon's specs.rolePromptPaths), and every other issue takes the
+// deployment's. The boot logs one line for each such name, naming the issues whose plan keeps it.
 func (e *Engine) stopLostRoles(ctx context.Context, tx pgx.Tx) error {
 	issues, err := e.store.Issues(ctx, tx)
 	if err != nil {
 		return err
 	}
+	var names []string
+	shadowed := map[string][]string{}
 	for _, issue := range issues {
 		if issue.Project != e.cfg.Project || issue.Phase == phase.Done || record.OutOfWorkflow(issue.Status) {
 			continue
@@ -2855,6 +2862,15 @@ func (e *Engine) stopLostRoles(ctx context.Context, tx pgx.Tx) error {
 		w, err := e.walk(ctx, tx, issue)
 		if err != nil {
 			return err
+		}
+		for _, role := range w.Roles {
+			if _, deployed := e.cfg.Deployment.Roles[role.Role]; !deployed {
+				continue
+			}
+			if _, seen := shadowed[role.Role]; !seen {
+				names = append(names, role.Role)
+			}
+			shadowed[role.Role] = append(shadowed[role.Role], issue.Key)
 		}
 		if planHold(issue, w.Stored) {
 			continue
@@ -2871,6 +2887,10 @@ func (e *Engine) stopLostRoles(ctx context.Context, tx pgx.Tx) error {
 			e.logOnCommit(ctx, "workflow: a task whose step names a role the deployment no longer defines is not stopped where it stands",
 				"issue", issue.Key, "task", w.Task, "step", lost.Position, "reason", refusal.Message)
 		}
+	}
+	for _, name := range names {
+		e.logOnCommit(ctx, "workflow: a role of the deployment has the name of a role the plan in force of an issue defines; each such issue keeps its plan's role until a version of its plan changes it, and every other issue takes the deployment's",
+			"role", name, "issues", shadowed[name])
 	}
 	return nil
 }

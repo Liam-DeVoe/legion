@@ -582,7 +582,7 @@ func (r *idleWakeRig) newRuntime(ctx context.Context, listener *stream.Listener,
 	opts.SavedWorkspaceBundle, opts.WorkspaceBundleRestored = savedWorkspaceBundle(st, opts.Project), st.DeleteRestoredWorkspaceBundle
 	opts.Tokens = idleRigTokens{}
 	opts.GitHubCredential = func(_ context.Context, _ string, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
-		app, err := appauth.AppRoleFor(role, opts.DeploymentApps, appauth.Planned{})
+		app, err := appauth.AppRoleFor(role, opts.RoleApps.Deployed, appauth.Planned{})
 		if err != nil {
 			return ghconfig.Bundle{}, err
 		}
