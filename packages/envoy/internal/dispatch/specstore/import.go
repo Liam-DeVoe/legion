@@ -87,7 +87,10 @@ func ParseLevel(level, notes string) (Level, error) {
 			component := specgraph.Component{ID: cells[0], Interface: cells[1] == "interface", Name: cells[2], Purpose: cells[3]}
 			if related := cells[4]; related != "none" && related != "" {
 				if component.Interface {
-					component.Joins = splitIDs(related)
+					// specgraph.Component holds the components an interface joins sorted and unique, as
+					// a change request's parse writes them, so an approved interface compares equal to
+					// the same interface a later request names as context.
+					component.Joins = sortedUnique(splitIDs(related))
 				} else {
 					component.Parent = related
 				}
