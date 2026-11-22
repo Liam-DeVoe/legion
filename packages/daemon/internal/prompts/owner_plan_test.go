@@ -200,11 +200,11 @@ func TestTheRootsCatchUpStatesItsAcceptanceOnce(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	text := foldWhitespace(composedText(t, composer, claim.RoleArchitect, true))
-	stated := "No worker runs there and the notice that moved it there may never have reached you, so read each one's evidence, then `sign_off` it or send it back with `request_backward_move`. Sign off a parent only on a head that the step before your acceptance passed and that carries the merges of every child its criteria need; otherwise run its last round (`skill://legion-architect/references/acceptance.md`, \"The last round\")."
+	stated := "No worker runs there and the notice that moved it there may never have reached you, so read each one's evidence, then `sign_off` it or send it back with `request_backward_move`. Sign off a parent only after its last round, on a head that the step before your acceptance passed and at which its checks pass (`skill://legion-architect/references/acceptance.md`, \"The last round\")."
 	if !strings.Contains(text, stated) {
 		t.Errorf("the composed root architect prompt omits %q", stated)
 	}
-	if n := strings.Count(text, "carries the merges of every child its criteria need"); n != 1 {
+	if n := strings.Count(text, "the step before your acceptance passed and at which its checks pass"); n != 1 {
 		t.Errorf("the composed root architect prompt says the head a parent's sign-off needs %d times, want 1", n)
 	}
 }

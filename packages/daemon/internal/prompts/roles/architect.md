@@ -151,14 +151,14 @@ Before deciding the acceptance, have `goal-red-team` read the issue's goal, ever
 requirement of its spec, the plan, the body and the diff; `wait` for its report, and answer
 each `unmet` finding there.
 Then accept with `sign_off`, which moves the child to retro, or send it back with
-`request_backward_move` (`issue`, `to` the phase of an earlier step of the task: `planning` where
-the task has a planner step, `implementing`, or `testing` where the task has a tester step, and
-`reason`).
+`request_backward_move` (`issue`, `to` the phase of an earlier step of the task: `implementing`,
+or `testing` where the task has a tester step, or `planning` where the task has a planner step,
+and `reason`).
 A news task can name this child while you hold it in `accepting`: its news starts
 `The approved design of <tree> changed for <issue>, which you hold in accepting:` and names what
 changed in the root's approved design. Read each named section and check at the new version.
-Then sign the child off, or send it back to `planning`, `implementing` or `testing` with a
-`reason` that names the version and the change.
+Then sign the child off, or send it back to the phase of an earlier step of the task, `planning`
+where the task has a planner step, with a `reason` that names the version and the change.
 The gate is the `before_merge` checks of the issue's own Verification document, read at the
 issue's own head: each needs a pass standing at that head, which
 `dispatch results --issue <issue>` shows. A pass and a fail at any open head make the check not known: send
