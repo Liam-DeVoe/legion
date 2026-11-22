@@ -67,7 +67,9 @@ func TestTheTmuxGateRefusesASessionDatabaseItsPanesCouldNotUse(t *testing.T) {
 // no Oh My Pi has opened yet, whose table the first pane's Oh My Pi creates, which the gate logs.
 func TestTheTmuxGatePassesASessionDatabaseItsPanesCanUse(t *testing.T) {
 	ctx := context.Background()
-	dsn := testdb.Database(t, "legion_tmux_session_gate_test")
+	// The gate reads the session database with pgx.Connect (ompsessions.ConnectURL), as a
+	// deployment's session_dsn_file URL is read, so it is given a URL with no pgxpool key.
+	dsn := testdb.PlainDatabase(t, "legion_tmux_session_gate_test")
 	f := newImageOmp(t, []string{"available"}, []string{"yes"}, []string{"refuses"})
 	g, logged := sessionGateUnder(t, f, dsn)
 

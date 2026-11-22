@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,6 +18,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testpg"
+	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 )
 
 // legionProject is the Legion project token of a `legion.yaml` whose project is sjawhar/legion,
@@ -71,15 +73,28 @@ func (l *logs) logger() *slog.Logger { return slog.New(slog.NewTextHandler(l, ni
 
 func TestMain(m *testing.M) { os.Exit(testpg.Main("legion_agenthistory_test", m.Run)) }
 
+// migratedStore is a migrated clone opened as the daemon's store, and the clone's URL for Oh My
+// Pi's session table, which the tests read and write through ompsessions.ConnectURL. That is a
+// pgx.Connect, which sends a pgxpool key such as the pool_max_conns testpg.Clone's URL carries
+// (testdb.PoolBounded) to the server as a setting it refuses, so the URL it answers is the clone's
+// with pgxpool's keys taken out (testdb.DatabaseURL).
 func migratedStore(t *testing.T) (*store.Store, string) {
 	t.Helper()
-	dsn := testpg.Clone(t, "legion_agenthistory_test")
-	st, err := store.Open(context.Background(), dsn)
+	pooled := testpg.Clone(t, "legion_agenthistory_test")
+	st, err := store.Open(context.Background(), pooled)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(st.Close)
-	return st, dsn
+	parsed, err := url.Parse(pooled)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain, err := testdb.DatabaseURL(pooled, strings.TrimPrefix(parsed.Path, "/"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return st, plain
 }
 
 // ompSession is an Oh My Pi session's content: a header titled title (none for ""), a subagent's
