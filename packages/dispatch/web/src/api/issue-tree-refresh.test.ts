@@ -648,3 +648,107 @@ test("a parent's view is marked while its outline's first read is out, on an eve
   response.resolve(treeAnswer([treeNode("CORE-1", "issue", null)]));
   await read;
 });
+
+/** The grandparent CORE-1's outline, which holds its child CORE-2's node and no node of the
+ *  grandchild CORE-3, and its Verification view, which holds its requirement and no node of
+ *  either; and what else the page holds that places CORE-3 under CORE-2: CORE-3's detail, CORE-2's
+ *  outline holding CORE-3's node, or nothing. */
+function grandparentHolding(
+  client: QueryClient,
+  placing: "detail" | "parent's outline" | "nothing"
+): { readonly outline: readonly unknown[]; readonly verification: readonly unknown[] } {
+  const requirement = treeNode("r1", "requirement", "CORE-1", {
+    in: "spec",
+    text: "Every child is drawn.",
+  });
+  const outline = issueTreeKey("CORE-1");
+  client.setQueryData(
+    outline,
+    treeAnswer([
+      treeNode("CORE-1", "issue", null),
+      requirement,
+      treeNode("CORE-2", "issue", "CORE-1", { ...CHILD, text: "Draw each child" }),
+    ])
+  );
+  const verification = viewKey("CORE-1", "verification");
+  client.setQueryData(verification, treeAnswer([requirement], [], { view: "verification" }));
+  if (placing === "detail") {
+    client.setQueryData(["issue", "CORE-3"], { key: "CORE-3", parent: "CORE-2" });
+  }
+  if (placing === "parent's outline") {
+    client.setQueryData(
+      issueTreeKey("CORE-2"),
+      treeAnswer(
+        [
+          treeNode("CORE-2", "issue", null),
+          treeNode("CORE-3", "issue", "CORE-2", { issue: "CORE-3", read_only: true }),
+        ],
+        [],
+        { issue: "CORE-2" }
+      )
+    );
+  }
+  return { outline, verification };
+}
+
+/** A version of the grandchild CORE-3's Verification document, which can add its first check
+ *  serving the grandparent's requirement. */
+const GRANDCHILD_VERSION = eventOf(
+  "artifact.version",
+  { artifact_id: "artifact-3", number: 2 },
+  "CORE-3"
+);
+
+// A document event names no ancestors, so the page places the grandchild from what it holds: its
+// detail names its parent, whose node the grandparent's outline holds, and the grandparent's
+// outline is read again, with the views of it the page holds.
+test("a grandchild's document version marks its grandparent's outline and view where the grandchild's detail names its parent", () => {
+  const client = new QueryClient();
+  const { outline, verification } = grandparentHolding(client, "detail");
+  refreshQueries(client, eventRefreshTargets(GRANDCHILD_VERSION, "alice"));
+  expect({
+    outline: client.getQueryState(outline)?.isInvalidated,
+    verification: client.getQueryState(verification)?.isInvalidated,
+  }).toEqual({ outline: true, verification: true });
+});
+
+// The parent's held outline places the grandchild too: it holds the grandchild's node under the
+// parent's.
+test("a grandchild's document version marks its grandparent's outline and view where its parent's held outline holds its node", () => {
+  const client = new QueryClient();
+  const { outline, verification } = grandparentHolding(client, "parent's outline");
+  refreshQueries(client, eventRefreshTargets(GRANDCHILD_VERSION, "alice"));
+  expect({
+    outline: client.getQueryState(outline)?.isInvalidated,
+    parent: client.getQueryState(issueTreeKey("CORE-2"))?.isInvalidated,
+    verification: client.getQueryState(verification)?.isInvalidated,
+  }).toEqual({ outline: true, parent: true, verification: true });
+});
+
+// Where nothing the page holds places the grandchild, its document version reads nothing of the
+// grandparent's; and a grandchild's comment moves no node, so it reads nothing of the
+// grandparent's wherever the page places it.
+test("a grandchild's document version marks nothing of its grandparent's that nothing places it under, and its comment marks nothing of the grandparent's", () => {
+  const comment = eventOf(
+    "comment.created",
+    { body: "A reply.", id: "comment-3", kind: "comment" },
+    "CORE-3"
+  );
+  const cases = [
+    ["a version, nothing placing the grandchild", "nothing", GRANDCHILD_VERSION],
+    ["a comment, the grandchild's detail placing it", "detail", comment],
+    ["a comment, its parent's outline placing it", "parent's outline", comment],
+  ] as const;
+  for (const [name, placing, event] of cases) {
+    const client = new QueryClient();
+    const { outline, verification } = grandparentHolding(client, placing);
+    refreshQueries(client, eventRefreshTargets(event, "alice"));
+    expect(
+      {
+        outline: client.getQueryState(outline)?.isInvalidated,
+        verification: client.getQueryState(verification)?.isInvalidated,
+      },
+      name
+    ).toEqual({ outline: false, verification: false });
+  }
+});
