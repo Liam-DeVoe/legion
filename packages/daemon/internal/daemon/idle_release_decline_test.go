@@ -6,9 +6,11 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/notify"
@@ -266,10 +268,10 @@ func TestAnIdleReleaseDeclinesAWorkspaceWithOneUnpushedCommitAndKeepsThePod(t *t
 // decline: the role's relaunches run out, or the daemon stops it. The pod then runs no role to read
 // its disk through, and the release of a pod no claim owns reads the decline instead
 // (pods.IdleDecline.HoldsUnpushedWork): the disk holds the work the check found, so the pass holds
-// the pod as unowned_unpushed_work, records that hold, marks no release and asks for no teardown,
-// for as long as nothing of the issue starts again. A start row of a claim after the decline is a
-// role process started again, which can run in a pod made again; once that claim has stopped too,
-// the decline says nothing of the disk, and the pass releases the pod.
+// the pod as unowned_unpushed_work, records that hold, marks no release and asks for no teardown.
+// A role started again in that same pod and stopped since leaves the disk, and the work, where it
+// was, so the hold stands. Only a pod made again — the runtime answering another pod for the issue
+// than the one the check read — takes the disk the decline spoke of, and the pass releases it.
 func TestAnUnownedPodWhoseDeclineNamesUnpushedWorkIsKept(t *testing.T) {
 	ctx := context.Background()
 	rig := newIdleRig(t)
@@ -309,18 +311,143 @@ func TestAnUnownedPodWhoseDeclineNamesUnpushedWorkIsKept(t *testing.T) {
 		t.Fatalf("holds = %+v, want one %s streak the unowned passes counted on", rig.records(t).Holds, workflow.IdleHoldUnownedUnpushedWork)
 	}
 
-	// A start of the implementer after the decline, whose relaunches ran out again: its process
-	// may have run in a pod made again, so the decline no longer speaks for the disk.
+	// A start of the implementer after the decline, whose relaunches ran out again, in the same
+	// pod: the disk the decline read is still the pod's.
 	if _, err := rig.pool.Exec(ctx, `update claims set last_start_row = $2, updated_at = now() - interval '30 minutes'
 		where token = $1`, string(rig.token), started+1); err != nil {
 		t.Fatalf("record a start of the implementer after the decline: %v", err)
 	}
+	rows := rig.sequenceValue(t, "outbox")
+	unownedPasses(idleRigPasses)
+	if after := rig.sequenceValue(t, "outbox"); after != rows {
+		t.Fatalf("the passes after a start in the same pod queued outbox rows (the sequence moved from %d to %d), want none: its disk still holds the work",
+			rows, after)
+	}
+	if asked := rig.rt.teardownsAsked(); len(asked) != 0 {
+		t.Fatalf("teardowns asked after a start in the same pod = %v, want none", asked)
+	}
+
+	// A relaunch built pod-b in pod-a's place: the disk, and the work on it, went with pod-a.
+	rig.rt.ScriptIssuePod(rig.issue.Key, "pod-b")
 	if queued := rig.queuedBy(t, func() { rig.w.releaseUnownedPods(ctx) }); !slices.Equal(queued, []string{"issue_release"}) {
-		t.Fatalf("the pass after the start queued %v, want the unowned release's teardown alone", queued)
+		t.Fatalf("the pass after the pod was made again queued %v, want the unowned release's teardown alone", queued)
 	}
 	rig.drain(t)
 	if asked := rig.rt.teardownsAsked(); !slices.Equal(asked, []string{"ReleaseIssue"}) {
 		t.Fatalf("teardowns asked = %v, want the release of the pod no claim owns", asked)
+	}
+}
+
+// A clean read is the daemon's newest word of the workspace, and the work a decline on record
+// named is gone from it: the check deletes that decline before it goes on (store.ForgetIdleDecline).
+// Kept, the decline would hold the pod for work that is no longer there, through the release of a
+// pod no claim owns or a later close, once its roles have stopped. Each subtest stands a decline
+// that no longer holds the pod — a turn of the live role after its last check — so the pass asks
+// the workspace again, the read is clean, and after the drain no decline of the issue remains.
+//
+// idle_release: the idle release's check reads the workspace and the release goes on.
+//
+// left_pod: the close of a parked child whose planner an operator's resume brought back reads the
+// workspace through the planner, and the close goes on.
+func TestACleanReadForgetsTheDecline(t *testing.T) {
+	ctx := context.Background()
+	// endedDecline records a decline of the rig's issue for one commit, read two hours ago in a pod
+	// the runtime could not name, and a turn of the rig's role an hour ago, after that read.
+	endedDecline := func(t *testing.T, rig *idleRig, role claim.Role) {
+		t.Helper()
+		if _, err := rig.pool.Exec(ctx, `insert into idle_release_declines
+			(project, issue, declined_at, checked_at, role, reason, head, commits, changed, started_row, pod_uid)
+			values ('legion', $1, now() - interval '2 hours', now() - interval '2 hours', $2, $3, $4, 1, false, 0, '')`,
+			rig.issue.Key, string(role), pods.DeclineUnpushedWork, idleRigUnpushed.Head); err != nil {
+			t.Fatalf("record the decline: %v", err)
+		}
+		if _, err := rig.pool.Exec(ctx, `update claims set last_turn_start = now() - interval '1 hour' where token = $1`,
+			string(rig.token)); err != nil {
+			t.Fatalf("record the role's turn after the decline: %v", err)
+		}
+	}
+
+	t.Run("idle_release", func(t *testing.T) {
+		rig := newIdleRig(t)
+		endedDecline(t, rig, claim.RoleImplementer)
+		rig.passes(t, 1)
+		if read, suspended := rig.rt.reads(); len(read) != 1 || suspended != 1 {
+			t.Fatalf("the pass read the workspace %d times and took %d pods, want one clean read and the release", len(read), suspended)
+		}
+		if rig.declined(t) {
+			t.Fatal("the decline stands after a read that found nothing origin does not hold")
+		}
+	})
+
+	t.Run("left_pod", func(t *testing.T) {
+		rig := newLeftPodRig(t, false)
+		parkChild(t, rig)
+		rig.drain(t)
+		leftPodGone(rig)
+		resumeAsOperator(t, rig)
+		endedDecline(t, rig, claim.RolePlanner)
+		idlePasses(rig)
+		rig.drain(t)
+		if read, _ := rig.rt.reads(); !slices.Equal(read, []claim.Role{claim.RolePlanner}) {
+			t.Fatalf("the workspace was read through %v, want one clean read through the planner", read)
+		}
+		if got := rig.machine.Claim(); got.State != supervise.StateSuspended {
+			t.Fatalf("the planner after the clean read = %s, want it stopped by the close", got.State)
+		}
+		if rig.declined(t) {
+			t.Fatal("the decline stands after a read that found nothing origin does not hold")
+		}
+	})
+}
+
+// readClockRuntime is the idle rig's runtime with a hook run as the workspace read begins, before
+// the fake answers it.
+type readClockRuntime struct {
+	*releaseRuntime
+	reading func()
+}
+
+func (r *readClockRuntime) WorkspaceWork(ctx context.Context, issue string, role claim.Role) (runtime.WorkspaceWork, error) {
+	r.reading()
+	return r.releaseRuntime.WorkspaceWork(ctx, issue, role)
+}
+
+// A decline is stamped with the moment its read began, not the moment the read answered: a turn
+// that started while the read ran may have pushed the work the read found, and it is a turn after
+// the decline, which ends it, only where the decline's moment is the read's start
+// (pods.IdleDecline.Stands). The runner's clock reads t1 until the read begins and t2, ten
+// seconds later, from then on; the decline reads t1.
+func TestADeclineIsStampedWithTheMomentItsReadBegan(t *testing.T) {
+	rig := newIdleRig(t)
+	rig.rt.ScriptWorkspaceWork(rig.issue.Key, idleRigUnpushed)
+	t1 := time.Now().Add(time.Minute).UTC().Truncate(time.Microsecond)
+	t2 := t1.Add(10 * time.Second)
+	var mu sync.Mutex
+	began := false
+	rig.runner.now = func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		if began {
+			return t2
+		}
+		return t1
+	}
+	rig.sup.deps.Runtime = &readClockRuntime{releaseRuntime: rig.rt, reading: func() {
+		mu.Lock()
+		defer mu.Unlock()
+		began = true
+	}}
+
+	rig.passes(t, 1)
+
+	var declined, checked time.Time
+	if err := rig.pool.QueryRow(context.Background(), `select declined_at, checked_at from idle_release_declines where issue = $1`,
+		rig.issue.Key).Scan(&declined, &checked); err != nil {
+		t.Fatalf("read the decline: %v", err)
+	}
+	if !declined.Equal(t1) || !checked.Equal(t1) {
+		t.Fatalf("the decline reads declined at %s and checked at %s, want both at %s, when the read began (it answered at %s)",
+			declined.UTC(), checked.UTC(), t1, t2)
 	}
 }
 

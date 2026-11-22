@@ -651,13 +651,38 @@ func TestTheRuleForAnIssueWithNoLiveClaim(t *testing.T) {
 			sandbox: true, want: IdleHoldUnownedUnpushedWork,
 		},
 		{
-			// A role was started again after the decline, and its process ran in a pod whose
-			// workspace may have been made again; it stopped since, and the decline says nothing
-			// of the disk now.
-			name: "a start row after the decline lets the pod go",
+			// A role was started again after the decline in the very pod the decline's check read,
+			// and stopped since: a start in the same pod keeps the disk, and the work on it, so the
+			// decline still speaks for that disk.
+			name: "a start row after the decline in the same pod keeps it",
 			view: func() pods.IdleView {
 				v := unownedIssue()
+				v.PodUID = "pod-a"
+				v.Declined = pods.IdleDecline{At: idleNow.Add(-30 * time.Minute), Reason: pods.DeclineUnpushedWork, StartedRow: 5, PodUID: "pod-a"}
+				v.Claims[2].LastStartRow = 6
+				return v
+			}(),
+			sandbox: true, want: IdleHoldUnownedUnpushedWork,
+		},
+		{
+			// The check could not say which pod it read: a start after it may have run in a pod made
+			// again, so the decline says nothing of the disk now.
+			name: "a start row after a decline that names no pod lets the pod go",
+			view: func() pods.IdleView {
+				v := unownedIssue()
+				v.PodUID = "pod-a"
 				v.Declined = pods.IdleDecline{At: idleNow.Add(-30 * time.Minute), Reason: pods.DeclineUnpushedWork, StartedRow: 5}
+				v.Claims[2].LastStartRow = 6
+				return v
+			}(),
+			sandbox: true, want: IdleHoldNone,
+		},
+		{
+			// The runtime cannot say which pod it holds now: the same reading of the start row.
+			name: "a start row after the decline where the runtime names no pod lets the pod go",
+			view: func() pods.IdleView {
+				v := unownedIssue()
+				v.Declined = pods.IdleDecline{At: idleNow.Add(-30 * time.Minute), Reason: pods.DeclineUnpushedWork, StartedRow: 5, PodUID: "pod-a"}
 				v.Claims[2].LastStartRow = 6
 				return v
 			}(),
@@ -675,11 +700,24 @@ func TestTheRuleForAnIssueWithNoLiveClaim(t *testing.T) {
 			sandbox: true, want: IdleHoldNone,
 		},
 		{
-			// A read that failed says nothing of the disk.
-			name: "a decline for a workspace the check could not read",
+			// A read that failed after a read that found work leaves the work on record: the
+			// failure says nothing new of the disk, and the last read that could read found work.
+			name: "a decline for a workspace the check could not read after a read that found work",
 			view: func() pods.IdleView {
 				v := unownedIssue()
-				v.Declined = pods.IdleDecline{At: idleNow.Add(-30 * time.Minute), Reason: pods.DeclineWorkspaceUnread}
+				v.PodUID = "pod-a"
+				v.Declined = pods.IdleDecline{At: idleNow.Add(-30 * time.Minute), Reason: pods.DeclineWorkspaceUnread, PodUID: "pod-a", Work: true}
+				return v
+			}(),
+			sandbox: true, want: IdleHoldUnownedUnpushedWork,
+		},
+		{
+			// A read that failed with no read that found work before it says nothing of the disk.
+			name: "a decline for a workspace the check could not read and no work on record",
+			view: func() pods.IdleView {
+				v := unownedIssue()
+				v.PodUID = "pod-a"
+				v.Declined = pods.IdleDecline{At: idleNow.Add(-30 * time.Minute), Reason: pods.DeclineWorkspaceUnread, PodUID: "pod-a"}
 				return v
 			}(),
 			sandbox: true, want: IdleHoldNone,
@@ -735,12 +773,22 @@ func leftChild() pods.IdleView {
 // idle release does: the decision names the live roles and the daemon queues one workspace check,
 // which queues the stops only where it finds nothing unpushed. A decline that stands keeps the pod
 // with its work, and while the check waits the pod is the daemon's own act under way. A pod with
-// no live claim has no role to read through and is closed whatever a decline says, since the
-// close stops no role there and the start that would bring one back builds the pod afresh.
+// no live claim has no role to read through, so the decline on record is the one word the daemon
+// has of its disk: where it says the disk holds work (pods.IdleDecline.HoldsUnpushedWork), the pod
+// is kept as the release of a pod no claim owns keeps it, and otherwise it is closed.
 // LeftPodCloseAfterCheck is the check's own decision once its read found nothing, and reads no
-// decline and no queued check: it is that check.
+// decline and no queued check: it is that check. It reads the moment the read began, and a turn
+// that started after it, by any claim, is one the read may not have seen.
 func TestTheCloseOfALeftPodReadsTheWorkspaceOfALiveRoleFirst(t *testing.T) {
 	standing := pods.IdleDecline{At: idleNow.Add(-30 * time.Minute), Reason: pods.DeclineUnpushedWork}
+	// failedImplementer is leftChild with no live claim: its implementer failed and records no
+	// process, its tester suspended beside it.
+	failedImplementer := func() pods.IdleView {
+		v := leftChild()
+		v.PodUID = "pod-a"
+		v.Claims[0].State = supervise.StateFailed
+		return v
+	}
 	for _, tc := range []struct {
 		name  string
 		view  pods.IdleView
@@ -779,14 +827,18 @@ func TestTheCloseOfALeftPodReadsTheWorkspaceOfALiveRoleFirst(t *testing.T) {
 			want: IdleHoldNotIdle,
 		},
 		{
-			name: "no live claim and a standing decline",
+			// The implementer failed after a check found one commit on this pod's disk, and no
+			// role is left to read it again: the close would delete the work.
+			name: "no live claim and a decline that says the disk holds work",
 			view: func() pods.IdleView {
-				v := leftChild()
-				v.Claims[0].State, v.Claims[0].SuspendedBy = supervise.StateSuspended, supervise.SuspendedByDaemon
-				v.Declined = standing
+				v := failedImplementer()
+				v.Declined = pods.IdleDecline{At: idleNow.Add(-30 * time.Minute), CheckedAt: idleNow.Add(-30 * time.Minute),
+					Reason: pods.DeclineUnpushedWork, PodUID: "pod-a", Work: true}
 				return v
 			}(),
+			want: IdleHoldUnownedUnpushedWork,
 		},
+		{name: "no live claim and no decline", view: failedImplementer()},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := LeftPodClose(tc.view, idleNow, idlePeriod)
@@ -800,16 +852,28 @@ func TestTheCloseOfALeftPodReadsTheWorkspaceOfALiveRoleFirst(t *testing.T) {
 	}
 
 	t.Run("after the check", func(t *testing.T) {
+		readAt := idleNow.Add(-time.Minute)
 		// The check found nothing: its own queued row and the decline it replaces hold nothing.
 		v := leftChild()
 		v.WorkspaceCheckQueued, v.Declined = true, standing
-		if got := LeftPodCloseAfterCheck(v); !got.Close || !slices.Equal(got.Roles, []claim.Role{claim.RoleImplementer}) {
+		v.Claims[0].LastTurnStart = readAt.Add(-time.Second)
+		if got := LeftPodCloseAfterCheck(v, readAt); !got.Close || !slices.Equal(got.Roles, []claim.Role{claim.RoleImplementer}) {
 			t.Fatalf("decision after a clean read = %+v, want the close of the implementer", got)
 		}
-		// A role that started a turn since the read holds the close for the next pass's read.
+		// A turn that started after the read began, of a claim that is no longer live as much as
+		// of a live one, is one the read may not have seen: the next pass reads again.
+		for i := range v.Claims {
+			turned := v
+			turned.Claims = slices.Clone(v.Claims)
+			turned.Claims[i].LastTurnStart = readAt.Add(time.Second)
+			if got := LeftPodCloseAfterCheck(turned, readAt); got.Close || got.Hold != IdleHoldNotIdle {
+				t.Fatalf("decision after a clean read with the %s's turn since = %+v, want %s", turned.Claims[i].Role, got, IdleHoldNotIdle)
+			}
+		}
+		// A role in a turn now holds the close for the next pass's read.
 		v.Claims[0].State = supervise.StateWorking
-		if got := LeftPodCloseAfterCheck(v); got.Close || got.Hold != IdleHoldInTurn {
-			t.Fatalf("decision after a clean read with a turn since = %+v, want %s", got, IdleHoldInTurn)
+		if got := LeftPodCloseAfterCheck(v, readAt); got.Close || got.Hold != IdleHoldInTurn {
+			t.Fatalf("decision after a clean read with a turn running = %+v, want %s", got, IdleHoldInTurn)
 		}
 	})
 }

@@ -645,13 +645,14 @@ func leftPodCloseRows(view pods.IdleView, decision workflow.IdleDecision, now ti
 		Rows: []store.IdleReleaseRow{{Kind: string(row.Kind), Payload: row.Payload}}}, nil
 }
 
-// leftPodStopsAfterCheck is the decision the close's workspace check makes once its read found
-// nothing that origin does not hold (checkLeftPodWorkspace): the close's stops and suspension
-// (leftPodStopRows) over a view read again in the store's transaction, where the close still
-// stands there (workflow.LeftPodCloseAfterCheck), and no rows where it does not.
-func leftPodStopsAfterCheck(now time.Time) func(pods.IdleView) (store.IdleReleaseMark, error) {
+// leftPodStopsAfterCheck is the decision the close's workspace check makes once its read, begun at
+// readAt, found nothing that origin does not hold (checkLeftPodWorkspace): the close's stops and
+// suspension (leftPodStopRows) over a view read again in the store's transaction, where the close
+// still stands there and no claim started a turn after readAt (workflow.LeftPodCloseAfterCheck),
+// and no rows where it does not.
+func leftPodStopsAfterCheck(now, readAt time.Time) func(pods.IdleView) (store.IdleReleaseMark, error) {
 	return func(view pods.IdleView) (store.IdleReleaseMark, error) {
-		decision := workflow.LeftPodCloseAfterCheck(view)
+		decision := workflow.LeftPodCloseAfterCheck(view, readAt)
 		if !decision.Close {
 			return store.IdleReleaseMark{}, nil
 		}

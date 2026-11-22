@@ -3354,9 +3354,18 @@ func (r *outbox) checkIssueWorkspace(ctx context.Context, row record.OutboxRow, 
 		hold, why := releaseHold(decision.Cause)
 		return r.cancelRelease(ctx, row.Issue, payload.Tree, hold, why)
 	}
+	// The read's moment is taken before it starts, so a turn that starts while it runs is a turn
+	// after the decline it may record (pods.IdleDecline.Stands).
+	readAt := r.now().UTC()
 	work, failed := r.readIssueWorkspace(ctx, row.Issue, payload.Role)
 	if failed != nil || work.HoldsWork() {
-		return r.declineRelease(ctx, row.Issue, payload, work, failed)
+		return r.declineRelease(ctx, row.Issue, payload, readAt, work, failed)
+	}
+	// The workspace holds none of the work an earlier decline named, so that decline goes: kept,
+	// it would hold the pod for work the daemon's own newer read found gone, whatever becomes of
+	// this release (store.Store.ForgetIdleDecline).
+	if err := r.trees.ForgetIdleDecline(ctx, r.project, row.Issue); err != nil {
+		return err
 	}
 	r.log.Info("outbox: the idle release read the issue's workspace and found nothing that no branch or tag on origin holds; its roles stop next",
 		"issue", row.Issue, "role", payload.Role, "head", work.Head)
@@ -3381,12 +3390,14 @@ func (r *outbox) readIssueWorkspace(ctx context.Context, issue string, role clai
 // store.DeclineLeftPodClose): the pod stays with its roles as they are, the role read through is
 // told once, and the rule holds the pod while the decline stands. A read that finds nothing queues
 // the close's stops and the issue's Sandbox suspension (leftPodStopRows) in one transaction with a
-// view read again (workflow.LeftPodCloseAfterCheck), so a role that started a turn or was given work
-// since the pass queued this check is not stopped; the next pass decides that pod again.
+// view read again (workflow.LeftPodCloseAfterCheck), so a role that started a turn after the read
+// began, or is in one or was given work now, is not stopped; the next pass decides that pod again.
+// A clean read also forgets the decline on record, whose work it found gone.
 func (r *outbox) checkLeftPodWorkspace(ctx context.Context, row record.OutboxRow, payload record.IssueWorkspaceCheck) error {
+	readAt := r.now().UTC()
 	work, failed := r.readIssueWorkspace(ctx, row.Issue, payload.Role)
 	if failed != nil || work.HoldsWork() {
-		decline, hold, why, err := r.declineFor(row.Issue, payload.Role, work, failed)
+		decline, hold, why, err := r.declineFor(row.Issue, payload.Role, readAt, work, failed)
 		if err != nil {
 			return err
 		}
@@ -3399,8 +3410,11 @@ func (r *outbox) checkLeftPodWorkspace(ctx context.Context, row record.OutboxRow
 		recordIdleHold(ctx, r.supervisor.store, r.project, row.Issue, hold, why, r.now().UTC(), r.log)
 		return nil
 	}
+	if err := r.trees.ForgetIdleDecline(ctx, r.project, row.Issue); err != nil {
+		return err
+	}
 	now := r.now().UTC()
-	closed, err := r.trees.ReleaseIdleIssue(ctx, r.project, row.Issue, leftPodStopsAfterCheck(now))
+	closed, err := r.trees.ReleaseIdleIssue(ctx, r.project, row.Issue, leftPodStopsAfterCheck(now, readAt))
 	if err != nil {
 		return err
 	}
@@ -3418,15 +3432,17 @@ func (r *outbox) checkLeftPodWorkspace(ctx context.Context, row record.OutboxRow
 // message only where the decline names other work than the decline on record
 // (store's recordDecline). A read that failed tells nobody, since there is nothing the role can push
 // on its word; it is a log line and a hold record, and the decline lets the pass ask again after
-// an hour (pods.DeclineUnreadRetry).
-func (r *outbox) declineFor(issue string, role claim.Role, work runtime.WorkspaceWork, failed error) (store.IdleReleaseDecline, workflow.IdleHold, string, error) {
+// an hour (pods.DeclineUnreadRetry). The decline is stamped with readAt, the moment the read began,
+// so a turn that started while the read ran — one that may have pushed the work the read found —
+// is a turn after the decline, which ends it (pods.IdleDecline.Stands).
+func (r *outbox) declineFor(issue string, role claim.Role, readAt time.Time, work runtime.WorkspaceWork, failed error) (store.IdleReleaseDecline, workflow.IdleHold, string, error) {
 	pod := ""
 	if podRuntime, ok := r.supervisor.deps.Runtime.(issuePods); ok {
 		if uid, read := podRuntime.IssuePod(issue); read {
 			pod = uid
 		}
 	}
-	at := r.now().UTC()
+	at := readAt
 	if failed != nil {
 		hold := workflow.IdleHoldWorkspaceUnread
 		return store.IdleReleaseDecline{At: at, Role: role, Reason: hold.String(), PodUID: pod}, hold,
@@ -3455,8 +3471,8 @@ func (r *outbox) declineFor(issue string, role claim.Role, work runtime.Workspac
 // reason with no new mark and no new read while it stands (pods.IdleDecline.Stands). So a pod that
 // keeps its work is asked once, and its role is told once: a read after a turn that finds the same
 // work keeps the decline and tells nobody.
-func (r *outbox) declineRelease(ctx context.Context, issue string, payload record.IssueWorkspaceCheck, work runtime.WorkspaceWork, failed error) error {
-	decline, hold, why, err := r.declineFor(issue, payload.Role, work, failed)
+func (r *outbox) declineRelease(ctx context.Context, issue string, payload record.IssueWorkspaceCheck, readAt time.Time, work runtime.WorkspaceWork, failed error) error {
+	decline, hold, why, err := r.declineFor(issue, payload.Role, readAt, work, failed)
 	if err != nil {
 		return err
 	}

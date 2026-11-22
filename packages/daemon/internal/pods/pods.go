@@ -288,20 +288,25 @@ const DeclineUnreadRetry = time.Hour
 
 // IdleDecline is the idle release the daemon last declined for an issue, as the idle view reads it.
 // At is when the check first found the work the decline names, by the daemon's clock, and the
-// moment the role was told; CheckedAt is when a check last read the workspace and found that same
-// work, or any work at all. Reason is one of the two above. StartedRow is the newest start row of
-// the issue's claims at the last check, and PodUID the pod the last check read, "" where the
-// runtime could not say. The zero IdleDecline is no decline.
+// moment the role was told; CheckedAt is when a check last read the workspace, or tried to. Each is
+// the moment the read began, so a turn that starts while the read runs is a turn after it. Reason
+// is one of the two above. StartedRow is the newest start row of the issue's claims at the last
+// check, and PodUID the pod the last check read, "" where the runtime could not say. Work is
+// whether the last read that could read the workspace found work that origin does not hold: a read
+// that failed keeps what the read before it found (store's recordDecline). The zero IdleDecline is
+// no decline.
 //
-// A check that reads the same work again (the same working-copy commit, the same count of commits
-// and the same change) keeps At and tells nobody (store's DeclineIssueRelease): the role was told
-// at At, and telling it again would start another turn for nothing.
+// A check that reads the same work again through the same role (the same working-copy commit, the
+// same count of commits and the same change) keeps At and tells nobody (store's
+// DeclineIssueRelease): the role was told at At, and telling it again would start another turn for
+// nothing.
 type IdleDecline struct {
 	At         time.Time
 	CheckedAt  time.Time
 	Reason     string
 	StartedRow int64
 	PodUID     string
+	Work       bool
 }
 
 // Stands is whether the decline still holds the pod at now, so that the pass marks no release,
@@ -337,14 +342,23 @@ func (d IdleDecline) Stands(v IdleView, now time.Time) bool {
 }
 
 // HoldsUnpushedWork is whether the decline says the disk of the pod that stands now holds work
-// that no branch or tag on origin holds: the last check found such work, no start row has followed
-// it, and the pod is the one that check read. The release of a pod no claim owns reads it
-// (workflow.UnownedPodRelease): such a pod runs no role to read through, so the decline on record
-// is the one word the daemon has of its disk. A turn does not end it, since a pod no claim owns
-// runs no turn, and a read that failed says nothing of the disk.
+// that no branch or tag on origin holds: the last read that could read the workspace found such
+// work, and the pod is the one that read was made in. The release of a pod no claim owns and the
+// close of a left pod with no live claim read it (workflow.UnownedPodRelease, LeftPodClose): such a
+// pod runs no role to read through, so the decline on record is the one word the daemon has of its
+// disk. A turn does not end it, since a pod no claim owns runs no turn, and a read that failed says
+// nothing of the disk, so it ends nothing either.
+//
+// Where the decline and the view each name the pod, the pod is all that ends it (podMoved): a start
+// row into that same pod, such as an operator's retry whose process fails again before any read,
+// leaves the disk and the work on it as they were. Only where either uid is unknown does a start row
+// after the decline end it, as the one word that a process may have run, and read, since.
 func (d IdleDecline) HoldsUnpushedWork(v IdleView) bool {
-	if d.At.IsZero() || d.Reason != DeclineUnpushedWork || d.podMoved(v) {
+	if d.At.IsZero() || !(d.Work || d.Reason == DeclineUnpushedWork) || d.podMoved(v) {
 		return false
+	}
+	if d.PodUID != "" && v.PodUID != "" {
+		return true
 	}
 	for _, c := range v.Claims {
 		if c.LastStartRow > d.StartedRow {

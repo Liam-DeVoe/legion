@@ -319,7 +319,8 @@ func (s *Store) ReleaseSuspendedClaim(ctx context.Context, project, issue string
 // the release's row, which is keyed by its issue, and the daemon's outbox runs only the rows of its
 // own project's keys (record's DueRows). A release whose check ran before the pause finishes as it
 // does while the project runs: its role stops and its teardown read no pause. The open pause is the
-// one fact this reads of it, in this transaction.
+// one fact this reads of it, in this transaction. Where the project runs, a check that finds the pod
+// given work since the mark cancels the release (ReleaseCauseOvertaken, releaseOvertaken).
 func (s *Store) IssueReleaseCheck(ctx context.Context, project, issue string, row int64) (ReleaseDecision, error) {
 	if project == "" || issue == "" || row <= 0 {
 		return ReleaseDecision{}, errors.New("a release's workspace check requires its project, its issue and its outbox row")
@@ -339,6 +340,18 @@ func (s *Store) IssueReleaseCheck(ctx context.Context, project, issue string, ro
 		}
 		if paused {
 			decision.Act, decision.Cause = ReleaseCancel, ReleaseCausePaused
+			return nil
+		}
+		// The pod given work since the mark — a wake, a start, a claim in a turn or a turn that
+		// started after the mark's newest — cancels the release here, before any read, as it does
+		// at a role stop and at the teardown: a read made beside a turn could miss what that turn
+		// makes, and a decline taken then would hold the pod for work the turn may have pushed.
+		overtaken, err := releaseOvertaken(ctx, tx, project, issue, mark)
+		if err != nil {
+			return err
+		}
+		if overtaken {
+			decision.Act, decision.Cause = ReleaseCancel, ReleaseCauseOvertaken
 		}
 		return nil
 	})

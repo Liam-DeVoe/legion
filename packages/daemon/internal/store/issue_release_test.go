@@ -474,6 +474,54 @@ func TestATurnBetweenTheMarkAndAStopCancelsTheRelease(t *testing.T) {
 	}
 }
 
+// The workspace check is the release's first row, and the pod can be given work between the mark
+// and the check's read just as between the mark and a role's stop: a whole turn there leaves no
+// claim in a turn and no start row, and a decline taken over it would hold the pod for work that
+// turn may have pushed. The check reads the mark's turn (issue_releases.turn_start) as the stops do,
+// and a claim whose last turn started after it cancels the release before any read
+// (releaseOvertaken). The control keeps the turn the mark was taken at, and the check acts.
+func TestAWorkspaceCheckOfAReleaseGivenWorkSinceItsMarkIsCancelled(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		later time.Duration
+		want  ReleaseAct
+		cause ReleaseCause
+	}{
+		{name: "a turn that started after the mark", later: time.Second, want: ReleaseCancel, cause: ReleaseCauseOvertaken},
+		{name: "control: the turn the mark was taken at", want: ReleaseActs},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := migratedStore(t)
+			ctx := context.Background()
+			openRunningTree(t, st)
+			if err := st.PutClaim(ctx, supervise.Claim{Token: claim.Token("legion-legion-legion-208-architect"), Project: "legion",
+				Tree: rootIssue, Issue: rootIssue, Role: claim.RoleArchitect, TreeEpoch: 1, Generation: 1,
+				State: supervise.StateIdle}); err != nil {
+				t.Fatal(err)
+			}
+			turnAt := func(at time.Time) {
+				t.Helper()
+				if _, err := st.Pool().Exec(ctx, `update claims set last_turn_start = $2 where issue = $1`, rootIssue, at); err != nil {
+					t.Fatalf("stamp the architect's turn: %v", err)
+				}
+			}
+			turned := time.Now().UTC().Add(-time.Hour).Truncate(time.Millisecond)
+			turnAt(turned)
+			first, _, _ := releaseThroughTheStore(t, st, rootIssue)
+
+			// The turn is over by the check: the claim is idle again, as it was at the mark.
+			turnAt(turned.Add(tc.later))
+			decision, err := st.IssueReleaseCheck(ctx, "legion", rootIssue, first)
+			if err != nil {
+				t.Fatalf("IssueReleaseCheck: %v", err)
+			}
+			if decision.Act != tc.want || decision.Cause != tc.cause {
+				t.Fatalf("the check = %s for %s, want %s for %s", decision.Act, decision.Cause, tc.want, tc.cause)
+			}
+		})
+	}
+}
+
 // A release's rows are still on the lane after it is cancelled, and the pod can be released
 // again before they run. Such a row names a release the mark is not, and acting on it would
 // suspend a claim of the live release, or tear its pod down with the workspace on its disk. The
@@ -865,6 +913,144 @@ func TestALeftPodCloseDeclineRecordsWithNoMark(t *testing.T) {
 	if declined, checked, _, messages, _ := read(); !declined.Equal(at) || !checked.Equal(again.At) || messages != 1 {
 		t.Fatalf("after the same work: declined %s, checked %s, %d messages; want %s, %s and still one message",
 			declined, checked, messages, at, again.At)
+	}
+}
+
+// A decline names the role it told, and the same work read through another role is news to that
+// role: the decline replaces the row at its own moment and tells the role, whatever the other role
+// was told. A read that failed says nothing of the disk: it moves the decline's reason, its last
+// check, its start row and its pod, and keeps what the last read that could read found — the
+// working-copy commit, the commits, the change, the role told and the moment it was told — so the
+// idle view still reads work on the disk (pods.IdleDecline.Work), and it tells nobody. The next read
+// that finds that same work through that same role is no news: it keeps the moment, puts the
+// reason back and tells nobody.
+func TestADeclineToAnotherRoleIsToldAndAFailedReadKeepsTheWork(t *testing.T) {
+	st := migratedStore(t)
+	ctx := context.Background()
+	openRunningTree(t, st)
+	if err := st.PutClaim(ctx, supervise.Claim{Token: claim.Token("legion-legion-legion-208-architect"), Project: "legion",
+		Tree: rootIssue, Issue: rootIssue, Role: claim.RoleArchitect, TreeEpoch: 1, Generation: 1, State: supervise.StateIdle}); err != nil {
+		t.Fatal(err)
+	}
+	messageTo := func(role claim.Role) *IdleReleaseRow {
+		return &IdleReleaseRow{Kind: "role_message", Payload: []byte(fmt.Sprintf(`{"role":"legion-legion-legion-208-%s","body":"push your work"}`, role))}
+	}
+	at := time.Now().UTC().Add(-time.Hour).Truncate(time.Millisecond)
+	work := IdleReleaseDecline{At: at, Role: claim.RoleArchitect, Reason: pods.DeclineUnpushedWork,
+		Head: "f2f134541b30dfa5160a5d1ce5e17b76c967c661", Commits: 1, PodUID: "pod-a", Message: messageTo(claim.RoleArchitect)}
+	type declineRow struct {
+		declined, checked time.Time
+		role, reason      string
+		head              string
+		commits           int
+		changed           bool
+		messages          int
+	}
+	read := func() declineRow {
+		t.Helper()
+		var row declineRow
+		if err := st.Pool().QueryRow(ctx, `select declined_at, checked_at, role, reason, head, commits, changed,
+			(select count(*) from outbox where issue = $1 and kind = 'role_message')
+			from idle_release_declines where issue = $1`, rootIssue).Scan(
+			&row.declined, &row.checked, &row.role, &row.reason, &row.head, &row.commits, &row.changed, &row.messages); err != nil {
+			t.Fatalf("read the decline of %s: %v", rootIssue, err)
+		}
+		return row
+	}
+	decline := func(d IdleReleaseDecline) bool {
+		t.Helper()
+		told, err := st.DeclineLeftPodClose(ctx, "legion", rootIssue, d)
+		if err != nil {
+			t.Fatalf("decline at %s through the %s: %v", d.At, d.Role, err)
+		}
+		return told
+	}
+
+	if !decline(work) {
+		t.Fatal("the first decline told nobody")
+	}
+
+	// The same work, read through the implementer, who was never told of it.
+	toImplementer := work
+	toImplementer.At, toImplementer.Role, toImplementer.Message = at.Add(10*time.Minute), claim.RoleImplementer, messageTo(claim.RoleImplementer)
+	if !decline(toImplementer) {
+		t.Fatal("the same work read through the implementer told nobody; the implementer was never told of it")
+	}
+	if row := read(); row.role != "implementer" || !row.declined.Equal(toImplementer.At) || row.messages != 2 {
+		t.Fatalf("after the read through the implementer the row = %+v, want it the implementer's, declined at %s, with a second message",
+			row, toImplementer.At)
+	}
+
+	// A read through the architect that failed: the work on record and the role it told stand.
+	unread := IdleReleaseDecline{At: at.Add(20 * time.Minute), Role: claim.RoleArchitect, Reason: pods.DeclineWorkspaceUnread, PodUID: "pod-a"}
+	if decline(unread) {
+		t.Fatal("a read that failed told a role")
+	}
+	row := read()
+	if row.reason != pods.DeclineWorkspaceUnread || !row.checked.Equal(unread.At) || !row.declined.Equal(toImplementer.At) ||
+		row.role != "implementer" || row.head != work.Head || row.commits != 1 || row.changed || row.messages != 2 {
+		t.Fatalf("after the failed read the row = %+v, want the reason %s and the check at %s, and the work, the role and the moment of the read before",
+			row, pods.DeclineWorkspaceUnread, unread.At)
+	}
+	if view := idleViewOf(t, st, rootIssue); !view.Declined.Work || view.Declined.Reason != pods.DeclineWorkspaceUnread {
+		t.Fatalf("the idle view's decline after the failed read = %+v, want the work the read before found", view.Declined)
+	}
+
+	// The same work through the implementer again: no news.
+	again := toImplementer
+	again.At = at.Add(30 * time.Minute)
+	if decline(again) {
+		t.Fatal("the same work read again through the role told of it told it again")
+	}
+	if row := read(); row.reason != pods.DeclineUnpushedWork || !row.declined.Equal(toImplementer.At) || !row.checked.Equal(again.At) || row.messages != 2 {
+		t.Fatalf("after the same work again the row = %+v, want the reason back at %s, declined at %s, checked at %s and no third message",
+			row, pods.DeclineUnpushedWork, toImplementer.At, again.At)
+	}
+}
+
+// A failed read keeps the work the read before it found only where both reads were made in the
+// same pod. A read that failed in another pod than the row's was made after a relaunch built the
+// issue's pod again, and the work the row names was found on a disk that pod replaced: the row
+// keeps no work, so the idle view reads none (pods.IdleDecline.Work) and no rule holds the new pod
+// for it. A failed read in the same pod, or in a pod the runtime could not name, keeps the work.
+func TestAFailedReadInAnotherPodKeepsNoWork(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		pod  string
+		work bool
+	}{
+		{name: "another pod", pod: "pod-b"},
+		{name: "the same pod", pod: "pod-a", work: true},
+		{name: "a pod the runtime could not name", pod: "", work: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := migratedStore(t)
+			ctx := context.Background()
+			openRunningTree(t, st)
+			if err := st.PutClaim(ctx, supervise.Claim{Token: claim.Token("legion-legion-legion-208-architect"), Project: "legion",
+				Tree: rootIssue, Issue: rootIssue, Role: claim.RoleArchitect, TreeEpoch: 1, Generation: 1, State: supervise.StateIdle}); err != nil {
+				t.Fatal(err)
+			}
+			at := time.Now().UTC().Add(-time.Hour).Truncate(time.Millisecond)
+			message := IdleReleaseRow{Kind: "role_message", Payload: []byte(`{"role":"legion-legion-legion-208-architect","body":"push your work"}`)}
+			if _, err := st.DeclineLeftPodClose(ctx, "legion", rootIssue, IdleReleaseDecline{At: at, Role: claim.RoleArchitect,
+				Reason: pods.DeclineUnpushedWork, Head: "f2f134541b30dfa5160a5d1ce5e17b76c967c661", Commits: 1, PodUID: "pod-a",
+				Message: &message}); err != nil {
+				t.Fatalf("decline for the work in pod-a: %v", err)
+			}
+			if _, err := st.DeclineLeftPodClose(ctx, "legion", rootIssue, IdleReleaseDecline{At: at.Add(10 * time.Minute),
+				Role: claim.RoleArchitect, Reason: pods.DeclineWorkspaceUnread, PodUID: tc.pod}); err != nil {
+				t.Fatalf("decline for a read that failed in %q: %v", tc.pod, err)
+			}
+			var commits int
+			if err := st.Pool().QueryRow(ctx, `select commits from idle_release_declines where issue = $1`, rootIssue).Scan(&commits); err != nil {
+				t.Fatalf("read the decline: %v", err)
+			}
+			view := idleViewOf(t, st, rootIssue)
+			if view.Declined.Work != tc.work || (commits == 1) != tc.work || view.Declined.Reason != pods.DeclineWorkspaceUnread {
+				t.Fatalf("after a failed read in %q the decline = %+v with %d commits, want work on record %t", tc.pod, view.Declined, commits, tc.work)
+			}
+		})
 	}
 }
 

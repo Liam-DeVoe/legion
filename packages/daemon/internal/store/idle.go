@@ -520,26 +520,54 @@ func (s *Store) DeclineLeftPodClose(ctx context.Context, project, issue string, 
 // message. The row's started_row is the newest start row of the issue's claims, read in this
 // transaction, so a role process started after it ends the decline (pods.IdleDecline.Stands).
 //
-// A decline that finds the same work as the decline on record — the same reason, the same
-// working-copy commit, the same count of commits and the same change — is a read the role was
-// already told of: it moves checked_at, started_row and pod_uid, keeps declined_at, and queues no
-// message. That is what ends the loop a message would otherwise start. The message starts a turn
-// in the role's session, the turn ends the decline (it can change the workspace), the next read
-// finds the same work, and a second message would start the next turn. Any other decline replaces
-// the row whole, at its own moment, and queues its message.
+// A decline that finds the same work as the decline on record, read through the same role — the
+// same working-copy commit, the same count of commits, the same change and the same role — is a
+// read that role was already told of: it moves checked_at, started_row and pod_uid, sets the
+// reason, keeps declined_at, and queues no message. That is what ends the loop a message would
+// otherwise start. The message starts a turn in the role's session, the turn ends the decline (it
+// can change the workspace), the next read finds the same work, and a second message would start
+// the next turn. The role is part of the key because the row names the role that was told: a role
+// that takes over, the next phase's worker, is told of the work once, as its own.
+//
+// A decline whose read failed (pods.DeclineWorkspaceUnread) says nothing of the work, so it keeps
+// what the last read that could read found, and the role that read told: on a row that stands it
+// moves the reason, checked_at, started_row and pod_uid alone. The next read that finds the same
+// work through the same role then tells nobody, and the pod's disk is still read as holding that
+// work where no role runs to read it again (pods.IdleDecline.Work). A failed read made in another
+// pod than the row's keeps no work, since the work was found on a disk that pod replaced. On no
+// row, it writes a row that holds no work. Any other decline replaces the row whole, at its own
+// moment, and queues its message.
 func recordDecline(ctx context.Context, tx pgx.Tx, project, issue string, decline IdleReleaseDecline) (bool, error) {
+	const startedRow = `(select coalesce(max(last_start_row), 0) from claims where project = $1 and issue = $2)`
+	if decline.Reason == pods.DeclineWorkspaceUnread {
+		// The row's pod and the failed read's are both named and differ: the pod was made again.
+		const otherPod = `idle_release_declines.pod_uid <> '' and excluded.pod_uid <> ''
+			and idle_release_declines.pod_uid <> excluded.pod_uid`
+		if _, err := tx.Exec(ctx, `insert into idle_release_declines
+			(project, issue, declined_at, checked_at, role, reason, started_row, pod_uid)
+			values ($1, $2, $3, $3, $4, $5, `+startedRow+`, $6)
+			on conflict (project, issue) do update set reason = excluded.reason,
+				checked_at = greatest(idle_release_declines.declined_at, excluded.checked_at),
+				head = case when `+otherPod+` then '' else idle_release_declines.head end,
+				commits = case when `+otherPod+` then 0 else idle_release_declines.commits end,
+				changed = case when `+otherPod+` then false else idle_release_declines.changed end,
+				started_row = excluded.started_row, pod_uid = excluded.pod_uid`,
+			project, issue, decline.At, string(decline.Role), decline.Reason, decline.PodUID); err != nil {
+			return false, fmt.Errorf("record the decline of %s's release: %w", issue, err)
+		}
+		return false, nil
+	}
 	var same bool
-	err := tx.QueryRow(ctx, `select reason = $3 and head = $4 and commits = $5 and changed = $6
+	err := tx.QueryRow(ctx, `select head = $3 and commits = $4 and changed = $5 and role = $6
 		from idle_release_declines where project = $1 and issue = $2 for update`,
-		project, issue, decline.Reason, decline.Head, decline.Commits, decline.Changed).Scan(&same)
+		project, issue, decline.Head, decline.Commits, decline.Changed, string(decline.Role)).Scan(&same)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return false, fmt.Errorf("read the decline of %s's release: %w", issue, err)
 	}
-	const startedRow = `(select coalesce(max(last_start_row), 0) from claims where project = $1 and issue = $2)`
 	if same {
 		if _, err := tx.Exec(ctx, `update idle_release_declines set checked_at = greatest(declined_at, $3),
-			role = $4, started_row = `+startedRow+`, pod_uid = $5 where project = $1 and issue = $2`,
-			project, issue, decline.At, string(decline.Role), decline.PodUID); err != nil {
+			reason = $4, started_row = `+startedRow+`, pod_uid = $5 where project = $1 and issue = $2`,
+			project, issue, decline.At, decline.Reason, decline.PodUID); err != nil {
 			return false, fmt.Errorf("record the decline of %s's release: %w", issue, err)
 		}
 		return false, nil
@@ -565,8 +593,10 @@ func recordDecline(ctx context.Context, tx pgx.Tx, project, issue string, declin
 }
 
 // ForgetIdleDecline deletes the decline of issue's release, if one stands: the issue is done or
-// its tree is closing, so no idle release of its pod is coming. A decline the table does not hold
-// is success, so a retried delete finishes.
+// its tree is closing, so no idle release of its pod is coming, or a workspace check has just read
+// the workspace and found nothing that origin does not hold, so the work the decline named is gone
+// and no rule may keep the pod for it. A decline the table does not hold is success, so a retried
+// delete finishes.
 func (s *Store) ForgetIdleDecline(ctx context.Context, project, issue string) error {
 	if _, err := s.pool.Exec(ctx, `delete from idle_release_declines where project = $1 and issue = $2`, project, issue); err != nil {
 		return fmt.Errorf("forget the declined release of %s: %w", issue, err)
@@ -903,9 +933,9 @@ func readIdleView(ctx context.Context, tx pgx.Tx, project, issue string) (pods.I
 	// The release the daemon last declined for the issue, which holds the pod while it stands
 	// (pods.IdleDecline). A view with no such row reads the zero decline. The pod the runtime holds
 	// now is no fact of this store's: the daemon's pass sets it (pods.IdleView.PodUID).
-	err = tx.QueryRow(ctx, `select declined_at, checked_at, reason, started_row, pod_uid from idle_release_declines
-		where project = $1 and issue = $2`, project, issue).Scan(&view.Declined.At, &view.Declined.CheckedAt,
-		&view.Declined.Reason, &view.Declined.StartedRow, &view.Declined.PodUID)
+	err = tx.QueryRow(ctx, `select declined_at, checked_at, reason, started_row, pod_uid, commits > 0 or changed
+		from idle_release_declines where project = $1 and issue = $2`, project, issue).Scan(&view.Declined.At,
+		&view.Declined.CheckedAt, &view.Declined.Reason, &view.Declined.StartedRow, &view.Declined.PodUID, &view.Declined.Work)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return pods.IdleView{}, fmt.Errorf("read the declined release of %s: %w", issue, err)
 	}

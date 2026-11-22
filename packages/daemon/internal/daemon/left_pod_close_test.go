@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
@@ -416,4 +417,62 @@ func TestALeftPodWithALiveRoleIsReadBeforeItsClose(t *testing.T) {
 	if got := rig.machine.Claim(); got.State == supervise.StateSuspended {
 		t.Fatalf("the planner after the passes = %s, want it still live", got.State)
 	}
+}
+
+// A left pod with no live claim runs no role to read its disk through, so the decline on record is
+// the one word the daemon has of that disk. A planner whose relaunches ran out after a check found
+// one commit origin does not hold left that commit on the disk of the pod the check read, and the
+// close would delete it with the pod: the passes hold the pod as unowned_unpushed_work, as the
+// release of a pod no claim owns does (pods.IdleDecline.HoldsUnpushedWork), queue nothing, ask for
+// no teardown and record one streak of that hold. The control stands the same pod with no decline,
+// and the passes close it as before: the Sandbox suspension alone.
+func TestALeftPodWithNoLiveClaimKeepsADiskADeclineSaysHoldsWork(t *testing.T) {
+	ctx := context.Background()
+	// failedLeftPod is the parked child of newLeftPodRig whose planner failed rather than being
+	// suspended, recording no process, in a pod the runtime names pod-a.
+	failedLeftPod := func(t *testing.T) *idleRig {
+		t.Helper()
+		rig := newLeftPodRig(t, true)
+		rig.rt.ScriptIssuePod(rig.issue.Key, "pod-a")
+		if _, err := rig.pool.Exec(ctx, `update claims set state = 'failed', suspended_by = '', locator = null,
+			updated_at = now() - interval '30 minutes' where token = $1`, string(rig.token)); err != nil {
+			t.Fatalf("fail the planner: %v", err)
+		}
+		return rig
+	}
+
+	t.Run("a decline says the disk holds work", func(t *testing.T) {
+		rig := failedLeftPod(t)
+		if _, err := rig.pool.Exec(ctx, `insert into idle_release_declines
+			(project, issue, declined_at, checked_at, role, reason, head, commits, changed, started_row, pod_uid)
+			values ('legion', $1, now() - interval '1 hour', now() - interval '1 hour', 'planner', $2, $3, 1, false, 0, 'pod-a')`,
+			rig.issue.Key, pods.DeclineUnpushedWork, idleRigUnpushed.Head); err != nil {
+			t.Fatalf("record the decline: %v", err)
+		}
+		// The outbox's sequence counts a row the drain ran and deleted as much as one left queued.
+		rows := rig.sequenceValue(t, "outbox")
+		for range idleRigPasses {
+			idlePasses(rig)
+			rig.drain(t)
+		}
+		if after := rig.sequenceValue(t, "outbox"); after != rows {
+			t.Fatalf("the passes queued outbox rows (the sequence moved from %d to %d), want none: the pod's disk holds work origin does not", rows, after)
+		}
+		if asked := rig.rt.teardownsAsked(); len(asked) != 0 {
+			t.Fatalf("teardowns asked = %v, want none", asked)
+		}
+		if _, present := rig.rt.IssueSandbox(rig.issue.Key); !present {
+			t.Fatal("the runtime no longer holds the child's Sandbox")
+		}
+		if held := holdsOf(t, rig, workflow.IdleHoldUnownedUnpushedWork); len(held) != 1 || held[0].Passes < 2 {
+			t.Fatalf("holds = %+v, want one %s streak the passes counted on", rig.records(t).Holds, workflow.IdleHoldUnownedUnpushedWork)
+		}
+	})
+
+	t.Run("control: no decline", func(t *testing.T) {
+		rig := failedLeftPod(t)
+		if queued := rig.queuedBy(t, func() { idlePasses(rig) }); !slices.Equal(queued, []string{"issue_suspend"}) {
+			t.Fatalf("the passes queued %v, want the close's Sandbox suspension alone", queued)
+		}
+	})
 }
