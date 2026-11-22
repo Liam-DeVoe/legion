@@ -361,6 +361,12 @@ func (m *newsModel) handle(a *newsModelAgent, ev supervise.Event) {
 		m.fail("handle %T for the %s: %v", ev, a.name, err)
 	}
 	a.machine.Wait()
+	// The agent's turn is over, so its host is idle and the worker takes what its claim holds, as a
+	// real worker takes the value it sees once idle: a connection a restart brought up streaming
+	// (newsPathRig.reconnect) would otherwise stay busy past that turn's end.
+	if _, ended := ev.(supervise.StreamTurnEnd); ended && a.conn != nil {
+		a.conn.SetStreaming(false)
+	}
 }
 
 // result is the end of the turn a's agent is in, and that turn's result, which says it ran. The
@@ -748,5 +754,8 @@ func (m *newsModel) restart() {
 		a.machine, a.conn = m.r.reconnect(a.row.issue, a.role, a.turn != "")
 		a.seen, a.next = 0, ""
 		m.handle(a, supervise.StreamHello{Claim: a.token, Generation: a.machine.Claim().Generation})
+		// The shim answers the hello's ask of whether the agent is in a turn on its stream, which the
+		// daemon's pump reads as a turn answer (newsPathRig.hello); one no ask waits on changes nothing.
+		m.handle(a, supervise.StreamTurnAnswered{Claim: a.token, Streaming: a.turn != ""})
 	}
 }

@@ -582,14 +582,21 @@ type newsModel struct {
 }
 
 // newsModelStored is a delivery as the claim store holds it, as far as its credit goes: whether it
-// holds one, under which id, confirmed or not, with which copy, final or not. The copy is its JSON
-// with its keys in order: the store reads it back from a jsonb column, which writes it its own way.
+// holds one, under which id, confirmed or not, whether the take's turn started, with which copy,
+// final or not. Under the take the stored credit's standing reads turn_started beside main's three
+// fields (confirmed, carried, ran): the copy is a standing credit only once the turn of the take
+// that carried it has started (20261122160000_design_news_credit_at_turn_start), so a refused write
+// of that start leaves the store behind the machine, lag, as a refused confirmation did on the push
+// path.
+// The copy is its JSON with its keys in order: the store reads it back from a jsonb column, which
+// writes it its own way.
 type newsModelStored struct {
-	held      bool
-	id        string
-	confirmed bool
-	carried   string
-	ran       bool
+	held        bool
+	id          string
+	confirmed   bool
+	turnStarted bool
+	carried     string
+	ran         bool
 }
 
 // storedFrom is the delivery d as far as its credit goes (newsModelStored), the zero value for nil.
@@ -604,7 +611,7 @@ func storedFrom(d *supervise.Delivery) newsModelStored {
 			carried = string(ordered)
 		}
 	}
-	return newsModelStored{held: true, id: d.ID, confirmed: !d.ConfirmedAt.IsZero(), carried: carried, ran: d.Ran}
+	return newsModelStored{held: true, id: d.ID, confirmed: !d.ConfirmedAt.IsZero(), turnStarted: d.TurnStarted, carried: carried, ran: d.Ran}
 }
 
 // storedClaims is every claim the claim store holds now, and the delivery each holds by its token,
@@ -771,7 +778,7 @@ func (m *newsModel) state() string {
 		}
 		pending := "none"
 		if p := a.machine.Claim().Pending; p != nil {
-			pending = fmt.Sprintf("%s confirmed=%t carried=%t ran=%t", p.ID, !p.ConfirmedAt.IsZero(), len(p.Carried) > 0, p.Ran)
+			pending = fmt.Sprintf("%s confirmed=%t started=%t carried=%t ran=%t", p.ID, !p.ConfirmedAt.IsZero(), p.TurnStarted, len(p.Carried) > 0, p.Ran)
 		}
 		parts = append(parts, fmt.Sprintf("%s holds %s (the claim store %+v), its agent next %q turn %q",
 			a.name, pending, storedFrom(stored[a.token]), a.next, a.turn))
