@@ -460,6 +460,28 @@ func TestAClaimsAgentResumeGenerationRoundTrips(t *testing.T) {
 	sameClaim(t, onlyClaim(t, store), want)
 }
 
+// The agent whose session a claim holds (SessionAgent) is a column of its own: a daemon restarted
+// between a step's start and the next reads it back, and with it whether the next step's agent
+// takes that session or starts in one of its own. A claim records none until a start for a step's
+// agent brings it back, and a later start for another agent replaces it.
+func TestAClaimsSessionAgentRoundTrips(t *testing.T) {
+	ctx := context.Background()
+	store := migratedStore(t)
+	want := tmuxClaim("legion-LEGION-209-implementer")
+	if err := store.PutClaim(ctx, want); err != nil {
+		t.Fatalf("put claim: %v", err)
+	}
+	sameClaim(t, onlyClaim(t, store), want)
+
+	for _, agent := range []string{"step:1:a", "key:b"} {
+		want.SessionAgent = agent
+		if err := store.PutClaim(ctx, want); err != nil {
+			t.Fatalf("put claim of agent %s: %v", agent, err)
+		}
+		sameClaim(t, onlyClaim(t, store), want)
+	}
+}
+
 // The turn a claim last started and the one it last ended are nullable columns of their own: a
 // claim that has taken no turn reads back with neither time rather than with a zero one, and a
 // claim that has worked reads both back to the microsecond, which is what a restarted daemon

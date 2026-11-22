@@ -167,6 +167,19 @@ type Claim struct {
 	// Session and SessionFile are the agent's reported session id and absolute transcript path.
 	Session     string
 	SessionFile string
+	// SessionAgent is the agent whose session the claim holds, in the identity a workflow start
+	// names it by (plan.Agent.ID, StartWork.Agent): the agent of a key, or of a step with no key.
+	// One name can go to two agents of an issue in turn — a later version of a plan can give the
+	// name a stopped task's agent ran under to a new agent — and this is the one record of which of
+	// them the session is. It is written in the decision that brings the claim back for a step's
+	// agent (revive), the decision that begins or takes the session for that agent: a spawn for it,
+	// a resume or a retry of the session the claim holds for it, and a start for another agent,
+	// which leaves the session behind first (leaveAnotherAgentsSession). No other code writes it,
+	// and a forget for any other cause keeps it: the claim then relaunches in a new session the same
+	// agent's work it holds. "" is a claim no start for a step's agent has brought back yet — the
+	// claim of an issue with no plan rows, of a role no step names, or one the release before last
+	// ran — whose session the next such start takes. The store keeps it in claims.session_agent.
+	SessionAgent string
 	// Abandoned is the session this claim stopped resuming when it last forgot one
 	// (forgetSession), and why. The session itself stays in its store — nothing of it is deleted
 	// — so this is the one record of where it went, for the operator who may want to read it and
@@ -3618,12 +3631,15 @@ func (m *Machine) sessionGone(ctx context.Context) {
 // It is the one place a claim leaves its session behind, so every start, retry or resume of a
 // claim relaunches the session the claim records — by its file, or by its id where it records no
 // file (start) — unless that launch forgets the session here, and a claim starts in a new session
-// only after this ran. It has three callers: the launch's startFresh, for a session no store holds
+// only after this ran. It has four callers: the launch's startFresh, for a session no store holds
 // any more, one the pod's launcher could not look up and Oh My Pi did not resume by its id, and
 // one a Claude Code claim records with no transcript file; retry, when freshSession says the retry
-// needs a new session; and the operator's forget-session (forgetSession, the table's), which
-// `legion claims retry --fresh-session` and the controller's fresh_session run (api's
-// freshSession). It clears the claim's mark of a start by Oh My Pi's own lookup with the session
+// needs a new session; the start of a step's agent whose session the claim does not hold
+// (leaveAnotherAgentsSession), in a spawn, a resume by rule or a retry; and the operator's
+// forget-session (forgetSession, the table's), which `legion claims retry --fresh-session` and
+// the controller's fresh_session run (api's freshSession). None of them changes the agent the
+// claim records as its session's (Claim.SessionAgent): the start of another agent records its own
+// once it is admitted (revive). It clears the claim's mark of a start by Oh My Pi's own lookup with the session
 // (Claim.AgentResumeGeneration), and, where it drops a session, the cause of an earlier forget
 // the machine keeps for the fresh agent's launches; Machine.lostCause says why one that drops
 // nothing keeps it. startFresh sets the cause of its own forget after this call.
@@ -3643,9 +3659,10 @@ func (m *Machine) sessionGone(ctx context.Context) {
 //
 // Every caller runs it after the old process's record is written, so no let-go writes a record of
 // that process later: the launch's startFresh runs after the launch let the old process go
-// (launchNow, letGo), and retry's fresh session and the operator's forget-session reach only a
-// claim that runs nothing — queued, suspended, failed or retired — whose process the suspension,
-// the failure or the retirement already let go (suspended, fail, retire), or that never had one. A
+// (launchNow, letGo), and retry's fresh session, the start of another agent and the operator's
+// forget-session reach only a claim that runs nothing — queued, suspended, failed or retired —
+// whose process the suspension, the failure or the retirement already let go (suspended, fail,
+// retire), or that never had one. A
 // let-go records nothing for a claim that records no process (recordEnd), so the next record
 // written is of the fresh session's own process.
 //

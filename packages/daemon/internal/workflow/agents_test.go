@@ -50,36 +50,96 @@ func TestALaterVersionGivesAFreshAgentANameOfItsOwnBesideAKeysName(t *testing.T)
 	}
 }
 
-// A new agent that takes a name a claim holds starts a session of its own: the owner stops task a
-// after its implementer ran, and gives a plan whose task p is `implementer reviewer`. Step 1 of p
-// takes the name implementer, since no agent of the plan in force holds it, and so the claim
-// `…-implementer`; but it is another agent than the one that ran a's step 1, so its start asks for
-// a fresh session (record.SuperviseRequest.FreshSession). The first start of an agent, and a return
-// of an agent to its own step, resume as before. The fault: p's fresh step resumes a's session,
-// against "a step with no key gets a fresh agent".
-func TestANewAgentOnANameAClaimHoldsStartsAFreshSession(t *testing.T) {
-	pool := migratedPool(t)
-	engine := returnEngine()
-	apply := applyFacts(t, pool, engine)
-	root := stepRoot(t, pool, phase.Admitted)
-	key, gen := root.Key, root.Generation
-	mustTake(t, "version 1", apply(planID(key, gen, 1), ownersPlan(t, key, gen, 1, givenTask(t, "Build the widget.", "implementer", "reviewer"))))
-	move(t, pool, engine, key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
-	if first := lastStartOf(t, pool, key, claim.RoleImplementer); first.FreshSession {
-		t.Fatalf("the first start of task a's implementer asks for a fresh session, want it to resume what its claim holds")
-	}
-	if result := apply("stop", ownersStop(t, root, "a")); result.Refusal != nil {
-		t.Fatalf("the owner's stop was refused: %+v", result.Refusal)
-	}
-	p := givenTask(t, "Build the manual.", "implementer", "reviewer")
-	p.ID = "p"
-	mustTake(t, "version 2", apply(planID(key, gen, 2), ownersPlan(t, key, gen, 2, p)))
-	if got := agentsOfTask(planStandingOf(t, pool, engine, key, gen).plan, "p"); !slices.Equal(got, []claim.Agent{"implementer", "reviewer"}) {
-		t.Fatalf("the agents of task p = %q, want implementer and reviewer", got)
-	}
-	start := lastStartOf(t, pool, key, claim.RoleImplementer)
-	if !start.FreshSession {
-		t.Errorf("the start of task p's step 1 = %+v, want it to ask for a fresh session: the claim implementer was another agent's", start)
+// Every start of a step names the agent of that step in one string (record.SuperviseRequest.Agent,
+// plan.Agent.ID), the agent of its key or, for a step with no key, the agent of its task and place,
+// and the claim the start reaches records the agent whose session it holds: the agent of the start
+// that began that session (supervise.Claim.SessionAgent). The runner starts a claim in a new session
+// exactly where the two differ. So a later version, given after the owner stopped the task that ran
+// first, names its step's agent by the plan it is, and never by the plan in force at the rows that
+// ran before it.
+//
+// Each case runs version 1 to the step whose agent last ran on the claim the later step takes,
+// stops the task, gives version 2, and reads the agent version 2's first step names. The step's
+// agent takes the name, and so the claim, the earlier agent ran on: the name implementer in each
+// case, so each case is one claim and the question is whose session it resumes.
+//   - A keyed agent keeps its own session across a version that moves its second step: v1
+//     `implementer:a tester:a reviewer`, v2 `implementer:a reviewer tester:a`. Before, the entry
+//     judged the claim's last row, place 2, by the plan in force, where place 2 is now the reviewer,
+//     and asked for a fresh session for key a.
+//   - A new key in a new task, and a key added at the place an agent with no key ran, are agents
+//     of their own. Before, a keyed step was taken for the same agent as any row of a task the plan
+//     no longer held, and a re-keyed place for the agent of the place.
+//   - A step whose key was taken off is a fresh agent. Before, the place's agent with no key was
+//     taken for the same agent as the key's.
+//   - A key's agent across two tasks is one agent.
+//
+// The fault in each: the agent the later step names is not the agent whose session it should
+// resume or leave behind.
+func TestAStartNamesTheAgentOfItsStepWhateverThePlanInForceHeldBefore(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// first and later are the task id and the steps of version 1 and version 2.
+		firstTask string
+		first     []string
+		laterTask string
+		later     []string
+		// ranStep2 is whether step 1 completes, so step 2 of version 1 runs on the claim last.
+		ranStep2 bool
+		// ran is the agent of the last step of version 1 that ran on the claim, and agent the agent
+		// of version 2's step 1.
+		ran, agent string
+	}{
+		{name: "a keyed agent keeps its session across a version that moves its step", firstTask: "a", first: []string{"implementer:a", "tester:a", "reviewer"},
+			laterTask: "a", later: []string{"implementer:a", "reviewer", "tester:a"}, ranStep2: true, ran: "key:a", agent: "key:a"},
+		{name: "a new key in a new task is an agent of its own", firstTask: "a", first: []string{"implementer", "reviewer"},
+			laterTask: "p", later: []string{"implementer:b", "reviewer"}, ran: "step:1:a", agent: "key:b"},
+		{name: "a step with no key in a new task is an agent of its own", firstTask: "a", first: []string{"implementer", "reviewer"},
+			laterTask: "p", later: []string{"implementer", "reviewer"}, ran: "step:1:a", agent: "step:1:p"},
+		{name: "a key added at the place of an agent with no key is an agent of its own", firstTask: "a", first: []string{"implementer", "reviewer"},
+			laterTask: "a", later: []string{"implementer:k", "reviewer"}, ran: "step:1:a", agent: "key:k"},
+		{name: "a step whose key was taken off is an agent of its own", firstTask: "a", first: []string{"implementer:k", "reviewer"},
+			laterTask: "a", later: []string{"implementer", "reviewer"}, ran: "key:k", agent: "step:1:a"},
+		{name: "a key's agent in two tasks is one agent", firstTask: "a", first: []string{"implementer:k", "reviewer"},
+			laterTask: "b", later: []string{"implementer:k", "reviewer"}, ran: "key:k", agent: "key:k"},
+		{name: "control: an agent with no key that returns to its place is one agent", firstTask: "a", first: []string{"implementer", "reviewer"},
+			laterTask: "a", later: []string{"implementer", "reviewer"}, ran: "step:1:a", agent: "step:1:a"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			engine := returnEngine()
+			tickingClock(engine)
+			apply := applyFacts(t, pool, engine)
+			root := stepRoot(t, pool, phase.Admitted)
+			key, gen := root.Key, root.Generation
+			first := givenTask(t, "Build the widget.", tc.first...)
+			first.ID = tc.firstTask
+			mustTake(t, "version 1", apply(planID(key, gen, 1), ownersPlan(t, key, gen, 1, first)))
+			move(t, pool, engine, key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
+			ran := lastStartOf(t, pool, key, claim.RoleImplementer)
+			if tc.ranStep2 {
+				completesAs(t, pool, engine, claim.RoleImplementer, agentToken(t, "implementer"), "implement", 1)
+				ran = lastStartOf(t, pool, key, claim.RoleTester)
+			}
+			if ran.Agent != tc.ran {
+				t.Fatalf("the last start of version 1 on the claim implementer names the agent %q, want %q", ran.Agent, tc.ran)
+			}
+			if result := apply("stop", ownersStop(t, root, tc.firstTask)); result.Refusal != nil {
+				t.Fatalf("the owner's stop was refused: %+v", result.Refusal)
+			}
+			later := givenTask(t, "Build the manual.", tc.later...)
+			later.ID = tc.laterTask
+			mustTake(t, "version 2", apply(planID(key, gen, 2), ownersPlan(t, key, gen, 2, later)))
+			if got := agentsOfTask(planStandingOf(t, pool, engine, key, gen).plan, tc.laterTask); len(got) == 0 || got[0] != "implementer" {
+				t.Fatalf("the agents of version 2's task %s = %q, want step 1's named implementer, the claim version 1's agent ran on", tc.laterTask, got)
+			}
+			start := lastStartOf(t, pool, key, claim.RoleImplementer)
+			if start.Agent != tc.agent {
+				t.Fatalf("the start of version 2's step 1 = %+v, want it to name the agent %q", start, tc.agent)
+			}
+			if start.FreshSession {
+				t.Errorf("the start of version 2's step 1 asks for a fresh session of its own, want the claim's record of its session's agent to decide: %+v", start)
+			}
+		})
 	}
 }
 

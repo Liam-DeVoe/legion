@@ -133,6 +133,39 @@ func (w Walk) AgentAt(place record.TaskPlace) claim.Agent {
 	return ""
 }
 
+// agentIDAt is the identity of the agent that does the work of place on w (plan.Agent.ID), the
+// agent AgentAt names: for a step, the agent of its key or of its own task and place; for the
+// retro, the agent of the task's last step of the type implementation. It is "" where AgentAt is:
+// for the merge, for a walk with no plan rows, for a step of the key owner and for a place the task
+// does not hold. A start of the work of place names it (record.SuperviseRequest.Agent), and the
+// claim it reaches starts in a new session where its session is another agent's
+// (supervise.Claim.SessionAgent).
+func (w Walk) agentIDAt(place record.TaskPlace) string {
+	if !w.Stored {
+		return ""
+	}
+	at := 0
+	switch place.Kind {
+	case record.PlaceStep:
+		at = place.Position
+	case record.PlaceRetro:
+		for i := len(w.Steps) - 1; i >= 0 && at == 0; i-- {
+			if w.Steps[i].Type == plan.TypeImplementation {
+				at = i + 1
+			}
+		}
+	}
+	if at < 1 || at > len(w.Steps) {
+		return ""
+	}
+	step := w.Steps[at-1]
+	agent := plan.AgentOf(w.Task, at, plan.Step{Role: step.Role, Key: step.AgentKey})
+	if agent.Owner() {
+		return ""
+	}
+	return agent.ID()
+}
+
 // placeIn is where w's task stands while its issue stands in p: for a stored walk, w.Place where
 // the phase it derives for a running task (issuePhaseOf) is p, and no place otherwise; for a walk
 // with no plan rows, and for a stored task at no act whose issue already stands in a step (plan

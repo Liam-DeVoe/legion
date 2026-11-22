@@ -32,9 +32,15 @@ import (
 // queued task is judged by (Deps.PhaseHolds), where it brings the claim back (startHolds) and, for
 // a launch the wake pacing parks, at that launch's turn (launchAfter). The zero StartWork — an
 // operator's request, the boot's, a start of no phase — is judged by nothing.
+//
+// Agent is the agent of the step the start is a run of (record.SuperviseRequest.Agent,
+// plan.Agent.ID), "" for a start of no step's agent. The decision that brings the claim back leaves
+// the claim's session behind first where it is another agent's (leaveAnotherAgentsSession), and
+// records Agent as the agent of the session it begins or takes (Claim.SessionAgent, revive).
 type StartWork struct {
 	Phase      phase.Phase
 	Generation uint64
+	Agent      string
 }
 
 // ErrStartLeft is a start the machine judged no longer the work of its claim's issue
@@ -70,6 +76,12 @@ func (m *Machine) startHolds(ctx context.Context, start StartWork) error {
 // that is being run again, since an admission the lifecycle refuses leaves the claim exactly as
 // it was (retry, whose failure record and budgets go there).
 //
+// The admission is also where the claim takes start's agent as the agent of its session
+// (Claim.SessionAgent): the session it spawns or relaunches is that agent's from here, and a
+// refused admission leaves the record as it was, as it leaves the rest of the claim. Its caller has
+// already left another agent's session behind (leaveAnotherAgentsSession), so the session it takes
+// is one the claim held for this agent, one no agent's start recorded yet, or none.
+//
 // The claims it starts — spawned, resumed, retried, a suspended claim given a task — record no
 // process, so its launch lets none go and records nothing of one (noEnd).
 func (m *Machine) revive(ctx context.Context, exempt bool, start StartWork, admitted func()) error {
@@ -78,10 +90,42 @@ func (m *Machine) revive(ctx context.Context, exempt bool, start StartWork, admi
 		return err
 	}
 	m.claim.TreeEpoch = bound.TreeEpoch
+	if start.Agent != "" {
+		m.claim.SessionAgent = start.Agent
+	}
 	if admitted != nil {
 		admitted()
 	}
 	return m.launchAfter(ctx, false, exempt, noEnd, start)
+}
+
+// SessionOfAnotherAgent is whether the claim's session is the session of another agent than agent,
+// the agent of the step a start is a run of (StartWork.Agent): both are recorded and they differ.
+// A start that names no agent, and a claim that records none, take the session the claim holds.
+func (c Claim) SessionOfAnotherAgent(agent string) bool {
+	return agent != "" && c.SessionAgent != "" && c.SessionAgent != agent
+}
+
+// leaveAnotherAgentsSession leaves the claim's session behind where it is the session of another
+// agent than the one start brings the claim back for (SessionOfAnotherAgent), so the launch spawns
+// that agent in a session of its own, and reports whether it did. It runs in the decision that
+// brings the claim back, before revive records start's agent, so the session is left and the new
+// agent recorded under one lock, and a start that never acts changes neither. A session the claim
+// does not hold is left only once its role no longer leads to the process under it (mayForget);
+// until then the decision is refused and the claim left as it was. request names the decision, for
+// that refusal and the line.
+func (m *Machine) leaveAnotherAgentsSession(ctx context.Context, start StartWork, request string) (bool, error) {
+	if !m.claim.SessionOfAnotherAgent(start.Agent) {
+		return false, nil
+	}
+	if err := m.mayForget(ctx, request); err != nil {
+		return false, err
+	}
+	m.log.Info("supervise: the step this start is for is another agent's than the one whose session the claim holds, so it starts in a new session",
+		"request", request, "agent", start.Agent, "sessionAgent", m.claim.SessionAgent, "session", m.claim.Session)
+	m.forgetSession(fmt.Sprintf("the step it was started for is another agent's (%s) than the one whose session it held (%s)",
+		start.Agent, m.claim.SessionAgent))
+	return true, nil
 }
 
 // checkLaunch is the lifecycle recheck every launch makes first: a claim whose tree cleanup is

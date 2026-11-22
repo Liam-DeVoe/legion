@@ -1230,6 +1230,18 @@ type SuperviseRequest struct {
 	// to the claim's retry, which forgets the session inside that one decision (supervise's
 	// RequestRetry), so a start that never ran leaves the session where it was.
 	FreshSession bool `json:"freshSession,omitempty"`
+	// Agent is the agent of the step the start is a run of, in the identity plan.Agent.ID gives:
+	// `key:<key>` for the agent of a key, `step:<place>:<task>` for the agent of a step with no key.
+	// The workflow writes it on every start of a step's agent of an issue with plan rows (enter's,
+	// the held phase's retry and the send of an owed entry), the retro's naming the agent that runs
+	// it, and on no other start. The runner hands it to the decision that brings the claim back
+	// (supervise.StartWork.Agent), which leaves the claim's session behind where it is another
+	// agent's (supervise.Claim.SessionAgent) and records this agent as the agent of the session it
+	// begins or takes; a claim that runs another agent's process is suspended first. A run of the
+	// row again once the claim's session is this agent's asks nothing of the claim. The release
+	// before decodes strictly (DisallowUnknownFields), so the way back of
+	// 20261122120917_claim_session_agent takes the key off each queued supervise row.
+	Agent string `json:"agent,omitempty"`
 	// Linger is the root generation whose linger a tree close expires. A member keeps its
 	// generation across re-admission, so the close acts only while its tree lingers at that root
 	// generation: never in the tree's next run, nor in a later linger of it.

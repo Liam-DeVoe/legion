@@ -13,7 +13,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
-	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -455,7 +454,7 @@ func (e *Engine) start(ctx context.Context, tx pgx.Tx, issue record.Issue, w Wal
 	if err != nil {
 		return err
 	}
-	return e.started(ctx, tx, issue, role, in.task, in.entry, startMarks{stored: true, freshSession: in.freshSession})
+	return e.started(ctx, tx, issue, role, in.task, in.entry, startMarks{stored: true, agent: in.agent})
 }
 
 // reviveArchitect queues the start of the architect of issue, a child, when the store records its
@@ -548,7 +547,9 @@ func childArchitectStart(issue record.Issue) record.SuperviseRequest {
 // does start afresh: its start names that entry, so a later entry of the same phase still refuses
 // this one's completion. A retry told not to resume the claim's recorded session passes that on,
 // freshSession, and only the operator's `legion claims retry --fresh-session` does
-// (record.SuperviseRequest's FreshSession).
+// (record.SuperviseRequest's FreshSession). The start names the agent of the step the issue stands
+// at (stepAgentOf), as the entry that raised the number named it, so a claim whose session is
+// another agent's starts that step's agent in a session of its own here too.
 //
 // The start is marked a resend (record.SuperviseRequest.ResendEntry), because it hands the role
 // the work of the entry its row already names: a claim that confirmed that entry's last task and
@@ -572,7 +573,7 @@ func (e *Engine) restart(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 	if err != nil {
 		return err
 	}
-	return e.started(ctx, tx, issue, role, told(at), row.Entry, startMarks{resend: true, freshSession: freshSession})
+	return e.started(ctx, tx, issue, role, told(at), row.Entry, startMarks{resend: true, freshSession: freshSession, agent: stepAgentOf(issue, w)})
 }
 
 // SendOwedEntry sends role the work the entry of its phases row names, at that entry, for a claim
@@ -616,6 +617,10 @@ func (e *Engine) SendOwedEntry(ctx context.Context, tx pgx.Tx, issue record.Issu
 // sweep alone would otherwise reset a stuck tree's quiet time sixty times an hour, and the
 // measure would never reach the bound on the stop it most needs to see. It is set here, once,
 // rather than by each door, so no door can send an owed entry as news.
+//
+// It names the agent of the step the issue stands at (stepAgentOf) on the walk it reads, as the
+// entry that raised the number named it (enter): the entry's own start can have finished without
+// acting, and the claim it sends the work to may still hold another agent's session.
 func (e *Engine) sendOwedEntry(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, row record.PhaseRow,
 	marks startMarks) error {
 	task := row.EntryTask
@@ -626,7 +631,11 @@ func (e *Engine) sendOwedEntry(ctx context.Context, tx pgx.Tx, issue record.Issu
 			return err
 		}
 	}
-	marks.reasserts = true
+	w, err := e.walk(ctx, tx, issue)
+	if err != nil {
+		return err
+	}
+	marks.reasserts, marks.agent = true, stepAgentOf(issue, w)
 	return e.started(ctx, tx, issue, role, task, row.Entry, marks)
 }
 
@@ -655,7 +664,7 @@ func (e *Engine) StartPromotedWorker(ctx context.Context, tx pgx.Tx, issue recor
 	if err != nil {
 		return err
 	}
-	return e.started(ctx, tx, issue, role, in.task, in.entry, startMarks{resumeTask: true, stored: true, freshSession: in.freshSession})
+	return e.started(ctx, tx, issue, role, in.task, in.entry, startMarks{resumeTask: true, stored: true, agent: in.agent})
 }
 
 // PromotedWorkerClaim is the claim StartPromotedWorker's start of role on issue reaches: the
@@ -711,10 +720,15 @@ type startMarks struct {
 	// change whose budget is at risk.
 	ruleResume bool
 	// freshSession says the start must not resume the session the claim records but begin one of
-	// its own (record.SuperviseRequest.FreshSession): the operator's `legion claims retry
-	// --fresh-session`, which reaches the retry of a held phase alone (restart), and the entry of a
-	// step whose agent takes the claim another agent last ran a step on (enter, anotherAgentsClaim).
+	// its own (record.SuperviseRequest.FreshSession). Only the operator's `legion claims retry
+	// --fresh-session` asks for it, which reaches the retry of a held phase alone (restart).
 	freshSession bool
+	// agent is the agent of the step the start is a run of (record.SuperviseRequest.Agent,
+	// Walk.agentIDAt), "" for a start of no step's agent: the claim it reaches starts in a new
+	// session where its session is another agent's. Every start of a step's work names it: a
+	// transition's start and the promotion's, from their entry (enter), the held phase's retry
+	// (restart) and the send of an owed entry (sendOwedEntry), from the step the issue stands at.
+	agent string
 	// reasserts says the start sends work the record already owes the role rather than carrying
 	// a fact new to the record, so it marks no movement of the issue (reassertion, startOrOwe). It
 	// rides on no request: started reads it to tell startOrOwe which movement the start is, and
@@ -762,7 +776,7 @@ func (e *Engine) started(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 	}
 	return startOrOwe(ctx, tx, e.store, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: role, Task: task,
 		Generation: issue.Generation, Phase: issue.Phase, Entry: entry, ResendEntry: marks.resend, ResumeTask: marks.resumeTask,
-		RoundNamed: marks.stored && namesTheRound(role), RuleResume: marks.ruleResume, FreshSession: marks.freshSession}, e.now(), move)
+		RoundNamed: marks.stored && namesTheRound(role), RuleResume: marks.ruleResume, FreshSession: marks.freshSession, Agent: marks.agent}, e.now(), move)
 }
 
 // movement says whether a start of a phase worker is news of its issue, which startOrOwe marks
@@ -1000,10 +1014,12 @@ func startOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string
 // its own row's, which a row the release before raised and no completion named a claim on keeps.
 // An issue with no plan rows has one row for each claim, so its entry is the row's own plus one.
 //
-// The entry asks for a fresh session where its step's agent takes a claim another agent last ran a
-// step on (anotherAgentsClaim): a name that no agent of the plan in force holds can be given to a
-// new agent while a claim of it stands (record.NameAgents' pass 4), and that agent is not the one
-// whose session the claim records.
+// The entry names its step's agent (Walk.agentIDAt) on the start it hands on
+// (record.SuperviseRequest.Agent): a name that no agent of the plan in force holds can be given to
+// a new agent while a claim of it stands (record.NameAgents' pass 4), and the claim records whose
+// session it holds (supervise.Claim.SessionAgent), so the runner starts the claim in a new session
+// exactly where the two differ. The entry judges nothing of the claim's session itself: neither the
+// plan in force nor the rows it rewrites say which agent ran on the claim last.
 func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, w *Walk, role claim.Role, task string, movedBack, verbatim bool) (entered, error) {
 	rows, err := e.store.Phases(ctx, tx, issue.Key)
 	if err != nil {
@@ -1026,7 +1042,7 @@ func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, w *Wa
 	entry := row.Entry + 1
 	row.EntryVerbatim, row.EntryRaisedAt, row.EntryMovedBack = verbatim, e.now(), movedBack
 	var agent claim.Token
-	fresh := false
+	agentID := ""
 	if worker && recordsSteps(issue) {
 		place, ok := w.placeIn(at)
 		if ok {
@@ -1037,7 +1053,9 @@ func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, w *Wa
 		if err != nil {
 			return entered{}, err
 		}
-		fresh = ok && anotherAgentsClaim(rows, agent, *w, place)
+		if ok {
+			agentID = w.agentIDAt(place)
+		}
 		for _, other := range rows {
 			if other.Claim == agent && other.Entry >= entry {
 				entry = other.Entry + 1
@@ -1066,48 +1084,29 @@ func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, w *Wa
 			return entered{}, err
 		}
 	}
-	return entered{entry: row.Entry, task: row.EntryTask, freshSession: fresh}, nil
+	return entered{entry: row.Entry, task: row.EntryTask, agent: agentID}, nil
 }
 
-// entered is what an entry hands its start (enter): the entry, the task it stored, and whether the
-// start asks for a fresh session.
+// entered is what an entry hands its start (enter): the entry, the task it stored, and the agent of
+// the step it is a run of (record.SuperviseRequest.Agent), "" where it is none.
 type entered struct {
-	entry        int64
-	task         string
-	freshSession bool
+	entry int64
+	task  string
+	agent string
 }
 
-// anotherAgentsClaim says whether agent, the claim the step at place of w is entered under, was
-// last on a step of another agent (plan.AgentOf): the row among rows, the issue's rows before this
-// entry, that names agent and whose entry was raised last, stands on a step whose agent is not
-// this step's. A claim that no row names on a step (a first start, a row a new generation cleared)
-// starts as it would, and so does an agent returning to a step of its own, a keyed agent's next
-// step included. A row's step of a task the plan in force no longer holds went with that task: a
-// step with no key is an agent of its own place, so that row was another agent's; a keyed agent
-// spans tasks and keeps its name by its key (record.NameAgents' pass 2), so it is the same agent.
-// A row of the task in force is judged by the step the plan in force holds at its place.
-func anotherAgentsClaim(rows []record.PhaseRow, agent claim.Token, w Walk, place record.TaskPlace) bool {
-	if !w.Stored || place.Kind != record.PlaceStep || place.Position < 1 || place.Position > len(w.Steps) {
-		return false
+// stepAgentOf is the agent of the step issue stands at on w, the agent a start of that step's work
+// names (record.SuperviseRequest.Agent), as the entry names it (enter): "" for an issue whose key
+// records no steps and where w holds no agent of the place (Walk.agentIDAt).
+func stepAgentOf(issue record.Issue, w Walk) string {
+	if !recordsSteps(issue) {
+		return ""
 	}
-	var last *record.PhaseRow
-	for i := range rows {
-		if row := &rows[i]; row.Claim == agent && row.StepTask != "" && row.StepPlace > 0 && (last == nil || row.Entry > last.Entry) {
-			last = row
-		}
+	place, ok := w.placeIn(record.StandsAt(issue))
+	if !ok {
+		return ""
 	}
-	if last == nil {
-		return false
-	}
-	agentAt := func(at int) plan.Agent {
-		step := w.Steps[at-1]
-		return plan.AgentOf(w.Task, at, plan.Step{Role: step.Role, Key: step.AgentKey})
-	}
-	this := agentAt(place.Position)
-	if last.StepTask != w.Task || last.StepPlace > len(w.Steps) {
-		return this.Key == ""
-	}
-	return agentAt(last.StepPlace) != this
+	return w.agentIDAt(place)
 }
 
 // stepRunRow is the row an entry of role's step at place of task raises, among rows, and whether

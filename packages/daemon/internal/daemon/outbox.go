@@ -2616,12 +2616,14 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 				return err
 			}
 		}
-		// The start of a step whose agent takes the claim another agent last ran a step on asks
-		// for a fresh session (payload.FreshSession, the workflow's enter): a claim that still runs
-		// that other agent's process ends it at its turn's end, as a re-role's does
-		// (suspendForStep), and the start waits; once the claim runs nothing, the resume below
-		// starts it in a new session.
-		if found && payload.FreshSession && payload.Entry > 0 && payload.Phase != "" {
+		// The start of a step whose agent is another than the one whose session its claim holds
+		// (payload.Agent, supervise.Claim.SessionAgent) starts that agent in a new session: a claim
+		// that still runs the other agent's process ends it at its turn's end, as a re-role's does
+		// (suspendForStep), and the start waits; once the claim runs nothing, the decision below
+		// that brings it back leaves the session behind and records this start's agent
+		// (supervise.StartWork.Agent). A run of this row again once that decision has acted finds
+		// the claim's session this agent's, and asks nothing of the claim here.
+		if found && machine.Claim().SessionOfAnotherAgent(payload.Agent) && payload.Entry > 0 && payload.Phase != "" {
 			err := r.suspendForStep(ctx, machine, token, row, payload, fmt.Sprintf("its claim's next step on %s is another agent's", row.Issue))
 			if errors.Is(err, supervise.ErrStepLeft) {
 				r.log.Info("outbox start serves a step its issue left before the claim ended the other agent's turn; finished without acting", "row", row.ID,
@@ -2730,7 +2732,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// own, which the workflow's move of the issue does not wait on, so the machine judges the
 		// same rule again under its own lock before it starts a process, and a start the issue has
 		// left since starts none and is finished without acting here (supervise.ErrStartLeft).
-		work := supervise.StartWork{Phase: payload.Phase, Generation: payload.Generation}
+		work := supervise.StartWork{Phase: payload.Phase, Generation: payload.Generation, Agent: payload.Agent}
 		var brought error
 		switch state {
 		case supervise.StateQueued:
@@ -2746,7 +2748,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 			if payload.CheckLook > 0 {
 				reason = fmt.Sprintf("start row %d of %s (production check look %d)", row.ID, issue.Key, payload.CheckLook)
 			}
-			if err := machine.Handle(ctx, supervise.RequestRuleResume{Claim: token, Reason: reason, Start: work, FreshSession: payload.FreshSession}); err != nil {
+			if err := machine.Handle(ctx, supervise.RequestRuleResume{Claim: token, Reason: reason, Start: work}); err != nil {
 				brought = fmt.Errorf("resume claim %s: %w", token, err)
 			}
 		case supervise.StateFailed:

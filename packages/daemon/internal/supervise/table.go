@@ -488,12 +488,10 @@ type ResumePause struct {
 type RequestRuleResume struct {
 	Claim  claim.Token
 	Reason string
-	// Start is the work a workflow start resumes the claim for, judged as RequestSpawn's is.
+	// Start is the work a workflow start resumes the claim for, judged as RequestSpawn's is. Where
+	// it names a step's agent whose session the claim does not hold, the resume starts that agent
+	// in a new session (leaveAnotherAgentsSession).
 	Start StartWork
-	// FreshSession says the resume starts a new session rather than the one the claim records:
-	// the workflow's start of a step whose agent takes a claim another agent last ran a step on
-	// (record.SuperviseRequest.FreshSession), whose recorded session is that other agent's.
-	FreshSession bool
 }
 
 // RequestStop ends one claim. The tree's root claim is not one it can end: a root ends only with
@@ -2456,9 +2454,15 @@ func noTurn(m *Machine, ctx context.Context, _ Event) error {
 	return m.promptFailed(ctx, fmt.Sprintf("acknowledged, and no turn started within %s", m.deps.Timeouts.RPC), taskRead)
 }
 
+// spawn launches a queued claim. A claim queued again after a launch (ReleasedLaunch) can hold a
+// session, which a spawn for another step's agent leaves behind as every start does
+// (leaveAnotherAgentsSession).
 func spawn(m *Machine, ctx context.Context, ev Event) error {
 	start := ev.(RequestSpawn).Start
 	if err := m.startHolds(ctx, start); err != nil {
+		return err
+	}
+	if _, err := m.leaveAnotherAgentsSession(ctx, start, "spawn"); err != nil {
 		return err
 	}
 	return m.revive(ctx, exemptWake(ev), start, nil)
@@ -2634,9 +2638,9 @@ func (m *Machine) resumeRefusal(ctx context.Context, request string) error {
 // the operator resumes the claim. A launch that fails is charged to the claim's launch budget like
 // any other, so a claim the rule resumes that keeps failing fails once the budget is spent, and a
 // failed claim is never resumed by rule. A claim recording a session it does not hold is not
-// resumed by rule either (resumeRefusal): it stays suspended, and the line says why. A resume that
-// asks for a new session (RequestRuleResume.FreshSession) forgets the recorded one instead, once
-// its role no longer leads to the process under it (mayForget), so the launch spawns a fresh agent.
+// resumed by rule either (resumeRefusal): it stays suspended, and the line says why. A resume for a
+// step's agent whose session the claim does not hold (RequestRuleResume.Start's Agent) leaves the
+// recorded session behind instead (leaveAnotherAgentsSession), so the launch spawns that agent.
 func resumeByRule(m *Machine, ctx context.Context, ev Event) error {
 	resume := ev.(RequestRuleResume)
 	rule := resume.Reason
@@ -2647,15 +2651,15 @@ func resumeByRule(m *Machine, ctx context.Context, ev Event) error {
 	if err := m.startHolds(ctx, resume.Start); err != nil {
 		return err
 	}
-	if resume.FreshSession {
-		if err := m.mayForget(ctx, "resume by rule"); err != nil {
-			return err
+	left, err := m.leaveAnotherAgentsSession(ctx, resume.Start, "resume by rule")
+	if err != nil {
+		return err
+	}
+	if !left {
+		if err := m.resumeRefusal(ctx, "resume by rule"); err != nil {
+			m.log.Info("supervise: not resumed by rule: the claim records a session it does not hold", "rule", rule, "error", err)
+			return nil
 		}
-		m.log.Info("supervise: resuming by rule in a new session", "rule", rule, "session", m.claim.Session)
-		m.forgetSession("the step it resumes for is another agent's than the one whose session it recorded")
-	} else if err := m.resumeRefusal(ctx, "resume by rule"); err != nil {
-		m.log.Info("supervise: not resumed by rule: the claim records a session it does not hold", "rule", rule, "error", err)
-		return nil
 	}
 	m.log.Info("supervise: resuming by rule", "rule", rule, "suspendedBy", m.claim.SuspendedBy)
 	return m.revive(ctx, exemptWake(ev), resume.Start, nil)
@@ -2669,7 +2673,9 @@ func resumeByRule(m *Machine, ctx context.Context, ev Event) error {
 // A retry that asks for a new session, and one of a claim whose provider refused the recorded
 // session out of its budget, forgets that session instead, so the launch spawns a fresh agent
 // (freshSession): relaunching a session every turn of which was refused would be refused again,
-// and the claim would fail its way through another budget having done nothing.
+// and the claim would fail its way through another budget having done nothing. So does the
+// workflow's retry for a step's agent whose session the claim does not hold
+// (leaveAnotherAgentsSession), which leaves that session first and asks nothing more.
 //
 // The failure record goes with the counts it names, and both go once the claim is admitted. A
 // reader is served that record built from the counts the claim holds now (api.FailureViewOf),
@@ -2697,7 +2703,11 @@ func retry(m *Machine, ctx context.Context, ev Event) error {
 	if err := m.startHolds(ctx, start); err != nil {
 		return err
 	}
-	if fresh, why := freshSession(ev, m.claim, m.deps.Limits.LaunchFailures); fresh {
+	left, err := m.leaveAnotherAgentsSession(ctx, start, "retry")
+	if err != nil {
+		return err
+	}
+	if fresh, why := freshSession(ev, m.claim, m.deps.Limits.LaunchFailures); fresh && !left {
 		// A session the claim does not hold is left behind only once its role no longer leads
 		// to the process under it (mayForget); the retry is refused, and the claim left as it
 		// was, until then.
@@ -2711,10 +2721,12 @@ func retry(m *Machine, ctx context.Context, ev Event) error {
 		// own reason answers for a claim that failed nothing, an operator's retry of a worker it
 		// stopped.
 		m.forgetSession(cmp.Or(m.claim.Failure, why))
-	} else if err := m.resumeRefusal(ctx, "retry"); err != nil {
+	} else if !left {
 		// A retry that relaunches the recorded session is refused it the way a resume is
 		// (resumeRefusal), before the budgets start over.
-		return err
+		if err := m.resumeRefusal(ctx, "retry"); err != nil {
+			return err
+		}
 	}
 	return m.revive(ctx, exemptWake(ev), start, func() {
 		m.claim.Budgets, m.claim.PendingCause = Budgets{}, ""

@@ -12,6 +12,7 @@ package plan
 import (
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -63,6 +64,18 @@ func AgentOf(task string, place int, s Step) Agent {
 
 // Owner says whether a is the owner of its task.
 func (a Agent) Owner() bool { return a.Key == "owner" }
+
+// ID is a in one string: `key:<key>` for the agent of a key, and `step:<place>:<task>` for the agent
+// of a step with no key, its place first, so no task id can make two agents one string. Two agents
+// are one exactly when their IDs are equal. A claim records the ID of the agent whose session it
+// holds (supervise.Claim.SessionAgent), and every start of a step names its step's
+// (record.SuperviseRequest.Agent), so the claim starts in a new session exactly where the two differ.
+func (a Agent) ID() string {
+	if a.Key != "" {
+		return "key:" + a.Key
+	}
+	return "step:" + strconv.Itoa(a.Place) + ":" + a.Task
+}
 
 // StoredAgentName is the name of the agent of step place of task, whose step is s and whose stored
 // name is stored: the last part of that agent's claim token, the one rule every reader of a stored
