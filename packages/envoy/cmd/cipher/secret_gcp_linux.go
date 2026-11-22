@@ -102,9 +102,11 @@ func runGcloudSupervisor(args []string) int {
 		fmt.Fprintln(os.Stderr, "agent-secrets: a gcloud supervisor needs gcloud's path")
 		return 2
 	}
-	// gcloud's parent-death signal follows the thread that starts it, not this process, so this
-	// run holds that thread to its end: no goroutine that locks it and returns can make the
-	// runtime end it, and send the signal, while gcloud runs.
+	// gcloud's parent-death signal follows the thread that starts it, not this process, so that
+	// thread must not end while gcloud runs. Run from init, as it is, this run is on the main
+	// thread already, which the Go runtime keeps locked through init and never ends; the lock
+	// adds nothing there. It stays as a guard should the call move out of init: then no goroutine
+	// that locks this thread and returns could make the runtime end it, and send the signal.
 	runtime.LockOSThread()
 	gcloud := exec.Command(args[0], args[1:]...)
 	gcloud.Stdin, gcloud.Stdout, gcloud.Stderr = os.Stdin, os.Stdout, os.Stderr

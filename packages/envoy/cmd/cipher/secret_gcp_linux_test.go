@@ -16,6 +16,7 @@ import (
 	"io/fs"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -402,10 +403,12 @@ func gcloudStubLast(t *testing.T, launcher, pidFile string) string {
 // gcloudSetpgid or gcloudSetsid, its value one of the two: before any test, the process moves into
 // a process group (setpgid) or a session (setsid) of its own, out of reach of a kill of the group
 // it was started in, writes its pid to gcloudStubPidFile, and replaces itself with a process that
-// never answers. It does so in init, on the process's main thread, which holds the parent-death
-// signal the process was started with: neither call clears that signal, nor does the exec of a
-// plain binary, but a thread other than the main one starts without it, and an exec from such a
-// thread would leave the process without it.
+// never answers and ignores SIGTERM, as a gcloud may: only the SIGKILL the supervisor gives gcloud
+// as its parent-death signal ends it, not a SIGTERM in its place. It does so in init, on the
+// process's main thread, which holds the parent-death signal the process was started with: neither
+// call clears that signal, nor does the exec of a plain binary, but a thread other than the main
+// one starts without it, and an exec from such a thread would leave the process without it. The
+// ignore of SIGTERM lasts across the exec.
 const gcloudLeavesGroup = "AGENT_SECRETS_GCLOUD_LEAVES_GROUP"
 
 func init() {
@@ -426,6 +429,7 @@ func init() {
 		err = os.WriteFile(os.Getenv(gcloudStubPidFile), []byte(strconv.Itoa(os.Getpid())+"\n"), 0o600)
 	}
 	if err == nil {
+		signal.Ignore(syscall.SIGTERM)
 		var sleep string
 		if sleep, err = exec.LookPath("sleep"); err == nil {
 			err = syscall.Exec(sleep, []string{"sleep", "3600"}, os.Environ())
