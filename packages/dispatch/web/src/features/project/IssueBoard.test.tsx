@@ -18,11 +18,7 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 import { installCountingStorage } from "../../__tests__/counting-storage";
 import { afterRescue, RescuedMain } from "../../__tests__/focus-rescue";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
-import {
-  type FakeLiveSockets,
-  installFakeLiveSockets,
-  snapshotFrame,
-} from "../../__tests__/live-socket-harness";
+import { answerBoard, liveSockets, waitMs } from "../../__tests__/live-socket-harness";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
 import type {
@@ -212,15 +208,6 @@ function cardKeys(region: HTMLElement): (string | null)[] {
 
 const liveRegion = () => screen.getByRole("status", { name: "Board announcements" });
 
-/** Lets `ms` of real time pass, and React draw whatever it set off. */
-async function waitMs(ms: number): Promise<void> {
-  await act(async () => {
-    const { promise, resolve } = Promise.withResolvers<void>();
-    setTimeout(resolve, ms);
-    await promise;
-  });
-}
-
 /** A PATCH that never answers: the Board stays as the move placed it. */
 function patchInFlight() {
   const patch = answerIssuePatches().mockImplementation(
@@ -301,22 +288,6 @@ function legionBoard(
     project: "CORE",
     settings: null,
   };
-}
-
-/** The live sockets the page opens, for the rest of the test. */
-function liveSockets(): FakeLiveSockets {
-  const sockets = installFakeLiveSockets();
-  restores.push(() => sockets.restore());
-  return sockets;
-}
-
-/** Dispatch answers the page's board subscription with `answer`. */
-async function answerBoard(sockets: FakeLiveSockets, answer: LegionBoardResponse): Promise<void> {
-  await waitFor(() => expect(sockets.sockets.length).toBeGreaterThan(0));
-  const socket = sockets.latest();
-  if (socket.readyState !== 1) act(() => socket.open());
-  const { sub } = await waitFor(() => socket.subscribed("legion"));
-  act(() => socket.receive(snapshotFrame(sub, answer)));
 }
 
 /** Every listing read the page made: none of them is the full listing, which names neither
@@ -415,7 +386,7 @@ const PHASE_BOARD = () =>
 // included, then the None rail with the count of the rows with no card; no Show Icebox and no
 // Done rail.
 test("by Legion phase the Board draws the eleven phases and the None rail, and no Show Icebox", async () => {
-  const sockets = liveSockets();
+  const sockets = liveSockets(restores);
   const { listing } = board(PHASE_ROWS(), "?layout=board&group=legion_phase", DAEMON);
   // The view's columns read the board, so it waits for it.
   expect(await screen.findByRole("status", { name: "Loading issues" })).toBeDefined();
@@ -444,7 +415,7 @@ test.each([
   ["implementing", ["implementing"], ["CORE-1"]],
   ["none", ["none"], []],
 ])("a Legion phase filter of %s keeps only its columns", async (pick, columns, cards) => {
-  const sockets = liveSockets();
+  const sockets = liveSockets(restores);
   board(PHASE_ROWS(), `?layout=board&group=legion_phase&f.legion_phase=${pick}`, DAEMON);
   await answerBoard(sockets, PHASE_BOARD());
   const region = await boardRegion();
@@ -456,7 +427,7 @@ test.each([
 // address as `group=legion_phase`, and no menu with no daemon.
 test("the Board's Group by picks Status or Legion phase, and a project with no daemon draws none", async () => {
   const user = userEvent.setup();
-  const sockets = liveSockets();
+  const sockets = liveSockets(restores);
   board(PHASE_ROWS(), "?layout=board", DAEMON);
   await answerBoard(sockets, PHASE_BOARD());
   await boardRegion();
@@ -487,7 +458,7 @@ const CLAIM: IssueClaim = {
 // from the board route, each left out where the board gives it no value.
 test("a card draws its Legion fields and leaves out every one the board gives no value", async () => {
   const user = userEvent.setup();
-  const sockets = liveSockets();
+  const sockets = liveSockets(restores);
   const since = new Date(Date.now() - (2 * 60 + 5) * 60_000).toISOString();
   board(
     [
@@ -657,24 +628,33 @@ test("Shift+L sets the next status, to the top where the rank rule lets it, and 
 });
 
 // Shift+L through every column that takes a drop, to the Done rail, which closes the issue: the
-// card leaves Open, and the focus lands on the rail.
+// card leaves Open, and the focus lands on the rail. At the Board's other edge, Triage, a card
+// moved toward that edge has no column to go to and writes nothing. That press comes first: the
+// Board sends its moves one at a time, so one pressed while the PATCH that never answers is out
+// would not be sent, edge or not.
 test("Shift+L walks a card to the Done rail, which closes it", async () => {
   const user = userEvent.setup();
   const patch = patchInFlight();
-  board([issue("CORE-1", { status: "retro", title: "Last" })], "?layout=board");
+  board(
+    [
+      issue("CORE-1", { status: "retro", title: "Last" }),
+      issue("CORE-2", { status: "triage", title: "First" }),
+    ],
+    "?layout=board"
+  );
   const region = await boardRegion();
+  // Triage is the Board's first column: Shift+H on its card moves it nowhere.
+  act(() => within(region).getByRole("article", { name: "CORE-2 First" }).focus());
+  await user.keyboard("{Shift>}H{/Shift}");
+  expect(patch).not.toHaveBeenCalled();
   act(() => within(region).getByRole("article", { name: "CORE-1 Last" }).focus());
   await user.keyboard("{Shift>}L{/Shift}");
   expect(patch).toHaveBeenCalledWith("CORE-1", { status: "done" }, keyedAttempt);
   expect(liveRegion().textContent).toBe("CORE-1 → Done, closed");
-  await waitFor(() => expect(cardKeys(region)).toEqual([]));
+  await waitFor(() => expect(cardKeys(region)).toEqual(["CORE-2"]));
   await waitFor(() =>
     expect(within(region).getByRole("region", { name: "Done (collapsed)" })).toHaveFocus()
   );
-  // At the Board's edge a move does nothing.
-  patch.mockClear();
-  await user.keyboard("{Shift>}L{/Shift}");
-  expect(patch).not.toHaveBeenCalled();
 });
 
 // A sorted Board takes no move within a column, at its end too, since the sort would put the
@@ -761,7 +741,7 @@ test("a move between cards with a place and cards with none is refused with why"
 test("by Legion phase only a move within Queue is taken, and every other key move is refused", async () => {
   const user = userEvent.setup();
   const patch = patchInFlight();
-  const sockets = liveSockets();
+  const sockets = liveSockets(restores);
   board(
     [
       issue("CORE-1", { status: "in_progress", title: "Building" }),
@@ -1375,7 +1355,7 @@ test("a draw in a new minute draws again only the cards whose Time in Legion pha
   const start = new Date("2026-11-17T12:00:30Z");
   setSystemTime(start);
   restores.push(() => setSystemTime());
-  const sockets = liveSockets();
+  const sockets = liveSockets(restores);
   const rows = manyRows(30);
   const minutes = (count: number) => new Date(start.getTime() - count * 60_000).toISOString();
   board(rows, "?layout=board", DAEMON);

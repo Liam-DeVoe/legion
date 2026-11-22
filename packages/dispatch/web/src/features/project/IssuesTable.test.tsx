@@ -8,12 +8,7 @@ import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { afterRescue, RescuedMain } from "../../__tests__/focus-rescue";
-import {
-  errorFrame,
-  type FakeLiveSockets,
-  installFakeLiveSockets,
-  snapshotFrame,
-} from "../../__tests__/live-socket-harness";
+import { answerBoard, liveSockets, waitMs } from "../../__tests__/live-socket-harness";
 import { installResizeObserver } from "../../__tests__/scroll-box";
 import { ApiError, api } from "../../api/client";
 import { boardMoveMutationKey, legionBoardQuery, projectIssuesQuery } from "../../api/queries";
@@ -2517,29 +2512,6 @@ function answerItems(answer: () => Promise<readonly EvalItemRow[]>) {
   return items;
 }
 
-/** The live sockets the page opens, for the rest of the test. */
-function liveSockets(): FakeLiveSockets {
-  const sockets = installFakeLiveSockets();
-  restores.push(() => sockets.restore());
-  return sockets;
-}
-
-/** Dispatch answers the page's board subscription with `board`, or refuses it. */
-async function answerBoard(
-  sockets: FakeLiveSockets,
-  answer: LegionBoardResponse | { readonly code: string; readonly message: string }
-): Promise<void> {
-  await waitFor(() => expect(sockets.sockets.length).toBeGreaterThan(0));
-  const socket = sockets.latest();
-  if (socket.readyState !== 1) act(() => socket.open());
-  const { sub } = await waitFor(() => socket.subscribed("legion"));
-  act(() =>
-    socket.receive(
-      "code" in answer ? errorFrame(sub, answer.code, answer.message) : snapshotFrame(sub, answer)
-    )
-  );
-}
-
 // While the daemon setting's first read is out, the page shows its loading state and reads no
 // listing: what it reads and draws turns on the answer.
 test("while the daemon setting is read, the tab shows its loading state and reads nothing more", async () => {
@@ -2564,7 +2536,7 @@ test("while the daemon setting is read, the tab shows its loading state and read
 // `legion`.
 test("a failed daemon setting read names its error with Retry, and the project is drawn with no daemon until it answers", async () => {
   const user = userEvent.setup();
-  const sockets = liveSockets();
+  const sockets = liveSockets(restores);
   const { setting } = table(
     [...VIEW_ROWS(), issue("CORE-4", { status: "in_progress", labels: ["legion"] })],
     "?f.queue=Queued",
@@ -2599,7 +2571,7 @@ test("a failed daemon setting read names its error with Retry, and the project i
 // failed read of the setting keeps the page as the answered read drew it.
 test("a daemon setting that names a daemon draws the Legion columns, says a failed daemon read, and outlasts a later failed read", async () => {
   const user = userEvent.setup();
-  const sockets = liveSockets();
+  const sockets = liveSockets(restores);
   const { client, setting } = table(VIEW_ROWS(), "", {}, {}, Promise.resolve(DAEMON));
   await answerBoard(
     sockets,
@@ -2632,7 +2604,7 @@ test("a daemon setting that names a daemon draws the Legion columns, says a fail
 // list, or a count, from a read that has not answered.
 test("a view that filters by a fact waits for the facts, and a failed read of them is an error with Retry", async () => {
   const user = userEvent.setup();
-  const sockets = liveSockets();
+  const sockets = liveSockets(restores);
   let answer = Promise.withResolvers<readonly EvalItemRow[]>();
   const items = answerItems(() => answer.promise);
   table(VIEW_ROWS(), "?view=done&f.work_hours=over-7d", {}, {}, Promise.resolve(DAEMON));
@@ -2665,7 +2637,7 @@ test("a view that filters by a fact waits for the facts, and a failed read of th
 // A view with no facts filter draws its rows before the facts answer; a failed items read marks
 // each facts cell of a done row with the error mark, never the empty cell of no Legion work.
 test("a failed items read marks the done rows' facts cells and names the error under the tabs", async () => {
-  const sockets = liveSockets();
+  const sockets = liveSockets(restores);
   answerItems(() =>
     Promise.reject(new ApiError(500, { error: "The facts store did not answer." }))
   );
@@ -2688,7 +2660,7 @@ test("a failed items read marks the done rows' facts cells and names the error u
 // that root. A row's tree is in its facts, so the view shows its loading state until the board
 // and the items of its done rows answer, never a list from a read that has not answered.
 test("exclude_tree leaves out the rows of each tree it names, and shows the loading state until the facts that name a row's tree answer", async () => {
-  const sockets = liveSockets();
+  const sockets = liveSockets(restores);
   const answer = Promise.withResolvers<readonly EvalItemRow[]>();
   const items = answerItems(() => answer.promise);
   const child = factsRow("CORE-6", "2026-11-12T10:00:00Z", 1);
@@ -2717,7 +2689,7 @@ test("exclude_tree leaves out the rows of each tree it names, and shows the load
 // remove that gives its rows back and leaves the other tree out.
 test("each tree exclude_tree leaves out is a chip of the row and a line of the Filters panel, and either remove gives its rows back", async () => {
   const user = userEvent.setup();
-  const sockets = liveSockets();
+  const sockets = liveSockets(restores);
   answerItems(async () => [factsRow("CORE-5", "2026-11-11T10:00:00Z", 3)]);
   table(VIEW_ROWS(), "?exclude_tree=CORE-3&exclude_tree=CORE-5", {}, {}, Promise.resolve(DAEMON));
   expect(await screen.findByRole("status", { name: "Loading issues" })).toBeDefined();
@@ -2748,7 +2720,7 @@ test("each tree exclude_tree leaves out is a chip of the row and a line of the F
 /** Done, in a project with a daemon whose board's map holds CORE-3 and not CORE-5: the items read
  *  of CORE-5's close day, and the counts of each read made. */
 async function doneWithFacts(rows = VIEW_ROWS()) {
-  const sockets = liveSockets();
+  const sockets = liveSockets(restores);
   const items = answerItems(async () => [factsRow("CORE-5", "2026-11-11T10:00:00Z", 3)]);
   const drawn = table(rows, "?view=done", {}, {}, Promise.resolve(DAEMON));
   await screen.findByRole("row", { name: "CORE-5 Work CORE-5" });
@@ -3067,7 +3039,7 @@ function pageWords(): string[] {
 // the trees and the last read. No text or name on the tab says "slot".
 test("the (i) hint follows Save view in a project with a daemon, and nothing on the tab says slot", async () => {
   const user = userEvent.setup();
-  const sockets = liveSockets();
+  const sockets = liveSockets(restores);
   table(
     VIEW_ROWS(),
     "?cols=key,title,status,legion_phase,waiting_reason,activity",
@@ -3112,15 +3084,6 @@ test("a project with no daemon has no (i) hint", async () => {
   await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
   expect(screen.queryByRole("button", { name: "Legion daemon" })).toBeNull();
 });
-
-/** Lets `ms` of real time pass, and React draw whatever it set off. */
-async function waitMs(ms: number): Promise<void> {
-  await act(async () => {
-    const { promise, resolve } = Promise.withResolvers<void>();
-    setTimeout(resolve, ms);
-    await promise;
-  });
-}
 
 /** The height of each row of the table in the geometry below. */
 const ROW_PX = 64;
@@ -3200,7 +3163,7 @@ test("a row added above the first row on screen lands out of view for a reader a
 // and the anchor holds nothing for it, even once the rows were painted: Open starts at its top
 // with the Queue sort's first row, the issue with Place 1, whole under the header.
 test("the board's first snapshot after Open's rows are painted starts Open at its top with the Queue sort's first row", async () => {
-  const sockets = liveSockets();
+  const sockets = liveSockets(restores);
   const geometry = tableGeometry({ head: () => 48, top: () => 300 });
   table([issue("CORE-1"), issue("CORE-2"), issue("CORE-3")], "", {}, {}, Promise.resolve(DAEMON));
   await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
@@ -3301,7 +3264,7 @@ test("a live read that moves one card of 600 draws at most 5 card bodies and 5 c
   const start = new Date("2026-11-17T12:00:30Z");
   setSystemTime(start);
   restores.push(() => setSystemTime());
-  const sockets = liveSockets();
+  const sockets = liveSockets(restores);
   const rows = Array.from({ length: 600 }, (_, index) =>
     issue(`CORE-${1000 + index}`, { status: index % 3 === 0 ? "in_progress" : "todo" })
   );
@@ -3396,7 +3359,7 @@ test("an open row's Work time is its board entry grown from its as_of to the pag
   const now = new Date("2026-11-17T12:00:00Z");
   setSystemTime(now);
   restores.push(() => setSystemTime());
-  const sockets = liveSockets();
+  const sockets = liveSockets(restores);
   table(
     [issue("CORE-1", { status: "in_progress" })],
     "?cols=key,title,work_hours",
@@ -3422,7 +3385,7 @@ test("a row's and its card's Time in Legion phase and Work time are of the clock
   const start = new Date("2026-11-17T12:00:00Z");
   setSystemTime(start);
   restores.push(() => setSystemTime());
-  const sockets = liveSockets();
+  const sockets = liveSockets(restores);
   const ago = (minutes: number) => new Date(start.getTime() - minutes * 60_000).toISOString();
   table(
     [issue("CORE-1", { status: "in_progress" })],
