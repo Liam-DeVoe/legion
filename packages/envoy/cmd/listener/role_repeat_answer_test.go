@@ -31,10 +31,13 @@ import (
 // role send's own, unchanged: a forward the stream confirmed costs one, a duplicate among them,
 // and an answer from the confirm record forwards nothing and costs nothing.
 //
-// A repeat's forward the stream refuses while the first one under its id is in process (as
-// nats-server's 10158 refusal, which a forward's wait returns as ErrForwardNotStored wrapping it)
-// is tried again, as any forward that failed is, and the stream's next answer, the duplicate
-// naming the first forward, is the copy the 200 carries.
+// A role forward the stream refuses while an earlier forward under its id is still in process
+// (nats-server's 10158) is sent again inside the forward's own wait (startRoleForward, through
+// publishPastInProcess), as publish_in_process_test.go shows. This test's forward seam replaces
+// the whole forward and fails the repeat's first one with the 10158 answer as a plain failed
+// forward (ErrForwardNotStored wrapping it, not bus.ErrDuplicateInProcess), so the route forwards
+// again, and the stream's next answer, the duplicate naming the first forward, is the copy the 200
+// carries.
 //
 // The control is the same repeat to a role nobody claims: its 202 kept answer is the copy the
 // role's kept lane holds, which the route already answered before this change (roleSend.kept).
