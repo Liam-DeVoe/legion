@@ -284,7 +284,7 @@ func windowTheComment(t *testing.T, database *store.Store, comment string) {
 	if err := tx.QueryRow(ctx, `select body from comments where id = $1::uuid for no key update`, comment).Scan(&body); err != nil {
 		t.Fatalf("read the body of comment %s: %v", comment, err)
 	}
-	if _, err := refs.IndexItem(ctx, tx, refs.ItemComment, comment, body, time.Now(), nil, nil); err != nil {
+	if _, err := refs.IndexItem(ctx, tx, refs.ItemComment, comment, body, "", time.Now(), nil, nil); err != nil {
 		t.Fatalf("index the blocks of comment %s: %v", comment, err)
 	}
 	if windowed, err := refs.WriteItemWindows(ctx, tx, refs.ItemComment, comment); err != nil || !windowed {

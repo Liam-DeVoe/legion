@@ -4531,6 +4531,11 @@ export interface components {
       replaced: boolean;
       resolution: components["schemas"]["AskResolution"] | null;
       selected: string[] | null;
+      selected_trees?: ({
+        type: string;
+      } & {
+        [key: string]: unknown;
+      })[];
       shaped: components["schemas"]["DecisionLink"][] | null;
       text: string;
       text_sha256: string;
