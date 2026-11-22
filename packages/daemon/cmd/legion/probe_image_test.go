@@ -36,8 +36,11 @@ import (
 // path holds `malformed` at once, with Oh My Pi's parse error, sleeps (`exec sleep 86400`) under one
 // whose path holds `slow`, so only a stop ends it, and under one whose path holds `refuses-late`
 // answers like a refusal (`malformed overlay` on stderr, exit 1) once a SIGTERM reaches it, as the
-// probe's deadline sends one; each of those two first writes the file $LEGION_TEST_WAITING names,
-// where it is set, so the probe's deadline can pass once it waits (budgetEndsOnceWaiting);
+// probe's deadline sends one; each of those two writes the file $LEGION_TEST_WAITING names, where
+// it is set, so the probe's deadline can pass once it waits (budgetEndsOnceWaiting). The
+// `refuses-late` one writes it only once its sleep has started: a stop sent before that would miss
+// the sleep, which would then hold the group and its output past the stop, until the test binary's
+// deadline, since the grace and WaitDelay are that deadline in these tests;
 // otherwise it says the setting is false, or true under
 // $LEGION_TEST_FALLBACK_ON, or fails with a message on stderr and exit 1 under
 // $LEGION_TEST_FALLBACK_FAIL. With $LEGION_TEST_SEEN set, each run appends the
@@ -74,7 +77,7 @@ case "$*" in
     case "$overlay" in
     *malformed*)
       printf '%s\n          ^\nerror: Failed to parse config overlay %s: SyntaxError: YAML Parse error\n' "` + strings.Repeat("x", 400) + `" "$overlay" >&2; exit 1 ;;
-    *refuses-late*) trap 'echo "malformed overlay" >&2; exit 1' TERM; : >"${LEGION_TEST_WAITING:-/dev/null}"; sleep 86400 & wait ;;
+    *refuses-late*) trap 'echo "malformed overlay" >&2; exit 1' TERM; sleep 86400 & : >"${LEGION_TEST_WAITING:-/dev/null}"; wait ;;
     *slow*) : >"${LEGION_TEST_WAITING:-/dev/null}"; exec sleep 86400 ;;
     esac
   done
@@ -804,7 +807,8 @@ func budgetEndsOnceWaiting(t *testing.T) string {
 // refusal once the deadline's SIGTERM reaches it (`refuses-late`), since that refusal may be the
 // deadline's own doing: each exits 75 naming the role's overlays, never exit 1. An overlay Oh My
 // Pi refuses before the deadline (`malformed`) fails the probe, exit 1, beside a TLS run with no
-// verdict.
+// verdict: node's emSign runs hold, and their limits pass once they are marked held, while its
+// other runs answer with no limit ending them (limitOnceHeld).
 func TestTLSProbeJudgesAStepAfterTheTLSCheckByTheDeadline(t *testing.T) {
 	omp := imageOmp(t)
 	img := inImage(t, thisBinarysContract, omp)
@@ -818,7 +822,9 @@ func TestTLSProbeJudgesAStepAfterTheTLSCheckByTheDeadline(t *testing.T) {
 		return path
 	}
 	slow, late, malformed := overlay("slow.yml"), overlay("refuses-late.yml"), overlay("malformed.yml")
-	slowTLS := shTLSClient("node", t.TempDir(), tlsSleepsAtEmSign, nodeAnswer)
+	slowDir := t.TempDir()
+	limitOnceHeld(t, heldIn(slowDir))
+	slowTLS := shTLSClient("node", slowDir, tlsSleepsAtEmSign, nodeAnswer)
 	budget := []string{"--probe-budget", shortProbeBudget}
 	for _, tc := range []struct {
 		name, file string

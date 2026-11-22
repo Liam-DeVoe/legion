@@ -17,6 +17,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/programbound"
 )
 
 // The host names the probe's server answers for. The two compromised chains' leaves name the
@@ -31,14 +33,15 @@ const (
 // tlsServerConnLimit bounds the start of each connection to the probe's server, counted from its
 // accept: its first byte, a proxy CONNECT and the TLS handshake (handle); and it bounds the read of
 // each request's header, counted from the start of that read (ReadHeaderTimeout). It is the longest
-// a client's first run at a site may last (tlsChromiumProbeTimeout). Once the HTTP server takes a
-// connection, Go's net/http clears that deadline after the handshake and sets none between
-// requests, since the server sets
-// no IdleTimeout, so an idle connection stays open until its client closes it or the server
-// closes; a client the probe has stopped closes its connections when its process group goes. No
-// verdict rests on the bound: a second run, within two times its client's limit (up to 180 s for
-// Chromium), may outlast it, and loses only a connection that hung in its handshake or a header.
-const tlsServerConnLimit = tlsChromiumProbeTimeout
+// a client's first run at a site may last (tlsChromiumProbeTimeout, read as tlsRunLimit reads it,
+// so in cmd/legion's tests it is the test binary's deadline as that run's limit is). Once the HTTP
+// server takes a connection, Go's net/http clears that deadline after the handshake and sets none
+// between requests, since the server sets no IdleTimeout, so an idle connection stays open until
+// its client closes it or the server closes; a client the probe has stopped closes its connections
+// when its process group goes. No verdict rests on the bound: a second run, within two times its
+// client's limit (up to 180 s for Chromium), may outlast it, and loses only a connection that hung
+// in its handshake or a header.
+func tlsServerConnLimit() time.Duration { return programbound.Of(&tlsChromiumProbeTimeout) }
 
 // tlsServedSite is one host one of the probe's listeners answers for: its site, its chain, the page
 // it serves, and how many TLS handshakes the server began for it.
@@ -151,7 +154,7 @@ func newTLSServer(stateDir string) (*tlsServer, error) {
 	}
 	server.http = &http.Server{
 		Handler:           http.HandlerFunc(server.serveHTTP),
-		ReadHeaderTimeout: tlsServerConnLimit,
+		ReadHeaderTimeout: tlsServerConnLimit(),
 		ErrorLog:          log.New(io.Discard, "", 0),
 	}
 	server.wait.Add(3)
@@ -232,7 +235,7 @@ func (s *tlsServer) accept(l *tlsListener) {
 // the TLS handshake with the chain of the host l answers for, and hands the connection to the HTTP
 // server.
 func (s *tlsServer) handle(l *tlsListener, conn net.Conn) {
-	deadline := time.Now().Add(tlsServerConnLimit)
+	deadline := time.Now().Add(tlsServerConnLimit())
 	_ = conn.SetDeadline(deadline)
 	reader := bufio.NewReader(conn)
 	first, err := reader.Peek(1)

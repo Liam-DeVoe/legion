@@ -23,20 +23,30 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
+	"github.com/sjawhar/legion/daemon/internal/programbound"
 	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 )
 
-const (
+const tlsDetailLimit = 300
+
+// The clients' own limits on a run (tlsClientSpec.timeout), each sized for the real client: a
+// client that has not answered by then is stopped and the run read by what it printed. Each is
+// registered with programbound, so cmd/legion's tests give a run of a stand-in on it the test
+// binary's deadline (tlsRunLimit).
+var (
 	tlsDefaultProbeTimeout  = 20 * time.Second
 	tlsChromiumProbeTimeout = 90 * time.Second
-	tlsDetailLimit          = 300
 	// bq's refusal of a chain tries its request three times, sleeping 2 and 4 s between the
 	// tries, and each call starts three Python interpreters (the SDK's launcher, bq.py and the
 	// `gcloud config` subprocess bq runs): measured on 2026-11-18 at 5-13 s of wall time and
 	// 4.5-7 s of CPU a call on 2 vCPU.
 	tlsBigQueryProbeTimeout = 60 * time.Second
 )
+
+func init() {
+	programbound.Register(&tlsDefaultProbeTimeout, &tlsChromiumProbeTimeout, &tlsBigQueryProbeTimeout)
+}
 
 // tlsSite is one site the probe holds the clients to. The probe's own server (tlsServer) serves
 // five, which no public host or name reaches: the fixture emSign and AAA chains, which every client
@@ -158,13 +168,24 @@ func (t tlsRunTerms) limit(timeout time.Duration) time.Duration {
 	return timeout
 }
 
-// tlsRunLimit is the limit a run of client at site takes, given the limit its terms give it
-// (tlsRunTerms.limit): that limit, in the legion binary. It is a variable so that a test can keep
-// the short limit for the run it needs that limit to end and give every other run its own
-// deadline: those runs share the client's one limit, and a run a loaded machine made slower than
-// it would be ended too.
-var tlsRunLimit = func(client string, site tlsSite, terms tlsRunTerms, limit time.Duration) time.Duration {
-	return limit
+// tlsRunLimit is the limit a run of a client whose own limit is timeout takes on terms
+// (tlsRunTerms.limit). A client's own limit that is one of the product's (tlsDefaultProbeTimeout,
+// tlsChromiumProbeTimeout, tlsBigQueryProbeTimeout) is read through programbound: in cmd/legion's
+// tests a run on it takes what is left of the test binary's deadline less programbound's margin,
+// on any terms, since a stand-in a loaded machine leaves unscheduled can take longer than the real
+// client's limit allows, and a stand-in that never answers then still ends before go test's alarm.
+// A limit a test gives its client itself keeps that limit.
+func tlsRunLimit(timeout time.Duration, terms tlsRunTerms) time.Duration {
+	for _, bound := range []*time.Duration{&tlsDefaultProbeTimeout, &tlsChromiumProbeTimeout, &tlsBigQueryProbeTimeout} {
+		if timeout != *bound {
+			continue
+		}
+		if limit := programbound.Of(bound); limit != timeout {
+			return limit
+		}
+		break
+	}
+	return terms.limit(timeout)
 }
 
 // tlsNoVerdicts is the positive controls' runs that have no verdict, each "<site> positive control
@@ -681,7 +702,7 @@ func (c tlsCommandClient) name() string { return c.clientName }
 // the chain should have carried says so (tlsSignatureFailure), and a refusal of an expired
 // certificate says so (tlsLeafExpired), each read from the whole output.
 func (c tlsCommandClient) probe(ctx context.Context, site tlsSite, terms tlsRunTerms) tlsOutcome {
-	r := c.run(ctx, site, tlsRunLimit(c.clientName, site, terms, terms.limit(c.timeout)))
+	r := c.run(ctx, site, tlsRunLimit(c.timeout, terms))
 	message := tlsCommandMessage(r.err, r.output)
 	accepted := r.err == nil || c.applicationSeen != nil && c.applicationSeen(message)
 	refused, detail := tlsCertificateError(message), trimTLSDetail(message)
@@ -724,6 +745,15 @@ const (
 // (tlsCommandClient.run). The context keeps the cause of whichever end fired first, so the run
 // tells its limit from the probe's deadline by that record, and never by the text of an error.
 var errTLSRunLimit = errors.New("the TLS run's own limit passed")
+
+// tlsRunContext is the context a run of client at site runs its command under: one its own limit
+// ends, with errTLSRunLimit as its cause, limit from now (context.WithTimeoutCause), in the legion
+// binary. It is a variable so that a test can end a run's limit only once the stand-in has done
+// what the row needs it to do before the limit (written a mark, printed, set a trap), and never end
+// a run that must answer, rather than at a time a loaded machine can make come first.
+var tlsRunContext = func(ctx context.Context, client string, site tlsSite, limit time.Duration) (context.Context, context.CancelFunc) {
+	return context.WithTimeoutCause(ctx, limit, errTLSRunLimit)
+}
 
 // tlsCommandRun is one run of a client's command: what it printed (run says which streams), its
 // stdout where the client keeps it apart, the run's error, how long it took, the limit it ran
@@ -795,7 +825,7 @@ func (r tlsCommandRun) outcome(terms tlsRunTerms, accepted, refused bool, detail
 func (c tlsCommandClient) run(ctx context.Context, site tlsSite, limit time.Duration) tlsCommandRun {
 	program, args, env := c.commandLine(site)
 	started := time.Now()
-	commandCtx, cancel := context.WithTimeoutCause(ctx, limit, errTLSRunLimit)
+	commandCtx, cancel := tlsRunContext(ctx, c.clientName, site, limit)
 	defer cancel()
 	cmd := exec.CommandContext(commandCtx, program, args...)
 	cmd.Env = env
@@ -858,7 +888,7 @@ type tlsChromiumClient struct {
 
 func (c tlsChromiumClient) probe(ctx context.Context, site tlsSite, terms tlsRunTerms) tlsOutcome {
 	c.keepStdout = true
-	r := c.run(ctx, site, tlsRunLimit(c.clientName, site, terms, terms.limit(c.timeout)))
+	r := c.run(ctx, site, tlsRunLimit(c.timeout, terms))
 	failure := chromiumNavigationFailure(r.output)
 	message := failure
 	if failure == "" {
