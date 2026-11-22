@@ -33,16 +33,19 @@ import (
 // the open holds of the level that name no repair issue get one: a child issue of the level's
 // issue, assigned to that issue's assignee, whose spec lists each of them. The child is opened
 // through the issue route's own handler, the one writer of an issue, and the same transaction names
-// it on each hold it lists (repairIssueHook), under the project's owner lock every create takes, so
-// two imports at once, and an import run again after a failure, leave one child holding each hold.
+// it on each hold it lists (repairIssueHook), under the project's owner lock every create takes and
+// the lock of the approved spec every writer of its holds takes, so two imports at once, an import
+// run again after a failure, and an approval that clears a hold while the import opens the child
+// leave one child holding each hold still open.
 
 // repairAttempts bounds how many times one import opens the repair issue of its holds again after
-// another writer named or cleared one of them while it opened it (errRepairRaced).
+// another writer named a repair issue on one of them, or cleared one, between the import's read of
+// them and the create's locks (errRepairRaced).
 const repairAttempts = 3
 
 // errRepairRaced is a repair issue its create refused because a hold it lists no longer waits for
-// one: between the import's read of the holds and the create's lock, another import named a repair
-// issue on it, or an approval cleared it.
+// one: between the import's read of the holds and the create's locks - the project's owner lock,
+// then the approved spec's - another import named a repair issue on it, or an approval cleared it.
 var errRepairRaced = errors.New("a hold the repair issue lists no longer waits for one")
 
 // importLevelInput is the body of POST /api/v1/issues/{key}/spec-import-level.
@@ -293,7 +296,7 @@ func levelHolds(ctx context.Context, q queryer, issue model.Issue, repo string) 
 // level's assignee, through the issue route's own handler, as the request r's caller, naming it on
 // each of holds in the create's own transaction (repairIssueHook), and answers its key. It answers
 // errRepairRaced, having written nothing, where a hold no longer waited for a repair issue by the
-// time the create held its project's lock.
+// time the create held its project's owner lock and the approved spec's lock.
 func (s *server) openRepairIssue(r *http.Request, issue model.Issue, repo string, holds []specstore.Hold, actor model.Actor) (string, error) {
 	var spec strings.Builder
 	spec.WriteString("The import of the approved level of " + issue.Key + " could not resolve these statements, so the approved spec does not hold them yet. " +
@@ -337,37 +340,49 @@ func (s *server) openRepairIssue(r *http.Request, issue model.Issue, repo string
 
 // repairIssueHook names the issue a create makes the repair of each of holds of the level issue,
 // in that create's own transaction (issueCreateHook), so the child and its link to the holds commit
-// together or not at all. Under the project's owner lock the create holds, which every create of
-// the project takes, it reads the level's holds again: where one of holds is no longer open or
+// together or not at all. In the create's read phase, under the project's owner lock the create
+// takes, which every create of the project takes, it takes the lock of the repository's approved
+// spec (specstore.Lock), which every writer of its holds takes - an import, and an approval that
+// clears a hold - and reads the level's holds again: where one of holds is no longer open or
 // already names a repair issue, another import's create committed its own child first, or an
 // approval cleared the hold, so it sets raced and refuses the create, which then writes nothing.
-// Otherwise it queues one repair_issue value on each hold's node after the create's own writes.
-func repairIssueHook(issue model.Issue, repo string, holds []specstore.Hold, actor model.Actor, raced *bool) issueCreateHook {
-	return func(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, key string) error {
-		current, err := levelHolds(ctx, tx, issue, repo)
-		if err != nil {
-			return err
-		}
-		waiting := make(map[string]bool, len(current))
-		for _, hold := range current {
-			waiting[hold.ID] = hold.RepairIssue == ""
-		}
-		for _, hold := range holds {
-			if !waiting[hold.ID] {
-				*raced = true
-				return errorf(http.StatusConflict, "REPAIR_ISSUE_RACED",
-					"the hold of %s no longer waits for a repair issue: another import named one, or an approval cleared it, while this one opened its own", hold.ID)
+// Both locks hold until the create commits, so the holds it read are still the open holds then: an
+// approval that clears one waits for the create, or the create for it. After the create's own
+// writes it queues one repair_issue value on each hold's node.
+func repairIssueHook(issue model.Issue, repo string, holds []specstore.Hold, actor model.Actor, raced *bool) *issueCreateHook {
+	return &issueCreateHook{
+		locked: func(ctx context.Context, tx pgx.Tx) error {
+			if err := specstore.Lock(ctx, tx, issue.Project, repo); err != nil {
+				return err
 			}
-		}
-		var at time.Time
-		if err := tx.QueryRow(ctx, `select clock_timestamp()`).Scan(&at); err != nil {
-			return fmt.Errorf("read the time of the repair issue: %w", err)
-		}
-		facts := specstore.RepairIssueFacts(issue.Project, repo, holds, key, actor, at.UTC())
-		return ledger.Queue(func(b *store.WriteBatch) error {
-			graphstore.QueueWrite(b, nil, facts)
+			current, err := levelHolds(ctx, tx, issue, repo)
+			if err != nil {
+				return err
+			}
+			waiting := make(map[string]bool, len(current))
+			for _, hold := range current {
+				waiting[hold.ID] = hold.RepairIssue == ""
+			}
+			for _, hold := range holds {
+				if !waiting[hold.ID] {
+					*raced = true
+					return errorf(http.StatusConflict, "REPAIR_ISSUE_RACED",
+						"the hold of %s no longer waits for a repair issue: another import named one, or an approval cleared it, while this one opened its own", hold.ID)
+				}
+			}
 			return nil
-		})
+		},
+		beforeCommit: func(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, key string) error {
+			var at time.Time
+			if err := tx.QueryRow(ctx, `select clock_timestamp()`).Scan(&at); err != nil {
+				return fmt.Errorf("read the time of the repair issue: %w", err)
+			}
+			facts := specstore.RepairIssueFacts(issue.Project, repo, holds, key, actor, at.UTC())
+			return ledger.Queue(func(b *store.WriteBatch) error {
+				graphstore.QueueWrite(b, nil, facts)
+				return nil
+			})
+		},
 	}
 }
 
