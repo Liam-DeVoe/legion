@@ -4,7 +4,9 @@ body: |-
   `notifications.github.`. The caller gets `400` with `expected: ["topic"]` and an error that
   names the lane and what to do instead, for example `cannot publish to notifications.dispatch.
   topics; Dispatch alone publishes that lane: publish it straight to NATS with the lane's own
-  user`, and the listener publishes nothing. The Legion daemon trusts an event on Dispatch's lane
+  user`, and the listener publishes nothing. An edge listener (`ENVOY_EDGE_PROJECTS`) refuses
+  every topic but its projects' role subjects before this rule, with `403` `topic_not_published`,
+  so a session at the edge gets that answer for these lanes. The Legion daemon trusts an event on Dispatch's lane
   as Dispatch's, and it applies a merge and a deciding review from an event on GitHub's lane. The
   NATS grants refuse a direct publish there, but no grant can refuse a caller of the route on the
   listener beside envoy-dispatch, whose user holds Dispatch's lane, or on the webhook listener,

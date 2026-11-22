@@ -47,7 +47,8 @@ var errEarlierAttemptInProcess = errors.New("the request ended while an earlier 
 //
 // A call that ends after a refusal, because ctx ended or a later send failed, wraps
 // errEarlierAttemptInProcess: with ctx's error and the last refusal when ctx ended, and with the
-// failure itself otherwise.
+// failure itself otherwise. Where the last send ended with ctx's error, its own error stands for
+// ctx's, so a send that waited out a reconnect until ctx ended still names bus.ErrReconnecting.
 //
 // A send of the call that went out unanswered (bus.ErrUnacknowledged) may have stored the copy
 // itself, whether it came before a refusal or after one: a stream leader change drops the ids the
@@ -78,7 +79,11 @@ func publishPastInProcess(ctx context.Context, publish func() (bus.StoredAck, er
 		}
 		ownSend = ownSend || mayHaveStored(err)
 		if ctx.Err() != nil {
-			err = fmt.Errorf("%w: %w (after %w)", errEarlierAttemptInProcess, ctx.Err(), refusal)
+			cause := ctx.Err()
+			if errors.Is(err, cause) {
+				cause = err
+			}
+			err = fmt.Errorf("%w: %w (after %w)", errEarlierAttemptInProcess, cause, refusal)
 		} else {
 			err = fmt.Errorf("%w: %w", errEarlierAttemptInProcess, err)
 		}

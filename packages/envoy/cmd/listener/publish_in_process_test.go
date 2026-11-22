@@ -154,9 +154,10 @@ func (p inProcessPath) line() string {
 }
 
 // inProcessPaths are the publish route to a team topic and to a topic the stream captures for a
-// source, and the send route to target, a session the rig registers live.
+// source, and the send route to target, a session the rig registers live. The captured topic is
+// Slack's: the route refuses Dispatch's lane and GitHub's lane (publisherLanes).
 func inProcessPaths(target string) []inProcessPath {
-	const team, captured = "notifications.team.in-process", "notifications.github.legion-test.in_process.pr.1"
+	const team, captured = "notifications.team.in-process", "notifications.slack.legion-test.in_process.message"
 	return []inProcessPath{
 		{name: "publish to a team topic", route: "/v1/messages/publish", subject: team, body: func(sender, key string) map[string]any {
 			return map[string]any{"topic": team, "source": "agent", "source_session": sender, "message": "team, resent while in process", "idempotency_key": key}
