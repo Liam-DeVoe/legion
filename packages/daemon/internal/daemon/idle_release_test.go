@@ -97,8 +97,8 @@ func (r *releaseRuntime) IssueSandbox(string) (string, bool) {
 // BundleWorkspace refuses a role whose stored claim records no process before it bundles
 // anything, as the Sandbox runtime does (sandbox's runningRoleConn): only that role's shim can
 // build the bundle, and it dies with the role's process. A save that got a bundle therefore always
-// has a claim recording a process in the pod, which is what the save reads the pod's repository
-// through (issuePodRepository).
+// has its role's claim recording a process in the pod, which is the claim the save reads the
+// pod's repository through (outbox.bundleIssueWorkspace).
 func (r *releaseRuntime) BundleWorkspace(ctx context.Context, issue string, role claim.Role) (runtime.WorkspaceBundle, error) {
 	r.mu.Lock()
 	r.bundled = append(r.bundled, role)

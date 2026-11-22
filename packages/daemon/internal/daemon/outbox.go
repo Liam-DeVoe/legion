@@ -3490,8 +3490,16 @@ func (r *outbox) bundleIssueWorkspace(ctx context.Context, row record.OutboxRow,
 	// replaces this one names the release whose work it put back (store.PutWorkspaceBundle), and
 	// under the repository the released pod itself was built from, which is the repository its
 	// workspace is a clone of and so the repository this work is in the history of
-	// (issuePodRepository): a restore into a pod of another repository is refused by it
+	// (podRepository): a restore into a pod of another repository is refused by it
 	// (store.TakeWorkspaceBundleForRestore).
+	//
+	// That pod is asked through the claim the bundle was taken through, the release's own role's
+	// (payload.Role), and through no other claim of the issue: the bundle came off the pod that
+	// claim's process runs in (runtime.WorkspaceBundler), so the label and the work name one pod
+	// by construction. Another claim of the issue can record a process of an earlier pod, built
+	// from another repository, the lowest-token claim the idle rule asks the pod through
+	// (issuePodRepository) among them, and a label read through it would name that pod's
+	// repository and not the one this work is in.
 	//
 	// It is the pod's repository and never the record's, because the two differ for exactly as
 	// long as this save matters. A correction in Dispatch moves the record to the new repository
@@ -3511,7 +3519,14 @@ func (r *outbox) bundleIssueWorkspace(ctx context.Context, row record.OutboxRow,
 	// it labels work of the old repository with the new one. No runtime that reaches this line
 	// lacks a pod repository: the tmux runtime, whose panes are in no pod, releases no pod and
 	// returned at the IssueReleaser check, so the record is the fallback of no runtime here.
-	repo, err := issuePodRepository(ctx, r.supervisor, row.Issue)
+	repo, err := podRepository(ctx, r.supervisor.deps.Runtime, func(yield func(supervise.Claim) bool) {
+		for _, m := range r.supervisor.supervised() {
+			if c := m.View().Claim; c.Issue == row.Issue && c.Role == payload.Role {
+				yield(c)
+				return
+			}
+		}
+	})
 	switch {
 	case err != nil:
 		return r.cancelRelease(ctx, row.Issue, payload.Tree, workflow.IdleHoldBundleSave,

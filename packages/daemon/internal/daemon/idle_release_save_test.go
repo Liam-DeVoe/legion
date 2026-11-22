@@ -3,11 +3,15 @@ package daemon
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/legion/daemon/internal/api"
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -266,4 +270,61 @@ func TestAFailedSaveWhoseCancelFailsCannotDeleteThePod(t *testing.T) {
 			t.Fatal("the unowned release stored a bundle")
 		}
 	})
+}
+
+// The save labels its bundle through the claim it took the bundle through, and through no other
+// claim of the issue. The release's own role here is the implementer, whose process runs in the
+// pod being released, built from the repository the record holds. The architect's claim has the
+// lower token and records a process as well, of the pod before this one: that pod was built from
+// the repository the issue was on before Dispatch moved it, and the architect failed there and
+// has run nowhere since. A label read through the architect, as the idle rule reads the pod
+// (issuePodRepository), names the earlier pod's repository, and the restore refuses the work to
+// every pod of the repository it is in. Control: with the save reading through
+// issuePodRepository, the bundle is labelled acme/gadgets.
+//
+// The earlier pod's repository is scripted only after the mark, because the idle rule's
+// repository hold asks the pod through that same lowest-token claim, and a repository the
+// record has left there holds the pod rather than releasing it (workflow.IdleHoldRepository).
+func TestASaveLabelsTheBundleThroughTheClaimItTookTheBundleThrough(t *testing.T) {
+	const earlierRepo = "acme/gadgets"
+	rig := newIdleRig(t)
+	ctx := context.Background()
+	architect := mustClaimToken(t, rig.issue.Key, claim.RoleArchitect)
+	if architect >= rig.token {
+		t.Fatalf("the architect's token %s is not below the implementer's %s", architect, rig.token)
+	}
+	failed := supervise.Claim{Token: architect, Project: "legion", Tree: rig.issue.Tree, Issue: rig.issue.Key,
+		Role: claim.RoleArchitect, TreeEpoch: 1, Generation: 1, State: supervise.StateFailed,
+		Budgets: supervise.Budgets{Deaths: 3}, Session: "ses-architect", SessionFile: "/tmp/architect.jsonl",
+		PluginContract: api.DaemonAPIVersion, Locator: podUpdateLocator(architect, rig.issue.Key, "pod-before-this-one")}
+	if err := rig.st.PutClaim(ctx, failed); err != nil {
+		t.Fatalf("seed the architect that failed in the earlier pod: %v", err)
+	}
+	if _, err := rig.sup.restore(ctx, []supervise.Claim{failed}); err != nil {
+		t.Fatalf("restore the failed architect: %v", err)
+	}
+	// As quiet as the rest of the pod, so the rule reads the pod as idle.
+	if _, err := rig.pool.Exec(ctx, `update claims set updated_at = now() - interval '30 minutes'
+		where token = $1`, string(architect)); err != nil {
+		t.Fatalf("backdate the failed architect: %v", err)
+	}
+
+	rig.w.releaseIdlePod(ctx, rig.issue.Key)
+	if !rig.marked(t) {
+		t.Fatal("the pass marked no release of an idle pod")
+	}
+	rig.rt.ScriptPodRepository(architect, earlierRepo)
+
+	rig.drain(t)
+
+	if bundled, _ := rig.rt.reads(); !slices.Equal(bundled, []claim.Role{claim.RoleImplementer}) {
+		t.Fatalf("the bundle was taken through %v, want the implementer, the release's own role", bundled)
+	}
+	if !rig.bundled(t) {
+		t.Fatal("the release saved no bundle of the workspace's unpushed work")
+	}
+	if got := rig.bundleRepository(t); got != rig.issue.Repo {
+		t.Fatalf("the saved bundle is labelled %q, want %q: the work came off the implementer's pod, built from %s, not the architect's earlier pod, built from %s",
+			got, rig.issue.Repo, rig.issue.Repo, earlierRepo)
+	}
 }

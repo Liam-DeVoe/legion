@@ -32,12 +32,12 @@ import (
 // from, which is the repository its workspace is a clone of and so the one this work is in the
 // history of, and the take refuses a bundle whose repository the issue has left by it
 // (runtime.WorkspaceBundleRefusedRepository). It is an argument and not a column this statement
-// reads, because the caller is what can read the pod (the daemon's
-// outbox.bundleIssueWorkspace, over issuePodRepository): the record's own repository is not the
-// same answer while a correction is waiting for the pod it moved to be replaced, and the pod's
-// is the one the work is in. The caller cancels the save where it cannot read the pod's
-// repository, so an empty repo is no save of this release's. It is stored as it is given, and the
-// take refuses it for its repository, as it refuses a row an earlier release saved with none.
+// reads, because the caller is what can read the pod (the daemon's outbox.bundleIssueWorkspace):
+// the record's own repository is not the same answer while a correction is waiting for the pod
+// it moved to be replaced, and the pod's is the one the work is in. The caller cancels the save
+// where it cannot read the pod's repository, so an empty repo is no save of this release's. It is
+// stored as it is given, and the take refuses it for its repository, as it refuses a row an
+// earlier release saved with none.
 //
 // The save ends the issue's bundle refusal in the same statement (RecordBundleRefusal): the
 // work fit this time, so nothing is left for the idle rule to hold the pod for.

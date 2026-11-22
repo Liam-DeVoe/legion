@@ -532,6 +532,8 @@ func newCutoverRig(t *testing.T) *cutoverRig {
 
 	rig.rt = &releaseRuntime{Runtime: fake.NewRuntime(), onImage: true, sandboxName: "legion-" + project + "-cutover"}
 	rig.rt.InPod = true
+	// The runtime looks the save's role up in the claims, as the Sandbox runtime does.
+	rig.rt.claims = st.Claims
 	rig.o = fakeRuntime(rig.rt, rig.built)
 	rig.o.workflowTokens = &workflowTokenRecorder{}
 	rig.o.githubAPI = rig.github(t)
