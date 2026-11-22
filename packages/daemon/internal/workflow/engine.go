@@ -1240,9 +1240,18 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 // suspended its claims (a parked child) or closed them (a child closed as done), and a lingering
 // tree holds its members where they stood, so neither tells anyone.
 //
+// Two claims of one issue can hold one role — the agent of a key on a step of another role,
+// beside that role's own claim of an earlier version of the plan — so the role the fact names does
+// not name the claim that failed: the fact names it too (intake.ClaimFailed.Claim). Only the
+// failure of the claim that works the role's step (workerClaim) holds the issue; another claim of
+// that role failing is told in a worker-died that names it and the step's worker, and holds
+// nothing, so the working agent is not left running on a held issue. A fact that names no claim,
+// from a daemon before the claim was carried, keeps the role's rule.
+//
 // The checking role of a closed issue failing inside a look of its production check ends that look
 // as a report of pending would (endLook): a done issue has no phase to hold, and the look's next
-// wake starts the claim again.
+// wake starts the claim again. The look is its claim's, the worker on the check role's step, so
+// another claim of that role failing leaves it open.
 func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFailed) (intake.Result, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || issue == nil {
@@ -1276,7 +1285,15 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 		if err != nil {
 			return intake.Result{}, err
 		}
-		if check != nil && check.Open() && check.LookOpen && fact.Role == check.Role {
+		looks := check != nil && check.Open() && check.LookOpen && fact.Role == check.Role
+		if looks && fact.Claim != "" {
+			worker, err := e.workerClaim(ctx, tx, *issue, check.Role)
+			if err != nil {
+				return intake.Result{}, err
+			}
+			looks = worker == fact.Claim
+		}
+		if looks {
 			if err := e.endLook(ctx, tx, check, "claim failed"); err != nil {
 				return intake.Result{}, err
 			}
@@ -1304,6 +1321,17 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 	if issue.RoleAt(working) != fact.Role {
 		return intake.Result{}, e.notice(ctx, tx, issue.Key, record.Notice{Kind: "worker-died", Role: fact.Role, Phase: issue.Phase, Failure: failure,
 			Reason: fmt.Sprintf("the %s does not work %s's phase %s; nothing is held", fact.Role, issue.Key, working)})
+	}
+	if fact.Claim != "" {
+		worker, err := e.workerClaim(ctx, tx, *issue, fact.Role)
+		if err != nil {
+			return intake.Result{}, err
+		}
+		if worker != fact.Claim {
+			return intake.Result{}, e.notice(ctx, tx, issue.Key, record.Notice{Kind: "worker-died", Role: fact.Role, Phase: issue.Phase, Failure: failure,
+				Reason: fmt.Sprintf("%s, a claim of the %s, does not work %s's phase %s; %s does, and nothing is held",
+					fact.Claim, fact.Role, issue.Key, working, worker)})
+		}
 	}
 	if issue.Phase == phase.Held {
 		return intake.Result{}, nil

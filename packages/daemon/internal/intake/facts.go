@@ -1384,8 +1384,15 @@ func (f CloseRoot) Message() string {
 // cluster did — and because it is persisted on the claim, so the boot's replay of a failure no
 // daemon applied reports the same end (the daemon's replayTerminal).
 type ClaimFailed struct {
-	Issue        string
-	Role         claim.Role
+	Issue string
+	Role  claim.Role
+	// Claim is the token of the claim that failed. Two claims of one issue can hold one role — the
+	// agent of a key on a step of another role, beside that role's own claim of an earlier version
+	// of the plan — so the role does not name the claim: only the failure of the claim that works
+	// the role's step holds the issue, and only the failure of a look's claim ends that look
+	// (workflow's claimFailed). It is "" on a fact from a daemon before the claim was carried,
+	// which keeps the role's rule.
+	Claim        claim.Token
 	Reason       string
 	Death        string
 	StartFailure string
