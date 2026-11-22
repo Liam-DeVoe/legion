@@ -197,12 +197,16 @@ func (s *KVStore) Read(ctx context.Context, logical string) (Record, uint64, err
 }
 
 // Write implements Store. It writes the record under its own key (Record.Key), never under the
-// sentinel's (recordKey): only WriteSentinel writes there.
+// sentinel's (recordKey): only WriteSentinel writes there. A record every read would refuse
+// (writable) is refused as ErrMalformedRecord, and nothing is written.
 func (s *KVStore) Write(ctx context.Context, logical string, record Record, revision uint64) (uint64, error) {
 	if err := recordKey(logical); err != nil {
 		return 0, err
 	}
 	record.Key = logical
+	if err := writable(record); err != nil {
+		return 0, err
+	}
 	data, err := json.Marshal(record)
 	if err != nil {
 		return 0, err

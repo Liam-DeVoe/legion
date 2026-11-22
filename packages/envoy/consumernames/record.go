@@ -435,6 +435,18 @@ func decodeRecord(key string, data []byte) (Record, error) {
 	return record, nil
 }
 
+// writable refuses record, carrying the key it is to be written under, when every read of that
+// key would refuse it (check), as ErrMalformedRecord naming the key: a store writes no record its
+// readers cannot read, so a writer outside Names that builds one, an operator's cleanup that drops
+// a retired name from Retired alone among them, fails at its own write and leaves the key as it
+// was for every reader.
+func writable(record Record) error {
+	if err := record.check(record.Key); err != nil {
+		return fmt.Errorf("%w: the record of %s is not written: %w", ErrMalformedRecord, record.Key, err)
+	}
+	return nil
+}
+
 // decodeSentinel reads data as the sentinel under key of a store of family, as decodeRecord reads a
 // record: anything else, a sentinel of another family among them (ErrSentinelFamily), is
 // ErrMalformedSentinel, which no store answers as a missing sentinel.

@@ -105,9 +105,13 @@ func (s *PGStore) Read(ctx context.Context, logical string) (Record, uint64, err
 }
 
 // Write implements Store. It writes the record under the family's key of logical, which the record
-// carries as its own (Record.Key).
+// carries as its own (Record.Key). A record every read would refuse (writable) is refused as
+// ErrMalformedRecord, and nothing is written.
 func (s *PGStore) Write(ctx context.Context, logical string, record Record, revision uint64) (uint64, error) {
 	record.Key = PGKey(s.family, logical)
+	if err := writable(record); err != nil {
+		return 0, err
+	}
 	data, err := json.Marshal(record)
 	if err != nil {
 		return 0, err
