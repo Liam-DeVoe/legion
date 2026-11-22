@@ -77,7 +77,8 @@ const (
 	// costBudget is what c-read-cost holds every read to: a read whose p99 rises by more than
 	// this much above the same read at the commit before this child fails. c-write-cost holds
 	// its request paths to ratios instead (write_cost_test.go, writeCostEditRatio and the three
-	// beside it).
+	// beside it), and the 8,001-block version to this rise beside its ratio, the lower allowance
+	// deciding (writeCostOverAllowance).
 	costBudget = 100 * time.Millisecond
 	// writeCostRewriteRowBudget is what each store row of a whole-document rewrite may cost.
 	// The rewrite makes every block of the document new to the index, so it writes about 14,000
