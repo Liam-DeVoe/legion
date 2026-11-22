@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -19,6 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
 // The places of LEGION-208's review steps on today's line, the task default (todaysSteps): the
@@ -68,9 +70,10 @@ func stepVerdictOf(t *testing.T, pool *pgxpool.Pool, head string, place int) (st
 // as its agent (record.StepStart.Agent, which the start writes from stepClaim), and records it as
 // that step's verdict at the commit it names: the reviewer's completion as the verdict of the
 // reviewer's step, and the owner's acceptance as its sign-off's approve, or its move back's changes,
-// at the head the pull request stands at. A completion of the reviewer's step from a claim the
-// step's record does not name is refused VERDICT_CALLER_FORBIDDEN, left unspent, and records
-// nothing.
+// at the head the pull request stands at. A completion of the reviewer's step, and the owner's
+// sign-off or move back out of accepting, from a claim the step's record does not name are refused
+// VERDICT_CALLER_FORBIDDEN, left unspent, and record and move nothing, as review_verdict refuses
+// such a claim past review (TestAReviewVerdictTheRecordNoLongerTakesIsRefused).
 func TestReviewStepVerdictFromItsOwnClaim(t *testing.T) {
 	t.Run("the reviewer's verdict is its step's, under its claim", func(t *testing.T) {
 		pool := migratedPool(t)
@@ -139,6 +142,42 @@ func TestReviewStepVerdictFromItsOwnClaim(t *testing.T) {
 			}
 			if other, found := stepVerdictOf(t, pool, "head", reviewerStep); found {
 				t.Fatalf("the reviewer's step holds the verdict %+v, want none: the owner's call is its own step's", other)
+			}
+		})
+	}
+
+	for _, tc := range []struct {
+		name string
+		send func(t *testing.T, pool *pgxpool.Pool, engine *Engine) intake.Fact
+	}{
+		{name: "sign_off", send: func(t *testing.T, pool *pgxpool.Pool, engine *Engine) intake.Fact {
+			return rootsSignOff(t, pool, engine, "LEGION-208")
+		}},
+		{name: "request_backward_move", send: func(t *testing.T, pool *pgxpool.Pool, engine *Engine) intake.Fact {
+			return rootsMoveBack(t, pool, engine, "LEGION-208", phase.Implementing, "the evidence does not cover the migration")
+		}},
+	} {
+		t.Run("the owner's "+tc.name+" from a claim the step's record does not name is refused", func(t *testing.T) {
+			const another claim.Token = "legion-legion-legion-209-architect"
+			pool := migratedPool(t)
+			seedAccepting(t, pool)
+			seedStepAgent(t, pool, acceptanceStep, another, false)
+			engine := testEngine(config.DesignGateRootIssues, nil)
+			result := applyFacts(t, pool, engine)("owner-"+tc.name, tc.send(t, pool, engine))
+			if result.Refusal == nil || result.Refusal.Code != "VERDICT_CALLER_FORBIDDEN" || result.Refusal.Status != 403 || !result.Unspent {
+				t.Fatalf("the %s of a claim the step's record does not name = %+v (unspent %t), want 403 VERDICT_CALLER_FORBIDDEN, unspent",
+					tc.name, result.Refusal, result.Unspent)
+			}
+			for _, want := range []string{string(architectClaim), string(another), tc.name, "nothing was recorded"} {
+				if !strings.Contains(result.Refusal.Message, want) {
+					t.Fatalf("the refusal says %q, want it to say %q", result.Refusal.Message, want)
+				}
+			}
+			if got := issuePhase(t, pool); got != phase.Accepting {
+				t.Fatalf("after the refused %s the issue is in %s, want accepting", tc.name, got)
+			}
+			if given, found := stepVerdictOf(t, pool, "head", acceptanceStep); found {
+				t.Fatalf("after the refused %s the acceptance holds the verdict %+v, want none", tc.name, given)
 			}
 		})
 	}
@@ -223,6 +262,137 @@ func TestTheOwnersAcceptanceIsAtTheHeadItNames(t *testing.T) {
 			}
 		})
 	}
+}
+
+// R5 after a change of owner. The acceptance step's record names the architect that owned the issue
+// when its accepting started (acceptingAgent): here LEGION-209's own architect, whose claim held its
+// role then. The operator's suspension of that claim moves the owner walk to the tree root's
+// architect, which owns the issue now: the issue's notices reach it, and its route's owner rule
+// (record.ArchitectAbove) passes. Its sign_off and its move back out of accepting are still refused
+// VERDICT_CALLER_FORBIDDEN, unspent, naming the claim the step's record names, and move and record
+// nothing, as its review_verdict past review is: the three routes agree that the owner's verdict is
+// the recorded agent's alone. The step's record changes only with a later start of accepting. Once
+// the operator resumes LEGION-209's architect, its sign_off is taken and recorded under its claim,
+// and the ask of a verdict past review after a later push goes to that claim, whose review_verdict
+// is taken where the root's is refused.
+func TestTheOwnersCallAfterAChangeOfOwnerIsTheRecordedAgentsAlone(t *testing.T) {
+	pool := migratedPool(t)
+	engine := returnEngine()
+	stepRoot(t, pool, phase.Implementing)
+	child := stepChild(t, pool, "LEGION-209", phase.Admitted, nil)
+	seedChildPR(t, pool, record.PullRequestOpen)
+	seedStepsPlan(t, pool, child.Key, child.Generation, "implementer", "acceptance:owner")
+	seedIssuesArchitect(t, pool, child.Key, supervise.StateReady, "")
+	walkTargetTo(t, pool, engine, child.Key, phase.Accepting)
+	childsArchitect := subArchitect(t, child.Key)
+	rootsArchitect := claim.Token(treeRoleToken(t, "LEGION-208", claim.RoleArchitect))
+	acceptance := record.StepPlace{Task: "a", Kind: record.PlaceStep, Place: 2}
+	var recorded record.StepStart
+	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) (err error) {
+		recorded, err = engine.store.StepStarts(ctx, tx, child.Key, acceptance)
+		return err
+	})
+	if recorded.Agent != string(childsArchitect) {
+		t.Fatalf("premise: the acceptance step's record names %q, want %s, the owner when accepting started", recorded.Agent, childsArchitect)
+	}
+
+	// The change of owner: the operator suspends LEGION-209's own architect.
+	setClaimState(t, pool, childsArchitect, supervise.StateSuspended, supervise.SuspendedByOperator)
+	onStored(t, pool, engine, child.Key, func(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
+		owner, err := engine.owningArchitect(ctx, tx, issue)
+		if err == nil && owner != "LEGION-208" {
+			t.Fatalf("premise: the owner walk of %s ends at %s, want LEGION-208: the owner has not changed", child.Key, owner)
+		}
+		return err
+	})
+	read := issueOf(t, pool, engine, child.Key)
+	calls := map[string]func(by claim.Token) intake.Fact{
+		"sign_off": func(by claim.Token) intake.Fact {
+			return intake.SignOff{Issue: child.Key, By: by, Generation: read.Generation, Entry: openStepOf(t, pool, engine, child.Key),
+				Commit: ownersHead(t, pool, child.Key)}
+		},
+		"request_backward_move": func(by claim.Token) intake.Fact {
+			return intake.BackwardMove{Issue: child.Key, Requester: claim.RoleArchitect, To: phase.Implementing, Reason: "the evidence does not cover the migration",
+				By: by, Generation: read.Generation, Entry: openStepOf(t, pool, engine, child.Key), Commit: ownersHead(t, pool, child.Key)}
+		},
+	}
+	for _, name := range []string{"sign_off", "request_backward_move"} {
+		before := standingOf(t, pool, engine, child.Key, true)
+		result := applyFacts(t, pool, engine)("new-owner-"+name, calls[name](rootsArchitect))
+		if result.Refusal == nil || result.Refusal.Code != "VERDICT_CALLER_FORBIDDEN" || result.Refusal.Status != 403 || !result.Unspent {
+			t.Fatalf("the new owner's %s = %+v (unspent %t), want 403 VERDICT_CALLER_FORBIDDEN, unspent", name, result.Refusal, result.Unspent)
+		}
+		for _, want := range []string{string(childsArchitect), string(rootsArchitect), name} {
+			if !strings.Contains(result.Refusal.Message, want) {
+				t.Fatalf("the refusal of the new owner's %s says %q, want it to say %q", name, result.Refusal.Message, want)
+			}
+		}
+		if now := standingOf(t, pool, engine, child.Key, true); !reflect.DeepEqual(now, before) {
+			t.Fatalf("the refused %s changed %s:\n before %+v\n after  %+v", name, child.Key, before, now)
+		}
+	}
+	if given, found := childVerdictOf(t, pool, "head-43"); found {
+		t.Fatalf("after the new owner's refused calls the acceptance holds the verdict %+v, want none", given)
+	}
+
+	// The recorded agent is back, and its sign_off is the acceptance.
+	setClaimState(t, pool, childsArchitect, supervise.StateReady, "")
+	applyRefusingNothing(t, pool, engine, calls["sign_off"](childsArchitect))
+	if got := issueOf(t, pool, engine, child.Key); got.Phase != phase.Retro {
+		t.Fatalf("after the recorded agent's sign_off %s is in %s, want retro", child.Key, got.Phase)
+	}
+	if given, found := childVerdictOf(t, pool, "head-43"); !found || given.Verdict != store.VerdictApprove || given.Session != string(childsArchitect) {
+		t.Fatalf("the acceptance's verdict at head-43 = %+v (found %t), want the approve of %s", given, found, childsArchitect)
+	}
+
+	// Past review the routes agree: a push asks the recorded agent, and the root's verdict is refused.
+	applyRefusingNothing(t, pool, engine, intake.PullRequestSynchronized{Repo: "sjawhar/legion", Number: 43, Branch: "legion/LEGION-209",
+		Before: "head-43", HeadSHA: "head-44"})
+	var addressed []string
+	for _, row := range issueOutboxOf(t, pool, child.Key, string(record.OutboxKindRoleMessage)) {
+		var message record.RoleMessage
+		if err := json.Unmarshal(row.payload, &message); err != nil {
+			t.Fatalf("decode a role message of %s: %v", child.Key, err)
+		}
+		if strings.Contains(message.Body, "review_verdict") {
+			addressed = append(addressed, message.Role)
+		}
+	}
+	if !reflect.DeepEqual(addressed, []string{string(childsArchitect)}) {
+		t.Fatalf("the push asked %v for a verdict past review, want the recorded agent %s alone", addressed, childsArchitect)
+	}
+	verdictOf := func(by claim.Token) intake.ReviewVerdict {
+		return intake.ReviewVerdict{Issue: child.Key, Claim: by, Verdict: "approve", Commit: "head-44", Summary: "read the push"}
+	}
+	if result := applyFacts(t, pool, engine)("roots-verdict", verdictOf(rootsArchitect)); refusalCode(result) != "VERDICT_CALLER_FORBIDDEN" {
+		t.Fatalf("the root's review_verdict = %+v, want VERDICT_CALLER_FORBIDDEN", result.Refusal)
+	}
+	applyRefusingNothing(t, pool, engine, verdictOf(childsArchitect))
+	if given, found := childVerdictOf(t, pool, "head-44"); !found || given.Session != string(childsArchitect) {
+		t.Fatalf("the acceptance's verdict at head-44 = %+v (found %t), want the recorded agent's", given, found)
+	}
+}
+
+// setClaimState sets the state of the claim token as the claim store holds it, suspended by by
+// when it is suspended.
+func setClaimState(t *testing.T, pool *pgxpool.Pool, token claim.Token, state supervise.ClaimState, by supervise.SuspendSource) {
+	t.Helper()
+	if _, err := pool.Exec(t.Context(), `update claims set state = $2, suspended_by = $3 where token = $1`, string(token), string(state), string(by)); err != nil {
+		t.Fatalf("set the state of %s: %v", token, err)
+	}
+}
+
+// childVerdictOf is the verdict the store holds of LEGION-209's owner's acceptance, the second step
+// of its task a, on #43 at head, and whether it holds one.
+func childVerdictOf(t *testing.T, pool *pgxpool.Pool, head string) (store.Verdict, bool) {
+	t.Helper()
+	var given store.Verdict
+	var found bool
+	seedRecord(t, pool, func(tx pgx.Tx) (err error) {
+		given, found, err = store.StepVerdictTx(t.Context(), tx, ghrepo.MustParse("sjawhar/legion"), 43, head, "a", 2)
+		return err
+	})
+	return given, found
 }
 
 // reviewerVerdict is LEGION-208's reviewer completing its round with verdict at commit, as the

@@ -246,8 +246,9 @@ type heldTopicsOptions struct {
 }
 
 // heldTopicsRig is a supervisor with a machine for each of claims, in project legion at generation
-// 1, and an outbox built as newOutbox builds it, as opts says. Each of taken is a session another
-// claim, legion-943's implementer, recorded first.
+// 1, and an outbox built as newOutbox builds it, as opts says, over a database of its own, as
+// production's outbox always has one. Each of taken is a session another claim, legion-943's
+// implementer, recorded first.
 func heldTopicsRig(t *testing.T, opts heldTopicsOptions, claims []supervise.Claim, taken ...string) (*supervisor, *outboxPublisher, *outbox) {
 	t.Helper()
 	ctx := context.Background()
@@ -267,6 +268,6 @@ func heldTopicsRig(t *testing.T, opts heldTopicsOptions, claims []supervise.Clai
 		}
 	}
 	publisher := &outboxPublisher{}
-	runner := newOutbox(nil, nil, &outboxDispatch{}, publisher, sup, nil, nil, nil, nil, "legion", "LEGION", t.TempDir(), "", nil, nil, opts.launched, cmp.Or(opts.log, quietLogger()))
+	runner := newOutbox(isolatedOutboxPool(t), record.NewStore(), &outboxDispatch{}, publisher, sup, nil, nil, nil, nil, "legion", "LEGION", t.TempDir(), "", nil, nil, opts.launched, cmp.Or(opts.log, quietLogger()))
 	return sup, publisher, runner
 }

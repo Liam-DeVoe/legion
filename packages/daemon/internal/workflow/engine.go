@@ -2317,8 +2317,12 @@ func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMo
 		return intake.Result{}, err
 	}
 	// The owner's move back from accepting is its acceptance's changes at the head it names
-	// (recordAcceptance), and only at the pull request's current head (acceptanceHeadRefusal).
+	// (recordAcceptance): only from the claim the acceptance step's record names as its agent
+	// (stepCallerRefusal), and only at the pull request's current head (acceptanceHeadRefusal).
 	if fact.Requester == claim.RoleArchitect {
+		if refusal, err := e.stepCallerRefusal(ctx, tx, *issue, fact.By, "request_backward_move"); err != nil || refusal != nil {
+			return intake.Result{Refusal: refusal, Unspent: refusal != nil}, err
+		}
 		if refusal := acceptanceHeadRefusal(*issue, pr, "request_backward_move", fact.Commit); refusal != nil {
 			return *refusal, nil
 		}
@@ -2340,7 +2344,9 @@ func endChildrenFirst(hold string) string {
 
 // signOff is the architect's acceptance of a reviewed head: it moves the issue from accepting to
 // retro and starts the implementer there, told the review's handoff and the pull request as the
-// approval told it before acceptance existed. Outside accepting it changes nothing and says so.
+// approval told it before acceptance existed. Outside accepting it changes nothing and says so. It
+// is the acceptance step's verdict, so it is taken only from the claim that step's record names as
+// its agent (stepCallerRefusal, spec R5), whatever architect owns the issue now.
 //
 // It is refused while any issue beneath the one being accepted is still in the workflow
 // (OpenBeneath), with SIGNOFF_CHILD_IN_WORKFLOW naming them. A parent's work is proved by a head
@@ -2358,6 +2364,9 @@ func (e *Engine) signOff(ctx context.Context, tx pgx.Tx, fact intake.SignOff) (i
 	}
 	if issue.Phase != phase.Accepting {
 		return refused("SIGNOFF_OUTSIDE_ACCEPTING", fmt.Sprintf("%s is in phase %s, not accepting; this sign-off changed nothing", issue.Key, issue.Phase)), nil
+	}
+	if refusal, err := e.stepCallerRefusal(ctx, tx, *issue, fact.By, "sign_off"); err != nil || refusal != nil {
+		return intake.Result{Refusal: refusal, Unspent: refusal != nil}, err
 	}
 	open, err := e.openBeneath(ctx, tx, *issue)
 	if err != nil {

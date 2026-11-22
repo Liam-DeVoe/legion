@@ -635,9 +635,11 @@ func assertOutboxCount(t *testing.T, pool *pgxpool.Pool, kind string, want int) 
 // until its issue closes. (The merge's row is the close itself, which suspends the tree:
 // TestTheCloseLingersOnceAndExpiryStopsTreeAndRemovesEveryWorkspace.)
 func TestRemainingForwardRowsApplyThroughIntake(t *testing.T) {
-	// The root's architect, whose sign-off the route names it by; the seeded issue has no run of a
-	// step the record counts, so its route reads none.
+	// The root's architect, whose sign-off the route names it by, and the run of accepting its route
+	// reads: the start the boot's open of a run no start counted records (upgradedStart), which names
+	// that architect, the one claim the acceptance's verdict is taken from (stepCallerRefusal).
 	architect := claim.Token(treeRoleToken(t, "LEGION-208", claim.RoleArchitect))
+	accepting := record.StepEntry{Place: record.StepPlace{Task: defaultTask, Kind: record.PlaceStep, Place: acceptanceStep}, Starts: 1}
 	cases := []struct {
 		name       string
 		current    phase.Phase
@@ -698,8 +700,11 @@ func TestRemainingForwardRowsApplyThroughIntake(t *testing.T) {
 		},
 		{
 			name: "sign-off", current: phase.Accepting,
+			setup: func(t *testing.T, pool *pgxpool.Pool) {
+				seedStepAgent(t, pool, acceptanceStep, architect, false)
+			},
 			fact: func() intake.Fact {
-				return intake.SignOff{Issue: "LEGION-208", By: architect, Generation: 1}
+				return intake.SignOff{Issue: "LEGION-208", By: architect, Generation: 1, Entry: accepting}
 			},
 			wantPhase: phase.Retro, wantStatus: "retro", wantOutbox: []string{"dispatch_status", "supervise"},
 		},

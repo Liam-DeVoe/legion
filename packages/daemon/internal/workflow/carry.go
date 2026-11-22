@@ -46,7 +46,7 @@ func (e *Engine) reviewVerdict(ctx context.Context, tx pgx.Tx, fact intake.Revie
 	if err != nil {
 		return intake.Result{}, err
 	}
-	steps, err := e.reviewSteps(ctx, tx, *issue, w)
+	steps, err := reviewSteps(ctx, e.store, tx, *issue, w)
 	if err != nil {
 		return intake.Result{}, err
 	}
@@ -136,14 +136,17 @@ func (e *Engine) askVerdict(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 // before it cannot read (spec R15). Its executor delivers it while the issue stands past its review
 // at that head (leftMergeForwardAt). The agent of every other review step, the architect that ran
 // the owner's acceptance, is asked by a role message to the claim its step's record names
-// (record.RoleMessage, stepVerdictAsk), the kind every release reads, which reaches it while that
-// claim holds its role; a step whose record names no claim is asked nothing.
+// (record.RoleMessage, stepVerdictAsk), the kind every release reads. The daemon's executor
+// delivers it held while the ask stands (VerdictAskStands): a released claim is woken for it, and
+// the row waits until a session holds the claim's role, since with the default steps legion-verdict
+// at the new head waits on that agent's verdict and nothing else tells it of the push. A step whose
+// record names no claim is asked nothing.
 func (e *Engine) askReviewSteps(ctx context.Context, tx pgx.Tx, issue record.Issue, pr *record.PullRequest, from, base string, why record.ConflictWhy) (bool, error) {
 	w, err := e.walk(ctx, tx, issue)
 	if err != nil {
 		return false, err
 	}
-	steps, err := e.reviewSteps(ctx, tx, issue, w)
+	steps, err := reviewSteps(ctx, e.store, tx, issue, w)
 	if err != nil {
 		return false, err
 	}
@@ -184,15 +187,70 @@ func (e *Engine) askReviewSteps(ctx context.Context, tx pgx.Tx, issue record.Iss
 	return asked, nil
 }
 
+// VerdictAskStands reads in tx whether agent is still owed its ask of a verdict past review on
+// issue key (askReviewSteps): the issue is in the workflow, its tree does not linger, the pull
+// request the record holds for it is open, the issue stands past its review (record.PastReview),
+// and agent is the agent the record names of a review step of the issue's task that has passed,
+// the reviewer's aside, whose last verdict on the pull request names no head or another head than
+// the pull request's current one (storedVerdictSince). It also returns the issue the record holds,
+// nil where it holds none. The reviewer is left out because its ask is the merge-forward review,
+// held by a rule of its own (leftMergeForwardAt).
+//
+// The daemon's role-message executor is its one caller: a role message to such an agent is
+// delivered held, waking a released claim, where every other role message to a released claim ends
+// undelivered (internal/daemon's outbox.roleMessage). The executor reads it at each attempt, just
+// before it delivers, so the row is held only while the agent owes that verdict: its verdict at the
+// current head, the issue's move out of the phases past review or out of the workflow, and the pull
+// request's close each end the hold. Every role message of the issue to that agent is held while
+// the ask stands, the ask and a CI settlement's message alike, since the claim is woken for the ask
+// and reads both. It reads records alone, through the readers an engine reads with (readWalk,
+// reviewSteps), and builds no engine.
+func VerdictAskStands(ctx context.Context, records record.Store, tx pgx.Tx, key string, agent claim.Token) (*record.Issue, bool, error) {
+	issue, err := records.Issue(ctx, tx, key)
+	if err != nil || issue == nil || agent == "" || !record.InWorkflow(*issue) || !record.PastReview(*issue) {
+		return issue, false, err
+	}
+	if lingers, err := record.TreeLingers(ctx, records, tx, issue.Tree); err != nil || lingers {
+		return issue, false, err
+	}
+	pr, err := records.PullRequest(ctx, tx, key)
+	if err != nil || pr == nil || pr.State != record.PullRequestOpen {
+		return issue, false, err
+	}
+	w, err := readWalk(ctx, records, tx, *issue)
+	if err != nil {
+		return issue, false, err
+	}
+	steps, err := reviewSteps(ctx, records, tx, *issue, w)
+	if err != nil {
+		return issue, false, err
+	}
+	for _, step := range steps {
+		if step.at == phase.Reviewing || step.agent != agent || !step.passed(w, *issue) {
+			continue
+		}
+		since, err := storedVerdictSince(ctx, tx, *issue, pr, step, pr.HeadSHA)
+		return issue, since != "", err
+	}
+	return issue, false, nil
+}
+
 // stepVerdictSince is the head of step's last verdict on pr, "" where it names pr's head, so no
 // verdict of that step is owed there, and otherwise where none is recorded: the reviewer's row's
 // decision for the reviewer's step (verdictSince), and the store's last verdict of the step for
-// every other (store.LastStepVerdictTx).
+// every other (storedVerdictSince).
 func (e *Engine) stepVerdictSince(ctx context.Context, tx pgx.Tx, issue record.Issue, pr *record.PullRequest, step reviewStep, otherwise string) (string, error) {
 	if step.at == phase.Reviewing {
 		reviewer, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleReviewer)
 		return verdictSince(reviewer, pr.HeadSHA, otherwise), err
 	}
+	return storedVerdictSince(ctx, tx, issue, pr, step, otherwise)
+}
+
+// storedVerdictSince is the head of the last verdict of step, a review step other than the
+// reviewer's, that the store records on pr (store.LastStepVerdictTx), "" where it names pr's head,
+// and otherwise where none of issue's is recorded.
+func storedVerdictSince(ctx context.Context, tx pgx.Tx, issue record.Issue, pr *record.PullRequest, step reviewStep, otherwise string) (string, error) {
 	repository, err := ghrepo.Parse("the repository of "+issue.Key+"'s pull request", pr.Repo)
 	if err != nil {
 		return "", err

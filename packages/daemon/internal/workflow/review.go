@@ -1311,15 +1311,15 @@ type reviewStep struct {
 }
 
 // reviewSteps is each review step of w's task, the walk of issue's run, in the task's order, with
-// its agent (stepAgent).
-func (e *Engine) reviewSteps(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk) ([]reviewStep, error) {
+// its agent as store holds it in tx (stepAgentOf).
+func reviewSteps(ctx context.Context, store record.Store, tx pgx.Tx, issue record.Issue, w Walk) ([]reviewStep, error) {
 	var steps []reviewStep
 	for i, step := range w.Steps {
 		if step.Type != plan.TypeReview || i >= len(w.Line) {
 			continue
 		}
 		place := record.TaskPlace{Kind: record.PlaceStep, Position: i + 1}.StepPlace(w.Task)
-		agent, err := e.stepAgent(ctx, tx, issue, place, w.Line[i])
+		agent, err := stepAgentOf(ctx, store, tx, issue, place, w.Line[i])
 		if err != nil {
 			return nil, err
 		}
@@ -1328,15 +1328,21 @@ func (e *Engine) reviewSteps(ctx context.Context, tx pgx.Tx, issue record.Issue,
 	return steps, nil
 }
 
-// stepAgent is the agent of the review step at place of issue's task, which runs as at: the claim
-// the latest start of that place records (record.StepStart.Agent: the start writes the phase
-// worker's claim, stepClaim, and for the owner's acceptance the architect that owns the issue,
-// acceptingAgent). A reviewer's step no start recorded an agent of started under the release
-// before the daemon recorded each step's start, and can still be at work when this release
-// deploys, so its agent is the issue's reviewer claim, the claim that step's role runs under. Any
-// other step no start recorded has no agent, "".
+// stepAgent is the agent of the step at place of issue's task, which runs as at, on e's store
+// (stepAgentOf).
 func (e *Engine) stepAgent(ctx context.Context, tx pgx.Tx, issue record.Issue, place record.StepPlace, at phase.Phase) (claim.Token, error) {
-	start, err := e.store.StepStarts(ctx, tx, issue.Key, place)
+	return stepAgentOf(ctx, e.store, tx, issue, place, at)
+}
+
+// stepAgentOf is the agent of the review step at place of issue's task, which runs as at, as store
+// holds it in tx: the claim the latest start of that place records (record.StepStart.Agent: the
+// start writes the phase worker's claim, stepClaim, and for the owner's acceptance the architect
+// that owns the issue, acceptingAgent). A reviewer's step no start recorded an agent of started
+// under the release before the daemon recorded each step's start, and can still be at work when
+// this release deploys, so its agent is the issue's reviewer claim, the claim that step's role runs
+// under. Any other step no start recorded has no agent, "".
+func stepAgentOf(ctx context.Context, store record.Store, tx pgx.Tx, issue record.Issue, place record.StepPlace, at phase.Phase) (claim.Token, error) {
+	start, err := store.StepStarts(ctx, tx, issue.Key, place)
 	if err != nil || start.Agent != "" || at != phase.Reviewing {
 		return claim.Token(start.Agent), err
 	}
@@ -1382,12 +1388,28 @@ func (step reviewStep) passed(w Walk, issue record.Issue) bool {
 }
 
 // reviewStepRefusal is the refusal of fact, a completion that carries a verdict, where the step
-// issue stands in is a review step (plan.TypeReview) whose agent (stepAgent) is another claim than
-// fact's: VERDICT_CALLER_FORBIDDEN (spec R5: the daemon takes a review step's verdict only from the
-// claim that runs that step, as its step record names it). A step with no agent names no claim the
-// verdict may come from. nil where the claim is the step's agent, or the issue stands in no review
-// step.
+// issue stands in is a review step whose agent is another claim than fact's (stepCallerRefusal).
 func (e *Engine) reviewStepRefusal(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.HandoffComplete) (*intake.Refusal, error) {
+	return e.stepCallerRefusal(ctx, tx, issue, fact.Claim, "completion")
+}
+
+// stepCallerRefusal is the refusal of call, a request by the claim by that carries the verdict of
+// the step issue stands in, where that step is a review step (plan.TypeReview) whose agent
+// (stepAgent) is another claim: VERDICT_CALLER_FORBIDDEN (spec R5: the daemon takes a review step's
+// verdict only from the claim that runs that step, as its step record names it). The call is a
+// review step's completion (reviewStepRefusal), or the owner's sign_off or request_backward_move
+// out of accepting, its acceptance's approve or changes (signOff, backward), which review_verdict
+// holds to the same record past review (reviewVerdict, stepOfAgent). A step with no agent names no
+// claim the verdict may come from. nil where by is the step's agent, or the issue stands in no review
+// step.
+//
+// The record names the agent the step's start wrote (startAgent): for the owner's acceptance, the
+// architect that owned the issue when accepting started (acceptingAgent). A change of owner after
+// that start, as when an operator's suspension or a failure of that architect's claim moves the
+// owner walk to an architect above it, writes no start, so the new owner's call is refused here as
+// its review_verdict is, and the recorded agent's call is taken once its claim is back. Only a
+// later start of accepting names another agent.
+func (e *Engine) stepCallerRefusal(ctx context.Context, tx pgx.Tx, issue record.Issue, by claim.Token, call string) (*intake.Refusal, error) {
 	w, err := e.walk(ctx, tx, issue)
 	if err != nil {
 		return nil, err
@@ -1397,7 +1419,7 @@ func (e *Engine) reviewStepRefusal(ctx context.Context, tx pgx.Tx, issue record.
 		return nil, nil
 	}
 	agent, err := e.stepAgent(ctx, tx, issue, place, issue.Phase)
-	if err != nil || agent == fact.Claim {
+	if err != nil || agent == by {
 		return nil, err
 	}
 	named := "no claim"
@@ -1405,8 +1427,8 @@ func (e *Engine) reviewStepRefusal(ctx context.Context, tx pgx.Tx, issue record.
 		named = "claim " + string(agent)
 	}
 	return &intake.Refusal{Status: 403, Code: "VERDICT_CALLER_FORBIDDEN", Message: fmt.Sprintf(
-		"the verdict of step %d of %s, the %s's, is taken only from the claim its step record names as its agent, %s, and this completion is claim %s's; nothing was recorded",
-		place.Place, issue.Key, role, named, fact.Claim)}, nil
+		"the verdict of step %d of %s, the %s's, is taken only from the claim its step record names as its agent, %s, and this %s is claim %s's; nothing was recorded",
+		place.Place, issue.Key, role, named, call, by)}, nil
 }
 
 // acceptanceHeadRefusal is the refusal of the owner's call from accepting, what (sign_off or its
@@ -1432,12 +1454,13 @@ func acceptanceHeadRefusal(issue record.Issue, pr *record.PullRequest, what, com
 
 // recordAcceptance records the owner's acceptance as the verdict of its review step (spec R5):
 // by's sign_off as approve, and its request_backward_move as changes, word either, at commit, the
-// head the owner accepted or sent back, which its caller has held to the pull request's current
-// head (acceptanceHeadRefusal), and asks, on that commit, for the write of legion-verdict there
-// (askVerdictWrite): with the default steps the acceptance is the last review step to pass, so its
-// approve is what writes success, and its changes refuse the head (spec R4). An issue that does not
-// stand in accepting, a request that names no claim, a pull request not recorded, and a tree that
-// lingers, whose request changes nothing, record nothing and ask nothing.
+// head the owner accepted or sent back. Its caller has held by to the claim the step's record names
+// (stepCallerRefusal) and commit to the pull request's current head (acceptanceHeadRefusal). It
+// asks, on that commit, for the write of legion-verdict there (askVerdictWrite): with the default
+// steps the acceptance is the last review step to pass, so its approve is what writes success, and
+// its changes refuse the head (spec R4). An issue that does not stand in accepting, a request that
+// names no claim, a pull request not recorded, and a tree that lingers, whose request changes
+// nothing, record nothing and ask nothing.
 func (e *Engine) recordAcceptance(ctx context.Context, tx pgx.Tx, issue record.Issue, by claim.Token, word store.VerdictWord, pr *record.PullRequest, commit string) error {
 	if issue.Phase != phase.Accepting || by == "" || pr == nil || commit == "" {
 		return nil

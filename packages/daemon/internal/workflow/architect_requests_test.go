@@ -12,12 +12,17 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
 // subTreeTarget is LEGION-211 of the tree LEGION-208, beneath LEGION-209, whose architect is a
 // sub-architect of the tree, with LEGION-210, a sibling of LEGION-209 whose architect is another
 // sub-architect. LEGION-211 walks the plan `implementer acceptance:owner` at generation 3, with its
 // open pull request #44, and stands at at: implementing, accepting, or held from implementing.
+// LEGION-211's own architect is suspended by the operator and LEGION-209's holds its role, so
+// LEGION-209's sub-architect owns LEGION-211 when its accepting starts, and the acceptance step's
+// record names it, the one claim its sign_off and its move back are taken from (spec R5,
+// stepCallerRefusal).
 func subTreeTarget(t *testing.T, pool *pgxpool.Pool, engine *Engine, at phase.Phase) record.Issue {
 	t.Helper()
 	stepRoot(t, pool, phase.Implementing)
@@ -30,6 +35,8 @@ func subTreeTarget(t *testing.T, pool *pgxpool.Pool, engine *Engine, at phase.Ph
 	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: target.Key, Repo: "sjawhar/legion", Number: 44,
 		Branch: "legion/LEGION-211", HeadSHA: "head-44", Failing: []string{}})
 	seedStepsPlan(t, pool, target.Key, target.Generation, "implementer", "acceptance:owner")
+	seedIssuesArchitect(t, pool, target.Key, supervise.StateSuspended, supervise.SuspendedByOperator)
+	seedIssuesArchitect(t, pool, parent, supervise.StateReady, "")
 	walkTargetTo(t, pool, engine, target.Key, at)
 	return issueOf(t, pool, engine, target.Key)
 }
