@@ -270,20 +270,64 @@ test("a drop onto a card lands at its place, one step down below it and one step
   expect(dropPlace(board, "CORE-1", cardDropId("CORE-99"))).toBeUndefined();
 });
 
-// By Status, under the Place sort: a move within a column writes the rank, and the card shows a
-// rank between its new neighbours until the server answers.
+// By Status, under the Place sort: a move within a column writes the rank before the card it
+// lands above, and the card shows a rank between its new neighbours until the server answers.
 test("under the Place sort a move within a column writes the rank and names where the card lands", () => {
   const board = lines(TODO());
   expect(planMove(board, PLACE, "CORE-1", { column: "todo", lane: undefined, index: 1 })).toEqual({
     kind: "move",
     key: "CORE-1",
-    change: { input: { rank: { after: "CORE-2", before: "CORE-3" } }, rank: rankAfter("b") },
+    change: { input: { rank: { before: "CORE-3" } }, rank: rankAfter("b") },
     position: { at: 2, of: 3 },
+  });
+  // Last in the column: after the card above it.
+  expect(
+    planMove(board, PLACE, "CORE-1", { column: "todo", lane: undefined, index: 2 })
+  ).toMatchObject({
+    kind: "move",
+    change: { input: { rank: { after: "CORE-3" } }, rank: rankAfter("c") },
+    position: { at: 3, of: 3 },
   });
   // A move that leaves the card where it is changes nothing.
   expect(
     planMove(board, PLACE, "CORE-1", { column: "todo", lane: undefined, index: 0 })
   ).toBeUndefined();
+});
+
+// INFRA-3221's tester: the daemon gives Places in an order of its own, so two cards next to each
+// other by Place need not be in rank order, and the server refuses a rank between two that are
+// not. A drop between them names one neighbour, the card it lands above, by Status and in Queue.
+test("a drop between two placed cards whose ranks run against their Places names only the card it lands above", () => {
+  const board = legionBoard({
+    queue: [
+      { key: "CORE-4", place: 1 },
+      { key: "CORE-3", place: 2 },
+      { key: "CORE-5", place: 3 },
+    ],
+  });
+  // In the view's order, by Place: CORE-4 holds Place 1 and ranks after CORE-3.
+  const items = rows(
+    [
+      issue("CORE-4", { rank: "x" }),
+      issue("CORE-3", { rank: "w" }),
+      issue("CORE-5", { rank: "y" }),
+    ],
+    board
+  );
+  const queue: MoveRules = { by: "legion_phase", lanes: false, rankRefusal: undefined };
+  for (const [rules, column, by] of [
+    [PLACE, "todo", "status"],
+    [queue, "queue", "legion_phase"],
+  ] as const) {
+    const drawn = lines(items, { by });
+    const cell = drawn[0]?.cells.find((candidate) => candidate.column.id === column);
+    expect(cell?.items.map((item) => item.issue.key)).toEqual(["CORE-4", "CORE-3", "CORE-5"]);
+    expect(planMove(drawn, rules, "CORE-5", { column, lane: undefined, index: 1 })).toMatchObject({
+      kind: "move",
+      change: { input: { rank: { before: "CORE-3" } } },
+      position: { at: 2, of: 3 },
+    });
+  }
 });
 
 test("a move into another column sets its status, with the rank under the Place sort and none under another", () => {

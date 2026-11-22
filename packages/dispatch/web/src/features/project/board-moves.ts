@@ -8,9 +8,6 @@ import { useKeyedWrite } from "../writes/useKeyedWrite";
 import type { BoardChange } from "./board-model";
 import { projectIssuesQueryKey } from "./issue-filters";
 
-export const staleBoardMessage =
-  "The board changed while you were moving this card - refreshed, try again.";
-
 /** The issue as a move leaves it on the page until the server answers: its new status, its new
  *  priority and a rank between its new neighbours, where the move writes each. */
 function movedIssue(issue: IssueSummary, { input, rank }: BoardChange): IssueSummary {
@@ -38,8 +35,7 @@ export interface BoardMoveVariables {
  * answered before the move never lands over the placement: a fetch already on the wire is
  * cancelled as the move writes, and one that starts while a move is unanswered waits for the
  * answer (`projectIssuesQuery`, keyed on `boardMoveMutationKey`). Any failure puts the listings
- * back, reads them again, and says so: a stale rank (`RANK_INPUT`, the neighbours moved under the
- * drag) gets `staleBoardMessage`; anything else the server's message.
+ * back, reads them again, and says so with the server's message.
  */
 export function useBoardMoves(project: string): {
   error: string | undefined;
@@ -85,13 +81,7 @@ export function useBoardMoves(project: string): {
         setError(undefined);
       } catch (cause) {
         for (const { queryKey, issues } of held) queryClient.setQueryData(queryKey, issues);
-        setError(
-          cause instanceof ApiError
-            ? cause.code === "RANK_INPUT"
-              ? staleBoardMessage
-              : cause.message
-            : "Could not move the card."
-        );
+        setError(cause instanceof ApiError ? cause.message : "Could not move the card.");
       } finally {
         await queryClient.invalidateQueries({ queryKey: listings });
       }

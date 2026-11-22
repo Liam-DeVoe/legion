@@ -1,7 +1,8 @@
 import { afterEach, expect, test } from "bun:test";
 import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { type ReactNode, useRef } from "react";
+import { type ReactNode, useRef, useState } from "react";
+import { AnchoredPanel } from "./AnchoredPanel";
 import { Tooltip, useTooltip } from "./Tooltip";
 
 /** A control with a tooltip between two plain buttons. `paused` stands for a column drag. */
@@ -80,6 +81,59 @@ test("Escape closes a tooltip a hover opened while the focus is on another contr
   await user.keyboard("{Escape}");
   expect(screen.queryByRole("tooltip")).toBeNull();
   expect(before).toHaveFocus();
+});
+
+/** A filter's panel, open with the focus in it, beside a control whose tooltip a hover opens. */
+function PanelBesideTooltip(): ReactNode {
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const anchorRef = useRef<HTMLButtonElement>(null);
+  const tooltip = useTooltip();
+  const [open, setOpen] = useState(true);
+  return (
+    <>
+      <button ref={triggerRef} type="button">
+        Filter
+      </button>
+      {open ? (
+        <AnchoredPanel
+          anchorRef={triggerRef}
+          className=""
+          label="Filter"
+          onDismiss={() => setOpen(false)}
+          role="dialog"
+        >
+          <button type="button">Inside</button>
+        </AnchoredPanel>
+      ) : null}
+      <button {...tooltip.props} ref={anchorRef} type="button">
+        Sort
+      </button>
+      <Tooltip anchorRef={anchorRef} trigger={tooltip}>
+        Sort by this column
+      </Tooltip>
+    </>
+  );
+}
+
+// INFRA-3221's tester: an open panel takes Escape at the document in the capture phase and stops
+// it there, so a tooltip that read Escape as it bubbled stayed open until a second press.
+test("one Escape closes an open panel and a tooltip a hover opened beside it, and goes no further", async () => {
+  const user = userEvent.setup();
+  const behind: string[] = [];
+  const hear = (event: KeyboardEvent) => behind.push(event.key);
+  window.addEventListener("keydown", hear);
+  restores.push(() => window.removeEventListener("keydown", hear));
+  draw(<PanelBesideTooltip />);
+  expect(screen.getByRole("button", { name: "Inside" })).toHaveFocus();
+  await user.hover(anchor());
+  expect(screen.getByRole("tooltip")).toBeDefined();
+  await user.keyboard("{Escape}");
+  expect(screen.queryByRole("dialog", { name: "Filter" })).toBeNull();
+  expect(screen.queryByRole("tooltip")).toBeNull();
+  // The Escape is still the panel's alone: the page behind it hears none, and the reader is back
+  // on the panel's trigger.
+  expect(behind).toEqual([]);
+  expect(screen.getByRole("button", { name: "Filter" })).toHaveFocus();
 });
 
 test("an open tooltip adds no Tab stop to the page and takes no focus from a press on it", async () => {

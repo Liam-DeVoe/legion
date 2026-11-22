@@ -1100,8 +1100,9 @@ test("each parameter of an Evals link narrows Done to the rows the routes give: 
 });
 
 // SLOW(>=2s): the facts consumer's rows of five issues and the eval refresher's pass, up to 75 s,
-// then Open sorted three ways and Done's reads of an issue closed 40 days ago.
-test("Open sorts by Time waiting, Time in Legion phase and Worker state as the board gives them, and Done with no window reads the items over windows of at most 84 days that hold every close and draws the facts of an issue closed 40 days ago", async ({
+// then Open sorted three ways and by Work time and Created, and Done's reads of an issue closed
+// 40 days ago.
+test("Open sorts by Time waiting, Time in Legion phase and Worker state as the board gives them, and by Work time then Created with the rows with no Work time in Created's order, and Done with no window reads the items over windows of at most 84 days that hold every close and draws the facts of an issue closed 40 days ago", async ({
   browser,
 }) => {
   test.setTimeout(180_000);
@@ -1134,6 +1135,54 @@ test("Open sorts by Time waiting, Time in Legion phase and Worker state as the b
       await expect.poll(async () => (await rowKeys(table)).length).toBe(open.length);
       expect(inOrder(await rowKeys(table), value), `sort=${sort}`).toMatchObject({ sorted: true });
     }
+
+    // Sorted by Work time, a shift-click on Created adds a second sort: the rows with no Work time
+    // come after the rows with one, and among themselves in Created's order. Their creation times
+    // are written an hour apart in the listing's own order with its first two swapped, so neither
+    // that order nor its reverse is Created's.
+    const facts = await getLegionBoard(ACME);
+    const measured = (key: string) => {
+      const held = boardFacts(facts, key);
+      return held === undefined || (held.work_first_at === null && !(held.work_hours > 0))
+        ? undefined
+        : held.work_hours;
+    };
+    const unmeasured = open.filter((issue) => measured(issue.key) === undefined);
+    expect(unmeasured.length, "Open's rows with no Work time").toBeGreaterThan(2);
+    const firstCreated = Date.now() - 30 * DAY;
+    const created = new Map(
+      unmeasured.map(
+        (issue, index) =>
+          [issue.key, firstCreated + (index < 2 ? 1 - index : index) * HOUR] as const
+      )
+    );
+    await sql(
+      ...[...created].map(
+        ([key, at]) => `UPDATE issues SET created_at = '${iso(at)}' WHERE key = '${key}'`
+      )
+    );
+    await page.goto(
+      `/projects/${ACME}/issues?view=open&sort=-work_hours&cols=key,title,work_hours,created`
+    );
+    await expect.poll(async () => (await rowKeys(table)).length).toBe(open.length);
+    await table
+      .locator("thead")
+      .getByRole("button", { name: /^Created/ })
+      .click({ modifiers: ["Shift"] });
+    await expect
+      .poll(() => new URL(page.url()).searchParams.get("sort"))
+      .toBe("-work_hours,created");
+    await expect
+      .poll(async () => {
+        const keys = await rowKeys(table);
+        const empty = keys.filter((key) => measured(key) === undefined);
+        return {
+          measuredFirst: inOrder(keys, (key) => (measured(key) === undefined ? undefined : 0))
+            .sorted,
+          createdOrder: inOrder(empty, (key) => created.get(key)).sorted,
+        };
+      })
+      .toEqual({ measuredFirst: true, createdOrder: true });
 
     // Done with no window: the items over windows of at most 84 days that hold every close, and
     // the facts cells of the issue closed 40 days ago equal to its items row.

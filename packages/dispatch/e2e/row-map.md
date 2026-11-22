@@ -212,7 +212,7 @@ such a row loses is feedback on the pull request itself.
 | `e2e/attention.e2e.ts` | the new card arrives over the live socket; a read-mark write moves under the reader |
 | `e2e/bare-references.e2e.ts` | opens the spec's live editor and its margin for every assertion |
 | `e2e/block-references.e2e.ts` | uploads, then asserts the server re-resolved the reference; an edit after load must arrive live; a delete after load must arrive live |
-| `e2e/board.e2e.ts` | drag writes a rank, read back after a reload; rank writes; the server's rank rejection is the assertion |
+| `e2e/board.e2e.ts` | drag writes a rank, read back after a reload; rank writes; a drop on a stale board is the server's rank, and its refusal of a closed issue's close is the assertion |
 | `e2e/broadcast.e2e.ts` | broadcast sends, server-side exclusion, retry and idempotency |
 | `e2e/broker-approval.e2e.ts` | decisions made on the real broker, with sign-in and cross-origin refusals |
 | `e2e/btw.e2e.ts` | delivery modes and sends asserted against the fake Envoy |

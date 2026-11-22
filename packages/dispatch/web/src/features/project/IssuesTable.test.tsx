@@ -523,9 +523,10 @@ test("a row a server sends without created_by or created_at renders, with no aut
 });
 
 test("a row with no created_at stays last when Created is sorted the other way", async () => {
-  // A sorting function alone cannot do this: the table orders an absent accessor value before it
-  // calls one and then reverses that for a descending sort, so the column says `sortUndefined:
-  // "last"`. Two rows without a time keep their own order beside the one that has one.
+  // A sorting function blind to the direction cannot do this: the table reverses its answer for a
+  // descending sort, so the column turns its answer for an empty cell round by the direction it
+  // is sorted in (`emptyLast`). Two rows without a time keep their own order beside the one that
+  // has one.
   table(
     [issue("CORE-3"), issueFromOlderServer("CORE-1"), issueFromOlderServer("CORE-2")],
     "?sort=-created"

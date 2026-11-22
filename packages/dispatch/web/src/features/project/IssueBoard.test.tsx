@@ -36,7 +36,7 @@ import { KeymapProvider } from "../shell/KeymapProvider";
 import { useKeymapScope } from "../shell/keymap";
 import { userPreferenceStorageKey } from "../shell/userPreference";
 import { DAEMON_SETS_PHASE } from "./board-model";
-import { staleBoardMessage, useBoardMoves } from "./board-moves";
+import { useBoardMoves } from "./board-moves";
 import { IssuesTable } from "./IssuesTable";
 import { LEGION_PHASES, type LegionPhase } from "./issues-legion";
 import { MEASURE_METHODS } from "./issues-table-model";
@@ -596,11 +596,7 @@ test("Shift+J under the Place sort writes the rank, reads the card's place out a
   expect(liveRegion().textContent).toBe("");
 
   await user.keyboard("{Shift>}J{/Shift}");
-  expect(patch).toHaveBeenCalledWith(
-    "CORE-1",
-    { rank: { after: "CORE-2", before: "CORE-3" } },
-    keyedAttempt
-  );
+  expect(patch).toHaveBeenCalledWith("CORE-1", { rank: { before: "CORE-3" } }, keyedAttempt);
   expect(liveRegion().textContent).toBe("CORE-1 → Todo, position 2 of 3");
   const todo = within(region).getByRole("region", { name: "Todo" });
   await waitFor(() => expect(cardKeys(todo)).toEqual(["CORE-2", "CORE-1", "CORE-3"]));
@@ -1110,11 +1106,11 @@ const move = (input: UpdateIssueInput, rank?: string) => ({
   ...(rank === undefined ? {} : { rank }),
 });
 
-test("a failed move puts the listing back, reads it again and tells the truth about a stale rank", async () => {
+test("a refused move puts the listing back, reads it again and shows the server's message", async () => {
   const open = keyboardIssues();
   const { client, hook, key } = renderMoves(open);
   const patch = answerIssuePatches().mockRejectedValue(
-    new ApiError(400, { code: "RANK_INPUT", error: "rank neighbors are not ordered" })
+    new ApiError(409, { code: "ISSUE_CLOSED", error: "issue is closed" })
   );
   restores.push(() => patch.mockRestore());
   await act(() =>
@@ -1128,7 +1124,7 @@ test("a failed move puts the listing back, reads it again and tells the truth ab
     { status: "in_progress", rank: { before: "CORE-4" } },
     keyedAttempt
   );
-  expect(hook.result.current.error).toBe(staleBoardMessage);
+  expect(hook.result.current.error).toBe("issue is closed");
   expect(client.getQueryData<IssueSummary[]>(key)).toEqual(open);
   expect(client.getQueryState(key)?.isInvalidated).toBe(true);
 });

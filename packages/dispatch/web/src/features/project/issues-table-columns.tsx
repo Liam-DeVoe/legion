@@ -135,17 +135,50 @@ const FILTER_FNS = {
 
 /** Where `value` stands in `order`, a value this build does not know after the known ones, or
  *  undefined with no value: a column of named states sorts in their order, its empty cells last
- *  (`sortUndefined: "last"`). */
+ *  (`emptyLast`). */
 function placeIn(order: readonly string[], value: string | null | undefined): number | undefined {
   if (value === null || value === undefined || value === "") return undefined;
   const index = order.indexOf(value);
   return index === -1 ? order.length : index;
 }
 
+/** How a column whose cells can be empty sorts: its sorting function, and no answer of TanStack's
+ *  own for an empty cell before that function is asked (`emptyLast`). */
+interface EmptyLastSort {
+  readonly sortingFn: SortingFn<Item>;
+  readonly sortUndefined: false;
+}
+
+/**
+ * The sort of a column whose cells can be empty (an undefined accessor value): two values by
+ * `compare`, the empty cells last whichever way the column is sorted, and two empty cells tied,
+ * so that the next sort key orders them and, after the last, the listing's own order. TanStack
+ * answers for a pair with an empty cell itself unless `sortUndefined` is false: `"last"` keeps
+ * the empty cells last but answers for two of them too, before the next key is asked, and its
+ * default puts them first in a descending sort. The table turns a sorting function's answer round
+ * for a descending sort, so the answer for an empty cell is turned round here first, by the
+ * direction the column is sorted in.
+ */
+function emptyLast<V>(compare: (left: V, right: V) => number): EmptyLastSort {
+  return {
+    sortUndefined: false,
+    sortingFn: (a, b, id) => {
+      const left = a.getValue<V | undefined>(id);
+      const right = b.getValue<V | undefined>(id);
+      if (left !== undefined && right !== undefined) return compare(left, right);
+      if (left === right) return 0;
+      const last = left === undefined ? 1 : -1;
+      return a._getAllCellsByColumnId()[id]?.column.getIsSorted() === "desc" ? -last : last;
+    },
+  };
+}
+
+/** Two numbers, the smaller first, and the empty cells last. */
+const smallestFirst = emptyLast((left: number, right: number) => left - right);
+
 /** Two runs of a card's time by the moment each started, as lengths: the later start is the
- *  shorter time, so it sorts first. */
-const shortestFirst: SortingFn<Item> = (a, b, id) =>
-  b.getValue<number>(id) - a.getValue<number>(id);
+ *  shorter time, so it sorts first, and the empty cells last. */
+const shortestFirst = emptyLast((left: number, right: number) => right - left);
 
 /** What a facts cell draws while the read of its facts is out, or after it failed: a loading
  *  mark or an error mark, and never the empty cell of an issue with no Legion work. */
@@ -254,7 +287,8 @@ function Author({ issue, clamp }: { issue: IssueSummary; clamp: boolean }): Reac
  *  Everything else about a column — whether it filters, what a row files under, what it groups
  *  by, how wide it starts and how narrow it may go — comes from `COLUMNS` in the model, so the
  *  two never disagree. A row's own checkbox tells `onMark` the row it marks. A column whose rows
- *  can have no value sorts those rows last whichever way it is sorted (`sortUndefined`).
+ *  can have no value sorts those rows last whichever way it is sorted, and by the next sort key
+ *  among themselves (`emptyLast`).
  *  Time per phase draws in the reader's mode (`usePhaseHoursMode`), which its header's control
  *  switches. */
 const renderings = (
@@ -290,7 +324,7 @@ const renderings = (
   priority: {
     header: "Priority",
     accessorFn: (item) => item.issue.priority ?? undefined,
-    sortUndefined: "last",
+    ...smallestFirst,
     sortDescFirst: false,
     cell: ({ row }) => (
       <PriorityControl
@@ -389,8 +423,7 @@ const renderings = (
     header: "Legion phase",
     // The board's order, the rows with no card last.
     accessorFn: (item) => placeIn(LEGION_PHASE_PICKS, item.card?.column),
-    sortUndefined: "last",
-    sortingFn: "basic",
+    ...smallestFirst,
     sortDescFirst: false,
     cell: ({ row }) =>
       row.original.card === undefined ? null : (
@@ -441,14 +474,12 @@ const renderings = (
     header: "Created",
     accessorFn: (item) => createdAt(item.issue),
     // A server of the release before the one that added `created_at` sends none, and the table
-    // sorts such a row last in either direction: TanStack orders an undefined accessor value
-    // before it calls `sortingFn` and then reverses that for a descending sort, so a sorting
-    // function alone would put those rows first under `?sort=-created`. `priority` and `queue`
-    // say the same thing the same way. What `compareTimestamps` then compares is always a time
-    // it can parse. `IssuesTable.test.tsx` sorts a row without a time in both directions.
-    sortUndefined: "last",
-    sortingFn: (a, b) =>
-      compareTimestamps(a.original.issue.created_at, b.original.issue.created_at),
+    // sorts such a row last in either direction, as every column whose cells can be empty does
+    // (`emptyLast`); a sorting function blind to the direction would put those rows first under
+    // `?sort=-created`, since TanStack reverses its answer for a descending sort. What
+    // `compareTimestamps` then compares is always a time it can parse. `IssuesTable.test.tsx`
+    // sorts a row without a time in both directions.
+    ...emptyLast(compareTimestamps),
     cell: ({ row }) => {
       // The cell is empty for a row that server sent, which carries no time to show, which the
       // same row of `IssuesTable.test.tsx` reads.
@@ -473,8 +504,7 @@ const renderings = (
   closed: {
     header: "Closed",
     accessorFn: (item) => item.issue.closed_at ?? undefined,
-    sortUndefined: "last",
-    sortingFn: (a, b, id) => compareTimestamps(a.getValue<string>(id), b.getValue<string>(id)),
+    ...emptyLast(compareTimestamps),
     cell: ({ row }) =>
       row.original.issue.closed_at === null ? null : (
         <Timestamp
@@ -492,16 +522,13 @@ const renderings = (
       );
       return places.length === 0 ? undefined : places.sort((a, b) => a - b);
     },
-    sortUndefined: "last",
-    sortingFn: (a, b, id) => {
-      const left = a.getValue<number[]>(id);
-      const right = b.getValue<number[]>(id);
+    ...emptyLast((left: number[], right: number[]) => {
       for (let index = 0; index < Math.min(left.length, right.length); index++) {
         const step = (left[index] ?? 0) - (right[index] ?? 0);
         if (step !== 0) return step;
       }
       return left.length - right.length;
-    },
+    }),
     sortDescFirst: false,
     cell: ({ row }) => (
       <span className={`text-xs ${textSecondaryOnCanvas}`}>
@@ -515,8 +542,7 @@ const renderings = (
   activity: {
     header: "Worker state",
     accessorFn: (item) => placeIn(WORKER_STATE_PICKS, item.card?.card.slot_use),
-    sortUndefined: "last",
-    sortingFn: "basic",
+    ...smallestFirst,
     sortDescFirst: false,
     cell: ({ row }) => {
       const use = row.original.card?.card.slot_use;
@@ -528,8 +554,7 @@ const renderings = (
   waited: {
     header: "Time waiting",
     accessorFn: (item) => sinceMs(item.card?.card.waiting?.since),
-    sortUndefined: "last",
-    sortingFn: shortestFirst,
+    ...shortestFirst,
     sortDescFirst: true,
     cell: ({ row }) => (
       <CardTime nowMs={row.original.at} since={row.original.card?.card.waiting?.since} />
@@ -538,8 +563,7 @@ const renderings = (
   waiting_reason: {
     header: "Why it waits",
     accessorFn: (item) => placeIn(WAITING_REASON_PICKS, item.card?.card.waiting?.reason),
-    sortUndefined: "last",
-    sortingFn: "basic",
+    ...smallestFirst,
     sortDescFirst: false,
     cell: ({ row }) => {
       const waiting = row.original.card?.card.waiting;
@@ -566,8 +590,7 @@ const renderings = (
   time_in_phase: {
     header: "Time in Legion phase",
     accessorFn: (item) => sinceMs(item.card?.card.phase_since),
-    sortUndefined: "last",
-    sortingFn: shortestFirst,
+    ...shortestFirst,
     sortDescFirst: true,
     cell: ({ row }) => (
       <CardTime nowMs={row.original.at} since={row.original.card?.card.phase_since} />
@@ -576,8 +599,7 @@ const renderings = (
   work_hours: {
     header: "Work time",
     accessorFn: workHoursOf,
-    sortUndefined: "last",
-    sortingFn: "basic",
+    ...smallestFirst,
     sortDescFirst: true,
     cell: ({ row }) =>
       factsCell(row.original, () => {
@@ -592,8 +614,7 @@ const renderings = (
   review_rounds: {
     header: "Review rounds",
     accessorFn: (item) => item.facts?.review_rounds,
-    sortUndefined: "last",
-    sortingFn: "basic",
+    ...smallestFirst,
     sortDescFirst: true,
     // A counted zero reads 0: Legion worked the issue and no review round reached it.
     cell: ({ row }) =>
@@ -606,9 +627,9 @@ const renderings = (
     // The roots first, then the children by their root.
     accessorFn: (item) =>
       item.facts === undefined ? undefined : item.facts.tree_depth === 0 ? "" : item.facts.root_key,
-    sortUndefined: "last",
-    sortingFn: (a, b, id) =>
-      a.getValue<string>(id).localeCompare(b.getValue<string>(id), undefined, { numeric: true }),
+    ...emptyLast((left: string, right: string) =>
+      left.localeCompare(right, undefined, { numeric: true })
+    ),
     sortDescFirst: false,
     cell: ({ row }) =>
       factsCell(row.original, (facts) =>
@@ -655,7 +676,7 @@ const EMBEDDED_RENDERINGS: Readonly<Partial<Record<ColumnId, Partial<ColumnDef<I
   queue: {
     header: "Queue",
     accessorFn: (item) => item.queue,
-    sortUndefined: "last",
+    ...smallestFirst,
     sortDescFirst: false,
     cell: ({ row }) => <QueuePlace place={row.original.queue} queued={false} />,
   },

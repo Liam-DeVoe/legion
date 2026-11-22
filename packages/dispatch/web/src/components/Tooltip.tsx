@@ -107,13 +107,15 @@ function OpenTooltip({
 }): ReactNode {
   const { hide } = trigger;
   useEffect(() => {
-    // Escape from the control itself is the panel's (`AnchoredPanel`), which takes it; any
-    // other Escape closes the tooltip and goes on to whoever owns it.
+    // Escape closes the tooltip wherever the focus is and goes on to whoever owns it. It is read
+    // at the document in the capture phase, where an open panel reads Escape too (`AnchoredPanel`):
+    // the panel stops the press from going on past the document, which leaves this listener on the
+    // same node to run, so one Escape closes the panel and the tooltip both.
     const onEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape") hide();
     };
-    document.addEventListener("keydown", onEscape);
-    return () => document.removeEventListener("keydown", onEscape);
+    document.addEventListener("keydown", onEscape, true);
+    return () => document.removeEventListener("keydown", onEscape, true);
   }, [hide]);
   return (
     <AnchoredPanel anchorRef={anchorRef} className={TOOLTIP_CLASS} onDismiss={hide} tooltip>

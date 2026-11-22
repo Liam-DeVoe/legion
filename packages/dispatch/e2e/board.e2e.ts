@@ -271,17 +271,15 @@ test("v toggles Table and Board; Shift+J/K rank a focused card through the one m
     // dnd-kit renders its own unnamed `role=status` region; the board's is the named one.
     const live = page.getByRole("status", { name: "Board announcements" });
 
-    // B2: Shift+J sends the same PATCH a drop would, names the visible neighbours, and the
-    // card keeps focus in its new place while the live region says where it went.
+    // B2: Shift+J sends the same PATCH a drop would, names the card it lands above, and the card
+    // keeps focus in its new place while the live region says where it went.
     await alphaCard.focus();
     await expect(alphaCard).toBeFocused();
     const movePatch = patchOf(page, alpha.key);
     await page.keyboard.press("Shift+J");
     const moveResponse = await movePatch;
     expect(moveResponse.status()).toBe(200);
-    expect(moveResponse.request().postDataJSON()).toEqual({
-      rank: { after: bravo.key, before: charlie.key },
-    });
+    expect(moveResponse.request().postDataJSON()).toEqual({ rank: { before: charlie.key } });
     await expect(todo.getByRole("article")).toHaveText([/Bravo/, /Alpha/, /Charlie/]);
     await expect(alphaCard).toBeFocused();
     await expect(live).toHaveText(`${alpha.key} → Todo, position 2 of 3`);
@@ -371,8 +369,13 @@ test("v toggles Table and Board; Shift+J/K rank a focused card through the one m
   }
 });
 
-// SLOW(>=2s): two whole-card drags, the first refused by the server and the board read again.
-test("a stale board refreshes and says so when the server rejects the rank", async ({
+// A drop names one neighbour: the card it lands above, or the card above it where it lands last.
+// The server takes that rank whatever moved under the drag, so a drop on a board that has not
+// seen another reader's move lands by the card it was dropped on, and the Board reads the
+// server's order with no alert. A drop the server refuses for another reason - here a close of an
+// issue someone else closed - says the server's reason and reads the Board again.
+// SLOW(>=2s): three whole-card drags on a board whose live socket is closed, each read again.
+test("a drop on a stale board lands by the card it was dropped on, and a refused drop says why and reads the board again", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -390,7 +393,7 @@ test("a stale board refreshes and says so when the server rejects the rank", asy
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
   try {
-    // Without the event subscription the board does not learn about the API move below.
+    // Without the event subscription the board does not learn about the API writes below.
     await page.routeWebSocket(/\/ws\/live$/u, (route) =>
       route.close({ code: 1011, reason: "test network drop" })
     );
@@ -398,6 +401,8 @@ test("a stale board refreshes and says so when the server rejects the rank", asy
     await page.goto("/projects/CORE");
     await page.getByRole("button", { name: "Board" }).click();
     const todo = page.getByRole("region", { name: "Todo" });
+    const card = (key: string, title: string) =>
+      todo.getByRole("article", { name: `${key} ${title}` });
     await expect(todo.getByRole("article")).toHaveText([/Alpha/, /Bravo/, /Charlie/]);
 
     await patchIssue(alpha.key, { rank: { after: charlie.key } });
@@ -408,40 +413,51 @@ test("a stale board refreshes and says so when the server rejects the rank", asy
     ]);
     await expect(todo.getByRole("article")).toHaveText([/Alpha/, /Bravo/, /Charlie/]);
 
-    // Charlie between Alpha and Bravo names neighbours the server now has in the other order.
-    const stalePatch = patchOf(page, charlie.key);
-    await mouseDrag(
-      page,
-      todo.getByRole("article", { name: `${charlie.key} Charlie` }),
-      todo.getByRole("article", { name: `${bravo.key} Bravo` }),
-      4
-    );
-    const staleResponse = await stalePatch;
-    expect(staleResponse.status()).toBe(400);
-    expect(staleResponse.request().postDataJSON()).toEqual({
-      rank: { after: alpha.key, before: bravo.key },
-    });
-    await expect(page.getByRole("alert")).toHaveText(
-      "The board changed while you were moving this card - refreshed, try again."
-    );
-    await expect(todo.getByRole("article")).toHaveText([/Bravo/, /Charlie/, /Alpha/]);
+    // Charlie dropped above Bravo on the board that still draws Alpha first: the write names
+    // Bravo alone, and Charlie stands above Bravo, first now that Alpha has moved last.
+    const abovePatch = patchOf(page, charlie.key);
+    await mouseDrag(page, card(charlie.key, "Charlie"), card(bravo.key, "Bravo"), 4);
+    const aboveResponse = await abovePatch;
+    expect(aboveResponse.status()).toBe(200);
+    expect(aboveResponse.request().postDataJSON()).toEqual({ rank: { before: bravo.key } });
     expect((await listIssues("CORE")).map((issue) => issue.key)).toEqual([
-      bravo.key,
       charlie.key,
+      bravo.key,
       alpha.key,
     ]);
-
-    // Trying again from the refreshed board succeeds and clears the alert.
-    const retryPatch = patchOf(page, charlie.key);
-    await mouseDrag(
-      page,
-      todo.getByRole("article", { name: `${charlie.key} Charlie` }),
-      todo.getByRole("article", { name: `${bravo.key} Bravo` }),
-      4
-    );
-    expect((await retryPatch).status()).toBe(200);
     await expect(todo.getByRole("article")).toHaveText([/Charlie/, /Bravo/, /Alpha/]);
     await expect(page.getByRole("alert")).toHaveCount(0);
+
+    // Bravo moves after Alpha unseen; Charlie dropped last, below Alpha, names Alpha alone and
+    // stands right after it, with Bravo after them both.
+    await patchIssue(bravo.key, { rank: { after: alpha.key } });
+    const lastPatch = patchOf(page, charlie.key);
+    await mouseDrag(page, card(charlie.key, "Charlie"), card(alpha.key, "Alpha"));
+    const lastResponse = await lastPatch;
+    expect(lastResponse.status()).toBe(200);
+    expect(lastResponse.request().postDataJSON()).toEqual({ rank: { after: alpha.key } });
+    expect((await listIssues("CORE")).map((issue) => issue.key)).toEqual([
+      alpha.key,
+      charlie.key,
+      bravo.key,
+    ]);
+    await expect(todo.getByRole("article")).toHaveText([/Alpha/, /Charlie/, /Bravo/]);
+    await expect(page.getByRole("alert")).toHaveCount(0);
+
+    // Alpha closed unseen, then dropped on the Done rail: the server refuses to close it again,
+    // the Board says the server's reason, and its next read takes the closed Alpha off Open.
+    await patchIssue(alpha.key, { status: "done" });
+    const closePatch = patchOf(page, alpha.key);
+    await mouseDrag(
+      page,
+      card(alpha.key, "Alpha"),
+      page.getByRole("region", { name: "Done (collapsed)" })
+    );
+    const closeResponse = await closePatch;
+    expect(closeResponse.status()).toBe(409);
+    expect(closeResponse.request().postDataJSON()).toEqual({ status: "done" });
+    await expect(page.getByRole("alert")).toHaveText("issue is closed");
+    await expect(todo.getByRole("article")).toHaveText([/Charlie/, /Bravo/]);
   } finally {
     await context.close();
   }
@@ -938,7 +954,7 @@ test("a filtered drag names the visible neighbours and the hidden card interleav
     );
     return card;
   };
-  const alpha = await seedCard("Alpha", ["keep"]);
+  await seedCard("Alpha", ["keep"]);
   const bravo = await seedCard("Bravo");
   const charlie = await seedCard("Charlie", ["keep"]);
   const delta = await seedCard("Delta", ["keep"]);
@@ -952,17 +968,15 @@ test("a filtered drag names the visible neighbours and the hidden card interleav
     const todo = page.getByRole("region", { name: "Todo" });
     await expect(todo.getByRole("article")).toHaveText([/Alpha/, /Charlie/, /Delta/]);
 
-    // Delta dropped above Charlie: the visible neighbours are Alpha and Charlie - the hidden
-    // Bravo, ranked between them, is never named.
+    // Delta dropped above Charlie: the write names Charlie, the visible card it lands above -
+    // the hidden Bravo, ranked between Alpha and Charlie, is never named.
     const deltaCard = todo.getByRole("article", { name: `${delta.key} Delta` });
     const charlieCard = todo.getByRole("article", { name: `${charlie.key} Charlie` });
     const movePatch = patchOf(page, delta.key);
     await mouseDrag(page, deltaCard, charlieCard, 4);
     const moveResponse = await movePatch;
     expect(moveResponse.status()).toBe(200);
-    expect(moveResponse.request().postDataJSON()).toEqual({
-      rank: { after: alpha.key, before: charlie.key },
-    });
+    expect(moveResponse.request().postDataJSON()).toEqual({ rank: { before: charlie.key } });
     await expect(todo.getByRole("article")).toHaveText([/Alpha/, /Delta/, /Charlie/]);
 
     // Lifting the filter shows the hidden card interleaved among the moved ones - no alert,

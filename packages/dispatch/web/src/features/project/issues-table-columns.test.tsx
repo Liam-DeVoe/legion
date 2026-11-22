@@ -470,6 +470,74 @@ test("a missing measure draws an empty cell, never 0, and sorts last either way"
   expect(listed()).toEqual(["CORE-5", "CORE-1", "CORE-2", "CORE-3", "CORE-4", "CORE-6", "CORE-7"]);
 });
 
+// INFRA-3221's tester: the rows that tie on the first sort because they have no value there follow
+// the second sort, whichever way the first runs, and still come after the rows with a value. A
+// row with no value in the second sort comes last among them, either way that one runs.
+test("rows with no value in the first sort follow the second sort, after the rows with a value", async () => {
+  const made = (key: string, created: string, overrides: Partial<IssueSummary> = {}) =>
+    issue(key, { created_at: `2026-09-${created}T00:00:00Z`, ...overrides });
+  const items = buildItems(
+    [
+      made("CORE-1", "04", { priority: 2 }),
+      made("CORE-2", "03", { priority: 0 }),
+      made("CORE-3", "01", { priority: 3 }),
+      made("CORE-4", "02", { priority: 1 }),
+      made("CORE-5", "06", { status: "in_progress" }),
+      made("CORE-6", "05"),
+    ],
+    (actor) => actor.id,
+    undefined,
+    {
+      legion: {
+        board: board({ implementing: [card("CORE-5")] }, { "CORE-5": facts({ work_hours: 10 }) }),
+        boardStatus: "success",
+        items: {},
+        itemsStatus: "success",
+      },
+    }
+  );
+  for (const [sorting, order] of [
+    [
+      [
+        { id: "legion_phase", desc: false },
+        { id: "priority", desc: false },
+      ],
+      ["CORE-5", "CORE-2", "CORE-4", "CORE-1", "CORE-3", "CORE-6"],
+    ],
+    [
+      [
+        { id: "legion_phase", desc: true },
+        { id: "priority", desc: false },
+      ],
+      ["CORE-5", "CORE-2", "CORE-4", "CORE-1", "CORE-3", "CORE-6"],
+    ],
+    [
+      [
+        { id: "legion_phase", desc: false },
+        { id: "priority", desc: true },
+      ],
+      ["CORE-5", "CORE-3", "CORE-1", "CORE-4", "CORE-2", "CORE-6"],
+    ],
+    // Work time, then a shift-click on Created: oldest first among the rows with no work time.
+    [
+      [
+        { id: "work_hours", desc: true },
+        { id: "created", desc: false },
+      ],
+      ["CORE-5", "CORE-3", "CORE-4", "CORE-2", "CORE-1", "CORE-6"],
+    ],
+  ] as const) {
+    draw({
+      items,
+      layout: showing("legion_phase", "priority", "work_hours", "created"),
+      sorting: [...sorting],
+    });
+    await screen.findByRole("table", { name: "Issues" });
+    expect(listed(), JSON.stringify(sorting)).toEqual([...order]);
+    undraw();
+  }
+});
+
 test("a facts cell whose read is out shows a loading mark, and one whose read failed an error mark", async () => {
   const shown = showing("work_hours", "review_rounds", "legion", "phase_hours", "waited");
   draw({

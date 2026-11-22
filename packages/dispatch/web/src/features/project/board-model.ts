@@ -309,10 +309,12 @@ export function rankAfter(after: string | undefined): string {
  *
  * By Status, a move within a cell writes the rank, and only where the rank decides where the card
  * lands: while the view sorts by Place, first to last, and the card and the cards around its new
- * place all have a place in the Legion queue or all have none. Any other move within a cell is
- * refused with a text that says why. A move into another column sets that status, whatever the
- * card's Legion phase, and into another lane that lane's priority, under any sort; each writes the
- * rank only where the same rule lets it, and the card otherwise lands where the sort puts it.
+ * place all have a place in the Legion queue or all have none. The rank names one neighbour: the
+ * card the move lands above, or the card above it where it lands last in the cell. Any other move
+ * within a cell is refused with a text that says why. A move into another column sets that
+ * status, whatever the card's Legion phase, and into another lane that lane's priority, under any
+ * sort; each writes the rank only where the same rule lets it, and the card otherwise lands where
+ * the sort puts it.
  *
  * By Legion phase the daemon puts each card in its phase, so the one move taken is one within
  * Queue, under the same rank rule; every other move is refused with `DAEMON_SETS_PHASE`.
@@ -355,13 +357,16 @@ export function planMove(
   const lane = rules.lanes ? to.lane : undefined;
   const priority =
     lane === undefined || lane === issuePriority(item.issue.priority) ? undefined : { lane };
-  const rank =
-    ranked && (above !== undefined || below !== undefined)
-      ? {
-          ...(above === undefined ? {} : { after: above.issue.key }),
-          ...(below === undefined ? {} : { before: below.issue.key }),
-        }
-      : undefined;
+  // One neighbour, so the server takes the rank whatever order the neighbours' own ranks run in:
+  // the daemon gives Places in an order of its own, so two cards next to each other by Place need
+  // not be in rank order, and the server refuses a rank between two that are not.
+  const rank = !ranked
+    ? undefined
+    : below !== undefined
+      ? { before: below.issue.key }
+      : above !== undefined
+        ? { after: above.issue.key }
+        : undefined;
   const input: UpdateIssueInput = {
     ...(status === undefined ? {} : { status }),
     ...(priority === undefined ? {} : { priority: priority.lane }),

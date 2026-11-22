@@ -77,7 +77,7 @@ export const realStackReasons: Record<string, string> = {
   "block-references.e2e.ts":
     "uploads, then asserts the server re-resolved the reference; an edit after load must arrive live; a delete after load must arrive live",
   "board.e2e.ts":
-    "drag writes a rank, read back after a reload; rank writes; the server's rank rejection is the assertion",
+    "drag writes a rank, read back after a reload; rank writes; a drop on a stale board is the server's rank, and its refusal of a closed issue's close is the assertion",
   "broadcast.e2e.ts": "broadcast sends, server-side exclusion, retry and idempotency",
   "broker-approval.e2e.ts":
     "decisions made on the real broker, with sign-in and cross-origin refusals",
