@@ -75,12 +75,17 @@ expected_paths=$(printf '%s\n' 'bin/run.sh' 'copy/of.txt' 'docs/old' 'docs/old/i
 
 cat > "$work/bin/gh" <<'GH'
 #!/usr/bin/env bash
-# gh-read.sh's lookup of when a spent budget resets, kept out of the calls a case counts.
+# gh-read.sh's lookup of when a spent budget resets, kept out of the calls a case counts. It prints
+# what gh-read.sh's --jq makes of the answer: the reset of the budget at 0, or 0 when none is.
 if [ "${2:-}" = rate_limit ]; then
   printf '%s\n' "$*" >> "$STANDIN_DIR/rate-limit-calls"
-  [ "${GH_RATE_LIMIT:-back}" != hang ] || exec sleep 120
-  # What its --jq makes of an answer with no budget at 0: the window turned over.
-  echo 0
+  case ${GH_RATE_LIMIT:-back} in
+    hang) exec sleep 120 > /dev/null 2>&1 ;;
+    # The core budget spent until that many seconds from now.
+    spent-for:*) echo $(($(date +%s) + ${GH_RATE_LIMIT#spent-for:})) ;;
+    # No budget at 0: the window turned over.
+    *) echo 0 ;;
+  esac
   exit 0
 fi
 printf '%s\n' "$*" >> "$STANDIN_DIR/gh-calls"
@@ -93,16 +98,17 @@ if [ "$calls" -le "${GH_REFUSE_FIRST:-0}" ]; then
     # script retries a refusal whatever its status.
     load) echo "gh: Server Error: Sorry, this diff is temporarily unavailable due to heavy server load." >&2; exit 1 ;;
     # 120 s: past every case's bound, and short enough that a child a broken script leaves ends.
-    hang) exec sleep 120 ;;
+    # Its output goes nowhere, so a child left behind holds no pipe of the case's open.
+    hang) exec sleep 120 > /dev/null 2>&1 ;;
     # A read that ignores TERM, so only the KILL `timeout -k` sends 10 s after its bound ends it.
-    hang-ignoring-term) trap '' TERM; exec sleep 120 ;;
+    hang-ignoring-term) trap '' TERM; exec sleep 120 > /dev/null 2>&1 ;;
     truncated) body="$STANDIN_DIR/truncated.json" ;;
     empty) body="$STANDIN_DIR/empty.json" ;;
     # GitHub's refusal for the hourly API budget, as gh prints it, which gh-read.sh answers with a
     # read of GET /rate_limit.
     rate-limit) echo "gh: API rate limit exceeded for installation ID 1. (HTTP 403)" >&2; exit 1 ;;
     # The same refusal, and then a read that ignores TERM.
-    rate-limit-hang) echo "gh: API rate limit exceeded for installation ID 1. (HTTP 403)" >&2; trap '' TERM; exec sleep 120 ;;
+    rate-limit-hang) echo "gh: API rate limit exceeded for installation ID 1. (HTTP 403)" >&2; trap '' TERM; exec sleep 120 > /dev/null 2>&1 ;;
   esac
 fi
 # `--jq <filter>`: each page parsed and filtered, and a page that does not parse fails the call,
@@ -139,14 +145,16 @@ chmod +x "$work/bin/git"
 # gh_calls, rate_limit_calls and fetches. The script runs without JOB_TIMEOUT_MINUTES and
 # STEP_TIMEOUT_MINUTES, as in the changes job, which sets neither: the test job that runs this
 # harness sets the first for gh-read.sh's wait, and with it gh-read.sh would stop the ladder at
-# its first rate-limit refusal, before the bound over the read that the rate-limit cases test.
+# its first rate-limit refusal, before the bound over the read that the rate-limit cases test. A
+# VAR=value sets them back for a case that wants them.
 list_files() {
   local event_name=$1 dest=$2
   shift 2
   rm -f "$work/gh-calls" "$work/rate-limit-calls" "$work/git-fetches"
+  case_marker="changed-files-case-$$-$dest"
   set +e
-  out=$(env -u JOB_TIMEOUT_MINUTES -u STEP_TIMEOUT_MINUTES PATH="$work/bin:$PATH" GITHUB_EVENT_NAME="$event_name" \
-    GITHUB_EVENT_PATH="$work/event.json" "$@" \
+  out=$(env -u JOB_TIMEOUT_MINUTES -u STEP_TIMEOUT_MINUTES CHANGED_FILES_CASE="$case_marker" PATH="$work/bin:$PATH" \
+    GITHUB_EVENT_NAME="$event_name" GITHUB_EVENT_PATH="$work/event.json" "$@" \
     timeout "${CASE_SECONDS:-$((BUDGET + 15))}" "$script_dir/changed-files.sh" --budget "$BUDGET" "$dest" 2> "$work/err")
   status=$?
   set -e
@@ -154,6 +162,42 @@ list_files() {
   gh_calls=$(cat "$work/gh-calls" 2> /dev/null || true)
   rate_limit_calls=$(cat "$work/rate-limit-calls" 2> /dev/null || true)
   fetches=$(cat "$work/git-fetches" 2> /dev/null || true)
+}
+
+# under_worker <directory> [VAR=value...]: list_files for a pull request, with the case's bound at
+# the budget and 5 s, run as a child of a parent process named Runner.Worker: a copy of bash by
+# that name, as GitHub's runner starts each job's steps. gh-read.sh measures JOB_TIMEOUT_MINUTES
+# from that process's start and STEP_TIMEOUT_MINUTES from its child's, the case's `timeout`. Sets
+# out, err and status, and started, the clock just before that child starts.
+worker="$work/worker/Runner.Worker"
+mkdir "$work/worker"
+cp "$(command -v bash)" "$worker"
+under_worker() {
+  local dest=$1
+  shift
+  rm -f "$work/gh-calls" "$work/rate-limit-calls" "$work/git-fetches"
+  case_marker="changed-files-case-$$-$dest"
+  started=$(date +%s)
+  set +e
+  # shellcheck disable=SC2016 # the worker's own shell expands "$@" and "$?", not this one
+  out=$(env -u JOB_TIMEOUT_MINUTES -u STEP_TIMEOUT_MINUTES CHANGED_FILES_CASE="$case_marker" PATH="$work/bin:$PATH" \
+    GITHUB_EVENT_NAME=pull_request GITHUB_EVENT_PATH="$work/event.json" "$@" \
+    "$worker" -c '"$@"; exit "$?"' worker \
+    timeout "$((BUDGET + 5))" "$script_dir/changed-files.sh" --budget "$BUDGET" "$dest" 2> "$work/err")
+  status=$?
+  set -e
+  err=$(cat "$work/err")
+  gh_calls=$(cat "$work/gh-calls" 2> /dev/null || true)
+  rate_limit_calls=$(cat "$work/rate-limit-calls" 2> /dev/null || true)
+}
+
+# left_behind: how many processes the last case started still run. Every process the script
+# starts inherits the case's marker in its environment, so this counts what any part of the read
+# left behind: a stand-in, an attempt's `timeout`, gh-read.sh's lookup or its own `sleep`.
+left_behind() {
+  local found
+  found=$(grep -lsazx -- "CHANGED_FILES_CASE=$case_marker" /proc/[0-9]*/environ 2> /dev/null || true)
+  call_count "$found"
 }
 
 # diff_paths <directory>: the paths paths-filter reads there with `base: HEAD`, one a line, sorted.
@@ -279,6 +323,8 @@ check "it fails by itself, inside its budget" "$(is "$status" 1)"
 check "after three attempts" "$(is "$(call_count "$gh_calls")" 3)"
 check "naming the read" \
   "$(contains "$err" "^::error::the changes job could not read the files of pull request #7: GET repos/o/r/pulls/7/files ")"
+left=$(left_behind)
+check "nothing the read started outlives the script ($left left)" "$(is "$left" 0)"
 
 echo "case: every read is refused for GitHub's rate limit, and GET /rate_limit hangs"
 # gh-read.sh answers each refusal with a read of GET /rate_limit, bounded at 30 s, past the 6 s
@@ -289,6 +335,10 @@ check "it fails by itself, inside its budget" "$(is "$status" 1)"
 check "the ladder looked the reset up" "$(is "$([ "$(call_count "$rate_limit_calls")" -ge 1 ] && echo yes || echo no)" yes)"
 check "naming the read and the bound that ended it" \
   "$(contains "$err" "^::error::the changes job could not read the files of pull request #7: GET repos/o/r/pulls/7/files did not end within the step's 60 s budget, whose bound of 50 s ends the read")"
+# When the bound fired, a lookup of GET /rate_limit was running under its own `timeout`, in a
+# process group of its own.
+left=$(left_behind)
+check "nothing the read started outlives the script ($left left)" "$(is "$left" 0)"
 
 echo "case: every read is refused for GitHub's rate limit and then ignores TERM, and GET /rate_limit says the budget is back"
 # gh-read.sh runs an attempt's command a second time when the reset has passed: each attempt is
@@ -299,6 +349,50 @@ check "it fails by itself, inside its budget" "$(is "$status" 1)"
 check "the ladder ran the first attempt's read twice" "$(is "$([ "$(call_count "$gh_calls")" -ge 2 ] && echo yes || echo no)" yes)"
 check "naming the read and the bound that ended it" \
   "$(contains "$err" "^::error::the changes job could not read the files of pull request #7: GET repos/o/r/pulls/7/files did not end within the step's 60 s budget, whose bound of 50 s ends the read")"
+# When the bound fired, a read that ignores TERM was running under its attempt's `timeout`, in a
+# process group of its own, with up to 16 s left before that `timeout` would KILL it.
+left=$(left_behind)
+check "nothing the read started outlives the script ($left left)" "$(is "$left" 0)"
+
+echo "case: under a Runner.Worker with JOB_TIMEOUT_MINUTES=30 and STEP_TIMEOUT_MINUTES=2, a rate limit whose reset gh-read.sh waits for past the bound"
+# Every read is refused for the hourly budget, which GET /rate_limit says resets 70 s from now.
+# gh-read.sh measures the step's 2 minutes from the step's start, the earlier of the two limits,
+# and a reset 71 s away leaves its 30 s margin before them, so it waits. The bound over the read
+# ends that wait at 50 s, inside the 60 s budget, whatever the step's limit allows.
+under_worker "$work/pr-worker" JOB_TIMEOUT_MINUTES=30 STEP_TIMEOUT_MINUTES=2 GH_REFUSE_FIRST=99 GH_REFUSAL=rate-limit GH_RATE_LIMIT=spent-for:70
+# step_end_at <seconds>: the times, 2 s either side, at which a limit of that many seconds from
+# `started` ends, as a grep alternation; the process starts gh-read.sh reads are whole seconds.
+step_end_at() {
+  local pattern="" at skew
+  for skew in -2 -1 0 1 2; do
+    at=$(date -u -d "@$((started + $1 + skew))" +%Y-%m-%dT%H:%M:%SZ)
+    if [ -z "$pattern" ]; then pattern=$at; else pattern="$pattern\\|$at"; fi
+  done
+  printf '\\(%s\\)' "$pattern"
+}
+check "it fails by itself, inside its budget" "$(is "$status" 1)"
+check "gh-read.sh derived the step's limit, 2 minutes from the step's start, and waited within it" \
+  "$(contains "$err" "^::warning::the API budget is spent until .*; waiting [0-9]* s for it, within this step's limit at $(step_end_at 120), then calling once more\$")"
+check "the bound over the read ended that wait, by name" \
+  "$(contains "$err" "^::error::the changes job could not read the files of pull request #7: GET repos/o/r/pulls/7/files did not end within the step's 60 s budget, whose bound of 50 s ends the read")"
+left=$(left_behind)
+check "nothing the read started outlives the script, gh-read.sh's sleep among them ($left left)" "$(is "$left" 0)"
+
+echo "control: the same refusals with STEP_TIMEOUT_MINUTES=1"
+# The step's limit is now 60 s from its start, and a reset 71 s away is past it: gh-read.sh waits
+# for nothing, names the limit it derived, and stops the ladder at its first attempt, since a later
+# one within seconds would meet the same refusal. The line the case above reads is absent. Run
+# under the same stand-in Runner.Worker, the nearest one among the script's parents also in CI,
+# whose own runner is a Runner.Worker further up.
+under_worker "$work/pr-worker-short" JOB_TIMEOUT_MINUTES=30 STEP_TIMEOUT_MINUTES=1 GH_REFUSE_FIRST=99 GH_REFUSAL=rate-limit \
+  GH_RATE_LIMIT=spent-for:70
+check "it fails" "$(is "$status" 1)"
+check "gh-read.sh waited for nothing" "$(is "$(contains "$err" "waiting [0-9]* s for it")" false)"
+check "  naming the step's limit it derived, 1 minute from the step's start" \
+  "$(contains "$err" "^::error::the API budget is spent until .*, past this step's limit at $(step_end_at 60); re-run the job after that time\$")"
+check "after one attempt" "$(is "$(call_count "$gh_calls")" 1)"
+check "naming the rate limit" \
+  "$(contains "$err" "^::error::the changes job could not read the files of pull request #7: GitHub refused GET repos/o/r/pulls/7/files for its rate limit, ")"
 
 echo "case: the budget is divided over three attempts and their waits"
 # 300 s with a 1 s backoff unit, so 1 s and 2 s between attempts: the read is bounded at 290 s,

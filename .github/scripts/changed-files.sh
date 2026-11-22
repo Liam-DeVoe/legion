@@ -23,11 +23,19 @@
 # Inside the bound the ladder has three attempts and 10 s + 20 s of waiting, so each attempt is
 # bounded at (budget - 10 s - 30 s) / 3 - 10 s, since `timeout` sends TERM at the bound and KILL
 # 10 s later: the ladder's own worst case - every attempt running to its bound and ignoring TERM -
-# ends before the bound over the read does. .github/scripts/check-retry-budgets.sh, in ci.yaml's
-# lint job, refuses a budget above half the job's timeout-minutes. The changes job passes 300 s of
-# its 10 minutes: the read is bounded at 290 s and each attempt at 76 s, and the API's largest
-# list, 30 pages, took about 20 s at the 0.56 to 0.69 s a page five pages of pull request #4418
-# took through gh on the dev box.
+# ends before the bound over the read does. When the bound fires, nothing the read started outlives
+# it: the child shell leads a session of its own, and every process left in that session is KILLed
+# (each attempt's own `timeout` puts its command in a process group of its own, which the bound's
+# signal does not reach). .github/scripts/check-retry-budgets.sh, in ci.yaml's lint job, refuses a
+# budget above half the job's timeout-minutes. The changes job passes 300 s of its 10 minutes: the
+# read is bounded at 290 s and each attempt at 76 s, and the API's largest list, 30 pages, took
+# about 20 s at the 0.56 to 0.69 s a page five pages of pull request #4418 took through gh on the
+# dev box.
+#
+# The changes job sets neither JOB_TIMEOUT_MINUTES nor STEP_TIMEOUT_MINUTES, so gh-read.sh names a
+# rate limit and goes on with its ladder. A step that sets them lets gh-read.sh wait for a reset
+# within the earlier of the two limits, or stop the ladder at once when the reset falls past it;
+# either way the bound over the read still ends the read by name inside the budget.
 #
 #   pull_request  GET repos/<repo>/pulls/<number>/files, every page, the read paths-filter v4.0.3
 #                 makes (src/main.ts, getChangedFilesFromApi). A renamed file counts under both its
@@ -102,12 +110,26 @@ ladder="3 attempts, $retry_seconds s and $((2 * retry_seconds)) s apart, each bo
 overran="did not end within the step's $budget s budget, whose bound of $read_seconds s ends the read with every attempt, wait and rate-limit lookup gh-read.sh makes for it ($ladder; the log above holds the answers the ladder printed)"
 
 # within_budget <command>...: gh-read.sh's gh_read over the command, in a child shell that one
-# `timeout` ends $read_seconds s after it starts and KILLs $KILL_SECONDS s later. It returns
-# gh_read's status, or timeout's 124 or 137 when the bound ended the read.
+# `timeout` ends $read_seconds s after it starts and KILLs $KILL_SECONDS s later. The child shell
+# leads a session of its own (setsid), which writes its id, its own pid, to read-session, and
+# everything the read starts stays in that session. When the bound fires, every process left in it
+# is KILLed before this returns. It returns gh_read's status (75 when gh-read.sh failed by name on
+# a rate limit), or timeout's 124 or 137 when the bound ended the read.
 within_budget() {
-  # shellcheck disable=SC2016 # the child shell expands "$1" and "$@", not this one
-  timeout -k "$KILL_SECONDS" "$read_seconds" \
-    bash -c 'source "$1" && shift && gh_read "$@"' within_budget "$script_dir/gh-read.sh" "$@"
+  local status=0 session
+  rm -f "$work/read-session"
+  # shellcheck disable=SC2016 # the child shell expands "$1", "$2" and "$@", not this one
+  timeout -k "$KILL_SECONDS" "$read_seconds" setsid --wait bash -c \
+    'echo "$$" > "$1" && source "$2" && shift 2 && gh_read "$@"' \
+    within_budget "$work/read-session" "$script_dir/gh-read.sh" "$@" || status=$?
+  if [ "$status" -eq 124 ] || [ "$status" -eq 137 ]; then
+    session=$(cat "$work/read-session" 2> /dev/null || true)
+    # A session id is a positive pid; `pkill -s 0` would name this script's own session.
+    if [[ $session =~ ^[1-9][0-9]*$ ]]; then
+      pkill -KILL -s "$session" 2> /dev/null || true
+    fi
+  fi
+  return "$status"
 }
 
 work=$(mktemp -d)
@@ -150,6 +172,9 @@ case $event_name in
     within_budget read_files > "$work/files.json" || status=$?
     if [ "$status" -eq 124 ] || [ "$status" -eq 137 ]; then
       echo "::error::the changes job could not read the files of pull request #$number: GET $route $overran" >&2
+      exit 1
+    elif [ "$status" -eq 75 ]; then
+      echo "::error::the changes job could not read the files of pull request #$number: GitHub refused GET $route for its rate limit, and gh-read.sh's error line above says why it did not wait and when to re-run ($ladder)" >&2
       exit 1
     elif [ "$status" -ne 0 ]; then
       echo "::error::the changes job could not read the files of pull request #$number: GET $route failed $ladder, each refused, cut off, hung or short of the $expected files the event counts (the log above holds each attempt's answer)" >&2
