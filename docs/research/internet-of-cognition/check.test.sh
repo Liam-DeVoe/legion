@@ -5138,6 +5138,68 @@ for form in unset malformed; do
     fi
 done
 
+# 174. The local part of a qualified name is read as a whole word too (test round 46, the
+# class of the architect's round 46: a reader of what an author writes matches the whole
+# token or fails by name). resolve_symbol holds each component of a qualified name's prefix
+# to its file as a whole word (prefix_held, case 172), but finds the local part with git grep
+# -F, which matches it inside a longer word, so at 919871f2 'Engine.matc', its method name
+# typed short, resolved in a file of `class Engine` and `def match` and passed
+# citation-our-code. The case commits that file into the fixture as case 172 does and writes
+# the fixture's row f-our-1 as citing it with the symbol 'Engine.matc', then 'Engine.match',
+# running --citations over each: the first must fail citation-our-code, naming the row and the
+# part; the honest form passes it.
+for form in short honest; do
+    case "$form" in
+    short) local_part='matc' ;;
+    honest) local_part='match' ;;
+    esac
+    dir="$(fresh "symbol-local-$form")"
+    evidence_copy="$dir/repo/docs/research/internet-of-cognition"
+    printf 'class Engine:\n    def match(self, row):\n        return row\n' >"$dir/repo/packages/daemon/internal/api/engine.py"
+    engine="$(
+        cd "$dir/repo" &&
+            git add packages/daemon/internal/api/engine.py &&
+            git commit --quiet -m "the engine" &&
+            git rev-parse HEAD
+    )"
+    jq --arg c "$engine" '.our_repository.commit = $c' "$evidence_copy/sources.json" >"$dir/sources.json" &&
+        mv "$dir/sources.json" "$evidence_copy/sources.json"
+    sed -i "/\"id\":\"f-our-1\"/s#\"file\":\"packages/daemon/internal/api/handoff.go\",\"symbol\":\"TesterVerdictRequired\"#\"file\":\"packages/daemon/internal/api/engine.py\",\"symbol\":\"Engine.$local_part\"#" \
+        "$evidence_copy/claims.jsonl"
+    [ -n "$engine" ] && [ "$(jq -r '.our_repository.commit' "$evidence_copy/sources.json")" = "$engine" ] &&
+        grep -F '"id":"f-our-1"' "$evidence_copy/claims.jsonl" | grep -qF "\"file\":\"packages/daemon/internal/api/engine.py\",\"symbol\":\"Engine.$local_part\"" || {
+        printf 'FAIL the symbol Engine.%s and its file could not be planted in the fixture row f-our-1\n' "$local_part"
+        exit 1
+    }
+    out="$(fixture_run "$dir" --citations)"
+    case "$form" in
+    short)
+        case_result "a dotted name whose local part its file holds only inside a longer word, Engine.matc beside def match, fails --citations, naming the row and the part" \
+            "citation-our-code: f-our-1 cites .*Engine\\.matc" "$out"
+        ;;
+    honest) honest_result "a dotted name whose local part its file holds as a whole word, Engine.match, passes citation-our-code" citation-our-code "$out" ;;
+    esac
+done
+
+# 175. A symbol part read as text is read as a whole word where it starts or ends with a
+# letter, a digit or `_` (test round 46, the class of case 174). resolve_symbol looks for a
+# part with git grep -F, which finds it inside a longer word, so at 919871f2 the fixture's row
+# f-our-1 written with the symbol 'TesterVerdictRequire', its last letter dropped, resolved
+# in packages/daemon/internal/api/handoff.go, which holds TesterVerdictRequired, and passed
+# citation-our-code. The case writes that symbol and runs --citations, which must fail
+# citation-our-code, naming the row and the part; the fixture's own symbol, the honest form,
+# passes in every other case of --citations.
+dir="$(fresh symbol-bare-short)"
+claims_copy="$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
+sed -i '/"id":"f-our-1"/s/"symbol":"TesterVerdictRequired"/"symbol":"TesterVerdictRequire"/' "$claims_copy"
+grep -F '"id":"f-our-1"' "$claims_copy" | grep -qF '"symbol":"TesterVerdictRequire"' || {
+    printf 'FAIL the symbol TesterVerdictRequire could not be planted in the fixture row f-our-1\n'
+    exit 1
+}
+case_result "a symbol its file holds only inside a longer word, TesterVerdictRequire beside TesterVerdictRequired, fails --citations, naming the row and the part" \
+    "citation-our-code: f-our-1 cites .*TesterVerdictRequire([^d]|$)" \
+    "$(fixture_run "$dir" --citations)"
+
 # ==== the summary of check.test.sh begins below this line, where cases_copy cuts it ====
 # The summary, by the three endings and their precedence (check.sh's header): run_ending
 # reads every case this file counted, the ones that could not run among them, and this
