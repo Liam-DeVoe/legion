@@ -99,7 +99,9 @@ type Config struct {
 	// Now is the clock; time.Now when nil.
 	Now func() time.Time
 	// SettleAge is how old an open operation whose candidate the server does not hold must be
-	// before another call retires that candidate: 2 s when 0.
+	// before another call retires that candidate, and the clock skew this process allows beside an
+	// abandoned candidate's until before it drops the name (Record.DropRetired), since another
+	// host's clock wrote it: defaultSettleAge, 2 s, when 0.
 	SettleAge time.Duration
 	// Poll is how often a call waiting on such an operation reads again: 50 ms when 0.
 	Poll time.Duration
@@ -188,7 +190,7 @@ func New(cfg Config) *Names {
 		cfg.Now = time.Now
 	}
 	if cfg.SettleAge <= 0 {
-		cfg.SettleAge = 2 * time.Second
+		cfg.SettleAge = defaultSettleAge
 	}
 	if cfg.Poll <= 0 {
 		cfg.Poll = 50 * time.Millisecond
@@ -234,6 +236,10 @@ type CreateRequest struct {
 // that runs its own loop over Names' steps, as the session family's restart does over Select and
 // Replace, takes the same bound.
 const MaxConflicts = 16
+
+// defaultSettleAge is Config.SettleAge when a Config sets none, and the clock skew
+// Record.DropRetired allows a dropper beside an abandoned candidate's until.
+const defaultSettleAge = 2 * time.Second
 
 // errSettleLater says Step 0 met an open operation too young to settle, and the call reads again.
 var errSettleLater = errors.New("consumer names: an operation in flight is younger than the settle age")
@@ -748,10 +754,10 @@ func (n *Names) publish(ctx context.Context, sel Selection, info *jetstream.Cons
 
 // settleRetired is record, logical's, with each retired name the server does not hold dropped by
 // DropRetired's rule (an abandoned candidate read absent stays until its create can no longer
-// land), and, with deleteHeld, each name the server holds deleted to free its slot and dropped
-// once the server confirms the delete. A name whose read fails, or that another key owns, stays
-// for Cleanup. It reads each retired name once, so its reads are as many as the names the record
-// keeps.
+// land, and this process's settle age after, the clock skew it allows), and, with deleteHeld, each
+// name the server holds deleted to free its slot and dropped once the server confirms the delete.
+// A name whose read fails, or that another key owns, stays for Cleanup. It reads each retired name
+// once, so its reads are as many as the names the record keeps.
 func (n *Names) settleRetired(ctx context.Context, logical string, record Record, deleteHeld bool) Record {
 	now := n.cfg.Now()
 	for _, name := range slices.Clone(record.Retired) {
@@ -767,7 +773,7 @@ func (n *Names) settleRetired(ctx context.Context, logical string, record Record
 				record, _ = record.DropRetired(name, true, now)
 			}
 		case errors.Is(err, ErrNotFound):
-			record, _ = record.DropRetired(name, false, now)
+			record, _ = record.dropRetired(name, false, now, n.cfg.SettleAge)
 		}
 	}
 	return record
@@ -872,9 +878,11 @@ func (n *Names) RecordLastFloor(ctx context.Context, logical, name string, floor
 // deleted, never the current, never by name pattern, and never a consumer of another key (Owns),
 // which refuses the call as a malformed record. A retired candidate whose create may still land
 // (Record.Abandoned) is dropped only once it is read absent at or after the time its create can
-// no longer land; until then it stays named, so a create that lands late leaves a consumer the
-// record names, which a later cleanup deletes. A refused write of the record leaves the names for
-// the next cleanup, which finds them gone.
+// no longer land and this process's settle age after it (Config.SettleAge, the skew it allows
+// between the retirer's clock, which wrote that time, and its own); until then it stays named, so
+// a create that lands within its bound leaves a consumer the record names, which a later cleanup
+// deletes. A refused write of the record leaves the names for the next cleanup, which finds them
+// gone.
 func (n *Names) Cleanup(ctx context.Context, logical string) (int, error) {
 	sel, err := n.selectRecord(ctx, logical, nil, false)
 	if err != nil || len(sel.Record.Retired) == 0 {
@@ -902,7 +910,7 @@ func (n *Names) Cleanup(ctx context.Context, logical string) (int, error) {
 			n.observe(OperationCleanup, OutcomeRefused)
 			return deleted, err
 		case errors.Is(err, ErrNotFound):
-			record, gone = record.DropRetired(name, false, now)
+			record, gone = record.dropRetired(name, false, now, n.cfg.SettleAge)
 		}
 		dropped = dropped || gone
 	}

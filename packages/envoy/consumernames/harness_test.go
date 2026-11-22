@@ -277,6 +277,10 @@ func newHarness() *harness {
 // testCreateBound is the create bound of the test families' Configs (Config.CreateBound).
 const testCreateBound = 10 * time.Second
 
+// testSettleAge is the settle age of the test families' Configs (Config.SettleAge): the age an open
+// operation's candidate is retired at, and the clock skew a dropper allows beside its until.
+const testSettleAge = 2 * time.Second
+
 // names is a process's Names over the row's store and server.
 func (h *harness) names(owner string) *Names {
 	return New(Config{
@@ -291,7 +295,7 @@ func (h *harness) names(owner string) *Names {
 		},
 		Owner:       owner,
 		Now:         h.clock.Now,
-		SettleAge:   2 * time.Second,
+		SettleAge:   testSettleAge,
 		Poll:        time.Millisecond,
 		CreateBound: testCreateBound,
 	})

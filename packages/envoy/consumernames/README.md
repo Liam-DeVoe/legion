@@ -53,19 +53,23 @@ revision:
   `last_floor`. A replaced predecessor whose delete the server confirmed leaves `retired` again;
   one whose delete failed stays there for the cleanup. A cleanup, and each retirement of a
   candidate, drops a retired name the server does not hold, except an abandoned candidate read
-  absent before its time has passed: its create can still land, and the consumer it makes must
-  stay named, so the next cleanup deletes it. Names
-  ends each create once the family's `Config.CreateBound` has passed since the operation's
-  reservation, its `Config.Reserved` hook's time included, and sends no create past it: the bound
-  its requests run under, the session family's consumer requests' 10 s, the listener's durable
-  calls' 10 s. A retirement comes after the reservation, so its `until` is no earlier than the
-  create's end. A create the server
-  applies later still, past the bound its client waited, is a stated limit: the consumer it leaves
-  is named by no record, and the stream's inactive threshold removes it. A reader that deletes
-  retired names itself (the operator's cleanup) drops each with `Record.DropRetired(name, deleted,
-  now)`, the rule `Cleanup` drops by: it takes the name out of `retired` and `abandoned` together,
-  so the record stays one the stores read, and keeps an abandoned name read absent before its
-  `until`.
+  absent before its time and the dropper's `Config.SettleAge` (2 s) after it have passed: its
+  create can still land, and the consumer it makes must stay named, so the next cleanup deletes
+  it. Names ends each create once the family's `Config.CreateBound` has passed since the
+  operation's reservation, its `Config.Reserved` hook's time included, and sends no create past
+  it: the bound its requests run under, the session family's consumer requests' 10 s, the
+  listener's durable calls' 10 s. A retirement comes after the reservation, so its `until`, on the
+  retirer's clock, is no earlier than the create's end. The dropper reads `until` on its own
+  clock, which can be another host's, and the settle age is the skew it allows. Two stated limits
+  remain. A create the server applies later still, past the bound its client waited, leaves a
+  consumer no record names, and so does a dropper whose clock is ahead of the retirer's by more
+  than the settle age, when the create lands after the dropper dropped its name. Neither loses a
+  message or deletes a consumer it should not: such a consumer holds a slot of the stream's
+  consumer limit until the stream's inactive threshold or the cutover hold's streams census
+  removes it. A reader that deletes retired names itself (the operator's cleanup) drops each with
+  `Record.DropRetired(name, deleted, now)`, the rule `Cleanup` drops by: it takes the name out of
+  `retired` and `abandoned` together, so the record stays one the stores read, and keeps an
+  abandoned name read absent before its `until` and the default settle age after it.
 - **Where records live, and their keys.** A store reads and writes only its own family's
   sentinel and records:
   - The session family keeps its records in the KV bucket `envoy_session_consumers`

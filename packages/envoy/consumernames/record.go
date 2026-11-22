@@ -85,8 +85,9 @@ type Record struct {
 	Retired []string `json:"retired,omitempty"`
 	// Abandoned are the retired candidates whose create may still have been in flight when they
 	// were retired (Step 0's or a retry's), each with the time until which it can still land: the
-	// retirement and the create's own bound (Op.CreateWithin). Cleanup drops one the server does not
-	// hold only once it reads it absent at or after that time, so a create that lands after the
+	// retirement and the create's own bound (Op.CreateWithin), on the retirer's clock. Cleanup drops
+	// one the server does not hold only once it reads it absent at or after that time and its own
+	// settle age (Config.SettleAge, the clock skew it allows), so a create that lands after the
 	// candidate was retired leaves a consumer the record still names, which the next cleanup
 	// deletes. Each is also in Retired.
 	Abandoned []Abandoned `json:"abandoned,omitempty"`
@@ -189,13 +190,21 @@ func (r Record) abandon(candidate string, until time.Time) Record {
 // names itself (the operator's cleanup), so the record it writes stays one the stores read (each
 // abandoned name is also retired). deleted says the caller deleted the consumer, else it read the
 // name absent. An abandoned candidate read absent while now is before its until (Abandoned.Until)
-// can still land, and the consumer it makes must stay named, so it is kept: the answer is then r
-// as it was and false, as it is for a name r does not retire. r itself is never changed.
+// and the settle age after it (defaultSettleAge, 2 s) can still land, and the consumer it makes
+// must stay named, so it is kept: the answer is then r as it was and false, as it is for a name r
+// does not retire. The settle age is the skew allowed between the clock that wrote until, the
+// retirer's, and now's, the dropper's, which can be another host's. r itself is never changed.
 func (r Record) DropRetired(name string, deleted bool, now time.Time) (Record, bool) {
+	return r.dropRetired(name, deleted, now, defaultSettleAge)
+}
+
+// dropRetired is DropRetired with skew, the dropper's Config.SettleAge, as the clock skew it
+// allows beside an abandoned name's until.
+func (r Record) dropRetired(name string, deleted bool, now time.Time, skew time.Duration) (Record, bool) {
 	if !slices.Contains(r.Retired, name) {
 		return r, false
 	}
-	if until, ok := r.abandonedUntil(name); ok && !deleted && now.Before(until) {
+	if until, ok := r.abandonedUntil(name); ok && !deleted && now.Before(until.Add(skew)) {
 		return r, false
 	}
 	r.Retired = slices.DeleteFunc(slices.Clone(r.Retired), func(retired string) bool { return retired == name })

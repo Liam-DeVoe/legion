@@ -76,7 +76,7 @@ func TestARetiredCandidateWhoseCreateIsInFlightStaysNamed(t *testing.T) {
 		if rec := h.store.record(t, key); rec.Op != nil || !slices.Contains(rec.Retired, "session~X") {
 			t.Fatalf("the record after a Cleanup within the create's bound = %+v; want session~X retired and kept", rec)
 		}
-		h.clock.advance(testCreateBound + time.Second)
+		h.clock.advance(testCreateBound + testSettleAge + time.Second)
 		if _, err := h.names("p3").Cleanup(ctx, key); err != nil {
 			t.Fatal(err)
 		}

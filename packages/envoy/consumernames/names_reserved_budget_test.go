@@ -11,11 +11,11 @@ import (
 // candidate ends no later than the candidate's until, whoever retires it. Here the first process's
 // Config.Reserved hook runs while two other processes act on the key: the second's Cleanup settles
 // the open create once it is the settle age old (Step 0 abandons the candidate, until = then + its
-// create bound), and the third's Cleanup, past that until, reads the candidate absent and drops it.
-// The hook then returns. The first process sends no create of the candidate, whose bound has passed
-// since its reservation, and goes on to a fresh one; the server never holds a consumer no record
-// names. Before, the create was bounded from its own start: the candidate landed after its until,
-// and no record named it, an orphan holding a slot of the stream.
+// create bound), and the third's Cleanup, past that until and its own settle age, reads the
+// candidate absent and drops it. The hook then returns. The first process sends no create of the
+// candidate, whose bound has passed since its reservation, and goes on to a fresh one; the server
+// never holds a consumer no record names. Before, the create was bounded from its own start: the
+// candidate landed after its until, and no record named it, an orphan holding a slot of the stream.
 func TestACreatesBoundRunsFromItsReservation(t *testing.T) {
 	const key = "ses-1"
 	ctx := context.Background()
@@ -31,7 +31,7 @@ func TestACreatesBoundRunsFromItsReservation(t *testing.T) {
 		if _, err := h.names("p2").Cleanup(ctx, key); err != nil {
 			t.Errorf("the second process's Cleanup over the open create = %v", err)
 		}
-		h.clock.advance(testCreateBound + time.Second)
+		h.clock.advance(testCreateBound + testSettleAge + time.Second)
 		if _, err := h.names("p3").Cleanup(ctx, key); err != nil {
 			t.Errorf("the third process's Cleanup past the candidate's until = %v", err)
 		}

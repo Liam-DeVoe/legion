@@ -11,11 +11,12 @@ import (
 // Record.DropRetired is the one rule for dropping a retired name, Names.Cleanup's and a reader's
 // that deletes retired names itself (the operator's cleanup): it drops the name from Retired and
 // Abandoned together, so the record stays one the stores read; it keeps an abandoned candidate read
-// absent while its create can still land (now before its until); and it drops a name the caller
-// deleted at once. Each answer is decoded as the stores decode it (DecodeKVValue). The control is
-// the rule a reader would copy, dropping the name from Retired alone, whose record every read
-// refuses as malformed. Before, the library held this rule only inside Names.Cleanup, so a reader
-// could only copy it.
+// absent while its create can still land, now before its until and the settle age after it (the
+// clock skew allowed between the retirer, which wrote until, and the dropper); and it drops a name
+// the caller deleted at once. Each answer is decoded as the stores decode it (DecodeKVValue). The
+// control is the rule a reader would copy, dropping the name from Retired alone, whose record every
+// read refuses as malformed. Before, the library held this rule only inside Names.Cleanup, so a
+// reader could only copy it.
 func TestDropRetiredDropsARetiredNameFromBothListsAsCleanupDoes(t *testing.T) {
 	const key = "ses-1"
 	now := testEpoch.Add(time.Hour)
@@ -40,7 +41,8 @@ func TestDropRetiredDropsARetiredNameFromBothListsAsCleanupDoes(t *testing.T) {
 		abandonedLeft int
 	}{
 		{"an abandoned name read absent before its until is kept", "session~X", false, now, false, []string{"session~A", "session~X"}, 1},
-		{"an abandoned name read absent at its until is dropped from both lists", "session~X", false, now.Add(time.Second), true, []string{"session~A"}, 0},
+		{"an abandoned name read absent at its until, within the settle age, is kept", "session~X", false, now.Add(time.Second), false, []string{"session~A", "session~X"}, 1},
+		{"an abandoned name read absent at its until and the settle age is dropped from both lists", "session~X", false, now.Add(time.Second + defaultSettleAge), true, []string{"session~A"}, 0},
 		{"an abandoned name the caller deleted is dropped at once", "session~X", true, now, true, []string{"session~A"}, 0},
 		{"a retired name read absent is dropped", "session~A", false, now, true, []string{"session~X"}, 1},
 		{"a name the record does not retire is not dropped", "session~Z", true, now, false, []string{"session~A", "session~X"}, 1},
