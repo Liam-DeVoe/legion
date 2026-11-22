@@ -21,7 +21,8 @@ import (
 // (testnats.HandshakeHold) on the package's shared server. The hold is released and the proxy
 // restored before the client closes, since nats.go's Close waits for its connection lock, which a
 // held handshake or a held write holds. Its windows run on a fake the rows never move
-// (WithWindowClock), so a Probe's flush is ended by nothing but the answer the row waits for.
+// (WithWindowClock), so a first send's wait for a connection and a Probe's flush are each ended by
+// nothing but the answer the row waits for.
 func heldHandshakeClient(t *testing.T) (*Client, *testnats.HandshakeHold) {
 	t.Helper()
 	hold := testnats.StartHandshakeHold(t, testnats.URL(t))
@@ -192,10 +193,7 @@ func TestAWindowPinnedBeforeTheClientHearsOfAReconnectKeepsIt(t *testing.T) {
 	t.Cleanup(unlock)
 	hold.Cut()
 	hold.Restore()
-	testwait.Until(t, "control: nats.go to reconnect after the cut, with the reconnect counted", func() (string, bool) {
-		status, reconnects := conn.Status(), conn.Stats().Reconnects
-		return fmt.Sprintf("status %v, %d reconnect(s)", status, reconnects-before), status == nats.CONNECTED && reconnects != before
-	})
+	waitForReconnect(t, conn, before)
 	select {
 	case <-entered:
 		t.Fatal("control: the client heard of the drop while the row held its lock, so the first gap was not held")

@@ -227,10 +227,15 @@ type intakeProcess struct {
 	client *bus.Client
 	intake *Intake
 	leases *cuttableLeases
-	// cancel ends the process's intake run and returns at once, for a row that goes on while the
-	// stop drains; stop ends it and waits for the run to return, on the test's goroutine.
-	cancel func()
-	stop   func()
+	// The run is runIntake's. cancel ends it and returns at once, for a row that goes on while the
+	// stop drains; stop ends it and waits for the run to return, on the test's goroutine
+	// (awaitIntakeStopped); stopping cancels the run and returns the channel the run's return
+	// closes, for a row that acts while the stop is under way and waits for that return on its own
+	// test goroutine (testwait.Receive), so a give-up fails the row there, by name, rather than on a
+	// goroutine of the row's.
+	cancel   func()
+	stop     func()
+	stopping func() <-chan struct{}
 	// release lets every fetch its GitHub holds answer.
 	release func()
 
@@ -421,21 +426,9 @@ func startIntakeProcessWith(t *testing.T, pool *store.Pool, natsURL string, bloc
 	if before != nil {
 		before(process)
 	}
-	runCtx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		intake.Run(runCtx)
-	}()
-	process.cancel = cancel
-	// The stop is not a sync.OnceFunc: a give-up inside one ends the goroutine (runtime.Goexit) in
-	// the once, which sync.OnceFunc turns into a panic with a nil argument. cancel may be called
-	// again, and a second receive finds done closed.
-	process.stop = func() {
-		cancel()
-		testwait.Receive(failOnce{t}, "the intake's Run to return once its context ended", done)
-	}
-	t.Cleanup(process.stop)
+	process.stopping = runIntake(t, intake)
+	process.cancel = func() { process.stopping() }
+	process.stop = func() { awaitIntakeStopped(t, process.stopping) }
 	return process
 }
 

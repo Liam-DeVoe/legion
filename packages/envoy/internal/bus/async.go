@@ -17,9 +17,9 @@ import (
 )
 
 // publishAcknowledgementTimeout bounds each send of a publish window (Client.WindowUntil): its wait
-// for a connection, a JetStream send's acknowledgement (the stream context's PublishAsyncTimeout),
-// and a Request's answer when its options set no timeout of their own. Publish takes publishBound
-// instead.
+// for a connection, on the client's window clock (WithWindowClock), a JetStream send's
+// acknowledgement (the stream context's PublishAsyncTimeout), and a Request's answer when its
+// options set no timeout of their own. Publish takes publishBound instead.
 const publishAcknowledgementTimeout = 5 * time.Second
 
 // ErrUnavailable is wrapped by the outcome of a window's send that NATS did not take because of
@@ -101,12 +101,13 @@ type RequestOptions struct {
 }
 
 // WindowUntil returns a Sender whose sends all go out on one connection, or not at all. Its first
-// send waits, within publishAcknowledgementTimeout, for the client to have a connection, and pins
-// the window to it. Every later send checks that connection first and answers ErrUnavailable at
-// once, without sending, once it has been lost or has reconnected since (window.current), so a
-// window does not go on sending across a connection it saw fail. That check reads no state of
-// nats.go's and waits for no lock nats.go holds, which a reconnect's handshake and a write to a slow
-// socket hold: it reads whether nats.go has reported the connection's life over (connLife).
+// send waits, within publishAcknowledgementTimeout on the client's window clock (WithWindowClock),
+// for the client to have a connection, and pins the window to it. Every later send checks that
+// connection first and answers ErrUnavailable at once, without sending, once it has been lost or
+// has reconnected since (window.current), so a window does not go on sending across a connection it
+// saw fail. That check reads no state of nats.go's and waits for no lock nats.go holds, which a
+// reconnect's handshake and a write to a slow socket hold: it reads whether nats.go has reported
+// the connection's life over (connLife).
 //
 // A window keeps no order of its own between its sends. Its answers come back in whatever order
 // the server and the stream give them, and a JetStream publish NATS did not acknowledge may still
@@ -221,8 +222,9 @@ func (w *window) send(subject string, item contracts.Envelope, msgID string) (fu
 // longer current (current).
 //
 // It holds pinning only to read and to set the pin. The first send's wait for a connection, and its
-// reads of the connection, are made with it released and end at wait whatever nats.go is doing
-// (Bounded): nats.go holds its connection lock through a reconnect's dial and handshake.
+// reads of the connection, are made with it released and end at wait on the client's window clock
+// (windowTime) whatever nats.go is doing (Bounded): nats.go holds its connection lock through a
+// reconnect's dial and handshake.
 // The check of a pinned connection waits for no lock nats.go holds
 // (current), so no send of the window waits for a handshake, nor behind another send that does.
 func (w *window) pin(wait time.Duration) error {
@@ -240,13 +242,17 @@ func (w *window) pin(wait time.Duration) error {
 	return nil
 }
 
-// pinFirst waits up to wait for the client to have a connection, with pinning released, and pins
-// the window to its current life (connLife), unless another send pinned it first. It takes that
-// life before it reads connected; a report of its end after either read closes the channel and the
-// loop tries the connection again. The reconnect count records a life only while that same channel
-// is still current and unpinned.
+// pinFirst waits up to wait on the client's window clock (windowTime) for the client to have a
+// connection, with pinning released, and pins the window to its current life (connLife), unless
+// another send pinned it first. It takes that life before it reads connected; a report of its end
+// after either read closes the channel and the loop tries the connection again. The reconnect
+// count records a life only while that same channel is still current and unpinned.
+//
+// The wait ends on the window clock, as the window's deadline does (expired): production's is the
+// real clock, and a row whose client runs its windows on a fake it never moves (WithWindowClock)
+// has a wait that only the connection ends, however long a staged reconnect takes.
 func (w *window) pinFirst(wait time.Duration) error {
-	ctx, cancel := context.WithTimeout(context.Background(), wait)
+	ctx, cancel := w.client.windowTime().WithTimeout(context.Background(), wait)
 	defer cancel()
 	type connection struct {
 		conn *nats.Conn
@@ -322,8 +328,9 @@ func (w *window) pinToSend() error {
 	return pinned
 }
 
-// windowTime is the clock the client's publish windows read their deadlines against and time
-// their probes on: WithWindowClock's, and the real clock when that set none.
+// windowTime is the clock the client's publish windows read their deadlines against, time a first
+// send's wait for a connection on (pinFirst) and time their probes on: WithWindowClock's, and the
+// real clock when that set none.
 func (c *Client) windowTime() clock.Clock {
 	if c.windowClock == nil {
 		return clock.Real()
@@ -660,10 +667,11 @@ func acknowledgement(reply *nats.Msg) (replyAck, bool) {
 }
 
 // Probe pins the window to the client's connection when nothing has yet, waiting up to timeout
-// for one, and flushes that connection within timeout on the window clock (WithWindowClock). A
-// flush that fails or runs out of time, and a connection lost or reconnected since the window
-// pinned it, answer an error wrapping ErrUnavailable. After a window whose sends NATS did not
-// acknowledge, it tells a connection that is gone or silent from one whose server still answers.
+// for one, and flushes that connection within timeout, both on the window clock
+// (WithWindowClock). A flush that fails or runs out of time, and a connection lost or reconnected
+// since the window pinned it, answer an error wrapping ErrUnavailable. After a window whose sends
+// NATS did not acknowledge, it tells a connection that is gone or silent from one whose server
+// still answers.
 func (w *window) Probe(timeout time.Duration) error {
 	if err := w.pin(timeout); err != nil {
 		return err

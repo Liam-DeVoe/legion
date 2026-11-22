@@ -18,8 +18,10 @@
 // waits through the wait the tests share (testwait.ReceiveInHelper): a function that never returns,
 // one that waits for the test to act after the move among them, holds the move until that wait
 // gives up, 30 s before the test binary's deadline, and the move then panics with the wait's text,
-// which names the timer's deadline and the move's target. A channel timer (After, NewTimer, Sleep)
-// is fired by a non-blocking send on its channel, whose buffer holds one.
+// which names the timer's deadline and the move's target. A move whose timer's function waits for
+// the test to act is made off the test goroutine through StartMove, whose join, on the test
+// goroutine, is that move's one bound and names the function it waits for. A channel timer (After,
+// NewTimer, Sleep) is fired by a non-blocking send on its channel, whose buffer holds one.
 //
 // A timer armed for a moment the fake has already reached, a wait of zero or less, fires as it is
 // armed, as the real clock's does, and is never pending: an AfterFunc's function starts on a
@@ -144,7 +146,7 @@ func (c *Fake) Advance(d time.Duration) {
 		panic(fmt.Sprintf("clocktest: Advance(%v): a fake moves back only by Set", d))
 	}
 	c.mu.Lock()
-	c.moveLocked(c.nowLocked().Add(d), false)
+	c.moveLocked(c.nowLocked().Add(d), false, nil)
 }
 
 // Set moves the fake to at, earlier or later, firing every timer due by then. A timer keeps the
@@ -164,20 +166,23 @@ func (c *Fake) SetWhen(to func(now time.Time, armed []time.Time) (time.Time, boo
 		c.mu.Unlock()
 		return armed, false
 	}
-	c.moveLocked(target, true)
+	c.moveLocked(target, true, nil)
 	return armed, true
 }
 
 func (c *Fake) moveTo(target time.Time) {
 	c.mu.Lock()
-	c.moveLocked(target, true)
+	c.moveLocked(target, true, nil)
 }
 
 // moveLocked is moveTo begun under the hold of the lock its caller took: each later pass takes
 // the lock again (the loop's post statement), and the last lets it go. back is whether the move
 // may end before the fake's present, as a Set may; a move that may not ends at target only when
 // target is ahead, since another move can take the fake past it while a timer of this one fires.
-func (c *Fake) moveLocked(target time.Time, back bool) {
+// started is the move StartMove started, which waits for each timer's function with no bound of
+// its own (startedMove.waitFor), and nil for any other move, which waits through the shared wait
+// and panics at its give-up.
+func (c *Fake) moveLocked(target time.Time, back bool, started *startedMove) {
 	for ; ; c.mu.Lock() {
 		next := c.dueLocked(target)
 		if next == nil {
@@ -215,10 +220,85 @@ func (c *Fake) moveLocked(target time.Time, back bool) {
 		}()
 		what := fmt.Sprintf("the function of the AfterFunc due at %s, which a move to %s fired, to return",
 			due.Format(time.RFC3339Nano), target.Format(time.RFC3339Nano))
+		if started != nil {
+			started.waitFor(what, done)
+			continue
+		}
 		if _, err := testwait.ReceiveInHelper("clocktest", what, done); err != nil {
 			panic(err)
 		}
 	}
+}
+
+// StartMove moves the fake to target on a goroutine of its own, firing every timer due by then as
+// Advance does, and never back: another move that took the fake past target while a timer of this
+// one fired leaves it there. It returns join, which waits on the test goroutine for that move to
+// return. It is for a move that fires a timer whose function waits on what the test holds, or on
+// what the test does after the move began, for which a move on the test goroutine would wait for
+// ever.
+//
+// The started move waits for each timer's function with no bound of its own, and join's wait
+// (testwait.Until) is its one bound: a function that never returns fails t there, on the test
+// goroutine, with a text that names what, the move, and the function the move waits for, by its
+// timer's deadline and the move's target. A move made on the test goroutine waits for each
+// function through testwait.ReceiveInHelper instead and panics at its give-up, whose moment, read
+// from the process's start, is microseconds before the test's own waits give up, too close to
+// order a give-up on another goroutine against them. A started move nobody joins waits for its
+// function for ever, on its own goroutine.
+//
+// Once the move has returned, each call of join returns at once, so a row may join in its body and
+// again in a cleanup that runs when the body ended before its join. Call join on the test
+// goroutine only.
+func (c *Fake) StartMove(what string, target time.Time) (join func(t testing.TB)) {
+	started := &startedMove{returned: make(chan struct{})}
+	go func() {
+		defer close(started.returned)
+		c.mu.Lock()
+		c.moveLocked(target, false, started)
+	}()
+	return func(t testing.TB) {
+		t.Helper()
+		testwait.Until(t, what+" to return", func() (string, bool) {
+			select {
+			case <-started.returned:
+				return "", true
+			default:
+				return started.reading(), false
+			}
+		})
+	}
+}
+
+// startedMove is a move StartMove started, as its join reads it: returned closes once the move has
+// returned, and waiting is the wait for a timer's function the move is in, empty between two.
+type startedMove struct {
+	returned chan struct{}
+
+	mu      sync.Mutex
+	waiting string
+}
+
+// waitFor waits for done, which closes once the function what names has returned, with no bound of
+// its own: the join's wait on the test goroutine is the one bound, and reads what while the move
+// waits here.
+func (m *startedMove) waitFor(what string, done <-chan struct{}) {
+	m.mu.Lock()
+	m.waiting = what
+	m.mu.Unlock()
+	<-done
+	m.mu.Lock()
+	m.waiting = ""
+	m.mu.Unlock()
+}
+
+// reading is the join's last reading of the move: the wait for a timer's function it is in.
+func (m *startedMove) reading() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.waiting == "" {
+		return "the move waits for no timer's function"
+	}
+	return "the move waits for " + m.waiting
 }
 
 // dueLocked is the pending timer due earliest by target, the earliest armed among those due

@@ -120,9 +120,10 @@ func WithReconnectErrClock(now func() time.Time) DialOption {
 	return func(o *connectOpts) { o.reconnectErrClock = now }
 }
 
-// WithWindowClock sets the clock a publish window reads its deadline against and runs its probe's
-// flush timeout on (WindowUntil, window.Probe), so a test whose window deadline is a hold's on a
-// clocktest.Fake judges both on that fake. nil, the default, is the real clock.
+// WithWindowClock sets the clock a publish window reads its deadline against, times its first
+// send's wait for a connection on, and runs its probe's flush timeout on (WindowUntil,
+// window.Probe), so a test whose window deadline is a hold's on a clocktest.Fake judges all three on
+// that fake. nil, the default, is the real clock.
 func WithWindowClock(c clock.Clock) ConnectOption {
 	return clientOption(func(o *connectOpts) { o.windowClock = c })
 }
@@ -329,8 +330,8 @@ type Client struct {
 	dialer                      *socks5Dialer
 	publishAcknowledgementClock AcknowledgementClock
 	reconnectErrClock           func() time.Time
-	// windowClock is the clock a publish window reads its deadline against and times its probe on
-	// (WithWindowClock); nil is the real clock.
+	// windowClock is the clock a publish window reads its deadline against, times its first send's
+	// wait for a connection on and times its probe on (WithWindowClock); nil is the real clock.
 	windowClock clock.Clock
 	// reconnectWaitTick, when not nil, runs at each pass of ensureConnWithContext's wait for a
 	// reconnect, before the pass blocks; a connection event it causes is read before the wait looks

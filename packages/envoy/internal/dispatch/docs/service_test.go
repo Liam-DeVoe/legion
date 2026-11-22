@@ -5362,28 +5362,20 @@ func TestShutdownContextDoesNotWaitForBlockedSettlement(t *testing.T) {
 	editLiveTree(t, service, artifactID, replaceRun("before", "after"))
 	// The edit arms the settlement a settle delay on the fake. The move past it runs the
 	// settlement and returns only once the settlement has, which waits on the lock the test holds
-	// until it returns, so the move is made on a goroutine of its own, joined once the lock is let
-	// go: registered after the service's shutdown, the join runs first. That move's wait gives up
-	// before any wait of the test's (testwait.ReceiveInHelper), so its panic is recovered there and
-	// handed to the join, which fails the test by name; unrecovered, it would end the test binary
-	// naming no test. It is an Advance, not a Set: the test's own Advance past the caller's
-	// deadline below comes while this move waits on the settlement, and a Set ends at its target
-	// whatever moved the fake meanwhile, which would put the fake back behind that deadline.
+	// until it returns, so the move is made off the test goroutine (clocktest.Fake.StartMove),
+	// joined once the lock is let go: registered after the service's shutdown, the join runs first,
+	// and fails the test naming the move and the settlement it waits for when that settlement never
+	// returns. The started move never moves the fake back, as an Advance does not: the test's own
+	// Advance past the caller's deadline below comes while this move waits on the settlement, and a
+	// Set ends at its target whatever moved the fake meanwhile, which would put the fake back behind
+	// that deadline.
 	settleAt := callerClock.Now().Add(service.settle)
 	testwait.Until(t, fmt.Sprintf("the edit's settlement armed on the service's clock at %v", settleAt), func() ([]time.Time, bool) {
 		armed := callerClock.Armed()
 		return armed, slices.Contains(armed, settleAt)
 	})
-	settled := make(chan any, 1)
-	go func() {
-		defer func() { settled <- recover() }()
-		callerClock.Advance(settleAt.Sub(callerClock.Now()))
-	}()
-	t.Cleanup(func() {
-		if gaveUp := testwait.Receive(t, "the move that ran the settlement to return once the settlement has", settled); gaveUp != nil {
-			t.Fatalf("the move that ran the settlement gave up waiting for it: %v", gaveUp)
-		}
-	})
+	joinSettlement := callerClock.StartMove("the move that ran the settlement", settleAt)
+	t.Cleanup(func() { joinSettlement(t) })
 	waitForDatabaseLock(t, service.store)
 	// The caller's deadline is a context on the fake, which the test moves past it once Shutdown
 	// has scanned the room whose settlement waits on the lock.

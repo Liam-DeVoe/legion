@@ -157,12 +157,9 @@ func stopWithAHeldHandBack(t *testing.T) heldHandBack {
 	}
 	row.delivery.beforeHandBackPublish.Store(&hook)
 	row.from = row.recorded.count()
-	done := make(chan struct{})
-	row.stopped = done
-	go func() {
-		defer close(done)
-		holder.stop()
-	}()
+	// The stop begins here, and the row waits for Run's return on its own test goroutine
+	// (row.stopped), so a Run that never returns fails the row there, once, naming the stop.
+	row.stopped = holder.stopping()
 	waitFor(t, holder.keyedRunnerStopped, func() string {
 		return "the stopping holder has not stopped its keyed runner: " + consumerState(publisher)
 	})
@@ -170,8 +167,7 @@ func stopWithAHeldHandBack(t *testing.T) heldHandBack {
 	// was waiting behind it, and the hook holds the write before that publish. The hook runs on a
 	// goroutine the holder's Run waits for -- the stop's own, or a handler's the stop gave up, whose
 	// deferred answer hands its message back -- so a hand-back reaches the hook before Run returns,
-	// and a Run that returned with held still open made none. held is read again once done is, as
-	// both can be closed by the time the select runs.
+	// and a Run that returned with held still open made none.
 	holder.release()
 	waitFor(t, func() bool {
 		select {

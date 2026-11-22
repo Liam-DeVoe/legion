@@ -79,7 +79,7 @@ func TestTakeWriteLockOnAHooksGoroutineFailsByNameAndReturns(t *testing.T) {
 		t.Fatalf("the child panicked rather than failing its row by name:\n%s", text)
 	}
 	for _, want := range []string{
-		"testwait: testnats: gave up waiting for nats.go to let its connection lock go, so the hook can take it as a write does 30s before the test binary's deadline",
+		"testwait: testnats: gave up waiting for nats.go to let its connection lock go, so the fixture can take it as a write does 30s before the test binary's deadline",
 		"--- FAIL: TestTakeWriteLockOnAHooksGoroutineChild (",
 	} {
 		if !strings.Contains(text, want) {

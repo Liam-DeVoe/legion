@@ -180,12 +180,17 @@ func runIntake(t *testing.T, intake *Intake) (stopping func() <-chan struct{}) {
 	}
 	// The cleanup's stop is not a sync.OnceFunc: a give-up inside one ends the goroutine
 	// (runtime.Goexit) in the once, which sync.OnceFunc turns into a panic with a nil argument.
-	// cancel may be called again, and a second receive finds done closed; a give-up once the row has
-	// failed is logged rather than failed again (failOnce).
-	t.Cleanup(func() {
-		testwait.Receive(failOnce{t}, "the intake's Run to return once its context ended", stopping())
-	})
+	// cancel may be called again, and a second receive finds done closed.
+	t.Cleanup(func() { awaitIntakeStopped(t, stopping) })
 	return stopping
+}
+
+// awaitIntakeStopped ends the run stopping cancels (runIntake) and waits, on the test goroutine,
+// for Run to return; a give-up once the row has failed is logged rather than failed again
+// (failOnce).
+func awaitIntakeStopped(t *testing.T, stopping func() <-chan struct{}) {
+	t.Helper()
+	testwait.Receive(failOnce{t}, "the intake's Run to return once its context ended", stopping())
 }
 
 // While GitHub holds the fetch of pull request 1, a message of pull request 2 is handled and

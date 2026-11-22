@@ -18,12 +18,13 @@ import (
 
 var epoch = time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
 
-// childEnv tells the re-executed test binary to run TestAMoveWhoseFunctionNeverReturnsChild,
-// which skips in an ordinary run.
+// childEnv tells the re-executed test binary to run the child its parent names
+// (TestAMoveWhoseFunctionNeverReturnsChild, TestAStartedMoveThatGivesUpChild), each of which skips
+// in an ordinary run.
 const childEnv = "CLOCKTEST_CHILD"
 
-// childTimeout is the -timeout the parent gives the child: its move gives up 5 s into the run,
-// 30 s before its deadline.
+// childTimeout is the -timeout a parent gives its child: the child's move, or its join, gives up
+// 5 s into the run, 30 s before its deadline.
 const childTimeout = "35s"
 
 // Advance fires every timer due by the moment it moves to, earliest first and the timers due
@@ -95,6 +96,71 @@ func TestAMoveGivesUpNamingAFunctionThatNeverReturns(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "panic: "+line) {
 		t.Errorf("the child's move did not panic with %q; its output:\n%s\nstderr:\n%s", line, &stdout, &stderr)
+	}
+}
+
+// A move StartMove started runs off the test goroutine, so a timer's function that waits for the
+// test to act lets the test act while the move waits: StartMove returns while the function waits,
+// and join returns once the function has returned and the move with it, with what the function did
+// done and the fake at the move's target. A second join returns at once, as a cleanup's join after
+// the row's own does. The negative controls: a StartMove that made the move on the caller's
+// goroutine does not return while the function waits, and the wait for it fails; a join that
+// returned before the move had finds the function's work undone; a join that took a value the move
+// sent once waits for a second that never comes, and its second call fails.
+func TestAStartedMoveIsJoinedOnceItsTimersFunctionReturns(t *testing.T) {
+	c := clocktest.New(epoch)
+	entered, release := make(chan struct{}), make(chan struct{})
+	ran := false
+	c.AfterFunc(time.Second, func() {
+		close(entered)
+		<-release
+		ran = true
+	})
+	var join func(testing.TB)
+	testwait.Returns(t, "StartMove to return while the move it started waits for the timer's function", func() {
+		join = c.StartMove("the move past the timer due at 1s", epoch.Add(5*time.Second))
+	})
+	testwait.Receive(t, "the timer's function, which the started move fired, to start", entered)
+	close(release)
+	join(t)
+	if !ran {
+		t.Error("join returned before the timer's function had")
+	}
+	if now := c.Now(); !now.Equal(epoch.Add(5 * time.Second)) {
+		t.Errorf("once join returned the fake reads %s, want the move's target %s", now, epoch.Add(5*time.Second))
+	}
+	join(t)
+}
+
+// A started move whose timer's function never returns fails the test that joins it, by name, on
+// the test goroutine, and the test binary goes on: join's wait is the move's one bound, and its
+// give-up names the move and the function the move waits for, by its timer's deadline and the
+// move's target (TestAStartedMoveThatGivesUpChild, under -timeout 35s, whose join gives up 5 s in).
+// The negative controls: a started move that waits for its function through the shared wait, as a
+// move on the test goroutine does, panics at that wait's give-up and ends the child; a join whose
+// reading does not name the function the move waits for fails the line the row reads.
+func TestAStartedMoveThatGivesUpFailsTheTestByName(t *testing.T) {
+	// As in TestAMoveGivesUpNamingAFunctionThatNeverReturns, the child is waited for through
+	// Returns and runs on testwait.Context, so this row cannot outlast its own binary's deadline.
+	child := exec.CommandContext(testwait.Context(t), os.Args[0], "-test.run=^TestAStartedMoveThatGivesUpChild$", "-test.timeout="+childTimeout, "-test.v")
+	child.Env = append(os.Environ(), childEnv+"=1")
+	var stdout, stderr bytes.Buffer
+	child.Stdout, child.Stderr = &stdout, &stderr
+	var ran error
+	testwait.Returns(t, "the child under -timeout "+childTimeout+" to exit", func() { ran = child.Run() })
+	if ran == nil {
+		t.Fatalf("the child was meant to fail; it passed:\n%s\nstderr:\n%s", &stdout, &stderr)
+	}
+	if strings.Contains(stdout.String(), "panic:") || strings.Contains(stderr.String(), "panic:") {
+		t.Fatalf("the child panicked rather than failing its test by name:\n%s\nstderr:\n%s", &stdout, &stderr)
+	}
+	for _, want := range []string{
+		"testwait: TestAStartedMoveThatGivesUpChild: gave up waiting for the move past the timer due at 1s to return 30s before the test binary's deadline; last read: the move waits for the function of the AfterFunc due at 2026-09-22T12:00:01Z, which a move to 2026-09-22T12:00:05Z fired, to return",
+		"--- FAIL: TestAStartedMoveThatGivesUpChild (",
+	} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Errorf("the child's output does not say %q:\n%s\nstderr:\n%s", want, &stdout, &stderr)
+		}
 	}
 }
 
@@ -468,4 +534,19 @@ func TestAMoveWhoseFunctionNeverReturnsChild(t *testing.T) {
 	c.AfterFunc(time.Second, func() { <-never })
 	c.Advance(5 * time.Second)
 	t.Fatal("the move returned, though the function it fired never does")
+}
+
+// TestAStartedMoveThatGivesUpChild is the child of TestAStartedMoveThatGivesUpFailsTheTestByName,
+// run under -timeout 35s: it starts a move (StartMove) that fires a function that never returns,
+// and joins it; the join gives up 5 s in. Its verdict is the join's alone. It runs only when the
+// parent re-executes this binary.
+func TestAStartedMoveThatGivesUpChild(t *testing.T) {
+	if os.Getenv(childEnv) == "" {
+		t.Skip(childEnv + " is not set: this test is the child of TestAStartedMoveThatGivesUpFailsTheTestByName")
+	}
+	c := clocktest.New(epoch)
+	never := make(chan struct{})
+	c.AfterFunc(time.Second, func() { <-never })
+	join := c.StartMove("the move past the timer due at 1s", epoch.Add(5*time.Second))
+	join(t)
 }

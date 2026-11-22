@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -329,6 +330,14 @@ func TestAStaleJobsReadStaysForTheBackfill(t *testing.T) {
 // writes every job finished -- answers with the production job still running, and lands after:
 // the stored jobs stay finished and the run's jobs stay complete.
 func TestAReadThatLandsAfterTheRunEndedUndoesNothing(t *testing.T) {
+	// githubapp's own bound on a call, RequestTimeout, runs on the wall clock, so it is lengthened
+	// past any run for this row: only the row's release may end the read GitHub holds, which then
+	// lands after the run ended. At 20 s, a slow run would end the held read first, and the client
+	// would ask again, so the row would pass with no late read landing. The restore is registered
+	// before the fake's server, so it runs after the read has returned.
+	requestTimeout := githubapp.RequestTimeout
+	githubapp.RequestTimeout = 24 * time.Hour
+	t.Cleanup(func() { githubapp.RequestTimeout = requestTimeout })
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	seedRunningDeployRun(t, ctx, pool)
@@ -347,29 +356,15 @@ func TestAReadThatLandsAfterTheRunEndedUndoesNothing(t *testing.T) {
 	jobs := newJobIntake(nil, pool, nil, fake.newTestClient(), clock, loadedSettingsCache(t, ctx, pool))
 	jobs.receive(ctx, jobPayload("acme/widgets", 500))
 	// The move that fires the read returns once the read has, which waits at GitHub for the row's
-	// release, so it is made on a goroutine of its own. Its wait gives up before any wait of the
-	// row's (testwait.ReceiveInHelper), so its panic is recovered there and handed to whichever
-	// join comes first, the row's own or its cleanup's, which fails the row by name; unrecovered,
-	// it would end the test binary naming no test.
-	read := make(chan any, 1)
-	go func() {
-		defer func() { read <- recover() }()
-		clock.Advance(jobQuiet)
-	}()
-	// The move sends one value; joined says the row's own join took it, so the cleanup's does not
-	// wait for another.
-	joined := false
+	// release, so it is made off the test goroutine (clocktest.Fake.StartMove). The row joins it,
+	// and so does a cleanup, for a row that failed before its own join; once the move has returned,
+	// a join returns at once. A read that never returns fails the row at the join, naming the move
+	// and the read's timer.
+	joinRead := clock.StartMove("the move that ran the job intake's read", clock.Now().Add(jobQuiet))
 	// After the fake's server, so they run before its Close, which waits for the handler held at
 	// GitHub: a failure before the release releases the read and waits for the move that ran it,
 	// and a give-up of that wait once the row has failed is logged rather than failed again.
-	t.Cleanup(func() {
-		if joined {
-			return
-		}
-		if gaveUp := testwait.Receive(failOnce{t}, "the move that ran the job intake's read to return once the row's cleanup released it", read); gaveUp != nil {
-			failOnce{t}.Fatalf("the move that ran the job intake's read gave up waiting for it: %v", gaveUp)
-		}
-	})
+	t.Cleanup(func() { joinRead(failOnce{t}) })
 	t.Cleanup(release)
 	testwait.Receive(t, "the job intake's read, which the move fires, to reach GitHub", entered)
 
@@ -390,11 +385,7 @@ func TestAReadThatLandsAfterTheRunEndedUndoesNothing(t *testing.T) {
 		t.Fatalf("store the ended run's jobs: %v", err)
 	}
 	release()
-	gaveUp := testwait.Receive(t, "the move that ran the job intake's read to return once the read was released", read)
-	joined = true
-	if gaveUp != nil {
-		t.Fatalf("the move that ran the job intake's read gave up waiting for it: %v", gaveUp)
-	}
+	joinRead(t)
 
 	stored, err := ListRunJobs(ctx, pool, "acme/widgets", 500)
 	if err != nil {

@@ -38,22 +38,16 @@ func (c *heldFiring) AfterFunc(d time.Duration, f func()) clock.Timer {
 	})
 }
 
-// fireHeld moves the fake to at on a goroutine of its own, since a move waits for the function of
-// each timer it fires to return, and waits until the firing of the timer due there waits. It
-// answers a channel that receives once the move has returned, and that function with it: nil, or
-// what the move panicked with when its wait for that function gave up (clocktest). That wait gives
-// up before any wait of the test's (testwait.ReceiveInHelper), so its panic is recovered on its
-// goroutine and handed to the test, which fails by name, as startArmedSettlement's is
-// (live_write_test.go): unrecovered, it would end the test binary naming no test.
-func (c *heldFiring) fireHeld(t *testing.T, at time.Time) <-chan any {
+// fireHeld moves the fake to at off the test goroutine (clocktest.Fake.StartMove), since a move
+// waits for the function of each timer it fires to return, and waits until the firing of the timer
+// due there waits. It answers the move's join, which waits for the move to return, and that
+// function with it, and fails the test naming the move and the function it waits for when that
+// function never returns.
+func (c *heldFiring) fireHeld(t *testing.T, at time.Time) (join func(testing.TB)) {
 	t.Helper()
-	moved := make(chan any, 1)
-	go func() {
-		defer func() { moved <- recover() }()
-		c.Set(at)
-	}()
+	join = c.StartMove("the move that fired the read deadline due at "+at.Format(time.RFC3339Nano), at)
 	testwait.Receive(t, "the read deadline's timer to fire at "+at.Format(time.RFC3339Nano)+" and its function to wait", c.fired)
-	return moved
+	return join
 }
 
 func (c *heldFiring) let() { c.release.Do(func() { close(c.released) }) }
@@ -87,15 +81,13 @@ func TestAReadDeadlineFiringThatAMoveOvertookEndsNoReads(t *testing.T) {
 		rig := newCountedRig(t, deadlines)
 		socket := rig.openCounted(t)
 		awaitArmedAt(t, deadlines.Fake, "the pong deadline the upgrade armed", pongBy)
-		moved := deadlines.fireHeld(t, pongBy)
+		joinMove := deadlines.fireHeld(t, pongBy)
 
 		socket.sendOverTheLimit(t)
 		awaitArmedAt(t, deadlines.Fake, "the drain's own deadline, liveSocketCloseWait on", pongBy.Add(liveSocketCloseWait))
 		socket.drainReading(t)
 		deadlines.let()
-		if gaveUp := testwait.Receive(t, "the function of the pong deadline's firing, overtaken by the drain, to return", moved); gaveUp != nil {
-			t.Fatalf("the move that fired the pong deadline gave up waiting for its function, overtaken by the drain: %v", gaveUp)
-		}
+		joinMove(t)
 		socket.endFrame(t, "the pong deadline's firing, overtaken by the drain, ended the drain before the frame's end")
 		rig.sockets(t, 0)
 	})
@@ -104,7 +96,7 @@ func TestAReadDeadlineFiringThatAMoveOvertookEndsNoReads(t *testing.T) {
 		rig := newCountedRig(t, deadlines)
 		client := rig.openCounted(t).client
 		awaitArmedAt(t, deadlines.Fake, "the pong deadline the upgrade armed", pongBy)
-		moved := deadlines.fireHeld(t, pongBy)
+		joinMove := deadlines.fireHeld(t, pongBy)
 
 		// The pong's write ends where the shared wait gives up (none under -timeout 0).
 		writeBy, _ := testwait.GiveUpAt(t)
@@ -113,9 +105,7 @@ func TestAReadDeadlineFiringThatAMoveOvertookEndsNoReads(t *testing.T) {
 		}
 		awaitArmedAt(t, deadlines.Fake, "the pong deadline the page's pong armed, two heartbeats on", pongBy.Add(2*drainHeartbeat))
 		deadlines.let()
-		if gaveUp := testwait.Receive(t, "the function of the pong deadline's firing, overtaken by the pong, to return", moved); gaveUp != nil {
-			t.Fatalf("the move that fired the pong deadline gave up waiting for its function, overtaken by the pong: %v", gaveUp)
-		}
+		joinMove(t)
 		client.send(t, LiveUnsubscribe{Type: "unsubscribe"})
 		frame := client.next(t, "the socket's answer to the page's next frame: the pong deadline's firing, overtaken by the pong, must not have cut it")
 		if refusal, ok := frame.(LiveError); !ok || refusal.Code != "INVALID_FRAME" {

@@ -148,34 +148,35 @@ func (h *HandshakeHold) Release() {
 }
 
 // HoldWriteLock holds conn's nats.go connection lock as a write to a socket that does not drain
-// holds it, on a connection that stays connected: it takes that lock itself (connLock), so from
-// the moment it returns every call of conn's that reads or writes the connection waits, as each
-// waits behind such a write, and nothing about the connection changes. The fixture takes the lock
-// rather than filling the socket, so no span decides when a write blocked: the lock is held when
-// the take returns, and let go when the row calls the func it returns, which the test's end calls
-// too. The proxy is left as it is.
+// holds it, on a connection that stays connected: it takes that lock itself (TakeWriteLock), so
+// from the moment it returns every call of conn's that reads or writes the connection waits, as
+// each waits behind such a write, and nothing about the connection changes. The fixture takes the
+// lock rather than filling the socket, so no span decides when a write blocked: the lock is held
+// when the take returns, and let go when the row calls the func it returns, which the test's end
+// calls too. The take's give-up fails the test. The proxy is left as it is.
 func (h *HandshakeHold) HoldWriteLock(t testing.TB, conn *natsgo.Conn) (release func()) {
 	t.Helper()
-	lock := connLock(t, conn)
-	testwait.Eventually(t, "nats.go to let its connection lock go, so the row can take it as a write does", lock.TryLock)
-	var once sync.Once
-	release = func() { once.Do(lock.Unlock) }
+	release, err := h.TakeWriteLock(conn)
+	if err != nil {
+		t.Fatal(err)
+	}
 	t.Cleanup(release)
 	return release
 }
 
-// TakeWriteLock is HoldWriteLock for a hook the code under test runs on a goroutine of its own,
-// where no method of t that ends the test may run: it takes the lock through the shared wait's
-// helper form (testwait.InHelper), with the bound every wait has, and returns that wait's give-up,
-// or a nats.go whose Conn holds no connection lock, as an error rather than failing a test. It
-// registers no cleanup: the hook hands the error to the test goroutine, which fails the row on it,
-// and has the release run at the test's end. The release may be called more than once.
+// TakeWriteLock takes conn's nats.go connection lock (connLockOf) as HoldWriteLock describes, with
+// no t, for a hook the code under test runs on a goroutine of its own, where no method of t that
+// ends the test may run: it waits for the lock through the shared wait's helper form
+// (testwait.InHelper), with the bound every wait has, and returns that wait's give-up, or a nats.go
+// whose Conn holds no connection lock, as an error rather than failing a test. It registers no
+// cleanup: the hook hands the error to the test goroutine, which fails the row on it, and has the
+// release run at the test's end. The release may be called more than once.
 func (h *HandshakeHold) TakeWriteLock(conn *natsgo.Conn) (release func(), err error) {
 	lock, err := connLockOf(conn)
 	if err != nil {
 		return nil, err
 	}
-	if err := testwait.InHelper("testnats", "nats.go to let its connection lock go, so the hook can take it as a write does", lock.TryLock); err != nil {
+	if err := testwait.InHelper("testnats", "nats.go to let its connection lock go, so the fixture can take it as a write does", lock.TryLock); err != nil {
 		return nil, err
 	}
 	var once sync.Once

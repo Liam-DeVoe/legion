@@ -55,7 +55,7 @@ func TestEditArtifactRollbackNeverReachesTheRoom(t *testing.T) {
 	peer.barrier(t)
 	// The document's settlement, armed on the fixture's clock, runs as the row moves the clock to
 	// it, and queues behind the held edit's transaction for the issue's owner lock.
-	settled := f.startArmedSettlement(t)
+	joinSettlement := f.startArmedSettlement(t)
 	f.waitForLockWaiter(t)
 	f.assertArtifactKeyShareLockAvailable(t)
 	// A settlement pending when the transactional write starts must not version it either
@@ -68,9 +68,7 @@ func TestEditArtifactRollbackNeverReachesTheRoom(t *testing.T) {
 	f.assertVersionCount(t, 1)
 	closeTestGate(f.failure.release)
 	f.expectFailedResponse(t, responses)
-	if gaveUp := testwait.Receive(t, "the settlement queued behind the held edit to end once the edit's rollback let the issue's owner lock go", settled); gaveUp != nil {
-		t.Fatalf("the move that ran the settlement queued behind the held edit gave up waiting for it: %v", gaveUp)
-	}
+	joinSettlement(t)
 	f.assertLiveText(t, "before\n")
 	f.assertVersionCount(t, 1)
 	f.assertDurableText(t, "before\n")
@@ -447,28 +445,21 @@ func (f *heldWriteFixture) waitOutSettlement(t *testing.T) {
 		func() ([]string, bool) { return f.versions(t), true }, f.settles)
 }
 
-// startArmedSettlement moves the fixture's clock, on a goroutine of its own, to the first deadline
-// armed on it, which runs the settlement armed for then, and answers a channel that receives once
-// the move has returned, which is once that settlement has (clocktest): nil, or what the move
-// panicked with when its wait for the settlement gave up. It is for a settlement that waits on
-// what the test holds - the issue's owner lock, under a held edit's transaction - for which a move
-// on the test's own goroutine would wait for ever. The move's wait gives up before any wait of the
-// test's (testwait.ReceiveInHelper), so its panic is recovered on its goroutine and handed to the
-// test, which fails by name: unrecovered, it would end the test binary naming no test. The
+// startArmedSettlement moves the fixture's clock off the test goroutine (clocktest.Fake.StartMove)
+// to the first deadline armed on it, which runs the settlement armed for then, and answers the
+// move's join, which waits for the move to return, which is once that settlement has (clocktest),
+// and fails the test naming the move and the settlement it waits for when that settlement never
+// returns. It is for a settlement that waits on what the test holds - the issue's owner lock, under
+// a held edit's transaction - for which a move on the test's own goroutine would wait for ever. The
 // deadline must stand within a settlement's reach (documentSettleReach).
-func (f *heldWriteFixture) startArmedSettlement(t *testing.T) <-chan any {
+func (f *heldWriteFixture) startArmedSettlement(t *testing.T) (join func(testing.TB)) {
 	t.Helper()
 	armed := f.settles.AwaitArmed(t, "the settlement the room armed", 1)
 	if ahead := armed[0].Sub(f.settles.Now()); ahead >= documentSettleReach {
 		t.Fatalf("the first deadline armed on the document service's clock stands %s ahead, past a settlement's reach of %s (every deadline armed: %v)",
 			ahead, documentSettleReach, armed)
 	}
-	moved := make(chan any, 1)
-	go func() {
-		defer func() { moved <- recover() }()
-		f.settles.Set(armed[0])
-	}()
-	return moved
+	return f.settles.StartMove("the move that ran the settlement armed at "+armed[0].Format(time.RFC3339Nano)+", queued behind the held edit's transaction", armed[0])
 }
 
 // versions lists the document's versions as "number: markdown".

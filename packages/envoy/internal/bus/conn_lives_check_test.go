@@ -28,8 +28,10 @@ import (
 //
 // The controls: a pinIf that ignores its ch argument lets a stale life pin, so the second row's
 // window is refused. A check that never ends a pinned life fails the first; a >= rather than > in
-// endReconnected fails both the second and the third. Every wait is testwait's, with no bound of
-// the row's: each only guards against NATS not changing state.
+// endReconnected fails both the second and the third. A pin whose wait for a connection runs on the
+// real clock fails the second once its staged reconnect takes longer than that wait
+// (publishAcknowledgementTimeout, 5 s). Every wait is testwait's, with no bound of the row's: each
+// only guards against NATS not changing state.
 func TestAConnectionsOwnCheckKeepsALifeAfterACleanReconnect(t *testing.T) {
 	every := lifeCheckEvery.Swap(int64(time.Hour))
 	t.Cleanup(func() { lifeCheckEvery.Store(every) })
@@ -54,7 +56,10 @@ func TestAConnectionsOwnCheckKeepsALifeAfterACleanReconnect(t *testing.T) {
 		client, hold := heldHandshakeClient(t)
 		conn := client.Connection()
 		// The hook below holds a reconnect's handshake (Hold) until the pin has read its count; the
-		// attempt ends only when the row releases it, with a connect timeout of the test's own.
+		// attempt ends only when the row releases it, with a connect timeout of the test's own. The
+		// pin's own wait for a connection is on the client's window clock, a fake the row never moves
+		// (heldHandshakeClient), so it does not end inside the staged drop and reconnect, however long
+		// they take: the hooks' waits are the row's only give-up.
 		testnats.OwnConnectTimeout(t, conn)
 		w := client.WindowUntil(nil).(*window)
 		original := lifeOf(conn).current()
