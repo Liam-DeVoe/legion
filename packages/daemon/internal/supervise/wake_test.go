@@ -32,8 +32,8 @@ const (
 // secondToken and thirdToken are the other claims a paced claim is paced against: the pacing is a
 // property of the daemon's whole queue, so no test of it has one claim only.
 const (
-	secondToken claim.Token = "legion-LEGION-209-tester"
-	thirdToken  claim.Token = "legion-LEGION-209-reviewer"
+	secondToken claim.Token = "legion-legion-legion-209-tester"
+	thirdToken  claim.Token = "legion-legion-legion-209-reviewer"
 )
 
 // pacedDeps sets a machine's pacing to one limiter of rate wakes a minute in bursts of one,
@@ -70,13 +70,15 @@ func pacedHarness(t *testing.T, rate int, tune ...func(*Deps)) *harness {
 	return h
 }
 
-// wakeClaim is another claim of the same daemon in state, with the session a resume relaunches.
+// wakeClaim is another claim of the same daemon in state, with the session a resume relaunches: a
+// session of its own, since the daemon holds each session's id and file to the first claim that
+// recorded them (holdRecorded), and a resume of another claim's session is refused.
 func wakeClaim(token claim.Token, state ClaimState) Claim {
 	c := queuedClaim()
 	c.Token, c.State = token, state
 	if state != StateQueued {
 		c.Generation = 1
-		c.Session, c.SessionFile = session, sessionFile
+		c.Session, c.SessionFile = "ses_"+string(token), "/state/sessions/"+string(token)+".jsonl"
 	}
 	if state == StateSuspended {
 		c.SuspendedBy = SuspendedByDaemon
@@ -347,7 +349,7 @@ func TestAnOperatorsForgetSessionOfAWaitingClaimIsDecidedAndTheWakeKeepsItsTurn(
 
 	h.must(RequestSpawn{Claim: h.token})
 	h.mustPostTo(second, RequestRuleResume{Claim: secondToken, Reason: "it owns its issue's phase"})
-	h.mustPostTo(second, RequestForgetSession{Claim: secondToken, Session: session})
+	h.mustPostTo(second, RequestForgetSession{Claim: secondToken, Session: second.Claim().Session})
 
 	if got := second.Claim(); got.Session != "" || got.SessionFile != "" {
 		t.Fatalf("the claim records session %q at %q, want neither", got.Session, got.SessionFile)
@@ -486,16 +488,17 @@ func TestTheControllersClaimLaunchesAtOnce(t *testing.T) {
 // waveToken is the token of the nth claim of a wave: a daemon that must wake forty claims at
 // once is what the pacing exists for, and each of them is a claim of its own.
 func waveToken(n int) claim.Token {
-	return claim.Token(fmt.Sprintf("legion-LEGION-209-worker-%02d", n))
+	return claim.Token(fmt.Sprintf("legion-legion-legion-209-worker-%02d", n))
 }
 
 // stalePluginClaim is c as a live worker of an earlier release, which is what a plugin wave finds:
 // ready, recording the process the stale-plugin lane decides and the session a relaunch resumes,
-// at the plugin contract its registration declared.
+// at the plugin contract its registration declared. The session is the claim's own (wakeClaim's),
+// since a resume of another claim's session is refused (holdRecorded).
 func stalePluginClaim(c Claim, contract int) Claim {
 	c.State = StateReady
 	c.Generation = 1
-	c.Session, c.SessionFile = session, sessionFile
+	c.Session, c.SessionFile = "ses_"+string(c.Token), "/state/sessions/"+string(c.Token)+".jsonl"
 	c.PluginContract = contract
 	c.Locator = &runtime.Locator{
 		Runtime:     runtime.RuntimeTmux,

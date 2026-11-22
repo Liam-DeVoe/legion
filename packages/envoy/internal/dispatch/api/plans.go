@@ -2,12 +2,11 @@ package api
 
 import (
 	"errors"
-	"fmt"
 	"net/http"
 	"net/url"
-	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/workflowstore"
 )
@@ -21,19 +20,20 @@ import (
 // tuples that hold the plans and the step records.
 //
 // The write is the daemon's alone, as a step record's is (403 STEP_WRITER), appends no issue
-// event and reads the issue with no open check. The read writes nothing, is one statement for the
-// whole project whatever the number of its issues, and a read-only token may call it
-// (readScopeRoutes).
+// event and reads the issue with no open check. The read writes nothing, reads the project, then
+// all its finished issues in one statement whatever their number, and a read-only token may call
+// it (readScopeRoutes).
 
 // The refusals of a plan write, beside the step write's STEP_WRITER, the package's own decode
-// error and 404 ISSUE_NOT_FOUND.
+// error and 404 ISSUE_NOT_FOUND, each the code contracts gives it, which the Legion daemon reads to
+// end a row on.
 const (
 	// codePlanInput is a plan value outside its form, or a plan that does not name its
 	// generation, its source and its tasks; the message names the field
 	// (workflowstore.ErrPlanInput).
-	codePlanInput = "PLAN_INPUT"
+	codePlanInput = contracts.PlanInputCode
 	// codePlanOtherIssue is an id whose plan is the plan of another issue.
-	codePlanOtherIssue = "PLAN_OTHER_ISSUE"
+	codePlanOtherIssue = contracts.PlanOtherIssueCode
 )
 
 // planRecordInput is the body PUT /api/v1/issues/{key}/plans/{id} takes: the writer, the run the
@@ -48,7 +48,9 @@ type planRecordInput struct {
 }
 
 // planTaskInput is one task of a written plan: its id and its steps in order, each a role or
-// `role:key`.
+// `role:key`. It has the fields of workflowstore.PlanTask and model.PlanTask, so a task converts
+// between the three, and a field added to one of them alone fails the build rather than being
+// dropped on the way.
 type planTaskInput struct {
 	ID    string   `json:"id" required:"true"`
 	Steps []string `json:"steps" required:"true"`
@@ -63,12 +65,8 @@ func (s *server) putIssuePlan(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	actor, ok := s.requireActor(w, r, input.Actor)
+	actor, key, ok := s.requireIssueDaemon(w, r, input.Actor, "a plan")
 	if !ok {
-		return
-	}
-	key := r.PathValue("key")
-	if !requireIssueDaemon(w, actor, key, "a plan") {
 		return
 	}
 
@@ -78,20 +76,22 @@ func (s *server) putIssuePlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
-	issue, project, ok := s.lockRecordedIssue(w, r, tx, key)
+	project, ok := s.lockRecordedIssue(w, r, tx, key)
 	if !ok {
 		return
 	}
+	// A body with no tasks stays nil, which the store refuses as a list left out (tasks is
+	// required), apart from an empty list, which it refuses as a plan with no task.
 	var tasks []workflowstore.PlanTask
 	if input.Tasks != nil {
 		tasks = make([]workflowstore.PlanTask, len(input.Tasks))
 		for index, task := range input.Tasks {
-			tasks[index] = workflowstore.PlanTask{ID: task.ID, Steps: task.Steps}
+			tasks[index] = workflowstore.PlanTask(task)
 		}
 	}
 	written, err := workflowstore.PutPlan(r.Context(), tx, workflowstore.PlanWrite{
-		ID: r.PathValue("id"), Issue: issue, Project: &project, Source: input.Source,
-		ArtifactID: input.ArtifactID, Generation: input.Generation, Version: input.Version, Tasks: tasks,
+		ID: r.PathValue("id"), Issue: key, Project: &project, Source: input.Source,
+		Generation: input.Generation, Document: input.document(), Tasks: tasks,
 	}, actor, time.Now())
 	switch {
 	case errors.Is(err, workflowstore.ErrPlanInput):
@@ -111,13 +111,28 @@ func (s *server) putIssuePlan(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, planRecord(written))
 }
 
+// document is the owner's document input states as the store's one value: each half the body
+// leaves out, or sends null, "" or 0, is "" or 0, which states nothing. The store refuses a half an
+// owner's plan leaves out, and a half a default plan names, naming it, after it has checked the
+// plan's generation and source.
+func (input planRecordInput) document() workflowstore.PlanDocument {
+	var document workflowstore.PlanDocument
+	if input.ArtifactID != nil {
+		document.ArtifactID = *input.ArtifactID
+	}
+	if input.Version != nil {
+		document.Version = *input.Version
+	}
+	return document
+}
+
 // listProjectPlans is each finished issue of one project, newest close first:
 // GET /api/v1/projects/{key}/plans, its close bounded by ?since= and ?until=.
 func (s *server) listProjectPlans(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
-	since, until, err := parsePlansWindow(r.URL.Query())
+	window, err := parsePlansWindow(r.URL.Query())
 	if err != nil {
 		writeError(w, "INVALID_QUERY", http.StatusBadRequest, err.Error())
 		return
@@ -127,7 +142,7 @@ func (s *server) listProjectPlans(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	finished, err := workflowstore.ProjectPlans(r.Context(), s.deps.Store.Pool, key, since, until)
+	finished, err := workflowstore.ProjectPlans(r.Context(), s.deps.Store.Pool, key, window)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -144,9 +159,12 @@ func (s *server) listProjectPlans(w http.ResponseWriter, r *http.Request) {
 			listed.Plan = &plan
 		}
 		for place, rating := range issue.Ratings {
-			listed.Ratings[place] = model.PlanRating{Rating: rating.Rating, Reason: rating.Reason, StepID: rating.StepID, EndedAt: rating.EndedAt}
+			listed.Ratings[place] = model.PlanRating(rating)
 		}
-		if issue.StartedAt != nil && issue.EndedAt != nil {
+		// The span is known only where the latest end is not before the earliest start: a run whose
+		// start Dispatch never got that ended before a later run started, whose end has not landed,
+		// holds no time to count.
+		if issue.StartedAt != nil && issue.EndedAt != nil && !issue.EndedAt.Before(*issue.StartedAt) {
 			seconds := int64(issue.EndedAt.Sub(*issue.StartedAt) / time.Second)
 			listed.DurationSeconds = &seconds
 		}
@@ -155,26 +173,11 @@ func (s *server) listProjectPlans(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, read)
 }
 
-// parsePlansWindow is the plans read's [since, until) window on the close: each bound an RFC 3339
-// time, nil when the query leaves it out or blank, and since before until when both are given. Its
-// error is the text of the route's 400 INVALID_QUERY.
-func parsePlansWindow(query url.Values) (since, until *time.Time, err error) {
-	bounds := [2]*time.Time{}
-	for index, bound := range []string{"since", "until"} {
-		text := strings.TrimSpace(query.Get(bound))
-		if text == "" {
-			continue
-		}
-		parsed, err := time.Parse(time.RFC3339, text)
-		if err != nil {
-			return nil, nil, fmt.Errorf("%s must be an RFC 3339 time, such as 2026-11-01T00:00:00Z", bound)
-		}
-		bounds[index] = &parsed
-	}
-	if bounds[0] != nil && bounds[1] != nil && !bounds[0].Before(*bounds[1]) {
-		return nil, nil, errors.New("since must be before until")
-	}
-	return bounds[0], bounds[1], nil
+// parsePlansWindow is the plans read's [since, until) window on the close (parseWindow); the read
+// rounds each bound up to the microsecond it compares.
+func parsePlansWindow(query url.Values) (workflowstore.Window, error) {
+	since, until, err := parseWindow(windowBound{name: "since", text: query.Get("since")}, windowBound{name: "until", text: query.Get("until")})
+	return workflowstore.Window{Since: since, Until: until}, err
 }
 
 // planRecord is a plan as the routes answer it: the owner's document and version are null for a
@@ -184,16 +187,12 @@ func planRecord(plan workflowstore.Plan) model.PlanRecord {
 		ID: plan.ID, Issue: plan.Issue, Generation: plan.Generation, Source: plan.Source,
 		Tasks: make([]model.PlanTask, len(plan.Tasks)),
 	}
-	if plan.ArtifactID != "" {
-		artifact := plan.ArtifactID
-		record.ArtifactID = &artifact
-	}
-	if plan.Version != 0 {
-		version := plan.Version
-		record.Version = &version
+	if plan.Document != nil {
+		document := *plan.Document
+		record.ArtifactID, record.Version = &document.ArtifactID, &document.Version
 	}
 	for index, task := range plan.Tasks {
-		record.Tasks[index] = model.PlanTask{ID: task.ID, Steps: task.Steps}
+		record.Tasks[index] = model.PlanTask(task)
 	}
 	return record
 }

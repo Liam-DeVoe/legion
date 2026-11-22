@@ -49,8 +49,8 @@ const (
 	HeldAcceptedAncestor HeldReason = "accepted_ancestor"
 	// HeldChildrenBeforeRetro is a parent whose plan has no acceptance step, held before its retro
 	// while issues beneath it are still in the workflow (HoldForChildren, HeldForChildren). heldBy
-	// names each of them (OpenBeneath). The last of them to leave the workflow ends the hold, and
-	// the daemon then starts the retro itself (workflow's startHeldRetro). It stands below every
+	// names each of them (OpenBeneath). Once none of them is open beneath it in a tree that runs,
+	// the hold ends and the daemon starts the retro itself (workflow's releaseHeldParents). It stands below every
 	// word that speaks of the issue's tree, a Dispatch link or an ancestor, because each of those
 	// holds the issue whatever its own hold is, and above at_work and unclassified, which it read
 	// before it had a word of its own: at_work's sentence, that the issue's workers run, is false
@@ -61,7 +61,7 @@ const (
 	// step to return to (HoldTaskStopped), and that keeps no slot where it stands: one held from
 	// accepting, retro or merging (KeepsSlot). No issue holds it, so heldBy is empty. A later
 	// version of the plan from its owner that changes the stopped task, or a person's todo on the
-	// root, ends the hold (workflow's planGiven and restartTask). A task stopped at a step keeps
+	// root, ends the hold (workflow's restartTask and waitForFirstStep). A task stopped at a step keeps
 	// that step's slot and stands in the active set, so one that keeps its slot and holds none is
 	// a gap and reads unclassified. It stands beside children_before_retro, for the same reasons;
 	// the two are never true of one issue, since an issue holds one hold reason.
@@ -288,7 +288,7 @@ func HeldReasonOf(issue Issue, facts HeldFacts) (HeldReason, []string) {
 	switch {
 	case HeldForChildren(issue):
 		return HeldChildrenBeforeRetro, openBeneathIn(issue, facts.Chain)
-	case issue.Phase == phase.Held && issue.Hold != nil && issue.Hold.Reason == HoldTaskStopped && !KeepsSlot(issue):
+	case HeldFor(issue, HoldTaskStopped) && !KeepsSlot(issue):
 		return HeldTaskStopped, nil
 	}
 	// The issue must not stand in held. Since dispatch://INFRA-2560 a hold from a phase past the

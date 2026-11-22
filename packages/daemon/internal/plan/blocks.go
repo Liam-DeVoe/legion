@@ -73,7 +73,7 @@ func taskOf(block Block) (Task, error) {
 		return Task{}, fmt.Errorf("task %s: %w", block.ID, err)
 	}
 	if len(steps) > 0 {
-		task.HasSteps, task.Steps = true, steps
+		task.Steps = steps
 	}
 	return task, nil
 }
@@ -115,7 +115,7 @@ func ChangedTasks(held, next Plan) []string {
 // sameBlock says whether two tasks of one id say the same thing.
 func sameBlock(a, b Task) bool {
 	return a.Text == b.Text && a.PartOf == b.PartOf && a.Owner == b.Owner && a.Merges == b.Merges &&
-		a.HasSteps == b.HasSteps && slices.Equal(a.Needs, b.Needs) && slices.Equal(a.Steps, b.Steps)
+		slices.Equal(a.Needs, b.Needs) && slices.Equal(a.Steps, b.Steps)
 }
 
 // sameRoles says whether each role a step of t names is the same in both versions: defined by

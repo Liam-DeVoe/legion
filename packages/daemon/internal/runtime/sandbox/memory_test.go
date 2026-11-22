@@ -131,7 +131,7 @@ func TestAKeptPodBuiltBeforeTheMemoryMountIsToldNoMemoryOverlay(t *testing.T) {
 			spec := memorySpec(t)
 			s := &sandbox{Spec: sandboxSpec{PodTemplate: podTemplate{Spec: podOf(t, tc.built, spec)}}}
 			l := launchOf(t, after, spec)
-			kept, readable := after.keptBy(s, l)
+			kept, readable := after.keptBy(s, "", l)
 			if !readable {
 				t.Fatal("keptBy could not read the pod's template")
 			}
@@ -161,7 +161,7 @@ func TestAKeptPodHoldingTheMemoryOverlaysTellsALaunchInNoMemoryGroupNone(t *test
 	own := operatorPod().Env["PI_CONFIG_FILES"] + ":" + strings.Join(roleFiles[claim.RoleTester], ":")
 	s := &sandbox{Spec: sandboxSpec{PodTemplate: podTemplate{Spec: podOf(t, r, memorySpec(t))}}}
 	l := launchOf(t, r, workerSpec(t))
-	kept, readable := r.keptBy(s, l)
+	kept, readable := r.keptBy(s, "", l)
 	if !readable {
 		t.Fatal("keptBy could not read the pod's template")
 	}
@@ -245,7 +245,7 @@ func TestTheImageProbeReadsEveryWorkflowRolesMemoryOverlays(t *testing.T) {
 		t.Fatalf("the probe of a deployment that names no overlay at all is told %q", base)
 	}
 	roleOnly := slices.Clone(base)
-	for _, role := range roleConfigRoles {
+	for _, role := range memoryRuntime(t, nil).roleConfigRoles() {
 		if files := roleFiles[role]; len(files) > 0 {
 			roleOnly = append(roleOnly, bootprobe.RoleConfigFilesFlag, bootprobe.RoleConfigFilesValue(string(role), files))
 		}

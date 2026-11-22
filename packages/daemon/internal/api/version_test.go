@@ -1,9 +1,13 @@
 package api
 
 import (
+	"os"
+	"regexp"
 	"slices"
+	"strconv"
 	"testing"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -35,6 +39,52 @@ func TestFailureCausesGolden(t *testing.T) {
 	golden(t, "failure-causes.json", map[string][]supervise.FailureCause{"causes": supervise.FailureCauses})
 }
 
+// Below deploymentRolesContract a reader reads the `role` of a stranded claim, of a waiting wake
+// and of a pause stop with an enumeration of Legion's six roles, and the band of that contract
+// serves it the claims of claim.Roles alone (shaping.go's withoutDeploymentRoleClaims), whatever
+// roles the deployment defines. From that contract the three fields, and a registration's `role`,
+// take any role of the role grammar (claim.IsRole), which no list of values records
+// (answers.go's enumeratedFields), so no row of EnumeratedFields holds what this test holds. So
+// claim.Roles must be those six, named here one by one: a role added to claim.Roles would pass the
+// band and reach a reader whose enumeration refuses the whole state for it. And the band is held
+// to them: a claim of each of the six is kept in each of the three lists, and a claim of a role
+// of the deployment is dropped from each.
+func TestEveryRoleAnOlderReaderIsServedIsOneItsEnumerationNames(t *testing.T) {
+	olderReaders := []claim.Role{claim.RoleArchitect, claim.RolePlanner, claim.RoleImplementer, claim.RoleTester,
+		claim.RoleReviewer, claim.RoleMerger}
+	if !slices.Equal(claim.Roles, olderReaders) {
+		t.Fatalf("claim.Roles = %v, want the six roles a reader below deploymentRolesContract enumerates, %v: "+
+			"withoutDeploymentRoleClaims keeps every role of claim.Roles, so a role added there is served to a reader "+
+			"that refuses the whole state for it; serve it down below the contract it arrives at", claim.Roles, olderReaders)
+	}
+	state := State{Paused: &PausedView{}}
+	for _, role := range append(slices.Clone(claim.Roles), "checker") {
+		state.StrandedClaims = append(state.StrandedClaims, StrandedClaim{Issue: "LEGION-208", Role: role, State: "failed"})
+		state.WakesWaiting = append(state.WakesWaiting, WakeWaiting{Issue: "LEGION-208", Role: role, Kind: "launch"})
+		state.Paused.WaitsOn = append(state.Paused.WaitsOn, PauseStopView{Issue: "LEGION-208", Role: role})
+	}
+	served, moved := withoutDeploymentRoleClaims(state)
+	if !moved {
+		t.Fatal("withoutDeploymentRoleClaims reports no move on a state carrying a checker's claim in each list")
+	}
+	kept := map[string][]claim.Role{}
+	for _, c := range served.StrandedClaims {
+		kept["strandedClaims"] = append(kept["strandedClaims"], c.Role)
+	}
+	for _, wake := range served.WakesWaiting {
+		kept["wakesWaiting"] = append(kept["wakesWaiting"], wake.Role)
+	}
+	for _, stop := range served.Paused.WaitsOn {
+		kept["paused.waitsOn"] = append(kept["paused.waitsOn"], stop.Role)
+	}
+	for _, list := range []string{"strandedClaims", "wakesWaiting", "paused.waitsOn"} {
+		if !slices.Equal(kept[list], claim.Roles) {
+			t.Errorf("%s served below deploymentRolesContract names %v, want Legion's six %v and no role of the deployment",
+				list, kept[list], claim.Roles)
+		}
+	}
+}
+
 // supervise.PodUpdateContract is the contract that introduced ready_for_update, and supervise
 // cannot read DaemonAPIVersion: internal/api imports supervise, not the other way round. This is
 // the one place the two meet, so it pins the number rather than bounding it.
@@ -62,12 +112,13 @@ func TestPodUpdateContractIsTheContractThatIntroducedTheOp(t *testing.T) {
 
 // OwnerPlanContract is the contract whose entry in version.go added the owner's plan: the routes
 // register_plan and stop_task, a completion's returnTo, and the issues' holdReason task-stopped
-// and children. The number is pinned, as PodUpdateContract's is, because the narrowing of
-// holdReason serves a caller below it the state without the two new reasons: a constant left
-// behind at a renumber would serve a plugin that cannot parse them the two reasons. Above the
-// daemon's own contract, no caller could be served them.
+// and children. The number is pinned, as PodUpdateContract's is, because the declared table records
+// the two new hold reasons and the two new held words at it, and the value strips hold them back
+// from a caller below it (answers.go's holdReasons and heldReasons): a constant left behind at a
+// renumber would serve a plugin that cannot parse them the new values. Above the daemon's own
+// contract, no caller could be served them.
 func TestTheOwnerPlanContractIsTheContractThatAddedThePlan(t *testing.T) {
-	const addedOwnerPlan = 156
+	const addedOwnerPlan = 211
 	if OwnerPlanContract != addedOwnerPlan {
 		t.Fatalf("OwnerPlanContract = %d, want %d, the contract whose entry in version.go added register_plan, stop_task, returnTo and the two new hold reasons",
 			OwnerPlanContract, addedOwnerPlan)
@@ -75,5 +126,58 @@ func TestTheOwnerPlanContractIsTheContractThatAddedThePlan(t *testing.T) {
 	if OwnerPlanContract > DaemonAPIVersion {
 		t.Fatalf("OwnerPlanContract = %d, above DaemonAPIVersion %d: no caller could be served the two new hold reasons",
 			OwnerPlanContract, DaemonAPIVersion)
+	}
+}
+
+// entryHeader matches the head of one numbered entry of version.go's doc comment: `// <n>: `.
+var entryHeader = regexp.MustCompile(`(?m)^// (\d+): `)
+
+// numberedEntries is every contract version.go carries an entry for, read out of the file
+// itself. The test below runs in the package directory, so the file is beside it.
+func numberedEntries(t *testing.T) map[int]bool {
+	t.Helper()
+	source, err := os.ReadFile("version.go")
+	if err != nil {
+		t.Fatalf("read version.go: %v", err)
+	}
+	entries := map[int]bool{}
+	for _, match := range entryHeader.FindAllStringSubmatch(string(source), -1) {
+		number, err := strconv.Atoi(match[1])
+		if err != nil {
+			t.Fatalf("entry header %q: %v", match[0], err)
+		}
+		entries[number] = true
+	}
+	if len(entries) == 0 {
+		t.Fatal("version.go carries no numbered entry: the pattern this test reads them with no longer matches")
+	}
+	return entries
+}
+
+// SupportedContracts (answers.go) is the list of contracts this daemon describes a shape for,
+// and version.go's numbered entries are what say which contracts exist. The two are held
+// together in both directions: an entry between the floor and this daemon's own contract that
+// the list omits is a contract no answer is shaped for, and a number in the list that no entry
+// names is a contract nothing ever shipped under. A number with no entry would be the second
+// case, which is why none is in the list.
+func TestSupportedContractsAreTheNumberedEntriesFromTheFloorUp(t *testing.T) {
+	entries := numberedEntries(t)
+	listed := map[int]bool{}
+	for _, contract := range SupportedContracts {
+		listed[contract] = true
+	}
+	for contract := ServingFloor; contract <= DaemonAPIVersion; contract++ {
+		if entries[contract] && !listed[contract] {
+			t.Errorf("version.go has an entry for %d and SupportedContracts leaves it out", contract)
+		}
+	}
+	for _, contract := range SupportedContracts {
+		if contract < ServingFloor || contract > DaemonAPIVersion {
+			t.Errorf("SupportedContracts names %d, outside the floor %d and this daemon's own contract %d",
+				contract, ServingFloor, DaemonAPIVersion)
+		}
+		if !entries[contract] {
+			t.Errorf("SupportedContracts names %d and version.go has no entry for it", contract)
+		}
 	}
 }

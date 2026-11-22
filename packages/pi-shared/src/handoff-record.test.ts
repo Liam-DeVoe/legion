@@ -9,6 +9,7 @@ import { forgetBrokerClients } from "@legion/envoy-client/broker-credential";
 import { DispatchServiceError } from "@legion/envoy-client/dispatch-http";
 import { fakeLatestHandoff } from "@legion/envoy-client/test/fake-dispatch";
 import { restoreEnvironment } from "@legion/test-fixtures/environment";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
 import {
   versionControlEnvironment,
@@ -153,6 +154,24 @@ test("every other completion reports the commit the workspace stands on, and rea
   }
 });
 
+// Contract 221: a role of the deployment completes the step it works, `step`, which ends with no
+// handoff record, so it reports the commit its workspace stands on wherever its issue stands.
+test("a role of the deployment reports the commit the workspace stands on, and reads no record", async () => {
+  for (const [phase, role] of [
+    ["step", "checker"],
+    ["step", "code-checker"],
+    ["testing", "checker"],
+  ] as const) {
+    const { jj, calls } = fakeJj();
+    const { latestHandoff, reads } = recordingDispatch();
+    await expect(findHandoffReport({ phase, role, env, jj, latestHandoff })).resolves.toEqual({
+      commit: STANDING,
+    });
+    expect(calls).toEqual([["log", "-r", "@-", "--no-graph", "-T", "commit_id"]]);
+    expect(reads).toEqual([]);
+  }
+});
+
 test("a reviewer whose review moved its issue on reports its own newest review record and the head it names", async () => {
   // A request for changes moves the issue to implementing at once, an approval to accepting once
   // the pull request is mergeable, and the reviewer completes after it: the daemon records that
@@ -256,6 +275,7 @@ const COMPLETIONS: Readonly<Record<LegionRole, Readonly<Record<LegionPhase, Comp
     implementing: row({ record: "plan" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
     testing: row({ record: "plan" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
     reviewing: row({ record: "plan" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
+    step: row({ record: "plan" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
     accepting: row({ record: "plan" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
     retro: row({ record: "plan" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
     merging: row({ record: "plan" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
@@ -271,6 +291,7 @@ const COMPLETIONS: Readonly<Record<LegionRole, Readonly<Record<LegionPhase, Comp
     implementing: row({ thrown: PUSH_IT }, "@- and origin", "no request"),
     testing: row({ record: "implement" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
     reviewing: row({ record: "implement" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
+    step: row({ record: "implement" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
     accepting: row({ record: "implement" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
     retro: row("@-", "@-", "200"),
     merging: row("@-", "@-", "409 HANDOFF_NOT_CURRENT_PHASE"),
@@ -286,6 +307,7 @@ const COMPLETIONS: Readonly<Record<LegionRole, Readonly<Record<LegionPhase, Comp
     implementing: row({ record: "test" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
     testing: row({ record: "test" }, "nothing", "200"),
     reviewing: row({ record: "test" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
+    step: row({ record: "test" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
     accepting: row({ record: "test" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
     retro: row({ record: "test" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
     merging: row({ record: "test" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
@@ -301,6 +323,7 @@ const COMPLETIONS: Readonly<Record<LegionRole, Readonly<Record<LegionPhase, Comp
     implementing: row({ record: "review" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
     testing: row({ record: "review" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
     reviewing: row({ record: "review" }, "nothing", "200"),
+    step: row({ record: "review" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
     accepting: row({ record: "review" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
     retro: row({ record: "review" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
     merging: row({ record: "review" }, "nothing", "409 HANDOFF_NOT_CURRENT_PHASE"),
@@ -316,6 +339,7 @@ const COMPLETIONS: Readonly<Record<LegionRole, Readonly<Record<LegionPhase, Comp
     implementing: row("@-", "@-", "409 HANDOFF_NOT_CURRENT_PHASE"),
     testing: row("@-", "@-", "409 HANDOFF_NOT_CURRENT_PHASE"),
     reviewing: row("@-", "@-", "409 HANDOFF_NOT_CURRENT_PHASE"),
+    step: row("@-", "@-", "409 HANDOFF_NOT_CURRENT_PHASE"),
     accepting: row("@-", "@-", "409 HANDOFF_NOT_CURRENT_PHASE"),
     retro: row("@-", "@-", "409 HANDOFF_NOT_CURRENT_PHASE"),
     merging: row("@-", "@-", "200"),
@@ -331,6 +355,7 @@ const COMPLETIONS: Readonly<Record<LegionRole, Readonly<Record<LegionPhase, Comp
     implementing: row("@-", "@-", "409 ACCEPTANCE_IS_SIGN_OFF"),
     testing: row("@-", "@-", "409 ACCEPTANCE_IS_SIGN_OFF"),
     reviewing: row("@-", "@-", "409 ACCEPTANCE_IS_SIGN_OFF"),
+    step: row("@-", "@-", "409 ACCEPTANCE_IS_SIGN_OFF"),
     accepting: row("@-", "@-", "409 ACCEPTANCE_IS_SIGN_OFF"),
     retro: row("@-", "@-", "409 ACCEPTANCE_IS_SIGN_OFF"),
     merging: row("@-", "@-", "409 ACCEPTANCE_IS_SIGN_OFF"),
@@ -769,10 +794,11 @@ test("the pane's Dispatch reads the phase's newest record as the session's confi
     });
     return answers.shift() ?? Response.json({ error: "unexpected" }, { status: 500 });
   }) as typeof fetch;
+  const paneDispatchToken = fixtureSecret("dsp");
   const paneEnv = {
     ...env,
     DISPATCH_URL: "http://dispatch.test",
-    DISPATCH_TOKEN: "pane-dispatch-token",
+    DISPATCH_TOKEN: paneDispatchToken,
   };
   const latestHandoff = paneLatestHandoff(file, paneEnv, root, "pane-session", dispatch);
   const report = () =>
@@ -797,7 +823,7 @@ test("the pane's Dispatch reads the phase's newest record as the session's confi
   expect(requests).toEqual([
     {
       url: "http://dispatch.test/api/v1/issues/LEGION-208/handoffs/review/latest",
-      authorization: "Bearer pane-dispatch-token",
+      authorization: `Bearer ${paneDispatchToken}`,
     },
   ]);
 
@@ -830,13 +856,14 @@ test("a pane whose Dispatch is the broker's reads the record under its own sessi
   scratch.push(root);
   const file = { path: path.join(root, "envoy.json"), error: null } as const;
   const trades: URLSearchParams[] = [];
+  const brokerToken = fixtureSecret("broker");
   const broker = Bun.serve({
     port: 0,
     hostname: "127.0.0.1",
     fetch: async (request) => {
       trades.push(new URLSearchParams(await request.text()));
       return Response.json({
-        access_token: "broker-access-token",
+        access_token: brokerToken,
         issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
         token_type: "DPoP",
         expires_in: 3600,
@@ -844,7 +871,7 @@ test("a pane whose Dispatch is the broker's reads the record under its own sessi
     },
   });
   const identityFile = path.join(root, "projected-token");
-  await Bun.write(identityFile, "projected.service.account.token\n");
+  await Bun.write(identityFile, `${fixtureSecret("proj")}\n`);
   const asked: Array<{ authorization: string | null; proof: string | null }> = [];
   const dispatch = (async (_input, init) => {
     const headers = new Headers(init?.headers);
@@ -869,7 +896,7 @@ test("a pane whose Dispatch is the broker's reads the record under its own sessi
   }
 
   expect(trades.map((form) => form.get("session"))).toEqual(["pane-session"]);
-  expect(asked.map((one) => one.authorization)).toEqual(["DPoP broker-access-token"]);
+  expect(asked.map((one) => one.authorization)).toEqual([`DPoP ${brokerToken}`]);
   expect(asked[0]?.proof).toBeString();
 });
 

@@ -34,6 +34,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/lookpath"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
@@ -92,6 +93,10 @@ type Options struct {
 	// way (appauth.AppRoleFor). Nil is a daemon with no GitHub Apps (Stage 2's, which configures no
 	// workflow): its panes are told no gh variable, hold no gh files, and the refresher does nothing.
 	GitHubCredential runtime.GitHubCredential
+	// ActsAs answers the role whose App a claim's pane holds while the claim does work other than
+	// its stored role's (runtime.ActsAs), which runtime.SlotRole reads at each mint of a pane's gh
+	// files. Optional: nil gives every pane its claim's stored role.
+	ActsAs runtime.ActsAs
 	// ControllerCredential is the daemon's function for the controller's own gh bundle
 	// (appauth.ControllerCredential). The refresher asks it for the owner the pane's launch
 	// recorded (trackedProcess.ghDefault); a launch asks for none, taking the first owner, which
@@ -108,6 +113,11 @@ type Options struct {
 	// restart, whose launch's repository it never saw, and never reads that from the pane's gh
 	// directory, which the pane's own user can write. Required with GitHubCredential.
 	ClaimRepository func(ctx context.Context, token claim.Token) (ghrepo.Repository, error)
+	// ClaimRole is a claim's stored role, from the daemon's own state: the role whose App the pane
+	// of a claim this runtime adopted without seeing its launch holds (runtime.SlotRole), since the
+	// claim's token names its agent and not its role. Optional: without it such a pane keeps its
+	// gh files until it is launched again.
+	ClaimRole func(ctx context.Context, token claim.Token) (claim.Role, error)
 	// Launchers are how a pane runs each harness the daemon resolved at boot (Launcher), by backend:
 	// a spec whose backend (runtime.Of) has none is refused. At least one, and only backends the
 	// tmux runtime launches (runtime.Backends).
@@ -136,6 +146,15 @@ type Options struct {
 	// overlays a pane of that role alone names in PI_CONFIG_FILES, after PiConfigFiles, so each
 	// outranks those, by role, the controller's pane included. Nil is none.
 	RoleConfigFiles map[claim.Role][]string
+	// LeakCheckManifestSHA256 is the manifest digest of the deployment's shared public leak check
+	// (leakguard.Setting.ManifestSHA256, config's leak_check), which every pane is told as
+	// leakguard.CheckerVar (panePairs): it is the sign that the deployment runs a check, under
+	// which a pane's guard refuses a write for want of a check or under a check whose manifest
+	// digest is anything else. A pane's `legion gh` trusts its read rule under the program that
+	// rule was proven against, whose digest it compiles in, and not under this digest. "" is a
+	// deployment that runs no shared leak check, whose panes are told nothing of it and refuse no
+	// write for its absence.
+	LeakCheckManifestSHA256 string
 	// ExperimentVariants is every arm of every experiment the project declares
 	// (config.Project.ExperimentsDeclared), in the order the file declares the experiments and,
 	// within one experiment, the order it declares the arms. A pane names the overlays of the
@@ -179,11 +198,14 @@ type Runtime struct {
 	dispatchURL      string
 	dispatchToken    string
 	gitHubCredential runtime.GitHubCredential
+	// actsAs is Options.ActsAs.
+	actsAs runtime.ActsAs
 	// controllerCredential is the controller pane's bundle by default owner
 	// (Options.ControllerCredential), set with gitHubCredential and nil without it.
 	controllerCredential runtime.ControllerCredential
 	gh                   string
 	claimRepository      func(ctx context.Context, token claim.Token) (ghrepo.Repository, error)
+	claimRole            func(ctx context.Context, token claim.Token) (claim.Role, error)
 	launchers            map[runtime.Backend]Launcher
 	markers              []string
 	agents               string
@@ -212,17 +234,25 @@ type Runtime struct {
 	// takeOver is the runtime whose locators this runtime takes over (Options.TakeOver):
 	// runtime.RuntimeSandbox under TakeOverKubernetes, "" for none.
 	takeOver string
+	// leakCheckManifestSHA256 is Options.LeakCheckManifestSHA256, the digest every pane is told.
+	leakCheckManifestSHA256 string
 
 	// run executes one tmux argv. A field so an in-package test can record every argv the
 	// runtime hands tmux; New sets it to runTmux.
 	run func(ctx context.Context, argv []string) (result, error)
 	// readProc reads a /proc file; a field for the same reason.
 	readProc func(path string) ([]byte, error)
+	// writeBundle writes a claim's gh bundle for the credential refresh (writeWatchedBundle); New
+	// sets it to ghconfig.WriteBundle. A field so an in-package test can hold the refresh inside its
+	// write, under the launch lock, while a relaunch of the same claim runs.
+	writeBundle func(root string, bundle ghconfig.Bundle) ([]string, error)
 
 	// launchMu serializes everything that decides which window a pane lands in and every change
 	// to the private server's set of panes the runtime must not race: session creation, a launch's
 	// refusal of a claim whose process still runs and the files it then writes for the claim, window
-	// choice, the pane's opening and recording, orphan reaping, and the scrub.
+	// choice, the pane's opening and recording, orphan reaping, and the scrub. A refresh's write of
+	// a claim's gh directory takes it too, to judge under it that its pane is still watched
+	// (writeWatchedBundle).
 	launchMu sync.Mutex
 
 	trackedMu sync.Mutex
@@ -241,16 +271,19 @@ type Runtime struct {
 // opened it (empty for one it adopted, whose window is then not offered to later panes),
 // ghRepo, the repository its launch minted the gh bundle's write token for: its spec's, or the
 // zero Repository for a launch on no repository and for the controller, whose bundle is
-// read-only throughout; and ghDefault, the default owner its launch wrote, whose directory is
+// read-only throughout; ghDefault, the default owner its launch wrote, whose directory is
 // the pane's GH_CONFIG_DIR, which is what a controller's refresh asks its bundle for
-// (Options.ControllerCredential). An adopted tree pane's repository is the daemon's record of
-// its claim (Options.ClaimRepository); an adopted controller's default is the first owner,
-// sorted, as its launch took it, since the launch this runtime never saw recorded nothing here.
+// (Options.ControllerCredential); and role, the role its launch ran it as, "" for a process this
+// runtime adopted without seeing its launch. An adopted tree pane's repository and role are the
+// daemon's record of its claim (Options.ClaimRepository, Options.ClaimRole); an adopted
+// controller's default is the first owner, sorted, as its launch took it, since the launch this
+// runtime never saw recorded nothing here.
 type trackedProcess struct {
 	locator   runtime.Locator
 	issue     string
 	ghRepo    ghrepo.Repository
 	ghDefault string
+	role      claim.Role
 }
 
 // New builds a runtime from opts, resolving the tmux and legion binaries now so a daemon that
@@ -333,41 +366,45 @@ func New(opts Options) (*Runtime, error) {
 	}
 	markers, agents := agentMarkers(opts.Launchers)
 	r := &Runtime{
-		socket:               "legion-" + opts.Project,
-		stateDir:             opts.StateDir,
-		streamAddress:        opts.StreamAddress,
-		daemonURL:            opts.DaemonURL,
-		envoyURL:             opts.EnvoyURL,
-		natsURLs:             opts.NatsURLs,
-		dispatchURL:          opts.DispatchURL,
-		dispatchToken:        opts.DispatchTokenFile,
-		gitHubCredential:     opts.GitHubCredential,
-		controllerCredential: opts.ControllerCredential,
-		gh:                   opts.GH,
-		claimRepository:      opts.ClaimRepository,
-		launchers:            opts.Launchers,
-		markers:              markers,
-		agents:               agents,
-		stopGrace:            opts.StopGrace,
-		probeInterval:        opts.ProbeInterval,
-		adoptTimeout:         opts.AdoptTimeout,
-		commandTimeout:       opts.CommandTimeout,
-		conns:                opts.Conns,
-		paneEnv:              paneEnv,
-		ownEnviron:           environ,
-		tmuxPath:             tmuxPath,
-		legion:               legion,
-		now:                  opts.Now,
-		log:                  opts.Log,
-		providerEnvDir:       opts.ProviderEnvDir,
-		providerKeys:         providerKeys,
-		operatorEnv:          opts.PaneEnv,
-		piConfigFiles:        opts.PiConfigFiles,
-		roleConfigFiles:      opts.RoleConfigFiles,
-		takeOver:             takeOver,
-		readProc:             os.ReadFile,
-		tracked:              map[string]*trackedProcess{},
-		displaced:            map[claim.Token]runtime.Locator{},
+		socket:                  "legion-" + opts.Project,
+		stateDir:                opts.StateDir,
+		streamAddress:           opts.StreamAddress,
+		daemonURL:               opts.DaemonURL,
+		envoyURL:                opts.EnvoyURL,
+		natsURLs:                opts.NatsURLs,
+		dispatchURL:             opts.DispatchURL,
+		dispatchToken:           opts.DispatchTokenFile,
+		gitHubCredential:        opts.GitHubCredential,
+		actsAs:                  opts.ActsAs,
+		controllerCredential:    opts.ControllerCredential,
+		gh:                      opts.GH,
+		claimRepository:         opts.ClaimRepository,
+		claimRole:               opts.ClaimRole,
+		launchers:               opts.Launchers,
+		markers:                 markers,
+		agents:                  agents,
+		stopGrace:               opts.StopGrace,
+		probeInterval:           opts.ProbeInterval,
+		adoptTimeout:            opts.AdoptTimeout,
+		commandTimeout:          opts.CommandTimeout,
+		conns:                   opts.Conns,
+		paneEnv:                 paneEnv,
+		ownEnviron:              environ,
+		tmuxPath:                tmuxPath,
+		legion:                  legion,
+		now:                     opts.Now,
+		log:                     opts.Log,
+		providerEnvDir:          opts.ProviderEnvDir,
+		providerKeys:            providerKeys,
+		operatorEnv:             opts.PaneEnv,
+		piConfigFiles:           opts.PiConfigFiles,
+		roleConfigFiles:         opts.RoleConfigFiles,
+		takeOver:                takeOver,
+		leakCheckManifestSHA256: opts.LeakCheckManifestSHA256,
+		readProc:                os.ReadFile,
+		writeBundle:             ghconfig.WriteBundle,
+		tracked:                 map[string]*trackedProcess{},
+		displaced:               map[claim.Token]runtime.Locator{},
 	}
 	if r.commandTimeout == 0 {
 		r.commandTimeout = defaultCommandTimeout
@@ -427,16 +464,22 @@ func (r *Runtime) ReplacePod(context.Context, runtime.Known, func(context.Contex
 func (r *Runtime) CleanupTree(context.Context, string) error { return nil }
 
 // result is one tmux invocation's outcome. timedOut is the budget the client was killed at, zero
-// when it returned on its own.
+// when it returned on its own; signal is the words of the signal that ended the client
+// (`signal: killed`), empty when it exited. In either case exitCode is -1, which a message never
+// prints (failed, exited).
 type result struct {
 	stdout, stderr string
 	exitCode       int
 	timedOut       time.Duration
+	signal         string
 }
 
 // runTmux runs one argv against the private server under the pane environment, bounded by the
-// command timeout. A client that ran and failed is a result; one that could not run at all, or
-// whose caller's context ended, is an error. The client timed out only when the timeout killed it
+// command timeout. A client that ran and did not succeed is a result: one that exited non-zero,
+// one its timeout killed, and one some other signal ended (the kernel's out-of-memory kill), so
+// each caller reads them alike as a failed run, and a message about one names its exit, its
+// timeout or its signal (failed, exited). One that could not run at all, or whose caller's context
+// ended, is an error. The client timed out only when the timeout killed it
 // (procgroup.KilledByContext): once the client has exited on its own, pipeDrainDelay can hold Run
 // open past the timeout for a server still holding the client's pipes, and the client's exit is
 // then its answer.
@@ -459,6 +502,10 @@ func (r *Runtime) runTmux(ctx context.Context, argv []string) (result, error) {
 	}
 	if killed() {
 		res.exitCode, res.timedOut = -1, r.commandTimeout
+		return res, nil
+	}
+	if end := procgroup.Ended(err); end.Signal != "" {
+		res.exitCode, res.signal = -1, end.Signal
 		return res, nil
 	}
 	if runErr := procgroup.Err(err); runErr != nil {
@@ -489,6 +536,30 @@ func failure(res result) string {
 		return ": " + detail
 	}
 	return ": tmux printed nothing on stderr"
+}
+
+// failed is the end of an error message about a tmux client that did not succeed, after the
+// command it ran: ` failed (exit 3): <stderr>`, ` was ended by signal: killed: <stderr>` for a
+// client a signal ended, or ` timed out after 10s` for a client its timeout killed. Neither of the
+// last two left the client an exit of its own.
+func failed(res result) string {
+	switch {
+	case res.timedOut > 0:
+		return fmt.Sprintf(" timed out after %s", res.timedOut)
+	case res.signal != "":
+		return fmt.Sprintf(" was ended by %s%s", res.signal, failure(res))
+	}
+	return fmt.Sprintf(" failed (exit %d)%s", res.exitCode, failure(res))
+}
+
+// exited is failed for a message that says what the client exited with: ` exited 3: <stderr>`, or,
+// for a client with no exit of its own, failed's ` was ended by signal: killed: <stderr>` or
+// ` timed out after 10s`.
+func exited(res result) string {
+	if res.timedOut > 0 || res.signal != "" {
+		return failed(res)
+	}
+	return fmt.Sprintf(" exited %d%s", res.exitCode, failure(res))
 }
 
 // incarnation is a pane's process identity: its root pid and that process's start ticks.
@@ -559,15 +630,17 @@ func (r *Runtime) displacedObservation(loc runtime.Locator) runtime.Observation 
 }
 
 // track watches the process a launch opened: the issue it works, the repository its gh bundle's
-// write token was minted for, and the default owner that bundle was written with. A record this
-// runtime already made of the same incarnation stands, since it is the launch's own.
-func (r *Runtime) track(loc runtime.Locator, issue string, ghRepo ghrepo.Repository, ghDefault string) {
+// write token was minted for, the default owner that bundle was written with, and the role the
+// process was launched as (the spec's role, the claim's stored role then), which it runs for its
+// whole life: a claim takes another role only while it runs nothing. A record this runtime already
+// made of the same incarnation stands, since it is the launch's own.
+func (r *Runtime) track(loc runtime.Locator, issue string, ghRepo ghrepo.Repository, ghDefault string, role claim.Role) {
 	r.trackedMu.Lock()
 	defer r.trackedMu.Unlock()
 	if existing, ok := r.tracked[loc.Incarnation]; ok && existing.issue != "" {
-		issue, ghRepo, ghDefault = existing.issue, existing.ghRepo, existing.ghDefault
+		issue, ghRepo, ghDefault, role = existing.issue, existing.ghRepo, existing.ghDefault, existing.role
 	}
-	r.tracked[loc.Incarnation] = &trackedProcess{locator: loc, issue: issue, ghRepo: ghRepo, ghDefault: ghDefault}
+	r.tracked[loc.Incarnation] = &trackedProcess{locator: loc, issue: issue, ghRepo: ghRepo, ghDefault: ghDefault, role: role}
 }
 
 func (r *Runtime) untrack(loc runtime.Locator) {
@@ -597,7 +670,7 @@ func (r *Runtime) adoptExactly(located []runtime.Locator) {
 	for _, loc := range located {
 		entry := &trackedProcess{locator: loc}
 		if existing, ok := r.tracked[loc.Incarnation]; ok {
-			entry.issue, entry.ghRepo, entry.ghDefault = existing.issue, existing.ghRepo, existing.ghDefault
+			entry.issue, entry.ghRepo, entry.ghDefault, entry.role = existing.issue, existing.ghRepo, existing.ghDefault, existing.role
 		}
 		r.tracked[loc.Incarnation] = entry
 	}
@@ -740,7 +813,7 @@ func (r *Runtime) stop(ctx context.Context, loc runtime.Locator) error {
 		return fmt.Errorf("stop %s: %w", loc.Claim, err)
 	}
 	if res.exitCode != 0 && !paneGoneStderr.MatchString(res.stderr) {
-		return fmt.Errorf("stop %s: kill-pane %s exited %d%s", loc.Claim, pane, res.exitCode, failure(res))
+		return fmt.Errorf("stop %s: kill-pane %s%s", loc.Claim, pane, exited(res))
 	}
 	r.untrack(loc)
 	return nil

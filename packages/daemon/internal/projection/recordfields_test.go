@@ -198,11 +198,12 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 	// The issue record with every field set. It stands in another project than the pass's, so
 	// the admission line — which is no part of the issue record — puts nothing of its own on the
 	// view, and under a root of its own tree, so the hold's reason is served: the reason is
-	// suppressed by its tree's linger, not by its own.
+	// suppressed by its tree's linger, not by its own. Its hold took it out of step, so the role
+	// of its running step, which no phase names, is served beside the phase the hold left.
 	issue := record.Issue{
 		Key: held, Tree: root, Project: "OTHER", Title: "the held child", Parent: &parent,
 		Phase: phase.AwaitingPerson, Generation: 3, Status: "in_progress", Rank: "00042",
-		LingerUntil: &lingerUntil, Hold: &record.Hold{From: phase.Implementing, Reason: record.HoldEscalated},
+		LingerUntil: &lingerUntil, Hold: &record.Hold{From: phase.Step, Reason: record.HoldEscalated},
 		LastDispatchSeq: 91,
 		HandedOver:      true, TakenBack: true, DispatchStatus: "needs_review",
 		Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
@@ -211,7 +212,7 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 			Ask: "9a8fd348-55d5-4d72-a793-3cd037f75f13", Since: record.EventMark{Seq: 12, At: projectedAt.Add(-time.Hour)},
 			AnsweredAt: &answeredAt, AnsweredBy: record.AnsweredByAsk,
 		},
-		HandoutSeq: 88, DeclaredSeq: 89, DeclaredAt: declaredAt,
+		HandoutSeq: 88, DeclaredSeq: 89, DeclaredAt: declaredAt, StepRole: "checker",
 	}
 	// The root the child reads its tree's facts from. It does not linger, a linger of the tree
 	// being what suppresses the hold's reason.
@@ -251,7 +252,7 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 		Budgets:    supervise.Budgets{LaunchFailures: 4, Deaths: 1, PromptFailures: 2, PromptRetires: 3},
 		Failure:    "launch failures ran out", FailureCause: supervise.CauseDied, FailedAt: failedAt,
 		PendingCause:   supervise.CauseDied,
-		LeakCheckCause: "the shared public leak check could not be installed: the tarball of theorem-labs/agent-infra at leak-check-v3 holds no leak-check directory",
+		LeakCheckCause: "the shared public leak check could not be installed: the tarball of example-org/deployment at leak-check-v3 holds no leak-check directory",
 		Pending: &supervise.Delivery{
 			ID: "dlv-9", Task: "implement the change, which no agent surface carries",
 			Generation: 3, Entry: 8, Phase: phase.Implementing, QueuedAt: queuedAt,
@@ -262,7 +263,7 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 		UncertainStreak: 1,
 		SuspendedBy:     supervise.SuspendedByOperator, SuspensionHeld: true,
 		SuspensionHeldBy: supervise.SuspendedByDaemon, Compacting: true, ProcessGone: true, DeathCharged: true,
-		PluginContract: api.DaemonAPIVersion, PluginRelaunchFor: api.DaemonAPIVersion - 1,
+		PluginContract: api.DaemonAPIVersion, PluginRelaunchFor: api.DaemonAPIVersion - 1, AgentResumeGeneration: 3,
 		UpdateRound: "pod:" + podUID, UpdateReasons: "the pod template changed: the image moved",
 		UpdateOpenedAt: &openedAt, UpdateTaskedAt: &openedAt, UpdateSignalledAt: &answeredAt,
 		UpdateHead:       "4c1b8e2a6f9d3047b5e1c8a2f6d940b3e7c5a128",
@@ -280,7 +281,7 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 		Abandoned: supervise.AbandonedSession{Session: "ses_implementer_499", Why: "the provider refused every turn of it"},
 		EndedWork: supervise.EndedWork{At: projectedAt.Add(-40 * time.Minute), Cause: "the process died: gone: OOMKilled",
 			Generation: 2, Turn: true, TaskTurn: true, Background: true, Kinds: []string{"subagent"}, Reported: true},
-		SessionLost: true,
+		SessionLost: supervise.SessionLossGone,
 		Step: supervise.StepRecord{
 			At: projectedAt.Add(-time.Minute), TurnStartedAt: projectedAt.Add(-2 * time.Minute),
 			Tool: "bash", CallID: "toolu_impl_11", ArgsBytes: 128, ArgsHash: "9b2e45c0d1f8a673",
@@ -292,8 +293,10 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 		issues:      []record.Issue{tree, issue},
 		assignments: map[string][]record.Assignment{root: {drawn}},
 	}
-	state, err := Project(context.Background(), nil, store,
-		"LEGION", nil, nil, []supervise.Claim{current}, nil, nil, projectedAt)
+	state, err := Project(context.Background(), Inputs{
+		Store: store, Project: "LEGION",
+		Claims: []supervise.Claim{current}, Now: projectedAt,
+	})
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}
@@ -306,7 +309,9 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 		document := wire(t, worker.Claim)
 		// `capabilities` is no field of the claim record — it is what the claim's session last
 		// reported — so the claim built here carries none and the view's keys are the record's.
-		servedKeys(t, "supervise.Claim", document, api.ClaimRecordFields, nil, wire(t, state.Issues[root]))
+		// `updateState` is no one field's either: it is a reading over several of the update
+		// columns (api.UpdateStateOf), so no entry of the table names it and it is named here.
+		servedKeys(t, "supervise.Claim", document, api.ClaimRecordFields, []string{"updateState"}, wire(t, state.Issues[root]))
 
 		want := wire(t, map[string]any{
 			"session":           current.Session,
@@ -317,6 +322,7 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 			"updateRound":       current.UpdateRound,
 			"updateHead":        current.UpdateHead,
 			"updateReasons":     current.UpdateReasons,
+			"updateState":       api.UpdateStateAnswered,
 			"providerErrorRun":  current.ProviderErrorRun,
 			// The turn times and the two causes, with the ready that dates them: the view
 			// carries each as the record holds it.
@@ -378,7 +384,7 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 			"key": issue.Key, "tree": issue.Tree, "phase": issue.Phase,
 			"generation": issue.Generation, "status": issue.Status,
 			"lingerUntil": issue.LingerUntil,
-			"holdReason":  issue.Hold.Reason, "heldFrom": issue.Hold.From,
+			"holdReason":  issue.Hold.Reason, "heldFrom": issue.Hold.From, "stepRole": issue.StepRole,
 			"repo": issue.Repo, "defaultBranch": issue.DefaultBranch,
 			"ancestry": issue.Ancestry,
 			"waitingOn": map[string]any{

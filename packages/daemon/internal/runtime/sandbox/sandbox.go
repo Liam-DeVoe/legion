@@ -1,6 +1,7 @@
 // Package sandbox runs each issue in one Agent Sandbox (agents.x-k8s.io/v1beta1 Sandbox,
 // kubernetes-sigs/agent-sandbox v1.0.3). Its pod's one container, `roles`, runs one launcher that
-// serves all six workflow roles, each role's generation in namespaces of its own (`legion launcher
+// serves every role of the issue (Legion's six workflow roles, then each role the deployment
+// defines), each role's generation in namespaces of its own (`legion launcher
 // role-init`), and the roles share the issue's workspace and network. The project controller
 // (`controller: daemon`) runs in a Sandbox of its own whose pod has the controller's launcher
 // alone. The two are the runtime's two kinds of pod (podKind): one supervision path runs both, and
@@ -54,6 +55,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
@@ -82,13 +84,21 @@ type Runtime struct {
 	probeRun                       string
 	volumeSize                     resource.Quantity
 	scheduling                     Scheduling
+	sandboxConfig                  SandboxConfig
 	resources                      PodResources
 	streamURL, daemonURL, envoyURL string
 	dispatchURL, dispatchToken     string
 	natsURLs                       []string
 	tools                          Tools
 	pod                            Pod
-	roleConfigFiles                map[claim.Role][]string
+	// issueRoles are the runtime's issue roles: Legion's six (claim.Roles), then each role the
+	// deployment defines, sorted by name (issueRolesOf over Options.DeploymentApps).
+	// deploymentApps is that map, the App each role of the deployment acts as. Both are set once
+	// in configureProber and only read after, and no package variable holds either: two runtimes
+	// of one process keep their own.
+	issueRoles      []claim.Role
+	deploymentApps  appauth.DeploymentApps
+	roleConfigFiles map[claim.Role][]string
 	// experimentVariants are every arm of every experiment the project declares
 	// (Options.ExperimentVariants), and variantFiles their overlay files as one list, in that
 	// same order: the union every reader that holds a pod or the deployment and no tree takes,
@@ -103,7 +113,6 @@ type Runtime struct {
 	controllerSlackChannels []string
 	agent                   []string
 	setup                   []string
-	skills                  ghrepo.Repository
 	testPostgres            bool
 	bootTimeout             time.Duration
 	registrationIntervals   int
@@ -115,31 +124,50 @@ type Runtime struct {
 	adoptTimeout            time.Duration
 	tokens                  ProvisionTokens
 	gitHubCredential        runtime.GitHubCredential
-	controllerCredential    runtime.ControllerCredential
-	gitHubDirs              func(repo ghrepo.Repository, roles []appauth.AppRole) []string
-	store                   Store
-	conns                   runtime.Conns
-	launchers               *launchers
-	launcherAuth            launcherCredentials
-	now                     func() time.Time
-	log                     *slog.Logger
+	actsAs                  runtime.ActsAs
+	// launchedApp is, for each slot of each pod (by its Sandbox's name), the App of the last
+	// start this runtime made in it (writeLaunchCredential), which says whether a start's slot gh
+	// files may not hold its credential yet. A runtime that restarted holds it empty. Guarded by
+	// launchedMu.
+	launchedApp          map[slotKey]string
+	launchedMu           sync.Mutex
+	controllerCredential runtime.ControllerCredential
+	gitHubDirs           func(repo ghrepo.Repository, roles []appauth.AppRole) []string
+	store                Store
+	conns                runtime.Conns
+	launchers            *launchers
+	launcherAuth         launcherCredentials
+	now                  func() time.Time
+	log                  *slog.Logger
+	// keptVolumeBound is how long a launch gives a pod with a kept volume to start where the boot
+	// timeout is shorter (startBound): keptVolumeAttachWait, which a test sets short.
+	keptVolumeBound time.Duration
 	// memoryGuard is Options.MemoryGuard: the memory guard settings an issue pod's launcher is
 	// handed on the answer to each hello (LauncherResolver), nil for a deployment that turned the
 	// guard off.
 	memoryGuard *shimwire.LauncherMemoryGuard
-	// podShapes is the configuration each kind of pod is built from now (podShape), by kind,
-	// encoded once here. Every input of a shape — the image, the kind's reservation, the
-	// operator's volumes and mounts and the disk — is set at construction and never written
-	// again, so the pod template that records a shape (podTemplate) and the sweep that compares a
-	// stored one against it (PodDrift, once per claim of the deployment per tick) read a string
-	// rather than marshalling that configuration again.
-	podShapes map[podKind]string
-	// cacheConfig is how each repository's cache is made, mapped the repositories the project's
-	// mapping names now (Options.RepositoryCache, Options.Mapped), and cacheDial opens every
-	// connection the health read makes (net.Dialer's own; a test routes the Service's name itself).
-	cacheConfig RepositoryCache
-	mapped      func() []ghrepo.Repository
-	cacheDial   func(ctx context.Context, network, address string) (net.Conn, error)
+	// leakCheck is Options.LeakCheckSetting: the deployment's shared public leak check, whose
+	// install and checker every role is told where it is configured (mainEnvironment).
+	leakCheck leakguard.Setting
+	// volumeTrim is Options.VolumeTrim: the cache trimmer settings an issue pod's launcher is
+	// handed on the answer to its hello (LauncherResolver), nil for a deployment that runs none.
+	volumeTrim *shimwire.LauncherVolumeTrim
+	// podShapes is the configuration each kind of pod is built from now in each sandbox it can
+	// run in (podShape), by kind and sandbox (podShapeKey), encoded once here (podShapes). Every
+	// input of a shape — the image, the kind's reservation, the operator's volumes and mounts, the
+	// disk and the microvm block — is set at construction and never written again, so the pod
+	// template that records a shape (podTemplate) and the sweep that compares a stored one against
+	// it (PodDrift, once per claim of the deployment per tick) read a string rather than
+	// marshalling that configuration again.
+	podShapes map[podShapeKey]string
+	// cacheConfig is how each repository's cache is made, cacheRepositories the repositories the
+	// caches follow, those of the project's live issue records and of the launches since the
+	// daemon last read them (Options.RepositoryCache, Options.CacheRepositories), and cacheDial
+	// opens every connection the health read makes (net.Dialer's own; a test routes the Service's
+	// name itself).
+	cacheConfig       RepositoryCache
+	cacheRepositories func() []ghrepo.Repository
+	cacheDial         func(ctx context.Context, network, address string) (net.Conn, error)
 
 	// lifetime is the informers' context; a read no single caller waits for
 	// (readLauncherCredential) ends with it.
@@ -165,6 +193,12 @@ type Runtime struct {
 	watch map[claim.Token]runtime.Locator
 	// observer is the running Observe, nil when none runs.
 	observer *observer
+	// sessions is, by claim, the session the latest Claude Code launch of it started or resumed
+	// under and the incarnation it started as (LaunchSession), kept only when agentSecrets names
+	// an exchange audience (nameSession): written once that launch's start is sent, and dropped
+	// with the watch's record when the process is let go or the claim's next launch begins
+	// (forget, forgetIf). Memory only; a restarted daemon answers none.
+	sessions map[claim.Token]launchedSession
 	// podTurns serializes the relaunches, issue suspension, release and orphan deletion of one pod,
 	// keyed by its Sandbox's name (lockPod). Nothing serializes the pods of one tree against each
 	// other: each issue's pod provisions its own clone on its own volume.
@@ -234,8 +268,8 @@ func configure(opts Options) (*Runtime, error) {
 // adopting and sweeping a claim's pod, and making, refreshing and sweeping the repository caches:
 // the provisioning token source, the roles' gh-files function and the owners it serves them for,
 // the store, the connection directory, a worker stream address a pod can dial, the repository
-// caches' configuration and the mapping they follow. A runtime that runs the image probe alone
-// (newProber) reads none of them.
+// caches' configuration and the repositories they follow. A runtime that runs the image probe
+// alone (newProber) reads none of them.
 func checkSupervision(opts Options) error {
 	refuse := func(format string, args ...any) error { return fmt.Errorf("sandbox runtime: "+format, args...) }
 	switch {
@@ -251,8 +285,8 @@ func checkSupervision(opts Options) error {
 		return refuse("no store")
 	case opts.Conns == nil:
 		return refuse("no connection directory")
-	case opts.Mapped == nil:
-		return refuse("no repository mapping for the repository caches")
+	case opts.CacheRepositories == nil:
+		return refuse("no repository set for the repository caches")
 	}
 	if err := opts.RepositoryCache.check(); err != nil {
 		return refuse("%v", err)
@@ -272,6 +306,14 @@ func configureProber(opts Options) (*Runtime, error) {
 	// which its stream from the repository cache runs outside of, the shared clone's own, and the
 	// issue's own checkout's.
 	provisionBound := workspace.FetchBudget + workspace.CloneTimeout + workspace.CheckoutTimeout
+	// The longest a launch try gives a pod to start (startBound), which the try's bound counts in
+	// awaitRoleLauncher's backstop (launchBound): the kept-volume bound where the microvm block
+	// keeps an issue pod's volume and that bound is longer than the boot timeout, and the boot
+	// timeout otherwise.
+	longestStart := opts.BootTimeout
+	if keptVolume(issuePod{}, opts.Sandbox.MicroVM) {
+		longestStart = max(longestStart, keptVolumeAttachWait)
+	}
 	refuse := func(format string, args ...any) (*Runtime, error) {
 		return nil, fmt.Errorf("sandbox runtime: "+format, args...)
 	}
@@ -285,6 +327,11 @@ func configureProber(opts Options) (*Runtime, error) {
 		return refuse("image %q is not pinned by digest (…@sha256:…)", opts.Image)
 	case opts.StorageClass == "":
 		return refuse("no storage class for the issue volume (the cluster has no default class to fall back on)")
+	case opts.Sandbox.AnyMicroVM() && (opts.Sandbox.MicroVM == nil || opts.Sandbox.MicroVM.ComputeClass == ""):
+		return refuse("no compute class for the issue pods that run in a microVM (sandbox type %q, canary issues %v): the ComputeClass whose nodes run them",
+			opts.Sandbox.Type, opts.Sandbox.CanaryIssues)
+	case opts.Sandbox.AnyMicroVM() && opts.Sandbox.MicroVM.StorageClass == "":
+		return refuse("no storage class for the disks of the issue pods that run in a microVM (the cluster has no default class to fall back on)")
 	case opts.IssueVolume.Sign() <= 0:
 		return refuse("no issue volume size: %s is not a positive quantity", opts.IssueVolume.String())
 	// An issue pod's disk is the pod's own ephemeral volume, created with the pod and deleted with
@@ -331,6 +378,13 @@ func configureProber(opts Options) (*Runtime, error) {
 		}
 	}
 	if a := opts.AgentSecrets; a != nil {
+		// The Workload Identity pool is the audience of the token a microVM pod's launcher
+		// exchanges for a Google one (workloadIdentityVolumes); empty, no pod carries that token.
+		// While an issue pod runs in a microVM the switch above has refused a nil MicroVM.
+		var workloadPool string
+		if opts.Sandbox.AnyMicroVM() && opts.Sandbox.MicroVM.Metadata != nil {
+			workloadPool = opts.Sandbox.MicroVM.Metadata.WorkloadPool
+		}
 		switch {
 		case a.URL == "":
 			return refuse("agent secrets: no broker URL")
@@ -338,9 +392,17 @@ func configureProber(opts Options) (*Runtime, error) {
 			return refuse("agent secrets: no token audience")
 		case a.TokenExpiry < 10*time.Minute || a.TokenExpiry > time.Hour:
 			return refuse("agent secrets: token expiry %s is not between %s and %s (the API server's floor and the cluster's admission cap)", a.TokenExpiry, 10*time.Minute, time.Hour)
+		case a.ExchangeAudience == a.Audience:
+			return refuse("agent secrets: the exchange audience is the enrollment's own, %q; the cluster projects one volume per audience", a.Audience)
+		case workloadPool != "" && a.Audience == workloadPool:
+			return refuse("agent secrets: the enrollment's audience is the Workload Identity pool's, %q, which the metadata endpoint's token holds; the cluster projects one volume per audience", workloadPool)
+		case workloadPool != "" && a.ExchangeAudience == workloadPool:
+			return refuse("agent secrets: the exchange audience is the Workload Identity pool's, %q, which the metadata endpoint's token holds; the cluster projects one volume per audience", workloadPool)
 		}
 	}
-	if err := CheckPod(opts.Pod, opts.ProviderKeys, opts.Tools, opts.LaunchSecrets, opts.ProvidersSecrets, opts.SessionStore); err != nil {
+	issueRoles := issueRolesOf(opts.DeploymentApps)
+	if err := CheckPod(opts.Pod, append(slices.Clone(issueRoles), claim.RoleController), opts.ProviderKeys, opts.Tools, opts.LaunchSecrets, opts.ProvidersSecrets, opts.SessionStore,
+		opts.AgentSecrets != nil && opts.AgentSecrets.ExchangeAudience != ""); err != nil {
 		return refuse("%v", err)
 	}
 	for _, name := range opts.ProvidersSecrets {
@@ -349,7 +411,7 @@ func configureProber(opts Options) (*Runtime, error) {
 		}
 	}
 	for role, files := range opts.RoleConfigFiles {
-		if !slices.Contains(roleConfigRoles, role) {
+		if role != claim.RoleController && !slices.Contains(issueRoles, role) {
 			return refuse("Oh My Pi overlays for %q, which is not a Legion role", role)
 		}
 		for _, file := range files {
@@ -367,23 +429,26 @@ func configureProber(opts Options) (*Runtime, error) {
 	}
 	r := &Runtime{
 		namespace: opts.Namespace, project: opts.Project, image: opts.Image, storageClass: opts.StorageClass,
-		volumeSize: opts.IssueVolume, scheduling: opts.Scheduling, resources: opts.Resources,
+		volumeSize: opts.IssueVolume, scheduling: opts.Scheduling, sandboxConfig: opts.Sandbox, resources: opts.Resources,
 		streamURL: opts.StreamURL, daemonURL: opts.DaemonURL, envoyURL: opts.EnvoyURL, dispatchURL: opts.DispatchURL,
 		dispatchToken: opts.DispatchToken, natsURLs: opts.NATSURLs, tools: opts.Tools, agentSecrets: opts.AgentSecrets,
-		pod: opts.Pod, roleConfigFiles: opts.RoleConfigFiles, experimentVariants: opts.ExperimentVariants,
+		pod: opts.Pod, issueRoles: issueRoles, deploymentApps: opts.DeploymentApps,
+		roleConfigFiles: opts.RoleConfigFiles, experimentVariants: opts.ExperimentVariants,
 		variantFiles: runtime.VariantOverlays(opts.ExperimentVariants),
 		providerKeys: opts.ProviderKeys, providersSecrets: slices.Sorted(slices.Values(opts.ProvidersSecrets)), natsUser: opts.NATSUser,
 		sessionStore: opts.SessionStore, controllerSlackChannels: slices.Clone(opts.ControllerSlackChannels),
-		bootTimeout: opts.BootTimeout, registrationIntervals: opts.RegistrationIntervals,
+		bootTimeout: opts.BootTimeout, keptVolumeBound: keptVolumeAttachWait, registrationIntervals: opts.RegistrationIntervals,
 		busyBackoff: opts.BusyBackoff, provisionBound: provisionBound, terminationGrace: opts.TerminationGrace,
-		launchBound:   launchBound(opts.BootTimeout, provisionBound, opts.TerminationGrace),
+		launchBound:   launchBound(opts.BootTimeout, longestStart, provisionBound, opts.TerminationGrace, len(issueRoles)),
 		probeInterval: opts.ProbeInterval, adoptTimeout: opts.AdoptTimeout, agent: opts.Agent, setup: slices.Clone(opts.Setup),
-		testPostgres: opts.TestPostgres, skills: opts.SkillsRepository, memoryGuard: opts.MemoryGuard,
-		tokens: opts.Tokens, gitHubCredential: opts.GitHubCredential, controllerCredential: opts.ControllerCredential,
+		testPostgres: opts.TestPostgres, memoryGuard: opts.MemoryGuard, leakCheck: opts.LeakCheckSetting, volumeTrim: opts.VolumeTrim,
+		tokens: opts.Tokens, gitHubCredential: opts.GitHubCredential, actsAs: opts.ActsAs, controllerCredential: opts.ControllerCredential,
 		gitHubDirs: opts.GitHubDirs,
 		store:      opts.Store, conns: opts.Conns, now: opts.Now, log: opts.Log,
 		changed: make(chan struct{}), watch: map[claim.Token]runtime.Locator{}, podTurns: map[string]chan struct{}{}, stranded: map[string]string{},
-		cacheConfig: opts.RepositoryCache, mapped: opts.Mapped,
+		sessions:    map[claim.Token]launchedSession{},
+		launchedApp: map[slotKey]string{},
+		cacheConfig: opts.RepositoryCache, cacheRepositories: opts.CacheRepositories,
 		cacheDial: (&net.Dialer{}).DialContext, occupiedCaches: map[string]bool{}, cacheBearers: map[string]string{},
 	}
 	if len(r.agent) == 0 {
@@ -396,18 +461,35 @@ func configureProber(opts Options) (*Runtime, error) {
 		r.log = slog.Default()
 	}
 	// The launchers carry the shared public leak check and one pod's saved workspace bundle to it
-	// before any of its roles start, take its memory guard's kill reports, and log what they could
-	// not carry or record, so they are built once the runtime's log is settled.
-	r.launchers = newLaunchers(opts.LeakCheck, opts.SavedWorkspaceBundle, opts.WorkspaceBundleRestored, opts.MemoryGuardKilled, r.log)
+	// before any of its roles start, take its memory guard's kill reports and its cache trimmer's
+	// sweep reports, and log what they could not carry or record, so they are built once the
+	// runtime's log is settled.
+	r.launchers = newLaunchers(opts.LeakCheckSetting, opts.LeakCheck, opts.SavedWorkspaceBundle, opts.WorkspaceBundleRestored, opts.HeldWorkspaceBundle,
+		opts.MemoryGuardKilled, opts.VolumeReported, r.log)
 	// Last, after the logger a failed encoding is reported through: every input is settled above
-	// and none is written again, so each kind's shape is encoded here and only read afterwards.
-	r.podShapes = map[podKind]string{issuePod{}: podShape(r, issuePod{}), controllerPod{}: podShape(r, controllerPod{})}
+	// and none is written again, so each kind's shape in each sandbox is encoded here and only
+	// read afterwards.
+	r.podShapes = podShapes(r)
 	return r, nil
 }
 
-// roleConfigRoles are the roles Options.RoleConfigFiles may name, in the workflow's order: every
-// issue role, then the controller.
-var roleConfigRoles = append(slices.Clone(claim.Roles), claim.RoleController)
+// issueRolesOf is the one rule of the order of an issue pod's roles: Legion's six in the workflow's
+// order (claim.Roles), then each role deployed defines, sorted by name, so every reader of the
+// list and every pod built from it sees the same order whatever order the map gives.
+func issueRolesOf(deployed appauth.DeploymentApps) []claim.Role {
+	return append(slices.Clone(claim.Roles), slices.Sorted(maps.Keys(deployed))...)
+}
+
+// IssueRoles is issueRolesOf exported, the one rule of the order of an issue pod's roles, for the
+// daemon's own reads of the deployment that build no runtime (`legion config check` and the boot's
+// check of the operator's pod, checkOperatorConfig), so they refuse what configure refuses.
+func IssueRoles(deployed appauth.DeploymentApps) []claim.Role { return issueRolesOf(deployed) }
+
+// roleConfigRoles are the roles Options.RoleConfigFiles may name, in the order the image probe is
+// told them: every issue role (issueRoles), then the controller.
+func (r *Runtime) roleConfigRoles() []claim.Role {
+	return append(slices.Clone(r.issueRoles), claim.RoleController)
+}
 
 // checkRequirements is why requirements, what's (an issue pod's, the controller's pod's, or the
 // repository cache's), is not a reservation, or nil when it is one: cpu and memory each limited and
@@ -734,11 +816,12 @@ func terminal(p *corev1.Pod) bool {
 // another release of the daemon, and its agents call this daemon as that release — for a route it
 // no longer serves, a variable it no longer sets — until the pod is replaced. A launch into an
 // issue pod on another image keeps it (relaunch): such a pod is replaced by its update round,
-// once every role in it has answered the update message and no turn runs, or at the round's
-// bound (PodDrift, ReplacePod). The controller's pod, which no round covers, is replaced by the
-// next launch into it that installs nothing (roundCovers), and the repository cache's own pod,
-// which holds no worker, by its next sweep (reconcileCachePod). ReconcileOrphans warns of each
-// one it finds. A nil pod holds no drift: it is replaced for being absent.
+// once every role in it has answered the update message, no turn runs and no claim's activity
+// report holds it (internal/daemon's roundEnd.holding), or at the round's bound (PodDrift,
+// ReplacePod). The controller's pod, which no round covers, is replaced by the next launch into it
+// that installs nothing (roundCovers), and the repository cache's own pod, which holds no worker,
+// by its next sweep (reconcileCachePod). ReconcileOrphans warns of each one it finds. A nil pod
+// holds no drift: it is replaced for being absent.
 func imageDrift(p *corev1.Pod, image string) (string, bool) {
 	if p == nil {
 		return "", false
@@ -779,10 +862,11 @@ func serviceAccountOr(name string) string {
 // daemon writes to the Sandbox moves it — so an operator who changes service_account reaches a
 // running pod only by replacing it: until then its agents hold the identity the old account
 // grants, whatever the configuration now says they may reach. Such a pod is replaced by its own
-// update round, which asks every worker in it to push first, where a round covers its kind
-// (roundCovers, PodDrift), by the next launch of one of its roles where no round does (relaunch),
-// and by reconcileCachePod at the next ensure of a cache's (a sweep, or a new issue pod of its
-// repository); ReconcileOrphans warns of each one it finds, as all of them do for imageDrift.
+// update round, which first asks every worker in it to do the steps of its update message
+// (supervise.UpdateTask), where a round covers its kind (roundCovers, PodDrift), by the next
+// launch of one of its roles where no round does (relaunch), and by reconcileCachePod at the next
+// ensure of a cache's (a sweep, or a new issue pod of its repository); ReconcileOrphans warns of
+// each one it finds, as all of them do for imageDrift.
 // The comparison is of the live pod's spec.ServiceAccountName, never the Sandbox's stored
 // template: the API server keeps a named account as written. It reads an unset account as
 // `default` on both sides, because the two sides spell the same account differently — the daemon
@@ -871,7 +955,8 @@ func (r *Runtime) checkLocator(loc runtime.Locator) error {
 }
 
 // ProvisionsWorkspaces is true: every pod's init containers provision its claim's workspace on the
-// issue's disk, the pod's own ephemeral volume, which goes with the pod.
+// issue's disk: the pod's own ephemeral volume, which goes with the pod, or a kept volume
+// (keptVolume), which the issue's Sandbox owns and which outlives the pod.
 func (r *Runtime) ProvisionsWorkspaces() bool { return true }
 
 // Suspend ends only the recorded role process. It never changes the issue Sandbox operating mode:
@@ -1032,22 +1117,19 @@ func (r *Runtime) AdoptWorkingCopy(ctx context.Context, loc runtime.Locator, id 
 
 var _ runtime.WorkspaceBundler = (*Runtime)(nil)
 
-// BundleWorkspace has role's shim bundle the unpushed work of the issue workspace every role of
-// the issue shares, over that claim's connection, for a release about to take the pod and its
-// disk away. The role named must be one whose process runs in the issue's own running pod: its
-// shim builds the bundle in the workspace it already works in, so a claim with no locator, one
-// whose pod is not the recorded one, and one with no connection are each a refusal rather than an
-// empty bundle.
+// BundleWorkspace has the shim of the claim token names bundle the unpushed work of the issue
+// workspace every claim of the issue shares, over that claim's connection, for a release about to
+// take the pod and its disk away. The claim must be one whose process runs in the issue's own
+// running pod: its shim builds the bundle in the workspace it already works in, so a claim with
+// no locator, one whose pod is not the recorded one, and one with no connection are each a
+// refusal rather than an empty bundle. The claim is named by its token rather than derived from a
+// role, since a keyed agent works a step of another role in the claim it started.
 //
-// It is the role's shim that answers, never its launcher, so a release has to ask before it stops
-// the role's process: the idle release's save is a row of its own ahead of its role stops
+// It is the claim's shim that answers, never its launcher, so a release has to ask before it
+// stops the claim's process: the idle release's save is a row of its own ahead of its stops
 // (record.IssueBundle, the daemon's idleReleaseRows), and asking after them refuses with "holds
 // no role process to bundle it".
-func (r *Runtime) BundleWorkspace(ctx context.Context, issue string, role claim.Role) (runtime.WorkspaceBundle, error) {
-	token, err := claim.NewToken(r.project, issue, role)
-	if err != nil {
-		return runtime.WorkspaceBundle{}, fmt.Errorf("bundle %s's workspace: %w", issue, err)
-	}
+func (r *Runtime) BundleWorkspace(ctx context.Context, issue string, token claim.Token) (runtime.WorkspaceBundle, error) {
 	claims, err := r.store.Claims(ctx)
 	if err != nil {
 		return runtime.WorkspaceBundle{}, fmt.Errorf("bundle %s's workspace: %w", issue, err)
@@ -1161,13 +1243,14 @@ func (r *Runtime) ReconcileOrphans(ctx context.Context, known []runtime.Known, g
 }
 
 // warnPodDrift logs, for the Sandbox u, what the pod it owns in the store runs that a pod created
-// now would not: a container on an image other than the runtime's (imageDrift), and the pod
-// running as a ServiceAccount other than the configured one (accountDrift). Each kind of drift is
-// one warning of its own, naming the Sandbox, what was found and what is configured, as
-// ReconcileOrphans says, so a pod holding both is named twice. A same-named pod u does not own is
-// an earlier Sandbox's, on its way out, and is nothing of u's to warn about. No cache Sandbox is
-// ever warned of, for the account as for the image: ReconcileOrphans passes over it before the
-// call, since its own sweep replaces its pod for either drift without a relaunch to wait for.
+// now would not: a container on an image other than the runtime's (imageDrift), the pod running as
+// a ServiceAccount other than the configured one (accountDrift), and the recorded leak-check
+// manifest differing from the configured one (leakCheckDrift). Each kind of drift is one warning
+// of its own, naming the Sandbox and the held and current values, as ReconcileOrphans says, so a
+// pod holding several is named once for each. A same-named pod u does not own is an earlier
+// Sandbox's, on its way out, and is nothing of u's to warn about. No cache Sandbox is ever warned
+// of, for the account as for the image: ReconcileOrphans passes over it before the call, since its
+// own sweep replaces its pod for either drift without a relaunch to wait for.
 func (r *Runtime) warnPodDrift(u *unstructured.Unstructured) {
 	pod := r.storedPod(u.GetName())
 	if !ownedBy(pod, u.GetUID()) {
@@ -1181,6 +1264,15 @@ func (r *Runtime) warnPodDrift(u *unstructured.Unstructured) {
 		r.log.Warn(fmt.Sprintf("sandbox runtime: %s runs as ServiceAccount %s, the configured ServiceAccount is %s; its agents hold that identity until the pod is replaced — by its update round where a round covers the pod, by the next launch of one of its roles where none does",
 			u.GetName(), account, serviceAccountOr(r.pod.ServiceAccount)),
 			"sandbox", u.GetName(), "pod", pod.UID)
+	}
+	annotations, _, _ := unstructured.NestedStringMap(u.Object, "spec", "podTemplate", "metadata", "annotations")
+	if held, recorded := recordedLeakChecker(annotations, u.GetAnnotations(), string(pod.UID)); len(r.leakCheckDrift(held, recorded)) > 0 {
+		current := r.leakCheck.ManifestSHA256
+		if current == "" {
+			current = "none"
+		}
+		r.log.Warn(fmt.Sprintf("sandbox runtime: %s runs leak check manifest %s, the configured manifest is %s; its agents keep the held check until its update round replaces the pod",
+			u.GetName(), held, current), "sandbox", u.GetName(), "pod", pod.UID)
 	}
 }
 

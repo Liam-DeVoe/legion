@@ -7,17 +7,18 @@
     "startedAt": "2026-09-22T09:15:02Z"
   },
   "contract": {
-    "daemon": 156,
-    "caller": 156
+    "daemon": 221,
+    "caller": 221
   },
   "admission": {
-    "cap": 5,
+    "cap": 6,
     "active": [
       "LEGION-208",
       "LEGION-210",
       "LEGION-212",
       "LEGION-218",
-      "LEGION-219"
+      "LEGION-219",
+      "LEGION-240"
     ],
     "waiting": [
       "LEGION-212",
@@ -76,7 +77,12 @@
           "claim": {
             "session": "ses_implementer_207",
             "state": "working",
-            "pluginContract": 0
+            "pluginContract": 0,
+            "updateState": "none",
+            "wake": {
+              "kind": "plugin-refresh",
+              "dueAt": "2026-09-22T09:17:56Z"
+            }
           },
           "handoffCommit": "7d1e4f2a9c3b5e8d0a6f2c4b8e1d3a5f7c9b2e40",
           "pass": 1,
@@ -137,6 +143,12 @@
           }
         },
         "pluginContract": 0,
+        "updateState": "none",
+        "lastTurnStart": "2026-09-22T09:16:40Z",
+        "lastTurnEnd": "2026-09-22T09:16:58Z",
+        "lastDeathCause": "the pane's process was gone at the daemon's read",
+        "lastStartFailure": "the pod was not ready within the worker boot timeout",
+        "lastReady": "2026-09-22T09:15:44Z",
         "step": {
           "at": "2026-09-22T09:16:58Z",
           "turnStartedAt": "2026-09-22T09:16:40Z",
@@ -146,6 +158,10 @@
           "argsHash": "3f7c1a9d62b40e58",
           "startedAt": "2026-09-22T09:16:55Z",
           "endedAt": "2026-09-22T09:16:58Z"
+        },
+        "wake": {
+          "kind": "catch-up",
+          "dueAt": "2026-09-22T09:18:03Z"
         }
       },
       "workers": {
@@ -183,6 +199,7 @@
             "pluginContract": 0,
             "updateRound": "pod:7f0c2f9a-6a4b-4f2e-9a1c-2f0d5a3b7e11",
             "updateReasons": "the pod template changed: image ghcr.io/cybermonklabs/legion-worker moved",
+            "updateState": "asked",
             "providerErrorRun": 2,
             "pendingTask": {
               "phase": "implementing",
@@ -224,7 +241,12 @@
             "pluginContract": 0,
             "updateRound": "pod:7f0c2f9a-6a4b-4f2e-9a1c-2f0d5a3b7e11",
             "updateHead": "4c1b8e2a6f9d3047b5e1c8a2f6d940b3e7c5a128",
-            "updateReasons": "the pod template changed: image ghcr.io/cybermonklabs/legion-worker moved"
+            "updateReasons": "the pod template changed: image ghcr.io/cybermonklabs/legion-worker moved",
+            "updateState": "answered",
+            "wake": {
+              "kind": "launch",
+              "dueAt": "2026-09-22T09:18:11Z"
+            }
           },
           "handoffRecord": {
             "id": "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b",
@@ -239,6 +261,7 @@
         "number": 1247,
         "head": "5b3d9e2c8f1a47d06b2e5c9f3a8d1e4b7c0f6a29",
         "state": "open",
+        "mergeState": "blocked",
         "reviewDecision": "changes_requested"
       },
       "designGate": {
@@ -329,6 +352,7 @@
             "session": "ses_implementer_210",
             "state": "failed",
             "pluginContract": 0,
+            "updateState": "none",
             "failure": {
               "cause": "died",
               "detail": "launch failures ran out",
@@ -341,7 +365,7 @@
               }
             },
             "pendingCause": "died",
-            "leakCheckCause": "the shared public leak check could not be installed: GitHub answered the read of theorem-labs/agent-infra at leak-check-v3 with HTTP 404: Not Found"
+            "leakCheckCause": "the shared public leak check could not be installed: GitHub answered the read of example-org/deployment at leak-check-v3 with HTTP 404: Not Found"
           },
           "pass": 1,
           "rounds": 1
@@ -389,6 +413,7 @@
             "session": "ses_implementer_211",
             "state": "suspended",
             "pluginContract": 0,
+            "updateState": "none",
             "pendingTask": {
               "phase": "implementing",
               "queuedAt": "2026-09-22T08:54:20Z",
@@ -606,6 +631,42 @@
       "givenEntry": 2,
       "treeMovedAt": "2026-09-20T16:42:58Z",
       "quietHours": 40.583888888888886
+    },
+    "LEGION-240": {
+      "key": "LEGION-240",
+      "generation": 1,
+      "phase": "step",
+      "stepRole": "checker",
+      "startWaitsForPod": [
+        "checker"
+      ],
+      "status": "in_progress",
+      "tree": "LEGION-240",
+      "repo": "acme/widgets",
+      "defaultBranch": "main",
+      "workers": {}
+    },
+    "LEGION-241": {
+      "key": "LEGION-241",
+      "generation": 1,
+      "phase": "held",
+      "stepRole": "checker",
+      "status": "in_progress",
+      "tree": "LEGION-241",
+      "repo": "acme/widgets",
+      "defaultBranch": "main",
+      "heldFrom": "step",
+      "workers": {
+        "checker": {
+          "claim": {
+            "session": "ses_checker_241",
+            "state": "failed",
+            "pluginContract": 0
+          },
+          "pass": 0,
+          "rounds": 0
+        }
+      }
     }
   },
   "pendingStatusWrites": [],
@@ -633,6 +694,11 @@
       "issue": "LEGION-212",
       "role": "tester",
       "state": "retired"
+    },
+    {
+      "issue": "LEGION-241",
+      "role": "checker",
+      "state": "failed"
     }
   ],
   "wakesWaiting": [
@@ -659,6 +725,38 @@
     }
   ],
   "claimsToRefresh": 4,
+  "paused": {
+    "id": 7,
+    "since": "2026-09-22T09:09:00Z",
+    "by": {
+      "kind": "controller",
+      "session": "ses_controller"
+    },
+    "reason": "the model provider is refusing every turn",
+    "waitsOn": [
+      {
+        "claim": "legion-legion-legion-208-implementer",
+        "issue": "LEGION-208",
+        "role": "implementer",
+        "askedAt": "2026-09-22T09:09:00Z"
+      }
+    ],
+    "held": [
+      {
+        "id": 811,
+        "kind": "supervise",
+        "issue": "LEGION-211",
+        "claim": "legion-legion-legion-211-implementer",
+        "waitedSeconds": 412
+      },
+      {
+        "id": 814,
+        "kind": "notice",
+        "issue": "LEGION-209",
+        "waitedSeconds": 95
+      }
+    ]
+  },
   "controllerLocator": {
     "runtime": "kubernetes",
     "external": true,
@@ -783,14 +881,20 @@
     }
   ],
   "repositories": {
-    "owners": [
-      "acme",
-      "zeta"
-    ],
-    "mapped": [
+    "live": [
+      {
+        "repo": "acme/gadgets",
+        "apps": {
+          "implement": true,
+          "review": false
+        }
+      },
       {
         "repo": "acme/widgets",
-        "default": true,
+        "apps": {
+          "implement": true,
+          "review": true
+        },
         "cache": {
           "repo": "acme/widgets",
           "sandbox": "legion-legion-cache-acme-widgets-d782c874",
@@ -803,8 +907,23 @@
         }
       },
       {
+        "repo": "sjawhar/legion",
+        "servedAs": "cybermonklabs/legion",
+        "apps": {
+          "implement": true,
+          "review": true
+        }
+      },
+      {
+        "repo": "zeta/archive",
+        "readError": "the implement App's installation on zeta/archive could not be read: GitHub answered 502; Legion reads it again"
+      },
+      {
         "repo": "zeta/tools",
-        "default": false,
+        "apps": {
+          "implement": true,
+          "review": true
+        },
         "cache": {
           "repo": "zeta/tools",
           "sandbox": "legion-legion-cache-zeta-tools-1b2c3d4e",
@@ -812,12 +931,6 @@
           "reason": "container cache CrashLoopBackOff: back-off 5m0s restarting failed container (restarted 4 times)",
           "ready": false
         }
-      }
-    ],
-    "refused": [
-      {
-        "repo": "acme/gadgets",
-        "reason": "the review App is not installed on acme/gadgets"
       }
     ],
     "withoutWebhookApp": [
@@ -890,7 +1003,8 @@
         "agent_secrets": {
           "url": "https://agent-secrets.internal.example",
           "audience": "fixture-broker-audience",
-          "token_expiry_seconds": 1800
+          "token_expiry_seconds": 1800,
+          "exchange_audience": "fixture-exchange-audience"
         },
         "plugins": {
           "pi_legion": "10.4.0",
@@ -901,7 +1015,6 @@
           "-c",
           "echo fixture-setup"
         ],
-        "skills_repository": "acme/agent-skills",
         "test_postgres": false,
         "repository_cache": {
           "volume": "40Gi",
@@ -928,6 +1041,17 @@
             "wait_seconds": 8,
             "interval_milliseconds": 250
           }
+        },
+        "volume_trim": {
+          "enabled": true,
+          "high_percent": 90,
+          "low_percent": 60,
+          "min_age_minutes": 120,
+          "interval_seconds": 30
+        },
+        "sandbox": {
+          "type": "gvisor",
+          "canary_issues": []
         }
       }
     },
@@ -1080,5 +1204,6 @@
       "stalled": false,
       "unavailable": "read the consumer's info: context deadline exceeded"
     }
-  ]
+  ],
+  "lowestPluginContract": 46
 }

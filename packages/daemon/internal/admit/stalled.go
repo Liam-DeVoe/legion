@@ -146,7 +146,7 @@ func (a *Admission) quietTrees(ctx context.Context, tx pgx.Tx, issues []record.I
 // bound, the measure and the registration above.
 func (a *Admission) tellStalledTrees(ctx context.Context, tx pgx.Tx, issues []record.Issue,
 	facts record.LineFacts, slots []record.Slot, line []record.LineEntry, dropped []record.HeldIssue,
-	rows map[string]blockers.Row,
+	rows map[string]blockers.Row, floor stallFloor,
 ) error {
 	if a.stalledTreeNotice <= 0 {
 		return nil
@@ -168,7 +168,14 @@ func (a *Admission) tellStalledTrees(ctx context.Context, tx pgx.Tx, issues []re
 	if len(candidates) == 0 {
 		return nil
 	}
-	// Step 2: the measure the rule decides on.
+	// Step 2: the measure the rule decides on. The quiet time is counted from no earlier than
+	// the end of the project's latest pause (floor, stallFloor.count), as the architect-stalled
+	// arms count theirs: a pause stops every role of a tree, so a tree quiet only while the pause
+	// held the project has not stopped (decision 14 of dispatch://INFRA-3759). The floor is the
+	// pass's own, read with the pause before anything else (promoteHolds, readStallFloor), so the
+	// measure reads nothing for it; the notice still says how long the tree has been quiet, the
+	// pause's time included. Nothing reaches this while the project is paused, because the pass
+	// promotes nothing then.
 	quiet, claims, err := a.quietTrees(ctx, tx, issues, now)
 	if err != nil {
 		return err
@@ -177,7 +184,7 @@ func (a *Admission) tellStalledTrees(ctx context.Context, tx pgx.Tx, issues []re
 	claimed := false
 	for _, root := range candidates {
 		measure := quiet[root.Key]
-		if measure.Quiet <= a.stalledTreeNotice {
+		if from, _ := floor.count(measure.MovedAt); now.Sub(from) <= a.stalledTreeNotice {
 			continue
 		}
 		if told := root.TreeStalledToldAt; told != nil && !measure.MovedAt.After(*told) {
@@ -820,13 +827,13 @@ func (a *Admission) everyIssueWaitsByDesign(members []record.Issue, holds lineHo
 // stalledTreeReason is what a stalled-tree notice tells the project's controller: the root, how
 // long the tree has been quiet, and, for each member of the tree (record.TreeMember), the phase
 // its record carries — `held` for a held issue — the role whose turn that issue's standing is
-// (workflow.RoleFor over record.StandsAt, which is the phase a held issue was held from) or
-// that the phase has no role, and the state of its pull request. It ends by telling the
-// controller to read the tree and decide. An issue standing at admitted is told as a phase no
-// role works, as it was before workflow.RoleFor named the architect there: that answer is for
-// the readers that start, resume or report the architect, and this notice keeps the words it
-// had (dispatch://INFRA-2614 R2). Accepting was the architect's before as well, so an issue
-// standing there names the architect, as it did.
+// (record.Issue.RoleAt over record.StandsAt, which is the phase a held issue was held from, and
+// which at step is the role of the running step) or that the phase has no role, and the state of
+// its pull request. It ends by telling the controller to read the tree and decide. An issue
+// standing at admitted is told as a phase no role works, as it was before workflow.RoleFor named
+// the architect there: that answer is for the readers that start, resume or report the architect,
+// and this notice keeps the words it had (dispatch://INFRA-2614 R2). Accepting was the
+// architect's before as well, so an issue standing there names the architect, as it did.
 //
 // The membership is the measure's own and is read from the one predicate, so the notice names
 // exactly the issues whose stillness was measured: a root, whatever its own status says, and
@@ -846,10 +853,10 @@ func stalledTreeReason(root string, measure record.TreeQuiet, members []record.I
 		root, measure.Quiet.Hours())
 	for _, member := range members {
 		fmt.Fprintf(&reason, "\n%s is in %s. ", member.Key, member.Phase)
-		// The architect works admitted (workflow.RoleFor), and this notice says what it said
+		// The architect works admitted (Issue.RoleAt), and this notice says what it said
 		// before that: no role works an issue standing there (dispatch://INFRA-2614 R2).
 		standsAt := record.StandsAt(member)
-		if role := workflow.RoleFor(standsAt); role != "" && standsAt != phase.Admitted {
+		if role := member.RoleAt(standsAt); role != "" && standsAt != phase.Admitted {
 			fmt.Fprintf(&reason, "The %s has the turn. ", role)
 		} else {
 			reason.WriteString("No role works this phase. ")

@@ -3,9 +3,13 @@ package supervise
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
+	"sync"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/wait"
 )
@@ -18,11 +22,48 @@ import (
 // whose process a retirement already stopped (relaunchRefused); the start that met it retries once
 // the cleanup confirmed and a fresh admission opened the next epoch.
 
+// StartWork is the work a workflow start brings its claim back for: the phase and the run its
+// outbox row was queued for (record.SuperviseRequest's Phase and Generation), which the spawn, the
+// rule's resume and the retry it asks for carry (RequestSpawn, RequestRuleResume, RequestRetry).
+// The start's runner judges it on its own read of the issue, which the workflow's move of the
+// issue does not wait on: a move that commits after that read and before the claim is brought back
+// would leave a process started for work the issue has left, which nothing then stops, since no
+// move stops a worker. So the machine judges it again under its own lock, with the one answer a
+// queued task is judged by (Deps.PhaseHolds), where it brings the claim back (startHolds) and, for
+// a launch the wake pacing parks, at that launch's turn (launchAfter). The zero StartWork — an
+// operator's request, the boot's, a start of no phase — is judged by nothing.
+type StartWork struct {
+	Phase      phase.Phase
+	Generation uint64
+}
+
+// ErrStartLeft is a start the machine judged no longer the work of its claim's issue
+// (startHolds): the issue has left the phase, the step or the run the start was queued for. The
+// claim is left exactly as it was, with no process started, and the start's runner finishes its
+// row without acting, as its own read would have had it come later (internal/daemon's outbox).
+var ErrStartLeft = errors.New("the issue has left the phase or the step this start was queued for")
+
+// startHolds is ErrStartLeft where start's work is not the work of the claim's issue now, nil where
+// it is or names none, and the read's error where the record could not be read. It runs under the
+// machine's lock, before anything of the claim changes.
+func (m *Machine) startHolds(ctx context.Context, start StartWork) error {
+	holds, err := m.phaseHolds(ctx, Delivery{Phase: start.Phase, Generation: start.Generation})
+	if err != nil {
+		return err
+	}
+	if !holds {
+		return fmt.Errorf("start of %s for phase %s of run %d: %w", m.claim.Token, start.Phase, start.Generation, ErrStartLeft)
+	}
+	return nil
+}
+
 // revive binds an explicitly spawned, resumed or retried claim to the open tree epoch before
 // launching. In-lifetime recovery only rechecks the bound epoch (checkLaunch), so an old launch
 // cannot cross a cleanup confirmation into a later admission. exempt is whether the request that
 // asked for it is one the wake pacing never makes wait (exemptWake); every caller reads it from
-// its own event, so a request that carries no such field is paced.
+// its own event, so a request that carries no such field is paced. start is the work a workflow
+// start brings the claim back for, which its caller has judged already (startHolds) and the
+// launch judges again at the turn of a wake the pacing parks it on (launchAfter).
 //
 // admitted, where a caller gives one, runs once the admission has bound the claim and before
 // anything else of the start: it is where a caller puts what it may change only for a claim
@@ -31,7 +72,7 @@ import (
 //
 // The claims it starts — spawned, resumed, retried, a suspended claim given a task — record no
 // process, so its launch lets none go and records nothing of one (noEnd).
-func (m *Machine) revive(ctx context.Context, exempt bool, admitted func()) error {
+func (m *Machine) revive(ctx context.Context, exempt bool, start StartWork, admitted func()) error {
 	bound, err := m.deps.Store.AdmitClaim(ctx, m.claim)
 	if err != nil {
 		return err
@@ -40,7 +81,7 @@ func (m *Machine) revive(ctx context.Context, exempt bool, admitted func()) erro
 	if admitted != nil {
 		admitted()
 	}
-	return m.launchAfter(ctx, false, exempt, noEnd)
+	return m.launchAfter(ctx, false, exempt, noEnd, start)
 }
 
 // checkLaunch is the lifecycle recheck every launch makes first: a claim whose tree cleanup is
@@ -126,7 +167,7 @@ func (m *Machine) relaunchRefused(ctx context.Context, relaunch func(context.Con
 	}
 	if errors.Is(err, treelifecycle.ErrCleanupReserved) {
 		m.log.Warn("supervise: the tree's cleanup is reserved and the retired process is stopped; suspending the claim for the tree's close", "error", err)
-		return errors.Join(err, m.suspended(ctx, SuspendedByDaemon))
+		return errors.Join(err, m.suspended(ctx, SuspendedByDaemon, nil))
 	}
 	m.log.Warn("supervise: the lifecycle check of the retired process's relaunch failed; trying it again at the probe interval", "error", err)
 	m.relaunchLater(m.deps.Timeouts.Probe, m.retryHolding(m.pluginRelaunch, relaunch))
@@ -194,13 +235,14 @@ func (m *Machine) relaunchLater(wait time.Duration, relaunch func(context.Contex
 }
 
 // relaunchAgain is the relaunch relaunchLater left waiting (TimerRelaunch). A suspension held
-// meanwhile ends here, with no process left to stop, rather than in a relaunch; otherwise the
+// meanwhile ends here, with no process left to stop, rather than in a relaunch — a stop that meets
+// the relaunch it ends, which a project pause's stop owes the role (suspendedFor); otherwise the
 // relaunch is tried again as it was first made, charged as that call charges it.
 func relaunchAgain(m *Machine, ctx context.Context, _ Event) error {
 	relaunch := m.relaunch
 	m.relaunch = nil
 	if m.held != nil {
-		return m.suspendedFor(ctx, *m.held)
+		return m.suspendedFor(ctx, *m.held, true)
 	}
 	return relaunch(ctx)
 }
@@ -208,6 +250,10 @@ func relaunchAgain(m *Machine, ctx context.Context, _ Event) error {
 // RunsNothing is whether the claim is in a state with no process of its own (RunsNothingStates):
 // only such a claim may move to another tree.
 func (c Claim) RunsNothing() bool { return slices.Contains(runsNothing, c.State) }
+
+// Gone is whether the claim is suspended, failed or retired (GoneStates): its process has been
+// let go, so a project's pause has nothing of it to stop.
+func (c Claim) Gone() bool { return IsGone(c.State) }
 
 // Retree re-points a claim to tree, the tree its issue belongs to now: a child of a closed tree
 // re-admitted as a root of its own keeps its roles' claims, which still name the tree it left. The
@@ -228,7 +274,98 @@ func (m *Machine) Retree(ctx context.Context, tree string) error {
 	if !m.claim.RunsNothing() {
 		return wait.Errorf("re-point claim %s from tree %s to %s: it is %s there", m.claim.Token, m.claim.Tree, tree, m.claim.State)
 	}
-	m.log.Info("supervise: the claim's issue moved to another tree", "claim", m.claim.Token, "from", m.claim.Tree, "to", tree)
+	m.log.Info("supervise: the claim's issue moved to another tree", "from", m.claim.Tree, "to", tree)
 	m.claim.Tree, m.claim.TreeEpoch = tree, 0
+	return m.persist(ctx)
+}
+
+// ErrRunsAProcess is Rerole's refusal of a claim that still runs a process: that process was
+// started with the claim's role's prompt and App, so the role it holds is the one it runs.
+var ErrRunsAProcess = errors.New("the claim still runs a process")
+
+// ErrStepLeft is a machine's refusal of a request whose reading of the record no longer holds
+// under the machine's lock (Standing): the claim it read as the worker on a role's step works it no
+// more, or the step a start is for is one its issue has left. Nothing of the claim changed.
+var ErrStepLeft = errors.New("the record no longer asks this claim for the step the request was made for")
+
+// standingKey is the context key Standing puts a request's standing under.
+type standingKey struct{}
+
+// standing is a request's reading of the record (Standing), and whether an act of the request has
+// passed it under a machine's lock.
+type standing struct {
+	stands func(context.Context) (bool, error)
+	mu     sync.Mutex
+	passed bool
+}
+
+// Standing is ctx carrying stands, the reading of the record a request on a claim was made on: the
+// claim a route read as the worker on a role's step (api's workerToken), the step a start is for
+// (the daemon's outbox). The request reads the record before any lock its acts take, so each act a
+// machine decides for it under its lock — Handle, and so Compact, and Rerole — judges that reading
+// again there, before anything acts, and refuses with ErrStepLeft where it no longer holds.
+//
+// A request is the record's from the first act that passes: stands is asked until it first answers
+// true under a machine's lock, and every later act of the same request reads nothing again. Its
+// acts are several decisions under several takings of the lock, so a move that commits after the
+// first finds the request under way, as it would had the whole request run before it, and no
+// request is left half done by a move after it began. A request whose first act is refused did
+// nothing at all. The judgment a suspension makes before it cancels a start in flight (Handle) is
+// a filter, and passes nothing: the one that counts is under the lock.
+func Standing(ctx context.Context, stands func(context.Context) (bool, error)) context.Context {
+	return context.WithValue(ctx, standingKey{}, &standing{stands: stands})
+}
+
+// judgeStanding judges the standing ctx carries for an act on the claim token (Standing), and
+// answers nil for a ctx that carries none. pass is whether this judgment is one under a machine's
+// lock, which commits the request once it holds.
+func judgeStanding(ctx context.Context, token claim.Token, pass bool) error {
+	s, ok := ctx.Value(standingKey{}).(*standing)
+	if !ok {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.passed {
+		return nil
+	}
+	holds, err := s.stands(ctx)
+	if err != nil {
+		return fmt.Errorf("supervise: read again what the request on %s was made on: %w", token, err)
+	}
+	if !holds {
+		return fmt.Errorf("supervise: claim %s: %w", token, ErrStepLeft)
+	}
+	s.passed = pass
+	return nil
+}
+
+// Rerole gives a claim the role of its agent's next step, which a step of another role than the
+// claim holds asks for (the daemon's outbox, the start of a phase entry): one key is one claim
+// across roles, and its next generation registers, is prompted and acts as the App of the role it
+// holds then. Only a claim that runs nothing takes a new role, so a process keeps the role it was
+// started with; one that still runs is ErrRunsAProcess, and the start suspends it first, keeping
+// its session, and waits for its turn to end. The claim keeps its session, so its next generation
+// resumes it.
+//
+// The start read the step from the record before this lock, so it asks with the step's standing
+// (Standing), judged here under the lock: a step its issue has left since, by a move back or a
+// later entry, is ErrStepLeft, and the claim keeps the role it holds. A role is never stored for
+// a step the record no longer asks for, whatever reaches the claim next.
+func (m *Machine) Rerole(ctx context.Context, role claim.Role) error {
+	m.mu.Lock()
+	defer m.unlock()
+	if m.claim.Role == role {
+		return nil
+	}
+	if !m.claim.RunsNothing() {
+		return fmt.Errorf("give claim %s the role %s for its agent's next step: it is %s as %s: %w",
+			m.claim.Token, role, m.claim.State, m.claim.Role, ErrRunsAProcess)
+	}
+	if err := judgeStanding(ctx, m.claim.Token, true); err != nil {
+		return fmt.Errorf("give claim %s the role %s for its agent's next step: %w", m.claim.Token, role, err)
+	}
+	m.log.Info("supervise: the claim takes the role of its agent's next step", "claim", m.claim.Token, "from", m.claim.Role, "to", role)
+	m.claim.Role = role
 	return m.persist(ctx)
 }

@@ -269,8 +269,8 @@ func linkReason(waitsOn []string) string {
 }
 
 // atWorkPastReview is an issue whose work is running now in a phase past its own review:
-// accepting, where the tree's architect reads the head the issue's worker built, its retro, and
-// its merge. Since dispatch://INFRA-2560 such an issue holds none of the cap's slots
+// accepting, where the architect that owns the issue reads the head the issue's worker built, its
+// retro, and its merge. Since dispatch://INFRA-2560 such an issue holds none of the cap's slots
 // (record.PhaseKeepsSlot), so `admission.active` does not name it and it reaches the last arm of
 // whyStates standing in none of the three lists that place an issue: the held list names it
 // instead, under the ladder's at_work where no earlier word is true of it (record.HeldAtWork).
@@ -399,8 +399,8 @@ var heldSentences = map[record.HeldReason]heldSentence{
 			"while these issues beneath it are still in the workflow: " + heldBy + ". Its retro does not start while one of them is."
 	}},
 	record.HeldTaskStopped: {states: []api.WhyState{api.WhyUnlisted}, sentence: func(string) string {
-		return "Its task was stopped, by its owner or by a failed step that had no step to return to, so no step of the task runs. " +
-			"No release of its hold starts the task again."
+		return "Its task was stopped, by its owner or by a failed step that had no step to return to, so no step of the task runs " +
+			"until a later version of its plan changes the task (register_plan) or, on a root, a person sets it todo; a retry of its hold starts none."
 	}},
 	record.HeldAtWork: {states: []api.WhyState{api.WhyUnlisted}, sentence: func(string) string {
 		return "It stands in a phase that keeps no admission slot, and the waiting line does not carry it: " +

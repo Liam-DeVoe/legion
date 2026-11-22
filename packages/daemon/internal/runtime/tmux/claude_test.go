@@ -6,7 +6,9 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claudelaunch"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -21,7 +23,7 @@ var testClaude = ClaudeLaunch{Binary: "/opt/claude/bin/claude", PluginDir: "/opt
 // claim's prompt file, a path, never the prompt's text.
 func TestClaudeInnerCommand(t *testing.T) {
 	const promptFile = "/state/secrets/c-system-prompt.md"
-	got := claudeInnerCommand("/opt/legion/legion", testClaude, "/state/claude/c/mcp.json", "11111111-2222-4333-8444-555555555555", false, promptFile)
+	got := claudeInnerCommand("/opt/legion/legion", testClaude, "/state/claude/c/mcp.json", "11111111-2222-4333-8444-555555555555", false, promptFile, "")
 	want := "/opt/legion/legion claude-bridge -- /opt/claude/bin/claude -p --input-format stream-json --output-format stream-json --verbose" +
 		" --replay-user-messages" +
 		" --thinking-display summarized" +
@@ -32,7 +34,7 @@ func TestClaudeInnerCommand(t *testing.T) {
 	if got != want {
 		t.Errorf("fresh:\n%s\nwant\n%s", got, want)
 	}
-	resumed := claudeInnerCommand("/opt/legion/legion", testClaude, "/m.json", "11111111-2222-4333-8444-555555555555", true, "/state dir/p.md")
+	resumed := claudeInnerCommand("/opt/legion/legion", testClaude, "/m.json", "11111111-2222-4333-8444-555555555555", true, "/state dir/p.md", "")
 	if !strings.Contains(resumed, " --resume 11111111-2222-4333-8444-555555555555 ") || strings.Contains(resumed, "--session-id") ||
 		!strings.HasSuffix(resumed, " --append-system-prompt-file '/state dir/p.md'") {
 		t.Errorf("resumed: %s", resumed)
@@ -103,6 +105,99 @@ func TestWriteClaudeMCPConfig(t *testing.T) {
 	}
 }
 
+// A fifo or a link at the MCP configuration's path, which the pane can leave there since the
+// claim's directory is its own, is replaced by a 0600 regular file holding the configuration, and
+// the file a link named is left as it was. Written with os.WriteFile, as it was, a fifo holds the
+// spawn waiting for a reader for as long as none comes, and a link has the file it names truncated
+// and written.
+func TestWriteClaudeMCPConfigReplacesAFifoOrALinkAtItsPath(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// plant puts the shape at path and answers the check of what it must leave as it was,
+		// or nil.
+		plant func(t *testing.T, path string) (kept func(t *testing.T))
+	}{
+		{"a fifo", func(t *testing.T, path string) func(t *testing.T) {
+			if err := syscall.Mkfifo(path, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			return nil
+		}},
+		{"a link to a file outside the directory", func(t *testing.T, path string) func(t *testing.T) {
+			precious := filepath.Join(t.TempDir(), "precious")
+			if err := os.WriteFile(precious, []byte("precious\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(precious, path); err != nil {
+				t.Fatal(err)
+			}
+			return func(t *testing.T) {
+				t.Helper()
+				if body, err := os.ReadFile(precious); err != nil || string(body) != "precious\n" {
+					t.Errorf("%s, the file the link named, is %q (%v), want it as it was", precious, body, err)
+				}
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "mcp.json")
+			kept := tc.plant(t, path)
+			type answer struct {
+				path string
+				err  error
+			}
+			answered := make(chan answer, 1)
+			go func() {
+				path, err := writeClaudeMCPConfig(dir, testClaude)
+				answered <- answer{path, err}
+			}()
+			var got answer
+			select {
+			case got = <-answered:
+			case <-time.After(time.Second):
+				// The write waits in an open of the fifo for a reader. An open of it for reading
+				// and writing waits on nothing and is that reader, so the goroutine ends before
+				// the test does. It is opened again until the write answers, since the write may
+				// not yet have reached its open when the first is closed.
+				released := time.After(10 * time.Second)
+				for {
+					if fifo, err := os.OpenFile(path, os.O_RDWR|syscall.O_NONBLOCK|syscall.O_NOFOLLOW, 0); err == nil {
+						_ = fifo.Close()
+					}
+					select {
+					case late := <-answered:
+						t.Fatalf("writeClaudeMCPConfig over %s waited more than a second, and answered %v only once the open it waited in was released", path, late.err)
+					case <-released:
+						t.Fatalf("writeClaudeMCPConfig over %s has not answered in 11 seconds", path)
+					case <-time.After(10 * time.Millisecond):
+					}
+				}
+			}
+			if got.err != nil || got.path != path {
+				t.Fatalf("writeClaudeMCPConfig over %s = %s, %v, want it replaced", path, got.path, got.err)
+			}
+			if kept != nil {
+				kept(t)
+			}
+			info, err := os.Lstat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
+				t.Fatalf("%s is %v after writeClaudeMCPConfig, want a regular file of mode 0600", path, info.Mode())
+			}
+			want, err := claudelaunch.MCPConfig(testClaude.Bun, testClaude.PluginDir, dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if body, err := os.ReadFile(path); err != nil || string(body) != string(want) {
+				t.Fatalf("%s holds %q (%v) after writeClaudeMCPConfig, want %q", path, body, err, want)
+			}
+		})
+	}
+}
+
 // A Claude Code pane carries its claim's directory and Claude Code's scheduled prompts off, beside
 // the pairs every pane carries. Nothing on the pane turns its background tasks off: a task that
 // finishes wakes a turn of Claude Code's own, which the bridge reports to the daemon.
@@ -143,5 +238,14 @@ func TestClaudeLauncherLaunch(t *testing.T) {
 	}
 	if want := " --append-system-prompt-file /state/secrets/c-system-prompt.md"; !strings.HasSuffix(inner, want) {
 		t.Errorf("Launch = %s, want it to end %s", inner, want)
+	}
+	// A role whose spec names its model runs it on the pane's Claude Code.
+	spec.Model = "checker-model"
+	modelled, _, err := launcher.Launch(spec, host, "/state/secrets/c-system-prompt.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(modelled, " --model checker-model ") {
+		t.Errorf("Launch with the model checker-model = %s, want it to hold --model checker-model", modelled)
 	}
 }

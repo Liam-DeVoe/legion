@@ -92,6 +92,8 @@ var ClaimRecordFields = []RecordFieldDecision{
 		Reason: "the four counts a failed claim failed with, read against the limits in `settings`; served inside the failure record, which is where a reader acts on them"},
 	{Field: "Failure", Column: ColumnAgents, Keys: []string{"failure.detail"},
 		Reason: "the sentence the site that failed the claim wrote, which names what no one word can"},
+	{Field: "PodEnd", Column: ColumnWithheld,
+		Reason: "the pod end the claim's process was last observed to have died of, which the workflow reads off the claim to name the cluster's cause in a worker-died notice's reason; no claim view carries it under a key"},
 	{Field: "FailureCause", Column: ColumnAgents, Keys: []string{"failure.cause"},
 		Reason: "the one word for what failed the claim, which a retry, an escalation or a re-admission turns on"},
 	{Field: "FailedAt", Column: ColumnAgents, Keys: []string{"failure.at"},
@@ -123,6 +125,7 @@ var ClaimRecordFields = []RecordFieldDecision{
 	{Field: "PluginContract", Column: ColumnAgents, Keys: []string{"pluginContract"},
 		Reason: "the contract the claim's registration declared, which says what shape its seat parses this body with"},
 	{Field: "PluginRelaunchFor", Column: ColumnWithheld, Reason: BookkeepingReason},
+	{Field: "AgentResumeGeneration", Column: ColumnWithheld, Reason: BookkeepingReason},
 	{Field: "UpdateRound", Column: ColumnAgents, Keys: []string{"updateRound"},
 		Reason: "the round the claim is in, which says the process holding it is waiting to be replaced"},
 	{Field: "UpdateReasons", Column: ColumnAgents, Keys: []string{"updateReasons"},
@@ -161,7 +164,7 @@ var ClaimRecordFields = []RecordFieldDecision{
 	{Field: "Abandoned", Column: ColumnWithheld,
 		Reason: "the session this claim left behind, which reaches its replacement in that agent's first task and no surface"},
 	{Field: "EndedWork", Column: ColumnWithheld,
-		Reason: "what the last let-go of this claim's process ended, which reaches the next process in that agent's own prompt and in a root architect's catch-up, and no surface"},
+		Reason: "what the last let-go of this claim's process ended, which reaches the next process in that agent's own prompt and in an architect's catch-up, and no surface"},
 	{Field: "SessionLost", Column: ColumnWithheld,
 		Reason: "an argument of one spec build, set on the copy handed the builder and never on the claim, so no surface could carry it"},
 }
@@ -212,6 +215,8 @@ var IssueRecordFields = []RecordFieldDecision{
 		Reason: "when this one issue last moved reaches no surface of its own: what a reader is served is its whole tree's measure, `treeMovedAt` and `quietHours`, which the projection builds from every member's movement and from their claims' steps (record.QuietTrees) and which no field of one record carries"},
 	{Field: "TreeStalledToldAt", Column: ColumnWithheld,
 		Reason: "the mark that holds one stall to one notice, written on a tree's root as the stalled-tree notice is queued: it is the daemon's own record of what it has already told a controller, and a reader of the state is told the tree's quiet time instead"},
+	{Field: "StepRole", Column: ColumnAgents, Keys: []string{"stepRole"},
+		Reason: "the role that works an issue at step, or held from it, which the phase alone does not name"},
 }
 
 // AssignmentRecordFields is every field of `record.Assignment`, in the order the record declares

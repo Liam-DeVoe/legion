@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
@@ -41,6 +42,23 @@ func architectClaim(t *testing.T, root string) claim.Token {
 		t.Fatal(err)
 	}
 	return token
+}
+
+// rootArchitectsRead is what an architect route reads of key for the architect of key's tree
+// root (api's architectForIssue and openStep): that architect's claim, the issue's generation and
+// the run of the step it stands in, which sign_off and request_backward_move name on their facts.
+func rootArchitectsRead(t *testing.T, pool *pgxpool.Pool, key string) (claim.Token, uint64, record.StepEntry) {
+	t.Helper()
+	recorded := issue(t, pool, key)
+	var entry record.StepEntry
+	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+		var err error
+		entry, err = record.NewStore().OpenStep(context.Background(), tx, key)
+		return err
+	}); err != nil {
+		t.Fatalf("read the open step of %s: %v", key, err)
+	}
+	return architectClaim(t, recorded.Tree), recorded.Generation, entry
 }
 
 // ownersPlanRows is the plan `implementer reviewer` that the architect of root gave for key at
@@ -76,7 +94,7 @@ func seedDefaultPlan(t *testing.T, pool *pgxpool.Pool, key string, generation ui
 	version := record.PlanVersion{Issue: key, Generation: generation, Source: record.PlanSourceDefault, GivenAt: fixedNow.Add(-time.Hour)}
 	tasks := []record.PlanTask{{Issue: key, Generation: generation, Task: "default", BlockText: "The project's default steps.",
 		StepsByDefault: true, State: record.TaskDone}}
-	types := []string{"planning", "implementation", "testing", "review", "review"}
+	types := []plan.Type{plan.TypePlanning, plan.TypeImplementation, plan.TypeTesting, plan.TypeReview, plan.TypeReview}
 	steps := make([]record.PlanStep, len(todaysDefaultRoles))
 	for i, role := range todaysDefaultRoles {
 		steps[i] = record.PlanStep{Issue: key, Generation: generation, Task: "default", Position: i + 1, Role: role, Type: types[i]}
@@ -154,18 +172,13 @@ func assertTakesOwnersPlan(t *testing.T, pool *pgxpool.Pool, key, root string, g
 	if got := stepRoles(stored, "a"); !reflect.DeepEqual(got, []string{"implementer", "reviewer"}) {
 		t.Fatalf("the steps of task a = %v, want implementer and reviewer", got)
 	}
-	for _, step := range stored.Steps["a"] {
-		if step.ReviewedHead != "" {
-			t.Fatalf("step %+v names the commit a review read, want none: the run starts from its start", step)
-		}
-	}
 	if got, want := workerStarts(t, pool, key), []string{fmt.Sprintf("implementer/implementing@%d", generation)}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("the worker starts of %s = %v, want %v: the first step of the owner's plan, and no planner", key, got, want)
 	}
 }
 
 // assertTakesDefaultSteps fails unless key's run at generation stands at planning on the project's
-// default steps, stored at its first step (R5), and the one worker start queued is the planner's
+// default steps, stored at its first step, and the one worker start queued is the planner's
 // of that generation: today's line.
 func assertTakesDefaultSteps(t *testing.T, pool *pgxpool.Pool, key string, generation uint64) {
 	t.Helper()
@@ -244,7 +257,7 @@ func personsTodo(t *testing.T, pool *pgxpool.Pool, admission *Admission) {
 func assertChildStarted(t *testing.T, pool *pgxpool.Pool, first phase.Phase) {
 	t.Helper()
 	want := []string{pathsChild + " is todo; it runs again under " + pathsRoot,
-		fmt.Sprintf("%s starts %s under %s: it reached the front of the waiting line and took an admission slot", pathsChild, first, pathsRoot)}
+		fmt.Sprintf("%s starts %s under %s: it reached the front of the waiting line and took an admission slot", pathsChild, first, pathsRoot) + childStartedOwnership}
 	if got := joinedNotices(t, pool, pathsChild); !reflect.DeepEqual(got, want) {
 		t.Fatalf("the child-status notices of %s = %q, want %q", pathsChild, got, want)
 	}
@@ -332,7 +345,7 @@ func carriedPlan(stored *record.StoredPlan) *record.StoredPlan {
 	return carried
 }
 
-// Each path that opens a generation of an issue says what happens to its plan (B-21), and each
+// Each path that opens a generation of an issue says what happens to its plan, and each
 // subtest asserts the first step that starts. A rerun of a child (rerun_child), a person's move
 // of a done child to todo and the re-admission of a root that carries no run open a run whose
 // first step takes the newest plan its owner gave, of any generation, from its start: generation
@@ -343,7 +356,7 @@ func carriedPlan(stored *record.StoredPlan) *record.StoredPlan {
 // with its run, goes on at the step it stood at: generation 2 stands at reviewing with the task
 // at the same place and counts (CarryPlan with carried, in readmit), and the reviewer is the step
 // that starts; its control is a carried orphan held for its stopped task, which stays held with
-// its task stopped and starts no step. The twin (R20): an issue that ran before the release has no
+// its task stopped and starts no step. The twin: an issue that ran before the release has no
 // plan rows, and each path goes on as today: a new run starts planning, and a carried orphan
 // carries no plan rows and goes on at its phase.
 func TestEachPathThatOpensAGenerationSaysItsPlan(t *testing.T) {
@@ -483,7 +496,7 @@ func TestEachPathThatOpensAGenerationSaysItsPlan(t *testing.T) {
 }
 
 // A plan given at generation 0 for an issue the daemon never recorded waits through its giver's
-// tree leaving the workflow (C4-3): the root closes, its linger ends, and a person sets it todo
+// tree leaving the workflow: the root closes, its linger ends, and a person sets it todo
 // again. The rows at generation 0 are still there, because the token of a tree's architect comes
 // from the key of its root and a re-admitted root has the same one, and the re-admitted root's
 // release of the issue starts it at implementing, the first step of that plan, with no notice of
@@ -501,6 +514,19 @@ func TestAPlanGivenBeforeTheIssueIsRecordedWaitsThroughTheRootsReadmission(t *te
 			pool := migratedPool(t)
 			admission := newAdmission(t, 2, slog.New(slog.NewTextHandler(io.Discard, nil)))
 			lingeringRoot(t, pool)
+			// Each role of the root ran, so each holds a stored claim: the linger's close writes one
+			// row for each stored claim of each member (the workflow's lingerExpired).
+			for _, role := range claim.Roles {
+				token, err := claim.NewToken("legion", pathsRoot, role)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := pool.Exec(context.Background(), `insert into claims (token, project, tree, issue, role, generation, session, session_file,
+					state, launch_failures, prompt_failures, prompt_retires, uncertain_streak)
+					values ($1, 'legion', $2, $2, $3, 1, '', '', 'suspended', 0, 0, 0, 0)`, string(token), pathsRoot, string(role)); err != nil {
+					t.Fatalf("store the %s's claim of %s: %v", role, pathsRoot, err)
+				}
+			}
 			var waiting *record.StoredPlan
 			if tc.given {
 				waiting = seedOwnersPlan(t, pool, pathsChild, pathsRoot, 0, record.PlanTask{State: record.TaskWaiting})

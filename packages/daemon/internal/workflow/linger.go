@@ -20,22 +20,24 @@ import (
 // IssueSuspend finishes without acting on the check's start (store.IssueSuspension's restarted
 // fence), and the start resumes the checking role in the still-live pod. A child ends only itself:
 // it leaves the table, its phase parked in done, so no transition or status write follows the
-// human's move; the tree's architect is told, and decides what the rest of its tree does, as the
+// human's move; the architect above it is told, and decides what the rest of its tree does, as the
 // shipped daemon routes a child's close to the architect. A later todo re-enters the child. What
 // becomes of the child's claims is the status's: a child parked in backlog, icebox or triage has
 // every claim suspended with its session, for a later todo to resume; a child closed as done with
 // no merged pull request (close_root, a human's done) is finished, so each of its claims is
-// closed (issue_close: retired, its session dropped). Its pod goes either way, and the disk it
-// ran on with it, so its Sandbox is deleted either way (record.IssueSuspend), while its parent
-// keeps running in a pod of its own. A child closed as done at its merge still owes its
+// closed (issue_close: retired, its session kept for a later todo). Its pod goes either way, and
+// the disk it ran on with it, so its Sandbox is deleted either way (record.IssueSuspend), while
+// its parent keeps running in a pod of its own. A child closed as done at its merge still owes its
 // production check, where the project opens one (Engine.checkRole): five of its claims are
 // closed, the checking role's is not, no IssueSuspend is written, and the check opens in that
 // role's live session; the check's close writes the suspension (closeCheck). A project whose
 // `production_check` is off checks nothing in production, so its merged child close is like any
 // other done: every claim is closed and the Sandbox deleted with the pod and the disk it ran on.
-// A done child set back to todo starts fresh. Every claim above is one of Legion's own; the
-// issue's Dispatch claim is the board's, and Dispatch releases one at a close alone, so every
-// departure short of a close queues the row that releases it (record.ClaimRelease).
+// A done child set back to todo opens a new run, and each of its claims comes back on the session
+// it kept when a start of its role reaches it: the architect's and the planner's at its next first
+// phase start. Every claim above is one of Legion's own; the issue's Dispatch claim is the
+// board's, and Dispatch releases one at a close alone, so every departure short of a close queues
+// the row that releases it (record.ClaimRelease).
 //
 // A member's leave may be the last one a merged issue above it waited for: an issue whose pull
 // request merged stands in merging while any issue beneath it is in the workflow
@@ -60,12 +62,20 @@ import (
 // are ordered by Dispatch rank (record.Waiting). The write is made whatever the record in hand
 // says, because that copy may have been read before the release wrote the mark, and a departure
 // is rare enough that one statement costs nothing.
+//
+// Nor does its pull request keep a merge forward (clearMergeForward): the ask, its landing and
+// the review it asked for are of the run that is leaving, and a run that comes back asks about a
+// conflict afresh. This is the one place an issue leaves the workflow, so it is the one clear of
+// a departure.
 func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, status string) error {
 	e.logOnCommit(ctx, "workflow: issue left the workflow", "issue", issue.Key, "tree", issue.Tree, "status", status)
 	if err := e.store.ClearReleasedForWait(ctx, tx, issue.Key); err != nil {
 		return fmt.Errorf("clear the slot release of %s for what it waits on: %w", issue.Key, err)
 	}
 	if err := e.untellUnresumedChanges(ctx, tx, issue); err != nil {
+		return err
+	}
+	if err := e.clearMergeForward(ctx, tx, issue.Key); err != nil {
 		return err
 	}
 	if claim.IsTreeRoot(issue.Key, issue.Tree) {
@@ -78,13 +88,6 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 			}
 			return e.leaveUnderOperator(ctx, tx, issue, status)
 		}
-		// The departure stops the root's step, a held one's included (record.StandsAt), where the
-		// root's close writes it done: not for a root that already lingers, which left once, nor
-		// for a root the operator's tree holds, whose phases the workflow never ran. A root a
-		// transition took to done stands in no step any more, and writes nothing here.
-		if err := e.endStep(ctx, tx, issue, stepStopped); err != nil {
-			return err
-		}
 		if err := e.beginLinger(ctx, tx, issue, status); err != nil {
 			return err
 		}
@@ -96,21 +99,9 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 		}
 		return e.openCheckIfMerged(ctx, tx, issue, false)
 	}
-	// A child's departure stops its step the same way, before its phase is written done.
-	if err := e.endStep(ctx, tx, issue, stepStopped); err != nil {
-		return err
-	}
-	// The leave ends the child's task with its run, where it stands (moveTask, leaveState).
+	// The leave ends the child's task with its run, where it stands (endTaskWithLeave).
 	if issue.Phase != phase.Done {
-		w, err := e.walk(ctx, tx, issue)
-		if err != nil {
-			return err
-		}
-		if err := e.moveTask(ctx, tx, &issue, &w, phase.Done, leaveState(w, status)); err != nil {
-			return err
-		}
-		issue.Hold = nil
-		if err := e.store.PutIssue(ctx, tx, issue); err != nil {
+		if err := e.endTaskWithLeave(ctx, tx, &issue, status); err != nil {
 			return err
 		}
 	}
@@ -169,9 +160,9 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 	// record is read again rather than taken from the snapshot above, because closing the
 	// nearest one leaves (transition's own leave) and may close the ones above it on the way.
 	// The same departure may be the last one an ancestor held before its retro waited for, a
-	// parent whose plan has no acceptance step (record.HoldForChildren), whose retro then starts
-	// (startHeldRetro). The two waits never stand on one ancestor: one awaits its merge, the
-	// other has not reached it.
+	// parent whose plan has no acceptance step (record.HoldForChildren): the fact's settle starts
+	// its retro (releaseHeldParents), as it does for every other change of what stands beneath
+	// it.
 	for _, ancestor := range above {
 		current, err := e.store.Issue(ctx, tx, ancestor.Key)
 		if err != nil {
@@ -181,9 +172,6 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 			continue
 		}
 		if err := e.closeAwaitingMerge(ctx, tx, *current); err != nil {
-			return err
-		}
-		if err := e.startHeldRetro(ctx, tx, *current); err != nil {
 			return err
 		}
 	}
@@ -202,7 +190,7 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 // left at any other status (backlog, icebox, triage), where the issue goes out before its task is
 // done. Either way the task keeps its place. A task that already left at an earlier leave of its
 // run, done or left, keeps the state that leave wrote, since nothing moves it again.
-func leaveState(w Walk, status string) string {
+func leaveState(w Walk, status string) record.TaskState {
 	switch {
 	case w.State == record.TaskDone || w.State == record.TaskLeft:
 		return w.State
@@ -210,6 +198,24 @@ func leaveState(w Walk, status string) string {
 		return record.TaskDone
 	}
 	return record.TaskLeft
+}
+
+// endTaskWithLeave writes issue out of the workflow at status: its task ends with its run where it
+// stands, in the state its leave gives it (moveTask, leaveState), which writes the phase done, and
+// its hold and its wait on a person are cleared, in the caller's transaction (writeIssueOn). Every
+// leave ends a task here: a child's (leave), a root's that begins its linger (beginLinger) and a
+// waiting root's while the operator runs a tree under its key (leaveUnderOperator). issue is the
+// caller's record, which it writes with any field it set, and which stands as written after.
+func (e *Engine) endTaskWithLeave(ctx context.Context, tx pgx.Tx, issue *record.Issue, status string) error {
+	w, err := e.walk(ctx, tx, *issue)
+	if err != nil {
+		return err
+	}
+	if err := e.moveTask(ctx, tx, issue, &w, phase.Done, w.Place, leaveState(w, status)); err != nil {
+		return err
+	}
+	issue.Hold, issue.Awaiting = nil, nil
+	return e.writeIssueOn(ctx, tx, *issue, w)
 }
 
 // releaseParkedClaim queues the row that clears the issue's Dispatch claim when the issue is
@@ -224,17 +230,17 @@ func (e *Engine) releaseParkedClaim(ctx context.Context, tx pgx.Tx, issue record
 
 // leaveUnderOperator takes a waiting root out of the workflow while the operator runs a tree under
 // its key: its record's phase is done, so todo with the label re-admits it as a closed root's does,
-// and nothing else is written. Its claims, its pod and its tree's cleanup are the operator's, which
-// share the root's tokens and names, so no suspend, IssueSuspend, linger close or disarm is queued
-// for the workflow's record, and the workflow never ran a phase of it to check in production.
+// and its task, where it has one, ends as a leave's does; nothing else is written. Its claims, its
+// pod and its tree's cleanup are the operator's, which share the root's tokens and names, so no
+// suspend, IssueSuspend, linger close or disarm is queued for the workflow's record, and the
+// workflow never ran a phase of it to check in production.
 func (e *Engine) leaveUnderOperator(ctx context.Context, tx pgx.Tx, root record.Issue, status string) error {
 	e.logOnCommit(ctx, "workflow: a waiting root left the workflow while the operator runs a tree under its key; the operator's tree is left alone",
 		"issue", root.Key, "tree", root.Tree, "status", status)
-	// The record's phase is done and its task keeps its place (moveTask): this takes the root out of
-	// the workflow without ending its task, which the workflow never started, since the operator's
-	// tree runs the work under this key. A todo re-admits it as a closed root's does.
-	root.Phase, root.Hold, root.Awaiting = phase.Done, nil, nil
-	return e.store.PutIssue(ctx, tx, root)
+	// The record's phase is done, and its task ends with its run where it stands, as every leave's
+	// does (endTaskWithLeave), though the workflow never started it: the operator's tree runs the
+	// work under this key. A todo re-admits it as a closed root's does.
+	return e.endTaskWithLeave(ctx, tx, &root, status)
 }
 
 // LeaveUnslotted takes out of the workflow a root admission found in it with neither a slot nor a
@@ -348,28 +354,11 @@ func (e *Engine) beginLinger(ctx context.Context, tx pgx.Tx, root record.Issue, 
 		return err
 	}
 	root.LingerUntil = &until
-	// The root's leave writes it done, and ends its task where it stands (moveTask, leaveState).
-	w, err := e.walk(ctx, tx, root)
-	if err != nil {
-		return err
-	}
-	if err := e.moveTask(ctx, tx, &root, &w, phase.Done, leaveState(w, status)); err != nil {
-		return err
-	}
-	root.Hold, root.Awaiting = nil, nil
-	if err := e.store.PutIssue(ctx, tx, root); err != nil {
+	// The root's leave writes it done, and ends its task where it stands (endTaskWithLeave).
+	if err := e.endTaskWithLeave(ctx, tx, &root, status); err != nil {
 		return err
 	}
 	for _, member := range members {
-		// The linger stops every member's step, the root's being leave's. A member that awaits its
-		// merge keeps its merge step open: the merge that lands ends it passed (closeMerged), the
-		// hand-over at the linger's close or the promotion of the tree again stops it (admit's
-		// readmit, startMidPhaseMembers), so Dispatch never holds a stopped merge that landed.
-		if member.Key != root.Key && !awaitsMerge(member) {
-			if err := e.endStep(ctx, tx, member, stepStopped); err != nil {
-				return err
-			}
-		}
 		if err := e.everyClaim(ctx, tx, member, "suspend", fmt.Sprintf("the tree of %s lingers", root.Key), ""); err != nil {
 			return err
 		}
@@ -437,21 +426,21 @@ func (e *Engine) beginLinger(ctx context.Context, tx pgx.Tx, root record.Issue, 
 //
 // What the close does around the hand-over, for a member handed over under either rule: the same
 // expiry still queues a tree_close for every role of every member and a workspace removal for
-// every member, handed over or not (lingerExpired), so a handed member loses its claims and its
-// workspace here with the rest of the tree. Its workspace comes back when the merger start of
-// its new generation reaches one of those retired claims: the outbox's start row provisions the
-// workspace in its supervise.StateRetired branch and then relaunches the claim
+// every member, handed over or not (lingerExpired), so a handed member's claims are retired, their
+// sessions kept, and its workspace removed here with the rest of the tree. Its workspace comes
+// back when the first start of its new generation reaches one of those retired claims (the
+// promotion's start of its architect, or the start of its phase role): the outbox's start row
+// provisions the workspace in its supervise.StateRetired branch and then relaunches the claim
 // (internal/daemon/outbox.go). The phase it comes back in is the phase its record carries, and a
 // member carried in merging is merged by its own merger under its new tree, since the park
-// stopped the merge that tree's merger had not made. A member
-// added to the handed set also takes the decisions parked on it with it:
-// warnKeptDecisionsOfAClosedTree logs those as carried to the child's own architect rather than
-// warning that this close left them behind.
+// stopped the merge that tree's merger had not made. A member added to the handed set also takes
+// the decisions parked on it with it: warnKeptDecisionsOfAClosedTree logs those as carried to the
+// child's own architect rather than warning that this close left them behind.
 //
 // The non-done clause reads the member's phase itself rather than a predicate written over a
 // hold, because the phase is the spec's own rule and a hold from the merge phase is a state no
-// live daemon writes: a hold is written only where phase.RoleFor(issue.WorkingPhase()) is the
-// role whose claim died (claimFailed), and the merger holds that phase, so its own death leaves
+// live daemon writes: a hold is written only where the role that works issue.WorkingPhase() is
+// the role whose claim died (claimFailed), and the merger holds that phase, so its own death leaves
 // the issue held from merging with its claim failed rather than held from a phase nobody works.
 func (e *Engine) unfinishedHandOvers(ctx context.Context, tx pgx.Tx, root record.Issue, members []record.Issue) ([]record.Issue, error) {
 	done := root.Status == "done"
@@ -519,10 +508,19 @@ func (e *Engine) lingerExpired(ctx context.Context, tx pgx.Tx, fact intake.Linge
 		return intake.Result{}, err
 	}
 	// Each row names the root generation whose linger it expires: a member keeps its own generation
-	// across re-admission, so only that tells this linger's rows from a later one's.
+	// across re-admission, so only that tells this linger's rows from a later one's. The rows reach
+	// the claims every request of every claim of a member reaches (claimTargets): each stored claim
+	// by its token, so a claim of a role a keyed agent took over gets its close too, and each role
+	// whose step's claim is none of those by the role alone, so a claim that comes up after this read
+	// gets its close when the row runs. The tree's cleanup waits for every claim these rows reach.
 	for _, member := range members {
-		for _, role := range claim.Roles {
-			closeRow := record.SuperviseRequest{Op: "tree_close", Tree: member.Tree, Role: role, Generation: member.Generation, Linger: issue.Generation}
+		targets, err := e.claimTargets(ctx, tx, member, "")
+		if err != nil {
+			return intake.Result{}, err
+		}
+		for _, target := range targets {
+			closeRow := record.SuperviseRequest{Op: "tree_close", Tree: member.Tree, Role: target.role, Claim: target.token,
+				Generation: member.Generation, Linger: issue.Generation}
 			if err := e.enqueue(ctx, tx, member.Key, closeRow); err != nil {
 				return intake.Result{}, err
 			}
@@ -534,6 +532,12 @@ func (e *Engine) lingerExpired(ctx context.Context, tx pgx.Tx, fact intake.Linge
 	e.logOnCommit(ctx, "workflow: linger closed the tree", "tree", issue.Key, "generation", issue.Generation, "issues", len(members))
 	handed, err := e.unfinishedHandOvers(ctx, tx, *issue, members)
 	if err != nil {
+		return intake.Result{}, err
+	}
+	// The close ends the merge of each member it neither hands over nor leaves an open pull request:
+	// that merge can no longer land, and the record keeps no mark of the close for the fact's settle
+	// to read (closeLinger, mergeCanLand).
+	if err := e.closeLinger(ctx, issue.Tree); err != nil {
 		return intake.Result{}, err
 	}
 	if err := e.warnKeptDecisionsOfAClosedTree(ctx, tx, *issue, handed); err != nil {

@@ -1,4 +1,4 @@
-import { agentSubject } from "@legion/contracts";
+import { legacyAgentSubject, topicForms } from "@legion/contracts";
 import { z } from "zod";
 import {
   type DedupeIdentity,
@@ -340,11 +340,21 @@ function parseIdentity(data: string) {
 }
 
 /**
- * Whether a followed topic, expanded as the subscription it stands for, reaches `subject`: the
- * one "does this topic reach this frame" check the follow filter asks.
+ * Whether a followed topic, expanded as the subscription it stands for, reaches a frame whose
+ * subject reads as `forms`: the one "does this topic reach this frame" check the follow filter
+ * asks. The caller passes the frame's forms, which it reads once per frame rather than once per
+ * followed topic.
+ *
+ * Both sides are read in every form of their name while the rename that put a project into an
+ * issue's, an agent's and a role's name is under way (`topicForms`, dispatch://INFRA-3862): the
+ * listener's consumer filters carry both forms, so a frame arrives in a form the session did not
+ * follow in, and this client is the last reader of it. Comparing the spellings as they stand
+ * would drop every such frame, and drop it in silence (`receive` answers `done` and the resume
+ * point passes it). Until the old form is refused only.
  */
-function reaches(topic: string, subject: string): boolean {
-  return expandSubscriptionTopics([topic]).some((pattern) => subjectsOverlap(pattern, subject));
+function reaches(topic: string, forms: readonly string[]): boolean {
+  const patterns = topicForms(topic).flatMap((form) => expandSubscriptionTopics([form]));
+  return forms.some((form) => patterns.some((pattern) => subjectsOverlap(pattern, form)));
 }
 
 function every(ms: number, callback: () => void): () => void {
@@ -368,7 +378,12 @@ export function createConsumerDelivery(options: ConsumerDeliveryOptions): Consum
   const render = options.render ?? renderInbound;
   const now = options.now ?? Date.now;
   const repeat = options.every ?? every;
-  const ownSubject = agentSubject(sessionID);
+  // The session's own inbox, in the old form and under any project: every form of such a subject
+  // holds the old form (`topicForms`), which no other session's does, so a frame on any of them
+  // is its own, whenever the stream stored it. Named because the follow filter and the persisted
+  // follow times must read it the same way.
+  const ownSubject = legacyAgentSubject(sessionID);
+  const ownsSubject = (subject: string): boolean => topicForms(subject).includes(ownSubject);
 
   let currentEpoch: ConsumerEpoch = { id: newEpoch(), startedAt: now() };
   // When each followed topic was first followed, on the host's clock.
@@ -443,10 +458,11 @@ export function createConsumerDelivery(options: ConsumerDeliveryOptions): Consum
   };
 
   const followedAt = (subject: string): number | undefined => {
-    if (subject === ownSubject) return Number.NEGATIVE_INFINITY;
+    if (ownsSubject(subject)) return Number.NEGATIVE_INFINITY;
+    const forms = topicForms(subject);
     let earliest: number | undefined;
     for (const [topic, at] of follows) {
-      if (!reaches(topic, subject)) continue;
+      if (!reaches(topic, forms)) continue;
       if (earliest === undefined || at < earliest) earliest = at;
     }
     return earliest;
@@ -766,7 +782,7 @@ export function createConsumerDelivery(options: ConsumerDeliveryOptions): Consum
       for (const topic of topics) {
         // The session's own agent subject is always followed (`followedAt`), so it is never one of
         // the follow times a host persists.
-        if (topic === ownSubject) continue;
+        if (ownsSubject(topic)) continue;
         next.set(topic, follows.get(topic) ?? at);
       }
       follows = next;
@@ -830,6 +846,19 @@ export function inboundUnavailableNoticeText(why: string): string {
   });
 }
 
+/**
+ * What a session that was told its inbound is unavailable is told once a registration is
+ * accepted again, worded once for every host: without it the outage notice is the last word the
+ * session has, and a session that recovered a few seconds later reads itself as deaf for its life.
+ */
+export function inboundRestoredNoticeText(): string {
+  return envoyNoticeText({
+    notice: "Envoy inbound restored",
+    detail:
+      "The listener accepted this session's registration and gave it its durable consumer, so Envoy messages reach it again, the ones the stream stored during the outage first.",
+  });
+}
+
 /** One session's outage report (`inboundUnavailable`). */
 export interface InboundUnavailable {
   /**
@@ -837,19 +866,25 @@ export interface InboundUnavailable {
    * this outage already told it.
    */
   refused(error: unknown): void;
-  /** A registration was accepted: the next outage tells the session again. */
+  /** A registration was accepted: ends the outage, telling the session so through the host's
+   *  `restored` when it was told of the outage, and the next outage tells the session again. */
   accepted(): void;
 }
 
 /**
- * Says once per outage that the session receives nothing. The listener refuses a registration it
- * can give no consumer, and the host registers again at every heartbeat, so a host that told the
- * session each time would tell it every tick for as long as the outage lasts; one that never told
- * it again would leave a second outage silent. `tell` takes the listener's own message
- * (`messageFor`), which each host words with `inboundUnavailableNoticeText` and shows where it
- * shows a gap notice.
+ * Says once per outage that the session receives nothing, and that it receives again once a
+ * registration is accepted. The listener refuses a registration it can give no consumer, and the
+ * host registers again at every heartbeat, so a host that told the session each time would tell
+ * it every tick for as long as the outage lasts; one that never told it again would leave a second
+ * outage silent; and one that never said the outage ended would leave the session believing it
+ * deaf after it recovered. `tell` takes the listener's own message (`messageFor`), which each host
+ * words with `inboundUnavailableNoticeText`, and `restored` is worded with
+ * `inboundRestoredNoticeText`; each host shows both where it shows a gap notice.
  */
-export function inboundUnavailable(tell: (why: string) => void): InboundUnavailable {
+export function inboundUnavailable(
+  tell: (why: string) => void,
+  restored: () => void
+): InboundUnavailable {
   let told = false;
   return {
     refused(error) {
@@ -858,7 +893,9 @@ export function inboundUnavailable(tell: (why: string) => void): InboundUnavaila
       tell(messageFor(error));
     },
     accepted() {
+      if (!told) return;
       told = false;
+      restored();
     },
   };
 }
@@ -873,6 +910,12 @@ export interface RelayRegistration<Result> {
    * session holds no relay subject (no NATS connection yet, or inbound off for this session).
    */
   readonly relay: RegisteringRelay | undefined;
+  /**
+   * Why the session holds no relay subject when `relay` is undefined, in words a notice may hold
+   * (`natsFailureReason` of the failure of the NATS call that would have opened it); the refusal and
+   * the outage notice name it. Undefined when the host has no failure to name.
+   */
+  readonly relayMissing?: string;
   /** This session's own agent subject, which every registration carries. */
   readonly ownAgentSubject: string;
   /** Every topic the session follows now, filtered by `registrationTopics`. */
@@ -891,6 +934,13 @@ export interface RelayRegistration<Result> {
 }
 
 /**
+ * `registerWithRelay`'s refusal of a session that holds no relay subject, so a host can tell it
+ * from a refusal the listener sent. Its message names why the relay is missing when the host said
+ * (`relayMissing`).
+ */
+export class NoRelaySubjectError extends Error {}
+
+/**
  * One registration, as every host that holds a relay makes it: the topics the listener will
  * store (`registrationTopics`), stamped on the relay before the registration carries them, then
  * sent, with the outage told once whichever way it ends.
@@ -902,6 +952,7 @@ export interface RelayRegistration<Result> {
  */
 export function registerWithRelay<Result>({
   relay,
+  relayMissing,
   ownAgentSubject,
   followed,
   roles,
@@ -910,8 +961,8 @@ export function registerWithRelay<Result>({
   answered,
 }: RelayRegistration<Result>): Promise<Result> {
   if (relay === undefined) {
-    const refused = new Error(
-      "this session holds no relay subject, so the listener can give it no consumer and it can receive nothing"
+    const refused = new NoRelaySubjectError(
+      `this session holds no relay subject, so the listener can give it no consumer and it can receive nothing${relayMissing === undefined ? "" : `, because its relay subject could not be opened: ${relayMissing}`}`
     );
     outage.refused(refused);
     return Promise.reject(refused);

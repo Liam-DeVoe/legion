@@ -19,9 +19,9 @@ import (
 
 // A hand-over that carries its child's run carries the child's plan with it (record.Store's
 // CarryPlan with carried true): the child's new generation holds the plan of the old one, its task
-// where it stood, at its state, its place and its counts, and each step with the commit its review
-// read, so the child goes on at the step it stood at, as its phase, its gate and its pull request
-// do (TestAHandedOverChildCarriesItsPhaseGateAndPullRequest). The old generation's plan stays as it
+// where it stood, at its state, its place and its counts, so the child goes on at the step it stood
+// at, as its phase, its gate and its pull request do
+// (TestAHandedOverChildCarriesItsPhaseGateAndPullRequest). The old generation's plan stays as it
 // was.
 func TestAHandedOverOrphanKeepsItsPlan(t *testing.T) {
 	ctx := context.Background()
@@ -38,7 +38,7 @@ func TestAHandedOverOrphanKeepsItsPlan(t *testing.T) {
 		Counts: record.ReturnCounts{Pass: 2, Rounds: 1, ConflictRounds: 1, BackwardMoves: map[string]int{"reviewing-implementing": 1}, CapTold: 1}}
 	steps := []record.PlanStep{
 		{Issue: child, Generation: 1, Task: "a", Position: 1, Role: "implementer", Type: "implementation"},
-		{Issue: child, Generation: 1, Task: "a", Position: 2, Role: "reviewer", Type: "review", ReviewedHead: "head-41"},
+		{Issue: child, Generation: 1, Task: "a", Position: 2, Role: "reviewer", Type: "review"},
 	}
 	inTx(t, pool, func(tx pgx.Tx) {
 		records := record.NewStore()
@@ -46,7 +46,7 @@ func TestAHandedOverOrphanKeepsItsPlan(t *testing.T) {
 			records.PutIssue(ctx, tx, record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: testProject, Title: root, Phase: phase.Done, Generation: 1, Status: "done", LingerUntil: &until}),
 			records.PutIssue(ctx, tx, record.Issue{Key: child, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: testProject, Title: child, Parent: &parent, Phase: phase.Reviewing, Generation: 1, Status: "retro", Rank: "B", LastDispatchSeq: 1}),
 			records.PutGate(ctx, tx, record.DesignGate{Issue: root, ArtifactID: artifact, LatestVersion: 2, ApprovedVersion: new(2)}),
-			records.PutPullRequest(ctx, tx, record.PullRequest{Issue: child, Repo: "acme/widgets", Number: 42, Branch: "legion/LEGION-209", HeadSHA: "head-42", Generation: 1, State: record.PullRequestOpen, Task: "a"}),
+			records.PutPullRequest(ctx, tx, record.PullRequest{Issue: child, Repo: "acme/widgets", Number: 42, Branch: "legion/LEGION-209", HeadSHA: "head-42", Generation: 1, State: record.PullRequestOpen}),
 			records.PutHandover(ctx, tx, record.Handover{Issue: child, Tree: root, Generation: 1}),
 			records.PutPlan(ctx, tx, version, []record.PlanTask{task}, steps),
 		} {

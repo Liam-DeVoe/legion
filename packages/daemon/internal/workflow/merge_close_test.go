@@ -20,7 +20,7 @@ import (
 
 // The merge of a child's pull request while it awaits the merge closes the child and opens its
 // production check, under a project whose `production_check` names the tester, in the tester's
-// live session: the child is done on the record and on Dispatch, its architect is told
+// live session: the child is done on the record and on Dispatch, the architect above it is told
 // child-closed, five of its six claims are closed — the implementer's with the rest — and the
 // tester's is handed the check's first look, a start with no phase, fenced on the check's
 // look 1, whose task opens with the line a resumed session tells the check by, with no
@@ -32,6 +32,7 @@ func TestATesterProjectsMergedChildCloseOpensItsCheckAndSparesTheTester(t *testi
 	pool := migratedPool(t)
 	now := time.Date(2026, 10, 19, 4, 0, 0, 0, time.UTC)
 	seedMergingChild(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Implementing, Generation: 7, Status: "in_progress", Rank: "U", LastDispatchSeq: 1})
+	seedRoleClaims(t, pool, "LEGION-208", "LEGION-209")
 	engine := New(record.NewStore(), Config{Project: "LEGION", Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, ProductionCheckBound: 48 * time.Hour, ProductionCheckRole: claim.RoleTester, Clock: func() time.Time { return now }}, nil)
 
 	if result, err := intake.ApplyFact(context.Background(), pool, "github", "merged", intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 43, MergeSHA: "merge-43"}, engine, admissionStub{}); err != nil || result.Refusal != nil {
@@ -125,6 +126,7 @@ func TestAnOffProjectsMergedChildCloseRetiresEveryClaimAndReleasesItsPod(t *test
 	pool := migratedPool(t)
 	now := time.Date(2026, 10, 19, 4, 0, 0, 0, time.UTC)
 	seedMergingChild(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Implementing, Generation: 7, Status: "in_progress", Rank: "U", LastDispatchSeq: 1})
+	seedRoleClaims(t, pool, "LEGION-208", "LEGION-209")
 	engine := New(record.NewStore(), Config{Project: "LEGION", Linger: time.Hour, ProductionCheckBound: 48 * time.Hour, Clock: func() time.Time { return now }}, nil)
 
 	if result, err := intake.ApplyFact(context.Background(), pool, "github", "merged", intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 43, MergeSHA: "merge-43"}, engine, admissionStub{}); err != nil || result.Refusal != nil {
@@ -158,6 +160,7 @@ func TestAnOffProjectsMergedChildCloseRetiresEveryClaimAndReleasesItsPod(t *test
 func TestARootsCloseLingersItsTreeAndOpensItsCheckBehindTheLingersRows(t *testing.T) {
 	rig := seedMergedRoot(t, record.Issue{Key: "LEGION-209", Phase: phase.Implementing, Status: "in_progress"})
 	pool := rig.pool
+	seedRoleClaims(t, pool, "LEGION-208", "LEGION-209")
 	assertPhase(t, pool, phase.Merging)
 
 	rig.apply("child-done", intake.DispatchIssue{Key: "LEGION-209", Seq: 2, Type: "issue.closed", Status: "done", Title: "LEGION-209", Parent: "LEGION-208", Rank: "V1"})
@@ -211,6 +214,7 @@ func TestARootsCloseLingersItsTreeAndOpensItsCheckBehindTheLingersRows(t *testin
 func TestAnOffProjectsMergedRootCloseLingersWithEveryClaimSuspended(t *testing.T) {
 	rig := seedMergedRootUnder(t, "", record.Issue{Key: "LEGION-209", Phase: phase.Implementing, Status: "in_progress"})
 	pool := rig.pool
+	seedRoleClaims(t, pool, "LEGION-208", "LEGION-209")
 	assertPhase(t, pool, phase.Merging)
 
 	rig.apply("child-done", intake.DispatchIssue{Key: "LEGION-209", Seq: 2, Type: "issue.closed", Status: "done", Title: "LEGION-209", Parent: "LEGION-208", Rank: "V1"})
@@ -239,10 +243,10 @@ func TestAnOffProjectsMergedRootCloseLingersWithEveryClaimSuspended(t *testing.T
 }
 
 // A merge that lands while the tree lingers still closes the member: its phase and status are done,
-// its architect is told child-closed, and its production check opens with look 1 as a wake start
-// row, since the linger already suspended its tester. It retires nobody and suspends nothing:
-// no issue_close and no IssueSuspend, which the linger's own rows already wrote and the tree's
-// close completes.
+// a child-closed is queued for the architect above it, and its production check opens with look 1
+// as a wake start row, since the linger already suspended its tester. It retires nobody and
+// suspends nothing: no issue_close and no IssueSuspend, which the linger's own rows already wrote
+// and the tree's close completes.
 func TestALingeringMembersMergeClosesItAndWakesItsCheck(t *testing.T) {
 	pool := migratedPool(t)
 	now := time.Date(2026, 10, 19, 4, 0, 0, 0, time.UTC)
@@ -293,6 +297,7 @@ func TestAChildClosedAsDoneWithNoPullRequestOpensNoCheck(t *testing.T) {
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Implementing, Generation: 7, Status: "in_progress", Rank: "U", LastDispatchSeq: 1})
 	parent := "LEGION-208"
 	seedIssue(t, pool, record.Issue{Key: "LEGION-209", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "child", Parent: &parent, Phase: phase.Implementing, Generation: 7, Status: "in_progress", Rank: "V", LastDispatchSeq: 1})
+	seedRoleClaims(t, pool, "LEGION-208", "LEGION-209")
 	engine := New(record.NewStore(), Config{Project: "LEGION", Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, ProductionCheckRole: claim.RoleTester, Clock: func() time.Time { return time.Date(2026, 10, 19, 4, 0, 0, 0, time.UTC) }}, nil)
 
 	if _, err := intake.ApplyFact(context.Background(), pool, "dispatch", "child-done", intake.DispatchIssue{Key: "LEGION-209", Seq: 2, Type: "issue.closed", Status: "done", Title: "child", Parent: "LEGION-208", Rank: "V"}, engine, admissionStub{}); err != nil {
@@ -414,6 +419,7 @@ func TestAMergedRootClosesWhenItsLastOpenChildLeaves(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rig := seedMergedRoot(t, tc.child)
+			seedRoleClaims(t, rig.pool, "LEGION-208", "LEGION-209")
 			tc.leave(t, rig)
 			assertPhase(t, rig.pool, phase.Done)
 			var lingering bool
@@ -716,10 +722,10 @@ func issueOutboxOf(t *testing.T, pool *pgxpool.Pool, issue, kind string) []outbo
 	return got
 }
 
-// superviseRowsOf decodes issue's supervise rows of op, oldest first, with no start passed over:
-// in this package every start carries a task — a phase worker's is one row and carries it
-// (StartOrOwe) — and the task-less starts admission brings back are written in internal/admit,
-// never here.
+// superviseRowsOf decodes issue's supervise rows of op, oldest first, with no start passed over.
+// In this package a phase worker's start is one row and carries its task (StartOrOwe); a child's
+// own architect's plain start carries none (gateOpened, reviveArchitect), and the task-less starts
+// admission brings back are written in internal/admit, never here.
 func superviseRowsOf(t *testing.T, pool *pgxpool.Pool, issue, op string) []record.SuperviseRequest {
 	t.Helper()
 	var requests []record.SuperviseRequest

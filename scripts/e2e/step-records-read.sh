@@ -28,21 +28,16 @@ if [ "$#" -ne 1 ] || ! [[ $1 =~ ^[A-Z][A-Z0-9]*-[0-9]+$ ]]; then
   exit 2
 fi
 issue=$1
-unknown() {
-  echo "UNKNOWN: $*"
-  exit 2
-}
-command -v dispatch >/dev/null || unknown "no dispatch command is on PATH, so nothing was read"
-
-code=0
-out=$(dispatch steps --issue "$issue" 2>&1) || code=$?
-[ "$code" -eq 0 ] || unknown "dispatch steps --issue $issue exited $code, so nothing was read: $out"
-printf '%s\n' "$out"
+case ${BASH_SOURCE[0]} in */*) here=${BASH_SOURCE[0]%/*} ;; *) here=. ;; esac
+# shellcheck source-path=SCRIPTDIR source=lib/dispatch-read.sh
+. "$here/lib/dispatch-read.sh"
+read_require_dispatch
+read_dispatch steps --issue "$issue"
 
 # Each line after the header is one run, as `dispatch steps` prints it:
 #   <task> <step> <kind> <role> <type|-> attempt <a> <agent|-> <model|-> <started_at|-> <ended_at|running> <result|running>
 awk -v issue="$issue" '
-  function unknown(why) { print "UNKNOWN: " why; status = 2; exit }
+  function unknown(why) { print "UNKNOWN: " why; status = 2; exit status }
   NR == 1 {
     if ($0 !~ ("^" issue ": [0-9]+ steps in [0-9]+ tasks$")) unknown("the first line of the answer is no header of " issue ": " $0)
     listed = $2 + 0
@@ -55,14 +50,16 @@ awk -v issue="$issue" '
     runs++
     place = ($3 == "step") ? "step " $2 : "the " $3
     seen[place] = 1
-    if ($11 == "running" || $11 == "-" || $12 == "running") faults[++count] = "the record never ended: " $0
+    # A run that has ended prints its end, a moment, in column 11; steps.ts prints `running` there
+    # (and in column 12) for one that has not, and any other text there is no end either.
+    if ($11 !~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]/) faults[++count] = "the record never ended: " $0
     if ($8 == "-" && $3 != "merge") faults[++count] = "the record names no agent: " $0
     if ($8 == "-" && $3 == "merge") notes[++noted] = "the merge has no agent: no merger ran it: " $0
     if ($3 == "step" && $9 == "-") faults[++count] = "the step names no model: " $0
   }
   END {
     if (status) exit status
-    if (runs != listed) { print "UNKNOWN: the header says " listed " records and " runs " lines of runs follow it"; exit 2 }
+    if (runs != listed) unknown("the header says " listed " records and " runs " lines of runs follow it")
     split("step 1,step 2,step 3,step 4,step 5,the retro,the merge", places, ",")
     for (i = 1; i <= 7; i++) if (!(places[i] in seen)) faults[++count] = issue ": no record of " places[i]
     for (i = 1; i <= noted; i++) print notes[i]
@@ -70,4 +67,4 @@ awk -v issue="$issue" '
     if (count) exit 1
     print "PASS: " issue ": " runs " records; steps 1 to 5, the retro and the merge each have one, each record ended, each step and retro with an agent, each step with a model"
   }
-' <<<"$out"
+' <<<"$read_out"

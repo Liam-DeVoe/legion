@@ -3,7 +3,9 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
+	"maps"
 	"net/http"
 	"slices"
 	"strings"
@@ -11,10 +13,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -26,20 +27,20 @@ import (
 // transferredLegion is the pair a deployment configures over sjawhar/legion's transfer to
 // cybermonklabs: the records of a tree opened before it keep sjawhar/legion, while GitHub holds
 // the repository under cybermonklabs/legion, on cybermonklabs' installation.
-var transferredLegion = ghrepo.MustRenames(ghrepo.MustRename("sjawhar/legion", "cybermonklabs/legion"))
+var transferredLegion = ghrepo.MustRenames(ghrepo.MustRename(renameFrom, renameTo))
 
 // transferStates are the states a transferred repository's calls are driven in: the configured
-// pair with the project serving the repository GitHub holds it under, that same pair with one
-// more repository of the owner the transfer moved it away from served beside it, and no pair at
-// all. The second is the state of the production failure of 2026-11-06 — sjawhar/oh-my-pi added
-// to the project's mapping made sjawhar an owner of the project, which switched the live pair
-// off under the owner rule this replaced, and 47 trees could not push for 42 minutes — and it
-// must address exactly what the first does. The third is the control: with no pair configured
-// every call is addressed at the recorded repository, as it always was.
+// pair with both role Apps answered installed on the name GitHub holds the repository under, that
+// same pair with one more repository of the owner the transfer moved it away from served beside
+// it, and no pair at all. The second is the state of the production failure of 2026-11-06 —
+// sjawhar/oh-my-pi served beside the pair made sjawhar an owner of the project, which switched the
+// live pair off under the owner rule this replaced, and 47 trees could not push for 42 minutes —
+// and it must address exactly what the first does. The third is the control: with no pair
+// configured every call is addressed at the recorded repository, as it always was.
 var transferStates = []struct {
 	name    string
 	renames ghrepo.Renames
-	// served is the project's mapping, as GitHub names each repository it serves.
+	// served is the names both role Apps answered installed on, as GitHub names each.
 	served []string
 	// want is the repository every GitHub call for a tree recorded on sjawhar/legion addresses,
 	// and whose owner its token is minted for.
@@ -52,43 +53,24 @@ var transferStates = []struct {
 	{name: "no pair configured", served: []string{"sjawhar/legion"}, want: "sjawhar/legion"},
 }
 
-// renamedRepositories is the project's mapping as the boot builds it: the repositories Dispatch
-// maps, the first of them the project's default, under the configured pairs.
+// renamedRepositories is the repository state the refresher's preparation leaves (prepareLive):
+// both role Apps answered installed on each of served (repositories.fill), under the configured
+// pairs.
 func renamedRepositories(served []string, renames ghrepo.Renames) *repositories {
 	repos := newRepositories("LEGION", renames)
-	mapped := make([]mappedRepository, 0, len(served))
-	for i, repo := range served {
-		mapped = append(mapped, mappedRepository{Repo: ghrepo.MustParse(repo), Default: i == 0})
+	for _, repo := range served {
+		repos.fill(ghrepo.MustParse(repo))
 	}
-	repos.set(mapped, nil)
 	return repos
 }
 
 // renameOutbox is the outbox a transfer's rows run on: the implement App (roleTokens, whose token
-// names the owner it was minted for), GitHub at api, and the project's mapping — served, the
-// repositories Dispatch maps, and the configured pairs — as the boot builds it.
+// names the owner it was minted for), GitHub at api, and the repository state — served, the names
+// both role Apps answered installed on, and the configured pairs — as the refresher leaves it.
 func renameOutbox(t *testing.T, pool *store.Pool, records record.Store, api string, served []string, renames ghrepo.Renames) *outbox {
 	t.Helper()
 	return &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, tokens: roleTokens{},
 		project: "legion", githubAPI: api, repositories: renamedRepositories(served, renames), now: time.Now}
-}
-
-// seedTransferredREADY records LEGION-208 on sjawhar/legion awaiting the merge of its READY head,
-// its pull request #42 open there: a tree whose records were written before the transfer.
-func seedTransferredREADY(t *testing.T, pool *store.Pool, records record.Store) {
-	t.Helper()
-	putOutboxIssue(t, pool, records, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
-		Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Merging, Generation: 1, Status: "retro", Rank: "U"})
-	ctx := context.Background()
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
-		if err := records.PutPhase(ctx, tx, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleMerger, Claim: "merge-claim", HandoffCommit: "ready-head"}); err != nil {
-			return err
-		}
-		return records.PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "sjawhar/legion",
-			Number: 42, Branch: "legion/LEGION-208", HeadSHA: "ready-head", Failing: []string{}})
-	}); err != nil {
-		t.Fatalf("seed LEGION-208's READY: %v", err)
-	}
 }
 
 // renameGitHub is GitHub as a transferred repository's calls reach it: every REST path and every
@@ -188,9 +170,8 @@ func (g *renameGitHub) assertAddressed(t *testing.T, app appauth.AppRole, repo s
 // the owner it was minted for.
 type identityTokens struct{ roleTokens }
 
-func (t identityTokens) Token(ctx context.Context, role appauth.AppRole, repo ghrepo.Repository) (appauth.Lease, error) {
-	lease, err := t.roleTokens.Token(ctx, role, repo)
-	owner := repo.Owner()
+func (t identityTokens) Token(ctx context.Context, role appauth.AppRole, owner string) (appauth.Lease, error) {
+	lease, err := t.roleTokens.Token(ctx, role, owner)
 	lease.Identity = runtime.GitIdentity{Name: "legion-" + string(role) + "[bot] of " + owner, Email: owner + "@users.noreply.github.com"}
 	return lease, err
 }
@@ -226,6 +207,34 @@ func TestTheGitIdentityOfATreeRecordedBeforeAConfiguredRenameIsMintedForTheOwner
 	}
 }
 
+// A role the deployment defines commits as the bot of the App its github_app setting names, and
+// the map the workflow reads is built from the settings' roles (deploymentApps): the checker,
+// set to implement, commits as the implement App's bot and the critic, which names review, as
+// the review App's. A role nothing defines gets no identity: the mint is refused before any
+// lease is asked for.
+func TestTheGitIdentityOfADeploymentRoleIsItsAppsBot(t *testing.T) {
+	recorded := ghrepo.MustParse("sjawhar/legion")
+	tc := transferStates[0]
+	owner := ghrepo.MustParse(tc.want).Owner()
+	apps := deploymentApps([]config.Role{
+		{Name: "checker", Type: "testing", GitHubApp: config.RoleAppImplement},
+		{Name: "critic", Type: "review", GitHubApp: config.RoleAppReview},
+	})
+	if want := (appauth.DeploymentApps{"checker": appauth.Implement, "critic": appauth.Review}); !maps.Equal(apps, want) {
+		t.Fatalf("deploymentApps = %v, want %v", apps, want)
+	}
+	w := &workflowRuntime{tokens: identityTokens{}, repositories: renamedRepositories(tc.served, tc.renames), deployed: apps}
+	for role, app := range map[claim.Role]string{"checker": "implement", "critic": "review"} {
+		want := runtime.GitIdentity{Name: "legion-" + app + "[bot] of " + owner, Email: owner + "@users.noreply.github.com"}
+		if got, err := w.identity(context.Background(), role, recorded); err != nil || got != want {
+			t.Errorf("the identity of %s = %+v, %v; want %+v", role, got, err, want)
+		}
+	}
+	if got, err := w.identity(context.Background(), "ghost", recorded); !errors.Is(err, appauth.ErrRoleNotDefined) {
+		t.Errorf("the identity of ghost = %+v, %v; want an error that is appauth.ErrRoleNotDefined", got, err)
+	}
+}
+
 // The branch of a tree recorded before its repository's transfer is created on the repository
 // GitHub holds it under now: the record keeps sjawhar/legion, and both calls the create costs —
 // the read of the base branch's ref and the create of the issue's own — are addressed at
@@ -247,8 +256,7 @@ func TestTheBranchOfATreeRecordedBeforeItsTransferIsCreatedOnTheRepositoryGitHub
 			})
 			// The create reads no record of its own: the issue it is given carries the
 			// repository, so this outbox needs no database.
-			runner := &outbox{log: quietLogger(), dispatchProject: "LEGION", records: record.NewStore(), tokens: roleTokens{},
-				project: "legion", githubAPI: github.url, repositories: renamedRepositories(tc.served, tc.renames), now: time.Now}
+			runner := renameOutbox(t, nil, record.NewStore(), github.url, tc.served, tc.renames)
 
 			if err := runner.createBranch(context.Background(), issue); err != nil {
 				t.Fatalf("create the branch of %s: %v", issue.Key, err)

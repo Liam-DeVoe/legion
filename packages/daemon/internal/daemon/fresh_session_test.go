@@ -87,7 +87,7 @@ func newFreshSessionRig(t *testing.T) *freshSessionRig {
 	rig.operatorAPI = api.NewServer("127.0.0.1", 8437, api.Options{
 		Supervisor: sup, BootTokens: api.NewBootTokens(trees), Project: "legion", DispatchProject: "LEGION",
 		OperatorToken: freshSessionOperatorToken, Controller: trees, Trees: trees, Releaser: rt, Pool: pool, Record: records,
-		Handlers: []intake.Handler{engine}, RoleFor: workflow.RoleFor, Log: quietLogger(),
+		Handlers: []intake.Handler{engine}, Log: quietLogger(),
 	}).Handler
 	rig.implementer = mustClaimToken(t, issue.Key, claim.RoleImplementer)
 	machine, _, err := sup.Create(ctx, supervise.Claim{Token: rig.implementer, Project: "legion", Tree: issue.Tree, Issue: issue.Key,
@@ -286,7 +286,7 @@ func TestAnArchitectsRetryOfARefusedClaimStartsANewSessionWithThePhaseTask(t *te
 	// provider refused: a worker reading an empty transcript would otherwise take the task for a
 	// fresh start and do again what the abandoned session already pushed.
 	prompts := rig.conn.Prompts()
-	task := phaseTask + string(workflow.WorkingCopy(rig.issue, nil)) + " Reason: retry held phase."
+	task := phaseTask + workflow.WorkingCopy(rig.issue, nil).String() + " Reason: retry held phase."
 	if len(prompts) != 2 || !strings.HasSuffix(prompts[1].Message, task) {
 		t.Fatalf("the new session was prompted %+v, want it to end with the retried phase's task %q", prompts, task)
 	}

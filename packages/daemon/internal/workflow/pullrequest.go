@@ -18,11 +18,12 @@ import (
 // putPullRequest records pr and marks its issue moved where the write is news of the pull
 // request rather than the daemon reconciling what it already knew (pullRequestNews, and the rule
 // in engine.go's dispatchIssue). Every write of a pull request row in this package goes through
-// it but two: the row is written from ten places — a pull request opened, reopened,
-// synchronized, pushed to, closed or merged, a CI settlement, a mergeability read, a review, the
-// task of the run named on it (nameTaskOnPullRequest) — and a write site added later would
-// otherwise have to remember the mark. Routing them through one function is what makes
-// forgetting it hard rather than easy.
+// it but two: the row is written from thirteen places — a pull request opened, reopened,
+// synchronized, pushed to, closed or merged, a CI settlement, a mergeability read and the end of
+// its second read (conflictConfirmDone), a review, a merge forward's ask (mergeForward), its
+// landing (mergeForwardLanded) and its clearing (clearMergeForward) — and a write site added
+// later would otherwise have to remember the mark. Routing them through
+// one function is what makes forgetting it hard rather than easy.
 //
 // The two exceptions call record.Store.PutPullRequest themselves, and each says why where it
 // stands. The first is the listener's duplicate of a settlement the pass already built
@@ -59,37 +60,14 @@ func (e *Engine) putPullRequest(ctx context.Context, tx pgx.Tx, pr record.PullRe
 	return e.store.MarkIssueMoved(ctx, tx, pr.Issue, e.now())
 }
 
-// pullRequestTask is the task the pull request of w's run names (record.PullRequest.Task): the
-// run's one task, and none for a run with no plan rows, which names a task nowhere (R20).
-func pullRequestTask(w Walk) string {
-	if !w.Stored {
-		return ""
-	}
-	return w.Task
-}
-
-// nameTaskOnPullRequest writes the task of w's run on issue's pull request row, where the record
-// holds one that names another (record.PullRequest.Task). Every other write keeps the task the
-// row was read with; these two name it again: the first step of a run, whose open pull request can
-// outlive an earlier run of another plan (planFirstStep), and the start of the task a version put
-// in the place of a stopped one (restartTask). An issue with no pull request recorded has nothing
-// to name it on, and its opened names the task when it arrives (pullRequestOpened).
-func (e *Engine) nameTaskOnPullRequest(ctx context.Context, tx pgx.Tx, issue string, w Walk) error {
-	pr, err := e.store.PullRequest(ctx, tx, issue)
-	if err != nil || pr == nil || pr.Task == pullRequestTask(w) {
-		return err
-	}
-	pr.Task = pullRequestTask(w)
-	return e.putPullRequest(ctx, tx, *pr)
-}
-
 // pullRequestNews says whether the write of after over before is news of the pull request: the
 // daemon's judgement of it changed (classify.JudgementChanged — its head, the head it checked,
-// its failing and cancelled checks, its check runs, and the settlement fence those were read
-// from), its head run opened or closed, the pushes it is still holding changed, or one of the
-// facts GitHub reports about the pull request itself changed: its state, the branch it merges
-// into, the newest deciding review, GitHub's mergeability verdict and the merge state beside it,
-// the head the daemon holds conflicting, and the merge commit.
+// its failing and cancelled checks, its check runs, the commit statuses of the head it checked,
+// and the settlement fence those were read from), its head run opened or closed, the pushes it is
+// still holding changed, or one of the facts GitHub reports about the pull request itself
+// changed: its state, the branch it merges into, the newest deciding review, GitHub's
+// mergeability verdict and the merge state beside it, the head the daemon holds conflicting, and
+// the merge commit.
 //
 // GitHub's merge state is named for the reason its mergeability is, and the two are read from
 // one answer: the state says whether GitHub would merge this head now, which the tri-state
@@ -124,6 +102,17 @@ func (e *Engine) nameTaskOnPullRequest(ctx context.Context, tx pgx.Tx, issue str
 // that decides nothing). The same test holds that a merge-state read that only confirms what is
 // recorded moves no issue either.
 //
+// Two fields are left out because they are the daemon's bookkeeping of its own reads and asks, not
+// news of the pull request: the first conflicting read still waiting for its second
+// (record.PullRequest.ConflictRead) and the merge forward the daemon asked for (MergeForward). A
+// read that writes or releases the first read writes GitHub's verdict with it, which is named
+// above whenever it changed, and the confirmation writes the head the daemon holds conflicting,
+// which is named too; the ask is the daemon's own act on a conflict it already recorded, its
+// landing rides on the synchronize that moved the head, which is named above, its clearing on a
+// move of the issue or its leave, each a movement of its own, and the end of a second read that
+// decided nothing (workflow's conflictConfirmDone) is a note the daemon leaves itself, as
+// clearing BaseMoved is.
+//
 // A field added to record.PullRequest later is not news to this test until it is named here. The
 // direction that costs something is this one — an unnamed field that is news leaves a tree
 // reading quieter than it is, which is one notice to a controller — while naming a field that is
@@ -150,9 +139,7 @@ func pullRequestNews(before, after record.PullRequest) bool {
 // deletes a pull request that is not open, and all of them with it. An issue that waits to close on
 // its recorded merge (awaitsMerge) keeps that merge: GitHub never sends the merge again, so a pull
 // request opened from its branch is not recorded, while an issue set back to todo reruns and its
-// branch's new pull request replaces the merged one. The row of a pull request the record does
-// not hold is the row's first write, so it names the task of the issue's run (pullRequestTask); a
-// reopen keeps the task its row names, as every later write does.
+// branch's new pull request replaces the merged one.
 func (e *Engine) pullRequestOpened(ctx context.Context, tx pgx.Tx, fact intake.PullRequestOpened) (intake.Result, error) {
 	issue, err := e.issueForBranch(ctx, tx, fact.Repo, fact.Branch)
 	if err != nil || issue == nil {
@@ -194,8 +181,7 @@ func (e *Engine) pullRequestOpened(ctx context.Context, tx pgx.Tx, fact intake.P
 		}
 		// The reopen keeps the pushes - facts about commits - and the head run, so a push that
 		// arrives after the reopen settles the move the reopen made as it would have had it
-		// arrived first (classify.Reopen); the CI settlement starts afresh. It keeps the task its
-		// row names too.
+		// arrived first (classify.Reopen); the CI settlement starts afresh.
 		carried := classify.Reopen(*recorded, fact.HeadSHA)
 		pr.ReviewSeen = recorded.ReviewSeen
 		pr.Pushes, pr.Moves, pr.Run = carried.Pushes, carried.Moves, carried.Run
@@ -207,13 +193,6 @@ func (e *Engine) pullRequestOpened(ctx context.Context, tx pgx.Tx, fact intake.P
 			pr.Base = recorded.Base
 		}
 		pr.HeadUpdatedAt = classify.LatestClock(recorded.HeadUpdatedAt, fact.UpdatedAt)
-		pr.Task = recorded.Task
-	} else {
-		w, err := e.walk(ctx, tx, *issue)
-		if err != nil {
-			return intake.Result{}, err
-		}
-		pr.Task = pullRequestTask(w)
 	}
 	if err := e.putPullRequest(ctx, tx, pr); err != nil {
 		return intake.Result{}, err
@@ -251,6 +230,11 @@ func (e *Engine) pullRequestOpened(ctx context.Context, tx pgx.Tx, fact intake.P
 // record never held waits for it. Late, it records that alone, and moves and sets nothing else. In
 // implementing a head that arrives once the implementer has completed is the pull request its
 // completion waited for.
+//
+// A head that moves off the one a merge forward was asked of is that merge landing, in whatever
+// phase the issue stands (mergeForwardLanded, dispatch://INFRA-4374 R1): the record keeps the new
+// head as the merge's, and the phase's worker and, past the review, the reviewer are told. It is
+// recorded before the phase's own handling below, which goes on as it would for any move.
 func (e *Engine) pullRequestSynchronized(ctx context.Context, tx pgx.Tx, fact intake.PullRequestSynchronized) (intake.Result, error) {
 	pr, err := e.pullRequestByBranch(ctx, tx, fact.Repo, fact.Branch)
 	if err != nil || pr == nil || pr.State == record.PullRequestMerged {
@@ -286,6 +270,11 @@ func (e *Engine) pullRequestSynchronized(ctx context.Context, tx pgx.Tx, fact in
 	issue, err := e.store.Issue(ctx, tx, pr.Issue)
 	if err != nil || issue == nil {
 		return intake.Result{}, err
+	}
+	if moved {
+		if err := e.mergeForwardLanded(ctx, tx, *issue, pr); err != nil {
+			return intake.Result{}, err
+		}
 	}
 	switch issue.Phase {
 	case phase.Reviewing:
@@ -433,17 +422,18 @@ func (e *Engine) merged(ctx context.Context, tx pgx.Tx, fact intake.PullRequestM
 	return intake.Result{}, e.reaskRound(ctx, tx, *issue, pr, prior, byMerge)
 }
 
-// waitingForTree is what a root's architect is told when the merge of its pull request finds the
-// rest of the tree still running: the close is waiting, and for whom.
+// waitingForTree is what the architect that owns a merged issue is told when the merge of its pull
+// request finds issues beneath it still in the workflow (for a root, the rest of its tree): the
+// close is waiting, and for whom.
 func waitingForTree(issue string, number int, waiting []string) string {
 	return fmt.Sprintf("pull request #%d merged, and %s's close is waiting for %s, still in the workflow; %s closes once the last of them leaves. Park one with park_child "+parkRule+", and say in a comment which of those it is",
 		number, issue, strings.Join(waiting, ", "), issue)
 }
 
 // closeMergedTelling closes issue on its merged pull request (closeMerged) and, when the close
-// waited for the rest of the tree instead, tells the root's architect once. It is the two places
-// a wait is newly entered — the merge arriving at an issue that awaits it (merged), and an
-// issue reaching merging on a pull request already merged (transition) — and nowhere else:
+// waited for the issues beneath it instead, tells the architect that owns the issue once. It is
+// the two places a wait is newly entered — the merge arriving at an issue that awaits it (merged),
+// and an issue reaching merging on a pull request already merged (transition) — and nowhere else:
 // notices never de-duplicate (notice writes a row per call) and closeMerged is re-entered on the
 // departure of every issue beneath it (closeAwaitingMerge) and on every boot (sweepMerged), so
 // those two tell nobody.
@@ -463,13 +453,13 @@ func (e *Engine) closeMergedTelling(ctx context.Context, tx pgx.Tx, issue record
 // table's row to done (transition), which leaves: a child's close retires five of its claims and
 // opens its production check in the live session of the role the project's `production_check`
 // names, and retires all six and opens no check where that setting is off; a root's close lingers
-// its tree and opens its check behind the linger's rows (leave). A merge is the one fact GitHub never sends
-// again, so one that lands while the tree lingers, where no transition runs, still closes the
-// issue: it writes what leave would that a lingering tree allows — the phase done, the status
-// done, the pull request disarmed, a child's architect told child-closed — and opens the check,
-// whose first look is a wake, since the linger suspended that role. It retires nobody and
-// suspends nothing: the linger's own rows already did, and the tree's close retires every member's
-// claims. The boot's sweep closes a migrated issue the same way (booted).
+// its tree and opens its check behind the linger's rows (leave). A merge is the one fact GitHub
+// never sends again, so one that lands while the tree lingers, where no transition runs, still
+// closes the issue: it writes what leave would that a lingering tree allows — the phase done, the
+// status done, the pull request disarmed, the architect above a child told child-closed — and
+// opens the check, whose first look is a wake, since the linger suspended that role. It retires
+// nobody and suspends nothing: the linger's own rows already did, and the tree's close retires
+// every member's claims. The boot's sweep closes a migrated issue the same way (booted).
 //
 // A merged issue's close waits for the issues beneath it, on the one set both acceptance rules
 // read (OpenBeneath): for a tree root that is every other member of the tree still in the
@@ -507,33 +497,33 @@ func (e *Engine) closeMerged(ctx context.Context, tx pgx.Tx, issue record.Issue,
 				"pullRequest", pr.Number, "waitingFor", strings.Join(waiting, ", "))
 			return waiting, nil
 		}
-		return nil, e.transition(ctx, tx, issue, TriggerPullRequestMerged, "", record.PhaseRow{}, pr, "")
+		return nil, e.transition(ctx, tx, issue, TriggerPullRequestMerged, record.TaskPlace{}, record.PhaseRow{}, pr, "")
 	}
 	w, err := e.walk(ctx, tx, issue)
 	if err != nil {
 		return nil, err
 	}
-	row, ok := w.row(issue.Phase, TriggerPullRequestMerged, "", Snapshot{Phase: issue.Phase})
+	row, ok := w.row(issue.Phase, TriggerPullRequestMerged, record.TaskPlace{}, Snapshot{Phase: issue.Phase})
 	if !ok {
 		return nil, nil
 	}
 	status := PhaseStatus(row.To)
-	if err := e.status(ctx, tx, issue, status); err != nil {
+	if err := e.status(ctx, tx, issue, status, ""); err != nil {
 		return nil, err
 	}
-	// The merge ends the merge step the linger left open (beginLinger), passed: no transition runs
-	// in a lingering tree, so this write is the step's end.
-	if err := e.endStep(ctx, tx, issue, StepEnd{Result: "passed"}); err != nil {
+	// The merge ends the merge step the linger left open, passed: no transition runs in a lingering
+	// tree, so this move names that end itself, as a move of the table does (nameMoveEnd).
+	if err := e.nameMoveEnd(ctx, w, issue, TriggerPullRequestMerged, placeNamed(row.ToPlace, row.To), record.PhaseRow{}); err != nil {
 		return nil, err
 	}
-	if err := e.moveTask(ctx, tx, &issue, &w, row.To, record.TaskDone); err != nil {
+	if err := e.moveTask(ctx, tx, &issue, &w, row.To, row.ToPlace, record.TaskDone); err != nil {
 		return nil, err
 	}
 	issue.Hold = nil
 	if status != "" {
 		issue.Status = status
 	}
-	if err := e.store.PutIssue(ctx, tx, issue); err != nil {
+	if err := e.WriteIssue(ctx, tx, issue); err != nil {
 		return nil, err
 	}
 	e.logOnCommit(ctx, "workflow: a lingering tree's member closed at its merge", "issue", issue.Key, "tree", issue.Tree, "pullRequest", pr.Number, "status", issue.Status)

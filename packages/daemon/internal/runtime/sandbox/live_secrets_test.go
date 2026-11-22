@@ -24,7 +24,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sjawhar/legion/daemon/internal/agentsecrets"
+	"github.com/sjawhar/legion/daemon/internal/cipher"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
@@ -53,12 +53,14 @@ func (r *liveRig) ensureEnrolled(c *liveClaim) (string, error) {
 	return r.enroll(c, regs[len(regs)-1])
 }
 
+// agentSecretsSlot is the broker's slot of c's process as the daemon spells it (supervise's
+// enrollmentSlot): the slot of c's agent, the name its token ends in, and the generation.
 func agentSecretsSlot(c *liveClaim) string {
-	return fmt.Sprintf("%s-g%d", c.role, c.loc.Sandbox.Generation)
+	return fmt.Sprintf("%s-g%d", slotOf(c.token), c.loc.Sandbox.Generation)
 }
 
-// enroll is the daemon's enrollment of c's role process: the identity its hello carried, the
-// actual pod UID separate from its composed process incarnation, the role-generation slot and a
+// enroll is the daemon's enrollment of c's process: the identity its hello carried, the
+// actual pod UID separate from its composed process incarnation, the agent-generation slot and a
 // session id the harness mints (the stub agent registers none). It carries no issue: each secret's
 // owner and tier tags pick a request's approver at request time, never at enrollment. The id goes
 // to the shim over the claim's connection. An enrollment the harness holds for an earlier
@@ -72,7 +74,7 @@ func (r *liveRig) enroll(c *liveClaim, reg registration) (string, error) {
 	}
 	ctx, cancel := context.WithTimeout(r.ctx, 30*time.Second)
 	defer cancel()
-	enrolled, err := r.secrets.Enroll(ctx, agentsecrets.PodEnrollment{
+	enrolled, err := r.secrets.Enroll(ctx, cipher.PodEnrollment{
 		PodUID: c.loc.Sandbox.PodUID, Slot: agentSecretsSlot(c), Thumbprint: reg.identity.Thumbprint, PodToken: reg.identity.PodToken,
 		Session: "s4a-" + string(c.token),
 	})
@@ -273,10 +275,10 @@ func (r *liveRig) checkSecretsCopiedTokenNegative() error {
 	rootID, workerID := rootRegs[len(rootRegs)-1].identity, workerRegs[len(workerRegs)-1].identity
 	ctx, cancel := context.WithTimeout(r.ctx, 30*time.Second)
 	defer cancel()
-	_, err := r.secrets.Enroll(ctx, agentsecrets.PodEnrollment{
+	_, err := r.secrets.Enroll(ctx, cipher.PodEnrollment{
 		PodUID: "another-pod-uid", Slot: agentSecretsSlot(worker), Thumbprint: workerID.Thumbprint, PodToken: rootID.PodToken, Session: "s4a-copied",
 	})
-	var api *agentsecrets.APIError
+	var api *cipher.APIError
 	if !errors.As(err, &api) || api.Status != 403 || api.Code != "POD_IDENTITY_MISMATCH" {
 		return fmt.Errorf("enrolling another pod uid with the root's token: %v, want 403 POD_IDENTITY_MISMATCH", err)
 	}
@@ -307,10 +309,10 @@ func (r *liveRig) checkSecretsSelfEnrollNegative() error {
 
 // anyoneApprover is the approver of a credential record anyone signed in to Dispatch may decide —
 // a request for a shared human-tier secret. It is record.AnyoneApprover
-// (packages/envoy/internal/broker/record/record.go), which this module cannot import: that package
+// (packages/envoy/internal/cipher/record/record.go), which this module cannot import: that package
 // lives under github.com/sjawhar/envoy/internal/..., and Go's internal rule refuses this module
-// any import under it (internal/agentsecrets/contract_test.go says the same of the broker's test
-// rig, which is why the public brokertest facade exists). So this compares against the same
+// any import under it (internal/cipher/contract_test.go says the same of the broker's test
+// rig, which is why the public ciphertest facade exists). So this compares against the same
 // literal the broker writes into the wire field it is read from, "approver": "anyone".
 const anyoneApprover = "anyone"
 
@@ -335,7 +337,7 @@ func (r *liveRig) checkSecretsApprovalAsk() (rerr error) {
 	}
 	// POST /v1/requests's body verbatim, which --json prints as it came: approver is a nullable
 	// JSON string — a login, or the shared marker — never an object
-	// (packages/envoy/internal/broker/api/handlers_requests.go, createRequestResponse).
+	// (packages/envoy/internal/cipher/api/handlers_requests.go, createRequestResponse).
 	var pending struct {
 		RequestID string  `json:"request_id"`
 		State     string  `json:"state"`
@@ -462,10 +464,10 @@ func (r *liveRig) checkSecretsOldUIDAndRevocation() error {
 	}
 	ctx, cancel := context.WithTimeout(r.ctx, 30*time.Second)
 	defer cancel()
-	_, err = r.secrets.Enroll(ctx, agentsecrets.PodEnrollment{
+	_, err = r.secrets.Enroll(ctx, cipher.PodEnrollment{
 		PodUID: oldUID, Slot: agentSecretsSlot(worker), Thumbprint: reg.identity.Thumbprint, PodToken: reg.identity.PodToken, Session: "s4a-old-uid",
 	})
-	var api *agentsecrets.APIError
+	var api *cipher.APIError
 	if !errors.As(err, &api) || api.Status != 403 || api.Code != "POD_IDENTITY_MISMATCH" {
 		return fmt.Errorf("enrolling the replacement pod's key under the old uid %s: %v, want 403 POD_IDENTITY_MISMATCH", short(oldUID), err)
 	}

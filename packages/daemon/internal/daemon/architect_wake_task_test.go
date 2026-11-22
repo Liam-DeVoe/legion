@@ -55,7 +55,7 @@ func (r *mainPathRig) wakeByRoleMessage(report string) string {
 	if err != nil || result.Refusal != nil {
 		r.t.Fatalf("apply the listener's report %s = %#v, %v", report, result, err)
 	}
-	return workflow.WakeTask(pods.WakeRoleMessage, string(r.token))
+	return workflow.WakeTask(pods.WakeRoleMessage, string(r.token), workflow.StoppedByRelease)
 }
 
 // queueReleaseResume queues the resume a cancelled idle release writes for the architect's claim:
@@ -65,7 +65,7 @@ func (r *mainPathRig) wakeByRoleMessage(report string) string {
 // holds it.
 func (r *mainPathRig) queueReleaseResume() entryStartRow {
 	r.t.Helper()
-	row, err := r.runner.releaseResume(r.key, r.key)(claim.RoleArchitect, r.issue().Generation)
+	row, err := r.runner.releaseResume(r.key, r.key)(r.token, claim.RoleArchitect, r.issue().Generation)
 	if err != nil {
 		r.t.Fatalf("build the release's resume: %v", err)
 	}

@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"maps"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -99,7 +100,14 @@ func TestAnOpenIssueThatIsWorkingHasNoClaimStopped(t *testing.T) {
 	claims := make(map[claim.Token]struct{})
 	launch := func(issue string, role claim.Role) claim.Token {
 		t.Helper()
-		token := launchedClaim(t, sup, root, issue, role)
+		// The root's roles keep the session named for their role, which the ask below names as its
+		// author; a child's claim of the same role registers a session of its own, since the
+		// daemon holds each session id to the first claim that recorded it.
+		session := "ses-" + string(role)
+		if issue != root {
+			session = "ses-" + issue + "-" + string(role)
+		}
+		token := launchedClaimAs(t, sup, root, issue, role, session)
 		claims[token] = struct{}{}
 		return token
 	}
@@ -278,6 +286,9 @@ func TestOpenIssueSuspensionInvariantKeepsTheExceptions(t *testing.T) {
 			child := record.Issue{Key: "LEGION-821", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: root.Key, Parent: &parent, Title: "child", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "B"}
 			putOutboxIssue(t, pool, records, root)
 			putOutboxIssue(t, pool, records, child)
+			// The child ran each role, so the daemon's store holds a claim of each, which the leave
+			// reads (record.Store.IssueClaims).
+			storeRoleClaims(t, pool, root.Key, child.Key)
 			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
 				return records.PutSlot(ctx, tx, record.Slot{Issue: root.Key, Index: 0, AdmittedAt: time.Now()})
 			}); err != nil {
@@ -301,7 +312,7 @@ func TestOpenIssueSuspensionInvariantKeepsTheExceptions(t *testing.T) {
 	// The owner's stop of a task stops the process of the step it ran and keeps the session, in
 	// one op of its own, step_stop, so it is told from the suspend of an issue the workflow takes
 	// out: the issue stays in the workflow, held from the step's phase for the stopped task. An
-	// issue with no plan rows has no task to stop, so the same stop writes nothing (R20).
+	// issue with no plan rows has no task to stop, so the same stop writes nothing.
 	for _, planned := range []bool{true, false} {
 		name := "a stopped task"
 		if !planned {
@@ -333,7 +344,7 @@ func TestOpenIssueSuspensionInvariantKeepsTheExceptions(t *testing.T) {
 				t.Fatal(err)
 			}
 			engine := workflow.New(records, workflow.Config{Project: "legion", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
-			result, err := intake.ApplyFact(ctx, pool, "test", "stop-task", intake.TaskStopped{Issue: root.Key, Task: "a", By: architect}, engine)
+			result, err := intake.ApplyFact(ctx, pool, "test", "stop-task", intake.TaskStopped{Issue: root.Key, Task: "a", By: architect, Generation: root.Generation}, engine)
 			if err != nil {
 				t.Fatalf("stop task a: %v", err)
 			}
@@ -385,10 +396,9 @@ func TestOpenIssueSuspensionInvariantKeepsTheExceptions(t *testing.T) {
 			t.Fatalf("the rig's issue is %q, want one still in the workflow", rig.issue.Status)
 		}
 
-		rig.w.releaseIdlePods(ctx)
-
-		if got := rig.rows(t); len(got) != 3 || got[0] != "issue_bundle" || got[1] != "supervise:release" || got[2] != "issue_release" {
-			t.Fatalf("queued rows = %v, want the save, the role stop and the teardown and nothing else", got)
+		queued := rig.queuedBy(t, func() { rig.w.releaseIdlePods(ctx) })
+		if want := []string{"issue_bundle", "supervise:release", "issue_release"}; !slices.Equal(queued, want) {
+			t.Fatalf("queued rows = %v, want the save, the role stop and the teardown and nothing else", queued)
 		}
 		rig.drain(t)
 		if got := rig.machine.Claim(); got.State != supervise.StateSuspended || got.SuspendedBy != supervise.SuspendedByReleased {

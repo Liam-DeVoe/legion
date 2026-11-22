@@ -1,11 +1,13 @@
 package supervise
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 )
@@ -25,7 +27,7 @@ func TestAFreshLaunchEnrollsAtRegistrationWithTheSession(t *testing.T) {
 		t.Fatalf("enrollments %+v, want one at registration", enrollments)
 	}
 	loc := h.locator()
-	want := PodEnrollment{PodUID: loc.Incarnation, Thumbprint: testIdentity.Thumbprint, PodToken: testIdentity.PodToken, Session: session}
+	want := PodEnrollment{PodUID: loc.Incarnation, Thumbprint: testIdentity.Thumbprint, PodToken: testIdentity.PodToken, Session: session, Claim: string(testToken)}
 	if enrollments[0] != want {
 		t.Fatalf("enrolled %+v, want %+v", enrollments[0], want)
 	}
@@ -38,9 +40,10 @@ func TestAFreshLaunchEnrollsAtRegistrationWithTheSession(t *testing.T) {
 	}
 }
 
-// In an issue pod six role processes share one pod uid, so the broker tells their enrollments
-// apart by slot: the pod's real uid stays the identity the broker verifies against the projected
-// token, and the slot is the daemon's own `<role>-g<generation>`, never the composed incarnation.
+// In an issue pod the processes of the issue's claims share one pod uid, so the broker tells their
+// enrollments apart by slot: the pod's real uid stays the identity the broker verifies against the
+// projected token, and the slot is the daemon's own `<agent>-g<generation>`, never the composed
+// incarnation.
 func TestAnIssuePodProcessEnrollsWithItsPodUIDAndRoleSlot(t *testing.T) {
 	h := newHarness(t)
 	broker := h.withSecrets()
@@ -52,12 +55,53 @@ func TestAnIssuePodProcessEnrollsWithItsPodUIDAndRoleSlot(t *testing.T) {
 	h.helloWithIdentity()
 	h.register()
 	enrollments := broker.enrolled()
-	want := PodEnrollment{PodUID: "pod-uid-9", Slot: "implementer-g1", Thumbprint: testIdentity.Thumbprint, PodToken: testIdentity.PodToken, Session: session}
+	want := PodEnrollment{PodUID: "pod-uid-9", Slot: "implementer-g1", Thumbprint: testIdentity.Thumbprint, PodToken: testIdentity.PodToken, Session: session, Claim: string(testToken)}
 	if len(enrollments) != 1 || enrollments[0] != want {
 		t.Fatalf("enrolled %+v, want %+v", enrollments, want)
 	}
 	if stored := h.store.load(testToken); stored.Enrollment == nil || stored.Enrollment.Incarnation != "pod-uid-9/1" {
 		t.Fatalf("stored enrollment %+v, want it bound to the process incarnation", stored.Enrollment)
+	}
+}
+
+// The broker's slot of an issue pod's process is the slot of the claim's agent, the name its
+// token ends in (`<agent>-g<generation>`), never the role its step is on now. Two claims of one
+// role run in one pod side by side: here the tester's own claim and key a's claim, named
+// implementer, which took the tester's role for its tester step, both at generation 1 of pod
+// pod-uid-9. A slot spelled from the role would give both `tester-g1`, and the broker, which keeps
+// one live enrollment per slot of a pod, refuses the second (ErrAlreadyEnrolled). Key a's claim
+// keeps the slot it had on its implementer step, and the tester's own claim, whose agent's name is
+// its role, keeps the slot a claim named by its role always had.
+func TestTwoClaimsOfOneRoleInOnePodEnrollUnderTheSlotsOfTheirAgents(t *testing.T) {
+	enrolledSlot := func(t *testing.T, token claim.Token, role claim.Role) string {
+		t.Helper()
+		c := queuedClaim()
+		c.Token, c.Role = token, role
+		h := newHarnessOf(t, c)
+		broker := h.withSecrets()
+		h.rt.ScriptSpawn(fake.SpawnResult{Locator: runtime.Locator{
+			Runtime: runtime.RuntimeSandbox, Claim: token, Incarnation: runtime.SandboxIncarnation("pod-uid-9", 1),
+			Sandbox: &runtime.SandboxLocator{Namespace: "legion", Name: "legion-legion-209", PodUID: "pod-uid-9", Container: "roles", Generation: 1},
+		}})
+		h.launch()
+		h.helloWithIdentity()
+		h.register()
+		enrollments := broker.enrolled()
+		if len(enrollments) != 1 || enrollments[0].PodUID != "pod-uid-9" || enrollments[0].Claim != string(token) {
+			t.Fatalf("enrolled %+v, want one enrollment of %s in pod-uid-9", enrollments, token)
+		}
+		return enrollments[0].Slot
+	}
+	own := enrolledSlot(t, "legion-legion-legion-209-tester", claim.RoleTester)
+	keyed := enrolledSlot(t, "legion-legion-legion-209-implementer", claim.RoleTester)
+	if own != "tester-g1" {
+		t.Errorf("the tester's own claim enrolled in slot %q, want %q, the slot a claim named by its role has", own, "tester-g1")
+	}
+	if keyed != "implementer-g1" {
+		t.Errorf("key a's claim on its tester step enrolled in slot %q, want %q, its agent's slot", keyed, "implementer-g1")
+	}
+	if own == keyed {
+		t.Errorf("two claims of one role in one pod enrolled in one slot %q; the broker refuses the second", own)
 	}
 }
 
@@ -462,5 +506,43 @@ func TestAnExpiredTokenRefusalReadsTheTokenAgainAtTheNextObservation(t *testing.
 	}
 	if c := h.claim(); c.Enrollment == nil {
 		t.Fatal("the claim records no enrollment")
+	}
+}
+
+// nulIDEnroller is the broker answering every enrollment with an id that ends in a NUL.
+type nulIDEnroller struct{ *fakeEnroller }
+
+func (e nulIDEnroller) Enroll(ctx context.Context, p PodEnrollment) (string, error) {
+	id, err := e.fakeEnroller.Enroll(ctx, p)
+	if err != nil {
+		return "", err
+	}
+	return id + "\x00", nil
+}
+
+// The broker's enrollment id is held as the store keeps it (storetext.Text): a NUL in it is
+// U+FFFD in the claim, in the claim's write and in what the shim is told, as a restart would read
+// it back from the store.
+func TestABrokerEnrollmentIDWithNULIsHeldAsTheStoreKeepsIt(t *testing.T) {
+	h := newHarness(t)
+	h.deps.Secrets = nulIDEnroller{&fakeEnroller{now: h.clock.Now}}
+	h.start(h.store.load(h.token))
+	h.launch()
+	h.helloWithIdentity()
+	h.register()
+
+	const want = "enr-1\uFFFD"
+	held, stored := h.claim().Enrollment, h.store.load(testToken).Enrollment
+	if held == nil || stored == nil {
+		t.Fatalf("the claim holds the enrollment %+v and its write carries %+v, want one in each", held, stored)
+	}
+	if held.ID != want {
+		t.Errorf("the claim holds the enrollment id %q, want %q, as the store keeps the broker's", held.ID, want)
+	}
+	if stored.ID != want {
+		t.Errorf("the claim's write carries the enrollment id %q, want %q", stored.ID, want)
+	}
+	if told := h.conn.Enrollments(); len(told) != 1 || told[0] != want {
+		t.Errorf("the shim was told %q, want [%q]", told, want)
 	}
 }

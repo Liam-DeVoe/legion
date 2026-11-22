@@ -153,9 +153,7 @@ const STALL_STATE = {
   wakesWaiting: [],
   capabilities: [],
   repositories: {
-    owners: ["acme"],
-    mapped: [{ repo: "acme/widgets", default: true }],
-    refused: [],
+    live: [{ repo: "acme/widgets", apps: { implement: true, review: true } }],
     withoutWebhookApp: [],
     caches: [],
   },
@@ -286,7 +284,11 @@ async function stallPane(
       answer: (url, body) => {
         const own = options.answer?.(url, body);
         if (own !== undefined) return own;
-        if (url.pathname === "/legion/v1/state") return Response.json(STALL_STATE);
+        // The reminder's check and `handoff_complete` read one issue's record
+        // (dispatch://INFRA-2694); nothing of this pane asks for the whole project body.
+        if (url.pathname === "/legion/v1/issues/STALL-2/record") {
+          return Response.json(STALL_STATE.issues["STALL-2"]);
+        }
         if (url.pathname === "/legion/v1/handoff/complete") return Response.json({});
         if (url.pathname === "/api/v1/issues/STALL-2/handoffs/implement/latest") {
           const newest = records.at(-1);
@@ -373,9 +375,9 @@ test.skipIf(skip)(
     expect(daemonRoutes(pane)).toEqual([
       "/legion/v1/claims/register",
       "/legion/v1/claims/ready",
-      "/legion/v1/state",
+      "/legion/v1/issues/STALL-2/record",
       "/legion/v1/claims/turn-outcome",
-      "/legion/v1/state",
+      "/legion/v1/issues/STALL-2/record",
       "/legion/v1/grants",
       "/legion/v1/handoff/complete",
       "/legion/v1/claims/turn-outcome",
@@ -402,9 +404,10 @@ test.skipIf(skip)(
     expect(turns).toHaveLength(3);
     // A Legion pane, both entries loaded: the host offers the model the `legion` tool.
     expect(toolNames(turns[0] as Request)).toContain("legion");
-    // Every role is offered the same tool text, and it gives a verdict to the tester alone.
+    // Every role is offered the same tool text, and it gives a verdict to the tester or a role
+    // of the deployment.
     expect(legionToolDescription(turns[0] as Request)).toContain(
-      "`verdict` pass|fail from the tester alone"
+      "`verdict` pass|fail from the tester or a role of the deployment"
     );
     expect(userText(turns[0] as Request)).not.toContain("handoff_complete");
     // The sentence the settling message earned still leads the reminder it earned.
@@ -525,7 +528,7 @@ test.skipIf(skip)(
         .map((request) => request.path)
         .filter(
           (path) =>
-            path !== "/legion/v1/state" &&
+            path !== "/legion/v1/issues/STALL-2/record" &&
             path !== "/legion/v1/claims/turn-outcome" &&
             path !== ACTIVITY_ROUTE &&
             path !== "/v1/interests/subscribe" &&
@@ -667,7 +670,9 @@ test.skipIf(skip)(
       {
         quietMs: 4_000,
         answer: (url) =>
-          url.pathname === "/legion/v1/state" ? Response.json(MOVED_ON) : undefined,
+          url.pathname === "/legion/v1/issues/STALL-2/record"
+            ? Response.json(MOVED_ON.issues["STALL-2"])
+            : undefined,
       }
     );
 
@@ -698,11 +703,12 @@ test.skipIf(skip)(
         env: { LEGION_STALL_REMINDER_MS: "500" },
         quietMs: 4_000,
         answer: (url) => {
-          if (url.pathname !== "/legion/v1/state") return undefined;
+          if (url.pathname !== "/legion/v1/issues/STALL-2/record") return undefined;
           reads += 1;
           // The first read is the continuation reminder's own check; by the timer's read the
           // daemon has moved the issue on.
-          return Response.json(reads === 1 ? STALL_STATE : MOVED_ON);
+          const seen = reads === 1 ? STALL_STATE : MOVED_ON;
+          return Response.json(seen.issues["STALL-2"]);
         },
       }
     );

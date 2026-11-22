@@ -3,7 +3,7 @@
 // The live proof's driver for the completion route's entry fence on a completion behind its phase
 // entry: a completion of an entry the issue has moved past is taken when the commit it names is the
 // head the daemon's record holds, because a verdict is a fact about a head and the phase was
-// entered again at that same head (api/handoff.go's behindEntryClause), and is refused when it
+// entered again at that same head (intake.BehindEntryClause), and is refused when it
 // names any other commit or none, or when the move that entered the phase again moved the issue
 // back. Such a move sends the work back at the head that is already there, so the two heads read
 // alike and the heads alone would take a verdict over an entry that exists to have the work done
@@ -34,11 +34,11 @@
 // working copy while another role of the issue is in a turn (supervise's sendPending), so the
 // implementer's task waits for that turn to end; the tester's completions come instead from a
 // turn of its own, begun while the implementer works and so before the new entry's task could
-// reach it. Neither of the moves the daemon makes on its own serves here. A CI red moves no issue,
-// since the daemon judges no check, so the proof publishes no settlement; and the daemon reads a
-// head's mergeability at its start, after a handoff, and for an approved review round in reviewing
-// alone, so a head that starts conflicting with its base while the tester tests is not read until
-// the next handoff (dispatch://INFRA-3164). The move back into testing is the reviewer's own
+// reach it. Neither a CI red nor a conflict with the base serves here, since neither moves an
+// issue: the daemon judges no check, so the proof publishes no settlement, and for a head that
+// conflicts with its base the daemon makes no move at all: the issue keeps its phase, and the
+// implementer is asked to merge the base forward when the next step needs a head that merges
+// (dispatch://INFRA-4374 R0, R1). The move back into testing is the reviewer's own
 // request over POST /legion/v1/phase/backward, from reviewing, under a grant its registered
 // session minted, because the engine takes a backward move from no role but the one running the
 // issue's phase (workflow's Engine.backward, BACKWARD_REFUSED).
@@ -280,7 +280,7 @@ func (r *behindEntryFenceLive) behindWithNoHead() {
 // Step 5. A behind completion at the head the record holds is taken. The same completion from the
 // same turn names the head the record holds. Nothing moved the issue back into testing, so the work
 // the standing entry's task asks for is the work this turn did: the daemon takes the completion
-// (behindEntryClause) and the pass moves the issue to reviewing. Steps 3 and 4 are this same
+// (intake.BehindEntryClause) and the pass moves the issue to reviewing. Steps 3 and 4 are this same
 // completion with another commit; step 6 sends it again once it is taken; step 8 is this same
 // completion at this same head with one thing changed, the move that raised the entry.
 func (r *behindEntryFenceLive) behindAtTheHead() {

@@ -15,7 +15,10 @@ const maxAgentName = 32
 // rule of a name, which reads no store of its own. earlier is every plan_steps row of the issue, of
 // every generation (PlanStepsOf), read before the version's steps are written, since the write
 // deletes the steps of each task it gives. It names in four passes, in this order, so that a key
-// never changes its name and no new name can take a key's:
+// the version names never changes its name and no new name can take that key's. A key the version
+// no longer names frees its name: an agent of the version can take it, and with it that name's
+// claim and session, as a new task's agent with no key takes the name of a stopped task's agent
+// of its role.
 //
 //  1. A step of the key owner has no name: its agent is the tree's architect, whose token names the
 //     tree and no name on the issue.
@@ -71,20 +74,46 @@ func NameAgents(earlier, steps []PlanStep) []PlanStep {
 		if _, ok := names[agent]; ok {
 			continue
 		}
-		name := step.Role
-		if len(name) > maxAgentName {
-			name = name[:maxAgentName]
-		}
-		if taken[claim.Agent(name)] {
+		name := RoleName(step.Role)
+		if taken[name] {
 			give(agent, "")
 			continue
 		}
-		give(agent, claim.Agent(name))
+		give(agent, name)
 	}
 	for i := range named {
 		named[i].Agent = names[agentOf(named[i])]
 	}
 	return named
+}
+
+// RoleName is the name an agent takes from the role of its first step (NameAgents' pass 4): the
+// role, cut to maxAgentName bytes.
+func RoleName(role string) claim.Agent {
+	if len(role) > maxAgentName {
+		role = role[:maxAgentName]
+	}
+	return claim.Agent(role)
+}
+
+// UnnamedAgents is the first step of each agent of named, steps NameAgents gave, but the owner,
+// that has no name: an agent whose role's name (RoleName) another agent of the plan holds. This
+// release runs one agent of each role for an issue, so a version with one is refused before any
+// write.
+func UnnamedAgents(named []PlanStep) []PlanStep {
+	var unnamed []PlanStep
+	seen := map[plan.Agent]bool{}
+	for _, step := range named {
+		agent := plan.AgentOf(step.Task, step.Position, plan.Step{Role: step.Role, Key: step.AgentKey})
+		if seen[agent] || agent.Owner() {
+			continue
+		}
+		seen[agent] = true
+		if step.Agent == "" {
+			unnamed = append(unnamed, step)
+		}
+	}
+	return unnamed
 }
 
 // earlierPlaceName is the name of the latest row of earlier at step's task and place, on step's

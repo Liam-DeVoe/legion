@@ -46,7 +46,10 @@ func TestOperatorRoutesRefuseAnythingButTheOperatorBearer(t *testing.T) {
 		{http.MethodPost, "/legion/v1/operator/claims/" + string(architectToken) + "/stop"},
 		{http.MethodPost, "/legion/v1/operator/claims/" + string(architectToken) + "/retry"},
 		{http.MethodPost, "/legion/v1/operator/claims/" + string(architectToken) + "/forget-session"},
+		{http.MethodPost, "/legion/v1/operator/claims/" + string(architectToken) + "/release-names"},
 		{http.MethodPost, "/legion/v1/operator/claims/" + string(architectToken) + "/close"},
+		{http.MethodPost, "/legion/v1/operator/project/pause"},
+		{http.MethodPost, "/legion/v1/operator/project/resume"},
 	}
 	for _, route := range routes {
 		for name, header := range map[string]http.Header{
@@ -596,7 +599,7 @@ func failedImplementer(t *testing.T, handler intake.Handler) (*harness, claim.To
 	h.handler = NewServer("127.0.0.1", 8437, Options{
 		Steps:      config.DesignGateRootIssues.Steps(),
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken, Controller: h.store,
-		Pool: h.store.Pool(), Record: record.NewStore(), Releaser: h.runtime, Trees: h.store, Handlers: []intake.Handler{handler}, RoleFor: phase.RoleFor,
+		Pool: h.store.Pool(), Record: record.NewStore(), Releaser: h.runtime, Trees: h.store, Handlers: []intake.Handler{handler},
 	}).Handler
 	h.operator(http.MethodPost, "/legion/v1/operator/claims", spawnBody())
 	refused := fake.SpawnResult{Err: errors.New("the runtime refused the launch")}
@@ -711,7 +714,7 @@ func stoppedImplementer(t *testing.T, handler intake.Handler) (*harness, claim.T
 	h := newHarness(t)
 	h.handler = NewServer("127.0.0.1", 8437, Options{
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken, Controller: h.store,
-		Pool: h.store.Pool(), Record: record.NewStore(), Releaser: h.runtime, Trees: h.store, Handlers: []intake.Handler{handler}, RoleFor: phase.RoleFor,
+		Pool: h.store.Pool(), Record: record.NewStore(), Releaser: h.runtime, Trees: h.store, Handlers: []intake.Handler{handler},
 	}).Handler
 	token, _ := h.launchIn("LEGION-208", "LEGION-209", claim.RoleImplementer)
 	h.ready(token, "ses_implementer", 1)
@@ -853,7 +856,7 @@ func TestAnOperatorRetryOfAStoppedArchitectRelaunchesItThroughItsMachine(t *test
 	h := newHarness(t)
 	h.handler = NewServer("127.0.0.1", 8437, Options{
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken, Controller: h.store,
-		Pool: h.store.Pool(), Record: record.NewStore(), Releaser: h.runtime, Trees: h.store, Handlers: []intake.Handler{facts}, RoleFor: phase.RoleFor,
+		Pool: h.store.Pool(), Record: record.NewStore(), Releaser: h.runtime, Trees: h.store, Handlers: []intake.Handler{facts},
 	}).Handler
 	h.operator(http.MethodPost, "/legion/v1/operator/claims", spawnBody())
 	// The operator holds this tree, so its sub-architect is spawned through the same route: the

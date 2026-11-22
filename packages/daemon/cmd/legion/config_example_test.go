@@ -15,7 +15,7 @@ import (
 )
 
 // The legion.yaml example the repository ships (deploy/kubernetes/daemon/legion.yaml.example, the
-// docs site's configuration reference) passes `legion start --check-config` once the files it
+// docs site's configuration reference) passes `legion config check` once the files it
 // names exist, as its header says: a loader change that would refuse it fails here rather than on
 // an operator's first check. The example names no Postgres; the environment does, as its comment
 // offers.
@@ -46,8 +46,8 @@ func TestShippedLegionYAMLExamplesRoleConfigFilesPassCheckConfig(t *testing.T) {
 	}
 }
 
-// `legion start --check-config` reads back the models the file lists, in its order, on one line
-// right after the project lines, and says `none` for a file that lists none.
+// `legion config check` reads back the models the file lists, in its order, on one line right
+// after the project lines, and says `none` for a file that lists none.
 func TestCheckConfigPrintsTheListedModels(t *testing.T) {
 	if !strings.Contains(shippedExampleCheckOK, defaultStepsTodayLine("WIDGETS")+modelsNoneLine) {
 		t.Fatalf("the shipped example's check prints %q, want the models line right after the project lines", shippedExampleCheckOK)
@@ -59,10 +59,10 @@ func TestCheckConfigPrintsTheListedModels(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			config := stageShippedExample(t, func(example string) string { return example + "\n" + tc.key })
 			var out, errb bytes.Buffer
-			code := run(context.Background(), []string{"legion", "start", "--check-config", "--config", config}, &out, &errb)
+			code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
 			want := strings.Replace(shippedExampleCheckOK, modelsNoneLine, tc.line, 1)
 			if code != 0 || out.String() != want {
-				t.Fatalf("legion start --check-config with %q = %d, stdout %q, stderr %q; want 0 and %q", tc.key, code, out.String(), errb.String(), want)
+				t.Fatalf("legion config check with %q = %d, stdout %q, stderr %q; want 0 and %q", tc.key, code, out.String(), errb.String(), want)
 			}
 		})
 	}
@@ -179,6 +179,28 @@ func TestShippedLegionYAMLExamplesCommitIssueTrailerReposPassesCheckConfig(t *te
 	}
 }
 
+// The example's commented leak_check block, uncommented with a digest in place of its placeholder,
+// passes the same check and settles on the repository and the manifest digest it names. It needs
+// no volume and no mount: the block names a repository and a digest, not files.
+func TestShippedLegionYAMLExamplesLeakCheckPassesCheckConfig(t *testing.T) {
+	checker := strings.Repeat("5e", 32)
+	config := checkShippedExample(t, func(example string) string {
+		example = uncommentExample(t, example,
+			"# leak_check:",
+			"#   repository: example-org/deployment",
+			"#   manifest_sha256: <64 hex digits>",
+		)
+		return strings.Replace(example, "manifest_sha256: <64 hex digits>", "manifest_sha256: "+checker, 1)
+	})
+	cfg, err := configpkg.LoadForValidation(config, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.LeakCheck; got.Repository.String() != "example-org/deployment" || got.ManifestSHA256 != checker {
+		t.Errorf("the leak_check block uncommented settles on %+v, want example-org/deployment and %s", got, checker)
+	}
+}
+
 // The example's first commented hook is the hook a file that names no `hooks:` key runs, its
 // words included, so an operator reads the shipped default in the file it edits. Uncommented, it
 // loads as exactly that hook: a default changed in one place and not the other would have the
@@ -224,9 +246,9 @@ func TestShippedLegionYAMLExampleRefusesAWorkerSilenceUnderTheFloor(t *testing.T
 	})
 
 	var out, errb bytes.Buffer
-	code := run(context.Background(), []string{"legion", "start", "--check-config", "--config", config}, &out, &errb)
+	code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
 
-	want := "legion start: worker_silence_minutes (15m0s) is below the 16m0s floor under it: a healthy phase worker that answers its reminder with a WAITING line is quiet for the 15m that reply buys before the reminder comes again (DEFAULT_STALL_LIMITS.waitingMs), so a shorter bound would send a second task for work the worker already holds, to a worker whose own reminder is about to start a turn\n"
+	want := "legion config check: worker_silence_minutes (15m0s) is below the 16m0s floor under it: a healthy phase worker that answers its reminder with a WAITING line is quiet for the 15m that reply buys before the reminder comes again (DEFAULT_STALL_LIMITS.waitingMs), so a shorter bound would send a second task for work the worker already holds, to a worker whose own reminder is about to start a turn\n"
 	if code != 1 || out.Len() != 0 || errb.String() != want {
 		t.Fatalf("exit code = %d, stdout %q, stderr %q; want 1, nothing, and %q", code, out.String(), errb.String(), want)
 	}
@@ -246,9 +268,9 @@ func TestShippedLegionYAMLExampleRefusesAWorkerBackgroundAtTheSilenceBound(t *te
 	})
 
 	var out, errb bytes.Buffer
-	code := run(context.Background(), []string{"legion", "start", "--check-config", "--config", config}, &out, &errb)
+	code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
 
-	want := "legion start: worker_background_hours (30m0s) is at or below worker_silence_minutes (30m0s): the bound on background work a worker reports must be above the bound on its silence, since a shorter one would name a job that has barely begun and would race the repair that sends the same worker its phase's task again\n"
+	want := "legion config check: worker_background_hours (30m0s) is at or below worker_silence_minutes (30m0s): the bound on background work a worker reports must be above the bound on its silence, since a shorter one would name a job that has barely begun and would race the repair that sends the same worker its phase's task again\n"
 	if code != 1 || out.Len() != 0 || errb.String() != want {
 		t.Fatalf("exit code = %d, stdout %q, stderr %q; want 1, nothing, and %q", code, out.String(), errb.String(), want)
 	}
@@ -295,23 +317,24 @@ func TestMemoryGuardTheShippedExampleRefusesAnActShareAboveItsRange(t *testing.T
 	})
 
 	var out, errb bytes.Buffer
-	code := run(context.Background(), []string{"legion", "start", "--check-config", "--config", config}, &out, &errb)
-	t.Logf("legion start --check-config exited %d\nstdout:\n%s\nstderr:\n%s", code, out.String(), errb.String())
+	code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
+	t.Logf("legion config check exited %d\nstdout:\n%s\nstderr:\n%s", code, out.String(), errb.String())
 
-	want := "legion start: runtime.kubernetes.memory_guard.issue_pods.act_percent must be between 50 and 95\n"
+	want := "legion config check: runtime.kubernetes.memory_guard.issue_pods.act_percent must be between 50 and 95\n"
 	if code != 1 || out.Len() != 0 || errb.String() != want {
 		t.Fatalf("exit code = %d, stdout %q, stderr %q; want 1, nothing, and %q", code, out.String(), errb.String(), want)
 	}
 }
 
-// The example's commented session_database block, uncommented under `session_store: cloudsql-iam`
-// with session_dsn_secret taken out, passes the same check as shipped, with the same stdout. Its
-// impersonate_service_account set to the account's login form rather than its email is refused,
-// naming the member and the value, and a user that is not the account's login is refused, naming
-// the login the account has. The block is where an operator reads what each member takes, so a
-// member it showed wrongly would be an operator's file refused on their first check; here it is
-// this test that fails instead. The block stays commented in the file itself: the shipped store is
-// postgres, and the stdout TestShippedLegionYAMLExamplePassesCheckConfig holds is that store's.
+// The example's commented session_database block, its writer_audience included, uncommented under
+// `session_store: cloudsql-iam` with session_dsn_secret taken out, passes the same check as
+// shipped, with the same stdout. Its impersonate_service_account set to the account's login form
+// rather than its email is refused, naming the member and the value, and a user that is not the
+// account's login is refused, naming the login the account has. The block is where an operator
+// reads what each member takes, so a member it showed wrongly would be an operator's file refused
+// on their first check; here it is this test that fails instead. The block stays commented in the
+// file itself: the shipped store is postgres, and the stdout
+// TestShippedLegionYAMLExamplePassesCheckConfig holds is that store's.
 func TestShippedLegionYAMLExamplesSessionDatabasePassesCheckConfigOnlyWithTheAccountsEmailAndLogin(t *testing.T) {
 	for _, tc := range []struct {
 		name           string
@@ -323,12 +346,12 @@ func TestShippedLegionYAMLExamplesSessionDatabasePassesCheckConfigOnlyWithTheAcc
 		{name: "impersonate_service_account as the account's login",
 			edit: [][2]string{{"impersonate_service_account: legion-sessions@example-project.iam.gserviceaccount.com", "impersonate_service_account: legion-sessions@example-project.iam"}},
 			code: 1,
-			stderr: `legion start: runtime.kubernetes.session_database.impersonate_service_account "legion-sessions@example-project.iam" must be a Google service account's email,` +
+			stderr: `legion config check: runtime.kubernetes.session_database.impersonate_service_account "legion-sessions@example-project.iam" must be a Google service account's email,` +
 				" such as <name>@<project>.iam.gserviceaccount.com\n"},
 		{name: "user as another login",
 			edit: [][2]string{{"user: legion-sessions@example-project.iam ", "user: other@example-project.iam "}},
 			code: 1,
-			stderr: `legion start: runtime.kubernetes.session_database.user "other@example-project.iam" must be "legion-sessions@example-project.iam":` +
+			stderr: `legion config check: runtime.kubernetes.session_database.user "other@example-project.iam" must be "legion-sessions@example-project.iam":` +
 				" Cloud SQL's IAM login for the service account impersonate_service_account names is its email without .gserviceaccount.com\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -339,6 +362,7 @@ func TestShippedLegionYAMLExamplesSessionDatabasePassesCheckConfigOnlyWithTheAcc
 					"    #   name: legion_sessions",
 					"    #   user: legion-sessions@example-project.iam",
 					"    #   impersonate_service_account: legion-sessions@example-project.iam.gserviceaccount.com",
+					"    #   writer_audience: //iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/legion-session-writer/providers/example-cluster",
 				)
 				for _, edit := range append([][2]string{
 					{"\n    session_store: postgres ", "\n    session_store: cloudsql-iam "},
@@ -353,7 +377,7 @@ func TestShippedLegionYAMLExamplesSessionDatabasePassesCheckConfigOnlyWithTheAcc
 			})
 
 			var out, errb bytes.Buffer
-			code := run(context.Background(), []string{"legion", "start", "--check-config", "--config", config}, &out, &errb)
+			code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
 
 			if code != tc.code || out.String() != tc.stdout || errb.String() != tc.stderr {
 				t.Fatalf("exit code = %d, stdout %q, stderr %q; want %d, %q and %q", code, out.String(), errb.String(), tc.code, tc.stdout, tc.stderr)
@@ -379,7 +403,7 @@ func uncommentExample(t *testing.T, example string, lines ...string) string {
 }
 
 // stageShippedExample writes the shipped example as edit leaves it beside the files it names,
-// and answers the configuration's path, ready for `legion start --check-config` to be run over
+// and answers the configuration's path, ready for `legion config check` to be run over
 // it: the check that passes (checkShippedExample) and the check a bad value makes fail
 // (TestShippedLegionYAMLExampleRefusesAWorkerSilenceUnderTheFloor) stage the same files.
 func stageShippedExample(t *testing.T, edit func(string) string) string {
@@ -420,14 +444,14 @@ current-context: legion-daemon
 	return config
 }
 
-// shippedExampleCheckOK is the whole stdout of `legion start --check-config` on the shipped
+// shippedExampleCheckOK is the whole stdout of `legion config check` on the shipped
 // example, the same under either session store the example shows.
 var shippedExampleCheckOK = "Config OK: project=WIDGETS design-gate-steps=spec\n" +
 	productionCheckTesterLine("WIDGETS") + defaultStepsTodayLine("WIDGETS") + modelsNoneLine +
 	defaultCacheLine +
 	"plugins: none — set runtime.kubernetes.plugins or run a release build; a daemon that knows none relaunches no process on another plugin contract\n"
 
-// checkShippedExample runs `legion start --check-config` on the shipped example as edit leaves
+// checkShippedExample runs `legion config check` on the shipped example as edit leaves
 // it, beside the files it names, and answers the file's path. It logs the command's exit code,
 // stdout and stderr, so a `-v` run shows what the check printed for each edit of the example.
 func checkShippedExample(t *testing.T, edit func(string) string) string {
@@ -435,11 +459,53 @@ func checkShippedExample(t *testing.T, edit func(string) string) string {
 	config := stageShippedExample(t, edit)
 
 	var out, errb bytes.Buffer
-	code := run(context.Background(), []string{"legion", "start", "--check-config", "--config", config}, &out, &errb)
-	t.Logf("legion start --check-config exited %d\nstdout:\n%s\nstderr:\n%s", code, out.String(), errb.String())
+	code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
+	t.Logf("legion config check exited %d\nstdout:\n%s\nstderr:\n%s", code, out.String(), errb.String())
 
 	if code != 0 || out.String() != shippedExampleCheckOK {
-		t.Fatalf("legion start --check-config on the shipped example = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), shippedExampleCheckOK)
+		t.Fatalf("legion config check on the shipped example = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), shippedExampleCheckOK)
 	}
 	return config
+}
+
+// A role the deployment defines in `roles` gets one line of `legion config check` after
+// the projects' lines and the models line: its type, its model, the GitHub App it works as (the
+// review App, since the file names none) and its prompt file as the loader resolved it beside the
+// file.
+func TestCheckConfigPrintsEachRoleOfTheDeployment(t *testing.T) {
+	config := stageShippedExample(t, func(example string) string {
+		return example + "\nroles: {checker: {type: testing, prompt_file: checker.md, model: checker-model}}\n"
+	})
+	prompt := filepath.Join(filepath.Dir(config), "checker.md")
+	if err := os.WriteFile(prompt, []byte("You check the change.\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var out, errb bytes.Buffer
+	code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
+
+	projectLines := productionCheckTesterLine("WIDGETS") + defaultStepsTodayLine("WIDGETS") + modelsNoneLine
+	roleLine := "roles.checker: type testing, model checker-model, App review, prompt " + prompt + "\n"
+	want := strings.Replace(shippedExampleCheckOK, projectLines, projectLines+roleLine, 1)
+	if code != 0 || out.String() != want {
+		t.Fatalf("legion config check with a role = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
+	}
+}
+
+// A role whose prompt file the daemon cannot read refuses its start (config.Load), so the check
+// of the file refuses it too, naming the key and the path, rather than pass a file the start then
+// refuses.
+func TestCheckConfigRefusesARolesPromptFileItCannotRead(t *testing.T) {
+	config := stageShippedExample(t, func(example string) string {
+		return example + "\nroles: {checker: {type: testing, prompt_file: checker.md}}\n"
+	})
+	prompt := filepath.Join(filepath.Dir(config), "checker.md")
+
+	var out, errb bytes.Buffer
+	code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
+
+	want := "legion config check: roles.checker.prompt_file " + prompt + " cannot be read: "
+	if code != 1 || out.String() != "" || !strings.HasPrefix(errb.String(), want) {
+		t.Fatalf("legion config check with no prompt file = %d, stdout %q, stderr %q; want 1 and a refusal starting %q", code, out.String(), errb.String(), want)
+	}
 }

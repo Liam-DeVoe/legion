@@ -7,7 +7,6 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
-	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -55,19 +54,24 @@ import (
 // work on, and the work of an entry this claim was never given is work it does not have, so the
 // resume would spend the claim's first turn after the boot on the wrong prompt and the completion
 // it answered with would be refused as behind that entry. A claim level with that entry is sent
-// the task that takes its phase on (ResumePhaseTask), which the outbox does not deliver to a claim
+// the task that takes its phase on (ResumeTask), which the outbox does not deliver to a claim
 // still holding its phase's task. Either start resumes the claim by rule and takes the slot mark
 // the slot rule gives its phase (StartOrOwe), as every start of a phase worker does, so it waits
 // for the issue's admission slot in a phase up to the review and for none past it. A role a start
 // already covers (StartFor) gets no second.
 //
-// The sweep runs first so the resume reads the trees it closed as lingering. The owners' read
+// The sweep runs first so the resume reads the trees it closed as lingering. The stop of each task
+// a step of a role the deployment no longer defines still has to run (stopLostRoles) comes next,
+// so the resume finds those issues held and starts no lost role. The owners' read
 // (suspendedPhaseOwners) comes next, and the status repair runs on the issues and running roots
 // that read holds, before any start. The read writes nothing, and the repair writes none of the
 // pull requests, claims and queued starts the read takes beside the issues, so the read answers
 // what it would answer after the repair.
 func (e *Engine) booted(ctx context.Context, tx pgx.Tx, _ intake.DaemonBooted) (intake.Result, error) {
 	if err := e.sweepMerged(ctx, tx); err != nil {
+		return intake.Result{}, err
+	}
+	if err := e.stopLostRoles(ctx, tx); err != nil {
 		return intake.Result{}, err
 	}
 	owners, err := e.suspendedPhaseOwners(ctx, tx)
@@ -104,8 +108,9 @@ func (e *Engine) booted(ctx context.Context, tx pgx.Tx, _ intake.DaemonBooted) (
 // suspendedOwner is a claim that owns its issue's unfinished phase in a running tree and stands
 // suspended (suspendedPhaseOwners), with what a start of it is weighed against and built from:
 // the issue; its tree root, which StartFor and OwedEntry read; the role that works the phase;
-// that role's claim token; and the role's queued rows and claim at the issue's generation, whose
-// Claim is never nil.
+// the claim of the agent that works that role's step (Engine.workerClaim), which is the role's own
+// token on an issue with no plan rows; and that claim's queued rows and state at the issue's
+// generation, whose Claim is never nil.
 type suspendedOwner struct {
 	issue record.Issue
 	root  record.Issue
@@ -114,9 +119,10 @@ type suspendedOwner struct {
 	run   record.RoleRun
 }
 
-// phaseOwners is what suspendedPhaseOwners reads: every issue the store holds, of every project;
-// the roots of the project's trees that run (record.RunningRoots); and the suspended owners of
-// the project's unfinished phases in those trees, in the order the store lists the issues.
+// phaseOwners is what suspendedPhaseOwners reads: every issue the store holds, which the daemon's
+// store holds of the project alone (internal/daemon's projectRecords); the roots of the project's
+// trees that run (record.RunningRoots); and the suspended owners of the project's unfinished
+// phases in those trees, in the order the store lists the issues.
 type phaseOwners struct {
 	issues    []record.Issue
 	running   map[string]struct{}
@@ -132,8 +138,9 @@ type phaseOwners struct {
 // the boot reads its phase workers by a read of its own (admit's phaseWorkers) and sends only the
 // work of an entry a claim stands behind (owedEntryRoles). It writes nothing.
 //
-// The phase's owner is the role that works the issue's phase (phase.RoleFor) on an issue in the
-// workflow whose tree is running — this generation of it, by the one rule every reader of that
+// The phase's owner is the worker of the issue's open phase (OpenRoleOf: the role that works its
+// phase, at step the role of its running step) on an issue in the workflow whose tree is
+// running — this generation of it, by the one rule every reader of that
 // question asks (record.RunningRoots, record.TreeRuns): its lifecycle stands open under the
 // workflow, its root does not linger, and its root is not itself waiting in the line for the
 // tree to be opened. A lingering tree's claims stay suspended until re-admission runs the tree
@@ -147,31 +154,32 @@ type phaseOwners struct {
 // A phase its own terminating fact has already met is given no owner either (PhaseFinished): a
 // merged root stands in merging for as long as the rest of its tree runs, and resuming its merger
 // there would hand it the same phase again at every boot, for days.
-// The owner of admitted and of accepting is the tree's architect, which admission starts with the
-// tree, so no issue in either is given one. An owner is answered only while its claim at the
-// issue's generation stands suspended, whatever the source: which sources a start may act on is
-// each caller's to judge.
+// The owner of admitted and of accepting is an architect and no phase worker, so no issue in
+// either is given one. On a root it is the root's own architect, which admission starts with the
+// tree. On a child it is the architect that owns it: its own while that claim holds its role,
+// else the one above. At admitted that is the one above, since the child's own has not started
+// yet or a leave suspended or retired it, unless a person set the child back to todo while it ran
+// or was held: that re-entry starts and stops nothing, so a child's own architect that held its
+// role still holds it (ReenterChild). An owner is answered only while its claim at the issue's
+// generation stands suspended, whatever the source: which sources a start may act on is each
+// caller's to judge.
 func (e *Engine) suspendedPhaseOwners(ctx context.Context, tx pgx.Tx) (phaseOwners, error) {
 	issues, err := e.store.Issues(ctx, tx)
 	if err != nil {
 		return phaseOwners{}, err
 	}
-	own := make([]record.Issue, 0, len(issues))
 	byKey := make(map[string]record.Issue, len(issues))
 	for _, issue := range issues {
 		byKey[issue.Key] = issue
-		if issue.Project == e.cfg.Project {
-			own = append(own, issue)
-		}
 	}
-	facts, err := record.ReadLineFacts(ctx, tx, e.store, e.cfg.Project, own, e.cfg.Steps)
+	facts, err := record.ReadLineFacts(ctx, tx, e.store, e.cfg.Project, issues, e.cfg.Steps)
 	if err != nil {
 		return phaseOwners{}, err
 	}
-	owners := phaseOwners{issues: issues, running: record.RunningRoots(own, facts)}
-	for _, issue := range own {
-		role := phase.RoleFor(issue.Phase)
-		if role == "" || role == claim.RoleArchitect || record.OutOfWorkflow(issue.Status) {
+	owners := phaseOwners{issues: issues, running: record.RunningRoots(issues, facts)}
+	for _, issue := range issues {
+		role := OpenRoleOf(issue)
+		if role == "" || record.OutOfWorkflow(issue.Status) {
 			continue
 		}
 		root, ok := byKey[issue.Tree]
@@ -193,11 +201,7 @@ func (e *Engine) suspendedPhaseOwners(ctx context.Context, tx pgx.Tx) (phaseOwne
 		if finished {
 			continue
 		}
-		project, err := claim.ProjectToken(issue.Project)
-		if err != nil {
-			return phaseOwners{}, err
-		}
-		token, err := claim.NewToken(project, issue.Key, role)
+		token, err := e.workerClaim(ctx, tx, issue, role)
 		if err != nil {
 			return phaseOwners{}, err
 		}
@@ -217,7 +221,7 @@ func (e *Engine) suspendedPhaseOwners(ctx context.Context, tx pgx.Tx) (phaseOwne
 // built from the entry row names, and says whether the claim stands behind that entry. A claim
 // behind it (OwedEntry, which reads the owner's root for a tree close) is sent the work of that
 // entry at that entry (sendOwedEntry). A claim level with it is sent the phase's resume task
-// (ResumePhaseTask) at entry 0: that start hands the role the work it is already on rather than a
+// (ResumeTask) at entry 0: that start hands the role the work it is already on rather than a
 // new entry, so it moves no phases row either. The boot's resume by rule (booted) and the
 // cutover's repair of a merger the `awaiting_merge` cutover left released (oweCutoverMerger) both
 // build their start here, so the two are built alike. Neither hands it a claim the operator
@@ -238,7 +242,7 @@ func (e *Engine) startSuspendedOwner(ctx context.Context, tx pgx.Tx, owner suspe
 	if OwedEntry(owner.run, owner.root, row.Entry) {
 		return true, e.sendOwedEntry(ctx, tx, owner.issue, owner.role, row, startMarks{ruleResume: true})
 	}
-	resume, err := e.resumeTask(ctx, tx, owner.issue, reviewedPart(owner.role, owner.issue.Phase, row))
+	resume, err := e.ResumeTask(ctx, tx, owner.issue)
 	if err != nil {
 		return false, err
 	}
@@ -257,7 +261,7 @@ func (e *Engine) sweepMerged(ctx context.Context, tx pgx.Tx) error {
 		return err
 	}
 	for _, listed := range issues {
-		if listed.Project != e.cfg.Project || !awaitsMerge(listed) {
+		if !awaitsMerge(listed) {
 			continue
 		}
 		pr, err := e.store.PullRequest(ctx, tx, listed.Key)

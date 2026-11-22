@@ -1,13 +1,12 @@
 package workflowstore
 
 import (
-	"context"
 	"errors"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -31,8 +30,7 @@ func retroOf(id string) StepWrite {
 
 // rated is write with a rating and its reason.
 func rated(write StepWrite, rating int, reason string) StepWrite {
-	write.Rating = new(rating)
-	write.RatingReason = new(reason)
+	write.Rating = &StepRating{Rating: rating, Reason: reason}
 	return write
 }
 
@@ -44,8 +42,8 @@ func TestARatingIsWrittenOnceOnTheRetrosRecord(t *testing.T) {
 
 	put(t, pool, startOf(retroOf(id), minute(0)), minute(0))
 	written := put(t, pool, rated(endOf(retroOf(id), ResultPassed, minute(3)), 4, "The tester found the bug."), minute(3))
-	if written.Rating != 4 || written.RatingReason != "The tester found the bug." {
-		t.Fatalf("the rating write answers rating %d %q, want 4 and its reason", written.Rating, written.RatingReason)
+	if written.Rating == nil || *written.Rating != (StepRating{Rating: 4, Reason: "The tester found the bug."}) {
+		t.Fatalf("the rating write answers rating %+v, want 4 and its reason", written.Rating)
 	}
 	ratingTuples := 0
 	for _, tuple := range wholeLog(t, pool) {
@@ -59,43 +57,38 @@ func TestARatingIsWrittenOnceOnTheRetrosRecord(t *testing.T) {
 
 	before := wholeLog(t, pool)
 	again := put(t, pool, rated(retroOf(id), 2, "Another reason."), minute(9))
-	if again.Rating != 4 || again.RatingReason != "The tester found the bug." {
-		t.Fatalf("a second rating answers rating %d %q, want the first, 4", again.Rating, again.RatingReason)
+	if again.Rating == nil || *again.Rating != (StepRating{Rating: 4, Reason: "The tester found the bug."}) {
+		t.Fatalf("a second rating answers rating %+v, want the first, 4", again.Rating)
 	}
 	if after := wholeLog(t, pool); len(after) != len(before) {
 		t.Fatalf("a second rating appended %d tuples, want none", len(after)-len(before))
 	}
 	steps := issueSteps(t, pool, "LEG-1")
-	if len(steps) != 1 || steps[0].Rating != 4 || steps[0].RatingReason != "The tester found the bug." {
+	if len(steps) != 1 || steps[0].Rating == nil || *steps[0].Rating != (StepRating{Rating: 4, Reason: "The tester found the bug."}) {
 		t.Fatalf("the read lists %+v, want the one retro rated 4 with its reason", steps)
 	}
 }
 
-// A rating and its reason come together, the rating 1 to 5 and the reason not blank and at most
-// 2,000 characters counted as Unicode code points, as the daemon counts them; a rating is a
-// retro's alone. Each refusal names the field and writes nothing. A reason of exactly 2,000 code
-// points of two bytes each is taken, which is the control of the bound.
+// A rating carries its reason, the rating 1 to 5 and the reason stated, not blank and at most 2,000
+// characters counted as Unicode code points, as the daemon counts them; a rating is a retro's
+// alone. Each refusal names the field and writes nothing. A reason of exactly 2,000 code points of
+// two bytes each is taken, which is the control of the bound. A reason without its rating is no
+// StepWrite at all: the reason is a field of the rating.
 func TestARatingWriteRefusesAValueOutsideItsForm(t *testing.T) {
 	pool := storetest.Open(t).Pool
-	for name, write := range map[string]StepWrite{
-		"rating 0":               rated(retroOf(uuid.NewString()), 0, "A reason."),
-		"rating 6":               rated(retroOf(uuid.NewString()), 6, "A reason."),
-		"rating_reason left out": func() StepWrite { write := retroOf(uuid.NewString()); write.Rating = new(3); return write }(),
-		"rating left out":        func() StepWrite { write := retroOf(uuid.NewString()); write.RatingReason = new("Why."); return write }(),
-		"rating_reason blank":    rated(retroOf(uuid.NewString()), 3, "  \n\t "),
-		"rating_reason of 2001":  rated(retroOf(uuid.NewString()), 3, strings.Repeat("é", 2001)),
-		"rating on a step":       rated(implementer(uuid.NewString()), 3, "A reason."),
-		"rating on a merge": func() StepWrite {
-			write := rated(retroOf(uuid.NewString()), 3, "A reason.")
-			write.Kind = new(StepKindMerge)
-			return write
-		}(),
+	for name, change := range map[string]func(*StepWrite){
+		"rating 0":               func(write *StepWrite) { write.Rating.Rating = 0 },
+		"rating 6":               func(write *StepWrite) { write.Rating.Rating = 6 },
+		"rating_reason left out": func(write *StepWrite) { write.Rating.Reason = "" },
+		"rating_reason blank":    func(write *StepWrite) { write.Rating.Reason = "  \n\t " },
+		"rating_reason of 2001":  func(write *StepWrite) { write.Rating.Reason = strings.Repeat("é", 2001) },
+		"rating on a step":       func(write *StepWrite) { *write = rated(implementer(write.ID), 3, "A reason.") },
+		"rating on a merge":      func(write *StepWrite) { write.Kind = new(StepKindMerge) },
 	} {
 		t.Run(name, func(t *testing.T) {
-			err := tryWrite(pool, func(tx pgx.Tx) error {
-				_, err := PutStep(context.Background(), tx, write, daemon, minute(0))
-				return err
-			})
+			write := rated(retroOf(uuid.NewString()), 3, "A reason.")
+			change(&write)
+			_, err := tryPut(pool, write, minute(0))
 			if !errors.Is(err, ErrStepInput) {
 				t.Fatalf("the write answered %v, want %v", err, ErrStepInput)
 			}
@@ -109,30 +102,27 @@ func TestARatingWriteRefusesAValueOutsideItsForm(t *testing.T) {
 	}
 
 	longest := put(t, pool, rated(retroOf(uuid.NewString()), 5, strings.Repeat("é", 2000)), minute(0))
-	if longest.Rating != 5 || len([]rune(longest.RatingReason)) != 2000 {
-		t.Fatalf("a reason of 2,000 code points answers rating %d and %d code points, want 5 and 2,000", longest.Rating, len([]rune(longest.RatingReason)))
+	if longest.Rating == nil || longest.Rating.Rating != 5 || utf8.RuneCountInString(longest.Rating.Reason) != 2000 {
+		t.Fatalf("a reason of 2,000 code points answers rating %+v, want 5 and 2,000 code points", longest.Rating)
 	}
 }
 
-// A rating is judged against the kind the record holds, not the kind the write names: a record
-// made as a step refuses a write that calls it a retro and rates it, and keeps no rating.
+// A rating is judged against the kind the record holds as well as the kind the write names: a
+// record made as a step refuses a write that calls it a retro and rates it, and keeps no rating.
 func TestARatingOnARecordHeldAsAStepIsRefused(t *testing.T) {
 	pool := storetest.Open(t).Pool
 	id := uuid.NewString()
 	put(t, pool, startOf(implementer(id), minute(0)), minute(0))
 	before := wholeLog(t, pool)
 
-	err := tryWrite(pool, func(tx pgx.Tx) error {
-		_, err := PutStep(context.Background(), tx, rated(retroOf(id), 3, "A reason."), daemon, minute(1))
-		return err
-	})
+	_, err := tryPut(pool, rated(retroOf(id), 3, "A reason."), minute(1))
 	if !errors.Is(err, ErrStepInput) || !strings.Contains(err.Error(), "rating") {
 		t.Fatalf("a rating of a record held as a step answered %v, want %v naming rating", err, ErrStepInput)
 	}
 	if after := wholeLog(t, pool); len(after) != len(before) {
 		t.Fatalf("the refused rating appended %d tuples, want none", len(after)-len(before))
 	}
-	if steps := issueSteps(t, pool, "LEG-1"); len(steps) != 1 || steps[0].Rating != 0 || steps[0].Kind != StepKindStep {
+	if steps := issueSteps(t, pool, "LEG-1"); len(steps) != 1 || steps[0].Rating != nil || steps[0].Kind != StepKindStep {
 		t.Fatalf("the read lists %+v, want the one step, unrated", steps)
 	}
 }
@@ -145,7 +135,7 @@ func TestARatingBeforeItsEndMakesTheRecord(t *testing.T) {
 
 	put(t, pool, rated(retroOf(id), 2, "The plan skipped the tests."), minute(4))
 	ended := put(t, pool, endOf(retroOf(id), ResultPassed, minute(3)), minute(5))
-	if ended.Rating != 2 || ended.RatingReason != "The plan skipped the tests." || ended.Result != ResultPassed || ended.EndedAt == nil {
+	if ended.Rating == nil || *ended.Rating != (StepRating{Rating: 2, Reason: "The plan skipped the tests."}) || ended.Result != ResultPassed || ended.EndedAt == nil {
 		t.Fatalf("the end after the rating answers %+v, want the rating beside the end", ended)
 	}
 	if nodes := countNodes(t, pool, id); nodes != 1 {

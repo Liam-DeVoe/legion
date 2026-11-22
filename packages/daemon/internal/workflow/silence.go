@@ -65,7 +65,7 @@ func (e *Engine) phaseWorkerRecord(ctx context.Context, tx pgx.Tx, key string, g
 	if issue.Generation != generation {
 		return nil, nil
 	}
-	if working := OpenPhaseRole(issue.Phase); working == "" || working != role {
+	if working := OpenRoleOf(*issue); working == "" || working != role {
 		return nil, nil
 	}
 	row, owed, err := PhaseWorkerOwedTurn(ctx, e.store, tx, *issue, role)
@@ -86,9 +86,14 @@ func (e *Engine) phaseWorkerRecord(ctx context.Context, tx pgx.Tx, key string, g
 	if err != nil {
 		return nil, err
 	}
-	// A key that yields no claim token has no run, and is passed over as admission's
-	// resumeSlottedWorkers passes over one.
-	token, err := claim.NewToken(project, issue.Key, role)
+	phases, err := e.store.Phases(ctx, tx, issue.Key)
+	if err != nil {
+		return nil, err
+	}
+	// The run is the run of the agent that works the role's step (record.WorkerClaim), a keyed
+	// agent on a step of another role included. A key that yields no claim token has no run, and
+	// is passed over as admission's resumeSlottedWorkers passes over one.
+	token, err := record.WorkerClaim(project, issue.Key, role, phases)
 	if err != nil {
 		return nil, nil
 	}
@@ -124,7 +129,7 @@ type phaseWorkerReading struct {
 // risk. The phase's resume task would be the wrong prompt there: it says to carry the existing
 // phase work on, and the completion it answered with would be refused as behind that entry.
 //
-// A claim level with that entry is sent the phase's resume task (ResumePhaseTask) at entry 0,
+// A claim level with that entry is sent the phase's resume task (ResumeTask) at entry 0,
 // marked resumeTask, as readyWorkerTask's and the boot's level branches send it: entry 0 hands
 // the role no number the record does not already name and moves no phases row, and resumeTask
 // is what keeps the outbox from delivering a second prompt to a claim that holds its phase's
@@ -151,7 +156,7 @@ func (e *Engine) repairSilence(ctx context.Context, tx pgx.Tx, issue, root recor
 			return err
 		}
 	} else {
-		resume, err := e.resumeTask(ctx, tx, issue, reviewedPart(fact.Role, issue.Phase, row))
+		resume, err := e.ResumeTask(ctx, tx, issue)
 		if err != nil {
 			return err
 		}

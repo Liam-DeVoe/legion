@@ -2,10 +2,11 @@ package launcher
 
 // The layout of an issue pod's roles directory (--roles-dir), which the pod builder
 // (internal/runtime/sandbox) mounts and `legion launcher` and its role-init read: one directory per
-// role, holding the role's launcher token projection (RoleLauncherDir, its token file
+// slot (each --role), the slot being named for the agent that runs in it whatever role its step is
+// on, holding the slot's launcher token projection (RoleLauncherDir, its token file
 // LauncherTokenFile), its gh bundle (RoleGHDir), and its own memory-backed private, state and
 // agent-secrets directories (RolePrivateDir, RoleStateDir, RoleAgentSecretsDir); and RoleHomesDir,
-// the one disk directory, which holds each role's home overlay layers, its own temporary
+// the one disk directory, which holds each slot's home overlay layers, its own temporary
 // directories and its own config home (RoleConfigHomeDir). Both sides name these constants, so a
 // renamed directory moves on both.
 const (
@@ -17,6 +18,19 @@ const (
 	RoleHomesDir        = ".homes"
 	RoleConfigHomeDir   = "config"
 	LauncherTokenFile   = "LAUNCHER_TOKEN"
+)
+
+// SessionWriterDirName is the directory under the roles directory that the daemon mounts the
+// session writer token in, and SessionWriterTokenFile is the token's file in it. The writer token
+// is the projected ServiceAccount token whose audience is the session database's writer audience
+// (ompsessions.Database.WriterAudience): the session proxy exchanges it to impersonate the
+// session database's service account. So its path is <roles-dir>/session-writer/token. role-init
+// covers the whole roles directory with an empty filesystem (the covers of prepareRoleNamespace,
+// roleinit_linux.go), so no role reads the token. The launcher gives the path to the proxy alone:
+// it writes the path into no generation's environment and no file.
+const (
+	SessionWriterDirName   = "session-writer"
+	SessionWriterTokenFile = "token"
 )
 
 // The paths a role sees inside its own namespaces. FixedRoot is where `legion launcher role-init`
@@ -38,9 +52,14 @@ const (
 // home at that path instead (RoleConfigHomeDir under the role's directory of RoleHomesDir), made
 // once per pod as a copy of the shared one, so what one role writes there — a git `core.fsmonitor`
 // or a jj alias, which run in whatever git or jj reads them — never reaches another role.
+//
+// RoleTestPGLog is the file under FixedRoot at which role-init binds, read-only, the log of the
+// pod's own test database (testpg.go), the one file from under the roles directory every role of
+// the pod reads: the worker image makes it an empty root-owned file, the mount point.
 const (
 	FixedRoot     = "/var/run/legion"
 	Home          = "/home/legion"
 	HomeMountsDir = FixedRoot + "/home"
 	ConfigHomeDir = ".config"
+	RoleTestPGLog = "testpg.log"
 )

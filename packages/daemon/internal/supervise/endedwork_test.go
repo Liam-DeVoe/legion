@@ -486,7 +486,7 @@ func TestARelaunchRecordsAProcessWithNoReportAsUnknown(t *testing.T) {
 }
 
 // A report read before the cut turn began is no report of that turn, as the idle rule holds
-// (pods.IdleClaim.Reported): a Claude Code worker reports only at its Stop hook, and Oh My Pi at a
+// (claim.ReadSessionWork): a Claude Code worker reports only at its Stop hook, and Oh My Pi at a
 // turn's end and otherwise only when what runs has changed (pi-legion's legion.ts), so when a turn
 // of its task is cut off, its newest report can be the turn before's, which says nothing of what
 // the cut turn started. The process ran a turn and reported — nothing running, or a subagent — and
@@ -725,7 +725,7 @@ func TestARelaunchRecordsAReportOlderThanATurnTheAgentSaysItIsInAsNoReport(t *te
 			t.Run(through.name+": "+row.name, func(t *testing.T) {
 				h := newBareHarness(t)
 				holds := true
-				h.deps.PhaseHolds = func(context.Context, string, phase.Phase, uint64) (bool, error) { return holds, nil }
+				h.deps.PhaseHolds = func(context.Context, Claim, Delivery) (bool, error) { return holds, nil }
 				if err := h.store.PutClaim(h.ctx, queuedClaim()); err != nil {
 					t.Fatal(err)
 				}

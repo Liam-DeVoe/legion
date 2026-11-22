@@ -58,7 +58,7 @@ func openRegistryAt(t *testing.T, uri string) *registry {
 	conn := testnats.Connect(t, uri)
 	t.Cleanup(conn.Close)
 	c := &clock{now: time.Date(2026, 10, 26, 4, 0, 0, 0, time.UTC)}
-	store, err := legionagents.Open(conn, legionagents.WithReplicas(1), legionagents.WithClock(c.Now))
+	store, err := legionagents.Open(t.Context(), conn, legionagents.WithReplicas(1), legionagents.WithClock(c.Now))
 	if err != nil {
 		t.Fatalf("open the registry: %v", err)
 	}
@@ -151,15 +151,15 @@ func TestAnEntryRoundTripsThroughEveryRead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	if got.Entry != want || got.ReplacedBy != nil || got.ReplacedAt != nil {
+	if got.LegionAgentEntry != want || got.ReplacedBy != nil || got.ReplacedAt != nil {
 		t.Fatalf("get = %#v, want %#v with no replacement", got, want)
 	}
 	byRole, err := r.store.ByRoleToken(ctx(t), "legion-infra-infra-448-tester")
-	if err != nil || len(byRole) != 1 || byRole[0].Entry != want {
+	if err != nil || len(byRole) != 1 || byRole[0].LegionAgentEntry != want {
 		t.Fatalf("by role token = %#v, %v; want the one entry", byRole, err)
 	}
 	byIssue, err := r.store.ByIssue(ctx(t), "INFRA-448")
-	if err != nil || len(byIssue) != 1 || byIssue[0].Entry != want {
+	if err != nil || len(byIssue) != 1 || byIssue[0].LegionAgentEntry != want {
 		t.Fatalf("by issue = %#v, %v; want the one entry", byIssue, err)
 	}
 	held := r.contents(t)
@@ -191,7 +191,7 @@ func TestABatchRoundTripsInOrder(t *testing.T) {
 			t.Fatalf("stored[%d] = %#v, want %#v", i, stored[i], entries[i])
 		}
 		got, err := r.store.Get(ctx(t), entries[i].SessionID)
-		if err != nil || got.Entry != entries[i] {
+		if err != nil || got.LegionAgentEntry != entries[i] {
 			t.Fatalf("get %s = %#v, %v", entries[i].SessionID, got, err)
 		}
 	}
@@ -294,8 +294,11 @@ func TestEveryInvalidEntryIsRefusedByBothWrites(t *testing.T) {
 		{"a session id outside the key alphabet", func(e *legionagents.Entry) { e.SessionID = "ses:tester" }, "session_id"},
 		{"a session id holding a slash", func(e *legionagents.Entry) { e.SessionID = "ses/tester" }, "session_id"},
 		{"a session id too long", func(e *legionagents.Entry) { e.SessionID = strings.Repeat("s", 129) }, "session_id"},
-		{"a role outside the six", func(e *legionagents.Entry) {
+		{"the controller's role", func(e *legionagents.Entry) {
 			e.Role, e.RoleToken = "controller", "legion-infra-infra-448-controller"
+		}, "role"},
+		{"a role outside the grammar", func(e *legionagents.Entry) {
+			e.Role, e.RoleToken = "Checker", "legion-infra-infra-448-Checker"
 		}, "role"},
 		{"a legion_project that is not a project token", func(e *legionagents.Entry) {
 			e.LegionProject, e.RoleToken = "Sjawhar/Legion", "legion-Sjawhar/Legion-infra-448-tester"
@@ -466,6 +469,48 @@ func TestListingsFilterByIssueAndRoleToken(t *testing.T) {
 	}
 }
 
+// A role the deployment defines in its settings is stored as the six are: its entry is valid and
+// read back by its role token, and an issue lists its agents after the six, by role name. A token
+// is bounded by the longest role the grammar takes, 32 bytes, not by the longest of the six.
+func TestAnEntryOfADeploymentRoleIsValidAndListedAfterTheSix(t *testing.T) {
+	r := openRegistry(t)
+	if _, err := r.store.Put(ctx(t), agent("infra", "INFRA-448", "checker", "ses-checker", "2026-10-26T01:00:00Z")); err != nil {
+		t.Fatalf("put a checker: %v", err)
+	}
+	byRole, err := r.store.ByRoleToken(ctx(t), "legion-infra-infra-448-checker")
+	if err != nil || !slices.Equal(sessionIDs(byRole), []string{"ses-checker"}) {
+		t.Fatalf("by role token legion-infra-infra-448-checker = %v, %v; want the checker", sessionIDs(byRole), err)
+	}
+	_, err = r.store.PutAll(ctx(t), []legionagents.Entry{
+		agent("infra", "INFRA-448", "merger", "ses-merger", "2026-10-26T04:00:00Z"),
+		agent("infra", "INFRA-448", "linter", "ses-linter", "2026-10-26T02:00:00Z"),
+		agent("infra", "INFRA-448", "tester", "ses-tester", "2026-10-26T03:00:00Z"),
+	})
+	if err != nil {
+		t.Fatalf("put all: %v", err)
+	}
+	byIssue, err := r.store.ByIssue(ctx(t), "INFRA-448")
+	if err != nil {
+		t.Fatalf("by issue: %v", err)
+	}
+	if got := sessionIDs(byIssue); !slices.Equal(got, []string{"ses-tester", "ses-merger", "ses-checker", "ses-linter"}) {
+		t.Fatalf("by issue = %v, want the tester and the merger in workflow order, then the checker and the linter by name", got)
+	}
+
+	project, issue := strings.Repeat("p", 64), strings.Repeat("A", 27)+"-1234"
+	longest := legionagents.RoleToken(project, issue, strings.Repeat("r", 32))
+	if len(longest) != 137 {
+		t.Fatalf("the longest token is %d bytes, want 137", len(longest))
+	}
+	if err := legionagents.ValidateRoleToken(longest); err != nil {
+		t.Fatalf("the token of a 32-byte role: %v", err)
+	}
+	err = legionagents.ValidateRoleToken(legionagents.RoleToken(project, issue, strings.Repeat("r", 33)))
+	if !errors.Is(err, legionagents.ErrInvalid) || !strings.Contains(err.Error(), "role_token is 138 bytes, past 137") {
+		t.Fatalf("the token of a 33-byte role: %v, want role_token is 138 bytes, past 137", err)
+	}
+}
+
 // A read of a session, issue or role token the registry holds nothing for is a real absence: the
 // session is ErrNotFound, and a listing answers no agents.
 func TestAnAbsenceIsAnsweredAsOne(t *testing.T) {
@@ -542,7 +587,7 @@ func TestEntriesSurviveANATSRestart(t *testing.T) {
 	server.Start(t)
 	reopened := openRegistryAt(t, uri)
 	got, err := reopened.store.Get(ctx(t), "ses-tester")
-	if err != nil || got.Entry != want {
+	if err != nil || got.LegionAgentEntry != want {
 		t.Fatalf("get after the restart = %#v, %v; want %#v", got, err, want)
 	}
 }
@@ -552,7 +597,7 @@ func TestEntriesSurviveANATSRestart(t *testing.T) {
 func TestReopenMovesTheStoreToANewConnection(t *testing.T) {
 	uri := testnats.URL(t)
 	first := testnats.Connect(t, uri)
-	store, err := legionagents.Open(first, legionagents.WithReplicas(1))
+	store, err := legionagents.Open(t.Context(), first, legionagents.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -565,7 +610,7 @@ func TestReopenMovesTheStoreToANewConnection(t *testing.T) {
 	}
 	second := testnats.Connect(t, uri)
 	t.Cleanup(second.Close)
-	if err := store.Reopen(second); err != nil {
+	if err := store.Reopen(context.Background(), second); err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
 	if got, err := store.Get(ctx(t), "ses-tester"); err != nil || got.SessionID != "ses-tester" {

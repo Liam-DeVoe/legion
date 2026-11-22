@@ -30,7 +30,7 @@ import (
 // left behind, so the state showed a working tree with a quiet worker; the claim was never given
 // the phase's new entry, so every completion its worker reported was refused
 // HANDOFF_STALE_ENTRY, as a completion of an entry behind the one the phase is on
-// (api/handoff.go's staleEntry); and no restart cured it, because the record a restart rebuilds
+// (intake.StaleEntry); and no restart cured it, because the record a restart rebuilds
 // the claim from carries that same row. Only a start under a row of its own did — an operator's
 // retry of the phase's worker.
 //
@@ -39,8 +39,8 @@ import (
 // failure that follows the delivery, and a worker that is not taking the task now — its shim is
 // not connected here, as a worker is handed nothing while the wake pacing holds back the relaunch
 // that replaces its process, until the pacing lets that launch run (supervise's sendPending,
-// launchWaits). The phase is then entered again, as a head that starts conflicting with its base
-// or a sign-off enters one, and the transition writes its start through workflow.StartOrOwe
+// launchWaits). The phase is then entered again, as a tester's fail or a worker's backward move
+// enters one, and the transition writes its start through workflow.StartOrOwe
 // exactly as the engine does.
 //
 // The negative control is the fix reverted — the later task written over the owed row in

@@ -5,6 +5,7 @@ import (
 	"os"
 	"slices"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
@@ -67,7 +68,10 @@ func launchSecretNames(cfg config.Config, lookup func(string) (string, bool)) []
 // either runtime, a provider key may not name a launch secret, which every launch hands the agent
 // behind its `<NAME>_FILE` pointer alone (a tmux pane would refuse every launch; a pod's shim skips
 // the key). Under runtime: kubernetes, the operator's pod and provider keys are then held to the
-// Sandbox runtime's own refusals (sandbox.CheckPod).
+// Sandbox runtime's own refusals (sandbox.CheckPod), over the roles the runtime would run: the
+// issue roles of the deployment (sandbox.IssueRoles over deploymentApps), then the controller;
+// the exchange identity's names are among them only where runtime.kubernetes.agent_secrets names
+// an exchange_audience.
 func checkOperatorConfig(cfg config.Config, lookup func(string) (string, bool)) error {
 	names := launchSecretNames(cfg, lookup)
 	for _, key := range cfg.ProviderKeys {
@@ -78,8 +82,10 @@ func checkOperatorConfig(cfg config.Config, lookup func(string) (string, bool)) 
 	if cfg.Runtime.Kubernetes == nil {
 		return nil
 	}
-	return sandbox.CheckPod(sandbox.Pod(cfg.Runtime.Kubernetes.Pod), providerSecretKeys(cfg.ProviderKeys),
-		workerImageTools, names, providersSecrets(cfg, lookup), cfg.Runtime.Kubernetes.SessionStore)
+	roles := append(sandbox.IssueRoles(deploymentApps(cfg.Roles)), claim.RoleController)
+	broker := cfg.Runtime.Kubernetes.AgentSecrets
+	return sandbox.CheckPod(sandbox.Pod(cfg.Runtime.Kubernetes.Pod), roles, providerSecretKeys(cfg.ProviderKeys),
+		workerImageTools, names, providersSecrets(cfg, lookup), cfg.Runtime.Kubernetes.SessionStore, broker != nil && broker.ExchangeAudience != "")
 }
 
 // environLookup is os.LookupEnv over environ, the daemon's environment or a test's.

@@ -14,17 +14,26 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
-// RoleConfigRoles are the roles `role_config_files` may name, in the order the workflow reaches
-// them: every issue role, then the controller, which only `controller: daemon` launches.
+// RoleConfigRoles are Legion's roles `role_config_files` may name, in the order the workflow
+// reaches them: every issue role, then the controller, which only `controller: daemon` launches.
+// The key may also name each role of `roles` (Config.roleConfigRoles).
 var RoleConfigRoles = append(slices.Clone(claim.Roles), claim.RoleController)
 
-// readRoleConfigFiles is `role_config_files`: a mapping of a Legion role (RoleConfigRoles) to the
-// absolute paths of the Oh My Pi settings overlays that role alone names in PI_CONFIG_FILES, after
-// every role's own (runtime.tmux.pi_config_files, or PI_CONFIG_FILES in runtime.kubernetes.pod.env).
-// A role named twice or not a Legion role, a list that is empty or not a list of strings, and an
-// entry that is relative, unclean, holds PI_CONFIG_FILES' separator `:` or repeats another of the
-// role's are each refused naming the entry: a relative path would resolve against wherever the
-// role's Oh My Pi starts, which is no file of the operator's.
+// isRoleConfigName is whether `role_config_files` and `worker_stall_backstop_hours` take role when
+// the key is read: one of RoleConfigRoles, or a name of the role grammar (claim.IsRole), which
+// checkDeploymentRoleKeys holds to a role of `roles` once every key is read.
+func isRoleConfigName(role claim.Role) bool {
+	return role == claim.RoleController || claim.IsRole(role)
+}
+
+// readRoleConfigFiles is `role_config_files`: a mapping of a role (RoleConfigRoles, or a role of
+// `roles`) to the absolute paths of the Oh My Pi settings overlays that role alone names in
+// PI_CONFIG_FILES, after every role's own (runtime.tmux.pi_config_files, or PI_CONFIG_FILES in
+// runtime.kubernetes.pod.env). A role named twice or no role's name (isRoleConfigName), a list
+// that is empty or not a list of strings, and an entry that is relative, unclean, holds
+// PI_CONFIG_FILES' separator `:` or repeats another of the role's are each refused naming the
+// entry: a relative path would resolve against wherever the role's Oh My Pi starts, which is no
+// file of the operator's.
 func readRoleConfigFiles(value *yaml.Node, key string) (map[claim.Role][]string, error) {
 	if value.Tag == "!!null" {
 		return nil, nil
@@ -36,7 +45,7 @@ func readRoleConfigFiles(value *yaml.Node, key string) (map[claim.Role][]string,
 	for i := 0; i+1 < len(value.Content); i += 2 {
 		roleNode, listNode := value.Content[i], value.Content[i+1]
 		role := claim.Role(roleNode.Value)
-		if !slices.Contains(RoleConfigRoles, role) {
+		if !isRoleConfigName(role) {
 			return nil, fmt.Errorf("%s names %q, which is not a Legion role (%s)", key, roleNode.Value, runtime.JoinRoles(RoleConfigRoles))
 		}
 		if _, seen := files[role]; seen {
@@ -87,11 +96,11 @@ func readOverlayFiles(value *yaml.Node, key, reader, owner string) ([]string, er
 // under runtime kubernetes, an overlay outside every runtime.kubernetes.pod mount
 // (checkRoleConfigMount), since a pod sees only the image and the operator's mounts, and a file the
 // image ships is no operator's. Under tmux a file the host lacks is refused at boot and by
-// `legion start --check-config`, which read the host (internal/daemon, readBoot); under kubernetes
+// `legion config check`, which read the host (internal/daemon, readBoot); under kubernetes
 // the image probe reads every role's overlays in the mounts a role sees.
 func checkRoleConfigFiles(cfg Config) error {
 	everyRole := operatorOverlays(cfg)
-	for _, role := range RoleConfigRoles {
+	for _, role := range cfg.roleConfigRoles() {
 		files := cfg.RoleConfigFiles[role]
 		if len(files) == 0 {
 			continue
@@ -142,11 +151,14 @@ func operatorOverlays(cfg Config) everyRoleOverlays {
 
 // checkDeclaredOverlays refuses the overlays one declaration names that no role of a unit drawn
 // into it could load as named, once the rest of the file is settled: overlays while
-// worker_backends puts an issue role on a harness other than Oh My Pi, which reads no
-// PI_CONFIG_FILES; and, under runtime kubernetes, an overlay outside every
+// worker_backends puts an issue role the declaration reaches on a harness other than Oh My Pi,
+// which reads no PI_CONFIG_FILES; and, under runtime kubernetes, an overlay outside every
 // runtime.kubernetes.pod mount (checkRoleConfigMount), since a pod sees only the image and the
 // operator's mounts, and a file the image ships is no operator's. A declaration that names no
-// overlay is refused nothing here.
+// overlay is refused nothing here. roles is the issue roles the declaration reaches, an
+// experiment's `roles` (Experiment.Roles), nil for every issue role: a role it leaves out never
+// starts on its overlays, so that role's harness is no concern of it, while the mount check
+// stays whole, since every issue pod mounts every declared arm's files.
 //
 // field is the `config_files` key the overlays stand under, whole, which a declared arm carries
 // (Variant.ConfigFilesField) and the `memory` block names beside its own refusals; owner is what
@@ -155,14 +167,21 @@ func operatorOverlays(cfg Config) everyRoleOverlays {
 // is about the key having overlays at all, so it names the mapping they stand in rather than the
 // key itself. checkMemory and checkExperiments are the two callers, so the two keys are refused
 // alike and the block keeps the texts the documentation's refusal table quotes.
-func checkDeclaredOverlays(cfg Config, field, owner string, files []string) error {
+func checkDeclaredOverlays(cfg Config, field, owner string, files []string, roles []claim.Role) error {
 	if len(files) == 0 {
 		return nil
 	}
-	for _, role := range claim.Roles {
+	fix := "put every issue role on " + string(runtime.BackendOmp)
+	if roles != nil {
+		fix = "put every role its roles names on " + string(runtime.BackendOmp)
+	}
+	for _, role := range cfg.issueRoles() {
+		if roles != nil && !slices.Contains(roles, role) {
+			continue
+		}
 		if backend := cfg.BackendFor(role); backend != runtime.BackendOmp {
-			return fmt.Errorf("%s names config_files, and worker_backends.%s is %s, which reads no PI_CONFIG_FILES: put every issue role on %s, or take the overlays out of %s",
-				strings.TrimSuffix(field, ".config_files"), role, backend, runtime.BackendOmp, owner)
+			return fmt.Errorf("%s names config_files, and worker_backends.%s is %s, which reads no PI_CONFIG_FILES: %s, or take the overlays out of %s",
+				strings.TrimSuffix(field, ".config_files"), role, backend, fix, owner)
 		}
 	}
 	if k := cfg.Runtime.Kubernetes; k != nil {

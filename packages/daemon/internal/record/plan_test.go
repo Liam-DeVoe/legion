@@ -79,7 +79,6 @@ func TestPlanRowsRoundTrip(t *testing.T) {
 	tasks[0].State, tasks[0].StoppedReason = TaskStopped, "task a of LEGION-208 was stopped by its owner"
 	tasks[0].Place = TaskPlace{Kind: PlaceStep, Position: 2}
 	tasks[0].Counts = ReturnCounts{Pass: 3, Rounds: 2, ConflictRounds: 1, BackwardMoves: map[string]int{"reviewing-implementing": 2}, CapTold: 3}
-	steps[1].ReviewedHead = "1111111111111111111111111111111111111111"
 	early, earlyTasks, earlySteps := ownersPlan(unrecorded, 0, 1, otherOwner, planGivenAt.Add(time.Hour))
 
 	inTx(t, st, func(tx pgx.Tx) {
@@ -230,10 +229,9 @@ func TestANewGenerationClearsTheStepOfAPhaseRow(t *testing.T) {
 
 // A run of a child again, a person's todo on it and a re-admission of a root start the owner's plan
 // from its start (CarryPlan with carried false): the new generation holds the same versions and
-// the same steps, each task waiting at no act with every count 0, and no step's reviewed commit;
-// the old generation's rows stay as they were. The pull request the clear of a generation keeps
-// takes the id of the new generation's one task. The count of starts of each place is not the
-// plan's: it lives in step_starts alone (record.StepPlace), which the copy does not touch.
+// the same steps, each task waiting at no act with every count 0; the old generation's rows stay
+// as they were. The count of starts of each place is not the plan's: it lives in step_starts alone
+// (record.StepPlace), which the copy does not touch.
 func TestARerunCopiesTheOwnersPlanFresh(t *testing.T) {
 	st := migratedStore(t)
 	ctx := context.Background()
@@ -242,12 +240,9 @@ func TestARerunCopiesTheOwnersPlanFresh(t *testing.T) {
 	tasks[0].Task, steps[0].Task, steps[1].Task = "c", "c", "c"
 	tasks[0].State, tasks[0].Place = TaskRunning, TaskPlace{Kind: PlaceStep, Position: 2}
 	tasks[0].Counts = ReturnCounts{Pass: 2, Rounds: 1, BackwardMoves: map[string]int{"reviewing-implementing": 1}, CapTold: 1}
-	steps[1].ReviewedHead = "2222222222222222222222222222222222222222"
-	pr := PullRequest{Issue: planIssue, Repo: "acme/widgets", Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head-42", Generation: 1, State: PullRequestOpen, Task: "default"}
 	inTx(t, st, func(tx pgx.Tx) {
 		must(t, NewStore().PutIssue(ctx, tx, issue))
 		putPlan(t, tx, v, tasks, steps)
-		must(t, NewStore().PutPullRequest(ctx, tx, pr))
 		must(t, NewStore().CarryPlan(ctx, tx, planIssue, 1, 2, false))
 	})
 
@@ -258,7 +253,7 @@ func TestARerunCopiesTheOwnersPlanFresh(t *testing.T) {
 	freshTask.Counts = ReturnCounts{}
 	var freshSteps []PlanStep
 	for _, step := range steps {
-		step.Generation, step.ReviewedHead = 2, ""
+		step.Generation = 2
 		freshSteps = append(freshSteps, step)
 	}
 	inTx(t, st, func(tx pgx.Tx) {
@@ -268,25 +263,19 @@ func TestARerunCopiesTheOwnersPlanFresh(t *testing.T) {
 		if got, want := readPlan(t, tx, planIssue, 1), storedOf(v, tasks, steps); !reflect.DeepEqual(got, want) {
 			t.Fatalf("the plan of the old generation after the copy = %#v, want it as it was: %#v", got, want)
 		}
-		got, err := NewStore().PullRequest(ctx, tx, planIssue)
-		must(t, err)
-		if got == nil || got.Task != "c" {
-			t.Fatalf("the pull request after the copy = %+v, want the task c of the new generation's plan", got)
-		}
 	})
 }
 
 // A hand-over that carries its orphan's run (CarryPlan with carried true) carries where each task
-// stands: its state, its place and its counts, and each step's reviewed commit, so the orphan goes
-// on at the step it stood at. An issue that ran before the release has no plan rows, and the carry
-// writes none for it: it goes on as today.
+// stands: its state, its place and its counts, so the orphan goes on at the step it stood at. An
+// issue that ran before the release has no plan rows, and the carry writes none for it: it goes on
+// as today.
 func TestACarriedPlanKeepsWhereEachTaskStands(t *testing.T) {
 	st := migratedStore(t)
 	ctx := context.Background()
 	v, tasks, steps := ownersPlan(planIssue, 1, 2, planOwner, planGivenAt)
 	tasks[0].State, tasks[0].Place = TaskRunning, TaskPlace{Kind: PlaceStep, Position: 2}
 	tasks[0].Counts = ReturnCounts{Pass: 2, Rounds: 1, ConflictRounds: 1, BackwardMoves: map[string]int{"reviewing-implementing": 1}, CapTold: 1}
-	steps[1].ReviewedHead = "2222222222222222222222222222222222222222"
 	inTx(t, st, func(tx pgx.Tx) {
 		putPlan(t, tx, v, tasks, steps)
 		must(t, NewStore().CarryPlan(ctx, tx, planIssue, 1, 2, true))
@@ -575,9 +564,10 @@ func TestDeleteTasksRemovesTheirStepsAndLeavesTheRest(t *testing.T) {
 
 // MoveTask writes where one task stands and its state, the place one function of the walk keeps
 // (workflow's moveTask): a task at a step, at its retro or at its merge, or at no act. A move takes
-// a stopped task's reason away, since the task is no longer stopped, and a stop is StopTask's,
-// which keeps the place and records why. A task the plan does not hold, a place no plan has and a
-// stop without its reason are refused.
+// a stopped task's reason away, since the task is no longer stopped: the one move of a stopped
+// task that keeps it in the workflow is its start again at step 1 (workflow's restartTask). A stop
+// is StopTask's, which keeps the place and records why. A task the plan does not hold, a place no
+// plan has and a stop without its reason are refused.
 func TestMoveTaskAndStopTaskWriteWhereATaskStands(t *testing.T) {
 	st := migratedStore(t)
 	ctx := context.Background()
@@ -604,9 +594,14 @@ func TestMoveTaskAndStopTaskWriteWhereATaskStands(t *testing.T) {
 		if got := stands(tx); got.State != TaskStopped || got.StoppedReason != why || got.Place != (TaskPlace{Kind: PlaceStep, Position: 2}) {
 			t.Fatalf("task a after its stop = %s (%q) at %+v, want stopped at step 2 with its reason", got.State, got.StoppedReason, got.Place)
 		}
+		must(t, records.MoveTask(ctx, tx, planIssue, 1, "a", TaskPlace{Kind: PlaceStep, Position: 1}, TaskRunning))
+		if got := stands(tx); got.State != TaskRunning || got.StoppedReason != "" || got.Place != (TaskPlace{Kind: PlaceStep, Position: 1}) {
+			t.Fatalf("task a after its start again at step 1 = %s (%q) at %+v, want running at step 1 with no reason", got.State, got.StoppedReason, got.Place)
+		}
+		must(t, records.MoveTask(ctx, tx, planIssue, 1, "a", TaskPlace{Kind: PlaceStep, Position: 2}, TaskRunning))
 		must(t, records.MoveTask(ctx, tx, planIssue, 1, "a", TaskPlace{Kind: PlaceRetro}, TaskRunning))
-		if got := stands(tx); got.State != TaskRunning || got.StoppedReason != "" || got.Place != (TaskPlace{Kind: PlaceRetro}) {
-			t.Fatalf("task a after its move to its retro = %s (%q) at %+v, want running at its retro with no reason", got.State, got.StoppedReason, got.Place)
+		if got := stands(tx); got.State != TaskRunning || got.Place != (TaskPlace{Kind: PlaceRetro}) {
+			t.Fatalf("task a after its move to its retro = %s at %+v, want running at its retro", got.State, got.Place)
 		}
 	})
 	for _, tc := range []struct {
@@ -799,7 +794,7 @@ func TestPlanTasksOfReadsEachIssuesTaskAtItsGenerationInOneQuery(t *testing.T) {
 
 // Where a task stands names the place a step runs at, for the count of its starts and for its
 // record (record.StepPlace, the key of step_starts): the task, the kind and the place, in the words
-// the count of starts already writes (workflow's stepOf), so the start the walk counts for a task at
+// the count of starts already writes (workflow's placeOnWalk), so the start the walk counts for a task at
 // its place is the row of step_starts that the end of that run reads, and the plan keeps no count of
 // its own.
 func TestATaskPlaceNamesThePlaceItsStartsAreCountedAt(t *testing.T) {
@@ -868,8 +863,32 @@ func TestReturnCountsLiveOnTheTaskOrOnTheImplementersRow(t *testing.T) {
 	}
 }
 
-// Slice 4 holds an issue for two more reasons: its owner stopped its task, and it waits before its
-// retro for the issues beneath it. Each is written and read back as any reason of a hold is.
+// The task a run with plan rows is on is its plan's one task, whatever that task's state: this
+// release's plans hold one (plan.Supported). A plan that holds none, or more than one, names no
+// task, and says how many it holds.
+func TestThePlansTaskIsItsOneTask(t *testing.T) {
+	v := PlanVersion{Issue: "LEGION-212", Generation: 1}
+	stopped := PlanTask{Issue: "LEGION-212", Generation: 1, Task: "a", State: TaskStopped}
+	if got, err := (&StoredPlan{Version: v, Tasks: []PlanTask{stopped}}).Task(); err != nil || !reflect.DeepEqual(got, stopped) {
+		t.Fatalf("the task of a plan of one task = %+v, %v; want %+v", got, err, stopped)
+	}
+	for _, tc := range []struct {
+		tasks []PlanTask
+		want  string
+	}{
+		{nil, "the plan of LEGION-212 at generation 1 holds 0 tasks, and this release walks one"},
+		{[]PlanTask{{Task: "a", State: TaskWaiting}, {Task: "b", State: TaskRunning}},
+			"the plan of LEGION-212 at generation 1 holds 2 tasks, and this release walks one"},
+	} {
+		if got, err := (&StoredPlan{Version: v, Tasks: tc.tasks}).Task(); err == nil || err.Error() != tc.want || !reflect.DeepEqual(got, PlanTask{}) {
+			t.Errorf("the task of a plan of %d tasks = %+v, %v; want no task and %q", len(tc.tasks), got, err, tc.want)
+		}
+	}
+}
+
+// An owner's plan holds an issue for two more reasons: its owner stopped its task, and it waits
+// before its retro for the issues beneath it. Each is written and read back as any reason of a
+// hold is.
 func TestAHoldKeepsEachNewReason(t *testing.T) {
 	st := migratedStore(t)
 	ctx := context.Background()

@@ -580,8 +580,8 @@ func (r *rig) mustTmux(args ...string) string {
 // distinguishable from the daemon's, and an Envoy secret.
 func (r *rig) spec(tree, issue string, role claim.Role) runtime.SpawnSpec {
 	r.t.Helper()
-	// The token is the one the claim's coordinates derive, as the daemon mints it and as
-	// runtime.ValidateSpawnSpec holds every spec to.
+	// The token is the role's own agent's (claim.NewToken), as the daemon mints it for a step of no
+	// key; runtime.ValidateSpawnSpec holds every spec to the token of an agent of its issue.
 	derived, err := claim.NewToken(r.project, issue, role)
 	if err != nil {
 		r.t.Fatalf("claim token for %s/%s: %v", issue, role, err)
@@ -1833,13 +1833,13 @@ func TestRealTmuxPaneResolvesThisDaemonsLegionCLI(t *testing.T) {
 	// real gh's help of that command, gh's own for none, saved beside the wrapper's own tests; the
 	// shared public leak check's own read of a repository's visibility — the one call `legion gh`
 	// hands gh unchecked, and the read the guard makes for every write that names a destination —
-	// with a visibility; and every other run with the GH_CONFIG_DIR it was given. The variable
-	// that read carries is the guard's own exported one (leakguard.VisibilityReadVar), which
-	// `legion gh`'s exemption is written from too, so a rename cannot part this stand-in from the
-	// read it answers. It reports `public` because that is the answer which runs the whole guard
-	// over the call — a private or internal destination skips the in-process rule pass — and
-	// because any other word is no visibility GitHub reports, which refuses the call as a setup
-	// failure rather than letting this test read which gh ran.
+	// with a visibility; and every other run with the GH_CONFIG_DIR it was given. It tells that
+	// read by its argv, `api --hostname github.com repos/<slug> [--include] --jq .visibility`, as
+	// the real gh would have to: `legion gh` runs gh from an allowlist of its caller's environment,
+	// which holds no Legion variable naming the read. It reports `public` because that is the
+	// answer which runs the whole guard over the call — a private or internal destination skips
+	// the in-process rule pass — and because any other word is no visibility GitHub reports, which
+	// refuses the call as a setup failure rather than letting this test read which gh ran.
 	help, err := filepath.Abs(filepath.Join("..", "..", "..", "cmd", "legion", "testdata", "gh-help"))
 	if err != nil {
 		t.Fatal(err)
@@ -1848,7 +1848,7 @@ func TestRealTmuxPaneResolvesThisDaemonsLegionCLI(t *testing.T) {
 		"if [ \"$last\" = --help ]; then\n" +
 		"  path=$(printf '%s ' \"$@\" | sed -e 's/--help $//' -e 's/ $//' -e 's/ /_/g')\n" +
 		"  exec cat '" + help + "'/\"${path:-gh}\".txt\nfi\n" +
-		"if [ -n \"$" + leakguard.VisibilityReadVar + "\" ]; then\n  echo public\n  exit 0\nfi\n" +
+		"case \" $* \" in\n\\ api\\ --hostname\\ github.com\\ *\\ --jq\\ .visibility\\ )\n  echo public\n  exit 0;;\nesac\n" +
 		"printf 'real gh %s\\n' \"$GH_CONFIG_DIR\"\n"
 	if err := os.WriteFile(realGH, []byte(stub), 0o755); err != nil {
 		t.Fatal(err)

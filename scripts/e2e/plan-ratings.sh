@@ -12,9 +12,12 @@
 #   - three-finished-issues-each-rated: three issues walk planning to done, the first with one
 #     failed review, and their retros rate the plan 3, 4 and 5, each with a reason; `dispatch plans
 #     --project <PROJECT>` prints the three, newest close first, each with the default plan, its one
-#     rating with its reason, its time and `failed steps` 1, 0 and 0; control: the failed review's
-#     record deleted from Dispatch's database (its node and its tuples), the same parse reports
-#     the first issue's `failed steps 0` where 1 is wanted;
+#     rating with its reason, its time and `failed steps` 1, 0 and 0;
+#     scripts/e2e/plan-ratings-read.sh, which runs that command itself against the same Dispatch,
+#     with a `dispatch` on PATH that runs the same CLI, passes on the first issue and fails on the
+#     fourth, which is not finished; control: the failed review's record deleted from Dispatch's
+#     database (its node and its tuples), the same parse reports the first issue's `failed steps 0`
+#     where 1 is wanted;
 #   - a-retro-with-no-rating-is-refused: the fourth issue walks to its retro, and the retro's
 #     completion with no rating, from a claim at the contract that added the rating, is refused
 #     400 PLAN_RATING_REQUIRED, with the issue still in retro; control: the same completion with
@@ -35,22 +38,13 @@
 # installed with `go install`. PLAN_RATINGS_EVIDENCE_DIR (default a fresh directory under TMPDIR,
 # or /tmp when it is unset, kept and printed) keeps the transcript, the nats-server's log, the
 # daemon's, Dispatch's (dispatch.log) and the driver's output. Nothing reaches github.com or a
-# deployed Dispatch. A run takes two to five minutes, most of it building Dispatch and the driver.
+# deployed Dispatch. A run takes about a minute with a warm Go build cache and up to five minutes
+# cold, most of it building Dispatch and the driver.
 # The run around the driver is lib/live-daemon-proof.sh's.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
-command -v bun >/dev/null || {
-  echo "FAIL prerequisites: bun is not on PATH; the dispatch CLI the proof drives runs under it" >&2
-  exit 1
-}
-[ -d "$root/node_modules" ] || {
-  echo "FAIL prerequisites: $root/node_modules is missing; run \`bun install\` at the checkout's root first" >&2
-  exit 1
-}
-# The driver binary runs from this directory, not the package's, so it is told the checkout it
-# builds Dispatch from and runs the CLI out of.
-export LEGION_E2E_REPO_ROOT="$root"
 # shellcheck source-path=SCRIPTDIR source=lib/live-daemon-proof.sh
 . "$root/scripts/e2e/lib/live-daemon-proof.sh"
+require_dispatch_cli
 live_daemon_proof 'plan ratings' plan-ratings TestPlanRatingsLive "${PLAN_RATINGS_EVIDENCE_DIR:-}"
