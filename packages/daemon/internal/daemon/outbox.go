@@ -2730,6 +2730,13 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		if err := machine.StartedBy(ctx, row.ID, task); err != nil {
 			return fmt.Errorf("record the start of claim %s: %w", token, err)
 		}
+		// A claim that runs a process and records no agent of its session — one a release before
+		// that record started — takes this start's agent, whose task goes to that process, so a
+		// later start of another agent starts that one in a new session (the check above) rather
+		// than in this one (supervise.Machine.TakeSessionFor).
+		if err := machine.TakeSessionFor(ctx, payload.Agent); err != nil {
+			return fmt.Errorf("record the agent of the session of claim %s: %w", token, err)
+		}
 		state := machine.Claim().State
 		// A phase worker's start is one row that carries its task, so the claim is brought back
 		// and told its work here, in that order, and nothing of the start waits on another row.

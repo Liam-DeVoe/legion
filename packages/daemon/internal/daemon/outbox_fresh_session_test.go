@@ -38,6 +38,13 @@ type agentStartRig struct {
 // then suspended by the daemon, as the stop of its task suspends it.
 func newAgentStartRig(t *testing.T, suspended bool) *agentStartRig {
 	t.Helper()
+	return newAgentStartRigOf(t, suspended, earlierAgent)
+}
+
+// newAgentStartRigOf is newAgentStartRig with the claim spawned for agent, "" for a claim that
+// records no agent, as every claim a release before the record ran does.
+func newAgentStartRigOf(t *testing.T, suspended bool, agent string) *agentStartRig {
+	t.Helper()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -59,7 +66,7 @@ func newAgentStartRig(t *testing.T, suspended bool) *agentStartRig {
 				return workspace.Workspace{Dir: t.TempDir(), Bookmark: "legion/LEGION-208"}, nil
 			},
 		}}
-	if err := machine.Handle(ctx, supervise.RequestSpawn{Claim: token, Exempt: true, Start: supervise.StartWork{Agent: earlierAgent}}); err != nil {
+	if err := machine.Handle(ctx, supervise.RequestSpawn{Claim: token, Exempt: true, Start: supervise.StartWork{Agent: agent}}); err != nil {
 		t.Fatalf("spawn the earlier agent: %v", err)
 	}
 	r.comesUp("ses-earlier")
@@ -68,8 +75,8 @@ func newAgentStartRig(t *testing.T, suspended bool) *agentStartRig {
 			t.Fatalf("suspend the earlier agent: %v", err)
 		}
 	}
-	if got := machine.Claim().SessionAgent; got != earlierAgent {
-		t.Fatalf("the claim spawned for %s records the agent %q of its session, want %s", earlierAgent, got, earlierAgent)
+	if got := machine.Claim().SessionAgent; got != agent {
+		t.Fatalf("the claim spawned for %q records the agent %q of its session, want %q", agent, got, agent)
 	}
 	return r
 }
@@ -205,5 +212,62 @@ func TestAFreshStartThatFinishedWithoutActingLeavesTheNextStartFresh(t *testing.
 	}
 	if got := r.machine.Claim(); got.Session == "ses-earlier" || got.SessionAgent != laterAgent {
 		t.Fatalf("after the next start the claim records session %q of agent %q, want the earlier session left and %s recorded", got.Session, got.SessionAgent, laterAgent)
+	}
+}
+
+// A claim that records no agent — one a release before the record ran, still running its process
+// at the upgrade — takes the agent of the first start that reaches it as the agent of its session,
+// and the start's task goes to its running process, as the release before had it. A later start
+// of another agent then finds the session that first agent's, and starts its own agent in a new
+// session, as for any claim whose session is another agent's. The fault: the record was written
+// only where a start brought the claim back, so while the claim kept running every agent whose
+// start reached it shared its session. The control: the second start of the first agent keeps the
+// session.
+func TestAClaimThatRecordsNoAgentTakesTheFirstStartsAgent(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		agent string
+		task  string
+		fresh bool
+	}{
+		{name: "a second start of another agent", agent: laterAgent, task: "Build the index.", fresh: true},
+		// The first agent's process still holds the first task, so its second start here carries
+		// none, as a re-admission's start of a stored claim does: it reaches the same claim.
+		{name: "control: a second start of the first agent", agent: earlierAgent},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newAgentStartRigOf(t, false, "")
+			spawns, resumes := r.launches()
+
+			if err := r.runner.execute(r.ctx, r.start(81, earlierAgent, 1)); err != nil {
+				t.Fatalf("the first start = %v, want its task given to the running claim", err)
+			}
+			if got := r.machine.Claim(); got.SessionAgent != earlierAgent || got.Session != "ses-earlier" {
+				t.Fatalf("after the first start the claim records session %q of agent %q, want ses-earlier, %s's", got.Session, got.SessionAgent, earlierAgent)
+			}
+			if nowSpawns, nowResumes := r.launches(); nowSpawns != spawns || nowResumes != resumes {
+				t.Fatalf("the first start made %d spawns and %d resumes, want its task given to the running process", nowSpawns-spawns, nowResumes-resumes)
+			}
+
+			second := mustOutboxRow(t, r.issue.Key, record.SuperviseRequest{Op: "start", Tree: r.issue.Tree, Role: claim.RoleImplementer,
+				Phase: phase.Implementing, Entry: 4, Task: tc.task, Generation: 1, Agent: tc.agent}, time.Now())
+			second.ID = 82
+			if err := r.runner.execute(r.ctx, second); err != nil {
+				t.Fatalf("the second start = %v, want it to start the claim", err)
+			}
+			nowSpawns, nowResumes := r.launches()
+			got := r.machine.Claim()
+			if tc.fresh {
+				if nowSpawns-spawns != 1 || nowResumes != resumes || got.Session == "ses-earlier" || got.SessionAgent != tc.agent {
+					t.Fatalf("the start of %s made %d spawns and %d resumes, the claim in session %q of agent %q; want one spawn of a new session, %s's",
+						tc.agent, nowSpawns-spawns, nowResumes-resumes, got.Session, got.SessionAgent, tc.agent)
+				}
+				return
+			}
+			if nowSpawns != spawns || got.Session != "ses-earlier" || got.SessionAgent != earlierAgent {
+				t.Fatalf("the second start of %s made %d spawns, the claim in session %q of agent %q; want the session ses-earlier kept",
+					tc.agent, nowSpawns-spawns, got.Session, got.SessionAgent)
+			}
+		})
 	}
 }

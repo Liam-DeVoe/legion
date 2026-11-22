@@ -108,6 +108,28 @@ func (c Claim) SessionOfAnotherAgent(agent string) bool {
 	return agent != "" && c.SessionAgent != "" && c.SessionAgent != agent
 }
 
+// TakeSessionFor records agent, the agent of the step a start is a run of (StartWork.Agent), as
+// the agent of the session of a claim that runs a process and records no agent (SessionAgent ""):
+// a claim a release before the record started, or one an operator's spawn started for no step.
+// The start's task goes to that process, so the session is that agent's from here, and a later
+// start of another agent finds it so (SessionOfAnotherAgent) and starts its own agent in a new
+// session. Without it every agent whose start reached the running claim would share its session.
+// A claim that runs nothing is left alone: the decision that brings it back records the agent
+// once the claim is admitted (revive), and a refused admission leaves the record as it was. So is
+// a claim that records an agent, and a start that names none. Its one caller is the outbox's start,
+// under the machine's lock taken here, after the start's own record (StartedBy).
+func (m *Machine) TakeSessionFor(ctx context.Context, agent string) error {
+	m.mu.Lock()
+	defer m.unlock()
+	if agent == "" || m.claim.SessionAgent != "" || m.claim.RunsNothing() {
+		return nil
+	}
+	m.log.Info("supervise: a running claim that recorded no agent of its session takes the agent of the start that reached it",
+		"agent", agent, "session", m.claim.Session, "state", m.claim.State)
+	m.claim.SessionAgent = agent
+	return m.persist(ctx)
+}
+
 // leaveAnotherAgentsSession is how the decision that brings the claim back leaves its session
 // behind where it is the session of another agent than the one start brings the claim back for
 // (SessionOfAnotherAgent), so the launch spawns that agent in a session of its own: leave, which

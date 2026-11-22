@@ -463,7 +463,7 @@ func TestAClaimsAgentResumeGenerationRoundTrips(t *testing.T) {
 // The agent whose session a claim holds (SessionAgent) is a column of its own: a daemon restarted
 // between a step's start and the next reads it back, and with it whether the next step's agent
 // takes that session or starts in one of its own. A claim records none until a start for a step's
-// agent brings it back, and a later start for another agent replaces it.
+// agent reaches it, and a later start for another agent replaces it.
 func TestAClaimsSessionAgentRoundTrips(t *testing.T) {
 	ctx := context.Background()
 	store := migratedStore(t)

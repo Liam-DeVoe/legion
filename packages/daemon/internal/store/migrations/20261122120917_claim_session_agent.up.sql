@@ -10,9 +10,9 @@
 -- records the start's agent once the claim is admitted. Nothing else writes it.
 --
 -- Every row the table already holds takes the default, the empty string, which records no agent:
--- the next start of a step's agent that brings such a claim back takes the session it holds, as
--- the release before took it, and records that agent. A claim that keeps running its process
--- records none until something brings it back.
+-- the next start of a step's agent that reaches such a claim takes the session it holds, as the
+-- release before took it, and records that agent, whether the start brings the claim back or
+-- gives its task to the process the claim still runs.
 --
 -- The release before this one names each column it reads and writes (the claim store's
 -- claimSelect and upsertClaim), so it neither reads nor writes this one, and every row it inserts

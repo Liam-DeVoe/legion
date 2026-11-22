@@ -19,9 +19,9 @@ const claimSessionAgentRelease = "the release that records the agent of a claim'
 
 // 20261122120917 adds claims.session_agent, the agent whose session a claim holds
 // (supervise.Claim.SessionAgent). Every claim the release before left takes the default, the empty
-// string, which records no agent: such a claim resumes the session it holds for the next step that
-// brings it back and records that step's agent. A row the release before inserts names no such
-// column and takes the default.
+// string, which records no agent: such a claim takes the agent of the next step's start that
+// reaches it, brought back or still running, and keeps the session it holds for that agent. A row
+// the release before inserts names no such column and takes the default.
 //
 // This release also names a step's agent on each supervise start (record.SuperviseRequest.Agent),
 // a key the release before does not know: it decodes strictly, so a start left queued with it would
