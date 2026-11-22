@@ -1663,6 +1663,235 @@ echo "pid $orphan"`;
   60_000
 );
 
+// dockerHolds says whether this host runs Docker for this user (a `docker` CLI whose daemon
+// answers), and so whether the docker-init row below can run. A Legion pod has no Docker: there the
+// row is skipped by this name. The GitHub Actions runner has Docker, so there a host without it
+// fails the row by name. The row's image is the skill scenarios' pinned judge image (ubuntu, which
+// carries perl), a row of .github/ci-images.yaml.
+const dockerHolds =
+  hostTool("docker") !== null &&
+  Bun.spawnSync(["docker", "info"], { stdout: "ignore", stderr: "ignore", timeout: 30_000 })
+    .exitCode === 0;
+const dockerImage =
+  "ghcr.io/cybermonklabs/legion/ci@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55";
+if (!dockerHolds && !onActions) {
+  console.warn(
+    `Skipped the docker-init row of ${import.meta.path}: it needs a docker CLI whose daemon answers.`
+  );
+}
+
+test.skipIf(skip || withoutPython || (!dockerHolds && !onActions))(
+  "a not-dumpable process that `docker exec` left to a rootful container's init, older than the walking shell, cannot carry the run's mark: the walk passes it from a subreaper shell and from a plain one",
+  async () => {
+    if (!dockerHolds) {
+      throw new Error(
+        "this host runs no Docker for this user (no docker CLI, or `docker info` failed); the GitHub Actions runner has Docker"
+      );
+    }
+    // An init older than the walking shell that is the init of another pid namespace counted as an
+    // adopter of the run's orphans, since the run's own orphan in a namespace it entered goes there.
+    // A rootful container's docker-init is such an init, but the run cannot enter its namespace (it
+    // takes privilege over root's), and `docker exec` gives what it starts there the runtime's
+    // environment, not the run's: so another session's not-dumpable process under it failed every
+    // walk with 2 (Tester4784-3 at fe4ead44bb, from a subreaper shell and from a plain one). The row
+    // starts such a container, then each walking shell, which has `docker exec -u <this uid>` start
+    // a perl whose sh exits at once, so docker-init adopts it; the perl makes itself not dumpable
+    // (prctl PR_SET_DUMPABLE 0), or stays dumpable, the control, which the walk reads.
+    const work = join(dir, "docker-init");
+    mkdirSync(work);
+    const name = `legion-e2e-docker-init-${process.pid}-${Date.now()}`;
+    const run = Bun.spawnSync(
+      ["docker", "run", "-d", "--init", "--name", name, dockerImage, "sleep", "120"],
+      {
+        stdout: "pipe",
+        stderr: "pipe",
+        timeout: 90_000,
+      }
+    );
+    try {
+      expect({ code: run.exitCode, err: run.stderr.toString() }).toEqual({ code: 0, err: "" });
+      const init = Number(
+        Bun.spawnSync(["docker", "inspect", "-f", "{{.State.Pid}}", name]).stdout.toString().trim()
+      );
+      expect(readFileSync(`/proc/${init}/comm`, "utf8")).toBe("docker-init\n");
+      await pastStarts([init]);
+      const body = `set -Eeuo pipefail
+trap 'echo "ERR trap: $BASH_COMMAND" >&2' ERR
+root=${JSON.stringify(root)}
+work=$WORK
+. ${JSON.stringify(rig)}
+export LEGION_E2E_RUN=$work
+[ "\${LEGION_E2E_SUBREAPER:-}" = "$$ $(proc_start $$)" ] && echo "the shell is the subreaper" || echo "the shell is no subreaper"
+case $(docker exec "$C" uname -m) in x86_64) nr=157 ;; aarch64) nr=167 ;; *) echo "no prctl number for this machine"; exit 3 ;; esac
+pre=
+[ "$KIND" != unread ] || pre="syscall($nr, 4, 0, 0, 0, 0) == 0 or die; "
+docker exec -u "$(id -u)" "$C" sh -c "perl -e '\${pre}sleep 60' </dev/null >/dev/null 2>&1 & exit 0"
+perl=
+for i in $(seq 1 200); do
+  kids=()
+  { read -r -a kids <"/proc/$INIT/task/$INIT/children"; } 2>/dev/null || :
+  for p in \${kids[@]+"\${kids[@]}"}; do
+    comm=
+    { read -r comm <"/proc/$p/comm"; } 2>/dev/null || :
+    [ "$comm" != perl ] || perl=$p
+  done
+  [ -z "$perl" ] || break
+  sleep 0.05
+done
+echo "pid $perl"
+procs=$(mktemp -d "$work/proc.XXXXXX")
+ln -s "/proc/$perl" "$procs/$perl"
+ln -s "/proc/$$" "$procs/$$"
+echo "perl $([ -r "/proc/$perl/environ" ] && echo readable || echo unreadable), parent $([ "$(proc_parent "$perl")" = "$INIT" ] && echo "the container's init" || echo elsewhere)"
+st=0; proc_root=$procs run_processes >"$work/rp.out" 2>"$work/rp.err" || st=$?
+echo "run_processes $st, named [$(tr '\\n' ' ' <"$work/rp.out")], said [$(tr '\\n' ' ' <"$work/rp.err")]"`;
+      for (const kind of ["unread", "readable"]) {
+        for (const shellKind of ["subreaper", "plain"]) {
+          const argv =
+            shellKind === "subreaper"
+              ? ["python3", "-I", subreaperPy, "bash", "-c", body]
+              : ["bash", "-c", body];
+          const shell = Bun.spawnSync(ownGroup(argv), {
+            env: {
+              PATH: process.env.PATH ?? "",
+              WORK: work,
+              C: name,
+              INIT: String(init),
+              KIND: kind,
+            },
+            stdout: "pipe",
+            stderr: "pipe",
+            timeout: 60_000,
+          });
+          const out = shell.stdout.toString();
+          const perl = /^pid (\d+)$/m.exec(out)?.[1];
+          if (perl) started.push(Number(perl));
+          expect({
+            kind,
+            shellKind,
+            err: shell.stderr.toString(),
+            out: out.replace(/^pid \d+\n/m, ""),
+          }).toEqual({
+            kind,
+            shellKind,
+            err: "",
+            out: `the shell is ${shellKind === "subreaper" ? "the subreaper" : "no subreaper"}\nperl ${kind === "unread" ? "unreadable" : "readable"}, parent the container's init\nrun_processes 0, named [], said []\n`,
+          });
+          if (perl) process.kill(Number(perl), "SIGKILL");
+        }
+      }
+    } finally {
+      Bun.spawnSync(["docker", "rm", "-f", name], {
+        stdout: "ignore",
+        stderr: "ignore",
+        timeout: 60_000,
+      });
+    }
+  },
+  // A guard on a hang only: one container, a pull of its image the first time, and four walks.
+  180_000
+);
+
+// sudoHolds says whether this host gives this user root with no password (`sudo -n`) and has
+// unshare, nsenter and setpriv, and so whether the root-namespace row below can run. The GitHub
+// Actions runner has them, so there a host without them fails the row by name; elsewhere it is
+// skipped by this name.
+const sudoHolds =
+  hostTool("sudo") !== null &&
+  hostTool("unshare") !== null &&
+  hostTool("nsenter") !== null &&
+  hostTool("setpriv") !== null &&
+  Bun.spawnSync(["sudo", "-n", "true"], { stdout: "ignore", stderr: "ignore", timeout: 30_000 })
+    .exitCode === 0;
+if (!sudoHolds && !onActions) {
+  console.warn(
+    `Skipped the root-namespace row of ${import.meta.path}: it needs sudo -n, unshare, nsenter and setpriv.`
+  );
+}
+
+test.skipIf(skip || withoutPython || (!sudoHolds && !onActions))(
+  "a walk from a shell in a pid namespace below the one its /proc shows is no answer: it says so and exits 2, never reading another process as itself, beside an unreadable orphan of the run that the namespace's root-owned init adopted",
+  () => {
+    if (!sudoHolds) {
+      throw new Error(
+        "this host gives this user no root without a password (sudo -n), or has no unshare, nsenter or setpriv; the GitHub Actions runner has them"
+      );
+    }
+    // ns_init_adopts takes an init whose links this user cannot read for one whose namespace the run
+    // could not enter, and the init of the walking shell's own namespace for pid 1. Both hold only
+    // for a shell in the pid namespace /proc shows: a shell that entered a namespace without
+    // mounting its /proc has a $$ that /proc numbers as another process, and its own namespace's init
+    // shows there by its outer pid, root's or anyone's, with the run's orphans under it. So the walk
+    // refuses such a shell by name. Here root makes a pid namespace (its init a sleep of root's), and
+    // the shell enters it as this user with /proc left the host's (sudo nsenter --pid, setpriv); it
+    // starts a not-dumpable python3 whose sh exits at once, so the namespace's init adopts it, and
+    // walks.
+    const work = join(dir, "root-namespace");
+    mkdirSync(work);
+    const py = `import ctypes, os, sys, time
+ctypes.CDLL(None).prctl(4, 0, 0, 0, 0)
+open(sys.argv[1] + ".tmp", "w").write(os.readlink("/proc/self") + "\\n")
+os.rename(sys.argv[1] + ".tmp", sys.argv[1])
+time.sleep(60)`;
+    const body = `set -Eeuo pipefail
+trap 'echo "ERR trap: $BASH_COMMAND" >&2' ERR
+root=${JSON.stringify(root)}
+work=$WORK
+. ${JSON.stringify(rig)}
+export LEGION_E2E_RUN=$work
+${unreadableSh}
+echo "the init's links $([ -e "/proc/$INIT/ns/pid" ] && echo readable || echo unreadable), this shell's pid in /proc's numbering: $([ /proc/self -ef "/proc/$$" ] && echo "$$" || echo "not $$")"
+sh -c 'python3 -I -c "$1" "$2" </dev/null >/dev/null 2>&1 & exit 0' sh "$PY" "$work/orphan.ready"
+linked "$work/orphan.ready"; orphan=$pid
+for i in $(seq 1 200); do [ "$(proc_parent "$orphan")" != "$INIT" ] || break; sleep 0.05; done
+echo "orphan $(readable "$orphan"), parent $([ "$(proc_parent "$orphan")" = "$INIT" ] && echo "the namespace's init" || echo elsewhere)"
+st=0; run_processes >"$work/rp.out" 2>"$work/rp.err" || st=$?
+echo "run_processes $st, named [$(tr '\\n' ' ' <"$work/rp.out")]"
+echo "pid $orphan"`;
+    // Root's part: the namespace, a wait past its init's start tick, the shell, and the namespace's
+    // end (its init killed, which kills every process in it) on any exit.
+    const asRoot = `set -u
+unshare --pid --fork --kill-child sh -c 'exec sleep 60' </dev/null >/dev/null 2>&1 &
+u=$!
+trap 'kill -KILL "$u" 2>/dev/null; wait "$u" 2>/dev/null' EXIT
+init=
+for _ in $(seq 1 200); do init=$(cut -d' ' -f1 "/proc/$u/task/$u/children" 2>/dev/null); [ -n "$init" ] && break; sleep 0.05; done
+[ -n "$init" ] || { echo "no init in the namespace" >&2; exit 3; }
+sleep 1
+nsenter --target "$init" --pid -- setpriv --reuid="$1" --regid="$2" --init-groups env -i PATH="$3" WORK="$4" PY="$5" proc_root="$6" INIT="$init" bash -c "$7"`;
+    const ran = Bun.spawnSync(
+      [
+        "sudo",
+        "-n",
+        "bash",
+        "-c",
+        asRoot,
+        "-",
+        String(process.getuid?.() ?? 0),
+        String(process.getgid?.() ?? 0),
+        process.env.PATH ?? "",
+        work,
+        py,
+        rowRoot(),
+        body,
+      ],
+      { stdout: "pipe", stderr: "pipe", timeout: 60_000 }
+    );
+    const out = ran.stdout.toString();
+    const orphan = /^pid (\d+)$/m.exec(out)?.[1];
+    expect({ err: ran.stderr.toString(), out: out.replace(/^pid \d+\n/m, "") }).toEqual({
+      err: "",
+      out: "the init's links unreadable, this shell's pid in /proc's numbering: not 2\norphan unreadable, parent the namespace's init\nrun_processes 2, named []\n",
+    });
+    expect(readFileSync(join(work, "rp.err"), "utf8").trimEnd()).toMatch(
+      /^procs_naming: this shell is pid 2 in a pid namespace below the one \/proc shows \(NSpid \d+ \d+\), so its reads of \/proc are of other processes and the processes naming \S+ were not read$/m
+    );
+    expect(orphan).toMatch(/^\d+$/);
+  },
+  // A guard on a hang only, as for the rows above.
+  60_000
+);
+
 test.skipIf(skip)(
   "a run that has not marked itself has no processes to read: run_processes and stop_marked_processes exit 2",
   () => {
