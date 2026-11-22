@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/url"
 	"reflect"
@@ -18,6 +19,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
@@ -59,6 +61,7 @@ func TestBreakGlassCreatesAMissingBucketAsAListenersUser(t *testing.T) {
 	}
 	requests.take(t)
 
+	resends := recordResends(t)
 	code, stdout, stderr = runCommand(t, noHold(t), "create", "--break-glass", "--operator", "operator@example.com", "--bucket", bus.SessionBucket, "--nats", uri, "--connz", connz)
 	if code != 0 || stdout != "created "+bus.SessionBucket+" (1 copies)\n" {
 		t.Fatalf("create --break-glass as a listener's user = %d\n%s%s", code, stdout, stderr)
@@ -68,9 +71,10 @@ func TestBreakGlassCreatesAMissingBucketAsAListenersUser(t *testing.T) {
 		!strings.Contains(logged[0], " "+bus.SessionBucket+" ") || !strings.Contains(logged[0], " on "+uri+",") {
 		t.Fatalf("create --break-glass logged %q, want one line naming break-glass, the operator, the bucket and the server", stderr)
 	}
-	// The run's read, the create's own lookup (bus.CreateMissingCopiedBucket), the create, and the
-	// handle open after it.
-	if got, want := requests.take(t), []string{"INFO." + stream, "INFO." + stream, "CREATE." + stream, "INFO." + stream}; !slices.Equal(got, want) {
+	// The run's read, the create's own lookup (bus.CreateMissingCopiedBucket), the create, the
+	// lookup after it, which waits for the member to apply the create, and the handle open, each
+	// counted once however often the bus sent it (distinctSends).
+	if got, want := distinctSends(t, requests.take(t), resends), []string{"INFO." + stream, "INFO." + stream, "CREATE." + stream, "INFO." + stream, "INFO." + stream}; !slices.Equal(got, want) {
 		t.Fatalf("create --break-glass sent %v to the bucket's stream, want %v", got, want)
 	}
 	created, err := js.StreamInfo(stream)
@@ -375,6 +379,75 @@ func awaitStream(js natsgo.JetStreamContext, stream string) (*natsgo.StreamInfo,
 	}
 }
 
+// resentRequest is the line the bus logs each time it sends a stream request again because the
+// server left the send before it unanswered (sentAgain, internal/bus/start_wait.go), naming the
+// request "<stream> <request>". A lookup or a handle open waits 630 ms for its answer before it
+// is read again (firstReadLimit), so a hub slow under load, or a holdingRelay holding the run,
+// receives that read more often than the run made it. Were the line renamed, no resend would be
+// counted and distinctSends would compare as strictly as a bare count: never more leniently.
+const resentRequest = "envoy nats stream request unanswered; sending it again"
+
+// resentAs is the request of streamRequests.take that each request the bus names in
+// resentRequest sends: a lookup, a stream read and a handle open are each one STREAM.INFO, and a
+// create one STREAM.CREATE after the account $JS.API.INFO, which take does not see.
+var resentAs = map[string]string{"STREAM.INFO": "INFO", "handle open": "INFO", "create": "CREATE", "STREAM.CREATE": "CREATE"}
+
+// recordResends records the default logger until t ends, for distinctSends.
+func recordResends(t *testing.T) *logtest.Recorder {
+	t.Helper()
+	recorder := &logtest.Recorder{}
+	logtest.SetDefault(t, recorder)
+	return recorder
+}
+
+// distinctSends is requests, as streamRequests.take returns them, with each send the bus logged as
+// sent again (resentRequest) taken out. The run makes one request at a time, so a resend reaches
+// the hub right after the send it repeats, and is taken out there. A logged resend of a request
+// this cannot name, or one the hub did not receive after a send of the same request, fails t, so
+// a resend it misreads is never counted as one it can read.
+func distinctSends(t *testing.T, requests []string, logs *logtest.Recorder) []string {
+	t.Helper()
+	resent := map[string]int{}
+	for _, record := range logs.Records() {
+		if record.Message != resentRequest {
+			continue
+		}
+		record.Attrs(func(attr slog.Attr) bool {
+			if attr.Key != "request" {
+				return true
+			}
+			stream, request, _ := strings.Cut(attr.Value.String(), " ")
+			verb, named := resentAs[request]
+			switch {
+			case stream == bus.Stream:
+				// take leaves the notification stream's requests out, and so does this.
+			case !named:
+				t.Errorf("the bus sent %q again, a request this test cannot name", attr.Value.String())
+			default:
+				resent[verb+"."+stream]++
+			}
+			return false
+		})
+	}
+	var distinct []string
+	for _, request := range requests {
+		if n := len(distinct); n > 0 && distinct[n-1] == request && resent[request] > 0 {
+			resent[request]--
+			continue
+		}
+		distinct = append(distinct, request)
+	}
+	if taken := len(requests) - len(distinct); taken > 0 {
+		t.Logf("the hub received %v; %d of them the bus logged as sent again", requests, taken)
+	}
+	for request, left := range resent {
+		if left > 0 {
+			t.Errorf("the bus logged %d more resends of %s than the hub received after a send of it: %v", left, request, requests)
+		}
+	}
+	return distinct
+}
+
 // A bucket another client makes after a break-glass run's read is left as it is, and the run is
 // refused for it, rather than raising, updating or deleting it. The other client is a racer (race):
 // the run reaches a three-member hub through a relay that holds it after its first request on the
@@ -385,11 +458,16 @@ func awaitStream(js natsgo.JetStreamContext, stream string) (*natsgo.StreamInfo,
 //     and the run is refused there, having sent the bucket's stream its two reads alone. The control
 //     is the open the normal path takes (bus.CreateCopiedBucket), which raises a bucket its lookup
 //     finds with a stream update.
-//   - Between the create's lookup and its create - at the account info nats.go asks for before
-//     every create - the racer makes the role-claim bucket with the discard policy and direct get
-//     of a KV made before nats-server 2.7.2 and 2.9. The hub answers the create "stream name
-//     already in use"; nats.go reads the stream and sends no update, since the hub's metadata keeps
-//     the two configurations apart (bus, createOnly); and the run is refused.
+//   - Between the create's lookup and its create - at the account info the create asks for first,
+//     as nats.go does (bus, createBucketStream) - the racer makes the role-claim bucket with the
+//     discard policy and direct get of a KV made before nats-server 2.7.2 and 2.9. The hub answers
+//     the create "stream name already in use"; the create reads the stream, as nats.go does, and
+//     sends no update, since the hub's metadata keeps the two configurations apart (bus,
+//     createOnly); and the run is refused.
+//
+// Each request is counted once however often the bus sent it (distinctSends): the hold keeps the
+// run's next request from the hub for as long as the racer takes, and a lookup held past its read
+// limit, 630 ms, is sent again by design, which a loaded machine reaches.
 func TestBreakGlassLeavesABucketMadeAfterItsReadAsItIs(t *testing.T) {
 	config, seed := listenerUsers(t)
 	cluster := testnats.StartClusterConfig(t, 3, config)
@@ -443,6 +521,7 @@ func TestBreakGlassLeavesABucketMadeAfterItsReadAsItIs(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			stream := "KV_" + c.bucket
 			requests.take(t)
+			resends := recordResends(t)
 			relay := startHoldingRelay(t, uri, c.trigger)
 			r := race(t, uri, relay, stream, c.makeBucket)
 			connz := connzWithout(t, cluster.Servers[0].MonitorURL(), watcher, r.conn)
@@ -453,7 +532,7 @@ func TestBreakGlassLeavesABucketMadeAfterItsReadAsItIs(t *testing.T) {
 			}
 			// The run's requests are taken before the read below, which is the test's own.
 			var sent []string
-			for _, request := range requests.take(t) {
+			for _, request := range distinctSends(t, requests.take(t), resends) {
 				verb, _ := strings.CutSuffix(request, "."+stream)
 				if verb != "INFO" && verb != "CREATE" {
 					t.Errorf("the run sent %s, which changes a stream", request)

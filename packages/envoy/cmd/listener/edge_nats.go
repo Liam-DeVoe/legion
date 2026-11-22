@@ -33,10 +33,12 @@ import (
 // has none and keeps its configuration. An edge listener's grant holds no create or update of the
 // stream, so its client owns none (bus.Connect), names its inboxes under its machine's prefix, and
 // its start reads the stream and refuses, naming it, when the server has none
-// (edgeStreamPresent). Its grant creates and raises no bucket's stream either, so each bucket is
-// found at its open (bus.EnsureKeyValue), and a bucket the server lacks, or holds at fewer copies
-// than ENVOY_NATS_REPLICAS, ends the open naming the create or raise the server refused; no
-// keeper raises a bucket after.
+// (edgeStreamPresent). Its grant creates and raises no bucket's stream either, and no listener
+// creates a bucket it copies, so each bucket is found at its open: a copied bucket the server
+// lacks holds the start, as it does any listener's (awaitCopiedBuckets), and any other bucket the
+// server lacks, or a bucket it holds at fewer copies than ENVOY_NATS_REPLICAS, ends the open
+// (bus.EnsureKeyValue) naming the create or raise the server refused; no keeper raises a bucket
+// after.
 func connectListenerBus(cfg config.Service, edge *edgeGrant) (*bus.Client, error) {
 	if edge == nil {
 		return bus.ConnectOwningStream(cfg.NATSURLs, listenerStreamOptions(cfg)...)

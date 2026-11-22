@@ -675,10 +675,10 @@ func grantBeforeKnownSessions() []string {
 // open the known-session bucket may take to open /v1. Every caller through the port is refused
 // 503 "service starting" until it does, and a listener runs this way on any hub whose grant does
 // not carry the bucket, so the start must not wait the bucket out: a denied JetStream request is
-// dropped rather than refused, so waiting it out costs the whole JetStream wait. A healthy
-// listener opens /v1 in tens of milliseconds; this bound is well above one attempt's wait
-// (session.OpenKnownSessions) and well below the 10 seconds the default wait cost.
-const v1OpenWithoutTheBucket = 5000
+// dropped rather than refused, so waiting it out costs the whole JetStream wait, 10 s on its own.
+// A start opens /v1 about 2 s in, after one attempt's wait (session's knownBucketOpenWait), and
+// 5.2 s in on a loaded machine; a bound under the 10 s wait fails every start that waits it out.
+const v1OpenWithoutTheBucket = 9000
 
 // A listener whose NATS user may not open the known-session bucket opens /v1 without waiting the
 // bucket out, keeps running, and opens the bucket itself once the grant arrives - the order
