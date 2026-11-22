@@ -269,7 +269,8 @@ func fail(w http.ResponseWriter, status int, code, message string) {
 // write was sent, a grant that ended while the service held the call, a service's answer cut on
 // its way to the command. A service's answer the proxy carried says Airlock-Forwarded: true and
 // carries no Airlock-Code, whatever the service sent, so a service cannot pass for the proxy
-// (serveBound's ModifyResponse). dispatch's client reads them to tell a write the airlock
+// (serveBound's ModifyResponse), and an informational (1xx) answer it carried carries neither
+// header (statusWriter). dispatch's client reads them to tell a write the airlock
 // refused, which stored nothing, from one that may have been stored, which it asks again under
 // its key, and from one Dispatch answered.
 const (

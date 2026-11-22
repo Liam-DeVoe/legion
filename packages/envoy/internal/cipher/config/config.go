@@ -317,15 +317,19 @@ type Config struct {
 	// proxy's refusal of private addresses and of BROKER_AIRLOCK_CLUSTER_RANGES: the proxy dials
 	// url's host only when every address it resolves to is one it refuses every other request -
 	// private, 100.64.0.0/10 or inside BROKER_AIRLOCK_CLUSTER_RANGES - and none is loopback,
-	// link-local, unspecified or multicast, and a tunnel or a plain-HTTP request to those addresses
-	// stays refused. The request keeps the host as its Host header, and the DPoP proof of a dpop
-	// entry still names https:// and the host. Unset, the proxy sends every bound host's request to
-	// that host's own address. The start is refused, naming the setting and the fault, for more
-	// than one entry, for the setting without BROKER_AIRLOCK_RULES_FILE, for a host that is not one
-	// lower-case host name, and for a url that is not http or https, names no host, or carries a
-	// user, a path other than /, or a query; and, where the broker reads the rules file
-	// (AirlockResultRules), unless the rules entry DISPATCH_RESULTS_TOKEN binds the host, exactly
-	// and alone, of kind dpop, with a non-empty allow list, carried in Authorization alone.
+	// link-local, unspecified, multicast or a cloud metadata server's IPv6 address
+	// (netaddr.DestinationRefusal), and a tunnel or a plain-HTTP request to those addresses stays
+	// refused. The request keeps the host as its Host header, and the DPoP proof of a dpop entry
+	// still names https:// and the host. Unset, the proxy sends every bound host's request to that
+	// host's own address. The start is refused, naming the setting and the fault and quoting no part
+	// of the url a credential can sit in, for more than one entry, for the setting without
+	// BROKER_AIRLOCK_RULES_FILE, for a host that is not one lower-case host name, for a url that is
+	// not http or https, names no host or a port outside 1 to 65535, or carries a user, a path other
+	// than /, a query or a fragment, and for a url whose host every dial refuses - an address
+	// netaddr.DestinationRefusal names, localhost or a name under .localhost - unless
+	// BROKER_AIRLOCK_TEST_DIAL_ALLOW names that host and port; and, where the broker reads the rules
+	// file (AirlockResultRules), unless the rules entry DISPATCH_RESULTS_TOKEN binds the host,
+	// exactly and alone, of kind dpop, with a non-empty allow list, carried in Authorization alone.
 	AirlockPrivateUpstream PrivateUpstream
 	// BROKER_AIRLOCK_TEST_GITHUB_API_BASE: the base URL a github-app secret is minted against,
 	// in place of https://api.github.com, so a release of one mints at a stand-in GitHub
@@ -1991,9 +1995,11 @@ const privateUpstreamSetting = "BROKER_AIRLOCK_PRIVATE_UPSTREAM"
 // the exception is for one host; an entry with no host before its first = or no URL after it; a
 // host rulehost.Refusal refuses, a "*." pattern or a capital letter, since the proxy compares the
 // host as written with one lower-cased CONNECT host; and a URL that does not parse, carries a user,
-// is not http or https, names no host, or has a path other than / or a query, since the proxy sends
-// each request's own path and query to the URL's scheme and host alone. No refusal quotes the
-// entry's URL whole: a user in it may carry a password.
+// is not http or https, names no host, names a port outside 1 to 65535, or has a path other than /,
+// a query or a fragment, since the proxy sends each request's own path and query to the URL's
+// scheme, host and port alone. No refusal quotes a part of the URL a credential can sit in - its
+// user, its path, its query or its fragment - or the URL whole: a refusal names the URL's scheme at
+// most, and the start writes it to the broker's log.
 func parseAirlockPrivateUpstream(value string) (PrivateUpstream, error) {
 	const setting = privateUpstreamSetting
 	entries := strings.Fields(value)
@@ -2021,15 +2027,59 @@ func parseAirlockPrivateUpstream(value string) (PrivateUpstream, error) {
 	case destination.User != nil:
 		return PrivateUpstream{}, fmt.Errorf("%s: the URL after its = carries a user, which the proxy would never send; write the URL as a scheme and a host alone", setting)
 	case destination.Scheme != "http" && destination.Scheme != "https":
-		return PrivateUpstream{}, fmt.Errorf("%s: the URL %s is not http or https", setting, destination)
+		return PrivateUpstream{}, fmt.Errorf("%s: the URL after its = has the scheme %q, and it must be http or https", setting, destination.Scheme)
 	case destination.Hostname() == "":
-		return PrivateUpstream{}, fmt.Errorf("%s: the URL %s names no host", setting, destination)
+		return PrivateUpstream{}, fmt.Errorf("%s: the URL after its = names no host", setting)
+	case destination.Port() != "" && !portInRange(destination.Port()):
+		return PrivateUpstream{}, fmt.Errorf("%s: the URL after its = names a port outside 1 to 65535, which no dial reaches", setting)
 	case destination.Path != "" && destination.Path != "/":
-		return PrivateUpstream{}, fmt.Errorf("%s: the URL %s has the path %q; the proxy sends each request's own path, so the URL names none but /", setting, destination, destination.Path)
+		return PrivateUpstream{}, fmt.Errorf("%s: the URL after its = has a path; the proxy sends each request's own path, so the URL names none but /", setting)
 	case destination.RawQuery != "" || destination.ForceQuery:
-		return PrivateUpstream{}, fmt.Errorf("%s: the URL %s has a query; the proxy sends each request's own query, so the URL names none", setting, destination)
+		return PrivateUpstream{}, fmt.Errorf("%s: the URL after its = has a query; the proxy sends each request's own query, so the URL names none", setting)
+	case destination.Fragment != "" || strings.Contains(raw, "#"):
+		return PrivateUpstream{}, fmt.Errorf("%s: the URL after its = has a fragment, which no request carries; write the URL as a scheme and a host alone", setting)
 	}
 	return PrivateUpstream{Host: host, URL: destination}, nil
+}
+
+// portInRange reports whether port, a URL's port as url.URL.Port answers it (decimal digits),
+// names a port from 1 to 65535.
+func portInRange(port string) bool {
+	number, err := strconv.ParseUint(port, 10, 16)
+	return err == nil && number != 0
+}
+
+// privateUpstreamDialable refuses, naming the setting, a private destination every dial of the
+// proxy refuses (proxy.Server.upstreamAddresses), so the broker does not start with a destination
+// no write can reach: a URL whose host is an address netaddr.DestinationRefusal names (loopback,
+// link-local, unspecified, multicast, a cloud metadata server's), or localhost or a name under
+// .localhost, which resolve to loopback alone (RFC 6761, section 6.3). The one exception is the
+// proxy's own: BROKER_AIRLOCK_TEST_DIAL_ALLOW naming the URL's host and port, the local stack's way
+// to reach a stand-in of Dispatch on loopback, which a production start refuses. A name that
+// resolves elsewhere is the dial's to check, since it can resolve differently at each dial.
+func privateUpstreamDialable(upstream PrivateUpstream, dialAllow []string) error {
+	if upstream.URL == nil {
+		return nil
+	}
+	host, port := upstream.URL.Hostname(), upstream.URL.Port()
+	if port == "" {
+		port = "80"
+		if upstream.URL.Scheme == "https" {
+			port = "443"
+		}
+	}
+	if slices.Contains(dialAllow, net.JoinHostPort(host, port)) {
+		return nil
+	}
+	if name := strings.ToLower(host); name == "localhost" || strings.HasSuffix(name, ".localhost") {
+		return fmt.Errorf("%s: the URL after its = names the host %s, which resolves to loopback, an address the airlock never dials", privateUpstreamSetting, host)
+	}
+	if addr, err := netip.ParseAddr(host); err == nil {
+		if why := netaddr.DestinationRefusal(addr); why != "" {
+			return fmt.Errorf("%s: the URL after its = names %s, %s", privateUpstreamSetting, netaddr.Canonical(addr), why)
+		}
+	}
+	return nil
 }
 
 // AirlockResultRules is the one start check of the results capability, the airlock rules entry
@@ -2440,6 +2490,9 @@ func Load(getenv func(string) string) (Config, error) {
 	// since Load reads no file. Without a rules file no entry binds the host, so the setting would
 	// send nothing anywhere.
 	if cfg.AirlockPrivateUpstream, err = parseAirlockPrivateUpstream(getenv(privateUpstreamSetting)); err != nil {
+		return Config{}, err
+	}
+	if err = privateUpstreamDialable(cfg.AirlockPrivateUpstream, cfg.AirlockTestDialAllow); err != nil {
 		return Config{}, err
 	}
 	if cfg.AirlockPrivateUpstream.Host != "" && cfg.AirlockRulesFile == "" {

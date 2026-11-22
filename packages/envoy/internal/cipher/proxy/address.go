@@ -126,24 +126,28 @@ func (s *Server) destination() (host, port string) {
 // way, for the one host the broker's settings name as inside its own cluster: each address, read as
 // checkedAddresses reads it (netaddr.Canonical), must be one localRule refuses - private,
 // 100.64.0.0/10 or inside the cluster ranges - so the exception reaches no address the proxy would
-// tunnel to for a command; and none may be loopback, link-local (unicast or multicast),
-// unspecified or multicast, where the broker's own pod and the node's metadata server answer and
-// no destination of the broker's does. A name refused for one of its addresses is refused whole,
-// as checkedAddresses refuses one, and the refusal writes the line of a dial that did not happen.
+// tunnel to for a command; and none may be one netaddr.DestinationRefusal names - loopback,
+// link-local, unspecified, multicast or a cloud metadata server's IPv6 address - where the broker's
+// own pod and the node's metadata server answer and no destination of the broker's does. A name
+// refused for one of its addresses is refused whole, as checkedAddresses refuses one.
+//
+// The refusal is written twice. The broker's line of a dial that did not happen (logDialFailure)
+// names the destination's host and the address; the error answered, which reaches the command
+// that asked (a CONNECT's 403, a request's 502) and so a CI step's public log, names the rule and
+// neither the destination's in-cluster name nor its address (destinationRefused).
+//
 // An address Options.DialAllow names with the destination's port is dialled as it is, which is
 // how a local stack reaches a stand-in of Dispatch on loopback.
 func (s *Server) upstreamAddresses(ctx context.Context) ([]netip.Addr, error) {
 	host, port := s.destination()
 	addrs, err := s.resolve(ctx, host)
 	if err != nil {
-		refused := fmt.Errorf("cannot resolve the private upstream %s: %w", host, err)
-		s.logDialFailure(ctx, host, port, "", 0, failedClass(ctx, err, dialUnresolved), refused.Error())
-		return nil, refused
+		s.logDialFailure(ctx, host, port, "", 0, failedClass(ctx, err, dialUnresolved), fmt.Sprintf("cannot resolve the private upstream %s: %v", host, err))
+		return nil, destinationRefused("the airlock cannot resolve the private destination")
 	}
 	if len(addrs) == 0 {
-		refused := fmt.Errorf("the private upstream %s resolves to no address", host)
-		s.logDialFailure(ctx, host, port, "", 0, dialUnresolved, refused.Error())
-		return nil, refused
+		s.logDialFailure(ctx, host, port, "", 0, dialUnresolved, fmt.Sprintf("the private upstream %s resolves to no address", host))
+		return nil, destinationRefused("the private destination resolves to no address")
 	}
 	canonical := make([]netip.Addr, len(addrs))
 	for i, addr := range addrs {
@@ -154,21 +158,25 @@ func (s *Server) upstreamAddresses(ctx context.Context) ([]netip.Addr, error) {
 		return addrs, nil
 	}
 	for _, addr := range addrs {
-		var refused error
-		switch {
-		case addr.IsLoopback() || addr.IsLinkLocalUnicast() || addr.IsLinkLocalMulticast():
-			refused = fmt.Errorf("the private upstream %s resolves to %s, a loopback or link-local address, which the airlock never dials", host, addr)
-		case addr.IsUnspecified() || addr.IsMulticast():
-			refused = fmt.Errorf("the private upstream %s resolves to %s, an unspecified or multicast address, which the airlock never dials", host, addr)
-		case localRule(addr, s.clusterRanges) == "":
-			refused = fmt.Errorf("the private upstream %s resolves to %s, which this proxy would also tunnel to: list its range in BROKER_AIRLOCK_CLUSTER_RANGES", host, addr)
+		why := netaddr.DestinationRefusal(addr)
+		if why == "" && localRule(addr, s.clusterRanges) == "" {
+			why = "an address which this proxy would also tunnel to: list its range in BROKER_AIRLOCK_CLUSTER_RANGES"
 		}
-		if refused != nil {
-			s.logDialFailure(ctx, host, port, net.JoinHostPort(addr.String(), port), len(addrs), dialRefused, refused.Error())
-			return nil, refused
+		if why != "" {
+			s.logDialFailure(ctx, host, port, net.JoinHostPort(addr.String(), port), len(addrs), dialRefused,
+				fmt.Sprintf("the private upstream %s resolves to %s, %s", host, addr, why))
+			return nil, destinationRefused("the private destination resolves to " + why)
 		}
 	}
 	return addrs, nil
+}
+
+// destinationRefused is the error of a private destination the proxy will not dial, as the
+// command is told it (upstreamAddresses): its text names the rule that refused, and never the
+// destination's in-cluster name or address, which the broker's own line holds. It says where the
+// detail is, so an operator who reads a CI step's log knows to read the broker's.
+func destinationRefused(rule string) error {
+	return errors.New(rule + " (BROKER_AIRLOCK_PRIVATE_UPSTREAM); the broker's log names the destination and its address")
 }
 
 // dialChecked is one dial of a host outside the broker, check and all: the addresses the name
