@@ -30,10 +30,13 @@ type Retirement struct {
 var ErrDocumentRetired = errors.New("docs: the document is retired already")
 
 // RetiredDocumentError is a live write refused because its document is retired (joinLiveWrite):
-// the document's id, name and slug, which api's 409 DOCUMENT_RETIRED names, as it names them for a
-// write it refuses itself. It is ErrDocumentRetired.
+// the document's id, name and slug, and the issue it belongs to (nil for a project document), read
+// off the owner the write locked. api answers it as it answers a write it refuses itself: 409
+// DOCUMENT_RETIRED naming the document, or 409 DECISIONS_ARE_NODES for an issue's decisions
+// document (retiredDocumentRefusal). It is ErrDocumentRetired.
 type RetiredDocumentError struct {
 	ID, Name, Slug string
+	IssueKey       *string
 }
 
 func (e *RetiredDocumentError) Error() string {
@@ -135,6 +138,22 @@ func documentRetired(ctx context.Context, q Queryer, room string) (bool, error) 
 		return false, fmt.Errorf("read whether the document is retired: %w", err)
 	}
 	return retired, nil
+}
+
+// retiredUnderOwnerLock is whether the document artifactID is retired, read in the statement after
+// its owner's lock (lockArtifactOwner, artifactOwner.Retired), the lock RetireDocument takes: a
+// retirement that committed before the read is read, and one that has not waits for tx to end.
+// Every writer that walks an issue's documents reads it before it writes into one, and skips a
+// document it reads retired: it writes nothing into it, refuses nothing, and goes on with the
+// issue's other documents (WriteIssueAskStates, FollowClosedIssueVersions, KeepAskBlockInStep). A
+// list that leaves retired documents out is read before this lock is, or under a lock its caller
+// took, so it is never the read that decides.
+func retiredUnderOwnerLock(ctx context.Context, tx pgx.Tx, artifactID string) (bool, error) {
+	owner, _, err := lockArtifactOwner(ctx, tx, artifactID)
+	if err != nil {
+		return false, err
+	}
+	return owner.Retired, nil
 }
 
 // writeRetiredNode writes the retired document's artifact node gone, held for the event that

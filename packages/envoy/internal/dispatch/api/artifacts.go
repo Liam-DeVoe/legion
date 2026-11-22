@@ -2553,12 +2553,12 @@ func decisionsAreNodes(target artifactTarget, name string) error {
 }
 
 // retiredDocumentRefusal is the 409 refusing a write of new text to artifact, a retired document
-// (docs.RetireDocument): an upload or a create under name, its name or its slug, and an edit by its
-// id or its slug, whose name is the document's own. An issue's decisions document - one whose
-// slug, or the name the write gives, is a decisions document's - is refused as a new document of
-// that name is (decisionsAreNodes), since DOCUMENT_RETIRED's advice to write a document of another
-// name would lead its caller to decisions-2.md; any other is DOCUMENT_RETIRED
-// (documentRetiredRefusal).
+// (docs.RetireDocument): an upload or a create under name, its name or its slug, an edit by its id
+// or its slug, and a live write the document service refused (docs.RetiredDocumentError), whose
+// name is the document's own. An issue's decisions document - one whose slug, or the name the
+// write gives, is a decisions document's - is refused as a new document of that name is
+// (decisionsAreNodes), since DOCUMENT_RETIRED's advice to write a document of another name would
+// lead its caller to decisions-2.md; any other is DOCUMENT_RETIRED (documentRetiredRefusal).
 func retiredDocumentRefusal(artifact model.Artifact, name string) error {
 	target := artifactTarget{IssueKey: artifact.IssueKey}
 	for _, held := range []string{name, artifact.Slug} {
