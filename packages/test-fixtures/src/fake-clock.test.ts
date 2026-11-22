@@ -3,6 +3,7 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { turn, turnsUntil } from "./fake-clock";
 import { temporaryDirectories } from "./temporary-directories";
+import { settled } from "./wait";
 
 const makeDirectory = temporaryDirectories("test-fixtures-fake-clock");
 
@@ -93,8 +94,11 @@ test("a wait refuses a duration, as an argument or an option", async () => {
 // `row-deadline.test.ts`'s rows do: the deadline is 1000 ms (the least margin) before the guard,
 // 1400 ms after the row's mark. The row spends 1100 ms before its fake clock starts, so a wait
 // that counted from its own start would outlast the guard and leave only Bun's "timed out" to
-// read. The verdict is what the child printed: none reads a clock.
-test("a wait that never ends fails at its row's deadline, naming what it waited for", () => {
+// read. The verdict is what the child printed: none reads a clock. The child runs beside this
+// row's event loop (`Bun.spawn`), not in place of it, so a child that hangs leaves this row to
+// give up at its own deadline, naming the child, where `Bun.spawnSync` held the row's guard too.
+test("a wait that never ends fails at its row's deadline, naming what it waited for", async () => {
+  jest.useRealTimers();
   const work = makeDirectory("run");
   const fixtures = import.meta.dir;
   writeFileSync(
@@ -113,7 +117,7 @@ test("a row whose fact never comes", async () => {
 });
 `
   );
-  const run = Bun.spawnSync(
+  const child = Bun.spawn(
     [
       process.execPath,
       "test",
@@ -122,13 +126,28 @@ test("a row whose fact never comes", async () => {
       join(fixtures, "row-deadline.ts"),
       "./stuck.test.ts",
     ],
-    { cwd: work, env: process.env }
+    { cwd: work, env: process.env, stdout: "pipe", stderr: "pipe" }
   );
-  const output = `${run.stdout.toString()}${run.stderr.toString()}`;
+  let ran: [string, string, number];
+  try {
+    ran = await settled(
+      "the child bun test's output and exit",
+      Promise.all([
+        new Response(child.stdout).text(),
+        new Response(child.stderr).text(),
+        child.exited,
+      ])
+    );
+  } finally {
+    // A child the wait gave up on is ended here, not left to outlive the row.
+    if (child.exitCode === null) child.kill();
+  }
+  const [stdout, stderr, exitCode] = ran;
+  const output = `${stdout}${stderr}`;
   expect(output).toContain(
     "turnsUntil gave up waiting for the row's fact, 1000 ms before the row's guard of 2400 ms " +
       "(bun test --timeout) (no answer)"
   );
   expect(output).not.toContain("timed out");
-  expect(run.exitCode).toBe(1);
+  expect(exitCode).toBe(1);
 });

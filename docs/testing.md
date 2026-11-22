@@ -211,13 +211,16 @@ itself, whose tests import its sources by relative path.
   an alarm armed at each mark of the row-deadline preload, since the fake clock holds every clock
   the row could read (`packages/test-fixtures/src/deadline.ts`).
 
-- A row that reads a deadline the code arms with `AbortSignal.timeout` holds it through
+- A row that reads which deadline the code arms with `AbortSignal.timeout` holds it through
   `@legion/test-fixtures/held-deadlines`: `holdDeadlines(ms)` holds every deadline of that length
   the code arms until the row ends them (`end`, or `letGo`, after which one of that length is the
-  real one), and `restore` puts the real `AbortSignal.timeout` back. So the row reads what the code
-  did up to its own bound and at it, in that order, and a deadline the code armed at another length
-  is never held: a row that waits for the held one to be armed fails at its deadline, naming the
-  wait.
+  real one), and `restore` puts the real `AbortSignal.timeout` back. A hold proves which deadline
+  ends the wait: one the code armed at another length is never held, and a row that waits for the
+  held one to be armed fails at its deadline, naming the wait. It does not prove that the code did
+  not end before that deadline, because holding one deadline stops no other real timer. A row that
+  must show "not before" runs the code on the fake clock, moves it to `ms - 1` and reads the code
+  there, then moves the last 1 ms (`atDeadline` in
+  `packages/envoy-client/src/__tests__/nats-credential-deadlines.test.ts`).
 
 - A command whose rows wait through the shared wait or `turnsUntil` loads the row-deadline preload,
   `--preload @legion/test-fixtures/row-deadline`, as the `test` scripts of `packages/test-fixtures`,
