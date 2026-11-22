@@ -167,25 +167,32 @@ list_files() {
 # under_worker <directory> [VAR=value...]: list_files for a pull request, with the case's bound at
 # the budget and 5 s, run as a child of a parent process named Runner.Worker: a copy of bash by
 # that name, as GitHub's runner starts each job's steps. gh-read.sh measures JOB_TIMEOUT_MINUTES
-# from that process's start and STEP_TIMEOUT_MINUTES from its child's, the case's `timeout`. Sets
-# out, err and status, and started, the clock just before that child starts.
+# from that process's start and STEP_TIMEOUT_MINUTES from its child's, the case's `timeout`. On a
+# runner a step starts well after its job; a stand-in that started its child at once would start
+# the two within the same second, and a gh-read.sh that measured the step's limit from the job's
+# start would read the same deadline. So the stand-in waits JOB_LEAD seconds before it starts the
+# step, more than the 2 s either side the cases allow a deadline. Sets out, err and status;
+# job_started, the clock just before the stand-in starts; and started, the clock just before the
+# step starts, which the stand-in writes to step-started.
+readonly JOB_LEAD=6
 worker="$work/worker/Runner.Worker"
 mkdir "$work/worker"
 cp "$(command -v bash)" "$worker"
 under_worker() {
   local dest=$1
   shift
-  rm -f "$work/gh-calls" "$work/rate-limit-calls" "$work/git-fetches"
+  rm -f "$work/gh-calls" "$work/rate-limit-calls" "$work/git-fetches" "$work/step-started"
   case_marker="changed-files-case-$$-$dest"
-  started=$(date +%s)
+  job_started=$(date +%s)
   set +e
-  # shellcheck disable=SC2016 # the worker's own shell expands "$@" and "$?", not this one
+  # shellcheck disable=SC2016 # the worker's own shell expands "$1", "$2", "$@" and "$?", not this one
   out=$(env -u JOB_TIMEOUT_MINUTES -u STEP_TIMEOUT_MINUTES CHANGED_FILES_CASE="$case_marker" PATH="$work/bin:$PATH" \
     GITHUB_EVENT_NAME=pull_request GITHUB_EVENT_PATH="$work/event.json" "$@" \
-    "$worker" -c '"$@"; exit "$?"' worker \
+    "$worker" -c 'sleep "$1" && date +%s > "$2" && shift 2 && "$@"; exit "$?"' worker "$JOB_LEAD" "$work/step-started" \
     timeout "$((BUDGET + 5))" "$script_dir/changed-files.sh" --budget "$BUDGET" "$dest" 2> "$work/err")
   status=$?
   set -e
+  started=$(cat "$work/step-started" 2> /dev/null || echo 0)
   err=$(cat "$work/err")
   gh_calls=$(cat "$work/gh-calls" 2> /dev/null || true)
   rate_limit_calls=$(cat "$work/rate-limit-calls" 2> /dev/null || true)
@@ -358,8 +365,12 @@ echo "case: under a Runner.Worker with JOB_TIMEOUT_MINUTES=30 and STEP_TIMEOUT_M
 # Every read is refused for the hourly budget, which GET /rate_limit says resets 70 s from now.
 # gh-read.sh measures the step's 2 minutes from the step's start, the earlier of the two limits,
 # and a reset 71 s away leaves its 30 s margin before them, so it waits. The bound over the read
-# ends that wait at 50 s, inside the 60 s budget, whatever the step's limit allows.
+# ends that wait at 50 s, inside the 60 s budget, whatever the step's limit allows. The step starts
+# JOB_LEAD s after the stand-in job, so a deadline measured from the job's start names a time 6 s
+# or more before the one this case reads, outside the 2 s it allows.
 under_worker "$work/pr-worker" JOB_TIMEOUT_MINUTES=30 STEP_TIMEOUT_MINUTES=2 GH_REFUSE_FIRST=99 GH_REFUSAL=rate-limit GH_RATE_LIMIT=spent-for:70
+check "the stand-in job started $JOB_LEAD s or more before its step ($((started - job_started)) s)" \
+  "$(is "$([ "$((started - job_started))" -ge "$JOB_LEAD" ] && echo yes || echo no)" yes)"
 # step_end_at <seconds>: the times, 2 s either side, at which a limit of that many seconds from
 # `started` ends, as a grep alternation; the process starts gh-read.sh reads are whole seconds.
 step_end_at() {
@@ -386,6 +397,8 @@ echo "control: the same refusals with STEP_TIMEOUT_MINUTES=1"
 # whose own runner is a Runner.Worker further up.
 under_worker "$work/pr-worker-short" JOB_TIMEOUT_MINUTES=30 STEP_TIMEOUT_MINUTES=1 GH_REFUSE_FIRST=99 GH_REFUSAL=rate-limit \
   GH_RATE_LIMIT=spent-for:70
+check "the stand-in job started $JOB_LEAD s or more before its step ($((started - job_started)) s)" \
+  "$(is "$([ "$((started - job_started))" -ge "$JOB_LEAD" ] && echo yes || echo no)" yes)"
 check "it fails" "$(is "$status" 1)"
 check "gh-read.sh waited for nothing" "$(is "$(contains "$err" "waiting [0-9]* s for it")" false)"
 check "  naming the step's limit it derived, 1 minute from the step's start" \
