@@ -37,11 +37,14 @@ import (
 // a row of the five other read-state tables of that person is owed; an ask's ask.opened, ask.edited
 // or ask.answered, a comment's comment.created, comment.answered or comment.edited and a message's
 // message.created or message.answered, where that item's blocks, their links or its citations are
-// owed, an ask's or a message's row, a message's attempts, or a comment's delivery routes
+// owed, an ask's or a message's row, a comment's row where the comment names its node (the pointer
+// pass and the pass past the store's bound), a message's attempts, or a comment's delivery routes
 // (comment_mentions), or, for an answer, a user_threads row of the ask's thread; and
 // a comment.delivery, a message.delivery or a message.accepted, the receipt of an attempt its
 // sender settled or its session accepted, where an attempt row of that item is owed. Its claims
-// append no event, so only a pass started for another reason reaches an attempt one moved.
+// append no event, so only a pass started for another reason reaches an attempt one moved. And
+// whatever the events are, it answers true while the queue of the events that build's outbox
+// recorded (events_published_owed) holds one: that record appends no event.
 //
 // The read collects the ids the events name, kind by kind, and reads only those rows and their
 // nodes, through each row's unique key and the node's, so a tick whose events name only rows that
@@ -98,7 +101,8 @@ var eventsOweObjectPass = `
 // rollOwedByEvents is eventsOweObjectPass's test of the inbox cache rows the events name that the
 // block-index tick's catch-up owes (rollPasses), each kind read by its own owed test, the pass's,
 // narrowed to the rows the arrays of named name, through the key or the index each kind's rows are
-// read by.
+// read by; and of the queue of the events an older build's outbox recorded, which no event names
+// (publishedDeliveriesQueued).
 func rollOwedByEvents() string {
 	named := func(array, as string) string { return `any((select named.` + array + ` from named)::` + as + `[])` }
 	terms := []string{
@@ -107,10 +111,14 @@ func rollOwedByEvents() string {
 		`exists (select 1 ` + asksOwed + ` and k.id = ` + named("asked", "uuid") + `)`,
 		`exists (select 1 ` + messagesOwed + ` and m.id = ` + named("messaged", "uuid") + `)`,
 		`exists (select 1 ` + pastBoundMessages.owed + ` and m.id = ` + named("messaged", "uuid") + `)`,
+		`exists (select 1 ` + commentPointersOwed + ` and c.id = ` + named("commented", "uuid") + `)`,
+		`exists (select 1 ` + pastBoundComments.owed + ` and c.id = ` + named("commented", "uuid") + `)`,
 		`exists (select 1 ` + commentAttempts.owed() + ` and d.comment_id = ` + named("attempted", "uuid") + `)`,
 		`exists (select 1 ` + commentMentionsOwed + ` and m.comment_id = ` + named("commented", "uuid") + `)`,
 		`exists (select 1 ` + messageAttempts.owed() + ` and (d.message_id = ` + named("delivered", "uuid") +
 			` or d.message_id = ` + named("messaged", "uuid") + `))`,
+		// kept for one release: events-published-owed
+		`exists (select 1 ` + publishedDeliveriesQueued + `)`,
 	}
 	for _, table := range readStateTables {
 		terms = append(terms, `exists (select 1 `+table.owed()+` and user_threads_login(r.login) = `+named("logins", "text")+`)`)

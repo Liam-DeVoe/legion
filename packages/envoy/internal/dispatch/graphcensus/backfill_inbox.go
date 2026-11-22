@@ -37,9 +37,10 @@ import (
 // (graphstore.CommentPointerFacts), the delivery routes a comment names (as api's
 // commentMentionFacts states them), an item's blocks, their part_of and their links and its
 // citations (as refs' item index states them), an attempt to reach a session or a role
-// (graphstore.AttemptNode, graphstore.AttemptFactsAsWritten), what each comment, message, ask,
-// answer and decline an older build wrote owed the threads it was written in
-// (inboxwrite.RecordOlder), and what each read-state row says (graphstore.ToPerson,
+// (graphstore.AttemptNode, graphstore.AttemptFactsAsWritten), each session or role an older
+// build's outbox published a comment or a message to (as outbox's deliveredGraph states it), what
+// each comment, message, ask, answer and decline an older build wrote owed the threads it was
+// written in (inboxwrite.RecordOlder), and what each read-state row says (graphstore.ToPerson,
 // graphstore.FromPerson). Every batch takes the order the live writers take - the owner rows, then
 // the project rows an ask's waiting person is read under, then the item rows and its block state,
 // then the item's own store writes, then a thread's user_threads rows in ascending login, then the
@@ -210,7 +211,7 @@ func inboxPasses() []inboxPass {
 	for _, kind := range inboxItemKinds {
 		passes = append(passes, itemBlocksPass(kind), itemLinksPass(kind), itemCitationsPass(kind))
 	}
-	passes = append(passes, attemptsPass(commentAttempts), attemptsPass(messageAttempts),
+	passes = append(passes, attemptsPass(commentAttempts), attemptsPass(messageAttempts), publishedDeliveriesPass(),
 		asksOwedPass(), declinesPass(), userThreadsPass())
 	for _, table := range readStateTables {
 		passes = append(passes, readStatePass(table))
@@ -220,10 +221,11 @@ func inboxPasses() []inboxPass {
 
 // inboxTables is every table the inbox backfill's passes read or write: the rows each pass walks,
 // with its item and block tables, the store's two tables, the log each row's event is read from,
-// and the owner rows a batch takes and an ask's waiting person is read under.
+// the queue of the events an older build's outbox published (events_published_owed), and the owner
+// rows a batch takes and an ask's waiting person is read under.
 func inboxTables() []string {
 	tables := []string{"messages", "comments", "comment_mentions", "asks", "refs", "user_threads", "graph_nodes", "graph_tuples",
-		"events", "issues", "artifacts", "projects"}
+		"events", "events_published_owed", "issues", "artifacts", "projects"}
 	for _, kind := range inboxItemKinds {
 		tables = append(tables, kind.blocks, kind.links, kind.state)
 	}
@@ -531,8 +533,8 @@ var commentPointersOwed = `
 	where not c.tuples_stored and c.node_kind is not null
 	  and octet_length(coalesce(c.replies_to_block, '')) <= ` + addressBound
 
-// commentPointersKind is the comment pointer pass's kind, one pass the block-index tick does not
-// run over rows (rollPasses).
+// commentPointersKind is the comment pointer pass's kind, the census kind it marks
+// (commentPointerProjection).
 const commentPointersKind = "comment_pointers"
 
 // commentPointersPass states each comment an older build wrote as this release's comment writer
@@ -717,35 +719,39 @@ type RollRows struct {
 // rollPasses are the backfill's passes CatchUpOwedRows runs, in the order the backfill runs them:
 // the session pass over the sessions a published fallback copy reached (fallbackSessionsPass), the
 // one arm of that pass no event of the log names and no other pass here writes, and then every
-// pass of the inbox (inboxPasses) but three, each attempt pass writing the nodes of the sessions
-// its rows reached before it marks them (writeAttemptsAndSessions). A decline holds no row but its
-// event, which the tick reads once (CatchUpEvents), so a pass over declines would read the log.
-// The comment pointer pass and the pass over the comments past the store's bound owe only a
-// comment an older build inserts, since no build updates the columns those markers stand for
-// (migration 20261116150000), and that build appends the comment.created or comment.answered that
-// stores the comment in the same transaction; the tick gives every comment those events name the
-// same two writes while it reads them (CatchUpComments), so either pass here would read comments
-// for rows it never finds. The comment mention pass owes only rows an older build inserts with
-// their comment too (migration 20261120090000), but it runs here: the tick gives that catch-up only
-// to a comment whose row names no node, and a build that writes a comment's node itself, as the
-// store's own release does, writes its comment_mentions rows beside a comment that names its node,
-// which only this pass reaches; the event that stores such a comment makes the tick owe it
-// (rollOwedByEvents). Each pass reads its rows through the index that holds the rows it owes
-// (TestTheRollPassesReadTheirOwedRowsThroughThePartialIndexes), but three: the asks pass reads asks
+// pass of the inbox (inboxPasses) but the decline pass, each attempt pass writing the nodes of the
+// sessions its rows reached before it marks them (writeAttemptsAndSessions). A decline holds no
+// row but its event, which the tick reads once (CatchUpEvents), so a pass over declines would read
+// the log. The comment pointer pass, the pass over the comments past the store's bound and the
+// comment mention pass owe only rows an older build inserts with a comment, in the transaction
+// that appends the comment.created or comment.answered storing it (migrations 20261116150000 and
+// 20261120090000), and the tick gives every comment those events name whose row names no node the
+// same writes while it reads them (CatchUpComments); but a build that writes a comment's node
+// itself, as the store's own release does, writes a comment whose row names its node, which that
+// catch-up passes by, so only these passes reach it and the rows written with it; the event that
+// stores such a comment makes the tick owe them (rollOwedByEvents). The published-delivery pass
+// reads here the queue the trigger of migration 20261122100122 fills (publishedDeliveriesQueued)
+// rather than the log: an older build's outbox adds the topics an event reached to its
+// published_destinations after the event commits, appending no event, so no read of the log after
+// the tick's cursor finds a publish that lands after the tick has read its event. Each pass reads
+// its rows through the index that holds the rows it owes
+// (TestTheRollPassesReadTheirOwedRowsThroughThePartialIndexes), but two: the asks pass reads asks
 // whole, as the object pass does, since its marker test reads an answer's moment through a cast no
-// index predicate may hold, the fallback copies pass reads the published copies whole, a copy
-// holding no marker, and the comment mention pass reads comment_mentions in the order of its
-// primary key, which holds every row, no index holding the rows it owes alone.
+// index predicate may hold, and the fallback copies pass reads the published copies whole, a copy
+// holding no marker.
 func rollPasses() []inboxPass {
 	passes := []inboxPass{fallbackSessionsPass()}
 	for _, pass := range inboxPasses() {
 		switch pass.kind {
-		case declinesKind, commentPointersKind, pastBoundComments.kind:
+		case declinesKind:
 			continue
 		case commentAttempts.table:
 			pass.write = commentAttempts.writeAttemptsAndSessions
 		case messageAttempts.table:
 			pass.write = messageAttempts.writeAttemptsAndSessions
+		case publishedDeliveriesKind:
+			// kept for one release: events-published-owed
+			pass.batch, pass.remaining = publishedDeliveriesQueuedBatch, publishedDeliveriesQueued
 		}
 		passes = append(passes, pass)
 	}
@@ -754,14 +760,15 @@ func rollPasses() []inboxPass {
 
 // CatchUpOwedRows is the block-index tick's catch-up of the rows of the inbox's caches a build
 // before this one leaves unmarked after the backfill: every kind the backfill's inbox passes mark
-// but a comment's own two and the declines, which the tick gives while it reads their events
-// (rollPasses), which that build inserts, and updates with this release's marker taken off
-// (migrations 20261116150000, 20261116160000 and 20261116170000), not always with an event that
-// names the row - its delivery sender's claims append none, its read marks name a person and no
-// thread. Only the backfill marks such a row again, so without this the unmarked class R9 holds to
-// zero would stand until someone ran the backfill again. The docs' tick runs it on each tick that
-// owes the object pass (writeObjectNodesAnotherBuildWrote) - every tick while another build
-// serves, the first after it left, a tick whose events leave such a row owed
+// but the declines, which the tick gives while it reads their events (rollPasses), which that
+// build inserts, and updates with this release's marker taken off (migrations 20261116150000,
+// 20261116160000 and 20261116170000), not always with an event that names the row - its delivery
+// sender's claims append none, its read marks name a person and no thread, and its outbox's record
+// of the topics an event reached appends none (migration 20261122100122 queues that event in
+// events_published_owed instead). Only the backfill marks such a row again, so without this the
+// unmarked class R9 holds to zero would stand until someone ran the backfill again. The docs' tick
+// runs it on each tick that owes the object pass (writeObjectNodesAnotherBuildWrote) - every tick
+// while another build serves, the first after it left, a tick whose events leave such a row owed
 // (EventsOweObjectPass), each process's first and one an interval after its last pass - and keeps
 // that debt while it answers More or fails.
 //

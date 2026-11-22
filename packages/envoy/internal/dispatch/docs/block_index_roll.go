@@ -216,11 +216,14 @@ var markVersionedDocuments = `
 // off the authored_by tuples the batch appended, so it runs after the batch rather than in it. It
 // takes the item rows and the user_threads rows it writes `for no key update` before it writes
 // them, and every owner and project lock it takes is one the read phase took. So the tick gives a
-// comment written after the backfill, and the rows written with it, what the backfill gives one it
-// read, with no second backfill. Last, before the commit too, each decline among the events and
-// each session they name take what the backfill gives one (graphcensus.CatchUpEvents), whose first
-// statement reads whether a backfill has run and whether any of those events is of a type its
-// writes read, and which reads nothing more where none is.
+// comment written after the backfill with no node, and the rows written with it, what the backfill
+// gives one it read, with no second backfill. A comment a build writes with its node, as the
+// store's own release does, is no comment of this catch-up, and the tick's catch-up of the rows
+// another build left gives it and the rows written with it the same passes
+// (writeObjectNodesAnotherBuildWrote, graphcensus.CatchUpOwedRows). Last, before the commit too,
+// each decline among the events and each session they name take what the backfill gives one
+// (graphcensus.CatchUpEvents), whose first statement reads whether a backfill has run and whether
+// any of those events is of a type its writes read, and which reads nothing more where none is.
 //
 // It answers, as owed, the time since which this build owes the object pass
 // (writeObjectNodesAnotherBuildWrote), nil where it owes none. The tick owes the pass while a
@@ -413,9 +416,8 @@ const orphanedNodesSwept = 20
 // and a session only its outbox's fallback copy reached, wait as long. A pass with nothing to write
 // reads the four tables whole, 97 to 190 ms at production's row counts, and, once a backfill has
 // run, the rows the inbox's passes still owe, each table's through the index that holds those rows
-// alone but the asks, which that pass reads whole as the object pass does, the published fallback
-// copies, and comment_mentions, which that pass reads in the order of its primary key
-// (graphcensus.CatchUpOwedRows), so each process spends that once in this interval
+// alone but the asks, which that pass reads whole as the object pass does, and the published
+// fallback copies (graphcensus.CatchUpOwedRows), so each process spends that once in this interval
 // while this build serves alone, and on every tick while another build serves.
 const objectPassInterval = 10 * time.Minute
 
@@ -451,15 +453,18 @@ var rollNow time.Time
 //
 // That build also leaves unmarked, after the backfill, rows of every cache of the inbox, and not
 // always with an event that names the row: each message, attempt, item block, link and citation,
-// each ask's tuples, each read-state row it writes, and each user_threads row its Inbox routes and
-// its triggers move, a claim of an attempt with no event and a read mark with one that names a
-// person and no thread; and a session its outbox's fallback copy reached holds no node. R9 holds
-// the unmarked class to zero once the backfill ends, and no class may stand for good, so each tick
-// that owes this pass marks one batch of each kind as the backfill marks them, through the
-// backfill's own passes, after the object pass has given the asks and messages their nodes; a
-// thread's rows are marked only once every item of it the catch-up states holds its node. The debt
-// stands while a batch was full, so each class reaches zero a batch a tick once that build has
-// stopped writing, and a tick that owes no pass reads nothing of those tables.
+// each ask's tuples, each read-state row it writes, each comment it writes with its node, which the
+// event read passes by, with the delivery routes it names, and each user_threads row its Inbox
+// routes and its triggers move, a claim of an attempt with no event and a read mark with one that
+// names a person and no thread; a session its outbox's fallback copy reached holds no node; and its
+// outbox records the topics it published an event to with no delivered_to and no event, after the
+// event read has passed the event, which the trigger of migration 20261122100122 queues
+// (events_published_owed). R9 holds the unmarked class to zero once the backfill ends, and no class
+// may stand for good, so each tick that owes this pass marks one batch of each kind as the backfill
+// marks them, through the backfill's own passes, after the object pass has given the asks and
+// messages their nodes; a thread's rows are marked only once every item of it the catch-up states
+// holds its node. The debt stands while a batch was full, so each class reaches zero a batch a tick
+// once that build has stopped writing, and a tick that owes no pass reads nothing of those tables.
 //
 // It runs after the event read has committed and outside its transaction, each batch in a
 // transaction of its own that takes its rows' owner locks first (graphcensus's writeObjectBatch),

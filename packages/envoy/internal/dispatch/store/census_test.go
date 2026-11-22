@@ -913,6 +913,41 @@ func TestCensusExemptsAMigrationOfOnlyCatalogStatementsFromTheTableLimit(t *test
 	}
 }
 
+// The shipped 20261122100122 creates the queue of the events an older build's outbox records, its
+// function and its trigger after each update of events' published_destinations, under a lock_timeout
+// of its own: each statement changes only the catalog or the transaction's own settings, and the
+// trigger runs only on updates written after it, so over a database at 20261122100121 with the
+// limit at one byte the census exempts it, refuses nothing, and prints events above that limit with
+// why the migration is exempt, whatever events holds.
+func TestCensusExemptsTheEventsPublishedOwedTriggerAtAnyTableSize(t *testing.T) {
+	store := openEmptyTestStore(t)
+	migrateThrough(t, store, 20261122100121)
+	report, err := census(context.Background(), store.Pool.Config().ConnString(), migrationsThrough(t, 20261122100122), pgmigrate.CensusOptions{TableLimit: 1})
+	if err != nil {
+		t.Fatalf("census: %v", err)
+	}
+	const name = "20261122100122_events_published_owed.up.sql"
+	if len(report.Pending) != 1 || report.Pending[0].Migration.Name != name {
+		t.Fatalf("pending = %+v, want %s alone; report:\n%s", report.Pending, name, reportText(report))
+	}
+	if report.Refused() {
+		t.Errorf("%s refused: %v", name, refusals(report))
+	}
+	if exemption := report.Pending[0].TableSizeExemption; !strings.Contains(exemption, "create trigger") {
+		t.Errorf("TableSizeExemption = %q, want one naming create trigger", exemption)
+	}
+	touches := ""
+	for _, line := range strings.Split(reportText(report), "\n") {
+		if strings.HasPrefix(line, "census: "+name+" touches events: ") {
+			touches = line
+		}
+	}
+	if !strings.Contains(touches, ", above the 1 bytes limit, from which the migration is exempt because its statements are only ") {
+		t.Errorf("the census prints %q for events, want it above the limit and exempt; report:\n%s", touches, reportText(report))
+	}
+	t.Logf("%s", touches)
+}
+
 // The shipped 20261103085452 adds four nullable columns with no default to artifact_versions, of
 // types bigint, text, text and integer. PostgreSQL records each of them in the catalog alone and
 // reads no stored row, so the migration is catalog-only. Until the census read an added column's

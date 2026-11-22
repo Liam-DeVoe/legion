@@ -541,6 +541,12 @@ var publishedDestinationsProjection = projection{
 	pastBound: `
 		select count(*) from (` + publishedPairs + `) p
 		where p.reached_kind is not null and (not ` + fits(`coalesce(p.reached_id, '')`) + ` or not ` + fits(`coalesce(p.item_id, '')`) + `)`,
+	// An event an older build's outbox recorded since this release's schema reached the database,
+	// which the block-index tick has not stated the deliveries of yet, is a row of the queue the
+	// tick drains (publishedDeliveriesQueued), which reads zero once the tick has taken it.
+	//
+	// kept for one release: events-published-owed
+	unmarked:    `select count(*) ` + publishedDeliveriesQueued,
 	populations: createdPopulations(`(`+publishedPairs+`) p`, `p.created_at`, publishedOfAStoredItem),
 	narrowings: []narrowing{{
 		name: "owner_topics",

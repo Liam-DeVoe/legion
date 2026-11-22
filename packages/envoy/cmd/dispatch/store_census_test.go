@@ -24,6 +24,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -1562,7 +1563,11 @@ func readOnlySession(t *testing.T, ctx context.Context, databaseURL string) stri
 // carries the Inbox's ask row (contracts' OpenAskRow) and with it fields the older build's row did
 // not answer (openAskFieldsAdded). Each of its ask rows is held to every field the older build's
 // row answers, equal, and may carry beside them only the fields that list names; the rest of its
-// answer must be equal whole, as every other read's is.
+// answer must be equal whole, as every other read's is. One field of those rows, age_seconds, is
+// the ask's age in whole seconds at the moment each build answered, so two reads a second apart
+// answer it a second apart: it is held to at least the older build's and at most that plus the
+// whole seconds measured from the start of the older build's read to the end of this build's, and
+// every other field strictly.
 //
 // A read counts as compared only where the older build's answer holds something
 // (answerElements): two empty lists agree field for field and prove nothing, so each read that
@@ -1606,8 +1611,10 @@ func compareTheOldReadWithTheNew(t *testing.T, older, databaseURL string, now *d
 	}
 	compared, differing := 0, 0
 	for _, read := range reads {
+		started := time.Now()
 		was := decodeRead(t, before.call(t, http.MethodGet, read.path, "", http.StatusOK))
 		is := decodeRead(t, now.call(t, http.MethodGet, read.path, "", http.StatusOK))
+		between := int64(math.Ceil(time.Since(started).Seconds()))
 		elements := answerElements(was, read.lists)
 		if elements == 0 {
 			t.Errorf("GET %s answers nothing on the older build, so comparing it with this build's answer compares nothing: the seed must write what it lists",
@@ -1615,7 +1622,7 @@ func compareTheOldReadWithTheNew(t *testing.T, older, databaseURL string, now *d
 		} else {
 			compared++
 		}
-		if differences := answerDifferences(was, is, read.lists, read.added); len(differences) > 0 {
+		if differences := answerDifferences(was, is, read.lists, read.added, between); len(differences) > 0 {
 			differing++
 			t.Errorf("GET %s answers differently on the two builds: %s\nthe older build %s\nthis build     %s",
 				read.path, strings.Join(differences, "; "), mustEncode(t, was), mustEncode(t, is))
@@ -1648,8 +1655,9 @@ var openAskFieldsAdded = []string{
 // under lists that the older build answers is dropped or answered otherwise, where this build's
 // object carries a field the older build's does not, where a list holds another number of rows,
 // and where one of this build's rows carries a field the older build's row does not and added does
-// not name.
-func answerDifferences(was, is any, lists, added []string) []string {
+// not name. A row's age_seconds is answered otherwise only where this build's is below the older
+// build's or above it by more than between, the whole seconds between the two reads.
+func answerDifferences(was, is any, lists, added []string, between int64) []string {
 	if added == nil {
 		if reflect.DeepEqual(was, is) {
 			return nil
@@ -1668,6 +1676,11 @@ func answerDifferences(was, is any, lists, added []string) []string {
 			switch {
 			case !answered:
 				found = append(found, at+name+" is dropped")
+			case name == "age_seconds":
+				if !ageWithin(value, held, between) {
+					found = append(found, fmt.Sprintf("%s%s is %v on the older build and %v on this one, outside the %d whole second(s) between the two reads",
+						at, name, value, held, between))
+				}
 			case !reflect.DeepEqual(value, held):
 				found = append(found, at+name+" is answered otherwise")
 			}
@@ -1713,6 +1726,14 @@ func answerDifferences(was, is any, lists, added []string) []string {
 	}
 	slices.Sort(found)
 	return found
+}
+
+// ageWithin reports whether is, this build's age_seconds, is a whole number of seconds at least
+// was, the older build's, and at most between above it.
+func ageWithin(was, is any, between int64) bool {
+	older, wasNumber := was.(float64)
+	newer, isNumber := is.(float64)
+	return wasNumber && isNumber && newer == math.Trunc(newer) && newer >= older && newer-older <= float64(between)
 }
 
 // answerElements counts what one read's answer holds: the items of a list answer, and an object

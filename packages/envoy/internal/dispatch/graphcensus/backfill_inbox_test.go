@@ -1054,11 +1054,12 @@ func TestTheThreadPassTakesTheIssueOfADocumentsCommentThread(t *testing.T) {
 
 // The thread pass's catch-up reads the comments of a batch's threads the pointer pass still owes
 // through the comments' indexes - the key, comments_reply_to and comments_ask_id, one for each
-// column a comment's thread is read from - and never the whole table, which it would read once a
-// batch of 200 rows. The statement explained is the one the batch sends (writeUserThreads,
-// recorded), over a comments table of 2,000 rows this release stated and analysed, as a
-// deployment's is: every row names its node, so naming a node narrows nothing, and only the
-// thread's own columns pick the few rows a batch owes.
+// column a comment's thread is read from, or comments_tuples_unstored (migration 20261122100121),
+// which holds the comments whose tuples_stored is false alone, the only rows the catch-up can owe -
+// and never the whole table, which it would read once a batch of 200 rows. The statement explained
+// is the one the batch sends (writeUserThreads, recorded), over a comments table of 2,000 rows this
+// release stated and analysed, as a deployment's is: every row names its node, so naming a node
+// narrows nothing, and only the thread's own columns, or the marker, pick the few rows a batch owes.
 func TestTheThreadCatchUpReadsCommentsThroughTheirIndexes(t *testing.T) {
 	writes := newAddressingWrites(t)
 	writes.createIssue(t, "CENS-1", 1, "U", alice)
@@ -1120,13 +1121,16 @@ func TestTheThreadCatchUpReadsCommentsThroughTheirIndexes(t *testing.T) {
 	}
 	read := map[string]bool{}
 	for _, scan := range explaintest.IndexScans(t, plan) {
-		if strings.HasPrefix(scan.Index, "comments") && strings.Contains(scan.Cond, "ANY") {
+		if scan.Index == "comments_tuples_unstored" || strings.HasPrefix(scan.Index, "comments") && strings.Contains(scan.Cond, "ANY") {
 			read[scan.Index] = true
 		}
 	}
+	if read["comments_tuples_unstored"] {
+		return
+	}
 	for _, index := range []string{"comments_pkey", "comments_reply_to", "comments_ask_id"} {
 		if !read[index] {
-			t.Errorf("the catch-up reads comments through no keyed scan of %s (it keys %v): %s", index, read, plan)
+			t.Errorf("the catch-up reads comments through no keyed scan of %s and not through comments_tuples_unstored (it reads %v): %s", index, read, plan)
 		}
 	}
 }

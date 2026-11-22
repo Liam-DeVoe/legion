@@ -18,11 +18,13 @@ import (
 // The roll passes whose owed rows no index held before this release's partial indexes read them
 // through those indexes, which hold the owed rows alone in the order each pass walks them: the
 // user_threads rows whose marked_seq is null, the citations of an item whose tuples_stored is
-// false, and the rows of the five other read-state tables whose tuples_stored_at is null. Without
-// them, each tick that owes the catch-up read each of those tables whole (CatchUpOwedRows). The
-// plan is taken with sequential scans off, since a fixture's few rows are read fastest whole
-// however the statement is written; the index a plan then reads by is the one its predicate and
-// its order let it read by.
+// false, the rows of the five other read-state tables whose tuples_stored_at is null, the
+// comment_mentions rows and the comments whose tuples_stored is false; and the published-delivery
+// pass reads the queue of what an older build's outbox recorded through its key. Without them,
+// each tick that owes the catch-up read each of those tables whole (CatchUpOwedRows). The plan is
+// taken with sequential scans off, since a fixture's few rows are read fastest whole however the
+// statement is written; the index a plan then reads by is the one its predicate and its order let
+// it read by.
 func TestTheRollPassesReadTheirOwedRowsThroughThePartialIndexes(t *testing.T) {
 	database := storetest.Open(t)
 	readsBy := map[string]string{
@@ -35,6 +37,10 @@ func TestTheRollPassesReadTheirOwedRowsThroughThePartialIndexes(t *testing.T) {
 		"user_agent_reply_read":       "user_agent_reply_read_unmarked",
 		"user_agent_thread_dismissed": "user_agent_thread_dismissed_unmarked",
 		"user_ask_snooze":             "user_ask_snooze_unmarked",
+		"comment_mentions":            "comment_mentions_tuples_unstored",
+		"comment_pointers":            "comments_tuples_unstored",
+		"comments_past_bound":         "comments_tuples_unstored",
+		"published_destinations":      "events_published_owed_pkey",
 	}
 	read := map[string]bool{}
 	for _, pass := range rollPasses() {
@@ -101,7 +107,8 @@ func TestTheThreadPassLeavesTheRowsOfAThreadWhoseCommentHoldsNoNodeYet(t *testin
 // the rows that event names, and stops making it owe once the catch-up has marked them: a person's
 // read-state events, an answer, an item's create and edit, a comment's create beside the delivery
 // routes it names, written with the comment's node as a build that writes the store's comment node
-// writes it, and an attempt's receipt and acceptance.
+// writes it, a session's comment written so, whose pointers alone it owes, and an attempt's
+// receipt and acceptance.
 // Each case writes its rows and its event as that build does, with this build's marker writer
 // setting off, and the object pass gives the item its node first, so the read answers true on the
 // inbox's rows alone. Its control is rollOwedByEvents answering false: every case owes nothing.
@@ -203,6 +210,24 @@ func TestAnEventOwesTheCatchUpWhileItLeavesAnInboxRowOwed(t *testing.T) {
 				insert into comment_mentions (comment_id, target, delivery, resolved_session_id)
 				select id, 'role:keyed-role', 'steer', 's-keyed' from written`, id, actorJSON(t, alice), graphstore.KindComment)
 			return model.Event{IssueKey: issue, Type: "comment.created", Actor: alice, Payload: map[string]any{"id": id}}, err
+		}},
+		{"a session's comment.created, the comment written with its node", func(ctx context.Context, tx pgx.Tx) (model.Event, error) {
+			session := model.Actor{Kind: "session", ID: "s-commenting"}
+			var id string
+			var at time.Time
+			if err := tx.QueryRow(ctx, `select gen_random_uuid()::text, clock_timestamp()`).Scan(&id, &at); err != nil {
+				return model.Event{}, err
+			}
+			if err := graphstore.Write(ctx, tx, []graphstore.Node{{
+				Kind: graphstore.KindComment, ID: id, Supertag: graphstore.KindComment, Visibility: graphstore.VisibilityProject,
+				State: graphstore.StateLive, Project: "CENS", MadeAt: at, MadeBy: session, SourceEvent: graphstore.NoEvent,
+			}}, nil); err != nil {
+				return model.Event{}, err
+			}
+			_, err := tx.Exec(ctx, `
+				insert into comments (id, issue_key, author, body, node_kind, node_address)
+				values ($1::uuid, 'CENS-1', $2, 'A session''s remark.', $3, $1)`, id, actorJSON(t, session), graphstore.KindComment)
+			return model.Event{IssueKey: issue, Type: "comment.created", Actor: session, Payload: map[string]any{"id": id}}, err
 		}},
 		{"an ask's ask.opened", func(ctx context.Context, tx pgx.Tx) (model.Event, error) {
 			var id string
