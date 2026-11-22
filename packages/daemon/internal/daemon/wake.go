@@ -562,9 +562,12 @@ func getsBackstop(ctx context.Context, records record.Store, tx pgx.Tx, at phase
 // an earlier entry that it still holds, and does not deliver the new entry (keepsStartTask). A
 // task of no entry is a resume task (workflow.ResumePhaseTask) that the daemon sends with no
 // entry, to a ready worker that holds its issue's phase with nothing pending (workflow's
-// readyWorkerTask), to a silent phase worker (workflow's repairSilence) and to a
-// suspended owner that the boot resumes (workflow's startSuspendedOwner). Admission's
-// owed-entry repair passes over every claim that holds such a task (admit's owedOf, which reads
+// readyWorkerTask), to a silent phase worker (workflow's repairSilence) and to a suspended owner
+// that the boot resumes (workflow's startSuspendedOwner). Each of these three functions sends the
+// resume task only to a claim level with the entry its phases row names. A claim behind that entry
+// gets that entry's task instead (workflow's sendOwedEntry). Admission's owed-entry repair
+// passes over every claim that holds an undelivered task of the issue's run and phase that it
+// still works, of whatever entry (admit's owedOf, which reads
 // supervise.Delivery.StillWorked), so the backstop is then the one wake that brings the pod back
 // for that delivery. at is the phase the issue stands at, generation its run, and f what
 // getsBackstop read of c's role. The reminder hold takes no such exception (workflow's

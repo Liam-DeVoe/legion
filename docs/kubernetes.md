@@ -7538,7 +7538,9 @@ The wakes are these:
   A send can fail before any turn and then waits for the claim to come back.
   A relaunch of a failed or retired worker keeps the task of an earlier entry that it still holds, and does not deliver the new entry (`keepsStartTask`, `internal/daemon/outbox.go`).
   A task of no entry is a resume task (`ResumePhaseTask`) that the daemon sends with no entry, to a ready worker that holds its issue's phase with nothing pending (`readyWorkerTask`, `internal/workflow/catch_up.go`), to a silent phase worker (`repairSilence`, `internal/workflow/silence.go`) and to a suspended owner that the boot resumes (`startSuspendedOwner`, `internal/workflow/resume.go`).
-  Admission's owed-entry repair passes over every claim that holds such a task (`Delivery.StillWorked`), so the backstop is then the one wake that brings the pod back for that delivery.
+  Each of these three functions sends the resume task only to a claim level with the entry its phases row names.
+  A claim behind that entry gets that entry's task instead (`sendOwedEntry`, `internal/workflow/effects.go`).
+  Admission's owed-entry repair passes over every claim that holds an undelivered task of the issue's run and phase that it still works, of whatever entry (`Delivery.StillWorked`), so the backstop is then the one wake that brings the pod back for that delivery.
   For an issue the daemon records as waiting on another issue (its admission slot given back for the wait), the backstop wakes the pod only `WaitSilenceBound`, 24 hours, after the release armed it (`pod_wake_backstops.armed_at`), in place of `backstop_minutes`.
   The normal delay applies again at the first wake tick after the issue takes a slot, so a backstop already past it then wakes the pod at once.
 
