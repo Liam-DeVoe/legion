@@ -45,8 +45,8 @@ The Inbox opens the request in its reading column: the spec as the version to ap
 
 After approval the daemon starts the issue's steps. On the default steps it starts the planner,
 then the implementer, which opens the pull request, then the tester and the reviewer. The issue's
-status follows: `in_progress`, `testing`, `needs_review`, then `retro` once the reviewer has
-approved and the architect has accepted.
+status follows: `in_progress`, `testing`, `needs_review`, then `retro` once the reviewer has sent
+`approve` and the architect has accepted.
 
 ![The issue after the phases ran: Retro in its header beside the pull request link, #42, and its activity newest first: the Legion daemon's status updates, the architect's acceptance, one update from the implementer, and alice's approval of the spec.](/legion/media/legion/status-events.png)
 
@@ -61,8 +61,8 @@ findings on it as a `COMMENT` review and sends its verdict to the daemon. In Dis
 ## 6. The acceptance
 
 When the reviewer sends `approve`, the architect reads the evidence (the tester's handoff, each check of
-the issue with its latest result, the reviewer's verdict at the head) and accepts the change with a comment on the
-issue, which moves it to `retro`; a change that falls short goes back to the implementer or the
+the issue with its latest result, the reviewer's verdict at the head) and accepts the change with `sign_off`, naming
+that head, beside a comment on the issue that sums up the evidence. The sign-off moves the issue to `retro`; a change that falls short goes back to the implementer or the
 tester instead. The acceptance is the architect's own `approve` at that head, and the daemon writes
 the required check `legion-verdict` from the two verdicts and the check results there. Retro runs next.
 

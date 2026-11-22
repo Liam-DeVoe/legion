@@ -167,7 +167,7 @@ head — brings the pod back and resumes the same sessions where they stopped.
 | `implementing` | implementer | Writes the change, proves it works, pushes `legion/<KEY>` and opens the pull request. | implement App |
 | `testing` | tester | Runs the changed surface for real, tries to break it, judges whether the tests would catch what breaks, and reads CI for everything static; records a result for each of the issue's checks and completes with no verdict, since the state of each check at the tested head moves the issue. | review App |
 | `reviewing` | reviewer | Reviews the pull request, posts its findings as a `COMMENT` review, and sends its verdict on the head it read, `approve` or `changes`. | review App |
-| `accepting` | the architect | Where the issue's plan has the step `acceptance:owner`: reads each check of the issue's Verification document with its latest result, the tester's handoff and the reviewer's verdict at the head where the plan has those steps, and accepts the issue (on to retro) or sends it back to the implementer, or to the tester where the plan has one. Its acceptance is the verdict of a second review step: its sign-off is its `approve` at the pull request's head, and its move back its `changes` there. Issues still running beneath it do not hold the acceptance: a root's close waits for them instead. No worker runs here; the issue's Dispatch status stays `needs_review`. | review App |
+| `accepting` | the architect | Where the issue's plan has the step `acceptance:owner`: reads each check of the issue's Verification document with its latest result, the tester's handoff and the reviewer's verdict at the head where the plan has those steps, and accepts the issue (on to retro) or sends it back to the implementer, or to the tester where the plan has one. Its acceptance is the verdict of a second review step: its sign-off, naming the head it read as `commit`, is its `approve` at that head, and its move back its `changes` there. Issues still running beneath it do not hold the acceptance: a root's close waits for them instead. No worker runs here; the issue's Dispatch status stays `needs_review`. | review App |
 | `retro` | implementer | Writes down what the work taught, as one comment on the issue, and brings up to date whatever the repository's instructions require the pull request description to say about the paths it changes. It commits nothing. | implement App |
 | `merging` | merger | Reads the pull request and merges it itself, at the head it read and under a message it writes, which GitHub completes under the base branch's own rules. The merge closes the issue; a root whose tree still runs records the merge and stays here until the last other issue of its tree is done or parked. | implement App |
 
@@ -213,14 +213,15 @@ new owner's or the default steps.
 A step a plan leaves out hands its duty on. With no tester step, the implementer's own results
 against the issue's checks are the evidence, and a reviewer step sends no `approve` while any of
 them has no pass at the head. With no reviewer step, the owner's acceptance is the one review
-step, and a task with no review step at all gets `legion-verdict` `failure` once its other steps
-pass, since no review of it is independent ([review signalling](#review-signalling)). On a base
-that also requires an approving GitHub review, a task with no reviewer step leaves that review to a
-person: the merger waits and tells the architect which review is missing.
-The implementer then writes the pull request body's `Look at first` and `Not proven / risk` lines
-at each round, and before each completion, its retro's included, answers and resolves each bot
-review thread still open, naming each one it declined to the architect. With no acceptance step,
-the last step passing starts the retro; a parent that gets there while an issue beneath it is
+step, and the implementer writes the pull request body's `Look at first` and `Not proven / risk`
+lines at each round, and before each completion, its retro's included, answers and resolves each
+bot review thread still open, naming each one it declined to the architect. A task with no review
+step at all gets `legion-verdict` `failure` once every step has passed, since no review of it is
+independent ([review signalling](#review-signalling)). No step of any task gives an approving
+GitHub review, since every role acts as the one App, the pull request's author: on a base that
+requires one, the merger waits and tells the architect which review is missing, and only a person
+can give it. With no acceptance step, the last step passing starts the retro; a parent that gets
+there while an issue beneath it is
 still in the workflow is held before its retro until the last one leaves.
 `dispatch steps --issue <KEY>` prints each run of each step of an issue.
 
@@ -424,23 +425,29 @@ A review step's verdict is a word its agent sends to the daemon, never a review 
   verdict only from the claim that runs the step (`VERDICT_CALLER_FORBIDDEN`). Every role acts as
   the one App, the pull request's author, so no review written with its token decides anything. A
   person's request for changes, delivered by its webhook from an account of type `User` with write
-  access to the repository, refuses the head it names and ends the round; on a head a Legion issue
-  owns, that person's approval of the head lifts their refusal and decides nothing else. An
-  `approve` counts for the head it names and no other, since any push may change code, and a push
-  on its way from that head leaves the round undecided until the new head arrives. An `approve`
-  does not end the round on its own: the round ends once the record reaches that head and GitHub
-  reports that head one the issue may advance on. A head GitHub holds blocked, on a check or a
-  review the repository requires, leaves the issue in `reviewing` until that merge state comes
-  clean. A round that no verdict decides is told to the architect as stuck (`review-stuck`).
+  access to the repository, refuses the head it names, and while the reviewer's round is open it
+  ends the round; on a head a Legion issue owns, that person's approval of the head lifts their
+  refusal and decides nothing else. An `approve` counts for the head it names and no other, since
+  any push may change code, and a push on its way from that head leaves the round undecided until
+  the new head arrives. An `approve` does not end the round on its own: the round ends once the
+  record reaches that head and the daemon has read GitHub's merge state for it, at a state GitHub
+  would merge from, or at `blocked` once every check run GitHub reported on that head has
+  concluded, since `blocked` is also GitHub's answer while `legion-verdict` waits for a later
+  review step. The round waits while that state is unread or `unknown`, or while a check run of
+  that head runs. A round that no verdict decides, or whose head GitHub holds `behind`, `draft` or
+  `dirty` before a second read confirms it, is told to the architect as stuck (`review-stuck`).
 - The **owner's acceptance**, at `acceptance:owner`, is a second review step: the architect's
-  sign-off is its `approve`, and its move back out of `accepting` its `changes`, at the head the
-  record holds for the pull request. The **tester's** completion carries no verdict: the states
-  Dispatch publishes of the issue's checks at the tested head decide testing.
+  sign-off, which names the head it read as its `commit`, is its `approve` there, and its move back
+  out of `accepting`, which names `commit` too, its `changes` there; a `commit` that is not the pull
+  request's current head is refused (`VERDICT_HEAD_NOT_CURRENT`). The **tester's** completion
+  carries no verdict: the states Dispatch publishes of the issue's checks at the tested head decide
+  testing.
 - **`legion-verdict`**, the required check the daemon writes on a head a Legion issue owns, follows
-  the steps of the task's plan at that head: `success` once each check reads yes there, each review
-  step's verdict there is `approve`, and at least one of those steps was run by an agent whose
-  claim wrote none of the change; `failure` once a check reads no or a review step's verdict is
-  `changes` there, or once every step passed with no such independent review; and nothing before.
+  the steps of the task's plan at that head: `success` once each review step's verdict there is
+  `approve`, each check reads yes there where the task has a tester step, and at least one of those
+  review steps was run by an agent whose claim wrote none of the change; `failure` once a review
+  step's verdict is `changes` there, or, where the task has a tester step, a check reads no there,
+  and once every step passed with no such independent review; and nothing before.
   A claim wrote part of the change when it ran an implementation step of the task, or when a commit
   of the change names one of its sessions in its `Omp-Session` trailer, and where the daemon cannot
   read those commits or sessions it counts no review as independent. A pass or a verdict at an
@@ -455,7 +462,7 @@ A review step's verdict is a word its agent sends to the daemon, never a review 
   itself, fix code that is at fault, or wait — and for GitHub to hold the merge over, under the base
   branch's own required checks, which Legion reads only to decide whether a conflicting head needs
   its merge forward now (below), and never re-implements. The reviewer reads the
-  head's checks on GitHub itself before it approves, and the architect before it accepts; those
+  head's checks on GitHub itself before it sends `approve`, and the architect before it accepts; those
   reads are the ones that decide anything. Two settlements of the same head that name the same
   checks tell nobody twice, and a lingering tree is told nothing at all.
 - **A head that conflicts with its base** moves no phase. GitHub computes no merge ref for such a
@@ -465,8 +472,8 @@ A review step's verdict is a word its agent sends to the daemon, never a review 
   in `accepting`, `retro` or `merging`; a check the base requires has no green result on the head;
   the base requires a pull request to be current with it; or the daemon could not read the base's
   rules, which it reads (rulesets and branch protection) only on a conflicting read. Otherwise it
-  records the conflict, and the task's steps go on at that head; an approval of the head ends the
-  review round, and the daemon acts once the issue moves past its review, into `accepting`,
+  records the conflict, and the task's steps go on at that head; the reviewer's `approve` of the
+  head ends the review round, and the daemon acts once the issue moves past its review, into `accepting`,
   `retro` or `merging`.
   When it acts, the issue keeps its phase and takes no admission slot for the merge. The
   implementer is asked on its role topic to merge the base forward in the issue workspace and
@@ -541,8 +548,8 @@ A review step's verdict is a word its agent sends to the daemon, never a review 
 
 ## The merge
 
-When the issue's steps have passed — in the default steps, the reviewer has approved and the
-architect has accepted — and retro is done, the merger reads the
+When the issue's steps have passed — in the default steps, the reviewer has sent `approve` and the
+architect has signed off — and retro is done, the merger reads the
 pull request and merges it itself, as the implement App and at the head it read, which it names as
 the head GitHub must match (`gh pr merge <n> --squash --match-head-commit <head>`). On a base with
 a merge queue it enqueues the pull request instead, with GraphQL `enqueuePullRequest` and the same
@@ -561,8 +568,8 @@ the architect: only a person can change that setting, to `PR_BODY` or `BLANK`.
 The merger never turns auto-merge on, and the daemon submits no merge and changes no merge setting
 of any pull request. The repository's own required reviews and checks decide when it lands; Legion
 reads none of them at the merge, bypasses none, and waits for a review only a person can give. On
-an issue whose plan has no reviewer step and a base that requires an approving review, the merger
-also tells the architect which review is missing. On a base that requires `legion-verdict`, GitHub
+a base that requires an approving review, which no step of any task gives, the merger also tells
+the architect which review is missing. On a base that requires `legion-verdict`, GitHub
 merges only a head whose check reads `success`, which a push leaves without one until each review
 step's verdict names the new head. Where that check reads `failure` for want of an independent
 review (its title reads `legion-verdict: failure (no independent review)`), no worker's change

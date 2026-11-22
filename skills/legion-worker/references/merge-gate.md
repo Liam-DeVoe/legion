@@ -27,7 +27,7 @@ base=$(gh pr view <n> -R <o>/<r> --json baseRefName -q .baseRefName) && \
   echo code_scanning: && gh api --paginate "repos/<o>/<r>/rules/branches/$base_path" --jq '.[] | select(.type=="code_scanning") | .parameters'
 ```
 
-Both reads leave out `legion-verdict`, never waited for: the daemon writes it from every review step's verdict, `success` only after each sends `approve`.
+Both reads leave out `legion-verdict`, never waited for: the daemon writes it from your verdict, `success` only after `approve`.
 A `code_scanning` rule requires an analysis that no status-check list names.
 A read GitHub refuses leaves the required set unknown: report it to the architect, send no `approve`, and wait with a `WAITING` line naming the read.
 
@@ -78,7 +78,7 @@ Cases 2, 3, 4 and 6 end: tell the architect, send no `approve`, and wait with a 
 ### A merge of the base is reviewed for what it changed
 
 After a forward merge of the base, read the merge (`skill://legion-worker/references/conflicts-and-rewrites.md`) and this change's own commits since your last verdict's head:
-in `reviewing`, the `Last reviewed commit` your task names; past review, the old head the daemon's message names, your last verdict's.
+in `reviewing`, the `Last reviewed commit` your task names; past review, your last `review_verdict`'s `commit`, else your newest `review` handoff's `head`.
 `none`, or no such head: read the whole diff.
 
 ## Side reviews

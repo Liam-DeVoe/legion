@@ -31,12 +31,8 @@ writes it for them. For each step, a fresh agent or the agent of an earlier step
 | `planner` | planning | `planning` | No implementation plan and no plan review: the steps work from your task's text and the spec. |
 | `implementer` | implementation | `implementing` | Required. It also works the retro, and a failed step returns to it unless the failed step names an earlier one. |
 | `tester` | testing | `testing` | Only the implementer records results against the checks, and nobody runs them again. |
-| `reviewer` | review | `reviewing` | No reviewer's verdict: your acceptance is the one review step. On a base whose rules require an approving review, the merger waits and tells you. |
-| `acceptance:owner` | review | `accepting` | Your step. Without it the last step's pass starts the retro, nothing waits for you to read the evidence, and the reviewer's is the one review step. |
-
-`legion-verdict` is `success` at a head only where at least one review step that sent `approve` there was run by an agent whose claim wrote none of the change.
-A claim that ran the implementation step, or whose session a commit of the change names in its `Omp-Session` trailer, wrote part of it.
-A task with no review step, or whose every review step's agent wrote part of the change, gets `failure` once every step has passed, and only a person can merge that head.
+| `reviewer` | review | `reviewing` | No reviewer's verdict. |
+| `acceptance:owner` | review | `accepting` | Your step. Without it the last step's pass starts the retro, and nothing waits for you to read the evidence. |
 
 Without `acceptance:owner`, two steps still hold the checks, each as its own text says:
 a reviewer step gates its `approve` on them (its role prompt), and retro's first step sends back the ones `skill://legion-retro` names, except a `ci_check` whose run has not concluded or cannot be read, which moves nothing back.

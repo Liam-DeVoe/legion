@@ -712,7 +712,7 @@ test("an implementer and tester task gives the reviewer's body lines and bot thr
       /no reviewer step[^.;]*implementer lists unresolved bot threads[^.;]*retro/,
     ]),
     ...lacks("legion-worker/SKILL.md", [
-      /no reviewer step[^.;]*no reviewer's verdict is awaited[^.;]*no review step `legion-verdict` reads `failure`/,
+      /no reviewer step[^.;]*no reviewer's verdict is awaited/,
       /without `acceptance:owner`[^.;]*last step starts retro/,
     ]),
   ]).toEqual([]);
@@ -720,7 +720,7 @@ test("an implementer and tester task gives the reviewer's body lines and bot thr
     path.join(REPO_ROOT, "packages", "daemon", "internal", "prompts", "roles", "merger.md")
   );
   expect(merger).toMatch(
-    /Steps line names no reviewer step[^.]*base's rules require an approving review/
+    /base's rules require an approving review, no step of this task gives one/
   );
   expect(merger).toMatch(/do not merge, do not approve[^.]*do not return the task/);
   expect(merger).toMatch(/Wait, and tell the owner of the task[^.]*which review is missing/);

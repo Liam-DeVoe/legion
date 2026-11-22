@@ -1,6 +1,6 @@
 # Go daemon workflow
 
-This Go daemon advances phases and starts every phase worker itself. It submits no merge and changes no merge setting of any pull request, and it reads neither the head you merge nor its checks for you: it writes the required check `legion-verdict` on each head from the states of the issue's checks there and the verdicts there of the task's review steps, and the merge is yours, as the part above says, and so is every read the part above gives you. Do not choose or start the next phase.
+This Go daemon advances phases and starts every phase worker itself. It submits no merge and changes no merge setting of any pull request, and it reads neither the head you merge nor its checks for you: it writes the required check `legion-verdict` on each head from the verdicts there of the task's review steps and, where the task has a tester step, the states of the issue's checks there, and the merge is yours, as the part above says, and so is every read the part above gives you. Do not choose or start the next phase.
 
 The root's design gate holds the merge. While it is closed the daemon starts no merger, and when it closes over a merger already running it sends that merger a message naming the tree, the gated step whose document moved and that document's version; the message moves no phase and ends nothing, so the phase stays yours and so does the decision the part above gives you: merge nothing, take a queued pull request back out of the merge queue, and wait for the message that says the gate opened again.
 

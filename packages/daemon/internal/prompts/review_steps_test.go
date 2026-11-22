@@ -27,19 +27,29 @@ func TestEachReviewStepSendsItsVerdictAtTheHeadItRead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	carry := []string{"testedCommit", "tester's pass", "handoffCommit", "back to `testing` by itself",
+	// The removed field's own name is left to C3's grep over these trees, so this file names it nowhere.
+	carry := []string{"tester's pass", "handoffCommit", "back to `testing` by itself",
 		"sends the issue back to testing", "the reviewer whose completion ended the round"}
 	owner := [][]string{
-		{"your `sign_off` is your `approve` there", "your `request_backward_move` out of `accepting` is your `changes` there",
-			"read that head and its evidence before you decide"},
+		{"`sign_off` (`issue`, and `commit`, the head you read)"},
+		{"your `sign_off` with `commit` set to that head is your `approve` there",
+			"your `request_backward_move` out of `accepting` with `commit` set to it is your `changes` there",
+			"read that head (`pullRequest.head` in `read_record`) and its evidence before you decide"},
+		{"The daemon refuses a `commit` that is not the pull request's current head (`VERDICT_HEAD_NOT_CURRENT`)"},
 		{"send `review_verdict` with `issue` the issue you accepted", "`commit` the new head"},
 		{"a commit you push to the issue's branch makes your acceptance no independent review"},
 		{"`sign_off` is then your `approve` at the new head"},
+		{"each check reads yes there where the task has a tester step"},
+		{"a merge state the round does not end at", "`behind` its base, `draft`, or `dirty` before a second read confirms it"},
+		{"and at `blocked` once every check run GitHub reported on that head has concluded"},
 	}
 	ownerRetired := append([]string{
 		"the daemon also asks the reviewer for its verdict on the new head",
 		"that it sent `approve` on the new head and `legion-verdict` at that head reads `success`",
 		"which the daemon writes from the reviewer's verdict",
+		"no push earns it",
+		"a `blocked` one the required check run",
+		"your `sign_off` is your `approve` there",
 	}, carry...)
 	for _, tc := range []struct {
 		name    string
@@ -56,21 +66,28 @@ func TestEachReviewStepSendsItsVerdictAtTheHeadItRead(t *testing.T) {
 			{"A claim wrote part of the change when it ran an implementation step of the task", "`Omp-Session` trailer"},
 			{"A pass or a verdict at an earlier commit counts at no later head", "your `approve` carries no pass of the testing step"},
 			{"past review, the old head the daemon's message names", "the head your last verdict named"},
+			{"each check reads yes where the task has a tester step"},
+			{"or at `blocked` once every check run GitHub reported on that head has concluded"},
+			{"The round still waits while that state is unread or `unknown`, and while a check run of that head runs"},
+			{"a push past review, such as a merge forward the daemon asks for, makes a new head"},
 			{"each push past review asks the agent of each review step that has passed for a verdict on the new head"},
 		}, append([]string{"from your verdict there", "a head your `approve` names", "the reviewer is asked as well",
-			"the head the push left", "No other phase completion carries a `verdict` (`VERDICT_NOT_TAKEN`)"}, carry...)},
+			"the head the push left", "No other phase completion carries a `verdict` (`VERDICT_NOT_TAKEN`)",
+			"leaves the issue in `reviewing` until GitHub's own merge state for it comes clean",
+			"nothing of this tree pushes above it"}, carry...)},
 		{"root architect", claim.RoleArchitect, true, owner, ownerRetired},
 		{"sub-architect", claim.RoleArchitect, false, owner, ownerRetired},
 		{"tester", claim.RoleTester, false, [][]string{
 			{"You post no check run, and your completion carries no verdict", "the daemon writes `legion-verdict` from the states Dispatch publishes of the issue's checks at the head"},
 		}, append([]string{"from your verdict and the reviewer's"}, carry...)},
 		{"merger", claim.RoleMerger, false, [][]string{
-			{"The daemon writes the required check `legion-verdict` on each head from the states Dispatch publishes of the issue's checks there",
-				"the verdicts there of the task's review steps, the reviewer's and the owner's acceptance"},
+			{"The daemon writes the required check `legion-verdict` on each head from the verdicts there of the task's review steps, the reviewer's and the owner's acceptance",
+				"where the task has a tester step, the states Dispatch publishes of the issue's checks there"},
 			{"each push past review asks the agent of each review step that has passed for a verdict on the new head"},
 			{"Where a review step of your task has passed, the daemon also asks its agent for its verdict on that head"},
+			{"If the base's rules require an approving review, no step of this task gives one"},
 		}, append([]string{"from the reviewer's and the tester's verdicts", "a head the reviewer's `approve` names",
-			"Where your task has a reviewer step, the daemon also asks the reviewer"}, carry...)},
+			"Where your task has a reviewer step, the daemon also asks the reviewer", "the task's steps have no review step"}, carry...)},
 	} {
 		text := foldWhitespace(composedText(t, composer, tc.role, tc.isRoot))
 		for _, terms := range tc.holds {

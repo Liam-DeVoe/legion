@@ -26,8 +26,6 @@ Read, against the goal, every check and every requirement:
 
 - `sign_off` works only in `accepting`, where the Dispatch status reads `needs_review`; your `handoff_complete` there is refused (`ACCEPTANCE_IS_SIGN_OFF`).
 
-- Your `sign_off` is your step's `approve`, and your `request_backward_move` out of `accepting` its `changes`, at the pull request's head in `read_record`: read that head before you decide.
-
 - A `catch-up` whose `reason` names an issue waiting for your acceptance is its wake: the `phase-finished` may never have reached you.
 
 - `SIGNOFF_CHILD_IN_WORKFLOW` names each issue beneath still in the workflow: run each to done, and sign off again.
@@ -77,11 +75,7 @@ When the merger reports:
 - a merge GitHub refuses for a repository setting or an App permission:
   open a `dispatch ask` naming the pull request, the head and GitHub's refusal, and never bypass a rule;
 
-- a required approving review that no reviewer step gave: open a `dispatch ask` naming the base rule.
-  Do not wait for a reviewer phase the task does not have;
-
-- `legion-verdict: failure (no independent review)`: no approving review step was run by an agent whose claim wrote none of the change, and no worker can change that.
-  Ask a person (`dispatch ask`), with the pull request, the head and the summary the merger quoted: only a person can merge that head;
+- a required approving review, which no step gives: open a `dispatch ask` naming the base rule;
 
 - a squash into a base other than the default branch:
   tell the implementer of each open pull request of the tree built on that branch whose issue is yours and still in `implementing` to merge that base forward in its implementing round.
@@ -96,10 +90,8 @@ the task's steps go on at that head, a reviewer step's `approve` of it ends its 
 When it asks outside `implementing`, it tells you once by `checks-red`, naming the phase the issue stays in, the head, the base and why; in `implementing` no notice comes.
 You start nothing for the merge.
 
-Past review, every push, a forward merge among them, has the daemon ask each review step's agent that has passed for its verdict on the new head, sent with `review_verdict`.
-In `accepting`, where the task has a reviewer step, wait before `sign_off` until the reviewer tells you on your role topic that it sent `approve` on the new head, and read `dispatch results` there: a pass at an earlier head counts at no later one.
-Send the issue back with `request_backward_move` when the reviewer's verdict is `changes`.
-In `retro` or `merging`, the daemon's message asks for your own: send `review_verdict` with `issue`, `verdict` and `commit` the new head.
+Past review, where the task has a reviewer step, every push, a forward merge among them, has the daemon ask the reviewer for its verdict on the new head, which it sends with `review_verdict`.
+That verdict writes no handoff and sends you no notice: in `accepting`, wait before `sign_off` until the reviewer tells you on your role topic that it sent `approve` on the new head, and send the issue back with `request_backward_move` when its verdict is `changes`.
 A task with no reviewer step has no review to await.
 
 ## A review thread GitHub will not resolve

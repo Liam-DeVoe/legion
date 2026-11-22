@@ -86,7 +86,7 @@ Where it disagrees with the code or a command's `--help`, follow those and tell 
 - The merge gate follows the task's `Steps:` line: each named step runs in order, then retro and the merger.
   The default task has tester evidence, the reviewer's `approve` and architect acceptance.
   With no tester step, the implementer's evidence serves;
-  with no reviewer step, no reviewer's verdict is awaited, and with no review step `legion-verdict` reads `failure`; without `acceptance:owner`, the last step starts retro.
+  with no reviewer step, no reviewer's verdict is awaited; without `acceptance:owner`, the last step starts retro.
   Only the merger runs `gh pr merge`; nobody turns auto-merge on.
 
 - End every pull-request comment or review you post with `<!-- legion: {"session":"<session-id>","phase":"<phase>"} -->`.
@@ -113,7 +113,8 @@ and the production check after the close (`skill://legion-worker/references/merg
 
 - A check carrying `ci_check`: `skill://legion-worker/references/ci-checks.md`.
 
-- Review, verdict, merge, production check: `skill://legion-worker/references/merge-gate.md`; review threads, a bot's finding: `skill://legion-worker/references/review-threads.md`.
+- Review, verdict, merge, production check: `skill://legion-worker/references/merge-gate.md`.
+- Review threads, a bot's finding: `skill://legion-worker/references/review-threads.md`.
 
 - A conflict, the daemon's merge-forward message, a need for the base, a retarget, a wrong pushed commit:
   `skill://legion-worker/references/conflicts-and-rewrites.md`.

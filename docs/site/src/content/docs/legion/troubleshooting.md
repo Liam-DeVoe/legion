@@ -1452,8 +1452,9 @@ These arrive as messages on the Dispatch issue:
   holds the merge under the base branch's own required checks.
 - **A review round that no verdict decides.** Legion's reviewer ends its round with its verdict,
   `approve` or `changes`, in its completion of reviewing, on the head its `review` handoff names;
-  the daemon records that verdict as the round's decision at that head and writes `legion-verdict`
-  there. The daemon refuses a reviewer's completion with no verdict (`REVIEWER_VERDICT_REQUIRED`)
+  the daemon records that verdict as the round's decision at that head, and writes `legion-verdict`
+  there once every testing and review step of the task has passed there, or one has failed. The
+  daemon refuses a reviewer's completion with no verdict (`REVIEWER_VERDICT_REQUIRED`)
   or with no head (`VERDICT_COMMIT_REQUIRED`), so a round its reviewer completed with no verdict is
   one whose completion the daemon recorded before it took the reviewer's verdict. The architect is
   told with `review-stuck`, the issue stays in `needs_review`, and the remedy is the reviewer's
@@ -1485,8 +1486,12 @@ These arrive as messages on the Dispatch issue:
   request for changes ends the round`. The reviewer's `approve` counts for the head it names and
   no other, since any push may change code, and a push on its way from that head leaves it
   undecided until the new head arrives. The remedy is the reviewer's verdict on the head itself,
-  which ends the round once the record reaches that head and GitHub reports that head one the
-  issue may advance on.
+  which ends the round once the record reaches that head and the daemon has read GitHub's merge
+  state for it: a state GitHub would merge from, or `blocked` once every check run GitHub reported
+  on that head has concluded, since `blocked` is also GitHub's answer while `legion-verdict` waits
+  for a later review step. The round waits while that state is unread or `unknown`, or while a
+  check run of that head runs; `behind`, `draft` and a `dirty` read not yet confirmed leave it
+  stuck, and the architect is told.
 - **A later review round reads the whole change, or from an older commit.** The reviewer's task of
   a later round names `Last reviewed commit: <sha>`, and the reviewer reads the difference from that
   commit to the head. The commit is the one the reviewer's newest verdict named in its completion of
