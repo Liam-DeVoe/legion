@@ -38,7 +38,8 @@ func testBinaryDeadline() (time.Time, bool) {
 // visibility read, the credential helper's fork read, the leak guard's gh, curl and ls-remote
 // reads, a CLI read of the daemon's API, the controller's Dispatch trade, the model-token sign-in, a
 // claims call's --wait default, workspace-init's commands and shared clone, a process group's stop
-// grace and WaitDelay, the worker shim's grace for its agent and for a CodeGraph warm-up) what is
+// grace and WaitDelay, the worker shim's grace for its agent and for a CodeGraph warm-up, and the
+// TLS probe's client limits) what is
 // left of deadline less 30 s when its wait starts, in this process and in each run of this binary
 // as `legion` whose environment is this process's own (testDeadlineEnv). Each product bound fits
 // the real program or service, and none is

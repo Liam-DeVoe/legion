@@ -2236,11 +2236,14 @@ func (c timedTLSClient) probe(ctx context.Context, site tlsSite, terms tlsRunTer
 // at site (tlsRunContext), rather than at a time after the run started alone. A stand-in marks a
 // run held after whatever the row needs it to do before the limit (write a mark, print, set a
 // trap, start a child), so a loaded machine that schedules it late moves the limit with it; and a
-// run that answers instead marks nothing, so no limit ends it however slow it is. Each mark is
-// removed when its limit passes, so a later run of the client at the site waits for its own. A run
-// that neither answers nor marks itself fails the row by name at the test binary's deadline less
-// testBoundMargin, where its limit then passes. The limit a run's line names is still its client's,
-// and a run ended by its limit took no less than that limit.
+// run that answers instead marks nothing, so no limit ends it however slow it is. A run's start
+// removes the mark an earlier run of the client at the site left, so each run waits for its own;
+// a run's watch removes none, since a watch that outlives its run by a poll could otherwise take
+// the next run's mark away and hold that run until the give-up
+// (TestLimitOnceHeldLeavesAMarkToTheNextRunsStart). A run that neither answers nor marks itself
+// fails the row by name at the test binary's deadline less testBoundMargin, where its limit then
+// passes. The limit a run's line names is still its client's, and a run ended by its limit took no
+// less than that limit.
 func limitOnceHeld(t *testing.T, held func(client string, site tlsSite) string) {
 	t.Helper()
 	previous, giveUp := tlsRunContext, time.Now().Add(testwait.Bounded(t, 1<<60, testBoundMargin))
@@ -2248,14 +2251,13 @@ func limitOnceHeld(t *testing.T, held func(client string, site tlsSite) string) 
 	tlsRunContext = func(parent context.Context, client string, site tlsSite, limit time.Duration) (context.Context, context.CancelFunc) {
 		ctx, cancel := context.WithCancelCause(parent)
 		mark, passes := held(client, site), time.Now().Add(limit)
-		// A mark an earlier run left, one the probe's deadline ended before its limit passed, is no
-		// mark of this run's.
+		// The mark an earlier run left, one its limit or the probe's deadline ended, is no mark of
+		// this run's.
 		_ = os.Remove(mark)
 		go func() {
 			stop := time.After(time.Until(giveUp))
 			for {
 				if _, err := os.Stat(mark); err == nil && !time.Now().Before(passes) {
-					_ = os.Remove(mark)
 					cancel(errTLSRunLimit)
 					return
 				}
@@ -2271,6 +2273,43 @@ func limitOnceHeld(t *testing.T, held func(client string, site tlsSite) string) 
 			}
 		}()
 		return ctx, func() { cancel(context.Canceled) }
+	}
+}
+
+// limitOnceHeld's watch of a run removes no mark: only the next run's own start clears the mark
+// an earlier run left. A watch can outlive its run by a poll, and one that removed marks could see
+// the next run's mark then and take it away, leaving that run held until the give-up. Two runs of
+// one client at one site share one mark: the first run's limit passes on its mark, and the mark
+// must still be there after that run ends; the second run's start clears it, and that run's limit
+// then passes on the second run's own mark alone.
+func TestLimitOnceHeldLeavesAMarkToTheNextRunsStart(t *testing.T) {
+	dir := t.TempDir()
+	limitOnceHeld(t, heldIn(dir))
+	mark := heldIn(dir)("node", controlTLSSite)
+	bound := testwait.Bounded(t, 1<<60, testBoundMargin)
+	first, endFirst := tlsRunContext(context.Background(), "node", controlTLSSite, 0)
+	if err := os.WriteFile(mark, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	testwait.WithinPolling(t, bound, testwait.Poll, "the first run's limit to pass on its mark", func() bool { return first.Err() != nil })
+	if cause := context.Cause(first); !errors.Is(cause, errTLSRunLimit) {
+		t.Fatalf("the first run ended with %v, want its limit", cause)
+	}
+	endFirst()
+	if _, err := os.Stat(mark); err != nil {
+		t.Fatalf("the first run's watch removed the mark (%v): a watch that outlives its run would take the next run's mark the same way", err)
+	}
+	second, endSecond := tlsRunContext(context.Background(), "node", controlTLSSite, 0)
+	defer endSecond()
+	if _, err := os.Stat(mark); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the second run started with the first run's mark still there (%v)", err)
+	}
+	if err := os.WriteFile(mark, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	testwait.WithinPolling(t, bound, testwait.Poll, "the second run's limit to pass on its own mark", func() bool { return second.Err() != nil })
+	if cause := context.Cause(second); !errors.Is(cause, errTLSRunLimit) {
+		t.Fatalf("the second run ended with %v, want its limit", cause)
 	}
 }
 

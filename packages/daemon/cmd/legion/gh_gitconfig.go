@@ -26,6 +26,10 @@ import (
 // (programbound).
 var ghGitReadBound = 30 * time.Second
 
+func init() {
+	programbound.Register(&ghGitReadBound)
+}
+
 // ghRepoGitConfigRefusal refuses the call when the configuration of the repository the git gh runs
 // works in (the current directory's, as gh's own git finds it, with env, the environment gh gets)
 // names something that would let that git's token reach anyone but github.com: any http.*ssl* or
