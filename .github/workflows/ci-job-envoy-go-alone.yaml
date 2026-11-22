@@ -89,6 +89,7 @@ jobs:
           --health-timeout 5s
           --health-retries 50
     env:
+      JOB_TIMEOUT_MINUTES: 21 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
       BROKER_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
     steps:
@@ -99,6 +100,8 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/envoy/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
           cache: false
       # go-envoy-test, envoy-go's family, restored as envoy-go restores it: these tests are a part
       # of what envoy-go's package list builds, so the fill .github/workflows/ci-caches.yaml makes

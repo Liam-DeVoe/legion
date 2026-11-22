@@ -81,6 +81,7 @@ jobs:
           --health-timeout 5s
           --health-retries 50
     env:
+      JOB_TIMEOUT_MINUTES: 41 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       # The Go half's database. The browser half runs on a Postgres of its own, which the harness
       # starts per step (e2e/harness-postgres.ts) from the same image digest the service runs, so
       # the service's pull is that step's too.
@@ -133,6 +134,8 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/envoy/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
           cache: false
       # The settings the service's command: asks for, read back from the server itself; envoy-go's
       # own read-back step says why a command is worth reading back.
@@ -332,6 +335,7 @@ jobs:
           --health-timeout 5s
           --health-retries 50
     env:
+      JOB_TIMEOUT_MINUTES: 45 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
     steps:
       # The whole history and the tags, as the job above takes them: build-dispatch-build.sh
@@ -364,6 +368,8 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/envoy/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
           cache: false
       # The settings the service's command: asks for, read back from the server itself; envoy-go's
       # own read-back step says why a command is worth reading back.
