@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { lstat, mkdir, mkdtemp, rm, symlink, utimes, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, realpath, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { LEGION_ROLES, type LegionRole } from "@legion/contracts";
@@ -879,11 +879,11 @@ test("a pane whose Dispatch is the broker's reads the record under its own sessi
 
 // The revsets are jj's, so a fake cannot prove them: one real repository with a bare origin, the
 // round's change committed and the branch pushed, run through PATH's jj, as a pane is. A host
-// with no jj runs neither row and says so, once for the file. The jj and git the rows run, and the
-// PATH's jj the code under test (`pathJj`) starts, are the binaries this host's `jj` and `git`
-// run (`jjBinary`, `gitBinary`), linked into a directory first on PATH: a wrapper on the host's
-// PATH finds its jj from the HOME and PATH it is given, which here are the test's, and may change
-// what jj or git does.
+// with no jj runs none of the rows and says so, once for the file. The jj and git the rows run,
+// and the PATH's jj the code under test (`pathJj`) starts, are the binaries this host's `jj` and
+// `git` run (`jjBinary`, `gitBinary`), linked into a directory first on PATH: a wrapper on the
+// host's PATH finds its jj from the HOME and PATH it is given, which here are the test's, and may
+// change what jj or git does.
 const withoutJj = skipWithout("jj");
 
 // `isolatedHome` puts these on the test process as well, so the jj that the code under test
@@ -924,14 +924,19 @@ async function run(
   return await runTool(found, cwd, env, args);
 }
 
-/** Where the two rows below make their repositories: the memory root (`memoryRoot`). Their jj and
- * git leave about 210 and 90 entries, which the afterEach above removes under Bun's 5 s for a
+/** Where the rows below make their repositories: the memory root (`memoryRoot`). Their jj and git
+ * leave about 90 to 210 entries a row, which the afterEach above removes under Bun's 5 s for a
  * hook; with the scratch on a dev box's shared disk at a load near 1,500 that removal timed out. */
 const jjScratchRoot = memoryRoot();
 
 /** Runs jj in `cwd` with the test's own environment, failing on a non-zero exit. */
 const jj = (cwd: string, env: Record<string, string>, ...args: string[]) =>
   run("jj", cwd, env, ...args);
+
+/** Runs PATH's git, the one a pane's `git commit` and `git push` run, as {@link jj} runs jj: the
+ * linked git binary isolatedHome puts first on that PATH. */
+const git = (cwd: string, env: Record<string, string>, ...args: string[]) =>
+  run("git", cwd, env, ...args);
 
 test.skipIf(withoutJj)(
   "against a real jj workspace, the implementer's report refuses an @- the branch does not carry and a record naming another commit, and names @- once it is pushed and recorded",
@@ -1042,6 +1047,100 @@ test.skipIf(withoutJj)(
         latestHandoff,
       })
     ).resolves.toEqual({ commit: fix });
+  },
+  60_000
+);
+
+// R4 of dispatch://INFRA-4036, in the pod's layout, which the row above does not build: the
+// workspace is a jj workspace of a colocated clone, and so a git worktree of it, and the round's
+// commit is made with `git commit` and pushed with `git push`, so jj has not seen it. The report's
+// read of `@-` (`STANDING`) snapshots the workspace, which imports git's HEAD, and that snapshot is
+// what filled a large workspace's pod; whatever makes it cheaper must leave it answering the
+// commit git made. The control shows jj still standing on the older commit before that read, so
+// the answer is the snapshot's import and not something jj already knew. A host whose jj makes no
+// git worktree fails the row saying so, rather than passing it on another layout.
+test.skipIf(withoutJj)(
+  "against a real jj workspace that is a git worktree, the implementer's report answers a commit made with git commit and pushed with git push",
+  async () => {
+    const root = await mkdtemp(path.join(jjScratchRoot, "legion-handoff-worktree-"));
+    scratch.push(root);
+    const origin = path.join(root, "origin.git");
+    const seed = path.join(root, "seed");
+    const clone = path.join(root, "clone");
+    const workspace = path.join(root, "workspace");
+    const childEnv = await isolatedHome(root);
+    // The fixture's environment writes no git identity, and `git commit` reads none of jj's.
+    const gitEnv = {
+      ...childEnv,
+      GIT_AUTHOR_NAME: versionControlIdentity.JJ_USER,
+      GIT_AUTHOR_EMAIL: versionControlIdentity.JJ_EMAIL,
+      GIT_COMMITTER_NAME: versionControlIdentity.JJ_USER,
+      GIT_COMMITTER_EMAIL: versionControlIdentity.JJ_EMAIL,
+    };
+    const paneEnv = { ...versionControlIdentity, LEGION_WORKSPACE: workspace, LEGION_ISSUE: ISSUE };
+
+    // A bare origin with one commit on `main`, its clone made colocated, and a jj workspace of
+    // that clone, as a pod's shared clone and its issue's workspace are.
+    await git(root, gitEnv, "init", "--bare", "--quiet", "--initial-branch=main", origin);
+    await git(root, gitEnv, "init", "--quiet", "--initial-branch=main", seed);
+    await writeFile(path.join(seed, "README.md"), "seed\n");
+    await git(seed, gitEnv, "add", "README.md");
+    await git(seed, gitEnv, "commit", "--quiet", "-m", "the base");
+    await git(seed, gitEnv, "push", "--quiet", origin, "main");
+    await git(root, gitEnv, "clone", "--quiet", origin, clone);
+    await jj(root, childEnv, "git", "init", "--colocate", clone);
+    await jj(root, childEnv, "workspace", "add", workspace, "-R", clone);
+
+    // git's own answer, not the `.git` file's text, which a newer git writes relative.
+    const cloneGit = await realpath(path.join(clone, ".git"));
+    const common = await git(workspace, gitEnv, "rev-parse", "--git-common-dir").then(
+      (answer) => realpath(path.resolve(workspace, answer)),
+      (error: unknown) => `no repository (${error instanceof Error ? error.message : error})`
+    );
+    if (common !== cloneGit) {
+      throw new Error(
+        `this host's jj made ${workspace} no git worktree of ${clone}, so the row cannot build the pod's layout: git there answers ${common} as its common directory, not ${cloneGit}`
+      );
+    }
+
+    /** The commit the workspace stands on, read without a snapshot. */
+    const standing = () =>
+      jj(
+        root,
+        childEnv,
+        "--ignore-working-copy",
+        "-R",
+        workspace,
+        "log",
+        "-r",
+        "@-",
+        "--no-graph",
+        "-T",
+        "commit_id"
+      );
+    const before = await standing();
+    expect(before).toMatch(/^[0-9a-f]{40}$/);
+
+    await writeFile(path.join(workspace, "main.py"), 'print("hi")\n');
+    await git(workspace, gitEnv, "add", "main.py");
+    await git(workspace, gitEnv, "commit", "--quiet", "-m", "implement: the change");
+    await git(workspace, gitEnv, "push", "--quiet", "origin", `HEAD:refs/heads/legion/${ISSUE}`);
+    const commit = await git(workspace, gitEnv, "rev-parse", "HEAD");
+
+    // The control: jj has not snapshotted since `git commit`, so it still stands on `before`.
+    expect(await standing()).toBe(before);
+
+    // The record names the commit git made, as the round writes it once the push succeeded.
+    const { latestHandoff } = fakeLatestHandoff(async () => ({ ...RECORD, body: body(commit) }));
+    await expect(
+      findHandoffReport({
+        phase: "implementing",
+        role: "implementer",
+        env: paneEnv,
+        jj: pathJj,
+        latestHandoff,
+      })
+    ).resolves.toEqual({ commit, handoffId: RECORD.id, handoffVersion: RECORD.version });
   },
   60_000
 );
