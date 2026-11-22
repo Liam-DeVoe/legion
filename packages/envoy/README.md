@@ -186,10 +186,11 @@ The header of `cmd/listener/project_scope.go` lists the rules and the function t
   So a given-back proof can be presented once more on the same method and path with another query, such as a session's `DELETE` without the conditions its query carried; that takes the token and the proof in plaintext, inside the proof's window.
   TLS covers the client's hop to the balancer alone: the hop from Google's proxy to the pod is HTTP inside Google's network, where the token and the proof travel in plaintext, so whoever reads that hop could replay a given-back proof once; that risk is accepted.
   A request with a body keeps its proof spent whatever its status; the balancer does not retry it, and the client sends it again with a fresh proof.
-  Three cases still answer the balancer's retry `401`, and the status stays `503` in each, the one every route documents for a fault the client can ask again about:
+  Four cases still answer the balancer's retry `401`, and the status stays `503` in each, the one every route documents for a fault the client can ask again about:
   - a spent-proof store that did not answer while its write of the proof landed;
   - a release whose delete did not reach the bucket in its second (`proofReleaseBudget`), which a bus that did not answer the route makes likely, logged as `listener: a 503 could not give its request's DPoP proof back`;
-  - a `502` or `504` the balancer wrote itself after the proof was recorded: a connection that ended before an answer (a killed pod, a handler that panicked, a shutdown that ended with the request in flight), or a request past the backend timeout.
+  - a `502` or `504` the balancer wrote itself after the proof was recorded: a connection that ended before an answer (a killed pod, a handler that panicked, a shutdown that ended with the request in flight), or a request past the backend timeout;
+  - a retry whose create meets the release's delete marker while its read of the key from the stream's leader gets no answer: the create cannot tell the marker from a live record, so it reports the key held (`nats.ErrKeyExists`, `bus`'s `streamMessageReads.Create`) and the retry reads as a replay, failing closed.
 
   The retry's create reads the delete marker from the stream's leader, since the edge's bucket handles read with stream message gets (`bus.WithStreamMessageReads`), so `ENVOY_NATS_REPLICAS` changes none of this.
 

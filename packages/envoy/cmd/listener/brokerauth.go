@@ -396,7 +396,7 @@ func (s *proofSpend) release(ctx context.Context) error {
 // balancer does not retry it. A proof presented once more after the retry was served is refused
 // as a replay.
 //
-// The balancer's retry is still the 401 of a replay in three cases, and the status stays 503 in
+// The balancer's retry is still the 401 of a replay in four cases, and the status stays 503 in
 // each, the status every route documents for a fault it can be asked again about:
 //   - the 503 came from the spent-proof store itself (refuseBrokerToken's check_failed): its create
 //     did not answer, so nothing this request can prove it wrote is there to release, though the
@@ -405,7 +405,11 @@ func (s *proofSpend) release(ctx context.Context) error {
 //     answer the route makes likely, and which logs a WARN;
 //   - the balancer wrote the 502 or 504 itself after the proof was recorded: the pod dropped the
 //     connection (a killed pod, a handler that panicked, a shutdown that ended with the request in
-//     flight) or the request ran past the backend timeout, so no 503 of this listener released it.
+//     flight) or the request ran past the backend timeout, so no 503 of this listener released it;
+//   - the retry's create met the release's delete marker and its read of the key from the stream's
+//     leader got no answer, so the create could not tell the marker from a live record and
+//     reported the key held (nats.ErrKeyExists, bus's streamMessageReads.Create): the retry reads
+//     as a replay, failing closed.
 //
 // A copy of a replicated bucket that has not applied the release's delete marker plays no part:
 // the retry's create reads the marker from the stream's leader (CheckAndSetDPoPProofUsed).
