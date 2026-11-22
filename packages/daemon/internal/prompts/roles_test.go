@@ -665,21 +665,29 @@ func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
 		// reviewer reads the spend over every `pull_request` run of the head, as the red-at-the-head
 		// page says: round 18 of INFRA-1303's batch (o-head-1, 2, 4 and 5) read the failing run's
 		// attempts alone, saw attempt 1, and pressed at a head whose one re-run another run's
-		// attempt 2 had already spent, and the cancelled-or-absent sentence below points at that run
-		// alone. The condition was the counted set's report until the architect's ruling of
+		// attempt 2 had already spent, and the spend-free re-run of a cancelled job below points at
+		// that run alone. The condition was the counted set's report until the architect's ruling of
 		// 2026-11-22 on round 20, whose world-t reviewers pressed on the head's own completed run.
 		{"go/reviewer.md", "Once the run that holds the failed job has completed, and before any re-run of it, read the spend over every `pull_request` run of the head, as that page says: the failing run on its first attempt says nothing, since another run's second attempt spends the head's one re-run too."},
 		// A failed job of the head's own `pull_request` run is acted on once that run has completed,
 		// whether or not the counted set lists its check yet, and no other run is acted on at all;
 		// a read made seconds after a push decides no head has no red, so a check no `pull_request`
 		// run of the head holds is waited for once (the architect's ruling of 2026-11-22 on round
-		// 20, which retired "unreported, not absent, and gets no re-run"). Main's re-run of a
-		// cancelled or absent check stays, absent meaning a run at the head holds its job while the
-		// check is missing from the list; where no run holds the job, the reviewer tells the
-		// architect and does not approve, the sentence pinned below.
+		// 20, which retired "unreported, not absent, and gets no re-run").
 		{"go/reviewer.md", "A failed job of the head's own `pull_request` run is acted on once that run has completed, whether or not the counted set lists its check yet, and no run that is not a `pull_request` run of the head is acted on at all; a read made seconds after a push never shows that the head has no red, so a check you were told of that no `pull_request` run of the head holds is waited for once"},
-		{"go/reviewer.md", "One `completed` as `cancelled`, or absent from that set: re-run that run's failed and cancelled jobs, once, then wait"},
-		{"go/reviewer.md", "When no run at the head holds the job, or nothing will run it (a check only a commit status reports, a workflow another repository defines), tell the architect and do not approve."},
+		// Main's spend-free re-run of a cancelled or absent required check stays, and its read stays
+		// the counted set. Its trigger read "One `completed` as `cancelled`, or absent from that
+		// set", and the counted set's lag is exactly a failed job of a completed `pull_request` run
+		// that the set does not list yet, so that red fitted both the red rule (record, spend read,
+		// press) and this re-run (no record, nothing spent): the architect's gap review of
+		// 2026-11-22. The case is now a check whose job a `pull_request` run of the head holds
+		// cancelled or never ran, and a failed job of a completed `pull_request` run of the head is
+		// never that case. Where no `pull_request` run of the head holds the job, the reviewer tells
+		// the architect and does not approve. The skills guard's `retiredRerunProhibitions` refuses
+		// the old trigger in every prompt part.
+		{"go/reviewer.md", "A required check absent from the counted set, or `completed` as `cancelled` there, whose job in a `pull_request` run of the head was cancelled or never ran: re-run that run's failed and cancelled jobs, once, then wait"},
+		{"go/reviewer.md", "A failed job of a completed `pull_request` run of the head is never that case: it is a red, which that page decides."},
+		{"go/reviewer.md", "When no `pull_request` run of the head holds the job, or nothing will run it (a check only a commit status reports, a workflow another repository defines), tell the architect and do not approve."},
 		// The worker part names the same record, and the implementer's overlay the same reading of
 		// whose red it is.
 		{"go/worker-common.md", "after it records the failure in a handoff record of its own phase with `dispatch handoff-write`"},
@@ -718,6 +726,16 @@ func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
 		{"implementer.md", "`skill://legion-worker/references/ci-checks.md`"},
 		{"architect.md", "takes no `run`"},
 		{"architect-root.md", "takes no `run`"},
+		// The tester reads no CI (Sami's decision on
+		// dispatch://INFRA-1303/ask/dd2229bf-075c-4524-b045-41f39978dbb3), so its role part reads
+		// no `ci_check` check's derived result, and its `failures` hold no such check. Dispatch
+		// refuses any role's result for one (`409 CHECK_PROVED_BY_CI`), so a `ci_check` check never
+		// has the implementer's pass, and the part's "A `before_merge` check with no pass standing
+		// from the implementer … is a test failure" failed every one. The part said "that read
+		// shows its one derived result" until the architect's gap review of 2026-11-22, and the
+		// skills guard's `retiredTesterCiReads` refuses that sentence in every prompt part.
+		{"tester.md", "A check carrying `ci_check` is CI's (`skill://legion-worker/references/ci-checks.md`): you do not read its derived result, run it or record it, and it is never an entry of your `failures`."},
+		{"tester.md", "A `before_merge` check with no `ci_check` and no pass standing from the implementer at the head you are testing is a test failure"},
 		// The reviewer's gate takes R5's three cases for a check CI proves: a run still going or
 		// unread is waited for, and a name no run answers goes to the architect, rather than sending
 		// the work back to an implementer who cannot cure it. The final gate points at that rule.
@@ -746,6 +764,69 @@ func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
 				t.Errorf("%s still contains %q", file, retired)
 			}
 		}
+	}
+}
+
+// R2 of dispatch://INFRA-1303: no text of the tester's points at the red-at-the-head page, since
+// the tester reads no CI and presses no re-run (Sami's decision on
+// dispatch://INFRA-1303/ask/dd2229bf-075c-4524-b045-41f39978dbb3). The architect's gap review of
+// 2026-11-22 found no row that held it. The row reads each part Compose gives the tester and
+// gives neither holder of the re-run, the implementer and the reviewer: roles/core/tester.md,
+// roles/tester.md and go/tester.md today. A part the tester shares with a holder (core/common.md,
+// mechanics/headless.md, go/worker-common.md) is that holder's text too, and go/worker-common.md
+// links the page right after "The tester presses nothing", so the row leaves the shared parts
+// alone. In the tester's own parts it refuses two things. The page's file name, which every link
+// and every path to the page holds: `skill://legion-worker/references/red-at-the-head.md`, or
+// "the worker skill's red-at-the-head page", which roles/core/tester.md carried until 0ac2891a.
+// And a sentence that sends its reader to the page by its title: a verb of reading before "A red
+// check at the head of the pull request" in one sentence. The core's "A red check at the head of
+// the pull request ends no round of yours" opens its sentence with the title, names the page's
+// subject, sends no one to read the page, and passes.
+func TestNoPartComposedForTheTesterAlonePointsAtTheRedAtTheHeadPage(t *testing.T) {
+	stateDir := t.TempDir()
+	composer, err := New(stateDir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	holders := map[string]bool{}
+	for _, role := range []claim.Role{claim.RoleImplementer, claim.RoleReviewer} {
+		parts, err := composer.Compose(role, false)
+		if err != nil {
+			t.Fatalf("Compose %s: %v", role, err)
+		}
+		for _, path := range parts.RolePromptPaths {
+			holders[path] = true
+		}
+	}
+	tester, err := composer.Compose(claim.RoleTester, false)
+	if err != nil {
+		t.Fatalf("Compose %s: %v", claim.RoleTester, err)
+	}
+	sendsToThePage := regexp.MustCompile(`(?i)\b(?:read|reads|open|opens|follow|follows|load|loads|see|sees|consult|consults)\b[^.]*?\ba red check at the head of the pull request\b`)
+	var own []string
+	for _, path := range tester.RolePromptPaths {
+		if holders[path] {
+			continue
+		}
+		name, err := filepath.Rel(stateDir, path)
+		if err != nil {
+			t.Fatalf("name %s under %s: %v", path, stateDir, err)
+		}
+		own = append(own, name)
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		text := foldWhitespace(string(body))
+		if strings.Contains(text, "red-at-the-head") {
+			t.Errorf("%s, composed for the tester alone, names the red-at-the-head page", name)
+		}
+		if found := sendsToThePage.FindString(text); found != "" {
+			t.Errorf("%s, composed for the tester alone, sends the tester to the red-at-the-head page: %q", name, found)
+		}
+	}
+	if len(own) == 0 {
+		t.Fatal("Compose gives the tester no part of its own, so this row read nothing")
 	}
 }
 

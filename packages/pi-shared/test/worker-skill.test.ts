@@ -7,6 +7,7 @@ import { readFileSync } from "node:fs";
 import {
   brokenSharedDatabaseRules,
   CI_CHECKS,
+  CONTROLLER_SKILL,
   censusFaults,
   FINDING_ASKS,
   MERGE_GATE,
@@ -63,8 +64,13 @@ test.each(roundFailures)("a page that says %p is refused", (wording) => {
   ]);
 });
 
-test("the controller's census acts on a test re-run green only where no open issue tracks it", () => {
-  expect(censusFaults(readFileSync(FINDING_ASKS, "utf8"))).toEqual([]);
+test("the controller's census acts on a test re-run green only where no open issue tracks it, and the skill routes it there", () => {
+  expect(
+    censusFaults({
+      findingAsks: readFileSync(FINDING_ASKS, "utf8"),
+      controllerSkill: readFileSync(CONTROLLER_SKILL, "utf8"),
+    })
+  ).toEqual([]);
 });
 
 test("the `ci_check` reference has the tester neither read nor record a check CI proves", () => {

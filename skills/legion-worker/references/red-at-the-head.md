@@ -40,8 +40,7 @@ A record short of one of the eight is a record the next reader cannot act on, an
 counted as such. The role reads that first line with `gh run view <run-id> --log-failed`. A read
 that fails is recorded as failed, with the error, and the role makes the re-run all the same. Where
 the log can be read and holds no line that states the failure, the record says that, naming the step
-and what the log did hold, rather than leaving the field empty or writing a line the log does not
-carry.
+and what the log did hold, rather than an empty field or a line the log does not carry.
 
 **The run that holds the check must have ended first.** A lane can fail and read `completed` while
 other lanes of its workflow run still run. Until that run ends, `gh run view <run-id> --log-failed`
@@ -72,11 +71,11 @@ the reviewer read it.
 Four readings decide it:
 
 1. A check that judges the pull request itself rather than its code, such as the title check, is the
-   change's when its own output names the pull request's own field (its title, body or labels) as
-   the cause, and it gets no re-run; a failure at a fetch, a limit or a runner in that check is read
-   by the fourth reading, like any other failure in no test. The one exception is a check whose own
-   output names a comment or a review as the cause. No role may edit a comment or a review, so the
-   role tells the architect, and that red is re-run by nobody.
+   change's when its own output names the pull request's own field (its title, body, labels, branch
+   name or commit messages) as the cause, and it gets no re-run; a failure at a fetch, a limit or a
+   runner in that check is read by the fourth reading, like any other failure in no test. The one
+   exception is a check whose own output names a comment or a review as the cause. No role may edit
+   a comment or a review, so the role tells the architect, and that red is re-run by nobody.
 2. An aggregate check is resolved to the lane that failed it. That lane is judged in its place.
 3. A failing test is the change's when its own package is one the pull request changes: the Go
    package for a Go test, the directory of the test file for a Bun or a Playwright suite. A run of
@@ -138,9 +137,8 @@ gh api "repos/<o>/<r>/actions/runs?head_sha=<head>&event=pull_request&per_page=1
 Once the run that holds the failed job has completed, and before any re-run of it, read the spend
 over every `pull_request` run of the head: the failing run on its first attempt says nothing, since
 another run's second attempt spends the head's one re-run too. A run of that head whose
-`run_attempt` is above 1 is a re-run somebody already pressed. Whether it spent the head's one
-re-run is read on each earlier attempt of that run, `<n>` from 1 to one below the run's
-`run_attempt`:
+`run_attempt` is above 1 is a re-run already pressed. Whether it spent the head's one re-run is
+read on each earlier attempt of that run, `<n>` from 1 to one below the run's `run_attempt`:
 
 ```bash
 gh api --paginate "repos/<o>/<r>/actions/runs/<run-id>/attempts/<n>/jobs?per_page=100" \
@@ -158,13 +156,15 @@ so a lane that hangs again reads `cancelled` again. `event=pull_request` keeps t
 `workflow_dispatch` runs out, as the counted set does.
 
 An aggregate is resolved to its lane, as step 2 of *Which red is the change's* says, before the
-spend is judged. The reviewer's existing re-run of a cancelled or absent required check, which its
-role prompt gives, neither spends the head's re-run nor is spent by it, and an aggregate that reads
-`failure` over a lane GitHub cancelled is that cancelled lane. A failed job of the head's own
-`pull_request` run is acted on once that run has completed, whether or not the counted set lists its
-check yet, and no run that is not a `pull_request` run of the head is acted on at all. A
-`gh run rerun <run-id> --failed` call pressed while a job of that run, resolved to its lane, is
-`failure` spends the head's re-run, whatever else that call clears.
+spend is judged. The reviewer's role prompt gives it one more re-run, of a required check absent
+from the counted set or `completed` as `cancelled` there whose job in a `pull_request` run of the
+head was cancelled or never ran. That re-run neither spends the head's re-run nor is spent by it,
+and an aggregate that reads `failure` over a lane GitHub cancelled is that cancelled lane. A failed
+job of a completed `pull_request` run of the head is never that case: it is a red, which this page
+decides. A failed job of the head's own `pull_request` run is acted on once that run has completed,
+whether or not the counted set lists its check yet, and no run that is not a `pull_request` run of
+the head is acted on at all. A `gh run rerun <run-id> --failed` call pressed while a job of that
+run, resolved to its lane, is `failure` spends the head's re-run, whatever else that call clears.
 
 When the re-run is spent, the role re-runs nothing. The reviewer requests changes, names the
 check, and says the head's one re-run is spent. The implementer records the red, tells the

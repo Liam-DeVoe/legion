@@ -89,7 +89,7 @@ function reported(
 }
 
 // Each retired sentence in the words of the file that carried it, the text around it shortened,
-// and the line its pattern's first word stands on. The last thirteen rows are the shapes no file
+// and the line its pattern's first word stands on. The last sixteen rows are the shapes no file
 // carried, in the words a reword would bring them back in. Every row is found by its own pattern
 // alone, so a row whose pattern is taken out of the guard reports nothing and fails.
 const retired: readonly (readonly [source: string, page: readonly string[], line: number])[] = [
@@ -317,6 +317,20 @@ const retired: readonly (readonly [source: string, page: readonly string[], line
     ],
     2,
   ],
+  // The trigger of the reviewer's spend-free re-run (`ABSENCE_FROM_THE_SET_IS_RERUN`), in the words
+  // of go/reviewer.md at 5525e6c7: the architect's gap review of 2026-11-22 found that its absence
+  // from the counted set also took a failed job of a completed `pull_request` run that the set did
+  // not list yet, so such a red got the re-run that spends nothing, with no record.
+  [
+    "reviewer.md's \"One `completed` as `cancelled`, or absent from that set: re-run that run's failed and cancelled jobs\"",
+    [
+      "One `queued` or `in_progress`: wait. One `completed` as `cancelled`, or",
+      "absent from that",
+      "set: re-run that run's failed and cancelled jobs, once, then wait — that re-run neither spends",
+      "the head's one re-run of a red nor is spent by it.",
+    ],
+    2,
+  ],
   [
     'a reviewer\'s re-run of a check the base does not require, "is yours to re-run once before you approve"',
     [
@@ -435,6 +449,36 @@ const retired: readonly (readonly [source: string, page: readonly string[], line
       "A `checks-red` notice is one thing only: the head of an issue in `testing` conflicts with its",
       "base. A red is yours to decide on: re-run it or",
       "wait for it.",
+    ],
+    2,
+  ],
+  // A ban of the reviewer's re-run with the review bot named after it, each let through until the
+  // class search at 5525e6c7 by `REVIEWER_RERUNS_NOTHING`'s trailing limit, which took a condition
+  // after the `nothing`, or a `for` whatever its sentence named after it.
+  [
+    'a review bot named after the ban, "The reviewer re-runs nothing when a review bot is red."',
+    [
+      "The reviewer reads the head's checks on GitHub before it approves.",
+      "The reviewer re-runs",
+      "nothing when a review bot is red.",
+    ],
+    2,
+  ],
+  [
+    'a review bot named after the ban, "The reviewer re-runs nothing until the review bot\'s thread is resolved."',
+    [
+      "The reviewer reads the head's checks on GitHub before it approves.",
+      "The reviewer re-runs",
+      "nothing until the review bot's thread is resolved.",
+    ],
+    2,
+  ],
+  [
+    'a review bot named after the ban, "The reviewer re-runs nothing for a review bot\'s red."',
+    [
+      "The reviewer reads the head's checks on GitHub before it approves.",
+      "The reviewer re-runs",
+      "nothing for a review bot's red.",
     ],
     2,
   ],
@@ -606,6 +650,43 @@ const kept: readonly (readonly [source: string, page: readonly string[]])[] = [
       "  with every check it holds `completed` and that one absent, or the head moves. Then the role",
       "  records the red, where it learned of it and what the counted set carries, re-runs nothing, goes",
       "  on with its round, and tells the architect.",
+    ],
+  ],
+  // The sentences beside `ABSENCE_FROM_THE_SET_IS_RERUN`: the reviewer's spend-free re-run and the
+  // page's that replaced its old trigger, the page's absence of a check the counted set does not
+  // list yet, and the architect's absence from the daemon's notice.
+  [
+    'reviewer.md\'s spend-free re-run, "A required check absent from the counted set, or `completed` as `cancelled` there"',
+    [
+      "One `queued` or `in_progress`: wait. A required check absent from the counted set, or",
+      "`completed` as `cancelled` there, whose job in a `pull_request` run of the head was cancelled",
+      "or never ran: re-run that run's failed and cancelled jobs, once, then wait — that re-run",
+      "neither spends the head's one re-run of a red nor is spent by it. A failed job of a completed",
+      "`pull_request` run of the head is never that case: it is a red, which that page decides.",
+    ],
+  ],
+  [
+    "red-at-the-head.md's \"The reviewer's role prompt gives it one more re-run\"",
+    [
+      "spend is judged. The reviewer's role prompt gives it one more re-run, of a required check absent",
+      "from the counted set or `completed` as `cancelled` there whose job in a `pull_request` run of the",
+      "head was cancelled or never ran. That re-run neither spends the head's re-run nor is spent by it.",
+    ],
+  ],
+  [
+    'red-at-the-head.md\'s "may find the failing check pending, queued, in progress or absent"',
+    [
+      "**An unread counted set is not an empty one.** After a push the counted set can lag, so a role",
+      "that reads it at once may find the failing check pending, queued, in progress or absent. A read",
+      "made seconds after a push never shows that the head has no red.",
+    ],
+  ],
+  [
+    'architect-common.md\'s "is absent from that list rather than named as missing"',
+    [
+      "This notice names no required check: one the base requires that never ran has no check run at",
+      "all and is absent from that list rather than named as missing, which makes the missing check",
+      "the thing to look for — read the base's required checks and the head's check runs on GitHub.",
     ],
   ],
   [
@@ -1155,6 +1236,18 @@ const retiredTesterReads: readonly (readonly [
     ],
     2,
   ],
+  // The tester's read of a check CI proves (`THE_TESTERS_READ_SHOWS_A_DERIVED_RESULT`), in the
+  // words of the tester's role part at 5525e6c7, which the architect's gap review of 2026-11-22
+  // found after the tester came to read no CI.
+  [
+    'tester.md\'s "that read shows its one derived result"',
+    [
+      "Read the issue's checks with `dispatch results --issue <issue>`. A check carrying `ci_check` is",
+      "CI's: that read shows its one",
+      "derived result. It needs no pass from the implementer, and you do not run or record it.",
+    ],
+    2,
+  ],
 ];
 
 test.each(retiredTesterReads)("%s is reported at the line it starts on", (_source, page, line) => {
@@ -1221,8 +1314,16 @@ const keptBesideTesterReads: readonly (readonly [source: string, page: readonly 
     "tester.md's and the tester's role part's \"is CI's\"",
     [
       "A check CI runs is recorded from CI's job at the head: a check carrying `ci_check` is CI's, and",
-      "its result is the one derived from that job's run. A check carrying `ci_check` is CI's: that",
-      "read shows its one derived result.",
+      "its result is the one derived from that job's run. A check carrying `ci_check` is CI's",
+      "(`skill://legion-worker/references/ci-checks.md`): you do not read its derived result, run it or",
+      "record it, and it is never an entry of your `failures`.",
+    ],
+  ],
+  [
+    'architect-root.md\'s "whenever that read shows no claim at all"',
+    [
+      "Claim the root with `dispatch claim --issue <root>` whenever that read shows no claim at all, or",
+      "shows your own session.",
     ],
   ],
   [

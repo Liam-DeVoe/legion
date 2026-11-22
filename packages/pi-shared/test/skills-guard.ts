@@ -451,13 +451,18 @@ const RERUN_LIMIT = "(?:when|where|once|if|after|past|outside|beyond|unless|unti
  *
  * Two shapes. The reviewer by name (`the reviewer`, `your review`) re-running nothing, unless the
  * ban is limited: its sentence opens with a condition (`when`, `where`, `once`, `if`, `after`,
- * `past`, `outside`, `beyond`, `unless`, `until`), or a limit follows the `nothing` (one of those,
- * or `for`). Those limits are the page's own rules, which pass: "When the head's one re-run is
- * spent, the reviewer re-runs nothing and requests changes.", "Past review the reviewer re-runs
- * nothing: it reads the merge …" and "The reviewer re-runs nothing for a check the base does not
- * require." An unlimited one is refused: "The reviewer re-runs nothing, a required check red at the
- * head included." And any re-runner in a sentence that names a review bot before it, which is the
- * retired claim's own shape, whatever limits it: `the reviewer`, `you`, or the imperative
+ * `past`, `outside`, `beyond`, `unless`, `until`), or a `for` follows the `nothing` and no review
+ * bot follows that `for` in its sentence. Those limits are the page's own rules, which pass: "When
+ * the head's one re-run is spent, the reviewer re-runs nothing and requests changes.", "Past
+ * review the reviewer re-runs nothing: it reads the merge …" and "The reviewer re-runs nothing for
+ * a check the base does not require." No sentence the trees keep puts its condition after the
+ * `nothing`, and a condition there let the retired claim back with the review bot named after the
+ * ban, as the class search at 5525e6c7 found, so each of these is refused: "The reviewer re-runs
+ * nothing when a review bot is red.", "The reviewer re-runs nothing until the review bot's thread
+ * is resolved." and "The reviewer re-runs nothing for a review bot's red." An unlimited one is
+ * refused too: "The reviewer re-runs nothing, a required check red at the head included." And
+ * any re-runner in a sentence that names a review bot before it, which is the retired claim's own
+ * shape, whatever limits it: `the reviewer`, `you`, or the imperative
  * `re-run nothing` that opens its clause (`CLAUSE_OPENS`), so "When a review bot is red, you re-run
  * nothing." and "While the review bot's thread stands, re-run nothing." are refused. A bare `you`
  * with no review bot can be any role, so it passes: the natural way to tell the merger it re-runs
@@ -466,15 +471,18 @@ const RERUN_LIMIT = "(?:when|where|once|if|after|past|outside|beyond|unless|unti
  * nothing." and "A role that is told of a red whose phase it does not hold re-runs nothing." (both
  * red-at-the-head.md), and "a re-run does not clear that red" (review-threads.md), which names no
  * re-runner at all. The cost is a ban written to the reviewer as a bare `you` with no review bot
- * in its sentence, or under a condition, which passes too. The gap is bounded by `[^.]{0,40}`, so
- * a `the reviewer` of the sentence before a full stop cannot reach across it to the `re-run
- * nothing` of the next, and the review bot and the condition are read in the sentence of the ban.
- * Each is read through a lookbehind, which Bun's JavaScriptCore runs, so a hit names the line of
- * the re-runner, or of the `re-run` where none is named.
+ * in its sentence, or under a condition that opens its sentence, which passes too. The other cost
+ * is a condition after the `nothing` that limits the ban to a case of the page's, "The reviewer
+ * re-runs nothing when the head's one re-run is spent.", which no tree carries and which is
+ * refused: it passes with its condition first, as the page writes it. The gap is bounded by
+ * `[^.]{0,40}`, so a `the reviewer` of the sentence before a full stop cannot reach across it to
+ * the `re-run nothing` of the next, and the review bot and the condition are read in the sentence
+ * of the ban. Each is read through a lookbehind, which Bun's JavaScriptCore runs, so a hit names
+ * the line of the re-runner, or of the `re-run` where none is named.
  */
 const REVIEWER_RERUNS_NOTHING = new RegExp(
   [
-    String.raw`(?<!${SENTENCE_OPENS}${RERUN_LIMIT}\b[^.]*)\b(?:the reviewer|your review)\b[^.]{0,40}?\bre-?runs?\s+(?:nothing|none)\b(?!\s+(?:for|${RERUN_LIMIT})\b)`,
+    String.raw`(?<!${SENTENCE_OPENS}${RERUN_LIMIT}\b[^.]*)\b(?:the reviewer|your review)\b[^.]{0,40}?\bre-?runs?\s+(?:nothing|none)\b(?!\s+for\b(?![^.]*\breview\s+bot\b))`,
     String.raw`(?<=\breview\s+bot\b[^.]*)(?:\b(?:the reviewer|you)\b[^.]{0,40}?\bre-?runs?|(?<=${CLAUSE_OPENS})re-?run)\s+(?:nothing|none)\b`,
   ].join("|"),
   "i"
@@ -682,7 +690,31 @@ const AN_UNREPORTED_RED_WAITS = new RegExp(
   "i"
 );
 
-/** The eleven rules INFRA-1303 retired, in the order they are written above. */
+/**
+ * The trigger of the reviewer's spend-free re-run as the architect's gap review of 2026-11-22
+ * found it: the reviewer's prompt part's "One `completed` as `cancelled`, or absent from that set:
+ * re-run that run's failed and cancelled jobs, once, then wait — that re-run neither spends the
+ * head's one re-run of a red nor is spent by it". That set is the counted set, and its lag is
+ * exactly a failed job of a completed `pull_request` run of the head that the set does not list
+ * yet, so such a red fitted both the red rule (record, spend read, press) and this re-run (no
+ * record, nothing spent). The re-run stays, for a check whose job a `pull_request` run of the head
+ * holds cancelled or never ran, and a failed job of a completed `pull_request` run is never that
+ * case (the page's `A_FAILED_JOB_IS_NEVER_THAT_CASE`).
+ *
+ * The shape is the absence from the set (`that`, `the` or `this` set, `counted` or not) with a
+ * re-run within twenty characters after it, which is a trigger with nothing to limit it. So the
+ * sentence that replaced it passes, since the job's state stands between the two: "A required
+ * check absent from the counted set, or `completed` as `cancelled` there, whose job in a
+ * `pull_request` run of the head was cancelled or never ran: re-run that run's failed and
+ * cancelled jobs, once". So do the page's other absences, "may find the failing check pending,
+ * queued, in progress or absent" and "with every check it holds `completed` and that one absent",
+ * and the architect's notice, "is absent from that list rather than named as missing". The cost
+ * is a re-run written before the absence ("Re-run a check absent from that set."), which passes.
+ */
+const ABSENCE_FROM_THE_SET_IS_RERUN =
+  /\babsent\s+from\s+(?:that|the|this)\s+(?:counted\s+)?set\b(?=[^.]{0,20}?\bre-?run\b)/i;
+
+/** The twelve rules INFRA-1303 retired, in the order they are written above. */
 const RETIRED_RERUN_PROHIBITIONS = [
   NO_LANE_IS_RERUN,
   RERUN_NONE_OF_THEM_YOURSELF,
@@ -695,6 +727,7 @@ const RETIRED_RERUN_PROHIBITIONS = [
   UNREQUIRED_CHECK_RERUN_FOR_THE_APPROVAL,
   REQUIRED_CHECK_NEITHER_WAITED_FOR_NOR_RERUN,
   AN_UNREPORTED_RED_WAITS,
+  ABSENCE_FROM_THE_SET_IS_RERUN,
 ];
 
 /**
@@ -703,11 +736,12 @@ const RETIRED_RERUN_PROHIBITIONS = [
  * re-run, gives the wait to the wrong role, sends the work back on the first `failed_checks`
  * ejection the merger now queues once more, offers the re-run to every role told of a red, gives
  * the reviewer a re-run of a check the base does not require before it approves, turns main's ban
- * on that wait and that re-run onto a required check, or holds a red of the head's own completed
- * `pull_request` run back until the counted set lists it. They were deleted from skill files and
- * daemon prompt parts at once, and a forward merge keeps both sides of a deletion in silence, so
- * the rule is written over whole partitions rather than over the files it cleared: another file
- * that acquires one fails here too.
+ * on that wait and that re-run onto a required check, holds a red of the head's own completed
+ * `pull_request` run back until the counted set lists it, or gives a check absent from the
+ * counted set the re-run that spends nothing whatever its job's state. They were deleted from
+ * skill files and daemon prompt parts at once, and a forward merge keeps both sides of a deletion
+ * in silence, so the rule is written over whole partitions rather than over the files it cleared:
+ * another file that acquires one fails here too.
  */
 export function retiredRerunProhibitions(roots: readonly string[]): string[] {
   return retiredRuleHits(roots, RETIRED_RERUN_PROHIBITIONS);
@@ -738,10 +772,11 @@ export function retiredRerunProhibitions(roots: readonly string[]): string[] {
  * what it changed." and "Lint is CI's work, read the job log on GitHub when it fails." A reword
  * that drops the place is still refused: "… are CI's: read them at the head you tested." The
  * sentences that keep a `ci_check` check CI's pass, since no such read follows: "A check carrying
- * `ci_check` is CI's: that read shows its one derived result" (the tester's role part) and "a
- * check carrying `ci_check` is CI's, and its result …" (its core). So do the sentences that
- * replaced the read: "every other lane are CI's work, and you do not run in your own pod what CI
- * runs for you" (the core) and "are CI's: the tester lets CI do its job" (pr-body.md).
+ * `ci_check` is CI's (`skill://legion-worker/references/ci-checks.md`): you do not read its derived
+ * result" (the tester's role part) and "a check carrying `ci_check` is CI's, and its result …" (its
+ * core). So do the sentences that replaced the read: "every other lane are CI's work, and you do
+ * not run in your own pod what CI runs for you" (the core) and "are CI's: the tester lets CI do its
+ * job" (pr-body.md).
  */
 const TESTER_READS_THE_STATIC_LANES =
   /\breads?\s+CI\s+for\s+everything\s+static\b|\bCI's(?:\s+work)?[,:]\s+read\s+(?:them\b|(?:on\s+GitHub|there|at\s+the\s+head)\b)/i;
@@ -908,7 +943,25 @@ const THE_TESTER_RECORDS_A_RED = new RegExp(
 const THE_TESTER_SENDS_A_CI_FINDING =
   /\bthe\s+(?:tester\s+and\s+the\s+reviewer|reviewer\s+and\s+the\s+tester)\s+(?:each\s+|both\s+)?(?:sends?|publish(?:es)?|reports?)\s+it\s+to\s+the\s+architect\b/i;
 
-/** The tester's seven retired shapes, in the order they are written above. */
+/**
+ * The tester's read of a check CI proves: the tester's role part's "A check carrying `ci_check` is
+ * CI's: that read shows its one derived result", which had the tester read that result in its
+ * `dispatch results` read, beside a rule that put in its `failures` every `before_merge` check with
+ * no pass from the implementer, a pass a `ci_check` check never has (Dispatch refuses any role's
+ * result for one, `409 CHECK_PROVED_BY_CI`). The architect's gap review of 2026-11-22 found it
+ * there after the tester came to read no CI. The shape is a read (`that read`, `the read`, `this
+ * read`, `your read`) that shows a derived result, so the sentences that keep a `ci_check` check
+ * CI's pass: "A check carrying `ci_check` is CI's (`skill://legion-worker/references/ci-checks.md`):
+ * you do not read its derived result, run it or record it, and it is never an entry of your
+ * `failures`." (the tester's role part) and "It neither reads nor records a `ci_check` check's
+ * derived result" (ci-checks.md). So does the architect's "whenever that read shows no claim at
+ * all", which shows no derived result. The cost is the same words said to the reviewer as `your
+ * read`, which a reword that names the reviewer's read passes.
+ */
+const THE_TESTERS_READ_SHOWS_A_DERIVED_RESULT =
+  /\b(?:that|the|this|your)\s+read\s+shows\s+(?:its|the|a|each)\s+(?:one\s+)?derived\s+results?\b/i;
+
+/** The tester's eight retired shapes, in the order they are written above. */
 const RETIRED_TESTER_CI_READS = [
   TESTER_READS_THE_STATIC_LANES,
   HEADS_CHECKS_BEFORE_ANY_VERDICT,
@@ -917,12 +970,13 @@ const RETIRED_TESTER_CI_READS = [
   CI_CHECK_IN_THE_TESTERS_FAILURES,
   THE_TESTER_RECORDS_A_RED,
   THE_TESTER_SENDS_A_CI_FINDING,
+  THE_TESTERS_READ_SHOWS_A_DERIVED_RESULT,
 ];
 
 /**
  * Every place in the Markdown files under `roots` that still tells the tester to read CI, gives it
- * the re-run of a red at the head, has it wait on CI, has it judge a check CI proves, has it
- * record a red at the head, or has it send the architect, beside the reviewer, a case only CI
+ * the re-run of a red at the head, has it wait on CI, has it judge or read a check CI proves, has
+ * it record a red at the head, or has it send the architect, beside the reviewer, a case only CI
  * shows, each as one `<file>:<line>`. The sentences were deleted from skill files, daemon prompt
  * parts and docs pages at once, and a forward merge keeps both sides of a deletion in silence, so
  * this rule too is written over whole partitions.
@@ -998,6 +1052,9 @@ export const FINDING_ASKS = path.join(
   REPO_ROOT,
   "skills/legion-controller/references/finding-asks.md"
 );
+
+/** The controller skill, which routes a test a role re-ran green to that census. */
+export const CONTROLLER_SKILL = path.join(REPO_ROOT, "skills/legion-controller/SKILL.md");
 
 /**
  * `markdown` with each run of whitespace made one space. The rules below read a skill file this
@@ -1177,9 +1234,28 @@ const NO_RED_IS_READ_AT_ONCE =
  * the change's only when its own output names the pull request's own field. The reading before
  * said such a check "is the change's, and it gets no re-run" whatever failed it, so a title check
  * that GitHub's API limit failed was read as the change's red, which costs the lap this page saves.
+ * The field read "(its title, body or labels)" until the architect's gap review of 2026-11-22: the
+ * title check (.github/scripts/check-pr-text.sh) also reads the branch name and the commit
+ * messages, and reports a hit there as `branch:` or `commits:`, so a red it gave for either was
+ * read as no field's and re-run.
  */
 const A_PULL_REQUEST_CHECK_IS_THE_CHANGES_ON_ITS_FIELD =
-  "is the change's when its own output names the pull request's own field (its title, body or labels) as the cause, and it gets no re-run; a failure at a fetch, a limit or a runner in that check is read by the fourth reading, like any other failure in no test.";
+  "is the change's when its own output names the pull request's own field (its title, body, labels, branch name or commit messages) as the cause, and it gets no re-run; a failure at a fetch, a limit or a runner in that check is read by the fourth reading, like any other failure in no test.";
+
+/**
+ * The reviewer's spend-free re-run on the page, and the sentence that keeps a failed job out of
+ * it, each pinned whole and literally. The page read "The reviewer's existing re-run of a
+ * cancelled or absent required check, which its role prompt gives, neither spends the head's
+ * re-run nor is spent by it" until the architect's gap review of 2026-11-22: its role prompt read
+ * the absence off the counted set, whose lag is exactly a failed job of a completed `pull_request`
+ * run that the set does not list yet, so such a red fitted both that re-run (no record, nothing
+ * spent) and the red rule (record, spend read, press). The prompt's old trigger is refused across
+ * the partitions (`ABSENCE_FROM_THE_SET_IS_RERUN`).
+ */
+const THE_REVIEWERS_SPEND_FREE_RERUN =
+  "The reviewer's role prompt gives it one more re-run, of a required check absent from the counted set or `completed` as `cancelled` there whose job in a `pull_request` run of the head was cancelled or never ran.";
+const A_FAILED_JOB_IS_NEVER_THAT_CASE =
+  "A failed job of a completed `pull_request` run of the head is never that case: it is a red, which this page decides.";
 
 /**
  * The sentence of `## One re-run belongs to the head` that keeps `--required` off the counted set,
@@ -1297,6 +1373,18 @@ const GREEN_RUNS_THE_DISPOSAL =
   "Green: the round goes on, and the role records that it re-ran, with the run and the attempt. Before it completes its phase, it runs the three steps of *What becomes of the record* below.";
 const A_FAILING_TEST_IS_NO_EXTERNAL_CAUSE =
   "A failing test is never the second case, whatever package holds it: one that is not the change's takes the one re-run on its first red, and on its second red it is handled as *Red again* above says, never as an external cause.";
+
+/**
+ * The implementer's act where it may not re-run, on a head whose one re-run is already spent and
+ * on a red that comes back red after the re-run, each sentence pinned whole and literally (the
+ * architect, 2026-11-22, 05:02Z). No row held either until then, so a page that lost one left the
+ * implementer only the reviewer's half of the rule beside it, a request for changes, which is no
+ * act of the implementer's.
+ */
+const IMPLEMENTER_ENDS_ON_A_SPENT_RERUN =
+  "The implementer records the red, tells the architect, and completes its phase, and its record and its message to the architect name the check and say the head's one re-run is spent; the reviewer judges the red in its round.";
+const IMPLEMENTER_ENDS_ON_RED_AGAIN =
+  "The implementer records the red, tells the architect, and completes its phase, naming the check; the reviewer judges the red in its round.";
 
 /**
  * The page's retired "fails the round" (the architect's gap review of 2026-11-20, item 3): "It
@@ -1437,6 +1525,16 @@ export function redAtTheHeadFaults(pages: {
             "a role that reads every red of the title check as the change's leaves a red a limit or a runner made, and the tree pays the lap this page saves",
         },
         {
+          sentence: THE_REVIEWERS_SPEND_FREE_RERUN,
+          because:
+            "a reviewer that reads the re-run's case off its prompt's old words gives a check the counted set does not list yet the re-run that spends nothing, though a failed job holds it",
+        },
+        {
+          sentence: A_FAILED_JOB_IS_NEVER_THAT_CASE,
+          because:
+            "a reviewer that takes a failed job of a completed `pull_request` run for the cancelled case re-runs a red with no record and no read of the spend",
+        },
+        {
           sentence: COUNTED_SET_IS_NEVER_REQUIRED,
           because:
             "a role that reads the counted set with `--required` sees no lane under `ci-ok` and no check the base does not require, and takes a base that requires nothing for a failed read",
@@ -1485,6 +1583,16 @@ export function redAtTheHeadFaults(pages: {
           sentence: A_FAILING_TEST_IS_NO_EXTERNAL_CAUSE,
           because:
             "a role that finds a failing test in another tree's package skips the one re-run",
+        },
+        {
+          sentence: IMPLEMENTER_ENDS_ON_A_SPENT_RERUN,
+          because:
+            "an implementer at a head whose one re-run is spent reads only the reviewer's request for changes, and neither records the red nor tells the architect",
+        },
+        {
+          sentence: IMPLEMENTER_ENDS_ON_RED_AGAIN,
+          because:
+            "an implementer whose re-run came back red reads only the reviewer's request for changes, and neither records the red nor tells the architect",
         },
       ]
     ),
@@ -1542,18 +1650,56 @@ const CONTROLLER_ACTS_ON_AN_UNTRACKED_TEST =
   "You act on it when the role found no issue for the test, or found one that reads `done`. For a test an open issue tracks, the role has already commented the occurrence there, and you do nothing more.";
 
 /**
- * What `markdown` — skills/legion-controller/references/finding-asks.md — gets wrong about a test
- * a role re-ran green.
+ * The three lines INFRA-1303 added to the controller skill for a test a role re-ran green, each
+ * pinned whole and literally, since the architect's gap review of 2026-11-22 found no row held
+ * them: the routing row that sends the role's message to the census, the move to `todo` of a
+ * test's issue reopened for the census, and the leave to file one issue per test. A controller
+ * that lost the row reads the message as a finding to ask a person about, one that lost the bullet
+ * has no leave to move the issue it reopened to `todo`, and one that lost the leave files no issue
+ * for a flaky test, or one per occurrence.
  */
-export function censusFaults(markdown: string): string[] {
-  const file = "skills/legion-controller/references/finding-asks.md";
-  return missingSentenceFaults(file, markdown, [
-    {
-      sentence: CONTROLLER_ACTS_ON_AN_UNTRACKED_TEST,
-      because:
-        "a controller that acts on every green re-run comments the occurrence a second time on the issue the role already commented",
-    },
-  ]);
+const CONTROLLER_ROUTES_A_TEST_RERUN_GREEN =
+  "| A clear defect a role sends, or a test it re-ran green | `skill://legion-controller/references/finding-asks.md#hand-over-a-clear-defect` |";
+const CONTROLLER_REOPENS_A_TESTS_ISSUE =
+  "- a test's issue you reopen for the re-run census, once you read that its fix is still in place;";
+const CONTROLLER_FILES_ONE_ISSUE_PER_TEST =
+  "a test a role re-ran green among them (one issue per test, never one per occurrence: `skill://legion-controller/references/finding-asks.md#hand-over-a-clear-defect`)";
+
+/**
+ * What the controller's census of a test a role re-ran green gets wrong: its reference
+ * (`FINDING_ASKS`) and the controller skill (`CONTROLLER_SKILL`), each read by its caller.
+ */
+export function censusFaults(pages: { findingAsks: string; controllerSkill: string }): string[] {
+  return [
+    ...missingSentenceFaults(
+      "skills/legion-controller/references/finding-asks.md",
+      pages.findingAsks,
+      [
+        {
+          sentence: CONTROLLER_ACTS_ON_AN_UNTRACKED_TEST,
+          because:
+            "a controller that acts on every green re-run comments the occurrence a second time on the issue the role already commented",
+        },
+      ]
+    ),
+    ...missingSentenceFaults("skills/legion-controller/SKILL.md", pages.controllerSkill, [
+      {
+        sentence: CONTROLLER_ROUTES_A_TEST_RERUN_GREEN,
+        because:
+          "a controller told of a test a role re-ran green finds no route to the census, and reads the message as a finding to ask a person about",
+      },
+      {
+        sentence: CONTROLLER_REOPENS_A_TESTS_ISSUE,
+        because:
+          "a controller that reopens a test's issue for the census has no leave to move it to `todo`, so the issue waits with no tree",
+      },
+      {
+        sentence: CONTROLLER_FILES_ONE_ISSUE_PER_TEST,
+        because:
+          "a controller with no leave to file for a test a role re-ran green files nothing for a flaky test, or one issue per occurrence",
+      },
+    ]),
+  ];
 }
 
 /**
