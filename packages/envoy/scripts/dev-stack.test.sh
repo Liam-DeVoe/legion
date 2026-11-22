@@ -1227,7 +1227,6 @@ collect_started() {
 # reader saw the server gone first) cannot pass the row without testing it.
 for server in listener dispatch; do
   asked_path=/healthz
-  [[ "$server" == listener ]] || asked_path=/api/v1
   label="the run whose $server exited after it reported its address"
   : >"$unserved_file"
   : >"${unserved_file}.asked"
