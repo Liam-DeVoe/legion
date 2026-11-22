@@ -805,14 +805,14 @@ func requirePreconditionCoverage(tree *batchTree, ops []model.EditOp, preconditi
 func operationPreconditionBlocks(tree *batchTree, op model.EditOp) (required, taken []string, err error) {
 	switch op.Op {
 	case "replace":
-		r, _, _, byMarker, err := findEditQuote(tree, op.Op, "find", op.Find, op.Occurrence)
+		r, at, _, byMarker, err := findEditQuote(tree, op.Op, "find", op.Find, op.Occurrence)
 		if err != nil {
 			return nil, nil, err
 		}
 		if required, err = rangePreconditionBlock(tree, r); err != nil {
 			return nil, nil, err
 		}
-		if rewritten := rewrittenTypedBlock(tree, r, op, byMarker); rewritten != nil && blockID(rewritten) != "" {
+		if rewritten := rewrittenTypedBlock(tree, at, r, op, byMarker); rewritten != nil && blockID(rewritten) != "" {
 			taken = []string{blockID(rewritten)}
 		}
 		return required, taken, nil
@@ -906,9 +906,9 @@ func deletePreconditionBlocks(tree *batchTree, target deleteTarget, named bool) 
 // (readReplacementWith), in the line feeds applyBatch gives an operation before its guard and its
 // write read it (withLineFeeds); one that reading refuses rewrites nothing here, and the write
 // refuses it.
-func rewrittenTypedBlock(tree *batchTree, r pmdoc.Range, op model.EditOp, byMarker bool) *pmdoc.Node {
-	at, ok := pmdoc.ContainingTextblock(tree.node, r.From)
-	if !ok || at.Node.Type != "paragraph" || len(at.Ancestors) == 0 || !pmdoc.IsTypedBlock(at.Ancestors[0].Type) {
+// at is the textblock holding the match, as findEditQuote found it.
+func rewrittenTypedBlock(tree *batchTree, at pmdoc.TextblockAt, r pmdoc.Range, op model.EditOp, byMarker bool) *pmdoc.Node {
+	if at.Node == nil || at.Node.Type != "paragraph" || len(at.Ancestors) == 0 || !pmdoc.IsTypedBlock(at.Ancestors[0].Type) {
 		return nil
 	}
 	with, err := readReplacementWith(tree, at, r, op, byMarker)

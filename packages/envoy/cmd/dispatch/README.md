@@ -5478,7 +5478,7 @@ Each item below names a status and code, then its meaning.
   An `insert`'s or a `move`'s quote anchor names a place, so it finds its block whatever it spells a link with, and is never refused with this code.
   The message of a `find` that covers text outside the link says it crosses the link's edge and spells the link with another URL or title, and gives the whole link with its markup, its own URL and title, to write in `find`: first for a `delete`, since narrowing its `find` deletes less than it named, and after narrowing for a `replace`.
   The message of one over the link's whole text and nothing more (`[this](https://wrong.example/9)`) says it spells the link with another URL or title, and to write the link as it is in `find`, which for a bare link writes `with` inside the link.
-  The message of one inside the link (`[one](https://wrong.example/9)` over `[one two](https://example.com/Sami)`) says to quote that text with no link markup, or under the link's own URL and title (`[one](https://example.com/Sami)`), which keeps the text the `find` named, where it said to write the whole link.
+  The message of one inside the link (`[one](https://wrong.example/9)` over `[one two](https://example.com/Sami)`) says to quote that text with no link markup, or under the link's own URL and title (`[one](https://example.com/Sami)`), which keeps the text the `find` named.
   Each span the `find` covers is weighed alone: one that spells a span's markup crosses the edge of every other span it covers whose markup it does not spell, as `wrote [this](https://a.example/1) and that` does where `that` is a second link.
 
 - `400 REPLACE_FIELDS`
