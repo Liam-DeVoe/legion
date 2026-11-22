@@ -16,8 +16,12 @@
 -- The way back below drops the table, so a rollback takes away every role a plan defines. At its
 -- boot, the release before stops each task that still has a step of such a role to run. The
 -- reason it gives is "step <n> names the role <role>, which the deployment no longer defines".
--- After the roll forward, the owner of each such task gives its plan again, and Legion takes that
--- version for the stopped task.
+-- Two kinds of task are not stopped at boot. A task whose plan role has the name of a role of the
+-- deployment is not stopped. The release before runs the deployment's role in its place. A root
+-- that waits on a person before its first step is not stopped at boot. It is stopped when it
+-- moves into that step. After the roll forward, the owner of each stopped task gives a new version
+-- of its plan. Legion takes only a version later than the one in force. The same version given
+-- again is dropped as a duplicate, and the task stays stopped.
 --
 -- There is no down file. This directory keeps none, so the way back is the transaction below, run
 -- with the daemon stopped, before the earlier image is pinned. A rollback that also goes past the
