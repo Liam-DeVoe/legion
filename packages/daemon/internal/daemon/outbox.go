@@ -2616,6 +2616,22 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 				return err
 			}
 		}
+		// The start of a step whose agent takes the claim another agent last ran a step on asks
+		// for a fresh session (payload.FreshSession, the workflow's enter): a claim that still runs
+		// that other agent's process ends it at its turn's end, as a re-role's does
+		// (suspendForStep), and the start waits; once the claim runs nothing, the resume below
+		// starts it in a new session.
+		if found && payload.FreshSession && payload.Entry > 0 && payload.Phase != "" {
+			err := r.suspendForStep(ctx, machine, token, row, payload, fmt.Sprintf("its claim's next step on %s is another agent's", row.Issue))
+			if errors.Is(err, supervise.ErrStepLeft) {
+				r.log.Info("outbox start serves a step its issue left before the claim ended the other agent's turn; finished without acting", "row", row.ID,
+					"issue", issue.Key, "phase", payload.Phase, "entry", payload.Entry, "role", payload.Role, "claim", token)
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+		}
 		if !found {
 			if err := r.provisionWorkspace(ctx, issue); err != nil {
 				return err
@@ -2730,7 +2746,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 			if payload.CheckLook > 0 {
 				reason = fmt.Sprintf("start row %d of %s (production check look %d)", row.ID, issue.Key, payload.CheckLook)
 			}
-			if err := machine.Handle(ctx, supervise.RequestRuleResume{Claim: token, Reason: reason, Start: work}); err != nil {
+			if err := machine.Handle(ctx, supervise.RequestRuleResume{Claim: token, Reason: reason, Start: work, FreshSession: payload.FreshSession}); err != nil {
 				brought = fmt.Errorf("resume claim %s: %w", token, err)
 			}
 		case supervise.StateFailed:
@@ -3214,18 +3230,32 @@ func (r *outbox) wakeTreeCloses(ctx context.Context, tree string) error {
 func (r *outbox) reroleForStep(ctx context.Context, machine *supervise.Machine, token claim.Token, row record.OutboxRow, payload record.SuperviseRequest) error {
 	role := payload.Role
 	ctx = supervise.Standing(ctx, func(ctx context.Context) (bool, error) { return r.stepStands(ctx, row, payload) })
-	if held := machine.Claim(); !held.RunsNothing() {
-		err := machine.Handle(ctx, supervise.RequestSuspend{Claim: token, By: supervise.SuspendedByDaemon,
-			Reason: fmt.Sprintf("its agent's next step on %s is the %s's", row.Issue, role)})
-		var refused *supervise.RefusedError
-		if err != nil && !errors.Is(err, supervise.ErrSuspendHeld) && !errors.As(err, &refused) {
-			return fmt.Errorf("suspend claim %s for its %s step: %w", token, role, err)
-		}
-		if held = machine.Claim(); !held.RunsNothing() {
-			return wait.Errorf("the %s step of %s waits for its claim %s to end its turn as %s", role, row.Issue, token, held.Role)
-		}
+	if err := r.suspendForStep(ctx, machine, token, row, payload, fmt.Sprintf("its agent's next step on %s is the %s's", row.Issue, role)); err != nil {
+		return err
 	}
 	return machine.Rerole(ctx, role)
+}
+
+// suspendForStep is a wait (wait.ErrWaiting) while machine's claim still runs a process that the
+// start of payload's step may not start in: the start asks it to suspend, as the daemon, keeping
+// its session, and waits on the row's backoff, as reroleForStep says; nil once the claim runs
+// nothing. The suspension is asked with the step's standing (supervise.Standing, stepStands), so a
+// step the issue left before it is supervise.ErrStepLeft. reason is the suspension's, for its line.
+func (r *outbox) suspendForStep(ctx context.Context, machine *supervise.Machine, token claim.Token, row record.OutboxRow, payload record.SuperviseRequest, reason string) error {
+	held := machine.Claim()
+	if held.RunsNothing() {
+		return nil
+	}
+	ctx = supervise.Standing(ctx, func(ctx context.Context) (bool, error) { return r.stepStands(ctx, row, payload) })
+	err := machine.Handle(ctx, supervise.RequestSuspend{Claim: token, By: supervise.SuspendedByDaemon, Reason: reason})
+	var refused *supervise.RefusedError
+	if err != nil && !errors.Is(err, supervise.ErrSuspendHeld) && !errors.As(err, &refused) {
+		return fmt.Errorf("suspend claim %s for its %s step: %w", token, payload.Role, err)
+	}
+	if held = machine.Claim(); !held.RunsNothing() {
+		return wait.Errorf("the %s step of %s waits for its claim %s to end its turn as %s", payload.Role, row.Issue, token, held.Role)
+	}
+	return nil
 }
 
 // stepStands says whether the step a start of a phase entry (payload) is for is still the work its

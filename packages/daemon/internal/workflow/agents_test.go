@@ -50,6 +50,39 @@ func TestALaterVersionGivesAFreshAgentANameOfItsOwnBesideAKeysName(t *testing.T)
 	}
 }
 
+// A new agent that takes a name a claim holds starts a session of its own: the owner stops task a
+// after its implementer ran, and gives a plan whose task p is `implementer reviewer`. Step 1 of p
+// takes the name implementer, since no agent of the plan in force holds it, and so the claim
+// `…-implementer`; but it is another agent than the one that ran a's step 1, so its start asks for
+// a fresh session (record.SuperviseRequest.FreshSession). The first start of an agent, and a return
+// of an agent to its own step, resume as before. The fault: p's fresh step resumes a's session,
+// against "a step with no key gets a fresh agent".
+func TestANewAgentOnANameAClaimHoldsStartsAFreshSession(t *testing.T) {
+	pool := migratedPool(t)
+	engine := returnEngine()
+	apply := applyFacts(t, pool, engine)
+	root := stepRoot(t, pool, phase.Admitted)
+	key, gen := root.Key, root.Generation
+	mustTake(t, "version 1", apply(planID(key, gen, 1), ownersPlan(t, key, gen, 1, givenTask(t, "Build the widget.", "implementer", "reviewer"))))
+	move(t, pool, engine, key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
+	if first := lastStartOf(t, pool, key, claim.RoleImplementer); first.FreshSession {
+		t.Fatalf("the first start of task a's implementer asks for a fresh session, want it to resume what its claim holds")
+	}
+	if result := apply("stop", ownersStop(t, root, "a")); result.Refusal != nil {
+		t.Fatalf("the owner's stop was refused: %+v", result.Refusal)
+	}
+	p := givenTask(t, "Build the manual.", "implementer", "reviewer")
+	p.ID = "p"
+	mustTake(t, "version 2", apply(planID(key, gen, 2), ownersPlan(t, key, gen, 2, p)))
+	if got := agentsOfTask(planStandingOf(t, pool, engine, key, gen).plan, "p"); !slices.Equal(got, []claim.Agent{"implementer", "reviewer"}) {
+		t.Fatalf("the agents of task p = %q, want implementer and reviewer", got)
+	}
+	start := lastStartOf(t, pool, key, claim.RoleImplementer)
+	if !start.FreshSession {
+		t.Errorf("the start of task p's step 1 = %+v, want it to ask for a fresh session: the claim implementer was another agent's", start)
+	}
+}
+
 // A version that gives a task again names its keys from the rows read before it replaces the
 // task's steps, so a key keeps the name it had, even where its first step is now of another role.
 func TestARegivenTaskKeepsTheNamesOfItsKeys(t *testing.T) {
