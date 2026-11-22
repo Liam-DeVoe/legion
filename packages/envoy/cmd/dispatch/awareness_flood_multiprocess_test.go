@@ -74,7 +74,31 @@ func aReaderJoiningAfterAnAwarenessFloodIsSeenOnTheOtherProcess(t *testing.T, la
 	// expiry of them 30 s on (awarenessExpiry), which ygo tells bob's tab nothing of, stands in for
 	// it only where B's listener redialed meanwhile (awaitRemovalReachesReader,
 	// awaitRelayedAwareness).
+	//
+	// The wait below is for each of those clients, so they must be every flooding client bob holds,
+	// and at least one. Bob's view is read before B's counts: B's room counts a client the relay
+	// hands it inside the apply, from the observer ygo fires there (awarenessRelay.touched), and
+	// only then sends the client to its peers (ygo's Server.Inject), so each flooding client bob
+	// holds by then is one the counts hold a state of.
+	seen := bob.AwarenessStates()
 	crossed := pair.b.roomCounters(t, artifactID)
+	counted := 0
+	for client, taken := range crossed.RelayedAwareness {
+		if client >= 500_000 && client < 500_000+floodClients && taken.States > 0 {
+			counted++
+		}
+	}
+	if counted == 0 {
+		t.Fatalf("B's room counts a relayed state of none of the flooding frame's %d clients, though bob on B was shown some of them: "+
+			"the wait for their departure from bob's view would check nothing", floodClients)
+	}
+	for client := range seen {
+		if client >= 500_000 && client < 500_000+floodClients && crossed.RelayedAwareness[client].States == 0 {
+			t.Fatalf("bob on B holds the flooding tab's client %d, of which B's room counts no relayed state (%+v): "+
+				"the wait for the departure of the clients that crossed would leave it in bob's view unchecked",
+				client, crossed.RelayedAwareness[client])
+		}
+	}
 	flood.Close()
 	// The flooding tab has left before alice joins: bob, on B, holds none of its clients once B's
 	// room has taken their removal, which is the tombstones the bound must not count.
