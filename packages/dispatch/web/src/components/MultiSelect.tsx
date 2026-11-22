@@ -473,12 +473,12 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
   // project's, so that label is listed only while the draft holds it. So a press of a row that
   // holds the focus only notes it, and the commit that answers the press gives the search box the
   // focus only where that commit left the focus lost (`focusLost`, the close's check above): on
-  // the body, or still on the row it took away. Chromium moves the focus to the body as the row
-  // leaves, but WebKit and Firefox move it off a removed element only at their next rendering
-  // update, after the effect below runs, so there the document still names the row, and a check
-  // for the body alone would let the focus fall to the body at that update, for the page's rescue
-  // to hand to the control now at the lost row's place (`handOn`), the next row where one
-  // follows. A pointer press focuses none of them (`onMouseDown` below), and leaves the focus
+  // the body, or an element no longer on the page. It is the page's one check for a lost focus,
+  // the one the close and the rescue ask too, so it holds wherever an engine leaves the focus of
+  // an element taken away: Playwright's Chromium, Firefox and WebKit were each measured to move it
+  // to the body at once (INFRA-3135's builds Jobs of 2026-11-22). Left to fall, the focus is the
+  // page's rescue's to hand to the control now at the lost row's place (`handOn`), the next row
+  // where one follows. A pointer press focuses none of them (`onMouseDown` below), and leaves the focus
   // where it is. A row or a Create row the options take away holds no press, and its focus stays
   // on the page's body, as for every change the reader did not make. A popover that closes takes
   // the search box along, and the close above gives the focus back to the trigger instead.
@@ -494,7 +494,10 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
     focusedRowPressed.current = true;
     renderAfterPress((renders) => renders + 1);
   };
-  useEffect(() => {
+  // Read in the commit itself, as the row leaves the page: a passive effect can run after the
+  // frame at which the page's rescue hands a lost focus on (`handOn`), which then has put it on
+  // the next row, as it did in Chromium and WebKit in a builds Job while Firefox ran this first.
+  useLayoutEffect(() => {
     const pressed = focusedRowPressed.current;
     focusedRowPressed.current = false;
     if (pressed && focusLost()) inputRef.current?.focus();

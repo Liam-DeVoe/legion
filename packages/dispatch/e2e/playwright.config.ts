@@ -371,10 +371,10 @@ const parallelProjects = [
   // neither fires a `focusout` for it. And a table scrolled while one of its rows holds the
   // focus, whose row the virtual list takes away out of sight: `table-controls`'s
   // scrolling-table row.
-  // The focus left on a removed element until the next rendering update (the HTML spec's focus
-  // fixup), so the document still names the element as the effects of the commit that took it
-  // away run: `issue-page-h`'s row that Details' labels list gives its text box the focus when
-  // Enter on the focused row of a label only the draft holds takes that row away.
+  // Where the engine leaves the focus of an element a commit takes off the page (the HTML spec's
+  // focus fixup), which a list reads as its focus lost: `issue-page-h`'s row that Details' labels
+  // list gives its text box the focus when Enter on the focused row of a label only the draft
+  // holds takes that row away.
   // The engine's own Tab order - a stop for each field of a date box, one for a radio group -
   // which decides when a Tab leaves a panel's last control, where the panel puts the focus on its
   // trigger: `table-controls`'s row that Tab and Escape never leave a panel for the page behind
@@ -474,10 +474,10 @@ const parallelProjects = [
   // priority opens its form in view with the focus on Priority to advance, its row that Change
   // answer opens the answer form with the focus in it, and its scrolling-table row, whose focused
   // row a scroll takes away.
-  // The focus left on a removed element until the next rendering update (the HTML spec's focus
-  // fixup), so the document still names the element as the effects of the commit that took it
-  // away run: `issue-page-h`'s row that Details' labels list gives its text box the focus when
-  // Enter on the focused row of a label only the draft holds takes that row away.
+  // Where the engine leaves the focus of an element a commit takes off the page (the HTML spec's
+  // focus fixup), which a list reads as its focus lost: `issue-page-h`'s row that Details' labels
+  // list gives its text box the focus when Enter on the focused row of a label only the draft
+  // holds takes that row away.
   // The engine's own Tab order - a stop for each field of a date box, one for a radio group -
   // which decides when a Tab leaves a panel's last control, where the panel puts the focus on its
   // trigger: `table-controls`'s row that Tab and Escape never leave a panel for the page behind

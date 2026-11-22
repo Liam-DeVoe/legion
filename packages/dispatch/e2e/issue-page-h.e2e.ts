@@ -1926,9 +1926,9 @@ const DRAFT_ONLY_LABEL = "label-draft-only";
 // right after the one that goes, so the page's focus rescue, which would answer a focus left to
 // fall with the control now at the lost one's place (`handOn`), would put it on that row: the
 // text box holding the focus is the list's own hand-off.
-// @webkit @firefox: the focus left on a removed element until the next rendering update (the HTML
-// spec's focus fixup), so as the list's effect runs the document still names the row it took
-// away rather than the body.
+// @webkit @firefox: where each engine leaves the focus of an element a commit takes off the page
+// (the HTML spec's focus fixup), which the list's check reads (`focusLost`: the body, or an
+// element no longer on the page).
 test("Details' labels list gives its text box the focus when Enter on the focused row of a label only the draft holds takes that row away @firefox @webkit", async ({
   browser,
 }) => {
