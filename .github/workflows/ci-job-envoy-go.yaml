@@ -92,30 +92,20 @@ jobs:
     # The comment on the call gives each member package's sum and the runs.
     #
     # Eight of these calls read higher in a dispatch run since the pair than the table's reading,
-    # each giving the table's limit again: race-impossible's docs 236.1 s (7.87), pgmigrate
-    # 284.7 s (9.49), testnats 4.8 s (0.16) and natscallout, then internal/broker/natscallout,
-    # 5.6 s (0.19), all in run 44790111577 (job 136476756402); the skip count's cmd/cipherd, then
-    # cmd/broker, 263.9 s (8.80) in run 44687712471 (job 136126011542); shutdown's cmd/dispatch
-    # 60.0 s (2.00) and routes 59.6 s (1.99) in run 44939290502 (job 136952816413); and bus
-    # 22.6 s (0.75) in run 44953084676 (job 136995819951).
+    # each giving the table's limit again; each call's comment gives that reading.
     #
     # Three calls run tests that read a margin off the test binary's own deadline, and each must
     # leave at least that margin above its slowest package's time, or those tests refuse the run
-    # rather than waiting in it. Each limit clears it: 19m leaves 652.5 s over
-    # internal/dispatch/pmdoc's 487.5 s in the package list (run 44790111577, its slowest
-    # reading), against the 60 s of pmdoc's perCallReportMargin
-    # (internal/dispatch/pmdoc/linear_test.go:1169); 8m leaves 263.9 s over
-    # the documents package's 216.1 s in the race-impossible call, against the 30 s of its
-    # roomWaitMargin (internal/dispatch/docs/settlement_credit_test.go:546); and 2m leaves 69.8 s
-    # over cmd/dispatch's 50.2 s in the shutdown call, against the 30 s of horizontest.Drain
+    # rather than waiting in it: the 60 s of pmdoc's perCallReportMargin
+    # (internal/dispatch/pmdoc/linear_test.go:1169) in the package list, the 30 s of the
+    # documents package's roomWaitMargin (internal/dispatch/docs/settlement_credit_test.go:546)
+    # in the race-impossible call, and in the shutdown call the 30 s of horizontest.Drain
     # (internal/dispatch/horizontest/horizontest.go, Drain), which the shutdown test's wait for its
     # event feed (waitEventsStart) leaves of the deadline so that its failure prints rather than
-    # being cut off by the package timeout. At 4 minutes the race-impossible call failed that
-    # floor and said so itself, in both arms of run 42577832967: "the test binary's deadline
-    # leaves 20.769s, not more than roomWaitMargin (30s): this looks like a misconfigured run;
-    # raise -timeout". Run 44790111577 read the documents package in the race-impossible call at
-    # 236.1 s, and run 44939290502 (job 136952816413) cmd/dispatch in the shutdown call at 60.0 s;
-    # 8m and 2m leave 243.9 s and 60.0 s above those.
+    # being cut off by the package timeout. Each limit clears it; the comment on each call gives
+    # by how much. At 4 minutes the race-impossible call failed that floor and said so itself, in
+    # both arms of run 42577832967: "the test binary's deadline leaves 20.769s, not more than
+    # roomWaitMargin (30s): this looks like a misconfigured run; raise -timeout".
     #
     # The job's own bound is its slowest time, 1,373 s (run 44790111577 at 85f6b018, job
     # 136476756402), against 1,328 s and 1,278 s in the pair (jobs 136026779841 and
@@ -130,14 +120,14 @@ jobs:
     # The steps after the unit step have limits of their own under that: the store-form
     # count under backend-count.sh's -timeout of 5 minutes, the skip counter's test under
     # main's step limit of 15 minutes and the callout check under main's 6. Both attempts of the
-    # pair missed the Go build cache, on arm64: in each the restore found no go-envoy-test entry
-    # for ARM64. The bound takes their times all the same. An attempt on x64 that missed it took
-    # 1,502 s (run 44097184245, job 134098415747) against warm x64 ones of 737 s and 765 s (runs
-    # 44078406008 and 44175873364), and the bound covers it at 52 %. Eight of the unit step's ten
-    # calls run at the same time, so the step's own worst case is the longest of them, then the
-    # shutdown feed test and the rows that run alone, one call after the other, rather than the
-    # sum of all ten. No dispatch run has yet read the job with those two calls after the
-    # others; the next run's sweep reads it against this bound.
+    # pair missed the Go build cache on arm64 (no go-envoy-test entry for ARM64); the bound takes
+    # their times all the same. An attempt on x64 that missed it took 1,502 s (run 44097184245,
+    # job 134098415747) against warm x64 ones of 737 s and 765 s (runs 44078406008 and
+    # 44175873364), and the bound covers it at 52 %. Eight of the unit step's ten calls run at the
+    # same time, so the step's own worst case is the longest of them, then the shutdown feed test
+    # and the rows that run alone, one call after the other, rather than the sum of all ten. No
+    # dispatch run has yet read the job with those two calls after the others; the next run's
+    # sweep reads it against this bound.
     # The API's claim model is not among them, running in envoy-go-claim-model.
     timeout-minutes: 48
     services:
@@ -539,7 +529,11 @@ jobs:
           # (natsversion), and that refusal's control: on 2.10, stepped past, the consumer loses
           # its old-form message. internal/cipher/natscallout has one too: that the image the hub
           # runs lets a user with an empty publish allow list publish anywhere, the fail-open its
-          # guard refuses, so the guard is shown able to fail on the server production runs. Each
+          # guard refuses, so the guard is shown able to fail on the server production runs.
+          # natsgrant and cmd/listener have the edge listener's: the server refuses the edge's
+          # user a Dispatch event, and the edge listener starts, relays a send and is reached by a
+          # role message through a shared listener under its rendered grant, with no violation,
+          # and ends its start, naming its inbox prefix, under a grant without it. Each
           # package runs only the tests its tag adds: `-tags natslive ./pkg` would re-run the
           # package's untagged tests, which already run elsewhere - internal/testnats in the
           # package list above, and internal/bus and internal/cipher/natscallout in
@@ -556,13 +550,18 @@ jobs:
           # each, the smallest whole minute there is. The slowest readings since are
           # internal/testnats 4.8 s and internal/broker/natscallout 5.6 s (run 44790111577 at
           # 85f6b018, job 136476756402) and internal/bus 22.6 s (run 44953084676 at 4165260d, job
-          # 136995819951), 0.16, 0.19 and 0.75, the same 1m.
+          # 136995819951), 0.16, 0.19 and 0.75, the same 1m. natsgrant's and cmd/listener's, from
+          # main (#4807), have no CI reading on this branch yet: 1m each, the smallest whole minute.
           rig=$(../../.github/scripts/go-tagged-tests.sh natslive ./internal/testnats)
           cap=$(../../.github/scripts/go-tagged-tests.sh natslive ./internal/bus)
           callout=$(../../.github/scripts/go-tagged-tests.sh natslive ./internal/cipher/natscallout)
+          grant=$(../../.github/scripts/go-tagged-tests.sh natslive ./natsgrant)
+          edge=$(../../.github/scripts/go-tagged-tests.sh natslive ./cmd/listener)
           { go test -json -count=1 -timeout 1m -tags natslive -run "$rig" ./internal/testnats/ &&
             go test -json -count=1 -timeout 1m -tags natslive -run "$cap" -v ./internal/bus/ &&
-            go test -json -count=1 -timeout 1m -tags natslive -run "$callout" ./internal/cipher/natscallout/; } > "$RUNNER_TEMP/go-test-json/natslive.json" 2> "$RUNNER_TEMP/go-test-logs/natslive.log" &
+            go test -json -count=1 -timeout 1m -tags natslive -run "$callout" ./internal/cipher/natscallout/ &&
+            go test -json -count=1 -timeout 1m -tags natslive -run "$grant" ./natsgrant/ &&
+            go test -json -count=1 -timeout 1m -tags natslive -run "$edge" ./cmd/listener/; } > "$RUNNER_TEMP/go-test-json/natslive.json" 2> "$RUNNER_TEMP/go-test-logs/natslive.log" &
           natslive=$!
           # The integration suite, which runs a real NATS server in the test process.
           # -timeout 1m, by R6 from the pair at 8cfd2682 (the table on this job): this call's

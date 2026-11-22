@@ -87,7 +87,7 @@ race lane's tests of that kind run alone in steps of their own; no race job runs
 packages, so their tests run at the end of this step instead.
 
 Each call but the vet writes a `go test -json` stream to a file of its own under
-$RUNNER_TEMP/go-test-json - the natslive call's three go test commands write one between
+$RUNNER_TEMP/go-test-json - the natslive call's five go test commands write one between
 them - which the upload step below publishes as one artifact per run attempt.
 .github/scripts/go-test-times.py ranks the tests and packages of such a stream, and
 compares two of them, which is how this job's time is measured (dispatch://INFRA-1075).

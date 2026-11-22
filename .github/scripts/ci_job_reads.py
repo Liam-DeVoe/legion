@@ -1135,7 +1135,7 @@ SCHEMA_SCRIPT = (
     "# shellcheck disable=SC2016 # ${VERSION} is Pulumi's placeholder, not a shell expansion\n"
     """pulumi package get-schema "$RUNNER_TEMP/pr" | jq -e '.version == "1.2.3" and .pluginDownloadURL == "https://github.com/cybermonklabs/legion/releases/download/envoy-infra-v${VERSION}"'"""
 )
-# The five steps, and the three go test commands of envoy-go's natslive call (UNIT_TEST_SCRIPT), that
+# The five steps, and the five go test commands of envoy-go's natslive call (UNIT_TEST_SCRIPT), that
 # run only what their build tag adds. A tag adds files to a package and
 # subtracts none, so `go test -tags T ./pkg` would run the untagged tests another job already
 # ran: each takes its -run from .github/scripts/go-tagged-tests.sh, which reads the names
@@ -2809,7 +2809,11 @@ events=$!
 # (natsversion), and that refusal's control: on 2.10, stepped past, the consumer loses
 # its old-form message. internal/cipher/natscallout has one too: that the image the hub
 # runs lets a user with an empty publish allow list publish anywhere, the fail-open its
-# guard refuses, so the guard is shown able to fail on the server production runs. Each
+# guard refuses, so the guard is shown able to fail on the server production runs.
+# natsgrant and cmd/listener have the edge listener's: the server refuses the edge's
+# user a Dispatch event, and the edge listener starts, relays a send and is reached by a
+# role message through a shared listener under its rendered grant, with no violation,
+# and ends its start, naming its inbox prefix, under a grant without it. Each
 # package runs only the tests its tag adds: `-tags natslive ./pkg` would re-run the
 # package's untagged tests, which already run elsewhere - internal/testnats in the
 # package list above, and internal/bus and internal/cipher/natscallout in
@@ -2826,13 +2830,18 @@ events=$!
 # each, the smallest whole minute there is. The slowest readings since are
 # internal/testnats 4.8 s and internal/broker/natscallout 5.6 s (run 44790111577 at
 # 85f6b018, job 136476756402) and internal/bus 22.6 s (run 44953084676 at 4165260d, job
-# 136995819951), 0.16, 0.19 and 0.75, the same 1m.
+# 136995819951), 0.16, 0.19 and 0.75, the same 1m. natsgrant's and cmd/listener's, from
+# main (#4807), have no CI reading on this branch yet: 1m each, the smallest whole minute.
 rig=$(../../{TAGGED_TESTS} natslive ./internal/testnats)
 cap=$(../../{TAGGED_TESTS} natslive ./internal/bus)
 callout=$(../../{TAGGED_TESTS} natslive ./internal/cipher/natscallout)
+grant=$(../../{TAGGED_TESTS} natslive ./natsgrant)
+edge=$(../../{TAGGED_TESTS} natslive ./cmd/listener)
 {{ go test -json -count=1 -timeout 1m -tags natslive -run "$rig" ./internal/testnats/ &&
   go test -json -count=1 -timeout 1m -tags natslive -run "$cap" -v ./internal/bus/ &&
-  go test -json -count=1 -timeout 1m -tags natslive -run "$callout" ./internal/cipher/natscallout/; }} > "$RUNNER_TEMP/go-test-json/natslive.json" 2> "$RUNNER_TEMP/go-test-logs/natslive.log" &
+  go test -json -count=1 -timeout 1m -tags natslive -run "$callout" ./internal/cipher/natscallout/ &&
+  go test -json -count=1 -timeout 1m -tags natslive -run "$grant" ./natsgrant/ &&
+  go test -json -count=1 -timeout 1m -tags natslive -run "$edge" ./cmd/listener/; }} > "$RUNNER_TEMP/go-test-json/natslive.json" 2> "$RUNNER_TEMP/go-test-logs/natslive.log" &
 natslive=$!
 # The integration suite, which runs a real NATS server in the test process.
 # -timeout 1m, by R6 from the pair at 8cfd2682 (the table on this job): this call's
@@ -3589,6 +3598,8 @@ GATES = [
         ("scripts/sessions/**", f"{at('test', 'Lint the session message-wait script')} and typecheck; the suite "
                                 f"itself is {SESSIONS_JOB}'s, the one step of this job that needed a database"),
         ("scripts/approval-eval/**", f"{at('test', 'Lint the approval-eval statistics')}, typecheck and test"),
+        ("scripts/search-measure/**", f"{at('test', 'Test the search-measure psql helper')}: pg_test.py imports pg.py"),
+        (f"{ENVOY}/scripts/fixtures/pg-url.json", f"{at('test', 'Test the search-measure psql helper')}: scripts/search-measure/pg_test.py:86 reads it (CORPUS)"),
         ("skills/approval-review/references/never-decide.md",
          f"{at('test', 'Test the approval-eval statistics')}: scripts/approval-eval/never-decide.ts:184 reads "
          "it, through refusals.ts:725, which __tests__/refusals.test.ts:165-177 runs"),
@@ -3674,6 +3685,8 @@ GATES = [
         (BUILD_BINARIES, f"docs/site/scripts/generate.ts:116 runs it ({at_docs('Build the docs site')})"),
         (RUN_SERVER, f"packages/dispatch/e2e/harness-listeners.ts's dispatchServer runs it ({at_docs('Take the screenshots')})"),
         ("scripts/e2e/lib/held-port.py", "packages/dispatch/e2e/run-server.sh:80,89 holds the server's port through it"),
+        (f"{ENVOY}/scripts/lib/pg-url.sh", "packages/dispatch/e2e/run-broker.sh:62 sources it, and packages/dispatch/e2e/harness-listeners.ts:188,197 "
+                                           f"start that script in a one-process run on the fake broker, which {at_docs('Take the screenshots')} is"),
         # broker-refgen (docs/site/generators/broker-reference.sh:15) parses these at run time,
         # each directory's non-test .go files alone (packages/envoy/cmd/cipher-refgen/source.go:34-45),
         # and the packages of REFGEN_API past them, whose non-test files the build of
@@ -3858,6 +3871,12 @@ GATES = [
         ("scripts/third-party-notices.ts", "packages/dispatch/web/vite.config.ts:12 (build:web writes dist/THIRD_PARTY_NOTICES.txt)"),
         ("scripts/e2e/lib/process-tree.sh", "packages/dispatch/e2e/acceptance/replace-blocks.sh:109 sources it, and "
                                             f"e2e/__tests__/replace-blocks-guard.test.ts, which {at('dispatch-ui', 'Test dispatch dashboard')} runs, runs that script"),
+        (f"{ENVOY}/scripts/lib/pg-url.sh", "packages/dispatch/e2e/__tests__/psql-password.test.ts:161 sources it, and "
+                                           "packages/dispatch/e2e/acceptance/replace-blocks.sh:113 does, which e2e/__tests__/replace-blocks-guard.test.ts runs; "
+                                           f"{at('dispatch-ui', 'Test dispatch dashboard')} runs both"),
+        (f"{ENVOY}/scripts/fixtures/pg-url.json", "packages/dispatch/e2e/__tests__/psql-password.test.ts:198-200, the new URL at :199"),
+        ("scripts/e2e/lib/held-port.py", "packages/dispatch/e2e/__tests__/psql-password.test.ts:330 runs packages/dispatch/e2e/run-server.sh, "
+                                         f"which holds its server's port through it (run-server.sh:83,92); {at('dispatch-ui', 'Test dispatch dashboard')} runs that file"),
         ("packages/envoy-client/test/fake-dispatch.ts", f"packages/dispatch/e2e/__tests__/delivery-live-probe.test.ts:6-9 and local-instance-support.test.ts:4-7 import @legion/envoy-client/test/fake-dispatch, and {at('dispatch-ui', 'Test dispatch dashboard')} runs both"),
         (TEST_FIXTURES_SRC, f"packages/dispatch's web and e2e/__tests__ suites import @legion/test-fixtures, and {at('dispatch-ui', 'Test dispatch dashboard')} runs them; packages/proof-editor/tests/build-upstream-tarball.test.ts imports its temporary-directories fixture, and {at('dispatch-ui', 'Test proof editor')} runs it"),
     ) + envoy_client_dep("packages/envoy-client/test/fake-dispatch.ts:30 imports ../src/dispatch-http, which the two suites "
@@ -3946,6 +3965,9 @@ GATES = [
         (f"{ENVOY}/internal/dispatch/pmdoc/schema/blocks.json", "packages/dispatch/e2e/engine-reading.ts:13"),
         (f"{ENVOY}/internal/dispatch/pmdoc/testdata/fixtures.json", "read at packages/dispatch/web/src/__tests__/pmdoc-fixtures.ts:48, whose path is the new URL at :44, in the module the browser rows of the seven markdown parity families it holds import; the web unit tests that read the same table run in dispatch-ui, which declares it too"),
         ("scripts/e2e/lib/held-port.py", "packages/dispatch/e2e/run-server.sh:80,89 holds each stack's server port through it"),
+        (f"{ENVOY}/scripts/lib/pg-url.sh", "packages/dispatch/e2e/run-broker.sh:62 sources it, and packages/dispatch/e2e/harness-listeners.ts:188,197 "
+                                           f"start that script in a one-process run on the fake broker: {at_browser(BROWSER_SHARD_SPECS)} and "
+                                           f"{at_browser(BROWSER_ALONE_SPECS, BROWSER_ALONE)}"),
         (".github/scripts/dispatch-browser-samples.sh",
          f"{at_browser(BROWSER_SHARD_SPECS)} and {at_browser(BROWSER_ALONE_SPECS, BROWSER_ALONE)} "
          "start it and read its two summaries"),
@@ -4038,7 +4060,7 @@ GATES = [
         # The unit step, eight of whose ten calls run at the same time (ci-job-envoy-go.yaml says
         # why): the package list, which starts first, and the plain run of what the race build
         # cannot make, internal/pgmigrate, the routes package, the events package, the natslive
-        # call, whose three go test commands run one after the other, the integration suite and
+        # call, whose five go test commands run one after the other, the integration suite and
         # the agentloop vet beside it; then, once those eight have ended, the shutdown feed test
         # and the rows that run alone (UNIT_ALONE_TESTS), one call after the other. Its Runs
         # together are everything the step compiles:
@@ -4074,14 +4096,14 @@ GATES = [
         #     internal/integration, which the list leaves to calls of their own, get a Run each,
         #     and so do the shutdown call and each package of the alone call (UNIT_ALONE_PACKAGES),
         #     which the list runs too, so a call left out of the step is a Run with no command;
-        #   * the natslive call's three commands run only what their tag adds, one package each:
+        #   * the natslive call's five commands run only what their tag adds, one package each:
         #     the rig's own matrix, the one test of internal/bus that needs a real server image,
-        #     and the auth service's check that the deployed server lets an empty allow list
-        #     through, which its guard refuses. The rest of internal/testnats runs in the package
-        #     list beside them; the rest of internal/bus and internal/cipher/natscallout runs in
-        #     envoy-go-race, since UNIT_TEST_PATTERN leaves the race lane's packages out of that
-        #     list, and the envoy_go entry of TAG_RUNS, one entry per step, checks the testnats
-        #     half alone;
+        #     the auth service's check that the deployed server lets an empty allow list through,
+        #     which its guard refuses, and the edge listener's grant and start under its rendered
+        #     user. The rest of internal/testnats runs in the package list beside them; the rest
+        #     of internal/bus and internal/cipher/natscallout runs in envoy-go-race, since
+        #     UNIT_TEST_PATTERN leaves the race lane's packages out of that list, and the envoy_go
+        #     entry of TAG_RUNS, one entry per step, checks the testnats half alone;
         #   * the agentloop vet compiles the package behind the modellive tag, which no test
         #     run of this module reaches.
         pinned_step("envoy-go", UNIT_TEST_STEP, ENVOY, UNIT_TEST_SCRIPT, [
@@ -4097,6 +4119,8 @@ GATES = [
             (ENVOY, ["./internal/testnats/"], "go test -tags natslive ./internal/testnats/", {"tags": "natslive"}),
             (ENVOY, ["./internal/bus/"], "go test -tags natslive ./internal/bus/", {"tags": "natslive"}),
             (ENVOY, ["./internal/cipher/natscallout/"], "go test -tags natslive ./internal/cipher/natscallout/", {"tags": "natslive"}),
+            (ENVOY, ["./natsgrant/"], "go test -tags natslive ./natsgrant/", {"tags": "natslive"}),
+            (ENVOY, ["./cmd/listener/"], "go test -tags natslive ./cmd/listener/", {"tags": "natslive"}),
             (ENVOY, ["./agentloop/"], "go vet -tags modellive ./agentloop/", {"tags": "modellive", "mode": "vet"}),
             *[(ENVOY, [f"./{under}"], f"go test -run of the rows that run alone in ./{under}", {})
               for under in UNIT_ALONE_PACKAGES],
@@ -4124,7 +4148,7 @@ GATES = [
         ]),
     ], reads=reads(
         (".github/actions/pull-test-images/**", at("envoy-go", "Pull test container images")),
-        (TAGGED_TESTS, f"{at('envoy-go', UNIT_TEST_STEP)} takes the -run of its natslive call's three commands from it"),
+        (TAGGED_TESTS, f"{at('envoy-go', UNIT_TEST_STEP)} takes the -run of its natslive call's five commands from it"),
         (DATABASE_SKIPS_SCRIPT, f"{at('envoy-go', DATABASE_SKIPS_STEP)} runs it, and "
                                 f"{at('envoy-go', DATABASE_SKIPS_TEST_STEP)} runs it and copies it"),
         (DATABASE_SKIPS_TEST, f"{at('envoy-go', DATABASE_SKIPS_TEST_STEP)} runs it"),
