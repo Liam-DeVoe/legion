@@ -94,6 +94,15 @@ type Read struct {
 	// listener's task relay among them, whose relay frames name it as the bucket's epoch
 	// (legiontasks.Epoch).
 	Created time.Time
+	// LastSeq is the stream's last sequence as the same read of it found it, before the watch
+	// created this read's watcher: a record at a later revision was stored after the read's first
+	// request. 0 is a stream that had stored nothing.
+	LastSeq uint64
+	// StreamRead numbers that read of the stream among every one this watcher's watches began
+	// (Watcher.StreamReads), counting from 1: a key a write site applied once that read had begun,
+	// at a revision past LastSeq, is the read's evidence of it (Copy.BeginRead); a take the fence
+	// dropped is no evidence.
+	StreamRead uint64
 }
 
 // Watcher is one cache's KV watcher, from New.
@@ -209,6 +218,9 @@ type Watcher struct {
 	// epoch is the current read's Read.Epoch, and bound its stale bound (boundFor).
 	epoch uint64
 	bound time.Duration
+	// streamReads counts the reads of the bucket's stream that this watcher's watches began, each
+	// one the start of a read (Read.StreamRead), whether or not its watch then installed.
+	streamReads uint64
 
 	// completedOnce is set by the first read that completed, and following while the copy follows
 	// the bucket: from a read's completion until the next stop (stopFollowing, watch). staleSince is
@@ -390,6 +402,15 @@ func (w *Watcher) Epoch() uint64 {
 	return w.epoch
 }
 
+// StreamReads is how many reads of the bucket's stream this watcher's watches have begun, each the
+// start of a read: a copy stamps with it a key a write site applied in a read's gap, after that
+// read's stream read and before its BeginRead (Copy.stamp).
+func (w *Watcher) StreamReads() uint64 {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	return w.streamReads
+}
+
 // Err is the current watcher's terminal error, or nil while it runs.
 func (w *Watcher) Err() error {
 	w.mu.RLock()
@@ -455,6 +476,10 @@ func (w *Watcher) watch(run context.Context, kv bus.KeyValue, expect uint64) err
 		w.watching++
 	}
 	disconnects := w.disconnects
+	// Counted before the stream read is sent, so a take stamped with this count or a later one
+	// came after it.
+	w.streamReads++
+	streamRead := w.streamReads
 	w.mu.Unlock()
 	if stopped {
 		return nil
@@ -555,7 +580,7 @@ func (w *Watcher) watch(run context.Context, kv bus.KeyValue, expect uint64) err
 	idle := make(chan struct{}, 1)
 	idleSince := w.now()
 	w.armIdle(w.scanIdle, idle)
-	read := Read{Epoch: w.epoch, Recreated: recreated, MaxAge: state.MaxAge, Created: stream}
+	read := Read{Epoch: w.epoch, Recreated: recreated, MaxAge: state.MaxAge, Created: stream, LastSeq: state.LastSeq, StreamRead: streamRead}
 	w.mu.Unlock()
 	w.cache.BeginRead(read)
 	w.applyMu.Unlock()
