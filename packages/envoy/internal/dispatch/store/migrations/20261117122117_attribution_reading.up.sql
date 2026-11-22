@@ -8,10 +8,20 @@
 --                        issues the body cites, the keys the head branch names and the keys the
 --                        commit messages name, each in text order with the first place of each
 --                        entry. A cited issue is https://github.com/<owner>/<repo>/issues/<n>, from
---                        a github.com path in any case and with an optional port, not after a
---                        letter, a digit, a dot or a hyphen, or from a bare #n of two to six
---                        digits, not after a word character, &, / or #, which names an issue of
---                        repo; each cited URL is in ASCII lower case. The branch is upper-cased as
+--                        a path /<owner>/<repo>/issues/<n> whose host is github.com in any case
+--                        with an optional port (the byte before the host is no letter, digit, dot
+--                        or hyphen), or from a bare #n of two to six digits, not after a word
+--                        character, &, / or #, which names an issue of repo; each cited URL is in
+--                        ASCII lower case. One pass over the body finds every path and every bare
+--                        #n, each with the text since the match before it, which gives each path's
+--                        byte offset. The host of a path is then decided from a slice of the body:
+--                        the 507 bytes before the path, or the bytes before it where the path
+--                        stands nearer the start, less the trailing bytes of a character the slice
+--                        cuts at its start. 507 is 2 x 253 + 1, a port of up to 253 digits, its
+--                        colon and a host name of up to 253 bytes, the bound the Go reading of the
+--                        default branch gives its own host check. So the check, as it is or as a
+--                        later change makes it, reads no more than 507 bytes before a path,
+--                        however long the body is. The branch is upper-cased as
 --                        Go's strings.ToUpper does it for a key: a to z, and the two runes outside
 --                        ASCII that it maps to ASCII letters, ı to I and ſ to S. The commit keys
 --                        are none where the messages are null, which is where a read did not read
@@ -79,7 +89,11 @@ select
   (select coalesce(pg_catalog.array_agg(u order by n), '{}') from (select u, pg_catalog.min(n) n from (
      select pg_catalog.translate((case when m[4] is null then 'https://github.com/' || m[1] || '/' || m[2] || '/issues/' || m[3]
        else 'https://github.com/' || repo || '/issues/' || m[4] end) collate "C", 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz') u, n
-     from pg_catalog.regexp_matches(coalesce(body, '') collate "C", '(?<![A-Za-z0-9.-])[Gg][Ii][Tt][Hh][Uu][Bb]\.[Cc][Oo][Mm](?::[0-9]{1,252})?/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/issues/([1-9][0-9]*)(?![A-Za-z0-9_])|(?:^|[^A-Za-z0-9_&/#])#([1-9][0-9]{1,5})(?![A-Za-z0-9_])', 'g') with ordinality r(m, n)) c where pg_catalog.octet_length(c.u) <= 1024 group by u) d),
+     from (select r.m[3:6] m, r.n, (pg_catalog.sum(pg_catalog.octet_length(r.m[1]) + pg_catalog.octet_length(r.m[2])) over (order by r.n) - pg_catalog.octet_length(r.m[2]))::integer path_at
+       from pg_catalog.regexp_matches(coalesce(body, '') collate "C", '(.*?)(/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/issues/([1-9][0-9]*)(?![A-Za-z0-9_])|(?:^|[^A-Za-z0-9_&/#])#([1-9][0-9]{1,5})(?![A-Za-z0-9_]))', 'g') with ordinality r(m, n)) p,
+       (select pg_catalog.convert_to(coalesce(body, ''), 'UTF8') bytes offset 0) b
+     where m[4] is not null or pg_catalog.convert_from(pg_catalog.ltrim(pg_catalog.substring(b.bytes, greatest(path_at - 507, 0) + 1, least(path_at, 507)), '\x808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf'::bytea), 'UTF8') collate "C"
+       ~ '(?<![A-Za-z0-9.-])[Gg][Ii][Tt][Hh][Uu][Bb]\.[Cc][Oo][Mm](?::[0-9]{1,252})?$') c where pg_catalog.octet_length(c.u) <= 1024 group by u) d),
   (select coalesce(pg_catalog.array_agg(k order by n), '{}') from (select m[1] k, pg_catalog.min(n) n from pg_catalog.regexp_matches(pg_catalog.translate(coalesce(head_ref, '') collate "C", 'abcdefghijklmnopqrstuvwxyzıſ', 'ABCDEFGHIJKLMNOPQRSTUVWXYZIS'), '(?<![A-Za-z0-9_])([A-Z][A-Z0-9]{1,9}-[1-9][0-9]*)(?![A-Za-z0-9_])', 'g') with ordinality r(m, n) where pg_catalog.octet_length(m[1]) <= 1024 group by m[1]) t),
   (select coalesce(pg_catalog.array_agg(k order by n), '{}') from (select m[1] k, pg_catalog.min(n) n from pg_catalog.regexp_matches(pg_catalog.array_to_string(coalesce(messages, '{}'), E'\n') collate "C", '(?<![A-Za-z0-9_])([A-Z][A-Z0-9]{1,9}-[1-9][0-9]*)(?![A-Za-z0-9_])', 'g') with ordinality r(m, n) where pg_catalog.octet_length(m[1]) <= 1024 group by m[1]) t);
 end;
