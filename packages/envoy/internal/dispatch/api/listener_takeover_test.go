@@ -283,7 +283,9 @@ func TestAListenerTakeOverIsWaitedOutAndARefusalSettlesAtOnce(t *testing.T) {
 // waits out a backoff of the production window the server runs. A sender tries again only after
 // such a backoff, and only once it has renewed its claim of the attempt (takeoverRetry.retry,
 // renewMessageDeliveryClaim), so the claims written on the attempt are its tries: one, the claim
-// it took before its first try, with no renewal.
+// it took before its first try, with no renewal. It holds no clock: the product records the
+// attempt's times but states no bound on how soon an attempt with no listener settles, so a delay
+// before the first try is not this test's to see.
 func TestASendWithNoListenerConfiguredSettlesAtOnce(t *testing.T) {
 	handler, database, _ := newTestServer(t, testServerOptions{takeoverWindow: listenerTakeoverWindow})
 	claims := countAttemptClaims(t, database)

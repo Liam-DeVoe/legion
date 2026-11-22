@@ -300,11 +300,11 @@ func TestInboxReadMarksOnlyWhatTheNarrowingNames(t *testing.T) {
 	})
 }
 
-// Every refusal, by status and code: the mark itself - the one ahead of the server's clock is the
-// last second RFC 3339 can name, which stays ahead however late the request reaches the server -
-// the two owner narrowings together, an unknown value in any list - the empty kind among them,
-// which only the list route's own split of an absent ?kind= stands for - a document id that is
-// not one, and a session, for whom the Inbox is nobody's.
+// Every refusal, by status and code: the mark itself - the one ahead of the server's clock is past
+// the minute the product allows (agentStateCutoffSkew) by pastTheRun, so it stays past it however
+// late the request reaches the server - the two owner narrowings together, an unknown value in any
+// list - the empty kind among them, which only the list route's own split of an absent ?kind=
+// stands for - a document id that is not one, and a session, for whom the Inbox is nobody's.
 func TestInboxReadRefusesWhatItCannotMark(t *testing.T) {
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Refusals", "A spec")
@@ -315,7 +315,7 @@ func TestInboxReadRefusesWhatItCannotMark(t *testing.T) {
 	}{
 		"no mark":          {map[string]any{}, "INVALID_STATE"},
 		"unreadable mark":  {map[string]any{"read_through": "yesterday"}, "INVALID_STATE"},
-		"mark ahead":       {map[string]any{"read_through": "9999-12-31T23:59:59Z"}, "INVALID_STATE"},
+		"mark ahead":       {map[string]any{"read_through": time.Now().Add(agentStateCutoffSkew + pastTheRun).UTC().Format(time.RFC3339Nano)}, "INVALID_STATE"},
 		"both owners":      {map[string]any{"read_through": now, "issue": issue.Key, "artifact": "7c9e6679-7425-40de-944b-e07fc1f90ae7"}, "INVALID_QUERY"},
 		"unknown kind":     {map[string]any{"read_through": now, "kind": []string{"ask"}}, "INVALID_QUERY"},
 		"empty kind":       {map[string]any{"read_through": now, "kind": []string{""}}, "INVALID_QUERY"},

@@ -680,9 +680,10 @@ func streamFull(socket *liveSocket) bool {
 // servedSpans wraps the server's listener so a test reads, for each connection the server accepts,
 // in the order it accepts them, how long the server itself served it: from the first read deadline
 // the server sets ahead of now, which a live socket sets as it opens (awaitPong, its first pong
-// deadline, before its writer starts the socket's age), to the server's close of the connection. A
-// span read off the server's own calls holds none of the client's dial, scheduling or reads, which a
-// loaded machine stretches, so a bound on it bounds the server alone.
+// deadline, before its writer starts the socket's age), to the server's end of the socket - the
+// close frame it writes, or, where it writes none (a page that answered no ping), its close of the
+// connection. A span read off the server's own calls holds none of the client's dial, scheduling,
+// reads or close reply, which a loaded machine stretches, so a bound on it bounds the server alone.
 type servedSpans struct {
 	mu    sync.Mutex
 	conns []*spannedConn
@@ -705,6 +706,9 @@ func (spans *servedSpans) span(n int) (time.Duration, bool) {
 	if conn.opened.IsZero() || conn.closed.IsZero() {
 		return 0, false
 	}
+	if !conn.closeFrame.IsZero() {
+		return conn.closeFrame.Sub(conn.opened), true
+	}
 	return conn.closed.Sub(conn.opened), true
 }
 
@@ -726,16 +730,25 @@ func (l spannedListener) Accept() (net.Conn, error) {
 }
 
 // spannedConn is one accepted connection, which records when the server first set its read
-// deadline ahead of now and when the server closed it; spans.mu guards both.
+// deadline ahead of now, when it began to write its close frame, and when it closed the connection;
+// spans.mu guards the three.
 type spannedConn struct {
 	net.Conn
-	spans          *servedSpans
-	opened, closed time.Time
+	spans                      *servedSpans
+	opened, closeFrame, closed time.Time
 }
 
 func (c *spannedConn) SetReadDeadline(at time.Time) error {
 	c.record(&c.opened, at.After(time.Now()))
 	return c.Conn.SetReadDeadline(at)
+}
+
+// Write records the server's close frame as it starts to write it. gorilla writes a control frame
+// in one Write, its first byte the FIN bit and the opcode; no data frame's write starts with that
+// byte, and a JSON payload written on its own starts with '{'.
+func (c *spannedConn) Write(p []byte) (int, error) {
+	c.record(&c.closeFrame, len(p) > 0 && p[0] == 0x80|gws.CloseMessage)
+	return c.Conn.Write(p)
 }
 
 func (c *spannedConn) Close() error {
@@ -1056,12 +1069,15 @@ func TestASocketPastItsAgeClosesWithMaxAge(t *testing.T) {
 	}
 	// The server drops the socket from its set once it has closed the connection, so its span is
 	// whole by then: from the pong deadline it set as the socket opened, before its writer started
-	// the age, to that close.
+	// the age, to the close frame it wrote at the age. The close comes at the age, so a second past
+	// it leaves only the scheduling of a loaded machine, and a writer that closes later fails.
 	rig.sockets(t, 0)
 	if lived, ok := spans.span(0); !ok {
 		t.Fatal("UNKNOWN: the server's span of the socket was not recorded, so its age was not measured")
 	} else if lived < age {
 		t.Fatalf("the server served the socket for %s, closing it before its age (%s)", lived, age)
+	} else if lived > age+time.Second {
+		t.Fatalf("the server served the socket for %s, closing it more than a second after its age (%s)", lived, age)
 	}
 }
 

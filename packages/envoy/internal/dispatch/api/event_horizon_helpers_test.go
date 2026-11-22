@@ -5,6 +5,7 @@ import (
 	"os"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // appendOutOfOrder appends two events through broker so they commit out of id order: tx A
@@ -66,9 +68,15 @@ func appendOutOfOrder(t *testing.T, database *store.Store, broker *events.Broker
 // holdClusterTransactionID opens a transaction in the test cluster's postgres database and takes
 // a transaction id, as a job in another database or another package's test does. Snapshots are
 // instance-wide, so until it ends no horizon on the cluster proves an observation taken after it
-// began. It commits when release runs or when the test ends, and at no other moment: a hold that
-// also ended on a clock of its own let a loaded machine's test see the horizon proven before the
-// check the hold was for.
+// began: every package's test that waits on a horizon waits on it. It commits when release runs,
+// at the test's first failure, or when the test ends, whichever comes first, and at no other
+// moment: a hold that also ended on a clock of its own let a loaded machine's test see the horizon
+// proven before the check the hold was for. The first failure is read off t.Failed every
+// testwait.Poll, and the test's end off t.Context, which ends before any cleanup runs, so a wait
+// that gives up lets the cluster go before anything else of its test is undone. A row whose wait
+// hangs without failing holds it until that wait gives up, at the test binary's deadline less
+// testwait's margin: no failure is known before then, and no release fits that ends the hold
+// sooner without a clock of its own.
 func holdClusterTransactionID(t *testing.T) (release func()) {
 	t.Helper()
 	config, err := pgx.ParseConfig(os.Getenv(storetest.DatabaseURLEnv))
@@ -91,12 +99,32 @@ func holdClusterTransactionID(t *testing.T) (release func()) {
 		t.Fatalf("take a transaction id: %v", err)
 	}
 	var once sync.Once
+	released := make(chan struct{})
 	release = func() {
 		once.Do(func() {
+			close(released)
 			_ = tx.Commit(context.Background())
 			_ = conn.Close(context.Background())
 		})
 	}
+	go func() {
+		poll := time.NewTicker(testwait.Poll)
+		defer poll.Stop()
+		for {
+			select {
+			case <-released:
+				return
+			case <-t.Context().Done():
+				release()
+				return
+			case <-poll.C:
+				if t.Failed() {
+					release()
+					return
+				}
+			}
+		}
+	}()
 	t.Cleanup(release)
 	return release
 }

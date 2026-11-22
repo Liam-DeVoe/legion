@@ -39,6 +39,27 @@ func keyedPost(server *httptest.Server, path, body, key string, timeout time.Dur
 	return response.StatusCode, string(answer), response.Header, err
 }
 
+// keyedReply is what keyedPost answered: the status, body and headers, or the client's failure.
+type keyedReply struct {
+	status int
+	body   string
+	header http.Header
+	err    error
+}
+
+// keyedPostAnswered is keyedPost with no client timeout, its answer taken with testwait.Receive:
+// its one bound is the test binary's deadline less testwait's margin, so a server a loaded machine
+// slows still answers, and one that never answers fails the test by name, with what.
+func keyedPostAnswered(t *testing.T, what string, server *httptest.Server, path, body, key string) keyedReply {
+	t.Helper()
+	answered := make(chan keyedReply, 1)
+	go func() {
+		status, body, header, err := keyedPost(server, path, body, key, 0)
+		answered <- keyedReply{status: status, body: body, header: header, err: err}
+	}()
+	return testwait.Receive(t, what, answered)
+}
+
 // INFRA-258. A write the server takes longer to finish than its client waits still lands, once:
 // the handler runs on past the client's giving up, and the client's repeat under its key is told
 // the first run is still going (409 KEY_IN_FLIGHT), then answered the first run's own stored
@@ -83,26 +104,19 @@ func TestAKeyedWriteSlowerThanItsClientFinishesAndIsReplayed(t *testing.T) {
 	}()
 	testwait.Receive(t, "the first attempt's run to start", running)
 	giveUp()
-	// A client timeout of 0 sets none: each repeat is answered by the server in this process and
-	// waited for as every synchronous request of this package is, under go test's own timeout.
-	status, body, header, err := keyedPost(server, "/test/a/writes", `{"n":1}`, "slow-press", 0)
-	if err != nil || status != http.StatusConflict || !strings.Contains(body, contracts.IdempotencyKeyInFlight) ||
-		header.Get("Retry-After") != "1" {
+	repeat := keyedPostAnswered(t, "the answer to the repeat after the first attempt's client gave up", server, "/test/a/writes", `{"n":1}`, "slow-press")
+	if repeat.err != nil || repeat.status != http.StatusConflict || !strings.Contains(repeat.body, contracts.IdempotencyKeyInFlight) ||
+		repeat.header.Get("Retry-After") != "1" {
 		t.Fatalf("the repeat after the client gave up: %d %s (%v), want 409 %s: the first run is still going",
-			status, body, err, contracts.IdempotencyKeyInFlight)
+			repeat.status, repeat.body, repeat.err, contracts.IdempotencyKeyInFlight)
 	}
 	releaseOnce()
-	type repeated struct {
-		status int
-		body   string
-		header http.Header
-	}
-	answer := testwait.UntilPolling(t, 20*time.Millisecond, "a repeat answered other than 409 once the first run was let go (the last answer)", func() (repeated, bool) {
-		status, body, header, err := keyedPost(server, "/test/a/writes", `{"n":1}`, "slow-press", 0)
-		if err != nil {
-			t.Fatalf("a later repeat: %v", err)
+	answer := testwait.UntilPolling(t, 20*time.Millisecond, "a repeat answered other than 409 once the first run was let go (the last answer)", func() (keyedReply, bool) {
+		later := keyedPostAnswered(t, "the answer to a later repeat", server, "/test/a/writes", `{"n":1}`, "slow-press")
+		if later.err != nil {
+			t.Fatalf("a later repeat: %v", later.err)
 		}
-		return repeated{status: status, body: body, header: header}, status != http.StatusConflict
+		return later, later.status != http.StatusConflict
 	})
 	if answer.status != http.StatusCreated || answer.header.Get(contracts.IdempotencyReplayedHeader) != "?1" || !strings.Contains(answer.body, `"run":1`) {
 		t.Fatalf("the repeat once the first run finished: %d %s replayed=%q, want the first run's 201 replayed",

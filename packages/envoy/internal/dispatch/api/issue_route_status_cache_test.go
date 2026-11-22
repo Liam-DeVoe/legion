@@ -230,30 +230,32 @@ func TestAListenerThatFailedIsAskedAgainOnceItsSilenceWindowPasses(t *testing.T)
 	}
 }
 
-// A listener that does not answer holds a fetch only for the fetch's own bound, not the client's
-// window (a minute here), and the reads after it read unknown at once without asking again. How
-// long the fetch held the call is read off the stored silence, on the database's clock: from the
-// moment the call counts as sent to the silence's store (its expires_at less the silence window),
-// which the test's own setup and scheduling are no part of. That the fetch met a listener that did
-// not answer is its error, its bound's deadline. Whether a later read asked again is read off the
-// stored answer too, not off the listener's count of calls: a read that asked would have stored a
-// silence of its own, sent later, while a call a loaded machine sends past the half-second bound
-// reaches the listener late or not at all, so a count read after the read returns can miss it.
+// A listener that does not answer holds a fetch only for the fetch's own bound, and the reads
+// after it read unknown at once without asking again. The listener client's window is that bound
+// and a millisecond, so a fetch that held its call past the bound it was given is ended by the
+// client's window instead, whatever the machine's speed, and the error says which ended it: the
+// fetch's own context (listRouteRoster) takes its deadline before the call begins and the window
+// starts with the call, so the call's context is the sooner of the two, net/http sets no deadline
+// of its own and its error says "context deadline exceeded"; a call the window ended says
+// "Client.Timeout exceeded" (net/http's setRequestCancel). Whether a later read asked again is
+// read off the stored answer, not off the listener's count of calls: a read that asked would have
+// stored a silence of its own, sent later, while a call a loaded machine sends past the half-second
+// bound reaches the listener late or not at all, so a count read after the read returns can miss
+// it.
 func TestAListenerThatDoesNotAnswerHoldsAReadOnlyForTheFetchBound(t *testing.T) {
-	served, _, _ := heldRosterServer(t)
-	served.rosters.timeout, served.rosters.silenceTTL = 500*time.Millisecond, time.Minute
+	const bound = 500 * time.Millisecond
+	listenerURL, _, _ := heldRosterListener(t)
+	_, _, _, served := newRegisteredTestServer(t, testServerOptions{envoyURL: listenerURL, envoyTimeout: bound + time.Millisecond})
+	served.rosters.ttl, served.rosters.timeout, served.rosters.silenceTTL = time.Minute, bound, time.Minute
 
 	roster := readRoster(t, served, context.Background())
 	if roster.answered {
 		t.Fatal("a read answered a roster though the listener never answered")
 	}
-	if roster.err == nil || !strings.Contains(roster.err.Error(), context.DeadlineExceeded.Error()) {
-		t.Fatalf("the first read's fetch ended with %v, want its bound's %v", roster.err, context.DeadlineExceeded)
+	if roster.err == nil || !strings.Contains(roster.err.Error(), context.DeadlineExceeded.Error()) || strings.Contains(roster.err.Error(), "Client.Timeout exceeded") {
+		t.Fatalf("the first read's fetch ended with %v, want its own %s bound's %v, not the listener client's window", roster.err, bound, context.DeadlineExceeded)
 	}
-	sent, expires := storedRosterTimes(t, served)
-	if held := expires.Add(-served.rosters.silenceTTL).Sub(sent); held >= time.Minute {
-		t.Fatalf("the fetch held the listener's call %s from its send to its silence's store, want about the 500ms fetch bound, not the client's minute", held)
-	}
+	sent, _ := storedRosterTimes(t, served)
 	if roster := readRoster(t, served, context.Background()); roster.answered {
 		t.Fatal("a read inside the silence window answered a roster")
 	}
@@ -262,36 +264,16 @@ func TestAListenerThatDoesNotAnswerHoldsAReadOnlyForTheFetchBound(t *testing.T) 
 	}
 }
 
-// timedCalls counts the calls that reached a timed listener, and keeps the moment the first one
-// reached it.
-type timedCalls struct {
-	atomic.Int32
-	mu    sync.Mutex
-	first time.Time
-}
-
-// firstArrival is the moment the first call reached the listener, zero before any did.
-func (c *timedCalls) firstArrival() time.Time {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.first
-}
-
 // timedRosterServer is a test server on a database of its own whose listener answers GET
 // /v1/sessions with ses-sre holding sre after delay, or, when hang is set, not until the test
-// ends. calls counts the requests that reached it and keeps when the first did. The listener
-// client's own window is a minute, so only the fetch's bound ends a call early. lifetime is the
-// lifetime the server runs on, nil for the test's own context.
-func timedRosterServer(t *testing.T, delay time.Duration, hang bool, lifetime context.Context) (*server, *timedCalls) {
+// ends. calls counts the requests that reached it. The listener client's own window is a minute,
+// so only the fetch's bound ends a call early. lifetime is the lifetime the server runs on, nil
+// for the test's own context.
+func timedRosterServer(t *testing.T, delay time.Duration, hang bool, lifetime context.Context) (*server, *atomic.Int32) {
 	t.Helper()
-	calls := &timedCalls{}
+	calls := &atomic.Int32{}
 	gate := make(chan struct{})
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		calls.mu.Lock()
-		if calls.first.IsZero() {
-			calls.first = time.Now()
-		}
-		calls.mu.Unlock()
 		calls.Add(1)
 		if hang {
 			<-gate
@@ -308,9 +290,10 @@ func timedRosterServer(t *testing.T, delay time.Duration, hang bool, lifetime co
 
 // An answer's TTL counts from the moment its call was sent, so a slow listener cannot stretch the
 // age of the answers a read is served past the TTL. A 1 s fetch with a 1.5 s TTL is stored
-// expiring 1.5 s after its call was sent, which is before the call reached the listener plus the
-// second it took plus the TTL: a TTL counted from the answer expires at that moment or later. Once
-// the answer has expired, by the database's clock it expires on, a read asks again.
+// expiring exactly 1.5 s after its call was sent, both on the database's clock (sent_at, the
+// database's now() before the call, and expires_at); a TTL counted from the answer would expire a
+// second or more later. Once the answer has expired, by the database's clock it expires on, a
+// read asks again.
 func TestAnAnswersTTLCountsFromWhenItsCallWasSent(t *testing.T) {
 	const delay, ttl = time.Second, 1500 * time.Millisecond
 	served, calls := timedRosterServer(t, delay, false, nil)
@@ -318,9 +301,8 @@ func TestAnAnswersTTLCountsFromWhenItsCallWasSent(t *testing.T) {
 	if !readRoster(t, served, context.Background()).answered {
 		t.Fatal("the first read did not answer")
 	}
-	_, expires := storedRosterTimes(t, served)
-	if answered := calls.firstArrival().Add(delay); !expires.Before(answered.Add(ttl)) {
-		t.Fatalf("the answer expires at %s, not before its answer (%s at the soonest: its call reached the listener %s before) plus the %s TTL: the TTL must count from when the call was sent", expires, answered, delay, ttl)
+	if sent, expires := storedRosterTimes(t, served); expires.Sub(sent) != ttl {
+		t.Fatalf("the answer expires %s after its call was sent (at %s), want the %s TTL: the TTL must count from when the call was sent", expires.Sub(sent), sent, ttl)
 	}
 	testwait.UntilPolling(t, 20*time.Millisecond, "the stored answer to expire by the database's clock (whether it has)", func() (bool, bool) {
 		var expired bool
@@ -336,12 +318,16 @@ func TestAnAnswersTTLCountsFromWhenItsCallWasSent(t *testing.T) {
 }
 
 // A failure's window counts from the moment the failure is known, so a listener that hangs is left
-// alone for the whole window after its call times out. A call bound at 1 s with a 1.5 s window is
-// stored expiring at least 2.5 s after the call was sent, on the database's clock, where a window
-// counted from the send would expire at 1.5 s.
+// alone for the whole window after its call times out. A call bound at 1 s with a minute's window
+// is stored expiring at least a minute and a second after the call was sent, on the database's
+// clock, where a window counted from the send would expire a second sooner; and a read inside the
+// window asks the listener nothing. That read is inside the minute however slow the machine. The
+// listener sees at most the first read's call, which a loaded machine can deliver late or not at
+// all, so the count is held to one or fewer; the stored answer, still the first read's silence,
+// says the read made no fetch of its own whether its call would have arrived or not.
 func TestAFailuresWindowCountsFromWhenTheFailureIsKnown(t *testing.T) {
-	const timeout, window = time.Second, 1500 * time.Millisecond
-	served, _ := timedRosterServer(t, 0, true, nil)
+	const timeout, window = time.Second, time.Minute
+	served, calls := timedRosterServer(t, 0, true, nil)
 	served.rosters.ttl, served.rosters.silenceTTL, served.rosters.timeout = time.Minute, window, timeout
 	if readRoster(t, served, context.Background()).answered {
 		t.Fatal("a listener that hangs answered")
@@ -349,6 +335,15 @@ func TestAFailuresWindowCountsFromWhenTheFailureIsKnown(t *testing.T) {
 	sent, expires := storedRosterTimes(t, served)
 	if left := expires.Sub(sent); left < timeout+window {
 		t.Fatalf("the silence expires %s after its call was sent, want at least the call's %s bound and the %s window: the window must count from when the call timed out", left, timeout, window)
+	}
+	if readRoster(t, served, context.Background()).answered {
+		t.Fatal("a read inside the silence window answered a roster")
+	}
+	if got := calls.Load(); got > 1 {
+		t.Fatalf("two reads, the second inside the silence window, made %d listener calls in all, want at most the first read's 1", got)
+	}
+	if again, _ := storedRosterTimes(t, served); !again.Equal(sent) {
+		t.Fatalf("a read inside the silence window asked the listener again: the stored answer was sent at %s, after the first read's silence sent at %s", again, sent)
 	}
 }
 

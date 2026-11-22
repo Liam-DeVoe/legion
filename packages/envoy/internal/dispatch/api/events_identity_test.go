@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -39,19 +40,67 @@ func (i *endableIdentity) Login(*http.Request) (string, error) {
 	return "alice@d.example", nil
 }
 
+// heartbeatLookups is the API's Identity with its lookups counted once its caller has ended. A
+// socket's heartbeat (whileCallerResolves) asks its lookup again on every StreamHeartbeat: the live
+// socket's callerStillResolves and the document socket's signInStillResolves, each of which, for a
+// caller with no bearer, is one Login of the API's Identity. end runs the change that ends the
+// caller under the lock every Login takes, so each Login is wholly before the end or wholly after
+// it, and a socket that closes on its first lookup after the end has made exactly one Login after
+// it. The count is the socket's verdict, not a clock: a refused Login that the lookup or the
+// heartbeat let pass, so the socket stayed open for another beat, is a second Login before the
+// close, however fast or slow the machine. What it cannot see is a lookup that stopped asking the
+// Identity at all: the count is of the product's own lookups, and such a lookup makes none.
+type heartbeatLookups struct {
+	identity.Identity
+	mu    sync.Mutex
+	ended bool
+	after int
+}
+
+func (l *heartbeatLookups) Login(r *http.Request) (string, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.ended {
+		l.after++
+	}
+	return l.Identity.Login(r)
+}
+
+// end runs ending, which ends the caller, and counts every Login after it.
+func (l *heartbeatLookups) end(ending func()) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	ending()
+	l.ended = true
+}
+
+// requireClosedAtTheFirstLookup fails the test unless socket, which has closed, did so on its
+// first lookup after the end: exactly one Login came after it.
+func (l *heartbeatLookups) requireClosedAtTheFirstLookup(t *testing.T, socket string) {
+	t.Helper()
+	l.mu.Lock()
+	after := l.after
+	l.mu.Unlock()
+	if after != 1 {
+		t.Fatalf("%s closed after %d lookups of its caller once the caller had ended, want it closed on the first", socket, after)
+	}
+}
+
 // A person whose session ends (logout, a refresh the sign-in pool refuses, a lost group) stops
 // receiving the event feed they subscribed to while signed in: the live socket resolves them again
-// on each heartbeat (whileCallerResolves) and closes with 1008 once they no longer resolve. The
-// heartbeat is a second, so the client's pong meets the pong deadline on a loaded runner and the
-// socket lasts until the session ends.
+// on each heartbeat (whileCallerResolves) and closes with 1008 on the first of those lookups after
+// they no longer resolve, counted from the lookups themselves (heartbeatLookups). The heartbeat is
+// a second, so the client's pong meets the pong deadline on a loaded runner and the socket lasts
+// until the session ends.
 func TestTheEventFeedClosesOnceItsPersonNoLongerResolves(t *testing.T) {
 	database := storetest.Open(t)
 	broker := events.NewBroker()
 	documents := docs.New(docs.Deps{Store: database, Events: broker})
 	t.Cleanup(func() { _ = documents.Shutdown(context.Background()) })
 	person := &endableIdentity{}
+	lookups := &heartbeatLookups{Identity: person}
 	deps, err := NewDeps(DepsInput{
-		Store: database, Identity: person, AgentTokens: sharedAgentTokens(t, "agent-token"), Docs: documents, Events: broker,
+		Store: database, Identity: lookups, AgentTokens: sharedAgentTokens(t, "agent-token"), Docs: documents, Events: broker,
 		StreamHeartbeat: time.Second,
 		// The subscribe below waits on the event feed (eventFeedFrame).
 		HorizonStallAfter: horizontest.StallWarning, HorizonWarnEvery: horizontest.StallWarning,
@@ -67,25 +116,27 @@ func TestTheEventFeedClosesOnceItsPersonNoLongerResolves(t *testing.T) {
 	client := openLiveSocketAt(t, gws.DefaultDialer, "ws"+strings.TrimPrefix(server.URL, "http")+"/ws/live", nil).servedBy(database).read()
 	subscribeEvents(t, client, "events", nil)
 
-	person.ended.Store(true)
+	lookups.end(func() { person.ended.Store(true) })
 	if closed := client.closeError(t); closed.Code != gws.ClosePolicyViolation {
 		t.Fatalf("the event feed's socket closed with %d %q once its person stopped resolving, want 1008", closed.Code, closed.Text)
 	}
+	lookups.requireClosedAtTheFirstLookup(t, "the event feed's socket")
 }
 
 // The same holds for a human watching an agent's live conversation: the socket that carries the
-// agent view resolves its person on each heartbeat and closes with 1008 once their session has
-// ended, so the view stops relaying.
+// agent view resolves its person on each heartbeat and closes with 1008 on the first of those
+// lookups after their session has ended, so the view stops relaying.
 func TestAgentStreamClosesOnceItsViewerNoLongerResolves(t *testing.T) {
 	database := storetest.Open(t)
 	broker := events.NewBroker()
 	documents := docs.New(docs.Deps{Store: database, Events: broker})
 	t.Cleanup(func() { _ = documents.Shutdown(context.Background()) })
 	person := &endableIdentity{}
+	lookups := &heartbeatLookups{Identity: person}
 	source := agentstream.NewMemory()
 	source.SetResponder(plannerSessionID, true)
 	deps, err := NewDeps(DepsInput{
-		Store: database, Identity: person, AgentTokens: sharedAgentTokens(t, "agent-token"), Docs: documents, Events: broker,
+		Store: database, Identity: lookups, AgentTokens: sharedAgentTokens(t, "agent-token"), Docs: documents, Events: broker,
 		AgentStream: source, StreamHeartbeat: time.Second,
 	})
 	if err != nil {
@@ -102,18 +153,19 @@ func TestAgentStreamClosesOnceItsViewerNoLongerResolves(t *testing.T) {
 		t.Fatalf("the agent view's first frame has data %s, want the session responding", data)
 	}
 
-	person.ended.Store(true)
+	lookups.end(func() { person.ended.Store(true) })
 	if closed := client.closeError(t); closed.Code != gws.ClosePolicyViolation {
 		t.Fatalf("the agent view's socket closed with %d %q once its viewer stopped resolving, want 1008", closed.Code, closed.Text)
 	}
+	lookups.requireClosedAtTheFirstLookup(t, "the agent view's socket")
 	waitUntil(t, "the closed socket's view leaves the session's frames", func() bool { return source.Viewers(plannerSessionID) == 0 })
 }
 
 // A person whose session ends while their editor holds a document open loses the live document
 // too: the document socket resolves them again on every heartbeat, as the live socket does, and
-// closes once they no longer resolve, so the editor neither receives the document's edits nor
-// sends its own. Each case ends the session the way it ends in production: the hourly membership
-// check finding the person out of the group, and a sign-out.
+// closes on the first of those lookups after they no longer resolve, so the editor neither
+// receives the document's edits nor sends its own. Each case ends the session the way it ends in
+// production: the hourly membership check finding the person out of the group, and a sign-out.
 func TestDocumentSocketClosesOnceItsPersonNoLongerResolves(t *testing.T) {
 	const heartbeat = 250 * time.Millisecond
 	for name, end := range map[string]func(*testing.T, *documentSocketRig){
@@ -152,9 +204,10 @@ func TestDocumentSocketClosesOnceItsPersonNoLongerResolves(t *testing.T) {
 				t.Fatalf("the sign-in pool was asked %d times within the hour, want 0", refreshes)
 			}
 
-			end(t, rig)
 			ended := time.Now()
+			rig.lookups.end(func() { end(t, rig) })
 			testwait.Receive(t, "the document socket's close once its person's session ended", peer.connection().Ended)
+			rig.lookups.requireClosedAtTheFirstLookup(t, "the document socket")
 			t.Logf("the document socket closed %s after the session ended (heartbeat %s)", time.Since(ended).Round(time.Millisecond), heartbeat)
 			if generation, _, err := rig.sessions.CurrentSessionGeneration(context.Background(), rig.email); err != nil || generation != rig.generation+1 {
 				t.Fatalf("session generation after the session ended = %d (%v), want %d", generation, err, rig.generation+1)
@@ -182,12 +235,16 @@ func TestDocumentSocketClosesOnceItsPersonNoLongerResolves(t *testing.T) {
 
 // documentSocketRig is the server main serves a person signed in through a sign-in pool: cookie
 // identity confirming membership with the pool, and the API and document socket Register mounts.
+// lookups is the API's Identity, which the document socket's heartbeat asks (signInStillResolves);
+// the document service keeps the bare one, so only the heartbeat's lookups and the API's own
+// requests are counted.
 type documentSocketRig struct {
 	database   *store.Store
 	pool       *oidctest.Issuer
 	people     *store.PgPeopleStore
 	sessions   *store.PgSessionStore
 	documents  *docs.Service
+	lookups    *heartbeatLookups
 	server     *httptest.Server
 	sockets    *servedSockets
 	email      string
@@ -242,8 +299,9 @@ func newDocumentSocketRig(t *testing.T, heartbeat time.Duration) *documentSocket
 	broker := events.NewBroker()
 	rig.documents = docs.New(docs.Deps{Store: database, Events: broker, Identity: person, Settle: time.Hour})
 	t.Cleanup(func() { _ = rig.documents.Shutdown(context.Background()) })
+	rig.lookups = &heartbeatLookups{Identity: person}
 	deps, err := NewDeps(DepsInput{
-		Store: database, Identity: person, AgentTokens: sharedAgentTokens(t, "agent-token"), Docs: rig.documents, Events: broker,
+		Store: database, Identity: rig.lookups, AgentTokens: sharedAgentTokens(t, "agent-token"), Docs: rig.documents, Events: broker,
 		StreamHeartbeat: heartbeat,
 	})
 	if err != nil {

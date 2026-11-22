@@ -491,46 +491,48 @@ func TestTwoAgentViewsShareOneSocket(t *testing.T) {
 
 // heldReplaySource is the in-memory relay but for one session whose replay request waits until it
 // is released or its request's context ends, as a session slow to answer holds a real request up to
-// its timeout. It records how the held session's last request ended.
+// its timeout. Each request of the held session sends asked a record of its own (heldReplay), so
+// how one request ended is never read as another's.
 type heldReplaySource struct {
 	*agentstream.Memory
 	held    string
-	asked   chan struct{}
+	asked   chan *heldReplay
 	release chan struct{}
+}
 
+// heldReplay is one replay request of the held session.
+type heldReplay struct {
 	mu sync.Mutex
-	// ended is the error the held session's last replay request ended with, its context's, and
-	// nil while that request still waits.
+	// ended is the error the request ended with, its context's, and nil while it still waits.
 	ended error
 }
 
 func (s *heldReplaySource) Replay(ctx context.Context, sessionID string) (agentstream.Frame, error) {
 	if sessionID == s.held {
-		s.end(nil)
-		s.asked <- struct{}{}
+		request := &heldReplay{}
+		s.asked <- request
 		select {
 		case <-s.release:
 		case <-ctx.Done():
-			s.end(ctx.Err())
+			request.end(ctx.Err())
 			return nil, ctx.Err()
 		}
 	}
 	return s.Memory.Replay(ctx, sessionID)
 }
 
-// end records how the held session's replay request ended, nil while it waits.
-func (s *heldReplaySource) end(err error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.ended = err
+// end records how the request ended.
+func (r *heldReplay) end(err error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.ended = err
 }
 
-// replayEnded is the error the held session's last replay request ended with, its context's, and
-// nil while that request still waits.
-func (s *heldReplaySource) replayEnded() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.ended
+// endedWith is the error the request ended with, its context's, and nil while it still waits.
+func (r *heldReplay) endedWith() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.ended
 }
 
 // A session's replay can take up to two seconds to answer, and it is asked on the subscription's
@@ -548,7 +550,7 @@ func TestAnAgentViewAsksForItsReplayOffTheReadLoop(t *testing.T) {
 	memory := agentstream.NewMemory()
 	memory.SetResponder(plannerSessionID, true)
 	memory.SetResponder(reviewerSessionID, true)
-	source := &heldReplaySource{Memory: memory, held: plannerSessionID, asked: make(chan struct{}, 4), release: make(chan struct{})}
+	source := &heldReplaySource{Memory: memory, held: plannerSessionID, asked: make(chan *heldReplay, 4), release: make(chan struct{})}
 	t.Cleanup(func() { close(source.release) })
 	rig := newLiveSocketRig(t, testServerOptions{agentStream: source}, nil)
 
@@ -557,7 +559,7 @@ func TestAnAgentViewAsksForItsReplayOffTheReadLoop(t *testing.T) {
 		attempts++
 		client := rig.dial(t, asUser("alice"))
 		client.subscribeAgent(t, "planner", plannerSessionID)
-		testwait.Receive(t, "the planner's view's request for its replay", source.asked)
+		replay := testwait.Receive(t, "the planner's view's request for its replay", source.asked)
 		client.subscribeAgent(t, "reviewer", reviewerSessionID)
 		for {
 			next := client.next(t, "the reviewer's first frame")
@@ -570,18 +572,18 @@ func TestAnAgentViewAsksForItsReplayOffTheReadLoop(t *testing.T) {
 			}
 			// The planner's view answers once its replay has ended, which the replay's timeout can
 			// do first.
-			if !ok || frame.Sub != "planner" || frame.Event != "responder" || source.replayEnded() == nil {
+			if !ok || frame.Sub != "planner" || frame.Event != "responder" || replay.endedWith() == nil {
 				t.Fatalf("frame = %+v, want the reviewer's responder", next)
 			}
 		}
 		// Nil when the planner's replay still waited as the reviewer's view opened.
-		opened := source.replayEnded()
+		opened := replay.endedWith()
 
 		stopped := time.Now()
 		client.send(t, LiveUnsubscribe{Type: "unsubscribe", Sub: "planner"})
 		waitUntil(t, "the unsubscribed view's end", func() bool { return memory.Viewers(plannerSessionID) == 0 })
 		t.Logf("the waiting view ended %s after its unsubscribe", time.Since(stopped))
-		switch cancelled := source.replayEnded(); {
+		switch cancelled := replay.endedWith(); {
 		case opened != nil:
 			_ = client.conn.Close()
 			return fmt.Sprintf("attempt %d: the reviewer's view opened once the planner's replay had ended (%v)", attempts, opened), false

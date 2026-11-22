@@ -22,13 +22,6 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// eventFeedWait bounds a wait on the server's own work that does not wait on the event horizon -
-// a heartbeat, a subscription's end, a replay sent out of what a subscription already read, the
-// hub's own reads - so a frame that never arrives fails the test by name rather than holding it
-// until the package's own timeout, which would take every other test's result with it. A wait for
-// work behind the horizon keys on the horizon instead (eventFeedFrame, horizontest.WaitInProcess).
-const eventFeedWait = 30 * time.Second
-
 // The event feed stands behind the event horizon: a subscription's events_start is the last thing
 // it sends, once the relay's first cursor has awaited the horizon (firstRelayCursor), and the relay
 // sends an event only once the horizon has passed its id. The horizon's proof is instance-wide, so
