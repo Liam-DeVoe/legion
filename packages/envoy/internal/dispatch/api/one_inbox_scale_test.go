@@ -38,7 +38,8 @@ import (
 // Each prints its readings on lines of their own, under the prefixes measurement-one: and
 // measurement-two:, each with the moment it was taken, which is what the pull request body
 // carries. Both run when LEGION_SCALE_TEST is 1, as a14 does (inbox_dismissed_scale_test.go):
-// seeding the corpus and taking 2,800 timed readings costs minutes, which no ordinary run pays.
+// seeding the corpus and taking 200 timed readings of each write path costs minutes, which no
+// ordinary run pays.
 
 // The participant set, in exactly R11's words: the participants user_threads holds per thread, and
 // the count over the writers user_threads cannot hold, the sessions, over comments and over messages
@@ -230,7 +231,9 @@ func settleOneInbox(t *testing.T, side *oneInboxSide, owed string) {
 // otherwise find moved, or writes to a target of its own the seed made one of per reading, so every
 // reading measures the same write, and each build's readings write to its own corpus's targets.
 // many marks a path that moves more than one ask a reading, whose times c-p99 prints with the
-// count it moved and holds to no bound (R11).
+// count it moved and holds to no bound (R11): putProjectDefaultAssignee's move of many asks,
+// project-default-assignee. Its move of one ask, project-default-assignee-one-ask, is no such path:
+// c-p99 holds it, as every path not many, to its bound in oneInboxWriteBounds.
 type oneInboxPath struct {
 	name   string
 	run    func(t *testing.T, side *oneInboxSide, reading int) time.Duration
@@ -244,9 +247,11 @@ type oneInboxPath struct {
 // direct reply (replyMessage), an ask's answer (answerAsk), a dismissal (dismissInbox), Mark all
 // read (markInboxRead), a thread read (putThreadRead), an agent's Clear and read
 // (putUserAgentState), a snooze (putAskSnooze), and the three writes that move the person an ask
-// waits on: patchIssue, putAskAskedOf and putProjectDefaultAssignee. The inbox writes are the heavy
-// person's, over their own history. The mention of a person names the heavy person, whose node
-// holds the corpus's largest set of deliveries, and delivers to them as it mentions them.
+// waits on: patchIssue and putAskAskedOf, each over one ask, and putProjectDefaultAssignee, over
+// the many asks that fall through to one project's default and over the one ask that falls through
+// to another's. The inbox writes are the heavy person's, over their own history. The mention of a
+// person names the heavy person, whose node holds the corpus's largest set of deliveries, and
+// delivers to them as it mentions them.
 func oneInboxWritePaths() []oneInboxPath {
 	issue := func(side *oneInboxSide) string { return "/api/v1/issues/" + side.corpus.issue }
 	return []oneInboxPath{
@@ -368,6 +373,18 @@ func oneInboxWritePaths() []oneInboxPath {
 				side.corpus.moveProject, oneInboxDefaults[(oneInboxReadings+1)%2])
 			if moved != oneInboxDefaultAsks {
 				t.Fatalf("%s: the project's default moved %d asks, want the %d nobody holds", side.name, moved, oneInboxDefaultAsks)
+			}
+			return fmt.Sprintf("asks_moved=%d", moved)
+		}},
+		{name: "project-default-assignee-one-ask", run: func(t *testing.T, side *oneInboxSide, reading int) time.Duration {
+			return oneInboxExpect(t, side.name+": a project's default moved over one ask", side.server.call(t, oneInboxHeavy, http.MethodPut,
+				"/api/v1/projects/"+side.corpus.moveOneProject+"/default-assignee",
+				map[string]any{"assignee": oneInboxDefaults[(reading+1)%2]}), http.StatusOK).took
+		}, beside: func(t *testing.T, side *oneInboxSide) string {
+			moved := oneInboxAsksWaitingOn(t, side.database, `p.key = $1 and a.asked_of is null and i.assignee is null`,
+				side.corpus.moveOneProject, oneInboxDefaults[(oneInboxReadings+1)%2])
+			if moved != 1 {
+				t.Fatalf("%s: the project's default moved %d asks, want the one nobody holds", side.name, moved)
 			}
 			return fmt.Sprintf("asks_moved=%d", moved)
 		}},

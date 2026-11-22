@@ -42,9 +42,10 @@ import (
 // and what each write path the baseline times needs: an issue message thread, open asks on an
 // issue whose assignee is set (one per reading, for the answer), an issue holding exactly one open
 // ask (patchIssue and putAskAskedOf), a project whose default assignee is the only person
-// oneInboxDefaultAsks open asks wait on (putProjectDefaultAssignee), an ask the heavy person
-// snoozes, and a session's conversation with a person: one direct root it answered and one per
-// reading it has not, which are also where a broadcast and a Clear land.
+// oneInboxDefaultAsks open asks wait on and another whose default one open ask waits on
+// (putProjectDefaultAssignee over many asks and over one), an ask the heavy person snoozes, and a
+// session's conversation with a person: one direct root it answered and one per reading it has
+// not, which are also where a broadcast and a Clear land.
 //
 // It fills both tables the one read's plan is held on to scale: comments with the threads above,
 // and messages with each person's conversations, a session of their own answering each one-off
@@ -166,6 +167,9 @@ type oneInboxCorpus struct {
 	snoozeAsk   string
 	moveProject string
 	moveIssue   string
+	// moveOneProject is the project whose default the one open ask of its one issue falls through
+	// to, so a move of that default moves one ask.
+	moveOneProject string
 	// answeredRoot is the conversation's root the session has answered; directRoots are the roots
 	// it has not, each holding attempt 1, one per reading of the session's reply.
 	answeredRoot string
@@ -202,7 +206,7 @@ func seedOneInboxCorpus(t *testing.T, database *store.Store, server oneInboxCall
 	started := time.Now()
 	seedOneInboxPeople(t, database)
 
-	corpus := &oneInboxCorpus{moveProject: "MOVE"}
+	corpus := &oneInboxCorpus{moveProject: "MOVE", moveOneProject: "MOVEONE"}
 	createOneInboxProject(t, server, "SCALE", oneInboxHeavy)
 	corpus.issue = createOneInboxIssue(t, server, "SCALE", "The corpus every inbox reads", oneInboxHeavy)
 	createOneInboxProject(t, server, "WRITE", oneInboxHeavy)
@@ -211,10 +215,14 @@ func seedOneInboxCorpus(t *testing.T, database *store.Store, server oneInboxCall
 	snoozeIssue := createOneInboxIssue(t, server, "WRITE", "A question the heavy person puts off", oneInboxHeavy)
 	createOneInboxProject(t, server, corpus.moveProject, oneInboxDefaults[0])
 	corpus.moveIssue = createOneInboxIssue(t, server, corpus.moveProject, "Questions nobody holds", oneInboxHeavy)
-	// Every issue is created with somebody on it, so the one whose questions fall to the project's
+	createOneInboxProject(t, server, corpus.moveOneProject, oneInboxDefaults[0])
+	moveOneIssue := createOneInboxIssue(t, server, corpus.moveOneProject, "The one question nobody holds", oneInboxHeavy)
+	// Every issue is created with somebody on it, so each one whose questions fall to its project's
 	// default is emptied afterwards, as a person does by hand.
-	oneInboxExpect(t, "unassign "+corpus.moveIssue, server.call(t, oneInboxHeavy, http.MethodPatch,
-		"/api/v1/issues/"+corpus.moveIssue, map[string]any{"assignee": nil}), http.StatusOK)
+	for _, issue := range []string{corpus.moveIssue, moveOneIssue} {
+		oneInboxExpect(t, "unassign "+issue, server.call(t, oneInboxHeavy, http.MethodPatch,
+			"/api/v1/issues/"+issue, map[string]any{"assignee": nil}), http.StatusOK)
+	}
 
 	corpus.widestRoot = seedOneInboxWidestThread(t, database, corpus.issue)
 	corpus.soloRoot = seedOneInboxSoloThread(t, database, corpus.issue)
@@ -233,6 +241,7 @@ func seedOneInboxCorpus(t *testing.T, database *store.Store, server oneInboxCall
 	for index := range oneInboxDefaultAsks {
 		openOneInboxAsk(t, server, corpus.moveIssue, fmt.Sprintf("Who takes unheld question %d?", index))
 	}
+	openOneInboxAsk(t, server, moveOneIssue, "Who takes the one unheld question?")
 	corpus.answeredRoot = sendOneInboxDirect(t, server, "The first question the session answered.")
 	oneInboxExpect(t, "the session's answer to its first question", server.call(t, "", http.MethodPost,
 		"/api/v1/messages/"+corpus.answeredRoot+"/reply", map[string]any{
@@ -749,6 +758,14 @@ func assertOneInboxCorpus(t *testing.T, database *store.Store, corpus *oneInboxC
 		{"open asks of the moving project", `
 			select count(*) from asks a join issues i on i.key = a.issue_key where i.project_key = $1 and a.state = 'open'
 		`, []any{corpus.moveProject}, oneInboxDefaultAsks},
+		{"open asks nobody holds of the project whose default moves one ask, waiting on its default", `
+			select count(*) from asks a` + askedOfPersonJoins + `
+			where p.key = $1 and a.state = 'open' and a.asked_of is null and i.assignee is null
+			  and ` + askedOfPersonExpression + ` = $2
+		`, []any{corpus.moveOneProject, oneInboxDefaults[0]}, 1},
+		{"open asks of the project whose default moves one ask", `
+			select count(*) from asks a join issues i on i.key = a.issue_key where i.project_key = $1 and a.state = 'open'
+		`, []any{corpus.moveOneProject}, 1},
 		{"the session's answer to the conversation's first root", `
 			select count(*) from message_deliveries d join messages m on m.id = d.message_id
 			where m.id = $1 and m.issue_key is null and d.session_id = $2 and d.reply_id is not null
