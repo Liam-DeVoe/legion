@@ -15,16 +15,17 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// pollEvery is how often wait reads the consumers' state: more than the longest a wake waits for
-// the refresher's next pass (evals.RefresherGap, 10 s, which its facts relay shortens and never
-// lengthens), so a cursor that stood still for a whole poll had a pass in which to move.
+// pollEvery is how often wait reads the consumers' state: more than the longest the refresher
+// waits between two passes with work it knows of, one batch of a walk and the next
+// (evals.RefresherGap, 10 s; a change's wake runs its pass as soon as the running one ends), so a
+// cursor or a walk that stood still for a whole poll had a pass in which to move.
 const pollEvery = 15 * time.Second
 
 // lagPolls is how many polls old the heads a cursor is held to are: each cursor must stand at or
 // past where its feed stood lagPolls polls before. The rows the Legion facts consumer writes log
 // changes after its own cursor, so its cursor reaches a head only on its next pass, which the
-// drain of those changes wakes no sooner than legionfacts.PassGap (10 s) after the pass that wrote
-// them; three polls is 45 s, many times that.
+// drain of those changes wakes as soon as the pass that wrote them ends; three polls is 45 s, many
+// times a pass.
 const lagPolls = 3
 
 // heads is where each feed the consumers read stands.

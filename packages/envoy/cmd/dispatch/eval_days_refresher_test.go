@@ -16,10 +16,10 @@ import (
 )
 
 // refresherCatchUpWait is how long the process is given to catch the day rows up. Its refresher
-// runs a pass at start and then one per wake, ten seconds apart at the closest
-// (evals.RefresherGap), and the history is three delivery days and three Legion trees, which one
-// pass walks in well under a second: the wait is the boot, the Legion facts consumer's first whole
-// read, and a few passes of each loop.
+// runs a pass at start and then one per wake, each as soon as the pass before it ends, and a batch
+// of the walks each ten seconds at the closest (evals.RefresherGap), and the history is three
+// delivery days and three Legion trees, which one pass walks in well under a second: the wait is
+// the boot, the Legion facts consumer's first whole read, and a few passes of each loop.
 const refresherCatchUpWait = 3 * time.Minute
 
 // seriesSpan is the first and last day of one series' all-repositories rows of a project and how

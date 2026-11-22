@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"testing"
 	"time"
@@ -247,14 +248,16 @@ func TestTheUnownedP0RowOfEachDayIsWrittenWithNoDeliverySettings(t *testing.T) {
 	}
 }
 
-// TestAnEventAboveTheSafeHorizonAsksForAPassOneGapAway: a pass reads the event log up to the safe
+// TestAnEventAboveTheSafeHorizonAsksForAPassSoon: a pass reads the event log up to the safe
 // horizon it took (events.Horizon), and an event that committed while a lower id was still open
 // stands above it. A write holds a lower event id open while EVAL-50 opens as a P0 and its
 // issue.created commits, which moves today's unowned-p0 count: the pass leaves today's row as it
-// was and asks for its next pass RefresherGap away, not at the day's end, since what holds the
-// horizon back may end without a wake. Once the lower write commits, the next pass writes today's
-// row with EVAL-50 counted.
-func TestAnEventAboveTheSafeHorizonAsksForAPassOneGapAway(t *testing.T) {
+// was and says its horizon held an event back, since what holds the horizon back may end without a
+// wake. The loop, run while the write stays open, asks for its next pass horizonRetry after such a
+// pass, doubling the wait with each one in a row: its passes end 250 ms, 500 ms and 1 s apart, each
+// plus a pass's length, rather than RefresherGap apart. Once the lower write commits, the next pass
+// writes today's row with EVAL-50 counted.
+func TestAnEventAboveTheSafeHorizonAsksForAPassSoon(t *testing.T) {
 	r := newRefresherRig(t)
 	ctx := t.Context()
 	r.settle(t)
@@ -298,8 +301,8 @@ func TestAnEventAboveTheSafeHorizonAsksForAPassOneGapAway(t *testing.T) {
 	}
 
 	// The pass as the loop runs it: no Await before it, which would wait out the open write.
-	report, next, err := r.registry.refresh(ctx, RefresherDeps{Horizon: r.horizon, Build: r.build},
-		refresherSchedule{gap: RefresherGap, page: refresherPage, batch: r.batch, now: func() time.Time { return r.now }}, r.seeds)
+	report, _, err := r.registry.refresh(ctx, RefresherDeps{Horizon: r.horizon, Build: r.build},
+		refresherSchedule{gap: RefresherGap, page: refresherPage, batch: r.batch, now: func() time.Time { return r.now }}, r.seeds, nil)
 	if err != nil {
 		t.Fatalf("the pass below the open write failed: %v", err)
 	}
@@ -310,22 +313,43 @@ func TestAnEventAboveTheSafeHorizonAsksForAPassOneGapAway(t *testing.T) {
 	if slices.Contains(report.sorted(), today) {
 		t.Fatalf("the pass below the open write wrote %s, so its pages read past its safe horizon", today)
 	}
-	if want := r.now.Add(RefresherGap); !next.Equal(want) {
-		t.Errorf("the pass that left EVAL-50's issue.created (id %d) above its safe horizon asks for its next pass at %s, want %s, RefresherGap away",
-			opened, next.Format(time.RFC3339), want.Format(time.RFC3339))
+	if !report.heldBack {
+		t.Errorf("the pass that left EVAL-50's issue.created (id %d) above its safe horizon says its horizon held none back", opened)
+	}
+
+	loop := r.startLoop(t, RefresherGap, make(chan struct{}, 1))
+	loop.awaitRan(t, 4, 5*time.Second)
+	var ends []time.Time
+	for _, record := range loop.log.Records() {
+		if record.Message != "dispatch duty: leased pass ran" {
+			continue
+		}
+		record.Attrs(func(attr slog.Attr) bool {
+			if attr.Key == "lease" && attr.Value.String() == RefresherLease {
+				ends = append(ends, record.Time)
+				return false
+			}
+			return true
+		})
+	}
+	var apart []time.Duration
+	for i, wait := range []time.Duration{horizonRetry, 2 * horizonRetry, 4 * horizonRetry} {
+		gap := ends[i+1].Sub(ends[i])
+		apart = append(apart, gap)
+		if gap < wait-5*time.Millisecond || gap > wait+400*time.Millisecond {
+			t.Errorf("pass %d below the open write ended %s after the one before it, want %s and a pass's length", i+2, gap, wait)
+		}
 	}
 
 	if err := lower.Commit(ctx); err != nil {
 		t.Fatalf("commit the lower write: %v", err)
 	}
-	after, _ := r.pass(t)
-	count := r.day(t, evalID, SeriesUnownedP0, "", refresherToday)
-	if !slices.Contains(after.sorted(), today) || count.LastValue == nil || *count.LastValue != 1 {
-		t.Errorf("the pass after the lower write committed wrote %v, and today's unowned-p0 row holds %v; want %s written, holding 1",
-			after.sorted(), showValue(count.LastValue), today)
-	}
-	t.Logf("the held pass read below id %d, left id %d unread and asked for %s; the next pass wrote %s holding %s",
-		held, opened, next.Format(time.RFC3339), today, showValue(count.LastValue))
+	awaitAt(t, time.Now().Add(8*horizonRetry+3*time.Second), "today's unowned-p0 row holding EVAL-50", func() bool {
+		count := r.day(t, evalID, SeriesUnownedP0, "", refresherToday)
+		return count.LastValue != nil && *count.LastValue == 1
+	})
+	t.Logf("the held pass read below id %d and left id %d unread; the loop's passes below the open write ended %v apart, and once it committed today's row held EVAL-50",
+		held, opened, apart)
 }
 
 // TestTheShippedMembersReadKeepsItsPartialIndexUnderAGenericPlan: the read of the pull requests a

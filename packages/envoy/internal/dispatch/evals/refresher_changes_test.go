@@ -629,8 +629,8 @@ func TestARepoProjectsChangeReattributesWithinOnePass(t *testing.T) {
 	}
 
 	r.batch = 100
-	report, next := r.pass(t)
-	if next.Equal(r.now) {
+	report, _ := r.pass(t)
+	if report.walksLeft {
 		t.Errorf("the pass left a walk with days to build, want the whole history rebuilt in one pass")
 	}
 	if got := r.count(t, checks, other, EvalID(other, SlugPRCI), measures.SeriesMinutes, refresherToday); got != mainChecks {
@@ -970,12 +970,12 @@ func TestALegionSeriesWhoseFirstDayMovesLandsInOneCommitAsAWholeWalkHoldsIt(t *t
 		seq, stood := live.latestSeq(t), record()
 		closeAgain(live, history)
 		wrote()
-		_, next := live.pass(t)
+		report, _ := live.pass(t)
 		transactions := wrote()
 		if len(transactions) != 1 {
 			t.Errorf("%s: the pass wrote day rows, members or figures in %d transactions, want one: %v", move.name, len(transactions), transactions)
 		}
-		if next.Equal(live.now) {
+		if report.walksLeft {
 			t.Errorf("%s: the pass left a walk with days to build", move.name)
 		}
 		if got := record(); got != stood {

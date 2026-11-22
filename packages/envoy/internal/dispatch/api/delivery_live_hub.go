@@ -398,9 +398,14 @@ type deliveryHubNote struct {
 const (
 	// A dirty view is recomputed once no change has marked it for viewQuiet, or viewMaxWait after
 	// the first did, whichever comes first, but for a mark that waits for no quiet
-	// (markDirtyLocked).
+	// (markDirtyLocked). The quiet coalesces a burst of marks into one recompute. viewMaxWait bounds
+	// what marks that keep coming less than viewQuiet apart can hold a view back: under a stream of
+	// changes the refresher answers each at once (evals.RefresherGap), so its passes and their
+	// echoes mark a view every few hundred milliseconds, and R14 gives a change 2 s from its commit
+	// to every view, which its passes and the recompute itself share. A second leaves them the
+	// other second.
 	viewQuiet   = 250 * time.Millisecond
-	viewMaxWait = 2 * time.Second
+	viewMaxWait = time.Second
 	// deliveryLiveRetry is how long a view whose read failed waits before the next.
 	deliveryLiveRetry = 5 * time.Second
 	// deliveryLivePage is how many changes one catch-up read takes.

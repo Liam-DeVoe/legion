@@ -4071,7 +4071,7 @@ const (
 // waitOutABucketBoundary sees to. reference-excerpts is a woken loop
 // (docs.RunReferenceExcerptReconciliation) that runs a pass at start and again on the
 // pglisten.Hub wake after its first LISTEN: the process that found the lease held retries (every
-// two seconds, its MinGap) until it runs a pass of its own, because the other's pass may have
+// two seconds, its Retry) until it runs a pass of its own, because the other's pass may have
 // read before whatever woke it, so after the release each process runs at least one pass and no
 // count is held to one. The other seven are not observable, and this row says so rather than
 // pretending: issue-ask-repair's first leased pass is one IssueAskRepairInterval (10 min) in, the

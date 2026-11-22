@@ -658,7 +658,7 @@ func TestTheMarkerHoldsTheReadOffUntilTheFirstWholeBuild(t *testing.T) {
 	last := refresherToday.AddDate(0, 0, FigureLead)
 	heldOff := 0
 	for passes := 1; passes <= 100; passes++ {
-		_, next := r.pass(t)
+		report, _ := r.pass(t)
 		built := r.figuresBuilt(t)
 		if passes == 1 && len(built) != 0 {
 			t.Errorf("the first pass, whose walks of the day rows have days left, left figures built: %v", built)
@@ -678,7 +678,7 @@ func TestTheMarkerHoldsTheReadOffUntilTheFirstWholeBuild(t *testing.T) {
 			}
 			heldOff++
 		}
-		if !next.Equal(r.now) {
+		if !report.walksLeft {
 			break
 		}
 	}

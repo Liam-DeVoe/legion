@@ -13,6 +13,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
+	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -91,10 +92,10 @@ import (
 //     day, which the walk or a page's span built, or the first it builds itself
 //     (refresh.firstOf).
 //
-// A walk begins again, and rebuilds its days a batch a pass, for a change of a repository's
-// mapping, a build with no record of its own (a release), a lost change cursor, a database whose
-// rows' settings are not recorded, and a project first seen: walk restarts, which no page's
-// commit holds.
+// A walk begins again, and rebuilds its days a batch each RefresherGap, for a change of a
+// repository's mapping, a build with no record of its own (a release), a lost change cursor, a
+// database whose rows' settings are not recorded, and a project first seen: walk restarts, which
+// no page's commit holds.
 
 // refresh is one pass's state: the build and the day it writes as, the projects and the delivery
 // settings it read, the first input day of each project's series it has read (of each deploy
@@ -167,12 +168,13 @@ type refresh struct {
 	walking bool
 	// walked is the span of days the pass's walks wrote, by family and project (noteWalked).
 	walked map[walkKey]daySpan
-	// eventsFrom is where the event cursor stood when the pass's first page read it (paged is set
-	// once one has), and eventsTo where the last page the pass committed left it (commitPage): the
-	// span of the event log the pass read past, which owedFacts reads.
-	eventsFrom, eventsTo int64
-	paged                bool
-	report               refreshed
+	// batched is the walks' batch of the gap whose days the pass's walks build (gapBatch), and
+	// walkBuilt how many writes they have made: days of the day rows' walks, daily writes and
+	// projects' batches of the figures walk. A pass that has made one stops its walks for an owed
+	// wake (yields).
+	batched   *gapBatch
+	walkBuilt int
+	report    refreshed
 }
 
 // load reads the projects and the delivery settings and seeds the projects the pass owes a seed
@@ -383,9 +385,7 @@ func (w *pageWork) restarts(projects []string) []walkKey {
 // days the page names, and moves the cursors in a transaction of its own, which also records the
 // walks the page begins again and, where the page's days move what days it does not name hold,
 // writes them and those days (apply, commitPage). It then writes each day a write left owed
-// (writeOwed). It answers whether a feed holds more rows. The pass's first page
-// records where the event cursor stood before it (eventsFrom), where the pass's reading of the
-// event log began (owedFacts).
+// (writeOwed). It answers whether a feed holds more rows.
 //
 // A database holding no cursor row has committed no pass: the cursors start at the feeds' heads,
 // and every walk begins, which builds every day the feeds' history could name. A change cursor
@@ -407,9 +407,6 @@ func (r *refresh) page(ctx context.Context, safe int64, limit int) (bool, error)
 	cursors, committed, err := r.store.readRefresherCursors(ctx)
 	if err != nil {
 		return false, err
-	}
-	if !r.paged {
-		r.paged, r.eventsFrom = true, cursors.events
 	}
 	work := newPageWork()
 	var moved feedCursors
@@ -1272,11 +1269,12 @@ func (r *refresh) noteBuilt(family, project string, day time.Time, built []DayRo
 	}
 }
 
-// walk makes a batch of each walk: the delivery walk (where delivery settings exist), and each
-// project's Legion walk, logged zero fill and unowned-p0 row of today, and then folds the stored
-// figures of the days the batches wrote (foldWalked). It answers whether a walk has days left,
-// which asks for the next pass at once. It computes every day it reaches, so the days the pass's
-// pages wrote are written again where a batch reaches them (refresh.done begins empty).
+// walk builds what the pass's batch (gapBatch) has left of each walk: the delivery walk (where
+// delivery settings exist), and each project's Legion walk, logged zero fill and unowned-p0 row of
+// today, and then folds the stored figures of the days it wrote (foldWalked). It answers whether a
+// walk has days left, after the batch or because the walks stopped for an owed wake (yields),
+// which asks for the pass that builds them. It computes every day it reaches, so the days the
+// pass's pages wrote are written again where a batch reaches them (refresh.done begins empty).
 func (r *refresh) walk(ctx context.Context) (bool, error) {
 	walks, err := r.store.readWalks(ctx, r.build)
 	if err != nil {
@@ -1309,19 +1307,37 @@ func (r *refresh) walk(ctx context.Context) (bool, error) {
 			return false, err
 		}
 	}
-	return pending, r.foldWalked(ctx)
+	return pending || r.report.yielded, r.foldWalked(ctx)
 }
 
-// walkDays makes one batch of the walk key: from the first day it has not built, or, where it is
-// to begin (no record of the running build's, which is how each build makes its own walk, or one
-// begun again), from the first input day begin answers, it builds up to r.batch days through today
-// with build, and records where it stands. A walk with nothing to walk (begin answers nil) stands
-// at tomorrow. It answers whether days before today are left. The batch builds by the first input
-// days of the days before its first (beginBatch), and writes each project's day of it that holds
-// rows of the walk's family whether or not it builds a row of it (heldDays), so a day whose input
-// left holds no row a whole walk would not hold.
+// yields reports whether the pass's walks stop before their next write, a day of a walk, a daily
+// write or a project's batch of the figures walk, and records it in the pass's report: a wake is
+// owed (duty.WakeOwed), so a change waits behind the write being made rather than the whole batch,
+// and the walks have made one write in this pass already, so a run of wakes cannot keep them from
+// building, as the echo of the walks' own writes would. The owed pass builds what the batch has
+// left after its own changes' work (gapBatch).
+func (r *refresh) yields(ctx context.Context) bool {
+	if r.walkBuilt == 0 || !duty.WakeOwed(ctx) {
+		return false
+	}
+	r.report.yielded = true
+	return true
+}
+
+// walkDays builds what the pass's batch has left of the walk key: from the first day it has not
+// built, or, where it is to begin (no record of the running build's, which is how each build makes
+// its own walk, or one begun again), from the first input day begin answers, it builds up to the
+// batch's days left of the walk through today with build, stopping between two days for an owed
+// wake (yields), and records where it stands. A walk with nothing to walk (begin answers nil)
+// stands at tomorrow. It answers whether days before today are left. The days a pass builds of the
+// walk build by the first input days of the days before their first (beginBatch), and write each
+// project's day of them that holds rows of the walk's family whether or not they build a row of it
+// (heldDays), so a day whose input left holds no row a whole walk would not hold.
 func (r *refresh) walkDays(ctx context.Context, walks map[walkKey]walkState, key walkKey,
 	begin func(context.Context) (*time.Time, error), build func(context.Context, time.Time) error) (bool, error) {
+	if r.yields(ctx) {
+		return true, nil
+	}
 	state, found := walks[key]
 	begun := !found || state.next == nil
 	next := state.next
@@ -1341,22 +1357,37 @@ func (r *refresh) walkDays(ctx context.Context, walks map[walkKey]walkState, key
 		}
 		return false, nil
 	}
-	last := next.AddDate(0, 0, max(r.batch, 1)-1)
+	left := r.batched.left(key, r.batch)
+	if left <= 0 {
+		return true, nil
+	}
+	last := next.AddDate(0, 0, left-1)
 	if last.After(r.today) {
 		last = r.today
 	}
 	if err := r.beginBatch(ctx, key, *next, last); err != nil {
 		return false, err
 	}
-	for day := *next; !day.After(last); day = day.AddDate(0, 0, 1) {
+	built := 0
+	day := *next
+	for ; !day.After(last); day = day.AddDate(0, 0, 1) {
+		if r.yields(ctx) {
+			break
+		}
 		if err := build(ctx, day); err != nil {
 			return false, err
 		}
+		built++
+		r.walkBuilt++
 	}
-	if err := r.recordWalk(ctx, key, last.AddDate(0, 0, 1)); err != nil {
+	if built == 0 {
+		return true, nil
+	}
+	r.batched.spend(key, built)
+	if err := r.recordWalk(ctx, key, day); err != nil {
 		return false, err
 	}
-	return last.Before(r.today), nil
+	return !day.After(r.today), nil
 }
 
 // beginBatch begins a batch of the walk key from from through through: the walk's first input days
@@ -1481,18 +1512,23 @@ func (r *refresh) deliveryWalkDay(ctx context.Context, day time.Time) error {
 	return nil
 }
 
-// walkDaily makes the once-a-day write of the walk key: write runs on the first pass of each UTC
-// day, and on the first pass of a walk begun again (no record of the running build's), and the
-// walk then stands at tomorrow. The logged evals' zero fill is one (fillLogged through today), and
-// the unowned-p0 row of today another (writeUnowned): its count reads issues alone, so it is
+// walkDaily makes the once-a-day write of the walk key: write runs on the first walking pass of
+// each UTC day, and on the first walking pass of a walk begun again (no record of the running
+// build's), and the walk then stands at tomorrow; a pass whose walks stopped for an owed wake
+// (yields) leaves it to the next. The logged evals' zero fill is one (fillLogged through today),
+// and the unowned-p0 row of today another (writeUnowned): its count reads issues alone, so it is
 // written whether or not delivery settings exist, a project made since the last pass included.
 func (r *refresh) walkDaily(ctx context.Context, walks map[walkKey]walkState, key walkKey, write func(context.Context) error) error {
 	state, found := walks[key]
 	if found && state.next != nil && state.next.After(r.today) {
 		return nil
 	}
+	if r.yields(ctx) {
+		return nil
+	}
 	if err := write(ctx); err != nil {
 		return err
 	}
+	r.walkBuilt++
 	return r.recordWalk(ctx, key, r.today.AddDate(0, 0, 1))
 }

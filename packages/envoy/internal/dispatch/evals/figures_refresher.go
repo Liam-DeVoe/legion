@@ -46,7 +46,7 @@ import (
 // `figures` row), which no build without the figures reads, so a change such a build's refresher
 // read off the refresher's own cursor is still folded. A read sees figures older than the rows
 // from that write's commit until the next pass of a build with the figures, which the change's
-// own notification wakes, one RefresherGap at most after the pass before it began, and the pass's
+// own notification wakes and which starts as soon as the pass running then ends, and the pass's
 // own length.
 
 // figuresCursor names the figures' own cursor in eval_days_cursor (figureChanges).
@@ -329,18 +329,20 @@ func (s *Store) foldFiguresOfDays(ctx context.Context, build, project string, sp
 	return nil
 }
 
-// walkFigures makes a batch of each project's figures walk under the pass's build: from the first
-// end day it has not built, or, where it is to begin (no record of the build's, which is how each
-// build makes its own walk, or one begun again), from the day after the project's first listed day
-// row, it folds up to r.batch end days through FigureLead days after today (buildFigureEnds), and
-// records where it stands in the same transaction, so the figures and the walk that says how far
-// they are folded commit together. The batch that reaches the last end day records the project's
-// figures built through it (eval_figures_built), which the first whole walk of any build sets and
-// every later one moves on; so once a walk has built the last end day, each later UTC day's first
-// pass builds the end day that day adds, two days after the new today. A project with no listed day
-// row stands past the last end day, and one whose first row is later than that stands at the day
-// after it, built: no range before holds a row, and the write of its first rows folds them. It
-// answers whether end days before the last are left, which asks for the next pass at once.
+// walkFigures builds what the pass's batch (gapBatch) has left of each project's figures walk under
+// the pass's build: from the first end day it has not built, or, where it is to begin (no record
+// of the build's, which is how each build makes its own walk, or one begun again), from the day
+// after the project's first listed day row, it folds up to the batch's end days left of the walk
+// through FigureLead days after today (buildFigureEnds), and records where it stands in the same
+// transaction, so the figures and the walk that says how far they are folded commit together. It
+// stops between two projects for an owed wake (yields), each project's part being one
+// transaction. The part that reaches the last end day records the project's figures built through
+// it (eval_figures_built), which the first whole walk of any build sets and every later one moves
+// on; so once a walk has built the last end day, each later UTC day's first walking pass builds
+// the end day that day adds, two days after the new today. A project with no listed day row stands
+// past the last end day, and one whose first row is later than that stands at the day after it,
+// built: no range before holds a row, and the write of its first rows folds them. It answers
+// whether end days before the last are left, which asks for the pass that builds them.
 func (r *refresh) walkFigures(ctx context.Context) (bool, error) {
 	walks, err := r.store.readWalks(ctx, r.build)
 	if err != nil {
@@ -349,6 +351,9 @@ func (r *refresh) walkFigures(ctx context.Context) (bool, error) {
 	last := r.today.AddDate(0, 0, FigureLead)
 	pending := false
 	for _, project := range r.projects {
+		if r.yields(ctx) {
+			return true, nil
+		}
 		key := walkKey{family: walkFigures, project: project}
 		state, found := walks[key]
 		next := state.next
@@ -371,13 +376,20 @@ func (r *refresh) walkFigures(ctx context.Context) (bool, error) {
 			}
 			continue
 		}
-		end := next.AddDate(0, 0, max(r.batch, 1)-1)
+		left := r.batched.left(key, r.batch)
+		if left <= 0 {
+			pending = true
+			continue
+		}
+		end := next.AddDate(0, 0, left-1)
 		if end.After(last) {
 			end = last
 		}
 		if err := r.buildFigures(ctx, key, *next, end, end.Equal(last)); err != nil {
 			return false, err
 		}
+		r.batched.spend(key, int(end.Sub(*next)/(24*time.Hour))+1)
+		r.walkBuilt++
 		pending = pending || end.Before(last)
 	}
 	return pending, nil

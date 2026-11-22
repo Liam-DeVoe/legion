@@ -284,8 +284,8 @@ func TestASettingsChangeRewritesInOnePassWhatAWholeWalkWrites(t *testing.T) {
 		walking.putSettings(t, settings, alice)
 
 		seq, walk, before := rewriting.latestSeq(t), rewriting.walkXmin(t), rewriting.dayRows(t)
-		if _, next := rewriting.pass(t); next.Equal(rewriting.now) {
-			t.Errorf("%s: the pass asked for another at once, which a walk with days left does", step.name)
+		if report, _ := rewriting.pass(t); report.walksLeft {
+			t.Errorf("%s: the pass left a walk with days to build", step.name)
 		}
 		if rewriting.walkXmin(t) != walk {
 			t.Errorf("%s: the pass began the delivery walk again", step.name)
@@ -325,8 +325,8 @@ func TestASettingsChangeRewritesInOnePassWhatAWholeWalkWrites(t *testing.T) {
 		walking.putSettings(t, settings, alice)
 		seq, walk := rewriting.latestSeq(t), rewriting.walkXmin(t)
 		rows, members := rewriting.xmins(t, dayRowXmins), rewriting.xmins(t, memberXmins)
-		if _, next := rewriting.pass(t); next.Equal(rewriting.now) {
-			t.Errorf("%s: the pass asked for another at once, which a walk with days left does", move.name)
+		if report, _ := rewriting.pass(t); report.walksLeft {
+			t.Errorf("%s: the pass left a walk with days to build", move.name)
 		}
 		show := func(xmin string) string { return "written by " + xmin }
 		if differ := sameValues(rewriting.xmins(t, dayRowXmins), rows, show); len(differ) > 0 {
@@ -1536,7 +1536,7 @@ func TestARewoundSpanLandsInOneCommitAsAWholeWalkHoldsIt(t *testing.T) {
 			prints := &commitPrints{t: t, rig: live.rig}
 			before := prints.read()
 			live.registry = New(storetest.TracedStore(t, live.database, prints), live.documents, live.registry.events)
-			_, next := live.pass(t)
+			report, _ := live.pass(t)
 			after := prints.read()
 
 			transactions := wrote()
@@ -1555,7 +1555,7 @@ func TestARewoundSpanLandsInOneCommitAsAWholeWalkHoldsIt(t *testing.T) {
 			if len(states) > 0 {
 				t.Errorf("a reader between two commits of the pass saw %d states that are neither the one before it nor the one after it", len(states))
 			}
-			if next.Equal(live.now) {
+			if report.walksLeft {
 				t.Errorf("the pass left a walk with days to build")
 			}
 			if got := live.walkRecord(t); got != record {
@@ -1672,8 +1672,8 @@ func TestARebuiltSpansMembersPastTheBoundGoInSeveralStatements(t *testing.T) {
 	live.copyRunsBefore(t, deliveries.DeployRepo, unmapped, delivery.DeliveryRunKindDeploy, &cutoff)
 	writes := &memberWrites{}
 	live.registry = New(storetest.TracedStore(t, live.database, writes), live.documents, live.registry.events)
-	_, next := live.pass(t)
-	if next.Equal(live.now) {
+	report, _ := live.pass(t)
+	if report.walksLeft {
 		t.Errorf("the pass left a walk with days to build")
 	}
 	largest, total := 0, 0
@@ -1970,8 +1970,8 @@ func TestASeededSeriesOfSpanChangesLandsInOnePassEachAsAWholeWalkHoldsThem(t *te
 		drawn[name] = true
 		what := fmt.Sprintf("change %d, %s", step, name)
 		change(t, live)
-		_, next := live.pass(t)
-		if next.Equal(live.now) {
+		report, _ := live.pass(t)
+		if report.walksLeft {
 			t.Errorf("%s: the pass left a walk with days to build", what)
 		}
 		walking.exec(t, "forget the settings the rows stand built under", `delete from eval_days_settings`)
@@ -2093,8 +2093,8 @@ func TestARunsRemovalRewritesTheDayOfTheDeployThatShipsItsPullRequestsNext(t *te
 	}
 	seq := live.latestSeq(t)
 	remove(t, live, deliveries)
-	report, next := live.pass(t)
-	if next.Equal(live.now) {
+	report, _ := live.pass(t)
+	if report.walksLeft {
 		t.Errorf("the pass left a walk with days to build")
 	}
 	if _, err := delivery.DrainPending(t.Context(), live.database.Pool); err != nil {
@@ -2142,8 +2142,8 @@ func TestAPullRequestLeavingTheDaysBeforeItsRepositorysHistoryRewritesTheDeployT
 	live.exec(t, "merge the pull request when the history merges it", `
 		update delivery_pull_requests set merged_at = $3, created_at = $4 where repo = $1 and number = $2
 	`, moved.Repo, moved.Number, moved.MergedAt, moved.CreatedAt)
-	report, next := live.pass(t)
-	if next.Equal(live.now) {
+	report, _ := live.pass(t)
+	if report.walksLeft {
 		t.Errorf("the pass left a walk with days to build")
 	}
 	if on := live.deploysWithPRs(t, main, repo, early); on != 0 {

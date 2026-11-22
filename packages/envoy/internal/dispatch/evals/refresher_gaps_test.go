@@ -41,7 +41,7 @@ func (r *refresherRig) failingPass(t *testing.T) {
 		t.Fatalf("await the event log's safe horizon: %v", err)
 	}
 	if _, _, err := r.registry.refresh(t.Context(), RefresherDeps{Horizon: r.horizon, Build: r.build},
-		refresherSchedule{gap: RefresherGap, page: refresherPage, batch: r.batch, now: func() time.Time { return r.now }}, r.seeds); err == nil {
+		refresherSchedule{gap: RefresherGap, page: refresherPage, batch: r.batch, now: func() time.Time { return r.now }}, r.seeds, &gapBatch{}); err == nil {
 		t.Fatal("the pass the test fails answered no error")
 	}
 }

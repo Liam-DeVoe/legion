@@ -823,6 +823,39 @@ func TestEveryOtherEvalsViewMarkWaitsTheQuiet(t *testing.T) {
 	}
 }
 
+// TestAViewUnderMarksLessThanTheQuietApartIsDueASecondAfterItsFirst: marks that keep coming less
+// than viewQuiet apart, as the refresher's passes and their echoes make under a stream of changes,
+// never let the view's quiet begin, and hold it no longer than viewMaxWait: it is due one second
+// after its first mark, within the 2 s R14 gives a change to reach every view, whatever marks come
+// after that second. Day writes 200 ms apart through 0.8 s and through 3 s, and readings 100 ms
+// apart through 0.9 s.
+func TestAViewUnderMarksLessThanTheQuietApartIsDueASecondAfterItsFirst(t *testing.T) {
+	start := time.Date(2026, 11, 13, 12, 0, 0, 0, time.UTC)
+	every := func(kind string, apart, through time.Duration) []evalsMarkStep {
+		var steps []evalsMarkStep
+		for at := time.Duration(0); at <= through; at += apart {
+			steps = append(steps, evalsMarkStep{at, kind, ""})
+		}
+		return steps
+	}
+	days, readings := delivery.ChangeKindEvalDays, delivery.ChangeKindEvalReadings
+	for _, c := range []struct {
+		name  string
+		steps []evalsMarkStep
+	}{
+		{"day writes 200 ms apart through 0.8 s", every(days, 200*time.Millisecond, 800*time.Millisecond)},
+		{"day writes 200 ms apart through 3 s", every(days, 200*time.Millisecond, 3*time.Second)},
+		{"readings 100 ms apart through 0.9 s", every(readings, 100*time.Millisecond, 900*time.Millisecond)},
+	} {
+		at, cause, ok := markEvalsView(start, c.steps).dueAt()
+		if want := start.Add(time.Second); !ok || !at.Equal(want) || cause != deliveryCauseChange {
+			t.Errorf("%s: due %t, %s after the first mark (%s), want 1s after it (%s)", c.name, ok, at.Sub(start), cause, deliveryCauseChange)
+			continue
+		}
+		t.Logf("%s: %d marks, due %s after the first, its last %s after it", c.name, len(c.steps), at.Sub(start), c.steps[len(c.steps)-1].after)
+	}
+}
+
 // settingsRewritePage is a page subscribed to INFRA's evals over the 28 days ending today, on a
 // hub whose clock stands still: a recompute due after a quiet waits for the test to move the
 // clock, and one due at once runs without it. held is the body the page holds.

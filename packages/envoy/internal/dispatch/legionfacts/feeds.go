@@ -761,19 +761,3 @@ func CursorAge(ctx context.Context, q Querier, now time.Time) (time.Duration, bo
 	}
 	return now.Sub(*oldest), true, nil
 }
-
-// EventsReadThrough is the id of the last event the consumer's committed passes read, the
-// position of its events cursor, and 0 where that cursor has no row: a database no pass has
-// committed on. It rests on one rule: the cursor moves only in the transaction that wrote the
-// rows and filings of the events it covers, with their changes in the change log's outbox
-// (writePass, advanceCursors). So once a read answers id, every fact of every event at or below
-// id has committed, with its change; a reader that drains the outbox after that read (the eval
-// day-row refresher's pass, evals' refresh) finds those changes in the log. An event above it may
-// still move facts the consumer has not stored yet.
-func EventsReadThrough(ctx context.Context, q Querier) (int64, error) {
-	var position int64
-	if err := q.QueryRow(ctx, `select coalesce((select position from issue_facts_cursor where name = $1), 0)`, eventsCursor).Scan(&position); err != nil {
-		return 0, fmt.Errorf("read the Legion facts' events cursor: %w", err)
-	}
-	return position, nil
-}
