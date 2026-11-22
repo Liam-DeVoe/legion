@@ -200,22 +200,27 @@ func TestAReadEndsAfterGitExitsThoughAProcessKeepsWritingToThePipe(t *testing.T)
 // one WaitDelay after git exits for the standard error it copies, and Wait answers
 // exec.ErrWaitDelay: the read of the standard output then ends at once, its own wait having run
 // out with exec's, rather than one WaitDelay after Wait. The process is started by the diff's git
-// alone, so the push takes one WaitDelay and some, as on main, where exec copies both outputs; a
-// read that waited a second WaitDelay after Wait would take two. The WaitDelay here is 10 s, so
-// the two stand apart however slow the machine.
+// alone, so the push takes one WaitDelay more than the same push with no such process, as on
+// main, where exec copies both outputs; a read that waited a second WaitDelay after Wait would
+// take two more. The bound is one and a half WaitDelays above that baseline, measured in the same
+// test, and the WaitDelay is 20 s, so a slow machine's cost lands in both pushes and one and two
+// WaitDelays stay 10 s from the bound either way.
 func TestAReadEndsOneWaitDelayAfterGitExitsThoughAProcessHoldsBothOutputs(t *testing.T) {
-	const delay = 10 * time.Second
+	const delay = 20 * time.Second
 	push := aPushOf(t, map[string]string{"notes.md": "a line of nothing\nthe runner answers at " + theHost + "\n"})
 	want := refusal(t, push.through(guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public))).Lines
 	git := fixturegit.CompiledGit(t)
-	guard := gitFirst(t, "case \" $* \" in\n"+
-		"*\" --unified=0 \"*) sleep 40 &\n  exec '"+git+"' \"$@\" ;;\n"+
-		"*) exec '"+git+"' \"$@\" ;;\nesac\n")
-	guard.waitDelay = delay
-	started := time.Now()
-	err := guard.Push(context.Background(), push.req)
-	if took := time.Since(started); took >= delay*3/2 {
-		t.Errorf("the push was answered after %s, past one and a half WaitDelays of %s: the read waited a second one", took.Round(time.Second), delay)
+	withHolder := func(holder string) *Guard {
+		guard := gitFirst(t, "case \" $* \" in\n"+
+			"*\" --unified=0 \"*) "+holder+"\n  exec '"+git+"' \"$@\" ;;\n"+
+			"*) exec '"+git+"' \"$@\" ;;\nesac\n")
+		guard.waitDelay = delay
+		return guard
+	}
+	baseline, _ := timedPush(withHolder(":"), push.req)
+	took, err := timedPush(withHolder("sleep 60 &"), push.req)
+	if took-baseline >= delay*3/2 {
+		t.Errorf("the push was answered after %s, %s past the same push with no holding process: past one and a half WaitDelays of %s, the read waited a second one", took.Round(time.Second), (took - baseline).Round(time.Second), delay)
 	}
 	if got := refusal(t, err).Lines; !slices.Equal(got, want) {
 		t.Fatalf("the report is %q, want the one with no holding process, %q", got, want)
@@ -225,22 +230,32 @@ func TestAReadEndsOneWaitDelayAfterGitExitsThoughAProcessHoldsBothOutputs(t *tes
 // Where git fails and a process it started holds both its outputs, Wait answers git's
 // *exec.ExitError, not exec.ErrWaitDelay, though exec waited one WaitDelay for the standard error
 // it copies: the read of the standard output still ends at once, so the diff's git takes one
-// WaitDelay, as on main, and not two. The push is refused for git's status. The WaitDelay here is
-// 10 s, so one and two stand apart however slow the machine.
+// WaitDelay more than the same failing git with no such process, as on main, and not two. The
+// push is refused for git's status. The bound and the WaitDelay are as in the test above.
 func TestAReadEndsOneWaitDelayAfterAFailedGitExitsThoughAProcessHoldsBothOutputs(t *testing.T) {
-	const delay = 10 * time.Second
+	const delay = 20 * time.Second
 	push := aPushOf(t, map[string]string{"notes.md": "a line of nothing in particular\n"})
 	git := fixturegit.CompiledGit(t)
-	guard := gitFirst(t, "case \" $* \" in\n"+
-		"*\" --unified=0 \"*) sleep 40 &\n  '"+git+"' \"$@\"\n  exit 3 ;;\n"+
-		"*) exec '"+git+"' \"$@\" ;;\nesac\n")
-	guard.waitDelay = delay
-	started := time.Now()
-	err := guard.Push(context.Background(), push.req)
-	if took := time.Since(started); took >= delay*3/2 {
-		t.Errorf("the push was answered after %s, past one and a half WaitDelays of %s: the read waited a second one", took.Round(time.Second), delay)
+	withHolder := func(holder string) *Guard {
+		guard := gitFirst(t, "case \" $* \" in\n"+
+			"*\" --unified=0 \"*) "+holder+"\n  '"+git+"' \"$@\"\n  exit 3 ;;\n"+
+			"*) exec '"+git+"' \"$@\" ;;\nesac\n")
+		guard.waitDelay = delay
+		return guard
+	}
+	baseline, _ := timedPush(withHolder(":"), push.req)
+	took, err := timedPush(withHolder("sleep 60 &"), push.req)
+	if took-baseline >= delay*3/2 {
+		t.Errorf("the push was answered after %s, %s past the same failing push with no holding process: past one and a half WaitDelays of %s, the read waited a second one", took.Round(time.Second), (took - baseline).Round(time.Second), delay)
 	}
 	says(t, setupFailure(t, err), "the push's commits could not be read: git diff-tree exited 3")
+}
+
+// timedPush is how long guard took to answer req, and its answer.
+func timedPush(guard *Guard, req PushRequest) (time.Duration, error) {
+	started := time.Now()
+	err := guard.Push(context.Background(), req)
+	return time.Since(started), err
 }
 
 // Once the child has exited and its wait has run out, a read takes what the pipe held at that
