@@ -153,13 +153,12 @@ func QuoteInSeed(markdown string, kind MarkKind, quote string, occurrence *int) 
 		markErr = anchorNotAllowed(kind, quote, markErr)
 	})
 	// The document the mark was written on reads, so a schema refusal is the write's own.
-	readable := func() error { return nil }
 	if markErr != nil {
-		return Anchored{}, joinedSchemaError(markErr, readable)
+		return Anchored{}, producedSchemaError(markErr)
 	}
 	marked, err := treeOfUnshared(doc)
 	if err != nil {
-		return Anchored{}, joinedSchemaError(err, readable)
+		return Anchored{}, producedSchemaError(err)
 	}
 	anchored, err := readAnchored(marked.Node(), kind, mark.ID)
 	if errors.Is(err, ErrAnchorMissing) {

@@ -53,7 +53,8 @@ type heldRequest interface {
 	place() string
 	// beside is what the post of the write, held beside a held parent, writes and answers, read
 	// off the held texts it waits on as hold reads them, or the refusal that post gives, in its
-	// order (heldBeside).
+	// order (heldBeside). It reads on hold.tx and takes no other connection while that
+	// transaction is open: a dry run it reads heldBeside runs before (besideHold.ran).
 	beside(s *server, ctx context.Context, hold besideHold) (*heldDryRun, error)
 	// postEvent is the event the post of the write, held under id, appends, as a session's write
 	// advice names it (sessionWriteTypes), and, for an ask, the ask it opens to its writer, as
@@ -70,6 +71,10 @@ type heldRequest interface {
 	// refuses a posted one.
 	climb(kind reviewer.Kind, owner owner) (replyTo, askID string, err error)
 }
+
+// projectPlace is the prefix of a new issue's place, its project's (issueCreate.place), which no
+// place of another kind's text starts with (placeOf, messagePlaceOf).
+const projectPlace = "project "
 
 // placeOf is the place of a text on o (heldRequest.place): its issue, else its document.
 func placeOf(o owner) string {
@@ -378,27 +383,24 @@ func (c issueCreate) rewritten(_ reviewer.Kind, rewrite reviewer.Text) (reviewed
 
 // place is the issue's project: one writer's new issues there, filed under keys reserved in the
 // order written, post in that order.
-func (c issueCreate) place() string { return "project " + c.Project }
+func (c issueCreate) place() string { return projectPlace + c.Project }
 
 // beside reads, beside its held parent, what the new issue's post writes: the refusals of its
 // blockers, its parent and every other check of that post, with its spec as its seed renders it,
-// off its dry run (heldIssueCreateError); the assignee its post files it under
-// (heldIssueAssignee); and the advice of a new issue in triage under its labels and parent chain
-// (heldIssueRow), with the blocks of its spec its dry run read off that rendering.
+// off its dry run, which heldBeside ran before it opened hold.tx (heldIssueCreateError,
+// besideHold.ran); the assignee its post files it under (heldIssueAssignee); and the advice of a
+// new issue in triage under its labels and parent chain (heldIssueRow), with the blocks of its
+// spec its dry run read off that rendering.
 func (c issueCreate) beside(s *server, ctx context.Context, hold besideHold) (*heldDryRun, error) {
-	ran, err := s.heldIssueCreateError(ctx, hold.tx, c, hold.actor, hold.id, hold.waited)
-	if err != nil {
-		return nil, err
-	}
 	assignee, err := s.heldIssueAssignee(ctx, hold.tx, c, hold.actor, hold.waited)
 	if err != nil {
 		return nil, err
 	}
-	advice := s.writeAdviceBefore(ctx, hold.tx, "POST /api/v1/issues", "", hold.actor, model.IssueStatusTriage, heldIssueRow(c, hold.waited), adviceAsks{})
-	if advice != nil && ran.advice != nil {
-		advice.documentBlocks = ran.advice.documentBlocks
+	advice := s.writeAdviceBefore(ctx, hold.tx, routeNewIssue, "", hold.actor, model.IssueStatusTriage, heldIssueRow(c, hold.waited), adviceAsks{})
+	if advice != nil && hold.ran.advice != nil {
+		advice.documentBlocks = hold.ran.advice.documentBlocks
 	}
-	return &heldDryRun{markdown: ran.markdown, assignee: assignee, advice: advice}, nil
+	return &heldDryRun{markdown: hold.ran.markdown, assignee: assignee, advice: advice}, nil
 }
 
 // postEvent is none a session's write advice counts: a new issue's advice is a new issue's.
@@ -509,7 +511,7 @@ func (c commentCreate) beside(s *server, ctx context.Context, hold besideHold) (
 	}
 	key := deref(c.Owner.IssueKey)
 	if issue, _, held := hold.waited.issue(key); held {
-		if comment.Anchor, err = heldSpecAnchor(issue, c.Input.Anchor, commentMarkKind(c.Input), hold.waited.keptBeside(key)); err != nil {
+		if comment.Anchor, err = heldSpecAnchor(issue, c.Input.Anchor, commentMarkKind(c.Input.Suggestion != nil), hold.waited.keptBeside(key)); err != nil {
 			return nil, err
 		}
 	}

@@ -330,17 +330,17 @@ func commentThreadInputError(input commentInput) error {
 // normalizeCommentThreadTarget's check, which a comment beside a held parent makes at its hold
 // too (commentCreate.beside), where no dry run makes it. Nil for an ask_id shaped as one.
 func (s *server) askIDInputError(ctx context.Context, q queryer, owner owner, askID string) error {
-	if _, err := uuid.Parse(askID); err != nil || strings.TrimSpace(askID) == "" {
+	if _, err := uuid.Parse(askID); err != nil {
 		return s.askIDInputForOwner(ctx, q, owner)
 	}
 	return nil
 }
 
-// commentMarkKind is the mark a comment's anchor takes in its document: a suggestion's, else a
-// comment's (writeComment, and a comment anchored in a held issue's spec at its hold,
-// heldSpecAnchor).
-func commentMarkKind(input commentInput) docs.MarkKind {
-	if input.Suggestion != nil {
+// commentMarkKind is the mark a comment's anchor takes in its document: a suggestion's for a
+// comment that suggests, else a comment's (writeComment, registerCommentAnchor, and a comment
+// anchored in a held issue's spec at its hold, heldSpecAnchor).
+func commentMarkKind(suggested bool) docs.MarkKind {
+	if suggested {
 		return docs.MarkSuggestion
 	}
 	return docs.MarkComment
@@ -880,7 +880,7 @@ func (s *server) writeComment(ctx context.Context, create commentCreate, actor m
 	// (destinations.leftTo); publishFallbackCopies in internal/dispatch/outbox is the one
 	// description.
 	turn := threadTarget.replyTurn(actor, input.Turn)
-	markKind := commentMarkKind(input)
+	markKind := commentMarkKind(input.Suggestion != nil)
 	// Everything up to Commit is the read phase (Docs.Join): the document operations and this
 	// write queue their writes on the ledger, in the order made, and Commit sends them as one
 	// batch. Write advice is read here, before the first write is queued, so its queries hold no

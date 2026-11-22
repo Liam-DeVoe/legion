@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // A held write's answer is the answer its post would give, whole (INFRA-3231's R5): each test
@@ -580,6 +581,52 @@ func TestAHeldFollowUpIsAnsweredOffTheReadingThatChoseToReadIt(t *testing.T) {
 	dry, err := rig.served.heldBeside(ctx, write, row.actor, followUp, *waited)
 	if err != nil || dry == nil || dry.message == nil || deref(dry.message.InReplyTo) != reply || target == nil || deref(dry.message.Target) != *target {
 		t.Errorf("the follow-up read beside the reply that posted meanwhile: %#v, %v; want it filed under %s to %v", dry, err, reply, target)
+	}
+}
+
+// A new issue held beside its held parent holds one connection of the shared pool at a time: the
+// dry run of every check of its post (heldIssueCreateError), which begins a transaction of its own
+// on the post's context (dryRunHeld), runs before the hold's read transaction opens (heldBeside).
+// A request that holds one connection while it waits for another can wait on the pool for ever,
+// and store.ErrNestedAcquire cannot refuse the dry run's, whose context carries a mark of its own.
+// So the hold is read again on a server whose pool holds one connection, with the request and the
+// server's lifetime, which the post's context is made from (postContext), both ending at the
+// deadline below: a hold that asked for the dry run's connection while its transaction held that
+// one would wait for itself until then, which a hold taking the one connection in turn is nowhere
+// near.
+func TestAHeldIssueBesideAHeldParentHoldsOneConnectionAtATime(t *testing.T) {
+	rig := newReviewRig(t, ReviewerConfig{Issues: ReviewHold, WriterWindow: time.Minute}, nil)
+	parent := rig.held(rig.asWriter(http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "RVW", "title": "Astrolabe gnomon reseat offsets",
+		"spec": "The astrolabe reads a constant offset after each gnomon reseat.\n\n" + vacuousPhrase,
+	}), "the held parent").ID
+	child := rig.held(rig.asWriter(http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "RVW", "title": "Bellows valve chatter at idle", "parent": parent,
+		"spec": "The bellows valve chatters while the pump idles.\n\n" + vacuousPhrase,
+	}), "the held child of the held issue").ID
+	row := rig.heldRow(child)
+	write, err := row.write()
+	if err != nil {
+		t.Fatalf("read the held child's write: %v", err)
+	}
+	oneConnection, _ := oneConnectionStore(t, rig.served.deps)
+	deps := rig.served.deps
+	deps.Store = oneConnection
+	lifetime, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	served := directServer(deps)
+	served.lifetime = lifetime
+	ctx := store.WithTransactionTracking(lifetime)
+	waited, err := served.heldWaitedBeside(ctx, write, parent)
+	if err != nil || waited == nil {
+		t.Fatalf("the held texts the child waits on: %v, %v; want its held parent read", waited, err)
+	}
+	dry, err := served.heldBeside(ctx, write, row.actor, child, *waited)
+	if err != nil {
+		t.Fatalf("the child's hold read on a pool of one connection: %v; want it read with that connection, taken in turn", err)
+	}
+	if dry == nil || !strings.Contains(dry.markdown, "The bellows valve chatters while the pump idles.") {
+		t.Errorf("the child's hold read %#v, want its spec as its seed renders it", dry)
 	}
 }
 

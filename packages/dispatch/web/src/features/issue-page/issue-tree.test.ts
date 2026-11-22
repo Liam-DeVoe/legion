@@ -23,7 +23,6 @@ import type {
   RequirementCoverage,
 } from "../../api/types";
 import { askResolutionBadge } from "../refs/actor";
-import { decisionsParts, waitingOrder } from "./decisions-filter/decisions-parts";
 import { agentsOnlyItem } from "./issue-address";
 import {
   buildIssueTree,
@@ -1995,11 +1994,11 @@ test("an open question waits on the reader only where its turn is theirs", () =>
 });
 
 // A decision block the reviewer holds (`held_for_review`) is drawn as the open question it is,
-// and does not wait on the reader until it posts: the tree does not mark it, and the header
-// count's walk of what waits (`waitingOrder`) passes it over, as the server's `open_asks` and
-// every Inbox leave it out. Once it posts, the same question waits on the reader again.
+// and does not wait on the reader until it posts: the tree leaves it unmarked (`node.waiting`),
+// so the page does not open on it (`IssueTree.tsx`'s `waitingQuestion`), as the server's
+// `open_asks`, which the header's count reads (`waiting.ts`), and every Inbox leave it out. Once
+// it posts, the same question waits on the reader again.
 test("a decision block the reviewer holds does not wait on the reader until it posts", () => {
-  const issue = issueDetails([]);
   const read = (held: boolean) => {
     const root = buildIssueTree({
       asks: [
@@ -2010,29 +2009,16 @@ test("a decision block the reviewer holds does not wait on the reader until it p
         }),
         question("mine", { waiting_on: "human", waiting_on_person: "alice" }),
       ],
-      issue,
+      issue: issueDetails([]),
       viewer: "alice",
-    });
-    const parts = decisionsParts({
-      asks: undefined,
-      decisions: undefined,
-      issueKey: KEY,
-      nodeIdOf: treeContext({ issue }, () => "").nodeIdOf,
-      reader: "alice",
-      root,
     });
     return {
       questions: root.children.map((child) => child.question),
       waiting: root.children.filter((child) => child.waiting).map((child) => child.id),
-      walk: waitingOrder(parts),
     };
   };
-  expect(read(true)).toEqual({ questions: [true, true], waiting: ["mine"], walk: ["mine"] });
-  expect(read(false)).toEqual({
-    questions: [true, true],
-    waiting: ["held", "mine"],
-    walk: ["held", "mine"],
-  });
+  expect(read(true)).toEqual({ questions: [true, true], waiting: ["mine"] });
+  expect(read(false)).toEqual({ questions: [true, true], waiting: ["held", "mine"] });
 });
 
 // A Change is a comment a person anchored to a decision's words in the decisions document. The

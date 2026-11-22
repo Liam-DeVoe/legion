@@ -605,7 +605,7 @@ func (s *server) writeIssue(ctx context.Context, tx pgx.Tx, create issueCreate, 
 	var advice *writeAdvice
 	if held.answers() {
 		advice = s.writeAdviceBefore(
-			ctx, tx, "POST /api/v1/issues", key, actor, model.IssueStatusTriage,
+			ctx, tx, routeNewIssue, key, actor, model.IssueStatusTriage,
 			adviceIssueRow{parent: parentRef, labels: create.Labels}, adviceAsks{},
 		)
 		// The spec's blocks come from the rendering the seed read back above, so they are worked
@@ -961,7 +961,7 @@ func (s *server) respondWithExistingExternalIssue(
 		return
 	}
 	advice := s.writeAdvice(
-		r.Context(), adviceReadTx, "POST /api/v1/issues", existingKey, actor, adviceAsks{}, existingStatus, "", false,
+		r.Context(), adviceReadTx, routeNewIssue, existingKey, actor, adviceAsks{}, existingStatus, "", false,
 	)
 	if err := adviceReadTx.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)

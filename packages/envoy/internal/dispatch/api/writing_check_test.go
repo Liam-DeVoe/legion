@@ -167,20 +167,18 @@ func TestTheWritingCheckActorRule(t *testing.T) {
 	for _, probe := range []struct {
 		name      string
 		actor     model.Actor
-		checked   bool
 		exemption string
 	}{
-		{"an agent session", model.Actor{Kind: "session", ID: "s-writer"}, true, ""},
-		{"a project's daemon", model.Actor{Kind: "session", ID: "legion-daemon:WCK"}, false, writingcheck.ExemptDaemon},
-		{"a person for themselves", model.Actor{Kind: "user", ID: "alice"}, false, writingcheck.ExemptPerson},
-		{"a person's token with no session", model.Actor{Kind: "user", ID: "alice", Act: &model.ActorAct{TokenID: "t"}}, false, writingcheck.ExemptPerson},
-		{"a person's token acting for a session", model.Actor{Kind: "user", ID: "alice", Act: &model.ActorAct{Session: "s-writer"}}, true, ""},
-		{"a person's token acting for the daemon", model.Actor{Kind: "user", ID: "alice", Act: &model.ActorAct{Session: "legion-daemon:WCK"}}, false, writingcheck.ExemptDaemon},
-		{"Dispatch itself", model.Actor{Kind: "system", ID: "dispatch"}, false, writingcheck.ExemptSystem},
+		{"an agent session", model.Actor{Kind: "session", ID: "s-writer"}, ""},
+		{"a project's daemon", model.Actor{Kind: "session", ID: "legion-daemon:WCK"}, writingcheck.ExemptDaemon},
+		{"a person for themselves", model.Actor{Kind: "user", ID: "alice"}, writingcheck.ExemptPerson},
+		{"a person's token with no session", model.Actor{Kind: "user", ID: "alice", Act: &model.ActorAct{TokenID: "t"}}, writingcheck.ExemptPerson},
+		{"a person's token acting for a session", model.Actor{Kind: "user", ID: "alice", Act: &model.ActorAct{Session: "s-writer"}}, ""},
+		{"a person's token acting for the daemon", model.Actor{Kind: "user", ID: "alice", Act: &model.ActorAct{Session: "legion-daemon:WCK"}}, writingcheck.ExemptDaemon},
+		{"Dispatch itself", model.Actor{Kind: "system", ID: "dispatch"}, writingcheck.ExemptSystem},
 	} {
-		exemption := writingCheckExemption(probe.actor)
-		if checked := exemption == ""; checked != probe.checked || exemption != probe.exemption {
-			t.Errorf("%s: checked %t (%q), want %t (%q)", probe.name, checked, exemption, probe.checked, probe.exemption)
+		if exemption := writingCheckExemption(probe.actor); exemption != probe.exemption {
+			t.Errorf("%s: exemption %q, want %q", probe.name, exemption, probe.exemption)
 		}
 	}
 }

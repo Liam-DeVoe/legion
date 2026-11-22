@@ -289,16 +289,21 @@ func (s *server) heldParentOf(ctx context.Context, names []string) (*heldParent,
 // (heldRequest.place), "" where it holds none there or place is "": the text a held ask, comment,
 // message, reply or new issue posts after, so one writer's held texts at one place post in the
 // order written, whichever review ends first. It reads the id, the kind and the request of the
-// writer's open texts of the kinds that have a place, newest first, and stops at the first one
-// there.
+// writer's open texts of the kinds that post at such a place, newest first - new issues at a
+// project's place (issueCreate.place), asks, comments and messages (replies among them) at any
+// other (placeOf, messagePlaceOf) - and stops at the first one there.
 func (s *server) heldBeforeOf(ctx context.Context, writer, place string) (string, error) {
 	if writer == "" || place == "" {
 		return "", nil
 	}
+	kinds := []string{string(reviewer.KindAsk), string(reviewer.KindComment), string(reviewer.KindMessage)}
+	if strings.HasPrefix(place, projectPlace) {
+		kinds = []string{string(reviewer.KindIssue)}
+	}
 	rows, err := s.deps.Store.Pool.Query(ctx, `
 		select id, kind, request from held_texts
-		where writer = $1 and state in `+heldOpenStatesSQL+` and kind in ('ask', 'comment', 'message', 'issue')
-		order by seq desc`, writer)
+		where writer = $1 and state in `+heldOpenStatesSQL+` and kind = any($2)
+		order by seq desc`, writer, kinds)
 	if err != nil {
 		return "", fmt.Errorf("read the writer's held texts: %w", err)
 	}
@@ -525,7 +530,11 @@ func (s *server) heldIssueAssignee(ctx context.Context, q queryer, create issueC
 // a dry run's shape for heldAnswerOf and heldAdvice: what its kind reads (heldRequest.beside) off
 // the records of the held texts it waits on and, where a text it names has posted or is no held
 // text, off that text's row as its post reads it, with the write advice its post answers, all in
-// one read transaction it rolls back once:
+// one read transaction it rolls back once. That transaction opens after a new issue's dry run
+// (heldIssueCreateError), the one dry run such a reading runs, which takes a connection of its own
+// (dryRunHeld): a request that held the transaction's connection while it waited for another
+// could wait on the shared pool for ever, which store.ErrNestedAcquire cannot refuse here, the dry
+// run's context carrying a mark of its own. It reads:
 //   - an ask: whom it waits on - on a held issue, the assignee that issue's post writes
 //     (heldIssueAssignee) - and an anchor in a held issue's spec (heldSpecAnchor), with the
 //     document it quotes;
@@ -554,22 +563,34 @@ func (s *server) heldIssueAssignee(ctx context.Context, q queryer, create issueC
 // issue's post seeds (heldSpecAnchor); a new issue's blockers, parent and every other check of
 // its post (heldIssueCreateError); and a follow-up that names a block (heldFollowUpBeside).
 func (s *server) heldBeside(ctx context.Context, write reviewedWrite, actor model.Actor, id string, waited heldChain) (*heldDryRun, error) {
+	hold := besideHold{actor: actor, id: id, waited: waited}
+	if create, isIssue := write.request.(issueCreate); isIssue {
+		ran, err := s.heldIssueCreateError(ctx, s.deps.Store.Pool, create, actor, id, waited)
+		if err != nil {
+			return nil, err
+		}
+		hold.ran = ran
+	}
 	tx, err := s.begin(ctx)
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback(ctx)
-	return write.request.beside(s, ctx, besideHold{tx: tx, actor: actor, id: id, waited: waited})
+	hold.tx = tx
+	return write.request.beside(s, ctx, hold)
 }
 
 // besideHold is what the hold of a text beside a held parent reads what its post writes with
 // (heldRequest.beside): the hold's one read transaction, which heldBeside rolls back once, the
-// text's actor and its reserved id, and the held texts it waits on.
+// text's actor and its reserved id, the held texts it waits on, and for a new issue the dry run
+// heldBeside ran before it opened that transaction (heldIssueCreateError). A beside reads on tx
+// alone: nothing it calls takes another connection while tx is open.
 type besideHold struct {
 	tx     pgx.Tx
 	actor  model.Actor
 	id     string
 	waited heldChain
+	ran    heldDryRun
 }
 
 // heldIssueAdvice is the write advice the post of a text on issue, beside a held parent, answers
@@ -771,8 +792,10 @@ func (s *server) heldWaitedBeside(ctx context.Context, write reviewedWrite, pare
 	if err != nil {
 		return nil, err
 	}
-	if _, answered := waited.attemptReply(replay); isReplay && !answered {
-		return nil, nil
+	if isReplay {
+		if _, answered := waited.attemptReply(replay); !answered {
+			return nil, nil
+		}
 	}
 	return &waited, nil
 }
