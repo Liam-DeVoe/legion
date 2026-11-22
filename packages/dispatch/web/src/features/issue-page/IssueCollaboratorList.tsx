@@ -1,6 +1,6 @@
 import type { LegionRole } from "@legion/contracts";
 import { useQuery } from "@tanstack/react-query";
-import { type ReactNode, type RefObject, useLayoutEffect, useRef } from "react";
+import type { ReactNode, RefObject } from "react";
 
 import { issueCollaboratorsQuery } from "../../api/queries";
 import type { IssueCollaboratorPerson } from "../../api/types";
@@ -13,8 +13,9 @@ import {
 } from "../../theme/classes";
 import { collaboratorSections } from "../issue/CollaboratorsTab";
 import { AgentName } from "../refs/AgentName";
+import { standsFailed } from "../refs/reference-target";
 import { Timestamp } from "../refs/Timestamp";
-import { DetailsErrorLine } from "./details-error";
+import { DetailsErrorLine, retryRead, useRetryHandOff } from "./details-error";
 import { PROPERTY_LABELS, pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS, EMPTY_STATE_LINES, STATE_LINES } from "./page-words";
 
@@ -80,9 +81,8 @@ function Worked({
  *
  * It is drawn in the People section of the issue page's one right-hand panel, behind that
  * section's own disclosure (`details-more.tsx`), where the nine-tab
- * page gave it a tab of its own. What a read answered stays drawn when a later read fails, with
- * the failure and its Retry above it; the failure is drawn alone only while no read
- * has answered.
+ * page gave it a tab of its own. What a read answered stays drawn when a later read fails, and no
+ * failure is said over it; the failure and its Retry are drawn only while no read has answered.
  */
 export function IssueCollaboratorList({
   issueKey,
@@ -98,31 +98,18 @@ export function IssueCollaboratorList({
   // Pinned hands it on (`IssuePins.tsx`). It is never disabled while it reads again, so a read
   // that fails again leaves the focus on it: Chromium drops the focus of a focused button that
   // turns disabled to the page. It reads busy then, and a press while the list is read joins
-  // that read rather than ending it and sending another (`cancelRefetch: false`), which the
-  // query decides as the press lands: the render's `isFetching` can be older than a second
-  // press made before React draws the first one's read.
-  const retried = useRef<Element | null>(null);
-  useLayoutEffect(() => {
-    if (retried.current === null || retried.current.isConnected) return;
-    retried.current = null;
-    if (document.activeElement === null || document.activeElement === document.body) {
-      owner.current?.focus();
-    }
-  });
-  // The line stays while the read its Retry sent is out, even where no read has answered: a
-  // fetch of a read that holds no answer clears its failure and puts it back to pending as it
-  // starts, which would take the line, and its Retry with the focus, away at the press. A
-  // failure it counts (`errorUpdateCount`) is then one it still stands in. Each failure is drawn
-  // afresh by that count, so a read that fails again is said again, in the same words.
-  const failed = query.isError || (query.isPending && query.errorUpdateCount > 0);
-  const failure = failed ? (
+  // that read rather than ending it and sending another (`retryRead`).
+  const retry = useRetryHandOff(() => owner.current);
+  // The line stands while the read stands failed (`standsFailed`): it holds no answer, and a
+  // fetch of it has failed. A refresh that fails over a list the read holds draws no line, and
+  // the list stays drawn. The line stays while the read its Retry sent is out, and each failure
+  // is drawn afresh by its count, so a read that fails again is said again, in the same words.
+  const failure = standsFailed(query) ? (
     <DetailsErrorLine
       failure={query.errorUpdateCount}
       message={ANSWER_LINES.collaborators_unreadable}
-      onRetry={() => {
-        retried.current = document.activeElement;
-        void query.refetch({ cancelRefetch: false });
-      }}
+      onRetry={retryRead(query)}
+      {...retry}
       retrying={query.isFetching}
     />
   ) : null;

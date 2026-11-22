@@ -267,10 +267,11 @@ test("a row the model gives no address draws no list", () => {
   expect(getReferences.mock.calls).toHaveLength(0);
 });
 
-// With the list held, a failed read of it keeps its line and its Retry drawn while that Retry
-// reads it again, so the Retry is never disabled then: Chromium would drop its focus to the page
+// A refresh that fails over the list held draws no line, and the list stays drawn. A first read
+// of the list that failed keeps its line and its Retry drawn while that Retry reads it again, so
+// the Retry is never disabled then: Chromium would drop its focus to the page
 // (`chromium-focus-fixup.ts`), and a read that failed again would leave it there.
-test("the references' Retry pressed by keyboard over the list held keeps the focus when its read fails again", async () => {
+test("a refresh that fails over the references held draws no line, and their Retry pressed by keyboard keeps the focus when its read fails again", async () => {
   const { client, getReferences } = draw(true);
   const restoreFocus = emulateChromiumFocusFixup();
   const key = ["references", "to", STATEMENT];
@@ -281,6 +282,13 @@ test("the references' Retry pressed by keyboard over the list held keeps the foc
     await screen.findByRole("link", { name: "Thread 1 opens here." });
     getReferences.mockRejectedValueOnce(new Error("the references' read failed"));
     await act(() => client.invalidateQueries({ queryKey: key }));
+    expect(client.getQueryState(key)?.status, "the refresh did not fail").toBe("error");
+    expect(screen.queryByRole("alert"), "a failed refresh said a failure over the list").toBeNull();
+    expect(screen.queryByRole("button", { name: CONTROL_LABELS.retry })).toBeNull();
+    expect(screen.queryByRole("link", { name: "Thread 1 opens here." })).not.toBeNull();
+    // The list taken back to holding none, as before its first read, which then fails.
+    getReferences.mockRejectedValueOnce(new Error("the references' read failed"));
+    await act(() => client.resetQueries({ queryKey: key }));
     const retry = await screen.findByRole("button", { name: CONTROL_LABELS.retry });
     // The read the Retry sends is held out until the case fails it.
     const again = Promise.withResolvers<GraphReferences>();
@@ -288,7 +296,7 @@ test("the references' Retry pressed by keyboard over the list held keeps the foc
 
     retry.focus();
     await userEvent.keyboard("{Enter}");
-    await waitFor(() => expect(getReferences).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(getReferences).toHaveBeenCalledTimes(4));
     expect(
       document.activeElement,
       "the references' Retry left the focus on the page while it read"
@@ -302,15 +310,15 @@ test("the references' Retry pressed by keyboard over the list held keeps the foc
       document.activeElement,
       "the references' Retry whose read failed again left the focus on the page"
     ).toBe(retry);
-    expect(screen.queryByRole("link", { name: "Thread 1 opens here." })).not.toBeNull();
   } finally {
     restoreFocus();
   }
 });
 
-// A second press of Retry made before React draws the read the first one sent found the render's
-// `isFetching` still false, so it read the list again: a refetch of a read that holds an answer
-// ends the request that is out and sends another. A press while the read is out joins it.
+// A second press of Retry made before React draws the read the first one sent finds the render's
+// `isFetching` still false. A press while the read is out joins it, and sends no other read.
+// A refresh that fails over the list held draws no line, so the Retry is a first read's that
+// failed.
 test("two presses of the references' Retry before a render send one read", async () => {
   const { client, getReferences } = draw(true);
   const key = ["references", "to", STATEMENT];
@@ -320,6 +328,13 @@ test("two presses of the references' Retry before a render send one read", async
   await screen.findByRole("link", { name: "Thread 1 opens here." });
   getReferences.mockRejectedValueOnce(new Error("the references' read failed"));
   await act(() => client.invalidateQueries({ queryKey: key }));
+  expect(client.getQueryState(key)?.status, "the refresh did not fail").toBe("error");
+  expect(screen.queryByRole("alert"), "a failed refresh said a failure over the list").toBeNull();
+  expect(screen.queryByRole("button", { name: CONTROL_LABELS.retry })).toBeNull();
+  expect(screen.queryByRole("link", { name: "Thread 1 opens here." })).not.toBeNull();
+  // The list taken back to holding none, as before its first read, which then fails.
+  getReferences.mockRejectedValueOnce(new Error("the references' read failed"));
+  await act(() => client.resetQueries({ queryKey: key }));
   const retry = await screen.findByRole("button", { name: CONTROL_LABELS.retry });
   // Every read sent from here is held out until the case lets it land.
   const again = Promise.withResolvers<GraphReferences>();
@@ -333,12 +348,35 @@ test("two presses of the references' Retry before a render send one read", async
   expect(
     getReferences,
     "the second press ended the read the first one sent and sent another"
-  ).toHaveBeenCalledTimes(3);
+  ).toHaveBeenCalledTimes(4);
   await waitFor(() => expect(retry).toHaveAttribute("aria-busy", "true"));
 
   await act(async () => again.resolve(ANSWER));
   await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
-  expect(getReferences).toHaveBeenCalledTimes(3);
+  expect(getReferences).toHaveBeenCalledTimes(4);
+});
+
+// A list that answered with nothing references the row says None, and a refresh of it that fails
+// says None still and no failure: the read holds that answer, so nothing it draws is missing.
+test("a refresh that fails over a list of none keeps None and says no failure", async () => {
+  const { client, getReferences } = draw(true, STATEMENT_ROW, { ...ANSWER, edges: [] });
+  const key = ["references", "to", STATEMENT];
+  await userEvent.click(
+    await screen.findByRole("button", { name: NODE_REFERENCES_WORDS.what_references })
+  );
+  await screen.findByText(CONTROL_LABELS.none);
+  getReferences.mockRejectedValueOnce(new Error("the references' read failed"));
+  await act(() => client.invalidateQueries({ queryKey: key }));
+  expect(client.getQueryState(key)?.status, "the refresh did not fail").toBe("error");
+  expect(screen.queryByRole("alert"), "a failed refresh said a failure over None").toBeNull();
+  expect(
+    screen.queryByRole("button", { name: CONTROL_LABELS.retry }),
+    "a failed refresh offered a Retry of a read that holds its answer"
+  ).toBeNull();
+  expect(
+    screen.queryByText(CONTROL_LABELS.none),
+    "a failed refresh took away the None its answer drew"
+  ).not.toBeNull();
 });
 
 // A first read of the list that failed holds no answer, and a fetch of such a read clears its

@@ -285,15 +285,22 @@ test("a failed read of the subscribed agents says so, with Retry", async () => {
     // of the list the line was about, not on the page.
     expect(document.activeElement, "the focus fell to the page with Retry").toBe(subscribers);
 
-    // A read that fails once the row holds an answer keeps what it holds: the count and the
-    // agents, with the failure and its Retry beside them.
+    // A read that fails once the row holds an answer keeps what it holds - the count and the
+    // agents - and says no failure beside them: neither a line nor a Retry.
     await userEvent.click(subscribers);
     await screen.findByRole("button", { name: "Unsubscribe" });
     getIssueSubscribers.mockRejectedValueOnce(
       new ApiError(503, { code: "ENVOY_UNAVAILABLE", error: "envoy listener unreachable" })
     );
     await act(() => view.client.invalidateQueries({ queryKey: ["subscribers", KEY] }));
-    expect((await screen.findByRole("alert")).textContent).toBe(STATE_LINES.subscribers_unreadable);
+    expect(
+      view.client.getQueryState(["subscribers", KEY])?.status,
+      "the refresh did not fail"
+    ).toBe("error");
+    expect(
+      screen.queryByRole("alert"),
+      "a failed refetch said a failure over the agents it held"
+    ).toBeNull();
     expect(subscribers.textContent, "a failed refetch dropped the count it held").toBe(
       `${PROPERTY_LABELS.subscribers}:1`
     );
@@ -301,7 +308,10 @@ test("a failed read of the subscribed agents says so, with Retry", async () => {
       screen.queryByRole("button", { name: "Unsubscribe" }),
       "a failed refetch dropped the agents it held"
     ).not.toBeNull();
-    expect(screen.getByRole("button", { name: CONTROL_LABELS.retry })).toBeDefined();
+    expect(
+      screen.queryByRole("button", { name: CONTROL_LABELS.retry }),
+      "a failed refetch offered a Retry over the agents it held"
+    ).toBeNull();
   } finally {
     view.unmount();
     getIssueSubscribers.mockRestore();
@@ -428,22 +438,34 @@ test("Unsubscribe's Retry takes no press while the write it sent again is out", 
   }
 });
 
-// With the agents held, a failed read of them keeps its line and its Retry drawn while that
-// Retry reads them again, so the Retry is never disabled then: Chromium would drop its focus to
-// the page (`chromium-focus-fixup.ts`), and a read that failed again would leave it there.
-test("a subscribers' Retry pressed by keyboard over the agents held keeps the focus when its read fails again", async () => {
+// A refresh that fails over the agents held draws no line, and the agents stay drawn. A first
+// read of them that failed keeps its line and its Retry drawn while that Retry reads them again,
+// so the Retry is never disabled then: Chromium would drop its focus to the page
+// (`chromium-focus-fixup.ts`), and a read that failed again would leave it there.
+test("a refresh that fails over the subscribed agents held draws no line, and their Retry pressed by keyboard keeps the focus when its read fails again", async () => {
   const refusal = () =>
     new ApiError(503, { code: "ENVOY_UNAVAILABLE", error: "envoy listener unreachable" });
   const getIssueSubscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([SUBSCRIBER]);
   const restoreFocus = emulateChromiumFocusFixup();
   const view = renderPeople();
+  const key = ["subscribers", KEY];
   try {
     const subscribers = await screen.findByRole("button", { name: SUBSCRIBERS });
     await waitFor(() => expect(subscribers.textContent).toBe(`${PROPERTY_LABELS.subscribers}:1`));
     await userEvent.click(subscribers);
     await screen.findByRole("button", { name: "Unsubscribe" });
     getIssueSubscribers.mockRejectedValueOnce(refusal());
-    await act(() => view.client.invalidateQueries({ queryKey: ["subscribers", KEY] }));
+    await act(() => view.client.invalidateQueries({ queryKey: key }));
+    expect(view.client.getQueryState(key)?.status, "the refresh did not fail").toBe("error");
+    expect(
+      screen.queryByRole("alert"),
+      "a failed refresh said a failure over the agents"
+    ).toBeNull();
+    expect(screen.queryByRole("button", { name: CONTROL_LABELS.retry })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Unsubscribe" })).not.toBeNull();
+    // The agents taken back to holding none, as before their first read, which then fails.
+    getIssueSubscribers.mockRejectedValueOnce(refusal());
+    await act(() => view.client.resetQueries({ queryKey: key }));
     const retry = await screen.findByRole("button", { name: CONTROL_LABELS.retry });
     // The read the Retry sends is held out until the case fails it.
     const again = Promise.withResolvers<Subscriber[]>();
@@ -451,23 +473,20 @@ test("a subscribers' Retry pressed by keyboard over the agents held keeps the fo
 
     retry.focus();
     await userEvent.keyboard("{Enter}");
-    await waitFor(() => expect(getIssueSubscribers).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(getIssueSubscribers).toHaveBeenCalledTimes(4));
     expect(
       document.activeElement,
       "the subscribers' Retry left the focus on the page while it read"
     ).toBe(retry);
 
     again.reject(refusal());
-    await waitFor(() =>
-      expect(view.client.getQueryState(["subscribers", KEY])?.fetchStatus).toBe("idle")
-    );
+    await waitFor(() => expect(view.client.getQueryState(key)?.fetchStatus).toBe("idle"));
     expect(screen.getByRole("alert").textContent).toBe(STATE_LINES.subscribers_unreadable);
     expect(screen.getByRole("button", { name: CONTROL_LABELS.retry })).toBe(retry);
     expect(
       document.activeElement,
       "the subscribers' Retry whose read failed again left the focus on the page"
     ).toBe(retry);
-    expect(screen.queryByRole("button", { name: "Unsubscribe" })).not.toBeNull();
   } finally {
     restoreFocus();
     view.unmount();
@@ -476,19 +495,30 @@ test("a subscribers' Retry pressed by keyboard over the agents held keeps the fo
 });
 
 // A second press of the subscribers' Retry made before React draws the read the first one sent
-// found the render's `isFetching` still false, so it read the agents again: a refetch of a read
-// that holds an answer ends the request that is out and sends another. A press while the read is
-// out joins it.
+// finds the render's `isFetching` still false. A press while the read is out joins it, and sends
+// no other read. A refresh that fails over the agents held draws no line, so the Retry is a first
+// read's that failed.
 test("two presses of the subscribers' Retry before a render send one read", async () => {
+  const refusal = () =>
+    new ApiError(503, { code: "ENVOY_UNAVAILABLE", error: "envoy listener unreachable" });
   const getIssueSubscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([SUBSCRIBER]);
   const view = renderPeople();
+  const key = ["subscribers", KEY];
   try {
     const subscribers = await screen.findByRole("button", { name: SUBSCRIBERS });
     await waitFor(() => expect(subscribers.textContent).toBe(`${PROPERTY_LABELS.subscribers}:1`));
-    getIssueSubscribers.mockRejectedValueOnce(
-      new ApiError(503, { code: "ENVOY_UNAVAILABLE", error: "envoy listener unreachable" })
-    );
-    await act(() => view.client.invalidateQueries({ queryKey: ["subscribers", KEY] }));
+    getIssueSubscribers.mockRejectedValueOnce(refusal());
+    await act(() => view.client.invalidateQueries({ queryKey: key }));
+    expect(view.client.getQueryState(key)?.status, "the refresh did not fail").toBe("error");
+    expect(
+      screen.queryByRole("alert"),
+      "a failed refresh said a failure over the count"
+    ).toBeNull();
+    expect(screen.queryByRole("button", { name: CONTROL_LABELS.retry })).toBeNull();
+    expect(subscribers.textContent).toBe(`${PROPERTY_LABELS.subscribers}:1`);
+    // The agents taken back to holding none, as before their first read, which then fails.
+    getIssueSubscribers.mockRejectedValueOnce(refusal());
+    await act(() => view.client.resetQueries({ queryKey: key }));
     const retry = await screen.findByRole("button", { name: CONTROL_LABELS.retry });
     // Every read sent from here is held out until the case lets it land.
     const again = Promise.withResolvers<Subscriber[]>();
@@ -502,12 +532,12 @@ test("two presses of the subscribers' Retry before a render send one read", asyn
     expect(
       getIssueSubscribers,
       "the second press ended the read the first one sent and sent another"
-    ).toHaveBeenCalledTimes(3);
+    ).toHaveBeenCalledTimes(4);
     await waitFor(() => expect(retry).toHaveAttribute("aria-busy", "true"));
 
     await act(async () => again.resolve([SUBSCRIBER]));
     await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
-    expect(getIssueSubscribers).toHaveBeenCalledTimes(3);
+    expect(getIssueSubscribers).toHaveBeenCalledTimes(4);
   } finally {
     view.unmount();
     getIssueSubscribers.mockRestore();

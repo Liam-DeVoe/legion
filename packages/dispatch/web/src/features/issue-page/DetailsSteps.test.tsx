@@ -294,10 +294,10 @@ test("an issue with no runs reads None under its heading", async () => {
 // yet. The section's read has no retry policy of its own, so nothing asks again before Retry or
 // the catch-up's next read, where the client's policy would ask twice within the second. Retry
 // reads again and draws the runs; the focus it held goes to the heading once the line goes, never
-// to the page. The catch-up's next read, 2 s after the opening, is refused too, and its failure
-// stands above the runs the read before it drew. On the fake clock each read is the one the case
-// names.
-test("a refused read says so with a Retry that reads again, and a later failure stands above the runs", async () => {
+// to the page. The catch-up's next read, 2 s after the opening, is refused too, and the runs the
+// read before it drew stay drawn with no failure said over them. On the fake clock each read is
+// the one the case names.
+test("a refused read says so with a Retry that reads again, and a later failure says nothing over the runs", async () => {
   await onNoonClock(async () => {
     const user = userOnFakeClock();
     let refusing = true;
@@ -333,13 +333,19 @@ test("a refused read says so with a Retry that reads again, and a later failure 
       refusing = true;
       await tick(1_000, 100);
       expect(steps.listSteps).toHaveBeenCalledTimes(3);
-      const later = screen.getByRole("alert");
-      expect(later.textContent).toBe(ANSWER_LINES.steps_unreadable);
+      expect(
+        screen.queryByRole("alert"),
+        "a later failure said a failure over the runs the read holds"
+      ).toBeNull();
+      expect(
+        screen.queryByRole("button", { name: CONTROL_LABELS.retry }),
+        "a later failure offered a Retry over the runs the read holds"
+      ).toBeNull();
       expect(heading().textContent).toBe(`${CONTROL_LABELS.steps} (5)`);
       expect(
-        later.compareDocumentPosition(run("docs-1")) & Node.DOCUMENT_POSITION_FOLLOWING,
-        "the failure is not drawn above the runs"
-      ).toBeTruthy();
+        run("docs-1"),
+        "a later failure took away the runs the read holds"
+      ).toBeInTheDocument();
     } finally {
       steps.restore();
     }

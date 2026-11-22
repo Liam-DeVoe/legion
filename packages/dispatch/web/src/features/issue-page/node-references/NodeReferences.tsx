@@ -1,13 +1,13 @@
 import { skipToken, useQuery } from "@tanstack/react-query";
-import { type ReactNode, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useId, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { api } from "../../../api/client";
 import { pageHeaderControl, pageInkText, pageQuietText } from "../../../theme/classes";
 import { drawsEdge } from "../../refs/ReferencedBy";
-import { referencesQuery } from "../../refs/reference-target";
+import { referencesQuery, standsFailed } from "../../refs/reference-target";
 import { buildReferencePath, parseNodeReference } from "../../refs/routes";
-import { DetailsErrorLine } from "../details-error";
+import { DetailsErrorLine, retryRead, useRetryHandOff } from "../details-error";
 import type { FocusedNode } from "../focused-node";
 import { useMarginDrawer } from "../margin-slot";
 import { shortDay } from "../node-time";
@@ -132,29 +132,18 @@ export function NodeReferences({
     [itemWords, names, open, query.data]
   );
   const toggle = useRef<HTMLButtonElement>(null);
-  // The control of the list the focus was last on (`onFocus` below). Retry goes with its line
-  // once the read it sent lands, under the reader's own press, and the focus would fall to the
-  // page with it: it goes back to the list's own control instead, as Unpin in Pinned hands it on
-  // (`IssuePins.tsx`). Retry is never disabled while it reads again, since Chromium drops the
-  // focus of a focused button that turns disabled to the page, so a read that fails again
-  // leaves the focus on it; it reads busy then, and a press while the list is read joins that
-  // read rather than ending it and sending another (`cancelRefetch: false`), which the query
-  // decides as the press lands: the render's `isFetching` can be older than a second press made
-  // before React draws the first one's read.
-  const held = useRef<Element | null>(null);
-  useLayoutEffect(() => {
-    if (held.current === null || held.current.isConnected) return;
-    held.current = null;
-    if (document.activeElement === null || document.activeElement === document.body) {
-      toggle.current?.focus();
-    }
-  });
-  // The line stays while the read its Retry sent is out, even where the list held no answer: a
-  // fetch of a read that holds none clears its failure and puts it back to pending as it starts,
-  // which would take the line, and its Retry with the focus, away at the press. A failure it
-  // counts (`errorUpdateCount`) is then one it still stands in. Each failure is drawn afresh by
-  // that count, so a read that fails again is said again, in the same words.
-  const failed = query.isError || (query.isPending && query.errorUpdateCount > 0);
+  // Retry goes with its line once the read it sent lands, under the reader's own press, and the
+  // focus would fall to the page with it: it goes back to the list's own control instead, as
+  // Unpin in Pinned hands it on (`IssuePins.tsx`). Retry is never disabled while it reads again,
+  // since Chromium drops the focus of a focused button that turns disabled to the page, so a read
+  // that fails again leaves the focus on it; it reads busy then, and a press while the list is
+  // read joins that read rather than ending it and sending another (`retryRead`).
+  const retry = useRetryHandOff(() => toggle.current);
+  // The line stands while the read stands failed (`standsFailed`): it holds no answer, and a
+  // fetch of it has failed. A refresh that fails over a list the read holds draws no line, and
+  // the list stays drawn. The line stays while the read its Retry sent is out, and each failure
+  // is drawn afresh by its count, so a read that fails again is said again, in the same words.
+  const failed = standsFailed(query);
   if (addressed === undefined) {
     return null;
   }
@@ -163,9 +152,6 @@ export function NodeReferences({
       aria-label={NODE_REFERENCES_WORDS.what_references}
       className="mt-2"
       data-node-references={node.id}
-      onFocus={(event) => {
-        held.current = event.target;
-      }}
     >
       <button
         aria-controls={panelId}
@@ -191,12 +177,13 @@ export function NodeReferences({
                 error={query.error}
                 failure={query.errorUpdateCount}
                 message={ANSWER_LINES.references_unreadable}
-                onRetry={() => void query.refetch({ cancelRefetch: false })}
+                onRetry={retryRead(query)}
+                {...retry}
                 retrying={query.isFetching}
               />
             </div>
           ) : null}
-          {query.isSuccess && rows.length === 0 ? (
+          {query.data !== undefined && rows.length === 0 ? (
             <p className={`mt-1 text-xs ${pageQuietText}`} {...pageChrome}>
               {CONTROL_LABELS.none}
             </p>

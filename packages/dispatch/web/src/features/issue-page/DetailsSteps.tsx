@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { Fragment, type ReactNode, useLayoutEffect, useRef } from "react";
+import { Fragment, type ReactNode, useRef } from "react";
 
 import { issueStepsQuery } from "../../api/queries";
 import {
@@ -11,9 +11,10 @@ import {
   pageStateText,
   pageStatusProgressText,
 } from "../../theme/classes";
+import { standsFailed } from "../refs/reference-target";
 import { useCatchUp } from "../steps/StepsTab";
 import { type StepRow, stepTasks } from "../steps/steps-model";
-import { DetailsErrorLine } from "./details-error";
+import { DetailsErrorLine, retryRead, useRetryHandOff } from "./details-error";
 import { authorText, pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
 
@@ -235,27 +236,21 @@ function Run({ row }: { row: StepRow }): ReactNode {
  * and the scheduler, which takes only a read begun after the one asked for as its answer, would
  * send the catch-up's as a second request - and has no retry policy: the catch-up's next read
  * asks again for a read that failed, where the app's retries would go on after Details shuts.
- * What a read answered stays drawn when a later read fails, with the failure and its Retry above
- * it; the failure is drawn alone only while no read has answered. Retry joins a read already out
- * (`cancelRefetch: false`) and, once a read lands and takes the line with it, hands the focus it
- * held to the heading rather than to the page.
+ * What a read answered stays drawn when a later read fails, and no failure is said over it; the
+ * failure and its Retry are drawn only while no read has answered. Retry joins a read already out
+ * (`retryRead`) and, once a read lands and takes the line with it, hands the focus it held to the
+ * heading rather than to the page.
  */
 export function DetailsSteps({ issueKey, open }: { issueKey: string; open: boolean }): ReactNode {
   const query = useQuery({ ...issueStepsQuery(issueKey), enabled: false, retry: false });
   useCatchUp(issueKey, open);
   const heading = useRef<HTMLHeadingElement>(null);
-  const retried = useRef<Element | null>(null);
-  useLayoutEffect(() => {
-    if (retried.current === null || retried.current.isConnected) return;
-    retried.current = null;
-    if (document.activeElement === null || document.activeElement === document.body) {
-      heading.current?.focus({ preventScroll: true });
-    }
-  });
-  // The line stays while the read its Retry sent is out, even where no read has answered: a
-  // fetch of a read that holds no answer puts it back to pending as it starts, which would take
-  // the line, and its Retry with the focus, away at the press.
-  const failed = query.isError || (query.isPending && query.errorUpdateCount > 0);
+  const retry = useRetryHandOff(() => heading.current);
+  // The line stands while the read stands failed (`standsFailed`): it holds no answer, and a
+  // fetch of it has failed. A refresh that fails over runs the read holds draws no line, and the
+  // runs stay drawn. The line stays while the read its Retry sent is out, though that read puts
+  // the query back to pending as it starts, so its Retry keeps the focus.
+  const failed = standsFailed(query);
   const tasks = query.data === undefined ? undefined : stepTasks(query.data);
   const runs = tasks?.reduce((count, task) => count + task.rows.length, 0);
   return (
@@ -284,10 +279,8 @@ export function DetailsSteps({ issueKey, open }: { issueKey: string; open: boole
           error={query.error}
           failure={query.errorUpdateCount}
           message={ANSWER_LINES.steps_unreadable}
-          onRetry={() => {
-            retried.current = document.activeElement;
-            void query.refetch({ cancelRefetch: false });
-          }}
+          onRetry={retryRead(query)}
+          {...retry}
           retrying={query.isFetching}
         />
       ) : null}

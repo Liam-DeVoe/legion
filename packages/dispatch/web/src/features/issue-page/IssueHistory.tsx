@@ -31,14 +31,14 @@ import { HISTORY_ENTRY_ATTRIBUTE } from "../margin/details-focus-keeper";
 import { KEEPS_DETAILS_ATTRIBUTE } from "../margin/Margin";
 import { AgentName, type AgentPart, AgentParts } from "../refs/AgentName";
 import { MarkdownBody } from "../refs/MarkdownBody";
-import { EVENT_FRESH } from "../refs/reference-target";
+import { EVENT_FRESH, standsFailed } from "../refs/reference-target";
 import { buildIssuePath, buildReferencePath, documentRoute } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
 import { PHONE_VIEWPORT_QUERY, useMediaQuery } from "../shell/useDialog";
 import { ViewportAnchor } from "../shell/ViewportAnchor";
 import { CutWords } from "./CutWords";
-import { DetailsErrorLine } from "./details-error";
+import { DetailsErrorLine, retryRead } from "./details-error";
 import { HistoryHandoff } from "./HistoryHandoff";
 import {
   buildHistory,
@@ -261,8 +261,9 @@ export function IssueHistory({
   // page at a time, until that thread is in or the log has ended, and the landing below then
   // marks the turn, opens its day and brings it on screen. It waits for the comments and
   // messages the threads are drawn from, before which no thread is drawn at all, and for every
-  // read in flight, so each page is one request; a read that failed stops it, and its line says
-  // so with its Retry.
+  // read in flight, so each page is one request. A read that failed stops it: a failed next page
+  // says so with its Retry, and a refetch that failed over the pages held draws no line, which
+  // leaves Load older to read on.
   const seeksItem =
     item !== undefined &&
     marked === undefined &&
@@ -486,18 +487,19 @@ export function IssueHistory({
     keeping.current = false;
     anchor.current?.keepRow(null);
   });
-  // The history draws the log it holds whatever the last read's outcome: a read
-  // that fails once it holds the log - a refetch after an event, a later open of Details, the
-  // next page - says so with its Retry beside the entries, never in their place, and the line
-  // stands alone only while no page is held. A failed next page is said where Load older is,
-  // and its Retry reads that page again; any other failure under the heading, where its Retry
-  // reads the log again. The line stays while the read its Retry sent is out, even where no page
-  // is held: a fetch of a log that holds none clears its failure and puts it back to pending as
-  // it starts, which would take the line, and its Retry with the focus, away at the press. A
-  // failure it counts (`errorUpdateCount`) is then one it still stands in. Each failure is drawn
-  // afresh by that count, so a read that fails again is said again, in the same words.
-  const logFailed = log.isError || (log.isPending && log.errorUpdateCount > 0);
-  const failed = logFailed ? (
+  // The history draws the log it holds whatever the last read's outcome. The log's own line
+  // stands under the heading while the log stands failed (`standsFailed`): it holds no page, and
+  // a fetch of it has failed. A refetch that fails once it holds pages - after an event, or on a
+  // later open of Details - draws no line, and every entry stays drawn. A failed next page is
+  // said where Load older is, below the pages held, and its Retry reads that page again; the
+  // log's Retry reads the log again. Each line stays while the read its Retry sent is out: the
+  // log's since the log still stands failed, though a fetch of a log that holds no page puts it
+  // back to pending as it starts; the next page's since the log keeps that failure while the page
+  // is read again. Each failure is drawn afresh by its count (`errorUpdateCount`), so a read that
+  // fails again is said again, in the same words.
+  const logFailed = standsFailed(log);
+  const saysFailure = logFailed || log.isFetchNextPageError;
+  const failed = saysFailure ? (
     <div ref={failure}>
       <DetailsErrorLine
         error={log.error}
@@ -509,9 +511,9 @@ export function IssueHistory({
           // it reads, since Chromium drops the focus of a focused button that turns disabled
           // to the page, so a read that fails again leaves the focus on it; it reads busy then,
           // and a press while the log is read joins that read rather than ending it and sending
-          // another: the next page's as `readOlderPage` says, the log's by `cancelRefetch: false`,
-          // which the query decides as the press lands, as the render's `isFetching` can be older
-          // than a second press made before React draws the first one's read.
+          // another: the next page's as `readOlderPage` says, the log's by `retryRead`, which the
+          // query decides as the press lands, as the render's `isFetching` can be older than a
+          // second press made before React draws the first one's read.
           const active = document.activeElement;
           if (
             active !== null &&
@@ -524,7 +526,7 @@ export function IssueHistory({
           }
           keepEntryBeside(log.isFetchNextPageError ? "under" : "above");
           if (log.isFetchNextPageError) readOlderPage();
-          else void log.refetch({ cancelRefetch: false });
+          else void retryRead(log)();
         }}
         retrying={log.isFetching}
       />
