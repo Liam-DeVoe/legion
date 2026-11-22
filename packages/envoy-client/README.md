@@ -1182,8 +1182,10 @@ its step in the command table (`DispatchCommand.dryRun`, `dispatch-commands/tabl
 such step is `dispatch artifact`'s: for inline content, it makes the call's own stored-text check
 (`storedTextCheck`), and refuses with the call's refusal and exit code a text the call refuses: one
 Dispatch would store under another spelling (`POST /api/v1/markdown/round-trip`, asked for every
-text but the empty string), or one the call refuses for the text alone. The check is the one
-place that decides what blank text (what Go's `strings.TrimSpace` empties, `goBlankPattern`) is
+text but the empty string), or one the call refuses for the text alone. A text whose typed
+blocks' attributes differ from Dispatch's only in their order is no such text: the call uploads it
+in Dispatch's order (`storedUpload`, `dispatch-commands/stored-spelling.ts`), so the dry run passes
+it. The check is the one place that decides what blank text (what Go's `strings.TrimSpace` empties, `goBlankPattern`) is
 asked: a refusal alone, never its spelling, and a check of it that gets no answer leaves the upload
 to make its own refusal. Text past the 1 MiB of UTF-8 one document holds is refused with
 `CAP_EXCEEDED` and exit 1 without asking Dispatch anything (`documentTooLarge`): the call refuses

@@ -1921,6 +1921,41 @@ describe("the dispatch CLI", () => {
     expect(requests).toEqual([{ method: "POST", path: ROUND_TRIP, body: markdownBody(content) }]);
   });
 
+  // A typed block whose attributes differ from what Dispatch stores only in their order is no
+  // other spelling: the call uploads the text as Dispatch stores it (storedUpload) and names the
+  // block, so its dry run, which refuses only what the call refuses, passes it.
+  test("an upload's dry run passes a text whose block attributes Dispatch stores in another order, as the call uploads it", async () => {
+    const document = (attributes: string) =>
+      `# Verification\n\n:::check{#c1 ${attributes}}\nThe block is stored in Dispatch's order.\n:::\n`;
+    const content = document(
+      'surface="cli" ci_check="lint" when="before_merge" negative_control="no"'
+    );
+    const stored = document(
+      'surface="cli" when="before_merge" negative_control="no" ci_check="lint"'
+    );
+    roundTrip = () => Response.json({ markdown: stored });
+    const dry = await run([...UPLOAD, "--dry-run"], omp, content);
+    expect(dry).toEqual({
+      code: 0,
+      stdout: `${JSON.stringify({ issue: "DSP-1", name: "notes.md", content }, null, 2)}\n`,
+      stderr: "",
+    });
+    requests.length = 0;
+    const call = await run(UPLOAD, omp, content);
+    expect(call.code, call.stdout).toBe(0);
+    expect(call.stdout).toContain(
+      "in the order Dispatch stores: id, surface, when, negative_control, ci_check."
+    );
+    expect(
+      requests
+        .filter(
+          (request) =>
+            request.method === "POST" && request.path === "/api/v1/issues/DSP-1/artifacts"
+        )
+        .map((request) => request.body)
+    ).toEqual([expect.objectContaining({ content: stored })]);
+  });
+
   // A Dispatch older than the round trip answers no route for it, and the call then uploads the
   // text unchecked. The dry run asks the route once, with no waits before asking again, so that
   // answer reaches it well inside its 5 s bound.
@@ -2658,6 +2693,47 @@ describe("the dispatch CLI", () => {
       expect(stdout).toContain(
         "- blocks lists the live document, the one dispatch doc-edit changes; name no version"
       );
+      expect(requests).toEqual([]);
+    });
+  });
+
+  // A replace with no with was sent and read as an empty one, which deleted the text its find
+  // matched; one whose new text stood under markdown did the same. Both exit 2 before anything is
+  // sent, naming the operation and the field.
+  describe("doc-edit replace", () => {
+    test("refuses a replace with no with before it sends anything", async () => {
+      const { code, stdout } = await run(
+        [
+          "doc-edit",
+          "--issue",
+          "DSP-2",
+          "--ops-json",
+          JSON.stringify([{ op: "replace", find: "old" }]),
+        ],
+        omp
+      );
+      expect(code).toBe(2);
+      expect(stdout).toContain(
+        'ops[0] is a replace with no with, which would delete the text find matches: write the new text in with, or with "" to delete it on purpose.'
+      );
+      expect(requests).toEqual([]);
+    });
+
+    test("refuses a replace carrying a field replace does not take, naming it", async () => {
+      const ops = [
+        { op: "replace", find: "old", with: "new" },
+        { op: "replace", find: "old", markdown: "new" },
+      ];
+      const { code, stdout } = await run(
+        ["doc-edit", "--issue", "DSP-2", "--ops-json", JSON.stringify(ops)],
+        omp
+      );
+      expect(code).toBe(2);
+      expect(stdout).toContain(
+        "ops[1] is a replace carrying markdown, which replace does not take: it takes find, with and occurrence, and its new text goes in with."
+      );
+      expect(stdout).toContain("ops[1] is a replace with no with");
+      expect(stdout).not.toContain("ops[0]");
       expect(requests).toEqual([]);
     });
   });

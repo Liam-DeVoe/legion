@@ -8,8 +8,6 @@
 import {
   MARKDOWN_DOCUMENT_MAX_BYTES,
   MARKDOWN_DOCUMENT_TOO_LARGE,
-  PATH_KEEPS_BYTES,
-  pathKeepsBytesOf,
   utf8Bytes,
 } from "@legion/contracts";
 import { goBlankPattern } from "@legion/contracts/go-blank";
@@ -19,89 +17,7 @@ import { type DispatchClient, DispatchServiceError } from "../dispatch-http";
 import { messageFor } from "../errors";
 import { ToolInputError } from "../tool-input-errors";
 import { dispatchAnswered } from "./failures";
-
-/**
- * How much of one line a refusal quotes whole. A line of a document is bounded by the document
- * itself, so one differing line can be as long as the whole text, and a quote nobody can read
- * to the end is one nobody acts on — the same reason STORED_TEXT_PRINTED bounds the stored
- * text below, and the cut is named the same way.
- */
-const STORED_LINE_QUOTED = 200;
-
-/** `line` as a refusal quotes it: its JSON spelling whole while the line is short, and
- *  otherwise that of its first STORED_LINE_QUOTED characters, with the cut named after it. */
-function quotedStoredLine(line: string): string {
-  if (line.length <= STORED_LINE_QUOTED) return JSON.stringify(line);
-  const head = JSON.stringify(line.slice(0, STORED_LINE_QUOTED));
-  return `${head} (cut after ${STORED_LINE_QUOTED} of its ${line.length} characters)`;
-}
-
-/** The first line the store would write otherwise, which is the line a reader fixes first. The
- *  two texts differ, so one of the three arms answers. Each quote is bounded, since the line it
- *  names can be as long as the document itself. */
-function firstStoredDifference(given: string, stored: string): string {
-  const written = given.split("\n");
-  const holds = stored.split("\n");
-  // Each side is read as `string | undefined`, since a line past the end of its own text is
-  // undefined and the strict packages that compile this file say so. The two are not equal
-  // here, so exactly one arm below answers and the pair can never both be undefined.
-  for (let line = 0; line < Math.max(written.length, holds.length); line += 1) {
-    const wrote = written[line];
-    const held = holds[line];
-    if (wrote === held) continue;
-    if (wrote === undefined && held !== undefined) {
-      return `the store writes a line ${line + 1}, ${quotedStoredLine(held)}`;
-    }
-    if (held === undefined && wrote !== undefined) {
-      return `the store drops line ${line + 1}, ${quotedStoredLine(wrote)}`;
-    }
-    if (wrote !== undefined && held !== undefined) {
-      return `line ${line + 1} reads ${quotedStoredLine(wrote)} and is stored as ${quotedStoredLine(held)}`;
-    }
-  }
-  return "the stored text differs from the text given";
-}
-
-/**
- * How much of the stored text a refusal prints whole. Past it the refusal prints the first whole
- * lines that fit and says how much it cut: a document is up to 1 MiB, and a refusal nobody can
- * read to the end is one nobody acts on. The line a reader fixes first is named before the text
- * either way, so a cut refusal still says what to change.
- */
-const STORED_TEXT_PRINTED = 2000;
-
-/** The stored text as a refusal prints it, and what the refusal says of the cut: whole while it
- *  is short, and otherwise its first whole lines up to STORED_TEXT_PRINTED characters. */
-function storedTextPrinted(stored: string): { readonly text: string; readonly cut: string } {
-  if (stored.length <= STORED_TEXT_PRINTED) return { text: stored, cut: "" };
-  const head = stored.slice(0, STORED_TEXT_PRINTED);
-  const lastLineFeed = head.lastIndexOf("\n");
-  const text = lastLineFeed === -1 ? head : head.slice(0, lastLineFeed + 1);
-  return {
-    text,
-    cut: ` The text below is cut after ${text.length} of its ${stored.length} characters: change the line named above and send the text again.`,
-  };
-}
-
-/**
- * The refusal of inline text the store would change: where the two first differ, the way out
- * this name has, and the text the store writes, so the writer can send exactly that text. The
- * markers hold the stored text apart from the prose around it. A name `--path` would store as
- * bytes has a second way out, which keeps the text as it was written; a Markdown name has none,
- * since `--path` parses and renders it the same way (`pathKeepsBytesOf`).
- */
-function storedTextProblem(given: string, stored: string, name: string): string {
-  const asBytes = pathKeepsBytesOf(name)
-    ? ` To keep the text as you wrote it, send it as a file with ${PATH_KEEPS_BYTES}.`
-    : "";
-  const printed = storedTextPrinted(stored);
-  return [
-    `Dispatch stores this text under another spelling: ${firstStoredDifference(given, stored)}.`,
-    ` Send the text Dispatch stores, which is between the two marker lines below.${asBytes}`,
-    `${printed.cut}\n--- the text Dispatch stores ---\n${printed.text}`,
-    "--- end of the text Dispatch stores ---",
-  ].join("");
-}
+import { storedUpload } from "./stored-spelling";
 
 /** The two round trips the stored-text check asks, as a refusal or a warning names them: inline
  *  text's and a `--path` file's. Each writes nothing. */
@@ -137,22 +53,17 @@ function roundTripRouteAbsent(error: unknown): error is DispatchServiceError {
   return dispatchAnswered(error, 404) || dispatchAnswered(error, 405);
 }
 
-/** `text` without a final line feed, which is what the stored-text check compares. The store
- *  ends every document it holds with one, so text a writer gave without one comes back with one
- *  and nothing else changed (`markdown_round_trip_test.go` pins "one" stored as "one\n"). That
- *  one line feed is the only difference the check forgives. */
-function withoutFinalLineFeed(text: string): string {
-  return text.endsWith("\n") ? text.slice(0, -1) : text;
-}
-
 /**
  * What Dispatch says of the text an upload would store as a Markdown document (`storedTextCheck`
  * for inline text, `storedFileCheck` for a `--path` file), and so what the call does:
  * - `kept`: the store takes the text: inline, as given but for one final line feed, or blank,
  *   which is held to no spelling; from a file, however the store spells it. The call uploads it.
+ * - `reordered`: inline text that differs from what the store writes only in the order of typed
+ *   blocks' attributes (`storedUpload`). The call uploads `sent`, the text as the store writes it,
+ *   and its answer carries `lines`, one for each such block.
  * - `refused`: the call refuses the text, and `refusal` is what it throws for it: a
  *   `ToolInputError` for inline text the store writes under another spelling
- *   (`storedTextProblem`), an `Error` in Dispatch's words for text past the bytes one document
+ *   (`storedUpload`'s refusal), an `Error` in Dispatch's words for text past the bytes one document
  *   may hold (`documentTooLarge`), and Dispatch's own refusal of the round trip, which is its
  *   upload's refusal of the same text (`askRoundTrip`).
  * - `unchecked`: the round trip gave no answer about the text, and the call uploads it unchecked,
@@ -166,6 +77,7 @@ function withoutFinalLineFeed(text: string): string {
  */
 export type StoredTextCheck =
   | { readonly kind: "kept" }
+  | { readonly kind: "reordered"; readonly sent: string; readonly lines: readonly string[] }
   | { readonly kind: "refused"; readonly refusal: Error }
   | { readonly kind: "unchecked"; readonly failure: string; readonly routeAbsent: boolean }
   | { readonly kind: "failed"; readonly failure: string; readonly error: unknown };
@@ -323,8 +235,9 @@ async function askRoundTrip(
  * `--force`. `dispatch artifact` and its dry run both make it, so the two never answer
  * differently, and it is the one place that decides what the call does with blank text. Inline
  * text is stored as Markdown: Dispatch parses it and stores its rendering, so a text it would write
- * under another spelling is refused rather than stored changed, and a text Dispatch refuses is
- * refused with its refusal (`askRoundTrip`). Without `force` the call makes a new document, so the
+ * under another spelling is refused rather than stored changed, but for one whose typed blocks'
+ * attributes differ only in their order, which goes up as Dispatch writes it (`storedUpload`), and
+ * a text Dispatch refuses is refused with its refusal (`askRoundTrip`). Without `force` the call makes a new document, so the
  * round trip is asked for a new document's refusals; with it, it is not, and Dispatch answers as
  * the most permissive replacement takes the text: with the rendering that replacement stores,
  * which is compared as any other, or with a refusal every replacement makes, which is the call's.
@@ -365,16 +278,17 @@ async function storedTextCheck(
       return blank || answer.routeAbsent
         ? unchecked(answer)
         : { kind: "failed", failure: answer.failure, error: answer.error };
-    case "stored":
-      // The store ends a document with a line feed the writer's own text need not carry, and
-      // that one line feed is no other spelling: both sides lose at most one before they are
-      // compared. Every other difference is refused.
-      return blank || withoutFinalLineFeed(answer.stored) === withoutFinalLineFeed(content)
+    case "stored": {
+      if (blank) return { kind: "kept" };
+      // What goes up, and what is refused, is storedUpload's rule (stored-spelling.ts).
+      const upload = storedUpload(content, answer.stored, name);
+      if ("refusal" in upload) {
+        return { kind: "refused", refusal: new ToolInputError(tool, [upload.refusal]) };
+      }
+      return upload.reordered.length === 0
         ? { kind: "kept" }
-        : {
-            kind: "refused",
-            refusal: new ToolInputError(tool, [storedTextProblem(content, answer.stored, name)]),
-          };
+        : { kind: "reordered", sent: upload.sent, lines: upload.reordered };
+    }
   }
 }
 

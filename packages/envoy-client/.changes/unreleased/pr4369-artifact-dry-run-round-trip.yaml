@@ -4,7 +4,9 @@ custom:
 body: |-
   `dispatch artifact --dry-run` with inline content asks Dispatch how it would store the text
   (`POST /api/v1/markdown/round-trip`), as the call does, and refuses a text that Dispatch would
-  store under another spelling with the call's own refusal and exit code. It stores nothing. The
+  store under another spelling with the call's own refusal and exit code; a text whose typed
+  blocks' attributes differ only in their order, which the call uploads in Dispatch's order, it
+  passes. It stores nothing. The
   call and its dry run refuse a document's text past the document limit (1 MiB of UTF-8), inline
   or in a `--path` file whose path ends in .md or .markdown, with Dispatch's own `CAP_EXCEEDED`
   message before they ask the round trip or upload, the call before it reads whether the owner

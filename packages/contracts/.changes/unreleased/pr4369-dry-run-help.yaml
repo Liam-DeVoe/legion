@@ -4,7 +4,8 @@ custom:
 body: |-
   A Dispatch tool spec can carry `dryRunHelp`, the sentence its command's `--dry-run` help prints.
   The `dispatch_artifact` spec's sentence says that the dry run asks Dispatch how it would store
-  inline text, and refuses a text that Dispatch would store under another spelling or that the
+  inline text, and refuses a text that Dispatch would store under another spelling, but for typed
+  blocks' attributes in another order, which the call uploads in Dispatch's order, or that the
   call refuses for the text alone; that for a Markdown file it refuses a file past the document
   limit, and then one holding a NUL character or a byte that is not UTF-8, in the words of its
   upload, and sends Dispatch the bytes of any other, refusing what Dispatch refuses of them but

@@ -1135,7 +1135,7 @@ func TestSettledVersionNamesChangedReferenceTargets(t *testing.T) {
 		t.Fatalf("decode settle event payload: %v", err)
 	}
 	issueKey := "DOC-1"
-	want := []model.ChangedReference{{Kind: "ask", ID: askID, IssueKey: &issueKey}}
+	want := []model.ChangedReference{{Kind: "ask", ID: askID, IssueKey: &issueKey}, {Kind: "issue", ID: issueKey}}
 	if !reflect.DeepEqual(named.ReferencesChanged, want) {
 		t.Fatalf("settle event references_changed = %#v, want %#v", named.ReferencesChanged, want)
 	}
@@ -1185,7 +1185,7 @@ func TestVersionWritersReportChangedReferenceTargets(t *testing.T) {
 	if err := ledger.Commit(context.Background()); err != nil {
 		t.Fatalf("commit snapshot: %v", err)
 	}
-	want := []model.ChangedReference{{Kind: "ask", ID: askIDs[0], IssueKey: &issueKey}}
+	want := []model.ChangedReference{{Kind: "ask", ID: askIDs[0], IssueKey: &issueKey}, {Kind: "issue", ID: issueKey}}
 	if !snapshot.Wrote || !reflect.DeepEqual(snapshot.Changes.Targets, want) {
 		t.Fatalf("snapshot changes = %#v (wrote=%t), want %#v", snapshot.Changes.Targets, snapshot.Wrote, want)
 	}
@@ -1204,6 +1204,7 @@ func TestVersionWritersReportChangedReferenceTargets(t *testing.T) {
 	want = []model.ChangedReference{
 		{Kind: "ask", ID: askIDs[1], IssueKey: &issueKey},
 		{Kind: "ask", ID: askIDs[0], IssueKey: &issueKey},
+		{Kind: "issue", ID: issueKey},
 	}
 	if !reflect.DeepEqual(named.Changes.Targets, want) {
 		t.Fatalf("named version changes = %#v, want %#v", named.Changes.Targets, want)

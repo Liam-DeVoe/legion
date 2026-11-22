@@ -737,12 +737,14 @@ export async function artifactCommand(context: CommandContext): Promise<Dispatch
   // whatever name it carries (documentTooLarge); a text the store would write under another
   // spelling, or one Dispatch's round trip refuses as its upload would, is refused; and so is an
   // upload of text that is not blank whose check did not run, since that check says nothing about
-  // what the store would write. A Markdown file's bytes take storedFileCheck, which asks the file
-  // round trip for its refusal alone: the store keeps a Markdown file as it spells it, so no
-  // spelling is refused, and Dispatch refuses there, in the upload's own words, what the upload of
-  // those bytes is refused for. Without --force each check asks for the refusals of a new document,
-  // which this call makes; with it, the upload may replace a document, which is judged by looser
-  // rules, so it asks for none of them, and Dispatch answers as the most permissive replacement
+  // what the store would write. A text whose typed blocks' attributes differ from Dispatch's only
+  // in their order is no other spelling: it goes up as Dispatch writes it (storedUpload). A
+  // Markdown file's bytes take storedFileCheck, which asks the file round trip for its refusal
+  // alone: the store keeps a Markdown file as it spells it, so no spelling is refused, and
+  // Dispatch refuses there, in the upload's own words, what the upload of those bytes is refused
+  // for. Without --force each check asks for the refusals of a new document, which this call
+  // makes; with it, the upload may replace a document, which is judged by looser rules, so it
+  // asks for none of them, and Dispatch answers as the most permissive replacement
   // takes the text: with the rendering it stores, which the inline check compares as any other, or
   // with a refusal every replacement makes. Under a name the owner does not hold, --force uploads a
   // new document, and its upload makes the refusals the check did not ask for. A text the check
@@ -797,16 +799,20 @@ export async function artifactCommand(context: CommandContext): Promise<Dispatch
   // A call with a path uploads that file, one with content stores that text, and one with
   // neither makes an empty document the writer fills in afterwards with dispatch doc-edit. The
   // file's bytes, where the call holds them - a document's, read above, or those AskGate's check
-  // read - are sent as they were read, under the file's own type.
+  // read - are sent as they were read, under the file's own type. The text is sent as given, or,
+  // where it differs from what Dispatch stores only in the order of a typed block's attributes,
+  // as Dispatch stores it, and the answer names each such block (the check's `reordered`).
   const fileBytes = documentBytes ?? heldBytes;
+  const sent = stored?.kind === "reordered" ? stored.sent : content;
+  const reordered = stored?.kind === "reordered" ? stored.lines : [];
   const artifactInput =
     file !== undefined
       ? {
           ...options,
           file: fileBytes === undefined ? file : new Blob([fileBytes], { type: file.type }),
         }
-      : content !== undefined
-        ? { ...options, content }
+      : sent !== undefined
+        ? { ...options, content: sent }
         : options;
   const result =
     artifactOwner.kind === "project"
@@ -827,6 +833,7 @@ export async function artifactCommand(context: CommandContext): Promise<Dispatch
       path === undefined && content === undefined
         ? `Made ${result.artifact.name} as an empty document (artifact slug ${result.artifact.slug}; ${artifactRef}). Write in it with dispatch doc-edit.${await notSubscribed(uploadOwner, input.subscriptions)}`
         : `Uploaded ${result.artifact.name} as version ${result.version.number} (artifact slug ${result.artifact.slug}; ${artifactRef})${await notSubscribed(uploadOwner, input.subscriptions)}`,
+      ...reordered,
       ...adviceLines,
     ].join("\n"),
     details:
@@ -921,7 +928,9 @@ export async function artifactDryRun(context: DryRunContext): Promise<DryRunVerd
     // only what building the client throws.
     return unasked(messageFor(error), "The call is refused for the same reason.");
   }
-  if (stored.kind === "kept") return { kind: "passed" };
+  // A text whose typed blocks' attributes differ from Dispatch's only in their order the call
+  // uploads as Dispatch writes it, refusing nothing, so the dry run passes it too.
+  if (stored.kind === "kept" || stored.kind === "reordered") return { kind: "passed" };
   if (stored.kind === "refused") return { kind: "refused", refusal: stored.refusal };
   if (stored.kind === "unchecked" && stored.routeAbsent) {
     return {
