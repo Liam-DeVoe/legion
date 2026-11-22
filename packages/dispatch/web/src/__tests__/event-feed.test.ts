@@ -1795,6 +1795,7 @@ const eventsByType: Record<EventType, DispatchEvent> = {
     { issue_key: null }
   ),
   "settings.repo_project.updated": event("settings.repo_project.updated", {}, { issue_key: null }),
+  "spec.request_stale": event("spec.request_stale", { issue: "CORE-1", statements: [] }),
   "subscription.remove_requested": event("subscription.remove_requested", { session_id: "s1" }),
   "subscription.removed": event("subscription.removed", { session_id: "s1" }),
   "suggestion.accepted": event("suggestion.accepted", { anchor: null, id: "comment-1" }),

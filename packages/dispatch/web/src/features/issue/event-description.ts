@@ -122,6 +122,8 @@ function describe(event: DispatchEvent): string | AgentPart[] {
       return event.payload.reason === "closed" ? "Claim released on close" : "Claim released";
     case "issue.deployed":
       return `Deployed by run ${event.payload.run_id}`;
+    case "spec.request_stale":
+      return `Approval refused: the approved spec changed ${event.payload.statements.map((node) => node.id).join(", ")} after the change request was written; write it again and request approval`;
     case "handoff.recorded":
       return `Recorded the ${event.payload.phase} handoff, version ${event.payload.version}`;
     case "artifact.created":
