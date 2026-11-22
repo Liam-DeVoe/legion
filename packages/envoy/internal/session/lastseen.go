@@ -134,8 +134,10 @@ func lastSeenKey(sessionID string) string {
 // abandoned, which may still land and record this write's time. The read is by key, a direct get
 // on the key's own subject, which the listener's grant allows; a get by revision is a direct get
 // on the stream's bare subject, which it does not.
-// A read that finds another revision, or no record, means a newer write replaced this one, and
-// that write records its own.
+// A read that finds another revision, or no record, means a newer write replaced this one. A
+// registration's newer write records its own time; a rewrite of the stored entry
+// (rewriteStoredEntry: a gap mark, its clear, or a renewal) records none, so the record keeps the
+// time an earlier registration recorded until the next registration write records its own.
 func (r *SessionRegistry) recordSeen(ctx context.Context, kv bus.KeyValue, sessionID string, written uint64) {
 	r.mu.RLock()
 	seen := r.seen

@@ -179,6 +179,8 @@ func TestARepositoryGapOutlivesARelayRestart(t *testing.T) {
 		return rig.withheld(t, "answer_unknown") >= 1
 	})
 	rig.repositories.failWith(0)
+	// The relay's restart at the ack floor under the new epoch below recreates this consumer.
+	awaitSessionConsumerStored(t, rig.harness.client.Conn, sessionID)
 	requireStatus(t, rig.call(t, http.MethodPost, token, "/v1/interests/subscribe", consumerRegistration(sessionID, "epoch-2", "notifications.github.acme.pub.>")),
 		http.StatusOK, "the registration under a new delivery epoch")
 	next, _ := rig.storeEvent(t, contracts.LegacyAgentSubject(sessionID))
@@ -230,6 +232,8 @@ func TestARepositoryGapOutlivesAMoveToAnotherListener(t *testing.T) {
 	})
 
 	rig.repositories.failWith(0)
+	// The relay's restart at the ack floor under the registration below recreates this consumer.
+	awaitSessionConsumerStored(t, rig.harness.client.Conn, sessionID)
 	requireStatus(t, rig.call(t, http.MethodPost, token, "/v1/interests/subscribe", consumerRegistration(sessionID, "epoch-2", "notifications.github.acme.pub.>")),
 		http.StatusOK, "the registration that brings the session back to this listener")
 	next, _ := rig.storeEvent(t, contracts.LegacyAgentSubject(sessionID))
@@ -242,6 +246,61 @@ func TestARepositoryGapOutlivesAMoveToAnotherListener(t *testing.T) {
 	testwait.Eventually(t, "the sent mark to be cleared from the session's entry", func() bool {
 		return storedEdgeSessionEntry(t, rig, sessionID).RepositoryGap == ""
 	})
+}
+
+// The end of a receive term forgets every gap mark the relay set noted in its process (stopAll),
+// and a term that begins after it starts with none: the session's entry keeps the mark for the pod
+// that relays the session next, which may send and clear it before this pod relays again. Here the
+// edge withholds a GitHub event while no repository answer stands, so the relay notes the event's
+// mark; the term ends (durableReceiver.end, sessionRelays.setOwned), the mark is sent and cleared
+// from the entry while this listener relays nothing, as the pod that relayed the session meanwhile
+// would, and a term begins again, whose first frame carries no gap mark. Control: with stopAll
+// keeping the noted marks, the mark outlives the term's end and the row fails.
+func TestAReceiveTermsEndForgetsTheGapMarksItsRelaysNoted(t *testing.T) {
+	rig := newEdgeRig(t)
+	const sessionID = "ses_edge_gap_term_end"
+	token := rig.personToken(sessionID, "PRIV")
+	standIn := startSessionStandIn(t, rig.url, sessionID, answerDone)
+	requireStatus(t, rig.subscribe(t, token, sessionID, "notifications.github.acme.pub.>"), http.StatusOK, "the registration")
+	first, _ := rig.storeEvent(t, contracts.LegacyAgentSubject(sessionID))
+	requireFrames(t, standIn.collect(t, 1, 10*time.Second), first)
+
+	noted := func() string {
+		rig.relays.repositoryGapsMu.Lock()
+		defer rig.relays.repositoryGapsMu.Unlock()
+		return rig.relays.repositoryGaps[sessionID]
+	}
+	rig.repositories.failWith(http.StatusServiceUnavailable)
+	rig.clock.advance(edgeRepositoryAnswerLife + time.Second)
+	rig.storeGithubEvent(t, "acme/pub", "pr.1")
+	testwait.Eventually(t, "the edge to withhold the acme/pub event and note its gap mark", func() bool {
+		return rig.withheld(t, "answer_unknown") >= 1 && noted() != ""
+	})
+	mark := noted()
+
+	rig.relays.setOwned(nil)
+	if !testwait.Holds(10*time.Second, testwait.Poll, func() bool { return noted() == "" }) {
+		t.Fatalf("the relay set still notes the gap mark %q for %s 10 s after its receive term ended: a mark noted under a term outlives it", noted(), sessionID)
+	}
+	// The pod that relays the session meanwhile sends the mark and clears it from the entry.
+	if err := rig.deps.sessions.ClearRepositoryGap(t.Context(), sessionID, mark); err != nil {
+		t.Fatalf("clear %s's mark %q as the next pod's relay does: %v", sessionID, mark, err)
+	}
+	rig.repositories.failWith(0)
+	// The relay's restart at the ack floor when the term begins again recreates this consumer.
+	awaitSessionConsumerStored(t, rig.harness.client.Conn, sessionID)
+	rig.relays.setOwned(endlessTerm())
+	if again := noted(); again != "" {
+		t.Fatalf("the receive term that began after the end notes the gap mark %q for %s", again, sessionID)
+	}
+
+	next, _ := rig.storeEvent(t, contracts.LegacyAgentSubject(sessionID))
+	frames := standIn.collect(t, 1, 10*time.Second)
+	requireFrames(t, frames, next)
+	if gap, reason := frames[0].msg.Header.Get(relayHeaderGap), frames[0].msg.Header.Get(relayHeaderGapReason); gap != "" || reason != "" {
+		t.Fatalf("the first frame of the term that began after the end carries %s %q and %s %q: the gap mark %q, which the next pod sent and cleared, is sent again",
+			relayHeaderGap, gap, relayHeaderGapReason, reason, mark)
+	}
 }
 
 // The gap mark a later withheld event owes outlives another relay's clear of an earlier mark:

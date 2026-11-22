@@ -307,8 +307,8 @@ func TestTheCopysListenerTakesTheSubjectsItListsUnderTheMintedKeyAndRefusesTheRe
 	issuer, run := startCopyIssuer(t, testDispatchSubject, testRunnerSubject, testStrangerSubject)
 	listener, port := startCopysListener(t, binary, issuer, testDispatchSubject+","+testRunnerSubject)
 	base := "http://127.0.0.1:" + strconv.Itoa(port)
-	// /healthz answers 200 "starting" from the moment the listener serves, before NATS connects;
-	// only "healthy" says /v1 serves.
+	// /healthz answers 503 "starting" from the moment the listener serves it, before NATS connects,
+	// until /v1 serves; only "healthy" says /v1 serves.
 	deadline := time.Now().Add(90 * time.Second)
 	answer := "none"
 	for {

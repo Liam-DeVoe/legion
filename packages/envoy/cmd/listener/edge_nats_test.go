@@ -188,3 +188,56 @@ func TestAnEdgeListenerOpensNoLeaseAndSendsNothingOnTheListenerStateBucket(t *te
 		}
 	}
 }
+
+// An edge listener names its own grant, natsgrant.Edge ("infra/core EdgePermissions",
+// edgeListenerGrant), in the refusal lines of its start's bucket opens (grantName): the
+// spent-proof bucket's (openSpentProofBucket) and a store's (openStartStore). That grant creates
+// no bucket, so an edge started where no full listener made the buckets is refused at each open,
+// and a line naming the listener's grant would send its operator to fix a grant the edge does not
+// run under. The edge runs under its rendered grant, and the admin makes the stream alone; once
+// the spent-proof bucket's refusal is logged the admin makes that bucket, so the start goes on to
+// the interest registry's buckets and is refused there. Control: with grantName naming
+// listenerGrant for every listener, the lines name the listener's grant and the row fails.
+func TestAnEdgeListenerNamesItsOwnGrantInItsBucketRefusals(t *testing.T) {
+	const machineID = "example-edge-refused"
+	grant, err := natsgrant.Edge(machineID, []string{edgeProject})
+	if err != nil {
+		t.Fatalf("the edge's grant: %v", err)
+	}
+	seed, public := testnats.User(t)
+	granted := testnats.StartGranted(t, testnats.GrantedUser{Public: public, Grant: testnats.Grant{
+		Publish:   testnats.GrantRules{Allow: grant.Publish},
+		Subscribe: testnats.GrantRules{Allow: grant.Subscribe},
+	}})
+	admin, err := bus.ConnectOwningStream([]string{granted.AdminURL}, bus.WithReplicas(1), bus.WithName("edge-grant-name-test admin"))
+	if err != nil {
+		t.Fatalf("the admin creates the stream: %v", err)
+	}
+	t.Cleanup(admin.Close)
+	edge := startEdgeListenerProcess(t, cmdtest.Build(t, "envoy-listener"), granted.URL(), machineID, ciphertokentest.NewStubBroker(t),
+		bus.NkeySeedEnvVar+"="+seed)
+	// refusal is the first ERROR line the edge logged at line for one of buckets.
+	refusal := func(line string, buckets ...string) map[string]any {
+		t.Helper()
+		for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(200 * time.Millisecond) {
+			for _, record := range linesIn(edge.Output.String(), line, map[string]any{"level": "ERROR"}) {
+				if bucket, _ := record["bucket"].(string); slices.Contains(buckets, bucket) {
+					return record
+				}
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("the edge listener logged no %q for %v within 30 s:\n%s", line, buckets, edge.Output.String())
+			}
+		}
+	}
+
+	if record := refusal(spentProofBucketRefusedLine, bus.DPoPProofBucket); record["grant"] != edgeListenerGrant {
+		t.Fatalf("the edge listener's refusal of %s names the grant %v, want its own, %q: %v", bus.DPoPProofBucket, record["grant"], edgeListenerGrant, record)
+	}
+	if _, err := admin.JS().CreateKeyValue(&natsgo.KeyValueConfig{Bucket: bus.DPoPProofBucket, Storage: natsgo.FileStorage}); err != nil {
+		t.Fatalf("the admin makes the %s bucket: %v", bus.DPoPProofBucket, err)
+	}
+	if record := refusal(storeBucketRefusedLine, bus.InterestBucket, bus.RoleClaimBucket); record["grant"] != edgeListenerGrant {
+		t.Fatalf("the edge listener's refusal of %v names the grant %v, want its own, %q: %v", record["bucket"], record["grant"], edgeListenerGrant, record)
+	}
+}

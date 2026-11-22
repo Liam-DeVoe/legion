@@ -70,8 +70,8 @@ func TestAnEntryWriteStopsAfterABoundOfLostWrites(t *testing.T) {
 
 // staleGetKV is a session bucket whose direct get of key answers stale, an entry the bucket has
 // since written over, as a copy of a replicated bucket that stays a write behind does; every other
-// call is the bucket's own, a read from the stream's leader (bus.KeyValue.GetFromLeader) among
-// them, which does not go through this handle.
+// call is the bucket's own, a read from the stream's leader (bus.KeyValue.GetLatestFromLeader)
+// among them, which does not go through this handle.
 type staleGetKV struct {
 	nats.KeyValue
 	key   string

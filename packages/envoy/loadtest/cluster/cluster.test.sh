@@ -2273,8 +2273,8 @@ run_cluster down --namespace "$ns"
 ((RC == 0)) || fail "down after the up without a principal exited $RC"
 pass "up checks no identity at a listener that names no Dispatch principal, and says so"
 
-# A listener still starting answers 503 (its readiness passes on /healthz's "starting"): up sends
-# again 3 s later and goes on once it is taken.
+# A listener still starting answers 503 (/v1 closed; its /healthz answers 503 "starting" until /v1
+# serves): up sends again 3 s later and goes on once it is taken.
 reset_fake
 printf '%s\n' '503 {"error":"service starting"}' >"$fake/identity-answers"
 run_cluster up "${up_args[@]}" --dispatch-commit "$commit_ok"

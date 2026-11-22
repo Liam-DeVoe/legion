@@ -1,6 +1,9 @@
-// The leader-answered read of one key of a KV bucket (KeyValue.GetFromLeader), beside its test:
-// the one read of this package that may not be a direct get, because what it decides is a delete.
-// The read of a key's newest message it makes (newestMessage) is GetLatest's marker read too.
+// The leader-answered reads of one key of a KV bucket, beside their test, each read so because a
+// copy behind the leader, which a direct get may reach, would answer it wrongly:
+// KeyValue.GetFromLeader, whose caller decides a delete on the strength of a key being absent, and
+// KeyValue.GetLatestFromLeader, whose caller decides the revision a conditional write that lost to
+// another writes at next. The read of a key's newest message both make (newestMessage) is
+// GetLatest's marker read too.
 
 package bus
 

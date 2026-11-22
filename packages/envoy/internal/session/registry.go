@@ -989,19 +989,24 @@ func (r *SessionRegistry) readStored(ctx context.Context, kv bus.KeyValue, epoch
 	return SessionEntry{}, revision, false, nil
 }
 
-// readLatest reads sessionID's newest entry from the bucket through kv, waiting no longer than ctx,
-// as bus.KeyValue.GetLatest answers it: the stored value and its revision, or nats.ErrKeyNotFound
+// readLatest reads sessionID's newest entry from the bucket through kv, waiting no longer than ctx
+// and ending at the loss of the connection the read went out on (bus.BoundedOn), as
+// bus.KeyValue.GetLatest answers it: the stored value and its revision, or nats.ErrKeyNotFound
 // with a delete or purge marker's revision, or with 0 for a key that holds no entry at all. Any
 // other error is the read's. fromLeader reads it from the bucket stream's leader
 // (bus.KeyValue.GetLatestFromLeader), which holds every write the bucket took, rather than by a
-// direct get (bus.BoundedOn), which any copy near enough to current answers (Refresh): a write that
-// lost to another reads so, since a copy that keeps answering a write behind would hand it the
-// revision it just lost on, and would spend the write's bound of lost writes (entryWriteLosses).
+// direct get, which any copy near enough to current answers (Refresh): a write that lost to
+// another reads so, since a copy that keeps answering a write behind would hand it the revision it
+// just lost on, and would spend the write's bound of lost writes (entryWriteLosses). The leader
+// read is bounded as the direct get is: nats.go fails no request its connection drops, so a leader
+// read lost with its connection would otherwise hold the write that lost until ctx ends.
 func readLatest(ctx context.Context, kv bus.KeyValue, sessionID string, fromLeader bool) (bus.LatestEntry, error) {
-	if fromLeader {
-		return kv.GetLatestFromLeader(ctx, sessionID)
-	}
-	read, _, err := bus.BoundedOn(ctx, kv, func() (bus.LatestEntry, error) { return kv.GetLatest(sessionID) })
+	read, _, err := bus.BoundedOn(ctx, kv, func() (bus.LatestEntry, error) {
+		if fromLeader {
+			return kv.GetLatestFromLeader(ctx, sessionID)
+		}
+		return kv.GetLatest(sessionID)
+	})
 	return read, err
 }
 
@@ -1049,11 +1054,11 @@ func (r *SessionRegistry) writeEntryAt(ctx context.Context, kv bus.KeyValue, epo
 // asked again, by writeEntryAt's stop rule. The keys of the entry this build does not know are
 // written back as read (decodeSessionEntry). A key whose newest entry is no value - a delete or
 // purge marker, or none at all - is missing, the caller's error or nil, and is never written, and
-// a value no read decodes is an error. what names the change in each error. renews records a
-// write that lands as the session's last-seen time, as a registration's write is recorded
-// (recordSeen), for a change that stamps the entry as a heartbeat does; a change of the gap mark
-// alone says nothing of whether the session answers.
-func (r *SessionRegistry) rewriteStoredEntry(ctx context.Context, sessionID, what string, missing error, renews bool, change func(*SessionEntry) bool) error {
+// a value no read decodes is an error. what names the change in each error. No write it makes is
+// recorded as the session's last-seen time (recordSeen, which write calls for a registration): a
+// change of the gap mark says nothing of whether the session answers, and RenewWithin's one
+// caller, cmd/listener's edge listener, opens no listener state bucket to record it in.
+func (r *SessionRegistry) rewriteStoredEntry(ctx context.Context, sessionID, what string, missing error, change func(*SessionEntry) bool) error {
 	kv, epoch := r.watcher.Handle()
 	fromLeader := false
 	for range entryWriteLosses {
@@ -1071,14 +1076,11 @@ func (r *SessionRegistry) rewriteStoredEntry(ctx context.Context, sessionID, wha
 		if !change(&entry) {
 			return nil
 		}
-		written, lost, err := r.writeEntryAt(ctx, kv, epoch, sessionID, entry, read.Revision)
+		_, lost, err := r.writeEntryAt(ctx, kv, epoch, sessionID, entry, read.Revision)
 		if err != nil {
 			return fmt.Errorf("write session %s to %s: %w", sessionID, what, err)
 		}
 		if !lost {
-			if renews {
-				r.recordSeen(ctx, kv, sessionID, written)
-			}
 			return nil
 		}
 		fromLeader = true
@@ -1094,7 +1096,7 @@ func (r *SessionRegistry) rewriteStoredEntry(ctx context.Context, sessionID, wha
 // noteRepositoryGap gives its event back).
 func (r *SessionRegistry) SetRepositoryGap(ctx context.Context, sessionID, mark string) error {
 	missing := fmt.Errorf("mark session %s's repository gap: the bucket holds no entry of it: %w", sessionID, nats.ErrKeyNotFound)
-	return r.rewriteStoredEntry(ctx, sessionID, "mark its repository gap", missing, false, func(entry *SessionEntry) bool {
+	return r.rewriteStoredEntry(ctx, sessionID, "mark its repository gap", missing, func(entry *SessionEntry) bool {
 		if entry.RepositoryGap == mark {
 			return false
 		}
@@ -1108,7 +1110,7 @@ func (r *SessionRegistry) SetRepositoryGap(ctx context.Context, sessionID, mark 
 // since, for an event withheld later (each withheld event's mark is a new id), and a later frame
 // clears it. An entry the bucket does not hold carries no mark to clear, and is no error.
 func (r *SessionRegistry) ClearRepositoryGap(ctx context.Context, sessionID, mark string) error {
-	return r.rewriteStoredEntry(ctx, sessionID, "clear its repository gap", nil, false, func(entry *SessionEntry) bool {
+	return r.rewriteStoredEntry(ctx, sessionID, "clear its repository gap", nil, func(entry *SessionEntry) bool {
 		if entry.RepositoryGap != mark {
 			return false
 		}
@@ -1121,12 +1123,14 @@ func (r *SessionRegistry) ClearRepositoryGap(ctx context.Context, sessionID, mar
 // the stored entry is the caller's to renew (rewriteStoredEntry): a registration another listener
 // wrote between the read and the write is never overwritten with what was read, and owns is asked
 // again of the entry read again. Every other field is kept as read, the gap mark and the keys this
-// build does not know among them, and the renewal is recorded as the session's last-seen time, as
-// a registration is. An entry the bucket does not hold, and one owns refuses, are left as they
+// build does not know among them. A registry without the listener state bucket, as the edge
+// listener's is, takes the renewal's stamp as the session's last-seen time through its copy, as it
+// takes every entry it stores (storedLocked); the renewal writes no `seen.` record
+// (rewriteStoredEntry). An entry the bucket does not hold, and one owns refuses, are left as they
 // are, and neither is an error. cmd/listener's edge listener renews a session so through a
 // repository outage that refuses its heartbeats.
 func (r *SessionRegistry) RenewWithin(ctx context.Context, sessionID string, owns func(SessionEntry) bool) error {
-	return r.rewriteStoredEntry(ctx, sessionID, "renew it", nil, true, func(entry *SessionEntry) bool {
+	return r.rewriteStoredEntry(ctx, sessionID, "renew it", nil, func(entry *SessionEntry) bool {
 		if !owns(*entry) {
 			return false
 		}

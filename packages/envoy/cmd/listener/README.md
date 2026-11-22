@@ -35,7 +35,7 @@ Every pod of a machine id, active or standby:
   the greatest time any report named (`RecordListenerReady`, `packages/daemon/internal/store/wake.go`), which one live reporter is enough to hold up.
 
 Only the pod holding the machine's **delivery lease** receives the durable consumer, writes its policy, and runs the loops one deliverer runs (`holderLoops`, `main.go`):
-the interest reaper, the role-claim reaper, the session reaper, the interest marker collector, the sweep of the kept role lanes with the takeover passes it runs (`startKeptRoleSweep`, `keptSweepConfig`), the session consumer sweep (`startSessionConsumerSweep`) and, on a listener with the GitHub webhook route, the CI summary loop.
+the interest reaper, the role-claim reaper, the session reaper, the interest marker collector, the sweep of the kept role lanes with the takeover passes it runs (`startKeptRoleSweep`, `keptSweepConfig`), the session consumer sweep (`startSessionConsumerSweep`), on a listener with the GitHub webhook route the CI summary loop and, on an edge listener, the edge repository loop (`runEdgeRepositories`).
 The one exception is a listener without a lease, whose NATS user lacks the grant for `envoy_listener` (`openDeliveryLease`, `main.go`):
 it does all three with no lease, and receives while no other subscriber holds the durable, until a grant lets it open that bucket and it joins the lease ("Without the grant: no-lease mode" below).
 A standby runs none of them, never creates or updates the durable, and registers no JetStream subscription, so a NATS restart leaves it nothing to re-subscribe.
@@ -494,6 +494,8 @@ Its grant (`natsgrant.Edge`) holds no call of `envoy_listener`, so it opens no l
 Run one edge pod per machine id, since a second one has no lease to stand by under:
 a second edge pod for one machine id, a rolling update's surge pod included, can deliver a message twice, as an edge listener of a build before this release can.
 So an edge Deployment runs one replica under the `Recreate` strategy.
+The relays of an edge listener acknowledge a GitHub event they withhold, or give it back, with no check of the receive term (`acknowledgeWithheld`, `giveBackWithheld`, `session_relay.go`), because an edge listener holds no lease and runs one pod:
+an edge standby would need that withhold fenced by the lease, with the change to the edge's grant that its owner approves.
 
 ## Environment
 

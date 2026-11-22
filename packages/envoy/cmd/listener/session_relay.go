@@ -823,7 +823,11 @@ func (m *sessionRelays) apply(sessionID string, notice relayNotice) {
 // machine's receive term ended. Each caller names its own, so the line a stopped run writes says
 // which happened. No session is this listener's to relay after it, so every gap mark this process
 // noted is forgotten (forgetRepositoryGap's rule): the entries keep theirs for the pod that relays
-// the sessions next, and this one reads them again from the entries if its term comes back.
+// the sessions next, and this one reads them again from the entries if its term comes back. It
+// cancels the runs and waits for none of them, so a run its term's end cancelled during a
+// repository gap write (noteRepositoryGap) may still note that mark here after the clear. The
+// session's entry carries the same mark, written before it, so nothing acts on the noted one that
+// would not act on the entry's.
 func (m *sessionRelays) stopAll(reason relayCancelReason) {
 	for sessionID, run := range m.relays {
 		run.cancel(reason)
@@ -1578,7 +1582,10 @@ func (m *sessionRelays) forgetRepositoryGap(sessionID string) {
 
 // edgeWithholds reports whether an edge listener withholds msg from sessionID, and why. Every
 // other listener withholds nothing. A withheld message is acknowledged (acknowledgeWithheld) or
-// given back (giveBackWithheld) by the relay loop, which decides which.
+// given back (giveBackWithheld) by the relay loop, which decides which. Both answer the message
+// with no check of the receive term, which takeOverFrame holds every answer of a frame to, because
+// an edge listener holds no lease and runs one pod: an edge standby would need that withhold fenced
+// by the lease, with the change to the edge's grant that its owner approves.
 func (m *sessionRelays) edgeWithholds(sessionID string, msg bus.SessionMessage) (bool, string) {
 	if m.repositories == nil {
 		return false, ""

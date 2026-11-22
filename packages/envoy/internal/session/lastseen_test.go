@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -296,5 +297,62 @@ func TestALastSeenReadBackThatFindsANewerWriteRecordsNothing(t *testing.T) {
 	}
 	if got := logs.String(); strings.Contains(got, "level=WARN") {
 		t.Fatalf("the registry warned:\n%s", got)
+	}
+}
+
+// A write of the gap mark alone (SetRepositoryGap, ClearRepositoryGap) leaves the session's
+// last-seen time where its last registration put it, and a renewal of the stored entry
+// (RenewWithin) moves it to the renewal's stamp: the mark says nothing of whether the session
+// answers, and a renewal stands for the heartbeats a repository outage refuses. The registry has
+// no listener state bucket, as the edge listener's has none (it opens no lease), so LastSeen
+// answers the stamp of the entry its copy holds. Its clock moves on a second before each write,
+// so a write that stamped the entry would show. Control: with SetRepositoryGap stamping the entry
+// as RenewWithin does, the mark's write moves the last-seen time and the row fails.
+func TestAGapMarkWriteLeavesTheSessionsLastSeenAndARenewalMovesIt(t *testing.T) {
+	const sessionID, mark = "ses_mark_last_seen", "a-mark"
+	var clock atomic.Int64
+	clock.Store(time.Now().UnixMilli())
+	client := setupNATS(t)
+	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1),
+		WithSessionClock(func() time.Time { return time.UnixMilli(clock.Load()) }))
+	if err != nil {
+		t.Fatalf("open the session registry: %v", err)
+	}
+	t.Cleanup(reg.StopWatch)
+	if err := reg.Put(sessionID, SessionEntry{MachineID: "box-a"}); err != nil {
+		t.Fatalf("register %s: %v", sessionID, err)
+	}
+	registered := clock.Load()
+	if seen := reg.LastSeen(t.Context(), sessionID); seen != registered {
+		t.Fatalf("UNKNOWN: %s's last-seen time after its registration is %d, not the registration's stamp %d, so the row reads nothing", sessionID, seen, registered)
+	}
+
+	for _, write := range []struct {
+		what  string
+		write func() error
+		mark  string
+	}{
+		{"a gap mark (SetRepositoryGap)", func() error { return reg.SetRepositoryGap(t.Context(), sessionID, mark) }, mark},
+		{"the mark's clear (ClearRepositoryGap)", func() error { return reg.ClearRepositoryGap(t.Context(), sessionID, mark) }, ""},
+	} {
+		clock.Add(time.Second.Milliseconds())
+		if err := write.write(); err != nil {
+			t.Fatalf("%s: %v", write.what, err)
+		}
+		if entry, err := reg.Get(sessionID); err != nil || entry.RepositoryGap != write.mark {
+			t.Fatalf("UNKNOWN: after %s %s's entry is %+v (%v), not marked %q, so the write did not land and the row holds nothing", write.what, sessionID, entry, err, write.mark)
+		}
+		if seen := reg.LastSeen(t.Context(), sessionID); seen != registered {
+			t.Fatalf("%s moved %s's last-seen time to %d from the registration's %d: a write of the mark alone says nothing of whether the session answers",
+				write.what, sessionID, seen, registered)
+		}
+	}
+
+	clock.Add(time.Second.Milliseconds())
+	if err := reg.RenewWithin(t.Context(), sessionID, func(SessionEntry) bool { return true }); err != nil {
+		t.Fatalf("renew %s: %v", sessionID, err)
+	}
+	if seen, renewed := reg.LastSeen(t.Context(), sessionID), clock.Load(); seen != renewed {
+		t.Fatalf("after the renewal %s's last-seen time is %d, want the renewal's stamp %d", sessionID, seen, renewed)
 	}
 }
