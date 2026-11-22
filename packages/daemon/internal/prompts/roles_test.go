@@ -675,16 +675,17 @@ func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
 		{"core/common.md", "A claim about how a system behaves cites the file and the symbol or the text you read it at; an uncited claim is an assumption and is written as one."},
 		{"core/oracle.md", "A claim about how a system behaves cites the file and the symbol or the text you read it at; an uncited claim is an assumption and is written as one."},
 		{"core/oracle.md", "Findings cite the file and the symbol, or text quoted from it."},
-		// R6: the reviewer in `reviewing` and the implementer while it holds `implementing` re-run a
-		// red at the head once, after they write the failure down, so a red the change did not cause
-		// costs the tree no extra lap (dispatch://INFRA-1303). The tester reads no CI at all, Sami's
-		// decision on dispatch://INFRA-1303/ask/dd2229bf-075c-4524-b045-41f39978dbb3: "let CI do its
-		// job, your job is to boot and run the app's real workflows like a user would". Its core
-		// carries his words, and that it reads no check run, re-runs no CI and waits on no CI. The six
-		// rows that pinned the tester's re-run here until then (its holder sentence, the page's reading
-		// of whose red it is, the record before the press, the disposal steps after a green re-run,
-		// its wait for an unreported red, and its read of the head's checks before any verdict) went
-		// with that re-run; the skills guard's `retiredTesterCiReads` refuses their sentences.
+		// R6: the reviewer in `reviewing`, the implementer while it holds `implementing` and the
+		// merger in `merging` at a head its own forward merge made re-run a red at the head once,
+		// after they write the failure down, so a red the change did not cause costs the tree no
+		// extra lap (dispatch://INFRA-1303). The tester reads no CI at all, Sami's decision on
+		// dispatch://INFRA-1303/ask/dd2229bf-075c-4524-b045-41f39978dbb3: "let CI do its job, your
+		// job is to boot and run the app's real workflows like a user would". Its core carries his
+		// words, and that it reads no check run, re-runs no CI and waits on no CI. The six rows that
+		// pinned the tester's re-run here until then (its holder sentence, the page's reading of
+		// whose red it is, the record before the press, the disposal steps after a green re-run, its
+		// wait for an unreported red, and its read of the head's checks before any verdict) went with
+		// that re-run; the skills guard's `retiredTesterCiReads` refuses their sentences.
 		{"core/tester.md", "Let CI do its job: your job is to boot and run the app's real workflows like a user would."},
 		{"core/tester.md", "You read no check run, re-run no CI and wait on no CI"},
 		{"core/tester.md", "A red check at the head of the pull request ends no round of yours, since your verdict is on the issue's checks and the surface you drove."},
@@ -741,9 +742,9 @@ func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
 		{"go/reviewer.md", "A required check absent from the counted set, or `completed` as `cancelled` there, whose job in a `pull_request` run of the head was cancelled or never ran: re-run that run's failed and cancelled jobs, once, then wait"},
 		{"go/reviewer.md", "A failed job of a completed `pull_request` run of the head is never that case: it is a red, which that page decides."},
 		{"go/reviewer.md", "When no `pull_request` run of the head holds the job, or nothing will run it (a check only a commit status reports, a workflow another repository defines), tell the architect and do not approve."},
-		// The worker part names the same record, and the implementer's overlay the same reading of
-		// whose red it is.
-		{"go/worker-common.md", "after it records the failure in a handoff record of its own phase with `dispatch handoff-write`"},
+		// The worker part names the same record, the merger's `dispatch comment` beside it, since the
+		// merger writes no handoff, and the implementer's overlay the same reading of whose red it is.
+		{"go/worker-common.md", "The reviewer or the implementer records the failure in a handoff record of its own phase with `dispatch handoff-write`, and the merger, which writes no handoff, in a `dispatch comment` on the issue."},
 		{"go/implementer.md", "(*Which red is the change's* in `skill://legion-worker/references/red-at-the-head.md` decides which of the two it is, and a pass in your own pod does not move that)"},
 		// The implementer's overlay forbids every wait on CI but the ones the red-at-the-head page
 		// gives it for a red it acts on: the wait on the run that holds the red until it ends, the
@@ -757,12 +758,20 @@ func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
 		{"go/implementer.md", "Push, then complete: never wait for CI, except for the waits `skill://legion-worker/references/red-at-the-head.md` gives for a red you act on."},
 		{"go/implementer.md", "Outside those waits, each of which a wake ends as that page says, never wait for, watch or poll the pull request's remote CI"},
 		{"go/implementer.md", "A failed job of the head's own `pull_request` run is acted on once that run has completed, whether or not the counted set lists its check yet, and no run that is not a `pull_request` run of the head is acted on at all; a read made seconds after a push never shows that the head has no red, so a check you were told of that no `pull_request` run of the head holds is waited for once"},
-		// The worker part names the two roles that hold the re-run and the three that press none. It
-		// is composed into the merger's prompt too, and the forward merge of main's guide cut
-		// (5748720cd9) took main's line, which named no role and so gave the merger the re-run
-		// (INFRA-1303's review round 3); the tester left the list when it came to read no CI.
-		{"go/worker-common.md", "only the reviewer in `reviewing` or the implementer while it holds `implementing` re-runs one the change did not make"},
-		{"go/worker-common.md", "The tester presses nothing, and the merger and an implementer that runs retro re-run nothing"},
+		// The worker part names the three roles that hold the re-run, the merger only at a head its
+		// own forward merge made, and the two that press none. It is composed into the merger's
+		// prompt too, and the forward merge of main's guide cut (5748720cd9) took main's line, which
+		// named no role and so gave the merger the re-run at every head (INFRA-1303's review round
+		// 3); the tester left the list when it came to read no CI. The merger joined it, with its
+		// bound, once cybermonklabs/legion#4979 made the forward merge in `merging` its own (the
+		// architect's ruling of 2026-11-22T22:36Z), and the list read the reviewer and the
+		// implementer alone until then. The architect's part names the same holders and bound.
+		{"go/worker-common.md", "only the reviewer in `reviewing`, the implementer while it holds `implementing`, or the merger in `merging` at a head its own forward merge made re-runs one the change did not make"},
+		{"go/worker-common.md", "It re-runs it once at that head, only after it records the failure, and follows the order, the waits and the read of the spend in `skill://legion-worker/references/red-at-the-head.md`."},
+		{"go/worker-common.md", "The merger re-runs only a failed `pull_request` check: a `merge_group` check goes only through the one requeue of a `failed_checks` removal, and at any other head the merger re-runs nothing."},
+		{"go/worker-common.md", "The tester presses nothing, and an implementer that runs retro re-runs nothing."},
+		{"go/architect-common.md", "The merger in `merging` re-runs only a failed `pull_request` check at a head its own forward merge made, once at that head and only after it records the failure in a `dispatch comment` on the issue, and it follows the order, the waits and the read of the spend in `skill://legion-worker/references/red-at-the-head.md`."},
+		{"go/architect-common.md", "At any other head the merger re-runs nothing, and the tester presses nothing."},
 		// A check CI proves: a check carrying `ci_check` is proved by the CI run it names, so no
 		// role runs it or records its result, and `dispatch results` derives that result
 		// (dispatch://INFRA-3204, R5 of its spec). Each part that orders a check run, recorded or
@@ -824,17 +833,18 @@ func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
 // the tester reads no CI and presses no re-run (Sami's decision on
 // dispatch://INFRA-1303/ask/dd2229bf-075c-4524-b045-41f39978dbb3). The architect's gap review of
 // 2026-11-22 found no row that held it. The row reads each part Compose gives the tester and
-// gives neither holder of the re-run, the implementer and the reviewer: roles/core/tester.md,
+// gives no holder of the re-run, the implementer, the reviewer or the merger: roles/core/tester.md,
 // roles/tester.md and go/tester.md today. A part the tester shares with a holder (core/common.md,
 // mechanics/headless.md, go/worker-common.md) is that holder's text too, and go/worker-common.md
-// links the page right after "The tester presses nothing", so the row leaves the shared parts
-// alone. In the tester's own parts it refuses two things. The page's file name, which every link
-// and every path to the page holds: `skill://legion-worker/references/red-at-the-head.md`, or
-// "the worker skill's red-at-the-head page", which roles/core/tester.md carried until 0ac2891a.
-// And a sentence that sends its reader to the page by its title: a verb of reading before "A red
-// check at the head of the pull request" in one sentence. The core's "A red check at the head of
-// the pull request ends no round of yours" opens its sentence with the title, names the page's
-// subject, sends no one to read the page, and passes.
+// links the page in the holders' sentences, before "The tester presses nothing", so the row leaves
+// the shared parts alone. In the tester's own parts it refuses two things. The page's file name,
+// which every link and every path to the page holds:
+// `skill://legion-worker/references/red-at-the-head.md`, or "the worker skill's red-at-the-head
+// page", which roles/core/tester.md carried until 0ac2891a. And a sentence that sends its reader
+// to the page by its title: a verb of reading before "A red check at the head of the pull request"
+// in one sentence. The core's "A red check at the head of the pull request ends no round of yours"
+// opens its sentence with the title, names the page's subject, sends no one to read the page, and
+// passes.
 func TestNoPartComposedForTheTesterAlonePointsAtTheRedAtTheHeadPage(t *testing.T) {
 	stateDir := t.TempDir()
 	composer, err := New(stateDir)
@@ -842,7 +852,7 @@ func TestNoPartComposedForTheTesterAlonePointsAtTheRedAtTheHeadPage(t *testing.T
 		t.Fatalf("New: %v", err)
 	}
 	holders := map[string]bool{}
-	for _, role := range []claim.Role{claim.RoleImplementer, claim.RoleReviewer} {
+	for _, role := range []claim.Role{claim.RoleImplementer, claim.RoleReviewer, claim.RoleMerger} {
 		parts, err := composer.Compose(role, false)
 		if err != nil {
 			t.Fatalf("Compose %s: %v", role, err)

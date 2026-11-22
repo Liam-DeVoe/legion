@@ -72,15 +72,15 @@ test("every relative link resolves to a file inside the staged partition", () =>
   expect(brokenRelativeLinks(staged)).toEqual([]);
 });
 
-// INFRA-1303 gave the reviewer in `reviewing` and the implementer while it holds `implementing`
-// one re-run of a red at the head the change did not make
-// (`skill://legion-worker/references/red-at-the-head.md`), and took the sentences that forbade it
-// out of this partition's skills and the daemon's prompts. A forward merge keeps both sides of a
-// deletion with no conflict for anyone to read, so the prohibitions are refused over every root
-// rather than over the files they were deleted from. The documentation site is one of them: an
-// operator reads it, and its running-legion.md carried "re-runs nothing" until this change (test
-// round 1's F4). docs/plans and docs/solutions stay out, since they are dated history that may
-// quote a retired rule on purpose.
+// INFRA-1303 gave the reviewer in `reviewing`, the implementer while it holds `implementing` and
+// the merger in `merging` at a head its own forward merge made one re-run of a red at the head the
+// change did not make (`skill://legion-worker/references/red-at-the-head.md`), and took the
+// sentences that forbade it out of this partition's skills and the daemon's prompts. A forward
+// merge keeps both sides of a deletion with no conflict for anyone to read, so the prohibitions are
+// refused over every root rather than over the files they were deleted from. The documentation
+// site is one of them: an operator reads it, and its running-legion.md carried "re-runs nothing"
+// until this change (test round 1's F4). docs/plans and docs/solutions stay out, since they are
+// dated history that may quote a retired rule on purpose.
 test("no staged skill, daemon prompt or docs page forbids the holders' re-run of a red at the head", () => {
   expect(retiredRerunProhibitions([staged, promptsRoot, docsSiteRoot])).toEqual([]);
 });

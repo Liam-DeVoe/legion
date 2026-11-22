@@ -1,27 +1,36 @@
 # A red check at the head of the pull request
 
 Part of `skill://legion-worker`. Read it when a check is red at the head of the issue's pull
-request and you hold `reviewing` or `implementing`. Every path it cites is in cybermonklabs/legion.
-The runs that show what GitHub answers here: <https://cybermonklabs.github.io/legion/legion/checks-and-re-runs/>.
+request and you hold `reviewing` or `implementing`, or `merging` at a head your own forward merge
+made. Every path it cites is in cybermonklabs/legion. The runs that show what GitHub answers here:
+<https://cybermonklabs.github.io/legion/legion/checks-and-re-runs/>.
 
-A red the change did not make costs the tree a whole lap today: an implementing round, a new CI
-pass, a new testing round, and often a new review round. The role that already reads that head
-clears such a red where it stands. It writes the failure down in a handoff record of its own phase
-(`dispatch handoff-write`) before the `gh run rerun` call that re-runs the failed jobs once.
+A red the change did not make costs the tree a whole lap: an implementing round, a new CI pass, a
+new testing round, and often a new review round. The role that already reads that head clears such
+a red where it stands. It writes the failure down before the `gh run rerun` call that re-runs the
+failed jobs once: in a handoff record of its own phase (`dispatch handoff-write`), or, for the
+merger, in a `dispatch comment` on the issue.
 
 ## Who may re-run
 
-- The holders of the re-run are the reviewer in `reviewing` and the implementer while it holds
-  `implementing`.
+- The holders of the re-run are the reviewer in `reviewing`, the implementer while it holds
+  `implementing`, and the merger in `merging` at a head its own forward merge made.
+- The merger re-runs only a failed `pull_request` check at a head its own forward merge made: once
+  at that head, only after it records the failure, and in the order, the waits and the spend this
+  page gives. At any other head it re-runs nothing. A `merge_group` check goes only through the one
+  requeue of a `failed_checks` removal, which its role prompt gives. When its re-run is spent or
+  comes back red, it records the red and decides it as its role prompt's *A check that failed* says.
 - The tester presses nothing: it reads no CI, and a red at the head does not end its round.
 - The reviewer neither waits for a check the base does not require nor re-runs it for the approval,
   as `skill://legion-worker/references/merge-gate.md` says. It approves over such a red the change
   did not make and names the red in its `redAtTheHead` record and its review body, and nowhere else:
   with no re-run, nothing shows the test fails at random, so the red is no occurrence for the
   census. The implementer still re-runs such a red once.
-- The merger, the architect in `accepting` and an implementer that runs retro re-run nothing. The
-  merger's `failed_checks` ejection rule is in its role prompt.
+- The architect in `accepting` and an implementer that runs retro re-run nothing.
 - A role that is told of a red whose phase it does not hold re-runs nothing.
+- A red moves no phase: the daemon names each check of a settlement to the architect, the phase's
+  worker and, before `merging`, the implementer, and judges none (`tellChecks`, in the daemon's
+  `workflow/review.go`), so only the role ends a round such a red would hold, by this page.
 
 ## The record comes first, never after
 
@@ -49,22 +58,22 @@ GitHub refuses `gh run rerun`. So before the log read the role reads the run's o
 `gh run view <run-id> --json status --jq .status`, and reads the log and presses the re-run only on
 `completed`. The run's own `completed` is the leave to press where the run is a `pull_request` run
 of the head, whether or not the counted set lists the check yet; until then the role waits for
-the run, as *The act and the wait* says. A re-run GitHub refuses all the same starts no attempt,
-so it spends nothing: the role records GitHub's answer, and on the next wake it reads the spend
-again before it presses, as before the first press, since a refusal while the run reads
-`completed` can mean another press already started an attempt.
+the run, as *The act and the wait* says. A re-run GitHub refuses all the same starts no attempt
+and spends nothing: the role records GitHub's answer and reads the spend again on the next wake,
+before it presses, since a refusal while the run reads `completed` can mean another press began one.
 
-The record is a handoff record of the role's own phase, written with
-`dispatch handoff-write --issue <issue> --phase <implement|review> --body-file <file>` before the
-`gh run rerun` call, never after it. Its body carries the field `redAtTheHead`, a list with one
+The implementer's or the reviewer's record is a handoff record of the role's own phase, written
+with `dispatch handoff-write --issue <issue> --phase <implement|review> --body-file <file>` before
+the `gh run rerun` call, never after it. Its body carries the field `redAtTheHead`, a list with one
 entry per red, each entry naming all eight facts above. That record is a version of its own: the
 role writes the phase's full record later, with `redAtTheHead` in it again, and `handoff_complete`
 reports the newest version. A re-run pressed before Dispatch has recorded the first version loses
-the failure, which is what this page exists to keep. The reviewer writes that handoff record before
-the re-run as the implementer does, and repeats it in the body of the one review it submits at the
-end of the round, since the reviewer's one review ends its round. No file under
-`packages/daemon/internal/prompts/roles/` names that field. This page is where the implementer and
-the reviewer read it.
+the failure, which is what this page exists to keep. The reviewer repeats the record in the body of
+the one review it submits at the end of the round, since the reviewer's one review ends its round.
+No file under `packages/daemon/internal/prompts/roles/` names that field, so the implementer and
+the reviewer read it here. The merger writes no handoff record: its record is a `dispatch comment`
+on the issue that carries the eight facts, posted before the `gh run rerun` call, as its
+`failed_checks` requeue record is.
 
 ## Which red is the change's
 
@@ -121,9 +130,8 @@ gh api graphql --paginate -F oid=<head> -f query='query($oid:GitObjectID!,$endCu
 `--paginate` with the `$endCursor` variable and `endCursor` in the page info is what follows
 `hasNextPage`, because the context list is capped at 100 a page.
 
-**Do not judge a red from `repos/<o>/<r>/commits/<head>/check-runs`.** That endpoint answers
-every check run at the commit, a by-hand `workflow_dispatch` run's among them, which GitHub
-counts for no pull request.
+**Do not judge a red from `repos/<o>/<r>/commits/<head>/check-runs`.** It answers every check
+run at the commit, a by-hand `workflow_dispatch` run's too, which counts for no pull request.
 
 **The spend is a different question, and a different read.** Whether the red is the change's is
 judged on the check and its failed job, above. Whether the head's one re-run is already spent is
@@ -234,20 +242,19 @@ The settlement wakes the role in that session, and one read of the head's checks
 
 ## When the cause is another tree's, so no re-run clears it
 
-**This section is for a red the one re-run cannot clear.** A fetch that answered 5xx, a registry
-that refused, a runner that ended: on its first red each of these takes its one re-run, as *Which
-red is the change's* says, and most clear there. This section takes over in two cases: the re-run
-came back red at a step that ran **before any test of the change** — a setup or install step, a
-toolchain, a runner, a registry — or the lane's own output already shows the defect is in a file
-another tree owns. A failing test is never the second case, whatever package holds it: one that is
-not the change's takes the one re-run on its first red, and on its second red it is handled as *Red
-again* above says, never as an external cause. In both cases a further run of the lane meets the
-same defect, so no re-run ends it. The role records the external cause in the same record this page
-already asks for — the lane, the error, the head, and the change it waits on — tells the architect,
-and ends its round where it stands: a reviewer submits the `REQUEST_CHANGES` naming the red, since
-that is how a reviewer's round ends. It waits for nothing here. The fix is another tree's: it
-reaches this head only through a forward merge. A role that waits holds its phase and its pod for
-that, and the architect, who arranges it, has not seen the record.
+A fetch that answered 5xx, a registry that refused, a runner that ended: on its first red each of
+these takes its one re-run, as *Which red is the change's* says, and most clear there. This section
+takes over in two cases: the re-run came back red at a step that ran **before any test of the
+change** — a setup or install step, a toolchain, a runner, a registry — or the lane's own output
+already shows the defect is in a file another tree owns. A failing test is never the second case,
+whatever package holds it: one that is not the change's takes the one re-run on its first red, and
+on its second red it is handled as *Red again* above says, never as an external cause. In both cases
+a further run of the lane meets the same defect, so no re-run ends it. The role records the external
+cause in the same record this page asks for — the lane, the error, the head, and the change it
+waits on — tells the architect, and ends its round where it stands: a reviewer submits the
+`REQUEST_CHANGES` naming the red, since that ends a reviewer's round. It waits for nothing here.
+The fix is another tree's: it reaches this head only through a forward merge. A role that waits
+holds its phase and its pod for that, and the architect, who arranges it, has not seen the record.
 
 No role pushes a commit to make a new head for its own sake, and no role patches another tree's
 file to clear its own lane. The work waits until the repository's default branch carries the
@@ -263,12 +270,6 @@ give the same empty log and no exit status tells them apart. For a commit: the e
 cannot compare, so fetch and read again. Two repositories of one fleet carry the same pull request
 numbers, so a key is no answer and a file read is a date.
 
-## What the daemon does with a red
-
-A red moves no phase: the daemon names each check of a settlement to the architect, the phase's
-worker and the implementer and judges none (`tellChecks`, in the daemon's `workflow/review.go`),
-so only the role ends a round such a red would hold, and it ends it by this page.
-
 ## What becomes of the record
 
 A green re-run of a red in no test, such as a download that answered 5xx or a runner that ended,
@@ -277,9 +278,8 @@ and a fault of a download or a runner belongs to the tree that owns that step. A
 whose log read failed, the role knows the job but not the test's name: it makes no search, posts no
 comment, and sends step 3's message to the controller, naming the job and saying the log could not
 be read. After a green re-run of a failing test, and before it completes its phase, the role runs
-these three commands in this order. A red cleared and never written up is a flaky test nobody fixes,
-which is the cost this page is paid to stop. A re-run that comes back red is handled as *Red again*
-above says and owes no occurrence.
+these three commands in this order. A red cleared and never written up is a flaky test nobody fixes.
+A re-run that comes back red is handled as *Red again* above says and owes no occurrence.
 
 1. `dispatch search --query '<the failing test's full name>'`, which finds the issue that tracks
    that test. An issue a record of an earlier red already cites is read again before it is cited

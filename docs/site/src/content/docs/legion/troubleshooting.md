@@ -1445,12 +1445,17 @@ These arrive as messages on the Dispatch issue:
 - **A red check.** Nothing moves for it. The daemon names every check GitHub reported, with the
   conclusion GitHub gave it, in one message each to the architect that owns the issue, the worker of
   the issue's current phase and the implementer, and judges none of them. The reviewer in
-  `reviewing` or the implementer while it holds `implementing` re-runs a check that failed on
-  itself once at that head, after it records the failure in a handoff record of its phase
-  (`dispatch handoff-write`), and no other role re-runs one: the tester reads no CI. The
-  implementer fixes code that is at fault, and GitHub holds the merge under the base branch's own
-  required checks. The reviewer neither waits for nor re-runs a check the base does not require,
-  and approves over a red of it that the change did not make.
+  `reviewing`, the implementer while it holds `implementing`, or the merger in `merging` at a head
+  its own forward merge made re-runs a check that failed on itself once at that head, after it
+  records the failure, and follows the order, the waits and the read of the spend in
+  `skills/legion-worker/references/red-at-the-head.md`. The reviewer or the implementer records
+  the failure in a handoff record of its phase (`dispatch handoff-write`), and the merger, which
+  writes no handoff, in a `dispatch comment` on the issue. The merger re-runs only a failed
+  `pull_request` check, re-runs no merge queue group build, and re-runs nothing at any other head.
+  No other role re-runs one: the tester reads no CI. The implementer fixes code that is at fault,
+  and GitHub holds the merge under the base branch's own required checks. The reviewer neither
+  waits for nor re-runs a check the base does not require, and approves over a red of it that the
+  change did not make.
 - **A review round that no review decides.** Legion's reviewer must approve the head or request
   changes; a plain comment leaves the issue in `needs_review`, and the architect asks the reviewer
   for the decision. Only the review App or an account with write access to the repository decides a

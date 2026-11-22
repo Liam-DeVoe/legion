@@ -466,11 +466,12 @@ const RERUN_LIMIT = "(?:when|where|once|if|after|past|outside|beyond|unless|unti
  * review bot before it, which is the retired claim's own shape, whatever limits it: `the reviewer`,
  * `you`, or the imperative `re-run nothing` that opens its clause (`CLAUSE_OPENS`), so "When a
  * review bot is red, you re-run nothing." and "While the review bot's thread stands, re-run
- * nothing." are refused. A bare `you` with no review bot can be any role, so it passes: the natural
- * way to tell the merger it re-runs nothing is "You re-run nothing: …". So do the sentences that
- * deny the re-run to a role holding no phase: "The merger, the architect in `accepting` and an
- * implementer that runs retro re-run nothing." and "A role that is told of a red whose phase it
- * does not hold re-runs nothing." (both red-at-the-head.md), and "a re-run does not clear that red"
+ * nothing." are refused. A bare `you` with no review bot can be any role, so it passes: the
+ * merger's prompt part bounds its own re-run with "at any other head you re-run nothing". So do
+ * the sentences that deny the re-run to a role holding no phase, or to the merger past its bound:
+ * "The architect in `accepting` and an implementer that runs retro re-run nothing.", "At any other
+ * head it re-runs nothing." and "A role that is told of a red whose phase it does not hold re-runs
+ * nothing." (all three red-at-the-head.md), and "a re-run does not clear that red"
  * (review-threads.md), which names no re-runner at all. The cost is a ban written to the reviewer
  * as a bare `you` with no review bot in its sentence, or under a condition that opens its sentence,
  * which passes too. The other cost is a condition after the `nothing` that limits the ban to a case
@@ -586,13 +587,12 @@ const NO_WAIT_FOR_A_RUNNING_LANE = new RegExp(
  * within 40 characters either a comma, a second choice (`have`, `fix`, `wait`, `leave`), and `or`
  * and a third, or `or` and a second choice alone: "re-run it or wait for it" offers the re-run as
  * main's architect sentence did, one choice fewer. `\bre-?run\b` does not match `re-runs`, which
- * is what lets the sentence that replaced them pass: "either re-runs a check that failed on itself
- * once at that head, the tester, the merger and an implementer that runs retro re-run nothing, the
- * implementer fixes code that is at fault, and a check still running is waited for"
- * (concepts.md), whose bare `re-run nothing,` has no choice after its comma. A list a `not`, a
- * `never`, a `don't` or a `no` negates bans every choice in it, offering none, so it passes too:
- * "Do not re-run the group build, wait for its settlement, or leave the queue: record the removal
- * first."
+ * is what lets the sentences that replaced them pass: "Each re-runs it once at that head" and "The
+ * tester and an implementer that runs retro re-run nothing. The implementer fixes code that is at
+ * fault, and a check still running is waited for." (concepts.md), whose bare `re-run nothing.` has
+ * no choice after it. A list a `not`, a `never`, a `don't` or a `no` negates bans every choice in
+ * it, offering none, so it passes too: "Do not re-run the group build, wait for its settlement, or
+ * leave the queue: record the removal first."
  */
 const RERUN_AMONG_THE_CHOICES =
   /(?<!\b(?:not|never|don't|no)\s+)\bre-?run\b[^,.;]{0,40}(?:,\s+(?:have|fix|wait|leave)\w*\b[^.;]{0,60}?,?)?\s+or\s+(?:have|fix|wait|leave)\w*\b/i;
@@ -867,10 +867,11 @@ const RERUN_OBJECT = String.raw`(?:\`?gh\s+run\s+rerun\b|(?:(?:a|an|the|each|eve
  * issue's phase.", "The daemon reruns the reminder, which is read by the role that holds the
  * issue's phase." and "A job is re-run by the daemon, and its log is read by the role that holds
  * the issue's phase." The cost is a passive re-run whose agent stands past a second auxiliary,
- * which passes. The sentences that replaced them name the two holders and pass: "The holders of
- * the re-run are the reviewer in `reviewing` and the implementer while it holds `implementing`."
- * and "The tester presses nothing" (the page, the worker prompt part). So does the worker prompt
- * part's "One role holds the issue's phase at a time", which names no holder of a re-run.
+ * which passes. The sentences that replaced them name the holders and pass: "The holders of the
+ * re-run are the reviewer in `reviewing`, the implementer while it holds `implementing`, and the
+ * merger in `merging` at a head its own forward merge made." and "The tester presses nothing" (the
+ * page, the worker prompt part). So does the worker prompt part's "One role holds the issue's phase
+ * at a time", which names no holder of a re-run.
  */
 const THE_TESTER_HOLDS_THE_RERUN = new RegExp(
   [
@@ -975,12 +976,12 @@ const THE_TESTER_SENDS_A_CI_FINDING =
   /\bthe\s+(?:tester\s+and\s+the\s+reviewer|reviewer\s+and\s+the\s+tester)\s+(?:each\s+|both\s+)?(?:sends?|publish(?:es)?|reports?)\s+it\s+to\s+the\s+architect\b/i;
 
 /**
- * The prompt parts the daemon composes for the tester and for neither holder of the re-run, each
- * by its path from the repository's root, as a hit names it. `Compose`
+ * The prompt parts the daemon composes for the tester and for no holder of the re-run, each by its
+ * path from the repository's root, as a hit names it. `Compose`
  * (packages/daemon/internal/prompts/prompts.go) gives the tester core/common.md, core/tester.md,
  * mechanics/headless.md and tester.md from roles/, and tester.md and worker-common.md from go/; the
  * implementer and the reviewer are composed core/common.md, mechanics/headless.md and
- * worker-common.md too. roles_test.go's
+ * worker-common.md too, and the merger mechanics/headless.md and worker-common.md. roles_test.go's
  * TestNoPartComposedForTheTesterAlonePointsAtTheRedAtTheHeadPage reads the same split off `Compose`
  * itself, and skills-guard.test.ts holds each path here to a file that exists.
  */
@@ -1250,16 +1251,30 @@ export function brokenSharedDatabaseRules(markdown: string): string[] {
 
 /**
  * The sentence of `## Who may re-run` that carries INFRA-1303's rule, pinned whole and literally:
- * the reviewer in `reviewing` and the implementer while it holds `implementing`, since the tester
- * reads no CI (Sami's decision, dispatch://INFRA-1303/ask/dd2229bf-075c-4524-b045-41f39978dbb3).
- * A reader who lost it would believe the re-run belongs to whoever notices the red: the tester,
- * the merger, the architect in `accepting`, an implementer in retro, or a role merely told of a
- * red in a phase it does not hold — each of which the sentences beside it refuse. The grant is
- * what the page exists for; the sentences that deny the re-run read as a list of exceptions to
- * nothing once it is gone.
+ * the reviewer in `reviewing`, the implementer while it holds `implementing`, and the merger in
+ * `merging` at a head its own forward merge made, since the tester reads no CI (Sami's decision,
+ * dispatch://INFRA-1303/ask/dd2229bf-075c-4524-b045-41f39978dbb3) and the merger merges the base
+ * forward itself in `merging` (cybermonklabs/legion#4979; the architect's ruling of
+ * 2026-11-22T22:36Z). A reader who lost it would believe the re-run belongs to whoever notices the
+ * red: the tester, the merger at a head it did not make, the architect in `accepting`, an
+ * implementer in retro, or a role merely told of a red in a phase it does not hold — each of which
+ * the sentences beside it refuse. The grant is what the page exists for; the sentences that deny
+ * the re-run read as a list of exceptions to nothing once it is gone. The list named the reviewer
+ * and the implementer alone until that ruling.
  */
-const TWO_HOLDERS_PRESS_THE_RERUN =
-  "The holders of the re-run are the reviewer in `reviewing` and the implementer while it holds `implementing`.";
+const THE_HOLDERS_PRESS_THE_RERUN =
+  "The holders of the re-run are the reviewer in `reviewing`, the implementer while it holds `implementing`, and the merger in `merging` at a head its own forward merge made.";
+
+/**
+ * The bound of the merger's re-run, beside the holders, pinned whole and literally (the
+ * architect's ruling of 2026-11-22T22:36Z): only a failed `pull_request` check at a head its own
+ * forward merge made, once at that head, the record first, in the page's order, waits and spend,
+ * nothing at any other head, and a group build only through the one requeue of a `failed_checks`
+ * removal. A merger that lost it reads the holders' sentence as leave to press at the reviewed head
+ * it was handed, whose one re-run the reviewer or the implementer may already have spent.
+ */
+const THE_MERGERS_RERUN_IS_BOUNDED =
+  "The merger re-runs only a failed `pull_request` check at a head its own forward merge made: once at that head, only after it records the failure, and in the order, the waits and the spend this page gives. At any other head it re-runs nothing. A `merge_group` check goes only through the one requeue of a `failed_checks` removal, which its role prompt gives.";
 
 /**
  * The sentence of `## Who may re-run` that keeps the tester out of it, pinned whole and literally.
@@ -1408,9 +1423,12 @@ const UNREAD_LOG_NAMES_THE_JOB =
  * whole and literally in the words the architect ruled on 2026-11-19. A reader of the page that
  * lost one acts as a run of that batch did:
  *
- * - `RECORD_BEFORE_THE_PRESS`: the record is the phase's handoff record, before the press. Two
- *   runs read "It writes the failure down, then re-runs the failed jobs once." as a note and
- *   pressed first, one as `echo "failure recorded: …" && gh run rerun 7001002 --failed`.
+ * - `RECORD_BEFORE_THE_PRESS`: the record is the phase's handoff record, or the merger's
+ *   `dispatch comment`, before the press. Two runs read "It writes the failure down, then re-runs
+ *   the failed jobs once." as a note and pressed first, one as
+ *   `echo "failure recorded: …" && gh run rerun 7001002 --failed`. The merger writes no handoff
+ *   record, so since the architect's ruling of 2026-11-22T22:36Z the sentence names its comment,
+ *   and `THE_MERGERS_RECORD_IS_A_COMMENT` says what that comment carries.
  * - `RUN_STATUS_IS_THE_LEAVE` and `A_RED_IS_ACTED_ON_IN_ITS_RUN`: the run's own `completed`, in a
  *   `pull_request` run of the head, is the leave to press, whatever showed the red. Three runs read
  *   "presses the re-run only on `completed`" off the run's own status and pressed; the page then
@@ -1432,7 +1450,9 @@ const UNREAD_LOG_NAMES_THE_JOB =
  *   tester's act that no holder of the re-run has; it is handled as *Red again* says.
  */
 const RECORD_BEFORE_THE_PRESS =
-  "It writes the failure down in a handoff record of its own phase (`dispatch handoff-write`) before the `gh run rerun` call that re-runs the failed jobs once.";
+  "It writes the failure down before the `gh run rerun` call that re-runs the failed jobs once: in a handoff record of its own phase (`dispatch handoff-write`), or, for the merger, in a `dispatch comment` on the issue.";
+const THE_MERGERS_RECORD_IS_A_COMMENT =
+  "The merger writes no handoff record: its record is a `dispatch comment` on the issue that carries the eight facts, posted before the `gh run rerun` call, as its `failed_checks` requeue record is.";
 const RUN_STATUS_IS_THE_LEAVE =
   "The run's own `completed` is the leave to press where the run is a `pull_request` run of the head, whether or not the counted set lists the check yet; until then the role waits for the run, as *The act and the wait* says.";
 const A_RED_IS_ACTED_ON_IN_ITS_RUN =
@@ -1477,14 +1497,15 @@ const THE_ROUND_FAILS_ON_A_RED =
 
 /**
  * The three pointers to the page, each pinned whole and literally: the worker skill's own
- * References line, which is how a role reaches the page at all, and which sends only the two
- * holders there; the merge gate's; and the pull-request body reference's in `## Never waiting on
- * CI`, beside the holders' one re-run. A reference is reached only through a link from somewhere a
- * role reads, so a lost pointer leaves the rule shipped and unread: the role goes on from the text
- * around the gap, which tells it to finish its round on a red the change never made.
+ * References line, which is how a role reaches the page at all, and which sends only the three
+ * holders there, the merger only at a head its own forward merge made; the merge gate's; and the
+ * pull-request body reference's in `## Never waiting on CI`, beside the holders' one re-run. A
+ * reference is reached only through a link from somewhere a role reads, so a lost pointer leaves
+ * the rule shipped and unread: the role goes on from the text around the gap, which tells it to
+ * finish its round on a red the change never made.
  */
 const SKILL_LINKS_THE_PAGE =
-  "A check red at the head of the pull request, while you hold `reviewing` or `implementing`: `skill://legion-worker/references/red-at-the-head.md`.";
+  "A check red at the head of the pull request, while you hold `reviewing` or `implementing`, or `merging` at a head your own forward merge made: `skill://legion-worker/references/red-at-the-head.md`.";
 const MERGE_GATE_POINTS_AT_THE_PAGE =
   "A required check that is red at the head is a different case, which `skill://legion-worker/references/red-at-the-head.md` decides.";
 const NEVER_WAITING_POINTS_AT_THE_PAGE =
@@ -1492,16 +1513,18 @@ const NEVER_WAITING_POINTS_AT_THE_PAGE =
 
 /**
  * The same rulings where a role reads them outside the page, each pinned whole and literally: the
- * re-run in `## Never waiting on CI`, whose holders are the page's two and whose wait has the
- * page's bound where no settlement comes; and the tester's evidence bullet, which has the tester
- * let CI do its job in Sami's words (dispatch://INFRA-1303/ask/dd2229bf-075c-4524-b045-41f39978dbb3).
- * The tester's own pins that bullet carried until then — that it reads the head's checks before
- * any verdict, re-runs a red the change did not make, waits on that re-run, and keeps a local pass
- * from moving the page's reading — went with the rule they pinned, and `retiredTesterCiReads`
- * refuses their sentences.
+ * re-run in `## Never waiting on CI`, whose holders are the page's three, with the merger's bound
+ * beside them, and whose wait has the page's bound where no settlement comes; and the tester's
+ * evidence bullet, which has the tester let CI do its job in Sami's words
+ * (dispatch://INFRA-1303/ask/dd2229bf-075c-4524-b045-41f39978dbb3). The tester's own pins that
+ * bullet carried until then — that it reads the head's checks before any verdict, re-runs a red
+ * the change did not make, waits on that re-run, and keeps a local pass from moving the page's
+ * reading — went with the rule they pinned, and `retiredTesterCiReads` refuses their sentences.
  */
 const NEVER_WAITING_NAMES_THE_HOLDERS =
-  "by the reviewer in `reviewing` or the implementer while it holds `implementing`, after it records the failure";
+  "by the reviewer in `reviewing`, the implementer while it holds `implementing`, or the merger in `merging` at a head its own forward merge made, after it records the failure";
+const NEVER_WAITING_BOUNDS_THE_MERGER =
+  "The merger re-runs only a failed `pull_request` check, records the failure in a `dispatch comment` on the issue, since it writes no handoff, and at any other head re-runs nothing.";
 const RERUN_WAIT_IS_BOUNDED =
   "(where no settlement comes, the bound is the phase reminder or the daemon's backstop: it reads the counted set once then, and waits again on a re-run still queued or in progress)";
 const TESTER_LETS_CI_DO_ITS_JOB =
@@ -1526,7 +1549,7 @@ export function redAtTheHeadFaults(pages: {
       {
         sentence: SKILL_LINKS_THE_PAGE,
         because:
-          "a reference the skill does not link is a page no role opens, and a read by path stops at 300 lines; one that sends every phase there sends the tester to a red that is not its own",
+          "a reference the skill does not link is a page no role opens, and a read by path stops at 300 lines; one that sends every phase there sends the tester to a red that is not its own, and one that names `merging` without its bound sends the merger there at every head",
       },
     ]),
     ...missingSentenceFaults(
@@ -1534,9 +1557,14 @@ export function redAtTheHeadFaults(pages: {
       pages.redAtTheHead,
       [
         {
-          sentence: TWO_HOLDERS_PRESS_THE_RERUN,
+          sentence: THE_HOLDERS_PRESS_THE_RERUN,
           because:
             "a page that grants the re-run to nobody leaves every role that reads a red free to press it",
+        },
+        {
+          sentence: THE_MERGERS_RERUN_IS_BOUNDED,
+          because:
+            "a merger that reads the holders without the bound presses at the reviewed head it was handed, or re-runs a group build",
         },
         {
           sentence: TESTER_PRESSES_NOTHING,
@@ -1624,6 +1652,11 @@ export function redAtTheHeadFaults(pages: {
             "a role that reads the record as a note presses the re-run before Dispatch holds the failure",
         },
         {
+          sentence: THE_MERGERS_RECORD_IS_A_COMMENT,
+          because:
+            "a merger, which writes no handoff record, finds no place for the record and presses before Dispatch holds the failure",
+        },
+        {
           sentence: RUN_STATUS_IS_THE_LEAVE,
           because:
             "a role that holds the head's completed `pull_request` run to the counted set's report waits on a red it should clear",
@@ -1696,6 +1729,11 @@ export function redAtTheHeadFaults(pages: {
         sentence: NEVER_WAITING_NAMES_THE_HOLDERS,
         because:
           "a role reading `## Never waiting on CI` takes the re-run for the phase's, and the tester in `testing` presses it",
+      },
+      {
+        sentence: NEVER_WAITING_BOUNDS_THE_MERGER,
+        because:
+          "a merger reading `## Never waiting on CI` takes the holders' re-run for one at every head it holds, with no place for its record",
       },
       {
         sentence: RERUN_WAIT_IS_BOUNDED,

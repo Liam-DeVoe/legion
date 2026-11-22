@@ -407,13 +407,19 @@ Legion uses GitHub's own review mechanisms rather than labels:
   message names the head's commit statuses too, each with its state: Dispatch reads them from
   GitHub for each open head where its GitHub App holds Commit statuses, since GitHub's status event
   names no pull request. A red is for the reviewer in `reviewing` or the implementer while it holds
-  `implementing` to act on — either re-runs a check that failed on itself once at that head, the
-  tester, the merger and an implementer that runs retro re-run nothing, the implementer fixes code
-  that is at fault, and a check still running is waited for — and for GitHub to hold the merge
-  over, under the
-  base branch's own required checks, which Legion reads only to decide whether a conflicting head
-  needs its merge forward now (below), and never re-implements. The reviewer reads the
-  head's checks on GitHub itself before it approves, and the architect before it accepts; those
+  `implementing` to act on, and in `merging` for the merger. Three roles hold the re-run of a check
+  that failed on itself: the reviewer in `reviewing`, the implementer while it holds
+  `implementing`, and the merger in `merging` at a head its own forward merge made. Each re-runs it
+  once at that head, only after it records the failure, and follows the order, the waits and the
+  read of the spend in `skills/legion-worker/references/red-at-the-head.md`. The merger re-runs
+  only a failed `pull_request` check, records the failure in a `dispatch comment` on the issue,
+  since it writes no handoff, and re-runs nothing at any other head. It re-runs no merge queue
+  group build: the first `failed_checks` removal of a head gets that head queued once more. The
+  tester and an implementer that runs retro re-run nothing. The implementer fixes code that is at
+  fault, and a check still running is waited for. GitHub holds the merge over a red,
+  under the base branch's own required checks, which Legion reads only to decide whether a
+  conflicting head needs its merge forward now (below), and never re-implements. The reviewer reads
+  the head's checks on GitHub itself before it approves, and the architect before it accepts; those
   reads are the ones that decide anything. Two settlements of the same head that name the same
   checks tell nobody twice, and a lingering tree is told nothing at all.
 - **A head that conflicts with its base** moves no phase. GitHub computes no merge ref for such a

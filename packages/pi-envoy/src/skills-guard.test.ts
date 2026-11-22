@@ -231,12 +231,12 @@ test("every relative link resolves to a file inside the staged partition", () =>
   expect(brokenRelativeLinks(staged)).toEqual([]);
 });
 
-// INFRA-1303 gave the reviewer in `reviewing` and the implementer while it holds `implementing`
-// one re-run of a red at the head the change did not make
-// (`skill://legion-worker/references/red-at-the-head.md`), and took the sentence that forbade it
-// out of skills/envoy/SKILL.md, which this partition ships. A forward merge keeps both sides of a
-// deletion with no conflict for anyone to read, so the prohibitions are refused over the whole
-// partition rather than over the one file they were deleted from.
+// INFRA-1303 gave the reviewer in `reviewing`, the implementer while it holds `implementing` and
+// the merger in `merging` at a head its own forward merge made one re-run of a red at the head the
+// change did not make (`skill://legion-worker/references/red-at-the-head.md`), and took the
+// sentence that forbade it out of skills/envoy/SKILL.md, which this partition ships. A forward
+// merge keeps both sides of a deletion with no conflict for anyone to read, so the prohibitions are
+// refused over the whole partition rather than over the one file they were deleted from.
 test("no staged skill forbids the holders' re-run of a red at the head", () => {
   expect(retiredRerunProhibitions([staged])).toEqual([]);
 });
