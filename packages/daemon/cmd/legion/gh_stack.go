@@ -26,23 +26,22 @@ import (
 // directory's github.com remotes or the repository a gh-resolved marker names. None of its flags
 // or arguments names another: a pull request URL argument is read for its number alone
 // (cmd/utils.go, parsePRURL), and the rest are branches, pull request numbers and stack numbers
-// of that repository. So the call routes by GH_REPO where set, else by every remote line and
-// marker the working directory holds (fromWorkingDirectory, every line counting, since gh-stack
-// may take any of them), and is refused where those route to two directories, as any command
-// naming two owners is. A working directory that names no repository keeps GH_CONFIG_DIR, where
-// gh-stack itself fails to find one.
+// of that repository. So the call routes by GH_REPO, where set, and by every remote line and
+// marker the working directory holds (fromWorkingDirectory, every line counting, since gh-stack's
+// git pushes to and fetches from them), and is refused where those route to two directories, as
+// any command naming two owners is. A working directory that names no repository keeps
+// GH_CONFIG_DIR, where gh-stack itself fails to find one.
 //
 // gh-stack runs git with what the call names: `git fetch` and `git push` take the remote that
-// --remote names, or that branch.<b>.pushRemote, remote.pushDefault, branch.<b>.remote,
-// gh-stack.remote or the one remote picks (cmd/utils.go, pickRemote; internal/git/gitops.go,
-// ResolveRemote), as their first argument, ahead of refspecs, and other flags' values and the
+// --remote names as their first argument, ahead of refspecs, and other flags' values and the
 // branches it is given reach git too. git reads an argument that starts with `-` there as an
 // option of its own, and `--upload-pack=<command>` or `--receive-pack=<command>` runs that
 // command, with this call's token directory in its environment. So every flag is read against
 // ghStackCommands, compiled from the pinned release's source, and an unknown one is refused; a
 // flag's value that starts with `-` is refused; --remote must name a remote `git remote -v`
-// lists; a listed remote, or one of those settings, whose name starts with `-` is refused; and
-// `--`, after which gh-stack would take an argument that starts with `-` as a branch, is refused.
+// lists; and `--`, after which gh-stack would take an argument that starts with `-` as a branch,
+// is refused. What that git reads of the repository itself, its configuration, its remotes and
+// gh-stack's stack file, is read in gh_stack_git.go.
 //
 // The text gh-stack writes to GitHub is the titles and bodies of the pull requests `submit` and
 // `link` create: the one commit's subject and body or the branch's name, and the working tree's
@@ -117,15 +116,6 @@ var ghStackCommands = func() map[string]ghStackCommand {
 // and its version.
 var ghStackAlone = []string{"-h", "--help", "-v", "--version"}
 
-// ghStackRemoteSettings are the git settings gh-stack takes a remote's name from where --remote
-// is absent (internal/git/gitops.go, ResolveRemote); the settings that make the git it runs for a
-// fetch or a push run another program (a remote's uploadpack and receivepack, core.sshCommand,
-// core.gitProxy, core.askPass) or take a transport that runs one (protocol.allow and
-// protocol.<name>.allow, which admit `ext::`); and the URL rewrites, which git applies to `.`
-// too, though `git remote -v` lists no `.`; as `git config --get-regexp` matches their canonical,
-// lower-case names.
-const ghStackRemoteSettings = `^(branch\..*\.(pushremote|remote)|remote\.pushdefault|gh-stack\.remote|remote\..*\.(uploadpack|receivepack)|core\.(sshcommand|gitproxy|askpass)|protocol\.(.*\.)?allow|url\..*\.(insteadof|pushinsteadof))$`
-
 // ghStackTarget is the target of `gh stack args…` (the file's comment says how it is read).
 func ghStackTarget(args []string, env map[string]string, remotes func() ([]ghRemote, error), dirFor func(owner, name string) (string, error)) (ghTarget, error) {
 	call, err := readGhStackCall(args)
@@ -136,17 +126,25 @@ func ghStackTarget(args []string, env map[string]string, remotes func() ([]ghRem
 	if err != nil {
 		return ghTarget{}, err
 	}
-	if err := ghStackRemotesAreNames(call, lines); err != nil {
+	names, err := ghStackRemotes(call, lines)
+	if err != nil {
 		return ghTarget{}, err
 	}
+	if err := ghStackGitConfigRefusal(names); err != nil {
+		return ghTarget{}, err
+	}
+	if err := ghStackFileRefusal(); err != nil {
+		return ghTarget{}, err
+	}
+	// The routing counts GH_REPO, where set, and every remote line and marker alike: gh-stack's
+	// API client takes GH_REPO, and its git pushes to and fetches from the remotes.
 	var sel selectors
 	if repo := env["GH_REPO"]; repo != "" {
-		err = sel.repository(repo, "GH_REPO "+repo)
+		if err := sel.repository(repo, "GH_REPO "+repo); err != nil {
+			return ghTarget{}, err
+		}
 	}
-	if err == nil && (env["GH_REPO"] == "" || call.command.writes) {
-		err = sel.fromWorkingDirectory(func() ([]ghRemote, error) { return lines, nil }, false)
-	}
-	if err != nil {
+	if err := sel.fromWorkingDirectory(func() ([]ghRemote, error) { return lines, nil }, false); err != nil {
 		return ghTarget{}, err
 	}
 	files := []leakguard.GhFile{}
@@ -314,56 +312,6 @@ func commandSuffix(name string) string {
 		return ""
 	}
 	return " " + name
-}
-
-// ghStackRemotesAreNames refuses a --remote value that is no remote of the working directory's
-// remote lines, a remote whose name starts with `-`, a setting gh-stack takes a remote from whose
-// value is no such remote and not `.` (git's name for this repository), and any setting that makes
-// git run another program (ghStackRemoteSettings): gh-stack hands the remote to `git fetch` or
-// `git push` ahead of its refspecs, where git reads `-…` as an option of its own, and a URL or a
-// path there pushes outside every repository this routed by. `.` is no remote only while no
-// url.*.insteadOf or pushInsteadOf rewrites it, that is while none of them is `.` or empty, the
-// two values that are a prefix of `.`.
-func ghStackRemotesAreNames(call ghStackCall, lines []ghRemote) error {
-	var names []string
-	for _, line := range lines {
-		if line.marker {
-			continue
-		}
-		if strings.HasPrefix(line.name, "-") {
-			return fmt.Errorf("the working directory's remote %q starts with `-`, which gh-stack would hand to git, where it is an option of git's own, so `gh stack` sends nothing; rename the remote", line.name)
-		}
-		names = append(names, line.name)
-	}
-	for _, remote := range call.remotes {
-		if !slices.Contains(names, remote) {
-			return fmt.Errorf("`gh stack` gives --remote %q, which is no remote `git remote -v` lists here (%s), so it sends nothing; name one of them", remote, strings.Join(slices.Compact(slices.Sorted(slices.Values(names))), ", "))
-		}
-	}
-	settings, err := gitLines("config", "--get-regexp", ghStackRemoteSettings)
-	if err != nil {
-		return err
-	}
-	dotRewritten := false
-	for _, line := range settings {
-		key, value, _ := strings.Cut(line, " ")
-		if strings.HasPrefix(key, "url.") && (value == "" || value == ".") {
-			dotRewritten = true
-		}
-	}
-	for _, line := range settings {
-		key, value, _ := strings.Cut(line, " ")
-		switch {
-		case strings.HasPrefix(key, "url."):
-		case strings.HasPrefix(key, "branch.") || key == "remote.pushdefault" || key == "gh-stack.remote":
-			if (value != "." || dotRewritten) && !slices.Contains(names, value) {
-				return fmt.Errorf("the git setting %s names %q, which is no remote `git remote -v` lists here, and gh-stack would push or fetch there, outside the repository this call is routed by, so `gh stack` sends nothing; set it to one of them or unset it", key, value)
-			}
-		default:
-			return fmt.Errorf("the git setting %s makes the git gh-stack runs for a fetch or a push run another program, so `gh stack` sends nothing; unset it", key)
-		}
-	}
-	return nil
 }
 
 // ghStackTemplatePattern is the name of a pull request template, as cli/cli v2.97.0's
