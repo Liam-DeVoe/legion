@@ -23,7 +23,8 @@
  *             Code transcripts), named as not read with its reason.
  *
  * Refusals (exit 2), before any GitHub read: the arguments; a configuration without sets; a
- * `--not-read` that is not `<name>=<reason>`; rows or a spans file it cannot read; and rows in
+ * `--not-read` that is not `<name>=<reason>`; rows or a spans file it cannot read, rows an earlier
+ * count.sql made (a count row with no `calls` or `unpaired_calls`: `readCount`); and rows in
  * which a configured store that has rows lacks a summary row for a day from the window's start to
  * its end (`windowGaps`): no output of that day, not all 24 of its hours, a file that is not one
  * whole count.sql result, or a summary row whose mtime range is not its query's. Each gap is
@@ -41,10 +42,14 @@
  *   - names no copy (empty, a `skill://` path, or a name with no `/`, `\` or `:`): `no_copy`;
  *   - is any other path or prefix: `other_copy`.
  * A session is `(store, file hash)`; only a row's paired reads (`hashes`) count, never its unpaired
- * calls. Each session counts once for S, in the first of `own`, `upstream_url`, `other_copy`,
- * `no_copy` that one of its `read` rows of S reaches. `reference_own` counts the sessions with a
- * `reference` row of S at the own copy, apart from those four. Each column is also counted per
- * store. Every skill of each set at its pin is listed, one with no read at 0.
+ * calls. A read that two files of a store hold (one key of count.sql's `calls`: a forked session
+ * copies its parent's lines) counts in the file whose hash sorts first, over every query of the
+ * store, as attribute.ts counts it (`countOnce`, count.sql's rule applied across queries); a file
+ * stays in a row when one of its keys there counts in it. Each session counts once for S, in the
+ * first of `own`, `upstream_url`, `other_copy`, `no_copy` that one of its `read` rows of S
+ * reaches. `reference_own` counts the sessions with a `reference` row of S at the own copy, apart
+ * from those four. Each column is also counted per store. Every skill of each set at its pin is
+ * listed, one with no read at 0.
  *
  * Outputs under --out.
  *   exemplar-count.md   The window; the rows read (the label, and the digest of their files); each
@@ -72,6 +77,7 @@ import path from "node:path";
 import { messageFor } from "@legion/envoy-client/errors";
 import {
   type CountRead,
+  countOnce,
   parseSpans,
   type QueryOutput,
   readCount,
@@ -465,7 +471,7 @@ function markdown(report: Report): string {
     "",
     "## The rule",
     "",
-    "A count row counts as a skill of a set when the skill is in the set's list at its pin and its copy starts with `<set>:` (a Claude Code Skill call), holds the pin's install directory (`/node_modules/<package>/` or `/vendor/<dir>/`), or holds `/plugins/cache/` and after it a path part that is the set's name (Claude Code's plugin cache): that is its own copy. A copy that is a URL is no install directory: one that names the set's repository or an upstream of it is a read of the upstream by URL, any other another copy. A row with no path and no prefix names no copy; any other path or prefix is another copy. A session counts once for a skill, in the first of these columns that one of its reads reaches: own copy, upstream by URL, only another copy, no copy named. Reference reads at the own copy are a column of their own.",
+    "A count row counts as a skill of a set when the skill is in the set's list at its pin and its copy starts with `<set>:` (a Claude Code Skill call), holds the pin's install directory (`/node_modules/<package>/` or `/vendor/<dir>/`), or holds `/plugins/cache/` and after it a path part that is the set's name (Claude Code's plugin cache): that is its own copy. A copy that is a URL is no install directory: one that names the set's repository or an upstream of it is a read of the upstream by URL, any other another copy. A row with no path and no prefix names no copy; any other path or prefix is another copy. A read that two files of a store hold (a forked session copies its parent's lines) counts in the file whose hash sorts first, whichever queries hold the two, as the attribute command counts it. A session counts once for a skill, in the first of these columns that one of its reads reaches: own copy, upstream by URL, only another copy, no copy named. Reference reads at the own copy are a column of their own.",
     "",
     "## Sessions per skill",
     "",
@@ -654,7 +660,8 @@ export async function main(argv: readonly string[], io: SetCountIo): Promise<num
       config.windowStart,
       config.windowEnd
     );
-    const counts = countSets(setRules(pins.sets), count.outputs);
+    // A read that a fork and its parent both hold counts in one session, as attribute counts it.
+    const counts = countSets(setRules(pins.sets), countOnce(count.outputs).outputs);
 
     const outputs = [...count.outputs].sort((a, b) => {
       const [x, y] = [`${a.store}/${a.name}`, `${b.store}/${b.name}`];

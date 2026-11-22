@@ -31,6 +31,8 @@
  *       --style <file> --style-source <text> --craft <craft-list.json> --craft-source <text>
  *       [--nearest <dir>]... [--skill-source <text>] --out <entry.json> [--request-log <file>]
  *       [--budget-usd <n>] [--concurrency <n>]
+ *   bun scripts/skill-cuts/cli.ts craft-merge --entry <entry.json> --entry <entry.json>
+ *       [--entry <entry.json>]... --out <merged.json>
  *   bun scripts/skill-cuts/cli.ts nearest --config <file> --key-file <file> --skill <dir>
  *       [--skill-source <text>] --candidates <source>=<root>... --out <row.json>
  *       [--request-log <file>] [--budget-usd <n>] [--concurrency <n>]
@@ -76,9 +78,10 @@
  *   bun scripts/skill-cuts/cli.ts results-index --count <set-count out dir> --nearest <dir>
  *       --cases <dir> --results <dir>
  *
- * `count-sql`, `copies`, `attribute`, `set-count`, `craft-lines`, `build-cases`, `build-tasks` and
- * `results-index` are the commands of countsql.ts, copies.ts, attribute.ts, set-count.ts,
- * craftlist.ts, build.ts and results-index.ts, given their arguments whole.
+ * `count-sql`, `copies`, `attribute`, `set-count`, `craft-lines`, `craft-merge`, `build-cases`,
+ * `build-tasks` and `results-index` are the commands of countsql.ts, copies.ts, attribute.ts,
+ * set-count.ts, craftlist.ts, craftmerge.ts, build.ts and results-index.ts, given their arguments
+ * whole.
  *
  * **`behaviour`** runs the behaviour test of one skill: `--old` is the skill's own directory at
  * the cut's base (their skill), and `--cases` a case file of that skill (cases.ts, checked against
@@ -288,6 +291,7 @@ import {
 import { main as copiesMain, spawnGh } from "./copies";
 import { main as countSqlMain } from "./countsql";
 import { type CraftList, main as craftLinesMain, parseCraftList } from "./craftlist";
+import { main as craftMergeMain } from "./craftmerge";
 import {
   BudgetSpent,
   bodyIdentity,
@@ -3514,6 +3518,7 @@ const USAGE = [
   "  control craft (--remove-section <heading> | --join-lines <a>-<b>) --copy-line <a>[-<b>] ... --original-line <a>[-<b>|all] ... <craft's flags> --out <dir>",
   "  craft-lines --list <craft-list.json>",
   "  craft --config <skill-cuts.json> --key-file <file> --skill <dir> --style <file> --style-source <text> --craft <craft-list.json> --craft-source <text> [--nearest <dir>]... [--skill-source <text>] --out <entry.json> ...",
+  "  craft-merge --entry <entry.json> --entry <entry.json> [--entry <entry.json>]... --out <merged.json>",
   "  nearest --config <skill-cuts.json> --key-file <file> --skill <dir> [--skill-source <text>] --candidates <source>=<root>... --out <row.json> ...",
   "  craft-coverage --root <dir> [--source <text>] [--skip <name>]... --entries <reader-findings.jsonl>",
   "  proposals --config <skill-cuts.json> --key-file <file> --body <file> --body-source <text> --section <heading> --list <heading>... --pr-diff <id prefix>=<file>... --skills-root <repo>=<dir>... --repo-root <repo>=<dir> --style <file> --style-source <text> --craft <craft-list.json> --craft-source <text> --findings <reader-findings.jsonl> --out <dir> ...",
@@ -3570,6 +3575,8 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
         return await craftLinesMain(rest, { out: io.out, err: io.err, gh: spawnGh });
       case "craft":
         return await craftCommand(rest, io);
+      case "craft-merge":
+        return craftMergeMain(rest, io);
       case "nearest":
         return await nearestCommand(rest, io);
       case "craft-coverage":

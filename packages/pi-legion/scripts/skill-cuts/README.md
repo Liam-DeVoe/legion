@@ -504,7 +504,12 @@ prefix (empty, a `skill://` path, a bare name) names no copy; any other path or 
 copy. A session is its store and file hash, and counts once for S, in the first of these columns
 that one of its `read` rows reaches: `own`, `upstream_url`, `other_copy` (it read only another
 copy, such as a Legion fork), `no_copy`. `reference_own` counts the sessions with a `reference`
-row of S at the own copy, apart. Only a row's paired reads count, never its unpaired calls.
+row of S at the own copy, apart. Only a row's paired reads count, never its unpaired calls. A read
+that two files of a store hold (a forked session copies its parent's lines) counts in one of them,
+the file whose path hash sorts first, whichever queries hold the two, as `attribute` counts it
+(`attribute.ts`'s `countOnce`): a file stays a session of S in a row when one of its reads there
+counts in it. Rows made by an earlier `count.sql`, with no `calls` and `unpaired_calls`, are
+refused.
 
 Before it reads GitHub it refuses (exit 2), naming each gap, rows in which a configured store that
 has rows lacks a summary row for a day from the window's start to its end: no output of that day
@@ -627,6 +632,50 @@ where `answer` is `{judged, gaps}`, or null when every reply was refused. It wri
 message beside it, `<out less .json>.input.md` (`input`). It exits 0 with an answer, 1 when every
 reply was refused, and 2 when it refuses its arguments, a style text with no rule, a craft list,
 or a skill directory with no SKILL.md.
+
+### `craft-merge`
+
+```
+bun scripts/skill-cuts/cli.ts craft-merge --entry <entry.json> --entry <entry.json> \
+  [--entry <entry.json>]... --out <merged.json>
+```
+
+The merge of fresh `craft` readings of one skill (`craftmerge.ts`). The craft reader's answer
+varies between fresh requests of the same inputs (on one skill text it listed 6, 5, 0 and 3 style
+gaps), so a skill's findings come from several readings of the same inputs. Each `--entry` is an
+entry that `craft` wrote. It calls no model and reads nothing but the entries.
+
+It refuses (exit 2), naming each difference, an entry that is not a reading of the first entry's
+inputs: another name of the skill's directory, another set of skill files or another sha256 of
+one, another sha256 of the style text or of the craft list, or another set of nearest skills (by
+name) or of their files and sha256. It refuses, naming it, an entry whose `answer` is null (every
+reply refused), and it refuses fewer than two `--entry` and an entry it cannot read, that is no
+JSON or that is no craft entry. It refuses, naming both, one reading given twice: two `--entry`
+of one file (the same path once every link and `..` is resolved) or of two files with the same
+content (the same sha256), since that reading's gaps would look found by more readings than found
+them.
+
+Two gaps are one gap when they have the same `file`, `line` and `rule` (`S<n>`, `C<n>`, or the
+same `nearest:<skill>:<path>:<line>`); a different kind does not split them. It writes `--out`:
+`{entry: "craft-merged", skill, style, craft, nearest, reader, readings, entries: [{path,
+sha256}], gaps: [{file, line, rule, readings, of, kinds, why}], judged: [{rule, gap, met,
+notApplicable}], noGap, usd}`, where:
+
+- `skill`, `style`, `craft`, `nearest` and `reader` are the first entry's, as it wrote them;
+- `readings` is the number of entries, and `entries` each entry's path and the sha256 of its file,
+  in the order given;
+- `gaps` holds each gap that any reading lists: `readings` is the count of readings that list it,
+  of `of`; `kinds` and `why` are the kind and the why of each listing, in reading order, each why
+  with the prefix `reading <i>: `. They are sorted by file, then line, then rule (as text, so
+  `S10` comes before `S2`);
+- `judged` holds each rule that any reading judged, with the count of readings that judged it
+  `gap`, `met` and `not-applicable`, sorted by the rule's letter and then its number;
+- `noGap` is true exactly when no reading lists a gap (`gaps` is empty);
+- `usd` is the sum of the entries' `usd`.
+
+It prints one line: the skill, the number of merged gaps and how many of them are in each count
+of readings (`in 3 of 3: 8; 2 of 3: 6; 1 of 3: 3` for three entries), or `no gap in <n> readings`,
+and the spend. It exits 0 when it wrote the merged entry, and 2 when it refuses.
 
 ### `nearest`
 
