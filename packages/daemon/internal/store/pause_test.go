@@ -49,10 +49,11 @@ func seedPauseClaims(t *testing.T, st *Store) {
 }
 
 // pauseStopRow is the pause service's stop row, encoded and keyed as the daemon does (pause.StopRow
-// and pause.StopKey, which this package's tests cannot import): by the claim's issue, or by the
-// pause's project, naming the claim's issue, for a claim of another project's issue.
+// and pause.StopKey, which this package's tests cannot import): naming the claim it stops, keyed
+// by the claim's issue, or by the pause's project, naming the claim's issue, for a claim of another
+// project's issue.
 func pauseStopRow(pause Pause, stop PauseStopClaim) (PauseRow, error) {
-	request := record.SuperviseRequest{Op: "pause_stop", Tree: stop.Tree, Role: stop.Role,
+	request := record.SuperviseRequest{Op: "pause_stop", Tree: stop.Tree, Role: stop.Role, Claim: stop.Claim,
 		Generation: stop.Generation, Pause: pause.ID}
 	key := stop.Issue
 	if project, _, _ := strings.Cut(stop.Issue, "-"); project != pause.Project {

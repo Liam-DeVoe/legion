@@ -7268,6 +7268,7 @@ A handoff, a review, a CI result or a merge moves its issue's phase as it does w
 **How each role stops.**
 The pause's transaction asks for the stop of each live role of the project but the controller: one stop record (`project_pause_stops`) and one `pause_stop` row in the outbox for each.
 A live role is one whose claim is not `suspended`, `failed` or `retired`.
+Each `pause_stop` row names the claim it stops by its token (`pause.StopRow`), because two claims of one issue can hold one role, an agent's on another role's step beside that role's own claim; a row that the release before wrote names none and stops its role's own claim.
 A claim of another project's issue, which `legion claims spawn` makes under this daemon's own project, is part of the pause as every other claim is: the gates hold it, the pause stops it, and the resume launches it only for work that the pause held for it.
 Its `pause_stop` row is keyed by the project rather than by the claim's issue, because the daemon's outbox serves only the rows of its own project's keys, and the row names the claim's issue in its payload (`pause.StopKey`, `internal/pause/pause.go`).
 Once the transaction has committed, the daemon asks the stop of each live role that the transaction did not name, such as a launch that had passed the gate a moment before.

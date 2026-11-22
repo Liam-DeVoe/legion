@@ -264,7 +264,7 @@ func (p *projectPause) stopTx(ctx context.Context, tx pgx.Tx, c supervise.Claim,
 	if err != nil {
 		return made, err
 	}
-	if made.expedited, err = store.ExpeditePauseStopRowsTx(ctx, tx, p.project, c.Issue, c.Role, at); err != nil {
+	if made.expedited, err = store.ExpeditePauseStopRowsTx(ctx, tx, p.project, c.Issue, c.Token, c.Role, at); err != nil {
 		return made, err
 	}
 	if c.State != supervise.StateSuspended {
@@ -531,9 +531,14 @@ func pauseStopClaimOf(c supervise.Claim) store.PauseStopClaim {
 //     transaction;
 //   - failed or retired, or no machine at all: the stop row ends `failed`.
 //
-// The claim is the one of the role on the row's issue, or, on a row keyed by the project, of the
-// issue its payload names (record.SuperviseRequest.Issue, pause.StopKey): a claim of another
-// project's issue. Each line the executor writes names the claim's issue.
+// The claim is the one the row names (record.SuperviseRequest.Claim, pause.StopRow): two claims of
+// one issue can hold one role — the agent of a key on a step of another role, beside that role's
+// own claim of an earlier version of the plan — so the role alone would stop the other one, or no
+// machine, and leave the claim the pause asked to stop running and its stop row open. A row the
+// release before wrote names no claim, and stops the claim of the role on the row's issue, or, on
+// a row keyed by the project, of the issue its payload names (record.SuperviseRequest.Issue,
+// pause.StopKey): a claim of another project's issue. Each line the executor writes names the
+// claim's issue.
 func (r *outbox) pauseStop(ctx context.Context, row record.OutboxRow, payload record.SuperviseRequest) error {
 	if r.trees == nil {
 		return errors.New("pause stop executor has no store")
@@ -547,9 +552,11 @@ func (r *outbox) pauseStop(ctx context.Context, row record.OutboxRow, payload re
 		r.pauseStopEnded(row, issue, payload.Role, held.ID)
 		return nil
 	}
-	token, err := claim.NewToken(r.project, issue, payload.Role)
-	if err != nil {
-		return fmt.Errorf("derive claim for outbox row %d: %w", row.ID, err)
+	token := payload.Claim
+	if token == "" {
+		if token, err = claim.NewToken(r.project, issue, payload.Role); err != nil {
+			return fmt.Errorf("derive claim for outbox row %d: %w", row.ID, err)
+		}
 	}
 	machine, found := r.supervisor.Machine(token)
 	if !found {
