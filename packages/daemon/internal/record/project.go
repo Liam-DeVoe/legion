@@ -54,7 +54,8 @@ func OutOfWorkflow(status string) bool {
 // InWorkflow says whether an issue is in the workflow: its Dispatch status is one the workflow
 // runs in (OutOfWorkflow) and its phase is short of done. One still admitted counts, since it
 // will run — a root reopened inside its linger (admit's readmit) stands in admitted with no
-// role's phase until its architect reaches planning, and is running again from the reopen. It is
+// role's phase until its task's first step starts (planning, in the default steps), and is
+// running again from the reopen. It is
 // the production check's "runs again" predicate (workflow's check.go) and the outbox's
 // (checkLookHolds): a look of an issue that runs again would resume the checking role and
 // relaunch its Sandbox under the run, so none starts.
