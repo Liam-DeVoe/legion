@@ -18,7 +18,7 @@
 # NAME is the environment variable the caller read DSN from, and it starts that line. WHAT is
 # what the run does on that server, in a few words.
 #
-# Eleven call sites read a DSN with this guard before they start anything, because the server must
+# Twelve call sites read a DSN with this guard before they start anything, because the server must
 # be this machine's. Seven are proofs of their own: plan-pointer-drive.sh,
 # verification-results.sh, dispatch-claimant-delivery.sh, clean-session-stop-tmux.sh,
 # envoy-session-states.sh, envoy-session-delivery.sh and dispatch-session-settings.sh. The
@@ -28,10 +28,11 @@
 # reads LEGION_TEST_PG_DSN for each proof that makes that run, which is every entry script that
 # sources it. The tenth call site is busy-relaunch-delivery.sh's negative control, which reads
 # LEGION_TEST_PG_DSN with this guard before it builds the base commit's tree, through the copy
-# lib/live-daemon-proof.sh sources. The eleventh is
-# packages/pi-legion/scripts/skill-scenarios/rig.sh, the skill-scenario rig, whose own_dispatch
-# reads SKILL_SCENARIOS_POSTGRES_URL for each run's own database. Eight of the eleven call sites
-# call this function.
+# lib/live-daemon-proof.sh sources. The eleventh is approved-version-news.sh's arguments check,
+# which reads LEGION_TEST_PG_DSN with this guard before it builds or extracts anything, through
+# that same copy. The twelfth is packages/pi-legion/scripts/skill-scenarios/rig.sh, the
+# skill-scenario rig, whose own_dispatch reads SKILL_SCENARIOS_POSTGRES_URL for each run's own
+# database. Nine of the twelve call sites call this function.
 # envoy-session-delivery.sh, dispatch-session-settings.sh and the skill-scenario rig read their
 # DSN with run_database_url alone, which begins with this guard's own check. Every proof that
 # writes a server its caller's DSN names reads that DSN with this guard before it starts anything.

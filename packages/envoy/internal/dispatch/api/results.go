@@ -601,7 +601,9 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, body)
 }
 
-// refusal is every refusal a result's own fields earn, before anything is read.
+// refusal is every refusal a result's own fields earn, before anything is read. The three counts
+// are each a non-negative number check_results keeps in an integer column, so a count past that
+// column (fitsIntegerColumn) is refused here, before the query that would fail to encode it.
 func (input checkResultInput) refusal() error {
 	if strings.TrimSpace(input.Check) == "" {
 		return errorf(http.StatusBadRequest, "RESULT_INPUT", "check names the check block the result proves")
@@ -616,9 +618,12 @@ func (input checkResultInput) refusal() error {
 	if !resultCommitSHA.MatchString(input.Commit) {
 		return errorf(http.StatusBadRequest, "RESULT_INPUT", "commit is the 40-character lowercase hex commit the check ran at")
 	}
-	for name, count := range map[string]int{"failed": input.Failed, "skipped": input.Skipped, "excluded": input.Excluded} {
-		if count < 0 {
-			return errorf(http.StatusBadRequest, "RESULT_INPUT", "%s counts cases and cannot be negative", name)
+	for _, count := range []struct {
+		name  string
+		cases int
+	}{{"failed", input.Failed}, {"skipped", input.Skipped}, {"excluded", input.Excluded}} {
+		if count.cases < 0 || !fitsIntegerColumn(count.cases) {
+			return errorf(http.StatusBadRequest, "RESULT_INPUT", "%s counts cases, from 0 to %d", count.name, maxIntegerColumn)
 		}
 	}
 	if input.Verdict == "pass" && (input.Failed > 0 || input.Skipped > 0 || input.Excluded > 0) {
@@ -1131,11 +1136,13 @@ func plainWord(word, punctuation string) bool {
 // a host that ends in `.internal` with no ASCII letter or digit after it (a full stop, a
 // parenthesis or a hyphen included). Both read case-insensitively, so the Kelvin sign U+212A and
 // the long s U+017F, which fold to `k` and `s`, count as letters after a host too, while `é` does
-// not. privateHost's trailing `.internal` is what the script does not refuse: the script guards the
-// whole repository, where names such as metadata.google.internal and host.docker.internal are
-// well known and not private, while the line is pasted into public text with no reader in
-// between, so it is stricter on purpose. The line drops every word holding one, written without a
-// scheme too, and the script's reserved example hosts with them, since no line needs such a host.
+// not. privateHost's trailing `.internal` is what the script refuses only in a pull request's own
+// text (check-pr-text.sh turns it on there), where it still lets metadata.google.internal and
+// host.docker.internal pass: over the whole repository it reads no such ending, since those names
+// are well known and not private there. The line is pasted into public text with no reader in
+// between, so it is stricter than either on purpose. The line drops every word holding one,
+// written without a scheme too, the two well-known names and the script's reserved example hosts
+// with them, since no line needs such a host.
 var (
 	privateHost = regexp.MustCompile(`(?i)[[:alnum:]-]+[.]internal([^[:alnum:]]|$)`)
 	tailnetHost = regexp.MustCompile(`(?i)[[:alnum:]-]+[.]ts[.]net([^[:alnum:]]|$)`)
