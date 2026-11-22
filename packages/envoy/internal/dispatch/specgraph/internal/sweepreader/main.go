@@ -45,6 +45,12 @@ type answer struct {
 	Refusal string            `json:"refusal,omitempty"`
 }
 
+// The states of a wait (R29).
+const (
+	waitEnds  = "ends"
+	waitHolds = "holds"
+)
+
 func main() {
 	if err := serve(bufio.NewReader(os.Stdin), os.Stdout); err != nil {
 		fmt.Fprintln(os.Stderr, "sweepreader:", err)
@@ -107,6 +113,7 @@ func scenarioOf(line []byte) (fstest.MapFS, error) {
 // each unit, at each subject of the scenario fsys, by its place in the output: the subject by its
 // place in subjects.json, not its value, since an input that leaves out a member of a subject, such
 // as graph_tx, derives the states of that subject; or the refusal of the reader or of the derivation.
+// A wait ends where the state of its subject says so (WaitEnds), and holds where it does not.
 func sweepStates(fsys fs.FS) (map[string]string, error) {
 	s, err := specgraph.ReadScenario(fsys)
 	if err != nil {
@@ -128,7 +135,7 @@ func sweepStates(fsys fs.FS) (map[string]string, error) {
 		}
 		for _, u := range s.Units {
 			for _, statement := range u.WaitsOn {
-				states[at+" wait of "+u.ID+" on "+statement] = map[bool]string{true: "ends", false: "holds"}[state.WaitEnds(statement)]
+				states[at+" wait of "+u.ID+" on "+statement] = map[bool]string{true: waitEnds, false: waitHolds}[state.WaitEnds(statement)]
 			}
 		}
 	}

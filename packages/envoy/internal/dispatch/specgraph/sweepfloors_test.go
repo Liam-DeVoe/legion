@@ -26,11 +26,13 @@ import (
 // as many each way as it likes, and a change of the form of an input that keeps its kind (two
 // spaces for one) cannot pass. The floors count what the reader did with an input, not what the
 // judgment found: a judgment that stops reporting an input that moves a state toward true, and
-// counts it as read, meets them. That judgment fails by its known positives (knownPositives), one
-// for each kind of move that it reports, at silent-leg and wait-cycle, which each sweep must report
-// with the lines that each is built to move, and which no floor counts. A base, a scenario, a sweep
-// or a reader that adds, takes out, moves or writes otherwise an input, or judges it by another
-// right, changes the digest, so the table is written again, on purpose, from a run of the sweeps.
+// counts it as read, meets them. The judgment is tested over its whole domain
+// (TestTheSweepsJudgmentAgreesWithItsDefinitionOverItsWholeDomain), and a sweep that does not call
+// it fails by its known positives (knownPositives), one with no right and one with a right, at
+// silent-leg and wait-cycle, which each sweep must report with the lines that each is built to move,
+// and which no floor counts. A base, a scenario, a sweep or a reader that adds, takes out, moves or
+// writes otherwise an input, or judges it by another right, changes the digest, so the table is
+// written again, on purpose, from a run of the sweeps.
 // It is a function that gives a new table at each call.
 func sweepFloors() map[string]map[string]sweepFloor {
 	return map[string]map[string]sweepFloor{
