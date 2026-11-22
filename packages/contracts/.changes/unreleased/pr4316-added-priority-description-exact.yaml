@@ -1,0 +1,4 @@
+kind: Added
+body: |-
+  `Priority` and `PriorityRow` carry `description_tree_exact`, whether `description_tree` is an
+  exact reading of `description`: present exactly where `description_tree` is.

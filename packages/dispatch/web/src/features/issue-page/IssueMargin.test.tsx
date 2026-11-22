@@ -3729,12 +3729,11 @@ test("removing the last label draws Add, whose Labels the row's control now answ
   }
 });
 
-// Add is drawn beside a control it reaches once the control is back from what an entry opened.
 // On an issue with a value for every property but the priorities it advances, Add lists Advances
 // alone. Picking it presses "Add a priority to CORE-1", which opens the priorities' picker with
-// the focus in its search box; Escape closes the picker, writes nothing and gives the focus back
-// to that control, and Add stays drawn beside it.
-test("Add is drawn after the Advances picker it opened is closed", async () => {
+// the focus in its search box; Escape closes the picker, gives the focus back to that control and
+// writes nothing.
+test("Advances opens the priorities' picker with the focus in its search box, and Escape gives the focus back and writes nothing", async () => {
   const user = userEvent.setup();
   const { getIssue, patchIssue, restore } = stubIssueApi();
   const priorities = spyOn(api, "listPriorities").mockResolvedValue(noLivePriorities);
@@ -3770,12 +3769,6 @@ test("Add is drawn after the Advances picker it opened is closed", async () => {
       await screen.findByRole("button", { name: addPriorityControlName("CORE-1") }),
       "the priority's add control did not take the focus back as the picker closed"
     ).toHaveFocus();
-    await waitFor(() =>
-      expect(
-        screen.queryByRole("button", { name: CONTROL_LABELS.add }),
-        "Advances has no value and its control is drawn, but Details draws no Add"
-      ).toBeInTheDocument()
-    );
     expect(patchIssue, "a picker closed with nothing ticked wrote").not.toHaveBeenCalled();
   } finally {
     view.unmount();

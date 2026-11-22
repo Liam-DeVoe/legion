@@ -162,7 +162,14 @@ function PriorityShown({
   owners: readonly string[];
   titles: ReadonlyMap<string, string>;
 }): ReactNode {
-  const { description, description_tree: descriptionTree, id, owner, title } = item.priority;
+  const {
+    description,
+    description_tree: descriptionTree,
+    description_tree_exact: descriptionTreeExact,
+    id,
+    owner,
+    title,
+  } = item.priority;
   const [open, setOpen] = useState(true);
   // Where the owner's notice of the reader's kept texts is drawn: under the header's row of
   // chips, not inside it.
@@ -241,6 +248,7 @@ function PriorityShown({
                 canWrite={canWrite}
                 description={description}
                 descriptionTree={descriptionTree}
+                descriptionTreeExact={descriptionTreeExact}
                 kept={keptDescription}
                 label="Description"
                 onKeptChange={(texts) => keep(id, "description", texts)}

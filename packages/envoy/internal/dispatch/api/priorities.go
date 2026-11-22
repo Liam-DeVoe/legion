@@ -131,13 +131,13 @@ func priorityFrom(node prioritystore.Node) model.Priority {
 }
 
 // priorityAnswer is a write's own answer: the priority it wrote, with the tree of its description
-// for a caller that sent `Dispatch-Trees: 1`, read where it stands (shapeBuilt) as a comment's
-// write answers the tree of its body. The handler builds it before it stores the description's
-// tree, so the store finds that reading in the process's cache rather than reading the
-// description again.
+// and whether that tree is exact for a caller that sent `Dispatch-Trees: 1`, read where it stands
+// (shapeBuilt) as a comment's write answers the tree of its body. The handler builds it before
+// it stores the description's tree, so the store finds that reading in the process's cache
+// rather than reading the description again.
 func priorityAnswer(priority model.Priority, trees bool) model.Priority {
 	shapeBuilt(trees, func(reader *displayTreeReader) {
-		reader.text(&priority.DescriptionTree, priority.Description)
+		reader.textExact(&priority.DescriptionTree, &priority.DescriptionTreeExact, priority.Description)
 	})
 	return priority
 }
@@ -157,7 +157,9 @@ func priorityAnswer(priority model.Priority, trees bool) model.Priority {
 // and nothing has gone wrong.
 //
 // Every description carries its display tree for a caller that sent `Dispatch-Trees: 1`, read
-// as a comment list reads its bodies' (displayTreeReader), so the page parses no description.
+// as a comment list reads its bodies' (displayTreeReader), so the page parses no description,
+// and whether that tree is exact (model.Priority.DescriptionTreeExact), which says whether a
+// writer's editor may take the markdown in.
 func (s *server) listPriorities(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -178,7 +180,7 @@ func (s *server) listPriorities(w http.ResponseWriter, r *http.Request) {
 	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
 	for index := range body.Priorities {
 		row := &body.Priorities[index]
-		reader.text(&row.DescriptionTree, row.Description)
+		reader.textExact(&row.DescriptionTree, &row.DescriptionTreeExact, row.Description)
 	}
 	reader.resolve()
 	WriteJSON(w, http.StatusOK, body)

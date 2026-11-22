@@ -155,7 +155,13 @@ const PHONE_COUNTS = (
 function TitleCell({ item }: { item: PriorityItem }) {
   const actions = useRowActions();
   const open = actions.openId === item.priority.id;
-  const { description, description_tree: descriptionTree, id, title } = item.priority;
+  const {
+    description,
+    description_tree: descriptionTree,
+    description_tree_exact: descriptionTreeExact,
+    id,
+    title,
+  } = item.priority;
   const keptDescription = actions.kept(id, description);
   // An open row draws its whole description, and so does a closed one that keeps the reader's
   // text beside it: the notice of a write another person's change refused is on the row whether
@@ -190,6 +196,7 @@ function TitleCell({ item }: { item: PriorityItem }) {
           canWrite={actions.canWrite}
           description={description}
           descriptionTree={descriptionTree}
+          descriptionTreeExact={descriptionTreeExact}
           kept={keptDescription}
           label={`Description of ${item.order}`}
           onKeptChange={(texts) => actions.onKeep(id, texts)}

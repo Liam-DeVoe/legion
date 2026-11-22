@@ -25359,6 +25359,10 @@
             ],
             "type": "object"
           },
+          "description_tree_exact": {
+            "description": "Whether description_tree is an exact reading of description: true where the server's parser takes the description whole, false where it refuses a block of it or the whole of it, so the tree only draws that part, and an editor filled from it must not write it back. Present exactly where description_tree is.",
+            "type": "boolean"
+          },
           "id": {
             "type": "string"
           },
@@ -25518,6 +25522,10 @@
               "type"
             ],
             "type": "object"
+          },
+          "description_tree_exact": {
+            "description": "Whether description_tree is an exact reading of description: true where the server's parser takes the description whole, false where it refuses a block of it or the whole of it, so the tree only draws that part, and an editor filled from it must not write it back. Present exactly where description_tree is.",
+            "type": "boolean"
           },
           "id": {
             "type": "string"
