@@ -866,15 +866,17 @@
 #      `proof` job takes its limits from the rows of .github/e2e-scripts.json: those rows are
 #      derived by hand, each against the slowest retried step its own flags select, and that
 #      file says so where they are written. .github/workflows/dispatch-unit-repeat.yaml's
-#      `repeat` job writes `timeout-minutes: ${{ matrix.job_minutes }}` (:147), and its matrix's
-#      comment (:155-161) derives each lane's figure by hand, the job's first term plus the
-#      setup-bun step's two `ci_tools_fetch` calls, 3416 s: web 1020 + 3416 = 4436 s under 74
-#      minutes (4440 s), web-cold 180 + 3416 = 3596 s under 60 (3600 s), and harness
-#      1980 + 3416 = 5396 s under 90 (5400 s). Anyone adding such a row gets no gate, so the
+#      `repeat` job writes `timeout-minutes: ${{ matrix.job_minutes }}` (:129), and each matrix
+#      row (:156-180) writes its figure's arithmetic beside it, the job's first term plus
+#      `retry_seconds`, the setup-bun step's two `ci_tools_fetch` calls, 3416 s: web
+#      4080 + 74 + 3416 = 7570 s under 127 minutes, web-cold 480 + 88 + 3416 = 3984 s under 67,
+#      and harness 7920 + 458 + 3416 = 11794 s under 197, which
+#      packages/dispatch/e2e/__tests__/unit-repeat-budgets.test.ts holds exactly. Anyone adding
+#      such a row gets no gate, so the
 #      arithmetic has to be written beside it. A step that writes its budget as an expression
 #      is read the same way, as writing none, which refuses it where it holds a retried call:
 #      the same file's `Run the lane under one seed with --reruns ${{ matrix.reruns }}` step
-#      writes `timeout-minutes: ${{ matrix.step_minutes }}` (:264), and e2e.yaml's `Run the
+#      writes `timeout-minutes: ${{ matrix.step_minutes }}` (:269), and e2e.yaml's `Run the
 #      proof` step writes `timeout-minutes: ${{ matrix.run_timeout_minutes }}`, each row's figure
 #      derived by hand in .github/e2e-scripts.json and .github/ci-notes/e2e.md, which
 #      select-e2e-proofs.sh holds strictly below the row's job key. Both pass because neither
