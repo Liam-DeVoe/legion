@@ -295,18 +295,27 @@ func shapeAnswer(id AnswerID, body any, restore, strip int) (any, tookOff) {
 		default:
 			panic(fmt.Sprintf("api: the %s answer was written a %T, which its row cannot shape", id, body))
 		}
+	case AnswerPlanRegister:
+		registered, isRegistered := body.(PlanRegisterResponse)
+		if !isRegistered {
+			panic(fmt.Sprintf("api: the %s answer was written a %T, which its row cannot shape", id, body))
+		}
+		// AnswerPlanRegister arrived whole at OwnerPlanContract, and each task's `needs` arrived
+		// at tasksContract, so a caller below it is served each task without it (withoutNeeds).
+		if strip < tasksContract {
+			registered = withoutNeeds(registered)
+		}
+		return registered, took
 	case AnswerHealth, AnswerRegister, AnswerRegisterController, AnswerNoContent,
 		AnswerGrant, AnswerHandoffComplete, AnswerEmptyObject, AnswerFreshSession,
-		AnswerCompact, AnswerTurnOutcome, AnswerWaveRelease, AnswerProjectPause, AnswerProjectResume,
-		AnswerPlanRegister:
+		AnswerCompact, AnswerTurnOutcome, AnswerWaveRelease, AnswerProjectPause, AnswerProjectResume:
 		// The identity, one row each: every contract this daemon serves one of these answers
 		// reads the body it writes. No key has arrived on any of them since that answer arrived.
 		// One key has gone: AnswerHandoffComplete lost its `note` at stateMachineContract, and
 		// no reader from ServingFloor to 85 requires it, so no stand-in is written for it
-		// (version.go's 86). AnswerTurnOutcome arrived whole at stateMachineContract,
-		// AnswerProjectPause and AnswerProjectResume arrived whole at pauseContract, and
-		// AnswerPlanRegister arrived whole at OwnerPlanContract, so no older contract records any
-		// of the four at all.
+		// (version.go's 86). AnswerTurnOutcome arrived whole at stateMachineContract, and
+		// AnswerProjectPause and AnswerProjectResume arrived whole at pauseContract, so no older
+		// contract records any of the three at all.
 		return body, took
 	case answerUnparsed:
 		// The identity too, and for a reason of its own: no plugin parses these bodies, so no
@@ -1536,6 +1545,21 @@ func withoutTasks(issue Issue) (Issue, bool) {
 	moved := len(issue.Tasks) > 0
 	issue.Tasks = nil
 	return issue, moved
+}
+
+// withoutNeeds is register_plan's answer with no `needs` on any task, the one field tasksContract
+// added to it. The reader of OwnerPlanContract parses each task as a plain zod object, which drops
+// a key it does not name (legion-api.ts's LegionPlanRegisterResponse), so it would read the body
+// either way; the band serves each contract below tasksContract the body its record describes.
+// The tasks are copied, so the body the route wrote keeps its own.
+func withoutNeeds(registered PlanRegisterResponse) PlanRegisterResponse {
+	tasks := make([]RegisteredTask, len(registered.Plan.Tasks))
+	for i, task := range registered.Plan.Tasks {
+		task.Needs = nil
+		tasks[i] = task
+	}
+	registered.Plan.Tasks = tasks
+	return registered
 }
 
 // withoutUnadmittedWaitAnswer is the issue whose wait carries no `answeredAt` and no

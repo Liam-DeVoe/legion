@@ -3207,6 +3207,11 @@ package api
 // before the reader that drops a key it does not know reads an issue as a strict object and
 // would refuse the whole state over it. From this entry the last number of answers.go's
 // SupportedContracts is `api.tasksContract`.
+// `POST /legion/v1/plans/register` (`register_plan`) takes a plan of several tasks and a task's
+// `needs` (plan.Supported refuses neither), and its answer names each task's `needs`, the ids of
+// the tasks it needs as register_plan resolved them, `[]` for none (`api.RegisteredTask`). A
+// caller below 224 is served each task without `needs` (shaping.go's withoutNeeds); the reader of
+// 219 parses a task as a zod object, which drops the key, so a plugin before it reads either body.
 // (224 is a working number, above every number this tree's entries hold and every number the
 // changes this one is built on hold. No reading of the open pull requests chose it: the pull
 // request that carries this entry reads `const DaemonAPIVersion` at each open pull request's head

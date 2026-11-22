@@ -24,25 +24,30 @@ func PlanID(issue string, generation uint64) string {
 	return uuid.NewSHA1(planRecordNamespace, []byte(fmt.Sprintf("%s/%d", issue, generation))).String()
 }
 
-// planNode is the plan node of issue's run: the plan w walks, as Dispatch records it under
-// the run's one id (PlanID). Its source is the version in force's (record.PlanVersion.Source):
-// owner, with the document and the version of it Legion took, or default, the project's default
-// steps, with neither. Its task is the run's one task, with its steps in order, each a role or
-// `role:key` (plan.Step.String), and the tasks it needs, each by the id register_plan resolved
-// (record.PlanTask.Needs), [] where it needs none: the one record of the needs that Dispatch
-// serves. The node is written at the start of the work and again, whole, at each later version
+// planNode is the plan node of issue's run: the plan walks walk, one walk for each task in task id
+// order (walks), as Dispatch records it under the run's one id (PlanID). Its source is the version
+// in force's (record.PlanVersion.Source): owner, with the document and the version of it Legion
+// took, or default, the project's default steps, with neither. It holds each task of the plan,
+// with its steps in order, each a role or `role:key` (plan.Step.String), and the tasks it needs,
+// each by the id register_plan resolved (record.PlanTask.Needs), [] where it needs none: the one
+// record of the needs that Dispatch serves, which refuses a need naming a task the node does not
+// hold. The node is written at the start of the work and again, whole, at each later version
 // Legion takes (planGiven): Dispatch replaces all four fields for a version above the one it
-// holds. Both read w with its plan rows: the start's first step writes them (planFirstStep), and a
-// version taken is one. A run with no plan rows walks today's line, so its node is the task
-// default of todaysSteps, which needs none: a hand-over's carry of an orphan that ran before plans
-// (WritePlan).
-func planNode(issue record.Issue, w Walk) record.PlanRecord {
+// holds. Both read the walks with their plan rows: the start's first step writes them
+// (planFirstStep), and a version taken is one. A run with no plan rows walks today's line, so its
+// node is the task default of todaysSteps, which needs none: a hand-over's carry of an orphan that
+// ran before plans (WritePlan).
+func planNode(issue record.Issue, walks []Walk) record.PlanRecord {
 	node := record.PlanRecord{ID: PlanID(issue.Key, issue.Generation), Generation: issue.Generation, Source: record.PlanSourceDefault}
-	needs := append([]string{}, w.Needs...)
-	if w.Version.Source == record.PlanSourceOwner {
-		node.Source, node.PlanDocument = record.PlanSourceOwner, &record.PlanDocument{ArtifactID: w.Version.ArtifactID, Version: w.Version.Version}
+	if len(walks) > 0 && walks[0].Version.Source == record.PlanSourceOwner {
+		version := walks[0].Version
+		node.Source, node.PlanDocument = record.PlanSourceOwner, &record.PlanDocument{ArtifactID: version.ArtifactID, Version: version.Version}
 	}
-	node.Tasks = []record.PlanRecordTask{{ID: w.Task, Steps: plan.Words(namedSteps(w.Steps)), Needs: &needs}}
+	node.Tasks = make([]record.PlanRecordTask, len(walks))
+	for i, w := range walks {
+		needs := append([]string{}, w.Needs...)
+		node.Tasks[i] = record.PlanRecordTask{ID: w.Task, Steps: plan.Words(namedSteps(w.Steps)), Needs: &needs}
+	}
 	return node
 }
 
@@ -183,30 +188,31 @@ func describeVersion(version record.PlanVersion) string {
 	return fmt.Sprintf("version %d of document %s, given by %s", version.Version, version.ArtifactID, version.GivenBy)
 }
 
-// WritePlan queues the plan node of issue's run (planNode), the plan it carries out, read from its
-// walk, where the run's work starts: at the run's move out of admitted (transition's
-// TriggerGateOpened, which queues it on the walk it read, writePlanOn), after the first step has
-// settled the plan (planFirstStep), and at a hand-over's carry, which re-admits an orphan at a new
-// generation in the phase it ran in elsewhere (admit's readmit), so that run never leaves admitted,
-// after the carry has written its plan rows (record.Store.CarryPlan). A record key that is no
-// issue key writes nothing (recordsSteps), and reads no walk.
+// WritePlan queues the plan node of issue's run (planNode), the plan it carries out, read from the
+// walk of each of its tasks (walks), where the run's work starts: at the run's move out of
+// admitted (transition's TriggerGateOpened, which queues it on the walk it read, writePlanOn, and
+// gateOpened for a plan of several tasks), after the first step has settled the plan
+// (planFirstStep), and at a hand-over's carry, which re-admits an orphan at a new generation in
+// the phase it ran in elsewhere (admit's readmit), so that run never leaves admitted, after the
+// carry has written its plan rows (record.Store.CarryPlan). A record key that is no issue key
+// writes nothing (recordsSteps), and reads no walk.
 func (e *Engine) WritePlan(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
 	if !recordsSteps(issue) {
 		return nil
 	}
-	w, err := e.walk(ctx, tx, issue)
+	walks, err := e.walks(ctx, tx, issue)
 	if err != nil {
 		return err
 	}
-	return e.writePlanOn(ctx, tx, issue, w)
+	return e.writePlanOn(ctx, tx, issue, walks)
 }
 
-// writePlanOn is WritePlan on w, the walk of issue's run as its caller read it.
-func (e *Engine) writePlanOn(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk) error {
+// writePlanOn is WritePlan on walks, the walk of each task of issue's run as its caller read them.
+func (e *Engine) writePlanOn(ctx context.Context, tx pgx.Tx, issue record.Issue, walks []Walk) error {
 	if !recordsSteps(issue) {
 		return nil
 	}
-	return e.enqueue(ctx, tx, issue.Key, planNode(issue, w))
+	return e.enqueue(ctx, tx, issue.Key, planNode(issue, walks))
 }
 
 // rateRetro writes the rating the retro of issue's run gave the plan onto that retro's record, in

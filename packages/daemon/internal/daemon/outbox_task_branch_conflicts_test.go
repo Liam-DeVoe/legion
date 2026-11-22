@@ -4,9 +4,8 @@ package daemon
 // holding no transaction, and then writes what the join found onto the task. Each test here opens
 // that window inside the row's own GitHub call, the merge of the need c, and makes there the store
 // writes of a fact that can land in it, under the lock every fact applies under
-// (intake.SerializeFacts), as that fact makes them. No route reaches the window at this release:
-// register_plan takes no plan of several tasks or with needs (plan.Supported), so these plans are
-// the state the start of tasks reaches once such plans run.
+// (intake.SerializeFacts), as that fact makes them. Each plan here is the state the start of tasks
+// reaches with a plan of several tasks that register_plan took.
 
 import (
 	"bytes"
