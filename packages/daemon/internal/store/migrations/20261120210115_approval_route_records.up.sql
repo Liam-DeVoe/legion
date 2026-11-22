@@ -14,10 +14,14 @@
 -- spec row its re-admission deleted (record.Store.ClearTreeGeneration): the approved version, the
 -- document and the approval's place in the issue's Dispatch event log. The re-admission writes it
 -- right before it clears the gate rows, at any version, where a person's approval stands on the
--- root's own spec row. The route answers from it while the root holds no spec row. The next
--- registration of the spec step, and a changes request on that document, delete it. The
--- readmitted_approvals row is no such record: it is kept only while the approved version is older
--- than the latest, and the start task's delivery deletes it.
+-- root's own spec row. The route answers from it while the root holds no spec row. A later
+-- approval of that document moves it. A changes request on that document deletes it, unless the
+-- row would ignore that request: the request is on a version older than the record's latest
+-- version (20261122072401_cleared_spec_approval_latest_version adds that column), or the approval
+-- it records came after that request. The next registration of the spec step deletes it, and
+-- where it names the registered document, the new row keeps its approval of an older version.
+-- The readmitted_approvals row is no such record: it is kept only while the approved version is
+-- older than the latest, and the start task's delivery deletes it.
 --
 -- The release before this one names each column of handed_over_roots it reads and writes
 -- (record.Postgres.HandedOverRoot and PutHandedOverRoot), so it neither reads nor writes from_root,

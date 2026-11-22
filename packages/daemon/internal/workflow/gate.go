@@ -44,7 +44,10 @@ func gateOfDocument(gates map[record.DesignStep]record.DesignGate, document stri
 // told, unless the gate already records that same review as told, and the root keeps its slot at
 // admitted to revise. The architect is told the version the gate opened at, which an approval
 // carried to a later version makes the later one, and is not told it again when the gate of that
-// document was already open at that version.
+// document was already open at that version. Where no row of the registered document stands, the
+// record the root's re-admission left of the spec row it cleared stands for that row
+// (clearedSpecRow): the new row keeps its approval of an older version, and takes its approval of
+// the registered version where the read predates it. The registration then deletes the record.
 //
 // The approval request the registration's read found open is mirrored as the read found it
 // (mirrorRegisteredRequest), before anything decides whether the registration changes the gate:
@@ -118,15 +121,24 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 		return intake.Result{}, e.enqueue(ctx, tx, fact.Issue, record.GateSeed{ArtifactID: fact.ArtifactID, Step: step, Version: version, Generation: issue.Generation})
 	}
 	gate := record.DesignGate{Issue: fact.Issue, Step: step, ArtifactID: fact.ArtifactID, LatestVersion: version}
-	// An approval of an older version the gate of this document holds is kept, as a version event
-	// keeps it (classify.ApplyDesignGateEvent): a late changes request it answered stays answered.
-	if sameDocument && stored.ApprovedVersion != nil && *stored.ApprovedVersion < version {
-		gate.ApprovedVersion, gate.ApprovedMark = stored.ApprovedVersion, stored.ApprovedMark
+	// The row this registration replaces: the stored row of this document, or, where none stands,
+	// the record the root's re-admission left of the spec row it cleared (clearedSpecRow).
+	held := stored
+	if held == nil && step == record.DesignStepSpec {
+		if held, err = e.clearedSpecRow(ctx, tx, fact.Issue, fact.ArtifactID); err != nil {
+			return intake.Result{}, err
+		}
+	}
+	// An approval of an older version that row holds is kept, as a version event keeps it
+	// (classify.ApplyDesignGateEvent): a late changes request it answered stays answered, and a
+	// registration of a version the person has not approved yet leaves that approval standing.
+	if held != nil && held.ApprovedVersion != nil && *held.ApprovedVersion < version {
+		gate.ApprovedVersion, gate.ApprovedMark = held.ApprovedVersion, held.ApprovedMark
 	}
 	changesRequested := false
 	// Who reviewed, named on the design-approved notice the registration sends: the person whose
-	// approval the registration carries, and no person under gates.design off, which opens the gate
-	// whatever Dispatch shows.
+	// approval the registration's read carries, and no person under gates.design off, which opens
+	// the gate whatever Dispatch shows, or for the re-admission's record, which keeps no reviewer.
 	var reviewer string
 	switch {
 	case ungated:
@@ -135,11 +147,16 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 		// The approval the gate already holds at that version, read again, keeps the fuller mark,
 		// so a read that gave only its time never takes the sequence the live event gave.
 		mark := fact.ApprovedMark
-		if sameDocument && stored.ApprovedVersion != nil && *stored.ApprovedVersion == fact.ApprovedVersion && stored.ApprovedMark.Same(mark) {
-			mark = mark.Merged(stored.ApprovedMark)
+		if held != nil && held.ApprovedVersion != nil && *held.ApprovedVersion == fact.ApprovedVersion && held.ApprovedMark.Same(mark) {
+			mark = mark.Merged(held.ApprovedMark)
 		}
 		gate = classify.ApplyDesignGateEvent(gate, classify.DesignGateApproved, fact.ApprovedVersion, mark)
 		reviewer = fact.ReviewedBy.Name()
+	case held != nil && classify.ReviewAfter(*held, version, fact.Since):
+		// The re-admission's record holds a person's approval of this version that Dispatch recorded
+		// after the read began (a stored row the read predates returned above), so the read cannot
+		// show it: the row takes it, as a stored row the read predates keeps it.
+		gate = classify.ApplyDesignGateEvent(gate, classify.DesignGateApproved, version, held.ApprovedMark)
 	case fact.ChangesRequestedVersion >= version:
 		gate = classify.ApplyDesignGateEvent(gate, classify.DesignGateChangesRequested, fact.ChangesRequestedVersion, fact.ChangesRequestedMark)
 		changesRequested = true
@@ -169,7 +186,8 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 		return intake.Result{}, err
 	}
 	// The spec row is the root's again, so it answers for the approval from here on, and the record
-	// the root's re-admission left of the row it cleared goes (record.ClearedSpecApproval).
+	// the root's re-admission left of the row it cleared goes (record.ClearedSpecApproval): the row
+	// keeps what the record held (held above).
 	if step == record.DesignStepSpec {
 		if err := e.store.DeleteClearedSpecApproval(ctx, tx, fact.Issue); err != nil {
 			return intake.Result{}, err
@@ -625,9 +643,10 @@ func (e *Engine) gateRequestFound(ctx context.Context, tx pgx.Tx, fact intake.Ga
 // that owns it, by whose key Dispatch sends its events, takes every event (applyArtifact), and each
 // copy a hand-over carried to a child of its tree, now a root of its own (admit's readmit), takes
 // only an approval that opens it or keeps it open (copyTakes). register_gate refuses a document of
-// another issue, so no other gate names it. A changes request also ends the spec approval that
-// the owner's re-admission recorded of that document (forgetClearedSpecApproval), which no gate
-// row holds once the re-admission has cleared the rows.
+// another issue, so no other gate names it. Each event also reaches the record the owner's
+// re-admission left of its spec row (clearedSpecEvent), which stands for that row while no row
+// does: a new version raises its latest version, a later approval moves it, and a changes request
+// the row would take ends it.
 //
 // A person's approval of a parked labelled root's primary document is that person's handover of
 // the root (personHandoverQueues), and the daemon queues the root's todo itself, as admission does
@@ -653,13 +672,11 @@ func (e *Engine) dispatchArtifact(ctx context.Context, tx pgx.Tx, fact intake.Di
 	if err != nil {
 		return intake.Result{}, err
 	}
-	// A re-admission cleared the root's gate rows, so no row takes a changes request on the
-	// document it cleared: the record the re-admission left of that row goes instead, since the
-	// person's changes request ends the approval it records (record.ClearedSpecApproval).
-	if fact.Kind == intake.DispatchArtifactChangesRequested {
-		if err := e.forgetClearedSpecApproval(ctx, tx, fact.Key, fact.ArtifactID); err != nil {
-			return intake.Result{}, err
-		}
+	// A re-admission cleared the root's gate rows, so no row takes an event of the document it
+	// cleared: the record the re-admission left of that row takes it instead, by the row's rules
+	// (clearedSpecEvent).
+	if err := e.clearedSpecEvent(ctx, tx, fact); err != nil {
+		return intake.Result{}, err
 	}
 	for _, gate := range gates {
 		carried := gate.Issue != fact.Key
@@ -690,16 +707,59 @@ func (e *Engine) dispatchArtifact(ctx context.Context, tx pgx.Tx, fact intake.Di
 	return intake.Result{}, nil
 }
 
-// forgetClearedSpecApproval deletes the record key's re-admission left of its spec row
-// (record.ClearedSpecApproval) where that record is of document.
-func (e *Engine) forgetClearedSpecApproval(ctx context.Context, tx pgx.Tx, key, document string) error {
+// clearedSpecRow reads the record key's re-admission left of its cleared spec row
+// (record.ClearedSpecApproval) as that row: its latest version, and the approval of the recorded
+// version at its mark. It is nil where key holds no record of document. An event of the document
+// (clearedSpecEvent) and the spec step's registration (gateRegistered) both read the record as
+// this row, so the record moves, stands and ends by the row's rules while no row stands.
+func (e *Engine) clearedSpecRow(ctx context.Context, tx pgx.Tx, key, document string) (*record.DesignGate, error) {
 	cleared, err := e.store.ClearedSpecApproval(ctx, tx, key)
 	if err != nil || cleared == nil || cleared.ArtifactID != document {
+		return nil, err
+	}
+	approved := cleared.Version
+	return &record.DesignGate{Issue: key, Step: record.DesignStepSpec, ArtifactID: document, LatestVersion: cleared.LatestVersion,
+		ApprovedVersion: &approved, ApprovedMark: cleared.Mark}, nil
+}
+
+// clearedSpecEvent applies an event of fact's document to the record its owner's re-admission
+// left of the spec row it cleared, read as that row (clearedSpecRow), by the row's rules. An event
+// the row would ignore (artifactIgnored) leaves it: a review of a version older than its latest,
+// one the person has already followed with the approval it records (classify.StaleReview), and
+// any event while the deployment does not gate the spec step. A new version raises its latest
+// version and keeps its approval, as it does the row's (classify.ApplyDesignGateEvent), and a
+// later approval moves it to that approval's version and mark. A changes request ends it, as it
+// clears the row's approval, and so does an approval that carries no mark, which leaves no
+// person's approval on the row (record.DesignGate.PersonApproved).
+func (e *Engine) clearedSpecEvent(ctx context.Context, tx pgx.Tx, fact intake.DispatchArtifact) error {
+	row, err := e.clearedSpecRow(ctx, tx, fact.Key, fact.ArtifactID)
+	if err != nil || row == nil {
 		return err
 	}
-	e.logOnCommit(ctx, "workflow: a changes request ends the spec approval a re-admission recorded", "issue", key,
-		"artifact", document, "approved_version", cleared.Version)
-	return e.store.DeleteClearedSpecApproval(ctx, tx, key)
+	if ungated, stale := e.artifactIgnored(*row, fact); ungated || stale {
+		e.logOnCommit(ctx, "workflow: an event the spec row would ignore leaves the spec approval a re-admission recorded", "issue", fact.Key,
+			"artifact", fact.ArtifactID, "event", fact.Kind, "version", fact.Version, "approved_version", *row.ApprovedVersion,
+			"latest_version", row.LatestVersion, "review_seq", fact.Mark.Seq)
+		return nil
+	}
+	moved := classify.ApplyDesignGateEvent(*row, classify.DesignGateEventKind(fact.Kind), fact.Version, fact.Mark)
+	switch {
+	case !moved.PersonApproved():
+		e.logOnCommit(ctx, "workflow: a review ends the spec approval a re-admission recorded", "issue", fact.Key,
+			"artifact", fact.ArtifactID, "event", fact.Kind, "version", fact.Version, "approved_version", *row.ApprovedVersion)
+		return e.store.DeleteClearedSpecApproval(ctx, tx, fact.Key)
+	case fact.Kind == intake.DispatchArtifactVersion:
+		if moved.LatestVersion == row.LatestVersion {
+			return nil
+		}
+		e.logOnCommit(ctx, "workflow: a new version raises the latest version of the spec approval a re-admission recorded", "issue", fact.Key,
+			"artifact", fact.ArtifactID, "latest_version", moved.LatestVersion, "was", row.LatestVersion)
+	default:
+		e.logOnCommit(ctx, "workflow: a person's approval moves the spec approval a re-admission recorded", "issue", fact.Key,
+			"artifact", fact.ArtifactID, "approved_version", *moved.ApprovedVersion, "was", *row.ApprovedVersion)
+	}
+	return e.store.PutClearedSpecApproval(ctx, tx, record.ClearedSpecApproval{Issue: fact.Key, ArtifactID: fact.ArtifactID,
+		Version: *moved.ApprovedVersion, LatestVersion: moved.LatestVersion, Mark: moved.ApprovedMark})
 }
 
 // recordHandover records on a parked root's own gate the person's approval that queues the root as

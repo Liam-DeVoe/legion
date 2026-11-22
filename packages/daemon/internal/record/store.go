@@ -1101,16 +1101,22 @@ func (s *Postgres) DropReadmittedApproval(ctx context.Context, tx pgx.Tx, root s
 }
 
 // PutClearedSpecApproval writes the record a mark places, so a record with no mark, which would
-// name an approval Dispatch never placed, is refused here and by the table's check.
+// name an approval Dispatch never placed, is refused here and by the table's check. So is a record
+// whose latest version stands below the version it approved, which no row holds.
 func (s *Postgres) PutClearedSpecApproval(ctx context.Context, tx pgx.Tx, approval ClearedSpecApproval) error {
 	if approval.Mark.IsZero() {
 		return fmt.Errorf("record the spec approval cleared from %s: the approval of version %d carries no mark", approval.Issue, approval.Version)
 	}
+	if approval.LatestVersion < approval.Version {
+		return fmt.Errorf("record the spec approval cleared from %s: its latest version %d stands below the approved version %d",
+			approval.Issue, approval.LatestVersion, approval.Version)
+	}
 	seq, at := markValues(approval.Mark)
-	if _, err := tx.Exec(ctx, `insert into cleared_spec_approvals (issue, artifact_id, approved_version, approved_seq, approved_at) values ($1, $2, $3, $4, $5)
+	if _, err := tx.Exec(ctx, `insert into cleared_spec_approvals (issue, artifact_id, approved_version, latest_version, approved_seq, approved_at)
+		values ($1, $2, $3, $4, $5, $6)
 		on conflict (issue) do update set artifact_id = excluded.artifact_id, approved_version = excluded.approved_version,
-		approved_seq = excluded.approved_seq, approved_at = excluded.approved_at`,
-		approval.Issue, approval.ArtifactID, approval.Version, seq, at); err != nil {
+		latest_version = excluded.latest_version, approved_seq = excluded.approved_seq, approved_at = excluded.approved_at`,
+		approval.Issue, approval.ArtifactID, approval.Version, approval.LatestVersion, seq, at); err != nil {
 		return fmt.Errorf("record the spec approval cleared from %s at version %d: %w", approval.Issue, approval.Version, err)
 	}
 	return nil
@@ -1120,8 +1126,8 @@ func (s *Postgres) ClearedSpecApproval(ctx context.Context, tx pgx.Tx, root stri
 	approval := ClearedSpecApproval{Issue: root}
 	var seq *int64
 	var at *time.Time
-	err := tx.QueryRow(ctx, `select artifact_id, approved_version, approved_seq, approved_at from cleared_spec_approvals where issue = $1`, root).Scan(
-		&approval.ArtifactID, &approval.Version, &seq, &at)
+	err := tx.QueryRow(ctx, `select artifact_id, approved_version, latest_version, approved_seq, approved_at from cleared_spec_approvals where issue = $1`, root).Scan(
+		&approval.ArtifactID, &approval.Version, &approval.LatestVersion, &seq, &at)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}

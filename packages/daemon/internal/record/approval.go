@@ -35,8 +35,9 @@ type StandingApproval struct {
 // at the root's generation (HandedOverRoot.GateCarriedAt), takes only an approval of that other
 // root's spec (workflow's copyTakes), so a changes request there leaves it standing, and a copy
 // carried closed with an older approved version on its row names that version. A root with no spec
-// row is answered by the record its re-admission left (ClearedSpecApproval), until its next
-// registration or a changes request on that document clears it.
+// row is answered by the record its re-admission left (ClearedSpecApproval), which stands for that
+// row by the row's rules until the spec step's next registration: a later approval moves it, and a
+// changes request the row would take clears it.
 func StandingSpecApproval(ctx context.Context, tx pgx.Tx, store Store, steps []DesignStep, key string) (*StandingApproval, error) {
 	if !slices.Contains(steps, DesignStepSpec) {
 		return nil, nil

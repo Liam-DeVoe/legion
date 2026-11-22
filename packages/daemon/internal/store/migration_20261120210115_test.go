@@ -25,9 +25,10 @@ const approvalRouteRelease = "the release that answers the approval route"
 // (cleared_spec_approvals). A database the release before left holds neither, and one this
 // migration took stores both and reads them back, a hand-over row the release before wrote taking
 // the default ”. The way back, the last paragraph of the migration's header (migrations.WayBack),
-// drops the table and the column and deletes the migration's own version row, and leaves every
-// column of handed_over_roots the release before reads and writes as it was. The roll-forward runs
-// the migration again: the column comes back at its default and the table comes back empty.
+// run after the way back of 20261122072401, which a later migration of the same table adds, drops
+// the table and the column and deletes the migration's own version row, and leaves every column
+// of handed_over_roots the release before reads and writes as it was. The roll-forward runs both
+// migrations again: the column comes back at its default and the table comes back empty.
 func TestTheApprovalRouteRecordsAndTheirWayBackLeaveWhatTheReleaseBeforeReads(t *testing.T) {
 	ctx := context.Background()
 	store := emptyStore(t)
@@ -72,7 +73,7 @@ func TestTheApprovalRouteRecordsAndTheirWayBackLeaveWhatTheReleaseBeforeReads(t 
 		t.Fatalf("migrate through the approval route's records: %v", err)
 	}
 	handed := record.HandedOverRoot{Issue: "LEGION-209", Generation: 2, GateCarried: true, FromRoot: "LEGION-208"}
-	cleared := record.ClearedSpecApproval{Issue: "LEGION-208", ArtifactID: "artifact-208", Version: 4, Mark: record.EventMark{Seq: 12}}
+	cleared := record.ClearedSpecApproval{Issue: "LEGION-208", ArtifactID: "artifact-208", Version: 4, LatestVersion: 5, Mark: record.EventMark{Seq: 12}}
 	if err := store.Tx(ctx, func(tx pgx.Tx) error {
 		if err := record.NewStore().PutHandedOverRoot(ctx, tx, handed); err != nil {
 			return err
@@ -110,6 +111,7 @@ func TestTheApprovalRouteRecordsAndTheirWayBackLeaveWhatTheReleaseBeforeReads(t 
 	const releaseBeforesColumns = `select row(issue, generation, gate_carried)::text from handed_over_roots order by issue`
 	kept := rowsAsText(t, store, releaseBeforesColumns)
 
+	clearedApprovalsWayBackFirst(t, store)
 	if _, err := store.Pool().Exec(ctx, wayBackOf(t, approvalRouteVersion, approvalRouteRelease)); err != nil {
 		t.Fatalf("run the way back: %v", err)
 	}
@@ -132,5 +134,8 @@ func TestTheApprovalRouteRecordsAndTheirWayBackLeaveWhatTheReleaseBeforeReads(t 
 	}
 	if approvals := rowsAsText(t, store, clearedApprovals); len(approvals) != 0 {
 		t.Fatalf("after the roll-forward cleared_spec_approvals holds %v, want it empty", approvals)
+	}
+	if _, err := store.Pool().Exec(ctx, `select latest_version from cleared_spec_approvals`); err != nil {
+		t.Fatalf("after the roll-forward cleared_spec_approvals.latest_version = %v, want the column back", err)
 	}
 }

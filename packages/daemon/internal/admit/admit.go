@@ -1536,12 +1536,13 @@ func (a *Admission) putHandedOverRoot(ctx context.Context, tx pgx.Tx, stored rec
 // generation that the generation's clear is about to delete, where a person's approval stands on
 // it: an approved version with the place Dispatch recorded it at, which a registration of an
 // ungated step never has. It records that row at any version, the latest or one the document has
-// moved past, since the approval route answers from it while the root holds no spec row, and
-// keepStaleApproval keeps only the older one, for the start task alone. A row with no such
-// approval deletes an earlier record, which it has outgrown, and so does a carried copy of another
-// root's gate (record.HandedOverRoot.GateCarriedAt), whose approval is that other root's spec's. A
-// root that holds no spec row keeps an earlier record: an earlier re-admission cleared the row and
-// nothing has registered since.
+// moved past, with the row's latest version, since the approval route answers from it while the
+// root holds no spec row and an event of the document is judged against it as against the row
+// (workflow's clearedSpecEvent), and keepStaleApproval keeps only the older one, for the start
+// task alone. A row with no such approval deletes an earlier record, which it has outgrown, and so
+// does a carried copy of another root's gate (record.HandedOverRoot.GateCarriedAt), whose approval
+// is that other root's spec's. A root that holds no spec row keeps an earlier record: an earlier
+// re-admission cleared the row and nothing has registered since.
 func (a *Admission) recordSpecApproval(ctx context.Context, tx pgx.Tx, key string, gates map[record.DesignStep]record.DesignGate, generation uint64) error {
 	row := record.SpecGate(gates)
 	if row == nil {
@@ -1558,7 +1559,7 @@ func (a *Admission) recordSpecApproval(ctx context.Context, tx pgx.Tx, key strin
 		return a.store.DeleteClearedSpecApproval(ctx, tx, key)
 	}
 	return a.store.PutClearedSpecApproval(ctx, tx, record.ClearedSpecApproval{Issue: key, ArtifactID: row.ArtifactID,
-		Version: *row.ApprovedVersion, Mark: row.ApprovedMark})
+		Version: *row.ApprovedVersion, LatestVersion: row.LatestVersion, Mark: row.ApprovedMark})
 }
 
 // keepStaleApproval keeps, for the architect start of the root key re-admission is clearing, the

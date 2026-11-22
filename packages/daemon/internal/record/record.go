@@ -1715,16 +1715,22 @@ func (root *HandedOverRoot) GateCarriedAt(generation uint64) bool {
 
 // ClearedSpecApproval is the spec row a root's re-admission deleted (Store.ClearTreeGeneration)
 // while a person's approval stood on it: the document, the version the person approved and where
-// Dispatch recorded that approval (Mark, never zero). The approval route answers from it while
-// the root holds no spec row (StandingSpecApproval). The spec step's next registration, and a
-// changes request on that document, delete it (workflow's gateRegistered and dispatchArtifact).
-// It is apart from KeptApproval, which is kept only while the approved version is older than the
-// latest and is forgotten once the root's start task is told.
+// Dispatch recorded that approval (Mark, never zero), and the newest version of the document the
+// row knew of (LatestVersion, never below Version). It stands for that row while the root holds
+// no spec row. The approval route answers from it (StandingSpecApproval), and an event of the
+// document applies to it by the row's rules (workflow's clearedSpecEvent): a new version raises
+// its latest version, a later approval moves it, and a changes request deletes it. A review the
+// row would ignore leaves it: one of a version older than its latest, and one the person already
+// followed with the approval it records. The spec step's next registration deletes it, and where
+// it names the registered document, the new row keeps its approval of an older version
+// (workflow's gateRegistered). It is apart from KeptApproval, which is kept only while the
+// approved version is older than the latest and is forgotten once the root's start task is told.
 type ClearedSpecApproval struct {
-	Issue      string
-	ArtifactID string
-	Version    int
-	Mark       EventMark
+	Issue         string
+	ArtifactID    string
+	Version       int
+	LatestVersion int
+	Mark          EventMark
 }
 
 // WorkHold is the record of the work hold of one tree (`gates.hold: work`): its project (the
@@ -2078,8 +2084,9 @@ type Store interface {
 	// ReadmittedApproval is the pair root keeps, in any state, zeros when it keeps none.
 	ReadmittedApproval(ctx context.Context, tx pgx.Tx, root string) (approved, latest int, err error)
 	// PutClearedSpecApproval records on a root the spec row its re-admission is about to delete,
-	// where a person's approval stands on it; a later record replaces it. ClearedSpecApproval is
-	// the record root holds, nil for none; DeleteClearedSpecApproval deletes it, if any.
+	// where a person's approval stands on it, or that record as a later approval or a new version
+	// of its document moves it; a later record replaces it. ClearedSpecApproval is the record root
+	// holds, nil for none; DeleteClearedSpecApproval deletes it, if any.
 	PutClearedSpecApproval(ctx context.Context, tx pgx.Tx, approval ClearedSpecApproval) error
 	ClearedSpecApproval(ctx context.Context, tx pgx.Tx, root string) (*ClearedSpecApproval, error)
 	DeleteClearedSpecApproval(ctx context.Context, tx pgx.Tx, root string) error

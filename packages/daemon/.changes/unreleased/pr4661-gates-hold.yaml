@@ -25,6 +25,7 @@ body: |-
   `legion config check` prints the word as `design-gate-hold=`, and `legion state --json` shows it
   at `settings.gates.hold`. A daemon before this release refuses the key, so take it out of
   `legion.yaml` before a rollback. Then run the ways back in the headers of
+  `20261122072401_cleared_spec_approval_latest_version.up.sql`,
   `20261122023421_work_hold_openings.up.sql`, `20261121000254_work_holds.up.sql`,
   `20261120224328_claim_suspended_by_hold.up.sql` and
   `20261120210115_approval_route_records.up.sql`, in that order (docs/kubernetes.md).
