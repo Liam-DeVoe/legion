@@ -1,4 +1,3 @@
-import type { QueryCache } from "@tanstack/react-query";
 import { hashKey, type Query, type QueryClient, type QueryKey } from "@tanstack/react-query";
 
 import { ApiError } from "./client";
@@ -53,10 +52,10 @@ export interface RefreshTarget {
   readonly when?: RefreshCheck;
 }
 
-/** A test of one query's answer (`RefreshTarget.when`): its data, the query, and the query cache
- *  of the client the refresh runs on, which `refreshQueries` always hands it; a test called apart
- *  from a refresh may be handed none. */
-export type RefreshCheck = (data: unknown, query: Query, cache?: QueryCache) => boolean;
+/** A test of one query's answer (`RefreshTarget.when`): its data, the query, and the client the
+ *  refresh runs on, which `refreshQueries` always hands it; a test called apart from a refresh may
+ *  be handed none. */
+export type RefreshCheck = (data: unknown, query: Query, client?: QueryClient) => boolean;
 
 interface DeferredCheck {
   readonly requestedAt: number;
@@ -288,11 +287,11 @@ export function refreshQueries(queryClient: QueryClient, targets?: readonly Refr
     }
   } else {
     for (const target of targets) {
-      // Each check is handed this client's cache, whenever it runs: at once below, or on the
-      // response of a fetch out, which the cache's subscription judges it by.
+      // Each check is handed this client, whenever it runs: at once below, or on the response of
+      // a fetch out, which the cache's subscription judges it by.
       const { when } = target;
       const check: RefreshCheck | undefined =
-        when === undefined ? undefined : (data, query) => when(data, query, cache);
+        when === undefined ? undefined : (data, query) => when(data, query, queryClient);
       for (const query of cache.findAll({ exact: target.exact, queryKey: target.queryKey })) {
         const current = reached.get(query);
         if (current === true) {
