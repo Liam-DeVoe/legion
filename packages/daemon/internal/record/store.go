@@ -3145,7 +3145,7 @@ var heldRowsSQL = `select ` + outboxColumns + `, (select min(running.id) from ou
 // due; a row a lane leased before the pause runs to its end and is not listed. project is the
 // Dispatch key.
 func (s *Postgres) PauseHeldRows(ctx context.Context, tx pgx.Tx, project string, now time.Time) ([]PauseHeldRow, error) {
-	return pauseHeldRows(ctx, tx, pauseHeldRowsSQL, project, now)
+	return s.pauseHeldRows(ctx, tx, pauseHeldRowsSQL, project, now)
 }
 
 // MarkPauseHeldRows is PauseHeldRows for the resume of pause, the project's open pause, run in
@@ -3157,13 +3157,14 @@ func (s *Postgres) PauseHeldRows(ctx context.Context, tx pgx.Tx, project string,
 // until that commit, and its rule holds every such row. A restart while the project is paused
 // changes nothing of it, since the marks are written by the resume alone.
 func (s *Postgres) MarkPauseHeldRows(ctx context.Context, tx pgx.Tx, project string, pause int64, now time.Time) ([]PauseHeldRow, error) {
-	return pauseHeldRows(ctx, tx, markPauseHeldRowsSQL, project, now, pause)
+	return s.pauseHeldRows(ctx, tx, markPauseHeldRowsSQL, project, now, pause)
 }
 
 // pauseHeldRows runs statement, PauseHeldRows' or MarkPauseHeldRows', with now as $1, project as
 // $2 and more after them, and reads the rows it answers, each with the claim it is for and how
-// long it has waited at now.
-func pauseHeldRows(ctx context.Context, tx pgx.Tx, statement, project string, now time.Time, more ...any) ([]PauseHeldRow, error) {
+// long it has waited at now. The phases rows of the held rows' issues are read once after them,
+// for the rows that name no claim (pauseHeldClaim).
+func (s *Postgres) pauseHeldRows(ctx context.Context, tx pgx.Tx, statement, project string, now time.Time, more ...any) ([]PauseHeldRow, error) {
 	token, err := claim.ProjectToken(project)
 	if err != nil {
 		return nil, fmt.Errorf("list the rows %s's pause holds: %w", project, err)
@@ -3172,20 +3173,36 @@ func pauseHeldRows(ctx context.Context, tx pgx.Tx, statement, project string, no
 	if err != nil {
 		return nil, fmt.Errorf("list the rows %s's pause holds: %w", project, err)
 	}
-	defer rows.Close()
-	held := []PauseHeldRow{}
+	type heldRow struct {
+		row         PauseHeldRow
+		role, named string
+	}
+	var read []heldRow
+	var issues []string
 	for rows.Next() {
-		var row PauseHeldRow
-		var role, named string
-		if row.OutboxRow, err = scanOutbox(rows, &role, &named); err != nil {
+		var held heldRow
+		if held.row.OutboxRow, err = scanOutbox(rows, &held.role, &held.named); err != nil {
+			rows.Close()
 			return nil, fmt.Errorf("list the rows %s's pause holds: %w", project, err)
 		}
-		row.Claim = pauseHeldClaim(token, row.OutboxRow, role, claim.Token(named))
-		row.WaitedSeconds = max(0, int64(now.Sub(row.NextAt).Seconds()))
-		held = append(held, row)
+		read = append(read, held)
+		if !slices.Contains(issues, held.row.Issue) {
+			issues = append(issues, held.row.Issue)
+		}
 	}
+	rows.Close()
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("list the rows %s's pause holds: %w", project, err)
+	}
+	entries, err := s.PhaseEntries(ctx, tx, issues)
+	if err != nil {
+		return nil, fmt.Errorf("list the rows %s's pause holds: %w", project, err)
+	}
+	held := make([]PauseHeldRow, 0, len(read))
+	for _, r := range read {
+		r.row.Claim = pauseHeldClaim(token, r.row.OutboxRow, r.role, claim.Token(r.named), entries)
+		r.row.WaitedSeconds = max(0, int64(now.Sub(r.row.NextAt).Seconds()))
+		held = append(held, r.row)
 	}
 	return held, nil
 }
@@ -3208,13 +3225,16 @@ var (
 )
 
 // pauseHeldClaim is the claim a held row is for, where the row names one, and "" where it names
-// none (PauseHeldRow). project is the project token, role the payload's `role` and named its
-// `claim`. A start, a hook's words, an update ask and a merge forward's message are for the claim
-// they name, which their producer read as the worker of the role's step, a keyed agent's among
-// them; one the release before wrote names none and is for the claim of its role's own token on the
-// row's issue. The merge-queue message goes to the issue's merger; a role message names the claim's
-// token itself (record.RoleMessage.Role).
-func pauseHeldClaim(project string, row OutboxRow, role string, named claim.Token) claim.Token {
+// none (PauseHeldRow). project is the project token, role the payload's `role`, named its `claim`
+// and entries the phases rows of the held rows' issues. A start, a hook's words, an update ask and
+// a merge forward's message are for the claim they name, which their producer read as the worker
+// of the role's step, a keyed agent's among them. One the release before wrote names none, and
+// the merge-queue message names none and goes to the issue's merger: each is for the claim its
+// executor reaches, the worker on its role's step (WorkerClaimOf over entries, as the outbox's
+// workerToken reads it), which is the claim the role's phases row names while that row runs a
+// step of the plan, and otherwise the role's own claim. A role message names the claim's token
+// itself (record.RoleMessage.Role).
+func pauseHeldClaim(project string, row OutboxRow, role string, named claim.Token, entries map[PhaseRole]PhaseEntry) claim.Token {
 	switch row.Kind {
 	case OutboxKindSupervise, OutboxKindHookPrompt, OutboxKindUpdateAsk, OutboxKindMergeForward:
 		if named != "" {
@@ -3230,7 +3250,7 @@ func pauseHeldClaim(project string, row OutboxRow, role string, named claim.Toke
 	default:
 		return ""
 	}
-	token, err := claim.NewToken(project, row.Issue, claim.Role(role))
+	token, err := WorkerClaimOf(project, row.Issue, claim.Role(role), entries)
 	if err != nil {
 		return ""
 	}

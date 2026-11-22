@@ -3124,9 +3124,12 @@ package api
 // (api.ClaimView), and an issue lists each claim neither its `architect` nor its `workers` shows,
 // with its role, in `otherClaims` (api.Issue.OtherClaims): `workers` holds one entry per role, so
 // the other claim of a role a keyed agent works the step of was absent from the state. A caller
-// below 222 is served the issues without either (withoutClaimTokens). From this entry the last
-// number of answers.go's SupportedContracts is `api.strandedTokenContract`, and
-// `deploymentRolesContract` stays 221.
+// below 222 is served the issues without either (withoutClaimTokens). A row a pause holds
+// (api.PauseHeldView) that names no claim, a merge-queue message or a row the release before
+// wrote, names in `claim` the worker on its role's step, the claim its executor reaches, where it
+// named the role's own token; the key and its shape are unchanged, so every contract is served
+// it. From this entry the last number of answers.go's SupportedContracts is
+// `api.strandedTokenContract`, and `deploymentRolesContract` stays 221.
 // (This entry takes 222, the lowest number above the base's 221 (the entry above) that no other
 // open pull request declared: a reading of `const DaemonAPIVersion` at refs/pull/<n>/head, by the
 // contract check's own reader (declared_by_open_pull_requests), of each of the 428 open pull
