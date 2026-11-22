@@ -56,6 +56,20 @@ const ANCHOR = "The reading anchor sits here.";
 const SHAPED = "The reading host stores each notice.";
 const DECISION = "Store the notices";
 
+/** The question block the decision's own document declares: the reading world's, asked with
+ *  another urgency. A block of another document of the issue that asks exactly what a block of
+ *  the same id asks is a copy of that block and shows its ask (`docs/copied_asks.go`), so the
+ *  spec's own block would make this one name the spec's ask; this one settles into an ask of its
+ *  own. */
+function ownQuestionBlock(): string {
+  const spec = readingQuestionBlock();
+  const own = spec.replace('urgency="med"', 'urgency="high"');
+  if (own === spec) {
+    throw new Error(`setup: the reading question block names no urgency to change: ${spec}`);
+  }
+  return own;
+}
+
 /** Makes the project document the margin rows are reached on: one paragraph, the anchor, and
  *  the question block. A review of the document and a comment anchored to it are read against
  *  the document itself, so it declares the question a `#id` in them names, and a row whose text
@@ -121,20 +135,24 @@ test("margin-decision-passage: a margin decision card's passage draws every form
     readingAgent
   );
   const shaped = await blockId(spec, SHAPED);
-  // A decision stands beside a spec block it links, so its passage is the reading text and the
-  // link to that block; the link draws as its block's name, which leaves no address as text.
-  // The passage is a record of `decisions.md`, so a `#id` in it is read against that document
-  // (the card hands the renderer the document as the passage's source): the document declares
-  // the question block itself, ahead of its first decision, and the world is scoped to it.
+  // A decision stands beside each spec block its `shaped` attribute names. Its passage is the
+  // reading text and a link to that block, which draws as its block's name and leaves no address
+  // as text. A decision is a `decision` block of a document of the issue, so a `#id` in its
+  // passage is read against that document (the card hands the renderer the document as the
+  // passage's source): this one stands in a document of its own, which declares the question
+  // block itself, ahead of the decision, and the world is scoped to it. That block is no copy of
+  // the spec's, so it is an ask of its own, and a `#id` read against the spec would name another.
+  const shapes = `dispatch://${world.host.key}/spec#b-${shaped}`;
   const { artifact } = await createIssueArtifact(
     world.host.key,
     {
-      content: `${readingQuestionBlock()}\n\n## ${DECISION}\n\n${readingText(world)} Shapes dispatch://${world.host.key}/spec#b-${shaped}.\n`,
-      name: "decisions.md",
+      content: `${ownQuestionBlock()}\n\n:::decision{#d1 shaped="${shapes}"}\n### ${DECISION}\n\n${readingText(world)} Shapes ${shapes}.\n:::\n`,
+      name: "notes.md",
     },
     readingAgent
   );
   const scoped = await scopedTo(world, artifact.id);
+  expect(scoped.question, "the document's question is an ask of its own").not.toBe(world.question);
 
   await openSpec(page, world.host.key, SHAPED);
   // The card is an article a click selects, never a link or a button, and its passage is drawn

@@ -257,6 +257,8 @@ function ShapedLinks({
   if (shaped.length === 0) {
     return null;
   }
+  // A link points into the spec, so a `#id` in the block's words names a question of the spec.
+  const source = textSourceOf("artifact", spec?.id, issueKey);
   return (
     <div className="space-y-1">
       <p className={`text-xs ${textMutedOnSurface}`}>Shaped in the spec:</p>
@@ -265,15 +267,20 @@ function ShapedLinks({
           const blockId = link.to.block_id ?? "";
           return (
             <li key={`${link.from_block}:${blockId}`}>
-              {/* The link names the spec block by its id, in the panel's own words, as the
-                  characters they are. The decisions read sends no text of the block a link
-                  points to (`refs.BlockLinks` resolves each end as a graph node, which carries
-                  its text only on a reference read), so there is no stored text here to draw. */}
+              {/* A link holds no link, so it names the spec block by the plain-text projection
+                  of the block's words: the formatting gone and each reference read as its
+                  target's name. The decisions read sends those words as the block's stored
+                  excerpt (`to.text`) with no reading of them, so the page parses them - the
+                  reading list's `decision-shaped-link`. Until the engine has answered, and for a
+                  block the read sends no words for, the link names the block by its id, in the
+                  panel's own words. */}
               <Link
                 className={`${linkText} ${linkHoverText}`}
                 to={specBlockPath(issueKey, spec, blockId)}
               >
-                {`Block ${blockId}`}
+                <PlainText markdown={link.to.text} source={source} surface="decision-shaped-link">
+                  {(words) => words?.trim() || `Block ${blockId}`}
+                </PlainText>
               </Link>
               {link.stale ? (
                 <span className={`ml-2 text-xs ${textMutedOnSurface}`}>out of date</span>
