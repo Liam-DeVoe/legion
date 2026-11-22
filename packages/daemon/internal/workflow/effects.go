@@ -452,6 +452,13 @@ const testerVerdictLabel = "Tester's verdict"
 // A start of a copy of the issue read for one task of a plan of several (view) names the claim of
 // its step's agent, which the entry wrote on the role's phases row (startMarks.agent): two tasks'
 // steps of one role run at one time, each its own agent's, so each start is a row of its own.
+//
+// It is the one place a step of a plan of several tasks starts, and an agent does one step at a
+// time: where the step's agent does a step of another task, or a step of another task has waited
+// for it since earlier, the step waits for its agent instead (waitForAgent), and nothing of it
+// starts: no entry is raised, no start is counted and no start is queued. The settle hands the
+// agent on when it is free (handOnAgents), through this function again. A plan of one task, and a
+// run with no plan rows, pass no such check.
 func (e *Engine) start(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, role claim.Role, told func(Standing) string, movedBack bool) error {
 	if role == "" {
 		return nil
@@ -461,6 +468,12 @@ func (e *Engine) start(ctx context.Context, tx pgx.Tx, issue record.Issue, w Wal
 	}
 	if role == claim.RoleArchitect {
 		return nil
+	}
+	if issue.ViewTask != "" {
+		waits, err := e.waitForAgent(ctx, tx, issue, &w, role)
+		if err != nil || waits {
+			return err
+		}
 	}
 	at, err := e.standingPart(ctx, tx, issue, w)
 	if err != nil {
@@ -479,6 +492,77 @@ func (e *Engine) start(ctx context.Context, tx pgx.Tx, issue record.Issue, w Wal
 		marks.agent = row.Claim
 	}
 	return e.started(ctx, tx, issue, role, sent, entry, marks)
+}
+
+// waitForAgent says whether the step at the place of w's task, of issue, a copy read for that task
+// of a plan of several (view), waits for its agent (Walk.AgentAt) rather than starts, and writes
+// what it waits for (record.Store.SetStepWait). The agent is busy where the issue's running steps,
+// read from the store in this transaction, give it a step of another task, or where a step of
+// another task has waited for it since earlier (record.Store.AgentWaiter), so a freed agent goes to
+// the step that waited longest. A step a move just put at its task's place is a running step until
+// its own start, and its task is left out, so it counts as no busy step. A step that waits keeps
+// the moment its wait began, so its place in the line holds, and the log says which step the agent
+// does or which waits before it. A step whose agent is free waits for nothing (its wait is ended,
+// and w with it), and so does a step no agent of the issue does: the merge, and a step of the key
+// owner.
+func (e *Engine) waitForAgent(ctx context.Context, tx pgx.Tx, issue record.Issue, w *Walk, role claim.Role) (bool, error) {
+	agent := w.AgentAt(w.Place)
+	var runs *record.RunningStep
+	behind := ""
+	if agent != "" {
+		running, err := e.store.RunningSteps(ctx, tx, issue)
+		if err != nil {
+			return false, err
+		}
+		for _, step := range running {
+			if step.Agent == agent && step.Task != w.Task {
+				runs = &step
+				break
+			}
+		}
+		if runs == nil {
+			waiter, err := e.store.AgentWaiter(ctx, tx, issue.Key, issue.Generation, agent)
+			if err != nil {
+				return false, err
+			}
+			if waiter != w.Task {
+				behind = waiter
+			}
+		}
+	}
+	if runs == nil && behind == "" {
+		if w.Wait == record.StepWaitNone {
+			return false, nil
+		}
+		if err := e.store.SetStepWait(ctx, tx, issue.Key, issue.Generation, w.Task, record.StepWaitNone, nil); err != nil {
+			return false, err
+		}
+		w.Wait, w.WaitSince = record.StepWaitNone, nil
+		return false, nil
+	}
+	if w.Wait != record.StepWaitAgent || w.WaitSince == nil {
+		since := e.now()
+		if err := e.store.SetStepWait(ctx, tx, issue.Key, issue.Generation, w.Task, record.StepWaitAgent, &since); err != nil {
+			return false, err
+		}
+		w.Wait, w.WaitSince = record.StepWaitAgent, &since
+	}
+	args := []any{"issue", issue.Key, "tree", issue.Tree, "task", w.Task, "place", placeWords(w.Place), "role", role, "agent", agent}
+	if runs != nil {
+		args = append(args, "runs", fmt.Sprintf("%s %d", runs.Task, runs.Place.Position))
+	} else {
+		args = append(args, "behind", behind)
+	}
+	e.logOnCommit(ctx, "workflow: a step waits for its agent", args...)
+	return true, nil
+}
+
+// placeWords is place as a log line names it: `step <i>`, `retro` or `merge`.
+func placeWords(place record.TaskPlace) string {
+	if place.Kind == record.PlaceStep {
+		return fmt.Sprintf("step %d", place.Position)
+	}
+	return place.Kind
 }
 
 // reviveArchitect queues the start of the architect of issue, a child, when the store records its

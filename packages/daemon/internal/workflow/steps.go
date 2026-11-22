@@ -70,9 +70,11 @@ type standing struct {
 // of a step's record takes the step it found, or, for a phase the issue has left, stepAt's
 // (reportEndedStep). An issue its plan holds stands in no step (planHold): a stopped task's run
 // ended with its stop, and a parent held for its children has not started its retro, so the end
-// rule ends the run each stood in (runOver) and no start is made for either.
+// rule ends the run each stood in (runOver) and no start is made for either. Nor does a task whose
+// step waits (Walk.Wait), for its agent or its join: nothing of that step has started, so no run of
+// it is opened, at the boot either (OpenUncountedRuns), and its start opens one when it is delivered.
 func standingStep(w Walk, issue record.Issue) (standing, bool) {
-	if planHold(issue, w.Stored) {
+	if planHold(issue, w.Stored) || w.Wait != record.StepWaitNone {
 		return standing{}, false
 	}
 	return stepAt(w, issue, standingIn(record.StandsAt(issue)))

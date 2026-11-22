@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -60,6 +61,12 @@ type Walk struct {
 	// HoldReason is why a held task is held (record.PlanTask.HoldReason): "" for a failed claim,
 	// record.HoldEscalated or record.HoldForChildren; "" for a task that is not held.
 	HoldReason record.HoldReason
+	// Wait and WaitSince are what the step at the task's place waits for before its start is
+	// delivered, and since when (record.PlanTask.StepWait, StepWaitSince): none for a step whose
+	// start was delivered, and the agent for a step whose agent does a step of another task
+	// (Engine.start). A step that waits stands in no step (standingStep): nothing of it started.
+	Wait      record.StepWait
+	WaitSince *time.Time
 	// Version is the version of the plan in force (record.StoredPlan.Version): where the plan came
 	// from, its document and its number, which the run's plan node names (planNode); zero where
 	// the run has no plan rows.
@@ -142,7 +149,7 @@ func walkOfTask(key string, stored *record.StoredPlan, at int, merging string) W
 	steps, merges := stored.Steps[task.Task], task.Task == merging
 	return Walk{Stored: true, Task: task.Task, Branch: task.BranchOf(key), Text: task.BlockText, Steps: steps, Needs: task.Needs,
 		Line: plan.Line(namedSteps(steps), merges), Merges: merges, State: task.State, Place: task.Place, StoppedReason: task.StoppedReason,
-		HoldReason: task.HoldReason, Version: stored.Version}
+		HoldReason: task.HoldReason, Wait: task.StepWait, WaitSince: task.StepWaitSince, Version: stored.Version}
 }
 
 // mergingTask is the id of the task of stored whose work is the issue's that merges: the plan's
@@ -367,10 +374,11 @@ func orderRank(p phase.Phase) int {
 // (WriteIssue, or putIssue for a copy read for one task of a plan of several, which writes the
 // issue in the phase its tasks derive), so a caller that reads the issue after the move reads the
 // steps a fresh read gives: the moved task's step at its new place, with the role and the phase of
-// that place, and none for a task moved to no act, done or left. No move of this release writes a
-// wait of the step it moves to (record.PlanTask.StepWait): the store's move ends any wait the task
-// had, so the moved task's step is a running step at once. w then stands where the task does, for
-// whatever the caller reads of it after the move. A run with no plan rows has no task to move:
+// that place, and none for a task moved to no act, done or left. No move writes a wait of the step
+// it moves to (record.PlanTask.StepWait): the store's move ends any wait the task had, so the moved
+// task's step is a running step at once, and the start that follows the move (Engine.start) writes
+// the wait of a step whose agent does a step of another task. w then stands where the task does,
+// for whatever the caller reads of it after the move. A run with no plan rows has no task to move:
 // issue.Phase is to, as it always was, and its one running step stands at to
 // (record.RunningOf). A move to where the task already stands writes nothing. The caller clears
 // or keeps issue.Hold itself.
@@ -387,7 +395,7 @@ func (e *Engine) moveTask(ctx context.Context, tx pgx.Tx, issue *record.Issue, w
 		if err := e.store.MoveTask(ctx, tx, issue.Key, issue.Generation, w.Task, place, state); err != nil {
 			return err
 		}
-		w.Place, w.State = place, state
+		w.Place, w.State, w.Wait, w.WaitSince = place, state, record.StepWaitNone, nil
 	}
 	issue.Phase = to
 	running, err := e.store.RunningSteps(ctx, tx, *issue)

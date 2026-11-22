@@ -91,10 +91,11 @@ func (e *Engine) OpenFact(ctx context.Context) context.Context {
 
 // SettleFact settles the record the fact left, once its last handler has applied it, in its
 // transaction (intake.Settler): first each parent held before its retro whose tree the fact wrote
-// an issue of is released where nothing beneath it is open (releaseHeldParents), and then each run
+// an issue of is released where nothing beneath it is open (releaseHeldParents), then each run
 // the fact left over ends (runOver): the runs of each issue the fact touched, the released parents
 // among them, and of each member of a tree whose root the fact wrote and which lingers, or whose
-// linger it closed. A second settle of one fact settles nothing.
+// linger it closed. Last, each agent the fact freed goes to the step that waited longest for it
+// (handOnAgents). A second settle of one fact settles nothing.
 func (e *Engine) SettleFact(ctx context.Context, tx pgx.Tx) error {
 	runs, ok := ctx.Value(factRunsKey{}).(*factRuns)
 	if !ok || runs.settled {
@@ -104,7 +105,111 @@ func (e *Engine) SettleFact(ctx context.Context, tx pgx.Tx) error {
 	if err := e.releaseHeldParents(ctx, tx, record.IssuesWritten(ctx)); err != nil {
 		return err
 	}
-	return e.settleRuns(ctx, tx, runs, record.IssuesWritten(ctx), nil)
+	if err := e.settleRuns(ctx, tx, runs, record.IssuesWritten(ctx), nil); err != nil {
+		return err
+	}
+	return e.handOnAgents(ctx, tx, record.IssuesWritten(ctx))
+}
+
+// handOnAgents is the one place an agent a step of another task waits for is handed on, after each
+// move and each start of the fact: so a move that frees an agent and a move that puts a step of the
+// same agent at its task's place, in one fact, each had their own start first (Engine.start), and
+// the step a move made ready in the same act waits behind the steps that waited longer. For each
+// issue the fact wrote whose plan holds several tasks, each step of a running task that waits for
+// its agent, the one that waited longest first (by the moment its wait began, then by task id), is
+// started through Engine.start where no running step of the issue holds its agent, which starts it
+// in that agent's session. An issue of a tree that lingers starts nothing, as no move does there.
+func (e *Engine) handOnAgents(ctx context.Context, tx pgx.Tx, keys []string) error {
+	var order []string
+	for _, key := range keys {
+		if !slices.Contains(order, key) {
+			order = append(order, key)
+		}
+	}
+	for _, key := range order {
+		issue, err := e.store.Issue(ctx, tx, key)
+		if err != nil || issue == nil {
+			return err
+		}
+		stored, err := e.store.Plan(ctx, tx, key, issue.Generation)
+		if err != nil {
+			return err
+		}
+		waiting := agentWaiters(stored)
+		if len(waiting) == 0 {
+			continue
+		}
+		lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree)
+		if err != nil {
+			return err
+		}
+		if lingers {
+			continue
+		}
+		for _, id := range waiting {
+			if err := e.handOn(ctx, tx, key, id); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// agentWaiters is each task of stored, the plan of a run, in the state running whose step waits for
+// its agent, the one that waited longest first: by the moment its wait began, then by task id.
+// None for a plan of one task, or none.
+func agentWaiters(stored *record.StoredPlan) []string {
+	if stored == nil || len(stored.Tasks) <= 1 {
+		return nil
+	}
+	var waiting []record.PlanTask
+	for _, row := range stored.Tasks {
+		if row.State == record.TaskRunning && row.StepWait == record.StepWaitAgent && row.StepWaitSince != nil {
+			waiting = append(waiting, row)
+		}
+	}
+	slices.SortStableFunc(waiting, func(a, b record.PlanTask) int { return a.StepWaitSince.Compare(*b.StepWaitSince) })
+	ids := make([]string, len(waiting))
+	for i, row := range waiting {
+		ids[i] = row.Task
+	}
+	return ids
+}
+
+// handOn starts the step of task id of the issue keyed key that waits for its agent, where no
+// running step of the issue holds that agent, read again for that task (view): each start before
+// it in the same settle changed the issue's running steps. Its task is told where its work stands
+// (standingPart), the report of the step before it among it, and its own pull request
+// (record.Store.PullRequestOfTask).
+func (e *Engine) handOn(ctx context.Context, tx pgx.Tx, key, id string) error {
+	issue, err := e.store.Issue(ctx, tx, key)
+	if err != nil || issue == nil {
+		return err
+	}
+	view, w, err := e.view(ctx, tx, *issue, id)
+	if err != nil {
+		return err
+	}
+	agent := w.AgentAt(w.Place)
+	if w.State != record.TaskRunning || w.Wait != record.StepWaitAgent || agent == "" {
+		return nil
+	}
+	if _, busy := issue.StepOfAgent(agent); busy {
+		return nil
+	}
+	role := w.RoleAt(w.Place)
+	if err := e.clearHandoff(ctx, tx, key, role); err != nil {
+		return err
+	}
+	pr, err := e.store.PullRequestOfTask(ctx, tx, key, id)
+	if err != nil {
+		return err
+	}
+	e.logOnCommit(ctx, "workflow: a freed agent starts the step that waited for it", "issue", key, "tree", issue.Tree, "task", id,
+		"place", placeWords(w.Place), "role", role, "agent", agent)
+	return e.start(ctx, tx, view, w, role, func(at Standing) string {
+		return task(view, at, record.PhaseRow{}, pr, "")
+	}, false)
 }
 
 // nameMoveEnd names the end of the run issue stands in on w, the walk of its run, that a move on
