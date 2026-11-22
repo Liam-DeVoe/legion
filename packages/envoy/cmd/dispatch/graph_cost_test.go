@@ -338,7 +338,7 @@ func (a *costArm) timed(t *testing.T, method, path, body string, want int) (time
 }
 
 // timedAnswer is timed without the status check, for a read whose caller takes one refusal as a
-// reading (predicateCostRead's cutAtBase) and checks the status itself.
+// reading (predicateCostRead's cutAt) and checks the status itself.
 func (a *costArm) timedAnswer(t *testing.T, method, path, body string) (time.Duration, httpAnswer) {
 	t.Helper()
 	start := time.Now()
