@@ -98,7 +98,12 @@ func (b transferBounds) orDefault() transferBounds {
 // connection of its own (a test's recorder) bounds nothing: set answers http.ErrNotSupported,
 // which nothing here reads.
 type movingDeadline struct {
-	set     func(time.Time) error
+	// control is the connection's own controller, which set sets the deadline through and an
+	// answer's flush flushes through. It is held by value, and set is the controller's method
+	// itself ((*http.ResponseController).SetReadDeadline or SetWriteDeadline) rather than one
+	// bound to it, so a transfer allocates neither for its request.
+	control http.ResponseController
+	set     func(*http.ResponseController, time.Time) error
 	bounds  transferBounds
 	armed   bool
 	started time.Time
@@ -129,10 +134,10 @@ func (d *movingDeadline) arm() {
 	if !d.armed {
 		d.armed, d.started = true, now
 	} else if d.tooSlow(now) {
-		_ = d.set(now)
+		_ = d.set(&d.control, now)
 		return
 	}
-	_ = d.set(now.Add(d.bounds.idle + d.drain()))
+	_ = d.set(&d.control, now.Add(d.bounds.idle+d.drain()))
 }
 
 // drain is how long what the kernel already holds of the transfer takes to leave at the floor,
@@ -209,8 +214,17 @@ func (d *movingDeadline) tooSlow(now time.Time) bool {
 // answer, or fail a later answer on the same keep-alive connection.
 func (d *movingDeadline) lift() {
 	if d.armed {
-		_ = d.set(time.Time{})
+		_ = d.set(&d.control, time.Time{})
 	}
+}
+
+// connectionControl is the controller of w's connection, by value, which a transfer keeps as a
+// field (movingDeadline.control) rather than an allocation of its own. It is a function of its
+// own because the layers that build a transfer return closures the compiler copies into their
+// callers, and a copy calls http.NewResponseController rather than inlining it, which leaves
+// the controller on the heap.
+func connectionControl(w http.ResponseWriter) http.ResponseController {
+	return *http.NewResponseController(w)
 }
 
 // expectsContinue reports whether r's client asked to be told to continue before it sends its body
@@ -271,14 +285,16 @@ func (s *server) drainBeforeAnswer(route apiRoute, handler http.HandlerFunc) htt
 			handler(w, r)
 			return
 		}
-		control := http.NewResponseController(w)
 		body := &drainedBody{
-			ReadCloser:     r.Body,
-			movingDeadline: movingDeadline{set: control.SetReadDeadline, bounds: s.transfer.orDefault()},
-			ctx:            r.Context(),
-			length:         r.ContentLength,
-			limit:          limit,
-			askedContinue:  expectsContinue(r),
+			ReadCloser: r.Body,
+			movingDeadline: movingDeadline{
+				control: connectionControl(w), set: (*http.ResponseController).SetReadDeadline,
+				bounds: s.transfer.orDefault(),
+			},
+			ctx:           r.Context(),
+			length:        r.ContentLength,
+			limit:         limit,
+			askedContinue: expectsContinue(r),
 		}
 		defer body.close()
 		r.Body = body
@@ -853,9 +869,6 @@ func (w *drainingWriter) Unwrap() http.ResponseWriter {
 type boundedAnswer struct {
 	http.ResponseWriter
 	movingDeadline
-	// control is the connection's own controller, which set writes the deadline through and
-	// Flush flushes through.
-	control *http.ResponseController
 	// beginsAnswer is what the answer's first header or byte does to the read's own deadline:
 	// a download stops it there, since from the first byte on the transfer bound alone decides
 	// how long the answer may take (servedAsRead, admission.WithDeadlineUntilAnswer). Nil for
@@ -864,6 +877,9 @@ type boundedAnswer struct {
 	// failure is what cut the answer: the first write of it that failed or fell short, or the
 	// flush of its last bytes that did (sent). Nil for an answer written whole.
 	failure error
+	// carried is the read's context carrying the answer (boundsAnswerFloor), a field of the
+	// answer so the read allocates nothing more for it.
+	carried answerContext
 }
 
 // cut records err as what cut the answer, keeping the first: a Write that fails is followed by
@@ -884,17 +900,34 @@ func (a *boundedAnswer) begin() {
 	}
 }
 
-// answerFloorKey keys the one thing a handler may say about the bound on its own answer: which
-// of its waiting the floor must not judge it on (movingDeadline.outside). It travels on the
-// read's context rather than on the writer because the layers between servedAsRead and a
-// handler wrap that writer as they please, and a handler is given whatever the layer above it
-// passed down; the context reaches it whole whoever wraps what.
+// answerFloorKey keys the answer a read's handler writes, for the one thing a handler may say
+// about the bound on it: which of its waiting the floor must not judge it on
+// (movingDeadline.outside). It travels on the read's context rather than on the writer because
+// the layers between servedAsRead and a handler wrap that writer as they please, and a handler is
+// given whatever the layer above it passed down; the context reaches it whole whoever wraps what.
 type answerFloorKey struct{}
 
-// boundsAnswerFloor puts set on a read's context, which servedAsRead does for every read it
-// bounds: set hands the answer's floor the time it is to leave out.
-func boundsAnswerFloor(ctx context.Context, set func(func() time.Duration)) context.Context {
-	return context.WithValue(ctx, answerFloorKey{}, set)
+// boundsAnswerFloor puts answer on a read's context, which servedAsRead does for every read it
+// bounds, so its handler can hand the answer's floor the time it is to leave out
+// (leaveOutOfAnswerFloor). The context is a field of the answer (boundedAnswer.carried), which
+// the read has made already, so carrying it costs the read no allocation.
+func boundsAnswerFloor(ctx context.Context, answer *boundedAnswer) context.Context {
+	answer.carried = answerContext{Context: ctx, answer: answer}
+	return &answer.carried
+}
+
+// answerContext is a read's context carrying the answer its handler writes (boundsAnswerFloor):
+// every other value it reads from the context it was made from, as context.WithValue's does.
+type answerContext struct {
+	context.Context
+	answer *boundedAnswer
+}
+
+func (c *answerContext) Value(key any) any {
+	if key == (answerFloorKey{}) {
+		return c.answer
+	}
+	return c.Context.Value(key)
 }
 
 // leaveOutOfAnswerFloor tells the floor on ctx's answer to leave the time elapsed reports out of
@@ -903,8 +936,8 @@ func boundsAnswerFloor(ctx context.Context, set func(func() time.Duration)) cont
 // floor is about. A context no bounded answer is being written on - a test calling a handler
 // directly - is told nothing.
 func leaveOutOfAnswerFloor(ctx context.Context, elapsed func() time.Duration) {
-	if set, ok := ctx.Value(answerFloorKey{}).(func(func() time.Duration)); ok {
-		set(elapsed)
+	if answer, ok := ctx.Value(answerFloorKey{}).(*boundedAnswer); ok {
+		answer.outside = elapsed
 	}
 }
 

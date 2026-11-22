@@ -1057,6 +1057,10 @@ func (s *server) routeHandler(route apiRoute, limiter *admission.Limiter, deadli
 	// where the encoding is chosen (compressAnswers, outside this).
 	handler = varyOnDisplayTrees(handler)
 	if !route.TestHook {
+		// What admission runs once it has admitted the request, under the context admitted
+		// hands it (contextHandler): a read's bounds, which derive their own context from that
+		// one, and every other row's chain run under it.
+		var inside contextHandler
 		if admission.Reads(route.Method) {
 			// A download's work before its answer is bounded at downloadDeadline's five
 			// minutes, which a test shortens (Deps.DownloadDeadline); it is also the read
@@ -1066,15 +1070,19 @@ func (s *server) routeHandler(route apiRoute, limiter *admission.Limiter, deadli
 			if route.Download {
 				deadline = cmp.Or(s.deps.DownloadDeadline, downloadDeadline)
 			}
-			handler = s.servedAsRead(deadline, route.Download || route.Streams, route.pinsConnection(), handler)
+			inside = s.servedAsRead(deadline, route.Download || route.Streams, route.pinsConnection(), handler)
+		} else {
+			inside = withContext(handler)
 		}
 		// A stream takes no admission unit (apiRoute.Streams): its reader holds it open for
 		// the run behind it, and a unit of the read class held for all of that would be held
 		// against every other read, where the polls that fill it take a request-pool
 		// connection only while each one runs. The live socket register mounts outside the
 		// table is served the same way.
-		if !route.Streams {
-			handler = admitted(limiter, route.Weight, route.Lane, handler)
+		if route.Streams {
+			handler = inside.ServeHTTP
+		} else {
+			handler = admitted(limiter, route.Weight, route.Lane, inside)
 		}
 	}
 	// Outside admission, which it comes before, and inside the drain, so its refusal for room
@@ -1117,7 +1125,9 @@ func (s *server) routeHandler(route apiRoute, limiter *admission.Limiter, deadli
 
 // admitted runs handler once limiter admits the request at weight, with the ticket on the
 // request's context so a wait elsewhere can park it (admission.Ticket.Park), and answers a
-// refusal 429 OVERLOADED.
+// refusal 429 OVERLOADED. That context goes to handler beside the request rather than on a copy
+// of it (contextHandler), so a read's bounds, the layer inside, copy the request once for the
+// ticket's context and their own.
 //
 // The request takes its place in admission's arrival order first (admission.Limiter.Arrive) and
 // is admitted there and then where the server has room for it. Where it has none, a write whose
@@ -1162,7 +1172,7 @@ func (s *server) routeHandler(route apiRoute, limiter *admission.Limiter, deadli
 // queue gets the rest, and a read the lane held waits in the class queue at the place it
 // arrived rather than behind everything that arrived while it waited: before that a lane route
 // cost up to two whole waits, one in the lane and a fresh one in its class (INFRA-592).
-func admitted(limiter *admission.Limiter, weight int, lane admission.Lane, handler http.HandlerFunc) http.HandlerFunc {
+func admitted(limiter *admission.Limiter, weight int, lane admission.Lane, handler contextHandler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		arrival := limiter.Arrive(admission.ClassOf(r.Method), weight)
 		if lane != admission.NoLane {
@@ -1203,8 +1213,28 @@ func admitted(limiter *admission.Limiter, weight int, lane admission.Lane, handl
 			defer refused(nil)
 			body.admit(ticket, refused)
 		}
+		handler(ctx, w, r)
+	}
+}
+
+// contextHandler is a layer handed the context its request is to run under beside the request,
+// rather than on a copy of it: each r.WithContext copies the whole http.Request. admitted hands
+// its handler the ticket's context so, and a read's bounds inside it derive their own context
+// from that one and copy the request once for both (servedAsRead), where admitted's copy was
+// replaced at once by theirs and run under by nothing.
+type contextHandler func(ctx context.Context, w http.ResponseWriter, r *http.Request)
+
+// withContext is handler run on its request under the context it is handed.
+func withContext(handler http.HandlerFunc) contextHandler {
+	return func(ctx context.Context, w http.ResponseWriter, r *http.Request) {
 		handler(w, r.WithContext(ctx))
 	}
+}
+
+// ServeHTTP runs handler under its request's own context, for a layer no admission runs
+// outside: a stream's bounds (routeHandler), and a test's.
+func (handler contextHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	handler(r.Context(), w, r)
 }
 
 // errRefusedTakeBack is what a resolution whose request was refused the units it gave back for a
@@ -1249,7 +1279,9 @@ func answerRefusedTakeBack(w http.ResponseWriter, ticket *admission.Ticket) {
 // connection its first statement takes, given back when the handler returns
 // (store.PinConnection, apiRoute.pinsConnection). The answer is written under bounds of its own
 // (boundedAnswer), the server's own transfer bounds, read at each request as the drain reads
-// them (drainBeforeAnswer).
+// them (drainBeforeAnswer). The context it derives its own from is the one it is handed
+// (contextHandler): admitted's, which carries the ticket, for every read admission counts, and
+// the request's own for a stream.
 //
 // An ordinary read is bounded for its whole length (admission.WithDeadline): its work is the
 // database's, and an answer it has begun is written from what it already read. A file version
@@ -1286,26 +1318,26 @@ func answerRefusedTakeBack(w http.ResponseWriter, ticket *admission.Ticket) {
 // leaves the connection to net/http rather than flushing a connection that is already going.
 // Giving the pin back twice costs nothing (store.PinConnection), so the deferred unpin still
 // covers the panic.
-func (s *server) servedAsRead(deadline time.Duration, untilAnswer bool, pin bool, handler http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		var ctx context.Context
+func (s *server) servedAsRead(deadline time.Duration, untilAnswer bool, pin bool, handler http.HandlerFunc) contextHandler {
+	return func(ctx context.Context, w http.ResponseWriter, r *http.Request) {
 		var cancel context.CancelFunc
 		var beginsAnswer func()
 		if untilAnswer {
-			ctx, cancel, beginsAnswer = admission.WithDeadlineUntilAnswer(r.Context(), deadline)
+			ctx, cancel, beginsAnswer = admission.WithDeadlineUntilAnswer(ctx, deadline)
 		} else {
-			ctx, cancel = admission.WithDeadline(r.Context(), deadline)
+			ctx, cancel = admission.WithDeadline(ctx, deadline)
 		}
 		defer cancel()
-		control := http.NewResponseController(w)
 		answer := &boundedAnswer{
 			ResponseWriter: w,
-			movingDeadline: movingDeadline{set: control.SetWriteDeadline, bounds: s.transfer.orDefault(), buffered: true},
-			control:        control,
-			beginsAnswer:   beginsAnswer,
+			movingDeadline: movingDeadline{
+				control: connectionControl(w), set: (*http.ResponseController).SetWriteDeadline,
+				bounds: s.transfer.orDefault(), buffered: true,
+			},
+			beginsAnswer: beginsAnswer,
 		}
 		defer answer.lift()
-		ctx = boundsAnswerFloor(ctx, func(elapsed func() time.Duration) { answer.outside = elapsed })
+		ctx = boundsAnswerFloor(ctx, answer)
 		unpin := func() {}
 		if pin {
 			ctx, unpin = store.PinConnection(ctx)

@@ -968,7 +968,7 @@ func TestTheLastBytesOfAnAnswerGoOutUnderItsBound(t *testing.T) {
 				if _, err := w.Write([]byte(body)); err != nil {
 					t.Errorf("write the answer: %v", err)
 				}
-			})(writer, request)
+			}).ServeHTTP(writer, request)
 		}()
 		return writer, ended
 	}
@@ -1046,7 +1046,7 @@ func TestAPinnedReadsLastBytesGoOutAfterItsPinIsBack(t *testing.T) {
 		if _, err := w.Write([]byte(answer)); err != nil {
 			t.Errorf("write the answer: %v", err)
 		}
-	})(writer, request)
+	}).ServeHTTP(writer, request)
 
 	if writer.flushes != 1 {
 		t.Fatalf("the answer was flushed %d times, want the one flush that sends what net/http still holds", writer.flushes)

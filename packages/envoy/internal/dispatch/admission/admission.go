@@ -275,11 +275,13 @@ func DefaultLimits() Limits {
 // Limits.WriteWait for a write - and one that finds that queue already holding queueFactor times
 // the class's limit is refused at once. A Limiter is safe for concurrent use.
 type Limiter struct {
+	// arrived counts the arrivals so far, which is each one's place in the order the two queues
+	// are served in (Arrive). It is atomic rather than under mu, so an arrival takes no lock.
+	arrived atomic.Uint64
 	// mu guards every count and queue below: the combined cap is one number over both
 	// classes, so granting reads and moves the two together.
 	mu      sync.Mutex
-	used    int    // the units held across the classes
-	arrived uint64 // arrivals so far: a waiter's place in the order the two queues are served in
+	used    int // the units held across the classes
 	classes [classCount]*gate
 	// lanes are the heavy read routes' own limits, each with a queue and a mutex of its own: a
 	// request takes its lane before it asks its class for units (EnterLane, lane.go).
@@ -337,11 +339,8 @@ func New(limits Limits) *Limiter {
 // is then queued where it arrived, ahead of everything that arrived while it read, rather than
 // behind it.
 func (l *Limiter) Arrive(class Class, weight int) *Arrival {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.arrived++
 	return &Arrival{
-		limiter: l, class: class, seq: l.arrived,
+		limiter: l, class: class, seq: l.arrived.Add(1),
 		units: min(max(weight, 1), l.classes[class].limit, l.total),
 	}
 }
@@ -362,16 +361,26 @@ type Arrival struct {
 	// its class's queue, and parked for something outside admission (Ticket.Waited). Only the
 	// request's own goroutine touches it: a request waits for one thing at a time.
 	waited time.Duration
+	// ticket is the hold the arrival is admitted with (Admit, AdmitNow): a field of the arrival
+	// rather than an allocation of its own, since an arrival is admitted once.
+	ticket Ticket
+}
+
+// admitted is the arrival's ticket, holding the units the arrival has just been given.
+func (a *Arrival) admitted() *Ticket {
+	a.ticket.arrival, a.ticket.held = a, true
+	return &a.ticket
 }
 
 // Admit takes the arrival's units, waiting in its class's queue, at the place it arrived, for
 // what is left of its class's wait. It returns a *Refusal when the queue is full or the wait
 // runs out, and ctx's error when ctx ends first. The caller releases the Ticket once it is done.
+// An arrival is admitted once, by Admit or AdmitNow.
 func (a *Arrival) Admit(ctx context.Context) (*Ticket, error) {
 	if err := a.limiter.acquire(ctx, a); err != nil {
 		return nil, err
 	}
-	return &Ticket{arrival: a, held: true}, nil
+	return a.admitted(), nil
 }
 
 // AdmitNow takes the arrival's units while the Limiter has room for them and nobody is queued
@@ -381,7 +390,7 @@ func (a *Arrival) AdmitNow() *Ticket {
 	if !a.limiter.acquireNow(a) {
 		return nil
 	}
-	return &Ticket{arrival: a, held: true}
+	return a.admitted()
 }
 
 // Admit takes weight units of class for a request arriving now, waiting in the class's queue
@@ -453,6 +462,10 @@ type Ticket struct {
 	// takeBackRefusal is the refusal of the units the request asked back after a wait on the
 	// network (Away.TakeBack), nil where none was refused (RefusedTakeBack).
 	takeBackRefusal atomic.Pointer[Refusal]
+	// carried is the context the ticket's first WithTicket returns, a field of the ticket so
+	// the request allocates nothing for it; carrying is set once a WithTicket has claimed it.
+	carried  ticketContext
+	carrying atomic.Bool
 }
 
 // RefusedTakeBack is the refusal of the units the ticket's request asked back after a wait on the
@@ -570,9 +583,31 @@ func (t *Ticket) Release() {
 
 type ticketKey struct{}
 
-// WithTicket returns ctx carrying ticket.
+// WithTicket returns ctx carrying ticket. The context the first call for a ticket returns is a
+// field of the ticket (Ticket.carried), so admitting a request and carrying its ticket on its
+// context, which the API does once for every request it admits, allocates nothing for the
+// context; a later call for the same ticket, and a call for a nil one, make a context of their
+// own.
 func WithTicket(ctx context.Context, ticket *Ticket) context.Context {
-	return context.WithValue(ctx, ticketKey{}, ticket)
+	if ticket == nil || !ticket.carrying.CompareAndSwap(false, true) {
+		return context.WithValue(ctx, ticketKey{}, ticket)
+	}
+	ticket.carried = ticketContext{Context: ctx, ticket: ticket}
+	return &ticket.carried
+}
+
+// ticketContext is a context carrying a ticket (WithTicket): every other value it reads from the
+// context it was made from, as context.WithValue's does.
+type ticketContext struct {
+	context.Context
+	ticket *Ticket
+}
+
+func (c *ticketContext) Value(key any) any {
+	if key == (ticketKey{}) {
+		return c.ticket
+	}
+	return c.Context.Value(key)
 }
 
 // TicketFrom is the ticket ctx carries, or nil for a request admission did not count.

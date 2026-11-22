@@ -152,16 +152,40 @@ func (g *documentWriterGate) release(artifactID string) {
 	close(front.Value.(*gateWaiter).ready)
 }
 
+// releaseEach releases the gates of artifactIDs, the last taken first.
+func (g *documentWriterGate) releaseEach(artifactIDs []string) {
+	for index := len(artifactIDs) - 1; index >= 0; index-- {
+		g.release(artifactIDs[index])
+	}
+}
+
 // documentWriterHold is the set of documents whose writer gates a context carries, sorted, until
 // its release runs, and the work that waits for that release (afterRelease).
 type documentWriterHold struct {
+	// writers is the registry the gates were taken from, which release gives them back to.
+	writers     *documentWriterGate
 	artifactIDs []string
-	released    atomic.Bool
+	// one is where a hold of a single document keeps it, which artifactIDs then slices, so a
+	// write to one document makes no list of its own.
+	one      [1]string
+	released atomic.Bool
+	// releasing runs release once however often it is called.
+	releasing sync.Once
 	// mu guards after, which the write appends to while it holds the gates and the release
 	// takes once, on the same goroutine as a rule - a write runs its steps one after another -
 	// but not by the type's own guarantee.
 	mu    sync.Mutex
 	after []func()
+}
+
+// release hands each of the hold's gates to its next writer and then runs the work recorded for
+// after it (afterRelease), once however often it is called (AcquireDocumentWriter).
+func (h *documentWriterHold) release() {
+	h.releasing.Do(func() {
+		h.released.Store(true)
+		h.writers.releaseEach(h.artifactIDs)
+		h.runAfterRelease()
+	})
 }
 
 // afterRelease records work to run once this write's gates are released, which is where a
@@ -268,25 +292,29 @@ func (s *Service) AcquireDocumentWriter(ctx context.Context, artifactIDs ...stri
 	if store.ConnectionHeld(ctx) {
 		return nil, nil, ErrGateWhileHoldingConnection
 	}
-	ids := slices.Compact(slices.Sorted(slices.Values(artifactIDs)))
-	if len(ids) == 0 {
+	if len(artifactIDs) == 0 {
 		return ctx, func() {}, nil
 	}
 	if hold, _ := ctx.Value(documentWriterKey{}).(*documentWriterHold); hold.live() {
 		return nil, nil, errGateWhileHoldingGate
 	}
+	// The hold keeps its documents sorted and each once. One document is both already, and is
+	// kept in the hold itself; the caller's own list is never kept, so it does not escape.
+	hold := &documentWriterHold{writers: &s.writers}
+	if len(artifactIDs) == 1 {
+		hold.one[0] = artifactIDs[0]
+		hold.artifactIDs = hold.one[:]
+	} else {
+		hold.artifactIDs = slices.Compact(slices.Sorted(slices.Values(artifactIDs)))
+	}
+	ids := hold.artifactIDs
 	ticket := admission.TicketFrom(ctx)
 	wait := admission.DefaultWriteWait
 	if ticket != nil {
 		wait = ticket.Remaining()
 	}
-	deadline := time.Now().Add(wait)
-	releaseTaken := func(taken []string) {
-		for index := len(taken) - 1; index >= 0; index-- {
-			s.writers.release(taken[index])
-		}
-	}
 	parkedAt := time.Now()
+	deadline := parkedAt.Add(wait)
 	taken, failure := 0, error(nil)
 	for index, artifactID := range ids {
 		if err := s.writers.acquire(ctx, artifactID, time.Until(deadline), ticket.Park); err != nil {
@@ -300,20 +328,14 @@ func (s *Service) AcquireDocumentWriter(ctx context.Context, artifactIDs ...stri
 	}
 	ticket.Waited(time.Since(parkedAt))
 	if failure != nil {
-		releaseTaken(ids[:taken])
+		s.writers.releaseEach(ids[:taken])
 		return nil, nil, failure
 	}
 	if err := ticket.Resume(ctx); err != nil {
-		releaseTaken(ids)
+		s.writers.releaseEach(ids)
 		return nil, nil, err
 	}
-	hold := &documentWriterHold{artifactIDs: ids}
-	release := sync.OnceFunc(func() {
-		hold.released.Store(true)
-		releaseTaken(ids)
-		hold.runAfterRelease()
-	})
-	return context.WithValue(ctx, documentWriterKey{}, hold), release, nil
+	return context.WithValue(ctx, documentWriterKey{}, hold), hold.release, nil
 }
 
 // QueuedDocumentWriters is how many writers are waiting for a document's writer gate, over every
