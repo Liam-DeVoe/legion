@@ -21,8 +21,9 @@ function drawLine(reads: readonly LineRead[]) {
     initialProps: { line: reads },
   });
   return {
-    count: () => hook.result.current,
+    count: () => hook.result.current.refusals,
     draw: (line: readonly LineRead[]) => hook.rerender({ line }),
+    stands: () => hook.result.current.stands,
     unmount: () => hook.unmount(),
   };
 }
@@ -75,17 +76,83 @@ test("a failing read whose key changes adds its new query's whole count", () => 
 });
 
 // The statements line stands on the coverage, refused twice, while the spec's blocks are out. The
-// coverage answers and no read is failing: the line is drawn no more, and its count is 0. When
-// the blocks are then refused, the line stands again and counts that one refusal, not the
-// coverage's from before.
-test("the count goes back to 0 once no read is failing", () => {
+// coverage answers and no read is failing: the line stands no more, and keeps its count, which
+// never falls. When the blocks are then refused, the line stands again and counts that one
+// refusal on top of the coverage's from before.
+test("a line that stops standing keeps its count, since the count never falls, and adds only the refusal it stands again for", () => {
   const line = drawLine([lineRead("coverage", 2, true), lineRead("blocks", 0, false)]);
   try {
     expect(line.count()).toBe(2);
+    expect(line.stands()).toBe(true);
     line.draw([lineRead("coverage", 2, false), lineRead("blocks", 0, false)]);
-    expect(line.count(), "the count stayed with no read failing").toBe(0);
+    expect(line.stands(), "the line stood with no read failing").toBe(false);
+    expect(line.count(), "the count fell as the coverage answered").toBe(2);
     line.draw([lineRead("coverage", 2, false), lineRead("blocks", 1, true)]);
-    expect(line.count(), "the line counted refusals from before it stood again").toBe(1);
+    expect(line.stands(), "the line did not stand for the blocks' refusal").toBe(true);
+    expect(line.count(), "the line did not add the blocks' refusal alone").toBe(3);
+  } finally {
+    line.unmount();
+  }
+});
+
+// A read out with no refusal under its key stands no line: the names read of a set never read
+// before, out on its first try. Once the line stands, it stays while such a read is out, as a
+// read moved to a new set after a refusal is.
+test("a line stands for a refusal and stays through a read out under a new key, but not for that read alone", () => {
+  const line = drawLine([lineRead("set-a", 0, true)]);
+  try {
+    expect(line.stands(), "a read out with no refusal stood the line").toBe(false);
+    line.draw([lineRead("set-a", 1, true)]);
+    expect(line.stands()).toBe(true);
+    line.draw([lineRead("set-b", 0, true)]);
+    expect(line.stands(), "the line left while the read under a new key was out").toBe(true);
+    expect(line.count()).toBe(1);
+  } finally {
+    line.unmount();
+  }
+});
+
+// A read back on a key whose refusal the line counted holds that refusal still, and the line has
+// said it: the names read moved to a second set and refused there too, then moved back to the
+// first set, still refused once. Each refusal is counted once under its key, so the count stays.
+test("a failing read back on a key whose refusal the line counted adds nothing", () => {
+  const line = drawLine([lineRead("set-a", 1, true)]);
+  try {
+    expect(line.count()).toBe(1);
+    line.draw([lineRead("set-b", 1, true)]);
+    expect(line.count(), "the refusal under the second key was not counted").toBe(2);
+    line.draw([lineRead("set-a", 1, true)]);
+    expect(line.count(), "the first key's refusal was counted again").toBe(2);
+    expect(line.stands()).toBe(true);
+  } finally {
+    line.unmount();
+  }
+});
+
+// A line that stopped standing, as its read answered under another key, stands again where the
+// read is back on a key whose refusal it counted: that key's query holds no answer and its
+// refusal still, which the line has said, so it stands with its count unchanged.
+test("a line that stands again on a key whose refusal it counted keeps its count", () => {
+  const line = drawLine([lineRead("set-a", 1, true)]);
+  try {
+    expect(line.count()).toBe(1);
+    line.draw([lineRead("set-b", 0, false)]);
+    expect(line.stands(), "the line stood as its read answered").toBe(false);
+    line.draw([lineRead("set-a", 1, true)]);
+    expect(line.stands(), "the line did not stand again on the refused key").toBe(true);
+    expect(line.count(), "the first key's refusal was counted again").toBe(1);
+  } finally {
+    line.unmount();
+  }
+});
+
+// A query made afresh or reset counts from 0 again, and its answer is gone with it: a count
+// below the one seen under its key is all new refusals.
+test("a read whose count fell below the one seen under its key adds the whole of it", () => {
+  const line = drawLine([lineRead("set-a", 3, true)]);
+  try {
+    line.draw([lineRead("set-a", 1, true)]);
+    expect(line.count(), "the refusal of the query made afresh was not counted").toBe(4);
   } finally {
     line.unmount();
   }

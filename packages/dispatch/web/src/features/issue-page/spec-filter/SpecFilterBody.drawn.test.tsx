@@ -2045,6 +2045,41 @@ test("a line's alert is said again where the issue names a spec of another id wh
   }
 });
 
+// A line's alert is said again only for a refusal new to the line, which counts each refusal once
+// under the key it was refused under. The statements line stands on the spec's refused blocks;
+// the issue names a spec of another id, whose blocks read was refused too, and the alert is said
+// again. The issue then names the first spec again: the line stands on its blocks read, which
+// holds no answer and the refusal the line has counted, so the alert is not drawn afresh.
+test("a line's alert is not said again where the issue names again a spec whose refused blocks read the line counted", async () => {
+  const { client, read, redraw, view } = drawBody(issueTree([statement("r1")]), [], {
+    blocks: "failed",
+  });
+  const other = artifact("artifact-spec-2", "spec-2", true);
+  try {
+    const line = await waitFor(() => alertSaying(view, STATE_LINES.statements_unreadable));
+    const first = within(line).getByRole("alert");
+    await act(() => client.prefetchQuery(artifactBlocksQuery(other.id)));
+    read.blocks.mockReturnValue(new Promise<never>(() => {}));
+    const base = issueDetails();
+    redraw(true, {
+      ...base,
+      artifacts: [other, ...base.artifacts.filter(({ primary }) => !primary)],
+      primary_artifact_id: other.id,
+    });
+    const second = within(line).getByRole("alert");
+    expect(second, "the refusal of the new spec's blocks was not said again").not.toBe(first);
+    redraw(true, base);
+    expect(alertSaying(view, STATE_LINES.statements_unreadable)).toBe(line);
+    expect(
+      within(line).getByRole("alert"),
+      "the first spec's blocks, whose refusal the line counted, said it again"
+    ).toBe(second);
+  } finally {
+    view.unmount();
+    read.mockRestore();
+  }
+});
+
 // A line's alert is drawn afresh, so a screen reader says it again, only for a new refusal of a
 // read the line stands failed on. A read of the line that holds an answer keeps it when a
 // refresh of it - an event's - is refused, and the line says nothing new of it, so with the

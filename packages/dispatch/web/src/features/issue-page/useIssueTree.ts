@@ -78,10 +78,10 @@ export interface IssueTreeView {
 
 /** The names line's state while the tree's names stand failed (`IssueTreeView.namesFailure`). */
 export interface NamesFailure {
-  /** How many times the names reads have failed since every one of them asked for last held an
-   *  answer under its set of addresses (`useLineRefusals`): one for each failure of a read that
+  /** How many failures of the names reads the line has counted while the tree's slot lives,
+   *  each once under its set of addresses (`useLineRefusals`): one for each failure of a read that
    *  holds no answer under its set, as TanStack Query's `errorUpdateCount` rises under that set.
-   *  A read moved to another set adds the failures that set's query holds, new to the line, and
+   *  A read back on a set the line has counted adds only a failure new to that set, and
    *  one read answering while another does not takes none away, so the count changes only with
    *  a new failure, and the line draws its alert again only then. It is no read's own
    *  `errorUpdateCount`. */
@@ -431,7 +431,7 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   // The names stand failed, the names in hand standing through it (above), from a failure of a
   // names read that holds no answer under its set until every one of them asked for holds one,
   // by one count of their failures (`useLineRefusals`), so the line says a failure again only
-  // for a new one: neither a read out under a set never read before nor one read answering while
+  // for a new one: neither a read back on a set it has counted nor one read answering while
   // another does not changes it. The second read holds an answer where nothing is left for it to
   // name (`NO_MORE_TARGETS`): its query is disabled then and would never run again to answer, so
   // a line that waited on it would stay for good. Where a comment cites the address the second
@@ -442,7 +442,7 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   // no answer under its set, and the line is busy while one of those runs.
   const targetsAnswered = targets.data !== undefined;
   const moreAnswered = moreHeld !== undefined;
-  const [failure] = useLineRefusals([
+  const [{ refusals: failure, stands }] = useLineRefusals([
     [
       { errorUpdateCount: targets.errorUpdateCount, failing: !targetsAnswered, hash: targetsHash },
       { errorUpdateCount: more.errorUpdateCount, failing: !moreAnswered, hash: moreHash },
@@ -453,7 +453,7 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   const { refetch: refetchMore } = more;
   const namesFailure = useMemo(
     (): NamesFailure | undefined =>
-      failure > 0
+      stands
         ? {
             failure,
             retry: () => {
@@ -463,7 +463,7 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
             retrying,
           }
         : undefined,
-    [failure, moreAnswered, refetchMore, refetchTargets, retrying, targetsAnswered]
+    [failure, moreAnswered, refetchMore, refetchTargets, retrying, stands, targetsAnswered]
   );
   // The same answer every link of this page would otherwise read one pointer at a time, which a
   // link in a document, in a decision's card or in a comment's preview shows, and a row's

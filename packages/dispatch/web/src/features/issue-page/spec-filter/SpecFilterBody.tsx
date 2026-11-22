@@ -229,9 +229,10 @@ export function SpecFilterBody({
   // words for those two reads. A line stays, its Retry busy, while a read of it that stands
   // failed runs again, until the read answers. A line's Retry asks again the reads of that line
   // that stand failed (`failed`), and no other, and none of them while it is read again already.
-  // Each read of a line is paired with its key's hash (`lineRead`), and each line carries how
-  // many times its reads have been refused since it last stood (`useLineRefusals`), which keys
-  // its alert.
+  // Each read of a line is paired with its key's hash (`lineRead`), and each line carries the
+  // refusals of its reads it has counted while the body lives, each once under its key
+  // (`useLineRefusals`), which keys its alert. A line is drawn while a read of it stands failed,
+  // which holds a refusal, so it is drawn exactly while the hook says it stands.
   // The names reads' line (`namesFailure`) comes after all of these, as the outline draws it
   // last (`outline-reads.ts`): the tree reads the names last, once no read it is built from is
   // still out, and gives that line's state itself.
@@ -257,12 +258,12 @@ export function SpecFilterBody({
       reads: [lineRead(asksQuery, asksRead)],
     },
   ] as const;
-  const counts = useLineRefusals(lines.map(({ reads }) => reads));
+  const counted = useLineRefusals(lines.map(({ reads }) => reads));
   const unreadable = lines
     .map((group, at) => ({
       ...group,
       failed: group.reads.flatMap(({ failing, read }) => (failing ? [read] : [])),
-      refusals: counts[at],
+      refusals: counted[at].refusals,
     }))
     .filter(({ failed }) => failed.length > 0);
   // How a reference a plain line cites is named - in the three sentences, a quote, a question,
@@ -504,12 +505,12 @@ export function SpecFilterBody({
           (`slots/stage.tsx`). */}
       {unreadable.map(({ failed, line, message, refusals }) => (
         <FailedReadLine
-          // Which failure the line says, which keys its alert: how many times the line's reads
-          // that stand failed have been refused since the line last stood (`useLineRefusals`).
-          // That count rises by one for each refusal new to the line and never falls while the
-          // line stands, so the line says its failure again exactly for a new refusal, and a run
-          // that ends with no new refusal, as one paused while the browser is offline does, says
-          // it no more.
+          // Which failure the line says, which keys its alert: the refusals of the line's reads
+          // that stand failed that the line has counted while the body lives, each once under
+          // its key (`useLineRefusals`). That count rises by one for each refusal new to the line
+          // and never falls, so the line says its failure again exactly for a new refusal:
+          // neither a run that ends with no new refusal, as one paused while the browser is
+          // offline does, nor a read back on a key whose refusal the line counted says it again.
           failure={refusals}
           key={line}
           message={message}

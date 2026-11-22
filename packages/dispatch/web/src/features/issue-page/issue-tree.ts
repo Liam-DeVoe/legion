@@ -575,7 +575,11 @@ export function nodeWords(node: TreeNode): string {
  * stays the whole reading, which is what a body draws and what a node's citations are read
  * from.
  */
-export function lineWords(node: TreeNode): string {
+export function lineWords(node: {
+  readonly text: string;
+  readonly tree?: DisplayTree;
+  readonly type?: NodeType;
+}): string {
   return lineWordsBy(node, firstBlockWords);
 }
 

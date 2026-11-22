@@ -16,9 +16,7 @@ export interface SentenceRow {
    *  stored text opens with (`issue-tree.ts`'s `firstWords`). */
   readonly stored: string;
   /** Whether the issue's three sentences are tested over the row: the table's column for them,
-   *  where a row the table marks "n/a" is `false`. The flag follows that column and no rule of
-   *  its own, so k5 and k6, which open with no list marker, are `false` because the column marks
-   *  them n/a. */
+   *  where a row the table marks "n/a" is `false`. */
   readonly summary: boolean;
 }
 
