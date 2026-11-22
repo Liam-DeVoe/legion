@@ -129,6 +129,17 @@ run_lister demo "$root"
 check "exits 0" "$(is "$status" 0)"
 check "neither is named, and neither is an error" "$(is "$out" '^(TestOfTheTag)$')"
 
+echo "case: a bare negation of the tag contributes nothing"
+# Real: packages/envoy/cmd/listener's Dispatch-grant rows carry //go:build !serverchange, so the
+# serverchange soak's build leaves them out; the tag adds none of their tests.
+root=$(fixture negation)
+gofile "$root/without_test.go" '!demo' 'func TestOnlyWithoutTheTag(t *testing.T) {}'
+gofile "$root/spaced_test.go" '! demo' 'func TestOnlyWithoutTheTagSpaced(t *testing.T) {}'
+gofile "$root/wanted_test.go" demo 'func TestOfTheTag(t *testing.T) {}'
+run_lister demo "$root"
+check "exits 0" "$(is "$status" 0)"
+check "neither negated file is named, and neither is an error" "$(is "$out" '^(TestOfTheTag)$')"
+
 echo "case: a tag no file carries"
 root=$(fixture notag)
 gofile "$root/plain_test.go" '' 'func TestWithNoConstraint(t *testing.T) {}'
@@ -149,7 +160,7 @@ check "says the tagged files declare none" \
 
 echo "case: a constraint shape it refuses"
 shape_number=0
-for shape in 'demo && linux' '!demo' 'demo || linux' '(demo || othertag) && linux'; do
+for shape in 'demo && linux' '!demo && linux' 'demo || linux' '(demo || othertag) && linux'; do
   shape_number=$((shape_number + 1))
   root=$(fixture "shape$shape_number")
   gofile "$root/ok_test.go" demo 'func TestOfTheTag(t *testing.T) {}'

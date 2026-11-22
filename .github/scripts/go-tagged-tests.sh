@@ -22,7 +22,10 @@
 # A file contributes its tests when its constraint is the bare tag — the line is exactly
 # `//go:build <tag>`, whitespace aside. A file with no `//go:build` line, or with one that does
 # not mention the tag, contributes nothing and is no error: that is every ordinary test of the
-# package, and leaving them out is the point.
+# package, and leaving them out is the point. Nor does a file whose constraint is the bare
+# negation `//go:build !<tag>`, whitespace aside: it is built only without the tag, so the tag adds
+# none of its tests (packages/envoy/cmd/listener's Dispatch-grant rows are kept out of the
+# serverchange soak's build so).
 #
 # What it prints: one line on standard output, `^(A|B|C)$`, the names sorted, and nothing else.
 # A test is a top-level `func Test…(`, `func Fuzz…(` or `func Example…(` of a contributing file,
@@ -33,11 +36,12 @@
 # standard output. It refuses:
 #
 #   1. any argument count but two, or a directory that does not exist;
-#   2. a constraint that mentions the tag in any shape but the bare one — a conjunction
-#      (`memory && linux`), a disjunction, a negation (`!memory`), a parenthesised form. Every
-#      file carrying one of the six tags in use has the bare form today, so a future
-#      `//go:build memory && linux` is a loud failure here and never a silent omission from a
-#      `-run` that would then skip that file's tests while the job still reported green;
+#   2. a constraint that mentions the tag in any shape but the bare one or its bare negation — a
+#      conjunction (`memory && linux`), a disjunction, a negation inside either
+#      (`!memory && linux`), a parenthesised form. Every file whose tests one of the six tags in
+#      use adds has the bare form today, so a future `//go:build memory && linux` is a loud
+#      failure here and never a silent omission from a `-run` that would then skip that file's
+#      tests while the job still reported green;
 #   3. finding no test. A renamed tag or a moved file is then loud: the calling step assigns this
 #      output and fails under `bash -e`, instead of running `-run ""`, which matches every test —
 #      the very thing this script exists to stop.
@@ -98,6 +102,8 @@ for file in "$dir"/*_test.go; do
   constraint=$(constraint_of "$file")
   if [ "$constraint" = "$tag" ]; then
     tagged+=("$file")
+  elif [ "${constraint//[[:space:]]/}" = "!$tag" ]; then
+    continue # built only without the tag: the tag adds none of its tests
   elif [ -n "$constraint" ] && mentions_tag "$constraint" "$tag"; then
     fail "$file: '//go:build $constraint' names '$tag' in a shape this script will not read." \
       "Only the bare '//go:build $tag' contributes its tests, so this file would be left out of" \
