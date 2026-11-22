@@ -155,6 +155,22 @@ const codedStatement = "After the night build of the main branch the job runs `m
 const unclosedTick = "The job copies each report of the night build to the host of the build and keeps a copy for a week, as `x. " +
 	"Then it reads Web.Config and logs the size of each file at boot."
 
+// remoteElsewhere is a procedure whose address stands in its second sentence before a colon and a
+// stop, where it is a remote path and no finding: each way out takes the finding away from the
+// first sentence and none from the second, where it need only give no new finding (holds).
+const remoteElsewhere = "Send the log to deploy@build.example.com each night. Copy the file to deploy@build.example.com:. after the build."
+
+// quotedRemote is a claim whose address stands in its second sentence before a colon and a stop,
+// where it is a remote path and no finding, and ste-lint joins that sentence to the third past the
+// closing quote: the user and the host apart, written there, make a piece of 26 words, which only
+// the whole text that the way out writes in that sentence counts.
+const quotedRemote = `Dispatch mails deploy@build.example.com each day. He said "Copy it to deploy@build.example.com:." ` +
+	"Then the job copies each report of the night build to the host and keeps it today."
+
+// personInTitle is a requirement whose link's title names a person: a title is no sentence of the
+// text, so the whole text that a way out writes holds none of its words.
+const personInTitle = ":::requirement{#s-title}\nDispatch keeps each record of [the log](https://example.com/log \"Mail ada@example.com about it\").\n:::\n"
+
 // Each way out that a finding gives is a form that every rule takes. For each finding of each row
 // below, the test applies each of its ways out, as the change of the text that the finding's ways
 // out are written from (wayOut), at each place of the finding's words (withWayOut), and judges the
@@ -292,6 +308,22 @@ func TestEachWayOutOfARefusalPasses(t *testing.T) {
 		// it, and take the stop between into code font, so the rules would read one sentence of 33
 		// words; only the space is left.
 		own(claimOf(unclosedTick)),
+		// The address where it is a remote path and no finding, as the writer changes it there too:
+		// no way out need take a finding away there, and the whole text that the way out writes
+		// there is read too, where ste-lint joins that sentence to the next past a closing quote, so
+		// the user and the host apart are no way out. And a name in code font in another sentence.
+		own(procedureOf(remoteElsewhere)),
+		own(claimOf(quotedRemote)),
+		own(claimOf("Dispatch reads Web.Config at boot. It logs `Web.Config` once.")),
+		// A person in a link's title, which is no sentence of the text.
+		document(personInTitle),
+		// A name that ends its sentence before a closing bracket or a closing quote: its code font
+		// leaves the stop and the closing mark after it.
+		own(claimOf("He said to keep each record of (file1.Name.) Then read the log.")),
+		own(claimOf(`The guide says "Keep each record of file1.Name." Then read the log.`)),
+		// A name, and the same name with the stop that ends another sentence: one bare form, and
+		// neither finding's words stand in the other's sentence.
+		own(claimOf("Dispatch reads Foo.Validate at boot. It checks Foo.Validate. It confirms the file.")),
 	} {
 		c := planted()
 		texts := row.read(t)
@@ -363,7 +395,12 @@ func TestEachWayOutOfARefusalPasses(t *testing.T) {
 // text that uses "keeps" or "checks", and none beside one that uses "confirms", while a text that
 // uses "confirms" and refers to no footnote, beside one that uses "keeps" and refers to it, leaves
 // it a way out: no text that holds the footnote gives a new finding, though "check" and "confirm"
-// stand in the judgment after it.
+// stand in the judgment after it. The last seven rows are each a guard of the judge with the ways
+// out that it leaves, so that each guard's break changes a count: a way out need take no
+// finding away where only its words stand, as an address before a colon, which a whole-text piece
+// can still refuse, and a name in code font in another sentence; a title's place is no sentence of
+// the text; the code font of a name leaves the closing marks after its stop; and a name and the same
+// name with the stop that ends another sentence each give both ways out.
 func TestAWayOutStaysWhereTheOtherFindingsStayAsTheyWere(t *testing.T) {
 	for _, test := range []struct {
 		row  wayRow
@@ -436,6 +473,13 @@ func TestAWayOutStaysWhereTheOtherFindingsStayAsTheyWere(t *testing.T) {
 			map[Rule]int{rulePerson: 2}},
 		{own(procedureOf("Read the log, when the run ends, send the report.")), map[Rule]int{ruleInstructions: 1}},
 		{own(claimOf(unclosedTick)), map[Rule]int{ruleStopNoSpace: 1}},
+		{own(procedureOf(remoteElsewhere)), map[Rule]int{rulePerson: 3}},
+		{own(claimOf(quotedRemote)), map[Rule]int{rulePerson: 2}},
+		{own(claimOf("Dispatch reads Web.Config at boot. It logs `Web.Config` once.")), map[Rule]int{ruleStopNoSpace: 1}},
+		{document(personInTitle), map[Rule]int{rulePerson: 3}},
+		{own(claimOf("He said to keep each record of (file1.Name.) Then read the log.")), map[Rule]int{ruleStopNoSpace: 2}},
+		{own(claimOf(`The guide says "Keep each record of file1.Name." Then read the log.`)), map[Rule]int{ruleStopNoSpace: 2}},
+		{own(claimOf("Dispatch reads Foo.Validate at boot. It checks Foo.Validate. It confirms the file.")), map[Rule]int{ruleStopNoSpace: 4}},
 	} {
 		got := map[Rule]int{}
 		for _, each := range judgedAll(planted(), test.row.read(t)) {

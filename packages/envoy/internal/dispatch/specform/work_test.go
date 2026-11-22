@@ -141,7 +141,15 @@ func workRows(race bool) []workRow {
 // walk up from a footnote's ring that goes on where the verbs stay as they were, first passed it at
 // 64 (33.9), so its n is 128. At those n each of the four walks, broken in turn, failed its row in
 // 5 of 5 runs, 228.7, 169.4, 50.8 and 47.8 times or more, and failed no other row but the row of
-// many lines, which the first break also reads whole for each way out (153.5 times or more).
+// many lines, which the first break also reads whole for each way out (153.5 times or more). The
+// charge of each reading of a sentence (sentenceReads) has two rows, one sentence that holds in
+// code font the words of many findings that stand in the sentences after it, and the same as a
+// document holds them, the sentence after the findings: each finding's way out is read in that
+// sentence too (wayJudge.alsoAt), so with the charge taken out one sentence is read once for each
+// finding, and the work grows with the square of the text. Each n was found in the same way, on
+// the machine of 288 cores at a load average of 750 to 1,340: with the charge taken out, each row
+// first passed the bound at the least n whose windows cputest reads (8: 65.9 and 68.4 times), so
+// its n is 16, where the smaller window with the charge in place lasts 123 ms and 150 ms.
 func workTable() []workRow {
 	context := planted("ada.lovelace@example.com")
 	const id = "0195f3c2-7b1d-7c3e-9a4f-2b6d8e1f0a37"
@@ -345,11 +353,11 @@ func workTable() []workRow {
 				}
 				return markdown.String()
 			})},
-		{"one sentence that holds in code font the words of many findings that stand in the sentences after it", ruleStopNoSpace, 25,
+		{"one sentence that holds in code font the words of many findings that stand in the sentences after it", ruleStopNoSpace, 16,
 			built(KindClaim, func(n int) string {
 				return units("It keeps", " `a%d.B`", " at boot.")(n) + units("", " It reads a%d.B now.", "")(n)
 			})},
-		{"many findings whose words one sentence after them holds in code font, as a document holds them", ruleStopNoSpace, 25,
+		{"many findings whose words one sentence after them holds in code font, as a document holds them", ruleStopNoSpace, 16,
 			extracted(func(n int) string {
 				return ":::check{#c}\n" + units("", "It reads N%d.Cfg at boot. ", "It logs")(n) + units("", " `N%d.Cfg`", " today.\n:::\n")(n)
 			})},

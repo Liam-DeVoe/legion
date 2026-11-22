@@ -16,7 +16,8 @@ import (
 // addresses of a person in one sentence). A finding past this many of one sentence is still
 // refused and named, and its detail says that Dispatch offers no way out of it (pastNote). A text
 // that the judge reads whole for each way out it reads for the ways out of this many findings of
-// the text, in the same way (wholeText.passes, wholeNote).
+// the text, in the same way (wholeText.passes, wholeNote). The charge of each sentence counts the
+// readings that this bound holds (ownReads, sentenceReads).
 const maxJudgedInSentence = 8
 
 // pastNote is what the detail of a finding past the first maxJudgedInSentence findings of its
