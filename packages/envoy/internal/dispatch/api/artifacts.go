@@ -837,6 +837,14 @@ func (s *server) storeArtifact(
 			s.writeHandlerError(w, err)
 			return
 		}
+		// The find above read the row before this lock, and a retirement takes it too
+		// (docs.RetireDocument): one committed since is read here, under it. An issue's upload
+		// finds its document under its issue's lock already, which is the lock a retirement of
+		// that document takes, and an agent's conversation holds no document.
+		if err := refuseRetiredUnderOwnerLock(r.Context(), tx, artifact, input.name); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 	}
 
 	var version model.Version
@@ -1638,6 +1646,13 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 	eventOwner := ownerForArtifact(artifact)
 	status, err := s.requireOpenOwnerStatus(r.Context(), tx, eventOwner)
 	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	// The test of artifact.Retired above ran before this lock, and the decisions step's retirement
+	// takes it too (docs.RetireDocument): one committed since is read here, under the lock this
+	// edit's version write holds to its commit, and refused as that test refuses it.
+	if err := refuseRetiredUnderOwnerLock(r.Context(), tx, artifact, artifact.Name); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -2558,6 +2573,24 @@ func retiredDocumentRefusal(artifact model.Artifact, name string) error {
 		}
 	}
 	return documentRetiredRefusal(artifact)
+}
+
+// refuseRetiredUnderOwnerLock is retiredDocumentRefusal's answer for artifact, named name by a
+// write of new text, where its row reads retired in tx, and nil where it does not. tx holds the lock
+// of the document's owner, which docs.RetireDocument takes before it sets retired_at
+// (lockArtifactOwner) and which the write holds to its commit, so a retirement either committed
+// before this read and is read here, or waits for the write to end. A write's first test of the row
+// (model.Artifact.Retired) runs before that lock and spares the work for a document retired before
+// the request came; this read is the one that decides.
+func refuseRetiredUnderOwnerLock(ctx context.Context, tx pgx.Tx, artifact model.Artifact, name string) error {
+	var retired bool
+	if err := tx.QueryRow(ctx, `select retired_at is not null from artifacts where id = $1`, artifact.ID).Scan(&retired); err != nil {
+		return fmt.Errorf("read whether the document is retired: %w", err)
+	}
+	if !retired {
+		return nil
+	}
+	return retiredDocumentRefusal(artifact, name)
 }
 
 // documentRetiredRefusal is the 409 refusing a write of new text to artifact, a retired document
