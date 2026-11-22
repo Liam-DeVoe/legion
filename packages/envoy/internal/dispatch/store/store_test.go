@@ -273,6 +273,7 @@ func TestMigrateCreatesEmptySchemaAndIsIdempotent(t *testing.T) {
 		"document_search_vector",
 		"related_checks_source_block",
 		"related_checks_source_issue",
+		"graph_erasures_block_document",
 	}
 	assertDatabaseObjects(t, ctx, store.Pool, `
 		select indexname

@@ -1116,13 +1116,15 @@ func TestCensusAdmitsTheReplyIndexesTheEraseReadsThrough(t *testing.T) {
 	requireCensusAdmitsConcurrentIndexes(t, 20261120122700, 20261121180000, 20261121180100)
 }
 
-// TestCensusAdmitsTheRelatedCheckIndexesTheEraseReadsThrough holds the census to admitting the two
-// indexes the erase's reads of a block's related-item checks probe (20261122010000 on
+// TestCensusAdmitsTheRelatedCheckIndexesTheEraseReadsThrough holds the census to admitting three
+// indexes: the two the erase's reads of a block's related-item checks probe (20261122010000 on
 // related_checks.source_block_id, 20261122010100 on the source_issue_key of the issues' own
-// checks) over a database at 20261121180100, the version before them, with the limit at one byte,
-// where related_checks is over it (requireCensusAdmitsConcurrentIndexes).
+// checks), and the one the record of a check probes graph_erasures through for an erase of its
+// source (20261122010200 on the document of each erased block), over a database at
+// 20261121180100, the version before them, with the limit at one byte, where related_checks and
+// graph_erasures are over it (requireCensusAdmitsConcurrentIndexes).
 func TestCensusAdmitsTheRelatedCheckIndexesTheEraseReadsThrough(t *testing.T) {
-	requireCensusAdmitsConcurrentIndexes(t, 20261121180100, 20261122010000, 20261122010100)
+	requireCensusAdmitsConcurrentIndexes(t, 20261121180100, 20261122010000, 20261122010100, 20261122010200)
 }
 
 // requireCensusAdmitsConcurrentIndexes holds the census, over a database migrated through before
