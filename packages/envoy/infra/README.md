@@ -4002,7 +4002,9 @@ It publishes to:
   `GET /v1/roles/<role>` on any listener answers a lapsed holder's `last_seen` out of that
   session's record, whichever machine it registered through.
   A listener whose grant lacks `envoy_listener` logs an ERROR naming it and delivers without a
-  lease, as its machine's only deliverer;
+  lease, as its machine's only deliverer. An edge listener (`EdgePermissions`, below), whose grant
+  never holds the bucket, never asks for it: it logs one INFO naming the bucket and delivers
+  without a lease, one pod per machine id;
 - `$JS.API.STREAM.PURGE.KV_envoy_interests`, which the interest bucket's delete-marker collection
   sends.
 
@@ -4095,8 +4097,11 @@ a registration `consumer` and relays a send on the session's relay subject, with
 `EdgePermissions(machineID, projects)` is the grant of an edge listener's own NATS user: the
 listener that serves the sessions of an outside person's projects (`ENVOY_EDGE_PROJECTS`), which no
 session and no other listener shares. It is `ListenerPermissions(machineID)` with these changes and
-no other. It refuses a machine id that is not one subject token and a project list that is empty
-or not project keys, sorted, each once. In place of `notifications.>` it publishes this list and
+no other. It holds none of the subjects of the listener state bucket `envoy_listener`, which
+`ListenerPermissions` holds, so an edge listener opens no delivery lease and runs one pod per
+machine id (`cmd/listener/README.md`). It refuses a machine id that is not one subject token and
+a project list that is empty or not project keys, sorted, each once. In place of `notifications.>`
+it publishes this list and
 no other notification topic: `notifications.agent.>` (a send); `notifications.role.<KEY>.>` for
 each project (a role message in the form that names the project); `notifications.envoy.deliver.*`
 (a relay frame); `notifications.envoy.relayreply.>` (every edge machine's relay receipts, since the
@@ -4131,13 +4136,15 @@ bucket, so it can change no stream's subjects, limits or republish:
   day one until the hub's nats-server is raised to 2.15.3, which refuses a reply into `$JS.API.`.
 
 An edge listener reads the stream and its start ends, naming the stream, on a server that has
-none. It finds each bucket it opens: the interest, role, session and DPoP-proof buckets end its
-start, naming the refused create or raise, when the server lacks one or holds it at fewer copies
-than `ENVOY_NATS_REPLICAS`. The Legion agent bucket's open logs one ERROR and is retried in the
-background, and so is the known-session bucket's, which raises no bucket it finds with fewer
-copies. Every listener on this build that is not an edge listener creates the DPoP-proof bucket
-`envoy_dpop_proofs` at its start, whether or not it takes broker tokens, so a full listener on
-this build starts before an edge listener does. It subscribes its own machine's inbox prefix
+none. It finds each bucket it opens: when the server lacks the interest, role, session or
+DPoP-proof bucket, or holds it at fewer copies than `ENVOY_NATS_REPLICAS`, its start stays up and
+tries the open again by the listener's start rule (`cmd/listener/README.md`, "Start"), logging at
+each try an ERROR that names the refused create or raise, so it waits for the bucket. The Legion
+agent bucket's open logs one ERROR and is retried in the background, and so is the known-session
+bucket's, which raises no bucket it finds with fewer copies. Every listener on this build that is
+not an edge listener creates the DPoP-proof bucket `envoy_dpop_proofs` at its start, whether or
+not it takes broker tokens, so an edge listener started before any full listener on this build
+waits for one. It subscribes its own machine's inbox prefix
 `_INBOX_envoy_edge_<machine id>.>` in place of `_INBOX.>`, so one edge machine is delivered no
 other machine's replies, every session's relay subject `notifications.envoy.deliver.*`, its own
 machine's relay receipts `notifications.envoy.relayreply.<machine id>.>`, so no edge machine

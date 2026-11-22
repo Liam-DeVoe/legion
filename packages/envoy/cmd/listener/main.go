@@ -1146,8 +1146,23 @@ func waitOutGrantRefusal(logger *logging.Logger, wait *time.Duration, line strin
 }
 
 // listenerGrant names the grant that gives the listener's NATS user its KV buckets and its
-// notification stream, for the lines that report a bucket or the stream the grant refuses.
+// notification stream, for the lines that report a bucket or the stream the grant refuses: the
+// start's bucket and stream lines of every listener but an edge one (grantName), and the listener
+// state bucket's lines, which an edge listener never logs, since it opens no lease.
 const listenerGrant = "infra/core ListenerPermissions"
+
+// edgeListenerGrant names an edge listener's grant (natsgrant.Edge) in the start's bucket and
+// stream refusal lines (grantName): that grant creates and raises no bucket and creates no stream.
+const edgeListenerGrant = "infra/core EdgePermissions"
+
+// grantName is the grant the bucket and stream refusal lines of the listener's start name:
+// edgeListenerGrant for an edge listener (edge set), listenerGrant for every other.
+func grantName(edge *edgeGrant) string {
+	if edge != nil {
+		return edgeListenerGrant
+	}
+	return listenerGrant
+}
 
 // natsConnectionError reports whether err is a failure to reach NATS, or to get an answer from it,
 // that a later attempt can get past: no server answered the dial or closed it during the
@@ -1214,7 +1229,7 @@ func connectListener(cfg config.Service, edge *edgeGrant, instance string, logge
 			continue
 		}
 		if errors.Is(err, bus.ErrPublishDenied) {
-			waitOutGrantRefusal(logger, &refusedWait, streamRefusedLine, err, slog.String("stream", bus.Stream), slog.String("grant", listenerGrant))
+			waitOutGrantRefusal(logger, &refusedWait, streamRefusedLine, err, slog.String("stream", bus.Stream), slog.String("grant", grantName(edge)))
 			continue
 		}
 		if !natsConnectionError(err) {
@@ -1235,11 +1250,12 @@ func connectListener(cfg config.Service, edge *edgeGrant, instance string, logge
 // "Start"). An open the server cannot take in its cluster's present state is tried again after
 // waitOutClusterState, and one that fails for want of NATS (natsConnectionError) every startRetry.
 // An open the NATS user's grant refuses is tried again after waitOutGrantRefusal, which logs
-// storeBucketRefusedLine naming the bucket and the grant it lacks: nats-server drops a refused
-// request and reports the refusal only as the connection's last error, so the open runs out of
-// time, and a last error that changed across the open to a refusal of one of buckets' subjects is
-// that refusal (bucketRefusal). Any other failure ends the process after one ERROR naming it.
-func openStartStore[T any](client *bus.Client, logger *logging.Logger, what string, buckets []string, replicas int, open func(*nats.Conn) (T, error)) T {
+// storeBucketRefusedLine naming the bucket and grant, the name of that user's grant (grantName):
+// nats-server drops a refused request and reports the refusal only as the connection's last
+// error, so the open runs out of time, and a last error that changed across the open to a refusal
+// of one of buckets' subjects is that refusal (bucketRefusal). Any other failure ends the process
+// after one ERROR naming it.
+func openStartStore[T any](client *bus.Client, logger *logging.Logger, grant, what string, buckets []string, replicas int, open func(*nats.Conn) (T, error)) T {
 	clusterWait, refusedWait := clusterStateWait{next: durableBindPoll}, durableBindPoll
 	for {
 		conn := client.Conn
@@ -1249,7 +1265,7 @@ func openStartStore[T any](client *bus.Client, logger *logging.Logger, what stri
 			return store
 		}
 		if bucket, violation := bucketRefusal(buckets, err, before, conn.LastError()); violation != nil {
-			waitOutGrantRefusal(logger, &refusedWait, storeBucketRefusedLine, violation, slog.String("bucket", bucket), slog.String("grant", listenerGrant))
+			waitOutGrantRefusal(logger, &refusedWait, storeBucketRefusedLine, violation, slog.String("bucket", bucket), slog.String("grant", grant))
 			continue
 		}
 		if code, ok := bus.ClusterStateAnswer(err); ok {
@@ -1289,11 +1305,12 @@ const spentProofBucketRefusedLine = "spent-proof bucket refused by the NATS gran
 // waitOutClusterState, and one that fails for want of NATS (natsConnectionError) every startRetry
 // with a WARN. An open the NATS grant refuses (bus.ErrPublishDenied, which bus.EnsureKeyValue
 // returns as the server's refusal arrives) is tried again after waitOutGrantRefusal, each try
-// logging spentProofBucketRefusedLine at ERROR with the refused subject and the server's text, as
-// a refused durable's tries do (durableReceiver.prepare): an edge listener started before any full
-// listener made the bucket waits so for one. Any other failure is one no try gets past, an origin
-// ciphertoken.New refuses among them, and ends the process after one ERROR naming it.
-func openSpentProofBucket(ctx context.Context, client *bus.Client, logger *logging.Logger, tokens *brokerTokens, replicas int) {
+// logging spentProofBucketRefusedLine at ERROR with grant, the name of the NATS user's grant
+// (grantName), the refused subject and the server's text, as a refused durable's tries do
+// (durableReceiver.prepare): an edge listener started before any full listener made the bucket
+// waits so for one. Any other failure is one no try gets past, an origin ciphertoken.New refuses
+// among them, and ends the process after one ERROR naming it.
+func openSpentProofBucket(ctx context.Context, client *bus.Client, logger *logging.Logger, grant string, tokens *brokerTokens, replicas int) {
 	refusedWait, clusterWait := durableBindPoll, clusterStateWait{next: durableBindPoll}
 	for {
 		conn := client.Conn
@@ -1307,7 +1324,7 @@ func openSpentProofBucket(ctx context.Context, client *bus.Client, logger *loggi
 		}
 		switch {
 		case errors.Is(err, bus.ErrPublishDenied):
-			waitOutGrantRefusal(logger, &refusedWait, spentProofBucketRefusedLine, err, slog.String("bucket", bus.DPoPProofBucket), slog.String("grant", listenerGrant))
+			waitOutGrantRefusal(logger, &refusedWait, spentProofBucketRefusedLine, err, slog.String("bucket", bus.DPoPProofBucket), slog.String("grant", grant))
 		case natsConnectionError(err):
 			logger.Warn("spent-proof bucket open failed; retrying",
 				slog.String("bucket", bus.DPoPProofBucket),
@@ -1970,7 +1987,7 @@ func main() {
 	// 503 "service starting" (brokerTokens.verify), so no token is accepted without the check of
 	// its proof, and no spent proof is recorded anywhere this listener's other replicas cannot see
 	// it.
-	openSpentProofBucket(starting, client, logger, brokerTokenAuth, cfg.NATSReplicas)
+	openSpentProofBucket(starting, client, logger, grantName(edge), brokerTokenAuth, cfg.NATSReplicas)
 	consumer := bus.ListenerDurable(cfg.MachineID)
 	// The durable is checked here, before the cache warm-ups below (up to 30 s each), so a refused
 	// one ends the start within the NATS connect: no pod could receive from it, and nothing serves
@@ -2025,7 +2042,7 @@ func main() {
 	var renames ghrename.Renames
 	if webhookCfg.GitHub != nil {
 		renames = webhookCfg.GitHub.RepositoryRenames
-		ciStore = openStartStore(client, logger, "CI store", []string{bus.CIStateBucket}, cfg.NATSReplicas, func(conn *nats.Conn) (*cistore.Store, error) {
+		ciStore = openStartStore(client, logger, grantName(edge), "CI store", []string{bus.CIStateBucket}, cfg.NATSReplicas, func(conn *nats.Conn) (*cistore.Store, error) {
 			return cistore.Open(starting, conn, logger, cistore.WithReplicas(cfg.NATSReplicas), cistore.WithTTL(7*24*time.Hour))
 		})
 	} else {
@@ -2054,7 +2071,7 @@ func main() {
 			}
 			return time.Time{}
 		})}
-	registry := openStartStore(client, logger, "interest registry", []string{bus.InterestBucket, bus.RoleClaimBucket}, cfg.NATSReplicas, func(conn *nats.Conn) (*store.Registry, error) {
+	registry := openStartStore(client, logger, grantName(edge), "interest registry", []string{bus.InterestBucket, bus.RoleClaimBucket}, cfg.NATSReplicas, func(conn *nats.Conn) (*store.Registry, error) {
 		return store.Open(starting, conn, registryOptions...)
 	})
 
@@ -2137,7 +2154,7 @@ func main() {
 	if deliveryLease != nil {
 		sessionOptions = append(sessionOptions, session.WithLastSeenBucket(deliveryLease.kv))
 	}
-	sessions := openStartStore(client, logger, "session registry", []string{bus.SessionBucket}, cfg.NATSReplicas, func(conn *nats.Conn) (*session.SessionRegistry, error) {
+	sessions := openStartStore(client, logger, grantName(edge), "session registry", []string{bus.SessionBucket}, cfg.NATSReplicas, func(conn *nats.Conn) (*session.SessionRegistry, error) {
 		return session.OpenSessionRegistry(starting, conn, sessionOptions...)
 	})
 

@@ -32,7 +32,7 @@ Agent messages  --/       |
 
 ## Runtime shape
 
-- one listener per machine id delivering at a time: further listeners of the same id (pods of one Deployment) are standbys, and the delivery lease `lease.listener-<machine id>` in the `envoy_listener` KV bucket says which one receives the machine's durable consumer (`cmd/listener/README.md`)
+- one listener per machine id delivering at a time: further listeners of the same id (pods of one Deployment) are standbys, and the delivery lease `lease.listener-<machine id>` in the `envoy_listener` KV bucket says which one receives the machine's durable consumer (`cmd/listener/README.md`); an edge listener (`ENVOY_EDGE_PROJECTS`) opens no delivery lease and runs one pod per machine id
 - one GitHub receiver container on the public EC2 host
 - one Slack receiver container on the public EC2 host
 - NATS cluster across all machines via Tailscale mesh, with JetStream for durable notifications and core NATS for live role routing

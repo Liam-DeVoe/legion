@@ -225,16 +225,17 @@ func EdgeRelayReplyPrefix(machineID string) string {
 // takes the role lane writes), no exception of any other topic and no reply to another client's
 // request. A message on a role lane of its own project that names a role of another project is
 // the shared listeners' role lane to refuse. It holds no create or update of the stream or of any
-// bucket's stream, and no direct get of any bucket, so it cannot change any stream's
-// configuration - its subjects, its limits, or a republish. It can, though, delete any stream of
-// its account, through two answers the server sends with no body on whatever reply subject a
-// client names, each needing no other client: a no_wait pull on a consumer with nothing to
-// deliver is answered a "404 No Messages" status, and a synchronous ack an empty reply, so either
-// aimed at $JS.API.STREAM.DELETE.<s> deletes stream <s> (the consumer calls below,
-// TestAPullStatusAndAnAckAnswerOnTheAPIDeleteAStream). That reach is availability only - no
-// message of any project crosses it - and is accepted for day one until the hub's nats-server is
-// raised from 2.15.1 to 2.15.3, which refuses a reply into $JS.API. The two routes that would
-// change a stream's configuration are both held off:
+// bucket's stream, no direct get of any bucket, and none of the listener state bucket's calls
+// (ListenerState), which Listener holds and which include that bucket's stream create, update and
+// direct gets, so it cannot change any stream's configuration - its subjects, its limits, or a
+// republish. It can, though, delete any stream of its account, through two answers the server
+// sends with no body on whatever reply subject a client names, each needing no other client: a
+// no_wait pull on a consumer with nothing to deliver is answered a "404 No Messages" status, and a
+// synchronous ack an empty reply, so either aimed at $JS.API.STREAM.DELETE.<s> deletes stream <s>
+// (the consumer calls below, TestAPullStatusAndAnAckAnswerOnTheAPIDeleteAStream). That reach is
+// availability only - no message of any project crosses it - and is accepted for day one until
+// the hub's nats-server is raised from 2.15.1 to 2.15.3, which refuses a reply into $JS.API. The
+// two routes that would change a stream's configuration are both held off:
 //   - A republish carries the stored value to its destination with that value as its body, and a
 //     destination under $JS.API. is a request of the account's: on the hub's image an empty value
 //     republished to a stream delete deletes the stream, and a non-empty one is refused as that
@@ -248,20 +249,21 @@ func EdgeRelayReplyPrefix(machineID string) string {
 //     publishes; that answer, a stream info answer and a stored publish's acknowledgement, aimed the
 //     same way, take no action there in the same row.
 //
-// Its start reads the stream and refuses when it is missing, and finds each bucket it opens
-// (bus.EnsureKeyValue): the interest, role, session and spent-proof buckets end the start, naming
-// the create or raise the server refused, when the server lacks one or holds it at fewer copies
-// than the deployment's count; the Legion agent bucket's open logs one error and is retried in the
-// background, and so is the known-session bucket's, which raises no bucket it finds. Every other
-// listener of this build creates the spent-proof bucket at its start (cmd/listener's
-// ensureSpentProofBucket), so a full listener starts before an edge listener. It holds none of the
-// listener state bucket's calls (ListenerState): an edge listener opens no delivery lease and
-// delivers as a listener whose grant lacks that bucket does (cmd/listener, edge mode), and those
-// calls hold that bucket's stream create, update and direct gets, which reach the JetStream API as
-// every other bucket's do. The rest of Listener's publish list stays as it is: the stream's info
-// and stored-message get, its durable's calls, JetStream's account info, the KV calls of every
-// bucket of bus.ListenerBuckets but its stream's create, its update and its direct get, the
-// interest bucket's purge and the session consumers' calls.
+// Its start reads the stream and ends, naming it, when the server holds none, and finds each
+// bucket it opens (bus.EnsureKeyValue): when the server lacks the interest, role, session or
+// spent-proof bucket, or holds it at fewer copies than the deployment's count, the start tries the
+// open again by the listener's start rule (cmd/listener/README.md, "Start"), logging at each try
+// an error that names the create or raise the server refused, and so waits for the bucket; the
+// Legion agent bucket's open logs one error and is retried in the background, and so is the
+// known-session bucket's, which raises no bucket it finds. Every other listener of this build
+// creates the spent-proof bucket at its start (cmd/listener's ensureSpentProofBucket), so an edge
+// listener started before any full listener waits for one. Since it holds no call of the listener
+// state bucket, an edge listener opens no delivery lease and delivers as a listener whose grant
+// lacks that bucket does (cmd/listener, edge mode): one edge pod runs per machine id. The rest of
+// Listener's publish list stays as it is: the stream's info and stored-message get, its durable's
+// calls, JetStream's account info, the KV calls of every bucket of bus.ListenerBuckets but its
+// stream's create, its update and its direct get, the interest bucket's purge and the session
+// consumers' calls.
 //
 // Subscribe: its own machine's inbox prefix (EdgeInboxPrefix) in place of every reply inbox, so
 // the server delivers it no other client's replies; every session's relay subject

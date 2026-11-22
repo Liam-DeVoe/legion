@@ -775,13 +775,16 @@ install it, what each component deploys and which settings it sets.
 ### Health and readiness
 
 Any number of listeners may run with one `ENVOY_MACHINE_ID`, in Kubernetes as the pods of one
-Deployment. Every one of them serves `/v1`, the webhooks and role messages; only the one holding
-the machine's delivery lease, the active pod, delivers what the durable consumer carries, and the
-others are standbys. When the active pod stops, a standby takes over within a few seconds, and
-about 12 seconds after the active pod is killed or its node is lost; each session still gets its
-events in order. The listener's NATS user needs the `envoy_listener` bucket in its grant for that;
-without it the listener logs an error naming the bucket and runs as the machine's only deliverer,
-so run one listener per machine id until the grant is in place.
+Deployment. Every one of them serves `/v1`, the webhooks and, but an edge listener, role messages;
+only the one holding the machine's delivery lease, the active pod, delivers what the durable
+consumer carries, and the others are standbys. When the active pod stops, a standby takes over
+within a few seconds, and about 12 seconds after the active pod is killed or its node is lost; each
+session still gets its events in order. The listener's NATS user needs the `envoy_listener` bucket
+in its grant for that; without it the listener logs an error naming the bucket and runs as the
+machine's only deliverer, so run one listener per machine id until the grant is in place. A listener
+with `ENVOY_EDGE_PROJECTS` set, an edge listener, opens no delivery lease whatever its grant, so
+always run one per machine id: a second one, a rolling update's surge pod included, can deliver a
+message twice.
 
 `GET /healthz` needs no credential, and answers within 5 seconds:
 
@@ -848,7 +851,9 @@ the bucket again keeps every row until it completes.
 
 Give the listener about 30 seconds to stop after `SIGTERM`. It hands its deliveries to a standby,
 stops taking requests, lets deliveries in progress finish, then exits with a non-zero code so a
-restart policy brings it back. The listener's
+restart policy brings it back. An edge listener (`ENVOY_EDGE_PROJECTS` set) has no standby to
+hand them to, so run it as one replica under the `Recreate` strategy, which stops the old pod
+before the new one starts. The listener's
 [README](https://github.com/cybermonklabs/legion/blob/main/packages/envoy/cmd/listener/README.md) has
 the details: the lease, the take-over times, the probe settings and what the pods share.
 

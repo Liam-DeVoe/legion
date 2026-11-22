@@ -202,7 +202,9 @@ const (
 // receiving only while no other subscriber holds the durable, and tries the bucket again with the
 // start rule's wait for a refusal until a grant lets it open it (joinDeliveryLease): from then on
 // it is in the lease protocol, as the holder or a standby (durableReceiver.joinTerm), and /healthz
-// says this no more.
+// says this no more. It says this of an edge listener for as long as that listener runs: the
+// edge's grant never holds the bucket (natsgrant.Edge), so it opens no lease, never tries the
+// bucket and never joins one.
 const listenerLeaseUnavailable = "unavailable: missing NATS grant for KV bucket " + bus.ListenerStateBucket
 
 // receiveConfig carries the receive loop's timing, so a test of this package shortens it;

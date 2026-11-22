@@ -239,7 +239,7 @@ This section is the one statement of that rule; the code and the other guides po
 - **The listener's own configuration ends the start.**
   An error that the listener's settings alone decide ends the process, exit 1, with one line that names it:
   no retry gets past it, and a crash loop that carries its name is the signal an operator needs.
-  These are `config.Load`'s refusals, the instance name (`listenerInstance`), a missing, malformed or out-of-range setting (the API auth, OIDC, Google, broker-token and sender-limit settings, the webhook settings, the session windows and the periods), the listening socket, an origin `brokertoken.New` refuses, and the NATS credential: a seed the connect cannot read, or a credential the server refuses (`NATS connect failed`, with the server's refusal in `error`).
+  These are `config.Load`'s refusals, the instance name (`listenerInstance`), a missing, malformed or out-of-range setting (the API auth, OIDC, Google, broker-token and sender-limit settings, the webhook settings, the session windows and the periods), the listening socket, an origin `ciphertoken.New` refuses, and the NATS credential: a seed the connect cannot read, or a credential the server refuses (`NATS connect failed`, with the server's refusal in `error`).
   A restarted pod reads its credential again, so a fixed seed is taken at its next start.
   A durable that carries an idle heartbeat or ack policy NATS cannot change in place ends it too (`subscribe refused, shutting down`, "Recreating the durable" below): only an operator who recreates it gets past it.
 

@@ -1,6 +1,7 @@
 kind: Changed
 body: |-
-    `envoy-listener` runs as an active pod and standbys for any machine id: any number of
+    `envoy-listener` runs as an active pod and standbys for any machine id, except an edge listener
+    (`ENVOY_EDGE_PROJECTS`), which opens no lease and runs one pod: any number of
     listeners may run with one `ENVOY_MACHINE_ID`, and only the holder of the machine's delivery
     lease, the key `lease.listener-<machine id>` in the new KV bucket `envoy_listener` (created at
     `ENVOY_NATS_REPLICAS`, 20 minute `MaxAge`), receives its durable consumer. The holder renews the
