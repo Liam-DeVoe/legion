@@ -771,6 +771,23 @@ export const KeymapPersonContext = createContext<KeymapPerson>({
   personKeys: NO_PERSON_KEYS,
 });
 
+/**
+ * A condition every binding registered beneath it also needs (`useKeymap`): a binding there holds,
+ * and `?` shows it enabled, only while the gate and its own `when` both hold. The Inbox drawer
+ * sets it to "no dialog stands over the drawer", so no key of its tree acts behind a dialog
+ * standing over it: the `?` help, or the Decline box a card of it opens. `null`, the default,
+ * gates nothing.
+ */
+export const KeymapGateContext = createContext<(() => boolean) | null>(null);
+
+/** How `useKeymap` registers its bindings. */
+export interface UseKeymapOptions {
+  /** Leaves the bindings out of the gate around the caller (`KeymapGateContext`). For a dialog's
+   *  own Escape (`useDialog`), whose `when` - this dialog is the innermost open one - is the whole
+   *  rule: a dialog opened inside the drawer closes on it while the drawer's keys stand down. */
+  readonly outsideGate?: boolean;
+}
+
 /** The whole binding an action stands for, under `personKeys`' keys for it. An action that writes
  *  (`CatalogueEntry.writes`) runs once per press: a held key's repeats run nothing, and the
  *  registry's `preventDefault` keeps them from the page too. A palette row's keydown is no
@@ -803,18 +820,24 @@ export function actionBinding(binding: ActionBinding, personKeys: PersonKeys): K
  * `dialog`. A binding written out whole (`KeyBinding`) is a dialog's own Escape, the command
  * bar's own close (on the person's keys for Search and actions), the `y` that copies a focused
  * link's address (`link-copy.ts`), or a test's; a key change of one is a new signature, which
- * registers it again.
+ * registers it again. Beneath a gate (`KeymapGateContext`) each binding holds only while the gate
+ * does too, unless `options.outsideGate` leaves it out.
  */
 export function useKeymap(
   scope: KeymapScope,
-  bindings: readonly (ActionBinding | KeyBinding)[]
+  bindings: readonly (ActionBinding | KeyBinding)[],
+  options: UseKeymapOptions = {}
 ): void {
   const { personKeys } = useContext(KeymapPersonContext);
+  const contextGate = useContext(KeymapGateContext);
   const resolved = bindings.map((binding) =>
     "action" in binding ? actionBinding(binding, personKeys) : binding
   );
   const latest = useRef(resolved);
   latest.current = resolved;
+  // Read as a key is pressed, as `latest` is, so a gate drawn anew registers nothing again.
+  const gate = useRef<(() => boolean) | null>(null);
+  gate.current = options.outsideGate === true ? null : contextGate;
   const signature = resolved.map((binding) => `${binding.id}=${keysOf(binding).join(",")}`).join();
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: `signature` stands in for `bindings`, whose closures are read through `latest`
@@ -822,7 +845,8 @@ export function useKeymap(
     const proxies = latest.current.map((binding, index) => ({
       ...binding,
       run: (event: KeyboardEvent) => latest.current[index]?.run(event),
-      when: () => latest.current[index]?.when?.() !== false,
+      when: () =>
+        (gate.current === null || gate.current()) && latest.current[index]?.when?.() !== false,
     }));
     return appKeymap.register(scope, proxies);
   }, [scope, signature]);

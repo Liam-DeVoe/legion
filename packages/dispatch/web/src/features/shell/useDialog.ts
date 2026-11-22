@@ -76,6 +76,16 @@ function innermostOpenDialog(): HTMLElement | null | undefined {
   return innermost;
 }
 
+/** Whether no open dialog stands over `container`: it is the innermost open dialog, or none is
+ *  open yet - the commit that opens it, before its effect below adds it to the open ones. The
+ *  Inbox drawer gates every key of its tree on it (`KeymapGateContext`), and its own `?` too, so
+ *  they work from the render that opens it and stand down under a dialog opened over it: the help
+ *  that `?` opens, or a card's Decline box. */
+export function noDialogOver(container: HTMLElement | null): boolean {
+  const innermost = innermostOpenDialog();
+  return innermost === undefined || innermost === container;
+}
+
 /** Whether a dialog is open. Its Escape is then its own wherever the focus is: in the frame
  *  before its deferred initial focus has moved in, or after a press on its text took the focus
  *  to the page. A layer under it that answers Escape itself leaves the key to it. */
@@ -111,6 +121,9 @@ export function useDialog<T extends HTMLElement>({
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
   useKeymapScope(open ? DIALOG_SCOPE : null);
+  // Outside any gate around the dialog (`KeymapGateContext`): its `when` is the whole rule, so the
+  // Decline box a card of the Inbox drawer opens closes on Escape while the drawer's keys, gated
+  // on no dialog standing over the drawer, stand down under it.
   useKeymap(
     DIALOG_SCOPE,
     open
@@ -124,7 +137,8 @@ export function useDialog<T extends HTMLElement>({
             when: () => innermostOpenDialog() === containerRef.current,
           },
         ]
-      : []
+      : [],
+    { outsideGate: true }
   );
 
   useEffect(() => {

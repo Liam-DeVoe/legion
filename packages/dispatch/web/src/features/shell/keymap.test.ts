@@ -12,6 +12,7 @@ import {
   DIALOG_SCOPE,
   type KeyBinding,
   type Keymap,
+  KeymapGateContext,
   modHeld,
   useKeymap,
   useKeymapScope,
@@ -876,5 +877,51 @@ test("a person's key for an action registers the binding again under that key", 
   } finally {
     view.unmount();
     window.localStorage.removeItem(stored);
+  }
+});
+
+// dispatch://INFRA-2160, R13: a gate (`KeymapGateContext`) is a condition every binding beneath it
+// also needs, as the Inbox drawer gates its tree on no dialog standing over it; `?` shows the
+// binding as the registry reads it, and a binding registered outside the gate (a dialog's own
+// Escape) is left to its own `when`.
+test("a binding beneath a gate fires and is enabled only while the gate holds, and one registered outside it is its own", () => {
+  let gateHolds = false;
+  let snoozed = 0;
+  let own = 0;
+  function Page(): null {
+    useKeymapScope("inbox");
+    useKeymap("inbox", [{ action: "inbox.snooze", run: () => (snoozed += 1) }]);
+    useKeymap("inbox", [{ id: "own", keys: "q", label: "Its own", run: () => (own += 1) }], {
+      outsideGate: true,
+    });
+    return null;
+  }
+  const snoozeEnabled = () =>
+    appKeymap.describe().find((entry) => entry.scope === "inbox" && entry.id === "snooze")?.enabled;
+  const press = (key: string) =>
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { cancelable: true, key }));
+    });
+  const view = render(
+    createElement(
+      KeymapProvider,
+      {},
+      createElement(KeymapGateContext.Provider, { value: () => gateHolds }, createElement(Page))
+    )
+  );
+
+  try {
+    press("b");
+    expect(snoozed).toBe(0);
+    expect(snoozeEnabled()).toBe(false);
+    press("q");
+    expect(own).toBe(1);
+
+    gateHolds = true;
+    press("b");
+    expect(snoozed).toBe(1);
+    expect(snoozeEnabled()).toBe(true);
+  } finally {
+    view.unmount();
   }
 });

@@ -1,14 +1,19 @@
 import { expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
-import { useState } from "react";
+import userEvent, { type UserEvent } from "@testing-library/user-event";
+import { type ReactNode, useCallback, useLayoutEffect, useState } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { pickFromMenu } from "../../__tests__/menu-picks";
 import { api } from "../../api/client";
 import type { InboxRow } from "../../api/types";
+import { ShortcutHelpOpener } from "../issue-page/shortcut-help-opener";
 import { KeymapProvider } from "../shell/KeymapProvider";
+import { appKeymap, type KeyBindingDescription } from "../shell/keymap";
+import { catalogueEntry } from "../shell/keymap-catalogue";
+import { ShortcutHelp } from "../shell/ShortcutHelp";
+import { dialogOpen } from "../shell/useDialog";
 import { InboxDrawer } from "./InboxDrawer";
 import { installInboxApiMocks, issueAsk, mockAskReads } from "./inbox-fixture";
 
@@ -28,12 +33,59 @@ function Harness() {
   );
 }
 
+/** `Harness` with the `?` help beside the drawer, as `app.tsx` mounts the two: the shell hands
+ *  its opener down (`ShortcutHelpOpener`), and the help draws the registry as it stood when it
+ *  opened. */
+function HelpHarness() {
+  const [snapshot, setSnapshot] = useState<readonly KeyBindingDescription[] | null>(null);
+  const openHelp = useCallback(() => setSnapshot(appKeymap.describe()), []);
+  return (
+    <ShortcutHelpOpener.Provider value={openHelp}>
+      <Harness />
+      <ShortcutHelp onClose={() => setSnapshot(null)} snapshot={snapshot} />
+    </ShortcutHelpOpener.Provider>
+  );
+}
+
+/** Presses `f` on the window in the commit that opens the drawer, from a layout effect of a
+ *  sibling drawn after it: after the drawer's tree has registered its keys and pushed its scope
+ *  (layout effects, the drawer's before this one), and before `useDialog`'s effect adds the
+ *  drawer to the open dialogs. `opened` hears whether a dialog was open as it pressed. */
+function PressAsItOpens({
+  open,
+  opened,
+}: {
+  open: boolean;
+  opened: (dialogWasOpen: boolean) => void;
+}): null {
+  useLayoutEffect(() => {
+    if (!open) return;
+    opened(dialogOpen());
+    window.dispatchEvent(new KeyboardEvent("keydown", { cancelable: true, key: "f" }));
+  }, [open, opened]);
+  return null;
+}
+
+/** `Harness` with `PressAsItOpens` after the drawer. */
+function PressAsItOpensHarness({ opened }: { opened: (dialogWasOpen: boolean) => void }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <button onClick={() => setOpen(true)} type="button">
+        Open inbox
+      </button>
+      <InboxDrawer onClose={() => setOpen(false)} open={open} />
+      <PressAsItOpens open={open} opened={opened} />
+    </>
+  );
+}
+
 /** What the drawer must never write to: the address of the page it is a peek over. */
 function LocationProbe() {
   return <output data-testid="location">{useLocation().search}</output>;
 }
 
-function renderDrawer() {
+function renderDrawer(content: ReactNode = <Harness />) {
   const queryClient = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
   });
@@ -42,7 +94,7 @@ function renderDrawer() {
       <QueryClientProvider client={queryClient}>
         <KeymapProvider>
           <LocationProbe />
-          <Harness />
+          {content}
         </KeymapProvider>
       </QueryClientProvider>
     </MemoryRouter>
@@ -296,6 +348,192 @@ test("Shift+F and Shift+V in the drawer open its Filter panel and its View menu,
     expect(screen.queryByRole("dialog", { name: "View" })).toBeNull();
     expect(row).toHaveFocus();
     expect(screen.getByRole("dialog", { name: "Inbox" })).toBe(dialog);
+  } finally {
+    view.unmount();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+  }
+});
+
+// dispatch://INFRA-2160, R13: the drawer, the one dialog that registers a page's keys, takes `?`
+// too. The help opens over it with the Inbox's keys under Inbox and the dialog's under Dialog,
+// Escape closes the help alone and gives the focus back, and the drawer's search box keeps `?`.
+test("? in the drawer opens the help over it with the Inbox's keys under Inbox, Escape closes only the help and gives the focus back, and the search box keeps ?", async () => {
+  const user = userEvent.setup();
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue([issueAsk()]);
+  const getAsk = mockAskReads([issueAsk()]);
+  const view = renderDrawer(<HelpHarness />);
+  try {
+    await user.click(screen.getByRole("button", { name: "Open inbox" }));
+    const dialog = await screen.findByRole("dialog", { name: "Inbox" });
+    const row = (await within(dialog).findByTestId("ask-ask-a")).closest<HTMLElement>(
+      "[data-inbox-row]"
+    );
+    if (row === null) throw new Error("ask-a row missing");
+    act(() => row.focus());
+
+    await user.keyboard("?");
+    const help = screen.getByRole("dialog", { name: "Keyboard shortcuts" });
+    const labels = (scope: string) =>
+      within(within(help).getByRole("region", { name: scope }))
+        .getAllByRole("listitem")
+        .map((item) => item.firstChild?.textContent);
+    expect(labels("Inbox")).toContain(catalogueEntry("inbox.snooze").label);
+    expect(labels("Dialog")).toEqual(["Close dialog"]);
+    // The help takes the focus in the frame after it opens (`useDialog`); until then Escape on the
+    // row would be the row's own.
+    await waitFor(() =>
+      expect(within(help).getByRole("searchbox", { name: "Filter shortcuts" })).toHaveFocus()
+    );
+
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog", { name: "Keyboard shortcuts" })).toBeNull();
+    expect(screen.getByRole("dialog", { name: "Inbox" })).toBe(dialog);
+    expect(row).toHaveFocus();
+
+    const search = within(dialog).getByRole("searchbox", { name: "Search asks" });
+    act(() => search.focus());
+    await user.keyboard("?");
+    expect(search).toHaveValue("?");
+    expect(screen.queryByRole("dialog", { name: "Keyboard shortcuts" })).toBeNull();
+  } finally {
+    view.unmount();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+  }
+});
+
+/** Presses `?` in the drawer and, once the help has taken the focus, moves it to the help's
+ *  Close: a control that takes no typed text, so every key there reaches the registry. Answers
+ *  that Close. */
+async function helpOnItsClose(user: UserEvent): Promise<HTMLElement> {
+  await user.keyboard("?");
+  const help = screen.getByRole("dialog", { name: "Keyboard shortcuts" });
+  await waitFor(() =>
+    expect(within(help).getByRole("searchbox", { name: "Filter shortcuts" })).toHaveFocus()
+  );
+  const close = within(help).getByRole("button", { name: "Close" });
+  act(() => close.focus());
+  return close;
+}
+
+// dispatch://INFRA-2160, R13: every key of the drawer's tree stands down while a dialog stands
+// over the drawer (`KeymapGateContext`): Escape on the help's Close is the help's, not the
+// Inbox's Clear the selection, which shares the dialog scope with it.
+test("with the help open over the drawer, Escape on the help's Close closes the help and leaves a ticked row ticked", async () => {
+  const user = userEvent.setup();
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue([issueAsk()]);
+  const getAsk = mockAskReads([issueAsk()]);
+  const view = renderDrawer(<HelpHarness />);
+  try {
+    await user.click(screen.getByRole("button", { name: "Open inbox" }));
+    const dialog = await screen.findByRole("dialog", { name: "Inbox" });
+    const row = (await within(dialog).findByTestId("ask-ask-a")).closest<HTMLElement>(
+      "[data-inbox-row]"
+    );
+    if (row === null) throw new Error("ask-a row missing");
+    const tick = within(row).getByRole("checkbox");
+    await user.click(tick);
+    expect(tick).toBeChecked();
+
+    await helpOnItsClose(user);
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog", { name: "Keyboard shortcuts" })).toBeNull();
+    expect(tick).toBeChecked();
+    expect(screen.getByRole("dialog", { name: "Inbox" })).toBe(dialog);
+  } finally {
+    view.unmount();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+  }
+});
+
+// dispatch://INFRA-2160, R13: nor does `j` on the help's Close walk the drawer's rows behind it.
+test("with the help open over the drawer, j on the help's Close moves nothing in the drawer", async () => {
+  const user = userEvent.setup();
+  const second = issueAsk({
+    id: "ask-b",
+    issue: { assignee: "alice", key: "CORE-2", title: "Other issue" },
+    issue_key: "CORE-2",
+    question: "Which format?",
+  });
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue([issueAsk(), second]);
+  const getAsk = mockAskReads([issueAsk(), second]);
+  const view = renderDrawer(<HelpHarness />);
+  try {
+    await user.click(screen.getByRole("button", { name: "Open inbox" }));
+    const dialog = await screen.findByRole("dialog", { name: "Inbox" });
+    const row = (await within(dialog).findByTestId("ask-ask-a")).closest<HTMLElement>(
+      "[data-inbox-row]"
+    );
+    if (row === null) throw new Error("ask-a row missing");
+    act(() => row.focus());
+
+    const close = await helpOnItsClose(user);
+    await user.keyboard("j");
+    expect(close).toHaveFocus();
+    expect(dialog.querySelector("[data-inbox-row]:focus")).toBeNull();
+
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog", { name: "Keyboard shortcuts" })).toBeNull();
+    expect(row).toHaveFocus();
+  } finally {
+    view.unmount();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+  }
+});
+
+// The gate leaves a dialog's own Escape out (`useDialog`, `useKeymap`'s `outsideGate`): the Decline
+// box a card of the drawer opens closes on Escape, though the drawer's keys stand down under it,
+// and the drawer stays.
+test("a card's Decline box in the drawer closes on Escape, and the drawer stays", async () => {
+  const user = userEvent.setup();
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue([issueAsk()]);
+  const getAsk = mockAskReads([issueAsk()]);
+  const view = renderDrawer();
+  try {
+    await user.click(screen.getByRole("button", { name: "Open inbox" }));
+    const dialog = await screen.findByRole("dialog", { name: "Inbox" });
+    const card = await within(dialog).findByTestId("ask-ask-a");
+    await user.click(await within(card).findByRole("button", { name: "Decline to answer" }));
+    const decline = screen.getByRole("dialog", { name: "Decline to answer" });
+    await waitFor(() => expect(decline.contains(document.activeElement)).toBe(true));
+
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog", { name: "Decline to answer" })).toBeNull();
+    expect(screen.getByRole("dialog", { name: "Inbox" })).toBe(dialog);
+  } finally {
+    view.unmount();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+  }
+});
+
+// The gate holds while no dialog stands over the drawer, which is also the commit that opens it:
+// `useDialog`'s effect has not yet added the drawer to the open dialogs, and a key pressed at once
+// after `i` (k-keyboard-reach's drawer, k-every-action) lands there.
+test("a key pressed in the commit that opens the drawer, before it is among the open dialogs, is the drawer's", async () => {
+  const user = userEvent.setup();
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue([issueAsk()]);
+  const getAsk = mockAskReads([issueAsk()]);
+  const pressedWithADialogOpen: boolean[] = [];
+  const view = renderDrawer(
+    <PressAsItOpensHarness opened={(dialogWasOpen) => pressedWithADialogOpen.push(dialogWasOpen)} />
+  );
+  try {
+    // The first open reads the Inbox; the second draws it from the cache in the commit that opens
+    // the drawer, its search box with it, so `f` has a box to put the focus in.
+    await user.click(screen.getByRole("button", { name: "Open inbox" }));
+    const first = await screen.findByRole("dialog", { name: "Inbox" });
+    await within(first).findByTestId("ask-ask-a");
+    await user.click(within(first).getByRole("button", { name: "Close" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Inbox" })).toBeNull());
+
+    await user.click(screen.getByRole("button", { name: "Open inbox" }));
+    const dialog = screen.getByRole("dialog", { name: "Inbox" });
+    expect(pressedWithADialogOpen).toEqual([false, false]);
+    expect(within(dialog).getByRole("searchbox", { name: "Search asks" })).toHaveFocus();
   } finally {
     view.unmount();
     getAsk.mockRestore();

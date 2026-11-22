@@ -4826,8 +4826,8 @@ async function nextItemReviewSteps(page: Page, place: InboxPlace): Promise<void>
   );
   await expect(empty, step("the empty message has the focus")).toBeFocused();
   if (place === "the drawer") {
-    // The drawer is a dialog, whose scope is the only one a key is read through, so the page's
-    // `?` is not one of its keys: its own `f` is.
+    // In the drawer the row reads the Inbox's own `f` from the empty message, a key of the
+    // drawer's dialog scope; the drawer's `?` is k-default-keys' drawer row's.
     await page.keyboard.press("f");
     await expect(
       inbox.scope.getByRole("searchbox", { name: "Search asks" }),
@@ -8404,7 +8404,8 @@ test("k-keyboard-reach: on the Delivery page, on its timeline and on its list, T
 
 // ---------------------------------------------------------------------------
 // k-default-keys (R13): with no key changed, the `?` help lists the keys of the spec's table "The
-// keys" under their scopes, and a menu shows the keys of the table's menu rows.
+// keys" under their scopes, on a page and in the Inbox drawer, and a menu shows the keys of the
+// table's menu rows.
 // ---------------------------------------------------------------------------
 
 /** The keys of each row of the spec's table "The keys" whose scope names the Inbox, as the spec
@@ -8605,4 +8606,70 @@ test("k-default-keys: with no key changed, ? lists the Inbox keys of the spec's 
       .soft(turnKeys, step(`on the Conversation tab ? lists ${key} under Issue`))
       .toContain(key);
   }
+});
+
+// SLOW(>=2s): a question seeded, CORE's project page loaded and the drawer opened over it with
+// `i`, and the help opened and closed in it twice.
+test("k-default-keys: in the Inbox drawer ? opens the help over it, with the Inbox's keys under Inbox and the dialog's Escape under Dialog, Escape closes only the help, gives the focus back and leaves a ticked row ticked, and the drawer's search box types ?", async ({
+  page,
+}) => {
+  const step = (text: string) => `k-default-keys: ${text}`;
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Ledger rollout" });
+  const ask = await createAsk(issue.key, { question: "Ship the ledger rollout?" }, asker);
+
+  // The drawer over CORE's project page, with the focus on the question's row.
+  const peek = await openInboxAt(page, "the drawer", 1);
+  const row = rowOf(peek, ask.id);
+  await goTo(peek, ask.id);
+  await expect(row, step("in the drawer the question's row has the focus")).toBeFocused();
+
+  await page.keyboard.press("?");
+  const help = page.getByRole("dialog", { name: "Keyboard shortcuts" });
+  await expect(help, step("? in the drawer opens the help")).toBeVisible();
+  await expect(
+    help.getByRole("searchbox", { name: "Filter shortcuts" }),
+    step("the help over the drawer takes the focus")
+  ).toBeFocused();
+  const inboxKeys = await helpKeys(page, "Inbox");
+  for (const key of SPEC_INBOX_KEYS) {
+    expect.soft(inboxKeys, step(`in the drawer ? lists ${key} under Inbox`)).toContain(key);
+  }
+  expect(
+    await helpKeys(page, "Dialog"),
+    step("in the drawer ? lists the dialog's own Escape under Dialog, and no key of the Inbox")
+  ).toEqual(["Escape"]);
+
+  await page.keyboard.press("Escape");
+  await expect(help, step("Escape closes the help")).toHaveCount(0);
+  await expect(drawer(page), step("Escape out of the help leaves the drawer open")).toBeVisible();
+  await expect(row, step("Escape out of the help gives the focus back to the row")).toBeFocused();
+
+  // The drawer's keys stand down while the help stands over it, though they share its scope: with
+  // the row ticked and the focus on the help's Close, where no text is typed, Escape is the help's
+  // and not the Inbox's Clear the selection.
+  const tick = row.getByRole("checkbox");
+  await page.keyboard.press("x");
+  await expect(tick, step("x in the drawer ticks the row")).toBeChecked();
+  await page.keyboard.press("?");
+  await expect(help, step("? on a ticked row opens the help")).toBeVisible();
+  await expect(
+    help.getByRole("searchbox", { name: "Filter shortcuts" }),
+    step("the help over the ticked row takes the focus")
+  ).toBeFocused();
+  await help.getByRole("button", { exact: true, name: "Close" }).focus();
+  await page.keyboard.press("Escape");
+  await expect(help, step("Escape on the help's Close closes the help")).toHaveCount(0);
+  await expect(tick, step("Escape on the help's Close leaves the row ticked")).toBeChecked();
+  await expect(
+    drawer(page),
+    step("Escape on the help's Close leaves the drawer open")
+  ).toBeVisible();
+
+  // A text field of the drawer keeps `?` as a typed character.
+  const search = peek.scope.getByRole("searchbox", { name: "Search asks" });
+  await search.focus();
+  await page.keyboard.press("?");
+  await expect(search, step("? in the drawer's search box is typed")).toHaveValue("?");
+  await expect(help, step("? in the drawer's search box opens no help")).toHaveCount(0);
 });

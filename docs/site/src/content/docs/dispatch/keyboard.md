@@ -39,6 +39,9 @@ applies. Type in its filter box to narrow the list. A shortcut that would do not
 such as one that needs a focused row, is greyed out. **Change these keys in Settings**, at its
 foot, opens [Change the keys](#change-the-keys).
 
+`?` works in the Inbox drawer too. The help opens over the drawer and lists the drawer's keys under
+**Inbox**. `Escape` closes the help and leaves the drawer open.
+
 `Ctrl+K` opens the palette. With an empty box it lists the actions for the page you are on, each
 with the keys that also run it. Type to filter those actions and to search all of Dispatch. Use
 the arrow keys and `Enter` to pick a row. Some actions have no key, because a single key would be
