@@ -867,9 +867,12 @@ func heldBlockParentDifferences(
 
 // heldLink is one link a block node states beside its membership of its document and its
 // placement: a mention's or a pointer's, under the kind its pair names, to its far end.
-// A reading's authored_by (PlanDecisionNodes) and an ask block copy's copied_from (docs'
-// claimCopies) are no link: no block_refs row projects either, so no pair of a version
-// writes them and no pass that drops a row retracts them.
+// A reading's authored_by (PlanDecisionNodes), an ask block copy's copied_from (docs'
+// claimCopies) and a block's mention of a person, an agent's session or a role (IdentityKinds,
+// blockIdentityMentions) are no link: no block_refs row projects any of them, so no pair of a
+// version writes them and no pass that drops a row retracts them. An identity mention is never
+// retracted at all (identityMentions), and a person's goes through graphstore.ToPerson alone,
+// which refuses it in any other write.
 type heldLink struct{ kind, toKind, toID string }
 
 // heldDocumentBlocks is what the store states now of the blocks of the document refKey names, by
@@ -924,7 +927,9 @@ func heldDocumentBlocks(ctx context.Context, q Queryer, refKey string) (map[stri
 		`t.from_kind = '`+BlockNodeKind+`' and t.from_id = member.id
 				  and t.to_kind <> '`+graphstore.KindValue+`'
 				  and t.kind not in ('`+TupleInDocument+`', '`+graphstore.TuplePartOf+`',
-				                     '`+graphstore.TupleAuthoredBy+`', '`+graphstore.TupleCopiedFrom+`')`)+`
+				                     '`+graphstore.TupleAuthoredBy+`', '`+graphstore.TupleCopiedFrom+`')
+				  and not (t.kind = '`+graphstore.TupleMentions+`'
+				           and t.to_kind in ('`+strings.Join(IdentityKinds, `', '`)+`'))`)+`
 			) current
 			where current.asserted
 		) held on true

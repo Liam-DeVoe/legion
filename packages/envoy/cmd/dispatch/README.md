@@ -3710,6 +3710,7 @@ What the run reads instead is the two versions the document's own row records: `
 A document whose `store_version` is below its `version` is one another release indexed after the store stated it, and the run marks it too.
 The reconciliation's index pass over its latest version finds the store last stated the document at a version other than the latest one any release indexed, so it reads what the store still asserts of the document beside the rows and decides from the version's render: a block the store holds live that the version does not hold is stated `gone`, as a block a version drops is, and a link the store asserts that no block of the version holds is retracted (`TestTheBlockAndTheLinkThePreviousReleaseDroppedAreGoneAfterTheBackfill`).
 A version of the document that this release writes before the run does the same, in its own index pass.
+Neither pass retracts a block's mention of a person, an agent's session or a role: no `block_refs` row holds a party, so only the store holds the mention, and the index never retracts one (`TestThePassOverAVersionThePreviousReleaseIndexedKeepsItsBlocksIdentityMentions`).
 No release deletes a comment's row: no route of either deletes one, and a document is removed only while no comment points at it, so a comment leaves nothing to state `gone`.
 
 It is no repair.
