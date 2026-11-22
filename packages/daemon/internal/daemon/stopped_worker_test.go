@@ -576,14 +576,28 @@ type factHold struct {
 // connection (pg_locks gives a bigint key as its high half in classid and its low half in
 // objid), so the hold is that lock and no copy of its key: the session-level hold is taken under
 // it, and outlives the transaction that took it.
+//
+// The connection is opened from the pool's own configuration and runs the pool's AfterConnect,
+// the store's codec rule (registerStorableCodecs), so a fact applied on it writes what the
+// daemon's writes would. It is no store.Pool, so a fact applied on it is not under that pool's
+// refusal of a nested acquire (store.Pool's guard); the two facts this test applies on it, a
+// claim's failure and a retry, run the engine's handlers inside the fact's own transaction and
+// ask for no other connection. The wait for the lock, behind a pass that holds it, is
+// bounded by the test binary's deadline less testwait's margin (testwait.Remaining).
 func holdFacts(t *testing.T, pool *store.Pool) *factHold {
 	t.Helper()
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), testwait.Remaining(t))
+	defer cancel()
 	conn, err := pgx.ConnectConfig(ctx, pool.Config().ConnConfig.Copy())
 	if err != nil {
 		t.Fatalf("open the connection the fact lock is held on: %v", err)
 	}
 	t.Cleanup(func() { _ = conn.Close(context.Background()) })
+	if after := pool.Config().AfterConnect; after != nil {
+		if err := after(ctx, conn); err != nil {
+			t.Fatalf("run the pool's AfterConnect on the connection the fact lock is held on: %v", err)
+		}
+	}
 	hold := &factHold{conn: conn}
 	if err := pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
 		if err := intake.SerializeFacts(ctx, tx); err != nil {
@@ -604,8 +618,10 @@ func holdFacts(t *testing.T, pool *store.Pool) *factHold {
 // release gives the daemon's passes the fact lock back.
 func (h *factHold) release(t *testing.T) {
 	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), testwait.Remaining(t))
+	defer cancel()
 	var released bool
-	if err := h.conn.QueryRow(context.Background(), "select pg_advisory_unlock($1)", h.key).Scan(&released); err != nil || !released {
+	if err := h.conn.QueryRow(ctx, "select pg_advisory_unlock($1)", h.key).Scan(&released); err != nil || !released {
 		t.Fatalf("give the daemon's passes the fact lock back: released %t, %v", released, err)
 	}
 }
