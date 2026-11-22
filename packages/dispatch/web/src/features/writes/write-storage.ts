@@ -21,8 +21,9 @@ import { entryNames, pageStorage, readEntry, removeEntry, type Shape, shape } fr
  * carried, and its kind's own record.
  * An entry that does not parse - another version's, or damaged - is dropped when the page loads,
  * as is every entry of another person's. While any of them the reader sees is unconfirmed the
- * page asks the browser to confirm leaving (`beforeunload`), since a closed tab would lose it; a
- * quiet one (a read mark) is never shown, so it never asks.
+ * page asks the browser to confirm leaving (`beforeunload`), since a closed tab would lose it - a
+ * write a reload kept as well, from the load that reads it back until the store has taken it up
+ * or let it go; a quiet one (a read mark) is never shown, so it never asks.
  */
 
 const ENTRY_PREFIX = "dispatch.write:";
@@ -309,8 +310,27 @@ export class WriteStorage {
    *  request is kept from the press, before its turn comes: so a kept request says what went out
    *  only where `sent` says one did, and a key nothing went out under has never been seen by
    *  Dispatch. An entry this release wrote holds both fields, `null` included, and is read as it
-   *  was written. */
+   *  was written. Leaving the page asks for each one still out from here on, as it did on the
+   *  page that pressed it: the store's take-up of what a reload kept waits for the kinds of write
+   *  (`Writes.resume`), and until it has taken a write up or let it go, the tab's storage is the
+   *  only place that write is, which closing the tab would lose. */
   load(login: string): KeptWrite[] {
+    const loaded = this.#read(login, true);
+    for (const write of loaded) this.#confirm(write.key, WriteStorage.#settled(write));
+    return loaded;
+  }
+
+  /** Every write `login` kept, in press order, read as `load` reads them, dropping nothing and
+   *  changing nothing: for the store to read what a reload kept while the writes of another
+   *  person may be kept beside them - pressed in this page by someone signed in since, and still
+   *  the store's (`Writes.unsent`, `#dropKept`). */
+  peek(login: string): KeptWrite[] {
+    return this.#read(login, false);
+  }
+
+  /** `load` and `peek`: every write `login` kept, each entry that is not one of theirs dropped
+   *  where `drop` says so. */
+  #read(login: string, drop: boolean): KeptWrite[] {
     const storage = this.#storage;
     if (storage === undefined || this.#retired) return [];
     const loaded: KeptWrite[] = [];
@@ -321,7 +341,7 @@ export class WriteStorage {
         `${ENTRY_PREFIX}${entry.key}` !== name ||
         entry.login !== login
       ) {
-        removeEntry(storage, name);
+        if (drop) removeEntry(storage, name);
         continue;
       }
       const { carried: keptCarried, keyed, version: _version, ...write } = entry;

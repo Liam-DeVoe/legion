@@ -1,5 +1,6 @@
-import { type ReactNode, useEffect } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 
+import { ChunkBoundary } from "../shell/ChunkBoundary";
 import { chunk, chunkComponent } from "../shell/chunk-component";
 import {
   importWhenOnline,
@@ -27,7 +28,10 @@ import { useWriteSelection } from "./write-store";
  * every chunk of this dashboard a reader is in front of takes: a chunk that is in draws in the
  * commit of the row that shows it, and a download that fails goes through `renderChunk`, so a
  * list that cannot load after a deploy spends one of the tab's recovery reloads
- * (`DeploymentResilience.tsx`). Both chunks are started once the page has drawn, so a reader who
+ * (`DeploymentResilience.tsx`). Both hosts sit outside the page's error boundary - the status
+ * corner, and the sign-in page - so each list has a boundary of its own (`ChunkBoundary`): one
+ * that fails online draws nothing, as it would with no write to show, and the rest of the page
+ * stays drawn and signed in. Both chunks are started once the page has drawn, so a reader who
  * presses a write, or whose session lapses, usually finds its list in already.
  */
 const pendingWritesChunk = chunk<object>(() =>
@@ -64,6 +68,14 @@ export function loadWriteKinds(): Promise<unknown> {
 /** The pending-writes indicator, for the shell's status corner. */
 export function PendingWritesHost(): ReactNode {
   const rows = useWriteSelection("indicator", indicatorWrites);
+  // Mounted from the first row on, and never unmounted for want of one: the indicator draws
+  // nothing itself while nothing is pending, and the focus it hands on as its panel goes - after
+  // a Discard or a Stop trying that takes the last row away - is a layout effect of its own
+  // (`usePanelFocusReturn`), which runs only in a commit it is still mounted in. Unmounted in the
+  // commit its last row goes, it would leave the focus on the page's body. Set in the render that
+  // first sees a row, so that render draws it already.
+  const [shown, setShown] = useState(false);
+  if (rows.length > 0 && !shown) setShown(true);
   // Both chunks are started here, after the page has drawn (`features/shell/content-drawn.ts`):
   // an effect runs after the commit it belongs to, so a landing asks for neither before its
   // first paint, and a landing that draws a live document asks only once its first block is
@@ -83,11 +95,19 @@ export function PendingWritesHost(): ReactNode {
     prefetchChunk(keptWritesChunk.load);
     prefetchChunk(writeKinds);
   }, [drawn]);
-  return rows.length === 0 ? null : <PendingWritesIndicator />;
+  return rows.length > 0 || shown ? (
+    <ChunkBoundary>
+      <PendingWritesIndicator />
+    </ChunkBoundary>
+  ) : null;
 }
 
 /** What a lapsed session keeps, for the sign-in page. */
 export function KeptWritesHost(): ReactNode {
   const rows = useWriteSelection("kept-while-signed-out", keptWrites);
-  return rows.length === 0 ? null : <KeptWrites />;
+  return rows.length === 0 ? null : (
+    <ChunkBoundary>
+      <KeptWrites />
+    </ChunkBoundary>
+  );
 }

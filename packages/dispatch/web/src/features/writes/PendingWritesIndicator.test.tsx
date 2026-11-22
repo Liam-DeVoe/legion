@@ -18,6 +18,7 @@ import {
   sameKeyRetryNote,
 } from "./keyed-write";
 import { PendingWritesIndicator } from "./PendingWritesIndicator";
+import { PendingWritesHost } from "./write-hosts";
 import { KEPT_SEND_RESUME_MS } from "./write-storage";
 import { plainWrite, type Writes, writesOf } from "./write-store";
 
@@ -144,14 +145,17 @@ test("the indicator counts the writes out, names a late one, and clears when it 
   }
 });
 
-/** The indicator on a page as the shell draws it: after a control the reader comes to it from
- *  (`Elsewhere`, drawn while `elsewhere` holds), before another control and a line of plain text,
- *  and beside the page's main region, which takes the focus as `app.tsx`'s does. */
+/** The indicator on a page as the shell draws it: through its host (`PendingWritesHost`), which
+ *  mounts it once a write is out and keeps it mounted as the last one goes, so the focus it hands
+ *  on as its panel goes is handed on in the commit that takes the panel away; after a control the
+ *  reader comes to it from (`Elsewhere`, drawn while `elsewhere` holds), before another control
+ *  and a line of plain text, and beside the page's main region, which takes the focus as
+ *  `app.tsx`'s does. */
 function ShellPage({ elsewhere }: { readonly elsewhere: boolean }): ReactNode {
   return (
     <>
       {elsewhere ? <button type="button">Elsewhere</button> : null}
-      <PendingWritesIndicator />
+      <PendingWritesHost />
       <button type="button">Other</button>
       <p>Page text</p>
       <main id="main-content" tabIndex={-1} />

@@ -13,6 +13,7 @@ import {
 import { askSignInAgain } from "../../api/query-client";
 import type { AuthenticatedUser } from "../../api/types";
 import { newSendKey } from "../../lib/send-key";
+import type { UnsentChange } from "../shell/sign-in-channel";
 import { indexedDbFiles, type KeptFiles } from "./kept-files";
 import {
   KEYED_SEND_ATTEMPT_MS,
@@ -340,11 +341,11 @@ interface TakeUp {
   readonly login: string;
   readonly ask: () => void;
   readonly pressedMeanwhile: Entry[];
-  /** Every person whose writes were dropped while the take-up waited: by another person's sign-in
-   *  (`signedIn`), or by their sign-out landing in another tab or under a lapse (`dropLogin`).
-   *  What the reload kept of theirs is not in the store yet for that drop to reach, so the take-up
-   *  drops it in turn, unsent, rather than take it up for the next sign-in to send
-   *  (`#dropKept`). */
+  /** Every person whose writes were dropped while the take-up waited: the person it began for,
+   *  once another person signed in (`signedIn`), and anyone whose sign-out landed in another tab
+   *  or under a lapse (`dropLogin`). What the reload kept of the person the take-up began for is
+   *  not in the store yet for that drop to reach, so the take-up drops it in turn, unsent, rather
+   *  than take it up for the next sign-in to send (`#dropKept`). */
   readonly dropped: Set<string>;
 }
 
@@ -467,6 +468,31 @@ export class Writes {
 
   /** Every write held, in press order: one array until a write changes. */
   readonly rows = (): readonly Write[] => this.#rows;
+
+  /** What of `login`'s a sign-out would discard here: every write of theirs they can see that
+   *  Dispatch has not made - out, waiting its turn, or refused and holding their draft - by its
+   *  key and name. That is every such write the store holds, and, while the take-up of what a
+   *  reload kept waits for the kinds of write (`resume`), every one of theirs the reload kept
+   *  that it has not taken up yet: those are in the tab's storage alone until the kinds are in,
+   *  and a sign-out that lands meanwhile discards them with the rest (`signedOut`). Not once a
+   *  drop meanwhile has taken that person's writes, which the take-up drops in turn
+   *  (`TakeUp.dropped`). A quiet write - a read mark - is never shown, and is no change of theirs
+   *  to lose. What this tab's sign-out asks the person about, and what this tab answers another
+   *  tab's (`app.tsx`). */
+  readonly unsent = (login: string): UnsentChange[] => {
+    const takingUp = this.#takingUp;
+    const kept =
+      takingUp === undefined || takingUp.dropped.has(login) ? [] : this.#kept.peek(login);
+    // A kept write the store holds is this page's own, kept from its press, or one the take-up
+    // has taken up already: it is named once, as the store's.
+    const held = new Set(this.#rows.map((row) => row.key));
+    return [
+      ...this.#rows.filter((row) => row.login === login && row.status !== "made"),
+      ...kept.filter((write) => !held.has(write.key)),
+    ]
+      .filter((write) => write.presentation !== "quiet")
+      .map(({ key, label }) => ({ key, label }));
+  };
 
   /** The request the write `id` makes - the one its press named, or the one it last went out as
    *  - or undefined where the store holds no such write or it names none yet (one made by an
@@ -725,17 +751,17 @@ export class Writes {
    * upload's file with it: each one out stops trying after the attempt in flight, and none starts,
    * until someone signs in. The same person's sign-in takes them up again where they stood, each in
    * its line; anyone else's drops every write not theirs, its trying stopped and its press refused,
-   * and every write a reload kept of the people before, which a take-up still waiting would take
-   * up otherwise (`TakeUp.dropped`). A sign-out still out (`endsWithSession`) has done what it was
-   * for once the session lapses, and lands; so has another tab's sign-out of the person whose
-   * session lapsed, while it still holds their writes here (`holdFor`): the lapse is that sign-out
-   * landing, whether it reaches this page before or after that tab's hold ends, so their writes go
-   * (`dropLogin`) rather than wait for a sign-in they were discarded before. A lapse with no such
-   * hold keeps them. Whenever who is signed in changes, every hold this page's sign-out put on
-   * writes ends, and each kind lets go of what it remembered of the person before (`reset`) - once
-   * the writes the change drops are gone, so each of those is undone (`undone`) from what its kind
-   * still remembers of that person's answers. Another tab's hold is that tab's to end (`holdFor`),
-   * or this lapse's.
+   * and every write a reload kept of the person a take-up still waiting began for, which it
+   * would take up otherwise (`TakeUp.dropped`). A sign-out still out (`endsWithSession`) has done
+   * what it was for once the session lapses, and lands; so has another tab's sign-out of the
+   * person whose session lapsed, while it still holds their writes here (`holdFor`): the lapse is
+   * that sign-out landing, whether it reaches this page before or after that tab's hold ends, so
+   * their writes go (`dropLogin`) rather than wait for a sign-in they were discarded before. A
+   * lapse with no such hold keeps them. Whenever who is signed in changes, every hold this page's
+   * sign-out put on writes ends, and each kind lets go of what it remembered of the person before
+   * (`reset`) - once the writes the change drops are gone, so each of those is undone (`undone`)
+   * from what its kind still remembers of that person's answers. Another tab's hold is that tab's
+   * to end (`holdFor`), or this lapse's.
    */
   signedIn(login: string | undefined): void {
     const before = this.#login;
@@ -759,13 +785,9 @@ export class Writes {
     this.#unsettledSignOuts.clear();
     this.#lapsed = false;
     const takingUp = this.#takingUp;
-    if (takingUp !== undefined) {
-      // Whoever the take-up could still take up writes for once the kinds are in - the person it
-      // began for, after a lapse, or the person signed in until now - but this one.
-      for (const person of [takingUp.login, before]) {
-        if (person !== undefined && person !== login) takingUp.dropped.add(person);
-      }
-    }
+    // The person the take-up began for is the one whose kept writes it could still take up once
+    // the kinds are in (`resume`): anyone else's sign-in drops them.
+    if (takingUp !== undefined && takingUp.login !== login) takingUp.dropped.add(takingUp.login);
     this.#take([...this.#entries.values()].filter((entry) => entry.write.login !== login));
     if (changed) this.#resetKinds();
     void this.#files.keepOnly(login);
@@ -904,17 +926,30 @@ export class Writes {
    * (`kinds.ts`), so the app passes what loads them (`loadKinds`), and the take-up waits until
    * they are in, whichever load brought them (`kindsRegistered`). Every write pressed meanwhile
    * (`run`) joins its line once the take-up is done, behind every write the take-up put there, in
-   * press order, whatever order the page's effects pressed it in. A drop meanwhile of a person's
+   * press order, whatever order the page's effects pressed it in. A drop meanwhile of `login`'s
    * writes - another person's sign-in, or their sign-out landing - drops what the reload kept of
    * theirs too, once the kinds are in (`TakeUp.dropped`). A load that fails ends nothing here: the
    * next press asks again, and the failure of a load a reader waits on reloads the page while the
    * tab's reload budget lasts (`loadWriteKinds`), whose own take-up finds every write pressed
    * meanwhile here kept in the tab. Without `loadKinds` - every unit test's store - the take-up
    * runs at once.
+   *
+   * Another person's kept writes, and their files, go at once, before any wait: the take-up is
+   * only ever of `login`'s. Chosen once the kinds are in instead, a person signed in from another
+   * tab during the download would have what this tab kept of theirs from before the reload taken
+   * up and sent, where the page's own sign-in had already dropped it - the rule that another
+   * person's sign-in drops every write of another login (`signedIn`) - and a sweep of every file
+   * but one person's, made then, would delete the files of the uploads someone signed in since
+   * pressed meanwhile. While the take-up waits, a sign-out asks about the writes it will take up
+   * (`unsent`), and leaving the page asks for them (`WriteStorage.load`).
    */
   resume(login: string, loadKinds?: () => Promise<unknown>): void {
     if (this.#resumed) return;
     this.#resumed = true;
+    // Read for what it drops - every entry of another person's - and for leaving the page to ask
+    // for the person's own: the take-up reads them again once the kinds are in (`#takeUp`).
+    this.#kept.load(login);
+    void this.#files.keepOnly(login);
     if (loadKinds === undefined) {
       void this.#takeUp(login);
       return;
@@ -946,13 +981,13 @@ export class Writes {
     takingUp.ask();
     void registered.promise.then(async () => {
       takeUpsWaiting.delete(registered.resolve);
-      // Whoever is signed in by now: a person signed in from another tab meanwhile has their own
-      // taken up and the first person's dropped, as that sign-in would have dropped them; a lapse
-      // meanwhile takes up the first person's, to wait for the sign-in that follows (`signedIn`),
-      // unless a drop meanwhile took that person's writes (`TakeUp.dropped`).
-      const person = this.#login ?? login;
-      if (takingUp.dropped.has(person)) this.#dropKept(person);
-      else await this.#takeUp(person);
+      // The person's writes are taken up whoever is signed in by now - they themselves, or no one
+      // after a lapse, to wait for the sign-in that follows (`signedIn`) - unless a drop meanwhile
+      // took that person's writes: another person's sign-in from another tab always has, and the
+      // writes of whoever signed in since are this page's own, pressed meanwhile, with nothing of
+      // theirs kept from before the reload left to take up.
+      if (takingUp.dropped.has(login)) this.#dropKept(login);
+      else await this.#takeUp(login);
       this.#takingUp = undefined;
       for (const entry of takingUp.pressedMeanwhile) {
         if (this.#entries.get(entry.write.id) !== entry) continue;
@@ -995,24 +1030,25 @@ export class Writes {
         this.#resume(kept, kind, detail, now, undefined);
       }
     }
-    void this.#files.keepOnly(login);
     // Settled rather than all: a write pressed meanwhile goes on whatever a read made.
     return Promise.allSettled(files);
   }
 
   /** What a take-up does instead once a drop took `login`'s writes while it waited
-   *  (`TakeUp.dropped`): every write the reload kept of theirs goes, unsent, its file with it. */
+   *  (`TakeUp.dropped`): every write the reload kept of theirs goes, unsent, its file with it.
+   *  Nothing else of the tab's goes: what is kept beside them is the store's, pressed meanwhile -
+   *  by the person signed in again, or by someone signed in since and held now by a lapse of
+   *  theirs - and a sweep of every file but `login`'s would delete the files of that person's
+   *  uploads. Every other person's kept writes went as the take-up began (`resume`). */
   #dropKept(login: string): void {
-    // A write the store holds is this page's own, kept in the tab from its press - one pressed
-    // since the drop, by the person signed in again - and no write of the reload's, as `#takeUp`
-    // reads it too: it goes on as its press asked.
+    // A write the store holds is this page's own, kept in the tab from its press, and no write of
+    // the reload's, as `#takeUp` reads it too: it goes on as its press asked.
     const held = new Set([...this.#entries.values()].map((entry) => entry.write.key));
-    for (const kept of this.#kept.load(login)) {
+    for (const kept of this.#kept.peek(login)) {
       if (held.has(kept.key)) continue;
       this.#kept.forget(kept.key);
       if (kept.request !== null && "form" in kept.request) void this.#files.delete(kept.key);
     }
-    void this.#files.keepOnly(login);
   }
 
   #resume(kept: KeptWrite, kind: AnyKind, detail: unknown, now: number, file?: File): void {

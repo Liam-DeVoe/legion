@@ -75,11 +75,7 @@ import {
 import { NotFoundPage } from "./features/shell/NotFoundPage";
 import { RailButton } from "./features/shell/RailButton";
 import { ShortcutHelpHost } from "./features/shell/ShortcutHelpHost";
-import {
-  SIGN_OUT_SETTLE_MS,
-  SignInChannel,
-  type UnsentChange,
-} from "./features/shell/sign-in-channel";
+import { SIGN_OUT_SETTLE_MS, SignInChannel } from "./features/shell/sign-in-channel";
 import {
   COMPACT_VIEWPORT_QUERY,
   READING_PANE_QUERY,
@@ -93,7 +89,7 @@ import { Sidebar } from "./features/sidebar/Sidebar";
 import { SendStoppedError, stoppedWriteNote } from "./features/writes/keyed-write";
 import { useKeyedWrite, useRefusalOfSubject } from "./features/writes/useKeyedWrite";
 import { KeptWritesHost, loadWriteKinds, PendingWritesHost } from "./features/writes/write-hosts";
-import { type Write, writesOf } from "./features/writes/write-store";
+import { writesOf } from "./features/writes/write-store";
 import { FOOT_STATUS_INSET_PROPERTY, useFootInset } from "./hooks/useFootInset";
 import {
   backdrop50,
@@ -934,19 +930,21 @@ function AppShell({
       onSearch={() => setBarOpen(true)}
       onSignOut={() => {
         // Signing out discards the person's own writes in every tab of this browser, so it asks
-        // first while any is unsent, naming each once - this tab's, and every other tab's, which
-        // it asks for first (`SignInChannel.unsentElsewhere`), by key, since a tab duplicated
-        // from another holds the same writes; Cancel keeps them signed in and their writes as
-        // they are. Confirmed, nothing of theirs goes out in any tab until Dispatch answers the
-        // sign-out (`Writes.holdFor`), and only its landing discards them - a session that lapses
-        // under it has ended as the sign-out asked, so that lands too (`endsWithSession`).
+        // first while any is unsent, naming each once - this tab's, the writes a reload kept that
+        // the store has not taken up yet among them (`Writes.unsent`), and every other tab's,
+        // which it asks for first (`SignInChannel.unsentElsewhere`), by key, since a tab
+        // duplicated from another holds the same writes; Cancel keeps them signed in and their
+        // writes as they are. Confirmed, nothing of theirs goes out in any tab until Dispatch
+        // answers the sign-out (`Writes.holdFor`), and only its landing discards them - a session
+        // that lapses under it has ended as the sign-out asked, so that lands too
+        // (`endsWithSession`).
         if (askingTabs) return;
         setAskingTabs(true);
         void signIns.unsentElsewhere(login).then((elsewhere) => {
           setAskingTabs(false);
           const unsent = new Map<string, string>();
           for (const { key, label } of [
-            ...unsentChanges(writesOf(queryClient).rows(), login),
+            ...writesOf(queryClient).unsent(login),
             ...elsewhere.unsent,
           ]) {
             if (!unsent.has(key)) unsent.set(key, label);
@@ -1257,15 +1255,6 @@ const signIns = new SignInChannel(
   typeof navigator === "undefined" ? undefined : (navigator.locks ?? undefined)
 );
 
-/** What of `login`'s a sign-out would discard here: every write of theirs they can see that
- *  Dispatch has not made - out, waiting its turn, or refused and holding their draft - by its key
- *  and name. A read mark is never shown, and is no change of theirs to lose. */
-export function unsentChanges(rows: readonly Write[], login: string): UnsentChange[] {
-  return rows
-    .filter((row) => row.login === login && row.presentation !== "quiet" && row.status !== "made")
-    .map((row) => ({ key: row.key, label: row.label }));
-}
-
 /** What signing out asks while `unsent` changes - this tab's and the other tabs' - would be
  *  discarded, naming each, and while a tab that did not answer in time (`unanswered`) may hold
  *  more. */
@@ -1388,7 +1377,7 @@ export function AuthGate(): ReactNode {
       // Their sign-out there is out: nothing of theirs goes out here until Dispatch answers it.
       signingOut: (signingOut) => writes.holdFor(signingOut),
       stillSignedIn: (still) => writes.release(still),
-      unsent: (of) => unsentChanges(writes.rows(), of),
+      unsent: writes.unsent,
     });
   }, [queryClient]);
 

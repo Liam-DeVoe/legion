@@ -714,6 +714,90 @@ test("another person's sign-in while the take-up waits drops the first person's 
   });
 });
 
+// W26. A tab can keep the write of someone no longer signed in there - bob's, kept from his session
+// before the reload - and load signed in as alice, whose sign-in drops it, as it drops every write
+// of another login. It goes as the take-up begins, not once the kinds of write are in: bob signing
+// in from another tab while they download takes none of it up, and nothing goes out as anyone.
+test("another person's write a reload kept goes as the take-up begins, so their sign-in while the kinds download sends none of it", async () => {
+  await onFakeClock(async () => {
+    const tab = keptTab();
+    const bobs = keyMinted(Date.now());
+    keepWrite(tab, bobs, { login: "bob", target: "issue:CORE-1" });
+    const send = spyOn(api, "send").mockResolvedValue(null as never);
+    const kinds = Promise.withResolvers<void>();
+    try {
+      const writes = new Writes(signedIn("alice"), tab.page(), memoryFiles());
+      writes.signedIn("alice");
+      writes.resume("alice", () => kinds.promise);
+      await settle();
+
+      writes.signedIn("bob");
+      kinds.resolve();
+      await tick(60_000);
+      expect(
+        send.mock.calls.map(([, bounds]) => bounds?.key),
+        "the take-up sent the write the tab kept of bob's before alice signed in"
+      ).toEqual([]);
+      expect(writes.rows()).toEqual([]);
+      expect(tab.kept(bobs)).toBeUndefined();
+    } finally {
+      // Let in whichever step failed, so no take-up is left in the module's `takeUpsWaiting`
+      // for a later row's `kindsRegistered` to end against that row's `api.send`.
+      kinds.resolve();
+      await settle();
+      send.mockRestore();
+      tab.close();
+    }
+  });
+});
+
+// Alice's take-up waits for the kinds of write; bob signs in from another tab, which drops what
+// the reload kept of hers, and presses an upload, which waits for the take-up kept in the tab with
+// its file; then his session lapses, which keeps it for his next sign-in. The take-up then drops
+// what the reload kept of alice's, and nothing else: bob's upload keeps its file, which a reload
+// before his sign-in needs to make the upload again.
+test("a take-up that drops what the reload kept of the person it began for keeps the file of an upload someone signed in since pressed meanwhile", async () => {
+  await onFakeClock(async () => {
+    const tab = keptTab();
+    const alices = keyMinted(Date.now());
+    keepWrite(tab, alices, { target: "issue:CORE-1" });
+    const files = memoryFiles();
+    const client = signedIn("alice");
+    const send = spyOn(api, "send").mockResolvedValue(null as never);
+    const kinds = Promise.withResolvers<void>();
+    try {
+      const writes = new Writes(client, tab.page(), files);
+      writes.signedIn("alice");
+      writes.resume("alice", () => kinds.promise);
+      client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "bob" });
+      writes.signedIn("bob");
+      void uploadWrite(writes, spec, async () => null).catch(() => {});
+      await settle();
+      const [bobs] = writes.rows();
+      expect(bobs?.login).toBe("bob");
+      const key = bobs?.key ?? "";
+      expect(files.rows.get(key)).toBe(spec);
+
+      writes.signedIn(undefined);
+      kinds.resolve();
+      await tick(60_000);
+      expect(send).not.toHaveBeenCalled();
+      expect(tab.kept(alices)).toBeUndefined();
+      expect(writes.rows().map((write) => [write.key, write.status])).toEqual([[key, "queued"]]);
+      expect(tab.kept(key)).toMatchObject({ login: "bob" });
+      expect(
+        files.rows.get(key),
+        "the take-up's drop of alice's kept writes deleted the file of bob's upload"
+      ).toBe(spec);
+    } finally {
+      kinds.resolve();
+      await settle();
+      send.mockRestore();
+      tab.close();
+    }
+  });
+});
+
 // W48, W57. A sign-out of the person in another tab, out when the take-up ends, holds both the
 // write the reload kept and the one pressed meanwhile, each in its line and saying so, and none
 // goes out; its landing there (`dropLogin`) then drops both, unsent.

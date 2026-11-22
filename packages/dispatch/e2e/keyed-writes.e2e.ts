@@ -36,6 +36,7 @@ import {
   fetchedChunk,
   KEPT_WRITES_CHUNK,
   PENDING_WRITES_CHUNK,
+  recordTabReloads,
   shellLoads,
   tabReloads,
   WRITE_KINDS_CHUNK,
@@ -1318,6 +1319,152 @@ test("a pin on a turn and a priority pick pressed during an outage survive a rel
     for (const status of statuses) expect(status.input).toEqual({ status: "todo" });
     await expect(pendingWrites(page)).toHaveCount(0);
     await expect.poll(() => keptWrites(page)).toBe(0);
+  } finally {
+    await alice.close();
+  }
+});
+
+// The pending-writes indicator is a chunk of its own, and its download can fail while the browser
+// is online - a deployment that replaced the build the page loaded - with no recovery reload to
+// follow: the tab's three reloads are spent here, as a tab whose assets kept failing has spent
+// them. The indicator's host is in the status corner, outside the page's error boundary, so the
+// failure stops at the indicator's own (`ChunkBoundary`, `web/src/features/writes/write-hosts.tsx`):
+// the indicator draws nothing, and the rest of the page stays drawn and signed in. The app's top
+// boundary (`web/src/main.tsx`) would replace the whole app, `AuthGate` with it, so the tab would
+// stop answering another tab's sign-out, and stop showing the sign-in page on a 401, while its
+// write went on. The writes host's prefetch of the indicator is held on the wire, the status
+// change is pressed and held at the network - the indicator mounts on the held download - and
+// the download then fails. React reports a failure an error boundary caught on the console
+// (`onCaughtError`) in the commit that draws that boundary, which is what the row waits for.
+// SLOW(>=2s): two cold page loads, the first only to spend the tab's reloads in its own storage.
+test("a pending-writes indicator whose chunk fails to download online with no reload to follow leaves the page drawn and signed in", async ({
+  browser,
+}) => {
+  await createProject({ key: "KW", name: "Keyed writes" });
+  const issue = await createIssue({ project: "KW", title: "An indicator that cannot load" });
+  const path = `/api/v1/issues/${issue.key}`;
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await page.goto("/");
+    await expect(page.getByText("Signed in as alice")).toBeVisible();
+    const spent = await recordTabReloads(page, [3, 2, 1]);
+    // Every status change is held at the network, out and never answered, so a write is out
+    // while the indicator mounts.
+    await page.route(`**${path}`, (route) =>
+      route.request().method() === "PATCH" ? undefined : route.fallback()
+    );
+    const indicatorCode = await holdFirstRequest(page, PENDING_WRITES_CHUNK);
+    await page.goto(`/issues/${issue.key}`);
+    const indicator = await indicatorCode.held;
+    await expect(page.getByText("Signed in as alice")).toBeVisible();
+    const statusSent = page.waitForRequest(
+      (request) => request.method() === "PATCH" && new URL(request.url()).pathname === path
+    );
+    await page.getByLabel("Status").selectOption("backlog");
+    await statusSent;
+
+    const caught = page.waitForEvent("console", (message) =>
+      message.text().includes("Failed to fetch dynamically imported module")
+    );
+    await indicator.abort();
+    await caught;
+    await expect(page.getByTestId("error-boundary")).toHaveCount(0);
+    await expect(page.getByText("Signed in as alice")).toBeVisible();
+    await expect(page.getByLabel("Status")).toHaveValue("backlog");
+    await expect(pendingWrites(page)).toHaveCount(0);
+    expect(await tabReloads(page), "the failure reloaded the page").toEqual(spent);
+  } finally {
+    await alice.close();
+  }
+});
+
+/** Whether leaving `page` now asks the reader to confirm: a listener of its `beforeunload`
+ *  cancelled the event. It also marks the page as being left for the chunk-failure recovery
+ *  (`web/src/features/shell/DeploymentResilience.tsx`), until its next press: a row reads it
+ *  last. */
+function asksBeforeLeaving(page: Page): Promise<boolean> {
+  return page.evaluate(() => {
+    const leaving = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(leaving);
+    return leaving.defaultPrevented;
+  });
+}
+
+// While the store's take-up of what a reload kept waits for the kinds of write
+// (`web/src/features/writes/kinds.ts`, `Writes.resume`), the kept write is in the tab's storage
+// alone: the store holds no row of it, so the indicator does not name it yet. A sign-out that
+// lands discards it all the same, so Sign out pressed then asks first and names it
+// (`Writes.unsent`), as it names every write the store holds; and leaving the page asks for it,
+// since closing the tab would lose it (`WriteStorage.load`). Alice's status change is held at the
+// network, so it stays out and kept; the page reloads with the kinds' chunk held on the wire, so
+// the take-up waits; Cancel leaves her signed in, her write still kept.
+// SLOW(>=2s): the kept write is only observable across a real reload, so the row pays two issue
+// page loads and the browser's own "leave this page?" prompt between them.
+test("Sign out pressed while the take-up waits for the kinds of write names the write the reload kept, and leaving asks for it", async ({
+  browser,
+}) => {
+  await createProject({ key: "KW", name: "Keyed writes" });
+  const issue = await createIssue({ project: "KW", title: "Kept through the take-up" });
+  const path = `/api/v1/issues/${issue.key}`;
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    const questions: string[] = [];
+    page.on("dialog", (dialog) => {
+      // Sign out's question is cancelled, so it discards nothing; the reload's own "leave this
+      // page?" is accepted.
+      if (dialog.type() === "confirm") {
+        questions.push(dialog.message());
+        void dialog.dismiss();
+        return;
+      }
+      void dialog.accept();
+    });
+    // Every status change is held at the network: out, never answered, and kept in the tab.
+    await page.route(`**${path}`, (route) =>
+      route.request().method() === "PATCH" ? undefined : route.fallback()
+    );
+    await page.goto(`/issues/${issue.key}`);
+    await page.getByLabel("Status").selectOption("todo");
+    await expect(pendingWrites(page).getByRole("status")).toHaveText("Saving 1 change…");
+
+    const kindsCode = await holdFirstRequest(page, WRITE_KINDS_CHUNK);
+    await page.reload();
+    await kindsCode.held;
+    await expect(page.getByText("Signed in as alice")).toBeVisible();
+    // The take-up waits: the store holds no row of the write, which the tab keeps.
+    await expect(pendingWrites(page)).toHaveCount(0);
+    // The names of what the tab keeps, read from each kept write's own record, leaving out read
+    // marks as `keptWrites` does: the issue page's own read mark is a quiet write the tab keeps
+    // until Dispatch answers it, never shown and never asked about, and whether it is still out
+    // at this moment depends on the runner's speed.
+    const labels = await page.evaluate(() =>
+      Object.entries(window.sessionStorage).flatMap(([name, value]) => {
+        if (!name.startsWith("dispatch.write:")) return [];
+        const kept: unknown = JSON.parse(value);
+        return typeof kept === "object" &&
+          kept !== null &&
+          "label" in kept &&
+          !("presentation" in kept && kept.presentation === "quiet")
+          ? [String(kept.label)]
+          : [];
+      })
+    );
+    expect(labels).toEqual([expect.stringMatching(new RegExp(`^${issue.key} set to `, "u"))]);
+
+    await page.getByRole("button", { name: "Sign out" }).click();
+    await expect
+      .poll(() => questions, {
+        message: "Sign out did not ask about the write the reload kept before discarding it",
+      })
+      .toEqual([`Sign out and discard 1 unsent change?\n\n• ${labels[0]}`]);
+    await expect(page.getByText("Signed in as alice")).toBeVisible();
+    expect(await keptWrites(page)).toBe(1);
+    expect(
+      await asksBeforeLeaving(page),
+      "leaving the page asks nothing for the write the reload kept"
+    ).toBe(true);
   } finally {
     await alice.close();
   }
