@@ -8,6 +8,7 @@ import (
 	"maps"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -761,6 +762,93 @@ func TestMarkOnlyUpdateSweepsUnrecordedMarksWithoutCanonicalizingLegacyTable(t *
 		return !found
 	})
 	assertTableCellPipeVersionAndEventCounts(t, service.store, artifactID, 1, 0)
+}
+
+// The sweep of unrecorded marks that finds the document's room gone and the room budget with no
+// opening for a room of its own arms the document's next settlement itself, a settle delay on, and
+// logs the refusal at Warn naming the document and its retry. Here each settlement's room is closed
+// in ygo once the settlement has taken it and before it commits (beforeSettleCommit), as ygo's idle
+// sweep can retire a room no peer is in, and that settlement holds the budget's one opening, which
+// it booked to load the room. While the room keeps going, each settlement arms the next one, a
+// settle delay after it and never sooner; once a settlement keeps its room, its sweep takes the
+// mark off and the store holds the removal. Before, the sweep logged the refusal at Debug and armed
+// nothing, so the mark stayed in the stored document until somebody wrote the document again.
+func TestAnUnrecordedMarkSweepFindingNoRoomAndNoOpeningArmsTheNextSettlement(t *testing.T) {
+	const settleDelay = 200 * time.Millisecond
+	// refusals is how many settlements in a row the test closes the room under.
+	const refusals = 3
+	logs := captureLogs(t)
+	service, artifactID := newTestService(t)
+	service.settle = time.Hour
+	service.unrecordedMarkTTL = 0
+	service.srv.RoomIdleTimeout = time.Hour
+	seedServiceText(t, service, artifactID, "The quick brown fox")
+	browserMark(t, service, artifactID, "proofComment", "dangling", "brown")
+	awaitRoomAppends(t, service, artifactID, "become durable", service.waitForDurableAppends)
+	storedMark := func() bool {
+		_, _, found := pmdoc.FindMark(persistedProofTree(t, service.store, artifactID), "proofComment", "dangling")
+		return found
+	}
+	if !storedMark() {
+		t.Fatal("the stored document holds no unrecorded mark, so nothing here is tested")
+	}
+	// The room goes before the first settlement too, so that settlement books the budget's opening
+	// to load it and holds the opening through its sweep, as each after it does.
+	if err := service.srv.CloseRoom(artifactID, true); err != nil {
+		t.Fatalf("close the document's room: %v", err)
+	}
+	waitForNoLiveDocument(t, service, artifactID)
+	var mu sync.Mutex
+	var starts []time.Time
+	service.beforeSettleStart = func(room string) {
+		if room == artifactID {
+			mu.Lock()
+			starts = append(starts, time.Now())
+			mu.Unlock()
+		}
+	}
+	var closing atomic.Bool
+	closing.Store(true)
+	service.beforeSettleCommit = func(room string) {
+		if room != artifactID || !closing.Load() {
+			return
+		}
+		// The close runs on its own, as ygo's idle sweep does, and the hook waits for the room to
+		// leave the server: what the close does once it has, it may do under the document's lock
+		// this settlement holds.
+		live := service.srv.GetDoc(room)
+		go func() { _ = service.srv.CloseRoom(room, true) }()
+		if !testwait.Holds(roomWait(t), testwait.Poll, func() bool { return service.srv.GetDoc(room) != live }) {
+			t.Error("the settlement's room was never closed")
+		}
+	}
+	refused := func() string {
+		return logs.Lines(`level=WARN msg="dispatch: sweep unrecorded marks" room=` + artifactID)
+	}
+	// The delay is written once, before the settlement whose sweep arms the next.
+	service.settle = settleDelay
+	settleNow(service, artifactID)
+	waitFor(t, refusals*settleDelay+roomWait(t), fmt.Sprintf("%d settlements in a row to have their sweeps, finding no room and no opening, arm the next", refusals), func() bool {
+		return strings.Count(refused(), "\n") >= refusals
+	})
+	closing.Store(false)
+	waitFor(t, roomWait(t), "a settlement that keeps its room to store the mark's removal", func() bool { return !storedMark() })
+	for line := range strings.Lines(refused()) {
+		if !strings.Contains(line, `retry="the settlement this arms sweeps them"`) || !strings.Contains(line, "no opening for the room the unrecorded-mark sweep writes in") {
+			t.Fatalf("the sweep logged its refusal as:\n%s\nwant it naming the document, the refusal and its retry", line)
+		}
+	}
+	mu.Lock()
+	settled := slices.Clone(starts)
+	mu.Unlock()
+	if len(settled) < refusals+1 {
+		t.Fatalf("%d settlements of the document started, want the %d whose sweeps were refused and the one that kept its room", len(settled), refusals+1)
+	}
+	for index := 1; index < len(settled); index++ {
+		if gap := settled[index].Sub(settled[index-1]); gap < settleDelay*9/10 {
+			t.Fatalf("settlement %d of the document started %s after the one before it, sooner than the settle delay %s: the refused sweep's retry is not paced by the settlement timer", index+1, gap, settleDelay)
+		}
+	}
 }
 
 func TestCompactionRetainsContentClassificationAcrossMarkUpdates(t *testing.T) {

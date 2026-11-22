@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"sync/atomic"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/reearth/ygo/crdt"
@@ -240,7 +241,8 @@ const foldBufferBytes = 32 << 20
 // (store.RoomsPoolSize): a load used to fold inside its transaction on that pool, whose connections
 // bounded how many folds ran at once, and a buffered fold that has ended its transaction holds no
 // connection to bound it. A document load takes its slot before it knows whether its rows stream,
-// and gives it back before it waits for the whole slot a streamed fold takes (loadStored).
+// and gives it back as soon as it knows they do: before it waits for the whole slot a streamed
+// fold takes, and before a fold already on a whole slot streams them (loadStoredOnce).
 const bufferedFolds = store.RoomsPoolSize
 
 // foldRead hands use the room's stored updates through version, the rows of them tx reads, which
@@ -306,6 +308,7 @@ func (p *PgVersioned) foldRead(ctx context.Context, tx pgx.Tx, room string, vers
 		if err := cover(nil); err != nil {
 			return err
 		}
+		noteRowsRead(ctx)
 		if p.beforeFold != nil {
 			p.beforeFold(room)
 		}
@@ -314,6 +317,7 @@ func (p *PgVersioned) foldRead(ctx context.Context, tx pgx.Tx, room string, vers
 		}
 		return commit()
 	}
+	noteRowsRead(ctx)
 	updates := make([][]byte, 0, rows)
 	if err := eachUpdateThrough(ctx, tx, room, version, func(update []byte) error {
 		updates = append(updates, update)
@@ -331,6 +335,30 @@ func (p *PgVersioned) foldRead(ctx context.Context, tx pgx.Tx, room string, vers
 		p.beforeFold(room)
 	}
 	return use(ctx, memoryUpdates(ctx, updates))
+}
+
+// rowsReadKey marks a context whose read notes the moment it begins to read a log's rows
+// (watchRowsRead).
+type rowsReadKey struct{}
+
+// watchRowsRead is ctx marked so that the fold of a read under it notes the moment it begins to
+// read the stored rows (noteRowsRead), and the flag that moment sets: a cold read's fold, which
+// fails the room only where its fold had begun reading them (foldDocument). Every wait a read makes
+// for what it takes - a slot of the buffered folds, its grant, its rooms connection - comes before
+// that moment, but for the grant a fold of rows in memory takes once it holds them (foldRead) and
+// the wait of a decode that gives its grant back and takes its weight whole (holdUnbuiltLoad),
+// each of which holds nothing of the pool while it waits.
+func watchRowsRead(ctx context.Context) (context.Context, *atomic.Bool) {
+	read := new(atomic.Bool)
+	return context.WithValue(ctx, rowsReadKey{}, read), read
+}
+
+// noteRowsRead sets the flag watchRowsRead put in ctx, if any: the read under ctx begins to read
+// the stored rows, having waited for everything it takes before them.
+func noteRowsRead(ctx context.Context) {
+	if read, _ := ctx.Value(rowsReadKey{}).(*atomic.Bool); read != nil {
+		read.Store(true)
+	}
 }
 
 // takeFoldSlot takes one of the process's foldSlots for a read about to fold rows in memory

@@ -678,13 +678,16 @@ type serverWrite struct {
 //
 // A write of the server's own carries no grant in ctx, and takes the copy's bytes of its own,
 // waiting without a deadline, as holdServerLoad does. The copy is weighed (copyOfRoom) as that
-// wait begins and again once the grant is in hand, before the copy is encoded: what browsers
-// commit to the room while the count waits is in the state it copies. Nothing of the copy is
-// built by then, so the grant takes what the second weighing is past the first where the pool
-// gives it at once and otherwise gives itself back and takes the new weight whole, as a state
-// answer's grant is topped up (weighStateAnswer, unbuiltTake). A grant ctx carries already
-// holding bytes takes the difference only at once, and where the pool does not give it the copy
-// runs beside the pool's holders, as holdServerLoad's refused take does.
+// wait begins and again after every wait, before the copy is encoded: what browsers commit to
+// the room while the count waits is in the state it copies. Nothing of the copy is built by then,
+// so where the grant falls short of the room's weight it takes the difference where the pool
+// gives it at once and otherwise gives itself back and takes the new weight whole, waiting again,
+// as a state answer's grant is topped up (weighStateAnswer, unbuiltTake), and the room is weighed
+// once more after that wait; the copy is made once a weighing finds the grant covering the room,
+// so no commit made during any wait is in the copy and in no grant. The weight is capped at one
+// slot (copyWeight), so the weighings end once the grant holds one whatever the room does. A
+// grant ctx carries already holding bytes takes the difference only at once, and where the pool
+// does not give it the copy runs beside the pool's holders, as holdServerLoad's refused take does.
 func (s *Service) leavesPastDecodeCap(ctx context.Context, doc *crdt.Doc, write serverWrite) bool {
 	if past, decided := decodeCapWithoutCopy(doc, write); decided {
 		return past
@@ -693,8 +696,10 @@ func (s *Service) leavesPastDecodeCap(ctx context.Context, doc *crdt.Doc, write 
 	defer done()
 	ctx = slot.ownedBy(ctx)
 	take := unbuiltTake(ctx, slot)
-	if err := take(ctx, s.copyOfRoom(doc)); err == nil {
-		_ = take(ctx, s.copyOfRoom(doc))
+	for weight := s.copyOfRoom(doc); weight > slot.bytes; weight = s.copyOfRoom(doc) {
+		if take(ctx, weight) != nil {
+			break
+		}
 	}
 	return structsAfter(ctx, doc, write, slot.bytes) > maxUpdateItems
 }
@@ -724,7 +729,7 @@ func decodeCapWithoutCopy(doc *crdt.Doc, write serverWrite) (past, decided bool)
 // costs (copyOfRoom) - or the grant ctx carries where it carries one, which already holds the
 // copy's bytes by then, so this decode waits for nothing (holdServerLoad): a live write's
 // (leavesRoomPastDecodeCap, liveWrite.carriedBy), or a server write's own, which weighed the room
-// again once it held its grant (leavesPastDecodeCap).
+// again after each of its waits until its grant covered the room (leavesPastDecodeCap).
 func structsAfter(ctx context.Context, doc *crdt.Doc, write serverWrite, bytes int64) uint64 {
 	defer holdServerLoad(ctx, bytes)()
 	live := structCeiling(doc)

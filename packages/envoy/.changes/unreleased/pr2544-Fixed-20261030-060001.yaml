@@ -180,8 +180,9 @@ body: |-
     in between, a document weighed as its resident room is read from the store instead because
     that room retired or fell behind the stored head and its stored history weighs more, a stored
     history folds into more than its rows weigh, or the pool's fold slots are all taken and the
-    pool has no whole slot free at once. A document read that waits a minute for its turn in the
-    pool is answered `503` for its caller to retry and fails nothing.
+    pool has no whole slot free at once. A document read that waits a minute for its turn - for the
+    pool, a fold slot or a database connection - before it has begun reading the document's stored
+    history is answered `503` for its caller to retry and fails nothing.
 
     What the server holds for one browser's socket is bounded as well, at 70 MiB of frames queued
     for it and not yet written. ygo bounded that queue in frames alone, 512 of them whatever their

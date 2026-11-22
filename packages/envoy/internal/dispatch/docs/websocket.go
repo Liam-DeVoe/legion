@@ -174,6 +174,25 @@ func isSettlementLoad(ctx context.Context) bool {
 	return load
 }
 
+type noRoomLoadContextKey struct{}
+
+// withNoRoomLoad marks the call that ctx serves as one that may load no room: the awareness
+// relay's Inject of another process's update (awarenessRelay.received), which runs on room sync's
+// awareness lane, the one goroutine every room's relayed awareness waits behind. ygo's Inject
+// creates a room it does not find, and hands the room's load the Inject's context
+// (cybermonklabs/ygo v1.55.1-legion.2, PersistenceAdapterLoadContext), so a load whose context
+// carries the mark was created by that Inject, and it is refused before it records or reads
+// anything (servicePersistenceAdapter.LoadDocContext): its wait for the pod's load concurrency
+// has no deadline, and the lane would wait on it.
+func withNoRoomLoad(ctx context.Context) context.Context {
+	return context.WithValue(ctx, noRoomLoadContextKey{}, true)
+}
+
+func loadsNoRoom(ctx context.Context) bool {
+	refused, _ := ctx.Value(noRoomLoadContextKey{}).(bool)
+	return refused
+}
+
 // servicePersistenceAdapter observes ygo's otherwise asynchronous persistence
 // callbacks. A failed update evicts its room so the next access reloads durable
 // state instead of retaining unsaved live state.
@@ -237,18 +256,22 @@ func (a *servicePersistenceAdapter) LoadDoc(room string) ([]byte, error) {
 // found resident (allowApply), so its Apply makes a load of its own only where that room went
 // before ygo looked it up and no other caller's load of it was under way by then: ygo's idle sweep
 // retired it, or a close the service makes took it out. Where another caller's load was under way,
-// the Apply waits on that load instead, a stated risk allowApply describes. The refusal is not the
-// room's failure: it begins no record and takes no grant, so it has neither to give back, and it
-// fails no room. ygo removes its placeholder and hands the refusal to every
+// the Apply waits on that load instead, a stated risk allowApply describes. A load created by the
+// awareness relay's Inject (withNoRoomLoad) is refused the same way, for the same moment: the
+// relay injects only into a room ygo has published (holdsRoomForReaders), so its Inject creates
+// one only where a close or ygo's idle sweep took that room out in between, and its load would
+// wait for the pool on the awareness lane, which every room's relayed awareness waits behind. The
+// refusal is not the room's failure: it begins no record and takes no grant, so it has neither to
+// give back, and it fails no room. ygo removes its placeholder and hands the refusal to every
 // caller waiting on this load (provider/websocket/server.go, failRoomLoad), and the next access
 // loads the room afresh. A caller that waited on it meets the same refusal as no fault of the
 // room's: a settlement's warm-up is armed again and counted no failure (settleNoRoom), and a
 // committed write's publish ends as one that found no room does (publishedWithoutARoom). Every
-// other load - its ctx joined to no transaction, or to one whose grant holds nothing - reads as
-// above, and runs on no request's context: one load serves every caller waiting on it, so no
-// caller's end ends it.
+// other load - its ctx joined to no transaction, or to one whose grant holds nothing, and not the
+// relay's - reads as above, and runs on no request's context: one load serves every caller
+// waiting on it, so no caller's end ends it.
 func (a *servicePersistenceAdapter) LoadDocContext(ctx context.Context, room string) (_ []byte, err error) {
-	if transactionHolds(ctx) {
+	if transactionHolds(ctx) || loadsNoRoom(ctx) {
 		if hook := a.service.beforeRoomLoadRefused; hook != nil {
 			hook(room)
 		}
@@ -726,9 +749,11 @@ func (s *Service) allowApply(ctx context.Context, info websocket.InjectInfo) err
 
 // errRoomLoadUnderGrant refuses the load of a room a transaction holding its grant would have
 // waited for: here, where no room of the document is resident (allowApply), and at the load itself,
-// where the room went after that look (servicePersistenceAdapter.LoadDocContext). It is
-// ErrServiceUnavailable, the API's 503 DOC_SERVICE_UNAVAILABLE.
-var errRoomLoadUnderGrant = fmt.Errorf("%w: a transaction holding its grant of the pod's load concurrency loads no room, and this document's room is not resident", ErrServiceUnavailable)
+// where the room went after that look (servicePersistenceAdapter.LoadDocContext). The load the
+// awareness relay's Inject would make on its shared lane is refused with it too, at the load
+// (withNoRoomLoad), so every caller waiting on a refused load meets one refusal whoever created
+// the room. It is ErrServiceUnavailable, the API's 503 DOC_SERVICE_UNAVAILABLE.
+var errRoomLoadUnderGrant = fmt.Errorf("%w: a caller that may load no room - a transaction holding its grant of the pod's load concurrency, or the awareness relay - found this document's room not resident", ErrServiceUnavailable)
 
 // allowInject decides whether ygo may apply an injection to a room. Its issue read goes
 // through the shared pool for a caller that need hold no connection of its own (the unmark of
@@ -1172,22 +1197,25 @@ func leaveParkedOut(doc *crdt.Doc) {
 //
 // The grant is read off the room without encoding anything: its tracked state bytes, which the
 // service holds (roomWeighing.roomStateBytes), and the structs the answer may have to encode
-// (websocket.StateAnswerInfo.Structs). Both are read again once the grant is in hand and the
-// grant topped up where the room grew while this answer waited for it, which costs nothing where
-// it did not (StateAnswerInfo.StructsNow): the top-up takes the difference where the pool gives it
-// at once and otherwise gives the grant back and takes the new weight whole, since nothing of the
-// answer is built yet for the grant to cover while it waits (loadSlot.retake). The answer is built
-// after this returns, so a grant sized before a wait is otherwise a grant sized on a room that has
-// since changed. Beside the room, the grant weighs the browser's own SyncStep1, whose state vector
-// the answer decodes into a map it holds while it cuts (stepOneWeight): a browser names the
-// clients it holds there, as many as its message's bytes carry, whatever the room holds.
+// (websocket.StateAnswerInfo.Structs). Both are read again once the grant is in hand, and again
+// after every wait, until a reading finds the grant covering the room, which costs nothing where
+// the room did not grow (StateAnswerInfo.StructsNow): where the room grew while this answer
+// waited, the grant takes the difference where the pool gives it at once and otherwise gives
+// itself back and takes the new weight whole, since nothing of the answer is built yet for the
+// grant to cover while it waits (loadSlot.retake), and that wait is followed by another reading.
+// The answer is built after this returns, so a grant sized before a wait is otherwise a grant
+// sized on a room that has since changed. The grant is capped at one slot, so the readings end
+// once it holds one whatever the room does. Beside the room, the grant weighs the browser's own
+// SyncStep1, whose state vector the answer decodes into a map it holds while it cuts
+// (stepOneWeight): a browser names the clients it holds there, as many as its message's bytes
+// carry, whatever the room holds.
 //
-// A wait is bounded by WriteWaitBound, the server's own bound on what a caller spends at a
-// memory bound, and the browser a refusal closes is closed DOC_BUSY, the transient close the
-// editor comes back from and the one the room budget closes a browser it has no room for with.
-// Refusing beats waiting on past that: a browser whose answer waits has sent its SyncStep1 and
-// is shown nothing at all until it comes, where a browser closed DOC_BUSY is told why and comes
-// back to a pod that has room.
+// Every wait is bounded by one WriteWaitBound, the server's own bound on what a caller spends at
+// a memory bound, from this hook's start, and the browser a refusal closes is closed DOC_BUSY,
+// the transient close the editor comes back from and the one the room budget closes a browser it
+// has no room for with. Refusing beats waiting on past that: a browser whose answer waits has
+// sent its SyncStep1 and is shown nothing at all until it comes, where a browser closed DOC_BUSY
+// is told why and comes back to a pod that has room.
 func (s *Service) weighStateAnswer(info websocket.StateAnswerInfo) (func(), error) {
 	slot := newLoadSlot()
 	ctx, cancel := context.WithTimeout(context.Background(), WriteWaitBound)
@@ -1203,12 +1231,16 @@ func (s *Service) weighStateAnswer(info websocket.StateAnswerInfo) (func(), erro
 	if err := slot.take(ctx, weight); err != nil {
 		return nil, s.refusedStateAnswer(info, state, weight, err)
 	}
-	state, weight = grant(info.StructsNow())
-	if err := slot.retake(ctx, weight); err != nil {
-		slot.release()
-		return nil, s.refusedStateAnswer(info, state, weight, err)
+	for {
+		state, weight = grant(info.StructsNow())
+		if weight <= slot.bytes {
+			return slot.release, nil
+		}
+		if err := slot.retake(ctx, weight); err != nil {
+			slot.release()
+			return nil, s.refusedStateAnswer(info, state, weight, err)
+		}
 	}
-	return slot.release, nil
 }
 
 // answerWeight is what the cut of one answer to a browser's SyncStep1 holds of the pod's copy

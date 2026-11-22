@@ -199,6 +199,11 @@ type Service struct {
 	// when the flush packs it offers the state to the notification size check once
 	// (awarenessRelay.awarenessNotifications).
 	beforeAwarenessResolve func(room string, batch map[uint64]awarenessEntry)
+	// beforeAwarenessInject is given the room of another process's awareness update once the
+	// relay has found that room published and read by a reader here and before it injects the
+	// update (awarenessRelay.received). Nil outside tests; tests use it to close the room, or to
+	// begin another caller's load of it, in that window.
+	beforeAwarenessInject func(room string)
 	// beforeSettleStart runs as a settlement starts (settleRoomWithin), before it compares the
 	// room's generation under the state lock: after its timer fired, while the timer is still
 	// registered, or after settleLastPeer took the timer and counted the settlement running. Nil
@@ -214,11 +219,11 @@ type Service struct {
 	// Apply's own goroutine. Nil outside tests; tests use it to close the room, or to wait for
 	// ygo's idle sweep to retire it, in that window.
 	afterApplyAllowed func(room string)
-	// beforeRoomLoadRefused runs as a room's load refuses itself under a transaction's held grant
-	// (servicePersistenceAdapter.LoadDocContext), on that load's goroutine - the transaction's
-	// Apply - once ygo has listed the room's placeholder and before the refusal reaches the
-	// callers waiting on it. Nil outside tests; tests hold the refusal there until another caller
-	// waits on that placeholder.
+	// beforeRoomLoadRefused runs as a room's load refuses itself for the caller that created the
+	// room, one that may load no room (servicePersistenceAdapter.LoadDocContext) - a transaction
+	// holding its grant, whose Apply this runs on, or the awareness relay's Inject - once ygo has
+	// listed the room's placeholder and before the refusal reaches the callers waiting on it. Nil
+	// outside tests; tests hold the refusal there until another caller waits on that placeholder.
 	beforeRoomLoadRefused func(room string)
 	// afterReadCopy runs once a read of a room has copied the room's document (holdLive) and
 	// before that copy is offered to the room's replica (startFromRead). Nil outside tests;

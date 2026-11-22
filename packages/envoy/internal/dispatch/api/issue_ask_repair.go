@@ -229,11 +229,7 @@ func (s *server) repairIssueAsks(ctx context.Context, markedSince *time.Time, re
 			if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
 				err = fmt.Errorf("the issue's write bound of %s ended its transaction, which rolled back, and the next pass repairs the issue: %w", docs.WriteRequestBound, err)
 			}
-			if docs.RefusedBusy(err) {
-				slog.Warn("dispatch: repair the asks of an issue", "issue", issueKey, "retry", "the next pass repairs the issue", "error", err)
-			} else {
-				slog.Error("dispatch: repair the asks of an issue", "issue", issueKey, "error", err)
-			}
+			docs.LogDutyFailure("dispatch: repair the asks of an issue", "the next pass repairs the issue", err, "issue", issueKey)
 			failures = append(failures, fmt.Errorf("%s: %w", issueKey, err))
 			unrepaired = append(unrepaired, issueKey)
 			continue

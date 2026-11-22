@@ -923,6 +923,37 @@ func TestADocumentLoadsStreamedFoldWaitsForItsGrantHoldingNoRoomsConnection(t *t
 	}
 }
 
+// A document load whose rows stream gives its slot of the buffered folds back once it knows they
+// stream, before it streams them (loadStoredOnce): a streamed fold holds no row in memory, so the
+// slot would only keep a buffered fold of another document waiting for the whole of the stream.
+// Here the store has one slot and streams every log, and the load's second pass, on its whole
+// slot, takes the free fold slot before its rows transaction. Before, the load held that slot
+// until its streamed fold and decode had returned.
+func TestADocumentLoadWhoseRowsStreamHoldsNoFoldSlotWhileItStreamsThem(t *testing.T) {
+	ctx := context.Background()
+	service, _ := newTestService(t)
+	service.settle = time.Hour
+	document, _ := twoRowDocument(t, service, 84, 16<<10)
+	versioned, _ := oneFoldSlot(t, service)
+	versioned.foldBufferLimit = 1
+	held := -1
+	versioned.beforeFold = func(room string) {
+		if room == document {
+			held = len(versioned.foldSlots)
+		}
+	}
+	if _, err := versioned.Load(ctx, document); err != nil {
+		t.Fatalf("the load: %v", err)
+	}
+	switch held {
+	case -1:
+		t.Fatal("the load never came to stream its rows, so nothing here is tested")
+	case 0:
+	default:
+		t.Fatalf("the load streamed its rows holding %d slots of the buffered folds, want none", held)
+	}
+}
+
 // A transaction holding its first document's fork, beside a streamed fold that waits for the bytes
 // the transaction holds, reads a later document from the store through the rooms pool's one free
 // connection and finishes: the fold holds no rooms connection while it waits (loadStored), so the
@@ -1326,6 +1357,143 @@ func TestACopyOfARoomWeighedBeforeItsWaitIsCoveredAsTheRoomStandsOnceTheWaitIsOv
 					site.name, got, after, before)
 			}
 		})
+	}
+}
+
+// A server write's decode-cap count (leavesPastDecodeCap) whose top-up waits a second time weighs
+// the room again once that wait is over, and copies the room on a grant covering it as it stands
+// then: what the room committed during the second wait is in the copy. Here the count's first
+// grant is held while a browser's commit lands in the room and the rest of the pool stays filled,
+// so the top-up gives the grant back and waits for the room's new weight whole, and a second
+// commit lands during that wait. Before, the count copied the room on the grant its second
+// weighing took, short of the room by the second commit.
+func TestAServerWritesDecodeCapCountWeighsTheRoomAgainAfterEachWait(t *testing.T) {
+	service, _ := newTestService(t)
+	service.settle = time.Hour
+	documents, _ := residentGrantDocuments(t, service, []int{74}, []int{16 << 10})
+	live := service.srv.GetDoc(documents[0])
+	if live == nil {
+		t.Fatalf("no room of %s is resident", documents[0])
+	}
+	commit := func(what string) int64 {
+		t.Helper()
+		before := service.copyOfRoom(live)
+		if _, applied := newRoomCommitter(t, live).commitKeys(200); <-applied != nil {
+			t.Fatalf("%s to the room was refused", what)
+		}
+		after := service.copyOfRoom(live)
+		if after <= before {
+			t.Fatalf("the room weighs %d after %s and %d before it, want more after, or nothing here is tested", after, what, before)
+		}
+		return after
+	}
+	first := service.copyOfRoom(live)
+	pool, waits := poolWaits(t)
+	filler := fillPoolBut(t, pool, first)
+	granted := newPause(t)
+	var once atomic.Bool
+	pool.taken = func(int64) {
+		if once.CompareAndSwap(false, true) {
+			granted.stop()
+		}
+	}
+	var held int64
+	count := serverWrite{apply: func(*crdt.Doc) { held = pool.held.Load() }}
+	answered := make(chan error, 1)
+	go func() {
+		service.leavesPastDecodeCap(context.Background(), live, count)
+		answered <- nil
+	}()
+	granted.await(t, answered, "the count's first grant")
+	second := commit("the first commit")
+	for len(waits) > 0 {
+		<-waits
+	}
+	granted.goOn()
+	select {
+	case <-waits:
+	case <-answered:
+		t.Fatal("the count copied the room while the pool lacked the room's new weight, want its top-up waiting for that")
+	case <-time.After(holdAndWaitBound):
+		t.Fatalf("the count's top-up never came to wait for the pool within %s", holdAndWaitBound)
+	}
+	third := commit("the commit during the second wait")
+	filler.release()
+	if err := answeredWithin(t, answered, "the count"); err != nil {
+		t.Fatalf("the count: %v", err)
+	}
+	if held < third {
+		t.Fatalf("the count held %d bytes of the pool as it copied the room, want the %d the room weighs once its second wait was over: its grant was weighed at %d before that wait, short of the commit it copied",
+			held, third, second)
+	}
+}
+
+// A browser's first sync's answer whose top-up waits a second time weighs the room again once that
+// wait is over, and is admitted on a grant covering the room as it stands then (weighStateAnswer):
+// what the room committed during the second wait is in the answer ygo builds next. Here the
+// answer's info was read before the room's first thousand keystrokes, its first grant is held
+// while they land and the rest of the pool stays filled, so the top-up gives the grant back and
+// waits for the new weight whole, and the room's next thousand keystrokes land during that wait.
+// Before, the answer was admitted on the grant its second weighing took, short of the room by
+// those keystrokes.
+func TestAStateAnswerWeighsTheRoomAgainAfterEachWait(t *testing.T) {
+	service, _ := newTestService(t)
+	service.settle = time.Hour
+	room := newDocumentCopy()
+	text := room.GetText("t")
+	info := websocket.StateAnswerInfo{Room: "room", Doc: room, Structs: room.StructCount()}
+	weight := func() int64 { return min(answerWeight(room, 0, int64(info.StructsNow())), loadSlotBytes) }
+	typeKeys := func(what string) int64 {
+		t.Helper()
+		before := weight()
+		for range 1_000 {
+			room.Transact(func(txn *crdt.Transaction) { text.Insert(txn, 0, "x", nil) })
+		}
+		after := weight()
+		if after <= before {
+			t.Fatalf("the answer weighs %d after %s and %d before them, want more after, or nothing here is tested", after, what, before)
+		}
+		return after
+	}
+	first := weight()
+	pool, waits := poolWaits(t)
+	filler := fillPoolBut(t, pool, first)
+	granted := newPause(t)
+	var once atomic.Bool
+	pool.taken = func(int64) {
+		if once.CompareAndSwap(false, true) {
+			granted.stop()
+		}
+	}
+	answered := make(chan error, 1)
+	var release func()
+	go func() {
+		var err error
+		release, err = service.weighStateAnswer(info)
+		answered <- err
+	}()
+	granted.await(t, answered, "the answer's first grant")
+	second := typeKeys("the first thousand keystrokes")
+	for len(waits) > 0 {
+		<-waits
+	}
+	granted.goOn()
+	select {
+	case <-waits:
+	case err := <-answered:
+		t.Fatalf("the answer was admitted (%v) while the pool lacked the room's new weight, want its top-up waiting for that", err)
+	case <-time.After(holdAndWaitBound):
+		t.Fatalf("the answer's top-up never came to wait for the pool within %s", holdAndWaitBound)
+	}
+	third := typeKeys("the keystrokes during the second wait")
+	filler.release()
+	if err := answeredWithin(t, answered, "the answer"); err != nil {
+		t.Fatalf("the answer was refused: %v", err)
+	}
+	defer release()
+	if held := pool.held.Load(); held < third {
+		t.Fatalf("the answer was admitted holding %d bytes of the pool, want the %d the room weighs once its second wait was over: its grant was weighed at %d before that wait, short of the keystrokes it answers with",
+			held, third, second)
 	}
 }
 

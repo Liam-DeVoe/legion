@@ -162,3 +162,58 @@ func TestAnIssueCloseRefusedBusyAtALaterDocumentAnswers503AndItsRetryLands(t *te
 		}
 	}
 }
+
+// A close's sweep whose first fork waits for the pool, which the test holds full, until the
+// server's wait bound for a write (docs.WriteWaitBound, from the sweep's request) is refused busy
+// (docs' errWriteBusy, the 503 a caller retries), and the sweep logs that refusal at Warn, naming
+// the issue and the ask repair that retries it, as it logs the pool's other busy refusals
+// (docs.RefusedBusy). Before, the refusal wrapped the wait's deadline rather than the pool's
+// errGrantShort, which RefusedBusy did not take for a busy refusal, and the sweep logged it at
+// Error.
+func TestASweepWhoseFirstForkWaitsOutItsBoundForThePoolLogsItsRefusalAtWarn(t *testing.T) {
+	ctx := context.Background()
+	var documents *docs.Service
+	handler, database, _, served := newInteractionServer(t, func(database *store.Store) docs.API {
+		documents = docs.New(docs.Deps{Store: database, Identity: headerIdentity(database), Settle: time.Hour})
+		t.Cleanup(func() { _ = documents.Shutdown(context.Background()) })
+		return documents
+	})
+	issue := createInteractionIssue(t, handler, "TEST", "Swept while the pool stays full", "Context\n")
+	// The settlement loads the document's room, which stays until ygo's idle minute runs out, so
+	// the sweep's fork is a warm one, whose first wait is its cover's take of the pool.
+	if err := documents.SettleIssueDocuments(ctx, issue.Key); err != nil {
+		t.Fatalf("settle the issue's document: %v", err)
+	}
+	if !slices.Contains(documents.ResidentRooms(), issue.PrimaryArtifactID) {
+		t.Fatal("the issue's document has no resident room, so the sweep's fork would read the store first and nothing here is tested")
+	}
+	// The issue closes as a release older than the withdrawal closed one. Nothing tells the room.
+	if _, err := database.Pool.Exec(ctx, `update issues set status = 'done', closed_at = now() where key = $1`, issue.Key); err != nil {
+		t.Fatalf("close the issue: %v", err)
+	}
+	pool, restore := docs.UseOneLoadSlotForTest(nil)
+	t.Cleanup(restore)
+	release, filled := pool.FillForTest()
+	if !filled {
+		t.Fatal("the pool refused the bytes its holders do not hold")
+	}
+	t.Cleanup(release)
+	logs := captureLogs(t)
+	started, answered := sweepAsAnUnkeyedClose(served, issue.Key)
+	select {
+	case <-answered:
+	case <-time.After(docs.WriteWaitBound + heldSecondDocumentWait):
+		t.Fatalf("the close's sweep was not answered within %s of its start: its first fork's wait for the pool outlived docs.WriteWaitBound %s", docs.WriteWaitBound+heldSecondDocumentWait, docs.WriteWaitBound)
+	}
+	elapsed := time.Since(started)
+	t.Logf("the close's sweep answered %s after it began (docs.WriteWaitBound %s)", elapsed.Round(time.Millisecond), docs.WriteWaitBound)
+	if elapsed < docs.WriteWaitBound-time.Second {
+		t.Fatalf("the close's sweep answered %s after it began, before docs.WriteWaitBound %s: something other than its first fork's wait for the pool ended it", elapsed, docs.WriteWaitBound)
+	}
+	logged := logs.Lines(`msg="dispatch: sweep the ask blocks of a closed issue" issue=` + issue.Key)
+	if strings.Count(logged, "\n") != 1 || !strings.Contains(logged, "level=WARN") ||
+		!strings.Contains(logged, `retry="the ask repair's next pass sweeps the issue"`) ||
+		!strings.Contains(logged, "as many whole-document copies as its memory allows") {
+		t.Fatalf("the sweep logged:\n%s\nwant one line at Warn with its retry, naming %s and its first fork's busy refusal", logged, issue.Key)
+	}
+}

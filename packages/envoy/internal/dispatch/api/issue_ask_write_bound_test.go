@@ -197,19 +197,25 @@ func (f *heldSecondDocument) secondHead(t *testing.T) int64 {
 }
 
 // sweepAsAnUnkeyedClose runs the close's sweep of the issue (sweepClosedIssueAsks) on a goroutine
+// of its own, on the context an unkeyed close hands it (sweepAsAnUnkeyedClose).
+func (f *heldSecondDocument) sweepAsAnUnkeyedClose() (started time.Time, answered <-chan error) {
+	return sweepAsAnUnkeyedClose(f.served, f.issue)
+}
+
+// sweepAsAnUnkeyedClose runs served's close's sweep of issue (sweepClosedIssueAsks) on a goroutine
 // of its own, on the context an unkeyed close hands it: its request's, marked as every request is
 // (trackTransactions) and detached from its client (outlivingTheClient), whose client has then
 // gone away. It answers when the sweep began, and answered, sent nil once the sweep has returned.
-func (f *heldSecondDocument) sweepAsAnUnkeyedClose() (started time.Time, answered <-chan error) {
+func sweepAsAnUnkeyedClose(served *server, issue string) (started time.Time, answered <-chan error) {
 	client, leave := context.WithCancel(context.Background())
 	var outliving context.Context
-	request := httptest.NewRequest(http.MethodPatch, "/api/v1/issues/"+f.issue, nil).WithContext(client)
+	request := httptest.NewRequest(http.MethodPatch, "/api/v1/issues/"+issue, nil).WithContext(client)
 	trackTransactions(func(_ http.ResponseWriter, r *http.Request) { outliving = outlivingTheClient(r) })(httptest.NewRecorder(), request)
 	leave()
 	swept := make(chan error, 1)
 	started = time.Now()
 	go func() {
-		f.served.sweepClosedIssueAsks(outliving, f.issue, nil, model.Actor{Kind: "user", ID: "alice"})
+		served.sweepClosedIssueAsks(outliving, issue, nil, model.Actor{Kind: "user", ID: "alice"})
 		swept <- nil
 	}()
 	return started, swept

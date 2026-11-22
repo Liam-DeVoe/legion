@@ -326,9 +326,10 @@ type coldFold struct {
 // those reads too. It waits for its fold whatever its context does, within the cache's timeout.
 // A fold refused busy fails no room, since the document is sound: one the pool refused - a
 // transaction holding a fork takes more of its grant only where the pool gives it at once
-// (loadSlots) - and one whose load still held no grant when the cache's timeout passed, having
-// waited that long for the pool, a fold slot or a rooms connection (foldDocument). Each is
-// ErrServiceUnavailable, the 503 its caller retries, and the room keeps its settlement.
+// (loadSlots) - and one the cache's timeout ended before its fold had begun reading the rows, or
+// while it waited for the pool holding no grant, having waited that long for the pool, a fold slot
+// or a rooms connection (foldDocument). Each is ErrServiceUnavailable, the 503 its caller retries,
+// and the room keeps its settlement.
 func (s *Service) coldRead(ctx context.Context, artifactID string) (*documentRead, *pmdoc.Node, error) {
 	stamp, err := s.persistence.DocumentStamp(ctx, artifactID)
 	if err != nil {
@@ -383,13 +384,20 @@ func (s *Service) coldRead(ctx context.Context, artifactID string) (*documentRea
 // load concurrency (withLoadSlot), held until the fold returns: the load takes it on the rows it
 // folds and the state it decodes and leaves it held (LoadDocument), so the document it hands back
 // is counted while foldLoaded reads, renders and walks it, and cold reads of different documents
-// fold side by side only as far as the pool holds their documents. The one wait for it is the
-// load's own (foldRead), bounded by coldReadTimeout; what runs after the load holds the grant
-// waiting for nothing, takes no connection and nothing more of the pool, and takes the cache's
-// lock only to store the rendering. A load the timeout ends while its grant still holds nothing
-// was waiting for what it takes before its fold - the pool, a slot of the buffered folds, a rooms
-// connection - which a burst of cold reads holds, no fault of the document: it is refused busy,
-// errGrantShort, which fails no room (coldRead, RefusedBusy).
+// fold side by side only as far as the pool holds their documents. The load's waits - for a slot
+// of the buffered folds, for its grant, for its rooms connection - are bounded by coldReadTimeout;
+// what runs after the load holds the grant waiting for nothing, takes no connection and nothing
+// more of the pool, and takes the cache's lock only to store the rendering. A load the timeout
+// ends before its fold has begun reading the rows, or while its grant holds nothing, was waiting
+// for what it takes - the pool, a slot of the buffered folds, a rooms connection - which a burst of
+// cold reads holds, no fault of the document: it is refused busy, errGrantShort, which fails no
+// room (coldRead, RefusedBusy). That holds for a load that already holds its grant too: a log
+// past the fold buffer streams on one whole slot taken before its rooms connection (loadStored),
+// and a read under a transaction's grant holds bytes from the start (carriesLoadGrant), and each
+// can wait for one of the rooms pool's connections, every one of them held by another streamed
+// load. Which side of that moment the timeout met is read off a flag the fold sets as it begins
+// to read the rows (watchRowsRead, noteRowsRead); a timeout past it, while the fold reads and
+// decodes holding its grant, is the fold's own, and fails the room as any error of the fold does.
 // Its error is the load's, or a panic recovered from any of it: singleflight re-panics an
 // unrecovered panic of a call it has waiters for in a goroutine nothing can recover, where a read
 // panicking on the request's own goroutine would fail that one request.
@@ -402,12 +410,13 @@ func (s *Service) foldDocument(ctx context.Context, artifactID string) (fold col
 	}()
 	foldCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), coldReadTimeout)
 	defer cancel()
+	foldCtx, rowsRead := watchRowsRead(foldCtx)
 	foldCtx, slot, done := withLoadSlot(foldCtx)
 	defer done()
 	loaded, err := s.persistence.LoadDocument(foldCtx, artifactID)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) && errors.Is(foldCtx.Err(), context.DeadlineExceeded) {
-			if !slot.held {
+			if !slot.held || !rowsRead.Load() {
 				return coldFold{}, fmt.Errorf("%w: a cold document read waited %s for its turn to load the document", errGrantShort, coldReadTimeout)
 			}
 			return coldFold{}, fmt.Errorf("cold document read timed out after %s", coldReadTimeout)

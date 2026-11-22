@@ -456,6 +456,12 @@ func (r *renderedReplica) lockForUpdate() {
 	r.waiting.Add(-1)
 }
 
+// tryLockForRead takes mu for a read, which may not wait for it: only where mu is free at once and
+// no update observer waits for it (lockForUpdate). It reports whether it took mu.
+func (r *renderedReplica) tryLockForRead() bool {
+	return r.waiting.Load() <= 0 && r.mu.TryLock()
+}
+
 // observe is the update observer's turn with the replica: it waits for mu (lockForUpdate) and
 // drains the room's update log (drainLocked), classifying each update as it takes it (changedBy).
 // The observer and an exact read (atPoint) are the holders of mu that wait for it, and the ones
@@ -472,9 +478,10 @@ func (r *renderedReplica) observe(room string) (settles, changed, local bool) {
 
 // tryObserve is observe for a caller that may not wait for mu - the room-query lane, which serves
 // every room's queries (roomQueries.query): it drains the room's update log only where mu is free
-// at once and no update observer waits for it, as a read takes mu, and reports whether it did.
+// at once and no update observer waits for it, as a read takes mu (tryLockForRead), and reports
+// whether it did.
 func (r *renderedReplica) tryObserve(room string) (settles, changed, local, drained bool) {
-	if r.waiting.Load() > 0 || !r.mu.TryLock() {
+	if !r.tryLockForRead() {
 		return false, false, false, false
 	}
 	defer r.mu.Unlock()
@@ -928,7 +935,7 @@ func (r *renderedReplica) start(room string, base []byte) {
 // document again, and the updates built on what it lost wait in its pending set until the room
 // unloads.
 func (r *renderedReplica) startFromRead(doc *crdt.Doc, epoch uint64) *crdt.Doc {
-	if r.waiting.Load() > 0 || !r.mu.TryLock() {
+	if !r.tryLockForRead() {
 		return nil
 	}
 	if r.doc != nil || r.log.Pending() > 0 || r.epoch.Load() != epoch {
@@ -1396,7 +1403,7 @@ func (s *Service) liveTree(room string, live *crdt.Doc) (*pmdoc.Node, error) {
 // update applied by a read would be rendered by no observer and credited to nobody, which is the
 // loss the log exists to prevent (renderedReplica).
 func (r *renderedReplica) hold() *crdt.Doc {
-	if r.waiting.Load() > 0 || !r.mu.TryLock() {
+	if !r.tryLockForRead() {
 		return nil
 	}
 	if r.doc == nil || r.log.Pending() > 0 {

@@ -222,7 +222,7 @@ const loadSlotsName = "load"
 // an issue's close, reopen, sweep and repair, which write its ask states into each of its
 // documents in turn (Docs.WriteIssueAskStates) - weighs them all first, and its first fork takes
 // their sum, capped at one slot as every weight is (Service.forksAhead), so a later fork takes
-// nothing more unless it weighs more than it was weighed at (forksAhead lists when).
+// nothing more unless it takes more than it was weighed at (forksAhead lists when).
 //
 // A decode's grant, held between its take and its release, decodes, renders or reads the rows of
 // the transaction it already holds, takes no lock held across a wait, takes no pooled connection
@@ -486,9 +486,9 @@ func (g *loadSlot) take(ctx context.Context, bytes int64) error {
 // history grew between two passes of its work (storedWithUpdates, redoWhole); and a check of a
 // live room near its caps, or a write's clone of a room, that weighed the room before it waited
 // and finds it grew (nearACapOfRoom, forkPoint). A cold read whose load waited past its bound for
-// its turn, holding nothing, is refused with it too, the same 503 (foldDocument). Every other
-// holder that can meet it gives its grant back and takes the total whole instead (retake,
-// redoWhole).
+// its turn - holding nothing, or holding its grant before its fold began reading the rows - is
+// refused with it too, the same 503 (foldDocument). Every other holder that can meet it gives its
+// grant back and takes the total whole instead (retake, redoWhole).
 var errGrantShort = fmt.Errorf("%w: a holder of the pod's load concurrency needs more of it than is free at once, and waits for no more while it holds some", ErrServiceUnavailable)
 
 // retake makes g hold bytes as take does, for a holder that holds nothing it built under g's
@@ -684,14 +684,30 @@ func heldGrant(ctx context.Context) *loadSlot {
 
 // RefusedBusy reports whether err is a holder's refusal of what it would otherwise have waited for
 // holding its grant (transactionHolds): more of the pool (errGrantShort), a slot of the buffered
-// folds (errFoldSlotsBusy) or a room's load (errRoomLoadUnderGrant); or a cold read's refusal once
-// its wait for its turn passed its bound (foldDocument, errGrantShort). Each is the 503 its caller
-// retries and none is the document's own failure, so no room is failed for it, and a background
-// duty that meets one logs it at Warn with what retries it, keeping Error for every other error
-// (api's sweepClosedIssueAsks and repairIssueAsks, sweepUnrecordedMarks, the block index's and the
-// reference excerpts' reads).
+// folds (errFoldSlotsBusy) or a room's load (errRoomLoadUnderGrant); a transaction's first fork
+// whose wait for the pool ended at a deadline - the server's wait bound or the transaction's own -
+// before the pool gave it its grant (liveWrite.coverFork, errWriteBusy wrapping
+// context.DeadlineExceeded); or a cold read's refusal once its wait for its turn passed its bound
+// (foldDocument, errGrantShort). Each is the 503 its caller retries and none is the document's own
+// failure, so no room is failed for it, and a background duty that meets one logs it at Warn with
+// what retries it, keeping Error for every other error (LogDutyFailure). A first fork whose
+// caller went away (errWriteBusy wrapping context.Canceled) is not one: nobody waits for its
+// retry.
 func RefusedBusy(err error) bool {
-	return errors.Is(err, errGrantShort) || errors.Is(err, errFoldSlotsBusy) || errors.Is(err, errRoomLoadUnderGrant)
+	return errors.Is(err, errGrantShort) || errors.Is(err, errFoldSlotsBusy) || errors.Is(err, errRoomLoadUnderGrant) ||
+		errors.Is(err, errWriteBusy) && errors.Is(err, context.DeadlineExceeded)
+}
+
+// LogDutyFailure logs err, a background duty's failure, as msg with args: at Warn with retry,
+// what retries the duty, where err is a busy refusal (RefusedBusy), and at Error otherwise. Its
+// callers are api's sweepClosedIssueAsks and repairIssueAsks, and the block index's and the
+// reference excerpts' reads.
+func LogDutyFailure(msg, retry string, err error, args ...any) {
+	if RefusedBusy(err) {
+		slog.Warn(msg, append(args, "retry", retry, "error", err)...)
+		return
+	}
+	slog.Error(msg, append(args, "error", err)...)
 }
 
 // holdLoad covers a whole-document decode on the grant ctx carries, or on one of its own of
@@ -803,12 +819,12 @@ func loadDecodedHistory(ctx context.Context, load VersionedStore, artifactID str
 // copy's bytes before it copies, so its take here takes nothing more: a live write's, which took
 // them at once or refused the write (leavesRoomPastDecodeCap), so the transaction holds one grant
 // from its first fork's build to its last fork's release; and one of the three server writes
-// outside applyLive, which waited for them without a deadline and weighed the room again once it
-// held them (leavesPastDecodeCap). Where ctx's grant refuses the take (errGrantShort), which none
-// of those callers meets, it returns a release of nothing rather than nil, so no caller's deferred
-// release panics, and the decode runs beside the pool's holders, as one that may not wait does
-// (holdFreeLoad). A decode whose caller can refuse takes its grant through holdLoad instead
-// (buildForkHeld).
+// outside applyLive, which waited for them without a deadline and weighed the room again after
+// each wait until they covered it (leavesPastDecodeCap). Where ctx's grant refuses the take
+// (errGrantShort), which none of those callers meets, it returns a release of nothing rather than
+// nil, so no caller's deferred release panics, and the decode runs beside the pool's holders, as
+// one that may not wait does (holdFreeLoad). A decode whose caller can refuse takes its grant
+// through holdLoad instead (buildForkHeld).
 func holdServerLoad(ctx context.Context, bytes int64) func() {
 	release, err := holdLoad(context.WithoutCancel(ctx), bytes)
 	if err != nil {

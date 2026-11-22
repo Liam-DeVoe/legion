@@ -736,11 +736,18 @@ func (s *Service) sweepUnrecordedMarks(room string, tree *pmdoc.Node) {
 		// The marks stay, and stay expired: every later settlement's pass finds them again and is
 		// refused again, which is why the refusal is logged once rather than on each.
 		s.logPastDecodeCap(room, "unrecorded-mark sweep")
-	case RefusedBusy(err):
-		// A busy refusal - a load of the room another holder's transaction began, refused under
-		// that transaction's grant - leaves the marks expired, and the next settlement's pass
-		// sweeps them.
-		slog.Warn("dispatch: sweep unrecorded marks", "room", room, "retry", "the next settlement's pass sweeps them", "error", err)
+	case errors.Is(err, errRoomBudgetFull), RefusedBusy(err):
+		// The room was gone and the budget had no opening for it - ygo's idle sweep can retire a
+		// room no peer is in between this settlement's take of it and this sweep - or a busy
+		// refusal met the sweep: a load of the room another holder's transaction began, refused
+		// under that transaction's grant. The marks stay expired, and nothing else may run this
+		// sweep again: a document no browser holds and nobody writes arms no settlement of its
+		// own. So the sweep arms the document's next settlement itself, a settle delay from now,
+		// which takes the room - booking the budget's opening where no room is resident
+		// (awaitServerRoom) - and sweeps the marks with the room held. While the refusal lasts
+		// each such settlement arms the next one, one a settle delay, each logged here.
+		slog.Warn("dispatch: sweep unrecorded marks", "room", room, "retry", "the settlement this arms sweeps them", "error", err)
+		s.scheduleSettle(room)
 	case err != nil:
 		slog.Error("dispatch: sweep unrecorded marks", "room", room, "error", err)
 	}
@@ -808,14 +815,12 @@ func forgetMarkAuthorDeparture(state *roomState, actor model.Actor) {
 // (roomBudget.openServerRoom), as every other opener of Server.Apply does, since the budget
 // charges a room this sweep opened and marks it to be closed once nothing holds it only for the
 // room its opening names (roomBudget.load). Without an opening it sweeps nothing this round and
-// says so: the marks stay expired, and the next settlement's pass finds them again, which is
-// what a refusal of the decode cap already leaves it doing.
+// answers errRoomBudgetFull, so its caller arms the document's next settlement, which books the
+// opening as it takes the room and sweeps with the room held (sweepUnrecordedMarks).
 func (s *Service) unmarkExpired(room string, expired []pmdoc.MarkRef) error {
 	if !s.roomHeld(room) {
 		if !s.budget.openServerRoom(room) {
-			slog.Debug("dispatch: the unrecorded-mark sweep found no opening for a room no browser holds",
-				"room", room, "marks", len(expired))
-			return nil
+			return fmt.Errorf("%w: no opening for the room the unrecorded-mark sweep writes in", errRoomBudgetFull)
 		}
 		defer s.budget.closeServerRoom()
 	}

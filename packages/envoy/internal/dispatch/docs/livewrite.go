@@ -505,7 +505,7 @@ type forkSlot struct {
 	// ahead is what the forks of every document the transaction is about to write weigh
 	// together, capped at one slot, where it weighed them before its first fork
 	// (Service.forksAhead), and 0 otherwise: its first fork's cover takes that sum rather than its
-	// own weight alone (coverFork), so each later fork takes nothing more unless it weighs more than
+	// own weight alone (coverFork), so each later fork takes nothing more unless it takes more than
 	// it was weighed at (forksAhead lists when).
 	ahead int64
 }
@@ -559,7 +559,7 @@ func (w *liveWrite) carriedBy(ctx context.Context) context.Context {
 // since a wait for more while holding the first fork's grant could wait on a waiter that needs
 // those very bytes (loadSlots). A transaction that weighed every document it is about to write
 // before its first fork has that first fork take their sum (forkSlot.ahead, Service.forksAhead),
-// so each later fork takes nothing more unless it weighs more than it was weighed at (forksAhead
+// so each later fork takes nothing more unless it takes more than it was weighed at (forksAhead
 // lists when). The first fork's grant holds, as its cover is taken, at most what the
 // fork's own read took on it - a cold read's fold (foldRead) - and nothing that read built, so
 // where the pool does not give the difference at once the cover gives that back and takes bytes
@@ -608,12 +608,16 @@ func (w *liveWrite) coverFork(ctx context.Context, bytes int64) error {
 // another process appending to it; one weighed at its resident room's copy that forks cold, its
 // room retired, closed or behind the stored head by its fork (readFork), whose stored history - its
 // rows' bytes and declared structs, or one whole slot for a log its load streams - can weigh more
-// than the room's copy; and a stored history that folds into more than its rows weigh, as a
+// than the room's copy; a stored history that folds into more than its rows weigh, as a
 // split-dense history does: a later row's inserts split an item an earlier row declared as one, so
 // the folded state declares more structs than the rows do, and the fork's cover takes that state's
-// weight (coldFork, storedCopyWeight). No weighing ahead of the fold can know that count. A
-// transaction already holding a fork, or writing one document, weighs nothing: its first fork is
-// taken already, or is its only one.
+// weight (coldFork, storedCopyWeight) - no weighing ahead of the fold can know that count; and a
+// cold read that finds every slot of the buffered folds taken, however little its rows weigh: a
+// holder of the pool waits for no fold slot, so the read raises the grant to one whole slot and
+// streams the history on it, where the pool has what that slot is past the grant free at once
+// (loadStoredOnce, takeFoldSlot), and is refused busy otherwise. A transaction already holding a
+// fork, or writing one document, weighs nothing: its first fork is taken already, or is its only
+// one.
 func (s *Service) forksAhead(ctx context.Context, q Queryer, documents []string) error {
 	grant := transactionGrant(ctx)
 	if grant == nil || grant.forks > 0 || len(documents) < 2 {

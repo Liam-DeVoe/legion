@@ -215,11 +215,12 @@ func (p *PgVersioned) loadStored(ctx context.Context, room string, use func(ctx 
 }
 
 // loadStoredOnce is one attempt of loadStored's read in a transaction of its own on rooms. It
-// first takes a slot of the buffered folds as takeFoldSlot takes one, and gives it back as it
-// returns. A read whose grant holds bytes waits for no slot (loadSlots): where none is free at
-// once, it raises its grant to one whole slot, where the pool gives what that is past the grant at
-// once (loadSlot.take, nothing on a grant already holding one), and streams its rows; where the
-// pool does not, it is refused busy (errFoldSlotsBusy). It answers streams, having ended its
+// first takes a slot of the buffered folds as takeFoldSlot takes one, and gives it back once it
+// knows its rows stream, since a streamed fold holds no row in memory, or else as it returns. A
+// read whose grant holds bytes waits for no slot (loadSlots): where none is free at once, it raises
+// its grant to one whole slot, where the pool gives what that is past the grant at once
+// (loadSlot.take, nothing on a grant already holding one), and streams its rows; where the pool
+// does not, it is refused busy (errFoldSlotsBusy). It answers streams, having ended its
 // transaction and read nothing more, where the rows would stream (past foldBufferBytes) and slot
 // holds less than one whole slot, for loadStored to take that slot holding no rooms connection and
 // no fold slot and read again. A read on a whole slot streams its rows where they pass
@@ -232,9 +233,11 @@ func (p *PgVersioned) loadStoredOnce(ctx context.Context, rooms *pgxpool.Pool, r
 	if err != nil {
 		return DocumentStamp{}, false, err
 	}
-	if giveBack != nil {
-		defer giveBack()
-	}
+	defer func() {
+		if giveBack != nil {
+			giveBack()
+		}
+	}()
 	whole := slot.bytes >= loadSlotBytes
 	tx, err := rooms.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
@@ -255,6 +258,10 @@ func (p *PgVersioned) loadStoredOnce(ctx context.Context, rooms *pgxpool.Pool, r
 	buffered := giveBack != nil && stored.bytes <= p.foldBuffer()
 	if !buffered && !whole {
 		return DocumentStamp{}, true, nil
+	}
+	if !buffered && giveBack != nil {
+		giveBack()
+		giveBack = nil
 	}
 	if err := p.foldRead(ctx, tx, room, head, stored.rows, stored.bytes, "document load", buffered, func(ctx context.Context, updates updateSource) error {
 		return use(ctx, head, updates)
