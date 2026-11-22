@@ -434,7 +434,8 @@ above. That reason is always `delivery_failed`, the one 504 reason the route giv
 is not known to have been stored for its holder (no live holder to forward to, a holder lookup
 that failed or ran out of time, a publish or flush to the server that failed or timed out, or the
 stream did not acknowledge storing the forward,
-`bus.ErrForwardNotStored`). The route publishes no exception: its sender has the answer.
+`bus.ErrForwardNotStored`). The 504 publishes no exception, since its sender has the answer;
+the 404 raises one behind its answer, as this section's paragraph on exceptions says below.
 
 The listener keeps a role message on a stored subject of its own,
 `notifications.envoy.kept.role.<role>`. No session may register that subject, and no consumer of
