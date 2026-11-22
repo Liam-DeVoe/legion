@@ -1038,8 +1038,11 @@ What the two processes share, and what each keeps to itself:
   The intake's own connection (`dispatch-intake`, `dispatch-job-intake`) then only reads the stream: each generation's calls, its deliveries and their acknowledgements go on a connection named for it, which the NATS auth service grants by that name (`natsgrant.ParseDispatchConnection`), so `fresh` needs Dispatch to connect through the auth service:
 
   - `dispatch-intake/<durable>/<generation>[/<old generation>]`, a take-over's: `$JS.API.CONSUMER.INFO`, `$JS.API.CONSUMER.CREATE` (with the filter subject after the name) and `$JS.ACK` of `<durable>~<generation>`, and `$JS.API.CONSUMER.INFO` and `$JS.API.CONSUMER.DELETE` of `<durable>~<old generation>`.
+
   - `dispatch-cleanup/<durable>/<generation>`, the check's: `$JS.API.CONSUMER.INFO` and `$JS.API.CONSUMER.DELETE` of that one retired generation.
+
   - `listener-intake/<machine id>/<generation>[/<old generation>]` and `listener-cleanup/<machine id>/<generation>`, the envoy-listener's beside Dispatch, which holds Dispatch's credential: the calls of the two forms above, in that order, on `listener-<machine id>~<generation>`, its create without the filter subject, and only when the name's machine id is the one the auth service's entry grants.
+
   - Every Dispatch connection, whatever its name, also holds the fixed names' calls, and, for that listener, the selection bucket's `$JS.API.STREAM.INFO.KV_envoy_session_consumers` and `$JS.API.STREAM.MSG.GET.KV_envoy_session_consumers` and the write of its own record's key alone.
 
   `durable` is `delivery-events` or `delivery-jobs`, and each generation is 1 to 64 letters and digits: any other name is granted the fixed names alone.
