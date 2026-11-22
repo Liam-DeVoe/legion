@@ -298,8 +298,8 @@ func operatorSuspended(view pods.IdleView) []string {
 }
 
 // podWaitHeldWords is what the controller is told of the roles waiting, whose start waits for
-// the pod of issue that an operator's suspension of the claims suspended holds (ruling 18 point
-// 4), for the controller agent in plain words.
+// the pod of issue that an operator's suspension of the claims suspended holds, for the controller
+// agent in plain words.
 func podWaitHeldWords(issue string, waiting []claim.Role, suspended []string, idle time.Duration) string {
 	names := make([]string, len(waiting))
 	for i, role := range waiting {

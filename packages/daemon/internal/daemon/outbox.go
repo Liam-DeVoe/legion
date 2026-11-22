@@ -2518,7 +2518,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		}
 		// A role the issue's live pod was built before waits on this row, before it creates,
 		// retrees or hands anything to a claim: a launch into that pod would replace it with the
-		// issue's disk, and only the pod's update round or its release may (ruling 18).
+		// issue's disk, and only the pod's update round or its release may.
 		if err := r.roleWaitsForItsPod(ctx, row, issue, payload.Role); err != nil {
 			return err
 		}
@@ -3889,7 +3889,7 @@ func podRecorded(claims []supervise.Claim, issue, pod string) bool {
 }
 
 // podWaitWithNoReleaseWords is what the controller is told of a start of role that waits for the
-// pod of issue under a deployment with no idle release (ruling 19): the pod, the waiting role, what
+// pod of issue under a deployment with no idle release: the pod, the waiting role, what
 // is true now, and that the pod's disk can hold work a role did not push. It tells nobody to take
 // the pod away.
 func podWaitWithNoReleaseWords(issue, pod string, role claim.Role) string {

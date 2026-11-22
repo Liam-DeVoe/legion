@@ -1021,7 +1021,7 @@ type HandoffComplete struct {
 	// Entry is the entry of the role's phase the completing claim serves (the claim's
 	// ServingEntry, or the held task's on the route's fallback): the one value the route's entry
 	// fence reads. The workflow judges it again on the role's phases row under the fact's lock,
-	// with the same rule (EntryFence), and holds a review step's commit to it (R11): only a
+	// with the same rule (EntryFence), and holds a review step's commit to it: only a
 	// completion of the entry that stands, on a row that holds that entry's task, moves the step's
 	// reviewed commit. 0 where the claim serves no entry, which is judged by neither and moves no
 	// commit.

@@ -376,7 +376,7 @@ func TestTheStartOfADeploymentStepNamesItsAgent(t *testing.T) {
 	}
 }
 
-// A move back that names returnTo goes to the place it names (ruling 11), judged by the one judge
+// A move back that names returnTo goes to the place it names, judged by the one judge
 // of a named place the fail path uses (returnStep): in `implementer checker linter
 // acceptance:owner` at accepting, the owner's move to step with returnTo 2 starts the checker, and
 // with returnTo 3 the linter; a to that is not the phase the named step runs as is refused, and so
