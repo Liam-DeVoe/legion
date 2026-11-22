@@ -150,17 +150,27 @@ func reviewerRoot(t *testing.T) string {
 	return root
 }
 
-// phrases-labels reuses its results only for the labels' bytes they were graded from: labels
-// changed in place, in the same directory, are refused there.
-func TestPhrasesLabelsRefusesLabelsChangedInPlace(t *testing.T) {
-	dir := t.TempDir()
-	cases := `{"event_id":1,"source_id":"a","field":"body","group":"g1","text":"This names the problem. The run is green."}` + "\n"
-	labels := `{"event_id":1,"source_id":"a","family":"comment","sentences":[{"id":"s1","field":"body","text":"This names the problem.","verdict":"vacuous"},{"id":"s2","field":"body","text":"The run is green.","verdict":"not_vacuous"}]}` + "\n"
-	for name, data := range map[string]string{"cases.jsonl": cases, "labels.jsonl": labels} {
+// phrasesCases and phrasesLabels are a labeller round's cases.jsonl and labels.jsonl of one write.
+const (
+	phrasesCases  = `{"event_id":1,"source_id":"a","field":"body","group":"g1","text":"This names the problem. The run is green."}` + "\n"
+	phrasesLabels = `{"event_id":1,"source_id":"a","family":"comment","sentences":[{"id":"s1","field":"body","text":"This names the problem.","verdict":"vacuous"},{"id":"s2","field":"body","text":"The run is green.","verdict":"not_vacuous"}]}` + "\n"
+)
+
+// writePhrasesRound writes phrasesCases and phrasesLabels in dir.
+func writePhrasesRound(t *testing.T, dir string) {
+	t.Helper()
+	for name, data := range map[string]string{"cases.jsonl": phrasesCases, "labels.jsonl": phrasesLabels} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(data), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
+}
+
+// phrases-labels reuses its results only for the labels' bytes they were graded from: labels
+// changed in place, in the same directory, are refused there.
+func TestPhrasesLabelsRefusesLabelsChangedInPlace(t *testing.T) {
+	dir := t.TempDir()
+	writePhrasesRound(t, dir)
 	stand := modeltest.New(t, graderRules(t)...)
 	out := t.TempDir()
 	args := []string{"phrases-labels", "--labels", dir, "--out", out, "--gateway", stand.URL, "--gateway-key-file", keyFile(t), "--draws", "50"}
@@ -168,13 +178,55 @@ func TestPhrasesLabelsRefusesLabelsChangedInPlace(t *testing.T) {
 		t.Fatalf("phrases-labels = %d: %s", code, stderr)
 	}
 	calls := len(stand.Requests())
-	relabelled := strings.Replace(labels, `"verdict":"not_vacuous"`, `"verdict":"vacuous"`, 1)
+	relabelled := strings.Replace(phrasesLabels, `"verdict":"not_vacuous"`, `"verdict":"vacuous"`, 1)
 	if err := os.WriteFile(filepath.Join(dir, "labels.jsonl"), []byte(relabelled), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	code, _, stderr := runHarness(args...)
 	if code != 1 || !strings.Contains(stderr, "holds a run of other parameters") || !strings.Contains(stderr, "labels_sha256") {
 		t.Errorf("phrases-labels of labels changed in place = %d: %s", code, stderr)
+	}
+	if n := len(stand.Requests()); n != calls {
+		t.Errorf("the refused run made %d calls", n-calls)
+	}
+}
+
+// phrases-labels reuses its results only for the labels directory they were graded from, where
+// its files are read: with work/link pointing at x/sub, ../labels from work/link is x/labels, a
+// directory of its own though it holds the same bytes, and though --labels made absolute and
+// clean is work/labels, the first run's.
+func TestPhrasesLabelsRefusesTheLabelsOfAnotherDirectory(t *testing.T) {
+	// run.json names the labels with their links resolved (t.TempDir is under a link on macOS).
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	work, x := filepath.Join(dir, "work"), filepath.Join(dir, "x")
+	for _, d := range []string{filepath.Join(work, "labels"), filepath.Join(x, "sub"), filepath.Join(x, "labels")} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(filepath.Join(x, "sub"), filepath.Join(work, "link")); err != nil {
+		t.Fatal(err)
+	}
+	writePhrasesRound(t, filepath.Join(work, "labels"))
+	writePhrasesRound(t, filepath.Join(x, "labels"))
+	stand := modeltest.New(t, graderRules(t)...)
+	out, key := t.TempDir(), keyFile(t)
+	phrases := func(labels string) (int, string) {
+		code, _, stderr := runHarness("phrases-labels", "--labels", labels, "--out", out, "--gateway", stand.URL, "--gateway-key-file", key, "--draws", "50")
+		return code, stderr
+	}
+	if code, stderr := phrases(filepath.Join(work, "labels")); code != 0 {
+		t.Fatalf("phrases-labels = %d: %s", code, stderr)
+	}
+	calls := len(stand.Requests())
+	// t.Chdir sets PWD to work/link, the name os.Getwd answers.
+	t.Chdir(filepath.Join(work, "link"))
+	code, stderr := phrases("../labels")
+	if want := `"labels":"` + filepath.Join(x, "labels") + `"`; code != 1 || !strings.Contains(stderr, "holds a run of other parameters") || !strings.Contains(stderr, want) {
+		t.Errorf("phrases-labels of x/labels in work/labels's --out = %d, want 1 and the refusal naming %s: %s", code, want, stderr)
 	}
 	if n := len(stand.Requests()); n != calls {
 		t.Errorf("the refused run made %d calls", n-calls)
@@ -374,11 +426,69 @@ func TestAHeldOutScoreRefusesAnExposureLogInItsRunDirectory(t *testing.T) {
 	}
 }
 
+// linkedDirs makes work and x/sub in a directory of the test's own, its links resolved, and
+// work/link pointing at x/sub: the kernel takes work/link/.. to x, and filepath.Join cleans it to
+// work. A test writes such a name out, not with filepath.Join, which would take the ".." away.
+func linkedDirs(t *testing.T) (work, x string) {
+	t.Helper()
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	work, x = filepath.Join(dir, "work"), filepath.Join(dir, "x")
+	for _, d := range []string{work, filepath.Join(x, "sub")} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(filepath.Join(x, "sub"), filepath.Join(work, "link")); err != nil {
+		t.Fatal(err)
+	}
+	return work, x
+}
+
+// NoOutputIsAnInput takes a name through a link and then ".." where the kernel takes it: to the
+// parent of the link's target. With work/link pointing at x/sub, work/link/../in.json is
+// x/in.json, an input no work directory the command replaces holds, and a new
+// work/link/../out.json lies in an x the command reads whole; from work, the new
+// link/../state.json is x/state.json, one file with an output of that path. A directory read
+// whole is also where the command names its files by filepath.Join, which takes the ".." away
+// with the link: the files of work/link/.. are work's, so a new work/page.json lies in it.
+func TestNoOutputIsAnInputTakesADotDotAfterALinkAsTheKernelDoes(t *testing.T) {
+	work, x := linkedDirs(t)
+	if err := os.WriteFile(filepath.Join(x, "in.json"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Written out, as linkedDirs says.
+	through := work + "/link/../"
+	if err := NoOutputIsAnInput([]File{{Flag: "--out", Path: work, Tree: true}}, Files("--in", through+"in.json")); err != nil {
+		t.Errorf("work/link/../in.json, which is x/in.json, refused as a file of work: %v", err)
+	}
+	err := NoOutputIsAnInput(Files("--out", through+"out.json"), []File{{Flag: "--in", Path: x, Tree: true}})
+	if want := "the --out file lies in the --in directory, which this command reads whole"; err == nil || !strings.Contains(err.Error(), want) {
+		t.Errorf("a new work/link/../out.json with x read whole: %v, want %q", err, want)
+	}
+	err = NoOutputIsAnInput(Files("--out", filepath.Join(work, "page.json")), []File{{Flag: "--in", Path: through, Tree: true}})
+	if want := "the --out file lies in the --in directory, which this command reads whole"; err == nil || !strings.Contains(err.Error(), want) {
+		t.Errorf("a new work/page.json with work/link/.. read whole: %v, want %q", err, want)
+	}
+	t.Chdir(work)
+	err = NoOutputIsAnInput(append(Files("--out", filepath.Join(x, "state.json")), Files("--state", "link/../state.json")...), nil)
+	if want := "--state names the --out file, which this command also writes"; err == nil || !strings.Contains(err.Error(), want) {
+		t.Errorf("a new link/../state.json from work and x/state.json: %v, want %q", err, want)
+	}
+}
+
 // writeJSON, and each write ReplaceFile makes, goes through a file of a name of its own beside its
 // output: another run's file under the name the temporary file had before (<path>.tmp) is left
 // as it was, and a write that fails leaves no file of its own behind.
 func TestReplaceFileLeavesAnotherRunsFileAlone(t *testing.T) {
-	dir := t.TempDir()
+	// CreateBeside names its file in the directory with its links resolved (t.TempDir is under a
+	// link on macOS).
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	path := filepath.Join(dir, "run.json")
 	if err := os.WriteFile(path+".tmp", []byte("another run's\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -419,5 +529,33 @@ func TestReplaceFileLeavesAnotherRunsFileAlone(t *testing.T) {
 	defer b.Close()
 	if info, err := a.Stat(); a.Name() == b.Name() || filepath.Dir(a.Name()) != dir || err != nil || info.Mode().Perm() != 0o644 {
 		t.Errorf("two files beside %s: %s and %s (%v)", path, a.Name(), b.Name(), err)
+	}
+}
+
+// CreateBeside makes its file in the directory the rename over path lands in: work/link/../out.json
+// lands in x, so the file is made in x, and not in work, from where the rename could cross a file
+// system. A last name that is a link is the name the rename replaces, so the file is made beside
+// the link, in work.
+func TestCreateBesideMakesItsFileWhereTheRenameLands(t *testing.T) {
+	work, x := linkedDirs(t)
+	if err := os.Symlink(filepath.Join(x, "target.json"), filepath.Join(work, "last.json")); err != nil {
+		t.Fatal(err)
+	}
+	for path, want := range map[string]string{work + "/link/../out.json": x, filepath.Join(work, "last.json"): work} {
+		f, err := CreateBeside(path, 0o644)
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.Close()
+		os.Remove(f.Name())
+		if got := filepath.Dir(f.Name()); got != want {
+			t.Errorf("CreateBeside(%s) made %s, want it in %s", path, f.Name(), want)
+		}
+	}
+	if err := ReplaceFile(work+"/link/../out.json", []byte("whole\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if data, err := os.ReadFile(filepath.Join(x, "out.json")); err != nil || string(data) != "whole\n" {
+		t.Errorf("x/out.json holds %q (%v), want the write", data, err)
 	}
 }

@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/cmd/writing-check/harness"
 	"github.com/sjawhar/envoy/internal/dispatch/writingcheck/eval"
 )
 
@@ -38,7 +39,8 @@ func runValidate(args []string, stdout, stderr io.Writer) int {
 	}
 	dir := *manifestsDir
 	if dir == "" {
-		dir = filepath.Dir(*descPath)
+		// The directory of the description this reads (ParentDir), which filepath.Dir need not be.
+		dir = harness.ParentDir(*descPath)
 	}
 	data, err := os.ReadFile(*descPath)
 	if err != nil {
@@ -354,13 +356,16 @@ func checkBounds(d *eval.Description, fail func(string, ...any)) {
 }
 
 // gitLineTime is the committer time of the commit that last changed the line of path starting
-// with prefix, by git blame; false when git cannot read it or the line is not committed.
+// with prefix, by git blame; false when git cannot read it or the line is not committed. It reads
+// and blames path where the kernel finds it, the file its caller read (filepath.EvalSymlinks, which
+// takes a ".." after the link it follows): filepath.Abs would take the ".." away first, and with
+// link pointing at x/sub name link/../scanner.yaml in the working directory, not in x.
 func gitLineTime(path, prefix string) (time.Time, bool) {
-	abs, err := filepath.Abs(path)
+	file, err := filepath.EvalSymlinks(path)
 	if err != nil {
 		return time.Time{}, false
 	}
-	data, err := os.ReadFile(abs)
+	data, err := os.ReadFile(file)
 	if err != nil {
 		return time.Time{}, false
 	}
@@ -374,7 +379,7 @@ func gitLineTime(path, prefix string) (time.Time, bool) {
 	if line == 0 {
 		return time.Time{}, false
 	}
-	out, err := exec.Command("git", "-C", filepath.Dir(abs), "blame", "--porcelain", "-L", fmt.Sprintf("%d,%d", line, line), "--", filepath.Base(abs)).Output()
+	out, err := exec.Command("git", "-C", filepath.Dir(file), "blame", "--porcelain", "-L", fmt.Sprintf("%d,%d", line, line), "--", filepath.Base(file)).Output()
 	if err != nil {
 		return time.Time{}, false
 	}

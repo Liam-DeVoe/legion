@@ -1491,8 +1491,11 @@ type dsPage struct {
 
 var dsPageName = regexp.MustCompile(`^events-(\d+)-(\d+)\.jsonl\.gz$`)
 
-// dsPages is the page files of a work directory, in log order, checked to follow one another.
+// dsPages is the page files of a work directory, in log order, checked to follow one another. It
+// lists dir by the name it reads the pages by, filepath.Join's, which is dir cleaned: with link
+// pointing at x/sub, work/link/.. is work there, where the kernel would list x.
 func dsPages(dir string) ([]dsPage, error) {
+	dir = filepath.Clean(dir)
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, err
@@ -1690,6 +1693,9 @@ func runDatasetFetch(ctx context.Context, args []string, stdout, stderr io.Write
 	if *work == "" {
 		*work = *out + ".work"
 	}
+	// The work directory is the one its files are named in by filepath.Join: its name cleaned, so
+	// the fetch makes, checks, lists and reads one directory.
+	*work = filepath.Clean(*work)
 	for _, path := range [][2]string{{"--out", *out}, {"--work", *work}} {
 		if err := harness.OutsideRepository(path[0], path[1]); err != nil {
 			fmt.Fprintf(stderr, "writing-check dataset fetch: %v\n", err)
@@ -2032,7 +2038,8 @@ func assembleSnapshot(out, work string, header snapLine, labels []snapLine) (str
 // readLabelled reads the labelled sets, as their tarball or the directory it was extracted to:
 // every labels.jsonl, without the planted copies (a record with a copy id), keeping each write
 // labelled failure, that is, with a sentence the labeller found states no fact. A write labelled
-// in two sets is one label with both sets and the shapes of both.
+// in two sets is one label with both sets and the shapes of both. A directory is walked by its
+// name cleaned, the name the walk opens its files by (dsPages).
 func readLabelled(path string) ([]snapLine, error) {
 	type labelLine struct {
 		EventID    int64  `json:"event_id"`
@@ -2086,7 +2093,7 @@ func readLabelled(path string) ([]snapLine, error) {
 		return nil, err
 	}
 	if info.IsDir() {
-		err = filepath.WalkDir(path, func(p string, d os.DirEntry, err error) error {
+		err = filepath.WalkDir(filepath.Clean(path), func(p string, d os.DirEntry, err error) error {
 			if err != nil || d.IsDir() {
 				return err
 			}
@@ -3804,7 +3811,9 @@ func runDatasetPack(args []string, stdout, stderr io.Writer) int {
 	}
 	// build --from a directory reads a file named as a manifest or a part as that, never as a
 	// bundle (openBundle), so pack takes no such name.
-	dir, base := filepath.Dir(*out), filepath.Base(*out)
+	// The parts are beside the bundle, in the directory the kernel puts --out in (ParentDir),
+	// where removeParts and splitBundle remove and write them.
+	dir, base := harness.ParentDir(*out), filepath.Base(*out)
 	if strings.HasSuffix(base, ".manifest.json") || dsPartName.MatchString(base) {
 		fmt.Fprintf(stderr, "writing-check dataset pack: --out %s is named as a bundle's manifest or part, which build --from reads as one: name the bundle otherwise\n", *out)
 		return 2
@@ -3933,7 +3942,7 @@ func isGzipTarball(path string) bool {
 
 // removeParts removes <bundle>.manifest.json and each <bundle>.part-NNN beside bundle.
 func removeParts(bundle string) error {
-	dir, base := filepath.Dir(bundle), filepath.Base(bundle)
+	dir, base := harness.ParentDir(bundle), filepath.Base(bundle)
 	files, err := os.ReadDir(dir)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
@@ -3961,9 +3970,10 @@ func splitBundle(bundle, sum string, size, partSize int64) ([]string, error) {
 	defer src.Close()
 	m := dsManifest{Bundle: filepath.Base(bundle), Size: size, SHA256: sum}
 	var paths []string
+	dir := harness.ParentDir(bundle)
 	for i := 0; int64(i)*partSize < size; i++ {
 		name := fmt.Sprintf("%s.part-%03d", filepath.Base(bundle), i)
-		path := filepath.Join(filepath.Dir(bundle), name)
+		path := filepath.Join(dir, name)
 		buf := make([]byte, min(partSize, size-int64(i)*partSize))
 		if _, err := io.ReadFull(src, buf); err != nil {
 			return nil, err
@@ -4006,6 +4016,8 @@ func openBundle(from, dir string) (dsInputs, error) {
 	var packDir string
 	var bundles, parts []string
 	if info.IsDir() {
+		// Listed by the name its files are opened by, filepath.Join's: from cleaned (dsPages).
+		from = filepath.Clean(from)
 		entries, err := os.ReadDir(from)
 		if err != nil {
 			return in, err
@@ -4157,8 +4169,9 @@ func joinParts(manifestPath string, m dsManifest, dir string) (string, error) {
 	}
 	defer f.Close()
 	whole := sha256.New()
+	beside := harness.ParentDir(manifestPath)
 	for _, p := range m.Parts {
-		part, err := os.ReadFile(filepath.Join(filepath.Dir(manifestPath), p.Name))
+		part, err := os.ReadFile(filepath.Join(beside, p.Name))
 		if errors.Is(err, os.ErrNotExist) {
 			return "", fmt.Errorf("%s names the part %s, which is not beside it: name the whole bundle, or put every part beside the manifest", manifestPath, p.Name)
 		}
@@ -4346,7 +4359,7 @@ func writeSessions(manifestPath, casesPath, out string) (dsSessionCounts, error)
 			return counts, fmt.Errorf("%s counts masks of session %s, which it holds no rows of", manifestPath, s)
 		}
 	}
-	dir := filepath.Dir(manifestPath)
+	dir := harness.ParentDir(manifestPath)
 	for _, p := range m.Parts {
 		f, err := os.Open(filepath.Join(dir, p.Name))
 		if err != nil {

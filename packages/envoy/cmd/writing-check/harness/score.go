@@ -1135,11 +1135,7 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		if candidateSet {
 			logged[RoleCandidate] = strings.Join(candidates, ",")
 		}
-		dir, err := filepath.Abs(*out)
-		if err != nil {
-			return fail(err)
-		}
-		e := Exposure{Commit: c, Time: started.UTC().Format(time.RFC3339), Changes: changed, Models: logged, Reason: *newRun, Out: dir, Retried: retry}
+		e := Exposure{Commit: c, Time: started.UTC().Format(time.RFC3339), Changes: changed, Models: logged, Reason: *newRun, Out: joinedPath(*out), Retried: retry}
 		if _, err := checkHeldOut(*exposureLog, e, finished); err != nil {
 			return fail(err)
 		}

@@ -213,3 +213,54 @@ func TestValidateReadsTheBarsCommitTimeFromGit(t *testing.T) {
 		t.Error("an uncommitted bar line has a commit time")
 	}
 }
+
+// validate reads the manifests, by default, in the directory the kernel puts the description in:
+// with away/link pointing at the fixture's sub, away/link/../scanner.yaml is the fixture's
+// description, and its manifests are the fixture's, not away's.
+func TestValidateReadsTheManifestsBesideTheDescriptionItReads(t *testing.T) {
+	f := newValidFixture(t)
+	f.write(t)
+	away := t.TempDir()
+	if err := os.Mkdir(filepath.Join(f.dir, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(f.dir, "sub"), filepath.Join(away, "link")); err != nil {
+		t.Fatal(err)
+	}
+	// Written out, not with filepath.Join, which would take the ".." away before the link.
+	if code, stdout, stderr := runCmd(t, "validate", "--description", away+"/link/../scanner.yaml", "--exposure-log", f.log); code != 0 {
+		t.Errorf("validate --description away/link/../scanner.yaml: exit %d\n%s%s", code, stdout, stderr)
+	}
+}
+
+// The bar's commit time is read from the file validate is given, where the kernel finds it: with
+// away/link pointing at the repository's sub, away/link/../scanner.yaml is the repository's
+// committed scanner.yaml.
+func TestValidateReadsTheBarsCommitTimeOfTheFileItIsGiven(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("no git")
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "scanner.yaml"), []byte("name: x\nacceptance_bar:\n  confidence: 0.95\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"init", "-q"}, {"add", "scanner.yaml"}, {"commit", "-q", "-m", "bar"}} {
+		cmd := exec.Command("git", append([]string{"-C", dir, "-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false"}, args...)...)
+		cmd.Env = append(os.Environ(), "GIT_COMMITTER_DATE=2026-11-19T12:00:00Z", "GIT_AUTHOR_DATE=2026-11-19T12:00:00Z")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	away := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(dir, "sub"), filepath.Join(away, "link")); err != nil {
+		t.Fatal(err)
+	}
+	// Written out, not with filepath.Join, which would take the ".." away before the link.
+	at, ok := gitLineTime(away+"/link/../scanner.yaml", "acceptance_bar:")
+	if want, _ := time.Parse(time.RFC3339, "2026-11-19T12:00:00Z"); !ok || !at.Equal(want) {
+		t.Errorf("commit time of away/link/../scanner.yaml %v, %t; want %v", at, ok, want)
+	}
+}

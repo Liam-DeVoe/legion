@@ -1224,7 +1224,8 @@ PY
 // export-sessions.sh, run against a stand-in tq with the session list build writes, gives the
 // parts and the manifest, a 0 for a session the store holds no row of, and never queries a
 // session it leaves out; dataset sessions joins those rows to the cases at each write's place,
-// and refuses a part whose SHA-256 differs from the manifest.
+// reads the parts beside the manifest where the kernel finds it, and refuses a part whose SHA-256
+// differs from the manifest.
 func TestExportSessionsScriptFeedsDatasetSessions(t *testing.T) {
 	for _, tool := range []string{"bash", "python3", "gzip", "split"} {
 		if _, err := exec.LookPath(tool); err != nil {
@@ -1333,6 +1334,21 @@ func TestExportSessionsScriptFeedsDatasetSessions(t *testing.T) {
 	if code, _, errText := ingest(out); code != 0 {
 		t.Fatalf("dataset sessions: exit %d: %s", code, errText)
 	}
+	// The parts are read beside the manifest where the kernel finds it: with away/link pointing at
+	// export/sub, away/link/../manifest.json is export's manifest, and its parts are export's.
+	away := filepath.Join(dir, "away")
+	for _, d := range []string{filepath.Join(export, "sub"), away} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(filepath.Join(export, "sub"), filepath.Join(away, "link")); err != nil {
+		t.Fatal(err)
+	}
+	var through bytes.Buffer
+	if code := run(t.Context(), []string{"dataset", "sessions", "--manifest", away + "/link/../manifest.json", "--cases", casesPath, "--out", filepath.Join(dir, "through")}, &bytes.Buffer{}, &through); code != 0 {
+		t.Errorf("dataset sessions --manifest away/link/../manifest.json: exit %d: %s", code, through.String())
+	}
 	var sc dsSessionCounts
 	if data, err := os.ReadFile(filepath.Join(out, dsSessionCountsFile)); err != nil || json.Unmarshal(data, &sc) != nil ||
 		sc.Schema != m.Schema || sc.MasksBySession[withRows]["password"] != 1 || sc.CasesByStatus[dsPlaceFound] != 2 {
@@ -1416,9 +1432,10 @@ func TestExportSessionsScriptFeedsDatasetSessions(t *testing.T) {
 	}
 }
 
-// export-sessions.sh refuses an --out inside a repository, given whole or relative to the
-// directory it runs in, before it makes the directory or reads the store, as every step of the
-// dataset refuses one.
+// export-sessions.sh refuses an --out inside a repository, given whole, relative to the directory
+// it runs in, or through a link and "..": with outside/link pointing at repo/sub,
+// outside/link/../export is repo/export. It refuses before it makes the directory or reads the
+// store, as every step of the dataset refuses one.
 func TestExportSessionsScriptRefusesAnOutInsideARepository(t *testing.T) {
 	for _, tool := range []string{"bash", "python3"} {
 		if _, err := exec.LookPath(tool); err != nil {
@@ -1440,7 +1457,17 @@ func TestExportSessionsScriptRefusesAnOutInsideARepository(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for _, out := range []string{filepath.Join(repo, "data", "export"), "export"} {
+	outside := filepath.Join(dir, "outside")
+	for _, d := range []string{filepath.Join(repo, "sub"), outside} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(filepath.Join(repo, "sub"), filepath.Join(outside, "link")); err != nil {
+		t.Fatal(err)
+	}
+	// Written out, not with filepath.Join, which would take the ".." away before the link.
+	for _, out := range []string{filepath.Join(repo, "data", "export"), "export", outside + "/link/../export"} {
 		cmd := exec.Command("bash", script, "--sessions", list, "--exclude", exclude, "--out", out)
 		cmd.Dir = repo
 		cmd.Env = append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"), "TQ_LOG="+tqLog, "TQ_ROWS="+exclude)
@@ -1486,6 +1513,153 @@ func TestDatasetPackOverALargerBundleRemovesItsParts(t *testing.T) {
 	var counts dsCounts
 	if data, err := os.ReadFile(filepath.Join(out, "counts.json")); err != nil || json.Unmarshal(data, &counts) != nil || counts.Seed != fixtureSeed+1 {
 		t.Errorf("build --from the directory read the seed %d (%v), want the new bundle's %d", counts.Seed, err, fixtureSeed+1)
+	}
+}
+
+// linkedDirs makes work and x/sub in a directory of the test's own, its links resolved, and
+// work/link pointing at x/sub: the kernel takes work/link/.. to x, and filepath.Join cleans it to
+// work. A test writes such a name out, not with filepath.Join, which would take the ".." away.
+func linkedDirs(t *testing.T) (work, x string) {
+	t.Helper()
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	work, x = filepath.Join(dir, "work"), filepath.Join(dir, "x")
+	for _, d := range []string{work, filepath.Join(x, "sub")} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(filepath.Join(x, "sub"), filepath.Join(work, "link")); err != nil {
+		t.Fatal(err)
+	}
+	return work, x
+}
+
+// pack keeps the parts beside the bundle, in the directory the kernel puts --out in: the bundle
+// and manifest of --out work/link/../dataset.tar.gz are in x, and so are the parts it writes, the
+// earlier pack's parts it removes, and the parts it refuses as one of its inputs.
+func TestDatasetPackThroughALinkAndDotDotKeepsItsPartsBesideTheBundle(t *testing.T) {
+	work, x := linkedDirs(t)
+	snapshot, verdicts := standardFixture().write(t, t.TempDir())
+	through := work + "/link/../dataset.tar.gz"
+	if _, parts, err := packBundle(dsInputs{Snapshot: snapshot, Verdicts: verdicts, Seed: fixtureSeed}, filepath.Join(x, "dataset.tar.gz"), 4096); err != nil || len(parts) < 3 {
+		t.Fatalf("the pack in x wrote %v (%v), want parts and a manifest", parts, err)
+	}
+	part := filepath.Join(x, "dataset.tar.gz.part-000")
+	before, err := os.ReadFile(part)
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, _, stderr := runCmd(t, "dataset", "pack", "--snapshot", part, "--verdicts", verdicts, "--seed", "1", "--out", through)
+	if want := "dataset.tar.gz.part-000 of --out is the --snapshot file"; code != 2 || !strings.Contains(stderr, want) {
+		t.Errorf("pack --snapshot x/dataset.tar.gz.part-000 --out work/link/../dataset.tar.gz = %d, want 2 and %q:\n%s", code, want, stderr)
+	}
+	if after, err := os.ReadFile(part); err != nil || string(after) != string(before) {
+		t.Errorf("the refused pack changed its input %s (%v)", part, err)
+	}
+	if _, parts, err := packBundle(dsInputs{Snapshot: snapshot, Verdicts: verdicts, Seed: fixtureSeed + 1}, through, 4096); err != nil || len(parts) < 3 {
+		t.Fatalf("the larger pack through the link wrote %v (%v), want parts and a manifest", parts, err)
+	}
+	if left := slices.Sorted(maps.Keys(dirFiles(t, work))); !slices.Equal(left, []string{"link"}) {
+		t.Errorf("work holds %v, want the link alone: the parts are beside the bundle in x", left)
+	}
+	if _, parts, err := packBundle(dsInputs{Snapshot: snapshot, Verdicts: verdicts, Seed: fixtureSeed + 2}, through, dsPartSize); err != nil || len(parts) != 0 {
+		t.Fatalf("the smaller pack through the link wrote %v (%v), want the bundle alone", parts, err)
+	}
+	if left := slices.Sorted(maps.Keys(dirFiles(t, x))); !slices.Equal(left, []string{"dataset.tar.gz", "sub"}) {
+		t.Errorf("x holds %v, want the new bundle alone beside sub", left)
+	}
+}
+
+// build --from reads a bundle where its name leads: work/link/.., a directory, is listed by the
+// name its files are opened by, filepath.Join's, work; and the parts of the manifest
+// work/link/../dataset.tar.gz.manifest.json are read beside it, in x, where the kernel finds it.
+func TestDatasetBuildFromThroughALinkAndDotDot(t *testing.T) {
+	work, x := linkedDirs(t)
+	snapshot, verdicts := standardFixture().write(t, t.TempDir())
+	if _, parts, err := packBundle(dsInputs{Snapshot: snapshot, Verdicts: verdicts, Seed: fixtureSeed}, filepath.Join(work, "dataset.tar.gz"), dsPartSize); err != nil || len(parts) != 0 {
+		t.Fatalf("the pack in work wrote %v (%v), want the bundle alone", parts, err)
+	}
+	if _, parts, err := packBundle(dsInputs{Snapshot: snapshot, Verdicts: verdicts, Seed: fixtureSeed + 1}, filepath.Join(x, "dataset.tar.gz"), 4096); err != nil || len(parts) < 3 {
+		t.Fatalf("the pack in x wrote %v (%v), want parts and a manifest", parts, err)
+	}
+	for _, c := range []struct {
+		from string
+		seed uint64
+	}{
+		{work + "/link/..", fixtureSeed},
+		{work + "/link/../dataset.tar.gz.manifest.json", fixtureSeed + 1},
+	} {
+		out := filepath.Join(t.TempDir(), "out")
+		code, _, stderr := runCmd(t, "dataset", "build", "--from", c.from, "--out", out)
+		var counts dsCounts
+		if data, err := os.ReadFile(filepath.Join(out, "counts.json")); code != 0 || err != nil || json.Unmarshal(data, &counts) != nil || counts.Seed != c.seed {
+			t.Errorf("build --from %s = %d, the seed %d (%v), want 0 and the seed %d:\n%s", c.from, code, counts.Seed, err, c.seed, stderr)
+		}
+	}
+}
+
+// A work directory named work/link/.. is listed by the name its pages are read by, filepath.Join's,
+// work, and not x, where the kernel takes it: the pages read are work's.
+func TestDatasetReadsThePagesOfAWorkDirectoryNamedThroughALinkAndDotDot(t *testing.T) {
+	work, x := linkedDirs(t)
+	for path, id := range map[string]int{filepath.Join(work, "events-0-10.jsonl.gz"): 7, filepath.Join(x, "events-0-20.jsonl.gz"): 9} {
+		if _, err := dsWriteGzipJSONL(path, []map[string]int{{"id": id}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var read []string
+	err := eachPageEvent(work+"/link/..", func(raw []byte) error {
+		read = append(read, string(raw))
+		return nil
+	})
+	if err != nil || !slices.Equal(read, []string{`{"id":7}`}) {
+		t.Errorf("the pages of work/link/.. hold %v (%v), want work's one event", read, err)
+	}
+}
+
+// Labelled sets named work/link/.. are walked by the name their files are opened by,
+// filepath.Join's, work: the labels read are work's.
+func TestDatasetReadsLabelledSetsNamedThroughALinkAndDotDot(t *testing.T) {
+	work, _ := linkedDirs(t)
+	set := filepath.Join(work, "set-1")
+	if err := os.Mkdir(set, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	line := `{"event_id":7,"source_id":"c7","family":"comment","write_label":"failure","sentences":[{"verdict":"vacuous","shape":"names"}]}` + "\n"
+	if err := os.WriteFile(filepath.Join(set, "labels.jsonl"), []byte(line), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	labels, err := readLabelled(work + "/link/..")
+	if err != nil || len(labels) != 1 || labels[0].EventID != 7 || !slices.Equal(labels[0].Sets, []string{"set-1"}) {
+		t.Errorf("the labelled sets of work/link/.. read %+v (%v), want work's one label of set-1", labels, err)
+	}
+}
+
+// dataset fetch makes the work directory it writes and reads: --work work/link/../w is work/w, the
+// name its files are opened by, and the fetch makes no x/w, where the kernel takes the name. The
+// work directory holds a fetch of another end, so the fetch is refused before it reads the log.
+func TestDatasetFetchMakesTheWorkDirectoryItReads(t *testing.T) {
+	work, x := linkedDirs(t)
+	token := filepath.Join(t.TempDir(), "token")
+	for path, data := range map[string]string{token: "stand-in\n", filepath.Join(work, "w", "fetch.json"): `{"end":"2000-01-01T00:00:00Z","owner":"someone","dispatch_url":"http://127.0.0.1:1"}`} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("DISPATCH_URL", "http://127.0.0.1:1")
+	t.Setenv("DISPATCH_TOKEN_FILE", token)
+	code, _, stderr := runCmd(t, "dataset", "fetch", "--end", fixtureEnd, "--owner", fixtureOwner, "--out", filepath.Join(t.TempDir(), "snapshot.jsonl.gz"), "--work", work+"/link/../w")
+	if code != 1 || !strings.Contains(stderr, "was fetched for end 2000-01-01T00:00:00Z") {
+		t.Errorf("dataset fetch --work work/link/../w over a fetch of another end = %d, want 1 and the refusal:\n%s", code, stderr)
+	}
+	if _, err := os.Stat(filepath.Join(x, "w")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the fetch made x/w (%v), a directory it does not read", err)
 	}
 }
 
@@ -1739,7 +1913,12 @@ func TestDatasetBuildFromADirectoryFindsBundlesOfAnyName(t *testing.T) {
 // directory there: each writes Dispatch or session text. fetch and named need --owner: they
 // hold no default owner.
 func TestDatasetStepsRefuseAnOutInsideARepository(t *testing.T) {
-	repo := t.TempDir()
+	// The refusal names the repository with its links resolved (t.TempDir is under a link on
+	// macOS).
+	repo, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := os.Mkdir(filepath.Join(repo, ".jj"), 0o755); err != nil {
 		t.Fatal(err)
 	}

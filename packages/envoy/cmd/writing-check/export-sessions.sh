@@ -52,9 +52,10 @@ command -v python3 >/dev/null || { echo "export-sessions: python3 is required" >
 tq="${TQ:-tq}"
 command -v "$tq" >/dev/null || { echo "export-sessions: $tq is not on PATH" >&2; exit 2; }
 batch="${BATCH:-50}"
-# --out is absolute and clean as the harness reads it (OutsideRepository, filepath.Abs), so each
-# directory it walks up is one that holds --out.
-dir=$(python3 -c 'import os, sys; print(os.path.abspath(sys.argv[1]))' "$out")
+# --out with its links resolved as the kernel resolves them (os.path.realpath, as the harness's
+# OutsideRepository does), a ".." after a link naming the parent of the link's target: the script
+# writes "$out/<name>", so each directory it walks up is one that holds what it writes.
+dir=$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$out")
 while :; do
 	if [ -e "$dir/.git" ] || [ -e "$dir/.jj" ]; then
 		echo "export-sessions: --out $out is inside the repository at $dir: its files hold Dispatch text, so give a path under \$TMPDIR" >&2

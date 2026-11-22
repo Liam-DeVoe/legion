@@ -29,7 +29,8 @@ type Exposure struct {
 	Models  map[string]string `json:"models"`
 	// Reason is the --new-run reason of a second run of a cell at one commit, empty otherwise.
 	Reason string `json:"reason,omitempty"`
-	// Out is the run's output directory, an absolute path.
+	// Out is the run's output directory, where its files land (joinedPath): an absolute path with
+	// its links resolved, so two names of one directory give one Out, and two directories never do.
 	Out string `json:"out"`
 	// Continues is the Time of the line that began the run this one continues: the run at the
 	// same commit, in the same Out, of the same cells, which stopped before it scored every case.
@@ -91,7 +92,8 @@ func ClaimHeldOut(path string, e Exposure, finished bool) (Exposure, error) {
 	if err != nil {
 		return e, err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	// The directory the open below puts the log in (ParentDir), which filepath.Dir need not be.
+	if err := os.MkdirAll(ParentDir(path), 0o755); err != nil {
 		return e, err
 	}
 	line, err := json.Marshal(e)
@@ -160,21 +162,21 @@ func headCommit() (string, error) {
 }
 
 // OutsideRepository refuses an output path inside a repository: a directory at or above it that
-// holds a .git or a .jj. Every file the harness and the dataset steps write holds Dispatch or
-// session text, which goes under $TMPDIR and never into a working copy.
+// holds a .git or a .jj, above where a write to path lands (realPath) or where the files a command
+// names in it land (joinedPath). Every file the harness and the dataset steps write holds
+// Dispatch or session text, which goes under $TMPDIR and never into a working copy.
 func OutsideRepository(flag, path string) error {
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		return err
-	}
-	for d := abs; ; d = filepath.Dir(d) {
-		for _, marker := range []string{".git", ".jj"} {
-			if _, err := os.Stat(filepath.Join(d, marker)); err == nil {
-				return fmt.Errorf("%s %s is inside the repository at %s: its files hold Dispatch text, so give a path under $TMPDIR", flag, path, d)
+	for _, at := range slices.Compact([]string{realPath(path), joinedPath(path)}) {
+		for d := at; ; d = filepath.Dir(d) {
+			for _, marker := range []string{".git", ".jj"} {
+				if _, err := os.Stat(filepath.Join(d, marker)); err == nil {
+					return fmt.Errorf("%s %s is inside the repository at %s: its files hold Dispatch text, so give a path under $TMPDIR", flag, path, d)
+				}
+			}
+			if filepath.Dir(d) == d {
+				break
 			}
 		}
-		if filepath.Dir(d) == d {
-			return nil
-		}
 	}
+	return nil
 }

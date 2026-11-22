@@ -223,6 +223,27 @@ func TestTextsFromADirectoryOfTwoRunsIsRefused(t *testing.T) {
 	}
 }
 
+// A --texts-from directory named work/link/.. is listed by the name its runs are read by,
+// filepath.Join's, work, and not x, where the kernel takes it: work holds a run's run.json and a
+// lockstep's run, two runs, so it is refused, rather than read the run at its top alone.
+func TestTextsFromADirectoryNamedThroughALinkAndDotDotIsListedWhereItIsRead(t *testing.T) {
+	work, _ := linkedDirs(t)
+	for _, d := range []string{work, filepath.Join(work, "claude-opus-5-5")} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		for name, data := range map[string]string{"run.json": `{"change": "1", "part": "development"}`, "cases.jsonl": `{"case_id": "plain/comment:c1@10"}` + "\n"} {
+			if err := os.WriteFile(filepath.Join(d, name), []byte(data), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	// Written out, as linkedDirs says.
+	if sources, _, err := readTextsFrom(work + "/link/.."); err == nil || !strings.Contains(err.Error(), "the run of a lockstep in claude-opus-5-5, two runs: name one") {
+		t.Errorf("--texts-from work/link/.., which holds two runs, read %d runs: %v", len(sources), err)
+	}
+}
+
 // A line of --texts-from that keeps the writer's answer gives it to the judgements. A line of a
 // change that asks the writer a side question, for a case with a session part, that keeps none (a
 // run made before cases.jsonl kept it) gives none: the regrade's line says so, and the figures and

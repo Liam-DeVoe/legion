@@ -194,9 +194,9 @@ func placeQuote(quote string, sentences []LabelledSentence) string {
 }
 
 // phrasesRun is the run.json phrases-labels writes in its --out: the grader, the prompts'
-// digest (PromptsDigest, which holds candidates.yaml), the labels directory and the digest of the
-// files read in it (labelsDigest), so a rerun reuses its results only for the same grader,
-// prompts, directory and cases and labels.
+// digest (PromptsDigest, which holds candidates.yaml), the labels directory where its files are
+// read (joinedPath, its links resolved) and the digest of the files read in it (labelsDigest), so
+// a rerun reuses its results only for the same grader, prompts, directory and cases and labels.
 type phrasesRun struct {
 	Grader        string `json:"grader"`
 	PromptsSHA256 string `json:"prompts_sha256"`
@@ -352,10 +352,7 @@ func runPhrasesLabels(ctx context.Context, args []string, stdout, stderr io.Writ
 	if err := os.MkdirAll(*out, 0o755); err != nil {
 		return fail(1, err)
 	}
-	labels, err := filepath.Abs(*labelsDir)
-	if err != nil {
-		return fail(1, err)
-	}
+	labels := joinedPath(*labelsDir)
 	labelsSHA, err := labelsDigest(*labelsDir)
 	if err != nil {
 		return fail(1, err)

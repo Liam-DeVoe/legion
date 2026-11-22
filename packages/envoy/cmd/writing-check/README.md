@@ -1891,7 +1891,8 @@ except in two cases:
 - `--new-run '<reason>'` gives the reason for a second run of those cells. The line records the
   reason.
 - The run continues that run. The latest line at the commit that scored one of its cells has
-  the same `--out` and the same cells. The run scores the cases that hold no result: those with
+  the same `--out` directory, taken where the run's files land, links resolved (the line's `out`),
+  and the same cells. The run scores the cases that hold no result: those with
   no line, and those whose line holds an error. Its line records the time of the line that began
   the run as `continues`, and the results it scores again as `retried`, each model's counted. It
   scores no case that holds a result, and at one commit nothing that decides a score has

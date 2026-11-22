@@ -407,6 +407,37 @@ func TestAHeldOutRunWritesTheExposureLogAndIsRefusedAtTheSameCommit(t *testing.T
 	}
 }
 
+// A held-out run continues only the run whose directory its files land in. With work/link
+// pointing at x/sub, ../held from work/link is x/held: a run there at the commit of a run in
+// work/held is a second run of its cells, refused without a reason, although its --out, made
+// absolute and clean, is work/held.
+func TestAHeldOutRunContinuesOnlyTheRunOfItsOwnDirectory(t *testing.T) {
+	build, sessions := writeFixture(t)
+	stand := modeltest.New(t, graderRules(t)...)
+	key := keyFile(t)
+	exposure := filepath.Join(t.TempDir(), "exposure.log")
+	work, _ := linkedDirs(t)
+	score := func(out string) (int, string) {
+		code, _, stderr := runHarness("score", "--part", "held_out", "--commit", "c0ffee", "--cases", build, "--sessions", sessions, "--out", out,
+			"--gateway", stand.URL, "--gateway-key-file", key, "--draws", "50", "--exposure-log", exposure)
+		return code, stderr
+	}
+	if code, stderr := score(filepath.Join(work, "held")); code != 0 {
+		t.Fatalf("the first held-out run = %d:\n%s", code, stderr)
+	}
+	calls := len(stand.Requests())
+	// t.Chdir sets PWD to work/link, the name os.Getwd answers: ../held made absolute and clean
+	// is work/held, the first run's --out.
+	t.Chdir(filepath.Join(work, "link"))
+	code, stderr := score("../held")
+	if code != 1 || !strings.Contains(stderr, "already holds a run of the held-out part at commit c0ffee") || len(stand.Requests()) != calls {
+		t.Errorf("a held-out run in x/held after one in work/held = %d after %d calls, want 1 and the refusal:\n%s", code, len(stand.Requests())-calls, stderr)
+	}
+	if logged, err := ReadExposures(exposure); err != nil || len(logged) != 1 {
+		t.Errorf("the exposure log after the refused run: %+v (%v), want the first run's line alone", logged, err)
+	}
+}
+
 // A held-out run refused on a file of its own before it reads a case, a lane's cases.jsonl it
 // cannot open or a gateway key file it cannot read, writes no line to the exposure log: it read
 // no text of the part, so the next run at its commit is no second run.
@@ -567,6 +598,22 @@ func TestClaimHeldOut(t *testing.T) {
 	}
 }
 
+// ClaimHeldOut makes the directory its open puts the log in: work/link/../logs/exposure.log is in
+// x/logs, which it makes, and not in work/logs.
+func TestClaimHeldOutMakesTheDirectoryTheLogLandsIn(t *testing.T) {
+	work, x := linkedDirs(t)
+	// Written out, as linkedDirs says.
+	if _, err := ClaimHeldOut(work+"/link/../logs/exposure.log", Exposure{Commit: "a", Time: "t1", Changes: []string{"1"}, Out: "/runs/1"}, false); err != nil {
+		t.Fatal(err)
+	}
+	if logged, err := ReadExposures(filepath.Join(x, "logs", "exposure.log")); err != nil || len(logged) != 1 {
+		t.Errorf("x/logs/exposure.log holds %+v (%v), want the claim", logged, err)
+	}
+	if _, err := os.Stat(filepath.Join(work, "logs")); !os.IsNotExist(err) {
+		t.Errorf("the claim made work/logs (%v)", err)
+	}
+}
+
 func TestAScoreOfASampleRecordsTheSample(t *testing.T) {
 	build, sessions := writeFixture(t)
 	stand := modeltest.New(t, graderRules(t)...)
@@ -607,5 +654,39 @@ func TestAnOutputInsideARepositoryIsRefused(t *testing.T) {
 	}
 	if err := OutsideRepository("--out", filepath.Join(t.TempDir(), "run")); err != nil {
 		t.Errorf("a directory outside a repository: %v", err)
+	}
+}
+
+// OutsideRepository looks for the repository above where the output's files land, its links
+// resolved. With outside/link pointing at repo/sub, outside/link/run and outside/link/../run are
+// in repo; with repo/away pointing at outside/sub, repo/away/.. is outside, but the files a
+// command names in it by filepath.Join, which takes the ".." away with the link, are in repo.
+// repo/away/run itself is outside/sub/run, in no repository.
+func TestAnOutputThroughALinkIntoARepositoryIsRefused(t *testing.T) {
+	// The refusal names the repository with its links resolved (t.TempDir is under a link on
+	// macOS).
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo, outside := filepath.Join(dir, "repo"), filepath.Join(dir, "outside")
+	for _, d := range []string{filepath.Join(repo, ".jj"), filepath.Join(repo, "sub"), filepath.Join(outside, "sub")} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for link, target := range map[string]string{filepath.Join(outside, "link"): filepath.Join(repo, "sub"), filepath.Join(repo, "away"): filepath.Join(outside, "sub")} {
+		if err := os.Symlink(target, link); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Written out, not with filepath.Join, which would take each ".." away before its link.
+	for _, out := range []string{filepath.Join(outside, "link", "run"), outside + "/link/../run", repo + "/away/.."} {
+		if err := OutsideRepository("--out", out); err == nil || !strings.Contains(err.Error(), "is inside the repository at "+repo+":") {
+			t.Errorf("--out %s: %v, want the refusal naming %s", out, err, repo)
+		}
+	}
+	if err := OutsideRepository("--out", filepath.Join(repo, "away", "run")); err != nil {
+		t.Errorf("--out repo/away/run, which is outside/sub/run: %v", err)
 	}
 }

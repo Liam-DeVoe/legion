@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 )
 
@@ -92,18 +93,21 @@ func NoOutputIsAnInput(writes, reads []File) error {
 	return nil
 }
 
-// located is a file looked up once (locate): its path, its os.Stat (nil where it does not exist
-// or cannot be looked up) and its realPath.
+// located is a file looked up once (locate): its os.Stat (nil where it does not exist or cannot
+// be looked up), its realPath and, for a directory the command replaces or reads whole, where the
+// files it names in that directory land (joinedPath).
 type located struct {
-	path string
-	info os.FileInfo
-	real string
+	info         os.FileInfo
+	real, joined string
 }
 
 func locate(files []File) []located {
 	found := make([]located, len(files))
 	for i, f := range files {
-		found[i] = located{path: f.Path, real: realPath(f.Path)}
+		found[i] = located{real: realPath(f.Path)}
+		if f.Tree {
+			found[i].joined = joinedPath(f.Path)
+		}
 		if info, err := os.Stat(f.Path); err == nil {
 			found[i].info = info
 		}
@@ -118,43 +122,84 @@ func (a located) same(b located) bool {
 }
 
 // holds is whether dir, a directory a command replaces or reads whole, is f or lies above it,
-// whether or not either exists.
+// whether or not either exists: where dir's name leads, where the files the command names in it
+// land, or dir by any other name.
 func (dir located) holds(f located) bool {
-	rel, err := filepath.Rel(dir.real, f.real)
-	return err == nil && filepath.IsLocal(rel) || underDir(f.path, dir.info)
+	return inDir(dir.real, f.real) || inDir(dir.joined, f.real) || underDir(f.real, dir.info)
 }
 
-// realPath is where a write to path lands: path made absolute, its longest leading part that
-// exists with its links resolved, and the rest as written. Two names of one file that does not
+// inDir is whether path is the directory dir or lies under it, both realPaths.
+func inDir(dir, path string) bool {
+	rel, err := filepath.Rel(dir, path)
+	return err == nil && filepath.IsLocal(rel)
+}
+
+// joinedPath is where the files a command names in the directory path by filepath.Join land: the
+// realPath of path cleaned, since Join cleans it first. A ".." there takes away the name before
+// it, even a link the kernel would follow: with link pointing at x/sub, filepath.Join("link/..",
+// name) is name in the working directory, not x/name.
+func joinedPath(path string) string {
+	return realPath(filepath.Clean(path))
+}
+
+// realPath is where a write to path lands, found as the kernel finds it: from the root, or from
+// the working directory for a relative path, one name at a time, each link followed where it is
+// met, so that a ".." after a link names the parent of the link's target and not the directory
+// that holds the link. The first name that does not exist yet ends the walk, and the rest is
+// joined as written: a write through a directory that is not there fails, or makes it, and a ".."
+// in a directory it makes names that directory's parent. Two names of one file that does not
 // exist yet, as through a link to its directory, give one realPath.
 func realPath(path string) string {
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		return filepath.Clean(path)
+	const sep = string(filepath.Separator)
+	if !filepath.IsAbs(path) {
+		wd, err := os.Getwd()
+		if err != nil {
+			return filepath.Clean(path)
+		}
+		// Joined as written: filepath.Join would take a ".." away before the link it follows.
+		path = wd + sep + path
 	}
-	for dir, rest := abs, ""; ; {
-		if resolved, err := filepath.EvalSymlinks(dir); err == nil {
-			return filepath.Join(resolved, rest)
+	at, rest := sep, path
+	for links := 0; ; {
+		var name string
+		name, rest, _ = strings.Cut(strings.TrimLeft(rest, sep), sep)
+		switch name {
+		case "":
+			return at
+		case ".":
+			continue
+		case "..":
+			at = filepath.Dir(at)
+			continue
 		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return abs
+		next := filepath.Join(at, name)
+		info, err := os.Lstat(next)
+		if err != nil {
+			return filepath.Join(next, rest)
 		}
-		rest, dir = filepath.Join(filepath.Base(dir), rest), parent
+		if info.Mode()&os.ModeSymlink == 0 {
+			at = next
+			continue
+		}
+		// A loop of links, which the kernel refuses (ELOOP), ends the walk as well.
+		target, err := os.Readlink(next)
+		if links++; err != nil || links > 255 {
+			return filepath.Join(next, rest)
+		}
+		if filepath.IsAbs(target) {
+			at = sep
+		}
+		rest = target + sep + rest
 	}
 }
 
-// underDir is whether path is the directory dir, of the os.Stat given (nil where it does not
-// exist), or lies under it.
+// underDir is whether path, a realPath, is the directory dir, of the os.Stat given (nil where it
+// does not exist), or lies under it: whether dir is path or one of its parents, by any name.
 func underDir(path string, dir os.FileInfo) bool {
 	if dir == nil {
 		return false
 	}
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		return false
-	}
-	for d := abs; ; d = filepath.Dir(d) {
+	for d := path; ; d = filepath.Dir(d) {
 		if info, err := os.Stat(d); err == nil && os.SameFile(info, dir) {
 			return true
 		}
@@ -164,12 +209,32 @@ func underDir(path string, dir os.FileInfo) bool {
 	}
 }
 
-// CreateBeside creates a file of a name of its own in path's directory, of mode perm, for a write
-// that is renamed over path once it is whole (os.CreateTemp): no other run writes, renames or
-// removes that file, so two runs on one path never truncate or remove each other's. Where the
-// write fails, the caller removes the file by the name it answers, and no other.
+// ParentDir is the directory the kernel puts path's last name in: path's parent, resolved as the
+// kernel resolves it (realPath). filepath.Dir cleans path first, so a ".." takes away the name
+// before it, even a link the kernel would follow: with link pointing at x/sub, the parent of
+// link/../out is x, where filepath.Dir answers the working directory. A last name that is a link
+// is itself in ParentDir, as a rename over path replaces the link.
+func ParentDir(path string) string {
+	const sep = string(filepath.Separator)
+	trimmed := strings.TrimRight(path, sep)
+	i := strings.LastIndex(trimmed, sep)
+	if i < 0 {
+		if filepath.IsAbs(path) {
+			return sep
+		}
+		return realPath(".")
+	}
+	return realPath(trimmed[:i+1])
+}
+
+// CreateBeside creates a file of a name of its own, of mode perm, for a write that is renamed over
+// path once it is whole (os.CreateTemp): no other run writes, renames or removes that file, so two
+// runs on one path never truncate or remove each other's. Where the write fails, the caller
+// removes the file by the name it answers, and no other. The file is made in ParentDir(path), the
+// directory the rename lands in, so the rename never crosses a file system and the file is beside
+// the name it replaces.
 func CreateBeside(path string, perm os.FileMode) (*os.File, error) {
-	f, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*.tmp")
+	f, err := os.CreateTemp(ParentDir(path), filepath.Base(path)+".*.tmp")
 	if err != nil {
 		return nil, err
 	}

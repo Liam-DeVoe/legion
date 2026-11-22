@@ -48,6 +48,8 @@ func readTextsFrom(dir string) (sources []textsSource, lockstep bool, err error)
 		sources = append(sources, textsSource{dir: d, params: p, lines: lines})
 		return nil
 	}
+	// dir is listed by the name its runs are read by, filepath.Join's: dir cleaned (joinedPath).
+	dir = filepath.Clean(dir)
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, false, fmt.Errorf("--texts-from: %w", err)
