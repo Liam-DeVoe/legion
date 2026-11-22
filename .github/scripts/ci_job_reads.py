@@ -2827,7 +2827,7 @@ GATES = [
     # job that needs a database (scripts/sessions/__tests__/message-wait.test.ts:20-28 refuses
     # without LEGION_TEST_PG_DSN, since a store it cannot measure is a measurement of nothing),
     # and a Postgres service on the test job would start one for every change that selects any
-    # of its forty-three harness steps. The test reads the script it spawns and nothing else: both
+    # of its shell-script harnesses. The test reads the script it spawns and nothing else: both
     # are under scripts/sessions, and both import node: builtins and bun alone, so the job
     # installs no dependencies and this filter names no lockfile.
     gate("sessions_script", SESSIONS_JOB, reads=reads(

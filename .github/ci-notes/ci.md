@@ -1292,7 +1292,7 @@ filter (dispatch://INFRA-1413).
 
 The session message-wait suite, in a job of its own: it is the one test of the test job
 that needs a database, and a Postgres service there would start one for every change
-that selects any of that job's forty-three harness steps.
+that selects any of that job's shell-script harnesses.
 
 ## One output per test.sh step of the test job
 
