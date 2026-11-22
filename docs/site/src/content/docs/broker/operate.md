@@ -84,7 +84,8 @@ one of them cannot be read. Until it reads an issuer, it answers the tokens of t
 read: the token names a key that the broker does not hold from its last good read of the issuer's
 key set, and the key set cannot be read now. A token whose key the broker holds still verifies.
 It reads a key set that failed again at most once in 5 seconds, however many tokens arrive. A 503
-decides nothing about the token, so the Legion daemon and a pod's renewer try again. At its start
+decides nothing about the token, so the Legion daemon and a pod's renewer try again; every such
+answer carries `Retry-After: 1`, as the Envoy listener's does. At its start
 the broker logs one line for each issuer, saying whether it read it. After that it logs one line
 when it first answers a token of an issuer it has read this way, and one line when an issuer it
 could not read, at its start or since, can be read again ([Health and logs](#health-and-logs)).
@@ -145,7 +146,9 @@ callers use the Google audience: listing an API caller does not give it a machin
 its account as a VM service does. A project's default Google accounts and Google-managed service
 agents are refused here as they are in `BROKER_VM_SERVICES`. No secret is shared between the
 broker and its callers. A token that lives longer than an hour from its issue is refused, and
-an account the list does not name is answered `403 ACCOUNT_NOT_LISTED`. Through those routes
+an account the list does not name is answered `403 ACCOUNT_NOT_LISTED`. A Google identity token
+whose key the broker cannot read, because Google's key set cannot be read now, is answered
+`503 OIDC_ISSUER_UNAVAILABLE` with `Retry-After: 1`, as a cluster's token is. Through those routes
 Dispatch lists what waits on a person and relays a person's machine-login decisions, their
 machine-login revokes and their sign-in revokes; it decides no secret request
 ([Network and trust](#network-and-trust)).
@@ -888,7 +891,10 @@ A machine holding a Google identity token — a Compute Engine VM, a pod on Goog
 Engine, or anything a workload identity pool mints one for — trades that token at the broker's
 token exchange for a Dispatch access token and the machine login that trade mints. It holds no
 stored credential and no person approves it. Set the Google audience and list each exchanging
-account as a VM service. The remaining fleet settings are optional, subject to these checks:
+account as a VM service. A machine's, a person's or a workflow run's token whose key the broker
+cannot read, because its issuer's key set cannot be read now, is answered
+`503 OIDC_ISSUER_UNAVAILABLE` with `Retry-After: 1`, as a cluster's token is, and never refused
+as a token that does not verify. The remaining fleet settings are optional, subject to these checks:
 
 - `BROKER_GOOGLE_OIDC_AUDIENCE`: the audience the machines ask their metadata server for. The
   issuer is Google's, `https://accounts.google.com`, unless `BROKER_GOOGLE_OIDC_ISSUER` names a

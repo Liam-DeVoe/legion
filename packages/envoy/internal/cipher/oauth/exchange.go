@@ -166,10 +166,14 @@ type ExchangeConfig struct {
 	// token of an issuer whose keys cannot be read for want of a read of the issuer is answered
 	// 503 OIDC_ISSUER_UNAVAILABLE (issuerUnavailableRefusal).
 	Kubernetes []IssuerConfig
-	// GitHub is the issuer a continuous-integration workflow run's token comes from.
+	// GitHub is the issuer a continuous-integration workflow run's token comes from. A token
+	// whose key cannot be read for want of a read of its key set is answered 503
+	// OIDC_ISSUER_UNAVAILABLE (keyFunc), as a cluster's is.
 	GitHub IssuerConfig
 	// Google is the issuer a machine's identity token comes from, Google's own in a deployment
-	// and a stand-in for it on a dev stack.
+	// and a stand-in for it on a dev stack. A person's token and a machine's actor token are
+	// checked against its keys too, and each is answered 503 OIDC_ISSUER_UNAVAILABLE where its
+	// key cannot be read for want of a read of the key set (keyFunc).
 	Google IssuerConfig
 	// MachineCredentials creates or re-uses the launcher credential a machine holds, in the
 	// transaction the exchange carries (oauthstore.TxFrom), and answers its id. Every secrets
@@ -424,12 +428,23 @@ func clusterIssuer(issuers []IssuerConfig, iss string) (IssuerConfig, bool) {
 //
 // The read runs on its own context rather than the request's, because the library's signature
 // gives it none; the key source bounds its own fetch, and a set already cached costs no read.
+//
+// A key set that could not be read (oidc.ErrKeySet) is answered as oidc.ErrIssuerUnavailable,
+// which exchangeGrant answers 503 (issuerUnavailableRefusal): nothing was decided about the
+// token. The cluster issuers' source (oidc.LazyVerifier.Key) says so itself; the plain key sets
+// Google's and GitHub's tokens are checked against (*oidc.Keys) answer ErrKeySet alone, which
+// the library would otherwise refuse as a token it could not parse, a 400 its clients take as
+// final.
 func keyFunc(keys oidc.KeySource) jwt.Keyfunc {
 	return func(token *jwt.Token) (any, error) {
 		if !slices.Contains(subjectTokenAlgorithms, token.SignatureAlgorithm) {
 			return nil, fmt.Errorf("oauth: a subject token signed with %q is refused: its issuer signs with a published key", token.SignatureAlgorithm)
 		}
-		return keys.Key(context.Background(), token.KeyID, string(token.SignatureAlgorithm))
+		key, err := keys.Key(context.Background(), token.KeyID, string(token.SignatureAlgorithm))
+		if errors.Is(err, oidc.ErrKeySet) && !errors.Is(err, oidc.ErrIssuerUnavailable) {
+			return nil, fmt.Errorf("%w: %w", oidc.ErrIssuerUnavailable, err)
+		}
+		return key, err
 	}
 }
 
@@ -633,15 +648,17 @@ func (p *Provider) exchangeGrant(w http.ResponseWriter, r *http.Request, trade f
 	p.oauth.WriteAccessResponse(ctx, w, request, resp)
 }
 
-// issuerUnavailableRefusal answers a subject token whose key the broker cannot read for want of a
-// read of its issuer: the issuer's discovery document has not been read, or the token's key is
-// not among the keys the broker holds from its key set's last good read and the key set cannot
-// be read now (oidc.ErrIssuerUnavailable). It is the answer the broker's other routes give the
-// same fault (api.writeIssuerUnavailable), 503 OIDC_ISSUER_UNAVAILABLE with Dispatch's sentence,
-// as the OAuth error a client's library parses (WriteRefusal). It is a 5xx because nothing was
-// decided about the token, and a caller tries again after a 5xx.
+// issuerUnavailableRefusal answers a subject or actor token whose key the broker cannot read for
+// want of a read of its issuer: the issuer's discovery document has not been read, or the token's
+// key is not among the keys the broker holds from its key set's last good read and the key set
+// cannot be read now (oidc.ErrIssuerUnavailable, keyFunc). It is the answer the broker's other
+// routes give the same fault (api.writeIssuerUnavailable), 503 OIDC_ISSUER_UNAVAILABLE with
+// Dispatch's sentence and Retry-After: oidc.IssuerUnavailableRetryAfter, as the OAuth error a
+// client's library parses (WriteRefusal). It is a 5xx because nothing was decided about the
+// token, and a caller tries again after a 5xx.
 var issuerUnavailableRefusal = &Refusal{
 	Status: http.StatusServiceUnavailable, Code: oidc.IssuerUnavailableCode, Message: oidc.IssuerUnavailableMessage,
+	RetryAfter: oidc.IssuerUnavailableRetryAfter,
 }
 
 // subjectKeyError is the error a subject token type's key function answered, out of the

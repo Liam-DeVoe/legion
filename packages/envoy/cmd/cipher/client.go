@@ -113,6 +113,25 @@ type apiError struct {
 	// withheld is whether the answer came from an address that is not clean, so that none of
 	// its text prints: the decision doStatus made, read by Error and podRefusal.
 	withheld bool
+	// RetryAfter is the wait the answer's Retry-After header names (retryAfter), and zero where
+	// it names none: what enroll --pod waits before it asks again after a 503 (untilAvailable).
+	RetryAfter time.Duration
+}
+
+// maxRetryAfter is the most of a Retry-After header retryAfter reads, a day: past it, the wait
+// is only the broker saying not to come back soon, and the bound keeps a huge figure from
+// overflowing a time.Duration.
+const maxRetryAfter = 24 * time.Hour
+
+// retryAfter is the wait a Retry-After header names in whole seconds (RFC 9110 section 10.2.3),
+// at most maxRetryAfter, and zero for a header that is absent, names no positive number of
+// seconds, or names a date, which no broker answer carries.
+func retryAfter(header string) time.Duration {
+	seconds, err := strconv.ParseInt(strings.TrimSpace(header), 10, 64)
+	if err != nil || seconds <= 0 {
+		return 0
+	}
+	return time.Duration(min(seconds, int64(maxRetryAfter/time.Second))) * time.Second
 }
 
 // Error is the broker's message and code, and the answer id to quote when it named one; where
@@ -231,12 +250,13 @@ func (c *client) doStatus(ctx context.Context, method, url string, body []byte, 
 		// Beside an address that is not clean, whoever answers can repeat its credential in
 		// any text of its answer: the refusal prints as its status alone (apiError.withheld).
 		return resp.StatusCode, nil, &apiError{
-			Status:   resp.StatusCode,
-			Code:     envelope.Code,
-			Message:  c.baseURL.Words(envelope.Error),
-			AnswerID: c.baseURL.Words(envelope.AnswerID),
-			said:     &envelope.Error,
-			withheld: !c.baseURL.Clean(),
+			Status:     resp.StatusCode,
+			Code:       envelope.Code,
+			Message:    c.baseURL.Words(envelope.Error),
+			AnswerID:   c.baseURL.Words(envelope.AnswerID),
+			said:       &envelope.Error,
+			withheld:   !c.baseURL.Clean(),
+			RetryAfter: retryAfter(resp.Header.Get("Retry-After")),
 		}
 	}
 	return resp.StatusCode, data, nil

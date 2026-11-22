@@ -28,6 +28,12 @@ const (
 	IssuerUnavailableMessage = "the service-account token issuer cannot be reached; try again in a minute"
 )
 
+// IssuerUnavailableRetryAfter is the Retry-After, in seconds, that the broker's routes and its
+// token exchange send beside that pair: the Envoy listener's for the same fault. A key set whose
+// read failed is read again at most once per DefaultKeysFailureSpacing, however many tokens
+// arrive, so a client that tries again this soon costs the issuer nothing.
+const IssuerUnavailableRetryAfter = 1
+
 // ErrGrantRefused means the issuer's token endpoint refused a refresh token (RFC 6749 section
 // 5.2, invalid_grant): it has expired, been revoked, or is not the client's. The sign-in it renews
 // is over.
