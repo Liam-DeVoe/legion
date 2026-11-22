@@ -220,7 +220,7 @@ func (s *Store) UnfinishedPodResumesTx(ctx context.Context, tx pgx.Tx, project s
 // daemon's project's, matched to the resume's project token as readOpenPauseByToken matches it,
 // which says why.
 func podResumesWithoutAFirstTurn(ctx context.Context, q rowsQuerier, project string, before time.Time, unmarked bool) ([]PodResume, error) {
-	query := `select id, release_id, project, issue, role, kind, at, clock_at, coalesce(pause_id, 0), stuck
+	query := `select id, release_id, project, issue, role, claim, kind, at, clock_at, coalesce(pause_id, 0), stuck
 		from pod_resumes r where project = $1 and first_turn_at is null and closed_at is null and clock_at <= $2
 		and not exists (select 1 from project_pauses p where lower(p.project) = r.project and p.ended_at is null)`
 	if unmarked {
@@ -239,7 +239,7 @@ func podResumesWithoutAFirstTurn(ctx context.Context, q rowsQuerier, project str
 	var out []PodResume
 	for rows.Next() {
 		var r PodResume
-		if err := rows.Scan(&r.ID, &r.Release, &r.Project, &r.Issue, &r.Role, &r.Kind, &r.At, &r.ClockAt, &r.Pause, &r.Stuck); err != nil {
+		if err := rows.Scan(&r.ID, &r.Release, &r.Project, &r.Issue, &r.Role, &r.Claim, &r.Kind, &r.At, &r.ClockAt, &r.Pause, &r.Stuck); err != nil {
 			return nil, fmt.Errorf("read the unfinished resumes of %s: %w", project, err)
 		}
 		out = append(out, r)
@@ -361,8 +361,9 @@ func (s *Store) PodReleaseRecords(ctx context.Context, project string, since tim
 	}
 
 	// Each resume carries the pause that held it (decision 15 of dispatch://INFRA-3759), so a
-	// reader of the window tells a held wake's wait from a released pod's.
-	resumes, err := s.pool.Query(ctx, `select id, release_id, project, issue, role, kind, at, clock_at, coalesce(pause_id, 0),
+	// reader of the window tells a held wake's wait from a released pod's, and the claim it brought
+	// back, since two claims of one role can each be woken.
+	resumes, err := s.pool.Query(ctx, `select id, release_id, project, issue, role, claim, kind, at, clock_at, coalesce(pause_id, 0),
 		pod_ready_at, first_turn_at, stuck
 		from pod_resumes where project = $1 and at >= $2 order by id`, project, since)
 	if err != nil {
@@ -371,7 +372,7 @@ func (s *Store) PodReleaseRecords(ctx context.Context, project string, since tim
 	for resumes.Next() {
 		var r PodResume
 		var ready, first *time.Time
-		if err := resumes.Scan(&r.ID, &r.Release, &r.Project, &r.Issue, &r.Role, &r.Kind, &r.At, &r.ClockAt, &r.Pause,
+		if err := resumes.Scan(&r.ID, &r.Release, &r.Project, &r.Issue, &r.Role, &r.Claim, &r.Kind, &r.At, &r.ClockAt, &r.Pause,
 			&ready, &first, &r.Stuck); err != nil {
 			resumes.Close()
 			return out, fmt.Errorf("read the resume records of %s: %w", project, err)

@@ -1549,7 +1549,9 @@ const legionReleaseRecord = z.object({
 });
 
 /** `api.ResumeRecord` — one wake of a released pod and what it cost: the release it ended (0 when
- * no release row is recorded for it), the role of the claim it brought back, what woke it, when
+ * no release row is recorded for it), the role of the claim it brought back, that claim's token
+ * (`claim`, contract 222; absent on a wake recorded before it, which stands for each claim of its
+ * role: two claims of one issue can hold one role and each can be woken), what woke it, when
  * the wake reached the daemon, and `podReadyAt` and `firstTurnAt`, the first turn of that claim,
  * each absent until it is observed. `stuck` is a wake that went ten minutes with no turn of the
  * claim it brought back. `pause` is the project pause that held
@@ -1563,6 +1565,7 @@ const legionResumeRecord = z.object({
   release: z.number().int().nonnegative(),
   issue: issueKey,
   role: nonEmptyString.optional(),
+  claim: nonEmptyString.optional(),
   kind: nonEmptyString,
   at: timestamp,
   podReadyAt: timestamp.optional(),

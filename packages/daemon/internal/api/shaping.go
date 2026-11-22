@@ -239,10 +239,11 @@ func recordedContractAtOrBelow(n int) int {
 // (withoutResumePauses), and the refusal's row serves a PauseFailure as its Failure alone, with
 // no `setting`, `pause` or `lastPause`. The refusal's row does the same below OwnerPlanContract
 // for a PlanRefusal, which loses its `reasons`. Below strandedTokenContract the release records'
-// row serves every release without its `claims` (withoutRecordClaims). These follow strip, as
-// every band of stateNarrowings does, and placedByPod places the caller of each by its pod, so a
-// band here reaches the caller of a pod as the state's do. A plain refusal, a claim.Refusal or a
-// Failure, carries no key of any of those contracts and is the identity at every contract.
+// row serves every release without its `claims` and every resume without its `claim`
+// (withoutRecordClaims). These follow strip, as every band of stateNarrowings does, and
+// placedByPod places the caller of each by its pod, so a band here reaches the caller of a pod as
+// the state's do. A plain refusal, a claim.Refusal or a Failure, carries no key of any of those
+// contracts and is the identity at every contract.
 //
 // On the other side, a caller below fixAttemptsContract is served the two keys that contract
 // removed, each as a stand-in (withFixAttempts, withMaxFixAttempts). A settings key no reader
@@ -1059,9 +1060,10 @@ const repositoriesLiveContract = 202
 const deploymentRolesContract = 221
 
 // strandedTokenContract is the daemon contract that added each stranded claim's token to the
-// state (version.go's 222, `strandedClaims.*.token`), and the tokens of the claims a release
-// suspended to the release records (`releases.*.claims`): two claims of one issue can hold one
-// role, so the issue and the role no longer name one claim.
+// state (version.go's 222, `strandedClaims.*.token`), and to the release records the tokens of the
+// claims a release suspended (`releases.*.claims`) and of the claim a wake brought back
+// (`resumes.*.claim`): two claims of one issue can hold one role, so the issue and the role no
+// longer name one claim.
 //
 // It is a literal of its own and never DaemonAPIVersion, for the reason deploymentRolesContract
 // gives, and it is the last number of answers.go's SupportedContracts, which names the constant
@@ -1857,24 +1859,32 @@ func withoutResumePauses(records ReleaseRecordsResponse) ReleaseRecordsResponse 
 	return records
 }
 
-// withoutRecordClaims is records with no release carrying `claims`, the key strandedTokenContract
-// added to the release records beside the stranded claims' token: two claims of one issue can hold
-// one role, so a release's roles no longer name the claims it suspended, and a plugin below the
-// contract reads a release as a strict object. The key is `omitempty` and absent from a release
-// that suspended no claim, so records whose releases carry none are returned as they are, with no
-// copy made. Otherwise the releases are copied before one is written, so the body the route built
-// is left as it was, and the list stays non-nil, as every list of the body is
+// withoutRecordClaims is records with no release carrying `claims` and no resume carrying
+// `claim`, the two keys strandedTokenContract added to the release records beside the stranded
+// claims' token: two claims of one issue can hold one role, so a release's roles no longer name the
+// claims it suspended and a resume's role no longer names the claim it woke, and a plugin below the
+// contract reads a release and a resume as strict objects. Each key is `omitempty` and absent
+// where there is none to name, so records that carry neither are returned as they are, with no
+// copy made. Otherwise a list is copied before one of its entries is written, so the body the
+// route built is left as it was, and each list stays non-nil, as every list of the body is
 // (ReleaseRecordsResponse).
 func withoutRecordClaims(records ReleaseRecordsResponse) ReleaseRecordsResponse {
-	if !slices.ContainsFunc(records.Releases, func(release ReleaseRecord) bool { return len(release.Claims) > 0 }) {
-		return records
+	if slices.ContainsFunc(records.Releases, func(release ReleaseRecord) bool { return len(release.Claims) > 0 }) {
+		releases := make([]ReleaseRecord, len(records.Releases))
+		for i, release := range records.Releases {
+			release.Claims = nil
+			releases[i] = release
+		}
+		records.Releases = releases
 	}
-	releases := make([]ReleaseRecord, len(records.Releases))
-	for i, release := range records.Releases {
-		release.Claims = nil
-		releases[i] = release
+	if slices.ContainsFunc(records.Resumes, func(resume ResumeRecord) bool { return resume.Claim != "" }) {
+		resumes := make([]ResumeRecord, len(records.Resumes))
+		for i, resume := range records.Resumes {
+			resume.Claim = ""
+			resumes[i] = resume
+		}
+		records.Resumes = resumes
 	}
-	records.Releases = releases
 	return records
 }
 

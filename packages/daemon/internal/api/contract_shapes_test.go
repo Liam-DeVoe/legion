@@ -594,7 +594,7 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 				{ID: 102, Issue: "LEGION-209", Generation: 1, At: released.Add(15 * time.Minute)},
 			},
 			Resumes: []store.PodResume{
-				{ID: 201, Release: 101, Issue: "LEGION-208", Role: "implementer", Kind: "delivery",
+				{ID: 201, Release: 101, Issue: "LEGION-208", Role: "implementer", Claim: "legion-legion-legion-208-tester", Kind: "delivery",
 					At: released.Add(30 * time.Minute), PodReadyAt: released.Add(31 * time.Minute),
 					FirstTurnAt: released.Add(32 * time.Minute)},
 				{ID: 202, Issue: "LEGION-207", Role: "architect", Kind: "backstop",

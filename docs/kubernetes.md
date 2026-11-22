@@ -7150,7 +7150,9 @@ A role of an issue pod reads the deployment's records with the `legion` tool's `
 The plugin posts them on `POST /legion/v1/claims/release-records` with the claim token and secret its registration left in the session's own process, so no role handles that credential and nothing writes it to disk; the route takes it in the body because a query string would put the secret in every proxy and access log between the pod and the daemon.
 The op answers every release, resume and hold of the window, oldest first, and the counts a report is written from over them; what those are is in the tool's own description, which is where they are written out.
 A release record names the claims the release's own stops suspended by their tokens (`claims`) and the roles those claims held, each role once (`roles`): two claims of one issue can hold one role, a keyed agent's on another role's step among them, so the roles alone do not say which claims the release took.
-A caller whose plugin speaks a contract below 222 is served each release without its `claims`.
+A resume record names the claim its wake brought back by its token (`claim`), beside the role it was for; a wake recorded before the release that added the column names none, and stands for each claim of its role.
+The claims nothing will wake (`strandedClaims`) count a released claim as stranded only when a wake of that claim, or a wake of its role that names no claim, ran out with no turn: a wake of another claim of the same role does not strand it.
+A caller whose plugin speaks a contract below 222 is served each release without its `claims` and each resume without its `claim`.
 A release of a pod no claim owns writes a release record of its own, with no role in it and no bundle bytes, and `read_release_records` reports it with the rest.
 No operator claim route reports it, because that release changes no claim, so the record and the daemon's log are the whole of what an operator reads about it.
 The log carries one line that ends each such release, which names the issue, the Sandbox and the state of each claim of the issue.

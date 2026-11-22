@@ -3116,9 +3116,12 @@ package api
 // claims it suspended in a new key, `releases.*.claims` (api.ReleaseRecord), absent on a release
 // that suspended none and on one recorded before this release: a release's mark matches the claims
 // it suspended by their tokens, so two claims of one role are two claims, and `roles` names each
-// role once. A caller below 222 is served each release without it (withoutRecordClaims). From this
-// entry the last number of answers.go's SupportedContracts is `api.strandedTokenContract`, and
-// `deploymentRolesContract` stays 221.
+// role once. A resume of the same answer names the token of the claim its wake brought back in a
+// new key, `resumes.*.claim` (api.ResumeRecord), absent on a wake recorded before 20261121183336:
+// each claim of a role can be woken, and the stranded report reads a wake by that claim. A caller
+// below 222 is served each release and each resume without these keys (withoutRecordClaims). From
+// this entry the last number of answers.go's SupportedContracts is `api.strandedTokenContract`,
+// and `deploymentRolesContract` stays 221.
 // (This entry takes 222, the lowest number above the base's 221 (the entry above) that no other
 // open pull request declared: a reading of `const DaemonAPIVersion` at refs/pull/<n>/head, by the
 // contract check's own reader (declared_by_open_pull_requests), of each of the 428 open pull

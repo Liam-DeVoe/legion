@@ -31679,6 +31679,7 @@
       "resumes",
       "resumes.*",
       "resumes.*.at",
+      "resumes.*.claim",
       "resumes.*.firstTurnAt",
       "resumes.*.id",
       "resumes.*.issue",

@@ -1070,7 +1070,7 @@ func TestShapeAnswerShapesEveryAnswer(t *testing.T) {
 				records := ReleaseRecordsResponse{Holds: []HoldRecord{},
 					Releases: []ReleaseRecord{{ID: 101, Issue: "LEGION-208", Roles: []string{"implementer"},
 						Claims: []string{"legion-legion-legion-208-implementer", "legion-legion-legion-208-tester"}}},
-					Resumes: []ResumeRecord{{ID: 203, Issue: "LEGION-210", Kind: "pause", Pause: 7}}}
+					Resumes: []ResumeRecord{{ID: 203, Issue: "LEGION-210", Kind: "pause", Pause: 7, Claim: "legion-legion-legion-210-tester"}}}
 				body, _ := shapeAnswer(AnswerReleaseRecords, records, ServingFloor, ServingFloor)
 				shaped, isRecords := body.(ReleaseRecordsResponse)
 				if !isRecords {
@@ -1088,8 +1088,15 @@ func TestShapeAnswerShapesEveryAnswer(t *testing.T) {
 				if len(records.Releases[0].Claims) != 2 {
 					t.Error("the shaping wrote the release of the body the route built: the releases are copied before one is written")
 				}
-				if atOwn, _ := shapeAnswer(AnswerReleaseRecords, records, strandedTokenContract, strandedTokenContract); len(atOwn.(ReleaseRecordsResponse).Releases[0].Claims) != 2 {
-					t.Errorf("the release records served at contract %d lost a release's `claims`", strandedTokenContract)
+				if len(shaped.Resumes) != 1 || shaped.Resumes[0].Claim != "" {
+					t.Errorf("the release records served at the floor carry a resume's `claim`, which strandedTokenContract added: %+v", shaped.Resumes)
+				}
+				if records.Resumes[0].Claim == "" {
+					t.Error("the shaping wrote the resume of the body the route built: the resumes are copied before one is written")
+				}
+				atOwn, _ := shapeAnswer(AnswerReleaseRecords, records, strandedTokenContract, strandedTokenContract)
+				if own := atOwn.(ReleaseRecordsResponse); len(own.Releases[0].Claims) != 2 || own.Resumes[0].Claim == "" {
+					t.Errorf("the release records served at contract %d lost a release's `claims` or a resume's `claim`: %+v", strandedTokenContract, own)
 				}
 			case AnswerRefusal:
 				failure := Failure{Code: "GRANT_NOT_FOUND", Error: "no grant for this command"}

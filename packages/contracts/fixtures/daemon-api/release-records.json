@@ -30,6 +30,7 @@
       "release": 101,
       "issue": "LEGION-208",
       "role": "implementer",
+      "claim": "legion-legion-legion-208-tester",
       "kind": "delivery",
       "at": "2026-11-01T12:30:00Z",
       "podReadyAt": "2026-11-01T12:31:00Z",

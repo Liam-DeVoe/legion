@@ -1540,8 +1540,9 @@ func TestReadyForUpdateRequestGolden(t *testing.T) {
 //     unpushed (recordPodRelease counts only the claims this release's own stops suspended, and
 //     the store reads an empty `roles` column back as none): `roles` is `[]` and never `null`,
 //     `claims` is absent, and `bundleBytes` is 0 rather than absent;
-//   - the resumes are a wake whose pod was Ready and whose role took its first turn, which is
-//     the row that fills both optional stamps, and a wake of a pod with no release row recorded
+//   - the resumes are a wake whose pod was Ready and whose claim took its first turn, which is
+//     the row that fills both optional stamps and names the claim it woke in `claim`, here the
+//     agent of a key on the implementer's step; a wake of a pod with no release row recorded
 //     for it (`release` is 0) that went ten minutes with no turn, so it is `stuck` and its
 //     `firstTurnAt` is left out until something observes it; and a wake a project pause held
 //     (decision 15 of dispatch://INFRA-3759), which pairs with no release and names its pause in
@@ -1559,7 +1560,7 @@ func TestReleaseRecordsResponseGolden(t *testing.T) {
 			{ID: 102, Issue: "LEGION-209", Generation: 1, At: released.Add(15 * time.Minute)},
 		},
 		Resumes: []store.PodResume{
-			{ID: 201, Release: 101, Issue: "LEGION-208", Role: "implementer", Kind: "delivery",
+			{ID: 201, Release: 101, Issue: "LEGION-208", Role: "implementer", Claim: "legion-legion-legion-208-tester", Kind: "delivery",
 				At: released.Add(30 * time.Minute), PodReadyAt: released.Add(31 * time.Minute),
 				FirstTurnAt: released.Add(32 * time.Minute)},
 			{ID: 202, Issue: "LEGION-207", Role: "architect", Kind: "backstop",
