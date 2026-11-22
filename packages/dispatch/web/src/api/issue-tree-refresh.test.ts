@@ -16,8 +16,9 @@ import type { DispatchEvent, IssueTreeParent } from "./types";
  * The issue page's tree read is told of every event of its issue: each one names the tree's key
  * (`issueTreeKey`), by prefix, so the views under it (`["issue-tree", key, view]`) are reached
  * too. An event of another issue reaches a tree or a view where its answer holds a node of that
- * issue, or a node standing under one, of a kind the event can move, and an issue write each
- * ancestor's tree it names; an event of no issue reaches none.
+ * issue, or a node standing under one, of a kind the event can move - for an ask's event, one the
+ * ask is on - and an issue write that may have moved its issue's parent each ancestor's tree it
+ * names; an event of no issue reaches none.
  */
 
 /** An event of `type`, with the payload its reader reads; the feed's union is wider than this
@@ -319,4 +320,195 @@ test("a write of a child that moves nothing its parent's answers hold of it mark
       `a write of ${key} that moves ${moved}`
     ).toEqual({ detail: true, outline: false, verification: false });
   }
+});
+
+// A write of a child reads each ancestor's tree it names, and every view of it, where it may have
+// moved the child's parent: a create under the ancestor and a parent move put the child's nodes in
+// an answer that holds none of them yet, and a write that does not say what it moved may have
+// moved the parent. A write that moved no field reads none of them.
+test("an issue write marks stale each ancestor's tree it names only where it may have moved the issue's parent", () => {
+  const cases: readonly (readonly [string, string, Record<string, unknown>, boolean])[] = [
+    [
+      "a create under the parent",
+      "issue.created",
+      { ancestors: ["CORE-1"], changed: ["title", "status", "parent"] },
+      true,
+    ],
+    ["a parent move", "issue.updated", { ancestors: ["CORE-1"], changed: ["parent"] }, true],
+    ["a write that does not say what it moved", "issue.updated", { ancestors: ["CORE-1"] }, true],
+    ["a write that moved no field", "issue.updated", { ancestors: ["CORE-1"], changed: [] }, false],
+  ];
+  for (const [name, type, payload, marks] of cases) {
+    const client = new QueryClient();
+    const parent = issueTreeKey("CORE-1");
+    const spec = viewKey("CORE-1", "spec");
+    client.setQueryData(
+      parent,
+      treeAnswer([treeNode("CORE-1", "issue", null)], [], { issue: "CORE-1" })
+    );
+    client.setQueryData(
+      spec,
+      treeAnswer([treeNode("r1", "requirement", null, { in: "spec" })], [], { view: "spec" })
+    );
+    refreshQueries(client, eventRefreshTargets(eventOf(type, payload, "CORE-2"), "alice"));
+    expect(
+      {
+        spec: client.getQueryState(spec)?.isInvalidated,
+        tree: client.getQueryState(parent)?.isInvalidated,
+      },
+      name
+    ).toEqual({ spec: marks, tree: marks });
+  }
+});
+
+// A child's title is a member of the node its parent's outline holds of it, so the outline reads
+// it again through that node. A grandparent's answer holds no node of the child - it lists its own
+// children alone - so neither its outline nor a view of it reads the title again, though the
+// write names the grandparent among the child's ancestors.
+test("a child's title change marks its parent's outline that holds its node, and no grandparent's outline or view that holds none", () => {
+  const client = new QueryClient();
+  const { outline } = holdingChild(client);
+  const grandparent = issueTreeKey("CORE-0");
+  const grandparentSpec = viewKey("CORE-0", "spec");
+  client.setQueryData(
+    grandparent,
+    treeAnswer(
+      [
+        treeNode("CORE-0", "issue", null),
+        treeNode("CORE-1", "issue", "CORE-0", { issue: "CORE-1", read_only: true }),
+      ],
+      [],
+      { issue: "CORE-0" }
+    )
+  );
+  client.setQueryData(
+    grandparentSpec,
+    treeAnswer([treeNode("r0", "requirement", null, { in: "spec" })], [], {
+      issue: "CORE-0",
+      view: "spec",
+    })
+  );
+  const retitled = eventOf(
+    "issue.updated",
+    { ancestors: ["CORE-1", "CORE-0"], changed: ["title"], title: "Draw each child, once" },
+    "CORE-2"
+  );
+  refreshQueries(client, eventRefreshTargets(retitled, "alice"));
+  expect({
+    grandparent: client.getQueryState(grandparent)?.isInvalidated,
+    grandparentSpec: client.getQueryState(grandparentSpec)?.isInvalidated,
+    parent: client.getQueryState(outline)?.isInvalidated,
+  }).toEqual({ grandparent: false, grandparentSpec: false, parent: true });
+});
+
+// An ask's event moves only what the ask is on - its typed block, or the block its anchor's mark
+// is in, and the document it is written in - and a block found invalid or repaired only that
+// block. So a tree of the parent reads a child's ask event again where its answer holds one of
+// those, and a plain ask of the child, with no block and no anchor, is on none of them.
+test("a child's ask event marks stale a tree of its parent only where its answer holds what the ask is on", () => {
+  const plain = { anchor: null, id: "ask-2", question: "Which outline?", state: "open" };
+  const cases: readonly (readonly [string, DispatchEvent, boolean])[] = [
+    ["a plain ask opened", eventOf("ask.opened", plain, "CORE-2"), false],
+    [
+      "a plain ask answered",
+      eventOf("ask.answered", { ...plain, state: "answered" }, "CORE-2"),
+      false,
+    ],
+    [
+      "a block ask written in the document of the child's check",
+      eventOf(
+        "ask.opened",
+        {
+          ...plain,
+          block_artifact: { id: "artifact-2", primary: false, slug: "verification" },
+          block_id: "q1",
+        },
+        "CORE-2"
+      ),
+      true,
+    ],
+    [
+      "an ask anchored in the child's check",
+      eventOf(
+        "ask.edited",
+        {
+          ...plain,
+          anchor: {
+            artifact_id: "artifact-2",
+            block_id: "k1",
+            mark_id: "mark-1",
+            orphaned: false,
+            quote: "Draw",
+            version: 2,
+          },
+        },
+        "CORE-2"
+      ),
+      true,
+    ],
+    [
+      "the child's check found invalid",
+      eventOf(
+        "block.invalid",
+        { block_id: "k1", block_type: "check", reason: "no such job", version: 3 },
+        "CORE-2"
+      ),
+      true,
+    ],
+    [
+      "another block of the child repaired",
+      eventOf("block.repaired", { block_id: "q9", version: 3 }, "CORE-2"),
+      false,
+    ],
+  ];
+  for (const [name, event, marks] of cases) {
+    const client = new QueryClient();
+    const { outline, verification } = holdingChild(client);
+    refreshQueries(client, eventRefreshTargets(event, "alice"));
+    expect(
+      {
+        outline: client.getQueryState(outline)?.isInvalidated,
+        verification: client.getQueryState(verification)?.isInvalidated,
+      },
+      name
+    ).toEqual({ outline: marks, verification: marks });
+  }
+});
+
+// A child's view carries as context an ask of its parent's that a person answered and that
+// shaped a node of the view - the parent's requirement it carries - and the ask's event, which
+// can reword it or take its answer back, reaches the view by the ask's own node, wherever the
+// ask's typed block is written.
+test("an ancestor's ask event marks stale a descendant's view that carries the answered ask", () => {
+  const client = new QueryClient();
+  const childView = viewKey("CORE-2", "spec");
+  client.setQueryData(
+    childView,
+    treeAnswer(
+      [
+        treeNode("CORE-2", "issue", null),
+        treeNode("r1", "requirement", null, {
+          in: "spec",
+          issue: "CORE-1",
+          read_only: true,
+          role: "context",
+        }),
+        treeNode("ask-1", "ask", null, { decision: {}, role: "context", text: "Which outline?" }),
+      ],
+      [],
+      { issue: "CORE-2", view: "spec" }
+    )
+  );
+  const reworded = eventOf(
+    "ask.edited",
+    {
+      anchor: null,
+      block_artifact: { id: "artifact-decisions", primary: false, slug: "decisions" },
+      block_id: "q1",
+      id: "ask-1",
+    },
+    "CORE-1"
+  );
+  refreshQueries(client, eventRefreshTargets(reworded, "alice"));
+  expect(client.getQueryState(childView)?.isInvalidated, "the child's view").toBe(true);
 });

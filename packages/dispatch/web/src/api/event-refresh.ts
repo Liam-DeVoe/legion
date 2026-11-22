@@ -30,6 +30,7 @@ import type {
   InboxRow,
   IssueSummary,
   IssueTreeNode,
+  IssueTreeParent,
   IssueTreeRead,
   MyRepliesResponse,
   MyReplyRow,
@@ -464,14 +465,21 @@ function heldKind(kind: string, supertag: string): HeldKind {
  *  out of it (`treeNodesMoved`). */
 const BY_THE_WRITE = "by the write";
 
+/** An ask's event, or a block's found invalid or repaired, which moves the nodes it is on
+ *  (`onItsTarget`) and no other node of its issue. */
+const ON_ITS_TARGET = "on its target";
+
 /**
  * Which kinds of an issue's nodes (`HeldKind`) each event of the issue can move in a tree read of
  * another issue that holds them, or that holds a node standing under one, from what the route
- * reads (`issue_tree_read.go`) and what the event's writer writes. It is keyed by every event
- * type, so a type the contract adds does not compile until it says here what it moves. A type
- * whose writes are not shown to leave a kind alone names every kind.
+ * reads (`issue_tree_read.go`) and what the event's writer writes, or that it moves only the
+ * nodes it is on (`ON_ITS_TARGET`). It is keyed by every event type, so a type the contract adds
+ * does not compile until it says here what it moves. A type whose writes are not shown to leave a
+ * kind alone names every kind.
  */
-const TREE_NODES_MOVED: Readonly<Record<EventType, readonly HeldKind[] | typeof BY_THE_WRITE>> = {
+const TREE_NODES_MOVED: Readonly<
+  Record<EventType, readonly HeldKind[] | typeof BY_THE_WRITE | typeof ON_ITS_TARGET>
+> = {
   "issue.created": BY_THE_WRITE,
   "issue.updated": BY_THE_WRITE,
   "issue.closed": BY_THE_WRITE,
@@ -520,17 +528,20 @@ const TREE_NODES_MOVED: Readonly<Record<EventType, readonly HeldKind[] | typeof 
   "message.delivery": [],
   "ask.follower_added": [],
   "ask.follower_removed": [],
-  // An ask's other events, and a block ask found invalid or repaired, move its state, a decision
-  // block's asks and the ties of an answered ask: not shown to leave any kind alone.
-  "ask.anchor_refreshed": EVERY_KIND,
-  "ask.answered": EVERY_KIND,
-  "ask.asked_of": EVERY_KIND,
-  "ask.edited": EVERY_KIND,
-  "ask.handed_back": EVERY_KIND,
-  "ask.opened": EVERY_KIND,
-  "ask.resolved": EVERY_KIND,
-  "block.invalid": EVERY_KIND,
-  "block.repaired": EVERY_KIND,
+  // An ask's other events move only what the ask is on (`onItsTarget`): its own node, which an
+  // answer holds as a tie, with its state and wording; the decision that names it; and its typed
+  // block, whose server attributes the version a person's answer, resolve or decline writes
+  // carries. A block found invalid or repaired - an ask's or a check's - is the block the event
+  // names, whose change the settlement's own version carries.
+  "ask.anchor_refreshed": ON_ITS_TARGET,
+  "ask.answered": ON_ITS_TARGET,
+  "ask.asked_of": ON_ITS_TARGET,
+  "ask.edited": ON_ITS_TARGET,
+  "ask.handed_back": ON_ITS_TARGET,
+  "ask.opened": ON_ITS_TARGET,
+  "ask.resolved": ON_ITS_TARGET,
+  "block.invalid": ON_ITS_TARGET,
+  "block.repaired": ON_ITS_TARGET,
   // A claim, a release, a deploy, a pull request's attribution, a handoff and a subscription:
   // no node carries one.
   "issue.claimed": [],
@@ -554,46 +565,140 @@ const TREE_NODES_MOVED: Readonly<Record<EventType, readonly HeldKind[] | typeof 
   "user_thread_state.updated": [],
 };
 
+/** Whether an issue write may have moved the issue's parent, which decides which issues' trees
+ *  read its nodes: it names `parent` among what it moved - a create under a parent does, since it
+ *  names every field the new issue holds a value in - or it does not say what it moved. */
+function mayMoveParent(event: DispatchEvent): boolean {
+  const changed = payloadStrings(event, "changed");
+  return changed === undefined || changed.includes("parent");
+}
+
 /**
- * The kinds of the issue's nodes an event of the issue can move (`TREE_NODES_MOVED`). A write
- * moves the issue's node where it moved a member of it or a relation out of it
- * (`ISSUE_NODE_FIELDS`), and every kind where it moved the parent, which decides whether a tree
- * reads the issue's nodes at all: the route reads the nodes of the issues under the issue read
- * alone. A write that does not say what it moved may have moved the parent.
+ * The kinds of the issue's nodes an event of the issue can move (`TREE_NODES_MOVED`), or that it
+ * moves the nodes it is on (`ON_ITS_TARGET`). A write moves the issue's node where it moved a
+ * member of it or a relation out of it (`ISSUE_NODE_FIELDS`), and every kind where it may have
+ * moved the parent (`mayMoveParent`), which decides whether a tree reads the issue's nodes at
+ * all: the route reads the nodes of the issues under the issue read alone.
  */
-function treeNodesMoved(event: DispatchEvent): readonly HeldKind[] {
+function treeNodesMoved(event: DispatchEvent): readonly HeldKind[] | typeof ON_ITS_TARGET {
   const moved = TREE_NODES_MOVED[event.type];
   if (moved !== BY_THE_WRITE) {
     return moved;
   }
-  const changes = issueChanges(event);
-  if (changes === undefined || changes.has("parent")) {
+  if (mayMoveParent(event)) {
     return EVERY_KIND;
   }
-  return [...changes].some((field) => ISSUE_NODE_FIELDS.has(field)) ? ["issue"] : [];
+  const changed = payloadStrings(event, "changed") ?? [];
+  return changed.some((field) => ISSUE_NODE_FIELDS.has(field)) ? ["issue"] : [];
+}
+
+/** A node of a tree read, or the parent a node names: what `treesHolding` judges of either. */
+type HeldNode = Pick<IssueTreeParent, "id" | "issue" | "kind" | "supertag"> &
+  Partial<Pick<IssueTreeNode, "decision" | "document">>;
+
+/** Whether a node, or the parent a node names, is of issue `key`: it names the issue (`issue`),
+ *  or it is the issue's own node, which is known by its id whether or not it names its issue. */
+function ofIssue(node: HeldNode, key: string): boolean {
+  return node.issue === key || (node.kind === "issue" && node.id === key);
+}
+
+/** The block id a node's address ends with (`<KEY>/<slug>#<id>`), or "" for a node that is no
+ *  block of a document. */
+function blockIdOf(address: string): string {
+  const at = address.indexOf("#");
+  return at < 0 ? "" : address.slice(at + 1);
+}
+
+/**
+ * The nodes of a tree read of another issue that an ask's event of issue `key`, or a block's found
+ * invalid or repaired, is on (`ON_ITS_TARGET`), as a test of a node or of the parent one names:
+ *
+ * - the ask's own node, which an answer holds only as a tie a view carries (`readTies`: an ask a
+ *   person answered whose `shaped` names a node of the view), and a node whose decision names the
+ *   ask (`decision.asks`: the person's decision the answered ask is, or an agent's that settles
+ *   it);
+ * - each block of the issue the payload names by its id - the ask's typed block (`block_id`), the
+ *   block its anchor's mark is in, the block settlement found invalid or repaired - which the
+ *   address of a node of the issue ends with;
+ * - each document of the issue the ask is written or anchored in (`block_artifact`, `anchor`): a
+ *   node that names it as its document (`document`), or whose address is the document's
+ *   (`<KEY>/<slug>`, the parent a node of it standing under no block of it names) or one of its
+ *   blocks'.
+ *
+ * A plain ask - no block, no anchor - is on no node another issue's answer holds: only an ask's
+ * typed block states `shaped`, and no answer holds an ask node of another issue but as a tie, so
+ * its event reads nothing of another issue's tree.
+ */
+function onItsTarget(key: string, event: DispatchEvent): (node: HeldNode) => boolean {
+  let ask: string | undefined;
+  const blocks: string[] = [];
+  const documents: string[] = [];
+  const addresses: string[] = [];
+  switch (event.type) {
+    case "block.invalid":
+    case "block.repaired":
+      blocks.push(event.payload.block_id);
+      break;
+    case "ask.anchor_refreshed":
+    case "ask.answered":
+    case "ask.asked_of":
+    case "ask.edited":
+    case "ask.handed_back":
+    case "ask.opened":
+    case "ask.resolved": {
+      const { anchor, anchor_artifact, block_artifact, block_id, id } = event.payload;
+      ask = id;
+      for (const block of [block_id, anchor?.block_id]) {
+        if (typeof block === "string" && block !== "") {
+          blocks.push(block);
+        }
+      }
+      for (const document of [block_artifact, anchor_artifact]) {
+        if (document !== undefined) {
+          documents.push(document.id);
+          addresses.push(`${key}/${document.slug}`);
+        }
+      }
+      if (anchor != null) {
+        documents.push(anchor.artifact_id);
+      }
+      break;
+    }
+    default:
+      break;
+  }
+  return (node) =>
+    (node.kind === "ask" && node.id === ask) ||
+    (ask !== undefined && node.decision?.asks?.includes(ask) === true) ||
+    (ofIssue(node, key) && blocks.includes(blockIdOf(node.id))) ||
+    (node.document !== undefined && documents.includes(node.document.artifact_id)) ||
+    addresses.some((address) => node.id === address || node.id.startsWith(`${address}#`));
 }
 
 /** Every tree read and every view of one (`["issue-tree", key, view]`) whose answer holds a node
- *  of issue `key`, or a node standing under one, whichever issue it is the tree of, where `event`
- *  can move that node's kind (`treeNodesMoved`): a parent's outline holds an `issue` node for
- *  each child and the child's nodes it reads, and a descendant's view carries its ancestors'
- *  requirements as context. A node of another issue than the tree's names it (`issue`), the
- *  issue's own node among them, and is judged by its own kind; a node standing under one names
- *  it as its parent's (`parent.issue`), and is judged by its parent's kind. An event that moves
- *  no kind reaches none: a child's comment or message reads nothing of its parent's tree. */
+ *  of issue `key`, or a node standing under one, whichever issue it is the tree of, that `event`
+ *  can move: one of a kind it can move (`treeNodesMoved`), or one it is on (`onItsTarget`). A
+ *  parent's outline holds an `issue` node for each child and the child's nodes it reads, and a
+ *  descendant's view carries its ancestors' requirements as context. A node of another issue than
+ *  the tree's is of that issue (`ofIssue`) - it names it (`issue`), or it is the issue's own node
+ *  - and is judged by its own kind; a node standing under one names it as its parent, and is
+ *  judged by its parent's kind. An event that moves no kind reaches none: a child's comment or
+ *  message reads nothing of its parent's tree, nor does its plain ask. */
 function treesHolding(key: string, event: DispatchEvent): RefreshTarget | undefined {
   const moved = treeNodesMoved(event);
-  if (moved.length === 0) {
+  if (moved !== ON_ITS_TARGET && moved.length === 0) {
     return undefined;
   }
-  const moves = (kind: string, supertag: string) => moved.includes(heldKind(kind, supertag));
+  const moves =
+    moved === ON_ITS_TARGET
+      ? onItsTarget(key, event)
+      : (node: HeldNode) =>
+          ofIssue(node, key) && moved.includes(heldKind(node.kind, node.supertag));
   return {
     queryKey: ["issue-tree"],
     when: (data) =>
       rowsOf<IssueTreeNode>((data as Partial<IssueTreeRead> | undefined)?.nodes).some(
-        (node) =>
-          (node.issue === key && moves(node.kind, node.supertag)) ||
-          (node.parent?.issue === key && moves(node.parent.kind, node.parent.supertag))
+        (node) => moves(node) || (node.parent != null && moves(node.parent))
       ),
   };
 }
@@ -1451,20 +1556,27 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
     // where something draws it and marked stale where nothing does.
     { queryKey: issueTreeKey(key) },
   ];
-  // A tree holds nodes of other issues as well, and is told of their events the same way: each
-  // ancestor's tree the event names (`ancestors`), which a write can put a node of the issue in
-  // that its answer does not hold yet - a new child, a moved one - and every other tree or view
-  // whose answer holds a node of the issue, or a node standing under one, that the event can move
-  // (`treesHolding`). An issue write that names no ancestors - written before the field existed,
-  // or by an older server mid-rollout - may have put the issue under any tree, so every tree and
-  // every view is told of it, as every loaded detail is (`issueWriteTargets`). No other event
-  // carries `ancestors`, so its absence there says nothing.
+  // A tree holds nodes of other issues as well, and is told of their events the same way: every
+  // tree or view whose answer holds a node of the issue, or a node standing under one, that the
+  // event can move (`treesHolding`), and, for an issue write that may have moved the issue's
+  // parent (`mayMoveParent`), each ancestor's tree and every view of it the event names
+  // (`ancestors`): a create under a parent or a parent move puts the issue's nodes in an
+  // ancestor's answer that does not hold them yet, and a write that does not say what it moved
+  // may have moved the parent. Any other write reads no ancestor's tree by its name: a title
+  // reaches the parent's outline through the child's node it holds, and a status, an assignee, a
+  // priority, labels or no field at all (`changed: []`) move no node of the issue. An issue write
+  // that names no ancestors - written before the field existed, or by an older server
+  // mid-rollout - may have put the issue under any tree, so every tree and every view is told of
+  // it, as every loaded detail is (`issueWriteTargets`). No other event carries `ancestors`, so
+  // its absence there says nothing.
   const ancestors = payloadStrings(event, "ancestors");
   if (isIssueWrite(event) && ancestors === undefined) {
     targets.push({ queryKey: ["issue-tree"] });
   } else {
-    for (const ancestor of ancestors ?? []) {
-      targets.push({ queryKey: issueTreeKey(ancestor) });
+    if (isIssueWrite(event) && mayMoveParent(event)) {
+      for (const ancestor of ancestors ?? []) {
+        targets.push({ queryKey: issueTreeKey(ancestor) });
+      }
     }
     const holding = treesHolding(key, event);
     if (holding !== undefined) {
