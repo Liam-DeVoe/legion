@@ -76,7 +76,8 @@
 # the bound, and how many seconds it ran, from whichever subshell of the mode it ran in
 # (bound_stop), before the mode reads what the child printed, so a killed tool is never
 # read as an empty or a partial value: a row by its id, and so a program a row ran that a
-# signal ended; a helper by its words; count.py by its own line (count_run); a run of the
+# signal ended, a program a row's xargs ran among them, which xargs reports by its status
+# 125 (run_recorded); a helper by its words; count.py by its own line (count_run); a run of the
 # gate by the record fixture_run or gate_run writes for it, of a run that could not run,
 # which its reader reads by the rule of the ending record below; and a mode past its own
 # bound by the record run_mode writes, every assertion it declares unrun. The ending of a
@@ -2582,7 +2583,11 @@ run_recorded() {
     # the header's "Every child the gate waits on ends", under BOUND_ROW, and when a signal or
     # its bound ended it, or a signal ended a program it ran, as that program's function or
     # shim recorded it, but at a status the row declared, the mode cannot run, of the kind
-    # environment, naming the row, what ended it and how long the row ran.
+    # environment, naming the row, what ended it and how long the row ran. A program xargs
+    # runs has no function of its own, since xargs runs it, and xargs reports one a signal
+    # ended by its own status 125, so xargs's function recording 125, at a status the row did
+    # not declare, ends the mode the same way, naming the row and saying so; every other
+    # status of xargs, 123 for a program that exited 1 to 125 among them, keeps its meaning.
     local command="$1" out="$2" row="$3" script name names names_status ended took
     local failed_status failed_declared failed_command _failed_said signal_name
     script="$out.sh"
@@ -2632,8 +2637,10 @@ run_recorded() {
     IFS='|' read -r took ended 2>/dev/null <"$out.ended"
     [ -z "$ended" ] || bound_stop "the recorded command of the row $row was ended by $ended, $took s after it started"
     while IFS=$'\t' read -r failed_status failed_declared failed_command _failed_said; do
-        [ "$failed_status" -gt 128 ] 2>/dev/null && [ "$failed_status" != 141 ] || continue
         declared_status_holds "$failed_status" "$failed_declared" && continue
+        [ "$failed_status" = 125 ] && [ "${failed_command%% *}" = xargs ] &&
+            bound_stop "the program '${failed_command% }' the row $row ran exited 125, which xargs exits with when a program it ran was ended by a signal, and the row ran $took s"
+        [ "$failed_status" -gt 128 ] 2>/dev/null && [ "$failed_status" != 141 ] || continue
         signal_name="$(kill -l $((failed_status - 128)) 2>/dev/null)" || continue
         bound_stop "the program '${failed_command% }' the row $row ran was ended by signal $((failed_status - 128)) (SIG$signal_name), and the row ran $took s"
     done <"$out.failed"

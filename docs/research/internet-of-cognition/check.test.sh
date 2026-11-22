@@ -5490,6 +5490,95 @@ else
     fi
 fi
 
+# 181. An outage of the read of the deployment repository's name is a source that did not
+# answer, never a verdict, and its line names the input and not the value (the architect's
+# condition of round 47 on deployment_repository_read). The read goes through live_read, so
+# an answer that is neither the repository nor a 404 ends --replay cannot run, of the kind
+# source, as every read of a live source the gate makes itself does, and the line, written
+# by cannot_run, names IOC_DEPLOYMENT_REPO and quotes curl's own line. The case runs --replay
+# over this directory twice, as case 180 does, with IOC_DEPLOYMENT_REPO the placeholder
+# FIXTURE_DEPLOYMENT_REPO and a curl of its own first on PATH that answers that read with a
+# 503, then with no answer at all, exit 7, beside a git that refuses every ls-remote, so a
+# gate that went on past the read would end naming git instead; each run must end exit 2,
+# every assertion it leaves of the kind source, its last line naming IOC_DEPLOYMENT_REPO and
+# curl's line, and no line of its text may hold the value in any case. ba71a485 already
+# ends each run so; the case keeps that proven.
+outage="$WORK/deployment-outage"
+mkdir -p "$outage/503" "$outage/none"
+cat >"$outage/503/curl" <<'STUB'
+#!/bin/sh
+case " $* " in
+*" --config - "*)
+    printf '{"message": "Service Unavailable"}\n503'
+    printf 'curl: (22) The requested URL returned error: 503\n' >&2
+    exit 22
+    ;;
+esac
+printf 'curl: (7) the stub curl of case 181 answers no read but the one of the repository\n' >&2
+exit 7
+STUB
+cat >"$outage/none/curl" <<'STUB'
+#!/bin/sh
+printf "curl: (7) Failed to connect to api.github.com port 443 after 0 ms: Couldn't connect to server\n" >&2
+exit 7
+STUB
+cat >"$outage/503/git" <<'STUB'
+#!/bin/sh
+case " $* " in
+*" ls-remote "*)
+    printf 'fatal: the stub git of case 181 refuses every ls-remote\n' >&2
+    exit 128
+    ;;
+esac
+exec REAL_GIT "$@"
+STUB
+sed -i -e "s|REAL_GIT|'$(command -v git)'|" "$outage/503/git"
+cp "$outage/503/git" "$outage/none/git"
+chmod +x "$outage/503/curl" "$outage/none/curl" "$outage/503/git" "$outage/none/git"
+for form in 503 none; do
+    case "$form" in
+    503) said='curl: \(22\) The requested URL returned error: 503' what='a 503' ;;
+    none) said="curl: \\(7\\) Failed to connect to api\\.github\\.com port 443 after 0 ms: Couldn't connect to server" what='no answer' ;;
+    esac
+    out="$(PATH="$outage/$form:$PATH" IOC_DEPLOYMENT_REPO="$FIXTURE_DEPLOYMENT_REPO" gate_run "$HERE/check.sh" --replay)"
+    outage_case="--replay whose read of the deployment repository's name gets $what cannot run, of the kind source, naming IOC_DEPLOYMENT_REPO and not the value"
+    if grep -qiF -- "$FIXTURE_DEPLOYMENT_REPO" "$out/text"; then
+        case_failed "$outage_case" "its text names the value: $(grep -ciF -- "$FIXTURE_DEPLOYMENT_REPO" "$out/text") lines"
+        continue
+    fi
+    ending_read "$out"
+    if [ "$RUN_CRASH" != 1 ] && [ "$RUN_STATUS" = 2 ] && [ -z "$RUN_FAILED" ] &&
+        printf '%s\n' "$RUN_LINE" | grep -qE -- "^check\\.sh cannot run --replay: GitHub, the read of the repository IOC_DEPLOYMENT_REPO names, did not answer: $said ?\$" &&
+        [ "$(printf '%s' "$RUN_UNRUN" | cut -f2 | sort -u)" = source ]; then
+        case_passed "$outage_case"
+    else
+        case_failed "$outage_case" "exit $RUN_STATUS, last line: $RUN_LINE; could not run, by kind: $(printf '%s' "$RUN_UNRUN" | cut -f2 | sort | uniq -c | tr -s ' \n' ' ')"
+    fi
+done
+
+# 182. A program a row's xargs runs that a signal ends is no row that failed (the
+# architect's second item of round 47, the class of case 161). A program xargs runs has no
+# function of its own, since xargs runs it, and GNU xargs exits 125 when a signal ended
+# that program, so at ba71a485 xargs's function recorded 125 and the row failed
+# replay-command, "'xargs ...' exited 125", a verdict on the deliverable for the machine.
+# run_recorded now reads an xargs that recorded 125, at a status the row did not declare,
+# as a program a signal ended. The case adds a row whose command is
+# `printf 'a\n' | xargs python3 -c '...'`, whose python3 kills its own process with
+# SIGKILL, and runs --replay, which must end exit 2, cannot run, every assertion it leaves
+# of the kind environment, its last line naming the row and saying that xargs exited 125.
+dir="$(fresh xargs-killed-row)"
+jq -cn '{id: "f-xargs-killed", requirement: "r7", source: "this tree'"'"'s measurement", kind: "behaviour", claim: "The script prints ran once.", mark: "verified", evidence: {surface: "cli"}, command: "printf '"'"'a\\n'"'"' | xargs python3 -c '"'"'import os, signal; os.kill(os.getpid(), signal.SIGKILL)'"'"'", expect: {equals: "ran once"}, output: "ran once", note: "a row whose xargs runs a program the machine ends by SIGKILL"}' \
+    >>"$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
+grep -qF '"id":"f-xargs-killed"' "$dir/repo/docs/research/internet-of-cognition/claims.jsonl" || {
+    printf 'FAIL the row whose xargs runs a killed program could not be planted in the fixture\n'
+    exit 1
+}
+xargs_start="$EPOCHSECONDS"
+out="$(fixture_run "$dir" --replay)"
+bound_case "a row whose xargs runs a program the machine ends by SIGKILL makes --replay cannot run, of the kind environment, naming the row and xargs's status 125" \
+    "^check\\.sh cannot run --replay: the program 'xargs python3 -c .*' the row f-xargs-killed ran exited 125, which xargs exits with when a program it ran was ended by a signal, and the row ran [0-9]+ s\$" \
+    "$out" "$((EPOCHSECONDS - xargs_start))" 150
+
 # ==== the summary of check.test.sh begins below this line, where cases_copy cuts it ====
 # The summary, by the three endings and their precedence (check.sh's header): run_ending
 # reads every case this file counted, the ones that could not run among them, and this
