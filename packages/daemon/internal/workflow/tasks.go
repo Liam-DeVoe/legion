@@ -512,6 +512,10 @@ func (e *Engine) restartViewed(ctx context.Context, tx pgx.Tx, issue record.Issu
 	if err := e.moveTask(ctx, tx, &issue, &w, w.steps()[0], first, record.TaskRunning); err != nil {
 		return err
 	}
+	if err := e.store.SetStartReason(ctx, tx, issue.Key, issue.Generation, w.Task, reason); err != nil {
+		return err
+	}
+	w.StartReason = reason
 	issue.Hold = nil
 	written, err := e.putIssue(ctx, tx, issue)
 	if err != nil {

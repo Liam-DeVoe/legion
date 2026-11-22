@@ -2321,7 +2321,9 @@ type Store interface {
 	// none for a task at no act, and none for an issue with no plan rows.
 	TaskActs(ctx context.Context, tx pgx.Tx, issue Issue) ([]RunningStep, error)
 	// MoveTask writes where task stands and its state, which is not stopped (StopTask) or held
-	// (HoldTask), clears a stop's reason, and ends the task's hold reason and its step's wait.
+	// (HoldTask), clears a stop's reason and why the task started again, and ends the task's hold
+	// reason and its step's wait; a move into running from waiting or stopped, a start of the task,
+	// writes that its step waits for its join.
 	MoveTask(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string, place TaskPlace, state TaskState) error
 	// StopTask writes task stopped for reason, at the place it stands, ending a hold's reason.
 	StopTask(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task, reason string) error
@@ -2344,6 +2346,9 @@ type Store interface {
 	// SetJoinConflicts writes the needs of task whose join into its branch GitHub refused as a
 	// conflict, in place of what the task held.
 	SetJoinConflicts(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string, needs []string) error
+	// SetStartReason writes why a running task started again at its first step, which every move
+	// of the task clears.
+	SetStartReason(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task, reason string) error
 	// ReturnCounts is the counts of returns of task: on the task for a generation with plan rows,
 	// on the implementer's phases row for one with none.
 	ReturnCounts(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string) (ReturnCounts, error)

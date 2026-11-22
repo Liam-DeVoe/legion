@@ -67,6 +67,10 @@ type Walk struct {
 	// (Engine.start). A step that waits stands in no step (standingStep): nothing of it started.
 	Wait      record.StepWait
 	WaitSince *time.Time
+	// StartReason is why the task started again at its first step (record.PlanTask.StartReason),
+	// "" for a first start and after any later move: a step that starts after a wait (startAfterWait)
+	// tells it and counts as a move back, as the start again would have, had it waited for nothing.
+	StartReason string
 	// Version is the version of the plan in force (record.StoredPlan.Version): where the plan came
 	// from, its document and its number, which the run's plan node names (planNode); zero where
 	// the run has no plan rows.
@@ -149,7 +153,7 @@ func walkOfTask(key string, stored *record.StoredPlan, at int, merging string) W
 	steps, merges := stored.Steps[task.Task], task.Task == merging
 	return Walk{Stored: true, Task: task.Task, Branch: task.BranchOf(key), Text: task.BlockText, Steps: steps, Needs: task.Needs,
 		Line: plan.Line(namedSteps(steps), merges), Merges: merges, State: task.State, Place: task.Place, StoppedReason: task.StoppedReason,
-		HoldReason: task.HoldReason, Wait: task.StepWait, WaitSince: task.StepWaitSince, Version: stored.Version}
+		HoldReason: task.HoldReason, Wait: task.StepWait, WaitSince: task.StepWaitSince, StartReason: task.StartReason, Version: stored.Version}
 }
 
 // mergingTask is the id of the task of stored whose work is the issue's that merges: the plan's
@@ -402,7 +406,7 @@ func (e *Engine) moveTask(ctx context.Context, tx pgx.Tx, issue *record.Issue, w
 		if state == record.TaskRunning && (w.State == record.TaskWaiting || w.State == record.TaskStopped) {
 			wait = record.StepWaitJoin
 		}
-		w.Place, w.State, w.Wait, w.WaitSince = place, state, wait, nil
+		w.Place, w.State, w.Wait, w.WaitSince, w.StartReason = place, state, wait, nil, ""
 	}
 	issue.Phase = to
 	running, err := e.store.RunningSteps(ctx, tx, *issue)
