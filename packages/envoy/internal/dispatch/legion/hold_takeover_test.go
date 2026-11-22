@@ -212,20 +212,23 @@ func TestASettingWrittenDuringAHeldReadThatTimesOutKeepsTheFloorAboutElevenMinut
 // TestASettingNamingAnotherDaemonFinishesTheOldDaemonsMessagesWithNoRead: R3 applies no message
 // of the daemon a setting named before once it names another, and a failed starting read is one
 // "which no message holds". So, after a write that names another daemon, the old daemon's held
-// message is finished unapplied at its next redelivery, at once: it waits on no read, and makes
-// no read of its own or of the new daemon. Once the new daemon's failed starting read is due
-// again, a later message of the old daemon's store is acknowledged unapplied the same way, within
-// finishedWithin of its publish: it waits on no read and holds none. Until a read of the new URL
-// has succeeded, Dispatch cannot know whether the URL names another store or the same store
-// behind a new URL, so that message calls for the owed read, which the project's runner makes
-// after the message is acknowledged, and it calls for no more than that one read.
+// message is finished unapplied at its next redelivery, once the write's starting read of the new
+// daemon, which it waits behind on the project's runner, has ended: within one RequestTimeout and a
+// second of the write. It makes no read of its own or of the new daemon, and holds none. Once the
+// new daemon's failed starting read is due again, a later message of the old daemon's store is
+// acknowledged unapplied the same way, within finishedWithin of its publish: it waits on no read
+// and holds none. Until a read of the new URL has succeeded, Dispatch cannot know whether the URL
+// names another store or the same store behind a new URL, so that message calls for the owed
+// read, which the project's runner makes after the message is acknowledged, and it calls for no
+// more than that one read.
 //
 // The rig's client window is readWindow, long enough to tell a message that waits behind a read,
 // or makes one, from one that does neither. INFRA's daemon stops answering after its good starting
 // read, and a gap's message holds the owed read. After two hand-backs a person writes INFRA's
 // setting naming another daemon, which does not answer either. The old message's next delivery
-// comes holdAtLeast after its last hand-back, so it is finished within finishedWithin of the
-// write, and the new daemon has served the write's own starting read alone.
+// comes holdAtLeast after its last hand-back and waits behind the write's starting read, which
+// waits out readWindow, so it is finished within readWindow and a second of the write, and the new
+// daemon has served the write's own starting read alone.
 //
 // At 3e6a6784 the old message's redelivery waits on the project's runner behind the write's
 // starting read of the new daemon, then makes the new daemon's read owed for retry
@@ -272,9 +275,9 @@ func TestASettingNamingAnotherDaemonFinishesTheOldDaemonsMessagesWithNoRead(t *t
 	rig.waitFor(time.Minute, finishedThrough(holder), func() string {
 		return fmt.Sprintf("the old daemon's held message is not finished a minute after the write: %+v", rig.consumerInfo())
 	})
-	if took := time.Since(wroteAt); took >= finishedWithin {
-		t.Errorf("the old daemon's held message was finished %s after the write naming another daemon, want less than %s: it waited behind a read, or made one, of %s each",
-			took.Round(time.Millisecond), finishedWithin, readWindow)
+	if took := time.Since(wroteAt); took >= readWindow+time.Second {
+		t.Errorf("the old daemon's held message was finished %s after the write naming another daemon, want less than %s, the write's starting read of %s and a second: it waited behind more than that read, or made one",
+			took.Round(time.Millisecond), readWindow+time.Second, readWindow)
 	}
 	if served := named.served(); served != 1 {
 		t.Errorf("the daemon the setting names served %d reads by the time the old daemon's message was finished, want 1, the write's own starting read: the old daemon's message made a read", served)

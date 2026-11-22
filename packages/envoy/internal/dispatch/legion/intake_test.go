@@ -457,22 +457,25 @@ type cursorRow struct {
 	readHolds        int
 	previousStateID  *string
 	previousStateURL *string
+	foreignStateIDs  []string
+	releasedHolder   *int64
 }
 
 func (r cursorRow) String() string {
-	return fmt.Sprintf("{lastSeq=%s readOwed=%v readReasons=%v readHolder=%s readHolds=%d run=%s stateId=%s previousStateId=%s previousStateUrl=%s}",
+	return fmt.Sprintf("{lastSeq=%s readOwed=%v readReasons=%v readHolder=%s readHolds=%d run=%s stateId=%s previousStateId=%s previousStateUrl=%s foreignStateIds=%v releasedHolder=%s}",
 		orNone(r.lastSeq), r.readOwed, r.readReasons, orNone(r.readHolder), r.readHolds, orNone(r.run), orNone(r.stateID), orNone(r.previousStateID),
-		orNone(r.previousStateURL))
+		orNone(r.previousStateURL), r.foreignStateIDs, orNone(r.releasedHolder))
 }
 
 func cursorOf(t *testing.T, database *store.Store, project string) cursorRow {
 	t.Helper()
 	var row cursorRow
 	if err := database.Pool.QueryRow(context.Background(),
-		`select last_seq, read_owed, run, state_id, read_reasons, read_holder, read_holds, previous_state_id, previous_state_url
+		`select last_seq, read_owed, run, state_id, read_reasons, read_holder, read_holds, previous_state_id, previous_state_url,
+			foreign_state_ids, released_holder
 		from legion_event_cursors where project = $1`, project).Scan(
 		&row.lastSeq, &row.readOwed, &row.run, &row.stateID, &row.readReasons, &row.readHolder, &row.readHolds, &row.previousStateID,
-		&row.previousStateURL); err != nil {
+		&row.previousStateURL, &row.foreignStateIDs, &row.releasedHolder); err != nil {
 		t.Fatalf("read the cursor of %s: %v", project, err)
 	}
 	return row
@@ -1756,11 +1759,11 @@ func (r *intakeRig) wholeReadReasons(project string) []string {
 // longer names, or a sender that is no daemon) writes no observation and moves no cursor, though it
 // is at the cursor's next sequence. A good starting read holds back no read after it, so it makes
 // one whole read (ReadReasonStore) at once, logged with its reason, which finds the store the
-// daemon counts in now. The daemon still serves the starting point's store, so the message is
-// dropped, and the drop is logged once, with both ids and the message's sequences. A second
-// message of that store inside ReadRetryAfter of the read makes no read: the read is owed for that
-// reason, the message goes back to the stream until the read is due, and the daemon's own next
-// message is applied meanwhile.
+// daemon counts in now. The daemon still serves the starting point's store, so the read marks the
+// message's store as no daemon of INFRA (foreign_state_ids, row 3.1 of the read rule's cases), the
+// message is dropped, and the drop is logged once, with both ids and the message's sequences. A
+// second message of that store inside ReadRetryAfter of the read is dropped the same way: it makes
+// no read and holds none, and the daemon's own next message is applied.
 func TestAMessageOfAnotherStoreWritesNothingAndMakesOneRead(t *testing.T) {
 	rig := newIntakeRig(t)
 	daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
@@ -1772,14 +1775,14 @@ func TestAMessageOfAnotherStoreWritesNothingAndMakesOneRead(t *testing.T) {
 	at := time.Now().UTC().Truncate(time.Microsecond)
 	rig.publishIn("INFRA", rig.run, otherStateID, at, false, change(11, "INFRA-1", moved("phase", "merging")))
 	rig.publishIn("INFRA", rig.run, otherStateID, at, false, change(12, "INFRA-1", moved("phase", "merging")))
-	rig.settledHolding(1)
+	rig.settled()
 
 	if after := observations(t, rig.database, "INFRA"); !slices.Equal(after, rows) {
 		t.Errorf("observations = %v, want the starting read's %v alone: a message of another store writes nothing", after, rows)
 	}
-	if current := cursorOf(t, rig.database, "INFRA"); !current.readOwed || !slices.Equal(current.readReasons, []string{ReadReasonStore}) ||
+	if current := cursorOf(t, rig.database, "INFRA"); current.readOwed || !slices.Equal(current.foreignStateIDs, []string{otherStateID}) ||
 		current.lastSeq == nil || *current.lastSeq != 10 {
-		t.Errorf("the cursor is %+v, want it at the starting read's 10 with a read owed for the second message's store", current)
+		t.Errorf("the cursor is %+v, want it at the starting read's 10 with no read owed and the other store marked as no daemon of INFRA", current)
 	}
 	reads := readRecords(t, rig.database, "INFRA")
 	if len(reads) != 2 {
@@ -1800,7 +1803,7 @@ func TestAMessageOfAnotherStoreWritesNothingAndMakesOneRead(t *testing.T) {
 	}
 
 	rig.publish("INFRA", change(11, "INFRA-1", moved("phase", "implementing")))
-	rig.settledHolding(1)
+	rig.settled()
 	if got := history(t, rig.database, "INFRA", "INFRA-1", FieldPhase); !slices.Equal(got, []string{`"planning"`, `"implementing"`}) {
 		t.Errorf("the phase's history is %v, want the starting read's planning, then the daemon's own message's implementing", got)
 	}

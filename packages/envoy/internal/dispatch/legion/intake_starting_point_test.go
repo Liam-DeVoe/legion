@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // TestTheWholeReadLineNamesTheSequenceUnderDispatchsOwnHandler: each whole read is logged with its
@@ -155,12 +156,16 @@ func TestAFailedWholeReadSetsNoRun(t *testing.T) {
 // message that held the read went back stateMaxHolds times and was let go. A project with no
 // cursor, here one whose setting was written while no settings wake reached the intake, is read
 // whole at the take-over (ReadReasonStart). Each is read once at the take-over, and the good read
-// leaves its cursor at the read's stateSeq with nothing owed and no holder.
+// leaves its cursor at the read's stateSeq with nothing owed and no holder. A project whose cursor
+// owes nothing, after a good starting read, is not read at the take-over: R3 reads a project whole
+// only for the reasons it names.
 func TestATakeOverReadsAProjectWhoseOwedReadNoMessageHolds(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		project string
-		reason  string
+		// reason is the reason of the take-over's read, "" for a project the take-over does not
+		// read.
+		reason string
 		// before brings project to what the take-over finds, from the first intake's start on,
 		// and answers project's daemon and how many whole reads of every project are recorded by
 		// then.
@@ -219,6 +224,19 @@ func TestATakeOverReadsAProjectWhoseOwedReadNoMessageHolds(t *testing.T) {
 				return linux, 1
 			},
 		},
+		{
+			name: "a project that owes nothing", project: "INFRA", reason: "",
+			before: func(t *testing.T, rig *intakeRig) (*fakeDaemon, int) {
+				daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
+				seedLegionProject(t, rig.database, "INFRA", daemon.URL)
+				rig.start()
+				rig.awaitStartingRead("INFRA")
+				if c := cursorOf(t, rig.database, "INFRA"); c.readOwed || c.lastSeq == nil || *c.lastSeq != 10 {
+					t.Fatalf("INFRA's cursor after its good starting read is %s, want it at 10 with nothing owed", c)
+				}
+				return daemon, 1
+			},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rig := newIntakeRig(t)
@@ -230,6 +248,15 @@ func TestATakeOverReadsAProjectWhoseOwedReadNoMessageHolds(t *testing.T) {
 			rig.clock.advance(ReadRetryAfter + time.Second)
 			rig.stop()
 			rig.start()
+			if tc.reason == "" {
+				if testwait.Holds(3*time.Second, 25*time.Millisecond, func() bool { return daemon.served() > served }) {
+					t.Errorf("%s's daemon served %d reads at the take-over, want none: its cursor owes no read", tc.project, daemon.served()-served)
+				}
+				if c := cursorOf(t, rig.database, tc.project); c.readOwed || c.lastSeq == nil || *c.lastSeq != 10 {
+					t.Errorf("after the take-over %s's cursor is %s, want it at its starting read's 10 with nothing owed", tc.project, c)
+				}
+				return
+			}
 			rig.awaitWholeReads(reads + 1)
 
 			got := wholeReadsOf(t, rig.database, tc.project)

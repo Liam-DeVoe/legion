@@ -65,7 +65,7 @@ func TestTheDecodeReadsTheStateDocumentTheDaemonWrote(t *testing.T) {
 			if state.Daemon.StateSeq == nil || *state.Daemon.StateSeq == 0 {
 				t.Fatalf("daemon.stateSeq = %v, want the state sequence the state reflects: a whole read of a state without one is no starting point", state.Daemon.StateSeq)
 			}
-			read := fetchWhole(t.Context(), Settings{Project: state.Daemon.Project, StateURL: server.URL}, time.Now)
+			read := fetchWhole(t.Context(), Settings{Project: state.Daemon.Project, StateURL: server.URL}, time.Now(), time.Now)
 			if read.failure != nil || !read.observed || read.stateSeq == nil || *read.stateSeq != *state.Daemon.StateSeq {
 				t.Errorf("a whole read of the golden for project %s = failure %v, observed %v, stateSeq %v; want a good read at stateSeq %d",
 					state.Daemon.Project, read.failure, read.observed, read.stateSeq, *state.Daemon.StateSeq)
