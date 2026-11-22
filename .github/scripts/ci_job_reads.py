@@ -423,6 +423,11 @@ BROKER_CLIENT_SRC = "packages/cipher-client/**"
 # The shared test fixtures every other Bun package's tests import.
 TEST_FIXTURES_SRC = "packages/test-fixtures/src/**"
 
+# The test job's run of the live proofs' libraries, cited by its whole run: text. It leaves out
+# scripts/e2e/lib/nats-image.test.ts, whose one run is lint's (no filter gates lint), so the
+# natsfloor build that file starts is no read of this job.
+E2E_LIB_TESTS = "bun test scripts/e2e/lib --path-ignore-patterns=scripts/e2e/lib/nats-image.test.ts"
+
 
 def envoy_client_dep(why):
     """The reads of a gate whose job compiles @legion/envoy-client: that package's sources, and
@@ -558,7 +563,7 @@ RULES = {
         Read(path, "internal/api/reachstates_test.go:50 lists ../supervise and :60 parses each .go file of it but the test files (:57)")
         for path in files_but_tests(f"{DAEMON}/internal/supervise")],
     f"{DAEMON}/internal/api/real_github_test.go": reads(("scripts/e2e/lib/github-apps.sh", "internal/api/real_github_test.go:115 runs it in bash, and :208,249 read it")),
-    f"{DAEMON}/internal/api/state_golden_test.go": reads((f"{FIX}/daemon-api/*", "internal/api/state_golden_test.go:1391 (path from goldenPath at :1380, declared :38)")),
+    f"{DAEMON}/internal/api/state_golden_test.go": reads((f"{FIX}/daemon-api/*", "internal/api/state_golden_test.go: func golden reads goldenPath(name), which joins ../../../contracts/fixtures/daemon-api")),
     f"{DAEMON}/internal/appauth/deployment_doc_test.go": reads(("docs/deployment.md", "internal/appauth/deployment_doc_test.go:30 (path from deploymentDoc at :20)")),
     f"{DAEMON}/internal/capabilities/capabilities_test.go": reads(
         (f"{FIX}/capability-redaction.json", "internal/capabilities/capabilities_test.go:236 readFixture"),
@@ -602,7 +607,7 @@ RULES = {
         run(ENVOY, ["./cmd/listener", "./cmd/dispatch"], "internal/intake/redelivered_test.go:298-299 testbuild.EnvoyBinary, which runs go build ./cmd/listener and ./cmd/dispatch in packages/envoy (internal/testbuild/testbuild.go:112)", mode="build")],
     f"{DAEMON}/internal/intake/checks_skipped_test.go": reads((f"{FIX}/checks-settlement/*", "internal/intake/checks_skipped_test.go:32")),
     f"{DAEMON}/internal/intake/checks_statuses_test.go": reads((f"{FIX}/checks-settlement/*", "internal/intake/checks_statuses_test.go:139")),
-    f"{DAEMON}/internal/intake/intake_test.go": reads((f"{FIX}/github-envelopes/*", "internal/intake/intake_test.go:856 globs it and reads each file; :960 reads one")),
+    f"{DAEMON}/internal/intake/intake_test.go": reads((f"{FIX}/github-envelopes/*", "internal/intake/intake_test.go: TestEnvoyGoldenSubjectsReachTheirRepositorysConsumer globs it and reads each file; TestAWorkflowRunEnvelopeIsNoFact reads workflow-run-completed.json")),
     f"{DAEMON}/internal/projection/state_golden_test.go": reads((f"{FIX}/daemon-api/*", "internal/projection/state_golden_test.go:209")),
     f"{DAEMON}/internal/prompts/roles_test.go": reads(
         ("packages/pi-legion/agents/*.md", "internal/prompts/roles_test.go:261 stats agents/<name>.md for each task agent"),
@@ -2772,13 +2777,10 @@ GATES = [
     # have jobs of their own: the Claude Code plugin build, the changelog fold, about thirty
     # script harnesses - each behind a gate of its own below (SCRIPT_TEST_GATES), whose reads
     # this gate carries too, since the job must be selected for the step to run in it - and the
-    # Bun suites of scripts/. Two go commands are left, the builds Bun tests start: the listener's,
-    # and the natsfloor command the pin scanner asks the NATS floor through.
+    # Bun suites of scripts/. One go command is left, the build a Bun test starts: the listener's.
     gate("test", "test", runs=[
         script_run("scripts/e2e/lib/held-port.test.ts", 'const build = Bun.spawnSync(["go", "build", "-o", listener, "./cmd/listener"], {',
-                   at("test", "bun test scripts/e2e/lib"), ENVOY, ["./cmd/listener"], mode="build"),
-        script_run("scripts/e2e/lib/nats-image.test.ts", 'const build = Bun.spawnSync(["go", "build", "-o", floor, "./natsversion/cmd/natsfloor"], {',
-                   at("test", "bun test scripts/e2e/lib"), ENVOY, ["./natsversion/cmd/natsfloor"], mode="build"),
+                   at("test", E2E_LIB_TESTS), ENVOY, ["./cmd/listener"], mode="build"),
     ], reads=CLAUDE_ENVOY_BUILD + SCRIPT_TEST_READS + GUIDE_LAYOUT_READS + reads(
         ("scripts/third-party-notices.test.ts", at("test", "Test third-party notices")),
         ("packages/dispatch/web/src/fonts/inter/**", "scripts/third-party-notices.test.ts:102-105 resolves the font "
@@ -2789,11 +2791,11 @@ GATES = [
         ("scripts/semantic-line-breaks.ts", "scripts/semantic-line-breaks.test.ts:6,28 spawns it"),
         ("scripts/priorities-seed.test.ts", at("test", "Test the priorities seed")),
         ("scripts/priorities-seed.ts", "scripts/priorities-seed.test.ts:4 imports it"),
-        ("scripts/e2e/**", f"{at('test', 'bun test scripts/e2e/lib')} (lib/script-functions.test.ts:105-108 scans scripts/e2e/*.sh and lib/*); "
+        ("scripts/e2e/**", f"{at('test', E2E_LIB_TESTS)} (lib/script-functions.test.ts:105-108 scans scripts/e2e/*.sh and lib/*); "
                            f"{at('test', 'Test the e2e proof selector')}: the selector reads scripts/e2e/*.sh"),
         (CONTRACTS_SRC, "scripts/e2e/lib/envoy-bridge.ts:9-10, session-settings-services.ts:6; scripts/dispatch/ask-census.ts:3-9 (tsc -p scripts/dispatch); "
                         "scripts/priorities-seed.ts:29"),
-        (TEST_FIXTURES_SRC, f"{at('test', 'bun test scripts/e2e/lib')} and the other bun test steps import @legion/test-fixtures"),
+        (TEST_FIXTURES_SRC, f"{at('test', E2E_LIB_TESTS)} and the other bun test steps import @legion/test-fixtures"),
         # The envoy-client sources, and cipher-client's with them, are the shared read below:
         # scripts/e2e/lib/nats-stream.ts:16-18, operator-dispatch.ts:17-22, envoy-bridge.ts:11
         # and scripts/dispatch/ask-census.ts:10-18 import @legion/envoy-client/*, and the

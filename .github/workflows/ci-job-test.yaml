@@ -625,8 +625,10 @@ jobs:
           cache: false
 
       # After setup-go: held-port.test.ts builds the real envoy-listener and hands it a held socket.
+      # nats-image.test.ts is left out: lint's "Check every NATS server a script starts or installs
+      # is one the floor takes" runs that file on every run, and lint runs whenever this job does.
       - name: Test the live proofs' libraries (the GitHub ingress bridge, the proof human's check, the model gateway key command, the design-gate verdict, the held-port helper)
-        run: bun test scripts/e2e/lib
+        run: bun test scripts/e2e/lib --path-ignore-patterns=scripts/e2e/lib/nats-image.test.ts
 
       # After setup-go: its fixtures run go list over a scratch module.
       - name: Test the CI filter check

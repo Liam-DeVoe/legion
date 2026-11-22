@@ -1045,7 +1045,6 @@ test:
   - *go_workspace
   - *claude_envoy_build
   - *listener_command
-  - 'packages/envoy/natsversion/cmd/natsfloor/*'
   # why: .github/ci-notes/ci.md#test-each-harness-steps-own-gate-named-here-so-the-job-runs
   - *release_push_test
   - *release_bump_test
