@@ -231,6 +231,7 @@ func TestStreamsCensusRemovesAnUnrecordedFreshName(t *testing.T) {
 		"dispatch": func(name string) *natsgo.ConsumerConfig {
 			config := bus.DispatchDeliveryConsumer()
 			config.Durable = name
+			config.DeliverSubject = natsgo.NewInbox()
 			return &config
 		},
 		"daemon/PUB": func(name string) *natsgo.ConsumerConfig {

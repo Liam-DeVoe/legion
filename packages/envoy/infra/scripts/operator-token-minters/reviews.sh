@@ -143,22 +143,34 @@ judge_reviews() {
 }
 # seed_named KIND NAMESPACE NAME DETAIL: a system namespace's ServiceAccount a live role allows a right
 # by name (DETAIL) is never a finding itself, but who can become it holds that right, so it seeds
-# FOUND_SAS, as judge_reviews seeds one allowed a right outright; returns 0 when it did.
+# FOUND_SAS, as judge_reviews seeds one allowed a right outright; returns 0 when it did. RBAC takes
+# the account as a ServiceAccount subject or as the User system:serviceaccount:<namespace>:<name>
+# (k8s_subject allows both), so both forms seed it.
 seed_named() {
-  [ "$1" = ServiceAccount ] && system_namespace "$2" || return 1
-  [ -n "${FOUND_SAS[$2:$3]:-}" ] || FOUND_SAS[$2:$3]="$4"
+  local ns="$2" name="$3"
+  case "$1:$name" in
+    ServiceAccount:*) ;;
+    User:system:serviceaccount:*:*)
+      name="${name#system:serviceaccount:}"
+      ns="${name%%:*}" name="${name#*:}"
+      ;;
+    *) return 1 ;;
+  esac
+  system_namespace "$ns" || return 1
+  [ -n "${FOUND_SAS[$ns:$name]:-}" ] || FOUND_SAS[$ns:$name]="$4"
 }
 # follow_becomes KUBECONFIG STEP SUFFIX RESOURCE: who can become a ServiceAccount of FOUND_SAS holds
 # what it holds. In the ServiceAccount's namespace a principal becomes it by any namespaced right of
 # RIGHTS_TABLE (a pod or a workload controller runs as any ServiceAccount of its namespace; exec,
 # attach, an ephemeral container or a pod patch enters one; a rolebinding, bind or escalate grants
-# itself those; a token Secret is read) or by create on a custom resource there, and, by its name,
-# by create serviceaccounts/token or impersonate (become-rights.jq). Each principal of
-# $WORK/principals.rec allowed one of these is a finding naming the chain, but a seed, which is only
-# followed; and so is a binding subject whose live role limits one of them by name (a patch of one
-# Deployment sets its serviceAccountName), read as live_named reads the others when it read the
-# cluster's roles. Each ServiceAccount so found is followed in turn, up to 5 steps; one found in the
-# fifth and not followed is UNKNOWN. A ServiceAccount that becomes only itself is no finding.
+# itself those; a token Secret is read) or by create, update or patch of a custom resource there,
+# and, by its name, by create serviceaccounts/token or impersonate (become-rights.jq). Each
+# principal of $WORK/principals.rec allowed one of these is a finding naming the chain, but a seed,
+# which is only followed; and so is a binding subject whose live role limits one of them by name (a
+# patch of one Deployment sets its serviceAccountName), read as live_named reads the others when it
+# read the cluster's roles. Each ServiceAccount so found is followed in turn, up to 5 steps; one
+# found in the fifth and not followed is UNKNOWN. A ServiceAccount that becomes only itself is no
+# finding.
 follow_becomes() {
   local kube="$1" step="$2" suffix="$3" resource="$4" round sa rights label targets principal verdict error reason who why
   local what id detail kind ns name
@@ -256,16 +268,19 @@ follow_members() {
   done
 }
 # custom_rights KUBECONFIG STYLE: sets CUSTOM_RIGHTS, the JSON array, as rights_json writes rights,
-# of create on each custom resource the API server's discovery lists as namespaced and creatable,
-# in each guarded pair's namespace: a custom resource's controller may make a pod from it (an agent
-# sandbox does), so create on one there is the same path as create pods. Custom is any API group
-# outside Kubernetes' own: not the core group, no dotless group (apps, batch), and no *.k8s.io
-# group other than a *.x-k8s.io one. STYLE `guard` labels each right as GUARD_RIGHTS does. Returns
-# 1 with CUSTOM_ERROR when the discovery could not be read whole; CUSTOM_RIGHTS holds what it listed.
+# of create, update and patch on each custom resource the API server's discovery lists as namespaced
+# and creatable, in each guarded pair's namespace: a custom resource's controller may make a pod
+# from it (an agent sandbox does), so create on one there is the same path as create pods, and a
+# patch that finds no object creates it while an update changes what its controller makes. Custom
+# is any API group outside Kubernetes' own: not the core group, no dotless group (apps, batch), and
+# none of Kubernetes' built-in *.k8s.io groups (custom.jq names them); any other *.k8s.io group a CRD
+# uses (snapshot.storage.k8s.io, *.x-k8s.io) is custom. STYLE `guard` labels each right as
+# GUARD_RIGHTS does. Returns 1 with CUSTOM_ERROR when the discovery could not be read whole;
+# CUSTOM_RIGHTS holds what it listed.
 custom_rights() {
   CUSTOM_ERROR=""
   if ! kubectl --kubeconfig "$1" api-resources --namespaced=true --verbs=create -o name >"$WORK/api-resources" 2>"$WORK/api-resources.err"; then
-    CUSTOM_ERROR="the API server's discovery of namespaced resources could not be read whole, so create on a custom resource it leaves out is not reviewed: $(first_line "$WORK/api-resources.err")"
+    CUSTOM_ERROR="the API server's discovery of namespaced resources could not be read whole, so create, update and patch of a custom resource it leaves out are not reviewed: $(first_line "$WORK/api-resources.err")"
   fi
   CUSTOM_RIGHTS="$(printf '%s\n' "${GUARDED[@]}" | jq -R -s -c -L "$LIB" --rawfile names "$WORK/api-resources" --arg style "$2" -f "$LIB/custom-rights.jq")"
   [ -z "$CUSTOM_ERROR" ]

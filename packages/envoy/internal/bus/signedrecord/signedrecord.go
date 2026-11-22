@@ -222,15 +222,18 @@ func ParsePublicKeys(setting, raw string) ([]ed25519.PublicKey, error) {
 // again below the old history's, so an old row at a higher gen verifies too, but was signed before
 // it. After a point-in-time restore the old history's later rows were signed after the restored
 // row, so the check catches them only once the floor accepts a new move signed more than
-// SignedAtSkew after the old history's latest row. It lives as long as its reader's process: a
-// reader that starts again starts with no floor, which is the residual the hold's design states, and
-// is also how a floor that took a wrong time (a clock far fast) is cleared. The zero Floor has
-// accepted nothing, so it accepts any gen; it is safe for concurrent use.
+// SignedAtSkew after the old history's latest row. A signing time later than the reader's clock
+// plus SignedAtSkew (a row stored before the hold's routes judged signing times, or a reader whose
+// clock jumped back) moves the time later gens are judged against no further than that, so it
+// cannot hold a correct clock back (NotBackdated). It lives as long as its reader's process: a
+// reader that starts again starts with no floor, which is the residual the hold's design states.
+// The zero Floor has accepted nothing, so it accepts any gen; it is safe for concurrent use.
 type Floor struct {
 	mu       sync.Mutex
 	gen      uint64
 	digest   [sha256.Size]byte
-	signedAt time.Time
+	signedAt time.Time // the latest signing time accepted
+	timeGen  uint64    // the gen signed at signedAt
 	accepted bool
 }
 
@@ -255,8 +258,29 @@ func WithinSkewOf(signedAt, now time.Time) error {
 	return nil
 }
 
+// NotBackdated answers ErrBackdated, naming both gens and both times, when signedAt, gen's signing
+// time, is more than SignedAtSkew before the time it is judged against: latestAt, latestGen's, the
+// latest signing time the reader has accepted or verified, as long as latestAt is no more than
+// SignedAtSkew ahead of now, the reader's clock. A later time is no genuine row's (a row stored
+// before the hold's routes judged signing times, or a reader whose clock jumped back), so the gen is
+// judged against now instead, as the routes' WithinSkewOf judges it: a correct clock, which signs a
+// little before the reader reads, is never held back by such a time. It answers nil otherwise.
+// Floor.Accept and Floor.Admits judge by it, and the hold's routes judge a new row by it against
+// the log's latest verified signing time, which every replica shares.
+func NotBackdated(gen uint64, signedAt time.Time, latestGen uint64, latestAt, now time.Time) error {
+	judged := latestAt
+	if latestAt.After(now.Add(SignedAtSkew)) {
+		judged = now
+	}
+	if signedAt.Before(judged.Add(-SignedAtSkew)) {
+		return fmt.Errorf("%w: gen %d signed at %s, before gen %d signed at %s", ErrBackdated, gen,
+			signedAt.UTC().Format(time.RFC3339), latestGen, latestAt.UTC().Format(time.RFC3339))
+	}
+	return nil
+}
+
 // Admits answers ErrBackdated, naming the gens and both times, when gen is above the floor and
-// signedAt is more than SignedAtSkew before the latest accepted record's time, and nil otherwise,
+// NotBackdated refuses its signing time against the latest accepted record's, and nil otherwise,
 // as Accept judges a gen's signing time. It moves nothing: the hold's routes ask it of the row a
 // move or restore would write, inside that write's transaction and before it, so a row the floor
 // would refuse is never stored.
@@ -266,13 +290,12 @@ func (f *Floor) Admits(gen uint64, signedAt time.Time) error {
 	return f.backdated(gen, signedAt)
 }
 
-// backdated is Admits' judgement, with f.mu held.
+// backdated is Admits' judgement, with f.mu held, against the reader's clock now.
 func (f *Floor) backdated(gen uint64, signedAt time.Time) error {
-	if f.accepted && gen > f.gen && signedAt.Before(f.signedAt.Add(-SignedAtSkew)) {
-		return fmt.Errorf("%w: gen %d signed at %s, after gen %d signed at %s", ErrBackdated, gen,
-			signedAt.UTC().Format(time.RFC3339), f.gen, f.signedAt.UTC().Format(time.RFC3339))
+	if !f.accepted || gen <= f.gen {
+		return nil
 	}
-	return nil
+	return NotBackdated(gen, signedAt, f.timeGen, f.signedAt, time.Now())
 }
 
 // Accept records gen, the digest of lines, the record's signed lines, and signedAt, the time the
@@ -291,7 +314,7 @@ func (f *Floor) Accept(gen uint64, signedAt time.Time, lines []string) error {
 	switch {
 	case !f.accepted || gen > f.gen:
 		if !f.accepted || signedAt.After(f.signedAt) {
-			f.signedAt = signedAt
+			f.signedAt, f.timeGen = signedAt, gen
 		}
 		f.gen, f.digest, f.accepted = gen, digest, true
 		return nil

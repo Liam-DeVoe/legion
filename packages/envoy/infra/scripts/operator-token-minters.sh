@@ -96,16 +96,18 @@
 #                     iam.gke.io/gcp-service-account annotation) with system:authenticated, the
 #                     cluster's binding subjects (below), and anyone unauthenticated
 #                     (system:anonymous with system:unauthenticated), always. The
-#                     rights are the list below for each guarded pair; create on each custom
-#                     resource the API server's discovery (`kubectl api-resources --namespaced
-#                     --verbs=create`) lists, in each guarded pair's namespace: a custom resource's
-#                     controller may make a pod from it, as an agent sandbox does; and create,
-#                     update and patch, cluster-wide, of each admissionregistration.k8s.io resource
-#                     its discovery lists (`kubectl api-resources --api-group=...`): a mutating
-#                     webhook or admission policy can add a container to the operator's next pod,
-#                     and a validating one can block or reshape what it applies. A discovery that
-#                     cannot be read whole, or whose admission list lacks a webhook configuration,
-#                     which every API server serves, is UNKNOWN. RBAC allows a request against a
+#                     rights are the list below for each guarded pair; create, update and patch on
+#                     each custom resource the API server's discovery (`kubectl api-resources
+#                     --namespaced --verbs=create`) lists, in each guarded pair's namespace: a
+#                     custom resource's controller may make a pod from it, as an agent sandbox does,
+#                     a patch that finds no object creates it, and an update changes what its
+#                     controller makes; and create, update and patch, cluster-wide, of each
+#                     admissionregistration.k8s.io resource its discovery lists (`kubectl
+#                     api-resources --api-group=...`): a mutating webhook or admission policy can
+#                     add a container to the operator's next pod, and a validating one can block or
+#                     reshape what it applies. A discovery that cannot be read whole, or whose
+#                     admission list lacks a webhook configuration, which every API server serves,
+#                     is UNKNOWN. RBAC allows a request against a
 #                     rule with resourceNames only when the request names one, so the rights also
 #                     name each name: impersonate groups for system:masters and every Group subject
 #                     the bindings name, impersonate users for every User subject and each user and
@@ -130,13 +132,14 @@
 #                     in turn up to 5 steps: in its namespace, by any namespaced right of the list
 #                     below (a pod or a workload controller runs as it; exec, attach, an ephemeral
 #                     container or a pod patch enters one; a rolebinding, bind or escalate grants
-#                     those; a token Secret is read) or create on a custom resource there, and by
-#                     its name, create serviceaccounts/token or impersonate; each of those rights is
-#                     read in the cluster's live roles too, so one limited by name (a patch of one
-#                     Deployment sets its serviceAccountName) is a finding naming the chain; a read
-#                     of them that fails is UNKNOWN. A system namespace's ServiceAccount is reviewed
-#                     too, never a finding itself, but when it is allowed a right asked, outright or
-#                     by name in a live role, who can become it is followed the same way.
+#                     those; a token Secret is read) or create, update or patch of a custom resource
+#                     there, and by its name, create serviceaccounts/token or impersonate; each of
+#                     those rights is read in the cluster's live roles too, so one limited by name
+#                     (a patch of one Deployment sets its serviceAccountName) is a finding naming
+#                     the chain; a read of them that fails is UNKNOWN. A system namespace's
+#                     ServiceAccount is reviewed too, never a finding itself, but when it is allowed
+#                     a right asked, outright or by name in a live role, who can become it is
+#                     followed the same way.
 #   live: Workload    The Workload Identity member names the workload pool (<pool>.svc.id.goog,
 #     Identity        --pool-project, by default --project), the namespace and the ServiceAccount,
 #                     never the cluster, so every cluster that uses the pool can act as the Google

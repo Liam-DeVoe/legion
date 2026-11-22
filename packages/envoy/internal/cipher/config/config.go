@@ -838,42 +838,40 @@ type Config struct {
 	// start and refused unless it holds a seed of its kind (a user, an account, a curve key),
 	// naming the variable and never the value. BROKER_NATS_SERVICES lists the services admitted by
 	// platform identity, as whitespace-separated <kind>/<machine id or ->/<* or ->=<account>
-	// entries (dispatch, listener, daemon or measure; operator, the deployment's one operator
-	// identity, whose grant is the writer hold's phase's and whose token alone writes the hold
-	// through /v1/nats-hold; or probe, the hold's one probe; * for the kind's whole grant, - for the
-	// projects the account's exchange entry lists, which operator and probe refuse, as they refuse
-	// a machine id and a second entry of their kind), each account written as BROKER_API_ACCOUNTS
-	// writes one, every entry read once at load (ParseNATSServices). An edge listener's entry,
-	// edge-listener/<machine id>/<KEY>[,<KEY>…]=<account>, lists in place of * or - the projects
-	// GET /v1/project-repositories answers that account about, whether or not the broker runs the
-	// auth service: BROKER_NATS_SERVICES set alone, every entry an edge listener's, starts no auth
-	// service and needs no NATS audience, and any other kind of entry needs the URLs and seeds. An
-	// edge listener's account needs the issuer its identity token comes from, as a
-	// BROKER_API_ACCOUNTS entry of its kind does: BROKER_K8S_OIDC_ISSUER for a Kubernetes account,
-	// BROKER_GOOGLE_OIDC_AUDIENCE for a google: one, which counts as that audience's Google
-	// caller; an entry without its issuer refuses the start, naming the entry. The auth service
-	// refuses an edge listener's connection, since this build holds no edge listener's grant.
-	// BROKER_NATS_K8S_AUDIENCE is the audience a service's projected Kubernetes token must
-	// carry, verified against BROKER_K8S_OIDC_ISSUER, which it needs; BROKER_NATS_GOOGLE_AUDIENCE
-	// the audience a service's Google identity token must carry, verified against
-	// BROKER_GOOGLE_OIDC_ISSUER; while the auth service runs, a service entry whose kind of token
-	// has no audience is refused at start naming it. An edge listener's entry needs neither: no
-	// edge listener's connection is admitted whatever its token, so an audience would admit
-	// nothing, and without one its connection is refused at the token check. A session presents
-	// its broker access token and needs neither. All unset, or BROKER_NATS_SERVICES alone holding
-	// only edge listeners' entries, the broker runs no auth service; any other set needs the URLs
-	// and the three seed files. BROKER_NATS_HOLD_READ, true or false, default false, is whether
-	// the auth service reads the writer hold's row from the broker's Postgres at every decision:
-	// false, it never reads it and decides as if the row held released; true, the broker refuses to
-	// start without an operator entry in BROKER_NATS_SERVICES and without
-	// BROKER_NATS_HOLD_SIGNING_KEYS, and starts with no row, refusing every client but the operator
-	// until a row that verifies is written. BROKER_NATS_HOLD_SIGNING_KEYS is the operator's Ed25519
-	// public keys, a list for rotation, parted by whitespace or commas, each the unpadded base64url
-	// of its 32 bytes and refused by its place in the list, never its text: every write of the
-	// /v1/nats-hold routes must be signed by one of them, and so must every row the auth service
-	// reads. BROKER_NATS_HOLD_POOL_SIZE is the connections of the hold read's own Postgres pool,
-	// which it uses rather than the broker's, so a slow hold read takes no connection a secret
-	// request waits on.
+	// entries (dispatch, listener, edge-listener, daemon or measure; operator, the deployment's one
+	// operator identity, whose grant is the writer hold's phase's and whose token alone writes the
+	// hold through /v1/nats-hold; or probe, the hold's one probe; * for the kind's whole grant, -
+	// for the projects the account's exchange entry lists, which operator and probe refuse, as they
+	// refuse a machine id and a second entry of their kind), each account written as
+	// BROKER_API_ACCOUNTS writes one, every entry read once at load (ParseNATSServices). An edge
+	// listener's entry, edge-listener/<machine id>/<KEY>[,<KEY>…]=<account>, lists in place of * or
+	// - the projects its grant is built for and GET /v1/project-repositories answers that account
+	// about, whether or not the broker runs the auth service: BROKER_NATS_SERVICES set alone, every
+	// entry an edge listener's, starts no auth service and needs no NATS audience, and any other
+	// kind of entry needs the URLs and seeds. An edge listener's account needs the issuer its
+	// identity token comes from, as a BROKER_API_ACCOUNTS entry of its kind does:
+	// BROKER_K8S_OIDC_ISSUER for a Kubernetes account, BROKER_GOOGLE_OIDC_AUDIENCE for a google:
+	// one, which counts as that audience's Google caller; an entry without its issuer refuses the
+	// start, naming the entry. The auth service answers an edge listener's connection with
+	// natsgrant.Edge for the projects its entry lists. BROKER_NATS_K8S_AUDIENCE is the audience a
+	// service's projected Kubernetes token must carry, verified against BROKER_K8S_OIDC_ISSUER,
+	// which it needs; BROKER_NATS_GOOGLE_AUDIENCE the audience a service's Google identity token
+	// must carry, verified against BROKER_GOOGLE_OIDC_ISSUER; while the auth service runs, a
+	// service entry, an edge listener's included, whose kind of token has no audience is refused at
+	// start naming it. A session presents its broker access token and needs neither. All unset, or
+	// BROKER_NATS_SERVICES alone holding only edge listeners' entries, the broker runs no auth
+	// service; any other set needs the URLs and the three seed files. BROKER_NATS_HOLD_READ, true or
+	// false, default false, is whether the auth service reads the writer hold's row from the
+	// broker's Postgres at every decision: false, it never reads it and decides as if the row held
+	// released; true, the broker refuses to start without an operator entry in
+	// BROKER_NATS_SERVICES and without BROKER_NATS_HOLD_SIGNING_KEYS, and starts with no row,
+	// refusing every client but the operator until a row that verifies is written.
+	// BROKER_NATS_HOLD_SIGNING_KEYS is the operator's Ed25519 public keys, a list for rotation,
+	// parted by whitespace or commas, each the unpadded base64url of its 32 bytes and refused by its
+	// place in the list, never its text: every write of the /v1/nats-hold routes must be signed by
+	// one of them, and so must every row the auth service reads. BROKER_NATS_HOLD_POOL_SIZE is the
+	// connections of the hold read's own Postgres pool, which it uses rather than the broker's, so
+	// a slow hold read takes no connection a secret request waits on.
 	NATS NATSCallout
 	// BROKER_LEASE_SECONDS: an enrollment's lease. A session renews it while it runs; one whose
 	// lease runs out is no longer enrolled and its calls are refused. Time while no broker was
@@ -1623,7 +1621,7 @@ func parsePodOperators(setting, value string) (map[string]string, error) {
 // deciding person's name from the caller, so the person's pod could decide any request in any
 // person's name. It refuses a mapped account that a BROKER_NATS_SERVICES entry names, because the
 // person's pod would then be answered as that entry's service: by the NATS auth service
-// (internal/cipher/natscallout) with that entry's service grant or, for an edge-listener entry, by
+// (internal/cipher/natscallout) with that entry's service grant and, for an edge-listener entry, also by
 // GET /v1/project-repositories with the repositories of the projects the entry lists. It reads
 // each entry's account from cfg.NATS.Services, the one parse of that setting (ParseNATSServices),
 // which holds the account to ParseAccount's form. It refuses a mapped account that either side of
@@ -1701,7 +1699,7 @@ func mappedAccountRefusal(cfg *Config) error {
 			return fmt.Errorf("%s maps the service account %s to %s, and BROKER_API_ACCOUNTS names it as the caller %q; that caller's routes act on the caller's word, and the approval relays take the deciding person's name from it, so take the account out of BROKER_API_ACCOUNTS or out of %s", setting, account, person, caller.Name, setting)
 		}
 		if entry, names := natsEntries[account]; names {
-			return fmt.Errorf("%s maps the service account %s to %s, and the BROKER_NATS_SERVICES entry %q names it; the person's pod would be answered as that service, by the NATS auth service with its NATS grant or, for an edge-listener entry, by GET /v1/project-repositories, so take the account out of BROKER_NATS_SERVICES or out of %s", setting, account, person, entry, setting)
+			return fmt.Errorf("%s maps the service account %s to %s, and the BROKER_NATS_SERVICES entry %q names it; the person's pod would be answered as that service, by the NATS auth service with its NATS grant and, for an edge-listener entry, also by GET /v1/project-repositories, so take the account out of BROKER_NATS_SERVICES or out of %s", setting, account, person, entry, setting)
 		}
 		if pair, paired := pairs[account]; paired {
 			return fmt.Errorf("%s maps the service account %s to %s, and the BROKER_SESSION_ACCOUNT_PAIRS pair %q names it; a pair lets either account take the session names the other holds, so the session names the token exchange binds for the person's account and for the other account would cross, and a person's account shares no session name with another account, so take the account out of the pair or out of %s", setting, account, person, pair, setting)

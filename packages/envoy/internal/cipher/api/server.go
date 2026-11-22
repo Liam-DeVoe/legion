@@ -253,6 +253,9 @@ type server struct {
 	// repositoryCalls counts each edge listener's calls of GET /v1/project-repositories still
 	// waiting on Dispatch, at most maxRepositoryCallsInFlight each.
 	repositoryCalls *callsInFlight
+	// ownOnlyLogged lets MachineLoginsOwnOnlyMessage be written once per person per
+	// ownOnlyLogEvery (machineLoginsOwnOnly).
+	ownOnlyLogged *ratelimit.Keyed
 }
 
 func Register(mux *http.ServeMux, deps Deps) {
@@ -308,6 +311,7 @@ func Register(mux *http.ServeMux, deps Deps) {
 		holdRowFloor:    deps.NATSHold.RowFloor,
 		address:         address,
 		repositoryCalls: newCallsInFlight(maxRepositoryCallsInFlight),
+		ownOnlyLogged:   ratelimit.NewKeyed(ratelimit.Limit{Every: ownOnlyLogEvery, Burst: 1}),
 	}
 	if s.holdRowFloor == nil {
 		s.holdRowFloor = &signedrecord.Floor{}

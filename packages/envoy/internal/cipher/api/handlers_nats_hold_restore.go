@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 
 	"github.com/sjawhar/envoy/internal/bus/signedrecord"
 	"github.com/sjawhar/envoy/internal/cipher/natshold"
@@ -54,11 +55,11 @@ func (s *server) restoreNATSHold(w http.ResponseWriter, r *http.Request, operato
 		writeHoldRefusal(w, http.StatusBadRequest, "bad_signature", "no key of BROKER_NATS_HOLD_SIGNING_KEYS signed the row at its gen", nil)
 		return
 	}
-	admit := func(latest *natshold.LogEntry, journals []natshold.Record, next natshold.Row) error {
-		if err := s.rowSignedAtAdmitted(next.Gen, next.SignedAt); err != nil {
+	admit := func(log []natshold.LogEntry, journals []natshold.Record, next natshold.Row) error {
+		if err := s.rowSignedAtAdmitted(next.Gen, next.SignedAt, log); err != nil {
 			return err
 		}
-		return s.restoreAdmitted(latest, journals, next)
+		return s.restoreAdmitted(log, journals, next)
 	}
 	row, err := s.holdStore().Restore(r.Context(), natshold.Row{
 		Gen: uint64(body.Gen), Phase: body.Phase, HoldID: body.HoldID, Reason: body.Reason, UpdatedBy: operator, SignedAt: signedAt, Sig: body.Sig,
@@ -123,25 +124,27 @@ func (s *server) restoreTrusted(latest *natshold.LogEntry) error {
 // restoreAdmitted is whether next may be restored after the log's latest entry, which verified
 // (restoreTrusted), given journals, every hold's done record. An empty log takes only the first
 // row's released. Released follows a released entry; a prepare entry, since a prepare row refuses
-// no client, only with that entry's hold id (409 hold_mismatch otherwise, no hold id included): a
+// no client, only with that entry's hold id (409 hold_mismatch otherwise, naming that hold): a
 // released row under another id leaves the prepared hold's cohort and journal where no command
 // reaches them, since Admit and the cohort delete need its id on the row and it cannot be prepared
 // again; or a held one whose hold's journal, the done record, verifies and shows the hold ended (a
 // done hold release or hold abort), as when the row was lost between that done entry and the row's
-// move; after any other held entry it would free every client mid-hold. Whatever the log shows, a
-// released row is refused while any hold's journal that verifies shows hold set done and no end
-// (heldByRecord): that hold is held by its own record, and a log a database writer emptied or cut
-// back, on a replica whose floor started again, would otherwise free every client mid-hold. A
-// released row naming a hold whose done record does not verify is refused too, as unknown (409
-// below_floor). Held follows only a prepare or held entry of its own hold id, so a hold the log
-// shows ended, by a release or by abort from prepare, which leaves no journal entry, is not held
-// again.
-func (s *server) restoreAdmitted(latest *natshold.LogEntry, journals []natshold.Record, next natshold.Row) error {
+// move; after any other held entry it would free every client mid-hold. Whatever the latest entry,
+// a released row is refused while a hold's own record holds it (heldByRecord): that hold is held
+// by its own record, and a log a database writer emptied or cut back, on a replica whose floor
+// started again, would otherwise free every client mid-hold. Held follows only a prepare or held
+// entry of its own hold id, so a hold the log shows ended, by a release or by abort from prepare,
+// which leaves no journal entry, is not held again.
+func (s *server) restoreAdmitted(log []natshold.LogEntry, journals []natshold.Record, next natshold.Row) error {
 	refuse := func(why string) error {
 		return &natshold.Conflict{Err: fmt.Errorf("%w: %s", natshold.ErrBadTransition, why)}
 	}
+	var latest *natshold.LogEntry
+	if len(log) > 0 {
+		latest = &log[len(log)-1]
+	}
 	if next.Phase == string(natsgrant.OperatorPhaseReleased) {
-		if err := s.heldByRecord(latest, journals, next.HoldID); err != nil {
+		if err := s.heldByRecord(log, journals); err != nil {
 			return err
 		}
 	}
@@ -173,33 +176,61 @@ func (s *server) restoreAdmitted(latest *natshold.LogEntry, journals []natshold.
 	return refuse("the log's latest entry is held, and its hold's journal shows no done hold release or hold abort, so a released row restored after it would free every client mid-hold; restore the row held with its hold id")
 }
 
-// heldByRecord refuses a released restore while a hold's own record holds it: any journal among
-// journals that verifies and shows hold set done and no end (ErrBadTransition, naming the hold),
-// and, for named, the hold the restore names, a done record that does not verify (unknown, 409
-// below_floor). A hold whose row the log's latest entry shows released already (a release or abort
-// cut between its row move and its done entry) is not held by its record: its row was released,
-// and released is restored for it.
-func (s *server) heldByRecord(latest *natshold.LogEntry, journals []natshold.Record, named string) error {
-	released := func(holdID string) bool {
-		return latest != nil && latest.Phase == string(natsgrant.OperatorPhaseReleased) && latest.HoldID == holdID
-	}
+// heldByRecord refuses a released restore while a hold's own record holds it. It skips a hold the
+// verified log shows ended (endedInLog): a released entry naming it, at any gen, or a later hold's
+// prepare after its own entries. Every other hold's done record is judged: one below this
+// replica's record floor (an older signed version put back) or one that does not verify is unknown
+// (409 below_floor), and one that shows hold set done and no end refuses the restore
+// (ErrBadTransition, naming the hold). A log cut back below a hold's own entries shows nothing of
+// that hold, so its record still refuses.
+func (s *server) heldByRecord(log []natshold.LogEntry, journals []natshold.Record) error {
+	ended := s.endedInLog(log)
 	for i := range journals {
 		holdID := journals[i].HoldID
-		if released(holdID) {
+		if ended(holdID) {
 			continue
 		}
+		if s.holdFloors.below(recordFloorKey{holdID: holdID, kind: natshold.KindDone, key: holdJournalKey}, journals[i].Gen) {
+			return fmt.Errorf("%w: hold %s's done record is at gen %d, below a gen this broker wrote or served", errHoldLogUnknown, holdID, journals[i].Gen)
+		}
 		d, ok := s.verifiedJournal(holdID, &journals[i])
-		switch {
-		case !ok && holdID == named:
+		if !ok {
 			return fmt.Errorf("%w: hold %s's done record does not verify", errHoldLogUnknown, holdID)
-		case !ok:
-			continue
 		}
 		if _, setDone := d.Latest(holdrecord.CommandSet, holdrecord.StateDone); setDone && !journalEnded(d) {
 			return &natshold.Conflict{Err: fmt.Errorf("%w: hold %s's journal shows hold set done and no end, so a released row restored now would free every client mid-hold; restore the row held with its hold id %s", natshold.ErrBadTransition, holdID, holdID)}
 		}
 	}
 	return nil
+}
+
+// endedInLog answers, for a hold id, whether the log's verified entries show that hold ended: a
+// released entry naming it, at any gen (its release or abort moved the row, and a hold id is never
+// held again), or a prepare entry of another hold at a gen above every entry naming it (a later
+// hold began). A hold no verified entry names is shown nothing.
+func (s *server) endedInLog(log []natshold.LogEntry) func(holdID string) bool {
+	released := map[string]bool{}
+	last := map[string]uint64{}
+	var prepares []natshold.LogEntry
+	for _, e := range log {
+		if e.HoldID == "" || !s.verifiedLogEntry(e) {
+			continue
+		}
+		last[e.HoldID] = max(last[e.HoldID], e.Gen)
+		switch e.Phase {
+		case string(natsgrant.OperatorPhaseReleased):
+			released[e.HoldID] = true
+		case string(natsgrant.OperatorPhasePrepare):
+			prepares = append(prepares, e)
+		}
+	}
+	return func(holdID string) bool {
+		if released[holdID] {
+			return true
+		}
+		lastGen, named := last[holdID]
+		return named && slices.ContainsFunc(prepares, func(p natshold.LogEntry) bool { return p.HoldID != holdID && p.Gen > lastGen })
+	}
 }
 
 // journalOf is holdID's done record among journals, nil when there is none.
