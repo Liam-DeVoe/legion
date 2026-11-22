@@ -237,8 +237,9 @@ pass() { printf 'PASS: %s\n' "$*"; }
 # this suite exports LEGION_PROOF_DEADLINE_MS, its start plus its timeout-minutes less 30 s, and
 # each wait gives up at that moment, naming its fact, before GitHub ends the step. Run anywhere
 # else, with no such deadline set, the suite has no wall-time guard: each wait ends on its fact,
-# and whoever runs the suite owns its hang guard. Case (gg) holds both. The stop_watchdog bounds
-# below are cluster.sh's own hang guards, not waits.
+# and whoever runs the suite owns its hang guard. Case (gg) holds both. The stop_watchdog guards of
+# cases (dd) and (ee), around calls of cluster.sh's own bounded waits, end at that same deadline,
+# and there are none without it.
 work=$tmp
 note() { printf '%s\n' "$*"; }
 # shellcheck source=scripts/e2e/lib/proof-wait.sh
@@ -2705,49 +2706,62 @@ command -v dash >/dev/null ||
   ! grep -q started "$tmp/claim.out" || fail "a start whose claim failed went on to start its job"
   # The shell that waits on a job -- in the foreground, as replay_checksum's, or with the job in
   # the background, as runner_start's -- removes the directory on a TERM or a HUP of its own, on
-  # which dash otherwise ends without running its EXIT trap.
-  # shellcheck disable=SC2016 # expanded by dash
-  for case in foreground:TERM foreground:HUP detached:TERM detached:HUP detached:INT; do
+  # which dash otherwise ends without running its EXIT trap, and so does a foreground one on an
+  # INT, which reaches a foreground shell, one not started ignoring it (env --default-signal gives
+  # that shell INT back, which bash's background job here would start ignoring).
+  #
+  # The job is a stand-in that holds until this case opens its gate, a FIFO the case holds open:
+  # it reads one line of it, and then writes `kept` or `gone` beside the directory, as it finds the
+  # directory then. So the signal always lands while the job runs, however slow the box, and the
+  # job is let go only once the signal has been sent.
+  # credentials_written DIR PID: whether the shell PID wrote its last credential, pg-url, into
+  # DIR, for wait_for; a shell that ended never will.
+  # shellcheck disable=SC2317 # wait_for calls it by name
+  credentials_written() {
+    [ -f "$1/pg-url" ] && return 0
+    kill -0 "$2" 2>/dev/null || wait_impossible="the shell (pid $2) ended before it wrote $1/pg-url"
+    return 1
+  }
+  # shellcheck disable=SC2016 # expanded by dash, and by the job's sh
+  for case in foreground:TERM foreground:HUP foreground:INT detached:TERM detached:HUP detached:INT; do
     wrapper=${case%:*} sig=${case#*:}
     dir=$secrets_root/job-$wrapper-$sig
+    start_cmd=(dash)
     case $wrapper in
-      foreground) script='secrets=$1; shift; '"$RUNNER_CREDENTIALS"'; '"$RUNNER_SECRETS_CLEANUP"'"$@"' ;;
+      foreground)
+        script='secrets=$1; shift; '"$RUNNER_CREDENTIALS"'; '"$RUNNER_SECRETS_CLEANUP"'"$@"'
+        start_cmd=(env --default-signal=INT dash)
+        ;;
       detached) script='secrets=$1; shift; '"$RUNNER_CREDENTIALS"'; trap - HUP INT TERM; '"$RUNNER_SECRETS_CLEANUP"'"$@" & wait $!' ;;
     esac
-    dash -c "$script" sh "$dir" sleep 2 <<<"$creds" &
+    gate=$tmp/gate-$wrapper-$sig
+    mkfifo "$gate"
+    exec {gate_fd}<>"$gate"
+    "${start_cmd[@]}" -c "$script" sh "$dir" \
+      sh -c 'read -r _ <"$1"; if [ -d "$2" ]; then echo kept; else echo gone; fi >"$3"' job "$gate" "$dir" "$dir.job" \
+      <<<"$creds" &
     pid=$!
-    naps=0
-    until [ -f "$dir/pg-url" ]; do
-      ((++naps <= 200)) || fail "the $wrapper shell wrote no credentials into $dir"
-      sleep 0.05
-    done
+    wait_for "the $wrapper shell to write its job's credentials into $dir" credentials_written "$dir" "$pid"
     [ "$(stat -c %a "$dir")" = 700 ] && [ "$(stat -c %a "$dir/pg-url")" = 600 ] ||
       fail "the $wrapper shell's directory is mode $(stat -c %a "$dir") and its pg-url $(stat -c %a "$dir/pg-url"), not 700 and 600"
     kill -"$sig" "$pid"
+    printf 'go\n' >&"$gate_fd"
+    exec {gate_fd}>&-
     rc=0
-    if [ "$sig" = INT ]; then
+    wait "$pid" || rc=$?
+    if [ "$case" = detached:INT ]; then
       # A background job of a non-interactive sh ignores INT, the runner's detached wait shell as
-      # much as this one, so an INT ends neither it nor its job: the directory stays while the job
-      # runs and goes when it ends.
-      sleep 0.3
-      { kill -0 "$pid" 2>/dev/null && [ -d "$dir" ]; } ||
-        fail "an INT ended the detached shell or removed its job's credentials while the job ran"
-      wait "$pid" || rc=$?
-      ((rc == 0)) || fail "the detached shell ended with $rc once its job did, not 0"
+      # much as this one, so an INT ends neither it nor its job: the job, let go after the INT,
+      # finds the directory still there, and the shell ends with the job's own 0, where an INT it
+      # took would have ended it with 130, or 143 through its trap.
+      ((rc == 0)) || fail "the detached shell given an INT ended with $rc, not its job's 0: the INT ended it"
+      [ "$(cat "$dir.job" 2>/dev/null)" = kept ] ||
+        fail "the detached shell's job, let go after the INT, found its credentials '$(cat "$dir.job" 2>/dev/null)', not kept: the INT removed them while the job ran"
     else
-      wait "$pid" || rc=$?
       ((rc == 143)) || fail "the $wrapper shell ended with $rc on a $sig, not 143"
     fi
     [ ! -e "$dir" ] || fail "the $wrapper shell left its job's credentials in $dir after a $sig"
   done
-  # An INT that reaches a foreground shell, one not started ignoring it, ends it through the
-  # cleanup too.
-  dir=$secrets_root/job-foreground-INT
-  rc=0
-  # shellcheck disable=SC2016 # expanded by dash
-  timeout -s INT 0.5 dash -c 'secrets=$1; shift; '"$RUNNER_CREDENTIALS"'; '"$RUNNER_SECRETS_CLEANUP"'"$@"' sh "$dir" sleep 2 <<<"$creds" || rc=$?
-  ((rc == 124)) || fail "the foreground shell given an INT by timeout ended with $rc, not timeout's 124"
-  [ ! -e "$dir" ] || fail "the foreground shell left its job's credentials in $dir after an INT"
 )
 pass "two starts of one runner job name get directories of their own, a start never writes into or removes one it did not claim, and the shell that waits on a job removes its directory on a TERM or a HUP, and a foreground one on an INT, while an INT leaves a detached one running until its job ends"
 
@@ -4050,25 +4064,33 @@ oneread_stop=$tmp/one-read-stop.out
 lock_reads() { grep -c 'get configmap dispatch-loadtest-lock' "$fake/kubectl.log" || true; }
 # rc_reads JOB: how many times the job's exit status file has been read.
 rc_reads() { grep -c -- "exec runner -c runner -- cat /work/logs/$1.rc" "$fake/kubectl.log" || true; }
-# stop_watchdog SECONDS PID, stop_watchdog_end: a guard that kills the disk watcher PID after
-# SECONDS (a real nap: never one of FAKE_FAST_SLEEP's) and leaves $fake/stop-late behind. A
-# pg_disk_watch_stop that waits for ever on a watcher whose TERM was lost then fails this case
-# instead of hanging the suite, as the fakes' own caps do. The nap is a child the guard waits on
-# and kills when stop_watchdog_end TERMs the guard: a TERM to the subshell alone left its `sleep`
-# running, up to 240 s past the suite's own exit.
+# stop_watchdog PID, stop_watchdog_end: the hang guard of one call of cluster.sh's own bounded
+# waits, which (dd) and (ee) judge by the wait's own clock (timer_now) once the call returns. Where
+# the CI step exports the suite's deadline (proof_guard_from_env), the guard kills PID at that
+# deadline and leaves $fake/stop-late behind, so a call that never returns fails its case by name
+# before GitHub ends the step. With no deadline exported there is no guard, as for every wait of
+# the suite, so no span of wall clock, and no stall of the whole machine, decides a case. The nap
+# is a real one (never one of FAKE_FAST_SLEEP's), a child the guard waits on and kills when
+# stop_watchdog_end TERMs the guard: a TERM to the subshell alone left its `sleep` running past the
+# suite's own exit.
 stop_watchdog() {
   rm -f -- "$fake/stop-late"
+  stop_guard=""
+  [ -n "$proof_deadline_ms" ] || return 0
   (
-    sleep "$1" &
+    left=$(((LEGION_PROOF_DEADLINE_MS - $(proof_now_ms) + 999) / 1000))
+    ((left > 0)) || left=0
+    "$real_sleep" "$left" &
     nap=$!
     trap 'kill "$nap" 2>/dev/null; exit 0' TERM
     wait "$nap"
-    kill -KILL "$2" 2>/dev/null || true
+    kill -KILL "$1" 2>/dev/null || true
     : >"$fake/stop-late"
   ) &
   stop_guard=$!
 }
 stop_watchdog_end() {
+  [ -n "$stop_guard" ] || return 0
   kill "$stop_guard" 2>/dev/null || true
   wait "$stop_guard" 2>/dev/null || true
 }
@@ -4171,11 +4193,11 @@ stop_watchdog_end() {
   [ -f "$fake/lock-get-fails" ] ||
     fail "the watcher ended before its first read of the lock, so no TERM of this case lands inside one: $(cat "$oneread_out")"
   PG_DISK_STOP_SECONDS=300
-  stop_watchdog 45 "$watcher"
+  stop_watchdog "$watcher"
   pg_disk_watch_stop 2>"$oneread_stop"
   stop_watchdog_end
   [ ! -f "$fake/stop-late" ] ||
-    fail "pg_disk_watch_stop did not return within 45 s: the TERM that landed inside the watcher's read of the lock was lost, and every path out of a step waits on that watcher"
+    fail "pg_disk_watch_stop had not returned at the CI step's deadline: the TERM that landed inside the watcher's read of the lock was lost, and every path out of a step waits on that watcher"
   ! kill -0 "$watcher" 2>/dev/null ||
     fail "the disk watcher still runs after pg_disk_watch_stop returned: the TERM that landed inside its read of the lock was lost"
   ! grep -qF 'so it was killed' "$oneread_stop" ||
@@ -4193,11 +4215,11 @@ stop_watchdog_end() {
   [ -f "$fake/lock-get-fails" ] ||
     fail "the watcher ended before its first read of the lock, so no TERM of this case lands inside one: $(cat "$oneread_out")"
   PG_DISK_STOP_SECONDS=2
-  stop_watchdog 25 "$watcher"
+  stop_watchdog "$watcher"
   pg_disk_watch_stop 2>"$oneread_stop"
   stop_watchdog_end
   [ ! -f "$fake/stop-late" ] ||
-    fail "pg_disk_watch_stop did not return within 25 s, so it has no bound on the watcher it TERMed: $(cat "$oneread_stop")"
+    fail "pg_disk_watch_stop had not returned at the CI step's deadline, so it has no bound on the watcher it TERMed: $(cat "$oneread_stop")"
   # By the stop's own clock (timer_now): it armed its deadline the bound after its TERM, and
   # killed the watcher at its first reading at or past that deadline, neither before nor later.
   armed=$(armed_after "stop pgbound term" "stop pgbound poll" "$PG_DISK_STOP_SECONDS") ||
@@ -4269,11 +4291,11 @@ kill_tries() { grep -c -- 'kill -KILL' "$fake/kubectl.log" || true; }
     printf '%s\n' "$rc" >"$unreach_rc"
   ) &
   waiter=$!
-  stop_watchdog 90 "$waiter"
+  stop_watchdog "$waiter"
   wait "$waiter" 2>/dev/null || true
   stop_watchdog_end
   [ ! -f "$fake/stop-late" ] ||
-    fail "the wait past its deadline did not end within 90 s while every exec of the runner pod failed: it polls for an exit status nothing can record, and its step never returns"
+    fail "the wait past its deadline had not ended at the CI step's deadline while every exec of the runner pod failed: it polls for an exit status nothing can record, and its step never returns"
   [ "$(cat "$unreach_rc")" != 0 ] ||
     fail "that wait ended with status 0 although no TERM reached the job and no exit status was read: $(cat "$unreach_out")"
   [ ! -s "$unreach_print" ] ||
@@ -4299,11 +4321,11 @@ kill_tries() { grep -c -- 'kill -KILL' "$fake/kubectl.log" || true; }
     printf '%s\n' "$rc" >"$unreach_rc"
   ) &
   waiter=$!
-  stop_watchdog 90 "$waiter"
+  stop_watchdog "$waiter"
   wait "$waiter" 2>/dev/null || true
   stop_watchdog_end
   [ ! -f "$fake/stop-late" ] ||
-    fail "the wait whose TERM was the last exec the runner pod answered did not end within 90 s: it polls for an exit status the SIGKILL it cannot send would have made"
+    fail "the wait whose TERM was the last exec the runner pod answered had not ended at the CI step's deadline: it polls for an exit status the SIGKILL it cannot send would have made"
   grep -qx 'step-termed' "$fake/runner-stops" ||
     fail "that wait sent no TERM at its deadline, so this case never reached the pod going away: $(cat "$unreach_out")"
   [ "$(cat "$unreach_rc")" != 0 ] ||
@@ -4337,11 +4359,11 @@ kill_tries() { grep -c -- 'kill -KILL' "$fake/kubectl.log" || true; }
     printf '%s\n' "$rc" >"$unreach_rc"
   ) &
   waiter=$!
-  stop_watchdog 90 "$waiter"
+  stop_watchdog "$waiter"
   wait "$waiter" 2>/dev/null || true
   stop_watchdog_end
   [ ! -f "$fake/stop-late" ] ||
-    fail "the wait whose SIGKILL was the last exec the runner pod answered did not end within 90 s: it polls on for an exit status no read of that pod can bring back"
+    fail "the wait whose SIGKILL was the last exec the runner pod answered had not ended at the CI step's deadline: it polls on for an exit status no read of that pod can bring back"
   grep -qx 'step-killed' "$fake/runner-kills" ||
     fail "that wait sent no SIGKILL, so this case never reached the pod going away with it: $(cat "$unreach_out")"
   # By the wait's own clock: the end fell due a grace after the SIGKILL left, and the wait ended at
@@ -4379,11 +4401,11 @@ kill_tries() { grep -c -- 'kill -KILL' "$fake/kubectl.log" || true; }
   [ -f "$unreach_dir/step-failed.json" ] ||
     fail "the watcher ended before it recorded the step failed, so no TERM of this case lands after an act that failed: $(cat "$unreach_out")"
   PG_DISK_STOP_SECONDS=5
-  stop_watchdog 45 "$watcher"
+  stop_watchdog "$watcher"
   pg_disk_watch_stop 2>"$unreach_stop"
   stop_watchdog_end
   [ ! -f "$fake/stop-late" ] ||
-    fail "pg_disk_watch_stop did not return within 45 s of the TERM it sent between the watcher's failed act and its next nap: $(cat "$unreach_stop")"
+    fail "pg_disk_watch_stop had not returned at the CI step's deadline after the TERM it sent between the watcher's failed act and its next nap: $(cat "$unreach_stop")"
   ! grep -qF 'so it was killed' "$unreach_stop" ||
     fail "pg_disk_watch_stop had to kill the watcher at its bound: the TERM between its failed act and its next nap was lost: $(cat "$unreach_stop")"
   ! kill -0 "$watcher" 2>/dev/null ||
@@ -4422,11 +4444,11 @@ kill_tries() { grep -c -- 'kill -KILL' "$fake/kubectl.log" || true; }
   kill -TERM "$watcher"
   : >"$fake/pg-df-go"
   PG_DISK_STOP_SECONDS=30
-  stop_watchdog 60 "$watcher"
+  stop_watchdog "$watcher"
   pg_disk_watch_stop 2>"$unreach_stop"
   stop_watchdog_end
   [ ! -f "$fake/stop-late" ] ||
-    fail "pg_disk_watch_stop did not return within 60 s of the TERM it sent while the watcher was inside its read of the volume: $(cat "$unreach_stop")"
+    fail "pg_disk_watch_stop had not returned at the CI step's deadline after the TERM it sent while the watcher was inside its read of the volume: $(cat "$unreach_stop")"
   # A watcher that lost that TERM polls on, its naps fast, until pg_disk_watch_stop kills it at
   # its bound and says so (below).
   ! grep -qF 'so it was killed' "$unreach_stop" ||
@@ -4478,12 +4500,12 @@ until grep -q '^step-unreach ' "$fake/runner-starts" 2>/dev/null || ! kill -0 "$
 grep -q '^step-unreach ' "$fake/runner-starts" 2>/dev/null ||
   fail "the step command ended before it started its loadgen run, so no runner pod of it went away: $(cat "$unreach_step")"
 : >"$unreach_fail"
-stop_watchdog 240 "$unreach_pid"
+stop_watchdog "$unreach_pid"
 unreach_step_rc=0
 wait "$unreach_pid" 2>/dev/null || unreach_step_rc=$?
 stop_watchdog_end
 [ ! -f "$fake/stop-late" ] ||
-  fail "the step command did not end within 240 s of a runner pod that answers no exec: it waits for an exit status nothing can record, and its heartbeat renews the lock while no load runs: $(cat "$unreach_step")"
+  fail "the step command had not ended at the CI step's deadline, with a runner pod that answers no exec: it waits for an exit status nothing can record, and its heartbeat renews the lock while no load runs: $(cat "$unreach_step")"
 ((unreach_step_rc != 0)) ||
   fail "the step command exited 0 although its runner job was never stopped and gave no exit status: $(cat "$unreach_step")"
 # By the step's own clock: its wait gave up on its TERM at its first reading a grace or more past

@@ -3410,7 +3410,7 @@ GATES = [
          f"{at('envoy-go-checks', FIXTURE_STEP)}: internal/dispatch/pmdoc/web_fixtures_test.go:40-45 "
          "webFixturePath joins it under pmdocSourceDir, and --check reads its content to compare"),
         ("scripts/e2e/lib/proof-wait.sh",
-         "the guard and the one wait of the shell test this job runs: packages/envoy/loadtest/cluster/cluster.test.sh:245 sources it"),
+         "the guard and the one wait of the shell test this job runs: packages/envoy/loadtest/cluster/cluster.test.sh:246 sources it"),
         (f"{ENVOY}/loadtest/run-step.test.sh", at("envoy-go-checks", LOADTEST_RUN_STEP)),
         (f"{ENVOY}/loadtest/run-step.sh", "packages/envoy/loadtest/run-step.test.sh runs it"),
         (f"{ENVOY}/loadtest/run-series.sh", "packages/envoy/loadtest/run-step.test.sh runs it"),
