@@ -11,20 +11,21 @@ import {
   textPrimaryOnSurface,
 } from "../../theme/classes";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
-import { actionLabel } from "./action-names";
+import { fieldWords, undoneChangeLabel } from "./plan-rows";
 import { planTarget } from "./usePlan";
 
-/** What became of one change an Undo reversed, in the person's words: undone; a message, which
- *  was sent and is not undone; a value another writer changed after the run, which Undo kept and
- *  names; or the refusal that stopped it. */
+/** What became of one change an Undo reversed, in the person's words, the change and each field
+ *  named as its plan row named them: undone; a message, which was sent and is not undone; a value
+ *  another writer changed after the run, which Undo kept and names; or the refusal that stopped
+ *  it. */
 function lineText(line: GoingUndoLine): string {
-  const what = actionLabel(line.tool, line.item);
+  const what = undoneChangeLabel(line.tool, line.item);
   if (line.undo === "not_undone") {
     return `${what}: sent, not undone`;
   }
   const kept = (line.fields ?? []).filter((field) => !field.ok);
   if (kept.length > 0) {
-    return `${what}: ${kept.map((field) => `${field.field} kept, ${field.message}`).join("; ")}`;
+    return `${what}: ${kept.map((field) => `${fieldWords(field.field)} kept, ${field.message}`).join("; ")}`;
   }
   return line.outcome.ok ? `${what}: undone` : `${what}: ${line.outcome.message}`;
 }

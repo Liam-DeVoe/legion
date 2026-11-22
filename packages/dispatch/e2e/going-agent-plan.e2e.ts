@@ -192,8 +192,8 @@ test("from the Inbox the plan is in the card: untick unticks what needs it, an e
     await expect(planRows(card).nth(0)).toHaveAttribute("data-state", "waiting");
     expect((await listIssues("CORE")).length).toBe(before);
 
-    // Each row's tick is named by its change and its item, the new issue's by its title.
-    await card.getByRole("checkbox", { name: "Run issue Raise the dome, second half" }).uncheck();
+    // Each row's tick is named by what it does and its item, the new issue's by its title.
+    await card.getByRole("checkbox", { name: "File Raise the dome, second half" }).uncheck();
     await expect(planRows(card).nth(2)).toHaveAttribute("data-ticked", "false");
     await planRows(card).nth(1).getByRole("button", { name: "Edit title" }).click();
     const title = card.getByRole("textbox", { name: "New title" });
@@ -339,7 +339,7 @@ test("a plan with rows on the page and in the card shows each in its place", asy
     await expect(planRows(planOnPage(page))).toHaveCount(1);
     await expect(planOnPage(page)).toContainText("Raise the great dome");
     await expect(planRows(planCard(page))).toHaveCount(1);
-    await expect(planCard(page)).toContainText("message");
+    await expect(planRows(planCard(page))).toContainText(`Message on ${split.second}`);
   });
 });
 

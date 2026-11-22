@@ -55,7 +55,11 @@ test("a refusal of a run's plan does not show under the plan the run proposes in
   );
   try {
     renderWithQueries(<WaitingPlans />, { wrapper });
-    await user.click(await screen.findByTestId("inbox-going-plan-approve"));
+    // Approve says how many changes it runs, as the plan card's Approve does.
+    expect(await screen.findByTestId("inbox-going-plan-approve")).toHaveTextContent(
+      "Approve 3 changes"
+    );
+    await user.click(screen.getByTestId("inbox-going-plan-approve"));
     const row = screen.getByTestId("inbox-going-plan");
     expect(await within(row).findByRole("alert")).toHaveTextContent(
       "the plan was answered meanwhile, and no longer waits"

@@ -145,9 +145,10 @@ test("Undo in History undoes that run and names a value another person changed, 
 
     await waitFor(() => expect(undo).toHaveBeenCalledWith("r-3", undefined, keyedAttempt));
     const lines = await screen.findAllByTestId("going-undo-line");
+    // Each line names its change and its field as the plan card named them, never by a tool.
     expect(lines.map((line) => line.textContent)).toEqual([
-      "issue update CORE-3: parent kept, bob set it to CORE-9 since",
-      "message CORE-1: sent, not undone",
+      "Update CORE-3: Parent kept, bob set it to CORE-9 since",
+      "Send a message to CORE-1: sent, not undone",
     ]);
   } finally {
     read.mockRestore();

@@ -34,9 +34,9 @@ async function openPlanConversation(
   openConversation({ id: run.conversation, newest_at: run.created_at, runs: [run] });
 }
 
-/** One plan that waits: the words its run was asked, what the plan does, how many of its changes
- *  wait, Approve, which runs every change as the plan shows it, and Open, which shows its
- *  conversation in the bar to tick, edit or revise it there. */
+/** One plan that waits: the words its run was asked, what the plan does, Approve, which runs
+ *  every change that waits as the plan shows it and says how many (as the plan card's Approve
+ *  does), and Open, which shows its conversation in the bar to tick, edit or revise it there. */
 function WaitingPlanRow({ plan }: { readonly plan: GoingWaitingPlan }): ReactNode {
   const queryClient = useQueryClient();
   // The row stays mounted as its run proposes another plan, so a refusal names the plan it was
@@ -101,7 +101,7 @@ function WaitingPlanRow({ plan }: { readonly plan: GoingWaitingPlan }): ReactNod
           }}
           type="button"
         >
-          Approve
+          {plan.waiting === 1 ? "Approve 1 change" : `Approve ${plan.waiting} changes`}
         </button>
         <button
           className={secondaryButtonCompact}
@@ -124,7 +124,6 @@ function WaitingPlanRow({ plan }: { readonly plan: GoingWaitingPlan }): ReactNod
           Open
         </button>
         <span className={`text-xs ${textMutedOnSurface}`}>
-          {plan.waiting === 1 ? "1 change waits" : `${plan.waiting} changes wait`} ·{" "}
           <Timestamp at={plan.created_at} />
         </span>
       </div>

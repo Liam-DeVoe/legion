@@ -181,14 +181,14 @@ test("unticking a row unticks the row that needs it, and the approval carries ea
   try {
     renderWithQueries(<Card />);
     const card = await screen.findByTestId("going-plan-card-rows");
-    // Each row's tick is named by its change and its item, a new issue's by its title.
-    await user.click(within(card).getByRole("checkbox", { name: "Run issue The second half" }));
+    // Each row's tick is named by what it does and its item, a new issue's by its title.
+    await user.click(within(card).getByRole("checkbox", { name: "File The second half" }));
     const ticks = within(card)
       .getAllByTestId("going-plan-row")
       .map((drawn) => drawn.getAttribute("data-ticked"));
     expect(ticks).toEqual(["false", "false", "true"]);
     // Ticking the move again ticks the new issue it needs.
-    await user.click(within(card).getByRole("checkbox", { name: "Run issue update CORE-3" }));
+    await user.click(within(card).getByRole("checkbox", { name: "Update CORE-3" }));
     await user.click(within(card).getByRole("button", { name: "Edit title" }));
     const title = within(card).getByRole("textbox", { name: "New title" });
     await user.clear(title);

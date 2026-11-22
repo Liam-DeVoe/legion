@@ -1,13 +1,21 @@
+import { type DispatchToolLabel, dispatchToolSpecs } from "@legion/contracts/dispatch-tools";
+
 import type { GoingPlanAnswer, GoingPlanRow, GoingPlanTick } from "../../api/types";
-import { actionLabel } from "./action-names";
+import { issuePriority } from "../issue/issue-priority";
+import { PROPERTY_LABELS } from "../issue-page/page-structure";
+import { CONTROL_LABELS, issueStatusWord } from "../issue-page/page-words";
+import { laneLabel } from "../project/board-model";
 import { objectOf, textOf } from "./fields";
 import type { PlanDraft } from "./going-store";
 
 /**
- * What one plan's rows say to the person, and the person's answer to them: each row's change as
- * the item, the value now and the new value; a document change as its sentences and its diff;
- * the ticks, where unticking a row unticks every row that needs it and ticking one ticks every
- * row it needs; and the approval those make. Where each row is drawn is `plan-surfaces.ts`'.
+ * What one plan's rows say to the person, and the person's answer to them: the card's title, made
+ * from its rows; each row's change as the item, the field in the issue page's words, the value now
+ * and the new value as the page shows them; a new issue as its title and its fields; a message as
+ * whom it reaches and how; a document change as its sentences and its diff; why a row waits in
+ * Auto-review; the ticks, where unticking a row unticks every row that needs it and ticking one
+ * ticks every row it needs; and the approval those make. Where each row is drawn is
+ * `plan-surfaces.ts`'.
  */
 
 type Arguments = Readonly<Record<string, unknown>>;
@@ -22,13 +30,14 @@ export function makesIssue(row: GoingPlanRow): boolean {
   return row.tool === "dispatch_issue";
 }
 
-/** How a row names its change wherever it is drawn: its action and its item, and for a new issue,
- *  which has no item before it is made, its title; so each row of a plan is named apart. */
-export function rowLabel(row: GoingPlanRow): string {
-  return actionLabel(
-    row.tool,
-    row.item === "" && makesIssue(row) ? textOf(argumentsOf(row).title) : row.item
-  );
+/** `text` with its first letter a capital. */
+function capitalized(text: string): string {
+  return text === "" ? text : `${text.charAt(0).toUpperCase()}${text.slice(1)}`;
+}
+
+/** `count` and its noun: "1 issue", "3 issues". */
+function counted(count: number, one: string, many: string): string {
+  return `${count} ${count === 1 ? one : many}`;
 }
 
 /** The title of each new issue a plan's rows make, by the row's number, with the person's edits of
@@ -57,6 +66,8 @@ const NEW_ISSUE_ARGUMENTS: Readonly<Record<string, readonly string[]>> = {
   dispatch_issue_update: ["parent", "blocked_by", "before", "after"],
 };
 
+const NO_NEW_ISSUES: ReadonlyMap<number, string> = new Map();
+
 /** A string as the row shows it: a value naming a new issue of the plan as its title and "(new)",
  *  any other as it is. */
 function issueText(value: string, newIssues: ReadonlyMap<number, string>): string {
@@ -65,40 +76,149 @@ function issueText(value: string, newIssues: ReadonlyMap<number, string>): strin
   return title === undefined ? value : `${title} (new)`;
 }
 
-/** A value as one line of the row: a string as it is, anything else as its JSON. `newIssues` is
- *  given only for a value that may name a new issue of the plan (`RowChange.namesNewIssue`): there
- *  a string, or an item of a list, naming one ("$N", `newIssues`' row N) shows that issue's title
- *  and "(new)", as the issue has no key before the plan runs. Without it every string shows as
- *  written, so a title "$100" shows "$100". */
-export function valueText(
-  value: unknown,
-  newIssues: ReadonlyMap<number, string> = new Map()
-): string {
-  if (value === undefined || value === null) {
-    return "none";
-  }
-  if (typeof value === "string") {
-    return issueText(value, newIssues);
-  }
-  if (Array.isArray(value)) {
-    return JSON.stringify(
-      value.map((item: unknown) => (typeof item === "string" ? issueText(item, newIssues) : item))
-    );
-  }
-  return JSON.stringify(value);
+/** The name of each field a row writes, as the issue page names it beside its value
+ *  (`PROPERTY_LABELS`), and of the fields the page has no row for: a place on the board, the parts
+ *  of an ask, a new issue's project. */
+const FIELD_WORDS: Readonly<Record<string, string>> = {
+  advances: PROPERTY_LABELS.advances,
+  assignee: PROPERTY_LABELS.assignee,
+  blocked_by: PROPERTY_LABELS.blocked_by,
+  claim: PROPERTY_LABELS.claim,
+  components: PROPERTY_LABELS.components,
+  external_links: PROPERTY_LABELS.external_links,
+  labels: PROPERTY_LABELS.labels,
+  multiple: "Several answers",
+  options: "Options",
+  parent: PROPERTY_LABELS.parent,
+  priority: PROPERTY_LABELS.priority,
+  project: "Project",
+  question: "Question",
+  rank: "Place on the board",
+  repo: PROPERTY_LABELS.repository,
+  route: PROPERTY_LABELS.route,
+  status: PROPERTY_LABELS.status,
+  title: PROPERTY_LABELS.title,
+  urgency: "Urgency",
+};
+
+/** A field as the row names it: "Priority", "Labels", "Blocked by". */
+export function fieldWords(field: string): string {
+  return FIELD_WORDS[field] ?? capitalized(field.replaceAll("_", " "));
 }
 
-/** One field a row writes: its name, its value now and the value the row writes, the person's
- *  edit where they made one, whether the person can edit it (a value of text), and whether its
- *  value may name a new issue of the plan as "$N" (`NEW_ISSUE_ARGUMENTS`). An update's rank is
- *  the move its before and after make, whose new value is that move's words (`moveText`), which
- *  the person cannot edit: rank is no argument the change takes. */
-export interface RowChange {
-  readonly field: string;
-  readonly now: unknown;
-  readonly next: unknown;
-  readonly editable: boolean;
-  readonly namesNewIssue: boolean;
+/** The new holder of a claim the person takes: themselves. */
+const CLAIMED_BY_YOU = "you";
+
+/** One item of a list as words: a text as it is (an issue key naming a new issue of the plan by
+ *  its title and "(new)" where `newIssues` is given), and an object by the first of its title, its
+ *  label, its name, its address, its key or its id that it holds. */
+function itemWords(item: unknown, newIssues: ReadonlyMap<number, string>): string {
+  if (typeof item === "string") return issueText(item, newIssues);
+  if (typeof item === "number" || typeof item === "boolean") return String(item);
+  const fields = objectOf(item);
+  for (const key of ["title", "label", "name", "url", "key", "id"]) {
+    const named = fields[key];
+    if (typeof named === "string" && named !== "") return named;
+  }
+  return "";
+}
+
+/** The items of a list value: the list itself, or the ids an object holds (the priorities an
+ *  issue advances, its components); undefined for a value that is no list. */
+function listOf(value: unknown): readonly unknown[] | undefined {
+  if (Array.isArray(value)) return value;
+  const ids = objectOf(value).ids;
+  return Array.isArray(ids) ? ids : undefined;
+}
+
+/** An issue's place on its project's board (`issueRankPlace`): the issues it comes after and
+ *  before, as a move names them. */
+function placeWords(place: Arguments): string {
+  const after = textOf(place.after);
+  const before = textOf(place.before);
+  const sides = [
+    ...(after === "" ? [] : [`after ${after}`]),
+    ...(before === "" ? [] : [`before ${before}`]),
+  ];
+  return sides.length === 0 ? "Alone on the board" : sides.join(", ");
+}
+
+/**
+ * A value as the issue page shows it, in words (design v3, rule 6): a priority as "P2" or "No
+ * priority", a status by its word, a list (labels, the issues it waits on, links, an ask's options)
+ * with a comma between its items, the priorities an issue advances by their count, a place on the
+ * board by the issues beside it, a claim's holder by name, a yes or no, a text as it is, and no
+ * value as the page's "None". A value that may name a new issue of the plan ("$N") is given
+ * `newIssues`, and shows that issue's title and "(new)", as the issue has no key before the plan
+ * runs; without it every text shows as written, so a title "$100" shows "$100". No value shows as
+ * its JSON.
+ */
+export function valueWords(
+  field: string,
+  value: unknown,
+  newIssues: ReadonlyMap<number, string> = NO_NEW_ISSUES
+): string {
+  if (field === "priority") {
+    return laneLabel(issuePriority(typeof value === "number" ? value : null));
+  }
+  if (field === "claim") {
+    if (value === undefined || value === null) return "Nobody";
+    if (typeof value === "string") return capitalized(value);
+    const holder = objectOf(value);
+    return holder.kind === "session" ? "an agent session" : textOf(holder.id);
+  }
+  if (value === undefined || value === null || value === "") return CONTROL_LABELS.none;
+  if (typeof value === "string") {
+    if (field === "status") return issueStatusWord(value);
+    return field === "urgency" ? capitalized(value) : issueText(value, newIssues);
+  }
+  if (typeof value === "boolean") return value ? "Yes" : "No";
+  if (typeof value === "number") return String(value);
+  if (field === "rank") return placeWords(objectOf(value));
+  if (field === "components" && objectOf(value).mode === "inherit") {
+    return "Inherited from the issue above";
+  }
+  const list = listOf(value);
+  if (list !== undefined) {
+    if (list.length === 0) return CONTROL_LABELS.none;
+    if (field === "advances") return counted(list.length, "priority", "priorities");
+    const items = list.map((item) => itemWords(item, newIssues)).filter((item) => item !== "");
+    return items.length === 0 ? counted(list.length, "item", "items") : items.join(", ");
+  }
+  const named = itemWords(value, newIssues);
+  return named === "" ? CONTROL_LABELS.none : named;
+}
+
+/** One label of a change of labels: kept, put in, or taken out. */
+export interface LabelMark {
+  readonly label: string;
+  readonly mark: "kept" | "added" | "removed";
+}
+
+/** The labels of `value`, each a text. */
+function labelsOf(value: unknown): readonly string[] {
+  return Array.isArray(value)
+    ? value.filter((label): label is string => typeof label === "string")
+    : [];
+}
+
+/** A change of labels as the row draws it: the new labels in their order, each kept or put in,
+ *  then each label it takes out. Two labels that differ only in case are one, as the issue page
+ *  holds them (`IssueLabels.tsx`). */
+export function labelMarks(now: unknown, next: unknown): readonly LabelMark[] {
+  const before = labelsOf(now);
+  const after = labelsOf(next);
+  const holds = (labels: readonly string[], label: string) =>
+    labels.some((held) => held.toLowerCase() === label.toLowerCase());
+  return [
+    ...after.map((label) => ({
+      label,
+      mark: holds(before, label) ? ("kept" as const) : ("added" as const),
+    })),
+    ...before
+      .filter((label) => !holds(after, label))
+      .map((label) => ({ label, mark: "removed" as const })),
+  ];
 }
 
 /** The fields a new issue's row names, in the order the row shows them. */
@@ -110,44 +230,492 @@ const NEW_ISSUE_FIELDS = ["title", "project", "parent", "priority", "labels"] as
 const MOVE_ARGUMENTS = ["after", "before"] as const;
 
 /** The move an update's arguments `args` make, as its rank's new value: "after <key>",
- *  "before <key>", or both, each key as its argument shows it (`valueText`), a new issue of the
- *  plan ("$N", `newIssues`' row N) as its title and "(new)"; undefined for a row that names
- *  neither. */
+ *  "before <key>", or both, each key as its argument shows it, a new issue of the plan ("$N",
+ *  `newIssues`' row N) as its title and "(new)"; undefined for a row that names neither. */
 function moveText(args: Arguments, newIssues: ReadonlyMap<number, string>): string | undefined {
-  const takes = NEW_ISSUE_ARGUMENTS.dispatch_issue_update ?? [];
   const places = MOVE_ARGUMENTS.filter((place) => args[place] !== undefined).map(
-    (place) => `${place} ${valueText(args[place], takes.includes(place) ? newIssues : undefined)}`
+    (place) => `${place} ${valueWords(place, args[place], newIssues)}`
   );
   return places.length === 0 ? undefined : places.join(", ");
 }
 
+/** How the person edits a new value: the issue page's priority menu, its label picker, a box of
+ *  text, or not at all. */
+export type FieldEdit = "priority" | "labels" | "text" | undefined;
+
+/** One field a row writes: its name, its value now and the value the row writes, the person's
+ *  edit where they made one, how the person can edit it, and whether its value may name a new
+ *  issue of the plan as "$N" (`NEW_ISSUE_ARGUMENTS`). An update's rank is the move its before and
+ *  after make, whose new value is that move's words (`moveText`), which the person cannot edit:
+ *  rank is no argument the change takes. A claim's new holder is the person, or nobody. */
+export interface RowChange {
+  readonly field: string;
+  readonly now: unknown;
+  readonly next: unknown;
+  readonly edit: FieldEdit;
+  readonly edited: boolean;
+  readonly namesNewIssue: boolean;
+}
+
+/** The tools whose row writes the fields its read names, each with a value now: an issue's
+ *  fields, an ask's parts and a claim. Every other row shows a field only where its arguments
+ *  give it a value. */
+const VALUE_TOOLS: Readonly<Record<string, true>> = {
+  dispatch_claim: true,
+  dispatch_edit_ask: true,
+  dispatch_issue_update: true,
+};
+
+/** How the person edits `field`, whose new value is `value`. */
+function editOf(field: string, value: unknown): FieldEdit {
+  if (field === "priority" && (value === null || typeof value === "number")) return "priority";
+  if (field === "labels" && Array.isArray(value)) return "labels";
+  return typeof value === "string" ? "text" : undefined;
+}
+
 /** What a row changes, field by field: the fields its item's read names, each with its value now
  *  and the new value, an update's rank the move its before and after make (`moveText`, which
- *  shows a new issue of the plan by its title in `newIssues`); a new issue's title, project,
- *  parent, priority and labels, none of which has a value now. A row that names no field shows
- *  its item alone. */
+ *  shows a new issue of the plan by its title in `newIssues`), a claim's holder now and after; a
+ *  new issue's title, project, parent, priority and labels, none of which has a value now. A row
+ *  that names no field shows its item alone. */
 export function rowChanges(
   row: GoingPlanRow,
   edits: Arguments | undefined,
   newIssues: ReadonlyMap<number, string>
 ): RowChange[] {
   const args = { ...argumentsOf(row), ...edits };
-  const fields = makesIssue(row)
-    ? NEW_ISSUE_FIELDS.filter((field) => args[field] !== undefined)
-    : (row.fields ?? []);
-  const now = objectOf(row.now);
-  return fields.map((field) => {
-    const moves = row.tool === "dispatch_issue_update" && field === "rank";
-    return {
-      editable: !moves && typeof args[field] === "string",
+  const editedField = (field: string) => edits !== undefined && Object.hasOwn(edits, field);
+  const namesNewIssue = (field: string) => NEW_ISSUE_ARGUMENTS[row.tool]?.includes(field) ?? false;
+  if (makesIssue(row)) {
+    return NEW_ISSUE_FIELDS.filter((field) => args[field] !== undefined).map((field) => ({
+      edit: editOf(field, args[field]),
+      edited: editedField(field),
       field,
-      namesNewIssue: NEW_ISSUE_ARGUMENTS[row.tool]?.includes(field) ?? false,
-      next: moves ? moveText(args, newIssues) : args[field],
-      now: makesIssue(row)
-        ? undefined
-        : (now[field] ?? (fields.length === 1 ? row.now : undefined)),
-    };
+      namesNewIssue: namesNewIssue(field),
+      next: args[field],
+      now: undefined,
+    }));
+  }
+  const fields = row.fields ?? [];
+  const now = objectOf(row.now);
+  return fields
+    .filter((field) => VALUE_TOOLS[row.tool] === true || args[field] !== undefined)
+    .map((field) => {
+      const moves = row.tool === "dispatch_issue_update" && field === "rank";
+      const claims = row.tool === "dispatch_claim";
+      return {
+        edit: moves || claims ? undefined : editOf(field, args[field]),
+        edited: editedField(field),
+        field,
+        namesNewIssue: namesNewIssue(field),
+        next: moves
+          ? moveText(args, newIssues)
+          : claims
+            ? args.release === true
+              ? null
+              : CLAIMED_BY_YOU
+            : args[field],
+        // A field the read names with no value (null) is empty now; one it does not name is the
+        // read's whole value where the row writes one field (a claim's holder).
+        now: Object.hasOwn(now, field) ? now[field] : fields.length === 1 ? row.now : undefined,
+      };
+    });
+}
+
+/** Whether a value is there: neither absent nor empty. */
+function present(value: unknown): boolean {
+  if (value === undefined || value === null || value === "") return false;
+  const list = listOf(value);
+  return list === undefined || list.length > 0;
+}
+
+/** Whether a change takes something out: a close (status done), a value cleared, or a list - the
+ *  labels, the issues it waits on, its links, the priorities it advances - that loses an item. A
+ *  new issue's fields take nothing out. */
+function takesOut(change: RowChange): boolean {
+  if (change.field === "status") return change.next === "done";
+  if (change.now === undefined || change.field === "rank") return false;
+  const before = listOf(change.now);
+  const after = listOf(change.next);
+  if (before !== undefined && after !== undefined) {
+    const kept = new Set(after.map((item) => itemWords(item, NO_NEW_ISSUES).toLowerCase()));
+    return before.some((item) => !kept.has(itemWords(item, NO_NEW_ISSUES).toLowerCase()));
+  }
+  return present(change.now) && !present(change.next);
+}
+
+/** The tools whose every row deletes, removes, closes or declines something. */
+const REMOVING_TOOLS: Readonly<Record<string, true>> = {
+  dispatch_decline_ask: true,
+  dispatch_delete_priority: true,
+  dispatch_delete_session_group: true,
+  dispatch_dismiss_inbox: true,
+  dispatch_reject_suggestion: true,
+  dispatch_remove_architecture_source: true,
+  dispatch_remove_document: true,
+  dispatch_resolve_ask: true,
+  dispatch_resolve_comment: true,
+  dispatch_unmap_repo: true,
+  dispatch_unset_legion_daemon: true,
+  dispatch_unsubscribe_document: true,
+  dispatch_unsubscribe_issue: true,
+};
+
+/** Whether a row closes, deletes or removes something (design v3, state 6), which the row marks
+ *  in red: a tool that only removes, a release of a claim, an unfollow, a retracted result, and a
+ *  change of a field that takes something out (`takesOut`), given the row's `changes`. */
+export function rowRemoves(row: GoingPlanRow, changes: readonly RowChange[]): boolean {
+  const args = argumentsOf(row);
+  if (REMOVING_TOOLS[row.tool] === true) return true;
+  if (row.tool === "dispatch_claim") return args.release === true;
+  if (row.tool === "dispatch_follow") return args.action === "unfollow";
+  if (row.tool === "dispatch_result") return args.retract !== undefined;
+  return changes.some(takesOut);
+}
+
+/** The tools whose row sends a message to an agent (R7): on an issue, to one session, and to
+ *  several at once. */
+const MESSAGE_TOOLS: Readonly<Record<string, true>> = {
+  dispatch_broadcast: true,
+  dispatch_message: true,
+  dispatch_send_to_agent: true,
+};
+
+/** The kinds of row a plan card draws, each in its own way (design v3, state 6). */
+export type RowKind = "new_issue" | "change" | "claim" | "document" | "message" | "other";
+
+/** What kind of row `row` is: a new issue, a change of an issue's fields, a claim, a change of a
+ *  document's text, a message, or any other change. */
+export function rowKind(row: GoingPlanRow): RowKind {
+  if (makesIssue(row)) return "new_issue";
+  if (MESSAGE_TOOLS[row.tool] === true) return "message";
+  if (documentChange(row, "") !== undefined) return "document";
+  if (row.tool === "dispatch_issue_update") return "change";
+  return row.tool === "dispatch_claim" ? "claim" : "other";
+}
+
+/** How a message reaches its session, in the words the row says it with. */
+const DELIVERY_WORDS: Readonly<Record<string, string>> = {
+  aside: "as an aside",
+  btw: "as a BTW",
+  steer: "as a steer",
+};
+
+/** How a message row's message reaches its sessions: "as a BTW", "as an aside", "as a steer";
+ *  "" for a message on an issue, which names no delivery. */
+export function deliveryWords(row: GoingPlanRow): string {
+  return DELIVERY_WORDS[textOf(argumentsOf(row).delivery)] ?? "";
+}
+
+/** The sessions a broadcast row sends to. */
+export function broadcastSessions(row: GoingPlanRow): readonly string[] {
+  const sessions = argumentsOf(row).session_ids;
+  return Array.isArray(sessions)
+    ? sessions.filter((session): session is string => typeof session === "string")
+    : [];
+}
+
+/** The words a row posts or sends, which the row shows whole: a message's, a comment's, a
+ *  question's; "" for a row that posts none. */
+export function rowText(row: GoingPlanRow): string {
+  const args = argumentsOf(row);
+  return textOf(args.body) || textOf(args.question);
+}
+
+/** Each tool's label, the words the bar shows for its call (`dispatch-tools.ts`), by its name. */
+const TOOL_LABELS: ReadonlyMap<string, DispatchToolLabel> = new Map(
+  dispatchToolSpecs.map((spec): [string, DispatchToolLabel] => [spec.name, spec.label])
+);
+
+/** A label the plan names a row by in place of its tool's: a new issue is filed, as the card's
+ *  title says. */
+const ROW_LABELS: Readonly<Record<string, string>> = {
+  dispatch_issue: "File {title|{issue|a new issue}}",
+};
+
+/** A `{name}` of a label, with the words shown when the call leaves it out after a `|`
+ *  (`dispatch-tools.ts`'s own pattern). */
+const LABEL_PLACEHOLDER = /\{([^{}|]*)(?:\|((?:[^{}]|\{[^{}]*\})*))?\}/gu;
+
+/** The arguments a label names an issue by, which may name a new issue of the plan as "$N". */
+const LABEL_ISSUES: Readonly<Record<string, true>> = { issue: true, ref: true };
+
+/** A label form with each `{name}` filled: an argument's text as it is (an issue a new issue of
+ *  the plan, by its title and "(new)"), a number in digits; an argument the call left out, the
+ *  words the label gives for that, and nothing where it gives none. */
+function filledLabel(
+  form: string,
+  args: Arguments,
+  newIssues: ReadonlyMap<number, string>
+): string {
+  return form
+    .replace(new RegExp(LABEL_PLACEHOLDER), (_whole, name: string, absent: string | undefined) => {
+      const value = args[name];
+      if (typeof value === "string" && value !== "") {
+        return LABEL_ISSUES[name] === true ? issueText(value, newIssues) : value;
+      }
+      if (typeof value === "number") return String(value);
+      return absent === undefined ? "" : filledLabel(absent, args, newIssues);
+    })
+    .replace(/\s+/gu, " ")
+    .trim();
+}
+
+/** What a change of `tool` with `args` does, in the words the bar names its step with, as an
+ *  order: "Update CORE-3", "Send a message to CORE-1", "File The second half". */
+export function changeLabel(
+  tool: string,
+  args: Arguments,
+  newIssues: ReadonlyMap<number, string> = NO_NEW_ISSUES
+): string {
+  const own = ROW_LABELS[tool];
+  if (own !== undefined) return filledLabel(own, args, newIssues);
+  const label = TOOL_LABELS.get(tool);
+  if (label === undefined) return "Make a change";
+  const first = label.present.split(" ", 1)[0] ?? "";
+  return filledLabel(
+    `${capitalized(label.verb)}${label.present.slice(first.length)}`,
+    args,
+    newIssues
+  );
+}
+
+/** The name of a document a row changes, as its arguments give it: a reference, a document's
+ *  name or slug; "" where they give none. */
+function documentName(args: Arguments): string {
+  return textOf(args.ref) || textOf(args.artifact) || textOf(args.name);
+}
+
+/** How a row names its change wherever it is drawn - its tick, the line of a change of a document
+ *  or of another kind - with the person's `edits` of it: its change and its item, a new issue by
+ *  its title, a document by its name; so each row of a plan is named apart. */
+export function rowLabel(
+  row: GoingPlanRow,
+  edits?: Arguments,
+  newIssues: ReadonlyMap<number, string> = NO_NEW_ISSUES
+): string {
+  const args = { ...argumentsOf(row), ...edits };
+  const document = documentName(args);
+  return changeLabel(
+    row.tool,
+    document === "" || textOf(args.ref) !== "" ? args : { ...args, ref: document },
+    newIssues
+  );
+}
+
+/** The arguments a label names an item by, which an Undo line fills with the item it names. */
+const ITEM_ARGUMENTS = [
+  "ask",
+  "comment",
+  "document",
+  "group",
+  "issue",
+  "message",
+  "priority",
+  "ref",
+  "session",
+  "thread",
+] as const;
+
+/** A change an Undo line names, by its tool and the item it changed, in the words its plan row
+ *  named it with: "Update CORE-3", "Send a message to CORE-1", "File CORE-9". */
+export function undoneChangeLabel(tool: string, item: string): string {
+  return changeLabel(
+    tool,
+    item === "" ? {} : Object.fromEntries(ITEM_ARGUMENTS.map((argument) => [argument, item]))
+  );
+}
+
+/** The verb a change of an issue's fields is said with in the card's title: a close (status
+ *  done), a move (a place on the board or a parent, and nothing else), or a change. */
+function updateVerb(row: GoingPlanRow): "close" | "move" | "change" {
+  if (argumentsOf(row).status === "done") return "close";
+  const fields = row.fields ?? [];
+  return fields.length > 0 && fields.every((field) => field === "rank" || field === "parent")
+    ? "move"
+    : "change";
+}
+
+/** One part of a card's title: a verb, the items it names, and how many changes it counts. */
+interface TitleClause {
+  readonly verb: string;
+  readonly one: string;
+  readonly many: string;
+  /** Whether a clause of one item names it by its key ("Change DEMO-10"). */
+  readonly keyed: boolean;
+  readonly items: Set<string>;
+  count: number;
+}
+
+/** The parts of a sentence joined as a list is: "a", "a and b", "a, b and c". */
+function listed(parts: readonly string[]): string {
+  if (parts.length <= 1) return parts.join("");
+  return `${parts.slice(0, -1).join(", ")} and ${parts.at(-1)}`;
+}
+
+/**
+ * The plan card's title (design v3, state 6): a sentence made from its rows, "Change DEMO-10",
+ * "File 2 issues and move 3", "Send 1 message". Each kind of change is one part, in the order the
+ * rows first name it: new issues are filed; changes of an issue's fields change, move or close
+ * their issues, an issue named by its key where the part names one; messages are sent; documents
+ * changed; and the rest made. A part that counts the same thing as the one before it leaves out
+ * its noun.
+ */
+export function planTitle(rows: readonly GoingPlanRow[]): string {
+  const clauses = new Map<string, TitleClause>();
+  const add = (verb: string, one: string, many: string, keyed: boolean, item: string) => {
+    const clause = clauses.get(verb) ?? { count: 0, items: new Set(), keyed, many, one, verb };
+    clause.count += 1;
+    if (item !== "") clause.items.add(item);
+    clauses.set(verb, clause);
+  };
+  for (const row of rows) {
+    const item = row.item || row.issue;
+    switch (rowKind(row)) {
+      case "new_issue":
+        add("file", "issue", "issues", false, "");
+        break;
+      case "change":
+        add(updateVerb(row), "issue", "issues", true, item);
+        break;
+      case "claim":
+        add("change", "issue", "issues", true, item);
+        break;
+      case "document":
+        add("edit", "document", "documents", false, "");
+        break;
+      case "message":
+        add("send", "message", "messages", false, "");
+        break;
+      default:
+        add("make", "change", "changes", false, "");
+    }
+  }
+  let noun = "";
+  const parts = [...clauses.values()].map((clause, index) => {
+    const [only] = clause.items;
+    if (clause.keyed && clause.items.size === 1 && only !== undefined) {
+      noun = "";
+      return `${clause.verb} ${only}`;
+    }
+    const count = clause.keyed && clause.items.size > 0 ? clause.items.size : clause.count;
+    const other = clause.verb === "make" && index > 0 ? "other " : "";
+    const said =
+      clause.one === noun
+        ? `${clause.verb} ${count}`
+        : `${clause.verb} ${counted(count, `${other}${clause.one}`, `${other}${clause.many}`)}`;
+    noun = clause.one;
+    return said;
   });
+  return capitalized(listed(parts)) || "Change nothing";
+}
+
+/** The approval modes, as the person's setting names them (`CommandBarSection.tsx`). */
+export const MODE_WORDS: Readonly<Record<GoingPlanAnswer["mode"], string>> = {
+  ask: "Ask",
+  auto_review: "Auto-review",
+};
+
+/** Why a row waits for the person in every mode, by the reason the server sends
+ *  (`goingRowWaits`, going_modes.go): its class, where what it does is the person's own word, a
+ *  setting or a message, and the two reasons beside a class. */
+const WAIT_REASONS: Readonly<Record<string, string>> = {
+  ask_answer: "it answers a question in your name",
+  broadcast: "it sends a message to several agent sessions",
+  claimed_by_session: "an agent session holds this issue's claim",
+  decision: "it keeps a decision in your name",
+  delivers_to_session: "Dispatch hands this change to an agent session at once",
+  message: "it sends a message",
+  result: "it records a check result in your name",
+  review: "it gives a review in your name",
+  setting: "it changes a setting of Dispatch",
+};
+
+/** Why Auto-review never runs a row of a class it does not let through (going_modes.go
+ *  `goingAutoReviewClasses`: fields, links, claims, and new issues with a title alone). */
+const CLASS_WAITS: Readonly<Record<string, string>> = {
+  create_text: "it makes an item with text, which Auto-review never runs",
+  suggestion: "it suggests a change of text, which Auto-review never runs",
+  text: "it changes text, which Auto-review never runs",
+};
+
+/** The classes Auto-review may let through (going_modes.go `goingAutoReviewClasses`). */
+const AUTO_REVIEW_CLASSES: Readonly<Record<string, true>> = {
+  claim: true,
+  create_plain: true,
+  field: true,
+  link: true,
+};
+
+/**
+ * What a row says of Auto-review (R5) while its plan waits: a row the review let through, which
+ * has run, runs or is about to, "Ran · passed review"; a row that waits for the person, why, in
+ * words: each reason the server sends, else the class Auto-review never runs, else that the
+ * person's words did not ask for it. In Ask every row waits and no reason shows, so it says
+ * nothing; nor once the plan no longer waits.
+ */
+export function reviewWords(plan: GoingPlanAnswer, row: GoingPlanRow): string | undefined {
+  if (plan.mode !== "auto_review" || plan.state !== "waiting") return undefined;
+  switch (row.state) {
+    case "done":
+      return "Ran · passed review";
+    case "running":
+      return "Running · passed review";
+    case "approved":
+      return "Passed review · runs next";
+    case "waiting":
+      break;
+    default:
+      return undefined;
+  }
+  const reasons = (row.waits ?? [])
+    .map((reason) => WAIT_REASONS[reason])
+    .filter((reason): reason is string => reason !== undefined);
+  if (reasons.length > 0) return `Waits for you: ${reasons.join("; ")}`;
+  if (AUTO_REVIEW_CLASSES[row.class] !== true) {
+    return `Waits for you: ${CLASS_WAITS[row.class] ?? "Auto-review never runs this kind of change"}`;
+  }
+  return "Waits for you: your words did not ask for this change";
+}
+
+/** What a row whose item changed after the plan showed says of the value now: the one field's
+ *  value, or each field by its name. */
+export function valuesNowWords(changes: readonly RowChange[]): string {
+  const shown = changes.filter((change) => change.now !== undefined);
+  const [only] = shown;
+  if (shown.length === 1 && only !== undefined) return valueWords(only.field, only.now);
+  return shown
+    .map((change) => `${fieldWords(change.field)} ${valueWords(change.field, change.now)}`)
+    .join("; ");
+}
+
+/** The longest the sentences shown above a new issue's whole spec run, in characters. */
+const SPEC_SENTENCES_MAX = 300;
+
+/** The first two or three sentences of a new issue's spec, as plain words: its headings and its
+ *  Markdown marks (list marks, emphasis, code marks, a link's address) left out, its lines run
+ *  together, and the third sentence, then the second, left out where they run past
+ *  `SPEC_SENTENCES_MAX`. */
+export function specSentences(spec: string): string {
+  const plain = spec
+    .split("\n")
+    .filter((line) => !/^\s{0,3}#{1,6}(?:\s|$)/u.test(line))
+    .map((line) =>
+      line
+        .replace(/^\s{0,3}(?:[-*+]\s+(?:\[[ xX]\]\s+)?|\d+[.)]\s+|>\s?)/u, "")
+        .replace(/!?\[([^\]]*)\]\([^)]*\)/gu, "$1")
+        .replace(/[*_`]+/gu, "")
+        .trim()
+    )
+    .filter((line) => line !== "")
+    .join(" ");
+  const sentences = plain.match(/[^.!?]+(?:[.!?]+|$)/gu)?.map((sentence) => sentence.trim()) ?? [];
+  for (const count of [3, 2]) {
+    const said = sentences.slice(0, count).join(" ");
+    if (said.length <= SPEC_SENTENCES_MAX) return said;
+  }
+  const first = sentences[0] ?? "";
+  return first.length <= SPEC_SENTENCES_MAX ? first : `${first.slice(0, SPEC_SENTENCES_MAX)}…`;
 }
 
 /** One piece of a document change: the text it takes out and the text it puts in. */
@@ -318,12 +886,48 @@ export function toggledDraft(
   return { ...draft, unticked };
 }
 
-/** The draft with the person's edit of `field` of `row`. */
+/** Whether `row` is unticked because a row it needs is: what it says, "Needs the change above". */
+export function needsUnticked(draft: PlanDraft, row: GoingPlanRow): boolean {
+  return draft.unticked.has(row.row) && (row.needs ?? []).some((need) => draft.unticked.has(need));
+}
+
+/** The draft as the plan card holds it: the person's answer, and the change of each row's item
+ *  after the plan showed that has unticked its row already, so each such change unticks its row
+ *  once and the person's tick after it holds. */
+interface CardDraft extends PlanDraft {
+  readonly changesSeen?: ReadonlySet<string>;
+}
+
+/** The draft with each waiting row whose item changed after the plan showed (R4) unticked, with
+ *  each row that needs it, once for each value its item changed to: such a row waits to be
+ *  ticked again. The same draft where no row changed since it was last read. */
+export function withChangesUnticked(draft: PlanDraft, plan: GoingPlanAnswer): PlanDraft {
+  const seen = (draft as CardDraft).changesSeen ?? new Set<string>();
+  const rows = plan.rows ?? [];
+  const fresh = rows
+    .filter((row) => rowWaits(row) && row.changed)
+    .map((row) => ({ key: `${row.row}:${JSON.stringify(row.now)}`, row: row.row }))
+    .filter((change) => !seen.has(change.key));
+  if (fresh.length === 0) return draft;
+  const unticked = new Set(draft.unticked);
+  for (const change of fresh) {
+    unticked.add(change.row);
+    for (const needing of rowsNeeding(rows, change.row)) unticked.add(needing);
+  }
+  const next: CardDraft = {
+    ...draft,
+    changesSeen: new Set([...seen, ...fresh.map((change) => change.key)]),
+    unticked,
+  };
+  return next;
+}
+
+/** The draft with the person's edit of `field` of `row`: a text, a priority, a set of labels. */
 export function editedDraft(
   draft: PlanDraft,
   row: number,
   field: string,
-  value: string
+  value: unknown
 ): PlanDraft {
   const edits = new Map(draft.edits);
   edits.set(row, { ...edits.get(row), [field]: value });
@@ -333,6 +937,11 @@ export function editedDraft(
 /** Whether the row waits for the person: the rows a tick or an edit can change. */
 export function rowWaits(row: GoingPlanRow): boolean {
   return row.state === "waiting";
+}
+
+/** How many changes the draft approves of `plan`: its waiting rows the person left ticked. */
+export function tickedCount(plan: GoingPlanAnswer, draft: PlanDraft): number {
+  return (plan.rows ?? []).filter((row) => rowWaits(row) && !draft.unticked.has(row.row)).length;
 }
 
 /** The approval the draft makes of `plan` (`POST /api/v1/going/runs/{id}/plan/approve`): the
