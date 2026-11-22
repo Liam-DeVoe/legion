@@ -105,7 +105,8 @@ body: |-
     open row stored under a repository's old name, the re-key, keeps that row's head in the one
     history, and its trigger marks the canonical row's issue owed in the delete's own transaction,
     whichever build deletes it, so that head's states are published; and every application that
-    changes a pull request's history, the drain's, a pass's or a verification's, marks owed in its
+    changes a pull request's history, the drain's, a pass's, a join's of two names applied apart
+    or a verification's, marks owed in its
     own transaction each issue that holds an open row of the pull request when it applies, so a
     head applied after the pull request moved to an issue that had already settled is published
     there too, with no lock of an event owner taken and the writers' triggers still only

@@ -50,3 +50,68 @@ func TestAppliedHistoryOwesTheIssueThatHoldsThePullRequestWhenItIsApplied(t *tes
 		t.Fatalf("once the re-key's delete committed and was applied, %s, which holds #70, published no state at H2, the old row's head: the application owed it nothing", other)
 	}
 }
+
+// TestAJoinOfTwoNamesOwesEachIssueThatHoldsThePullRequest: before Dispatch knows the rename, #70
+// under its repository's old name is credited to the first issue and leaves H1 for H2, and #70
+// under the canonical name is credited to the other issue and stands at H3. Each issue's settle
+// applies its own name's records apart, so the two names are two pull requests, H1 a former head
+// of the first alone, and both issues settle until neither holds a mark. Dispatch then learns the
+// rename with both rows still stored, so no write records anything and nothing is pending. The
+// first issue is owed, as a change of its checks' words owes it, and its settle alone joins the
+// two names into one pull request, whose former head H1 the other issue now holds too. The join
+// changed the other issue's former heads, so it owes the other issue, which settles and publishes
+// at H1: no record of either name is left to apply, so nothing else would owe it.
+func TestAJoinOfTwoNamesOwesEachIssueThatHoldsThePullRequest(t *testing.T) {
+	const oldRepo = "oldorg/example-repo"
+	rig := newCheckStatesRig(t, checkStatesTwoChecks)
+	other := rig.fileIssue(t, "Holds the canonical name")
+	writeHead(t, rig.database, oldRepo, 70, eachHeadH1, "open", rig.issue)
+	writeHead(t, rig.database, oldRepo, 70, eachHeadH2, "open", rig.issue)
+	writeHead(t, rig.database, ciJobRepository, 70, eachHeadH3, "open", other)
+	settleOwed(t, rig)
+	if _, held := publishedRow(t, rig.database, rig.issue, oldRepo, eachHeadH1, ""); !held {
+		t.Fatalf("%s published nothing at H1 before the rename is known, want its former head published: this test holds no history to join", rig.issue)
+	}
+	if _, held := publishedRow(t, rig.database, other, ciJobRepository, eachHeadH3, ""); !held {
+		t.Fatalf("%s published nothing at H3, its open head: this test cannot see what it publishes", other)
+	}
+	if _, held := publishedRow(t, rig.database, other, ciJobRepository, eachHeadH1, ""); held {
+		t.Fatalf("%s published states at H1 before the rename is known, want none: this test holds nothing to join", other)
+	}
+
+	if response := dispatchRequest(t, rig.handler, http.MethodPut, "/api/v1/settings/repo-projects/"+oldRepo,
+		map[string]any{"project": ciJobProject, "renamed_to": ciJobRepository}, "alice"); response.Code != http.StatusOK {
+		t.Fatalf("map %s, renamed to %s: status=%d body=%s", oldRepo, ciJobRepository, response.Code, response.Body.String())
+	}
+	var rows, identities, moves, pending int
+	if err := rig.database.Pool.QueryRow(t.Context(), `
+		select (select count(*) from pull_request_heads where number = 70 and state = 'open'),
+			(select count(distinct pull) from pull_request_former_heads_aliases where number = 70),
+			(select count(*) from pull_request_former_heads_moves where number = 70),
+			(select count(*) from pull_request_former_heads_pending where issue_key in ($1, $2))`,
+		rig.issue, other).Scan(&rows, &identities, &moves, &pending); err != nil {
+		t.Fatalf("read #70's rows, identities and records: %v", err)
+	}
+	if marks, otherMarks := marksOf(t, rig.database, rig.issue), marksOf(t, rig.database, other); rows != 2 || identities != 2 || moves != 0 || pending != 0 || marks != 0 || otherMarks != 0 {
+		t.Fatalf("once the rename is known #70 has %d open rows and %d identities, %d records unapplied, %d rows pending, %d and %d marks; want both rows and both identities, nothing left to apply and no mark: a delete, a re-key or a mark left over would owe the other issue in the join's place",
+			rows, identities, moves, pending, marks, otherMarks)
+	}
+
+	if _, err := rig.database.Pool.Exec(t.Context(), `select check_states_owe($1)`, rig.issue); err != nil {
+		t.Fatalf("owe %s: %v", rig.issue, err)
+	}
+	settleBy(t, rig, rig.settler)
+	if err := rig.database.Pool.QueryRow(t.Context(), `select count(distinct pull) from pull_request_former_heads_aliases where number = 70`).Scan(&identities); err != nil {
+		t.Fatalf("read #70's identities: %v", err)
+	}
+	if identities != 1 {
+		t.Fatalf("after the settle of %s #70 has %d identities, want one: the settle joined nothing", rig.issue, identities)
+	}
+	if marks := marksOf(t, rig.database, other); marks == 0 {
+		t.Fatalf("the join gave %s, which holds #70 under its canonical name, the former head H1, and owed it nothing", other)
+	}
+	settleOwed(t, rig)
+	if _, held := publishedRow(t, rig.database, other, ciJobRepository, eachHeadH1, ""); !held {
+		t.Fatalf("once the two names are joined %s, which holds #70, published no state at H1, its former head", other)
+	}
+}

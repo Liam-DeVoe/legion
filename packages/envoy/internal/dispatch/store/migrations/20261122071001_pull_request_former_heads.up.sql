@@ -146,20 +146,24 @@
 -- order of its places. An application that changes the history owes the issue that holds the
 -- pull request when it applies, in its own transaction, not only the issue a writer saw when it
 -- recorded the change: a record's own trigger marks the issue its writer saw, which may have given
--- the pull request up, and settled, before the record was applied. So apply, like the answer
--- (below), marks owed each issue an open row of the pull request is at, but the issue whose settle
--- applies it, which reads the history next anyway.
+-- the pull request up, and settled, before the record was applied. So apply, like the join and the
+-- answer (below), marks owed each issue an open row of the pull request is at, but the issue whose
+-- settle applies it, which reads the history next anyway.
 --
--- pull_request_former_heads_resolve(name, number) is the identity of a pull request a name and a
--- number stand for today: the identity of that name where the settler met it before, else the
+-- pull_request_former_heads_resolve(name, number, issue) is the identity of a pull request a name
+-- and a number stand for today: the identity of that name where the settler met it before, else the
 -- identity of any name of the same number that the rename rule makes the same repository, else a
 -- new one. Where two identities turn out to be one pull request, because each name's records were
 -- applied before Dispatch learned the rename that joins them, it joins them into the older:
 -- pull_request_former_heads_join moves the younger's names, history and rows to the older, keeps
--- the later of their ends, and drops whatever that end ended. Creating and joining identities runs
--- under a lock of its own (the pull request lock's namespace and key 0, which no identity holds),
--- taken before any pull request's lock, and a settle takes pull requests' locks in the order of
--- their identities, so no two settles wait for each other in a cycle.
+-- the later of their ends, and drops whatever that end ended. A join is an application too: each
+-- issue that holds an open row under either name now holds the other name's history and the
+-- joined lifecycle, which it has not settled, and no record of either name may be left to owe it,
+-- since both were applied before; so the join marks owed each such issue, in its own transaction,
+-- but the issue whose drain joins them, which reads the history next anyway. Creating and joining
+-- identities runs under a lock of its own (the pull request lock's namespace and key 0, which no
+-- identity holds), taken before any pull request's lock, and a settle takes pull requests' locks
+-- in the order of their identities, so no two settles wait for each other in a cycle.
 --
 -- A head an open pull request left before this release is in no record. Such a head needs a state
 -- only where someone recorded a result at it that the settle of the pull request's issue reads: a
@@ -359,9 +363,12 @@ $$;
 -- $1's, the later of their ends stands, and every row of history reached before it goes, each
 -- left again where a result there was recorded after that end (pull_request_former_heads_leave_again).
 -- The joined pull request is of a generation after both, so no answer read about either before the
--- join applies to it. Called by pull_request_former_heads_resolve alone, which holds the
--- registry's lock alone, so no other transaction holds the lock of either identity.
-create function pull_request_former_heads_join(integer, integer) returns void language plpgsql as $$
+-- join applies to it. Each issue that holds an open row of it under any of its names now reads a
+-- history and a lifecycle it has not settled, so the join marks each owed, but $3, the issue whose
+-- drain joins them, null where a pass does (above). Called by pull_request_former_heads_resolve
+-- alone, which holds the registry's lock alone, so no other transaction holds the lock of either
+-- identity.
+create function pull_request_former_heads_join(integer, integer, text) returns void language plpgsql as $$
 declare
   last_end bigint;
   last_generation integer;
@@ -390,13 +397,20 @@ begin
     ) select coalesce(array_agg(ended.head_sha), '{}') into gone from ended;
     perform pull_request_former_heads_leave_again($1, gone);
   end if;
+  perform check_states_owe(holder.issue_key) from (
+    select distinct head.issue_key from pull_request_heads head
+    join pull_request_former_heads_aliases alias on alias.repo = lower(head.repo) and alias.number = head.number
+    where alias.pull = $1 and head.state = 'open' and head.issue_key is not null and head.issue_key is distinct from $3
+  ) holder;
 end $$;
 
 -- The identity of the pull request a name and a number stand for today (above), which it makes
 -- where the settler has met none of its names, joins where it has met two, and adds the name to.
 -- Where it must write, it does so under the registry's lock alone, read again under it; its
--- caller holds no pull request's lock yet, nor the registry's shared.
-create function pull_request_former_heads_resolve(text, integer) returns integer language plpgsql as $$
+-- caller holds no pull request's lock yet, nor the registry's shared. $3 is the issue whose drain
+-- resolves it, which a join owes nothing (pull_request_former_heads_join), null for any other
+-- caller.
+create function pull_request_former_heads_resolve(text, integer, text default null) returns integer language plpgsql as $$
 declare
   known integer[] := pull_request_former_heads_named($1, $2);
   kept integer;
@@ -414,7 +428,7 @@ begin
   else
     kept := known[1];
     foreach other in array known[2:] loop
-      perform pull_request_former_heads_join(kept, other);
+      perform pull_request_former_heads_join(kept, other, $3);
     end loop;
   end if;
   insert into pull_request_former_heads_aliases (repo, number, pull) values (lower($1), $2, kept)
@@ -821,9 +835,9 @@ begin
     select distinct stored.repo, stored.number from pull_request_heads stored where stored.issue_key = $1 and stored.state = 'open'
   loop
     for named in select distinct moves.repo from pull_request_former_heads_moves moves where moves.number = head.number loop
-      perform pull_request_former_heads_resolve(named, head.number);
+      perform pull_request_former_heads_resolve(named, head.number, $1);
     end loop;
-    perform pull_request_former_heads_resolve(head.repo, head.number);
+    perform pull_request_former_heads_resolve(head.repo, head.number, $1);
   end loop;
   perform pg_advisory_xact_lock_shared(hashtext('pull-request-former-heads'), 0);
   for held in
