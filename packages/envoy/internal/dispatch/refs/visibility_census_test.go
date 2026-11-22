@@ -180,9 +180,11 @@ var readsWithoutAViewer = map[string]string{
 	"BlockIndexing.Cited":  serverWork + " - a version write reads the blocks that cite the blocks its index changes, to count what it moves",
 	"BlockRefKinds": serverWork + " - a version write's block index and the erase read the names of the block[] attributes the " +
 		"store's type nodes declare, which only a migration writes, to bind them as a parameter of their own read of the store's tuples",
-	"BlockTargets":         serverWork + " - the write of a document checks the block pointers it holds against the blocks they name",
-	"BlockTextAt":          nodeDetail,
-	"CanonicalRepo":        noNode,
+	"BlockTargets":  serverWork + " - the write of a document checks the block pointers it holds against the blocks they name",
+	"BlockTextAt":   nodeDetail,
+	"CanonicalRepo": noNode,
+	"CommentsNamingNoNode": serverWork + " - the block-index tick's write of the comments the events after its cursor name " +
+		"reads, under those comments' owner locks, which of their rows name no node",
 	"CountedChanges":       serverWork + " - a write records what its own text cites, as the addresses that text already spells",
 	"CurrentBlockText":     nodeDetail,
 	"CurrentItemBlockText": nodeDetail,
@@ -218,6 +220,8 @@ var readsWithoutAViewer = map[string]string{
 	"RemovedBlockNode":   nodeDetail,
 	"ScopeSources":       serverWork,
 	"SourceText":         serverWork,
+	"StaleLensesOn": serverWork + " - a document's removal reads the stale lenses on the removed document to take each " +
+		"gone with all that stands beneath it, those its caller may not see included",
 }
 
 // SeedStoreThroughItsWriters writes the people and agents a running deployment's store holds, as
@@ -562,7 +566,7 @@ func storeReads(t *testing.T) (viewing, without []string) {
 				switch types.ExprString(parameter.Type) {
 				case "model.Actor", "*model.Actor":
 					viewer = true
-				case "Queryer", "*pgx.Batch":
+				case "Queryer", "graphstore.Queryer", "*pgx.Batch":
 					queries = true
 				}
 			}
