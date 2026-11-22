@@ -131,7 +131,7 @@ type ciRun struct {
 // answers each check's read at each head, by block id and then by the head's repository and commit
 // (ciHeadKey), which the comparison gives each subject (comparison.ci): two repositories at one
 // commit each read their own runs there, and each derives a result of its own, so a fail in one is
-// never hidden by a pass in the other (R8). A head whose read did not end within the one
+// never hidden by a pass in the other. A head whose read did not end within the one
 // ciReadDeadline of its batch is unread there alone (readCIHeads). A result the read loaded for
 // such a check that no run of the job its ci_check names recorded, a role's or another job's,
 // counts for nothing and says why (notCountedOnCICheck). An issue holding no check CI proves asks
