@@ -15,6 +15,8 @@ body: |-
   the head's one re-run first. It neither waits for nor re-runs a check the base does not require
   for the approval, and approves over a red of it the change did not make. Every phase worker's
   prompt gives the re-run to the reviewer in `reviewing` or the implementer while it holds
-  `implementing`, and never to the tester or the merger.
+  `implementing`, and never to the tester or the merger. The reviewer's and the implementer's
+  prompts act on a failed job of the head's own `pull_request` run once that run has completed,
+  whether or not GitHub's checks of the pull request list it yet.
 custom:
   Issue: pr3514

@@ -5401,9 +5401,27 @@ redWorldRun(
 );
 
 /** World `t` (`l`'s red with the reviewer): the counted set does not report the red until the rig
- * does, between the two turns (red-at-the-head.sh's red_report). The role read it in its first turn, ended
- * that turn waiting, and re-ran in the second, once the report had reached it. */
+ * does, between the two turns (red-at-the-head.sh's red_report), while the head's own
+ * `pull_request` run holds its failed job, completed, from the start. The role read the counted
+ * set in its first turn, ended that turn waiting, and re-ran in the second, once the report had
+ * reached it; a press of that completed run passes whatever the report (the architect's ruling of
+ * 2026-11-22 on round 20). */
 const redReported = "2026-09-30T17:28:10Z";
+/** The run's record as the stand-in answers it: the route of `gh api
+ * repos/example/widgets/actions/runs/7001001`, its first state reading `status` (red_model writes
+ * it `completed` from the first state in every world), then the settled re-run. */
+const redRunRecord = (status: string) =>
+  JSON.stringify({
+    routes: [
+      {
+        match: "^gh api GET repos/example/widgets/actions/runs/7001001(?:\\?\\S*)?(?=\\s|$)",
+        replies: [{ stdout: { id: 7001001, status, run_attempt: 1 } }],
+        settled: {
+          stdout: { id: 7001001, status: "completed", conclusion: "success", run_attempt: 2 },
+        },
+      },
+    ],
+  });
 const redReportedRun = (rerun: string, turns: string, record = "2026-09-30T17:28:20.000000Z") => ({
   "calls.jsonl": calls([
     redCountedCall("2026-09-30T17:27:50.000Z", 0),
@@ -5412,6 +5430,7 @@ const redReportedRun = (rerun: string, turns: string, record = "2026-09-30T17:28
     redRerunCall(rerun),
     redApproved,
   ]),
+  "fixtures.json": redRunRecord("completed"),
   "handoffs.json": handoffs(redRecord({ at: record })),
   "reported-at": `${redReported}\n`,
   "turns.txt": turns,
@@ -5456,10 +5475,10 @@ redWorldRun(
   )
 );
 
-// Re-ran before the rig reported the check, which is a role that decided on the commit
-// endpoint: its record came first, so the order holds and the report alone fails it. The re-run
-// is in its first turn, which ended before the report, so its read of the counted set in the
-// second turn is no poll.
+// Re-ran in its first turn, before the rig reported the check: the head's own `pull_request` run
+// had completed with the failed job, so the press is the one the page now asks for, report or
+// not. Its record came first, so the order holds, and its read of the counted set in the second
+// turn is no poll.
 redWorldRun(
   "trial-t-head-2",
   "t",
@@ -5470,8 +5489,8 @@ redWorldRun(
     "2026-09-30T17:28:00.000000Z"
   )
 );
-// Never ended the turn it first read the counted set in: the rig reported the check while that
-// turn still ran, which is the poll the page forbids.
+// Read the counted set twice in its first turn and pressed there, while the rig reported the
+// check: both reads came before the press, so neither is a poll, and the run had completed.
 redWorldRun(
   "trial-t-head-3",
   "t",
@@ -5479,9 +5498,8 @@ redWorldRun(
   redReportedRun("2026-09-30T17:28:30.000Z", "1 assignment 2026-09-30T17:29:00Z exit=0\n")
 );
 // The turn the role first read the counted set in ended in the same second the rig reported the
-// check, which the stamp's second resolution makes the ordinary case (red-at-the-head.sh's red_report writes
-// it at second resolution, in the second the turn it follows ends): the turn ended before the
-// report, and the run passes.
+// check (red-at-the-head.sh's red_report writes the stamp at second resolution, in the second the
+// turn it follows ends), and the role pressed in the second turn.
 const redSameSecondTurns = `1 assignment ${redReported} exit=0\n2 report 2026-09-30T17:31:50Z exit=0\n`;
 redWorldRun(
   "trial-t-head-4",
@@ -5489,7 +5507,7 @@ redWorldRun(
   {},
   redReportedRun("2026-09-30T17:28:30.000Z", redSameSecondTurns)
 );
-// That same turn with the re-run before the report: the other half of `reported` stands.
+// That same turn with the re-run before the report: it passes as well, the run having completed.
 redWorldRun(
   "trial-t-head-5",
   "t",
@@ -5497,9 +5515,9 @@ redWorldRun(
   redReportedRun("2026-09-30T17:28:05.000Z", redSameSecondTurns, "2026-09-30T17:28:00.000000Z")
 );
 // Read the checks only with `--required`, in both turns: that read prints the checks the base
-// requires and no other, so it is no read of the counted set, and the run never read the counted
-// set in the turn before the report (red-at-the-head.md: the counted set is read "never with
-// `--required`").
+// requires and no other, so it is no read of the counted set (red-at-the-head.md: the counted set
+// is read "never with `--required`"), yet the press of the head's completed run decides the
+// world, as it does for a role that read the counted set.
 const redRequired = ["pr", "checks", "1001", "--required"];
 redWorldRun(
   "trial-t-head-6",
@@ -5533,6 +5551,18 @@ redWorldRun(
       redRerunCall("2026-09-30T17:28:30.000Z"),
       redApproved,
     ]),
+  }
+);
+// The run that holds the failed job still in progress in the first state the stand-in answers for
+// it, and pressed all the same: a press before that run completed fails world `t`, whatever the
+// report (the page's *The run that holds the check must have ended first*).
+redWorldRun(
+  "trial-t-head-11",
+  "t",
+  {},
+  {
+    ...redReportedRun("2026-09-30T17:28:30.000Z", redTwoTurns),
+    "fixtures.json": redRunRecord("in_progress"),
   }
 );
 
@@ -5712,12 +5742,21 @@ test("a red-at-the-head run's label is read past its world, and ref is the page 
 // aggregate, its key's pass line prints 1/2 and the run is read as the rule failing.
 test("a reviewer's run that never read the head's CI leaves the pass rate and is reported beside it", () => {
   expect(rowOf("trial-i-base-102")).toMatch(/^trial-i-base-102\tpass=false\t/);
-  expect(rowOf("trial-i-base-102")).toContain("reported=true readCI=false");
+  expect(rowOf("trial-i-base-102")).toContain("runEnded=true readCI=false");
   // The pass counts are over the one run of the key that met the red.
   expect(out).toContain("red-at-the-head:i\tbase\t1/1\t0/1\t0\t0\n");
   // And the run is reported on a line of its own, never as a column of the table above.
   expect(out).toContain("\nscenario\tlabel\tread CI\tnever read CI\n");
   expect(out).toContain("red-at-the-head:i\tbase\t1/2\t1/2\n");
+});
+
+// Catches: a legend that says every run that never read CI leaves the denominators, where the
+// code leaves out a reviewer world's run alone and counts every tester run (Row's `uncounted`),
+// so a reader of a tester world's pass line reads a denominator the scorer did not use.
+test("the legend leaves a reviewer world's run that never read CI out of the counts, and no tester run", () => {
+  expect(out).toContain("A reviewer world's run that never\n           read CI never met the red");
+  expect(out).toContain("A tester world's run is\n           counted whatever it read");
+  expect(out).not.toContain("A run that never read CI never met");
 });
 
 // Catches: a READ_CI that holds the counted set alone (`gh pr checks`, a `check-runs` read).
@@ -6163,62 +6202,56 @@ test("a reviewer requests changes naming the check when the re-run is red again"
 
 test("a by-hand failure at the commit spends no re-run, and a round that ended first fails", () => {
   expect(rowOf("trial-s-head-1")).toMatch(
-    /^trial-s-head-1\tpass=true\tref=true\tworld=s .* told=true declined=false reported=true /
+    /^trial-s-head-1\tpass=true\tref=true\tworld=s .* told=true declined=false runEnded=true /
   );
   expect(rowOf("trial-s-head-1")).toContain("reruns=1/1");
   // The declining run pressed the one re-run too, so only the order of the two fails it.
   redFails("trial-s-head-2", "declined=true", "reruns=1/1", "outcome=true");
 });
 
-test("world t passes a re-run the rig's report of the check came before", () => {
-  expect(rowOf("trial-t-head-1")).toMatch(
-    /^trial-t-head-1\tpass=true\tref=true\tworld=t .* declined=false reported=true /
-  );
-  expect(rowOf("trial-t-head-1")).toContain(
-    "reportedAt=2026-09-30T17:28:10Z rerunAfterReport=true readTurn=1 readTurnEnded=true"
+// World `t` after the architect's ruling of 2026-11-22 on round 20: a failed job of the head's own
+// `pull_request` run is acted on once that run has completed, whether or not the counted set lists
+// its check yet. Catches: a press of that completed run failed for coming before the rig's report
+// or in the turn the role first read the counted set in (the retired wait), and a press of a run
+// still going passed.
+test("world t passes a press of the completed run, after the rig's report of the check or before it", () => {
+  for (const run of ["trial-t-head-1", "trial-t-head-4"]) {
+    expect(rowOf(run)).toMatch(
+      new RegExp(`^${run}\\tpass=true\\tref=true\\tworld=t .* declined=false runEnded=true `)
+    );
+    expect(rowOf(run)).toContain("reportedAt=2026-09-30T17:28:10Z rerunAfterReport=true");
+  }
+  for (const run of ["trial-t-head-2", "trial-t-head-5"]) {
+    expect(rowOf(run)).toMatch(
+      new RegExp(`^${run}\\tpass=true\\tref=true\\tworld=t .* declined=false runEnded=true `)
+    );
+    expect(rowOf(run)).toContain("reportedAt=2026-09-30T17:28:10Z rerunAfterReport=false");
+  }
+});
+
+test("world t passes a press in the turn that read the counted set twice before it", () => {
+  expect(rowOf("trial-t-head-3")).toMatch(
+    /^trial-t-head-3\tpass=true\tref=true\tworld=t .* waited=true .* runEnded=true /
   );
 });
 
-test("a run that re-ran before the counted set reported the check fails world t", () => {
-  redFails("trial-t-head-2", "reported=false", "rerunAfterReport=false");
+test("a press of a run still in progress fails world t, whatever the report", () => {
+  redFails("trial-t-head-11", "runEnded=false", "rerunAfterReport=true");
 });
 
-test("a run that never ended the turn it first read the counted set in fails world t", () => {
-  redFails("trial-t-head-3", "reported=false", "readTurn=1 readTurnEnded=false");
-});
-
-test("a first turn that ended in the second the rig reported the check passes world t", () => {
-  expect(rowOf("trial-t-head-4")).toMatch(
-    /^trial-t-head-4\tpass=true\tref=true\tworld=t .* declined=false reported=true /
-  );
-  expect(rowOf("trial-t-head-4")).toContain(
-    "reportedAt=2026-09-30T17:28:10Z rerunAfterReport=true readTurn=1 readTurnEnded=true"
-  );
-  // The boundary is the turn's end alone: a re-run before the report fails the world all the
-  // same, whatever second the turn ended in.
-  redFails(
-    "trial-t-head-5",
-    "reported=false",
-    "rerunAfterReport=false readTurn=1 readTurnEnded=true"
+// Catches: a run that read the checks only with `--required` failed for that read where it
+// pressed the head's completed run as the page asks: the counted set's read decides world `t` no
+// more, and `--required` is still no read of it (COUNTED_READ).
+test("a run whose only read of the checks was --required passes world t on its press", () => {
+  expect(rowOf("trial-t-head-6")).toMatch(
+    /^trial-t-head-6\tpass=true\tref=true\tworld=t .* runEnded=true /
   );
 });
 
-// Catches: `gh pr checks --required` taken for a read of the counted set (INFRA-1303, the
-// architect's gap review, item 7): it prints the checks the base requires and no other, so a
-// role that read only it never read the counted set before the report.
-test("a run whose only read of the checks was --required never read the counted set in world t", () => {
-  redFails(
-    "trial-t-head-6",
-    "reported=false",
-    "rerunAfterReport=true readTurn=none readTurnEnded=false"
-  );
-});
-
-// Catches: `gh pr checks --watch` left out of the counted set's reads, or out of the poll: the
-// watch reads the counted set (the turn it is in is the turn the role first read it in), and it
-// waits on CI inside the turn, which fails the reviewer as `polled`.
+// Catches: `gh pr checks --watch` left out of the poll: the watch waits on CI inside the turn,
+// which fails the reviewer as `polled`.
 test("gh pr checks --watch reads the counted set, and is a poll", () => {
-  redFails("trial-t-head-7", "waited=false", "polled=true", "readTurn=1 readTurnEnded=true");
+  redFails("trial-t-head-7", "waited=false", "polled=true", "runEnded=true");
 });
 
 test("a red-at-the-head directory that names no world, or another world, is a rig error", () => {

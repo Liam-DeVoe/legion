@@ -648,7 +648,7 @@ func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
 		// merge-gate.md until cybermonklabs/legion#4447 left the round order to this part alone.
 		{"go/reviewer.md", "record the failure in a `review` handoff record with `dispatch handoff-write` before the `gh run rerun` call"},
 		{"go/reviewer.md", "and once that re-run is green, run the three steps of that page's *What becomes of the record*"},
-		{"go/reviewer.md", "and a red the counted set does not yet report `completed`, however you learned of it"},
+		{"go/reviewer.md", "and a check you were told of that no `pull_request` run of the head holds yet, waited for once"},
 		// A required red is judged on the counted set, and the line says both halves of the rule
 		// (the architect's ruling of 2026-11-19 on the forward merge of cybermonklabs/legion#4447,
 		// whose sentence "A required check red there is a `REQUEST_CHANGES` naming it" sent every
@@ -661,22 +661,23 @@ func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
 		// holds no phase, so its re-run of a red holds only while it holds `reviewing` (INFRA-1303's
 		// review round 3).
 		{"go/reviewer.md", "and one the change did not make takes the head's one re-run first while you hold `reviewing`"},
-		// Once the counted set reports the check completed, and before any re-run of it, the
+		// Once the run that holds the failed job has completed, and before any re-run of it, the
 		// reviewer reads the spend over every `pull_request` run of the head, as the red-at-the-head
 		// page says: round 18 of INFRA-1303's batch (o-head-1, 2, 4 and 5) read the failing run's
 		// attempts alone, saw attempt 1, and pressed at a head whose one re-run another run's
 		// attempt 2 had already spent, and the cancelled-or-absent sentence below points at that run
-		// alone; round 19's world-t reviewers read every run before the counted set reported the
-		// check and pressed, where R1's order is the counted set's report, then the spend, then the
-		// record, then the press (the architect's sentence, 2026-11-21).
-		{"go/reviewer.md", "Once the counted set reports the check completed, and before any re-run of it, read the spend over every `pull_request` run of the head, as that page says: the failing run on its first attempt says nothing, since another run's second attempt spends the head's one re-run too."},
-		// A check the counted set does not list yet while a run at the head holds its failed job is
-		// unreported, not absent: it is waited for and gets no re-run, while main's re-run of a
+		// alone. The condition was the counted set's report until the architect's ruling of
+		// 2026-11-22 on round 20, whose world-t reviewers pressed on the head's own completed run.
+		{"go/reviewer.md", "Once the run that holds the failed job has completed, and before any re-run of it, read the spend over every `pull_request` run of the head, as that page says: the failing run on its first attempt says nothing, since another run's second attempt spends the head's one re-run too."},
+		// A failed job of the head's own `pull_request` run is acted on once that run has completed,
+		// whether or not the counted set lists its check yet, and no other run is acted on at all;
+		// a read made seconds after a push decides no head has no red, so a check no `pull_request`
+		// run of the head holds is waited for once (the architect's ruling of 2026-11-22 on round
+		// 20, which retired "unreported, not absent, and gets no re-run"). Main's re-run of a
 		// cancelled or absent check stays, absent meaning a run at the head holds its job while the
 		// check is missing from the list; where no run holds the job, the reviewer tells the
-		// architect and does not approve, the sentence pinned below (the architect's rulings of
-		// 2026-11-20 on INFRA-1303's review round 3).
-		{"go/reviewer.md", "One the counted set does not list yet while a run at the head holds its failed job is unreported, not absent, and gets no re-run: wait for it, as that page's *The act and the wait* says."},
+		// architect and does not approve, the sentence pinned below.
+		{"go/reviewer.md", "A failed job of the head's own `pull_request` run is acted on once that run has completed, whether or not the counted set lists its check yet, and no run that is not a `pull_request` run of the head is acted on at all; a read made seconds after a push never shows that the head has no red, so a check you were told of that no `pull_request` run of the head holds is waited for once"},
 		{"go/reviewer.md", "One `completed` as `cancelled`, or absent from that set: re-run that run's failed and cancelled jobs, once, then wait"},
 		{"go/reviewer.md", "When no run at the head holds the job, or nothing will run it (a check only a commit status reports, a workflow another repository defines), tell the architect and do not approve."},
 		// The worker part names the same record, and the implementer's overlay the same reading of
@@ -684,14 +685,17 @@ func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
 		{"go/worker-common.md", "after it records the failure in a handoff record of its own phase with `dispatch handoff-write`"},
 		{"go/implementer.md", "(*Which red is the change's* in `skill://legion-worker/references/red-at-the-head.md` decides which of the two it is, and a pass in your own pod does not move that)"},
 		// The implementer's overlay forbids every wait on CI but the ones the red-at-the-head page
-		// gives it for a red it acts on: the wait for the counted set to report that red, the wait on
-		// a null rollup read first, and the wait on its own re-run of a red the change did not make.
-		// Its "Push, then complete: never wait for CI" said no wait at all while the page had it wait
-		// for that re-run (the architect, 2026-11-20), and its exception then named the one re-run
-		// alone while the page had it wait before it pressed as well (the architect's gap review of
-		// 2026-11-20, item 2).
+		// gives it for a red it acts on: the wait on the run that holds the red until it ends, the
+		// one wait for a check no `pull_request` run of the head holds yet, and the wait on its own
+		// re-run of a red the change did not make. Its "Push, then complete: never wait for CI" said
+		// no wait at all while the page had it wait for that re-run (the architect, 2026-11-20), and
+		// its exception then named the one re-run alone while the page had it wait before it pressed
+		// as well (the architect's gap review of 2026-11-20, item 2). It acts on the head's own
+		// completed `pull_request` run whether or not the counted set lists the check yet, as the
+		// reviewer does (the architect's ruling of 2026-11-22 on round 20).
 		{"go/implementer.md", "Push, then complete: never wait for CI, except for the waits `skill://legion-worker/references/red-at-the-head.md` gives for a red you act on."},
 		{"go/implementer.md", "Outside those waits, each of which a wake ends as that page says, never wait for, watch or poll the pull request's remote CI"},
+		{"go/implementer.md", "A failed job of the head's own `pull_request` run is acted on once that run has completed, whether or not the counted set lists its check yet, and no run that is not a `pull_request` run of the head is acted on at all; a read made seconds after a push never shows that the head has no red, so a check you were told of that no `pull_request` run of the head holds is waited for once"},
 		// The worker part names the two roles that hold the re-run and the three that press none. It
 		// is composed into the merger's prompt too, and the forward merge of main's guide cut
 		// (5748720cd9) took main's line, which named no role and so gave the merger the re-run

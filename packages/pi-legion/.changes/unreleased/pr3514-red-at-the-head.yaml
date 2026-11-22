@@ -9,6 +9,7 @@ body: |-
   reads before it approves. The `legion-controller` skill gains the census of those tests: one
   issue per test, with every later occurrence a comment on it. The reviewer neither waits for nor
   re-runs a check the base does not require for the approval, while the implementer still re-runs
-  such a red once.
+  such a red once. A failed job of the head's own `pull_request` run is acted on once that run has
+  completed, whether or not GitHub's checks of the pull request list it yet.
 custom:
   Issue: pr3514

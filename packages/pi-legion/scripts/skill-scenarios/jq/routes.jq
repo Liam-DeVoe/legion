@@ -66,6 +66,13 @@ def no_job($in; $id): {stderr:("failed to get job: HTTP 404: Not Found (https://
   + $in + "/actions/jobs/" + $id + ")\n"), exit:1};
 def no_runs($in): {stderr:("failed to get runs: HTTP 404: Not Found (https://api.github.com/repos/"
   + $in + "/actions/runs?exclude_pull_requests=true&per_page=20)\n"), exit:1};
+# gh's error for a repository or a pull request GraphQL cannot resolve, as gh 2.98.0 prints it to
+# stderr, exit 1, nothing on stdout (measured on 2026-11-22: github-answers/repo-404-pr-list for
+# `gh pr list --repo <a repository GitHub does not hold>`, which `gh pr view`, `gh issue view` and
+# `gh repo view` of one answered byte for byte too, and github-answers/pr-view-404 for `gh pr view`
+# of a number the repository holds no pull request of, which `gh pr checks` and `gh pr diff`
+# answered too; README.txt names each request): the repository as the call named it,
+# `<owner>/<name>`, and the number.
 def no_repo($name): {stderr:("GraphQL: Could not resolve to a Repository with the name \u0027"
   + $name + "\u0027. (repository)\n"), exit:1};
 def no_pr($number): {stderr:("GraphQL: Could not resolve to a PullRequest with the number of "
@@ -354,11 +361,13 @@ def pull_routes:
   # check runs say, since a combined status holds statuses and no check run.
   # `repo_refusal` marks the answers for a repository other than the world, which GitHub
   # cannot see: REST answers its 404, the commands gh runs through GraphQL the words gh 2.98.0
-  # prints for a repository GraphQL cannot resolve (measured), and the run commands the 404 of
-  # the run, the job or the list they read. red_fixture keeps them ahead of every route.
+  # prints for a repository GraphQL cannot resolve (measured, github-answers/repo-404-pr-list),
+  # and the run commands the 404 of the run, the job or the list they read. red_fixture keeps
+  # them ahead of every route.
   # A pull request command names this pull request by its number; another number is answered
-  # what gh 2.98.0 prints for a pull request GraphQL cannot resolve (measured), and a branch, a
-  # URL or no number at all (gh then reads the branch of its working directory) is not modeled.
+  # what gh 2.98.0 prints for a pull request GraphQL cannot resolve (measured,
+  # github-answers/pr-view-404), and a branch, a URL or no number at all (gh then reads the branch
+  # of its working directory) is not modeled.
   # The reviews a role sends, with their inline comments, are kept by the stand-in, through the
   # routes that carry `review`, the template of each ($review: the head, the login of the rig,
   # which is no member or collaborator of the repository and so has the association NONE, the
@@ -393,7 +402,9 @@ def pull_routes:
   # The world GraphQL reads (gh-graphql.ts): the repository (its owner and name in lower case,
   # as gh-graphql.ts matches them), its pull request, the head and the base under every name
   # GraphQL resolves them by, and the viewer. The page info of the rollup ends in the cursor
-  # GitHub gives its last node (gh-graphql.ts), and in none where it holds no node.
+  # GitHub gives its last node (gh-graphql.ts), and in none where it holds no node. Another pull
+  # request number and another repository are GitHub's NOT_FOUND, its message as GitHub wrote it
+  # (measured on 2026-11-22: github-answers/graphql-pr-404 and graphql-repo-404).
   | {graphql:{
        ("repository(name:" + ($name|ascii_downcase|tojson) + ",owner:" + ($owner|ascii_downcase|tojson) + ")"):
          ({("pullRequest(number:" + $n + ")"):{"$ref":"pr"},
@@ -1231,6 +1242,16 @@ def rerun_job: model.job_id as $job_id
 # red-at-the-head.sh's rerun_pressed reads it between the turns, and score.ts's unscored reads it
 # of a finished run, so the rig and the scorer hold one rule.
 def pressed: .routes | any(.press == true and (.answered // 0) > 0);
+# Whether the run `$id` read `completed` in the first state the stand-in answered for it: the
+# first reply of the one route that answers `gh api GET repos/<repo>/actions/runs/<id>`, or its one
+# answer where it never moves. red_model writes the run that holds the red `completed` at attempt
+# 1 from the first state (run_routes), so in every world that run had ended before the role's
+# first turn, and it moves only when the rig settles a press of it. score.ts reads this for world
+# `t`'s press (redRunEndedFirst); a file with no such route, or two, is an error.
+def run_ended_first($id):
+  [.routes[] | select(.match | contains("/actions/runs/" + ($id|tostring) + "(?:\\?\\S*)?(?=\\s|$)"))]
+  | if length != 1 then error("\(length) routes answer the run \($id)")
+    else .[0] | ((.replies // [])[0] // .) | .stdout.status == "completed" end;
 def moving($match; $replies):
   {match:$match} + (if ($replies | unique | length) == 1 then $replies[0]
                     else {follows:rerun, replies:$replies[:-1], settled:$replies[-1],

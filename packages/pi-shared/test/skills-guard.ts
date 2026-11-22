@@ -350,6 +350,18 @@ function collapsedOffsets(markdown: string): number[] {
 const LANE = "(?:lane|check|suite|job)";
 /** The word a lane noun may carry before it and still be one: `CI lane`, `required check`, `test suite`. */
 const LANE_QUALIFIER = String.raw`(?:CI\s+|required\s+|test\s+)?`;
+/**
+ * Where a sentence or a list item opens: the file's start, a stop, a colon or a semicolon, or a
+ * list marker, each with the one space the collapse leaves (`collapsed`). A pattern reads it
+ * through a lookbehind, so a hit names the line of the word after it.
+ */
+const SENTENCE_OPENS = String.raw`(?:^|[.!?:;]\s|[-*]\s)`;
+/**
+ * Where a clause opens: a sentence (`SENTENCE_OPENS`), or the word after a comma, a dash or `and`,
+ * `or`, `but` or `then`. An imperative's verb stands there with no subject before it, so a role
+ * named before the verb makes the sentence a statement of what that role does.
+ */
+const CLAUSE_OPENS = String.raw`(?:${SENTENCE_OPENS}|[,—]\s|\b(?:and|or|but|then)\s)`;
 
 /**
  * The prohibition INFRA-1303 retired from the tester's evidence rule
@@ -362,34 +374,44 @@ const LANE_QUALIFIER = String.raw`(?:CI\s+|required\s+|test\s+)?`;
  * re-run of a lane, read by either of them, costs the tree a whole lap for a failure its code
  * never caused.
  *
- * Three shapes, each with its subject enumerated rather than left open. The passive: a lane noun
- * under a universal negative (`no`, `neither`) as the subject of the re-run, with nothing between
- * the noun and `re-run` but auxiliaries (`is`, `gets`, `may be`, `is ever`), so the prohibition is
- * on that lane. A negative that governs another verb passes, though a re-run follows it: "If no
- * checks appear after a minute, re-run the workflow from the Actions tab." and "When no job starts,
- * rerun `apply.sh`". The active: `never re-runs a …` over the same nouns behind a determiner. The
- * imperative: `re-run no …` over the same nouns, the shape cybermonklabs/legion#4447 brought back
- * into pr-body.md as "rerun no lane as evidence" in a forward merge that took main's side. `run` is
- * deliberately no such noun, which is what lets the sentences the change keeps pass: "A
- * merge-group run is never re-run" (merge-gate.md, pr-body.md and the implementer's prompt overlay)
- * and "Where no run at the head holds the failing check, the role re-runs nothing"
- * (red-at-the-head.md). "No role re-runs a group build." passes because a role is no lane, and "it
- * gets no re-run", said of a check that judges the pull request itself, because a re-run is no lane
- * either. The active form lets one limit through, a `for` naming the rows a ban covers:
- * merge-gate.md's "never re-run a job for a `cancelled` row that a newer run of the same name has
- * superseded" keeps the re-run of the red the page names, and passes. The guard reads every other
- * word after the noun as the ban itself: "Never re-run a check that failed." and "Never re-run a
- * lane that failed on itself." forbid the very re-run the page gives, and are refused. "Never
- * re-run a check that the change made red" keeps that re-run, yet the guard refuses it too, on
- * purpose, for it to be reworded: by the sentence's shape alone, a `that` clause which limits the
- * ban cannot be told apart from one which restates the retired ban. That is the cost of reading
- * shape: the guard refuses some correct text too.
+ * Three shapes, each with its subject or its object enumerated rather than left open. The
+ * passive: a lane noun under a universal negative (`no`, `neither`) as the subject of the re-run,
+ * with nothing between the noun and `re-run` but the auxiliaries of a rule (`is`, `gets`, `may
+ * be`, `is ever`), so the prohibition is on that lane. A past tense reports what a run did and is
+ * no rule, so it passes: "No job was re-run in that measurement" and "Neither check was re-run,
+ * since both passed on their first attempt." A negative that governs another verb passes, though
+ * a re-run follows it: "If no checks appear after a minute, re-run the workflow from the Actions
+ * tab." and "When no job starts, rerun `apply.sh`". The ban: `never`, `do not` or `don't` before
+ * the bare `re-run` and the same nouns, behind a determiner or a word of their state (`a`, `any`,
+ * `failed`); and `re-run no …` over them, the shape cybermonklabs/legion#4447 brought back into
+ * pr-body.md as "rerun no lane as evidence" in a forward merge that took main's side. Both are
+ * imperatives, so each opens its clause (`CLAUSE_OPENS`) with its bare verb, and a role named
+ * before it, or a verb that agrees with one (`re-runs`), makes it a statement of what that role
+ * does, which passes: "The merger never re-runs a check: …", "The daemon never re-runs a job on
+ * its own." and "The tester re-runs no check and reads no CI." So does a ban said to a role as
+ * `you` ("You never re-run a check"), since a bare `you` can be any role, as
+ * `REVIEWER_RERUNS_NOTHING` reads it too. `run` is deliberately no lane noun, which is what lets
+ * the sentences the change keeps pass: "A merge-group run is never re-run" (merge-gate.md,
+ * pr-body.md and the implementer's prompt overlay) and "Where no run at the head holds the failing
+ * check, the role re-runs nothing" (red-at-the-head.md). "No role re-runs a group build." passes
+ * because a role is no lane, and "it gets no re-run", said of a check that judges the pull request
+ * itself, because a re-run is no lane either. The ban lets one limit through, a `for` naming the
+ * rows it covers: merge-gate.md's "never re-run a job for a `cancelled` row that a newer run of
+ * the same name has superseded" keeps the re-run of the red the page names, and passes. The guard
+ * reads every other word after the noun as the ban itself: "Never re-run a check that failed."
+ * and "Never re-run a lane that failed on itself." forbid the very re-run the page gives, and are
+ * refused, as are "Do not re-run a CI lane as evidence." and "Don't rerun failed lanes as
+ * evidence." "Never re-run a check that the change made red" keeps that re-run, yet the guard
+ * refuses it too, on purpose, for it to be reworded: by the sentence's shape alone, a `that`
+ * clause which limits the ban cannot be told apart from one which restates the retired ban. That
+ * is the cost of reading shape: the guard refuses some correct text, and lets through a ban said
+ * to a role it names.
  */
 const NO_LANE_IS_RERUN = new RegExp(
   [
-    String.raw`\b(?:no|neither)\s+${LANE_QUALIFIER}${LANE}s?\s+(?:(?:is|are|was|were|gets?|got|be|been|ever|may|can|will|should|must)\s+){0,3}re-?run\b`,
-    String.raw`\bnever\s+re-?runs?\s+(?:a|an|any|the)\s+${LANE_QUALIFIER}${LANE}\b(?!\s+for\b)`,
-    String.raw`\bre-?runs?\s+no\s+${LANE_QUALIFIER}${LANE}s?\b`,
+    String.raw`\b(?:no|neither)\s+${LANE_QUALIFIER}${LANE}s?\s+(?:(?:is|are|gets?|be|ever|may|can|will|should|must)\s+){0,3}re-?run\b`,
+    String.raw`(?<=${CLAUSE_OPENS})(?:never|do\s+not|don't)\s+re-?run\s+(?:(?:a|an|any|the)\s+)?(?:(?:failed|failing|red)\s+)?${LANE_QUALIFIER}${LANE}s?\b(?!\s+for\b)`,
+    String.raw`(?<=${CLAUSE_OPENS})re-?run\s+no\s+${LANE_QUALIFIER}${LANE}s?\b`,
   ].join("|"),
   "i"
 );
@@ -406,12 +428,18 @@ const NO_LANE_IS_RERUN = new RegExp(
  * The object is enumerated — `them`, `these`, `those`, or the lane nouns themselves — rather than
  * left open, and the verb must be a re-run, never a bare `run`. That is what lets the sentence
  * the prompt keeps in its place pass: "you do not run in your own pod what CI runs for you", which
- * forbids the local run and says nothing of the re-run.
+ * forbids the local run and says nothing of the re-run. `re-run none of …` is the imperative,
+ * opening its clause with its bare verb (`CLAUSE_OPENS`), so a role named before it is a statement
+ * of what that role does, and passes: "The merger re-runs none of them: it records the removal and
+ * queues the head once more."
  */
 const RERUN_NONE_OF_THEM_YOURSELF = new RegExp(
-  String.raw`\bre-?runs?\s+(?:none|neither)\s+of\s+(?:them|these|those|the\s+${LANE}s)\b|\b(?:never|do not|don't)\s+re-?run\s+(?:any\s+of\s+)?(?:them|these|those)\b[^.]{0,40}?\byourself\b`,
+  String.raw`(?<=${CLAUSE_OPENS})re-?run\s+(?:none|neither)\s+of\s+(?:them|these|those|the\s+${LANE}s)\b|\b(?:never|do not|don't)\s+re-?run\s+(?:any\s+of\s+)?(?:them|these|those)\b[^.]{0,40}?\byourself\b`,
   "i"
 );
+
+/** The words that open a condition limiting a ban to a case: `When the re-run is spent, …`. */
+const RERUN_LIMIT = "(?:when|where|once|if|after|past|outside|beyond|unless|until)";
 
 /**
  * The prohibition INFRA-1303 retired from the reviewer's thread rule
@@ -421,21 +449,36 @@ const RERUN_NONE_OF_THEM_YOURSELF = new RegExp(
  * (`skill://legion-worker/references/red-at-the-head.md`); what that file keeps is the reason a
  * re-run does not clear this particular red, never a ban on pressing one.
  *
- * The subject is the reviewer: by name (`the reviewer`, `your review`), or as `you` in a sentence
- * that names a review bot before it, which is the retired claim's own shape. A bare `you` can be
- * any role, so it passes: the natural way to tell the merger it re-runs nothing is "You re-run
- * nothing: …". So do the sentences that deny the re-run to a role holding no phase: "The merger,
- * the architect in `accepting` and an implementer that runs retro re-run nothing." and "A role
- * that is told of a red whose phase it does not hold re-runs nothing." (both red-at-the-head.md),
- * and "a re-run does not clear that red" (review-threads.md), which names no re-runner at all. The
- * cost is a ban written to the reviewer as a bare `you` with no review bot in its sentence, which
- * passes too. The gap is bounded by `[^.]{0,40}`, so a `the reviewer` of the sentence before a
- * full stop cannot reach across it to the `re-run nothing` of the next, and the review bot is
- * read in the same sentence as its `you`. The `you` is found through a lookbehind, which Bun's
- * JavaScriptCore runs, so a hit names the line of the `you`.
+ * Two shapes. The reviewer by name (`the reviewer`, `your review`) re-running nothing, unless the
+ * ban is limited: its sentence opens with a condition (`when`, `where`, `once`, `if`, `after`,
+ * `past`, `outside`, `beyond`, `unless`, `until`), or a limit follows the `nothing` (one of those,
+ * or `for`). Those limits are the page's own rules, which pass: "When the head's one re-run is
+ * spent, the reviewer re-runs nothing and requests changes.", "Past review the reviewer re-runs
+ * nothing: it reads the merge …" and "The reviewer re-runs nothing for a check the base does not
+ * require." An unlimited one is refused: "The reviewer re-runs nothing, a required check red at the
+ * head included." And any re-runner in a sentence that names a review bot before it, which is the
+ * retired claim's own shape, whatever limits it: `the reviewer`, `you`, or the imperative
+ * `re-run nothing` that opens its clause (`CLAUSE_OPENS`), so "When a review bot is red, you re-run
+ * nothing." and "While the review bot's thread stands, re-run nothing." are refused. A bare `you`
+ * with no review bot can be any role, so it passes: the natural way to tell the merger it re-runs
+ * nothing is "You re-run nothing: …". So do the sentences that deny the re-run to a role holding
+ * no phase: "The merger, the architect in `accepting` and an implementer that runs retro re-run
+ * nothing." and "A role that is told of a red whose phase it does not hold re-runs nothing." (both
+ * red-at-the-head.md), and "a re-run does not clear that red" (review-threads.md), which names no
+ * re-runner at all. The cost is a ban written to the reviewer as a bare `you` with no review bot
+ * in its sentence, or under a condition, which passes too. The gap is bounded by `[^.]{0,40}`, so
+ * a `the reviewer` of the sentence before a full stop cannot reach across it to the `re-run
+ * nothing` of the next, and the review bot and the condition are read in the sentence of the ban.
+ * Each is read through a lookbehind, which Bun's JavaScriptCore runs, so a hit names the line of
+ * the re-runner, or of the `re-run` where none is named.
  */
-const REVIEWER_RERUNS_NOTHING =
-  /\b(?:the reviewer|your review|you(?<=\breview\s+bot\b[^.]*\byou))\b[^.]{0,40}?\bre-?runs?\s+(?:nothing|none)\b/i;
+const REVIEWER_RERUNS_NOTHING = new RegExp(
+  [
+    String.raw`(?<!${SENTENCE_OPENS}${RERUN_LIMIT}\b[^.]*)\b(?:the reviewer|your review)\b[^.]{0,40}?\bre-?runs?\s+(?:nothing|none)\b(?!\s+(?:for|${RERUN_LIMIT})\b)`,
+    String.raw`(?<=\breview\s+bot\b[^.]*)(?:\b(?:the reviewer|you)\b[^.]{0,40}?\bre-?runs?|(?<=${CLAUSE_OPENS})re-?run)\s+(?:nothing|none)\b`,
+  ].join("|"),
+  "i"
+);
 
 /**
  * The prohibition INFRA-1303 retired from the Envoy skill (skills/envoy/SKILL.md): "A Legion
@@ -471,14 +514,17 @@ const ONLY_THE_IMPLEMENTER_WAITS = /\ba Legion implementer waits this way only\b
  * work to fix." Between `is work to fix` and the send-back any punctuation stands, or none: the
  * comma of "is work to fix, so send the issue back", the full stop of "That is work to fix. Send
  * the issue back", and the colon of "That is work to fix: send the issue back", which no file
- * carried and which a `[,.]` let through. The clause that replaced it keeps every word up to
- * `goes back` and then says when: "… is work to fix, so the issue goes back on the second such
- * removal of that head", so a send-back followed by `on the second` or `only on the second`
- * passes, and so does the prompt part's "the issue goes back only on the second such removal of
- * that head", which calls nothing work to fix.
+ * carried and which a `[,.]` let through. The send-back is the issue's or `it`, sent or going,
+ * after a `so`, an `and` or nothing, so its one-step rewords are refused too: "That is work to
+ * fix, and the issue goes back." and "That is work to fix. Send it back with
+ * `request_backward_move`." The clause that replaced it keeps every word up to `goes back` and
+ * then says when: "… is work to fix, so the issue goes back on the second such removal of that
+ * head", so a send-back followed by `on the second` or `only on the second` passes, and so does
+ * the prompt part's "the issue goes back only on the second such removal of that head", which
+ * calls nothing work to fix.
  */
 const FIRST_EJECTION_GOES_BACK =
-  /\bmerge_group`?\s+checks\b.{0,30}?\bis\s+work\s+to\s+fix\b\s*[^\w\s]*\s+(?:so\s+)?(?:the\s+issue\s+goes\s+back|send\s+the\s+issue\s+back)\b(?!\s+(?:only\s+)?on\s+the\s+second\b)/i;
+  /\bmerge_group`?\s+checks\b.{0,30}?\bis\s+work\s+to\s+fix\b\s*[^\w\s]*\s+(?:(?:so|and)\s+)?(?:(?:the\s+issue|it)\s+goes\s+back|send\s+(?:the\s+issue|it)\s+back)\b(?!\s+(?:only\s+)?on\s+the\s+second\b)/i;
 
 /**
  * The ban on a wait INFRA-1303 retired from the tester's prompt part
@@ -493,14 +539,17 @@ const FIRST_EJECTION_GOES_BACK =
  * as forbidden.
  *
  * The subject is a lane noun — `lane`, `check`, `suite`, `job` — in a running state — `running`,
- * `queued`, `in progress` — and the ban is `never wait(s) for it` or `them` in the same sentence.
- * The sentences kept beside it keep a wait and so pass: the reviewer's "You wait for none of them
- * but the three `skill://legion-worker/references/red-at-the-head.md` gives you" and "One
- * `queued` or `in_progress`: wait." (go/reviewer.md). So do the implementer's "never wait for CI"
- * and the tester's "wait on no CI", which name no running lane and no `it`.
+ * `queued`, `in progress` — read as that state (`read`), and the ban is `never wait(s) for it` or
+ * `them` in the same sentence: the read of the running lane is what the tester gave up. The
+ * sentences kept beside it keep a wait and so pass: the reviewer's "You wait for none of them but
+ * the three `skill://legion-worker/references/red-at-the-head.md` gives you" and "One `queued` or
+ * `in_progress`: wait." (go/reviewer.md). So do the implementer's "never wait for CI" and the
+ * tester's "wait on no CI", which name no running lane and no `it`, and a running job called CI's
+ * with no read of it: "A job still running is CI's work: never wait for it, and push when your
+ * round is done."
  */
 const NO_WAIT_FOR_A_RUNNING_LANE = new RegExp(
-  String.raw`\b${LANE}s?\b[^.]{0,60}?\b(?:running|queued|in[\s_]progress)\b[^.]{0,60}?\bnever\s+waits?\s+for\s+(?:it|them)\b`,
+  String.raw`\b${LANE}s?\b[^.]{0,60}?\b(?:running|queued|in[\s_]progress)\b[^.]{0,60}?\bread\b[^.]{0,60}?\bnever\s+waits?\s+for\s+(?:it|them)\b`,
   "i"
 );
 
@@ -516,16 +565,20 @@ const NO_WAIT_FOR_A_RUNNING_LANE = new RegExp(
  * (`skill://legion-worker/references/red-at-the-head.md`). Two rounds of a case-sensitive grep for
  * the wording missed two of them, so the shape is pinned, not the words.
  *
- * The shape is a list of alternatives that starts with the re-run: the bare word `re-run`, a comma
- * within 40 characters, a second choice (`have`, `fix`, `wait`, `leave`), then `or` and a third.
- * `\bre-?run\b` does not match `re-runs`, which is what lets the sentence that replaced them pass:
- * "either re-runs a check that failed on itself once at that head, the tester, the merger and an
- * implementer that runs retro re-run nothing, the implementer fixes code that is at fault, and a
- * check still running is waited for" (concepts.md), whose bare `re-run nothing,` has no choice
- * after its comma.
+ * The shape is a list of alternatives that starts with the re-run: the bare word `re-run`, then
+ * within 40 characters either a comma, a second choice (`have`, `fix`, `wait`, `leave`), and `or`
+ * and a third, or `or` and a second choice alone: "re-run it or wait for it" offers the re-run as
+ * main's architect sentence did, one choice fewer. `\bre-?run\b` does not match `re-runs`, which
+ * is what lets the sentence that replaced them pass: "either re-runs a check that failed on itself
+ * once at that head, the tester, the merger and an implementer that runs retro re-run nothing, the
+ * implementer fixes code that is at fault, and a check still running is waited for"
+ * (concepts.md), whose bare `re-run nothing,` has no choice after its comma. A list a `not`, a
+ * `never`, a `don't` or a `no` negates bans every choice in it, offering none, so it passes too:
+ * "Do not re-run the group build, wait for its settlement, or leave the queue: record the removal
+ * first."
  */
 const RERUN_AMONG_THE_CHOICES =
-  /\bre-?run\b[^,.;]{0,40},\s+(?:have|fix|wait|leave)\w*\b[^.;]{0,60}?,?\s+or\s+(?:have|fix|wait|leave)\w*\b/i;
+  /(?<!\b(?:not|never|don't|no)\s+)\bre-?run\b[^,.;]{0,40}(?:,\s+(?:have|fix|wait|leave)\w*\b[^.;]{0,60}?,?)?\s+or\s+(?:have|fix|wait|leave)\w*\b/i;
 
 /**
  * The same grant written as a decision handed to every role the daemon told: worker-common.md's "a
@@ -533,13 +586,14 @@ const RERUN_AMONG_THE_CHOICES =
  * and the concepts page's "A red is for those roles to decide on". The daemon tells the architect,
  * the phase's worker and the implementer, and only one of them holds the phase.
  *
- * The plural `roles` and the told or reached roles are what it reads, so the sentence that
- * replaced the concepts page's passes: "A red is for the reviewer in `reviewing` or the
+ * The plural `roles` and the told or reached roles are what it reads, the decision handed to them
+ * or theirs to make ("The roles the daemon told decide whether to re-run it."), so the sentence
+ * that replaced the concepts page's passes: "A red is for the reviewer in `reviewing` or the
  * implementer while it holds `implementing` to act on", and so does "the daemon names the checks
  * GitHub reported and judges none of them".
  */
 const DECISION_FOR_THE_ROLES_TOLD =
-  /\b(?:decision|decide)\b[^.]{0,20}?\b(?:for|to)\s+the\s+roles\s+(?:it|they)\s+(?:told|reached)\b|\bfor\s+(?:the|those)\s+roles\b[^.]{0,30}?\bto\s+decide\b/i;
+  /\b(?:decision|decide)\b[^.]{0,20}?\b(?:for|to)\s+the\s+roles\s+(?:it|they)\s+(?:told|reached)\b|\bfor\s+(?:the|those)\s+roles\b[^.]{0,30}?\bto\s+decide\b|\bthe\s+roles\s+(?:the\s+daemon|it|they)\s+(?:told|reached)\s+decides?\b/i;
 
 /**
  * The grant of the reviewer's re-run of a check the base does not require, for the approval. The
@@ -553,21 +607,27 @@ const DECISION_FOR_THE_ROLES_TOLD =
  *
  * One sentence, read up to its full stop, holds all three in any order: a check the base does not
  * require (`check(s) (that) the base (branch) does not require`); a re-run (`re-run`, `re-runs`,
- * `rerun`) that no `nor`, `not`, `never`, `no` or `neither` just before it negates and that is no
- * `re-run(s) nothing` or `none`; and the approval (`approv…`). So it refuses "Before you approve,
- * re-run a check the base does not require once." and "A red on a check the base does not require
- * is yours to re-run once before you approve." It lets through main's two sentences, which put the
- * check and the re-run in different sentences; the page's "The reviewer neither waits for a check
- * the base does not require nor re-runs it for the approval" and the overlay's "A check the base
- * does not require you neither wait for nor re-run for the approval", whose re-run a `nor` negates;
- * the overlay's "a red the change did not cause, on a check the base requires, is yours to re-run
- * once", whose check is a required one; and "The implementer re-runs a red on a check the base
- * does not require once.", which holds no approval, since the implementer keeps that re-run.
- * The first lookahead puts the hit where one of the three words starts, so a hit names the line
- * of the sentence's first such word. The negation is a lookbehind, which Bun's JavaScriptCore runs.
+ * `rerun`) that no `nor`, `not`, `never`, `no` or `neither` just before it negates, that is no
+ * `re-run(s) nothing` or `none`, and that is not the implementer's (the implementer just before
+ * it, or a word or two before it); and the approval (`approv…`). So it refuses "Before you
+ * approve, re-run a check the base does not require once." and "A red on a check the base does
+ * not require is yours to re-run once before you approve." It lets through main's two sentences,
+ * which put the check and the re-run in different sentences; the page's "The reviewer neither
+ * waits for a check the base does not require nor re-runs it for the approval" and the overlay's
+ * "A check the base does not require you neither wait for nor re-run for the approval", whose
+ * re-run a `nor` negates; the overlay's "a red the change did not cause, on a check the base
+ * requires, is yours to re-run once", whose check is a required one; "The implementer re-runs a
+ * red on a check the base does not require once.", which holds no approval, since the implementer
+ * keeps that re-run; and the sentences that put the approval and the implementer's re-run in one
+ * sentence, the pi-legion changelog fragment's "The reviewer neither waits for nor re-runs a check
+ * the base does not require for the approval, while the implementer still re-runs such a red
+ * once." and "The reviewer approves over a red of a check the base does not require, which only
+ * the implementer re-runs." The first lookahead puts the hit where one of the three words starts,
+ * so a hit names the line of the sentence's first such word. The negation and the implementer are
+ * lookbehinds, which Bun's JavaScriptCore runs.
  */
 const UNREQUIRED_CHECK_RERUN_FOR_THE_APPROVAL =
-  /\b(?=checks?\b|approv|re-?runs?\b)(?=[^.]*?\bchecks?\s+(?:that\s+)?the\s+base(?:\s+branch)?\s+does\s+not\s+require\b)(?=[^.]*?\bapprov)(?=[^.]*?(?<!\b(?:nor|not|never|no|neither)\s+)\bre-?runs?\b(?!\s+(?:nothing|none)\b))/i;
+  /\b(?=checks?\b|approv|re-?runs?\b)(?=[^.]*?\bchecks?\s+(?:that\s+)?the\s+base(?:\s+branch)?\s+does\s+not\s+require\b)(?=[^.]*?\bapprov)(?=[^.]*?(?<!\b(?:nor|not|never|no|neither)\s+)(?<!\bimplementer(?:'s)?\s+(?:\w+\s+){0,2})\bre-?runs?\b(?!\s+(?:nothing|none)\b))/i;
 
 /**
  * Main's rule turned on a required check: "You neither wait for a required check nor re-run it for
@@ -581,14 +641,48 @@ const UNREQUIRED_CHECK_RERUN_FOR_THE_APPROVAL =
  * `required` and a lane noun (`check`, `lane`, `job`, `suite`), then `nor re-run` before the
  * sentence's full stop. Main's sentence passes, since its object is `it`, and so does the page's
  * "The reviewer neither waits for a check the base does not require nor re-runs it for the
- * approval", whose check is no `required` one.
+ * approval", whose check is no `required` one. Its subject is a role that waits for a required
+ * check and re-runs one, so a role that does neither, named just before the `neither` (the tester,
+ * the merger, the architect or the daemon), passes: "The tester neither waits for a required check
+ * nor re-runs it: it lets CI do its job."
  */
 const REQUIRED_CHECK_NEITHER_WAITED_FOR_NOR_RERUN = new RegExp(
-  String.raw`\bneither\s+waits?\s+for\s+(?:a|an|any|the)\s+required\s+${LANE}s?\b[^.]*?\bnor\s+re-?runs?\b`,
+  String.raw`(?<!\b(?:tester|merger|architect|daemon)\s+)\bneither\s+waits?\s+for\s+(?:a|an|any|the)\s+required\s+${LANE}s?\b[^.]*?\bnor\s+re-?runs?\b`,
   "i"
 );
 
-/** The ten rules INFRA-1303 retired, in the order they are written above. */
+/**
+ * The wait the architect retired on 2026-11-22 after INFRA-1303's round 20: a red the counted set
+ * does not list yet held back from its re-run although the head's own `pull_request` run holds its
+ * failed job, completed. The page's "A check the counted set does not list while a run at the head
+ * holds its failed job is unreported, not absent: it gets no re-run and is waited for", the
+ * reviewer's prompt part's "is unreported, not absent, and gets no re-run: wait for it", the page's
+ * "The run's own `completed` is no leave to press while the counted set does not report that
+ * check `completed`" and "A red the counted set does not yet report `completed` is not yet a red to
+ * act on", and the reviewer's third wait, "a red the counted set does not yet report `completed`,
+ * however you learned of it". Round 20's world-t reviewers saw the required check fail in the
+ * head's own run and pressed, and the architect ruled the act right and the wait wrong: a failed
+ * job of a completed `pull_request` run of the head is the red the page exists to clear
+ * (`A_COMPLETED_RUN_IS_ACTED_ON`), so a holder that reads the old wait leaves it.
+ *
+ * Three shapes: `unreported, not absent`; the counted set not listing or reporting a check, with
+ * the retired consequence in the same sentence (`gets no re-run`, `is not yet a red`, `presses no
+ * re-run`, `however the role learned` or `however you learned`); and `no leave to press while the
+ * counted set`. The sentences that replaced them pass, since they say the counted set `lists the
+ * check yet` or not: "A failed job of the head's own `pull_request` run is acted on once that run
+ * has completed, whether or not the counted set lists its check yet", and so does the wait's end,
+ * "the counted set settles with every check it holds `completed` and that one absent".
+ */
+const AN_UNREPORTED_RED_WAITS = new RegExp(
+  [
+    String.raw`\bunreported,?\s+not\s+absent\b`,
+    String.raw`\bthe\s+counted\s+set\s+does\s+not\s+(?:yet\s+)?(?:list|report)\b[^.]{0,100}?(?:\bgets\s+no\s+re-?run\b|\bis\s+not\s+yet\s+a\s+red\b|\bpresses\s+no\s+re-?run\b|\bhowever\s+(?:the\s+role|you)\s+learned\b)`,
+    String.raw`\bno\s+leave\s+to\s+press\s+while\s+the\s+counted\s+set\b`,
+  ].join("|"),
+  "i"
+);
+
+/** The eleven rules INFRA-1303 retired, in the order they are written above. */
 const RETIRED_RERUN_PROHIBITIONS = [
   NO_LANE_IS_RERUN,
   RERUN_NONE_OF_THEM_YOURSELF,
@@ -600,6 +694,7 @@ const RETIRED_RERUN_PROHIBITIONS = [
   DECISION_FOR_THE_ROLES_TOLD,
   UNREQUIRED_CHECK_RERUN_FOR_THE_APPROVAL,
   REQUIRED_CHECK_NEITHER_WAITED_FOR_NOR_RERUN,
+  AN_UNREPORTED_RED_WAITS,
 ];
 
 /**
@@ -607,8 +702,9 @@ const RETIRED_RERUN_PROHIBITIONS = [
  * each as one `<file>:<line>`: a sentence that forbids the re-run it turned on or the wait on that
  * re-run, gives the wait to the wrong role, sends the work back on the first `failed_checks`
  * ejection the merger now queues once more, offers the re-run to every role told of a red, gives
- * the reviewer a re-run of a check the base does not require before it approves, or turns main's
- * ban on that wait and that re-run onto a required check. They were deleted from skill files and
+ * the reviewer a re-run of a check the base does not require before it approves, turns main's ban
+ * on that wait and that re-run onto a required check, or holds a red of the head's own completed
+ * `pull_request` run back until the counted set lists it. They were deleted from skill files and
  * daemon prompt parts at once, and a forward merge keeps both sides of a deletion in silence, so
  * the rule is written over whole partitions rather than over the files it cleared: another file
  * that acquires one fails here too.
@@ -664,7 +760,7 @@ const TESTER_READS_THE_STATIC_LANES =
  * before any verdict it gives."
  */
 const HEADS_CHECKS_BEFORE_ANY_VERDICT = new RegExp(
-  String.raw`(?:\bthe\s+tester\s+reads|\byou\s+read|(?<=(?:^|[.!?:;]\s|[-*]\s))read)\s+the\s+head's\s+${LANE_QUALIFIER}(?:${LANE}s|runs)\b[^.]{0,30}?\bbefore\s+any\s+verdict\b`,
+  String.raw`(?:\bthe\s+tester\s+reads|\byou\s+read|(?<=${SENTENCE_OPENS})read)\s+the\s+head's\s+${LANE_QUALIFIER}(?:${LANE}s|runs)\b[^.]{0,30}?\bbefore\s+any\s+verdict\b`,
   "i"
 );
 
@@ -769,27 +865,50 @@ const RED_AT_THE_HEAD_FIELD = String.raw`(?<!\b(?:no|never|not)\s+\`?)\bredAtThe
  * records the red, "the tester records the red" or "the tester's `redAtTheHead`". The red it
  * records is the noun or a red lane: `red` followed by a stop, a lane noun or a word that follows
  * a noun (`at`, `in`, `that`, `the` …), so a red that names something else passes: "The tester
- * notes the red banner the app shows when the login fails." The tester reads no CI, so no red at
- * the head is in its record, and a text that puts one there brings back the read the record is
- * made from. The records that stay pass: the page's `--phase <implement|review>` before the `gh
- * run rerun` call, the reviewer's "names the red in its `redAtTheHead` record and its review
- * body", the handoff reads' `--phase <plan|implement|test|review>` (the worker skill) and
- * `--phase test --version <n>` (the implementer's role part), the tester's own `test` handoff and
- * its `failures`, which name no `redAtTheHead`, a sentence that says the tester's record carries no
- * `redAtTheHead`, and "The tester writes the red test for a way no test would catch".
+ * notes the red banner the app shows when the login fails." A red lane noun is the issue's own
+ * check, the tester's job, where `of the issue` follows it, and a check something else shows where
+ * a clause with its own subject follows it, so both pass: "The tester records each red check of
+ * the issue in `failures`, …", "The tester names the red check of the issue that failed on the
+ * surface it drove." and "The tester notes the red check the dashboard shows when the app's CI page
+ * loads." The cost is a red lane of the head with such a clause after it ("the red check the head
+ * carries"), which passes too. The tester reads no CI, so no red at the head is in its record, and
+ * a text that puts one there brings back the read the record is made from. The records that stay
+ * pass: the page's `--phase <implement|review>` before the `gh run rerun` call, the reviewer's
+ * "names the red in its `redAtTheHead` record and its review body", the handoff reads' `--phase
+ * <plan|implement|test|review>` (the worker skill) and `--phase test --version <n>` (the
+ * implementer's role part), the tester's own `test` handoff and its `failures`, which name no
+ * `redAtTheHead`, a sentence that says the tester's record carries no `redAtTheHead`, and "The
+ * tester writes the red test for a way no test would catch".
  */
 const THE_TESTER_RECORDS_A_RED = new RegExp(
   [
     String.raw`\bhandoff-write\b[^.]{0,60}?--phase\s+<[a-z|]*\btest\b[a-z|]*>(?=[^.]*?\b(?:re-?run|redAtTheHead)\b)`,
     `${TEST_RECORD}(?=[^.]*?${RED_AT_THE_HEAD_FIELD})`,
     `${RED_AT_THE_HEAD_FIELD}(?=[^.]*?${TEST_RECORD})`,
-    String.raw`\bthe\s+tester\s+(?:records?|writes?(?:\s+down)?|notes?|names?)\s+(?:the|a|each|that|this)\s+red\b(?=\s*[^\w\s]|\s*$|\s+(?:(?:CI\s+)?${LANE}s?|at|in|on|of|from|to|for|with|as|and|or|before|after|when|while|that|which|whose|it|its|the|this)\b)`,
+    String.raw`\bthe\s+tester\s+(?:records?|writes?(?:\s+down)?|notes?|names?)\s+(?:the|a|each|that|this)\s+red\b(?=\s*[^\w\s]|\s*$|\s+(?:(?:CI\s+)?${LANE}s?\b(?!\s+(?:of\s+(?:the|this|its)\s+issue|the|this)\b)|at|in|on|of|from|to|for|with|as|and|or|before|after|when|while|that|which|whose|it|its|the|this)\b)`,
     String.raw`\bthe\s+tester's\s+\`?redAtTheHead\b`,
   ].join("|"),
   "i"
 );
 
-/** The tester's six retired shapes, in the order they are written above. */
+/**
+ * The tester beside the reviewer on a check CI proves whose name no run answers: the worker
+ * skill's `ci_check` reference's "The tester and the reviewer each send it to the architect as a
+ * finding with `envoy_publish`; neither fails the round nor requests changes for it", a case the
+ * tester met only by reading CI. The reviewer alone sends it now, and the tester reads no CI run,
+ * so the case never reaches it (the same reference, `## A name that no run answers`). The subject
+ * is the two together, in either order, and the act a send of `it` to the architect (`sends`,
+ * `publishes`, `reports`), so the sentence that replaced it passes: "The reviewer sends it to the
+ * architect as a finding with `envoy_publish`, and requests no changes for it; the tester reads no
+ * CI run, so the case never reaches it." So do the two going on together, or naming a gap neither
+ * refuses (the architect's prompt parts): "the tester and the reviewer go on at that head" and "a
+ * gap the tester and the reviewer name and neither refuses". The cost is the two sending the
+ * architect some other `it` together, which a reword that names the thing sent passes.
+ */
+const THE_TESTER_SENDS_A_CI_FINDING =
+  /\bthe\s+(?:tester\s+and\s+the\s+reviewer|reviewer\s+and\s+the\s+tester)\s+(?:each\s+|both\s+)?(?:sends?|publish(?:es)?|reports?)\s+it\s+to\s+the\s+architect\b/i;
+
+/** The tester's seven retired shapes, in the order they are written above. */
 const RETIRED_TESTER_CI_READS = [
   TESTER_READS_THE_STATIC_LANES,
   HEADS_CHECKS_BEFORE_ANY_VERDICT,
@@ -797,14 +916,16 @@ const RETIRED_TESTER_CI_READS = [
   THE_TESTER_WAITS_ON_CI,
   CI_CHECK_IN_THE_TESTERS_FAILURES,
   THE_TESTER_RECORDS_A_RED,
+  THE_TESTER_SENDS_A_CI_FINDING,
 ];
 
 /**
  * Every place in the Markdown files under `roots` that still tells the tester to read CI, gives it
- * the re-run of a red at the head, has it wait on CI, has it judge a check CI proves, or has it
- * record a red at the head, each as one `<file>:<line>`. The sentences were deleted from skill
- * files, daemon prompt parts and docs pages at once, and a forward merge keeps both sides of a
- * deletion in silence, so this rule too is written over whole partitions.
+ * the re-run of a red at the head, has it wait on CI, has it judge a check CI proves, has it
+ * record a red at the head, or has it send the architect, beside the reviewer, a case only CI
+ * shows, each as one `<file>:<line>`. The sentences were deleted from skill files, daemon prompt
+ * parts and docs pages at once, and a forward merge keeps both sides of a deletion in silence, so
+ * this rule too is written over whole partitions.
  */
 export function retiredTesterCiReads(roots: readonly string[]): string[] {
   return retiredRuleHits(roots, RETIRED_TESTER_CI_READS);
@@ -1032,17 +1153,23 @@ const REVIEWER_LEAVES_AN_UNREQUIRED_CHECK =
   "The reviewer neither waits for a check the base does not require nor re-runs it for the approval, as `skill://legion-worker/references/merge-gate.md` says.";
 
 /**
- * The sentence of `## One re-run belongs to the head` that tells an unreported check from an
- * absent one, pinned whole and literally. The reviewer's existing re-run, main's, covers a
- * required check that is cancelled or absent, absent meaning that a run at the head holds its job
- * while the check is missing from the list; where no run at the head holds the job, the reviewer
- * tells the architect and does not approve. A check whose failed job a run at the head holds while
- * the counted set does not list it yet is unreported, and is waited for. A reader that lost the
- * sentence takes a failed job it read off the run for an absent check, and re-runs it before
- * GitHub counts it (the architect's rulings of 2026-11-20 on INFRA-1303's review round 3).
+ * The sentence of `## One re-run belongs to the head` that says which run a red is acted on in,
+ * pinned whole and literally, and the sentence of its counted set that keeps a read made at once
+ * from deciding. A failed job of the head's own `pull_request` run is the red the page exists to
+ * clear once that run has completed, whether or not the rollup lists its check yet: round 20's
+ * world-t reviewers saw the required check fail in the head's own run and pressed, and the
+ * architect ruled that act right and the old wait wrong (2026-11-22, 01:16Z), since GitHub's lag
+ * was never measured and the harm the wait guarded against is a by-hand run's, which the spend
+ * read's `event=pull_request` keeps out. The page said until then that such a check "is
+ * unreported, not absent: it gets no re-run and is waited for" (`AN_UNREPORTED_RED_WAITS` refuses
+ * that claim if it returns). A reader that lost the first sentence waits on a red it should clear,
+ * or presses on a run no pull request counts; one that lost the second takes a read made seconds
+ * after a push for a head with no red.
  */
-const UNREPORTED_IS_NOT_ABSENT =
-  "A check the counted set does not list while a run at the head holds its failed job is unreported, not absent: it gets no re-run and is waited for, as *The act and the wait* says.";
+const A_COMPLETED_RUN_IS_ACTED_ON =
+  "A failed job of the head's own `pull_request` run is acted on once that run has completed, whether or not the counted set lists its check yet, and no run that is not a `pull_request` run of the head is acted on at all.";
+const NO_RED_IS_READ_AT_ONCE =
+  "A read made seconds after a push never shows that the head has no red: a check the role was told of that no `pull_request` run of the head holds is waited for once, as *The act and the wait* says.";
 
 /**
  * The sentence of `## One re-run belongs to the head` that keeps `--required` off the counted set,
@@ -1058,17 +1185,15 @@ const COUNTED_SET_IS_NEVER_REQUIRED =
 
 /**
  * The sentence of `## One re-run belongs to the head` that reads the spend over every run of the
- * head once the counted set reports the check, pinned whole and literally, right after the
- * `actions/runs` read. Round 18 of INFRA-1303's batch (o-head-1, 2, 4 and 5) read only the failing
- * run's attempts, saw attempt 1, and pressed at a head whose one re-run another run's attempt 2 had
- * already spent. Round 19 (three world-t reviewers) read every run before the counted set reported
- * the check, found the failed run there, and pressed, where R1's order is the counted set's report,
- * then the spend, then the record, then the press (the architect's sentence, 2026-11-21). A reader
- * that lost it takes the failing run's first attempt for an unspent head, or reads the spend of a
- * red GitHub does not count yet.
+ * head once the run that holds the failed job has completed, pinned whole and literally, right
+ * after the `actions/runs` read. Round 18 of INFRA-1303's batch (o-head-1, 2, 4 and 5) read only
+ * the failing run's attempts, saw attempt 1, and pressed at a head whose one re-run another run's
+ * attempt 2 had already spent. The sentence put the counted set's report first until the
+ * architect's ruling of 2026-11-22 on round 20, which made the run's completion the condition. A
+ * reader that lost it takes the failing run's first attempt for an unspent head.
  */
 const EVERY_RUN_OF_THE_HEAD_IS_READ =
-  "Once the counted set reports the check completed, and before any re-run of it, read the spend over every `pull_request` run of the head: the failing run on its first attempt says nothing, since another run's second attempt spends the head's one re-run too.";
+  "Once the run that holds the failed job has completed, and before any re-run of it, read the spend over every `pull_request` run of the head: the failing run on its first attempt says nothing, since another run's second attempt spends the head's one re-run too.";
 
 /**
  * The exit statuses of the ancestry read, pinned literally. The sentence read "1 is not carried
@@ -1126,9 +1251,11 @@ const UNREAD_LOG_NAMES_THE_JOB =
  * - `RECORD_BEFORE_THE_PRESS`: the record is the phase's handoff record, before the press. Two
  *   runs read "It writes the failure down, then re-runs the failed jobs once." as a note and
  *   pressed first, one as `echo "failure recorded: …" && gh run rerun 7001002 --failed`.
- * - `RUN_STATUS_IS_NO_LEAVE` and `A_RED_HOWEVER_LEARNED_WAITS`: a red the counted set does not
- *   report is waited for whatever showed it. Three runs read "presses the re-run only on
- *   `completed`" off the run's own status, saw the check absent from the counted set, and pressed.
+ * - `RUN_STATUS_IS_THE_LEAVE` and `A_RED_IS_ACTED_ON_IN_ITS_RUN`: the run's own `completed`, in a
+ *   `pull_request` run of the head, is the leave to press, whatever showed the red. Three runs read
+ *   "presses the re-run only on `completed`" off the run's own status and pressed; the page then
+ *   held them to the counted set's report, a wait the architect retired on 2026-11-22 after round
+ *   20, where world t's reviewers pressed on the head's own completed run and were right.
  * - `THE_BOUND_IS_THE_REMINDER` and `NO_OTHER_WAKE_READS`: only the settlement's wake reads the
  *   counted set. Three runs read the checks when the thermonuclear pair's results woke them, before
  *   any settlement; one wrote "Now a new turn (thermo wake) — I may read the counted set once".
@@ -1146,10 +1273,10 @@ const UNREAD_LOG_NAMES_THE_JOB =
  */
 const RECORD_BEFORE_THE_PRESS =
   "It writes the failure down in a handoff record of its own phase (`dispatch handoff-write`) before the `gh run rerun` call that re-runs the failed jobs once.";
-const RUN_STATUS_IS_NO_LEAVE =
-  "The run's own `completed` is no leave to press while the counted set does not report that check `completed`.";
-const A_RED_HOWEVER_LEARNED_WAITS =
-  "**A red the counted set does not yet report `completed` is not yet a red to act on, however the role learned of it.** A task that names a failing check, a notice, another role's word or the role's own read of the runs, the jobs or the check-runs endpoint is not the counted set.";
+const RUN_STATUS_IS_THE_LEAVE =
+  "The run's own `completed` is the leave to press where the run is a `pull_request` run of the head, whether or not the counted set lists the check yet; until then the role waits for the run, as *The act and the wait* says.";
+const A_RED_IS_ACTED_ON_IN_ITS_RUN =
+  "**A red is acted on in the head's own `pull_request` run once that run has completed, however the role learned of it.** A task that names a failing check, a notice, another role's word or the counted set tells of a red; the head's `pull_request` runs (the spend read above) hold its failed job.";
 const THE_BOUND_IS_THE_REMINDER =
   "No wake comes at all: the bound is the phase reminder or the daemon's backstop.";
 const NO_OTHER_WAKE_READS =
@@ -1189,7 +1316,7 @@ const SKILL_LINKS_THE_PAGE =
 const MERGE_GATE_POINTS_AT_THE_PAGE =
   "A required check that is red at the head is a different case, which `skill://legion-worker/references/red-at-the-head.md` decides.";
 const NEVER_WAITING_POINTS_AT_THE_PAGE =
-  "`skill://legion-worker/references/red-at-the-head.md` holds the rest of that rule: which red is the change's, which a pass in the role's own pod does not move; that the counted set must report the check before any re-run, however the role learned of the red; the test of whether the head's one re-run is already spent; and the record the role writes before it re-runs.";
+  "`skill://legion-worker/references/red-at-the-head.md` holds the rest of that rule: which red is the change's, which a pass in the role's own pod does not move; that a red is acted on in the head's own `pull_request` run once that run has completed, however the role learned of it; the test of whether the head's one re-run is already spent; and the record the role writes before it re-runs.";
 
 /**
  * The same rulings where a role reads them outside the page, each pinned whole and literally: the
@@ -1285,9 +1412,14 @@ export function redAtTheHeadFaults(pages: {
             "a page that leaves exit 0 under cannot compare has a role fetch and read again forever, never concluding the base carries the fix",
         },
         {
-          sentence: UNREPORTED_IS_NOT_ABSENT,
+          sentence: A_COMPLETED_RUN_IS_ACTED_ON,
           because:
-            "a reviewer that takes an unreported check for an absent one re-runs a failed job the counted set does not report",
+            "a role that waits for the counted set to list a failed job of the head's completed `pull_request` run leaves the red it should clear, and one that acts on another run spends the head's one re-run on a run no pull request counts",
+        },
+        {
+          sentence: NO_RED_IS_READ_AT_ONCE,
+          because:
+            "a role that reads the checks seconds after a push takes a check GitHub has not started yet for a head with no red",
         },
         {
           sentence: COUNTED_SET_IS_NEVER_REQUIRED,
@@ -1297,7 +1429,7 @@ export function redAtTheHeadFaults(pages: {
         {
           sentence: EVERY_RUN_OF_THE_HEAD_IS_READ,
           because:
-            "a role that reads only the failing run's attempts sees attempt 1 and presses at a head whose one re-run another run already spent, and one that reads the runs before the counted set reports the check presses a red GitHub does not count yet",
+            "a role that reads only the failing run's attempts sees attempt 1 and presses at a head whose one re-run another run already spent",
         },
         {
           sentence: RECORD_BEFORE_THE_PRESS,
@@ -1305,14 +1437,14 @@ export function redAtTheHeadFaults(pages: {
             "a role that reads the record as a note presses the re-run before Dispatch holds the failure",
         },
         {
-          sentence: RUN_STATUS_IS_NO_LEAVE,
+          sentence: RUN_STATUS_IS_THE_LEAVE,
           because:
-            "a role that reads the run's own `completed` as leave presses while the counted set does not report the check",
+            "a role that holds the head's completed `pull_request` run to the counted set's report waits on a red it should clear",
         },
         {
-          sentence: A_RED_HOWEVER_LEARNED_WAITS,
+          sentence: A_RED_IS_ACTED_ON_IN_ITS_RUN,
           because:
-            "a role that learned of the red from its own read of the runs takes the wait for one it was only told of",
+            "a role that does not know which run a red is acted on in presses on a by-hand run, or waits on the counted set for a red the head's own run already holds",
         },
         {
           sentence: THE_BOUND_IS_THE_REMINDER,

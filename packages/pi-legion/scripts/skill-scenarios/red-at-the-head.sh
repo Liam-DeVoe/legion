@@ -502,8 +502,9 @@ red_workflows() {
 #      runs hold: a role that judges the head's one re-run as spent from the commit endpoint
 #      presses nothing, and one that judges it on the head's own runs re-runs
 #   l  a, with a counted set that does not report the red when the role first reads it, although
-#      the commit endpoint already holds its failing run: the role waits for the pull request's
-#      checks event, and the rig reports the check between the two turns (red_report)
+#      the head's own `pull_request` run already holds its failed job, completed, which a holder of
+#      the re-run acts on whether or not the counted set lists it yet; the rig reports the check
+#      between the two turns (red_report)
 #   m to t  c, d, e, f, g, h, k and l, in that order, with the reviewer in place of the tester:
 #      each the same red, answered as its base world answers it (red_workflows, red_model), and,
 #      but in q, i's aggregate ci beside it, so the red the reviewer meets is on a check the base
@@ -691,7 +692,7 @@ red_wake() {
 # reports the check red before the re-run and green after it, as every other world's counted
 # reads already do. Then the settlement the head's checks would raise, <run>/reported.json, goes
 # to the run's listener. <run>/reported-at is the moment the counted set reported it, which
-# score.ts's redAtTheHead reads the role's re-run and its first turn against.
+# score.ts's redAtTheHead notes beside the role's re-run.
 red_report() {
   red_wake '.routes |= map(if .unreported then .replies |= .[1:] | del(.unreported) else . end)' \
     reported reported.json "report of the check"

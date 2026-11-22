@@ -22,6 +22,7 @@ import { procRootOf } from "../../../../scripts/e2e/lib/proc-root";
 import { scriptFunctions } from "../../../../scripts/e2e/lib/script-functions";
 import {
   baseOf,
+  childEnvironment,
   RED_KEY,
   RED_VARIANT_FACTS,
   RED_VARIANT_WORLDS,
@@ -56,34 +57,9 @@ beforeAll(() => {
   mkdirSync(path.join(operatorHome, ".ssh"));
   writeFileSync(path.join(operatorHome, ".ssh", "id_ed25519"), "not a key\n", { mode: 0o600 });
 });
-/** The variables every child process of this file gets: the caller's PATH, a HOME of the test's
- * own, and the caller's mise data and config directories when the caller names them. A tool on
- * PATH can be a mise shim (jq and jj are, on a devbox). Under a fresh HOME such a shim finds
- * neither its installs nor its global config, so it fails. make_omp_home keeps the operator's two
- * directories for the processes it starts for the same reason, and base_env passes MISE_DATA_DIR
- * to every agent. A caller that names neither variable gets neither: the developer's own home
- * decides nothing here. PUBLIC_LEAK_CHECK and LEGION_LEAK_CHECK_TAG go through when the caller
- * has them: a row that builds a world through worker_fixture pushes into its bare remote, and on a
- * Legion pod that push goes through the pod's git wrapper, whose pre-push leak guard reads both. */
-const miseData =
-  process.env.MISE_DATA_DIR ??
-  (process.env.XDG_DATA_HOME === undefined
-    ? undefined
-    : path.join(process.env.XDG_DATA_HOME, "mise"));
-const childEnv = {
-  PATH: process.env.PATH ?? "",
-  HOME: operatorHome,
-  ...(miseData === undefined ? {} : { MISE_DATA_DIR: miseData }),
-  ...(process.env.XDG_CONFIG_HOME === undefined
-    ? {}
-    : { XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME }),
-  ...(process.env.PUBLIC_LEAK_CHECK === undefined
-    ? {}
-    : { PUBLIC_LEAK_CHECK: process.env.PUBLIC_LEAK_CHECK }),
-  ...(process.env.LEGION_LEAK_CHECK_TAG === undefined
-    ? {}
-    : { LEGION_LEAK_CHECK_TAG: process.env.LEGION_LEAK_CHECK_TAG }),
-};
+/** The variables every child process of this file gets, with this file's own HOME
+ * (red-at-the-head.fixtures.ts's childEnvironment says which and why). */
+const childEnv = childEnvironment(operatorHome);
 
 let profiles = 0;
 /** A label's profile directory with an empty Oh My Pi home, as make_omp_home leaves it. */

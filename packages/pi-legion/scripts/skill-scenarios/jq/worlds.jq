@@ -28,8 +28,9 @@ import "worlds" as $table;
 #                 run of that head whose `run_attempt` is 2 has already spent the head's one
 #                 re-run, and in `f` the title check judges the pull request rather than its code.
 #                 `k` and `l` re-run as `a` does: the failure of `k` that would spend the head's one
-#                 re-run is at the commit and in no counted set, and the counted set of `l` reports
-#                 its red once the rig does
+#                 re-run is at the commit and in no counted set, and the failed job of `l` is in
+#                 the head's own `pull_request` run, completed, though its counted set reports the
+#                 red only once the rig does
 #   turns         2 in a world that re-runs, which takes one more turn on the wake the re-run's
 #                 settlement brings once the turn that pressed it has ended (rerun_settle; `l`
 #                 takes the rig's report of the check first, so up to three); 1 in a world that

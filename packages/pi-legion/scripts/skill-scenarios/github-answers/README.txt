@@ -94,8 +94,9 @@ With no file, since the page holds the runs of the repository: `actions/workflow
 branch=main&per_page=1` (line 17) and `actions/runs?branch=main&per_page=1` (line 19) each answered
 a page whose run holds the same 35 keys in the same order, the run of the workflow list in the
 shape the runs list gives one.
-Measured on 2026-11-21 for INFRA-1303's round-19 fixes, with the pod's own gh 2.98.0 (a GraphQL
-read, no mutation) against cybermonklabs/legion#3514, at 21:20:43Z to 21:21:33Z: the query of
+Measured on 2026-11-21 for INFRA-1303's round-19 fixes with the pod's own gh 2.98.0, as GraphQL
+queries (no mutation) and GETs, not through measure-gh.sh, so no request log holds them, against
+cybermonklabs/legion#3514, at 21:20:43Z to 21:21:33Z: the query of
 trial-i-head-2's review threads read of round 19, `query($o:String!,$r:String!,$n:Int!,$endCursor:
 String){repository(owner:$o,name:$r){pullRequest(number:$n){reviewThreads(first:100,after:
 $endCursor){pageInfo{hasNextPage endCursor} nodes{id isResolved comments(last:1){nodes{author{login}
@@ -109,6 +110,23 @@ three pages one after another, nothing between them and no newline after, each p
 GitHub sent, which is compact JSON. gh asks each next page with the variable endCursor set to the
 page's pageInfo.endCursor while its hasNextPage is true: findEndCursor in pkg/cmd/api/
 pagination.go and api.go:456-460, read from raw.githubusercontent.com at v2.98.0.)
+Measured on 2026-11-22 for INFRA-1303's round-20 fixes with the pod's own gh 2.98.0, as GraphQL
+queries (no mutation) and one GET of gh's source, not through measure-gh.sh (gone with the pod's
+disk), each request written with its time to a log of the session before it was sent, at
+01:16:21Z to 01:18:27Z; gh exited 1 for each, <name>.stdout what it printed and <name>.stderr what
+it printed there:
+pr-view-404        gh pr view 999999 --repo cybermonklabs/legion   (nothing on stdout; `gh pr view` with --json headRefOid --jq .headRefOid, `gh pr checks 999999` and `gh pr diff 999999`, each with that --repo, the same bytes)
+repo-404-pr-list   gh pr list --repo cybermonklabs/no-such-repo-infra-1303 --head legion/LWEVAL-1 --state open --json number,headRefOid   (nothing on stdout; `gh pr view 1` with --json headRefOid --jq .headRefOid and `gh issue view 1`, each with that --repo, and `gh repo view cybermonklabs/no-such-repo-infra-1303`, the same bytes)
+graphql-pr-404     gh api graphql -f query='query{repository(owner:"cybermonklabs",name:"legion"){pullRequest(number:999999){number}}}'
+graphql-repo-404   gh api graphql -f query='query{repository(owner:"cybermonklabs",name:"no-such-repo-infra-1303"){name}}'
+graphql-parse-end-jq   trial-s-head-5's review threads read of round 20 as it sent it, one `}` short with its own --jq: gh api graphql -f query='query{repository(owner:"example",name:"widgets"){pullRequest(number:1005){reviewThreads(first:100){nodes{id isResolved comments(last:1){nodes{author{login}}}}}}}' --jq '.data.repository.pullRequest.reviewThreads.nodes[] | [.id, (if .isResolved then "resolved" else "open" end), .comments.nodes[0].author.login] | @tsv'
+  (trial-t-head-4's read of round 20, graphql-parse-end's query of pull request 1004 with
+  `--jq '.data.repository.pullRequest.reviewThreads.nodes | length'`, answered graphql-parse-end's
+  bytes. The same two queries of cybermonklabs/legion#3514 with the same filters answered the same
+  bytes but for the place, [1, 166] and [1, 171], and the first with no --jq answered what it
+  answered with it: gh runs no --jq over an error GitHub answers, and prints the body GitHub sent
+  and `gh: <message>` on stderr, pkg/cmd/api/api.go:488-561 at v2.98.0, read with
+  `gh api repos/cli/cli/contents/pkg/cmd/api/api.go?ref=v2.98.0` and the raw media type.)
 
 What GitHub answered to the reads below, measured the same way on 2026-11-18, which the rig's
 answers follow (no file: each is stated here and in the comment of the code that follows it):

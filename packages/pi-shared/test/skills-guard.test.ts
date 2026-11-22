@@ -89,7 +89,7 @@ function reported(
 }
 
 // Each retired sentence in the words of the file that carried it, the text around it shortened,
-// and the line its pattern's first word stands on. The last six rows are the shapes no file
+// and the line its pattern's first word stands on. The last thirteen rows are the shapes no file
 // carried, in the words a reword would bring them back in. Every row is found by its own pattern
 // alone, so a row whose pattern is taken out of the guard reports nothing and fails.
 const retired: readonly (readonly [source: string, page: readonly string[], line: number])[] = [
@@ -268,6 +268,55 @@ const retired: readonly (readonly [source: string, page: readonly string[], line
     ],
     2,
   ],
+  // The wait the architect retired after round 20 (`AN_UNREPORTED_RED_WAITS`), each in the words
+  // of the file that carried it at b6cb4b99.
+  [
+    'red-at-the-head.md\'s "is unreported, not absent: it gets no re-run and is waited for"',
+    [
+      "The reviewer's existing re-run of a cancelled or absent required check, which its role prompt",
+      "gives, neither spends the head's re-run nor is spent by it. A check the counted set does not",
+      "list while a run at the head holds its failed job is unreported, not absent: it gets no re-run and",
+      "is waited for, as *The act and the wait* says.",
+    ],
+    2,
+  ],
+  [
+    'reviewer.md\'s "is unreported, not absent, and gets no re-run: wait for it"',
+    [
+      "Second the head's checks as GitHub counts them for the pull request, the counted set.",
+      "One `queued` or `in_progress`: wait. One the counted set does not list yet while a run at the",
+      "head holds its failed job is unreported, not absent, and gets no re-run: wait for it.",
+    ],
+    2,
+  ],
+  [
+    "red-at-the-head.md's \"The run's own `completed` is no leave to press while the counted set does not report that check\"",
+    [
+      "`gh run view <run-id> --json status --jq .status`, and reads the log and presses the re-run only on",
+      "`completed`. The run's own `completed` is no leave to press while the counted set does not report",
+      "that check `completed`.",
+    ],
+    2,
+  ],
+  [
+    'red-at-the-head.md\'s "A red the counted set does not yet report `completed` is not yet a red to act on"',
+    [
+      "## The act and the wait",
+      "",
+      "**A red the counted set does not yet report `completed` is not yet a red to act on, however the role",
+      "learned of it.**",
+    ],
+    3,
+  ],
+  [
+    'reviewer.md\'s third wait, "a red the counted set does not yet report `completed`, however you learned of it"',
+    [
+      "You wait for none of them but the three `skill://legion-worker/references/red-at-the-head.md`",
+      "gives you: the run that holds a red, until it ends; your one re-run; and a red the counted set",
+      "does not yet report `completed`, however you learned of it.",
+    ],
+    2,
+  ],
   [
     'a reviewer\'s re-run of a check the base does not require, "is yours to re-run once before you approve"',
     [
@@ -329,6 +378,66 @@ const retired: readonly (readonly [source: string, page: readonly string[], line
     ],
     2,
   ],
+  // One step from a retired form, each let through until the class search at b6cb4b99: the
+  // evidence ban with `do not` or `don't`, the merger's send-back with `and` or of `it`, the thread
+  // rule as an imperative, the decision as the told roles' own, and the architect's grant with one
+  // choice fewer.
+  [
+    'tester.md\'s evidence ban with "do not", "Do not re-run a CI lane as evidence."',
+    ["Read the app's own output for what you ran.", "Do not re-run a CI", "lane as evidence."],
+    2,
+  ],
+  [
+    'tester.md\'s evidence ban with "don\'t", "Don\'t rerun failed lanes as evidence."',
+    ["Read the app's own output for what you ran.", "Don't rerun failed", "lanes as evidence."],
+    2,
+  ],
+  [
+    'merger.md\'s send-back with "and", "That is work to fix, and the issue goes back"',
+    [
+      "5. Act on a removal by its `removalReason`:",
+      "   - `failed_checks`: the queue's own `merge_group` checks failed. That is work to",
+      "     fix, and the issue goes back.",
+    ],
+    2,
+  ],
+  [
+    'merger.md\'s send-back of "it", "That is work to fix. Send it back"',
+    [
+      "5. Act on a removal by its `removalReason`:",
+      "   - `failed_checks`: the queue's own `merge_group` checks failed. That is work to",
+      "     fix. Send it back with `request_backward_move`.",
+    ],
+    2,
+  ],
+  [
+    "review-threads.md's rule as an imperative, \"While the review bot's thread stands, re-run nothing\"",
+    [
+      "## The reviewer, on a re-review",
+      "",
+      "While the review bot's thread stands,",
+      "re-run nothing: that red moves the issue nowhere.",
+    ],
+    4,
+  ],
+  [
+    'the decision as the told roles\' own, "The roles the daemon told decide whether to re-run it"',
+    [
+      "When CI settles on the pull request's head, the daemon names every check GitHub reported.",
+      "The roles the daemon told",
+      "decide whether to re-run it.",
+    ],
+    2,
+  ],
+  [
+    'architect-common.md\'s grant with one choice fewer, "re-run it or wait for it"',
+    [
+      "A `checks-red` notice is one thing only: the head of an issue in `testing` conflicts with its",
+      "base. A red is yours to decide on: re-run it or",
+      "wait for it.",
+    ],
+    2,
+  ],
 ];
 
 test.each(retired)("%s is reported at the line it starts on", (_source, page, line) => {
@@ -339,8 +448,11 @@ test.each(retired)("%s is reported at the line it starts on", (_source, page, li
 // refuse, in the words of the file that carries it and the text around it shortened. The sentences
 // no tree carries are the send-back limited by `only`, which the merge-queue pattern's lookahead
 // lets through, the implementer's re-run of a check the base does not require, which holds no
-// approval, and the last three, which a docs page, a runbook and the merger's prompt could
-// plausibly say: the lane and reviewer patterns refused each until INFRA-1303's review round 3.
+// approval, the three after them, which a docs page, a runbook and the merger's prompt could
+// plausibly say, which the lane and reviewer patterns refused until INFRA-1303's review round 3,
+// and the last thirteen, the rules of this change's own page and prompts said of a role, the
+// changelog fragment's own sentence and a measurement's note, which the lane, reviewer, wait,
+// choice and approval patterns refused until the class search at b6cb4b99.
 const kept: readonly (readonly [source: string, page: readonly string[]])[] = [
   [
     'merge-gate.md\'s "A merge-group run is never re-run"',
@@ -467,8 +579,33 @@ const kept: readonly (readonly [source: string, page: readonly string[]])[] = [
     'reviewer.md\'s "You wait for none of them but the three"',
     [
       "You wait for none of them but the three `skill://legion-worker/references/red-at-the-head.md`",
-      "gives you: the run that holds a red, until it ends; your one re-run; and a red the counted set",
-      "does not yet report `completed`, however you learned of it.",
+      "gives you: the run that holds a red, until it ends; your one re-run; and a check you were told",
+      "of that no `pull_request` run of the head holds yet, waited for once.",
+    ],
+  ],
+  [
+    "red-at-the-head.md's \"A failed job of the head's own `pull_request` run is acted on once that run has completed\"",
+    [
+      "`failure` over a lane GitHub cancelled is that cancelled lane. A failed job of the head's own",
+      "`pull_request` run is acted on once that run has completed, whether or not the counted set lists its",
+      "check yet, and no run that is not a `pull_request` run of the head is acted on at all.",
+    ],
+  ],
+  [
+    "red-at-the-head.md's \"The run's own `completed` is the leave to press\"",
+    [
+      "`completed`. The run's own `completed` is the leave to press where the run is a `pull_request` run",
+      "of the head, whether or not the counted set lists the check yet; until then the role waits for",
+      "the run, as *The act and the wait* says.",
+    ],
+  ],
+  [
+    "red-at-the-head.md's wait's end, \"the counted set settles with every check it holds `completed` and that one absent\"",
+    [
+      "- After that one wait no `pull_request` run of the head holds the check, and the counted set settles",
+      "  with every check it holds `completed` and that one absent, or the head moves. Then the role",
+      "  records the red, where it learned of it and what the counted set carries, re-runs nothing, goes",
+      "  on with its round, and tells the architect.",
     ],
   ],
   [
@@ -593,6 +730,88 @@ const kept: readonly (readonly [source: string, page: readonly string[]])[] = [
       "A red check at the head is not yours to act on. You re-run",
       "nothing: the reviewer in `reviewing` or the implementer while it holds `implementing` does.",
     ],
+  ],
+  [
+    'the merger\'s prompt, "The merger never re-runs a check: …"',
+    [
+      "A removal over `failed_checks` gets the same head queued once more. The merger never",
+      "re-runs a check: a re-run of a group build puts nothing back in the queue.",
+    ],
+  ],
+  [
+    'a tester\'s page, "The tester re-runs no check and reads no CI."',
+    [
+      "The tester boots the app and drives it as a user would. The tester re-runs no",
+      "check and reads no CI.",
+    ],
+  ],
+  [
+    'a measurement\'s note, "No job was re-run in that measurement"',
+    [
+      "The run's jobs were read at its end. No job was",
+      "re-run in that measurement: attempt 1 is the run's only attempt.",
+    ],
+  ],
+  [
+    'the merger\'s prompt, "The merger re-runs none of them: …"',
+    [
+      "The group build's checks failed. The merger re-runs none",
+      "of them: it records the removal and queues the head once more.",
+    ],
+  ],
+  [
+    "red-at-the-head.md's spent re-run, \"When the head's one re-run is spent, the reviewer re-runs nothing\"",
+    ["When the head's one re-run is spent, the reviewer re-runs", "nothing and requests changes."],
+  ],
+  [
+    'a reviewer past review, "Past review the reviewer re-runs nothing"',
+    [
+      "Past review the reviewer re-runs",
+      "nothing: it reads the merge and approves the new head or requests changes.",
+    ],
+  ],
+  [
+    'red-at-the-head.md\'s limit, "The reviewer re-runs nothing for a check the base does not require."',
+    ["The reviewer re-runs nothing for a", "check the base does not require."],
+  ],
+  [
+    "the implementer's prompt, \"A job still running is CI's work: never wait for it\"",
+    [
+      "Push, then complete. A job still running is CI's work: never wait",
+      "for it, and push when your round is done.",
+    ],
+  ],
+  [
+    'the merger\'s prompt, "Do not re-run the group build, wait for its settlement, or leave the queue"',
+    [
+      "A group build that failed is no red of yours. Do not re-run the group build, wait for its",
+      "settlement, or leave the queue: record the removal first.",
+    ],
+  ],
+  [
+    'the pi-legion changelog fragment\'s "while the implementer still re-runs such a red once"',
+    [
+      "The reviewer neither waits for nor re-runs a check the base does not require for the approval,",
+      "while the implementer still re-runs such a red once.",
+    ],
+  ],
+  [
+    'an approval over a red of a check the base does not require, "which only the implementer re-runs"',
+    [
+      "The reviewer approves over a red of a check the base does not require, which only the",
+      "implementer re-runs.",
+    ],
+  ],
+  [
+    'a tester\'s page, "The tester neither waits for a required check nor re-runs it"',
+    [
+      "The tester drives the app. The tester neither waits for a required",
+      "check nor re-runs it: it lets CI do its job.",
+    ],
+  ],
+  [
+    'the daemon\'s page, "The daemon never re-runs a job on its own."',
+    ["The daemon names every check GitHub reported. The daemon never re-runs a", "job on its own."],
   ],
 ];
 
@@ -924,6 +1143,18 @@ const retiredTesterReads: readonly (readonly [
     ],
     2,
   ],
+  // The tester beside the reviewer on a case only CI shows, which no pattern refused until the class
+  // search at b6cb4b99.
+  [
+    'ci-checks.md\'s "The tester and the reviewer each send it to the architect"',
+    [
+      "2. A held-back job reads `skipped`, not absent: the label cures it.",
+      "3. Otherwise the check's words are wrong. The tester and the",
+      "   reviewer each send it to the architect as a finding with `envoy_publish`; neither fails the",
+      "   round nor requests changes for it.",
+    ],
+    2,
+  ],
 ];
 
 test.each(retiredTesterReads)("%s is reported at the line it starts on", (_source, page, line) => {
@@ -932,9 +1163,10 @@ test.each(retiredTesterReads)("%s is reported at the line it starts on", (_sourc
 
 // Each sentence the trees keep beside the tester's retired ones, which a pattern too wide would
 // refuse: the sentences that replaced them, the reviewer's own read and wait, and the sentences that
-// keep a `ci_check` check CI's. The last fourteen are sentences a docs page, a runbook or a tester's
-// page could plausibly say, which no tree carries: the tester patterns refused the first seven until
-// the class search at INFRA-1303's merge head, and the last seven until the one at 5c710625.
+// keep a `ci_check` check CI's. The last seventeen are sentences a docs page, a runbook or a
+// tester's page could plausibly say, which no tree carries: the tester patterns refused the first
+// seven until the class search at INFRA-1303's merge head, the next seven until the one at
+// 5c710625, and the last three until the one at b6cb4b99.
 const keptBesideTesterReads: readonly (readonly [source: string, page: readonly string[]])[] = [
   [
     'tester.md\'s "Let CI do its job"',
@@ -974,8 +1206,8 @@ const keptBesideTesterReads: readonly (readonly [source: string, page: readonly 
     'reviewer.md\'s "You wait for none of them but the three"',
     [
       "You wait for none of them but the three `skill://legion-worker/references/red-at-the-head.md`",
-      "gives you: the run that holds a red, until it ends; your one re-run; and a red the counted set",
-      "does not yet report `completed`, however you learned of it.",
+      "gives you: the run that holds a red, until it ends; your one re-run; and a check you were told",
+      "of that no `pull_request` run of the head holds yet, waited for once.",
     ],
   ],
   [
@@ -998,6 +1230,21 @@ const keptBesideTesterReads: readonly (readonly [source: string, page: readonly 
     [
       "- The tester runs and records only the checks with no `ci_check`. It neither reads nor records a",
       "  `ci_check` check's derived result, which is CI's: the reviewer reads it before it approves.",
+    ],
+  ],
+  [
+    'ci-checks.md\'s "The reviewer sends it to the architect as a finding"',
+    [
+      "3. Otherwise the check's words are wrong. The reviewer sends it to the architect as a finding",
+      "   with `envoy_publish`, and requests no changes for it; the tester reads no CI run, so the case",
+      "   never reaches it.",
+    ],
+  ],
+  [
+    'concepts.md\'s "the tester and the reviewer go on at that head"',
+    [
+      "  records the conflict, and the tester and the reviewer go on at that head; an approval of the",
+      "  head ends the review round.",
     ],
   ],
   [
@@ -1146,6 +1393,27 @@ const keptBesideTesterReads: readonly (readonly [source: string, page: readonly 
   [
     "a runbook's \"The role that holds the issue's phase reruns its last command after a restart.\"",
     ["The role that holds the issue's phase reruns", "its last command after a restart."],
+  ],
+  [
+    'a tester\'s page, "The tester records each red check of the issue in `failures`"',
+    [
+      "The tester runs the issue's checks. The tester records each red",
+      "check of the issue in `failures`, with the command it ran and what it observed.",
+    ],
+  ],
+  [
+    'a tester\'s page, "The tester names the red check of the issue that failed"',
+    [
+      "The tester drives the changed surface. The tester names the red",
+      "check of the issue that failed on the surface it drove.",
+    ],
+  ],
+  [
+    'a tester\'s page, "The tester notes the red check the dashboard shows"',
+    [
+      "The tester opens the app's CI page. The tester notes the red",
+      "check the dashboard shows when the app's CI page loads.",
+    ],
   ],
 ];
 

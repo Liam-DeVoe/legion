@@ -8,6 +8,7 @@ import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 import { DAEMON_MODULE, workerPane } from "./daemon-pane";
 import {
   baseOf,
+  childEnvironment,
   RED_KEY,
   RED_VARIANT_FACTS,
   RED_VARIANT_WORLDS,
@@ -37,30 +38,9 @@ const operatorHome = path.join(work, "operator-home");
 beforeAll(() => {
   mkdirSync(operatorHome);
 });
-/** The variables every child process of this file gets, as rig.test.ts gives its own: the caller's
- * PATH, a HOME of the test's own, the caller's mise data and config directories when the caller
- * names them (a tool on PATH can be a mise shim), and PUBLIC_LEAK_CHECK and
- * LEGION_LEAK_CHECK_TAG when the caller has them, since worker_fixture pushes into its bare remote
- * through whatever git is first on PATH, a Legion pod's leak guard among them. */
-const miseData =
-  process.env.MISE_DATA_DIR ??
-  (process.env.XDG_DATA_HOME === undefined
-    ? undefined
-    : path.join(process.env.XDG_DATA_HOME, "mise"));
-const childEnv = {
-  PATH: process.env.PATH ?? "",
-  HOME: operatorHome,
-  ...(miseData === undefined ? {} : { MISE_DATA_DIR: miseData }),
-  ...(process.env.XDG_CONFIG_HOME === undefined
-    ? {}
-    : { XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME }),
-  ...(process.env.PUBLIC_LEAK_CHECK === undefined
-    ? {}
-    : { PUBLIC_LEAK_CHECK: process.env.PUBLIC_LEAK_CHECK }),
-  ...(process.env.LEGION_LEAK_CHECK_TAG === undefined
-    ? {}
-    : { LEGION_LEAK_CHECK_TAG: process.env.LEGION_LEAK_CHECK_TAG }),
-};
+/** The variables every child process of this file gets, as rig.test.ts gives its own, with this
+ * file's own HOME (red-at-the-head.fixtures.ts's childEnvironment says which and why). */
+const childEnv = childEnvironment(operatorHome);
 
 /** Runs SCRIPT under bash, after the library and rig.sh's note and fail are sourced
  * (red-at-the-head.fixtures.ts's `sourced`), with ARGS as $1... in an environment of PATH and the
@@ -1188,6 +1168,7 @@ describe("red_fixture", () => {
     expect(after.stdout.includes("retries a refused send")).toBe(RED_WORLD[world].after === "red");
     expect(await attemptLog(1)).toEqual(before);
     expect((await attemptLog(3)).stderr).toStartWith("rig: request not modeled: ");
+    // measured: <owed>
   }, 120_000);
 
   // Catches: a pull request body whose check line contradicts the world's Verification document.
@@ -3295,6 +3276,41 @@ describe("the world's repository, workflows and reads", () => {
     expect(githubAnswer("graphql-parse-end")).toEqual(error(1, 166));
   });
 
+  // The second again, with a filter: round 20's s-head-5 and t-head-4 sent their review threads
+  // queries one `}` short, each with a `--jq`, and the stand-in refused both as unmodeled. gh runs
+  // no `--jq` over an error GitHub answers: it prints the body GitHub sent as it stands and the
+  // error's message on stderr, exit 1 (pkg/cmd/api/api.go:488-561 at v2.98.0; measured for those
+  // very calls, github-answers/graphql-parse-end-jq and graphql-parse-end, README.txt). Catches:
+  // such a call refused as unmodeled, or its filter run over the error.
+  test("a GraphQL query one `}` short with a --jq answers GitHub's parse error, its filter never run", async () => {
+    const run = redFixture("i");
+    /** The two calls' query of pull request `number`, `after` standing after `author{login}`. */
+    const threads = (number: number, after: string) =>
+      `query=query{repository(owner:"example",name:"widgets"){pullRequest(number:${number}){reviewThreads(first:100){nodes{id isResolved comments(last:1){nodes{author{login}${after}}}}}}}`;
+    expect({
+      sHead5: await read(run, [
+        "api",
+        "graphql",
+        "-f",
+        threads(1005, ""),
+        "--jq",
+        '.data.repository.pullRequest.reviewThreads.nodes[] | [.id, (if .isResolved then "resolved" else "open" end), .comments.nodes[0].author.login] | @tsv',
+      ]),
+      tHead4: await read(run, [
+        "api",
+        "graphql",
+        "-f",
+        threads(1004, " body"),
+        "--jq",
+        ".data.repository.pullRequest.reviewThreads.nodes | length",
+      ]),
+    }).toEqual({
+      sHead5: githubAnswer("graphql-parse-end-jq"),
+      tHead4: githubAnswer("graphql-parse-end"),
+    });
+    expect(ghCalls(run).some((call) => "unmodeled" in call)).toBe(false);
+  });
+
   // The third: o-ablate-5 read `actions/workflows/ci.yaml/runs?branch=main`. Catches: the runs of a
   // workflow refused, answered with another workflow's runs or a branch's the world ran nothing on,
   // or a workflow the world does not hold answered other than GitHub's 404 (measured,
@@ -4845,6 +4861,41 @@ describe("GitHub's answers, as measured", () => {
       unmeasured.stderr.startsWith("rig: request not modeled: gh "),
       unmeasured.exit,
     ]).toEqual([true, 1]);
+  });
+
+  // Catches: gh's words for a repository or a pull request GraphQL cannot resolve (routes.jq's
+  // no_repo and no_pr, written by hand until INFRA-1303's round-20 fixes measured them) in other
+  // bytes than gh 2.98.0 prints, and GraphQL's NOT_FOUND of either in another shape or message
+  // than GitHub's (measured, github-answers/pr-view-404, repo-404-pr-list, graphql-pr-404 and
+  // graphql-repo-404). The repository GitHub does not hold is the one measured, so its answers are
+  // compared byte for byte; the pull request's GraphQL error stands where this world's query names
+  // the field, since the measured query named cybermonklabs/legion.
+  test("a repository or a pull request GraphQL cannot resolve answers gh's and GitHub's measured words", async () => {
+    const run = redFixture("a");
+    const missing = "cybermonklabs/no-such-repo-infra-1303";
+    const prQuery = `query{repository(owner:"example",name:"widgets"){pullRequest(number:999999){number}}}`;
+    const [prBody, prMessage] = githubAnswer("graphql-pr-404");
+    const located = JSON.parse(String(prBody));
+    located.errors[0].locations = [{ line: 1, column: prQuery.indexOf("pullRequest") + 1 }];
+    expect({
+      prView: await answer(run, ["pr", "view", "999999", "--repo", RED_REPO]),
+      prList: await answer(run, [
+        ...["pr", "list", "--repo", missing, "--head", `legion/${RED_KEY}`],
+        ...["--state", "open", "--json", "number,headRefOid"],
+      ]),
+      repoView: await answer(run, ["repo", "view", missing]),
+      graphqlPr: await answer(run, ["api", "graphql", "-f", `query=${prQuery}`]),
+      graphqlRepo: await answer(run, [
+        ...["api", "graphql", "-f"],
+        'query=query{repository(owner:"cybermonklabs",name:"no-such-repo-infra-1303"){name}}',
+      ]),
+    }).toEqual({
+      prView: githubAnswer("pr-view-404"),
+      prList: githubAnswer("repo-404-pr-list"),
+      repoView: githubAnswer("repo-404-pr-list"),
+      graphqlPr: [JSON.stringify(located), prMessage, 1],
+      graphqlRepo: githubAnswer("graphql-repo-404"),
+    });
   });
 
   // Catches: the combined status of a full commit sha the repository does not hold refused as an

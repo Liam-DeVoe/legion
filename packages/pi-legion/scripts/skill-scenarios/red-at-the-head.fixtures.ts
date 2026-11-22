@@ -57,6 +57,38 @@ const rig = scriptFunctions(path.join(import.meta.dir, "rig.sh"));
  * for. */
 export const sourced = `. ${JSON.stringify(path.join(import.meta.dir, "red-at-the-head.sh"))}\n${rig("note")}\n${rig("fail")}\njj() { :; }`;
 
+/** The variables every child process of a rig test file gets, rig.test.ts's and
+ * red-at-the-head.test.ts's alike: the caller's PATH, `home` as HOME (each file's own), the
+ * caller's mise data and config directories when the caller names them, and PUBLIC_LEAK_CHECK and
+ * LEGION_LEAK_CHECK_TAG when the caller has them. A tool on PATH can be a mise shim (jq and jj
+ * are, on a devbox), and under a fresh HOME such a shim finds neither its installs nor its global
+ * config, so it fails: make_omp_home keeps the operator's two directories for the processes it
+ * starts for the same reason, and base_env passes MISE_DATA_DIR to every agent. A caller that
+ * names neither gets neither, so the developer's own home decides nothing. A row that builds a
+ * world through worker_fixture pushes into its bare remote, and on a Legion pod that push goes
+ * through the pod's git wrapper, whose pre-push leak guard reads the two leak-check variables. */
+export function childEnvironment(home: string): Record<string, string> {
+  const miseData =
+    process.env.MISE_DATA_DIR ??
+    (process.env.XDG_DATA_HOME === undefined
+      ? undefined
+      : path.join(process.env.XDG_DATA_HOME, "mise"));
+  return {
+    PATH: process.env.PATH ?? "",
+    HOME: home,
+    ...(miseData === undefined ? {} : { MISE_DATA_DIR: miseData }),
+    ...(process.env.XDG_CONFIG_HOME === undefined
+      ? {}
+      : { XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME }),
+    ...(process.env.PUBLIC_LEAK_CHECK === undefined
+      ? {}
+      : { PUBLIC_LEAK_CHECK: process.env.PUBLIC_LEAK_CHECK }),
+    ...(process.env.LEGION_LEAK_CHECK_TAG === undefined
+      ? {}
+      : { LEGION_LEAK_CHECK_TAG: process.env.LEGION_LEAK_CHECK_TAG }),
+  };
+}
+
 /** Runs SCRIPT under bash after `sourced`, with ARGS as $1... and ENV as its environment. */
 export function runSourced(script: string, args: string[], env: Record<string, string>) {
   const result = Bun.spawnSync(["bash", "-c", `${sourced}\n${script}`, "-", ...args], { env });

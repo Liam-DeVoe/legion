@@ -25,7 +25,11 @@
 //   a name not on it is refused as gh refuses it, `Unknown JSON field: "<f>"` with the list, exit
 //   1, before any request; a name on it that the route's answer does not hold, of the object or of
 //   any object of a list, is a request the rig does not model. The fields picked print in the order
-//   gh prints them, by name. `--jq`/`-q` runs jq over what the call prints, as gh does;
+//   gh prints them, by name. `--jq`/`-q` runs jq over what the call prints, as gh does, but over
+//   no error GitHub answers: gh then prints the body GitHub sent as it stands and the error's
+//   message on stderr, exit 1, the filter never run (pkg/cmd/api/api.go:488-561 at v2.98.0; a
+//   GraphQL error measured with round 20's own filters, github-answers/graphql-parse-end-jq and
+//   README.txt);
 //   `--paginate` on a REST read follows every page a route's program gives (below), and on a
 //   GraphQL query prints its one page: gh asks the next only while the page's `pageInfo` says
 //   `hasNextPage` (findEndCursor, pkg/cmd/api/pagination.go at v2.98.0), and each connection a
@@ -175,6 +179,7 @@ import {
   sentReview,
   threads,
 } from "./review-keep";
+import { withoutServices } from "./without-services";
 
 /** One answer: what a route serves a call, and what each entry of a route's `replies` serves. A
  * reply marked `unmodeled` is a state of the world the rig cannot state truthfully, such as the
@@ -556,15 +561,10 @@ const JSON_FIELDS: Record<string, string[]> = {
   ],
 };
 
-/** Every variable of `env` but the DISPATCH_*, ENVOY_* and NATS_* ones (the header): the
- * environment each child of the stand-in runs with. Bun hands a child the environment this
- * process started with unless a spawn names one, so each spawn here names this one; publish reads
- * the run's own listener from its pane.env. */
-export function withoutServices(env: Record<string, string | undefined>) {
-  return Object.fromEntries(
-    Object.entries(env).filter(([name]) => !/^(?:DISPATCH|ENVOY|NATS)_/.test(name))
-  );
-}
+/** The environment each child of the stand-in runs with: this process's less the DISPATCH_*,
+ * ENVOY_* and NATS_* variables (without-services.ts, and the header). Bun hands a child the
+ * environment this process started with unless a spawn names one, so each spawn here names this
+ * one; publish reads the run's own listener from its pane.env. */
 const childEnv = withoutServices(process.env);
 
 export type Fixtures = z.infer<typeof Fixtures>;
@@ -1159,7 +1159,6 @@ function answered(call: Call, fixtures: Fixtures, matched: Route, now: Date): An
         ? { data: projected.data, errors: projected.errors }
         : { data: projected.data };
     if (projected.errors.length > 0) {
-      if (call.filter !== undefined) refuse();
       stderr = `gh: ${(projected.errors[0] as { message?: unknown }).message}\n`;
       status = 1;
     }

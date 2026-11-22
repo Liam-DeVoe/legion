@@ -1704,9 +1704,9 @@ run_tester_proof() {
 # run_red_at_the_head NAME N INDEX START WORLD: run_tester_proof's run with the world's red at the
 # head (red_fixture), for the one role that holds the phase in it, which the world's facts name
 # (red_world, read from world.json), and never two workers. A world whose counted set the rig
-# reports (`report`, world `l`) takes a turn on the rig's own report of the check (red_report),
-# the role having ended its first turn waiting for the counted set to report it. A world that
-# expects a re-run takes one more turn once a turn in which the role pressed it has ended: the rig
+# reports (`report`, world `l`) takes a turn on the rig's own report of the check (red_report)
+# once the role's first turn has ended, whatever that turn did with the red. A world that expects
+# a re-run takes one more turn once a turn in which the role pressed it has ended: the rig
 # settles the re-run then (rerun_settle), which publishes the settlement the role's subscription
 # carries to it, so the settlement never reaches the turn that pressed the re-run, and every read
 # in that turn finds the attempt still running.

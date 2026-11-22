@@ -48,12 +48,12 @@ other lanes of its workflow run still run. Until that run ends, `gh run view <ru
 answers `run <id> is still in progress; logs will be available when it is complete` and exits 1, and
 GitHub refuses `gh run rerun`. So before the log read the role reads the run's own status,
 `gh run view <run-id> --json status --jq .status`, and reads the log and presses the re-run only on
-`completed`. The run's own `completed` is no leave to press while the counted set does not report
-that check `completed`. Until then it waits for the pull request's checks event, as *The act and the
-wait* says: that settlement comes once every check run of the head has ended. A re-run GitHub
-refuses all the same starts no attempt, so it spends nothing: the role records GitHub's answer, and
-on the next wake it reads the spend again before it presses, as before the first press, since a
-refusal while the run reads `completed` can mean another press already started an attempt.
+`completed`. The run's own `completed` is the leave to press where the run is a `pull_request` run
+of the head, whether or not the counted set lists the check yet; until then the role waits for
+the run, as *The act and the wait* says. A re-run GitHub refuses all the same starts no attempt,
+so it spends nothing: the role records GitHub's answer, and on the next wake it reads the spend
+again before it presses, as before the first press, since a refusal while the run reads
+`completed` can mean another press already started an attempt.
 
 The record is a handoff record of the role's own phase, written with
 `dispatch handoff-write --issue <issue> --phase <implement|review> --body-file <file>` before the
@@ -124,17 +124,17 @@ every check run at the commit, a by-hand `workflow_dispatch` run's among them, w
 counts for no pull request.
 
 **The spend is a different question, and a different read.** Whether the red is the change's is
-judged on the counted set, above. Whether the head's one re-run is already spent is judged on
-the head's own `pull_request` workflow runs and their attempts, because GitHub's rollup carries
-the latest run of each check name, so a superseded failure cannot appear there at all:
+judged on the check and its failed job, above. Whether the head's one re-run is already spent is
+judged on the head's own `pull_request` workflow runs and their attempts, because GitHub's rollup
+carries the latest run of each check name, so a superseded failure cannot appear there at all:
 
 ```bash
 gh api "repos/<o>/<r>/actions/runs?head_sha=<head>&event=pull_request&per_page=100" \
   --jq '.workflow_runs[] | [.id,.name,.run_attempt,.conclusion] | @tsv'
 ```
 
-Once the counted set reports the check completed, and before any re-run of it, read the spend over
-every `pull_request` run of the head: the failing run on its first attempt says nothing, since
+Once the run that holds the failed job has completed, and before any re-run of it, read the spend
+over every `pull_request` run of the head: the failing run on its first attempt says nothing, since
 another run's second attempt spends the head's one re-run too. A run of that head whose
 `run_attempt` is above 1 is a re-run somebody already pressed. Whether it spent the head's one
 re-run is read on each earlier attempt of that run, `<n>` from 1 to one below the run's
@@ -158,11 +158,11 @@ so a lane that hangs again reads `cancelled` again. `event=pull_request` keeps t
 An aggregate is resolved to its lane, as step 2 of *Which red is the change's* says, before the
 spend is judged. The reviewer's existing re-run of a cancelled or absent required check, which its
 role prompt gives, neither spends the head's re-run nor is spent by it, and an aggregate that reads
-`failure` over a lane GitHub cancelled is that cancelled lane. A check the counted set does not
-list while a run at the head holds its failed job is unreported, not absent: it gets no re-run and
-is waited for, as *The act and the wait* says.
-A `gh run rerun <run-id> --failed` call pressed while a check of the counted set, resolved to its
-lane, is `failure` spends the head's re-run, whatever else that call clears.
+`failure` over a lane GitHub cancelled is that cancelled lane. A failed job of the head's own
+`pull_request` run is acted on once that run has completed, whether or not the counted set lists its
+check yet, and no run that is not a `pull_request` run of the head is acted on at all. A
+`gh run rerun <run-id> --failed` call pressed while a job of that run, resolved to its lane, is
+`failure` spends the head's re-run, whatever else that call clears.
 
 When the re-run is spent, the role re-runs nothing. The reviewer requests changes, names the
 check, and says the head's one re-run is spent. The implementer records the red, tells the
@@ -175,33 +175,33 @@ rollup of `null` read on the wake after that wait means GitHub counts no context
 check with no counted run there has no re-run to spend, and there is nothing to re-run.
 
 **An unread counted set is not an empty one.** After a push the counted set can lag, so a role that
-reads it at once may find the failing check pending, queued, in progress or absent. The spend test
-is decided only where the counted set reports that check `completed`. In every other state nothing
-is decided yet, and the role waits as *The act and the wait* says.
+reads it at once may find the failing check pending, queued, in progress or absent. A read made
+seconds after a push never shows that the head has no red: a check the role was told of that no
+`pull_request` run of the head holds is waited for once, as *The act and the wait* says.
 
 ## The act and the wait
 
-**A red the counted set does not yet report `completed` is not yet a red to act on, however the role
-learned of it.** A task that names a failing check, a notice, another role's word or the role's own
-read of the runs, the jobs or the check-runs endpoint is not the counted set. Until the counted set
-reports that check `completed`, the role presses no re-run and ends no round on it: it subscribes to
-the pull request's topic and ends the turn, as below, and reads the counted set again when the wake
-brings it back. GitHub fills a head's checks over seconds and minutes, so a counted set that is
-silent about a check the role knows of is one that has not caught up, and a re-run pressed there
-spends the head's one re-run on a run nobody counted. The wait ends one of three ways:
+**A red is acted on in the head's own `pull_request` run once that run has completed, however the
+role learned of it.** A task that names a failing check, a notice, another role's word or the
+counted set tells of a red; the head's `pull_request` runs (the spend read above) hold its failed
+job. GitHub fills a head's rollup over seconds and minutes, and that lag decides nothing. A run
+that is not a `pull_request` run of the head, a by-hand `workflow_dispatch` run among them, counts
+for no pull request, and a re-run pressed there spends the head's one re-run on a run nobody
+counted. While the run is queued or in progress, and once for a check no `pull_request` run of the
+head holds yet, the role presses no re-run and ends no round on it: it subscribes to the pull
+request's topic and ends the turn, as below. The wait ends one of three ways:
 
-- The counted set reports that check: the role acts on it.
-- The counted set settles with every check it holds `completed` and that one absent, or the head
-  moves. This ends the wait only once the role has waited at least once, since a counted set read
-  seconds after the role learned of the red looks the same whether it has settled without the check
-  or has not reached it yet. Then the role records the red, where it learned of it and what the
-  counted set carries, re-runs nothing, goes on with its round, and tells the architect.
+- The run that holds the failed job completes: the role acts on it.
+- After that one wait no `pull_request` run of the head holds the check, and the counted set settles
+  with every check it holds `completed` and that one absent, or the head moves. Then the role
+  records the red, where it learned of it and what the counted set carries, re-runs nothing, goes
+  on with its round, and tells the architect.
 - No wake comes at all: the bound is the phase reminder or the daemon's backstop. While its
   process runs (under `runtime: tmux`, and under `runtime: kubernetes` with idle release off), a
   phase worker that ended its turn with a WAITING line gets the phase reminder 15 minutes later
   (`LEGION_STALL_WAITING_MS`). Where idle release is on, the pod goes first, and the bound is the
-  daemon's backstop about an hour after the release. The role then reads the counted set once
-  more and takes whichever of the first two the reading gives.
+  daemon's backstop about an hour after the release. The role then reads the head's runs and the
+  counted set once more and takes whichever of the first two the reading gives.
 
 The role runs `gh run rerun <run id> --failed` in the head's own `pull_request` run. In that turn:
 

@@ -2,7 +2,8 @@ import { afterEach, expect, test } from "bun:test";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
-import { answer, Fixtures, parseCall, withoutServices } from "./gh-standin";
+import { answer, Fixtures, parseCall } from "./gh-standin";
+import { withoutServices } from "./without-services";
 
 const standin = path.join(import.meta.dir, "gh-standin.ts");
 const runDirectory = temporaryDirectories("skill-scenarios-gh-standin");
@@ -700,11 +701,8 @@ test("the re-run and the failed-log read are each recorded with the route that a
 test("a watch reply prints its frame again at each interval until the call is killed, recorded with no exit", async () => {
   const match = "^gh run watch 7(?=\\s|$)";
   const { env, gh, calls } = world([{ match, stdout: "* run 7\n", watch: true }]);
-  const inherited = Object.fromEntries(
-    Object.entries(process.env).filter(([name]) => !/^(?:DISPATCH|ENVOY|NATS)_/.test(name))
-  );
   const child = Bun.spawn(["bun", standin, "gh", "run", "watch", "7", "--interval", "1"], {
-    env: { ...inherited, ...env },
+    env: { ...withoutServices(process.env), ...env },
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -739,13 +737,10 @@ test("a watch reply prints its frame again at each interval until the call is ki
 test("a watch of the checks prints its frame every 10 seconds unless --interval names another", async () => {
   const match = "^gh pr checks 1(?=\\s|$)(?=.*\\s--watch(?:\\s|$))";
   const { env, calls } = world([{ match, stdout: "* checks\n", watch: true }]);
-  const inherited = Object.fromEntries(
-    Object.entries(process.env).filter(([name]) => !/^(?:DISPATCH|ENVOY|NATS)_/.test(name))
-  );
   /** What the watch printed in `ms` milliseconds after its first frame. */
   const printedIn = async (ms: number, ...args: string[]) => {
     const child = Bun.spawn(["bun", standin, "gh", "pr", "checks", "1", ...args], {
-      env: { ...inherited, ...env },
+      env: { ...withoutServices(process.env), ...env },
       stdout: "pipe",
       stderr: "pipe",
     });
