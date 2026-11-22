@@ -68,6 +68,26 @@ test("a stored list that starts at 3 reads its first item as 3", () => {
   expect(bullets?.attrs, "a bullet list holds no number").toBeUndefined();
 });
 
+// An author's own private-use character - an icon font's, a pasted terminal glyph - is a word of
+// the text: a stored text's reading holds it as written outside code, inside a code span and
+// beside an escape, as the server's reading does, and the shared projection reads it to the same
+// plain words, as the names store projects a stored text's reading (`projectedNames`).
+test("a stored text read to plain words keeps the author's private-use characters as written", () => {
+  const star = "\ue02a";
+  const low = "\ue05f";
+  for (const [stored, words] of [
+    [`an icon ${star} and ${low} here`, `an icon ${star} and ${low} here`],
+    [`Run \`a${star}b${low}c\` now`, `Run a${star}b${low}c now`],
+    [`\\*${star} and ${low}\\_`, `*${star} and ${low}_`],
+    [`${star} \\*not emphasis\\* and \`a*b\``, `${star} *not emphasis* and a*b`],
+    ["\ue000\\! and `\ue020!`", "\ue000! and \ue020!"],
+  ] as const) {
+    expect(wordsOfText(stored), stored).toBe(words);
+    const projected = projectedNames(new Map([["stored", { tree: storedReading(stored) }]]));
+    expect(projected.get("stored"), stored).toBe(words);
+  }
+});
+
 // A quote marker opens one block, so the first 100 of 150 open quotes and the 50 past the bound
 // read as the text they are, as the server keeps them.
 test("a stored text of quote markers past the nesting bound reads them as text", () => {
