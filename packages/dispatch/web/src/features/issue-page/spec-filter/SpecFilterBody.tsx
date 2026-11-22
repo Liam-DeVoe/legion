@@ -522,15 +522,19 @@ export function SpecFilterBody({
   // closed, as the outline's do (`IssueTree.tsx`'s `linesOpen`). Where each statement folds is
   // read from the tree alone, so opening or closing a line walks no tree (`openedRows`).
   const holdsWords = useHoldsWords();
-  const [lines, setLines] = useState<OvertakenLines>(NO_LINES);
+  const [overtakenLines, setOvertakenLines] = useState<OvertakenLines>(NO_LINES);
   const openOvertaken = useCallback(
-    (key: string, open: boolean) => setLines((held) => toggledLines(held, key, open, holdsWords)),
+    (key: string, open: boolean) =>
+      setOvertakenLines((held) => toggledLines(held, key, open, holdsWords)),
     [holdsWords]
   );
-  const folded = useMemo(() => foldedLines(groups, closedIds, root), [closedIds, groups, root]);
+  const folded = useMemo(
+    () => foldedLines(groups, closedIds, root, asksHeld),
+    [asksHeld, closedIds, groups, root]
+  );
   const folds = useMemo(
-    () => openedRows(folded, groups, others, (key) => lineIsOpen(lines, holdsWords, key)),
-    [folded, groups, holdsWords, lines, others]
+    () => openedRows(folded, groups, others, (key) => lineIsOpen(overtakenLines, holdsWords, key)),
+    [folded, groups, holdsWords, others, overtakenLines]
   );
   // A request from the Contents list or a chip that names a folded statement opens the line
   // that holds it, and the statement's row takes the focus once it is drawn. The request is
@@ -783,6 +787,7 @@ export function SpecFilterBody({
       >
         {groups.map((group) => (
           <Group
+            asksHeld={asksHeld}
             context={context}
             focused={focused}
             group={group}
@@ -918,12 +923,14 @@ const NO_FOLDS: FoldedLines = { holding: new Map(), lines: new Map() };
  * carries the key as its `of`'s id too, which the keys hand back to open or close it
  * (`useTreeKeymap.ts`'s `onOvertaken`). The line holds the statements run by run as their runs
  * are headed in `groups`, the groups the body draws, a run that waits on the asks read included;
- * `closed` is the ids of the tree's nodes at or under an overtaken node.
+ * `closed` is the ids of the tree's nodes at or under an overtaken node, and `asksHeld` whether
+ * the asks read holds an answer, which the runs are split by (`runsOf`).
  */
 function foldedLines(
   groups: readonly SpecGroup[],
   closed: ReadonlySet<string>,
-  root: TreeNode
+  root: TreeNode,
+  asksHeld: boolean
 ): ReadonlyMap<SpecGroup, GroupLine> {
   const lines = new Map<SpecGroup, GroupLine>();
   const groupOf = new Map<string, SpecGroup>();
@@ -976,7 +983,7 @@ function foldedLines(
         open: false,
         trail: [],
       },
-      runs: runsOf(into.folded),
+      runs: runsOf(into.folded, asksHeld),
     };
     lines.set(group, line);
   }
@@ -1024,32 +1031,39 @@ function openedRows(
   return { holding, lines, rows: [...rows, ...others.map(rowOf)] };
 }
 
-/** A statement with the head of its run: the decision that heads it, or the person's decision it
- *  waits on (`SpecRun.waiting`), or neither, where no decision shaped it. */
+/** A statement with the head of its run: the run `specDecidedBy` put it in, or, where that run's
+ *  head shaped nothing that still stands, the next decision that shaped it, or none
+ *  (`foldedLines`). */
 interface Headed {
-  readonly head: Pick<SpecRun, "decision" | "waiting">;
+  readonly head: Pick<SpecRun, "decision">;
   readonly statement: SpecStatement;
 }
 
-/** `headed` run as `specDecidedBy` runs statements: the statements side by side that one head
- *  heads are one run, so two runs of one decision with nothing drawn between them are one. */
-function runsOf(headed: readonly Headed[]): SpecRun[] {
-  const runs: { decision?: SpecDecision; statements: SpecStatement[]; waiting?: string }[] = [];
+/**
+ * `headed` run as `specDecidedBy` runs statements: side by side, the statements whose heads
+ * hold one key are one run, so two runs of one decision with nothing drawn between them are
+ * one. A head that draws a decision is keyed by that decision's id, as there (`tieOf`). One
+ * that draws none is headed by no decision once the asks read holds an answer (`asksHeld`), and
+ * all such share one key; until then it may be a person's decision that waits on that read,
+ * whose key `specDecidedBy` keeps to itself, so it is keyed by the head itself and joins only
+ * the statements of its own run.
+ */
+function runsOf(headed: readonly Headed[], asksHeld: boolean): SpecRun[] {
+  const runs: { decision?: SpecDecision; statements: SpecStatement[] }[] = [];
+  // The key of the last run built, which the next statement's head is matched against.
+  let runKey: unknown;
   for (const { head, statement } of headed) {
+    const key = head.decision?.id ?? (asksHeld ? undefined : head);
     const last = runs.at(-1);
-    if (
-      last !== undefined &&
-      last.decision?.id === head.decision?.id &&
-      last.waiting === head.waiting
-    ) {
+    if (last !== undefined && runKey === key) {
       last.statements.push(statement);
     } else {
       runs.push({ ...head, statements: [statement] });
     }
+    runKey = key;
   }
   return runs;
 }
-
 
 /**
  * Places the focused statement or cell on screen by the page's one rule (`useRowOnScreen`,
@@ -1265,6 +1279,7 @@ function dotted(parts: readonly LinePart[]): ReactNode {
 /** The statements under one parent: that parent's own line as the group's heading, then one row
  *  of the grid per run of statements one decision shaped. */
 function Group({
+  asksHeld,
   context,
   focused,
   group,
@@ -1280,6 +1295,9 @@ function Group({
   tabStop,
   underLine,
 }: {
+  /** Whether the asks read holds an answer: until it does, a run that draws no decision may be
+   *  a person's decision's that waits on that read, which the runs are split by (`runsOf`). */
+  asksHeld: boolean;
   context: ReadonlySet<string>;
   focused: string | undefined;
   group: SpecGroup;
@@ -1331,7 +1349,8 @@ function Group({
           run.statements.flatMap((statement) =>
             statement.node.closed === true ? [] : [{ head: run, statement }]
           )
-        )
+        ),
+        asksHeld
       ),
     };
   }
@@ -1409,6 +1428,7 @@ function Group({
       )}
       {line?.row.open === true && line.runs.length > 0 ? (
         <Group
+          asksHeld={asksHeld}
           context={context}
           focused={focused}
           group={{ runs: line.runs }}

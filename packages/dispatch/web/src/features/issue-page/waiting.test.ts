@@ -647,7 +647,7 @@ test("no reader is waited on for an overtaken ask", () => {
   };
   const asking: IssueDetails = { ...issue, open_asks: [...(issue.open_asks ?? []), inSpec] };
   const askBlock = (extra: Partial<TreeAnswerNode> = {}) =>
-    treeNode("q1", "ask", {
+    answerNode("q1", "ask", {
       document: { artifact_id: spec.id, position: 2, slug: "spec" },
       text: inSpec.question,
       ...extra,

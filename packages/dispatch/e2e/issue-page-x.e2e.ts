@@ -51,7 +51,7 @@ import {
   treeReads,
   viewAnswerOf,
   viewCount,
-} from "./issue-page-t";
+} from "./issue-page-t-tree";
 import { checkLegendCounts, verificationCheck } from "./issue-page-v";
 import {
   drawnIdOf,
@@ -108,9 +108,9 @@ import { asUser } from "./users";
  * Each row turns the new page on for alice with `phase` (`e2e/issue-page.ts`) and checks its
  * gates first, on an issue of its own (`seedGateIssue`): the tree read is served (`treeReadGate`,
  * which reads its 404) and an issue is born converted (`convertedGate`), each with `owedUnless`
- * (`e2e/issue-page-t.ts`). Where a gate is not met the row skips with an `owed` annotation that
- * names it, having written nothing else, and never passes; once both are met it runs whole: it
- * seeds its issue with `seedWholeIssue` and the seeds of `e2e/issue-page-x.ts`, asserts that
+ * (`e2e/issue-page-t-tree.ts`). Where a gate is not met the row skips with an `owed` annotation
+ * that names it, having written nothing else, and never passes; once both are met it runs whole:
+ * it seeds its issue with `seedWholeIssue` and the seeds of `e2e/issue-page-x.ts`, asserts that
  * issue's tree read answers `converted: true`, and reads it. The proposed and overtaken nodes are
  * written by the addresses the tree read answers alice (`seedNodeStates`); the reserved nodes'
  * writes answer their own (`seedAuthorOnly`).

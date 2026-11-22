@@ -236,11 +236,11 @@ export function VerificationFilterBody({
   // runs through, as the words filter opens the lines that hold its matches: once for each node
   // an address names, once the view holds it, so a line the reader closes after that stays
   // closed. The focus stays where it is.
-  const addressed = useAddressLines(view);
+  const addressLines = useAddressLines(view);
   const [openedFor, setOpenedFor] = useState<string | undefined>(undefined);
-  if (addressed.lines !== undefined && openedFor !== addressed.target) {
-    const named = addressed.lines;
-    setOpenedFor(addressed.target);
+  if (addressLines.lines !== undefined && openedFor !== addressLines.target) {
+    const named = addressLines.lines;
+    setOpenedFor(addressLines.target);
     setLines((held) =>
       [...named].reduce((into, id) => toggledLines(into, id, true, holdsWords), held)
     );

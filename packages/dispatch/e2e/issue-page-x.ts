@@ -24,7 +24,7 @@ import { seedWholeIssue, type WholeIssueSeed } from "./issue-layout-seed";
 import { asPlanner, HEAD_SHA, pause, recorderActor } from "./issue-layout-seed-support";
 import { OPEN_QUESTION_BLOCK_ID, requirementText } from "./issue-layout-seed-text";
 import { issuePage, presetCount, presetRow } from "./issue-page";
-import type { Gate } from "./issue-page-t";
+import type { Gate } from "./issue-page-t-tree";
 import {
   addFinding,
   type ConstraintRead,
@@ -63,7 +63,7 @@ import type { ApiRequest } from "./traffic";
  *   (`data-folded-count`), each filter control's (`data-preset-count`) and its flag
  *   (`data-preset-flag`), the Verification summary's "N of M covered" and Details' "Referenced
  *   by" - beside the same counts made from a page's own tree read (`heldUnder`,
- *   `reservedUnder`, `referencesTo`), with `viewCount` of `e2e/issue-page-t.ts` for a view's.
+ *   `reservedUnder`, `referencesTo`), with `viewCount` of `e2e/issue-page-t-tree.ts` for a view's.
  * - **What the page sent**: the requests to the node state routes (`nodeStateRequests`) and the
  *   address each settle names (`settlesSent`).
  * - **Details' facts of the focused row** (`FocusedNodeFacts.tsx`), with their "Referenced by"
