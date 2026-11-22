@@ -796,7 +796,10 @@ export const dispatchRouteToolSpecs = [
     example: {},
     description: `List the answers the person you act for gave to asks, newest first, a page at a time. ${AS_DATA}`,
     arguments: (z) => ({
-      limit: z.number({ int: true, min: 1 }).describe("How many answers a page holds.").optional(),
+      limit: z
+        .number({ int: true, min: 1, max: 200 })
+        .describe("How many answers a page holds, 1 to 200; 50 by default.")
+        .optional(),
       offset: z.number({ int: true, min: 0 }).describe("How many answers to skip.").optional(),
     }),
     strict: true,
@@ -940,13 +943,16 @@ export const dispatchRouteToolSpecs = [
     name: "dispatch_list_near_copy_checks",
     example: { project: "DSP" },
     description:
-      "List the near-copy checks Dispatch ran on issue creates, newest first: each create whose title came close to an issue already there, and what the creator did about it.",
+      "List one project's near-copy checks, oldest first: a row for each issue create the near-copy gate answered, with its outcome (refused, forced, nudged, passed or not_made) and the issues it found close to the create.",
     arguments: (z) => ({
-      project: z.string().describe("Only this project's checks.").optional(),
+      project: z.string().describe(PROJECT_KEY),
       from: z.string().describe(`Only checks at or after this time. ${RFC3339}`).optional(),
       to: z.string().describe(`Only checks before this time. ${RFC3339}`).optional(),
       after: z.string().describe("The cursor a previous page answered.").optional(),
-      limit: z.number({ int: true, min: 1 }).describe("How many checks a page holds.").optional(),
+      limit: z
+        .number({ int: true, min: 1, max: 1000 })
+        .describe("How many checks a page holds, 1 to 1000; 1000 by default.")
+        .optional(),
     }),
     strict: true,
     routes: get("/api/v1/near-copy-checks", { query: ["project", "from", "to", "after", "limit"] }),
@@ -1016,7 +1022,7 @@ export const dispatchRouteToolSpecs = [
   {
     name: "dispatch_list_broadcasts",
     example: {},
-    description: `List the broadcasts sent, newest first, each with the sessions it went to. ${AS_DATA}`,
+    description: `List the 50 most recent broadcasts, newest first, each with its author, body and delivery mode and two counts: recipients, the sessions it went to, and replies, those that answered. dispatch read-broadcast names the sessions. ${AS_DATA}`,
     arguments: () => ({}),
     strict: true,
     routes: get("/api/v1/broadcasts"),
@@ -1032,7 +1038,7 @@ export const dispatchRouteToolSpecs = [
   {
     name: "dispatch_list_decisions",
     example: { issue: "DSP-1" },
-    description: `List the decisions of an issue's documents: each decision block with its question, its options and the answer that settled it. ${AS_DATA}`,
+    description: `List an issue's decisions: each section of its decisions.md in document order, with its block_id, heading, text and text_sha256, the asks it mentions, its links to spec blocks, the Keep a person recorded (kept) and whether it waits on review; and open_questions, the issue's open asks whose block is in its spec. ${AS_DATA}`,
     arguments: (z) => ({ issue: z.string().describe(ISSUE_KEY) }),
     strict: true,
     routes: get("/api/v1/issues/{key}/decisions", { params: { key: "issue" } }),
@@ -1208,7 +1214,7 @@ export const dispatchRouteToolSpecs = [
         .optional(),
       limit: z
         .number({ int: true, min: 1, max: 200 })
-        .describe("How many events a page holds.")
+        .describe("How many events a page holds, 1 to 200; 200 by default.")
         .optional(),
     }),
     strict: true,
@@ -1221,7 +1227,7 @@ export const dispatchRouteToolSpecs = [
     name: "dispatch_read_document_references",
     example: { document: "0190c7d2-1111-7222-8333-444444444444" },
     description:
-      "Read a document's references one level in each direction: outgoing, every item or document its content mentions, a block with the document that holds it, and referenced_by, every item or document that mentions the document or one of its current blocks, each once.",
+      "Read a document's references one level in each direction: outgoing, every item or document its content mentions, and every document block it mentions that a current version holds, with that document; and referenced_by, every item or document that mentions the document or one of its current blocks, each once.",
     arguments: (z) => ({ document: z.string().describe(DOCUMENT_ID) }),
     strict: true,
     routes: get("/api/v1/artifacts/{id}/references", { params: { id: "document" } }),
@@ -1277,7 +1283,7 @@ export const dispatchRouteToolSpecs = [
     name: "dispatch_remove_document",
     example: { document: "0190c7d2-1111-7222-8333-444444444444" },
     description:
-      "Remove a document from its issue or project. Use it only when a person asks to delete that document. Undo does not bring it back.",
+      "Remove a document of an issue that is still untouched: made by typing a title and never written in, with nothing in Dispatch pointing at it. Dispatch refuses any other document (409 ARTIFACT_NOT_UNTOUCHED) and a project's document (400 ARTIFACT_PROJECT_DOCUMENT). Use it only when a person asks to delete that document. Undo does not bring it back.",
     arguments: (z) => ({ document: z.string().describe(DOCUMENT_ID) }),
     strict: true,
     routes: send("DELETE", "/api/v1/artifacts/{id}", { params: { id: "document" }, body: [] }),
@@ -1329,7 +1335,8 @@ export const dispatchRouteToolSpecs = [
   {
     name: "dispatch_read_block",
     example: { document: "0190c7d2-1111-7222-8333-444444444444", block: "b1" },
-    description: "Read one block of a document by its block id, with its text and attributes.",
+    description:
+      "Read where one block stands in a document, by its block id: its type, its path from the top-level block down (each node's type, id and index) and, for a table block, row or cell, its place in the table. It answers no text: dispatch doc-read reads the text.",
     arguments: (z) => ({
       document: z.string().describe(DOCUMENT_ID),
       block: z.string({ min: 1 }).describe("The block's id."),
@@ -1347,13 +1354,15 @@ export const dispatchRouteToolSpecs = [
       text_sha256: "0000000000000000000000000000000000000000000000000000000000000000",
     },
     description:
-      "Keep a decision block whose answer the related-item check found may repeat another decision, recording that the person read it and keeps it as written; text_sha256 is the digest of the block's text as read. It is not undone.",
+      "Keep a decision of an issue's decisions.md for the person you act for, recording that they agree with it as they read it: document is that decisions.md, and block and text_sha256 are the decision's block_id and text_sha256 copied from dispatch list-decisions. A decision whose text changed since is refused (409 DECISION_CHANGED). It is not undone.",
     arguments: (z) => ({
       document: z.string().describe(DOCUMENT_ID),
-      block: z.string({ min: 1 }).describe("The decision block's id."),
+      block: z.string({ min: 1 }).describe("The decision's block_id, the id of its heading block."),
       text_sha256: z
         .string({ min: 1 })
-        .describe("The SHA-256 of the block's text as read, in hex."),
+        .describe(
+          "The decision's text_sha256 as dispatch list-decisions answers it: the SHA-256 of its whole section, in hex."
+        ),
     }),
     strict: true,
     routes: send("POST", "/api/v1/artifacts/{id}/blocks/{block_id}/keep", {
@@ -1473,10 +1482,10 @@ export const dispatchRouteToolSpecs = [
     name: "dispatch_mark_document_read",
     example: { document: "0190c7d2-1111-7222-8333-444444444444", version: 3 },
     description:
-      "Record the version of a document the person you act for has read, or null to forget it. Undo does not change it back.",
+      "Record the version of a document the person you act for has read. Undo does not change it back.",
     arguments: (z) => ({
       document: z.string().describe(DOCUMENT_ID),
-      version: z.number({ int: true, min: 1 }).nullable().describe("The version read, or null."),
+      version: z.number({ int: true, min: 1 }).describe("The version read."),
     }),
     strict: true,
     routes: send("PUT", "/api/v1/me/documents/{id}/read", {
@@ -1488,10 +1497,12 @@ export const dispatchRouteToolSpecs = [
     name: "dispatch_snooze_ask",
     example: { ask: "0190c7d2-1111-7222-8333-444444444444", snoozed_until: "2026-11-20T09:00:00Z" },
     description:
-      "Snooze an ask in the Inbox of the person you act for until a time, or with null until it changes; it shows under Later meanwhile. Undo does not end the snooze: end it to take it back.",
+      "Snooze an ask in the Inbox of the person you act for until a time in the future; it shows under Later meanwhile. Undo does not end the snooze: end it to take it back.",
     arguments: (z) => ({
       ask: z.string().describe(ASK_ID),
-      snoozed_until: z.string().nullable().describe(`Snooze until this time, or null. ${RFC3339}`),
+      snoozed_until: z
+        .string()
+        .describe(`Snooze until this time, which must be in the future. ${RFC3339}`),
     }),
     strict: true,
     routes: send("PUT", "/api/v1/me/asks/{id}/snooze", {
@@ -1514,7 +1525,10 @@ export const dispatchRouteToolSpecs = [
     description: `Page Dispatch's event log across every issue and document, oldest first after a sequence. ${AS_DATA}`,
     arguments: (z) => ({
       after: z.number({ int: true, min: 0 }).describe("Events after this id.").optional(),
-      limit: z.number({ int: true, min: 1 }).describe("How many events a page holds.").optional(),
+      limit: z
+        .number({ int: true, min: 1, max: 1000 })
+        .describe("How many events a page holds, 1 to 1000; 1000 by default.")
+        .optional(),
     }),
     strict: true,
     routes: get("/api/v1/events/log", { query: ["after", "limit"] }),
