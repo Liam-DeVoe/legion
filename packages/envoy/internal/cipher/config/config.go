@@ -324,8 +324,8 @@ type Config struct {
 	// than one entry, for the setting without BROKER_AIRLOCK_RULES_FILE, for a host that is not one
 	// lower-case host name, and for a url that is not http or https, names no host, or carries a
 	// user, a path other than /, or a query; and, where the broker reads the rules file
-	// (PrivateUpstreamRules), unless exactly one entry binds the host, of kind dpop, with a
-	// non-empty allow list, carried in Authorization alone.
+	// (AirlockResultRules), unless the rules entry DISPATCH_RESULTS_TOKEN binds the host, exactly
+	// and alone, of kind dpop, with a non-empty allow list, carried in Authorization alone.
 	AirlockPrivateUpstream PrivateUpstream
 	// BROKER_AIRLOCK_TEST_GITHUB_API_BASE: the base URL a github-app secret is minted against,
 	// in place of https://api.github.com, so a release of one mints at a stand-in GitHub
@@ -854,7 +854,8 @@ type Config struct {
 	// workflow listed twice under one pattern, and one BROKER_EXCHANGE_WORKFLOWS lists too, are
 	// refused. Needs BROKER_EXCHANGE_GITHUB_ISSUER and BROKER_EXCHANGE_GITHUB_AUDIENCE, whose tokens
 	// its runs present, and BROKER_AIRLOCK_RULES_FILE, whose DISPATCH_RESULTS_TOKEN entry the start
-	// checks (ResultEntryRules). Unset, no run is granted a placeholder.
+	// checks (AirlockResultRules): it binds one exact host, BROKER_AIRLOCK_PRIVATE_UPSTREAM's. Unset,
+	// no run is granted a placeholder.
 	ExchangeResultWorkflows []exchange.ResultWorkflowEntry
 	// BROKER_RESULT_GRANT_TEST_SECONDS: how long a result grant lasts, 1 to 900 seconds, in place
 	// of the production lifetime (fifteen minutes, or BROKER_ACCESS_TOKEN_SECONDS when that is
@@ -2031,41 +2032,71 @@ func parseAirlockPrivateUpstream(value string) (PrivateUpstream, error) {
 	return PrivateUpstream{Host: host, URL: destination}, nil
 }
 
-// PrivateUpstreamRules checks the airlock rules a broker with BROKER_AIRLOCK_PRIVATE_UPSTREAM
-// starts with: exactly one entry binds the destination's host (proxyrules.HostBound, so a "*."
-// entry over the host binds it too), and that entry is of kind dpop, has a non-empty allow list and
-// is carried in the Authorization header alone (an entry naming no headers carries the default,
-// Authorization). So one allow list holds every request that reaches the private destination, and
-// what reaches it carries a token the broker minted and holds, never a value a command was
-// released. The refusal names the setting, the host and what is wrong. With no destination it
-// takes any rules. The caller reads the rules file; Load reads none.
-func PrivateUpstreamRules(rules proxyrules.Rules, upstream PrivateUpstream) error {
-	const setting = privateUpstreamSetting
-	if upstream.Host == "" {
-		return nil
-	}
-	var binding []string
-	for _, entry := range rules.Secrets {
-		if proxyrules.HostBound(entry.Hosts, upstream.Host) {
-			binding = append(binding, entry.Name)
+// AirlockResultRules is the one start check of the results capability, the airlock rules entry
+// DISPATCH_RESULTS_TOKEN (oauthwire.AirlockResultsName), against the private destination
+// (BROKER_AIRLOCK_PRIVATE_UPSTREAM) and the result entries (BROKER_EXCHANGE_RESULT_WORKFLOWS,
+// resultWorkflows). cmd/cipherd runs it on every broker, whatever its result entries: every broker
+// with an airlock port serves every result grant of the database it shares and mints that grant's
+// token, so a pod started with no result entry of its own still sends a run's token, and a DPoP
+// proof of its own key, to every host the entry binds.
+//
+// The entry is held to the one place Dispatch is named. No broker setting names Dispatch's public
+// URL; the private destination names Dispatch's address inside the cluster, and the proxy sends
+// every allowed request of the destination's host there and nowhere a name resolves to. So the
+// entry binds one exact host, no "*." name, and that host is the destination's; no other entry
+// binds the destination's host (proxyrules.HostBound, so a "*." entry over it counts), and no other
+// entry is of kind dpop, a capability the broker mints for DISPATCH_RESULTS_TOKEN alone, since no
+// grant holds another dpop name and a secret grant's release of one is refused. The entry is of
+// kind dpop, has a non-empty allow list and is carried in the Authorization header alone (an entry
+// naming no headers carries the default, Authorization), so one allow list holds every request
+// that reaches the destination and what reaches it carries a token the broker minted and holds.
+// Result entries need the entry, and a destination needs it to bind its host; with neither, and
+// no dpop entry, any rules pass. agent-secrets result-grant runs a command only when its https
+// DISPATCH_URL names the entry's host, and Dispatch accepts a proof only for its own origin
+// (DISPATCH_SERVER_URL).
+//
+// The refusal names the setting, the entry and what is wrong, and BROKER_EXCHANGE_RESULT_WORKFLOWS
+// only when it is set. The caller reads the rules file; Load reads none.
+func AirlockResultRules(rules proxyrules.Rules, upstream PrivateUpstream, resultWorkflows bool) error {
+	const rulesFile = "BROKER_AIRLOCK_RULES_FILE"
+	name := oauthwire.AirlockResultsName
+	for _, other := range rules.Secrets {
+		if other.Kind == proxyrules.KindDPoP && other.Name != name {
+			return fmt.Errorf("%s holds the entry %s of kind %s: kind %s is the results capability the broker mints for %s alone, and no grant can hold another name of that kind", rulesFile, other.Name, proxyrules.KindDPoP, proxyrules.KindDPoP, name)
 		}
 	}
-	switch len(binding) {
-	case 0:
-		return fmt.Errorf("%s names the host %s, and no entry of BROKER_AIRLOCK_RULES_FILE binds it: the private destination takes the allowed requests of the one entry that binds its host", setting, upstream.Host)
-	case 1:
-	default:
-		return fmt.Errorf("%s names the host %s, which %d entries of BROKER_AIRLOCK_RULES_FILE bind (%s): exactly one entry may bind the private destination's host, so that one allow list holds every request that reaches it", setting, upstream.Host, len(binding), strings.Join(binding, ", "))
+	entry := rules.Lookup(name)
+	if entry == nil {
+		switch {
+		case resultWorkflows:
+			return fmt.Errorf("BROKER_EXCHANGE_RESULT_WORKFLOWS needs the airlock rules entry %s, and %s holds no entry of that name", name, rulesFile)
+		case upstream.Host != "":
+			return fmt.Errorf("%s names the host %s, and %s holds no entry %s to bind it: the private destination takes that entry's allowed requests alone", privateUpstreamSetting, upstream.Host, rulesFile, name)
+		}
+		return nil
 	}
-	entry := rules.Lookup(binding[0])
 	switch {
+	case len(entry.Hosts) != 1 || strings.HasPrefix(entry.Hosts[0], "*."):
+		return fmt.Errorf("the airlock rules entry %s of %s must bind one exact host, Dispatch's, and no `*.` name, since the run's token goes to every host it binds; it binds %q", name, rulesFile, entry.Hosts)
 	case entry.Kind != proxyrules.KindDPoP:
-		return fmt.Errorf("%s names the host %s, and the entry %s that binds it is of kind %q: the private destination takes an entry of kind %s alone, a capability the broker mints and holds", setting, upstream.Host, entry.Name, entry.Kind, proxyrules.KindDPoP)
+		return fmt.Errorf("the airlock rules entry %s of %s must be of kind %s, a capability the broker mints and holds, and its kind is %q", name, rulesFile, proxyrules.KindDPoP, entry.Kind)
 	case len(entry.Allow) == 0:
-		return fmt.Errorf("%s names the host %s, and the entry %s that binds it has no allow list or an empty one: the private destination takes the methods and paths an allow list names, and no others", setting, upstream.Host, entry.Name)
+		return fmt.Errorf("the airlock rules entry %s of %s must have a non-empty allow list naming the results routes, and it has none", name, rulesFile)
 	}
 	if headers := entry.HeaderNames(); len(headers) != 1 || fold.ASCII(headers[0]) != "authorization" {
-		return fmt.Errorf("%s names the host %s, and the entry %s that binds it names the headers %q: the private destination takes an entry carried in the Authorization header alone", setting, upstream.Host, entry.Name, headers)
+		return fmt.Errorf("the airlock rules entry %s of %s must be carried in the Authorization header alone, and it names the headers %q", name, rulesFile, headers)
+	}
+	host := fold.ASCII(entry.Hosts[0])
+	switch {
+	case upstream.Host == "":
+		return fmt.Errorf("the airlock rules entry %s of %s binds %s, and %s is unset: the entry's host must be the private destination's, the one setting that names where Dispatch is, so the run's token goes to Dispatch's own address and nowhere a name resolves to", name, rulesFile, host, privateUpstreamSetting)
+	case upstream.Host != host:
+		return fmt.Errorf("the airlock rules entry %s of %s binds %s, and %s names the host %s: the entry's host must be the private destination's, so the run's token goes to Dispatch's own address and nowhere a name resolves to", name, rulesFile, host, privateUpstreamSetting, upstream.Host)
+	}
+	for _, other := range rules.Secrets {
+		if other.Name != name && proxyrules.HostBound(other.Hosts, upstream.Host) {
+			return fmt.Errorf("%s names the host %s, which the entry %s of %s binds besides %s: exactly one entry may bind the private destination's host, so that one allow list holds every request that reaches it", privateUpstreamSetting, upstream.Host, other.Name, rulesFile, name)
+		}
 	}
 	return nil
 }
@@ -2165,39 +2196,6 @@ func parseExchangeResultWorkflows(setting, value string) ([]exchange.ResultWorkf
 		})
 	}
 	return entries, nil
-}
-
-// ResultEntryRules checks the airlock rules a broker with BROKER_EXCHANGE_RESULT_WORKFLOWS starts
-// with: they hold the entry DISPATCH_RESULTS_TOKEN, which binds one exact host and no `*.` name,
-// is of kind dpop, has a non-empty allow list and is carried in the Authorization header alone (an
-// entry naming no headers carries the default, Authorization). Without that entry a result entry's
-// run would be granted a placeholder that no proxy honours, or one that opens every route of
-// Dispatch's host. The one host is Dispatch's public host: the proxy sends the run's token, and a
-// DPoP proof of the pod's key for the host it was sent to, to every host the entry binds, so a
-// second host or a name under a `*.` entry would receive both. The broker holds no setting that
-// names Dispatch's public URL to compare it with; agent-secrets result-grant runs a command only
-// when its https DISPATCH_URL names this host, and Dispatch accepts a proof only for its own
-// origin (DISPATCH_SERVER_URL). The refusal names the entry and what it lacks. The caller reads the
-// rules file; Load reads none.
-func ResultEntryRules(rules proxyrules.Rules) error {
-	name := oauthwire.AirlockResultsName
-	entry := rules.Lookup(name)
-	switch {
-	case entry == nil:
-		return fmt.Errorf("BROKER_EXCHANGE_RESULT_WORKFLOWS needs the airlock rules entry %s, and BROKER_AIRLOCK_RULES_FILE holds no entry of that name", name)
-	case len(entry.Hosts) == 0:
-		return fmt.Errorf("BROKER_EXCHANGE_RESULT_WORKFLOWS needs the airlock rules entry %s to bind Dispatch's host, and it binds no host", name)
-	case len(entry.Hosts) != 1 || strings.HasPrefix(entry.Hosts[0], "*."):
-		return fmt.Errorf("BROKER_EXCHANGE_RESULT_WORKFLOWS needs the airlock rules entry %s to bind one exact host, Dispatch's, and no `*.` name, since the run's token goes to every host it binds; it binds %q", name, entry.Hosts)
-	case entry.Kind != proxyrules.KindDPoP:
-		return fmt.Errorf("BROKER_EXCHANGE_RESULT_WORKFLOWS needs the airlock rules entry %s of kind %s, a capability the broker mints and holds, and its kind is %q", name, proxyrules.KindDPoP, entry.Kind)
-	case len(entry.Allow) == 0:
-		return fmt.Errorf("BROKER_EXCHANGE_RESULT_WORKFLOWS needs the airlock rules entry %s to have a non-empty allow list naming the results routes, and it has none", name)
-	}
-	if headers := entry.HeaderNames(); len(headers) != 1 || fold.ASCII(headers[0]) != "authorization" {
-		return fmt.Errorf("BROKER_EXCHANGE_RESULT_WORKFLOWS needs the airlock rules entry %s carried in the Authorization header alone, and it names the headers %q", name, headers)
-	}
-	return nil
 }
 
 // databasePasswordPlaceholder is the removed BROKER_DATABASE_PASSWORD's placeholder. Load refuses a
@@ -2438,8 +2436,9 @@ func Load(getenv func(string) string) (Config, error) {
 		return Config{}, err
 	}
 	// The private destination, read and held to its form here; the one rules entry that binds its
-	// host is checked where the rules file is read (PrivateUpstreamRules), since Load reads no file.
-	// Without a rules file no entry binds the host, so the setting would send nothing anywhere.
+	// host, DISPATCH_RESULTS_TOKEN, is checked where the rules file is read (AirlockResultRules),
+	// since Load reads no file. Without a rules file no entry binds the host, so the setting would
+	// send nothing anywhere.
 	if cfg.AirlockPrivateUpstream, err = parseAirlockPrivateUpstream(getenv(privateUpstreamSetting)); err != nil {
 		return Config{}, err
 	}
@@ -2796,7 +2795,7 @@ func Load(getenv func(string) string) (Config, error) {
 	// A result entry's run is granted a placeholder that only the airlock's rules entry
 	// DISPATCH_RESULTS_TOKEN makes worth anything, so a broker with result workflows and no rules
 	// file would grant placeholders no proxy honours. The entry itself is checked where the file is
-	// read (ResultEntryRules), since Load reads no file.
+	// read (AirlockResultRules), since Load reads no file.
 	if len(cfg.ExchangeResultWorkflows) > 0 && cfg.AirlockRulesFile == "" {
 		return Config{}, fmt.Errorf("BROKER_EXCHANGE_RESULT_WORKFLOWS needs BROKER_AIRLOCK_RULES_FILE: a result entry's run is granted an airlock placeholder, which the rules entry %s of kind %s makes a write to Dispatch", oauthwire.AirlockResultsName, proxyrules.KindDPoP)
 	}
