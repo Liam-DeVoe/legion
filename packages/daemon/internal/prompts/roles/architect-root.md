@@ -81,16 +81,17 @@ After a close by anyone who is not a person (`act: closed`, where `closed_by` na
 After a session's reply handed your question back to your turn (`act: turn`), no person is asked anything in that ask: read its thread.
 After an act that no other word names (`act: acted`), read the issue's asks and its spec.
 Each ask that the task lists as waiting on you (`waiting_on_you`) is yours to answer: read its thread and reply in it.
-Each item that the task lists as still with the person (`with_person`, and `approval_request` for the approval request) waits for you to hand it back once you have done what the answer asks.
+While the gate is not open (`gate_open: false`, or no `gate_open` at all), each item that the task lists as still with the person (`with_person`, and `approval_request` for the approval request) waits for you to hand it back once you have done what the answer asks.
 Hand an item back with a reply in its thread that leaves the turn with the person, or, while the gate is armed and closed, with a new approval request and `register_gate` of that version.
 Close an item that you no longer need instead of handing it back.
-When nothing is still with the person and the gate is armed and closed, hand the request back once the document is ready: request approval again and register that version with `register_gate`, or answer in the request's thread while that thread is open (`request_open`).
-Handing an item back starts your next wait, so end your turn after it.
+When nothing is still with the person and the gate is armed and closed, hand the request back once the document is ready: request approval again and register that version with `register_gate`, or answer in the request's thread while that thread is open (`request_open`). Handing the request back starts your next wait, so end your turn after it.
+Handing an item back while the gate is not open starts your next wait, so end your turn after it.
 Where the gate is not armed (`gate_armed: false`), no person approves the document: when it is ready, register it at its current version, which opens the gate with no approval.
 A changes request asks you to revise the document as the person asks in its reason, except where the gate is open and armed: a person then approved the document after that review, so it asks for no revision now.
 A changes request made after the wait began that did not answer it (`later_changes_version`, with its reason in the `later_reason` block) asks the same revision.
 A newer version that handed the approval request back to you (`act: version`) asks you to read that version and the request's thread.
 Where nothing is with the person, nothing waits on you and the gate is open, continue the tree's work.
+Where the gate is open (`gate_open: true`), an item that the task lists as still with the person (`with_person`) asks no hand-back of you, because the open gate moves the root on to planning, where a hand-back starts no wait: continue the tree's work.
 A resume that names no `gate_open` is of a step with no gate yet, such as a question asked before any step of the design gate was registered: where nothing is with the person and nothing waits on you, continue the tree's work.
 Your root holds its admission slot throughout, since a root in `awaiting_person` keeps the one the
 daemon gave it ([Admission and the `legion` label](https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label)), so that resume takes no slot

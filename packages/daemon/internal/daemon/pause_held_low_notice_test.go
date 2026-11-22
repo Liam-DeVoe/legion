@@ -16,6 +16,16 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
+// The check c-urgency-everywhere's pause case: the project is paused, a low notice is held for a
+// released architect and a low role message for a released implementer that does not work the
+// issue's phase, the project resumes, and each of the two sessions is launched once, where the low
+// text starts no turn of its own. Each text runs in a rig of its own, as a subtest.
+func TestAResumeLaunchesEachReaderThatAPauseHeldALowTextFor(t *testing.T) {
+	t.Run("a low notice held for a released architect", aLowNoticeAPauseHeldLaunchesItsReaderAtTheResume)
+	t.Run("a low role message held for a released implementer that does not work the phase",
+		aLowRoleMessageAPauseHeldForARoleItStoppedLaunchesThatRoleAtTheResume)
+}
+
 // A `low` notice that a project's pause held launches its reader at the resume
 // (dispatch://INFRA-3686's Design, which keeps R4 of dispatch://INFRA-3759: the resume launches each
 // reader it held a text for, whatever the text's urgency). Where the low rule and the held-row
@@ -27,7 +37,7 @@ import (
 // that architect no launch and nothing else of the resume brings it back. The negative control is
 // lowRule without its held-row exception: the row then takes the low rule, waits an hour for the
 // architect's next ready and wakes nothing, and the architect is never launched.
-func TestALowNoticeAPauseHeldLaunchesItsReaderAtTheResume(t *testing.T) {
+func aLowNoticeAPauseHeldLaunchesItsReaderAtTheResume(t *testing.T) {
 	r := newPauseDaemonRig(t, func(cfg *config.Config) { cfg.Gates.Design = config.DesignGateOff.Steps() })
 	issue := r.issue(1)
 	r.seed(r.root(issue, phase.Testing), r.running(issue, claim.RoleTester, supervise.StateIdle),
@@ -52,6 +62,7 @@ func TestALowNoticeAPauseHeldLaunchesItsReaderAtTheResume(t *testing.T) {
 		t.Fatalf("the checks-red notice of an issue in testing goes to the architect at %q, want low: this case proves nothing", got)
 	}
 	row := r.enqueue(issue, notice)
+	before := len(r.rt.launches())
 	r.resumeProject()
 	if got := r.heldByPause(row); got != pause.ID {
 		t.Fatalf("the resume marked the held low notice with pause %d, want %d", got, pause.ID)
@@ -68,6 +79,23 @@ func TestALowNoticeAPauseHeldLaunchesItsReaderAtTheResume(t *testing.T) {
 	}
 	if held == nil || *held != pause.ID || release != 0 {
 		t.Fatalf("the held low notice's wake is marked with pause %v and release %d, want pause %d and no release", held, release, pause.ID)
+	}
+	architect := r.token(issue, claim.RoleArchitect)
+	launched := func() int {
+		n := 0
+		for _, launch := range r.rt.launches()[before:] {
+			if launch.claim == architect {
+				n++
+			}
+		}
+		return n
+	}
+	for want := 1; launched() == 0; want++ {
+		r.runPacing(before, want, func(waveLaunch) {}, func(api.State) {})
+	}
+	time.Sleep(time.Second)
+	if n := launched(); n != 1 {
+		t.Fatalf("the architect launched %d times after the resume, want once", n)
 	}
 }
 
@@ -86,7 +114,7 @@ func TestALowNoticeAPauseHeldLaunchesItsReaderAtTheResume(t *testing.T) {
 //
 // The negative control is roleMessage without its wakeHeldRole call: the row waits through the
 // listener's answer, nobody wakes the role, and the test fails where it waits for the wake.
-func TestALowRoleMessageAPauseHeldForARoleItStoppedLaunchesThatRoleAtTheResume(t *testing.T) {
+func aLowRoleMessageAPauseHeldForARoleItStoppedLaunchesThatRoleAtTheResume(t *testing.T) {
 	r := newPauseDaemonRig(t, nil)
 	issue := r.issue(1)
 	worker := r.token(issue, claim.RoleImplementer)

@@ -18,7 +18,7 @@ import (
 // c7e1cbd5, 3d2dddd0, 6d50ef31, a4cd4949, 5f2bf9af, d46ec4e0 or c03d3afe for a sentence main wrote
 // since (a format verb, %s, %[1]s or %d, and … stand for any text), the readers, and the passage of
 // the readers' prompt (packages/daemon/internal/prompts) that gives each of them its own rule for
-// the step, quoted word for word from one line of the file.
+// the step, quoted word for word from the one line of the file that holds it.
 type goldenStep struct {
 	kind     texts.Kind
 	sentence string
@@ -41,7 +41,7 @@ var goldenSteps = []goldenStep{
 	{texts.PhaseAssignment, " Head %s is the merge of %s forward that landed after the review, and the reviewer is asked to read it: merge head %s only once the reviewer's approval of it is on the pull request.", "merger",
 		goPrompts + "merger.md", "that head is the merge of the base `merged_forward` names, which landed after the review, and the reviewer is asked to read it, so merge that head only once the reviewer's approval of it is on the pull request."},
 	{texts.PhaseAssignment, "the reviewer completed its round on pull request #%d with no review that decides it: only an APPROVE of head %s or a REQUEST_CHANGES ends the round", "reviewer",
-		goPrompts + "reviewer.md", "`stuck_round: undecided` means that no review decided the round."},
+		goPrompts + "reviewer.md", "`stuck_round: undecided` means that you completed the round and no review decided it: your completion stands, so you owe only the review that decides the round."},
 	{texts.PhaseAssignment, "; a review that would otherwise have decided this round was set aside - ", "reviewer",
 		goPrompts + "reviewer.md", "`set_aside` says why the daemon set aside a review that would otherwise have decided the round."},
 	{texts.PhaseAssignment, ", from an account with write access to the repository or from the reviewer's own session as the review App (…), and a COMMENT decides nothing", "reviewer",
@@ -140,12 +140,18 @@ var goldenSteps = []goldenStep{
 		rolePrompts + "architect-root.md", "Each ask that the task lists as waiting on you (`waiting_on_you`) is yours to answer: read its thread and reply in it."},
 	{texts.RootResume, " Still with the person: %s. Hand each one back once you have done what the answer asks — a reply in its thread that leaves the turn with the person", "architect (root)",
 		rolePrompts + "architect-root.md", "Hand an item back with a reply in its thread that leaves the turn with the person, or, while the gate is armed and closed, with a new approval request and `register_gate` of that version."},
+	{texts.RootResume, " Still with the person: %s. Hand each one back once you have done what the answer asks — a reply in its thread that leaves the turn with the person", "architect (root)",
+		rolePrompts + "architect-root.md", "While the gate is not open (`gate_open: false`, or no `gate_open` at all), each item that the task lists as still with the person (`with_person`, and `approval_request` for the approval request) waits for you to hand it back once you have done what the answer asks."},
 	{texts.RootResume, " — or close it if you no longer need it. Handing one back starts your next wait; then end your turn.", "architect (root)",
 		rolePrompts + "architect-root.md", "Close an item that you no longer need instead of handing it back."},
 	{texts.RootResume, " — or close it if you no longer need it. Handing one back starts your next wait; then end your turn.", "architect (root)",
-		rolePrompts + "architect-root.md", "Handing an item back starts your next wait, so end your turn after it."},
+		rolePrompts + "architect-root.md", "Handing an item back while the gate is not open starts your next wait, so end your turn after it."},
+	{texts.RootResume, " Still with the person: %s. Continue.", "architect (root)",
+		rolePrompts + "architect-root.md", "Where the gate is open (`gate_open: true`), an item that the task lists as still with the person (`with_person`) asks no hand-back of you, because the open gate moves the root on to planning, where a hand-back starts no wait: continue the tree's work."},
 	{texts.RootResume, " When the %s is ready, hand the request back to the person: request approval again and register that version with register_gate", "architect (root)",
 		rolePrompts + "architect-root.md", "When nothing is still with the person and the gate is armed and closed, hand the request back once the document is ready: request approval again and register that version with `register_gate`, or answer in the request's thread while that thread is open (`request_open`)."},
+	{texts.RootResume, ". Handing it back starts your next wait; then end your turn.", "architect (root)",
+		rolePrompts + "architect-root.md", "Handing the request back starts your next wait, so end your turn after it."},
 	{texts.RootResume, " The design gate is closed at version %d, as no registration of that version has opened it: when the %s is ready, register it at its current version, which opens the gate with no approval.", "architect (root)",
 		rolePrompts + "architect-root.md", "Where the gate is not armed (`gate_armed: false`), no person approves the document: when it is ready, register it at its current version, which opens the gate with no approval."},
 	{texts.RootResume, " Read the review, and revise the %s as they ask.", "architect (root)",
@@ -169,7 +175,9 @@ var goldenSteps = []goldenStep{
 	{texts.RootResume, "; read the issue's asks and its spec.", "architect (root)",
 		rolePrompts + "architect-root.md", "After an act that no other word names (`act: acted`), read the issue's asks and its spec."},
 	{texts.KeptDecisions, "While nobody in %s's tree could hear it, a person decided on the tree: %s. Read each before you continue.", "architect (root)",
-		goPrompts + "architect-root.md", "Act on each one before you carry on."},
+		goPrompts + "architect-root.md", "Read each one, and act on it before you carry on."},
+	{texts.KeptDecisions, "While nobody in %s's tree could hear it, a person decided on the tree: %s. Read each before you continue.", "architect (root)",
+		goPrompts + "architect-root.md", "Where a decision's `answer` block names a `rest` or `more`, the person's words were cut: read the rest at that decision's `ref`."},
 	{texts.KeptDecisions, "The %s is approved at version %d and is now at version %d: request approval of version %d, as skill://legion-architect/references/design-gate.md (\"The armed gate\") says.", "architect (root)",
 		goPrompts + "architect-root.md", "request approval of that latest version, as `skill://legion-architect/references/design-gate.md` (\"The armed gate\") says."},
 	{texts.ArchitectStart, "Take it up in this turn, as your role says: claim it in Dispatch", "architect (root)",
@@ -221,7 +229,7 @@ var goldenSteps = []goldenStep{
 	{texts.RelaunchNote, "Before you do any of that work again, check what it already did.", "planner, implementer, tester, reviewer, merger",
 		goPrompts + "worker-common.md", "Before you do any of that work again, check what it already did in your workspace and on the issue's branch."},
 	{texts.RelaunchNote, "Before you do any of that work again, check what it already did.", "architect",
-		goPrompts + "architect-common.md", "Before you do any of that work again, check what it already did."},
+		goPrompts + "architect-common.md", "Before you do any of that work again, check what it already did in your workspace and on the issue's branch."},
 	{texts.RelaunchNote, "Before you do any of that work again, check what it already did.", "controller",
 		rolePrompts + "controller-root.md", "Before you do any of that work again, check what it already did, with `read_state` and in Dispatch."},
 	{texts.RelaunchNote, "Then continue the task.", "planner, implementer, tester, reviewer, merger",
@@ -277,7 +285,7 @@ var goldenSteps = []goldenStep{
 	{texts.RelaunchNote, "Before you start any of that work again, check what it already did.", "planner, implementer, tester, reviewer, merger",
 		goPrompts + "worker-common.md", "Before you do any of that work again, check what it already did in your workspace and on the issue's branch."},
 	{texts.RelaunchNote, "Before you start any of that work again, check what it already did.", "architect",
-		goPrompts + "architect-common.md", "Before you do any of that work again, check what it already did."},
+		goPrompts + "architect-common.md", "Before you do any of that work again, check what it already did in your workspace and on the issue's branch."},
 	{texts.RelaunchNote, "Before you start any of that work again, check what it already did.", "controller",
 		rolePrompts + "controller-root.md", "Before you do any of that work again, check what it already did, with `read_state` and in Dispatch."},
 	{texts.AbandonedSessionNote, "Before you repeat any of that work, %s, and tell the architect your Legion addressing line names what you found, unless that is you or it names none.", "planner, implementer, tester, reviewer, merger",
@@ -298,8 +306,10 @@ var goldenSteps = []goldenStep{
 		goPrompts + "architect-common.md", "After an `out-of-memory-note`, read `skill://legion-worker/references/tools.md` before you or a subagent of yours runs heavy work again: an issue pod runs no heavy build and no whole test suite, so send such work to CI on the pull request or where your deployment's instructions say."},
 	{texts.ProviderErrorNote, "Your work did not cause it. ", "planner, implementer, tester, reviewer, merger",
 		goPrompts + "worker-common.md", "A `provider-error-note` says that a provider error stopped your turn, and your work did not cause it."},
+	{texts.ProviderErrorNote, "Read what that turn already did in your workspace and on the issue's branch. Then continue the task.", "planner, implementer, tester, reviewer, merger",
+		goPrompts + "worker-common.md", "Before you do any of that work again, check what it already did in your workspace and on the issue's branch."},
 	{texts.ProviderErrorNote, "Read what that turn already did in your workspace and on the issue's branch. Then continue the task.", "architect",
-		goPrompts + "architect-common.md", "A `provider-error-note` says that a provider error stopped your turn, and your work did not cause it."},
+		goPrompts + "architect-common.md", "Before you do any of that work again, check what it already did in your workspace and on the issue's branch."},
 	{texts.ProviderErrorNote, "Read what that turn already did in your workspace and on the issue's branch. Then continue the task.", "controller",
 		rolePrompts + "controller-root.md", "Before you do any of that work again, check what it already did, with `read_state` and in Dispatch."},
 	{texts.ProviderErrorNote, "The daemon sends you the task again. ", "planner, implementer, tester, reviewer, merger",
@@ -335,7 +345,7 @@ var goldenSteps = []goldenStep{
 	{texts.CatchUp, "So every subagent and background job that you started in that process is gone.", "architect",
 		goPrompts + "architect-common.md", "Without `reported`, the daemon holds no such report, so where `in_turn` is absent, or where `stopped` and `background` are absent, every subagent and background job that you started in that process is gone."},
 	{texts.CatchUp, "Before you start any of that work again, check what it already did.", "architect",
-		goPrompts + "architect-common.md", "Before you do any of that work again, check what it already did."},
+		goPrompts + "architect-common.md", "Before you do any of that work again, check what it already did in your workspace and on the issue's branch."},
 	{texts.CatchUp, "Before you start any of that work again, check what it already did.", "architect (root)",
 		goPrompts + "architect-root.md", "After a relaunch, its `relaunch` names what the last let-go ended, as a `relaunch-note` does."},
 	{texts.CatchUp, "Before you start any of that work again, check what it already did.", "architect (child)",
@@ -395,7 +405,7 @@ var goldenSteps = []goldenStep{
 	{texts.ChildReleaseStalled, "its parent %s is not recorded: release %s first, then %s", "architect",
 		goPrompts + "architect-common.md", "release that issue first, then release the child again once it is recorded in your tree, and tell the controller if it never is."},
 	{texts.ChildReleaseStalled, " in Dispatch now: release it again once it is todo)", "architect",
-		goPrompts + "architect-common.md", "Otherwise, release the child again once it is `todo`."},
+		goPrompts + "architect-common.md", "Release a child of `let_go` whose parent is recorded (`parent_recorded: true`) again once it is `todo`."},
 	{texts.ChildReleaseStalled, "the daemon records a child only under a recorded parent", "architect",
 		goPrompts + "architect-common.md", "The daemon records a child only under a recorded parent."},
 	{texts.ChildReleaseStalled, "(left out for now because GitHub did not answer its App installation read, or its default-branch read past GitHub's rate limit)", "architect",
@@ -411,7 +421,7 @@ var goldenSteps = []goldenStep{
 	{texts.ChildReleaseStalled, "GitHub answered for %s again (both role Apps' installation reads, and the read of its name and default branch), and the daemon recovered its issues from Dispatch's listing, but these children a release_children released while it was unread are still not recorded", "architect",
 		goPrompts + "architect-common.md", "A `stall: recovered-unrecorded` notice says that GitHub answered again for each repository `repos` names, both role Apps' installation reads and the read of its name and default branch, and that the daemon recovered their issues from Dispatch's listing"},
 	{texts.ChildReleaseStalled, "%s (its parent %s is recorded now: release %s again)", "architect",
-		goPrompts + "architect-common.md", "Otherwise, release the child again once it is `todo`."},
+		goPrompts + "architect-common.md", "Release a child of `unrecorded` whose parent is recorded now (`parent_recorded: true`) again at once, whatever status Dispatch gives it"},
 	{texts.WorkerDied, "%s's own architect failed; its notices come to you until it runs again, and the daemon starts it again at %s's next phase start", "architect",
 		goPrompts + "architect-common.md", "the child's notices come to you until that architect runs again, and the daemon starts it again at the child's next phase start."},
 	{texts.WorkerDied, "the %s does not work %s's phase %s; nothing is held", "architect",
@@ -427,9 +437,19 @@ var goldenSteps = []goldenStep{
 	{texts.WorkerStalled, "the stall itself charged the claim nothing; the %d launch failures the replacement charged are what it was charged.", "architect",
 		goPrompts + "architect-common.md", "`launch_failures` counts the launch failures the replacement charged the claim, which are all that the claim was charged, since the stall itself charges nothing"},
 	{texts.WorkerStalled, "The daemon made no stop of its stalled process, and the claim records that process still, so nothing the daemon has done has taken away what that process holds.", "architect",
-		goPrompts + "architect-common.md", "`not-made` is no stop at all: the claim records that process still, so nothing the daemon has done has taken away what that process holds."},
+		goPrompts + "architect-common.md", "`not-made` is no stop at all: the claim records that process still, so nothing the daemon has done has taken away what that process holds"},
 	{texts.WorkerStalled, "The runtime did not confirm the stop of its stalled process, so that process may be running still and holding what it runs on.", "architect",
 		goPrompts + "architect-common.md", "`unconfirmed` is a stop the runtime did not confirm, so that process may be running still and holding what it runs on"},
+	{texts.WorkerStalled, "the daemon ended the %s's turn", "architect",
+		goPrompts + "architect-common.md", "`stopped` is a process the daemon stopped, so the daemon ended the turn"},
+	{texts.WorkerStalled, "the daemon took the %s's turn off its claim", "architect",
+		goPrompts + "architect-common.md", "the daemon took the turn off its claim, though that process may run it still"},
+	{texts.WorkerStalled, "the daemon took back the %s's task without ending its turn", "architect",
+		goPrompts + "architect-common.md", "the daemon took back the role's task without ending its turn"},
+	{texts.WorkerStalled, "the daemon's stall backstop acted on the %s's stalled turn", "architect",
+		goPrompts + "architect-common.md", "the notice then names no `stop`: the daemon's stall backstop acted on the stalled turn"},
+	{texts.WorkerStalled, "past the %s this deployment gives the role (worker_stall_backstop_hours)", "architect",
+		goPrompts + "architect-common.md", "the bound this deployment gives the role in its `worker_stall_backstop_hours` setting"},
 	{texts.WorkerStalled, "and started a replacement in its place", "architect",
 		goPrompts + "architect-common.md", "`end: relaunched` is a replacement the daemon started in the stalled process's place, and the session was brought back on it."},
 	{texts.WorkerStalled, "its session was brought back on the replacement the daemon started", "architect",
@@ -465,9 +485,19 @@ var goldenSteps = []goldenStep{
 	{texts.WorkerStalled, "the stall itself charged the claim nothing; the %d launch failures the replacement charged are what it was charged.", "controller",
 		rolePrompts + "controller-root.md", "`launch_failures` counts the launch failures the replacement charged the claim, which are all that the claim was charged, since the stall itself charges nothing"},
 	{texts.WorkerStalled, "The daemon made no stop of its stalled process, and the claim records that process still, so nothing the daemon has done has taken away what that process holds.", "controller",
-		rolePrompts + "controller-root.md", "`not-made` is no stop at all: the claim records that process still, so nothing the daemon has done has taken away what that process holds."},
+		rolePrompts + "controller-root.md", "`not-made` is no stop at all: the claim records that process still, so nothing the daemon has done has taken away what that process holds"},
 	{texts.WorkerStalled, "The runtime did not confirm the stop of its stalled process, so that process may be running still and holding what it runs on.", "controller",
 		rolePrompts + "controller-root.md", "`unconfirmed` is a stop the runtime did not confirm, so that process may be running still and holding what it runs on"},
+	{texts.WorkerStalled, "the daemon ended the %s's turn", "controller",
+		rolePrompts + "controller-root.md", "`stopped` is a process the daemon stopped, so the daemon ended the turn"},
+	{texts.WorkerStalled, "the daemon took the %s's turn off its claim", "controller",
+		rolePrompts + "controller-root.md", "the daemon took the turn off its claim, though that process may run it still"},
+	{texts.WorkerStalled, "the daemon took back the %s's task without ending its turn", "controller",
+		rolePrompts + "controller-root.md", "the daemon took back the architect's task without ending its turn"},
+	{texts.WorkerStalled, "the daemon's stall backstop acted on the %s's stalled turn", "controller",
+		rolePrompts + "controller-root.md", "the notice then names no `stop`: the daemon's stall backstop acted on the stalled turn"},
+	{texts.WorkerStalled, "past the %s this deployment gives the role (worker_stall_backstop_hours)", "controller",
+		rolePrompts + "controller-root.md", "the bound this deployment gives the role in its `worker_stall_backstop_hours` setting"},
 	{texts.WorkerStalled, "and started a replacement in its place", "controller",
 		rolePrompts + "controller-root.md", "`end: relaunched` is a replacement the daemon started in the stalled process's place, and the session was brought back on it."},
 	{texts.WorkerStalled, "its session was brought back on the replacement the daemon started", "controller",
@@ -499,7 +529,7 @@ var goldenSteps = []goldenStep{
 	{texts.SessionLost, "It is running a fresh agent, which has read none of its own earlier turns; only what it pushed and committed survives.", "architect",
 		goPrompts + "architect-common.md", "the daemon runs the role in a fresh agent, which has read none of its own earlier turns, and only what it pushed and committed survives."},
 	{texts.SessionLost, "It is running a fresh agent, which has read none of its own earlier turns; only what it pushed and committed survives.", "controller",
-		rolePrompts + "controller-root.md", "the role runs on in a fresh agent, which has read none of its own earlier turns, and only what it pushed and committed survives, so take nothing for it."},
+		rolePrompts + "controller-root.md", "lost the session it recorded (`detail`): the role runs on in a fresh agent, which has read none of its own earlier turns, and only what it pushed and committed survives, so take nothing for it."},
 	{texts.SessionForgotten, "its pod's launcher is older than this release and could not look the session up by its id, and Oh My Pi did not resume it by that id.", "architect",
 		goPrompts + "architect-common.md", "A `session-forgotten` notice says that a role forgot the session it recorded (`session`) because its pod's launcher, older than the daemon, could not look that session up by its id (`launcher_lookup: failed`), and Oh My Pi did not resume it by that id (`resumed_by_id: false`)"},
 	{texts.SessionForgotten, "its pod's launcher is older than this release and could not look the session up by its id, and Oh My Pi did not resume it by that id.", "controller",
@@ -511,7 +541,7 @@ var goldenSteps = []goldenStep{
 	{texts.SessionForgotten, "The %s is running a fresh agent, which has read none of its own earlier turns; only what it pushed and committed survives.", "architect",
 		goPrompts + "architect-common.md", "it runs the role in a fresh agent, which has read none of its own earlier turns, and only what it pushed and committed survives."},
 	{texts.SessionForgotten, "The %s is running a fresh agent, which has read none of its own earlier turns; only what it pushed and committed survives.", "controller",
-		rolePrompts + "controller-root.md", "the role runs on in a fresh agent, which has read none of its own earlier turns, and only what it pushed and committed survives, so take nothing for it."},
+		rolePrompts + "controller-root.md", "the daemon deleted nothing of that session, and the role runs on in a fresh agent, which has read none of its own earlier turns, and only what it pushed and committed survives, so take nothing for it."},
 	{texts.SessionStoreFault, " Nothing is lost and nothing is charged; the daemon tries again every minute, and no worker of this issue runs until the store answers.", "controller",
 		rolePrompts + "controller-root.md", "nothing is lost or charged, the daemon asks the store again every `retry_every`, and no worker of the issue runs until the store answers, so name it in the day's report."},
 	{texts.Unslotted, "; the daemon set its phase to done and starts nothing for it; todo with the legion label queues it again", "controller",
@@ -522,6 +552,8 @@ var goldenSteps = []goldenStep{
 		rolePrompts + "controller-root.md", "take nothing for its slot, which it keeps while it waits."},
 	{texts.ParkedDecision, "; any child waiting on it starts", "controller",
 		rolePrompts + "controller-root.md", "so any child waiting on that gate starts."},
+	{texts.ParkedDecision, "a human approved %s's spec document at version %d, which opens the gate %s carried", "controller",
+		rolePrompts + "controller-root.md", "`decision: carried-gate-opened` means that a person approved, at `version`, the old root's document that `ref` names, not a document of `issue`"},
 	{texts.UpdateStalled, "The bound of the update round is past.", "controller",
 		rolePrompts + "controller-root.md", "An `update-stalled` notice says that the bound of an update round is past"},
 	{texts.UpdateStalled, "The daemon does not replace the pod until the operator resumes each of them.", "controller",
@@ -789,7 +821,8 @@ var goldenDeploymentWords = regexp.MustCompile(`[0-9]|\b(January|February|March|
 
 // The check c-daemon-texts-are-facts, fourth test: each sentence this change took out of a daemon
 // text, for each of its readers, is given by a passage of that reader's prompt, quoted word for
-// word on one line of its file. No golden sample holds such a sentence
+// word on exactly one line of its file, so a line that loses the passage fails its row rather than
+// leaving another line to hold it. No golden sample holds such a sentence
 // outside what R8 keeps and another author's words, and no passage names a number, a date, a time
 // or a project of one deployment.
 func TestEveryStepTakenOutOfATextIsInItsReadersPrompt(t *testing.T) {
@@ -802,9 +835,19 @@ func TestEveryStepTakenOutOfATextIsInItsReadersPrompt(t *testing.T) {
 			}
 			files[step.file] = strings.Split(string(body), "\n")
 		}
-		if !slices.ContainsFunc(files[step.file], func(line string) bool { return strings.Contains(line, step.passage) }) {
+		onLines := 0
+		for _, line := range files[step.file] {
+			if strings.Contains(line, step.passage) {
+				onLines++
+			}
+		}
+		switch {
+		case onLines == 0:
 			t.Errorf("%s does not hold, on one line, the passage that gives the %s the step of %q (%s): %q",
 				step.file, step.readers, step.sentence, step.kind, step.passage)
+		case onLines > 1:
+			t.Errorf("%s holds on %d lines the passage that gives the %s the step of %q (%s), so a line that loses it still passes: quote a passage that sits on one line: %q",
+				step.file, onLines, step.readers, step.sentence, step.kind, step.passage)
 		}
 		if found := goldenDeploymentWords.FindString(step.passage); found != "" {
 			t.Errorf("the passage of %s for the %s names %q, a number, date, time or project of one deployment: %q",
