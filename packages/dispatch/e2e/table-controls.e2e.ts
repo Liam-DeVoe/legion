@@ -395,6 +395,22 @@ test("the Inbox's first item starts within 203 px of the window, and within 255 
 const NINE_NARROWINGS =
   "/?priority=P0,P1,P2&urgency=blocking,high,med&type=question,approval&project=CORE";
 
+/** The boxes of the control row `row`, the row's own among them, that a reader can scroll
+ *  sideways: each whose `overflow-x` is auto or scroll and that holds more than its own width,
+ *  named by its tag, its `data-` attributes and the two widths. */
+function sidewaysScrollers(row: Element): string[] {
+  return [row, ...row.querySelectorAll("*")].flatMap((box) => {
+    const { overflowX } = getComputedStyle(box);
+    if (overflowX !== "auto" && overflowX !== "scroll") return [];
+    if (box.scrollWidth <= box.clientWidth + 1) return [];
+    const marks = [...box.attributes]
+      .filter((mark) => mark.name.startsWith("data-"))
+      .map((mark) => `[${mark.name}]`)
+      .join("");
+    return [`${box.tagName.toLowerCase()}${marks} (${box.scrollWidth}px in ${box.clientWidth}px)`];
+  });
+}
+
 // SLOW(>=2s): twenty-two seeded questions, read at three widths with and without nine narrowings.
 test("however many narrowings are on, their chips take at most one more line of the Inbox's row, at every width", async ({
   page,
@@ -402,8 +418,10 @@ test("however many narrowings are on, their chips take at most one more line of 
   await seedLongInbox();
   const firstRow = page.locator("[data-inbox-row]").first();
   const main = page.getByTestId("main-content");
+  const row = controlRow(main);
   const readings: string[] = [];
   const over: string[] = [];
+  const sideways: string[] = [];
   for (const size of [
     { height: 900, width: 1440 },
     { height: 800, width: 1280 },
@@ -418,13 +436,20 @@ test("however many narrowings are on, their chips take at most one more line of 
 
     await page.goto(NINE_NARROWINGS);
     await expect(firstRow).toBeVisible();
-    // One chip per value picked, as the row draws them, so nine chips.
-    await expect(control(controlRow(main), CONTROL.chip)).toHaveCount(9);
+    // One chip per value picked, as the row draws them, so nine chips: the ones the chips line
+    // has room for, each whole, and the rest in the panel its `+N more` opens.
+    const chips = await chipsInLineAndPanel(row, 9, `${size.width}x${size.height}`);
+    // Nothing in the row scrolls sideways. The chips were read above from a settled line, so
+    // the boxes read here are the narrowed row's.
+    const scrolling = await row.evaluate(sidewaysScrollers);
+    sideways.push(...scrolling.map((box) => `${size.width}x${size.height}: ${box}`));
     await resetScroll(page, firstRow);
     // The nine chips were counted and the scroll reset above, so this is the narrowed layout.
     const narrowed = await topOf(firstRow);
     const where = `${size.width}x${size.height}: nine narrowings moved the first item from ${Math.round(plain)}px to ${Math.round(narrowed)}px, ${Math.round(narrowed - plain)}px down`;
-    readings.push(where);
+    readings.push(
+      `${where}, with ${chips.line.length} chips in the line and ${chips.panel.length} behind +N more`
+    );
     if (narrowed - plain > CHIP_LINE) over.push(where);
   }
   await test.info().attach("first item with and without nine narrowings", {
@@ -437,6 +462,9 @@ test("however many narrowings are on, their chips take at most one more line of 
     over,
     `${over.join("; ")}, more than the ${CHIP_LINE}px of one more line of chips`
   ).toEqual([]);
+  // Nothing in the row scrolls sideways, at any width: a chip the line has no room for is listed
+  // behind its `+N more`, never scrolled to.
+  expect(sideways, `${sideways.join("; ")} scroll sideways in the Inbox's row`).toEqual([]);
 });
 
 /** The seven labels every issue of the Board's seed carries: the Board narrows by every label
@@ -456,11 +484,13 @@ test("however many narrowings are on, their chips take at most one more line of 
     if (first === "") first = issue.key;
   }
   const main = page.getByTestId("main-content");
+  const row = controlRow(main);
   const firstCard = page.locator("[data-board-card]").first();
   // Seven labels, the search text and the needs-you flag: nine chips, and every issue kept.
   const nine = `/projects/CORE/issues?${BOARD_LABELS.map((label) => `label=${label}`).join("&")}&q=Rollout&needs-you=1`;
   const readings: string[] = [];
   const over: string[] = [];
+  const sideways: string[] = [];
   for (const size of [
     { height: 900, width: 1440 },
     { height: 800, width: 1280 },
@@ -475,12 +505,29 @@ test("however many narrowings are on, their chips take at most one more line of 
 
     await page.goto(nine);
     await expect(firstCard).toBeVisible();
-    await expect(control(controlRow(main), CONTROL.chip)).toHaveCount(9);
+    // The Board opens its Filter panel by itself while a narrowing is on, unless the reader shut
+    // it before (`project.issue-filters`). That panel lies over the chips line and takes the
+    // pointer, so it is shut first by its trigger, as a reader shuts it, and the chips are read
+    // with no panel over the row. The panel is drawn over the page, so the layout stays the same.
+    await closeControlPanel(main);
+    await expect(
+      page.getByRole("dialog", { name: "Filters" }),
+      `${size.width}x${size.height}: the Board's Filter panel stayed open over the row`
+    ).toHaveCount(0);
+    // One chip per narrowing, so nine chips: the ones the chips line has room for, each whole,
+    // and the rest in the panel its `+N more` opens.
+    const chips = await chipsInLineAndPanel(row, 9, `${size.width}x${size.height}`);
+    // Nothing in the row scrolls sideways. The chips were read above from a settled line, so
+    // the boxes read here are the narrowed row's.
+    const scrolling = await row.evaluate(sidewaysScrollers);
+    sideways.push(...scrolling.map((box) => `${size.width}x${size.height}: ${box}`));
     await resetScroll(page, firstCard);
     // The nine chips were counted and the scroll reset above, so this is the narrowed layout.
     const narrowed = await topOf(firstCard);
     const where = `${size.width}x${size.height}: nine narrowings moved the Board's first card from ${Math.round(plain)}px to ${Math.round(narrowed)}px, ${Math.round(narrowed - plain)}px down`;
-    readings.push(where);
+    readings.push(
+      `${where}, with ${chips.line.length} chips in the line and ${chips.panel.length} behind +N more`
+    );
     if (narrowed - plain > CHIP_LINE) over.push(where);
   }
   await test.info().attach("first card with and without nine narrowings", {
@@ -492,6 +539,9 @@ test("however many narrowings are on, their chips take at most one more line of 
     over,
     `${over.join("; ")}, more than the ${CHIP_LINE}px of one more line of chips`
   ).toEqual([]);
+  // Nothing in the row scrolls sideways, at any width: a chip the line has no room for is listed
+  // behind its `+N more`, never scrolled to.
+  expect(sideways, `${sideways.join("; ")} scroll sideways in the Board's row`).toEqual([]);
 });
 
 /** The widths a reader's window takes, from the desktop down: R1's two, a tablet held upright,
@@ -530,24 +580,17 @@ test("a chip of the Inbox's row that has the keyboard focus is shown whole, with
 }) => {
   await seedLongInbox();
   const row = controlRow(page.getByTestId("main-content"));
-  const cut: string[] = [];
-  for (const size of READING_WIDTHS) {
-    await page.setViewportSize(size);
-    await page.goto(NINE_NARROWINGS);
-    await expect(control(row, CONTROL.chip)).toHaveCount(9);
-    await control(row, CONTROL.searchBox).focus();
-    let chips = 0;
-    // The search box, the filter trigger, nine chips and Clear filters, and the row's own
-    // controls after them: twenty presses walk past the end of the row.
-    for (let press = 0; press < 20; press++) {
-      await page.keyboard.press("Tab");
-      // The Tab moves the focus, and `onFocus` scrolls it into view with no smooth scroll, while
-      // the browser handles the press, so the instant after it is what the reader sees.
-      const reading = await page.evaluate((measure) => {
+  const more = row.getByRole("button", { name: MORE_FILTERS });
+  /** What the reader sees of the focused control the instant after a key, or null once the focus
+   *  is outside `within`: whether it is a chip, and for a chip its name, whether its words are
+   *  cut short, and how much of it is shown (`shownOf`). */
+  const focusedChip = (within: string) =>
+    page.evaluate(
+      ({ measure, selector }) => {
         const shown = new Function(`return (${measure})`)() as typeof shownOf;
         const focused = document.activeElement;
         if (!(focused instanceof HTMLElement)) return null;
-        if (focused.closest('[data-control="control-row"]') === null) return null;
+        if (focused.closest(selector) === null) return null;
         if (focused.getAttribute("data-control") !== "chip") return { chip: false } as const;
         const name = focused.querySelector(".truncate");
         return {
@@ -556,24 +599,93 @@ test("a chip of the Inbox's row that has the keyboard focus is shown whole, with
           nameCut: name !== null && name.scrollWidth > name.clientWidth + 1,
           ...shown(focused),
         } as const;
-      }, shownOf.toString());
+      },
+      { measure: shownOf.toString(), selector: within }
+    );
+  const cut: string[] = [];
+  const walks: string[] = [];
+  /** Notes a focused chip that the reader does not see whole, or whose name is cut short. */
+  const look = (
+    where: string,
+    reading: { label: string; nameCut: boolean; shown: number; width: number }
+  ) => {
+    const holder = `${where}: "${reading.label}" has the focus`;
+    if (reading.shown < reading.width - 1) {
+      cut.push(
+        `${holder} and ${Math.round(reading.shown)} of its ${Math.round(reading.width)}px are shown`
+      );
+    } else if (reading.nameCut) {
+      cut.push(`${holder} and its name is cut short`);
+    }
+  };
+  for (const size of READING_WIDTHS) {
+    const where = `${size.width}x${size.height}`;
+    await page.setViewportSize(size);
+    await page.goto(NINE_NARROWINGS);
+    // Nine chips, one per narrowing: the ones the chips line has room for, then the ones its
+    // `+N more` lists in its panel.
+    const chips = await chipsInLineAndPanel(row, 9, where);
+    const moreName = `${chips.panel.length} more ${chips.panel.length === 1 ? "filter" : "filters"}`;
+    // The Tab key walks the chips line's chips in their order, then `+N more`, which stands for
+    // the chips the line has no room for.
+    await control(row, CONTROL.searchBox).focus();
+    const walked: string[] = [];
+    // The search box, the filter trigger, the page's own controls and the display menu, then the
+    // line's chips, `+N more` and Clear filters: twenty presses walk past the end of the row.
+    for (let press = 0; press < 20; press++) {
+      await page.keyboard.press("Tab");
+      // The Tab moves the focus while the browser handles the press, and nothing in the row
+      // scrolls or moves when a control takes it, so the instant after it is what the reader sees.
+      const reading = await focusedChip('[data-control="control-row"]');
       if (reading === null) break;
       if (!reading.chip) continue;
-      chips++;
-      const where = `${size.width}x${size.height}: "${reading.label}" has the focus`;
-      if (reading.shown < reading.width - 1) {
-        cut.push(
-          `${where} and ${Math.round(reading.shown)} of its ${Math.round(reading.width)}px are shown`
-        );
-      } else if (reading.nameCut) {
-        cut.push(`${where} and its name is cut short`);
-      }
+      walked.push(reading.label);
+      look(where, reading);
     }
-    expect(chips, `${size.width}x${size.height}: the keyboard reached ${chips} of 9 chips`).toBe(9);
+    expect(walked, `${where}: the Tab key walks ${walked.join(", ")} in the chips line`).toEqual(
+      chips.panel.length === 0 ? chips.line : [...chips.line, moreName]
+    );
+    // Opening `+N more` from the keyboard reaches the rest: its panel takes the focus onto its
+    // first chip, Tab walks the panel's chips, and Tab past the last hands it back to `+N more`.
+    const listed: string[] = [];
+    if (chips.panel.length > 0) {
+      await more.focus();
+      await page.keyboard.press("Enter");
+      const panel = page.getByRole("dialog", { exact: true, name: moreName });
+      await expect(
+        panel.getByRole("button").first(),
+        `${where}: Enter on ${moreName} put the focus on no chip of its panel`
+      ).toBeFocused();
+      for (let press = 0; press < 12; press++) {
+        // The panel took the focus above, and each Tab moves it at once, to the panel's next chip
+        // or past the last onto `+N more`, so the instant after it is what the reader sees.
+        const reading = await focusedChip('[role="dialog"]');
+        if (reading === null) break;
+        if (reading.chip) {
+          listed.push(reading.label);
+          look(where, reading);
+        }
+        await page.keyboard.press("Tab");
+      }
+      await expect(
+        panel,
+        `${where}: Tab past the last chip of ${moreName} left its panel open`
+      ).toHaveCount(0);
+    }
+    expect(
+      listed,
+      `${where}: the Tab key walks ${listed.join(", ")} in the panel of ${moreName}`
+    ).toEqual(chips.panel);
+    walks.push(`${where}: ${walked.join(", ")}; in its panel ${listed.join(", ")}`);
   }
-  // The row's own promise (components/ControlRow.tsx): a chip the strip scrolled away is reached
-  // by the Tab key and scrolled into view. A reader who cannot see the chip they are on cannot
-  // tell which narrowing Enter takes off, which the chips showed whole before this change.
+  await test.info().attach("the Inbox's chips walked by the Tab key", {
+    body: walks.join("\n"),
+    contentType: "text/plain",
+  });
+  // The row's own promise (components/ControlRow.tsx): the Tab key reaches the chips the line
+  // draws in place, and the rest in the panel `+N more` opens, each shown whole. A reader who
+  // cannot see the chip they are on cannot tell which narrowing Enter takes off, which the chips
+  // showed whole before this change.
   expect(cut, cut.join("; ")).toEqual([]);
 });
 
@@ -587,7 +699,9 @@ test("Clear filters stays in view in the Inbox's row however many narrowings are
   for (const size of READING_WIDTHS) {
     await page.setViewportSize(size);
     await page.goto(NINE_NARROWINGS);
-    await expect(control(row, CONTROL.chip)).toHaveCount(9);
+    // One chip per narrowing, so nine chips: the ones the chips line has room for, each whole,
+    // and the rest in the panel its `+N more` opens.
+    await chipsInLineAndPanel(row, 9, `${size.width}x${size.height}`);
     const clear = row.getByRole("button", { exact: true, name: "Clear filters" });
     await expect(clear).toHaveCount(1);
     // The nine chips and Clear filters were waited for above; how much of it shows is the reading.
@@ -643,6 +757,60 @@ const SIXTEEN_NARROWINGS = `/?${[
 /** The name of the row's `+N more`, `<N> more filters`, as a screen reader hears what it opens,
  *  and of the panel it opens. */
 const MORE_FILTERS = /^\d+ more filters?$/;
+
+/** The chips of the `count` narrowings that are on in the control row `row`, by name and in their
+ *  order: the ones its chips line draws, then the ones its `+N more` lists in the panel it opens.
+ *  The line is read until its chips and the number `+N more` names add up to `count`, and the
+ *  panel is then opened by a pointer and shut by Escape, which hands the focus back to `+N more`.
+ *  A chip the line draws in part is in neither place for the reader, so a control the line cuts
+ *  fails the row by its name (`cutInChipsLine`), as another count or a chip drawn twice does. */
+async function chipsInLineAndPanel(
+  row: Locator,
+  count: number,
+  where: string
+): Promise<{ line: string[]; panel: string[] }> {
+  const page = row.page();
+  const more = row.getByRole("button", { name: MORE_FILTERS });
+  let left = 0;
+  await expect
+    .poll(
+      async () => {
+        const [line, named] = await Promise.all([
+          chipNames(row),
+          more.evaluateAll((all) => all.map((chip) => chip.getAttribute("aria-label") ?? "")),
+        ]);
+        left = Number.parseInt(named[0] ?? "0", 10);
+        return line.length + left;
+      },
+      {
+        message: `${where}: the chips line and its +N more stand for another number of chips than the ${count} narrowings that are on`,
+      }
+    )
+    .toBe(count);
+  // Every chip was drawn when the poll above passed, and the line is laid out again only when its
+  // room or a chip changes size, so what it cuts is read from a settled line.
+  const cut = await row.evaluate(cutInChipsLine, shownOf.toString());
+  expect(cut, `${where}: the chips line cuts ${cut.join(", ")}`).toEqual([]);
+  let line = await chipNames(row);
+  let listed: string[] = [];
+  if (left > 0) {
+    await more.click();
+    const panel = page.getByRole("dialog", { name: MORE_FILTERS });
+    await expect(panel, `${where}: +N more opened no panel named for it`).toBeVisible();
+    // The panel lists the chips the line leaves out in the commit that draws it, which was waited
+    // for above, so the line and the panel are read here as one split of the chips.
+    line = await chipNames(row);
+    listed = await chipNames(panel);
+    await page.keyboard.press("Escape");
+    await expect(panel, `${where}: Escape left the panel of +N more open`).toHaveCount(0);
+  }
+  const all = [...line, ...listed];
+  expect(
+    `${all.length} chips, ${new Set(all).size} of them named once`,
+    `${where}: the line draws ${line.join(", ")}, and the panel of +N more lists [${listed.join(", ")}]`
+  ).toBe(`${count} chips, ${count} of them named once`);
+  return { line, panel: listed };
+}
 
 // SLOW(>=2s): twenty-two seeded questions, the row's chips read at five widths with the panel of
 // its +N more opened at each, and a chip taken off from that panel.
@@ -723,34 +891,42 @@ test("the Inbox's chips that the line has no room for are listed behind one +N m
   });
 });
 
-/** Where the keyboard focus is, as the chips line reads it: on a chip (by its name), on the
- *  row's filter trigger, on Clear filters, or anywhere else - the body included - with how much
- *  of the focused element the reader can see. */
+/** Where the keyboard focus is, as the chips line reads it: on a chip, by its name, of the line or
+ *  of the panel its `+N more` opens; on the row's filter trigger; on Clear filters; or anywhere
+ *  else - the body included - with how much of the focused element the reader can see. */
 async function focusInRow(
   row: Locator
 ): Promise<{ where: "chip" | "trigger" | "clear" | "elsewhere"; label: string; whole: boolean }> {
-  return row.evaluate((root, measure) => {
-    const shown = new Function(`return (${measure})`)() as typeof shownOf;
-    const focused = document.activeElement;
-    if (!(focused instanceof HTMLElement) || !root.contains(focused)) {
-      return { where: "elsewhere", label: focused?.tagName ?? "nothing", whole: false } as const;
-    }
-    const reading = shown(focused);
-    const whole = reading.shown >= reading.width - 1;
-    const label = focused.getAttribute("aria-label") ?? focused.textContent?.trim() ?? "";
-    const control = focused.getAttribute("data-control");
-    if (control === "chip") return { where: "chip", label, whole } as const;
-    if (control === "panel-trigger") return { where: "trigger", label, whole } as const;
-    if (label === "Clear filters") return { where: "clear", label, whole } as const;
-    return { where: "elsewhere", label, whole } as const;
-  }, shownOf.toString());
+  return row.evaluate(
+    (root, { measure, more }) => {
+      const shown = new Function(`return (${measure})`)() as typeof shownOf;
+      const focused = document.activeElement;
+      // The panel `+N more` opens is drawn on the page's body, outside the row, and is named as
+      // `+N more` is.
+      const panel = focused?.closest('[role="dialog"]')?.getAttribute("aria-label") ?? "";
+      const inPanel = new RegExp(more).test(panel);
+      if (!(focused instanceof HTMLElement) || !(root.contains(focused) || inPanel)) {
+        return { where: "elsewhere", label: focused?.tagName ?? "nothing", whole: false } as const;
+      }
+      const reading = shown(focused);
+      const whole = reading.shown >= reading.width - 1;
+      const label = focused.getAttribute("aria-label") ?? focused.textContent?.trim() ?? "";
+      const control = focused.getAttribute("data-control");
+      if (control === "chip") return { where: "chip", label, whole } as const;
+      if (control === "panel-trigger") return { where: "trigger", label, whole } as const;
+      if (label === "Clear filters") return { where: "clear", label, whole } as const;
+      return { where: "elsewhere", label, whole } as const;
+    },
+    { measure: shownOf.toString(), more: MORE_FILTERS.source }
+  );
 }
 
 /** The two pages of R2 whose chips this row presses: the Inbox with nine narrowings on, which
  *  draw nine chips, and the project List with a label, its search text and its three flags on,
  *  of which the three flags and the label draw chips, four (the label is its column's filter,
  *  whose chip the row draws whether its column shows or not, and the text is its box).
- *  `chips` is how many chips each address draws. */
+ *  `chips` is how many chips each address draws, in the chips line and in the panel of its
+ *  `+N more` together. */
 const CHIP_FOCUS_SURFACES = [
   { chips: 9, name: "Inbox", path: NINE_NARROWINGS },
   {
@@ -769,6 +945,8 @@ test("a chip taken off from the keyboard hands the focus to the next chip, then 
   const main = page.getByTestId("main-content");
   const row = controlRow(main);
   const chips = control(row, CONTROL.chip);
+  const more = row.getByRole("button", { name: MORE_FILTERS });
+  const panel = page.getByRole("dialog", { name: MORE_FILTERS });
   const wrong: string[] = [];
   for (const size of [
     { height: 900, width: 1440 },
@@ -780,44 +958,71 @@ test("a chip taken off from the keyboard hands the focus to the next chip, then 
       // The List is the stored view from here on, so its address below opens on it.
       if (surface.name === "project List") await openSurface(page, "project List", scene);
       await page.goto(surface.path);
-      await expect(chips.first(), `${where}: no chip is drawn`).toBeVisible();
-      await expect(
-        chips,
-        `${where}: the address's narrowings draw another number of chips than ${surface.chips}`
-      ).toHaveCount(surface.chips);
-      // The keys a reader takes a chip off with: the last chip first, which has no next chip,
-      // then the first chip by Space and by Delete, then Enter until no chip is left.
-      let key = "Enter";
-      let pick: "last" | "first" = "last";
-      for (let removal = 0; removal < 20; removal++) {
-        // The chips' count was waited for above and each later turn follows a removal whose
-        // count was waited for, so the chips read are the ones the page settled on.
-        const before = await chips.evaluateAll((all) =>
-          all.map((chip) => chip.getAttribute("aria-label") ?? "")
-        );
-        if (before.length === 0) break;
-        const index = pick === "last" ? before.length - 1 : 0;
-        await chips.nth(index).focus();
+      // Every chip the address's narrowings draw, in their order: the chips line's, then the
+      // ones its `+N more` lists in its panel.
+      const drawn = await chipsInLineAndPanel(row, surface.chips, where);
+      let order = [...drawn.line, ...drawn.panel];
+      // A chip taken off hands the focus to the chip now at its place among the chips the row
+      // draws, which can be one that moved into the line from the panel, else to the chip before
+      // it, else to the filter trigger. One taken off in a panel that stays hands it to the
+      // panel's next chip there, else to the one before it, and the panel's last chip, which
+      // takes `+N more` with it, hands it on from the place `+N more` stood at. The turns: the
+      // line's last chip by Enter, whose place a chip of the panel may take; the line's first by
+      // Space; then, while `+N more` stands for a chip, the panel's first, from inside the panel,
+      // by Delete and then by Enter; then the line's first by Enter until no chip is left.
+      for (let removal = 0; removal < 20 && order.length > 0; removal++) {
+        const key = ["Enter", "Space", "Delete"][removal] ?? "Enter";
+        // The line was read settled before the first turn, and each later turn follows a
+        // removal that was waited for, so the line read here is the one the page settled on.
+        const line = await chipNames(row);
+        const fromPanel = removal >= 2 && order.length > line.length;
+        const index = fromPanel ? line.length : removal === 0 ? line.length - 1 : 0;
+        const taken = (fromPanel ? order[index] : line[index]) ?? "";
+        const target = (fromPanel ? panel : row).getByRole("button", { exact: true, name: taken });
+        const place = fromPanel ? " in the panel of +N more" : "";
+        // The panel stays open while a chip taken off in it leaves it any, and else Enter on
+        // `+N more` opens it from the keyboard, with the focus on its first chip.
+        if (fromPanel && (await expandedState(`${where}: +N more`, more)) === "shut") {
+          await more.focus();
+          await page.keyboard.press("Enter");
+        }
+        await target.focus();
         await page.keyboard.press(key);
-        const took = await expect
-          .poll(() => chips.count(), { timeout: 5_000 })
-          .toBe(before.length - 1)
+        const gone = page.getByRole("button", { exact: true, name: taken });
+        const took = await expect(gone)
+          .toHaveCount(0, { timeout: 5_000 })
           .then(() => true)
           .catch(() => false);
         let used = key;
         if (!took) {
-          wrong.push(`${where}: ${key} on "${before[index]}" took no chip off`);
-          await chips.nth(index).focus();
+          wrong.push(`${where}: ${key} on "${taken}"${place} took no chip off`);
+          await target.focus();
           await page.keyboard.press("Enter");
-          await expect(chips).toHaveCount(before.length - 1);
+          await expect(gone).toHaveCount(0);
           used = "Enter";
         }
-        const left = before.filter((_, at) => at !== index);
+        order = order.filter((name) => name !== taken);
+        // The chip's going was waited for above, and `ControlRow` draws the line, shuts a panel it
+        // emptied and hands the focus on in the commit that takes it off, so this read is settled.
+        const lineAfter = await chipNames(row);
+        // Read after the same commit as the line just above, so the panel is the one it settled on.
+        const listedAfter = await chipNames(panel);
+        // Each chip is drawn once, in its order: the line's from the first, then an open panel's.
+        const shown = [...lineAfter, ...listedAfter];
+        if (shown.join("\n") !== order.slice(0, shown.length).join("\n")) {
+          wrong.push(
+            `${where}: after ${used} took "${taken}" off${place} the row draws ${shown.join(", ")}, not the first of ${order.join(", ")}`
+          );
+        }
+        const standing = fromPanel && listedAfter.length > 0;
+        const among = standing ? listedAfter : lineAfter;
+        const at = standing ? 0 : index;
+        const next = among[at] ?? among[at - 1];
         const expected =
-          left.length === 0
+          next === undefined
             ? { where: "trigger", label: "the filter trigger" }
-            : { where: "chip", label: left[Math.min(index, left.length - 1)] ?? "" };
-        // The count above saw the removal commit, and `ControlRow` hands the focus on in that
+            : { where: "chip", label: next };
+        // The chip's going was waited for above, and `ControlRow` hands the focus on in that
         // commit's layout effect, so the focus read is where the removal left it.
         const focus = await focusInRow(row);
         const right =
@@ -825,20 +1030,13 @@ test("a chip taken off from the keyboard hands the focus to the next chip, then 
           (expected.where === "trigger" || focus.label === expected.label);
         if (!right) {
           wrong.push(
-            `${where}: after ${used} took "${before[index]}" off the focus is on ${focus.where === "elsewhere" ? `${focus.label}, outside the row's controls` : `"${focus.label}"`}, not on ${expected.where === "chip" ? `"${expected.label}"` : expected.label}`
+            `${where}: after ${used} took "${taken}" off${place} the focus is on ${focus.where === "elsewhere" ? `${focus.label}, outside the row's controls` : `"${focus.label}"`}, not on ${expected.where === "chip" ? `"${expected.label}"` : expected.label}`
           );
         } else if (!focus.whole) {
           wrong.push(`${where}: after ${used} the focused "${focus.label}" is not shown whole`);
         }
-        if (removal === 0) {
-          key = "Space";
-          pick = "first";
-        } else if (removal === 1) {
-          key = "Delete";
-        } else {
-          key = "Enter";
-        }
       }
+      if (order.length > 0) wrong.push(`${where}: 20 removals left ${order.join(", ")} on`);
       // Clear filters unmounts itself, so the focus it leaves goes to the filter trigger.
       await page.goto(surface.path);
       const clear = row.getByRole("button", { exact: true, name: "Clear filters" });
