@@ -711,24 +711,29 @@ const AN_UNREPORTED_RED_WAITS = new RegExp(
  * case (the page's `A_FAILED_JOB_IS_NEVER_THAT_CASE`).
  *
  * The shape is the absence from the set (`that`, `the` or `this` set, `counted` or not) with a
- * re-run within twenty characters after it and no negation between the two (`never`, `not`, `no`,
- * `none`, `nothing`, `neither`, `nor`, or a word ending in `n't`), which is a trigger with nothing
- * to limit it. So a sentence that withholds the re-run passes: "A check absent from the counted set
- * is never re-run on that absence alone.", "… is not re-run while its run is in progress." and "…
- * gets no re-run until a `pull_request` run of the head holds its job." (the class search at
- * 59442ee2). So does the sentence that replaced it, since the job's state stands between the two:
- * "A required check absent from the counted set, or `completed` as `cancelled` there, whose job in
- * a `pull_request` run of the head was cancelled or never ran: re-run that run's failed and
- * cancelled jobs, once". So do the page's other absences, "may find the failing check pending,
- * queued, in progress or absent" and "with every check it holds `completed` and that one absent",
- * and the architect's notice, "is absent from that list rather than named as missing". A literal
- * pattern does not close every paraphrase: "missing from that set", "absent from the rollup", "not
- * in that set", "the pull request's counted set", and a re-run written before the absence or more
- * than twenty characters after it all pass; the reviewer's prompt part's words, pinned in
- * roles_test.go, carry the rest.
+ * re-run within twenty characters after it, which is a trigger with nothing to limit it, unless a
+ * negation governs the re-run itself: `never`, `not`, `no` or a word ending in `n't` right before
+ * the re-run, or before `be` and the re-run (`never re-run`, `not be re-run`, `gets no re-run`,
+ * `isn't re-run`). So a sentence that withholds the re-run passes: "A check absent from the
+ * counted set is never re-run on that absence alone.", "… is not re-run while its run is in
+ * progress." and "… gets no re-run until a `pull_request` run of the head holds its job." (the
+ * class search at 59442ee2). A negation elsewhere between the two limits no re-run, so these are
+ * refused: "… or absent from that set, not merely late: re-run that run's failed and cancelled
+ * jobs", "… absent from that set (it isn't listed): re-run …" and "… absent from that set, no
+ * matter why: re-run …" (the class search at e7052779, which found them let through while any
+ * negation in the gap passed). So does the sentence that replaced it, since the job's state stands
+ * between the two: "A required check absent from the counted set, or `completed` as `cancelled`
+ * there, whose job in a `pull_request` run of the head was cancelled or never ran: re-run that
+ * run's failed and cancelled jobs, once". So do the page's other absences, "may find the failing
+ * check pending, queued, in progress or absent" and "with every check it holds `completed` and that
+ * one absent", and the architect's notice, "is absent from that list rather than named as
+ * missing". A literal pattern does not close every paraphrase: "missing from that set", "absent
+ * from the rollup", "not in that set", "the pull request's counted set", and a re-run written
+ * before the absence or more than twenty characters after it all pass; the reviewer's prompt
+ * part's words, pinned in roles_test.go, carry the rest.
  */
 const ABSENCE_FROM_THE_SET_IS_RERUN =
-  /\babsent\s+from\s+(?:that|the|this)\s+(?:counted\s+)?set\b(?=(?:(?!\b(?:never|not|no|none|nothing|neither|nor)\b|n't\b)[^.]){0,20}?\bre-?run\b)/i;
+  /\babsent\s+from\s+(?:that|the|this)\s+(?:counted\s+)?set\b(?=[^.]{0,20}?(?<!(?:\b(?:never|not|no)|n't)\s+(?:be\s+)?)\bre-?run\b)/i;
 
 /** The twelve rules INFRA-1303 retired, in the order they are written above. */
 const RETIRED_RERUN_PROHIBITIONS = [
@@ -960,42 +965,59 @@ const THE_TESTER_SENDS_A_CI_FINDING =
   /\bthe\s+(?:tester\s+and\s+the\s+reviewer|reviewer\s+and\s+the\s+tester)\s+(?:each\s+|both\s+)?(?:sends?|publish(?:es)?|reports?)\s+it\s+to\s+the\s+architect\b/i;
 
 /**
+ * The prompt parts the daemon composes for the tester and for neither holder of the re-run, each
+ * by its path from the repository's root, as a hit names it. `Compose`
+ * (packages/daemon/internal/prompts/prompts.go) gives the tester core/common.md, core/tester.md,
+ * mechanics/headless.md and tester.md from roles/, and tester.md and worker-common.md from go/; the
+ * implementer and the reviewer are composed core/common.md, mechanics/headless.md and
+ * worker-common.md too. roles_test.go's
+ * TestNoPartComposedForTheTesterAlonePointsAtTheRedAtTheHeadPage reads the same split off `Compose`
+ * itself, and skills-guard.test.ts holds each path here to a file that exists.
+ */
+export const TESTER_ONLY_PARTS: readonly string[] = [
+  "packages/daemon/internal/prompts/roles/core/tester.md",
+  "packages/daemon/internal/prompts/roles/tester.md",
+  "packages/daemon/internal/prompts/go/tester.md",
+];
+
+/**
  * The tester's read of a check CI proves: the tester's role part's "A check carrying `ci_check` is
  * CI's: that read shows its one derived result", which had the tester read that result in its
  * `dispatch results` read, beside a rule that put in its `failures` every `before_merge` check with
  * no pass from the implementer, a pass a `ci_check` check never has (Dispatch refuses any role's
  * result for one, `409 CHECK_PROVED_BY_CI`). The architect's gap review of 2026-11-22 found it
- * there after the tester came to read no CI. The shape is a read (`that read`, `the read`, `this
- * read`, `your read`) that shows a derived result, in a sentence said to the tester: `your read`,
- * or a sentence that says `you` or names the tester, or one that names no other role, since in a
- * role part a read no role is named for is the reader's own. So the reviewer's read passes: "Before
- * it approves, the reviewer reads each `ci_check` check: the read shows its one derived result."
- * (the class search at 59442ee2). So do the sentences that keep a `ci_check` check CI's: "A check
+ * there after the tester came to read no CI. The sentence is retired only where the tester is the
+ * reader, so the rule is read only in the parts composed for the tester alone
+ * (`TESTER_ONLY_PARTS`), and there it refuses the plain shape, a read (`that read`, `the read`,
+ * `this read`, `your read`) that shows a derived result, whatever role the sentence names after
+ * it: "…: that read shows its one derived result, which the reviewer reads before it approves." and
+ * "…, and it needs no pass from the implementer." are refused there. Anywhere else the sentence is
+ * another role's read, and passes: "Before it approves, the reviewer reads each `ci_check` check:
+ * the read shows its one derived result." and the reviewer's imperative, "Before you approve, read
+ * each `ci_check` check in `dispatch results`: the read shows its one derived result." The rule
+ * read the roles a sentence names until the class search at e7052779 found that this let the first
+ * two through and refused the last. The sentences that keep a `ci_check` check CI's pass: "A check
  * carrying `ci_check` is CI's (`skill://legion-worker/references/ci-checks.md`): you do not read
  * its derived result, run it or record it, and it is never an entry of your `failures`." (the
  * tester's role part) and "It neither reads nor records a `ci_check` check's derived result"
  * (ci-checks.md). So does the architect's "whenever that read shows no claim at all", which shows
  * no derived result. A literal pattern does not close every paraphrase: "that read also shows",
  * "the check's one derived result", "gives", "single" and "the `dispatch results` read" pass; the
- * tester's role part's words, pinned in roles_test.go, carry the rest.
+ * tester's role part's words, pinned in roles_test.go, carry the rest. The scope has a cost too: a
+ * part `Compose` gives the tester alone that `TESTER_ONLY_PARTS` does not list is not read.
  */
-const THE_TESTERS_READ_SHOWS_A_DERIVED_RESULT = (() => {
-  const read = String.raw`\s+read\s+shows\s+(?:its|the|a|each)\s+(?:one\s+)?derived\s+results?\b`;
-  const tester = String.raw`\b(?:you|yours?|testers?)\b`;
-  const otherRole = String.raw`\b(?:reviewer|implementer|architect|merger|planner|controller)s?\b`;
-  return new RegExp(
-    [
-      String.raw`\byour${read}`,
-      String.raw`(?<=${tester}[^.]*)\b(?:that|the|this)${read}`,
-      String.raw`\b(?:that|the|this)${read}(?=[^.]*${tester})`,
-      String.raw`(?<!${otherRole}[^.]*)\b(?:that|the|this)${read}(?![^.]*${otherRole})`,
-    ].join("|"),
-    "i"
-  );
-})();
+const THE_TESTERS_READ_SHOWS_A_DERIVED_RESULT =
+  /\b(?:that|the|this|your)\s+read\s+shows\s+(?:its|the|a|each)\s+(?:one\s+)?derived\s+results?\b/i;
+
+/**
+ * A retired rule: a pattern refused in every file, or a `claim` refused only in the files `parts`
+ * names, each by its path from the repository's root, which a file's path ends with wherever the
+ * tree it reads stands.
+ */
+type RetiredRule = RegExp | { readonly claim: RegExp; readonly parts: readonly string[] };
 
 /** The tester's eight retired shapes, in the order they are written above. */
-const RETIRED_TESTER_CI_READS = [
+const RETIRED_TESTER_CI_READS: readonly RetiredRule[] = [
   TESTER_READS_THE_STATIC_LANES,
   HEADS_CHECKS_BEFORE_ANY_VERDICT,
   THE_TESTER_HOLDS_THE_RERUN,
@@ -1003,7 +1025,7 @@ const RETIRED_TESTER_CI_READS = [
   CI_CHECK_IN_THE_TESTERS_FAILURES,
   THE_TESTER_RECORDS_A_RED,
   THE_TESTER_SENDS_A_CI_FINDING,
-  THE_TESTERS_READ_SHOWS_A_DERIVED_RESULT,
+  { claim: THE_TESTERS_READ_SHOWS_A_DERIVED_RESULT, parts: TESTER_ONLY_PARTS },
 ];
 
 /**
@@ -1012,7 +1034,8 @@ const RETIRED_TESTER_CI_READS = [
  * it record a red at the head, or has it send the architect, beside the reviewer, a case only CI
  * shows, each as one `<file>:<line>`. The sentences were deleted from skill files, daemon prompt
  * parts and docs pages at once, and a forward merge keeps both sides of a deletion in silence, so
- * this rule too is written over whole partitions.
+ * this rule too is written over whole partitions, save the read of a derived result, which is
+ * written over the parts composed for the tester alone.
  */
 export function retiredTesterCiReads(roots: readonly string[]): string[] {
   return retiredRuleHits(roots, RETIRED_TESTER_CI_READS);
@@ -1020,7 +1043,8 @@ export function retiredTesterCiReads(roots: readonly string[]): string[] {
 
 /**
  * Every place in the Markdown files under `roots` that one of `rules` matches, each as one
- * `<file>:<line>`.
+ * `<file>:<line>`. A rule that names its `parts` is read only in a file whose path ends with one of
+ * them.
  *
  * Each rule is matched against the whitespace-collapsed text (`collapsed`), the collapse the prose
  * pins read too, because these files are wrapped and a retired sentence can cross a line wherever
@@ -1030,7 +1054,7 @@ export function retiredTesterCiReads(roots: readonly string[]): string[] {
  * patterns carry no `g` flag, so a file that says it twice is named once and reads the same after
  * the first is fixed.
  */
-function retiredRuleHits(roots: readonly string[], rules: readonly RegExp[]): string[] {
+function retiredRuleHits(roots: readonly string[], rules: readonly RetiredRule[]): string[] {
   return roots.flatMap((root) =>
     files(root)
       .filter((file) => file.endsWith(".md"))
@@ -1045,7 +1069,12 @@ function retiredRuleHits(roots: readonly string[], rules: readonly RegExp[]): st
           : path.relative(root, file);
         let offsets: number[] | undefined;
         return rules.flatMap((rule) => {
-          const found = text.match(rule);
+          if (
+            !(rule instanceof RegExp) &&
+            !rule.parts.some((part) => file.split(path.sep).join("/").endsWith(`/${part}`))
+          )
+            return [];
+          const found = text.match(rule instanceof RegExp ? rule : rule.claim);
           if (found?.index === undefined) return [];
           offsets ??= collapsedOffsets(markdown);
           return [`${name}:${markdown.slice(0, offsets[found.index]).split("\n").length}`];

@@ -1,12 +1,14 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import {
   anchors,
   headingText,
+  REPO_ROOT,
   retiredRerunProhibitions,
   retiredTesterCiReads,
+  TESTER_ONLY_PARTS,
 } from "./skills-guard";
 
 // The heading parse behind `anchors`, which decides whether a `skill://<name>/<path>#anchor` link
@@ -74,14 +76,19 @@ test("a heading line of 200,000 trailing spaces is parsed, not scanned once per 
 // retired wording starts below the page's first line, so a hit names the line that wording starts
 // on rather than the first line of the file.
 
-/** What `rule` — `retiredRerunProhibitions` unless named — reports over a root holding `page` alone, as `page.md`. */
+/**
+ * What `rule` — `retiredRerunProhibitions` unless named — reports over a root holding `page` alone,
+ * as `file`, a path below that root (`page.md` unless named).
+ */
 function reported(
   page: readonly string[],
-  rule: (roots: readonly string[]) => string[] = retiredRerunProhibitions
+  rule: (roots: readonly string[]) => string[] = retiredRerunProhibitions,
+  file = "page.md"
 ): string[] {
   const root = mkdtempSync(path.join(os.tmpdir(), "retired-rerun-"));
   try {
-    writeFileSync(path.join(root, "page.md"), `${page.join("\n")}\n`);
+    mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
+    writeFileSync(path.join(root, file), `${page.join("\n")}\n`);
     return rule([root]);
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -89,7 +96,7 @@ function reported(
 }
 
 // Each retired sentence in the words of the file that carried it, the text around it shortened,
-// and the line its pattern's first word stands on. The last eighteen rows are the shapes no file
+// and the line its pattern's first word stands on. The last twenty-one rows are the shapes no file
 // carried, in the words a reword would bring them back in. Every row is found by its own pattern
 // alone, so a row whose pattern is taken out of the guard reports nothing and fails.
 const retired: readonly (readonly [source: string, page: readonly string[], line: number])[] = [
@@ -500,6 +507,36 @@ const retired: readonly (readonly [source: string, page: readonly string[], line
       "The reviewer reads the head's checks on GitHub before it approves.",
       "Your review re-runs",
       "nothing for a review-bot red.",
+    ],
+    2,
+  ],
+  // The reviewer's old trigger with a negation that limits no re-run between the absence and the
+  // re-run, each let through until the class search at e7052779 by the exception that took any
+  // negation in that gap.
+  [
+    'the old trigger with "not merely late"',
+    [
+      "One `queued` or `in_progress`: wait. One `completed` as `cancelled`, or",
+      "absent from that set, not merely late: re-run that run's failed and cancelled jobs, once, then",
+      "wait.",
+    ],
+    2,
+  ],
+  [
+    'the old trigger with "(it isn\'t listed)"',
+    [
+      "One `queued` or `in_progress`: wait. One `completed` as `cancelled`, or",
+      "absent from that set (it isn't listed): re-run that run's failed and cancelled jobs, once, then",
+      "wait.",
+    ],
+    2,
+  ],
+  [
+    'the old trigger with "no matter why"',
+    [
+      "One `queued` or `in_progress`: wait. One `completed` as `cancelled`, or",
+      "absent from that set, no matter why: re-run that run's failed and cancelled jobs, once, then",
+      "wait.",
     ],
     2,
   ],
@@ -1280,9 +1317,30 @@ const retiredTesterReads: readonly (readonly [
     ],
     2,
   ],
-  // The tester's read of a check CI proves (`THE_TESTERS_READ_SHOWS_A_DERIVED_RESULT`), in the
-  // words of the tester's role part at 5525e6c7, which the architect's gap review of 2026-11-22
-  // found after the tester came to read no CI.
+];
+
+test.each(retiredTesterReads)("%s is reported at the line it starts on", (_source, page, line) => {
+  expect(reported(page, retiredTesterCiReads)).toEqual([`page.md:${line}`]);
+});
+
+// Every path `TESTER_ONLY_PARTS` names is a file of the repository: a path a rename left behind
+// would leave the rule scoped to it reading nothing.
+test.each([...TESTER_ONLY_PARTS])("the tester's own part %s exists", (part) => {
+  expect(existsSync(path.join(REPO_ROOT, part))).toBe(true);
+});
+
+// The tester's read of a check CI proves (`THE_TESTERS_READ_SHOWS_A_DERIVED_RESULT`), which is
+// retired only where the tester is the reader, so it is read only in the parts composed for the
+// tester alone (`TESTER_ONLY_PARTS`). The first row is the tester's role part at 5525e6c7, which
+// the architect's gap review of 2026-11-22 found after the tester came to read no CI; the next
+// three are rewords, the last two of which name another role after the read and were let through
+// until the class search at e7052779. Each row is run in each of those parts, where it is refused,
+// and in a page outside them, where the same words can be another role's read, and pass.
+const readsInTesterParts: readonly (readonly [
+  source: string,
+  page: readonly string[],
+  line: number,
+])[] = [
   [
     'tester.md\'s "that read shows its one derived result"',
     [
@@ -1301,19 +1359,73 @@ const retiredTesterReads: readonly (readonly [
     ],
     2,
   ],
+  [
+    'the tester\'s read with the reviewer after it, "which the reviewer reads before it approves"',
+    [
+      "Read the issue's checks with `dispatch results --issue <issue>`.",
+      "A check carrying `ci_check` is CI's: that read shows its one",
+      "derived result, which the reviewer reads before it approves.",
+    ],
+    2,
+  ],
+  [
+    'the tester\'s read with the implementer after it, "and it needs no pass from the implementer"',
+    [
+      "Read the issue's checks with `dispatch results --issue <issue>`.",
+      "A check carrying `ci_check` is CI's: that read shows its one",
+      "derived result, and it needs no pass from the implementer.",
+    ],
+    2,
+  ],
 ];
 
-test.each(retiredTesterReads)("%s is reported at the line it starts on", (_source, page, line) => {
-  expect(reported(page, retiredTesterCiReads)).toEqual([`page.md:${line}`]);
+test.each(
+  TESTER_ONLY_PARTS.flatMap((part) => readsInTesterParts.map((row) => [part, ...row] as const))
+)("in %s, %s is reported at the line it starts on", (part, _source, page, line) => {
+  expect(reported(page, retiredTesterCiReads, part)).toEqual([`${part}:${line}`]);
+});
+
+test.each(
+  readsInTesterParts
+)("outside the tester's own parts, %s is not reported", (_source, page) => {
+  expect(reported(page, retiredTesterCiReads)).toEqual([]);
+});
+
+// The tester's own sentences beside that read, which the rule lets through in the parts composed
+// for it: the role part's "you do not read its derived result", and a read that shows no derived
+// result.
+const keptInTesterParts: readonly (readonly [source: string, page: readonly string[]])[] = [
+  [
+    'tester.md\'s "you do not read its derived result"',
+    [
+      "Read the issue's checks with `dispatch results --issue <issue>`. A check carrying `ci_check` is",
+      "CI's (`skill://legion-worker/references/ci-checks.md`): you do not read its derived result, run it or",
+      "record it, and it is never an entry of your `failures`.",
+    ],
+  ],
+  [
+    'a read that shows no derived result, "that read shows the implementer\'s results"',
+    [
+      "Read the issue's checks with `dispatch results --issue <issue>`: that read shows the",
+      "implementer's results and the commit each one was recorded at.",
+    ],
+  ],
+];
+
+test.each(
+  TESTER_ONLY_PARTS.flatMap((part) => keptInTesterParts.map((row) => [part, ...row] as const))
+)("in %s, %s is not reported", (part, _source, page) => {
+  expect(reported(page, retiredTesterCiReads, part)).toEqual([]);
 });
 
 // Each sentence the trees keep beside the tester's retired ones, which a pattern too wide would
 // refuse: the sentences that replaced them, the reviewer's own read and wait, and the sentences that
-// keep a `ci_check` check CI's. The last eighteen are sentences a docs page, a runbook or a
+// keep a `ci_check` check CI's. The last twenty-one are sentences a docs page, a runbook or a
 // tester's page could plausibly say, which no tree carries: the tester patterns refused the first
 // seven until the class search at INFRA-1303's merge head, the next seven until the one at
-// 5c710625, the next three until the one at b6cb4b99, and the last one, the reviewer's read of a
-// derived result, until the one at 59442ee2.
+// 5c710625, the next three until the one at b6cb4b99, the next one, the reviewer's read of a
+// derived result, until the one at 59442ee2, and the last three, the reviewer's own reads said to
+// it, until the one at e7052779.
 const keptBesideTesterReads: readonly (readonly [source: string, page: readonly string[]])[] = [
   [
     'tester.md\'s "Let CI do its job"',
@@ -1576,6 +1688,24 @@ const keptBesideTesterReads: readonly (readonly [source: string, page: readonly 
       "Before it approves, the reviewer reads each `ci_check` check: the read",
       "shows its one derived result.",
     ],
+  ],
+  [
+    'the reviewer\'s imperative read, "Before you approve, read each `ci_check` check in `dispatch results`"',
+    [
+      "Before you approve, read each `ci_check` check in `dispatch results`: the read shows its one",
+      "derived result.",
+    ],
+  ],
+  [
+    'the reviewer\'s read said to it, "your read shows its one derived result"',
+    [
+      "A check carrying `ci_check` is CI's: your read shows its one derived result, and you approve",
+      "only on a pass.",
+    ],
+  ],
+  [
+    'the reviewer\'s read of each, "the read shows each derived result"',
+    ["Read `dispatch results` at the head: the read shows each", "derived result."],
   ],
 ];
 
