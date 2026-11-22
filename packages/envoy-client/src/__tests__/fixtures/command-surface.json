@@ -1169,7 +1169,7 @@
       "requests": [
         {
           "method": "GET",
-          "path": "/api/v1/projects/INFRA/plans",
+          "path": "/api/v1/projects/INFRA/plans?limit=20&planned_or_rated=true",
           "headers": {
             "Accept": "application/json",
             "Authorization": "Bearer secret"

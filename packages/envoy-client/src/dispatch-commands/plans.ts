@@ -58,17 +58,17 @@ function issueLine(issue: FinishedIssue): string {
 
 /** `dispatch plans`: finished issues of a project with their plan, their ratings, their time and
  *  their count of failed steps, newest close first, as Dispatch lists them. With no `since`, the
- *  newest DISPATCH_PLANS_DEFAULT_COUNT that have a plan or a rating, under a header that counts them
- *  and every finished issue; with `since`, every finished issue of the window. */
+ *  newest DISPATCH_PLANS_DEFAULT_COUNT that have a plan or a rating, which Dispatch keeps and counts
+ *  (`planned_or_rated` and `limit`), under a header that counts them and every finished issue;
+ *  with `since`, every finished issue of the window, so that read sends neither. */
 export async function plansCommand(context: CommandContext): Promise<DispatchToolResult> {
   const { args, client } = context;
+  const project = stringArg(args, "project");
   const since = optionalString(args, "since");
-  const read = await client.listProjectPlans(stringArg(args, "project"), {
-    since,
-    until: optionalString(args, "until"),
-  });
-  const finished = read.issues ?? [];
+  const until = optionalString(args, "until");
   if (since !== undefined) {
+    const read = await client.listProjectPlans(project, { since, until });
+    const finished = read.issues ?? [];
     return {
       text: [
         `${read.project}: ${finished.length} finished issues`,
@@ -77,14 +77,23 @@ export async function plansCommand(context: CommandContext): Promise<DispatchToo
       details: { project: read.project, issues: finished },
     };
   }
-  // What an owner can learn from: an issue that ran from a plan, or that a retro rated.
+  const read = await client.listProjectPlans(project, {
+    until,
+    planned_or_rated: true,
+    limit: DISPATCH_PLANS_DEFAULT_COUNT,
+  });
+  const finished = read.issues ?? [];
+  // What an owner can learn from: an issue that ran from a plan, or that a retro rated. Dispatch
+  // answers only those, at most the limit, with both counts; one built before planned_or_rated and
+  // limit leaves both out and answers every finished issue with no count, so the command keeps and
+  // counts the issues itself, and each step below keeps all of an answer that is already kept.
   const planned = finished.filter(
     (issue) => issue.plan !== null || (issue.ratings ?? []).length > 0
   );
   const listed = planned.slice(0, DISPATCH_PLANS_DEFAULT_COUNT);
   const header =
-    `${read.project}: ${listed.length} of ${planned.length} finished issues with a plan or a rating; ` +
-    `${finished.length} finished in all; --since <RFC 3339 time> prints every finished issue closed since then`;
+    `${read.project}: ${listed.length} of ${read.total ?? planned.length} finished issues with a plan or a rating; ` +
+    `${read.finished_total ?? finished.length} finished in all; --since <RFC 3339 time> prints every finished issue closed since then`;
   return {
     text: [header, ...listed.map(issueLine)].join("\n"),
     details: { project: read.project, issues: listed },

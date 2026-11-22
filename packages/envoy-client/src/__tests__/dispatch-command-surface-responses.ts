@@ -354,10 +354,14 @@ export function stepsBody() {
 /** `GET /api/v1/projects/{key}/plans`: one finished issue Legion ran and rated, so the record
  *  holds the issue's whole line. Its start, its retro's end, its last end and its close are four
  *  times, and the last end is an hour and a half after the start, as `duration_seconds` counts
- *  it, so a line that printed one of the four in place of another reads differently. */
+ *  it, so a line that printed one of the four in place of another reads differently. The read
+ *  asks for the issues with a plan or a rating and a limit, so the answer counts them and every
+ *  finished issue: the one issue, of one. */
 export function plansBody() {
   return {
     project: "INFRA",
+    total: 1,
+    finished_total: 1,
     issues: [
       {
         issue: "INFRA-1",

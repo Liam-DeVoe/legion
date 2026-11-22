@@ -246,6 +246,10 @@ function defaultHeader(project: string, listed: number, planned: number, finishe
   return `${project}: ${listed} of ${planned} finished issues with a plan or a rating; ${finished} finished in all; --since <RFC 3339 time> prints every finished issue closed since then`;
 }
 
+/** The query `dispatch plans` sends with no `since`: the issues with a plan or a rating, at most
+ *  the 20 it prints. */
+const DEFAULT_QUERY = "planned_or_rated=true&limit=20";
+
 /** `count` finished issues, newest close first, each a copy of `issue` under a key of its own, the
  *  first `INFRA-<first>` and each next one a key lower and an hour older. */
 function finishedRun(issue: FinishedIssue, first: number, count: number): FinishedIssue[] {
@@ -261,8 +265,33 @@ function finishedRun(issue: FinishedIssue, first: number, count: number): Finish
 describe("dispatch plans", () => {
   // An owner reads the earlier plans to learn from plans, and a busy project closes hundreds of
   // issues a day that Legion never ran, each `plan none ratings none`. So with no `since` the
-  // command lists only the newest PLANS_DEFAULT_COUNT finished issues that have a plan or a rating.
-  test("with no since, it prints the 20 newest finished issues with a plan or a rating, and says how many there are", async () => {
+  // command asks Dispatch for only the newest PLANS_DEFAULT_COUNT finished issues that have a plan
+  // or a rating, and Dispatch counts the rest: the header's two counts are Dispatch's, which here
+  // differ from every count of the issues answered.
+  test("with no since, it asks for the 20 newest finished issues with a plan or a rating, and prints Dispatch's counts", async () => {
+    const planned = finishedRun(ratedOnce, 125, 20);
+    const answer: ProjectPlans = {
+      project: "INFRA",
+      issues: planned,
+      total: 25,
+      finished_total: 3567,
+    };
+
+    const { result, requests } = await readPlans({ project: "INFRA" }, answer);
+
+    expect(requests).toEqual([`GET /api/v1/projects/INFRA/plans?${DEFAULT_QUERY}`]);
+    const lines = result.text.split("\n");
+    expect(lines[0]).toBe(defaultHeader("INFRA", 20, 25, 3567));
+    expect(lines.slice(1).map((line) => line.split(" ")[0])).toEqual(
+      planned.map((issue) => issue.issue)
+    );
+    expect(result.details).toEqual({ project: "INFRA", issues: planned });
+  });
+
+  // A Dispatch built before planned_or_rated and limit leaves both out and answers every finished
+  // issue with no count, so the command keeps and counts the issues with a plan or a rating itself
+  // and prints what it printed before Dispatch took the two.
+  test("a Dispatch that answers every finished issue and no count still prints the 20 newest with a plan or a rating, and counts them", async () => {
     const planned = finishedRun(ratedOnce, 125, 25);
     const unplanned = finishedRun(neverRan, 99, 10);
     // Newest close first, as Dispatch answers: the issues Legion never ran stand among the others.
@@ -276,7 +305,7 @@ describe("dispatch plans", () => {
 
     const { result, requests } = await readPlans({ project: "INFRA" }, answer);
 
-    expect(requests).toEqual(["GET /api/v1/projects/INFRA/plans"]);
+    expect(requests).toEqual([`GET /api/v1/projects/INFRA/plans?${DEFAULT_QUERY}`]);
     const lines = result.text.split("\n");
     expect(lines[0]).toBe(defaultHeader("INFRA", 20, 25, 35));
     expect(lines.slice(1).map((line) => line.split(" ")[0])).toEqual(
@@ -309,7 +338,7 @@ describe("dispatch plans", () => {
 
     const { result, requests } = await readPlans({ project: "INFRA" }, answer);
 
-    expect(requests).toEqual(["GET /api/v1/projects/INFRA/plans"]);
+    expect(requests).toEqual([`GET /api/v1/projects/INFRA/plans?${DEFAULT_QUERY}`]);
     expect(result.text).toBe(
       [
         defaultHeader("INFRA", 2, 2, 2),
@@ -500,18 +529,26 @@ describe("dispatch plans", () => {
     );
   });
 
-  test("since and until ride as the read's query, and are left out when not given", async () => {
+  // With no since the read is the default list, so an until alone rides beside planned_or_rated
+  // and the limit; a since asks for every finished issue of its window, so it sends neither.
+  test("since and until ride as the read's query, and the default list's filter and limit ride without since", async () => {
     const answer: ProjectPlans = { project: "INFRA", issues: [] };
 
     const both = await readPlans(
       { project: "INFRA", since: "2026-11-01T00:00:00Z", until: "2026-11-17T00:00:00Z" },
       answer
     );
+    const sinceAlone = await readPlans({ project: "INFRA", since: "2026-11-01T00:00:00Z" }, answer);
     const untilAlone = await readPlans({ project: "INFRA", until: "2026-11-17T00:00:00Z" }, answer);
+    const neither = await readPlans({ project: "INFRA" }, answer);
 
-    expect([both.requests, untilAlone.requests].flat()).toEqual([
+    expect(
+      [both.requests, sinceAlone.requests, untilAlone.requests, neither.requests].flat()
+    ).toEqual([
       "GET /api/v1/projects/INFRA/plans?since=2026-11-01T00%3A00%3A00Z&until=2026-11-17T00%3A00%3A00Z",
-      "GET /api/v1/projects/INFRA/plans?until=2026-11-17T00%3A00%3A00Z",
+      "GET /api/v1/projects/INFRA/plans?since=2026-11-01T00%3A00%3A00Z",
+      `GET /api/v1/projects/INFRA/plans?until=2026-11-17T00%3A00%3A00Z&${DEFAULT_QUERY}`,
+      `GET /api/v1/projects/INFRA/plans?${DEFAULT_QUERY}`,
     ]);
   });
 
@@ -627,7 +664,9 @@ describe("dispatch plans on the command line", () => {
 
         const { code, stdout } = await run(server, ["plans", "--project", project], session);
 
-        expect(readsSince(server, before), label).toEqual([`/api/v1/projects/${project}/plans`]);
+        expect(readsSince(server, before), label).toEqual([
+          `/api/v1/projects/${project}/plans?${DEFAULT_QUERY}`,
+        ]);
         expect(code, label).toBe(0);
         expect(stdout, label).toBe(`${printed.join("\n")}\n`);
       }
@@ -635,15 +674,16 @@ describe("dispatch plans on the command line", () => {
   });
 
   // The bounds go through the parser `dispatch plans` runs, each to its own member of the query,
-  // and a bound left out is not sent. The two bounds differ, and neither is a whole minute.
+  // and a bound left out is not sent; with no --since the default list's filter and limit ride
+  // too. The two bounds differ, and neither is a whole minute.
   test("--since and --until ride as the read's query, each alone or both, and neither when not given", async () => {
     const server = dispatchServing();
     const since = "2026-11-01T08:15:30Z";
     const until = "2026-11-17T06:30:45Z";
     const cases: readonly [readonly string[], string][] = [
-      [[], ""],
+      [[], `?${DEFAULT_QUERY}`],
       [["--since", since], "?since=2026-11-01T08%3A15%3A30Z"],
-      [["--until", until], "?until=2026-11-17T06%3A30%3A45Z"],
+      [["--until", until], `?until=2026-11-17T06%3A30%3A45Z&${DEFAULT_QUERY}`],
       [
         ["--since", since, "--until", until],
         "?since=2026-11-01T08%3A15%3A30Z&until=2026-11-17T06%3A30%3A45Z",
