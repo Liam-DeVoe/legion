@@ -3,10 +3,14 @@ body: |-
   The NATS auth service passes the connection's own name to a Legion daemon's grant held to its
   projects (`natsgrant.Scope.Connection`, read from the CONNECT). Take a connection named
   `legion-go-<project>-<kind>/<generation>`, for a project the scope holds, a kind of the
-  daemon's consumers and a 22-character generation (`natsgrant.DaemonGenerationConnection`). It
-  is granted that one fresh consumer, `legion-go-<project>-<kind>~<generation>`: its create on
-  its kind's filter, its info, its pull and its acknowledgements. Any other connection name
-  adds nothing to the held grant.
+  daemon's consumers and a 22-character generation (`natsgrant.DaemonGenerationConnection`). Such
+  a connection is granted the fresh consumer of that name, `legion-go-<project>-<kind>~<generation>`:
+  its create on its kind's filter, its info, its pull and its acknowledgements. Any other connection
+  name adds nothing to the held grant. The grant bounds each connection, not the daemon: a held
+  daemon's token can create one such durable per connection name, and the durables outlive their
+  connections, on the stream whose 24000 consumers every tenant shares. The deployment watches
+  ENVOY_NOTIFICATIONS's consumer count with an alert below that cap (`infra/README.md`, the
+  generation grant).
 time: 2026-11-22T07:01:09Z
 custom:
     Issue: pr4970
