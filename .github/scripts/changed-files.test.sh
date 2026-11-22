@@ -8,7 +8,10 @@
 # `--jq <filter>` it parses each page with jq and fails on one it cannot parse, as gh does. It
 # records every call, and told to, it answers its first k calls badly: a 502, the answer
 # paths-filter met on pull request #4449, a hang (ignoring TERM, or not), a 200 whose second page
-# is cut off mid-row, or a 200 that lists no file. A case counts the attempts the script made.
+# is cut off mid-row, a 200 that lists no file, or GitHub's refusal for its rate limit (alone, or
+# followed by a hang that ignores TERM). It answers gh-read.sh's GET /rate_limit, which the ladder
+# reads after such a refusal, apart: by hanging, or by saying no budget is spent. A case counts the
+# attempts the script made.
 #
 # A merge group case builds an origin repository holding the base and the head, and checks out the
 # head the way the case names: a plain clone of the head alone, or what actions/checkout makes with
@@ -33,11 +36,11 @@ listener=""
 trap '[ -z "$listener" ] || kill "$listener" 2> /dev/null; rm -rf "$work"' EXIT
 mkdir "$work/bin"
 real_git=$(command -v git)
-# A 45 s budget with no wait between attempts: 45 / 3 - 10 = 5 s an attempt. The hanging case
-# waits it out once, and the fetches from a local origin, which take milliseconds, stay well inside
-# it on a loaded runner.
+# A 60 s budget with no wait between attempts: the read is bounded at 50 s, and each attempt at
+# (60 - 10) / 3 - 10 = 6 s. The hanging case waits it out once, and the fetches from a local
+# origin, which take milliseconds, stay well inside it on a loaded runner.
 export GH_RETRY_SECONDS=0 GITHUB_REPOSITORY=o/r STANDIN_DIR="$work"
-BUDGET=45
+BUDGET=60
 
 # Two pages of the files route, 11 rows. The rows carry every status the API answers with, and two
 # pairs of paths that trade a file for a directory (docs/old becomes a directory, lib/x/y becomes
@@ -72,6 +75,14 @@ expected_paths=$(printf '%s\n' 'bin/run.sh' 'copy/of.txt' 'docs/old' 'docs/old/i
 
 cat > "$work/bin/gh" <<'GH'
 #!/usr/bin/env bash
+# gh-read.sh's lookup of when a spent budget resets, kept out of the calls a case counts.
+if [ "${2:-}" = rate_limit ]; then
+  printf '%s\n' "$*" >> "$STANDIN_DIR/rate-limit-calls"
+  [ "${GH_RATE_LIMIT:-back}" != hang ] || exec sleep 120
+  # What its --jq makes of an answer with no budget at 0: the window turned over.
+  echo 0
+  exit 0
+fi
 printf '%s\n' "$*" >> "$STANDIN_DIR/gh-calls"
 calls=$(wc -l < "$STANDIN_DIR/gh-calls")
 body="$STANDIN_DIR/pages.json"
@@ -87,6 +98,11 @@ if [ "$calls" -le "${GH_REFUSE_FIRST:-0}" ]; then
     hang-ignoring-term) trap '' TERM; exec sleep 120 ;;
     truncated) body="$STANDIN_DIR/truncated.json" ;;
     empty) body="$STANDIN_DIR/empty.json" ;;
+    # GitHub's refusal for the hourly API budget, as gh prints it, which gh-read.sh answers with a
+    # read of GET /rate_limit.
+    rate-limit) echo "gh: API rate limit exceeded for installation ID 1. (HTTP 403)" >&2; exit 1 ;;
+    # The same refusal, and then a read that ignores TERM.
+    rate-limit-hang) echo "gh: API rate limit exceeded for installation ID 1. (HTTP 403)" >&2; trap '' TERM; exec sleep 120 ;;
   esac
 fi
 # `--jq <filter>`: each page parsed and filtered, and a page that does not parse fails the call,
@@ -118,20 +134,21 @@ GIT
 chmod +x "$work/bin/git"
 
 # list_files <event> <directory> [VAR=value...]: runs the script with --budget $BUDGET under a
-# `timeout` of CASE_SECONDS (60 by default) over $work/event.json, writing the repository to
-# <directory>; sets out, err and status, and leaves the stand-ins' call logs in gh_calls and
-# fetches.
+# `timeout` of CASE_SECONDS (the budget and 15 s by default) over $work/event.json, writing the
+# repository to <directory>; sets out, err and status, and leaves the stand-ins' call logs in
+# gh_calls, rate_limit_calls and fetches.
 list_files() {
   local event_name=$1 dest=$2
   shift 2
-  rm -f "$work/gh-calls" "$work/git-fetches"
+  rm -f "$work/gh-calls" "$work/rate-limit-calls" "$work/git-fetches"
   set +e
   out=$(env PATH="$work/bin:$PATH" GITHUB_EVENT_NAME="$event_name" GITHUB_EVENT_PATH="$work/event.json" "$@" \
-    timeout "${CASE_SECONDS:-60}" "$script_dir/changed-files.sh" --budget "$BUDGET" "$dest" 2> "$work/err")
+    timeout "${CASE_SECONDS:-$((BUDGET + 15))}" "$script_dir/changed-files.sh" --budget "$BUDGET" "$dest" 2> "$work/err")
   status=$?
   set -e
   err=$(cat "$work/err")
   gh_calls=$(cat "$work/gh-calls" 2> /dev/null || true)
+  rate_limit_calls=$(cat "$work/rate-limit-calls" 2> /dev/null || true)
   fetches=$(cat "$work/git-fetches" 2> /dev/null || true)
 }
 
@@ -243,28 +260,52 @@ list_files pull_request "$work/pr-down" GH_REFUSE_FIRST=99
 check "it fails" "$(is "$status" 1)"
 check "after three attempts" "$(is "$(call_count "$gh_calls")" 3)"
 check "naming the pull request, the read, the attempts and their bounds" \
-  "$(contains "$err" "^::error::the changes job could not read the files of pull request #7: GET repos/o/r/pulls/7/files failed 3 attempts, 0 s and 0 s apart, each bounded at 5 s within the step's 45 s budget, ")"
+  "$(contains "$err" "^::error::the changes job could not read the files of pull request #7: GET repos/o/r/pulls/7/files failed 3 attempts, 0 s and 0 s apart, each bounded at 6 s, under one bound of 50 s within the step's 60 s budget, ")"
 check "it writes no repository" "$(is "$(test -e "$work/pr-down" && echo yes || echo no)" no)"
 
 echo "case: GitHub never answers, and each read ignores TERM, so only KILL ends it"
-# The worst case the budget is divided for: three attempts, each running to its 5 s bound and
-# killed 10 s later, 45 s, the whole budget. The case's own bound is that budget and 5 s for the
-# script's own steps around the read, so a script that spent more is killed here and fails the
-# first check.
+# The worst case the attempts are divided for: three attempts, each running to its 6 s bound and
+# killed 10 s later, 48 s, which ends before the bound of 50 s over the read. On a loaded machine
+# the steps between the attempts can spend those 2 s, and then the bound over the read ends the
+# third attempt's wait for its KILL and names itself instead: either way the read is named. The
+# case's own bound is the 60 s budget and 5 s for the script's own steps around the read, so a
+# script that spent more is killed here and fails the first check.
 CASE_SECONDS=$((BUDGET + 5)) list_files pull_request "$work/pr-term" GH_REFUSE_FIRST=99 GH_REFUSAL=hang-ignoring-term
 check "it fails by itself, inside its budget" "$(is "$status" 1)"
 check "after three attempts" "$(is "$(call_count "$gh_calls")" 3)"
-check "naming the read" "$(contains "$err" "^::error::the changes job could not read the files of pull request #7: ")"
+check "naming the read" \
+  "$(contains "$err" "^::error::the changes job could not read the files of pull request #7: GET repos/o/r/pulls/7/files ")"
+
+echo "case: every read is refused for GitHub's rate limit, and GET /rate_limit hangs"
+# gh-read.sh answers each refusal with a read of GET /rate_limit, bounded at 30 s, past the 6 s
+# the attempts are divided for: three attempts take 90 s. The bound over the read ends it at 50 s,
+# and the case's bound is the budget and 5 s, as above.
+CASE_SECONDS=$((BUDGET + 5)) list_files pull_request "$work/pr-rate-hang" GH_REFUSE_FIRST=99 GH_REFUSAL=rate-limit GH_RATE_LIMIT=hang
+check "it fails by itself, inside its budget" "$(is "$status" 1)"
+check "the ladder looked the reset up" "$(is "$([ "$(call_count "$rate_limit_calls")" -ge 1 ] && echo yes || echo no)" yes)"
+check "naming the read and the bound that ended it" \
+  "$(contains "$err" "^::error::the changes job could not read the files of pull request #7: GET repos/o/r/pulls/7/files did not end within the step's 60 s budget, whose bound of 50 s ends the read")"
+
+echo "case: every read is refused for GitHub's rate limit and then ignores TERM, and GET /rate_limit says the budget is back"
+# gh-read.sh runs an attempt's command a second time when the reset has passed: each attempt is
+# two reads killed 16 s after they start, 32 s, and three attempts take 96 s. The bound over the
+# read ends it at 50 s.
+CASE_SECONDS=$((BUDGET + 5)) list_files pull_request "$work/pr-rate-twice" GH_REFUSE_FIRST=99 GH_REFUSAL=rate-limit-hang
+check "it fails by itself, inside its budget" "$(is "$status" 1)"
+check "the ladder ran the first attempt's read twice" "$(is "$([ "$(call_count "$gh_calls")" -ge 2 ] && echo yes || echo no)" yes)"
+check "naming the read and the bound that ended it" \
+  "$(contains "$err" "^::error::the changes job could not read the files of pull request #7: GET repos/o/r/pulls/7/files did not end within the step's 60 s budget, whose bound of 50 s ends the read")"
 
 echo "case: the budget is divided over three attempts and their waits"
-# 300 s with a 1 s backoff unit, so 1 s and 2 s between attempts: (300 - 3) / 3 - 10 = 89 s an
-# attempt. Every read is refused at once, so the case reads the bound from the error line.
+# 300 s with a 1 s backoff unit, so 1 s and 2 s between attempts: the read is bounded at 290 s,
+# and each attempt at (290 - 3) / 3 - 10 = 85 s. Every read is refused at once, so the case reads
+# the bounds from the error line.
 BUDGET=300
 list_files pull_request "$work/pr-300" GH_REFUSE_FIRST=99 GH_RETRY_SECONDS=1
-BUDGET=45
+BUDGET=60
 check "it fails after three refused attempts" "$(is "$status" 1)"
-check "each attempt bounded at 89 s within the 300 s budget" \
-  "$(contains "$err" "failed 3 attempts, 1 s and 2 s apart, each bounded at 89 s within the step's 300 s budget, ")"
+check "each attempt bounded at 85 s, the read at 290 s, within the 300 s budget" \
+  "$(contains "$err" "failed 3 attempts, 1 s and 2 s apart, each bounded at 85 s, under one bound of 290 s within the step's 300 s budget, ")"
 
 echo "case: a pull request that changes no file"
 pr_event 0
@@ -273,16 +314,16 @@ list_files pull_request "$work/pr-empty"
 check "it answers" "$(is "$status" 0)"
 check "the repository's diff is empty, so every filter is false" "$(is "$(diff_paths "$work/pr-empty")" "")"
 
-# 32 s: 32 / 3 - 10 = 0 s an attempt. 33 s would leave 1 s, which the script takes.
+# 42 s: (42 - 10) / 3 - 10 = 0 s an attempt. 43 s would leave 1 s, which the script takes.
 echo "case: a budget that leaves no second for an attempt, and no budget at all"
 rm -f "$work/gh-calls"
 set +e
 err=$(env PATH="$work/bin:$PATH" GITHUB_EVENT_NAME=pull_request GITHUB_EVENT_PATH="$work/event.json" \
-  "$script_dir/changed-files.sh" --budget 32 "$work/pr-small" 2>&1 > /dev/null)
+  "$script_dir/changed-files.sh" --budget 42 "$work/pr-small" 2>&1 > /dev/null)
 status=$?
 set -e
-check "a 32 s budget is refused" "$(is "$status" 2)"
-check "  and says why" "$(contains "$err" "^::error::changed-files.sh's budget of 32 s leaves no second for an attempt: 3 attempts, each with 10 s between TERM and KILL, and 0 s of waiting between them\$")"
+check "a 42 s budget is refused" "$(is "$status" 2)"
+check "  and says why" "$(contains "$err" "^::error::changed-files.sh's budget of 42 s leaves no second for an attempt: 10 s between TERM and KILL for the bound over the read, and inside it 3 attempts, each with 10 s between TERM and KILL, and 0 s of waiting between them\$")"
 set +e
 err=$(env PATH="$work/bin:$PATH" GITHUB_EVENT_NAME=pull_request GITHUB_EVENT_PATH="$work/event.json" \
   "$script_dir/changed-files.sh" "$work/pr-nobudget" 2>&1 > /dev/null)

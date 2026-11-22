@@ -13,14 +13,21 @@
 # counts as a refused attempt instead of holding the job until its own timeout. After the third
 # the script fails with an ::error:: line that names the read and the attempts.
 #
-# The budget is the most the script may take, and it divides it: one read of three attempts and
-# 10 s + 20 s of waiting, so each attempt is bounded at (budget - 30 s) / 3 - 10 s, since `timeout`
-# sends TERM at the bound and KILL 10 s later. The worst case - every attempt running to its bound
-# and ignoring TERM - is never more than the budget, so the named error prints inside it.
-# .github/scripts/check-retry-budgets.sh, in ci.yaml's lint job, refuses a budget above half the
-# job's timeout-minutes. The changes job passes 300 s of its 10 minutes: each attempt is bounded at
-# 80 s, and the API's largest list, 30 pages, took about 20 s at the 0.56 to 0.69 s a page five
-# pages of pull request #4418 took through gh on the dev box.
+# The budget is the most the script may take, and it divides it. The read, with every attempt,
+# wait and lookup gh-read.sh's ladder makes for it, runs in a child shell that one `timeout` ends
+# at the budget less 10 s and KILLs 10 s later, so the named error prints inside the budget
+# whatever the ladder does. Since #4893 a refusal for GitHub's rate limit costs the ladder a read
+# of GET /rate_limit of up to 30 s, and a reset that has already passed runs the attempt's command
+# a second time, so a division over the attempts alone no longer bounds the read: on a stand-in
+# GitHub that refuses every read for its rate limit, a 45 s budget so divided took 93 s and 94 s.
+# Inside the bound the ladder has three attempts and 10 s + 20 s of waiting, so each attempt is
+# bounded at (budget - 10 s - 30 s) / 3 - 10 s, since `timeout` sends TERM at the bound and KILL
+# 10 s later: the ladder's own worst case - every attempt running to its bound and ignoring TERM -
+# ends before the bound over the read does. .github/scripts/check-retry-budgets.sh, in ci.yaml's
+# lint job, refuses a budget above half the job's timeout-minutes. The changes job passes 300 s of
+# its 10 minutes: the read is bounded at 290 s and each attempt at 76 s, and the API's largest
+# list, 30 pages, took about 20 s at the 0.56 to 0.69 s a page five pages of pull request #4418
+# took through gh on the dev box.
 #
 #   pull_request  GET repos/<repo>/pulls/<number>/files, every page, the read paths-filter v4.0.3
 #                 makes (src/main.ts, getChangedFilesFromApi). A renamed file counts under both its
@@ -72,8 +79,6 @@ set -euo pipefail
 shopt -s inherit_errexit
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-# shellcheck source=.github/scripts/gh-read.sh
-source "$script_dir/gh-read.sh"
 
 readonly ATTEMPTS=3 KILL_SECONDS=10 LISTED_AT_MOST=3000
 if [ "${1:-}" != --budget ] || ! [[ ${2:-} =~ ^[0-9]+$ ]] || [ -z "${3:-}" ]; then
@@ -86,12 +91,24 @@ event=${GITHUB_EVENT_PATH:?GITHUB_EVENT_PATH must name the event payload}
 event_name=${GITHUB_EVENT_NAME:?GITHUB_EVENT_NAME must name the event}
 
 retry_seconds=${GH_RETRY_SECONDS:-10}
-attempt_seconds=$(((budget - 3 * retry_seconds) / ATTEMPTS - KILL_SECONDS))
+# The bound over the whole read, and inside it each attempt's.
+read_seconds=$((budget - KILL_SECONDS))
+attempt_seconds=$(((read_seconds - 3 * retry_seconds) / ATTEMPTS - KILL_SECONDS))
 if [ "$attempt_seconds" -lt 1 ]; then
-  echo "::error::changed-files.sh's budget of $budget s leaves no second for an attempt: $ATTEMPTS attempts, each with $KILL_SECONDS s between TERM and KILL, and $((3 * retry_seconds)) s of waiting between them" >&2
+  echo "::error::changed-files.sh's budget of $budget s leaves no second for an attempt: $KILL_SECONDS s between TERM and KILL for the bound over the read, and inside it $ATTEMPTS attempts, each with $KILL_SECONDS s between TERM and KILL, and $((3 * retry_seconds)) s of waiting between them" >&2
   exit 2
 fi
-ladder="3 attempts, $retry_seconds s and $((2 * retry_seconds)) s apart, each bounded at $attempt_seconds s within the step's $budget s budget"
+ladder="3 attempts, $retry_seconds s and $((2 * retry_seconds)) s apart, each bounded at $attempt_seconds s, under one bound of $read_seconds s within the step's $budget s budget"
+overran="did not end within the step's $budget s budget, whose bound of $read_seconds s ends the read with every attempt, wait and rate-limit lookup gh-read.sh makes for it ($ladder; the log above holds the answers the ladder printed)"
+
+# within_budget <command>...: gh-read.sh's gh_read over the command, in a child shell that one
+# `timeout` ends $read_seconds s after it starts and KILLs $KILL_SECONDS s later. It returns
+# gh_read's status, or timeout's 124 or 137 when the bound ended the read.
+within_budget() {
+  # shellcheck disable=SC2016 # the child shell expands "$1" and "$@", not this one
+  timeout -k "$KILL_SECONDS" "$read_seconds" \
+    bash -c 'source "$1" && shift && gh_read "$@"' within_budget "$script_dir/gh-read.sh" "$@"
+}
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
@@ -125,7 +142,16 @@ case $event_name in
       fi
       printf '%s\n' "$listed"
     }
-    if ! gh_read read_files > "$work/files.json"; then
+    # The child shell that within_budget starts runs read_files, so it gets the function and what
+    # it reads.
+    export -f read_files
+    export route expected number attempt_seconds KILL_SECONDS
+    status=0
+    within_budget read_files > "$work/files.json" || status=$?
+    if [ "$status" -eq 124 ] || [ "$status" -eq 137 ]; then
+      echo "::error::the changes job could not read the files of pull request #$number: GET $route $overran" >&2
+      exit 1
+    elif [ "$status" -ne 0 ]; then
       echo "::error::the changes job could not read the files of pull request #$number: GET $route failed $ladder, each refused, cut off, hung or short of the $expected files the event counts (the log above holds each attempt's answer)" >&2
       exit 1
     fi
@@ -151,7 +177,12 @@ case $event_name in
     if [[ " $parents " == *" $base "* ]]; then
       fetched="no read: the base is a parent of the head, in the checkout"
     else
-      if ! gh_read timeout -k "$KILL_SECONDS" "$attempt_seconds" git fetch --depth=1 --no-tags origin "$base" >&2; then
+      status=0
+      within_budget timeout -k "$KILL_SECONDS" "$attempt_seconds" git fetch --depth=1 --no-tags origin "$base" >&2 || status=$?
+      if [ "$status" -eq 124 ] || [ "$status" -eq 137 ]; then
+        echo "::error::the changes job could not fetch commit $base of the merge group from origin: git fetch $overran" >&2
+        exit 1
+      elif [ "$status" -ne 0 ]; then
         echo "::error::the changes job could not fetch commit $base of the merge group from origin: git fetch failed $ladder (the log above holds each attempt's answer)" >&2
         exit 1
       fi
