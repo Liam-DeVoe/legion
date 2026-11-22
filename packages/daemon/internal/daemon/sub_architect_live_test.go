@@ -760,7 +760,7 @@ func (r *subArchitectLive) release(by *subArchitectSession, keys ...string) (int
 // answer but 200, the refusal.
 func (r *subArchitectLive) rerun(by *subArchitectSession, key string) (int, api.Failure) {
 	r.t.Helper()
-	return r.answer(r.d.request(http.MethodPost, "/legion/v1/children/rerun", api.ChildRequest{GrantID: by.grant(), Issue: key}, false))
+	return r.answer(r.d.request(http.MethodPost, "/legion/v1/children/rerun", api.RerunChildRequest{GrantID: by.grant(), Issue: key}, false))
 }
 
 // answer is a route's status and, for any answer but 200, the refusal its body names.

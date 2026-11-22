@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 
 	"github.com/jackc/pgx/v5"
 
@@ -102,25 +103,29 @@ func OwningIssue(project string, chains *Chains, key string, fromParent bool, ru
 
 // ArchitectActsOn says whether the architect claim architect acts on key (R18 of
 // dispatch://INFRA-3320): it is the architect claim of key itself or of an issue above key on its
-// Dispatch chain as chains hold it, whatever the status of the issues between them. It is the
-// ownership rule an architect's call is held to, and the workflow reads it again where the call's
-// fact commits, so a call sent before a change of parent and committed after it is judged on the
-// chain it lands on. project is the claim project token (claim.ProjectToken). The caller refuses
-// an unknown chain (Chain.Known) before it asks.
+// Dispatch chain as chains hold it (ArchitectAbove), whatever the status of the issues between
+// them. It is the ownership rule an architect's call is held to, and the workflow reads it again
+// where the call's fact commits, so a call sent before a change of parent and committed after it
+// is judged on the chain it lands on. project is the claim project token (claim.ProjectToken).
+// The caller refuses an unknown chain (Chain.Known) before it asks.
 func ArchitectActsOn(project string, chains *Chains, architect claim.Token, key string) bool {
-	is := func(issue string) bool {
-		token, err := claim.NewToken(project, issue, claim.RoleArchitect)
-		return err == nil && token == architect
-	}
-	if is(key) {
-		return true
-	}
-	for _, link := range chains.Chain(key).Links {
-		if is(link) {
-			return true
-		}
-	}
-	return false
+	return isArchitectOf(project, architect, key) || ArchitectAbove(project, chains, architect, key)
+}
+
+// ArchitectAbove says whether the architect claim architect is the architect claim of an issue
+// above key on its Dispatch chain as chains hold it, whatever the status of the issues between
+// them: the rule of a call an architect makes only on an issue under its own, rerun_child and
+// release_children, which never take the architect's own issue. project is the claim project
+// token (claim.ProjectToken). The caller refuses an unknown chain (Chain.Known) before it asks.
+func ArchitectAbove(project string, chains *Chains, architect claim.Token, key string) bool {
+	return slices.ContainsFunc(chains.Chain(key).Links, func(link string) bool { return isArchitectOf(project, architect, link) })
+}
+
+// isArchitectOf says whether architect is the architect claim token of issue in the claim
+// project project.
+func isArchitectOf(project string, architect claim.Token, issue string) bool {
+	token, err := claim.NewToken(project, issue, claim.RoleArchitect)
+	return err == nil && token == architect
 }
 
 // HoldsRole is whether a claim the store records in state, suspended by by, holds its role: this

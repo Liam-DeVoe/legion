@@ -1202,7 +1202,7 @@ func (d *chainDaemon) calls(answer func(key, label, value string)) {
 			case opRelease:
 				path, body = "/legion/v1/waves/release", api.WaveReleaseRequest{GrantID: grant.ID, Issues: []string{row.key}}
 			case opRerun:
-				path, body = "/legion/v1/children/rerun", api.ChildRequest{GrantID: grant.ID, Issue: row.key}
+				path, body = "/legion/v1/children/rerun", api.RerunChildRequest{GrantID: grant.ID, Issue: row.key}
 			case opSignOff:
 				path, body = "/legion/v1/signoff", api.SignOffRequest{GrantID: grant.ID, Issue: row.key}
 			case opCloseRoot:

@@ -45,7 +45,7 @@ func (e *Engine) closeRoot(ctx context.Context, tx pgx.Tx, fact intake.CloseRoot
 	// A root is one on the Dispatch chain this transaction reads, closed by its own architect
 	// (architectCallRefusal, R18 of dispatch://INFRA-3320): an issue under another in Legion's
 	// work is no root whatever tree its record stores.
-	if refusal, err := e.architectCallRefusal(ctx, tx, fact.Architect, *root, closeCall); err != nil || refusal != nil {
+	if refusal, err := e.architectCallRefusal(ctx, tx, fact.Architect, *root, intake.CloseCall); err != nil || refusal != nil {
 		return intake.Result{Refusal: refusal}, err
 	}
 	if !closableAtPhase(root.Phase) || record.OutOfWorkflow(root.Status) {

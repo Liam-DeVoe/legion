@@ -268,24 +268,11 @@ func (w *workflowRuntime) readBlocker(ctx context.Context, key string) (intake.I
 		w.log.Warn("the controller tick's re-read of a blocker failed", "issue", key, "error", err)
 		return intake.IssueStatus{}, false
 	}
-	if issue.Project == "" {
+	reading, ok := intake.ReadingOf(key, issue)
+	if !ok {
 		w.log.Warn("the controller tick re-read a blocker whose answer names no project", "issue", key)
-		return intake.IssueStatus{}, false
 	}
-	return observedStatus(key, issue), true
-}
-
-// observedStatus is issue, Dispatch's answer for key, as one reading of all five values the copy
-// holds of an issue, under the project the answer names: what the turn's re-read and the chains'
-// re-read write through the Mirror (blockers.Mirror, intake.ControllerTick.Observed).
-func observedStatus(key string, issue dispatch.Issue) intake.IssueStatus {
-	parent := ""
-	if issue.Parent != nil {
-		parent = *issue.Parent
-	}
-	return intake.IssueStatus{Key: key, Project: issue.Project, Status: issue.Status, Blockers: issue.BlockedBy,
-		Seq: issue.LastSeq, ClaimedBy: issue.Claim.Holder(), ClaimKnown: !issue.ClaimUnread, Parent: parent,
-		Labels: issue.Labels, Rank: issue.Rank}
+	return reading, ok
 }
 
 // ownDispatchKey says whether key is an issue of this daemon's own Dispatch project, by its key's

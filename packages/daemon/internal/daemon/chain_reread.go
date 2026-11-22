@@ -155,10 +155,9 @@ func (w *workflowRuntime) applyChainReadings(ctx context.Context, key string, re
 	at := time.Now().UnixNano()
 	var links []intake.IssueStatus
 	for _, issue := range read[1:] {
-		if issue.Project == "" {
-			continue
+		if reading, ok := intake.ReadingOf(issue.Key, issue); ok {
+			links = append(links, reading)
 		}
-		links = append(links, observedStatus(issue.Key, issue))
 	}
 	if len(links) > 0 {
 		id := fmt.Sprintf("chain-reread:%s:%s:%s:%d", w.dispatchProject, w.bootID, key, at)

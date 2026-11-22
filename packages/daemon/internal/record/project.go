@@ -139,8 +139,15 @@ func InWorkflow(issue Issue) bool {
 
 // inWorkStatuses are the five Dispatch statuses an issue in Legion's work shows (R15 of
 // dispatch://INFRA-3320): todo, which hands an issue to Legion or releases it, and the four its
-// workflow writes as it runs. InLegionsWork is the one reader of the list.
+// workflow writes as it runs. InWorkStatus reads it in Go, and the store's queries are handed it.
 var inWorkStatuses = []string{"todo", "in_progress", "testing", "needs_review", "retro"}
+
+// InWorkStatus says whether status is one of the five Dispatch statuses of work (inWorkStatuses),
+// the group R24 of dispatch://INFRA-3320 calls in work: Dispatch's parent rule holds a parent in
+// that group while a child of it is.
+func InWorkStatus(status string) bool {
+	return slices.Contains(inWorkStatuses, status)
+}
 
 // InLegionsWork says whether issue, a record of the daemon's, is in Legion's work (R15 of
 // dispatch://INFRA-3320): its phase is not done and its Status is one of inWorkStatuses. Status
@@ -153,7 +160,7 @@ var inWorkStatuses = []string{"todo", "in_progress", "testing", "needs_review", 
 // record is in no one's work: there is no record of it to ask about, and Chains reads every key it
 // holds no record of as out of Legion's work.
 func InLegionsWork(issue Issue) bool {
-	return issue.Phase != phase.Done && slices.Contains(inWorkStatuses, issue.Status)
+	return issue.Phase != phase.Done && InWorkStatus(issue.Status)
 }
 
 // Stopped is whether the issue's own record says its work has stopped: it is not in Legion's work

@@ -1242,6 +1242,80 @@ type StatusRefused struct {
 
 func (f StatusRefused) namedIssue() (string, bool) { return f.Issue, true }
 
+// StatusCallOp names the API call a StatusCall carries: the controller's set_status, or an
+// architect's rerun_child or release_children.
+type StatusCallOp string
+
+const (
+	SetStatusCall       StatusCallOp = "set_status"
+	RerunChildCall      StatusCallOp = "rerun_child"
+	ReleaseChildrenCall StatusCallOp = "release_children"
+)
+
+// The values of a StatusCallIssue's Children and Parent: include_children and unlink_children of
+// Dispatch's status-change route, and its include_parent (R24 of dispatch://INFRA-3320).
+const (
+	IncludeArgument = "include"
+	UnlinkArgument  = "unlink"
+)
+
+// StatusCall is an API call that asks the daemon to write the status of issues in Dispatch: the
+// controller's set_status, an architect's rerun_child, or an architect's release_children
+// (decision 5 of dispatch://INFRA-4730). The route reads Dispatch only to bring the copy of
+// Dispatch's issues up to date: Readings is what it read of each issue it names and of each issue
+// above one on the Dispatch chain, which the Mirror writes into the copy first, in the fact's own
+// transaction (blockers.Mirror). The workflow then decides the whole call over that copy: who may
+// act (the architect claim Architect, "" for the controller), the chain, and the arguments
+// Dispatch's parent rule asks for. It queues each write as a status row on the issue's lane, in
+// the order of Issues, and counts it on the record of an issue the daemon records before Dispatch
+// echoes it (R16 of dispatch://INFRA-3320). A refusal writes nothing.
+type StatusCall struct {
+	Op        StatusCallOp
+	Architect claim.Token
+	Issues    []StatusCallIssue
+	Readings  []IssueStatus
+}
+
+func (f StatusCall) namedIssue() (string, bool) {
+	if len(f.Issues) != 1 {
+		return "", false
+	}
+	return f.Issues[0].Key, true
+}
+
+// StatusCallIssue is one issue a StatusCall names. Status is the status the call writes on it.
+// Children is set_status's children argument, "", IncludeArgument or UnlinkArgument, and Parent
+// the parent argument of set_status and rerun_child, "" or IncludeArgument. View is Dispatch's
+// view of an issue release_children names that the daemon does not record, readied as its event
+// would be (api's PrepareRepository): the workflow records such a child under its parent at
+// work from it, at its own todo (workflow's recordChildUnderParentAtWork), as it records a child
+// from the event of a todo, nil for every other issue.
+type StatusCallIssue struct {
+	Key      string
+	Status   string
+	Children string
+	Parent   string
+	View     *DispatchIssue
+}
+
+// ReadingOf is issue, Dispatch's answer for key, as one reading of all five values the copy holds
+// of an issue, under the project the answer names: what the controller tick's re-read, the
+// chains' re-read and an API route's read write through the Mirror (blockers.Mirror,
+// ControllerTick.Observed). An answer that names no project is no reading: its row would be
+// written under the empty project, which drops it out of every project's read.
+func ReadingOf(key string, issue dispatch.Issue) (IssueStatus, bool) {
+	if issue.Project == "" {
+		return IssueStatus{}, false
+	}
+	parent := ""
+	if issue.Parent != nil {
+		parent = *issue.Parent
+	}
+	return IssueStatus{Key: key, Project: issue.Project, Status: issue.Status, Blockers: issue.BlockedBy,
+		Seq: issue.LastSeq, ClaimedBy: issue.Claim.Holder(), ClaimKnown: !issue.ClaimUnread, Parent: parent,
+		Labels: issue.Labels, Rank: issue.Rank}, true
+}
+
 // ClaimFailed is the supervision terminal failure observation. Reason is the persisted cause when
 // the supervisor has one, so workflow notices can say what failed after a daemon restart. Death is
 // why the claim's process was last found gone and StartFailure why its last start did not produce

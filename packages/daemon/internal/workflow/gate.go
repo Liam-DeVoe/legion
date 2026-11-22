@@ -99,7 +99,7 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 	}
 	// An architect's registration is held to the chain this transaction reads: the gate is taken
 	// from the architect of an issue that holds its own gate, on that issue (architectCallRefusal).
-	if refusal, err := e.architectCallRefusal(ctx, tx, fact.Architect, *issue, gateCall); err != nil || refusal != nil {
+	if refusal, err := e.architectCallRefusal(ctx, tx, fact.Architect, *issue, intake.GateCall); err != nil || refusal != nil {
 		return intake.Result{Refusal: refusal}, err
 	}
 	if fact.Basis != nil && record.Stopped(*issue) {

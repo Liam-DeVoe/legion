@@ -305,6 +305,8 @@ func (e *Engine) apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake
 		return e.closeRefused(ctx, tx, fact)
 	case intake.StatusRefused:
 		return e.statusRefused(ctx, tx, fact)
+	case intake.StatusCall:
+		return e.statusCall(ctx, tx, fact)
 	case intake.DaemonBooted:
 		return e.booted(ctx, tx, fact)
 	case intake.CutoverMergerRepair:
@@ -1896,7 +1898,7 @@ func (e *Engine) retryOrEscalate(ctx context.Context, tx pgx.Tx, fact intake.Ret
 	}
 	// The architect's answer is held to the chain this transaction reads (architectCallRefusal);
 	// the operator's retry carries no architect.
-	if refusal, err := e.architectCallRefusal(ctx, tx, fact.Architect, *issue, retryCall); err != nil || refusal != nil {
+	if refusal, err := e.architectCallRefusal(ctx, tx, fact.Architect, *issue, intake.RetryCall); err != nil || refusal != nil {
 		return intake.Result{Refusal: refusal}, err
 	}
 	if issue.Phase != phase.Held || issue.Hold == nil {
@@ -2083,7 +2085,7 @@ func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMo
 	}
 	// An architect's move is held to the chain this transaction reads (architectCallRefusal); a
 	// phase worker's carries no architect and is its own phase's to ask.
-	if refusal, err := e.architectCallRefusal(ctx, tx, fact.Architect, *issue, backwardCall); err != nil || refusal != nil {
+	if refusal, err := e.architectCallRefusal(ctx, tx, fact.Architect, *issue, intake.BackwardCall); err != nil || refusal != nil {
 		return intake.Result{Refusal: refusal}, err
 	}
 	// A parent waiting on its children stands in no phase a move back acts on, so the move is
@@ -2287,7 +2289,7 @@ func (e *Engine) signOff(ctx context.Context, tx pgx.Tx, fact intake.SignOff) (i
 	// The caller is held to the chain this transaction reads, before anything about the issue's
 	// phase is answered: a sign-off a change of parent took from it is the new owner's to make
 	// (architectCallRefusal, decision 5 of dispatch://INFRA-4730).
-	if refusal, err := e.architectCallRefusal(ctx, tx, fact.Architect, *issue, signOffCall); err != nil || refusal != nil {
+	if refusal, err := e.architectCallRefusal(ctx, tx, fact.Architect, *issue, intake.SignOffCall); err != nil || refusal != nil {
 		return intake.Result{Refusal: refusal}, err
 	}
 	if issue.Phase == phase.AwaitingChildren {

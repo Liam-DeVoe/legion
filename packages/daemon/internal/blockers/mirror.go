@@ -15,11 +15,13 @@ import (
 // nothing: it refuses no fact, ever, so the handlers after it see exactly the facts they would
 // have seen without it. It runs before them, inside their transaction, because they read the row
 // it writes. Only a reading of Dispatch reaches the copy: an issue event, a view of an issue
-// (intake.ObservedIssue: release_children's read of a child, which reaches this handler alone when
-// the daemon records the child already, intake's settleObserved), and the periodic turn's own
-// re-read of Dispatch, which rides on the controller tick (intake.ControllerTick.Observed) and is
-// written here as an event is, so a blocker whose closing event never arrived is repaired before
-// those handlers judge. A reading writes only the values it carries, and each value keeps the
+// (intake.ObservedIssue: release_children's read of a child Dispatch shows todo, which reaches this
+// handler alone when the daemon records the child already, intake's settleObserved), the periodic
+// turn's own re-read of Dispatch, which rides on the controller tick (intake.ControllerTick.Observed)
+// and is written here as an event is, so a blocker whose closing event never arrived is repaired
+// before those handlers judge, and an API route's read of the issues its status call names and of
+// the chains above them (intake.StatusCall.Readings), which the workflow decides that call over. A
+// reading writes only the values it carries, and each value keeps the
 // sequence of the reading that wrote it: a reading changes it only at a higher sequence, or where
 // no reading wrote it (record.PutDispatchIssue). Each issue's Dispatch claim is mirrored beside its
 // row, behind a fence of its own (record.PutDispatchClaim): from an issue event or a view that
@@ -41,9 +43,10 @@ func NewMirror(store record.Store, project string) *Mirror {
 	return &Mirror{store: store, project: project}
 }
 
-// Apply writes the row of a Dispatch issue fact, an event's or a view's, and of every row the
-// periodic turn's re-read observed, the claim of a claim event, and does nothing for every other
-// kind of fact — a tick that observed nothing, which is almost every turn, included.
+// Apply writes the row of a Dispatch issue fact, an event's or a view's, of every row the periodic
+// turn's re-read observed and of every row an API route's status call read (intake.StatusCall),
+// the claim of a claim event, and does nothing for every other kind of fact — a tick that
+// observed nothing, which is almost every turn, included.
 func (m *Mirror) Apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake.Result, error) {
 	switch fact := fact.(type) {
 	case intake.DispatchIssue:
@@ -60,6 +63,12 @@ func (m *Mirror) Apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake
 		for _, observed := range fact.Observed {
 			if err := m.put(ctx, tx, readingOf(observed)); err != nil {
 				return intake.Result{}, fmt.Errorf("mirror the turn's re-read of %s: %w", observed.Key, err)
+			}
+		}
+	case intake.StatusCall:
+		for _, observed := range fact.Readings {
+			if err := m.put(ctx, tx, readingOf(observed)); err != nil {
+				return intake.Result{}, fmt.Errorf("mirror the %s call's read of %s: %w", fact.Op, observed.Key, err)
 			}
 		}
 	}

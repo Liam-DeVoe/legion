@@ -134,6 +134,9 @@ func (r *statusRecorder) ListIssues(context.Context, string, []string) ([]dispat
 	return summaries, nil
 }
 
+// GetIssue answers Dispatch's issue read. Dispatch names the project of every issue it answers,
+// and an API route's read of an issue is a reading of the copy only when it does
+// (intake.ReadingOf), so an issue a case gives no project answers its key's.
 func (r *statusRecorder) GetIssue(_ context.Context, key string) (dispatch.Issue, error) {
 	r.reads = append(r.reads, "issue:"+key)
 	if err, fails := r.readFails[key]; fails {
@@ -142,6 +145,9 @@ func (r *statusRecorder) GetIssue(_ context.Context, key string) (dispatch.Issue
 	issue, ok := r.issues[key]
 	if !ok {
 		return dispatch.Issue{}, &dispatch.Error{Status: http.StatusNotFound, Code: "NOT_FOUND", Message: "issue not found"}
+	}
+	if issue.Project == "" {
+		issue.Project, _, _ = strings.Cut(key, "-")
 	}
 	return issue, nil
 }

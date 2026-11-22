@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/dispatchblocks"
 	"github.com/sjawhar/envoy/steprecord"
 
+	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/classify"
@@ -89,7 +90,12 @@ type outbox struct {
 	trees      outboxTrees
 	tokens     appauth.Tokens
 	handlers   []intake.Handler
-	project    string
+	// prepare readies Dispatch's answer to a landed status write of an issue the daemon records
+	// nothing of, as that issue's event is readied (workflowRuntime.prepareObserved), before it is
+	// applied as the daemon's own write (applyOwnWrite); nil applies the answer as it is. attach
+	// sets it.
+	prepare func(ctx context.Context, issue intake.DispatchIssue) (intake.DispatchIssue, error)
+	project string
 	// dispatchProject is the Dispatch project whose issues' rows this outbox claims: the database
 	// is shared, and another project's rows are another daemon's.
 	dispatchProject string
@@ -1177,9 +1183,9 @@ func (r *outbox) writeStatus(ctx context.Context, row record.OutboxRow, payload 
 		if stands, err := r.readStands(ctx, row, payload, read); err != nil || !stands {
 			return err
 		}
-		_, err := r.dispatch.SetStatusAt(ctx, read, payload.Status)
+		written, err := r.dispatch.SetStatusAt(ctx, read, payload.Status)
 		if err == nil {
-			return nil
+			return r.applyOwnWrite(ctx, row, written)
 		}
 		if answered, err := r.statusRefusal(ctx, row, payload, err); answered {
 			return err
@@ -1601,15 +1607,16 @@ func (r *outbox) putAttempt(ctx context.Context, row record.OutboxRow, attempt r
 }
 
 // applyEntries applies to the record each entry of a status-change answer under key, a 2xx's or
-// the committed steps a refusal carries (dispatch://INFRA-4730's t4 rule), as an API route applies
-// its own status write (intake.OwnStatusWrite, through the issue's Observed view): the step's
-// issue, at the step's sequence, written by the daemon. An entry is applied only to an issue the
-// daemon records whose record stands below the entry's issue's sequence, so an entry whose event
-// the stream delivered first changes nothing; and an entry of an issue other than the row's only
-// where the record stands at the entry's previous_last_seq, since a record below it has events
-// before the step the stream has yet to deliver, which the entry would leave unread. Every other
-// entry is left to the events. Each is applied under an id of its own, so a run that applies it
-// again changes nothing more.
+// the committed steps a refusal carries (dispatch://INFRA-4730's t4 rule), as the daemon's own
+// status write (intake.OwnStatusWrite, through the issue's Observed view): the step's issue, at the
+// step's sequence, written by the daemon. An entry is applied only to an issue the daemon records
+// whose record stands below the entry's issue's sequence, so an entry whose event the stream
+// delivered first changes nothing; and an entry of an issue other than the row's only where the
+// record stands at the entry's previous_last_seq, since a record below it has events before the
+// step the stream has yet to deliver, which the entry would leave unread. The entry of the row's
+// own issue, where the daemon records nothing of it, is applied as any landed write of such an
+// issue is (applyOwnWrite). Every other entry is left to the events. Each is applied under an id
+// of its own, so a run that applies it again changes nothing more.
 func (r *outbox) applyEntries(ctx context.Context, row record.OutboxRow, key string, entries []dispatch.StatusChangeEntry) error {
 	if r.pool == nil {
 		return nil
@@ -1622,6 +1629,12 @@ func (r *outbox) applyEntries(ctx context.Context, row record.OutboxRow, key str
 		if err != nil {
 			return err
 		}
+		if recorded == nil && entry.Key == row.Issue {
+			if err := r.applyOwnWrite(ctx, row, *entry.Issue); err != nil {
+				return err
+			}
+			continue
+		}
 		if recorded == nil || entry.Issue.LastSeq <= recorded.LastDispatchSeq ||
 			entry.Key != row.Issue && recorded.LastDispatchSeq != entry.PreviousLastSeq {
 			continue
@@ -1632,6 +1645,32 @@ func (r *outbox) applyEntries(ctx context.Context, row record.OutboxRow, key str
 		if _, err := intake.ApplyFact(ctx, r.pool, "outbox", fmt.Sprintf("status-change:%s:%s:%d", key, entry.Key, entry.Issue.LastSeq), fact, r.handlers...); err != nil {
 			return fmt.Errorf("apply the status change of %s that %s committed: %w", entry.Key, key, err)
 		}
+	}
+	return nil
+}
+
+// applyOwnWrite applies Dispatch's answer to row's landed write, written, where the daemon records
+// nothing of its issue (api.ApplyOwnStatusWrite): a write an API route queued of an issue it could
+// not count on a record, such as the controller's set_status todo on an issue carrying the legion
+// label, which this records and admission stands in the waiting line before the write's event
+// arrives (decision 5 of dispatch://INFRA-4730). A write of a recorded issue was counted on its
+// record when it was queued, and its echo changes nothing. The write has landed, so a record that
+// does not take the answer is logged and left to the write's event, and the row ends.
+func (r *outbox) applyOwnWrite(ctx context.Context, row record.OutboxRow, written dispatch.Issue) error {
+	if r.pool == nil || written.Key == "" {
+		return nil
+	}
+	recorded, err := r.recordedIssue(ctx, written.Key)
+	if err != nil || recorded != nil {
+		return err
+	}
+	own := api.OwnStatusWrite{DispatchProject: r.dispatchProject, Prepare: r.prepare,
+		Apply: func(ctx context.Context, eventID string, fact intake.Fact) (intake.Result, error) {
+			return intake.ApplyFact(ctx, r.pool, "outbox", eventID, fact, r.handlers...)
+		}}
+	if failure := api.ApplyOwnStatusWrite(ctx, own, fmt.Sprintf("status-write:%s:%d:%d", written.Key, row.ID, written.LastSeq), written); failure != nil {
+		r.log.Warn("outbox status write landed, but the record did not take Dispatch's answer; the write's event records it",
+			"row", row.ID, "issue", written.Key, "status", written.Status, "code", failure.Code, "reason", failure.Message)
 	}
 	return nil
 }
@@ -1886,7 +1925,28 @@ func (r *outbox) personHandoverStands(row record.OutboxRow, issue dispatch.Issue
 // recorded reaches the engine through its own event (writeStatus). A close or a park is the issue's state now, and the status this
 // row carries is of a workflow the issue has left, so the row finishes having written nothing. An
 // issue the daemon keeps no record of is judged by the read alone.
+//
+// A row whose status stands on the other side of the workflow's edge from the status it observed
+// (crossesWorkflow) is an API call's write — set_status, rerun_child or release_children taking an
+// issue into the workflow or out of it (decision 5 of dispatch://INFRA-4730) — and the rule above
+// reads it backwards. Its caller has already finished it where Dispatch shows a status that is
+// neither, so the read still shows the status it observed, and it is wanted while the record, which
+// counted the write before its echo (R16 of dispatch://INFRA-3320), still stands on the side of
+// the edge the write's status is on: a person's move since, which the engine took, has moved the
+// record back across it. An issue the daemon keeps no record of is judged by the read alone.
 func (r *outbox) statusStillWanted(ctx context.Context, row record.OutboxRow, payload record.StatusWrite, read dispatch.Issue) (bool, error) {
+	if crossesWorkflow(payload) {
+		issue, err := r.recordedIssue(ctx, row.Issue)
+		if err != nil {
+			return false, fmt.Errorf("judge the status write of %s: %w", row.Issue, err)
+		}
+		if issue != nil && workflow.InWorkflow(*issue) == record.OutOfWorkflow(payload.Status) {
+			r.log.Info("outbox status write finished without writing: the record no longer stands where the write takes its issue",
+				"row", row.ID, "issue", row.Issue, "status", payload.Status, "record", issue.Status, "dispatch", read.Status)
+			return false, nil
+		}
+		return true, nil
+	}
 	left := record.OutOfWorkflow(read.Status)
 	if !left {
 		issue, err := r.recordedIssue(ctx, row.Issue)
@@ -1901,6 +1961,14 @@ func (r *outbox) statusStillWanted(ctx context.Context, row record.OutboxRow, pa
 		return false, nil
 	}
 	return true, nil
+}
+
+// crossesWorkflow says whether payload, an ordinary status row, writes a status on the other side of
+// the workflow's edge from the one it observed (record.OutOfWorkflow): a todo over a backlog, a
+// backlog over an in_progress. The workflow's own moves write within the workflow, and its closes
+// are close rows, so only an API call's write crosses (statusStillWanted).
+func crossesWorkflow(payload record.StatusWrite) bool {
+	return payload.ObservedStatus != "" && record.OutOfWorkflow(payload.Status) != record.OutOfWorkflow(payload.ObservedStatus)
 }
 
 // publishGatedSteps writes the deployment's design-gate steps onto the project's Dispatch row.
