@@ -215,6 +215,16 @@ func newRuleRig(t *testing.T, on bool) ruleRig {
 	return ruleRig{handler: handler, database: database, deps: deps}
 }
 
+// createProjects creates each project of keys through the API, as alice.
+func createProjects(t *testing.T, handler http.Handler, keys ...string) {
+	t.Helper()
+	for _, key := range keys {
+		if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": key, "name": key}, "alice"); response.Code != http.StatusCreated {
+			t.Fatalf("create project %s: status=%d body=%s", key, response.Code, response.Body.String())
+		}
+	}
+}
+
 // file files an issue titled title under parent, or as a root when parent is empty, and moves it
 // to status. A test seeds its issues in an order that keeps the rule, so each seed is taken with
 // the rule on.
