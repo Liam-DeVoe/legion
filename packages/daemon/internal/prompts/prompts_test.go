@@ -38,6 +38,50 @@ func TestComposeStepIsTheHeadlessMechanicsThePromptFileAndWorkerCommon(t *testin
 	}
 }
 
+// A step of a role the deployment defines writes no handoff, so its composition tells it how it
+// reports instead: with handoff_complete, the verdict and its commit, and return_to on a fail. The
+// part of that composition that is Legion's own, go/worker-common.md, says so where it lists the
+// phases that end with a handoff record, and where it says which report the `Handoff:` line names
+// after a return. The owner's part says where to read such a role's report on a `worker-died`, and
+// the implementer's where to read the round such a role sent back. Each part is read alone, so one
+// part's words cannot stand for another's. This shows the text is loaded, never that an agent
+// follows it.
+func TestADeploymentRoleIsToldHowToReport(t *testing.T) {
+	stateDir := t.TempDir()
+	composer, err := New(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	promptFile := filepath.Join(t.TempDir(), "checker.md")
+	if err := os.WriteFile(promptFile, []byte("# Checker\n\nCheck the change against the issue's spec.\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var composed strings.Builder
+	for _, path := range composer.ComposeStep(promptFile).RolePromptPaths {
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		composed.Write(body)
+	}
+	holdsAndRetires(t, "the composition of a role of the deployment", composed.String(), []string{
+		"Report your step with handoff_complete: the verdict pass or fail, and the commit your workspace stands on; with fail you may name `return_to`, the place of an earlier step of your task.",
+	}, nil)
+	for _, part := range []struct {
+		name, text string
+		want       []string
+	}{
+		{"go/worker-common.md", goPart(t, "worker-common.md"), []string{
+			"ends with a handoff record on the Dispatch issue, under the phase's word (`plan`, `implement`, `test` or `review`); `step`, the phase of a role of the deployment, writes none",
+			"the `Handoff:` line names the report of the step that failed, where that step wrote one; a step of a role of the deployment writes none",
+		}},
+		{"go/architect-common.md", goPart(t, "architect-common.md"), []string{"or, for a role of the deployment, which writes none, the verdict of its step"}},
+		{"roles/implementer.md", rolePart(t, "implementer.md"), []string{"since that step writes no handoff"}},
+	} {
+		holdsAndRetires(t, part.name, part.text, part.want, nil)
+	}
+}
+
 // A broken role sequence drops the shared core, uses a root prompt for a child, or makes the Go
 // daemon's instructions win before the shared role instructions. The prompt paths are what every
 // launch concatenates into the one prompt file its agent reads, so their order is the contract. The
