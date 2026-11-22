@@ -1261,7 +1261,8 @@ var ghHelpTimeout = 30 * time.Second
 // (visibilityAnswerBound), the credential helper's fork read (forkReadBound), and the worker shim's
 // grace for its agent (workerShimGrace). Each wait reads its bound through programbound.Of.
 func init() {
-	programbound.Register(&ghGitReadBound, &ghHelpTimeout, &visibilityAnswerBound, &forkReadBound, &workerShimGrace)
+	programbound.Register(&ghGitReadBound, &ghHelpTimeout, &visibilityAnswerBound, &forkReadBound, &workerShimGrace,
+		&requestTimeout, &controllerDispatchTradeWait, &modelTokenTimeout)
 }
 
 // readGhHelp is the real gh's help of the command path, `gh <path> --help` (`gh --help` for
