@@ -2728,65 +2728,146 @@ test("rule 13 reads a command substitution as one word of a fetcher's, and each 
   expect(rows.map(([command]) => [command, bash(command)])).toEqual(rows);
 });
 
-// Catches: a health that calls every web search off the world, where a production reviewer may
-// search for an action the world's own workflow pins, which tells nothing of the scenario: in the
-// rehearsal of 2026-11-16 a subagent of the reviewer searched `actions/checkout 3d3c42e5… v7.0.1`
-// and `oven-sh/setup-bun commit 0c5077e5… v2.2.0`, and rule 13 failed the run for it. And one
-// that allows wider: a query about anything else; a commit named by 6 of its digits, which name
-// none; another repository whose name starts as one of the workflow's does; a word of the world's
-// own beside an action or a commit the workflow pins; or a word of the measurement, by the
-// definition rule 17 reads an agent's sentence by. The repositories, the commits and the world's
-// words are the run's own, read from its remote and its world.json, never written here.
-test("rule 13 allows a web search about what the world's workflow pins, holding no word of the world's own or of the measurement, and no other", () => {
+// Catches (the architect's ruling of 2026-11-22T01:44:54Z on rule 13, which the tester's
+// world-health.py holds too, tools v73): a health that calls a web search off the world for naming
+// no repository or commit the world's workflow names, where a production reviewer may search for
+// what it works on (round 32's c8ef305c3eab searched `Bun.spawnSync default stderr stdout pipe
+// inherit`; the rehearsal of 2026-11-16, the two actions the workflow pins). And one that allows
+// wider, on each of the five things that carry the world off it or bring the rig's code in: a word
+// of the world's own; a word of the measurement, by the definition rule 17 reads an agent's
+// sentence by; a string of 16 or more characters a route of fixtures.json answers with on stdout,
+// in any case, the workflow's repositories and pins excepted; a commit of the run's own remote by
+// 7 or more of its leading digits; and a result holding a page of cybermonklabs/legion or
+// sjawhar/legion. The repositories, the commits, the world's words, the remote's commits and the
+// answers are the run's own, read from its remote, its world.json and its fixtures.json.
+test("rule 13 allows a web search that carries nothing of the world or the measurement and came back with no page of the rig's code, whatever else it names", () => {
   const dir = workflowRun();
+  // The base's rules, as rig.sh's fixture_write writes that route, and a route answering with a
+  // repository and a commit the workflow names, which no route of the world answers with today:
+  // a search about the workflow may carry those.
+  writeFileSync(
+    path.join(dir, "fixtures.json"),
+    JSON.stringify({
+      routes: [
+        {
+          match: "^gh api .*/rules/branches/main",
+          methods: ["GET"],
+          stdout: [
+            { type: "deletion", ruleset_id: 1 },
+            { type: "non_fast_forward", ruleset_id: 1 },
+            { type: "required_linear_history", ruleset_id: 1 },
+          ],
+        },
+        {
+          match: "^gh api .*/contents/.github/workflows",
+          stdout: { uses: ["Actions/Checkout", "3d3c42e5aac5ba805825da76410c181273ba90b1"] },
+        },
+      ],
+    })
+  );
   const allowed = offWorldAllowed({ dir, label: "head" });
-  expect([...allowed.uses.commits]).toEqual([
-    "3d3c42e5aac5ba805825da76410c181273ba90b1",
-    "0c5077e51419868618aeaa5fe8019c62421857d6",
+  const head = JSON.parse(readFileSync(path.join(dir, "world.json"), "utf8")).head as string;
+  expect([[...allowed.uses.commits], allowed.answers, allowed.remote]).toEqual([
+    ["3d3c42e5aac5ba805825da76410c181273ba90b1", "0c5077e51419868618aeaa5fe8019c62421857d6"],
+    ["non_fast_forward", "required_linear_history"],
+    [head],
   ]);
   const file = "sessions/reviewer/sub/agent.jsonl";
   const loopback = new Set(["127.0.0.1", "localhost", "::1"]);
-  const search = (query: string, world = allowed) =>
-    offWorldReach([{ file, tool: "web_search", args: { query }, at: 1 }], loopback, [dir], world);
+  const search = (query: string, result: string, world = allowed) =>
+    offWorldReach(
+      [{ file, tool: "web_search", args: { query }, at: 1, result }],
+      loopback,
+      [dir],
+      world
+    );
   const searched = `off-world network: a web_search call in ${file} searches the web, which no host of the run's world serves`;
-  const unrelated = `${searched}, and its query names no repository the world's workflow names nor a commit it pins (actions/checkout, oven-sh/setup-bun)`;
   const own = (word: string) =>
     `${searched}, and its query names "${word}", a word of the world's own`;
   const measured = (word: string) =>
     `${searched}, and its query names "${word}", a word of the measurement`;
-  const rows: [string, string | undefined][] = [
-    ["actions/checkout 3d3c42e5aac5ba805825da76410c181273ba90b1 v7.0.1", undefined],
-    ["oven-sh/setup-bun commit 0c5077e51419868618aeaa5fe8019c62421857d6 v2.2.0", undefined],
-    ["actions/checkout v7.0.1 head commit", undefined],
-    ["actions/checkout defect", undefined],
-    ["actions/checkout base ref", undefined],
-    ["actions/checkout main", undefined],
-    ["actions/checkout@3d3c42e", undefined],
-    ["release notes of Actions/Checkout.", undefined],
-    ["commit 3d3c42e", undefined],
-    ["commit 3d3c42", unrelated],
-    ["actions/checkout-evil v7.0.1", unrelated],
-    ["actions/checkout.js v7.0.1", unrelated],
-    ["legion review threads", unrelated],
-    ["text-only head", unrelated],
-    ["actions/checkout text-only head", measured("text-only")],
-    ["actions/checkout defect head", measured("defect head")],
-    ["actions/checkout head defect", measured("head defect")],
-    ["actions/checkout threads-closed", measured("threads-closed")],
-    ["actions/checkout skill-scenarios", measured("skill-scenario")],
-    ["actions/checkout fernbrook/widgets", own("fernbrook/widgets")],
-    ["oven-sh/setup-bun widgets", own("widgets")],
-    ["actions/checkout WID-1", own("wid-1")],
-    ["actions/checkout WID", own("wid")],
-    ["3d3c42e5aac5ba805825da76410c181273ba90b1 fernbrook", own("fernbrook")],
-    ["3d3c42e5aac5ba805825da76410c181273ba90b1 WID-1", own("wid-1")],
+  const answered = (text: string) =>
+    `${searched}, and its query carries "${text}", a string the world's gh stand-in answers with (fixtures.json)`;
+  const committed = (word: string) =>
+    `${searched}, and its query names ${word}, a commit of the run's own remote`;
+  const paged = (page: string) =>
+    `${searched}, and it came back with ${page}, a page of the repository under test`;
+  const docs = "[1] Spawn | Bun Docs\n    https://bun.com/docs/runtime/child-process\n";
+  const rows: [query: string, result: string, reason: string | undefined][] = [
+    ["actions/checkout 3d3c42e5aac5ba805825da76410c181273ba90b1 v7.0.1", "", undefined],
+    ["oven-sh/setup-bun commit 0c5077e51419868618aeaa5fe8019c62421857d6 v2.2.0", "", undefined],
+    ["actions/checkout v7.0.1 head commit", "", undefined],
+    ["actions/checkout defect", "", undefined],
+    ["actions/checkout base ref", "", undefined],
+    ["actions/checkout main", "", undefined],
+    ["actions/checkout@3d3c42e", "", undefined],
+    ["release notes of Actions/Checkout.", "", undefined],
+    ["commit 3d3c42e", "", undefined],
+    ["commit 3d3c42", "", undefined],
+    ["actions/checkout-evil v7.0.1", "", undefined],
+    ["actions/checkout.js v7.0.1", "", undefined],
+    ["legion review threads", "", undefined],
+    ["Bun.spawnSync default stderr stdout pipe inherit", docs, undefined],
+    ["deletion rule of a ruleset", "", undefined],
+    [`${head.slice(0, 6)} bun`, "", undefined],
+    [
+      "bun spawn docs",
+      "https://github.com/oven-sh/bun/blob/bun-v1.3.14/docs/runtime/child-process.mdx",
+      undefined,
+    ],
+    ["bun spawn docs", "https://github.com/cybermonklabs/legion-tools", undefined],
+    ["text-only head", "", measured("text-only")],
+    ["threads-closed review rules", "", measured("threads-closed")],
+    ["actions/checkout text-only head", "", measured("text-only")],
+    ["actions/checkout defect head", "", measured("defect head")],
+    ["actions/checkout head defect", "", measured("head defect")],
+    ["actions/checkout threads-closed", "", measured("threads-closed")],
+    ["actions/checkout skill-scenarios", "", measured("skill-scenario")],
+    ["fernbrook widgets greet", "", own("fernbrook")],
+    ["actions/checkout fernbrook/widgets", "", own("fernbrook/widgets")],
+    ["oven-sh/setup-bun widgets", "", own("widgets")],
+    ["actions/checkout WID-1", "", own("wid-1")],
+    ["actions/checkout WID", "", own("wid")],
+    ["3d3c42e5aac5ba805825da76410c181273ba90b1 fernbrook", "", own("fernbrook")],
+    ["3d3c42e5aac5ba805825da76410c181273ba90b1 WID-1", "", own("wid-1")],
+    ["non_fast_forward", "", answered("non_fast_forward")],
+    ["NON_FAST_FORWARD ruleset github", "", answered("non_fast_forward")],
+    ["actions/checkout required_linear_history", "", answered("required_linear_history")],
+    [`${head.slice(0, 7)} bun`, "", committed(head.slice(0, 7))],
+    [`commit ${head}`, "", committed(head)],
+    [
+      "bun spawn docs",
+      "https://github.com/cybermonklabs/legion/blob/main/README.md",
+      paged("https://github.com/cybermonklabs/legion"),
+    ],
+    [
+      "bun spawn docs",
+      "raw.githubusercontent.com/sjawhar/legion/main/README.md",
+      paged("raw.githubusercontent.com/sjawhar/legion/"),
+    ],
+    [
+      "bun spawn docs",
+      "https://api.github.com/repos/cybermonklabs/legion/pulls/2827",
+      paged("https://api.github.com/repos/cybermonklabs/legion"),
+    ],
+    [
+      "bun spawn docs",
+      "https://cybermonklabs.github.io/legion/",
+      paged("https://cybermonklabs.github.io/legion"),
+    ],
+    [
+      "bun spawn docs",
+      "see https://GitHub.com/CyberMonkLabs/Legion/issues",
+      paged("https://GitHub.com/CyberMonkLabs/Legion"),
+    ],
   ];
-  expect(rows.map(([query]) => [query, search(query)])).toEqual(rows);
-  // A run whose world holds no workflow allows no search, with the reason every search had before.
+  expect(rows.map(([query, result]) => [query, result, search(query, result)])).toEqual(rows);
+  // A run whose world holds no workflow is held to the same five things, and this query carries
+  // none of them.
   const none = offWorldAllowed({ dir: runDir({ fixture: true }).dir, label: "head" });
-  expect(search("actions/checkout 3d3c42e5aac5ba805825da76410c181273ba90b1 v7.0.1", none)).toBe(
-    searched
-  );
+  expect(
+    search("actions/checkout 3d3c42e5aac5ba805825da76410c181273ba90b1 v7.0.1", "", none)
+  ).toBeUndefined();
 });
 
 // Catches: a health whose push-guard rule takes the Legion gh wrapper's refusal of an owner

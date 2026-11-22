@@ -5339,7 +5339,9 @@ describe("health", () => {
   // role's notes); a base run that reads the head label's checkout, whose checkout only the head
   // run's built-from names; a read of PID 1's environment, where the 2026-11-14 probe found the
   // caller's Dispatch variables; a path under /var/run/legion/private; a curl of GitHub's API; a
-  // read that fetches a GitHub page; and a web search, each read as healthy. And the run that
+  // read that fetches a GitHub page; and a web search that came back with a page of the
+  // repository under test, whose query alone is part of the world (the architect's ruling of
+  // 2026-11-22T01:44:54Z), each read as healthy. And the run that
   // reaches only the loopback and the model gateway its profile's models.yml names, and reads
   // only its own checkout and its label's profile, read as unhealthy. The scratch root is the one
   // each run's namespace.txt covers, /recorded/scratch, whatever the judge's TMPDIR.
@@ -5369,7 +5371,14 @@ describe("health", () => {
       steps: [read("https://github.com/cybermonklabs/legion/blob/main/README.md")],
     }).dir;
     const searched = worldRun("threads-closed-code-defect-base-6", {
-      steps: [{ tool: "web_search", args: { query: "legion review threads" } }],
+      steps: [
+        {
+          tool: "web_search",
+          args: { query: "legion review threads" },
+          result:
+            "[1] legion/skills at main · cybermonklabs/legion\n    https://github.com/cybermonklabs/legion/tree/main/skills\n",
+        },
+      ],
     }).dir;
     const gateway = "http://model-gateway.example.invalid:4000";
     const own = worldRun("threads-closed-correct-head-7", {
@@ -5406,7 +5415,7 @@ describe("health", () => {
       `threads-closed-code-defect-head-7  unhealthy: credentials: a read call in ${session} names /var/run/legion/private/token, under /var/run/legion`,
       `threads-closed-code-defect-head-8  unhealthy: off-world network: a bash call in ${session} reaches api.github.com (https://api.github.com/repos/cybermonklabs/legion/pulls/2827), no host of the run's world (${loopback})`,
       `threads-closed-code-defect-head-9  unhealthy: off-world network: a read call in ${session} reaches github.com (https://github.com/cybermonklabs/legion/blob/main/README.md), no host of the run's world (${loopback})`,
-      `threads-closed-code-defect-base-6  unhealthy: off-world network: a web_search call in ${session} searches the web, which no host of the run's world serves`,
+      `threads-closed-code-defect-base-6  unhealthy: off-world network: a web_search call in ${session} searches the web, which no host of the run's world serves, and it came back with https://github.com/cybermonklabs/legion, a page of the repository under test`,
       "threads-closed-correct-head-7  healthy",
     ]);
     for (const [rule, count] of [

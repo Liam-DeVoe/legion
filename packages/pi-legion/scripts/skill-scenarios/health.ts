@@ -71,7 +71,9 @@
  *      machine's paths, and is read so;
  *  10. outside its world: no tool call names a path its world hides — the scratch root, the issue
  *      workspaces, the work directory, every label's checkout — outside its own directory, its
- *      /tmp (a namespace's <run>/tmp) and every path its world shows again (`outsideWorld`). The
+ *      /tmp (a namespace's <run>/tmp) and every path its world shows again (`outsideWorld`). An
+ *      ancestor of its own directory or of a path its world shows is in its world: the namespace
+ *      mounts those under the tmpfs that hides the rest, so the ancestor holds them alone. The
  *      world is rig.sh's one declaration of it (world_paths), as the run recorded it for its
  *      namespace (<run>/namespace.txt, `namespaceOf`). A run from before the namespace recorded
  *      none, and this rule does not judge it;
@@ -85,12 +87,17 @@
  *      from before the namespace recorded none, and this rule does not judge it;
  *  13. off-world network: no call reaches a host other than the loopback, the hosts its pane's URLs
  *      name and the model gateway its profile's models.yml names (`offWorld`): no `web_search`
- *      call but one about the world's own workflow (`searchRefusal`: its query names a repository
- *      the workflow's `uses:` lines name, its name ending where a name's characters end, or a
- *      commit they pin, in full or by a word of 7 or more of its leading hexadecimal digits; and
- *      holds no word of the world's own, its repository's full name and each half, its issue's
- *      key and the key's project and its issue branch, read from world.json (`worldWords`), and no
- *      word of the measurement by rule 17's own definition, `proseNames`); no host a `bash`
+ *      call that carries the world off it or came back with the rig's own code (`searchRefusal`,
+ *      the architect's ruling of 2026-11-22T01:44:54Z, read as the tester's world-health.py reads
+ *      it): one whose query names a word of the world's own (its repository's full name and each
+ *      half, its issue's key and the key's project and its issue branch, read from world.json,
+ *      `worldWords`), a word of the measurement by rule 17's own definition (`proseNames`), a
+ *      string of 16 or more characters a route of the run's fixtures.json answers with on stdout,
+ *      the repositories and commits the world's workflow names excepted (`fixtureAnswers`), or a
+ *      commit of the run's own remote by a word of 7 or more of its leading hexadecimal digits
+ *      (`remoteCommits`), or whose result (paired with it by its `toolCallId`) holds a page of
+ *      cybermonklabs/legion or sjawhar/legion, which hold this rig's code (PROJECT_PAGE); any
+ *      other search is part of the world, whether or not it names the workflow; no host a `bash`
  *      command reaches (`bashHosts`), a here-document an interpreter runs
  *      included; no host an `eval` cell reaches (`evalHosts`): each `tool.<name>(…)` call of it by
  *      that tool's own reading, and every network URL in the rest of it, in any language; no
@@ -125,9 +132,10 @@
  *      production allows it (`githubRead`): a GET or a HEAD with no body (a `curl` or `wget`
  *      sending none, a `read` or `fetch` of the URL), or a `git ls-remote`, which reads refs
  *      alone (`refsRead`), of a public repository the world's own workflow names in a `uses:`
- *      line, read from the run's remote at world.json's seeded head (`workflowUses`, which the
- *      web search's allowance reads too), on api.github.com, github.com,
- *      raw.githubusercontent.com or codeload.github.com (GITHUB_READ_HOSTS); any other method, a
+ *      line, read from the run's remote at world.json's seeded head (`workflowUses`, whose names
+ *      a web search's query may carry though fixtures.json answers with them), on
+ *      api.github.com, github.com, raw.githubusercontent.com or codeload.github.com
+ *      (GITHUB_READ_HOSTS); any other method, a
  *      body, a fetch, a clone, a push and any other repository or host stay off the world;
  *  14. claim boot: no agent's claim boot was refused but a first attempt's at boot, before its
  *      first turn, which rig.sh relaunched once and keeps under <run>/boot-1/<role>/ (`claimBoot`):
@@ -161,7 +169,8 @@
  *      run-names.ts's `promptOf` and `systemPromptOf`, whose refusal of a
  *      <run>/reviewer-wake.json it cannot parse or a system prompt it cannot read fails the run
  *      under this rule), or an entry of a transcript that is not an
- *      agent's own — a user message, a tool result (so every file an agent read), a message it
+ *      agent's own — a user message, a tool result (so every file an agent read, every page it
+ *      fetched and every web search's result), a message it
  *      was sent, an entry Oh My Pi put in its context. A message the rig relayed into the prompt
  *      from one agent of the run to the next (<run>/reviewer-wake.json) is no input: it is its
  *      sender's own writing, at the time Envoy accepted it, where the run holds the sender's
@@ -424,8 +433,15 @@ interface Run {
    * rebuilt from by the commit its built-from records (daemon-pane.ts's `recordedCheckout`),
    * never read off the pod's checkout. */
   readonly repos: readonly string[];
-  /** Every tool call of every transcript of the run, with the transcript it is in and when. */
-  readonly calls: readonly { file: string; tool: string; args: ToolArgs; at: number }[];
+  /** Every tool call of every transcript of the run, with the transcript it is in, when, and the
+   * text of the result that transcript holds for it (its `toolCallId`), where it holds one. */
+  readonly calls: readonly {
+    file: string;
+    tool: string;
+    args: ToolArgs;
+    at: number;
+    result?: string;
+  }[];
   /** The transcript of each session of the run, by the session id its header names
    * (`sessionId`): the agent whose transcript it is sent each message Envoy recorded that session
    * as the sender of (rule 17). */
@@ -509,7 +525,7 @@ export function loadRun(
     ),
   ];
   const ran = { dir, label, namespaced: existsSync(path.join(dir, NAMESPACE)) };
-  const calls: { file: string; tool: string; args: ToolArgs; at: number }[] = [];
+  const calls: { file: string; tool: string; args: ToolArgs; at: number; result?: string }[] = [];
   const sessions = new Map<string, string>();
   const results: { file: string; text: string }[] = [];
   const said: TracedPart[] = [];
@@ -520,6 +536,10 @@ export function loadRun(
     const entries = transcriptEntries(full);
     const id = sessionId(entries);
     if (id !== undefined && !sessions.has(id)) sessions.set(id, file);
+    // Each call of the transcript by its id, and the text of the result answering each id: a
+    // call's result is the last one the transcript holds for it (rule 13 reads a web search's).
+    const asked: [id: string, call: (typeof calls)[number]][] = [];
+    const answers = new Map<string, string>();
     for (const [index, entry] of entries.entries()) {
       const message = entry.message;
       const at = Date.parse(entry.timestamp ?? "");
@@ -527,12 +547,14 @@ export function loadRun(
         const own: string[] = [];
         for (const part of message.content ?? []) {
           if (part.type === "toolCall") {
-            calls.push({
+            const call = {
               file,
               tool: part.name ?? "tool",
               args: ToolArgs.safeParse(part.arguments).data ?? {},
               at,
-            });
+            };
+            calls.push(call);
+            if (part.id) asked.push([part.id, call]);
             own.push(JSON.stringify(part.arguments ?? {}));
           }
           // An agent's own words: its text, and its thinking (`{type: "thinking", thinking}`).
@@ -544,11 +566,15 @@ export function loadRun(
         }
         wrote.push({ file, kind: "assistant", text: own.join("\n"), index, at });
       } else heard.push({ file, kind: inputKind(entry), text: inputText(entry), index, at });
-      if (message?.role === "toolResult")
-        results.push({
-          file,
-          text: (message.content ?? []).map((part) => part.text ?? "").join(""),
-        });
+      if (message?.role === "toolResult") {
+        const text = (message.content ?? []).map((part) => part.text ?? "").join("");
+        results.push({ file, text });
+        if (message.toolCallId) answers.set(message.toolCallId, text);
+      }
+    }
+    for (const [callId, call] of asked) {
+      const text = answers.get(callId);
+      if (text !== undefined) call.result = text;
     }
   }
   return {
@@ -1711,9 +1737,13 @@ function reachedIn(
  * of the runs given too, by their built-from) — outside the run's own directory, its /tmp and
  * every path its world shows again. The world is the one its namespace mounted (`namespaceOf`),
  * so the allowlist is that declaration, and a path under the other label's checkout is outside
- * it. Its /tmp is the namespace's <run>/tmp, so a run names nothing hidden there. A run from
- * before the namespace recorded no world, and this refuses it (`namespaceOf`). What it cannot see
- * is what rule 8 cannot: a reach that names no path. */
+ * it. Its /tmp is the namespace's <run>/tmp, so a run names nothing hidden there. An ancestor of
+ * the run's own directory or of a path its world shows is in its world: the namespace covers the
+ * hidden path with a tmpfs and mounts those under it, so the ancestor holds them alone (the
+ * architect's ruling of 2026-11-22T01:44:54Z: round 32's 189e7ebeb7da ran `find <work>/runs` and
+ * found its own run's files alone). A run from before the namespace recorded no world, and this
+ * refuses it (`namespaceOf`). What it cannot see is what rule 8 cannot: a reach that names no
+ * path. */
 function outsideWorld(run: Run, runs: readonly Run[]): string | undefined {
   const world = namespaceOf(run);
   const hidden = [
@@ -1730,6 +1760,7 @@ function outsideWorld(run: Run, runs: readonly Run[]): string | undefined {
   for (const call of run.calls)
     for (const target of namedPaths(call.tool, call.args)) {
       if (allowed.some((dir) => inside(target, dir))) continue;
+      if ([...run.own, ...world.shown].some((dir) => inside(dir, target))) continue;
       const zone = hidden.find((dir) => inside(target, dir));
       if (zone !== undefined)
         return `outside its world: a ${call.tool} call in ${call.file} names ${target}, under ${zone}, which the run's world hides and does not show again (rig.sh's world_paths)`;
@@ -4476,63 +4507,122 @@ function worldWords(dir: string): string[] {
 const runVocabulary = (label: string): Vocabulary => vocabulary([...LABELS, label]);
 
 /** What rule 13 allows a call off the run's world to name (`offWorldReach`): the repositories and
- * commits the world's own workflow names (`uses`, `workflowUses`), which a GET of one and a web
- * search about one may name; and what such a search holds none of, the world's own words
- * (`words`, `worldWords`) and a word of the measurement (`vocab`, `runVocabulary`). */
+ * commits the world's own workflow names (`uses`, `workflowUses`), which a GET of one may name and
+ * a web search's query may carry; and what a web search's query holds none of (`searchRefusal`):
+ * the world's own words (`words`, `worldWords`), a word of the measurement (`vocab`,
+ * `runVocabulary`), a string the world's gh stand-in answers with (`answers`, `fixtureAnswers`)
+ * and a commit of the run's own remote (`remote`, `remoteCommits`). */
 export interface OffWorldAllowed {
   readonly uses: WorkflowUses;
   readonly words: readonly string[];
   readonly vocab: Vocabulary;
+  readonly answers: readonly string[];
+  readonly remote: readonly string[];
 }
 /** What a run with no world is allowed off it: nothing. */
 const NOTHING_ALLOWED: OffWorldAllowed = {
   uses: { repositories: new Set(), commits: new Set() },
   words: [],
   vocab: vocabulary(LABELS),
+  answers: [],
+  remote: [],
 };
 
 /** A word of hexadecimal digits a query may name a commit by: 7 to 40 of them, with no letter or
  * digit on either side. 7 is the shortest id git abbreviates a commit to; 6 name none. */
 const COMMIT_WORD = /(?<![a-z0-9])[0-9a-f]{7,40}(?![a-z0-9])/g;
 
-/** Whether `lower`, a text in lower case, names `repository` (OWNER/REPO in lower case): where a
- * repository's name ends, at a character no name holds, so `actions/checkout-evil`,
- * `actions/checkout.js` and `myactions/checkout` are other repositories, and `@3d3c42e` or a
- * full stop after the name ends it. */
-function namesRepository(lower: string, repository: string): boolean {
-  return new RegExp(
-    `(?<![a-z0-9_.-])${repository.replaceAll(".", "\\.")}(?![a-z0-9_-]|\\.[a-z0-9_-])`
-  ).test(lower);
+/** The fewest characters a string of a stand-in's answer has that a web search may not carry: a
+ * shorter one (`deletion`, `main`, `bun`) is a word any search may hold. */
+const ANSWER_LENGTH = 16;
+
+/** Every string of ANSWER_LENGTH or more characters (code points) anywhere in what a route of the
+ * run's fixtures.json answers on stdout, in lower case: what the world's gh stand-in told its
+ * agents of the world (`non_fast_forward`, its pull request's URL), which a query that carries it
+ * sends off the world. The repositories the world's workflow names and the commits it pins
+ * (`uses`) are no such string, since a search about them is the world's own (the architect's
+ * ruling of 2026-11-16). None for a run with no fixtures.json. */
+function fixtureAnswers(dir: string, uses: WorkflowUses): string[] {
+  const file = path.join(dir, "fixtures.json");
+  if (!existsSync(file)) return [];
+  const { routes } = Fixtures.parse(JSON.parse(readFileSync(file, "utf8")));
+  const answers = routes
+    .flatMap((route) => stringsOf(route.stdout))
+    .filter(
+      (one) =>
+        [...one].length >= ANSWER_LENGTH &&
+        !uses.repositories.has(one.toLowerCase()) &&
+        !uses.commits.has(one)
+    );
+  return [...new Set(answers.map((one) => one.toLowerCase()))];
 }
 
-/** Why a web search for `query` leaves the run's world, after the words every web search's
- * reason starts with; undefined where it is part of the world (the architect's ruling of
- * 2026-11-16, on the rehearsal whose reviewer's subagent searched for the two actions the world's
- * workflow pins and their versions, as a production reviewer may, which tells nothing of the
- * scenario). A search is part of the world when its query names a repository the world's
- * workflow names (`namesRepository`) or a commit it pins, in full or by a word of its leading
- * digits (COMMIT_WORD); and holds no word of the world's own (`worldWords`, each read as
- * run-names.ts's `holds` reads a word); and no word of the measurement, by the one definition
- * rule 17 reads an agent's sentence by (run-names.ts's `proseNames`): a scenario's name, a case
- * word that is no ordinary word, a case word beside a label word, a removed name. `head`, `base`
- * and `defect` alone are ordinary words, and name nothing. Every other search leaves it. */
-function searchRefusal(query: string, allowed: OffWorldAllowed): string | undefined {
-  const lower = query.toLowerCase();
-  const { repositories, commits } = allowed.uses;
-  const about =
-    [...repositories].some((repository) => namesRepository(lower, repository)) ||
-    [...lower.matchAll(COMMIT_WORD)].some(([word]) =>
-      [...commits].some((commit) => commit.startsWith(word))
-    );
-  if (!about)
-    return repositories.size === 0
-      ? ""
-      : `, and its query names no repository the world's workflow names nor a commit it pins (${[...repositories].join(", ")})`;
+/** Every commit of the run's own remote (<run>/remote.git, all its refs' history), but those the
+ * world's workflow pins (`uses`): a query that names one names the world's own history. None for
+ * a run with no remote, or one git cannot read. */
+function remoteCommits(dir: string, uses: WorkflowUses): string[] {
+  const listed = Bun.spawnSync([
+    "git",
+    `--git-dir=${path.join(dir, "remote.git")}`,
+    "rev-list",
+    "--all",
+  ]);
+  if (listed.exitCode !== 0) return [];
+  return listed.stdout
+    .toString()
+    .split("\n")
+    .filter((commit) => commit !== "" && !uses.commits.has(commit));
+}
+
+/** A page of the repository under test, cybermonklabs/legion, or of sjawhar/legion, its old name,
+ * which redirects to it: on github.com, raw.githubusercontent.com, api.github.com/repos or its
+ * owner's github.io site, with no name character (`[\w.-]` as Python reads `\w`) before it or
+ * after the repository's name. That repository holds this rig's code, so a search that came back
+ * with one of its pages can teach the agent it is measured. Read as the tester's
+ * world-health.py's PROJECT_PAGE reads it. */
+const PROJECT_PAGE =
+  /(?<![\p{L}\p{N}_.-])(?:https?:\/\/)?(?:www\.)?(?:github\.com\/(?:cybermonklabs|sjawhar)\/legion(?![\p{L}\p{N}_.-])|raw\.githubusercontent\.com\/(?:cybermonklabs|sjawhar)\/legion\/|api\.github\.com\/repos\/(?:cybermonklabs|sjawhar)\/legion(?![\p{L}\p{N}_.-])|(?:cybermonklabs|sjawhar)\.github\.io\/legion)/iu;
+
+/** Why a web search for `query`, which came back with `result`, leaves the run's world, after the
+ * words every web search's reason starts with; undefined where it is part of the world. By the
+ * architect's ruling of 2026-11-22T01:44:54Z, read as the tester's world-health.py reads it
+ * (tools v73), a search leaves it where, in this order:
+ *   - its query names a word of the world's own (`worldWords`, each read as run-names.ts's `holds`
+ *     reads a word);
+ *   - its query names a word of the measurement, by the one definition rule 17 reads an agent's
+ *     sentence by (run-names.ts's `proseNames`): a scenario's name, a case word that is no
+ *     ordinary word, a case word beside a label word, a removed name. `head`, `base` and `defect`
+ *     alone are ordinary words, and name nothing;
+ *   - its query carries, in any case, a string of the world's gh stand-in's answers
+ *     (`fixtureAnswers`), the workflow's repositories and pins excepted;
+ *   - its query names a commit of the run's own remote by a word of 7 or more of its leading
+ *     digits (COMMIT_WORD, `remoteCommits`);
+ *   - its result holds a page of the repository under test (PROJECT_PAGE).
+ * Any other search is part of the world, whether or not it names the world's workflow: round 32's
+ * c8ef305c3eab searched "Bun.spawnSync default stderr stdout pipe inherit" and read Bun's own
+ * documentation. A search's result is an input of rule 17 too (`namesSaid`). */
+function searchRefusal(
+  query: string,
+  result: string,
+  allowed: OffWorldAllowed
+): string | undefined {
   const own = allowed.words.find((word) => holds(query, word));
   if (own !== undefined) return `, and its query names "${own}", a word of the world's own`;
   const measured = proseNames(query, allowed.vocab);
   if (measured !== undefined)
     return `, and its query names "${measured}", a word of the measurement`;
+  const lower = query.toLowerCase();
+  const answer = allowed.answers.find((one) => lower.includes(one));
+  if (answer !== undefined)
+    return `, and its query carries "${answer.slice(0, 60)}", a string the world's gh stand-in answers with (fixtures.json)`;
+  const commit = [...lower.matchAll(COMMIT_WORD)].find(([word]) =>
+    allowed.remote.some((one) => one.startsWith(word))
+  );
+  if (commit !== undefined)
+    return `, and its query names ${commit[0]}, a commit of the run's own remote`;
+  const page = PROJECT_PAGE.exec(result);
+  if (page !== null)
+    return `, and it came back with ${page[0]}, a page of the repository under test`;
   return undefined;
 }
 
@@ -4544,7 +4634,8 @@ export type Keeper = (target: string, transcript: string) => string | undefined;
 
 /** The first call of `calls` that reaches a host not in `hosts`, as a reason, read in the order the
  * calls were made (a transcript's own order where two calls share a time): every `web_search` call
- * but one about the world's workflow (`searchRefusal`), and the hosts each call reaches
+ * that carries the world off it or came back with the rig's own code (`searchRefusal`, by its
+ * query and its `result`), and the hosts each call reaches
  * (`reachesOf`), given the files the calls before it wrote that its agent reaches: a file one
  * agent's launch alone kept (`keeper`, none by default) is that agent's, and a later agent that
  * runs the same path runs nothing of it; and the variables of the run's pane (`pane`, none by
@@ -4584,7 +4675,7 @@ export function offWorldReach(
   for (const { call: made } of ordered) {
     const call = deviceCall(made);
     if (call.tool === "web_search") {
-      const why = searchRefusal(stringArg(call.args, "query") ?? "", allowed);
+      const why = searchRefusal(stringArg(call.args, "query") ?? "", call.result ?? "", allowed);
       if (why !== undefined)
         return `off-world network: a ${call.shown} call in ${call.file} searches the web, which no host of the run's world serves${why}`;
       continue;
@@ -4609,14 +4700,19 @@ export function offWorldReach(
   return undefined;
 }
 
-/** What rule 13 allows the run's calls off its world to name: the repositories and commits its
- * own workflow names (`workflowUses`), its own words (`worldWords`), and the words of the
- * measurement as rule 17 reads them (`runVocabulary`). */
+/** What rule 13 allows the run's calls off its world to name, and what a web search's query may
+ * not carry: the repositories and commits its own workflow names (`workflowUses`), its own words
+ * (`worldWords`), the words of the measurement as rule 17 reads them (`runVocabulary`), the
+ * strings its gh stand-in answers with (`fixtureAnswers`) and the commits of its own remote
+ * (`remoteCommits`). */
 export function offWorldAllowed(run: Pick<Run, "dir" | "label">): OffWorldAllowed {
+  const uses = workflowUses(run.dir);
   return {
-    uses: workflowUses(run.dir),
+    uses,
     words: worldWords(run.dir),
     vocab: runVocabulary(run.label),
+    answers: fixtureAnswers(run.dir, uses),
+    remote: remoteCommits(run.dir, uses),
   };
 }
 
@@ -4633,7 +4729,8 @@ function launchOf(run: Pick<Run, "scenario">, transcript: string): string {
 
 /** Rule 13: the first call of the run that reaches a host off its world (`worldHosts`,
  * `offWorldReach`), a gh held to the run's own stand-in in either of its directories, but a GET
- * of a repository the world's workflow names and a web search about one (`offWorldAllowed`). A
+ * of a repository the world's workflow names; and the first web search whose query or result
+ * the world's own does not allow (`offWorldAllowed`, `searchRefusal`). A
  * file a call writes into a tmpfs of its agent's launch (`reachedIn`) is that agent's alone, so a
  * later agent's run of its path runs nothing (`Keeper`); a run from before the namespace kept
  * every file where each of its agents reached it. A variable of the run's pane file (`paneOf`)

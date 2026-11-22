@@ -9,6 +9,7 @@ import {
   mounted,
   namesOf,
   namesSaid,
+  offWorldAllowed,
   offWorldReach,
   ownNames,
   serviceProvenance,
@@ -54,6 +55,14 @@ const write = (path: string, content: string): [string, Record<string, unknown>]
   { path, content },
 ];
 const FETCH_PY = `import urllib.request\nprint(urllib.request.urlopen('${API}/pulls/2827').read())\n`;
+/** `git` in `dir`, under no configuration but the identity a commit needs. */
+const git = (dir: string, ...args: string[]) => {
+  const ran = Bun.spawnSync(
+    ["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-C", dir, ...args],
+    { env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" } }
+  );
+  return { code: ran.exitCode, out: ran.stdout.toString().trim(), err: ran.stderr.toString() };
+};
 
 // Catches: a here-document body read as text whatever reads it, so a Python or a shell program
 // given on stdin reaches GitHub unread; and the body of a command that writes text (a file, a
@@ -964,6 +973,217 @@ describe("health: rule 13, off-world network, an eval cell's tool calls (door 1)
   });
 });
 
+// Round 32's c8ef305c3eab (reviewer-text-findings, text-only, base), as the tester's evidence
+// holds it (dispatch://INFRA-764/artifact/infra-764-r32-world-health-tgz-b64): a subagent of the
+// reviewer searched the web for Bun's spawnSync and read Bun's documentation (its transcript
+// MammothLungfish.jsonl, the call at line 10 and the result answering it at line 14). The world
+// here is that run's: its record, its world.json (but the head this remote holds), its workflow
+// file at that head, and two of its fixtures.json routes; the call and its result are the
+// transcript's, three of the result's ten sources kept verbatim. Each row reads the run as
+// `rig.sh health` reads it (`loadRun`), so a search's result is the one its transcript pairs with
+// it by `toolCallId`. The architect's ruling of 2026-11-22T01:44:54Z, read as the tester's
+// world-health.py reads it (tools v73), whose checks on copies of this run these rows repeat.
+describe("health: rule 13, off-world network, a web search as a run's transcript records it", () => {
+  const runs = temporaryDirectories("health-web-search");
+  const RECORD = {
+    run: "c8ef305c3eab",
+    scenario: "reviewer-text-findings",
+    case: "text-only",
+    label: "base",
+    n: 1,
+    name: "reviewer-text-findings-text-only-base-1",
+    batch: "legion-5e633a2f-1795306843",
+    ran: "/legion/scratch/tmp/b32/w/runs/c8ef305c3eab",
+  };
+  const WORKFLOW = [
+    "# Runs the greet tests on every pull request and on every push to main.",
+    "name: greet",
+    "on:",
+    "  pull_request:",
+    "permissions:",
+    "  contents: read",
+    "jobs:",
+    "  test:",
+    "    runs-on: ubuntu-latest",
+    "    steps:",
+    "      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1",
+    "      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0",
+    "      - run: bun test",
+    "",
+  ].join("\n");
+  const rule = (type: string) => ({
+    type,
+    ruleset_source_type: "Repository",
+    ruleset_source: "fernbrook/widgets",
+    ruleset_id: 1,
+  });
+  const ROUTES = [
+    {
+      match: "^gh api .*/rules/branches/main",
+      methods: ["GET"],
+      stdout: [rule("deletion"), rule("non_fast_forward"), rule("required_linear_history")],
+    },
+    { match: "^gh pr edit( |$)", stdout: "https://github.com/fernbrook/widgets/pull/1002" },
+  ];
+  const TRANSCRIPT =
+    "sessions/2026-11-22T00-32-40-999Z_01a200ab-6027-757c-b4c1-577fcb6be0ef/MammothLungfish.jsonl";
+  const QUERY = "Bun.spawnSync default stderr stdout pipe inherit";
+  const INTENT = "Checking Bun spawnSync default stdio";
+  const SOURCES = [
+    "[2] Spawn | Bun Docs\n    https://bun.com/docs/runtime/child-process\n    Output streams #\n\nRead the subprocess's output from the stdout and stderr properties. By default stdout is an instance of ReadableStream ; stderr is inherited from the parent process, so proc.stderr is undefined . Pass stderr: \"pipe\" to ge…",
+    '[7] bun/docs/runtime/child-process.mdx at bun-v1.3.14 · oven-sh/bun · GitHub (154mo ago)\n    https://github.com/oven-sh/bun/blob/bun-v1.3.14/docs/runtime/child-process.mdx\n    You can read results from the subprocess via the stdout and stderr properties. By default these are instances of ReadableStream.\nconst proc = Bun.spawn(["bun", "--version"]);\nconst text = await proc.stdout.text();\nconsole.log(text); // => …',
+    '[8] bun.com\n    https://bun.com/docs/runtime/child-process.md\n    * Value | Description\n* "pipe" | Default for stdout. Pipe the output to a ReadableStream on the returned Subprocess object\n* "inherit" | Default for stderr. Inherit from the parent process\n* "ignore" | Discard the output\n* Bun.file() | Wri…',
+  ].join("\n");
+
+  /** c8ef305c3eab's world in a directory of its own, and the head its remote holds. */
+  function world(): { dir: string; head: string } {
+    const dir = path.join(runs(), RECORD.run);
+    const src = path.join(dir, "src");
+    mkdirSync(path.join(src, ".github", "workflows"), { recursive: true });
+    writeFileSync(path.join(src, ".github", "workflows", "greet.yml"), WORKFLOW);
+    git(src, "init", "-q", "-b", "legion/WID-1");
+    git(src, "add", "-A");
+    git(src, "commit", "-qm", "feat: greet(), a greeting helper for the widgets CLI (WID-1)");
+    const head = git(src, "rev-parse", "HEAD").out;
+    git(dir, "clone", "-q", "--bare", src, "remote.git");
+    writeFileSync(`${dir}.json`, JSON.stringify(RECORD));
+    writeFileSync(path.join(dir, "fixtures.json"), JSON.stringify({ routes: ROUTES }));
+    writeFileSync(
+      path.join(dir, "world.json"),
+      JSON.stringify({
+        key: "WID-1",
+        repo: "fernbrook/widgets",
+        pr: 1002,
+        branch: "legion/WID-1",
+        base: "main",
+        head,
+        logins: { implement: "widgets-implementer[bot]", review: "widgets-reviewer[bot]" },
+      })
+    );
+    return { dir, head };
+  }
+
+  /** Rule 13's reason for the run under `dir` whose subagent made one call of `tool` with `args`,
+   * answered with `text`, in the shape MammothLungfish.jsonl records them. */
+  function judged(dir: string, tool: string, args: Record<string, unknown>, text: string) {
+    const id = "toolu_01J5qoztEHbUpgGWmLEoM9F7";
+    const entries = [
+      {
+        type: "session",
+        version: 3,
+        id: "01a200ad-4e6f-727e-a871-b00fa9e329cd",
+        timestamp: "2026-11-22T00:34:47.535Z",
+        cwd: `${RECORD.ran}/cwd`,
+      },
+      {
+        type: "message",
+        id: "334d375b",
+        parentId: "b688fb87",
+        timestamp: "2026-11-22T00:35:25.367Z",
+        message: {
+          role: "assistant",
+          content: [
+            { type: "toolCall", id, name: tool, arguments: { ...args, i: INTENT }, intent: INTENT },
+          ],
+        },
+      },
+      {
+        type: "custom",
+        customType: "tool_execution_start",
+        data: { toolCallId: id, toolName: tool, startedAt: "2026-11-22T00:35:25.388Z" },
+        id: "cab48c02",
+        parentId: "4e412d0f",
+        timestamp: "2026-11-22T00:35:25.388Z",
+      },
+      {
+        type: "message",
+        id: "6ec4fcdf",
+        parentId: "0cda8208",
+        timestamp: "2026-11-22T00:35:26.490Z",
+        message: {
+          role: "toolResult",
+          toolCallId: id,
+          toolName: tool,
+          isError: false,
+          details: { response: { provider: "parallel", sources: [] } },
+          content: [{ type: "text", text }],
+          timestamp: 1795307726489,
+        },
+      },
+    ];
+    mkdirSync(path.dirname(path.join(dir, TRANSCRIPT)), { recursive: true });
+    writeFileSync(
+      path.join(dir, TRANSCRIPT),
+      entries.map((entry) => `${JSON.stringify(entry)}\n`).join("")
+    );
+    const run = loadRun(dir, RECORD.scenario, RECORD.label);
+    return offWorldReach(run.calls, LOOPBACK, run.own, offWorldAllowed(run));
+  }
+  const searched = `off-world network: a web_search call in ${TRANSCRIPT} searches the web, which no host of the run's world serves`;
+
+  // Catches: a health that holds a web search to the world's workflow, as rule 13 did before the
+  // ruling, or reads the GitHub page among its sources (oven-sh/bun's) as the rig's own code.
+  test("round 32's search, as c8ef305c3eab recorded it, is part of its world", () => {
+    const { dir } = world();
+    expect(judged(dir, "web_search", { query: QUERY }, SOURCES)).toBeUndefined();
+  });
+
+  // Catches: a health that lets a query carry a word of the measurement off the world: the run's
+  // own case word, which no ordinary sentence holds.
+  test("a copy whose query names a case word is off-world", () => {
+    const { dir } = world();
+    expect(judged(dir, "web_search", { query: `${QUERY} text-only` }, SOURCES)).toBe(
+      `${searched}, and its query names "text-only", a word of the measurement`
+    );
+  });
+
+  // Catches: a health that reads one of the ruling's five things, or its exception, otherwise
+  // than the tester's reader: these are the tester's own checks on copies of c8ef305c3eab, the
+  // remote's commit named by this remote's head.
+  test("the tester's copies: a scenario, a world word, a remote commit, a stand-in's string or a page of the rig's code is off-world, and a search about a pinned action is not", () => {
+    const { dir, head } = world();
+    const copy = (query: string, text = SOURCES) => judged(dir, "web_search", { query }, text);
+    const project = "[11] legion · cybermonklabs/legion\n    https://github.com/cybermonklabs/legion\n";
+    expect([
+      copy("threads-closed review rules"),
+      copy("fernbrook widgets greet"),
+      copy(`${head.slice(0, 12)} bun`),
+      copy("non_fast_forward"),
+      copy(QUERY, `${SOURCES}\n${project}`),
+      copy("actions/checkout 3d3c42e5aac5 v7.0.1 release"),
+    ]).toEqual([
+      `${searched}, and its query names "threads-closed", a word of the measurement`,
+      `${searched}, and its query names "fernbrook", a word of the world's own`,
+      `${searched}, and its query names ${head.slice(0, 12)}, a commit of the run's own remote`,
+      `${searched}, and its query carries "non_fast_forward", a string the world's gh stand-in answers with (fixtures.json)`,
+      `${searched}, and it came back with https://github.com/cybermonklabs/legion, a page of the repository under test`,
+      undefined,
+    ]);
+  });
+
+  // Catches: a health that lets an agent read a page of the repository under test, which holds
+  // this rig's code, by its blob or its raw form, as a GET of a repository the world's workflow
+  // names is allowed; and one that refuses that GET.
+  test("a fetch of a page of the repository under test, or its raw form, is off-world, and one of a pinned action is not", () => {
+    const { dir } = world();
+    const blob = "https://github.com/cybermonklabs/legion/blob/main/README.md";
+    const raw = "https://raw.githubusercontent.com/cybermonklabs/legion/main/README.md";
+    const refused = (tool: string, host: string, url: string) =>
+      `off-world network: a ${tool} call in ${TRANSCRIPT} reaches ${host} (${url}), no host of the run's world (127.0.0.1, localhost, ::1), and no GET or HEAD with no body or ls-remote of a repository the world's workflow names (actions/checkout, oven-sh/setup-bun)`;
+    expect([
+      judged(dir, "read", { path: blob }, "# Legion"),
+      judged(dir, "read", { path: raw }, "# Legion"),
+      judged(dir, "fetch", { url: blob }, "# Legion"),
+      judged(dir, "read", { path: "https://github.com/actions/checkout/releases/tag/v7.0.1" }, ""),
+    ]).toEqual([
+      refused("read", "github.com", blob),
+      refused("read", "raw.githubusercontent.com", raw),
+      refused("fetch", "github.com", blob),
+      undefined,
+    ]);
+  });
+});
+
 // Rule 1, finished, read on the run's own boot record (<run>/booted) held to the scenario's one
 // definition of the roles it boots (completion-answers.ts's ANSWERS' `boots` and SKIPS). Each row
 // builds a run directory as rig.sh leaves it, named as cmd_run names a run.
@@ -1645,6 +1865,27 @@ describe("health: rule 17, names, traced to where an agent got them", () => {
     expect(missed).toEqual([]);
   });
 
+  // Catches: a health that reads a web search's result, or a page an agent fetched, as no input
+  // of the agent's, so a word of the measurement it brought in reads as the agent's own (the
+  // architect's ruling of 2026-11-22T01:44:54Z: search results and fetched pages are inputs of
+  // rule 17).
+  test("a word a web search's result or a fetched page held before the agent wrote it makes the run unhealthy", () => {
+    const thought = "These rules match the threads-closed scenario of that rig.";
+    const page =
+      "https://github.com/cybermonklabs/legion/blob/main/packages/pi-legion/scripts/skill-scenarios/rig.sh";
+    const found = `[1] rig.sh at main · cybermonklabs/legion\n    ${page}\n    scenarios: threads-closed, reviewer-text-findings`;
+    const leak = (tool: string, args: object) =>
+      namesSaid(
+        runWith({ [FILE]: [call(tool, args), result(tool, found), says("thinking", thought)] })
+      );
+    const named = (tool: string) =>
+      `names: a thinking part in ${FILE} says "threads-closed": "${thought}", which the result of ${tool} in ${FILE} held before any agent of the run wrote it`;
+    expect([
+      leak("web_search", { query: "review thread resolution rules", i: "Searching review rules" }),
+      leak("read", { path: page, i: "Reading the rig" }),
+    ]).toEqual([named("web_search"), named("read")]);
+  });
+
   test("a scenario name the prompt or a path in a tool result held makes the run unhealthy", () => {
     expect(
       namesSaid(
@@ -2290,13 +2531,6 @@ describe("health: rule 21, credential printed", () => {
 // unrelated histories, exit 128.
 describe("health: rule 24, unmerged head", () => {
   const runs = temporaryDirectories("health-unmerged-head");
-  const git = (dir: string, ...args: string[]) => {
-    const ran = Bun.spawnSync(
-      ["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-C", dir, ...args],
-      { env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" } }
-    );
-    return { code: ran.exitCode, out: ran.stdout.toString().trim(), err: ran.stderr.toString() };
-  };
   const committed = (dir: string, text: string, message: string) => {
     writeFileSync(path.join(dir, "greet.ts"), text);
     git(dir, "add", "-A");
