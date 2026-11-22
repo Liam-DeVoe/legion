@@ -1,4 +1,4 @@
-import type { QueryCache } from "@tanstack/react-query";
+import { hashKey, type QueryCache } from "@tanstack/react-query";
 
 import { askProject } from "../features/inbox/list-row";
 import { buildDispatchReference } from "../features/refs/routes";
@@ -30,6 +30,7 @@ import type {
   EventType,
   GraphReferences,
   InboxRow,
+  IssueDetails,
   IssueSummary,
   IssueTreeNode,
   IssueTreeParent,
@@ -507,7 +508,7 @@ const TREE_NODES_MOVED: Readonly<
   // A child added or taken out moves the issue's two halves in a plan view.
   "child.added": ["issue"],
   "child.removed": ["issue"],
-  // No node carries a status, and the child's own write names every ancestor.
+  // No node carries a status.
   "child.status": [],
   // An edit moves the comment's words and its blocks, which a node standing under one names as
   // its parent's first line.
@@ -571,27 +572,27 @@ const TREE_NODES_MOVED: Readonly<
  *  read its nodes: it names `parent` among what it moved - a create under a parent does, since it
  *  names every field the new issue holds a value in - or it does not say what it moved. */
 function mayMoveParent(event: DispatchEvent): boolean {
-  const changed = payloadStrings(event, "changed");
-  return changed === undefined || changed.includes("parent");
+  const changes = issueChanges(event);
+  return changes === undefined || changes.has("parent");
 }
 
 /**
  * The kinds of the issue's nodes an event of the issue can move (`TREE_NODES_MOVED`), or that it
  * moves the nodes it is on (`ON_ITS_TARGET`). A write moves the issue's node where it moved a
  * member of it or a relation out of it (`ISSUE_NODE_FIELDS`), and every kind where it may have
- * moved the parent (`mayMoveParent`), which decides whether a tree reads the issue's nodes at
- * all: the route reads the nodes of the issues under the issue read alone.
+ * moved the parent (`mayMoveParent`'s rule), which decides whether a tree reads the issue's nodes
+ * at all: the route reads the nodes of the issues under the issue read alone.
  */
 function treeNodesMoved(event: DispatchEvent): readonly HeldKind[] | typeof ON_ITS_TARGET {
   const moved = TREE_NODES_MOVED[event.type];
   if (moved !== BY_THE_WRITE) {
     return moved;
   }
-  if (mayMoveParent(event)) {
+  const changes = issueChanges(event);
+  if (changes === undefined || changes.has("parent")) {
     return EVERY_KIND;
   }
-  const changed = payloadStrings(event, "changed") ?? [];
-  return changed.some((field) => ISSUE_NODE_FIELDS.has(field)) ? ["issue"] : [];
+  return [...changes].some((field) => ISSUE_NODE_FIELDS.has(field)) ? ["issue"] : [];
 }
 
 /** A node of a tree read, or the parent a node names: what `treesHolding` judges of either. */
@@ -625,14 +626,19 @@ function blockIdOf(address: string): string {
  * - each document of the issue the ask is written or anchored in (`block_artifact`, `anchor`): a
  *   node that names it as its document (`document`), or whose address is the document's
  *   (`<KEY>/<slug>`, the parent a node of it standing under no block of it names) or one of its
- *   blocks'.
+ *   blocks';
+ * - on a block ask's answer (`ask.answered` naming its `block_id`), every block of the issue: the
+ *   answer brings the ask into a view as the tie of a block of the view it shaped (`readTies`),
+ *   and `shaped` names blocks of the ask's own issue alone, so a view that holds no node of the
+ *   ask yet holds a block of its issue.
  *
- * A plain ask - no block, no anchor - is on no node another issue's answer holds: only an ask's
- * typed block states `shaped`, and no answer holds an ask node of another issue but as a tie, so
- * its event reads nothing of another issue's tree.
+ * A plain ask - no block, no anchor - is on no node another issue's answer holds but a decision
+ * that settles it: only an ask's typed block states `shaped`, and no answer holds an ask node of
+ * another issue but as a tie.
  */
 function onItsTarget(key: string, event: DispatchEvent): (node: HeldNode) => boolean {
   let ask: string | undefined;
+  let answeredBlock = false;
   const blocks: string[] = [];
   const documents: string[] = [];
   const addresses: string[] = [];
@@ -650,6 +656,8 @@ function onItsTarget(key: string, event: DispatchEvent): (node: HeldNode) => boo
     case "ask.resolved": {
       const { anchor, anchor_artifact, block_artifact, block_id, id } = event.payload;
       ask = id;
+      answeredBlock =
+        event.type === "ask.answered" && typeof block_id === "string" && block_id !== "";
       for (const block of [block_id, anchor?.block_id]) {
         if (typeof block === "string" && block !== "") {
           blocks.push(block);
@@ -675,9 +683,10 @@ function onItsTarget(key: string, event: DispatchEvent): (node: HeldNode) => boo
   return (node) =>
     (node.kind === "ask" && node.id === ask) ||
     (ask !== undefined && node.decision?.asks?.includes(ask) === true) ||
+    (answeredBlock && ofIssue(node, key) && node.kind === "block") ||
     (ofIssue(node, key) && blocks.includes(blockIdOf(node.id))) ||
     (node.document !== undefined && documents.includes(node.document.artifact_id)) ||
-    addresses.some((address) => node.id === address || node.id.startsWith(`${address}#`));
+    addresses.some((address) => addressUnder(node.id, address, "#"));
 }
 
 /** The nodes a held tree read or view answers, as its reader holds them; none for a query that
@@ -698,31 +707,34 @@ const DOCUMENT_WRITES: Partial<Record<EventType, true>> = {
  * The issues above issue `key` that the page can place from what `cache` holds (decision 402): a
  * document event carries no `ancestors`, so the chain is read from the page's own reads. An
  * issue's parent is the one its held detail (`["issue", <key>]`) names, else the one a held tree
- * read or view names as the parent of the issue's node, where that parent is an issue's node. The
- * walk goes up from `key` to each parent it finds, and stops at an issue it has passed already.
+ * read or view names as the parent of the issue's node, where that parent is an issue's node;
+ * the trees are read only once a detail names no parent. The walk goes up from `key` to each
+ * parent it finds, and stops at an issue it has passed already.
  */
 function issuesAbove(key: string, cache: QueryCache | undefined): ReadonlySet<string> {
   const above = new Set<string>();
   if (cache === undefined) {
     return above;
   }
-  const placed = new Map<string, string>();
-  for (const query of cache.findAll({ queryKey: ["issue-tree"] })) {
-    for (const node of treeNodesOf(query.state.data)) {
-      if (node.kind === "issue" && node.parent?.kind === "issue" && !placed.has(node.id)) {
-        placed.set(node.id, node.parent.id);
+  let parents: Map<string, string> | undefined;
+  const treeParent = (issue: string): string | undefined => {
+    if (parents === undefined) {
+      parents = new Map();
+      for (const query of cache.findAll({ queryKey: ["issue-tree"] })) {
+        for (const node of treeNodesOf(query.state.data)) {
+          if (node.kind === "issue" && node.parent?.kind === "issue" && !parents.has(node.id)) {
+            parents.set(node.id, node.parent.id);
+          }
+        }
       }
     }
-  }
+    return parents.get(issue);
+  };
   for (let issue = key; ; ) {
-    const detail = cache.find({ exact: true, queryKey: ["issue", issue] })?.state.data;
-    const parent =
-      typeof detail === "object" &&
-      detail !== null &&
-      "parent" in detail &&
-      typeof detail.parent === "string"
-        ? detail.parent
-        : placed.get(issue);
+    const detail = cache.get(hashKey(["issue", issue]))?.state.data as
+      | Partial<Pick<IssueDetails, "parent">>
+      | undefined;
+    const parent = detail?.parent ?? treeParent(issue);
     if (parent === undefined || parent === key || above.has(parent)) {
       return above;
     }
@@ -758,27 +770,28 @@ function treesHolding(key: string, event: DispatchEvent): RefreshTarget | undefi
       ? onItsTarget(key, event)
       : (node: HeldNode) =>
           ofIssue(node, key) && moved.includes(heldKind(node.kind, node.supertag));
-  // The issues above the event's issue, read once for the cache the refresh runs on, and only
-  // for a document event.
-  let chain:
-    | { readonly cache: QueryCache | undefined; readonly above: ReadonlySet<string> }
-    | undefined;
-  const above = (cache: QueryCache | undefined): ReadonlySet<string> => {
-    if (chain === undefined || chain.cache !== cache) {
-      chain = {
-        above: DOCUMENT_WRITES[event.type] === true ? issuesAbove(key, cache) : new Set(),
-        cache,
-      };
+  // The issues above the event's issue, read once, from the cache of the one client the event's
+  // refresh runs on, and only for a document event.
+  let placed: ReadonlySet<string> | undefined;
+  // Whether each answer holds a node the event moves, read once for the event, so the views that
+  // fall back to one outline read its nodes once.
+  const held = new WeakMap<object, boolean>();
+  const holds = (data: unknown, above: ReadonlySet<string>): boolean => {
+    if (typeof data !== "object" || data === null) {
+      return false;
     }
-    return chain.above;
+    let answer = held.get(data);
+    if (answer === undefined) {
+      answer = treeNodesOf(data).some(
+        (node) =>
+          moves(node) ||
+          (node.parent != null && moves(node.parent)) ||
+          (node.kind === "issue" && above.has(node.id))
+      );
+      held.set(data, answer);
+    }
+    return answer;
   };
-  const holds = (data: unknown, placed: ReadonlySet<string>) =>
-    treeNodesOf(data).some(
-      (node) =>
-        moves(node) ||
-        (node.parent != null && moves(node.parent)) ||
-        (node.kind === "issue" && placed.has(node.id))
-    );
   return {
     queryKey: ["issue-tree"],
     // A view (`["issue-tree", key, view]`) holds only the nodes its view takes, so the node an
@@ -788,13 +801,13 @@ function treesHolding(key: string, event: DispatchEvent): RefreshTarget | undefi
     // and where the outline's first read is out: it holds no answer yet that could say it does
     // not.
     when: (data, query, cache) => {
-      const placed = above(cache);
+      placed ??= DOCUMENT_WRITES[event.type] === true ? issuesAbove(key, cache) : new Set();
       if (holds(data, placed)) {
         return true;
       }
       const outline =
         query.queryKey.length > 2
-          ? cache?.find({ exact: true, queryKey: query.queryKey.slice(0, 2) })?.state
+          ? cache?.get(hashKey(query.queryKey.slice(0, 2)))?.state
           : undefined;
       if (outline === undefined) {
         return false;

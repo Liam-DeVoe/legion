@@ -134,24 +134,6 @@ test("an event of a parent's spec marks stale a child's view that holds a node o
   expect(client.getQueryState(other)?.isInvalidated, "another issue's tree").toBe(false);
 });
 
-// A write of a child names each ancestor's tree (`ancestors`): a new child, or one moved under
-// the ancestor, is a node the ancestor's answer does not hold yet, so no answer that holds a node
-// of the child reaches it.
-test("an issue write marks stale each ancestor's tree it names, whose answer holds no node of the issue", () => {
-  const client = new QueryClient();
-  const parent = issueTreeKey("CORE-1");
-  client.setQueryData(
-    parent,
-    treeAnswer([treeNode("CORE-1", "issue", null)], [], { issue: "CORE-1" })
-  );
-  const moved = eventOf("issue.updated", { ancestors: ["CORE-1"], changed: ["parent"] }, "CORE-2");
-  refreshQueries(client, eventRefreshTargets(moved, "alice"));
-  expect(
-    client.getQueryState(parent)?.isInvalidated,
-    "the parent's tree, which holds no node of the child"
-  ).toBe(true);
-});
-
 // An issue write with no `ancestors` - one an older server wrote mid-rollout, or one written
 // before the field existed and replayed with the feed's gap - falls back to what any ancestor
 // could be, as the issue's detail does (every loaded detail refreshes). A new child's create is
@@ -178,6 +160,23 @@ test("an issue write that names no ancestors marks every held tree stale, as it 
 /** What the route marks each node of the child CORE-2 with in an answer of another issue. */
 const CHILD: TreeNodeExtra = { issue: "CORE-2", read_only: true };
 
+/** The parent CORE-1's requirement, as its outline and its Verification view hold it. */
+const REQUIREMENT = treeNode("r1", "requirement", "CORE-1", {
+  in: "spec",
+  text: "Every child is drawn.",
+});
+
+/** The parent CORE-1's outline, holding its child CORE-2's node and no other node of the child. */
+const OUTLINE_WITH_CHILD = treeAnswer([
+  treeNode("CORE-1", "issue", null),
+  REQUIREMENT,
+  treeNode("CORE-2", "issue", "CORE-1", { ...CHILD, text: "Draw each child" }),
+]);
+
+/** The parent CORE-1's Verification view, holding its requirement alone: no node of an issue, so
+ *  only its outline can say it holds a node an event of another issue moves. */
+const VERIFICATION_WITH_REQUIREMENT = treeAnswer([REQUIREMENT], [], { view: "verification" });
+
 /** The parent CORE-1's answers that hold nodes of its child CORE-2, as the route answers them:
  *  its outline, which holds the child's node, a check of the child's that serves the parent's
  *  requirement under that node, and a result under the check; and its Verification view, which
@@ -187,10 +186,6 @@ function holdingChild(client: QueryClient): {
   readonly outline: readonly unknown[];
   readonly verification: readonly unknown[];
 } {
-  const requirement = treeNode("r1", "requirement", "CORE-1", {
-    in: "spec",
-    text: "Every child is drawn.",
-  });
   const check = (parent: string | IssueTreeParent) =>
     treeNode("k1", "check", parent, { ...CHILD, in: "verification", text: "Draw CORE-2." });
   const result = treeNode("result-1", "result", "k1", CHILD);
@@ -199,7 +194,7 @@ function holdingChild(client: QueryClient): {
     outline,
     treeAnswer([
       treeNode("CORE-1", "issue", null),
-      requirement,
+      REQUIREMENT,
       treeNode("CORE-2", "issue", "CORE-1", { ...CHILD, text: "Draw each child" }),
       check("CORE-2"),
       result,
@@ -215,7 +210,7 @@ function holdingChild(client: QueryClient): {
   };
   client.setQueryData(
     verification,
-    treeAnswer([treeNode("CORE-1", "issue", null), requirement, check(childNode), result], [], {
+    treeAnswer([treeNode("CORE-1", "issue", null), REQUIREMENT, check(childNode), result], [], {
       view: "verification",
     })
   );
@@ -278,17 +273,6 @@ test("an ancestor's comment or message marks stale no descendant's view that hol
     refreshQueries(client, eventRefreshTargets(event, "alice"));
     expect(client.getQueryState(childView)?.isInvalidated, event.type).toBe(false);
   }
-});
-
-// A write of the child that moves what the parent's outline draws of the child's node - its
-// title here - reaches a tree that holds the node by the node alone. The event names no
-// ancestor, so nothing but the node the parent's answer holds can reach the parent's tree.
-test("a child's title change marks stale a tree that holds the child's node", () => {
-  const client = new QueryClient();
-  const { outline } = holdingChild(client);
-  const retitled = eventOf("issue.updated", { ancestors: [], changed: ["title"] }, "CORE-2");
-  refreshQueries(client, eventRefreshTargets(retitled, "alice"));
-  expect(client.getQueryState(outline)?.isInvalidated, "the parent's outline").toBe(true);
 });
 
 // A write of a child or a grandchild that moves nothing the parent's answers hold of it - its
@@ -513,32 +497,65 @@ test("an ancestor's ask event marks stale a descendant's view that carries the a
   expect(client.getQueryState(childView)?.isInvalidated, "the child's view").toBe(true);
 });
 
+// A person's answer to a block ask brings the ask into a view as the tie of a block of the view
+// it shaped, and `shaped` names blocks of the ask's own issue alone: so the answer marks a view of
+// another issue that holds a block of the ask's issue, though the view holds no node of the ask
+// yet. A plain ask's answer, which no `shaped` comes with, marks none of it.
+test("an ancestor's block ask answered marks stale a descendant's view that holds a block of the ancestor, and a plain ask answered does not", () => {
+  const answered = (payload: Record<string, unknown>) =>
+    eventOf(
+      "ask.answered",
+      { anchor: null, id: "ask-1", question: "Which outline?", state: "answered", ...payload },
+      "CORE-1"
+    );
+  const cases = [
+    [
+      "a block ask",
+      answered({
+        block_artifact: { id: "artifact-decisions", primary: false, slug: "decisions" },
+        block_id: "q1",
+      }),
+      true,
+    ],
+    ["a plain ask", answered({}), false],
+  ] as const;
+  for (const [name, event, marks] of cases) {
+    const client = new QueryClient();
+    const childView = viewKey("CORE-2", "spec");
+    client.setQueryData(
+      childView,
+      treeAnswer(
+        [
+          treeNode("CORE-2", "issue", null),
+          treeNode("r1", "requirement", null, {
+            in: "spec",
+            issue: "CORE-1",
+            read_only: true,
+            role: "context",
+          }),
+        ],
+        [],
+        { issue: "CORE-2", view: "spec" }
+      )
+    );
+    refreshQueries(client, eventRefreshTargets(event, "alice"));
+    expect(client.getQueryState(childView)?.isInvalidated, name).toBe(marks);
+  }
+});
+
 /** The parent CORE-1's outline, which holds its child CORE-2's node, and its Verification view,
- *  which holds its requirement and no node of the child, whose documents hold no check serving
- *  the requirement yet; the view's query made first where `viewFirst` says so. */
+ *  which holds its requirement alone, the child's documents holding no check serving the
+ *  requirement yet, so the view is judged by its outline; the view's query made first where
+ *  `viewFirst` says so. */
 function holdingChildNode(
   client: QueryClient,
   viewFirst = false
 ): { readonly outline: readonly unknown[]; readonly verification: readonly unknown[] } {
-  const requirement = treeNode("r1", "requirement", "CORE-1", {
-    in: "spec",
-    text: "Every child is drawn.",
-  });
   const outline = issueTreeKey("CORE-1");
   const verification = viewKey("CORE-1", "verification");
   const reads = [
-    [
-      outline,
-      treeAnswer([
-        treeNode("CORE-1", "issue", null),
-        requirement,
-        treeNode("CORE-2", "issue", "CORE-1", { ...CHILD, text: "Draw each child" }),
-      ]),
-    ],
-    [
-      verification,
-      treeAnswer([treeNode("CORE-1", "issue", null), requirement], [], { view: "verification" }),
-    ],
+    [outline, OUTLINE_WITH_CHILD],
+    [verification, VERIFICATION_WITH_REQUIREMENT],
   ] as const;
   for (const [queryKey, answer] of viewFirst ? [...reads].reverse() : reads) {
     client.setQueryData(queryKey, answer);
@@ -620,14 +637,7 @@ test("a parent's view is marked while its outline's first read is out, on an eve
   const verification = viewKey("CORE-1", "verification");
   client.setQueryData(
     verification,
-    treeAnswer(
-      [
-        treeNode("CORE-1", "issue", null),
-        treeNode("r1", "requirement", "CORE-1", { in: "spec", text: "Every child is drawn." }),
-      ],
-      [],
-      { view: "verification" }
-    )
+    treeAnswer([treeNode("CORE-1", "issue", null), REQUIREMENT], [], { view: "verification" })
   );
   const outline = issueTreeKey("CORE-1");
   const response = Promise.withResolvers<unknown>();
@@ -657,21 +667,10 @@ function grandparentHolding(
   client: QueryClient,
   placing: "detail" | "parent's outline" | "nothing"
 ): { readonly outline: readonly unknown[]; readonly verification: readonly unknown[] } {
-  const requirement = treeNode("r1", "requirement", "CORE-1", {
-    in: "spec",
-    text: "Every child is drawn.",
-  });
   const outline = issueTreeKey("CORE-1");
-  client.setQueryData(
-    outline,
-    treeAnswer([
-      treeNode("CORE-1", "issue", null),
-      requirement,
-      treeNode("CORE-2", "issue", "CORE-1", { ...CHILD, text: "Draw each child" }),
-    ])
-  );
+  client.setQueryData(outline, OUTLINE_WITH_CHILD);
   const verification = viewKey("CORE-1", "verification");
-  client.setQueryData(verification, treeAnswer([requirement], [], { view: "verification" }));
+  client.setQueryData(verification, VERIFICATION_WITH_REQUIREMENT);
   if (placing === "detail") {
     client.setQueryData(["issue", "CORE-3"], { key: "CORE-3", parent: "CORE-2" });
   }

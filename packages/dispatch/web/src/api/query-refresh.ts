@@ -46,8 +46,6 @@ export const MIN_REFETCH_INTERVAL_MS = 1_000;
  * out - a first load or a refetch - it runs on the response that lands, not on the data that
  * response replaces, which is then fetched again if `when` accepts it; a body composed after the
  * event is not.
- * Beside the query a check is handed the query cache of the client the refresh runs on, whenever
- * it runs, so it can judge a query by another query's answer in that cache as well.
  */
 export interface RefreshTarget {
   readonly queryKey: QueryKey;
