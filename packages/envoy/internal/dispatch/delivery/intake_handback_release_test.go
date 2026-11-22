@@ -738,14 +738,16 @@ func logReconnects(t *testing.T, holder, standby *bus.Client) {
 }
 
 // handBackRefused reports whether records hold the end of a hand-back publish of delivery that
-// nats.go refused with refusal (traceHandBackPublished with that error), as it refuses one whose
-// connection had closed (natsgo.ErrConnectionClosed) or one while the connection reconnects
-// (natsgo.ErrReconnectBufExceeded): nats.go refuses it before it queues a byte, so the publish is
-// not counted (intakeDelivery.endPublish).
-func handBackRefused(records []map[string]any, delivery *intakeDelivery, refusal error) bool {
+// nats.go refused with one of refusals (traceHandBackPublished with that error), as it refuses one
+// whose connection had closed (natsgo.ErrConnectionClosed) or one while the connection reconnects
+// (natsgo.ErrReconnectBufExceeded), each of publishRefusals: nats.go refuses it before it queues a
+// byte, so the publish is not counted (intakeDelivery.endPublish).
+func handBackRefused(records []map[string]any, delivery *intakeDelivery, refusals ...error) bool {
 	_, found := logtest.LineWhere(records, func(record map[string]any) bool {
-		return record["msg"] == traceHandBackPublished && record["delivery"] == tracePointer(delivery) &&
-			record["error"] == refusal.Error()
+		if record["msg"] != traceHandBackPublished || record["delivery"] != tracePointer(delivery) {
+			return false
+		}
+		return slices.ContainsFunc(refusals, func(refusal error) bool { return record["error"] == refusal.Error() })
 	})
 	return found
 }
@@ -792,9 +794,11 @@ func handBackRefused(records []map[string]any, delivery *intakeDelivery, refusal
 //     hand-back does not reach the server after the standby creates the durable;
 //   - a pending hand-back at shutdown whose link stays frozen past the close: the same stop with
 //     the production window and the production write deadline, and the link never moves. The
-//     finalizer leaves the hold to lapse, or releases it when the close took nats.go's lock before
-//     the held -NAK, and the standby takes the durable over within closeLockWait + intakeHoldTTL +
-//     durableBindInterval of the close's start (its own comment);
+//     finalizer leaves the hold to lapse, or releases it when nats.go refused the held -NAK before
+//     it queued a byte, as closed when the close took nats.go's lock first, or with no reconnect
+//     buffer once the write deadline had ended the frozen write, and the standby takes the durable
+//     over within closeLockWait + intakeHoldTTL + durableBindInterval of the close's start (its own
+//     comment);
 //   - a hand-back the callback takes during the drain (landingBudget): the callback of the second
 //     message runs once the stop has handed back what it held, and hands the message back itself.
 //     Its publish is held until the link moves. The stop's drain loop gives up while the write is
@@ -998,13 +1002,15 @@ func TestAHandBackLeftRunningLandsBeforeTheStandbyTakesOver(t *testing.T) {
 	//
 	// Which end the finalizer takes depends on an order the subtest does not force, so it reads which
 	// one happened and requires that case's own outcome:
-	//   - the held -NAK took nats.go's lock before the close, so its publish ended and was counted:
-	//     no flush on the open connection can confirm it, and the finalizer leaves the hold to lapse
+	//   - nats.go queued the held -NAK before the close, so its publish ended and was counted: no
+	//     flush on the open connection can confirm it, and the finalizer leaves the hold to lapse
 	//     (finalizerLapse), with the hold's row still naming the holder once StartIntakes' stop has
 	//     returned, and the standby's take of the hold after that row's expiry;
-	//   - the close took the lock first, so nats.go refused the -NAK as closed before it queued a
-	//     byte (handBackRefused): nothing published is unconfirmed, and the finalizer
-	//     releases the hold (finalizerReleased). The message stays with the durable for the standby.
+	//   - nats.go refused the -NAK before it queued a byte (handBackRefused, publishRefusals): as
+	//     closed when the close took the lock first, or with no reconnect buffer once the write
+	//     deadline had ended the frozen write and nats.go was reconnecting. Nothing published is
+	//     unconfirmed, and the finalizer releases the hold (finalizerReleased). The message stays
+	//     with the durable for the standby.
 	//
 	// Either way it requires the standby's take-over within closeLockWait + intakeHoldTTL +
 	// durableBindInterval of the close's start (intakeFinalizerConfirmWait), with
@@ -1049,11 +1055,11 @@ func TestAHandBackLeftRunningLandsBeforeTheStandbyTakesOver(t *testing.T) {
 		if !closing || !ended {
 			t.Fatalf("control: the trace holds no start of the holder's close (%t) or no end of its finalizer (%t)", closing, ended)
 		}
-		refused := handBackRefused(records, row.delivery, natsgo.ErrConnectionClosed)
+		refused := handBackRefused(records, row.delivery, publishRefusals...)
 		outcome := finalizerOutcome(records, row.delivery)
 		switch {
 		case refused && outcome != finalizerReleased:
-			t.Fatalf("the finalizer's outcome is %q, want %q: nats.go refused the held -NAK as closed, so nothing published was left unconfirmed", outcome, finalizerReleased)
+			t.Fatalf("the finalizer's outcome is %q, want %q: nats.go refused the held -NAK before it queued a byte (as closed, or with no reconnect buffer), so nothing published was left unconfirmed", outcome, finalizerReleased)
 		case refused && heldBy == row.holder.intake.holder.String():
 			t.Fatalf("once StartIntakes' stop had returned, the hold's row still named the holder %s, whose finalizer released it", heldBy)
 		case !refused && outcome != finalizerLapse:
@@ -1247,6 +1253,115 @@ func TestAHandBackLeftRunningLandsBeforeTheStandbyTakesOver(t *testing.T) {
 		t.Logf("TAKEOVER the standby took the hold %s after the holder's client closed and %s after the expiry of the row the holder left to lapse, and created the durable %s after the close",
 			takeOver.seenAt.Sub(closedAt).Round(time.Millisecond), takeOver.takenAt.Sub(expiry).Round(time.Millisecond), createdAt.Sub(closedAt).Round(time.Millisecond))
 	})
+}
+
+// slowFlushHold is how long the slow-flush row's link keeps the holder's -NAK from the server,
+// counted from the end of the hand-back's publish: more than intakeFlushWait, so the stop's first
+// flush, which begins as the publish ends, cannot answer, and far less than landingBudget, so a
+// later flush can answer long before the stop's deadline.
+const slowFlushHold = 2500 * time.Millisecond
+
+// A stop whose first flush does not answer within intakeFlushWait flushes again, and releases its
+// hold once a flush answers before its deadline. It does not leave the hold to a finalizer while
+// most of its deadline is left.
+//
+// The row stops a holder whose stop hands a message back, with the hand-back's publish held behind
+// a write on the holder's link (stopWithAHeldHandBack, stopsHandBack, landingBudget). The stop goes
+// on without the publish (its log line), and the row sees it wait for its hand-back with its hold
+// live (handBacksWaiting). The link then keeps each chunk with the holder's -NAK from the server
+// (HoldChunks, carriesNAK), and the row thaws the write. So the publish ends, but no flush of the
+// holder's connection can answer: its PING waits behind the -NAK. The link lets the -NAK go
+// slowFlushHold after the publish ended. The row requires:
+//   - as a control, that the stop's first flush did not answer: the stop's first settle read
+//     (traceHandBacksSettled) is a flush that failed. A run whose first flush answered fails as a
+//     control, since it reads nothing of a slow first flush;
+//   - that the stop logs no intakeHoldFinalizing line before its deadline, and starts no finalizer
+//     (traceFinalizerStarts). A stop that logs that line only after its deadline fails as a premise
+//     not met, naming the budget;
+//   - that the hold is released by the time the stop returns;
+//   - that the hand-back reached the server before the standby created the durable.
+//
+// Control: with e10b6866's stop_finalize.go, whose stop makes one flush and answers
+// handBacksUnconfirmed when that flush does not answer within intakeFlushWait, the row fails at the
+// intakeHoldFinalizing check: the stop logs that line about 1 s after the publish ended, with most
+// of its deadline left, and leaves its hold to a finalizer.
+func TestAStopWhoseFirstFlushIsSlowReleasesItsHoldBeforeItsDeadline(t *testing.T) {
+	logs := captureLogs(t)
+	// The stop runs the hook on its own goroutine, so the hook only closes waiting. The hook is
+	// stored before stopWithAHeldHandBack starts the stop, so the stop finds it in handBacksReached.
+	waiting := make(chan struct{})
+	var signal sync.Once
+	hook := func() { signal.Do(func() { close(waiting) }) }
+	handBacksWaiting.Store(&hook)
+	t.Cleanup(func() { handBacksWaiting.Store(nil) })
+	// The stop begins inside stopWithAHeldHandBack, so its deadline comes later than landingBudget
+	// after this moment.
+	began := time.Now()
+	row := stopWithAHeldHandBack(t, landingBudget, stopsHandBack)
+	waitFor(t, untilTheBinaryDeadline(t), func() bool { return loggedMessage(logs(), callLeftRunning) }, func() string {
+		return "control: the stop never went on without the held hand-back's publish: " + consumerState(row.publisher)
+	})
+	waitFor(t, untilTheBinaryDeadline(t), func() bool {
+		select {
+		case <-waiting:
+			return true
+		default:
+			return !holderHolds(t, row.pool, row.holder)
+		}
+	}, func() string {
+		return "the stop neither started to wait for its hand-back nor released its hold once it went on without the publish: " + consumerState(row.publisher)
+	})
+	if !holderHolds(t, row.pool, row.holder) {
+		t.Fatalf("the stop released its hold before its hand-back reached the server, so a standby could recreate the durable first; the holder logged %q", loggedMessages(logs()))
+	}
+	letGo := make(chan struct{})
+	row.link.HoldChunks(t, carriesNAK(), letGo)
+	row.thaw()
+	var published time.Time
+	waitFor(t, untilTheBinaryDeadline(t), func() bool {
+		var ended bool
+		published, ended = tracedAt(logs(), traceHandBackPublished, row.holder.client)
+		return ended
+	}, func() string {
+		return "control: the hand-back's publish did not end once the write thawed: " + consumerState(row.publisher)
+	})
+	// The row's one wait on a time of its own: the link keeps the -NAK until slowFlushHold after
+	// the publish ended.
+	time.Sleep(time.Until(published.Add(slowFlushHold)))
+	close(letGo)
+	select {
+	case <-row.stopped:
+	case <-time.After(untilTheBinaryDeadline(t)):
+		t.Fatal("the holder's stop did not return once the link let the -NAK go")
+	}
+	records := logs()
+	first, read := logtest.LineWhere(records, func(record map[string]any) bool {
+		return record["msg"] == traceHandBacksSettled && record["client"] == tracePointer(row.holder.client)
+	})
+	switch {
+	case !read:
+		t.Fatalf("control: the stop made no read of whether its hand-backs reached NATS; the holder logged %q", loggedMessages(records))
+	case first["settled"] == true:
+		t.Fatalf("control: the stop's first flush answered (%v), so this run reads nothing of a first flush that does not answer within intakeFlushWait (%s)", first, intakeFlushWait)
+	case first["reason"] != settledByFlush || first["in_doubt"] == true:
+		t.Fatalf("control: the stop's first read of its hand-backs is not a flush that did not answer: %v", first)
+	}
+	if at, logged := loggedAt(records, intakeHoldFinalizing); logged {
+		if deadline := began.Add(landingBudget); at.Before(deadline) {
+			t.Fatalf("the stop logged %q %s after its hand-back's publish ended, at least %s before its deadline (landingBudget, %s): its first flush did not answer within intakeFlushWait (%s), and the stop left its hold to a finalizer rather than flush again; the holder logged %q",
+				intakeHoldFinalizing, at.Sub(published).Round(time.Millisecond), deadline.Sub(at).Round(time.Millisecond), landingBudget, intakeFlushWait, loggedMessages(records))
+		}
+		t.Fatalf("control: the premise did not hold: the stop's deadline (landingBudget, %s) passed before a flush answered, so this run reads nothing of a flush that answers before it; the holder logged %q", landingBudget, loggedMessages(records))
+	}
+	if _, started := logtest.LineWhere(records, func(record map[string]any) bool {
+		return record["msg"] == traceFinalizerStarts && record["delivery"] == tracePointer(row.delivery)
+	}); started {
+		t.Fatal("the stop started a hand-back finalizer although a flush answered before its deadline")
+	}
+	if holderHolds(t, row.pool, row.holder) {
+		t.Fatalf("the stop kept its hold although a flush confirmed its hand-back before its deadline, which costs the standby the lapse; the holder logged %q", loggedMessages(records))
+	}
+	requireHandBackBeforeCreation(t, row.recorded, row.from, row.publisher, row.sequences)
 }
 
 // A hand-back published on one connection of the intake's client is not confirmed by a flush of

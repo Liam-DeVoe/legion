@@ -187,12 +187,13 @@ func (t *bindThrottle) reportStandby(name, message string) {
 //     and did not handle. Once a flush of its connection, begun after each hand-back's publish
 //     ended, has answered, every hand-back has reached the server, and it releases the hold
 //     (stop): a standby takes over at once and is redelivered those messages within seconds rather
-//     than after the ack wait. A stop with a hand-back still pending, or whose flush cannot
-//     confirm the hand-backs reached the server, keeps the hold renewing until a flush does, and
-//     releases it only then (finalizeHandBacks). When the socket a published hand-back went out
-//     on goes before a flush on it confirms the hand-back -- the client closes, or its connection
-//     reconnects -- that hand-back may still be on its way to the server, so the hold is not
-//     released: it stops renewing and lapses at its row's expiry (duty.Hold.Abandon).
+//     than after the ack wait. A stop with a hand-back still pending at its deadline, or whose
+//     flushes, one at a time, have not confirmed by then that the hand-backs reached the server,
+//     keeps the hold renewing until a flush does, and releases it only then (finalizeHandBacks).
+//     When the socket a published hand-back went out on goes before a flush on it confirms the
+//     hand-back -- the client closes, or its connection reconnects -- that hand-back may still be
+//     on its way to the server, so the hold is not released: it stops renewing and lapses at its
+//     row's expiry (duty.Hold.Abandon).
 //
 // The run loop owns hold, recorded and subject; mu guards delivering, which StopDelivering reads
 // from any goroutine.

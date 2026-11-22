@@ -9,7 +9,6 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 
-	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 )
 
@@ -30,13 +29,14 @@ import (
 //     it confirmed the hand-back, so it may still be on its way to the server, and no later flush
 //     can tell. It leaves the hold to lapse at its expiry at once (abandonHold), as a finalizer
 //     that reads the same does, and starts no finalizer.
-//   - handBacksUnconfirmed: a hand-back is still pending when the stop's context ends, or a flush
-//     that can still confirm it has not answered. That does not keep Run past the context, and does
-//     not give the hold up either: the hold keeps renewing on a goroutine of its own
-//     (finalizeHandBacks) until that hand-back lands and a flush confirms it, and is released only
-//     then. It logs intakeHoldFinalizing. The finalizer starts here, and the caller that closes the
-//     client waits up to intakeFinalizerConfirmWait from that start before the close
-//     (stopDurables).
+//   - handBacksUnconfirmed: a hand-back is still pending when the stop's context ends, or no flush
+//     that can still confirm it has answered by then: the stop runs one flush at a time and waits
+//     for its answer up to intakeFlushWait at a time (handBacksReached). That does not keep Run
+//     past the context, but for that last wait, and does not give the hold up either: the hold
+//     keeps renewing on a goroutine of its own (finalizeHandBacks) until that hand-back lands and a
+//     flush confirms it, and is released only then. It logs intakeHoldFinalizing. The finalizer
+//     starts here, and the caller that closes the client waits up to intakeFinalizerConfirmWait
+//     from that start before the close (stopDurables).
 //
 // The hold is kept while a hand-back may still reach the server because a hand-back is a publish
 // at the message's reply subject, which names the durable rather than the consumer: one that
@@ -83,9 +83,11 @@ func (d *heldDurable) stop(ctx context.Context) {
 }
 
 // intakeHoldFinalizing is the line of a stop whose hand-back is unconfirmed at its deadline
-// (handBacksUnconfirmed): still pending, or with no answer yet from a flush that can still confirm
-// it. Its hold stays renewing until a flush confirms the hand-back (stop, finalizeHandBacks). A stop
-// whose hand-back is in doubt logs intakeHoldLeftToLapse instead.
+// (handBacksUnconfirmed): still pending, or with no answer by then from any flush that can still
+// confirm it. A flush that does not answer is followed by another until the deadline, one at a
+// time (handBacksReached), so a stop logs this line only once its deadline has passed. Its hold
+// stays renewing until a flush confirms the hand-back (stop, finalizeHandBacks). A stop whose
+// hand-back is in doubt logs intakeHoldLeftToLapse instead.
 const intakeHoldFinalizing = "dispatch delivery: a hand-back has not reached NATS by the stop's deadline, so the intake's hold stays renewing until it does"
 
 // finalizeHandBacks keeps hold renewing while a hand-back of the stopped delivery is pending, and
@@ -222,10 +224,22 @@ func (d *heldDurable) releaseHold(hold *duty.Hold, lapse bool) {
 // message the client had buffered, after the drain loop gave up and unsubscribed. Once the delivery
 // is sealed, no publish of it ends any more, so its record (handBackRecord.publishRecord) can only
 // gain confirmations. With a published hand-back unconfirmed, the connection is flushed, a round
-// trip to the server, so the hand-backs nats.go had queued have reached it once the flush answers
-// (flushHandBacks); with none, the record is read at once, with no flush and no bound
-// (handBacksSettled). The hook handBacksWaiting, when a test sets one, runs each time the stop
-// waits for a hand-back to settle, and before the flush. A stop with no delivery reads
+// trip to the server, so the hand-backs nats.go had queued have reached it once a flush answers
+// (flushHandBacks). It runs one flush at a time, as the finalizer does, and waits for its answer up
+// to intakeFlushWait at a time. A confirmed or in-doubt answer is its answer at once. After an
+// unconfirmed answer it starts the next flush at the next tick of intakeFlushWait. A flush that
+// has not answered within the wait stays in flight, and no other starts while it does, so a stop
+// that waits behind nats.go's connection lock has one flush waiting for it. It makes at least one
+// flush once the delivery is sealed, even when the seal comes after ctx has ended, as it does for
+// the hand-back of a handler the stop gave up at its deadline, and starts no other flush once ctx
+// has ended: it answers handBacksUnconfirmed after the wait in which it finds ctx ended, and leaves
+// a flush still in flight to end on its own. So a link that answers later than one flush's bound,
+// but before the deadline, still lets the stop answer before its deadline, and the stop's last
+// wait for a flush begins before ctx ends, or at the seal when that comes later, and lasts at most
+// intakeFlushWait (intakeFinalizerConfirmWait). It answers handBacksUnconfirmed at once when hold
+// is lost. With no published hand-back unconfirmed, the record is read at once, with no flush and
+// no bound (handBacksSettled). The hook handBacksWaiting, when a test sets one, runs each time the
+// stop waits for a hand-back to settle, and before each flush. A stop with no delivery reads
 // handBacksConfirmed.
 func (d *heldDurable) handBacksReached(ctx context.Context, delivery *intakeDelivery, hold *duty.Hold) handBacksState {
 	if delivery == nil {
@@ -241,10 +255,42 @@ func (d *heldDurable) handBacksReached(ctx context.Context, delivery *intakeDeli
 	if !delivery.handBacks.publishRecord().unconfirmed() {
 		return d.handBacksSettled(delivery)
 	}
-	if waiting != nil {
-		waiting()
+	retry := time.NewTicker(intakeFlushWait)
+	defer retry.Stop()
+	var answer <-chan handBacksState
+	for {
+		if answer == nil {
+			if waiting != nil {
+				waiting()
+			}
+			answer = d.flushHandBacks(delivery)
+		}
+		select {
+		case state := <-answer:
+			if state != handBacksUnconfirmed {
+				return state
+			}
+			answer = nil
+		case <-time.After(intakeFlushWait):
+		case <-hold.Lost():
+			return handBacksUnconfirmed
+		}
+		if ctx.Err() != nil {
+			return handBacksUnconfirmed
+		}
+		select {
+		case <-retry.C:
+		case <-ctx.Done():
+		case <-hold.Lost():
+		}
+		select {
+		case <-ctx.Done():
+			return handBacksUnconfirmed
+		case <-hold.Lost():
+			return handBacksUnconfirmed
+		default:
+		}
 	}
-	return d.flushHandBacks(delivery)
 }
 
 // sealLanded seals delivery (intakeDelivery.seal) once no hand-back of it is taken and not
@@ -275,25 +321,22 @@ func sealLanded(delivery *intakeDelivery, hold *duty.Hold, done <-chan struct{},
 }
 
 // handBacksWaiting is nil outside the release rows. A stop runs it each time it waits for a
-// hand-back its delivery took and has not settled, and before the flush when its delivery has a
+// hand-back its delivery took and has not settled, and before each flush when its delivery has a
 // published hand-back unconfirmed (handBacksReached), so a row sees that the stop waits for its
 // hand-backs with its hold live, or acts at that moment. A row that sets it runs its own steps
 // once (sync.Once), since the stop can run it more than once.
 var handBacksWaiting atomic.Pointer[func()]
 
-// flushHandBacks is handBacksSettled's answer for delivery within intakeFlushWait, on a bound of
-// its own as the release that follows it is: both are part of what follows the stop's deadline
-// (intakeStopBudget), and a healthy link answers the flush in a round trip. A read that has not
-// answered by then is handBacksUnconfirmed: its flush can still confirm the hand-backs, which the
-// stop's finalizer reads again.
-func (d *heldDurable) flushHandBacks(delivery *intakeDelivery) handBacksState {
-	flushing, cancel := context.WithTimeout(context.Background(), intakeFlushWait)
-	defer cancel()
-	state, answered, _ := bus.Bounded(flushing, func() (handBacksState, error) { return d.handBacksSettled(delivery), nil })
-	if !answered {
-		return handBacksUnconfirmed
-	}
-	return state
+// flushHandBacks starts one read of handBacksSettled for delivery on a goroutine of its own, and
+// returns the channel its answer arrives on, which holds that one answer. The read waits for
+// nats.go's connection lock with no bound of its own, and its flush then waits up to
+// intakeFlushWait for the server's answer (handBackPublishes.settle). A stop that returns before
+// the read answers leaves it to end on its own (handBacksReached): its answer goes to the channel,
+// which nothing reads, and the stop's finalizer can still confirm the hand-backs.
+func (d *heldDurable) flushHandBacks(delivery *intakeDelivery) <-chan handBacksState {
+	answer := make(chan handBacksState, 1)
+	go func() { answer <- d.handBacksSettled(delivery) }()
+	return answer
 }
 
 // handBacksSettled reads whether a hand-back of delivery that nats.go had queued can reach the
@@ -380,11 +423,11 @@ const intakeFlushWait = time.Second
 // them names this.
 //
 // A finalizer starts at the stop's deadline, intakeStopBudget (15 s) after the signal, or up to
-// intakeFlushWait (1 s) after it, since the stop's last flush (flushHandBacks) can begin just
-// before the deadline. Its hand-back lands once nats.go lets its connection lock go; one flush then
-// confirms it in a round trip, at most intakeFlushWait, tried again each intakeFlushWait. So within
-// 5 s, a hand-back that lands up to about 4 s after the finalizer's start still has a flush
-// answered on the open connection.
+// intakeFlushWait (1 s) after it, since the stop's last wait for a flush (handBacksReached) can
+// begin just before the deadline. Its hand-back lands once nats.go lets its connection lock go; one
+// flush then confirms it in a round trip, at most intakeFlushWait, tried again each
+// intakeFlushWait. So within 5 s, a hand-back that lands up to about 4 s after the finalizer's
+// start still has a flush answered on the open connection.
 //
 // Then the client closes (stopDurables). The close waits for nats.go's connection lock, while the
 // finalizer keeps the hold renewing. On a link that moves, it takes the lock at once. A write to a

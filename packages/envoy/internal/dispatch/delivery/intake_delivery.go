@@ -158,7 +158,7 @@ func subscribeDurable(client *bus.Client, wanted natsgo.ConsumerConfig, deliverS
 // what follows the deadline -- the handlers given up returning, which they do as soon as their
 // context is cancelled, the negative acknowledgements and the unsubscribe, each waiting for NATS at
 // most bus.ConnLockWait, the drain's end, which the given-up handlers' cancelled context cuts short,
-// and the clients closing. The flush that confirms the hand-backs (up to intakeFlushWait, 1 s)
+// and the clients closing. The stop's last flush wait (up to intakeFlushWait past the deadline)
 // and the hold's release (up to intakeHoldRenew, 5 s) run before Run returns. A hand-back still
 // pending at the deadline is left to its finalizer (heldDurable.finalizeHandBacks): the stop of the
 // process closes the intake's client only once the finalizer has ended or has had
