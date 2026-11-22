@@ -212,11 +212,11 @@ func boundText(bound time.Duration) string {
 // to wake it.
 //
 // How the current look ended does not matter: a report of it counts while the check is open,
-// however that look ended — its bound came due, a hold of the operator's, the controller's or an
-// architect's met its start, or the checking role's claim failed in it (the phase-workflow spec's
-// rule R12). The checking agent drove the change in production and its answer is the fact;
-// refusing it threw that away and left the check to close as not run. A report refused here
-// leaves its event unmarked, so the agent's next send of it applies (intake's ApplyFact).
+// however that look ended — its bound came due, a hold of the operator's or the controller's met
+// its start, or the checking role's claim failed in it (the phase-workflow spec's rule R12). The
+// checking agent drove the change in production and its answer is the fact; refusing it threw that
+// away and left the check to close as not run. A report refused here leaves its event unmarked, so
+// the agent's next send of it applies (intake's ApplyFact).
 func (e *Engine) checkReported(ctx context.Context, tx pgx.Tx, fact intake.CheckReport) (intake.Result, error) {
 	check, err := e.store.ProductionCheck(ctx, tx, fact.Issue)
 	if err != nil {
