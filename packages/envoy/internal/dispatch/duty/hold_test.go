@@ -3,6 +3,7 @@ package duty_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"slices"
 	"strings"
@@ -142,15 +143,17 @@ type lapsingHold struct {
 // past the lapse proves nothing about a live hold: one that took the hold is a lawful take-over,
 // and the standby lets the name go again; one refused with Expiry reading no time left may have
 // come either side of the lapse. Either way the setup is made again, with a new first holder, until
-// a try comes while the hold is live. A try that took the hold before the lapse, read on the
-// database's clock as the moment its own take ran (its expiry less the TTL), fails the test.
+// a try comes while the hold is live; the wait's reading is what the last try saw, so a wait that
+// gives up names it. A try that took the hold before the lapse, read on the database's clock as the
+// moment its own take ran (its expiry less the TTL), fails the test.
 func newLapsingHold(t *testing.T) *lapsingHold {
 	t.Helper()
 	database := storetest.Open(t)
 	opts := duty.HoldOptions{TTL: 2 * time.Second, Renew: 300 * time.Millisecond, Margin: time.Second}
 	ctx := context.Background()
 	standby := uuid.New()
-	return testwait.Until(t, "a try of the standby's to come while the first holder's hold is live on the database's clock", func() (*lapsingHold, bool) {
+	var lapsing *lapsingHold
+	testwait.Until(t, "a try of the standby's to come while the first holder's hold is live on the database's clock", func() (string, bool) {
 		dying := storetest.SecondProcess(t, database)
 		first, err := duty.TryHold(ctx, dying.Pool, holdName, uuid.New(), opts)
 		if err != nil || first == nil {
@@ -166,23 +169,26 @@ func newLapsingHold(t *testing.T) *lapsingHold {
 		}
 		if tried != nil {
 			_, _, expiresAt := holdRow(t, database.Pool)
-			if took := expiresAt.Add(-opts.TTL); took.Before(lapse) {
+			took := expiresAt.Add(-opts.TTL)
+			if took.Before(lapse) {
 				t.Fatalf("the standby took the hold %s before the lapse on the database's clock", lapse.Sub(took))
 			}
 			if err := tried.Release(ctx); err != nil {
 				t.Fatalf("release the hold the standby took once the machine held its try past the lapse: %v", err)
 			}
-			return nil, false
+			return fmt.Sprintf("the standby took the hold %s after the lapse", took.Sub(lapse)), false
 		}
 		remaining, held, err := duty.Expiry(ctx, database.Pool, holdName)
 		if err != nil || !held {
 			t.Fatalf("Expiry once the standby was refused: held %v, error %v; want the name still held", held, err)
 		}
 		if remaining <= 0 {
-			return nil, false
+			return fmt.Sprintf("refused; Expiry read %s left (held %v)", remaining, held), false
 		}
-		return &lapsingHold{database: database, opts: opts, first: first, lapse: lapse, standby: standby}, true
+		lapsing = &lapsingHold{database: database, opts: opts, first: first, lapse: lapse, standby: standby}
+		return fmt.Sprintf("refused; Expiry read %s left (held %v)", remaining, held), true
 	})
+	return lapsing
 }
 
 // takenBy checks that the row names the standby, whose hold taken is, and that the first holder

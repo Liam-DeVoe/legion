@@ -1780,16 +1780,22 @@ func TestAClaimLeftByAnotherProcessIsTakenWhenItLapses(t *testing.T) {
 	waits := &scanWaits{clock: &scanClock{Fake: fake}}
 	runQueue(t, Deps{Store: database, Embedder: newSyncEmbedder(configuredIdentity), Clock: waits.clock, scanWaiting: waits.report})
 	reached := databasePassed(t, database)
-	embeddedAt := testwait.Until(t, "CLAM-1 embedded", func() (time.Time, bool) {
+	var embeddedAt time.Time
+	testwait.Until(t, "CLAM-1 embedded", func() (string, bool) {
 		var at *time.Time
 		if err := database.Pool.QueryRow(ctx, `select embedded_at from embeddings where id = 'CLAM-1'`).Scan(&at); err != nil {
 			t.Fatalf("read embedded_at: %v", err)
 		}
 		if at == nil {
 			waits.moveToArmed(fake, reached)
-			return time.Time{}, false
+			seen := waits.all()
+			if len(seen) == 0 {
+				return "not embedded; the scan loop has reported no wait", false
+			}
+			return fmt.Sprintf("not embedded; the scan loop's latest wait %+v of %d, armed on its clock %v", seen[len(seen)-1], len(seen), fake.Armed()), false
 		}
-		return *at, true
+		embeddedAt = *at
+		return "embedded at " + at.String(), true
 	})
 	if embeddedAt.Before(lapses) {
 		t.Errorf("CLAM-1 embedded at %v, before its claim lapsed at %v", embeddedAt, lapses)

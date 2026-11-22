@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"slices"
 	"strings"
@@ -25,6 +26,12 @@ import (
 // owner_lock_legacy_registration's lock_timeout, which every run reads off the function itself
 // (registrationLockTimeout), spelled again here for the timing lane's reading of the refusal.
 const registrationGateBound = 5 * time.Second
+
+// pastRegistrationBound is how far past registrationGateBound the row requires a dashboard
+// publish to be still waiting for the gate, on the database's clock: room for the statement's
+// start before its trigger asks for the gate, and for a bound of the publish's own at the
+// registration's 5 seconds to have ended its wait by then.
+const pastRegistrationBound = time.Second
 
 // registrationLockTimeout is the setting owner_lock_legacy_registration runs under (pg_proc's
 // proconfig), as Postgres holds it: what bounds the registration's wait, and the one place the
@@ -50,7 +57,11 @@ func registrationLockTimeout(t *testing.T, s *Store) []string {
 // transaction as long as the publish does, and the heartbeat with it, which the shared wait's end
 // fails by name. The bound itself is the function's lock_timeout of 5 seconds, read off pg_proc,
 // so a migration that raised it fails here; how long the refusal takes on the clock is the timing
-// lane's (TestAnEarlierBuildsRegistrationIsRefusedWithinItsBoundOnTheClock).
+// lane's (TestAnEarlierBuildsRegistrationIsRefusedWithinItsBoundOnTheClock). That the publish
+// waits past the bound is read on the database's clock, where the product's bounds run: its
+// backend still waits for the gate once its insert has run registrationGateBound and
+// pastRegistrationBound, so a bound set anywhere on its path (its session, the gate's trigger
+// function, or a function that one calls) ends the publish first and fails the row by name.
 func TestAnEarlierBuildsRegistrationWaitsForTheGateNoLongerThanItsBound(t *testing.T) {
 	s, owners := openFleetStore(t)
 	ctx := context.Background()
@@ -124,7 +135,38 @@ func TestAnEarlierBuildsRegistrationWaitsForTheGateNoLongerThanItsBound(t *testi
 	}
 	published := make(chan error, 1)
 	go func() { published <- arriveOn(ctx, publishConn, publish, uuid.NewString()) }()
-	awaitGateWait(t, s, publishConn.Conn().PgConn().PID(), published, publish.name)
+	publishPID := publishConn.Conn().PgConn().PID()
+	awaitGateWait(t, s, publishPID, published, publish.name)
+	// The publish still waits for the gate past the registration's bound, read on the database's
+	// clock in one statement: its backend waits on a Lock, its gate request is not granted, and its
+	// insert, the statement whose trigger waits, started registrationGateBound and
+	// pastRegistrationBound before the database's now(). A publish that ends first, as one a bound
+	// on its path cuts off ends, fails the row naming its error. No clock of the test process is read.
+	want := registrationGateBound + pastRegistrationBound
+	testwait.Until(t, publish.name+" to still wait for the gate "+want.String()+" into its insert, on the database's clock", func() (string, bool) {
+		select {
+		case err := <-published:
+			t.Fatalf("%s ended (%v) while a transaction held the gate shared, before it had waited %s on the database's clock; want it to keep waiting past the registration's bound",
+				publish.name, err, want)
+		default:
+		}
+		var waitEventType string
+		var waitedMicros int64
+		var gateWaiting bool
+		if err := s.Pool.QueryRow(ctx, `
+			select coalesce(a.wait_event_type, ''), (extract(epoch from now() - a.query_start) * 1000000)::bigint,
+			  exists (select 1 from pg_locks l
+			    where l.pid = a.pid and l.locktype = 'advisory' and not l.granted and l.mode = 'ExclusiveLock'
+			      and l.database = (select oid from pg_database where datname = current_database())
+			      and l.classid::bigint = $2 and l.objid::bigint = $3 and l.objsubid = 2)
+			from pg_stat_activity a where a.pid = $1`,
+			publishPID, OwnerLockGateNamespace, OwnerLockGateKey).Scan(&waitEventType, &waitedMicros, &gateWaiting); err != nil {
+			t.Fatalf("read %s's wait on the database: %v", publish.name, err)
+		}
+		waited := time.Duration(waitedMicros) * time.Microsecond
+		return fmt.Sprintf("wait event type %q, waiting for the gate %t, %s into its statement", waitEventType, gateWaiting, waited),
+			waitEventType == "Lock" && gateWaiting && waited >= want
+	})
 	if err := holder.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}

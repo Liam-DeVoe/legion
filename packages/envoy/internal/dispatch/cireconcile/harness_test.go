@@ -487,20 +487,22 @@ func (h *harness) subscribe() *nats.Subscription {
 // summary loop's clock on through each tick it arms until the loop publishes one.
 func (h *harness) settlement(sub *nats.Subscription, why string) cistore.Summary {
 	h.t.Helper()
-	message := testwait.Until(h.t, why+": a settlement of the head", func() (*nats.Msg, bool) {
+	var message *nats.Msg
+	testwait.Until(h.t, why+": a settlement of the head", func() (string, bool) {
 		waiting, _, err := sub.Pending()
 		if err != nil {
 			h.t.Fatalf("%s: read the settlements waiting: %v", why, err)
 		}
 		if waiting > 0 {
-			message, err := sub.NextMsgWithContext(testwait.Context(h.t))
+			next, err := sub.NextMsgWithContext(testwait.Context(h.t))
 			if err != nil {
 				h.t.Fatalf("%s: reading the settlement published failed: %v", why, err)
 			}
-			return message, true
+			message = next
+			return "a settlement waiting", true
 		}
-		h.driveLoop(h.loopStep())
-		return nil, false
+		moved := h.driveLoop(h.loopStep())
+		return fmt.Sprintf("no settlement waiting; this try moved the summary loop's clock: %t; armed on it now: %v", moved, h.ciClock.Armed()), false
 	})
 	var envelope contracts.Envelope
 	if err := json.Unmarshal(message.Data, &envelope); err != nil {

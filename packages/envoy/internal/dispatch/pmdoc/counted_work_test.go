@@ -323,6 +323,12 @@ func countedBinary(t *testing.T) (bin, goCmd string, modules map[string]string) 
 	return countedBuild.bin, countedBuild.goCmd, countedBuild.modules
 }
 
+// buildCounted lists the packages pmdoc imports and builds the counted test binary into a
+// directory of its own. Both go commands pass -race=false: the go command reads GOFLAGS from the
+// test's environment, and a developer's GOFLAGS holding -race would make it refuse them,
+// -covermode=count where cgo is on (`-covermode must be "atomic"`, since the race detector takes
+// only atomic counters) and -race itself, the list included, where it is off (`-race requires
+// cgo`). The counts read here need no detector, and a flag on the command line overrides GOFLAGS's.
 func buildCounted(t *testing.T) {
 	goCmd, err := exec.LookPath("go")
 	if err != nil {
@@ -332,7 +338,7 @@ func buildCounted(t *testing.T) {
 		return
 	}
 	const mark = "counted "
-	listed, err := countedCommand(t, "go list of the packages pmdoc imports", nil, goCmd, "list", "-deps",
+	listed, err := countedCommand(t, "go list of the packages pmdoc imports", nil, goCmd, "list", "-race=false", "-deps",
 		"-f", "{{if .Module}}"+mark+"{{.Module.Path}} {{.ImportPath}}{{end}}", ".")
 	if err != nil {
 		countedBuild.err = err.Error()
@@ -356,7 +362,7 @@ func buildCounted(t *testing.T) {
 	}
 	countedBuild.dir = dir
 	bin := filepath.Join(dir, "pmdoc.test")
-	if _, err := countedCommand(t, "the build of the counted test binary", nil, goCmd, "test", "-c", "-cover",
+	if _, err := countedCommand(t, "the build of the counted test binary", nil, goCmd, "test", "-c", "-race=false", "-cover",
 		"-covermode=count", "-coverpkg="+strings.Join(slices.Sorted(maps.Keys(modules)), ","), "-o", bin, "."); err != nil {
 		countedBuild.err = err.Error()
 		return

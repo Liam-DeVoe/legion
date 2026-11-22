@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -132,16 +133,18 @@ func TestSendDoesNotCallAConnectFailureAReceiptTimeout(t *testing.T) {
 		})
 		answered <- err
 	}()
-	err := testwait.Until(t, "the send to an unroutable address to fail", func() (error, bool) {
+	var err error
+	testwait.Until(t, "the send to an unroutable address to fail", func() (string, bool) {
 		select {
-		case err := <-answered:
-			return err, true
+		case err = <-answered:
+			return fmt.Sprintf("the send answered %v", err), true
 		default:
 		}
-		if len(fake.Armed()) > 0 {
+		armed := fake.Armed()
+		if len(armed) > 0 {
 			fake.Advance(CallWindow)
 		}
-		return nil, false
+		return fmt.Sprintf("no answer yet; the send's clock had %v armed", armed), false
 	})
 	if err == nil {
 		t.Fatal("a send to an unroutable address must fail")

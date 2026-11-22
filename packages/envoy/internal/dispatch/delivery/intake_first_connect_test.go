@@ -34,10 +34,11 @@ var givingUpLines = []string{intakeHoldLost, durableDeliversElsewhere}
 // The row makes that order happen on every run. The bus holds the first-connect callback
 // (bus.HoldFirstConnectForTest); the intake starts while its client is CONNECTED and still waiting
 // for the callback; the take-over's boundHook, which runs after the bind subscribed and created the
-// durable, opens the gate and holds the take-over until the row has seen the callback run. Two bind
-// intervals later the durable still delivers to the subject this intake bound, the hold is still
-// this intake's, no line says it stopped delivering, and a message published after the callback is
-// handled by it.
+// durable, opens the gate and holds the take-over until the row has seen the callback run. Once
+// the run loop has checked the durable after the callback (its first check, intakeHoldRenew into
+// its run on the hold's clock), the durable still delivers to the subject this intake bound, the
+// hold is still this intake's, no line says it stopped delivering, and a message published after
+// the callback is handled by it.
 func TestAHolderKeepsTheDurableThroughAFirstConnectCallbackThatLandsInsideItsBind(t *testing.T) {
 	logs := captureLogsFrom(t, slog.LevelDebug)
 	_, uri := testnats.Start(t)

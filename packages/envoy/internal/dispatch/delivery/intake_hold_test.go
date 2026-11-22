@@ -1660,13 +1660,16 @@ func TestAnIntakeLogsEachCheckOfItsDurableAtDebug(t *testing.T) {
 	})
 	for pass := 1; pass <= 2; pass++ {
 		checks.Advance(intakeHoldRenew)
-		record := testwait.Until(t, fmt.Sprintf("the intake's check %d of its durable logged", pass), func() (map[string]any, bool) {
-			for _, record := range logs() {
-				if record["msg"] == DurableChecked && record["pass"] == float64(pass) {
-					return record, true
+		var record map[string]any
+		testwait.Until(t, fmt.Sprintf("the intake's check %d of its durable logged", pass), func() (string, bool) {
+			records := logs()
+			for _, logged := range records {
+				if logged["msg"] == DurableChecked && logged["pass"] == float64(pass) {
+					record = logged
+					return "logged", true
 				}
 			}
-			return nil, false
+			return fmt.Sprintf("the messages logged: %q", loggedMessages(records)), false
 		})
 		if record["level"] != "DEBUG" || record["name"] != bus.DispatchDeliveryDurable || record["found"] != checkDeliversHere {
 			t.Fatalf("the intake logged its check %d as %v, want it at DEBUG naming %s and finding %q", pass, record, bus.DispatchDeliveryDurable, checkDeliversHere)

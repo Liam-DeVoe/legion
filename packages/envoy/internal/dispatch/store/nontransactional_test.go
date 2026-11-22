@@ -23,22 +23,26 @@ import (
 func waitForInvalidIndex(t *testing.T, store *Store, name string) uint32 {
 	t.Helper()
 	ctx := context.Background()
-	return testwait.Until(t, fmt.Sprintf("an INVALID %s while the concurrent build waits", name), func() (uint32, bool) {
-		var oid uint32
+	var oid uint32
+	testwait.Until(t, fmt.Sprintf("an INVALID %s while the concurrent build waits", name), func() (string, bool) {
 		var valid bool
 		err := store.Pool.QueryRow(ctx, `select i.indexrelid, i.indisvalid from pg_index i
 			join pg_class c on c.oid = i.indexrelid where c.relname = $1`, name).Scan(&oid, &valid)
 		switch {
 		case err == nil && !valid:
-			return oid, true
-		case err == nil || errors.Is(err, pgx.ErrNoRows):
-			// Not built yet, or already valid on a database this test cannot have reached.
-			return 0, false
+			return "INVALID", true
+		case errors.Is(err, pgx.ErrNoRows):
+			// Not built yet.
+			return "no such index yet", false
+		case err == nil:
+			// Already valid, on a database this test cannot have reached.
+			return "the index is valid", false
 		default:
 			t.Fatalf("read %s from pg_index: %v", name, err)
-			return 0, false
+			return "", false
 		}
 	})
+	return oid
 }
 
 // migrationKeyRows selects the rows of pg_locks that are advisory locks on migrationLockKey in

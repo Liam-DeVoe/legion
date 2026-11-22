@@ -58,16 +58,33 @@ func TestAConnectionsOwnCheckKeepsALifeAfterACleanReconnect(t *testing.T) {
 		testnats.OwnConnectTimeout(t, conn)
 		w := client.WindowUntil(nil).(*window)
 		original := lifeOf(conn).current()
+		// The hooks run on the goroutine pinFirst's Bounded call starts, where no method of t may
+		// run: each waits through waitInHook and hands its first error to hookFailed, which the
+		// subtest reads once pinToSend has returned. The cleanup closes ended, so a hook still
+		// waiting when the subtest ends returns then rather than at the shared wait's end.
+		hookFailed := make(chan error, 1)
+		ended := make(chan struct{})
+		failed := func(err error) {
+			select {
+			case hookFailed <- err:
+			default:
+			}
+		}
 		var once sync.Once
 		var held <-chan struct{}
 		startDrop := func() {
 			once.Do(func() {
 				held = hold.Hold()
-				waitForLifeEnded(t, original)
+				if err := waitInHook("control: nats.go's report of the drop to end the old life", original, ended); err != nil {
+					failed(err)
+				}
 			})
 		}
 		releaseAfterCount := func() {
-			testwait.Receive(t, "the reconnect handshake to reach the hold", held)
+			if err := waitInHook("the reconnect handshake to reach the hold", held, ended); err != nil {
+				failed(err)
+				return
+			}
 			hold.Release()
 		}
 		w.afterConnected.Store(&startDrop)
@@ -75,10 +92,17 @@ func TestAConnectionsOwnCheckKeepsALifeAfterACleanReconnect(t *testing.T) {
 		t.Cleanup(func() {
 			w.afterConnected.Store(nil)
 			w.pinCountRead.Store(nil)
+			close(ended)
 			hold.Release()
 		})
-		if err := w.pinToSend(); err != nil {
-			t.Fatalf("a window whose life read the drop before connected answered %v, want nil", err)
+		pinned := w.pinToSend()
+		select {
+		case err := <-hookFailed:
+			t.Fatalf("a hook of the staged drop failed: %v; the pin answered %v", err, pinned)
+		default:
+		}
+		if pinned != nil {
+			t.Fatalf("a window whose life read the drop before connected answered %v, want nil", pinned)
 		}
 		life := lifeOf(conn)
 		life.check()
@@ -140,6 +164,31 @@ func requireFresh(t *testing.T, client *Client, after string) {
 func waitForLifeEnded(t *testing.T, life <-chan struct{}) {
 	t.Helper()
 	testwait.Receive(t, "control: nats.go's report of the drop to end the old life", life)
+}
+
+// waitInHook waits, inside a hook a product goroutine runs (a window's afterConnected or
+// pinCountRead, which pinFirst calls on its Bounded call's goroutine), until ch closes or the row
+// ends (stop closes): through testwait.ReceiveInHelper, so no method of t runs off the test
+// goroutine. It answers the wait's give-up, or that the row ended first, as an error the hook hands
+// to the test goroutine. A nil ch never closes.
+func waitInHook(what string, ch, stop <-chan struct{}) error {
+	either := make(chan struct{})
+	go func() {
+		defer close(either)
+		select {
+		case <-ch:
+		case <-stop:
+		}
+	}()
+	if _, err := testwait.ReceiveInHelper("bus", what, either); err != nil {
+		return err
+	}
+	select {
+	case <-ch:
+		return nil
+	default:
+		return fmt.Errorf("the row ended before %s", what)
+	}
 }
 
 // cutUntilReconnecting waits, with the link cut, until nats.go reads conn as RECONNECTING: it has
