@@ -196,12 +196,6 @@ func (f *heldSecondDocument) secondHead(t *testing.T) int64 {
 	return head
 }
 
-// sweepAsAnUnkeyedClose runs the close's sweep of the issue (sweepClosedIssueAsks) on a goroutine
-// of its own, on the context an unkeyed close hands it (sweepAsAnUnkeyedClose).
-func (f *heldSecondDocument) sweepAsAnUnkeyedClose() (started time.Time, answered <-chan error) {
-	return sweepAsAnUnkeyedClose(f.served, f.issue)
-}
-
 // sweepAsAnUnkeyedClose runs served's close's sweep of issue (sweepClosedIssueAsks) on a goroutine
 // of its own, on the context an unkeyed close hands it: its request's, marked as every request is
 // (trackTransactions) and detached from its client (outlivingTheClient), whose client has then
@@ -351,7 +345,7 @@ func (f *heldSecondDocument) requireRepairSweepsFirst(t *testing.T) {
 func TestAnUnkeyedClosesSweepWaitingForItsSecondDocumentsLockEndsAtTheWriteBound(t *testing.T) {
 	f := newHeldSecondDocument(t)
 	logs := captureLogs(t)
-	started, answered := f.sweepAsAnUnkeyedClose()
+	started, answered := sweepAsAnUnkeyedClose(f.served, f.issue)
 	f.holdTheCycle(t, "the close's sweep", answered)
 	requireEndedAtTheBound(t, "the close's sweep", started, answered)
 	logged := logs.String()
@@ -392,7 +386,7 @@ func TestAnAskRepairsTransactionWaitingForItsSecondDocumentsLockEndsAtTheWriteBo
 func TestASweepTheWriteBoundEndedIsFinishedByTheNextAskRepair(t *testing.T) {
 	f := newHeldSecondDocument(t)
 	logs := captureLogs(t)
-	started, answered := f.sweepAsAnUnkeyedClose()
+	started, answered := sweepAsAnUnkeyedClose(f.served, f.issue)
 	release := f.holdTheCycle(t, "the close's sweep", answered)
 	requireEndedAtTheBound(t, "the close's sweep", started, answered)
 	f.requireGrantGivenBack(t)

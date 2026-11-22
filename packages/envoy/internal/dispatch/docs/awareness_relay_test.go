@@ -382,12 +382,7 @@ func relayedState(t *testing.T, room string, client uint64, state any) string {
 	if err != nil {
 		t.Fatalf("encode client %d's state: %v", client, err)
 	}
-	entry := encoding.EncodeBytes(func(encoder *encoding.Encoder) {
-		encoder.WriteVarUint(client)
-		encoder.WriteVarUint(1)
-		encoder.WriteVarString(string(encoded))
-	})
-	update := encodeAwarenessEntries([][]byte{entry})
+	update := awarenessStates(client, 1, 1, string(encoded))
 	payload, err := json.Marshal(awarenessMessage{Sender: "another process", Room: room, Data: base64.StdEncoding.EncodeToString(update)})
 	if err != nil {
 		t.Fatalf("encode the notification of client %d's state: %v", client, err)
@@ -471,48 +466,43 @@ func TestRelayedAwarenessWhoseRoomGoesBeforeItsInjectLoadsNothingOnTheLane(t *te
 				defer close(handled)
 				service.awarenessRelay.received(context.Background(), payload)
 			}()
-			// letGo gives the pool back and waits for the relay's handling of the update, so
-			// nothing of it runs past the test's end.
-			letGo := func() {
+			// letGo gives the pool back and waits for the relay's handling of the update, once, and
+			// runs as the test ends in any case, so nothing of it runs past the test's end.
+			letGo := sync.OnceFunc(func() {
 				filler.release()
 				select {
 				case <-handled:
 				case <-time.After(holdAndWaitBound):
 					t.Errorf("the relay's handling of the update did not end within %s once the pool was free", holdAndWaitBound)
 				}
-			}
+			})
+			t.Cleanup(letGo)
 			select {
 			case err := <-gone:
 				if err != nil {
-					letGo()
 					t.Fatal(err)
 				}
 			case <-handled:
 				t.Fatal("the relay handled the update without reaching its Inject, so nothing here is tested")
 			case <-time.After(holdAndWaitBound):
-				letGo()
 				t.Fatalf("the relay did not reach its Inject within %s", holdAndWaitBound)
 			}
 			closed := time.Now()
 			select {
 			case <-handled:
 			case <-time.After(dropBound):
-				letGo()
 				t.Fatalf("the relay's handling of the update had not ended %s after its room went: its Inject loaded the room, or waited on another caller's load of it, on the awareness lane with no deadline", dropBound)
 			}
 			dropped := time.Since(closed)
 			t.Logf("the relay dropped the update %s after its room went", dropped.Round(time.Millisecond))
 			if !route.alsoLoading {
 				if dropped >= awarenessInjectBound {
-					letGo()
 					t.Fatalf("the relay dropped the update %s after its room went, at or past the Inject's own bound %s: its Inject did not refuse the load of the room it no longer found", dropped, awarenessInjectBound)
 				}
 				if service.srv.GetDoc(document) != nil || slices.Contains(service.srv.Rooms(), document) {
-					letGo()
 					t.Fatal("a room of the document loaded on the awareness lane once the close took it out")
 				}
 				if failure := service.roomFailure(document); failure != nil {
-					letGo()
 					t.Fatalf("the document's room is failed once the relay's load of it was refused: %v", failure)
 				}
 			}

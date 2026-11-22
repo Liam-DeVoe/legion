@@ -534,23 +534,23 @@ func paragraphMarkdown(paragraphs int) string {
 func bigDocumentMarkdown() string { return paragraphMarkdown(4_000) }
 
 // syncMessageBytesPerParagraph is how many bytes one of paragraphMarkdown's paragraphs adds to the
-// sync message a room sends a page that asks for the whole document: its 161 characters and the
-// block the document's tree holds them in. Measured at 257 on documents of 200 to 1,600
-// paragraphs, whose messages ran from 51 KB to 407 KB, and used only to size a document to a
-// socket's send buffer; the test below logs the message the server really wrote, so a build that
-// encodes a paragraph differently shows it there.
+// sync messages, in all, that a room sends a page that asks for the whole document: its 161
+// characters and the block the document's tree holds them in. Measured at 257 on documents of 200
+// to 1,600 paragraphs, whose messages ran from 51 KB to 407 KB, and used only to size a document to
+// a socket's send buffer; the test below logs the document messages the server really wrote, so a
+// build that encodes a paragraph differently shows it there.
 const syncMessageBytesPerParagraph = 257
 
-// slowPageMarkdown is a document whose sync message is about size bytes. The slow page below is
-// owed a message its socket's send buffer holds whole, so the document is cut to that buffer
-// rather than made as big as a test can write.
+// slowPageMarkdown is a document whose sync messages are about size bytes in all. The slow page
+// below is owed messages its socket's send buffer holds whole, so the document is cut to that
+// buffer rather than made as big as a test can write.
 func slowPageMarkdown(size int) string {
 	return paragraphMarkdown(max(size/syncMessageBytesPerParagraph, 1))
 }
 
 // dialSlowPage is dialPage on a connection whose receive buffer holds far less than the document's
-// sync message, so the server's write of that message is still part way through it while the page
-// reads nothing. The socket must be accepted, and closes when the test ends.
+// sync messages, so the server's writes of those messages are still part way through them while
+// the page reads nothing. The socket must be accepted, and closes when the test ends.
 func dialSlowPage(t *testing.T, serverURL, artifactID string, query url.Values) *gws.Conn {
 	t.Helper()
 	dialer := gws.Dialer{NetDial: func(network, address string) (net.Conn, error) {
@@ -727,12 +727,12 @@ const postRevokeMarker = "afterrevoke"
 // then that FIN, so the stream checked here is exactly what the page reads.
 func TestARevokedSlowPageEndsOnACodeItReconnectsOnAndSyncsWhole(t *testing.T) {
 	// The document is cut to the send buffer this host's kernel grants, read back before anything
-	// is seeded: the server's one write of it has to return with every byte queued, since a write
+	// is seeded: the server's writes of it have to return with every byte queued, since a write
 	// that blocked would have put nothing in the record below.
 	grant := sendBufferGrant(t)
 	message := slowPageMessageSize(t, grant)
 	markdown := slowPageMarkdown(message)
-	t.Logf("the kernel grants a send buffer of %d bytes, so the slow page is owed a document message of about %d bytes", grant, message)
+	t.Logf("the kernel grants a send buffer of %d bytes, so the slow page is owed document messages of about %d bytes in all", grant, message)
 	// The process stages one element it reads and cannot create, so it reads version and creates
 	// up to creatable, less than it reads, and the slow page, one version older, is admitted
 	// writable (newAdmissionServer).

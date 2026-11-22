@@ -98,7 +98,7 @@ func TestASweepRefusedBusyAtALaterDocumentIsLoggedAndTheNextAskRepairFinishesIt(
 		return strings.Contains(logs.String(), reloading) && !slices.Contains(f.documents.ResidentRooms(), f.second)
 	})
 	grown := growLaterDocument(t, f.documents, f.database, f.pool, f.first, f.second)
-	started, answered := f.sweepAsAnUnkeyedClose()
+	started, answered := sweepAsAnUnkeyedClose(f.served, f.issue)
 	select {
 	case <-answered:
 	case <-time.After(heldSecondDocumentWait):

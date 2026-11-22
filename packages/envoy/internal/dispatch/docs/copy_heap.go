@@ -683,17 +683,18 @@ func heldGrant(ctx context.Context) *loadSlot {
 }
 
 // RefusedBusy reports whether err is a holder's refusal of what it would otherwise have waited for
-// holding its grant (transactionHolds): more of the pool (errGrantShort), a slot of the buffered
-// folds (errFoldSlotsBusy) or a room's load (errRoomLoadUnderGrant); a transaction's first fork
-// whose wait for the pool ended at a deadline - the server's wait bound or the transaction's own -
-// before the pool gave it its grant (liveWrite.coverFork, errWriteBusy wrapping
-// context.DeadlineExceeded); or a cold read's refusal once its wait for its turn passed its bound
-// (foldDocument, errGrantShort). Each is the 503 its caller retries and none is the document's own
-// failure, so no room is failed for it, and a background duty that meets one logs it at Warn with
-// what retries it, keeping Error for every other error (LogDutyFailure); the unrecorded-mark sweep,
-// which meets it again each settle delay while it lasts, logs only the first of a run at Warn
-// (sweepUnrecordedMarks). A first fork whose caller went away (errWriteBusy wrapping
-// context.Canceled) is not one: nobody waits for its retry.
+// holding its grant (transactionHolds): more of the pool (errGrantShort) or a slot of the buffered
+// folds (errFoldSlotsBusy); a room's load refused to a caller that may load no room - a transaction
+// holding its grant, or the awareness relay's Inject - which every caller waiting on that load
+// meets too (errRoomLoadUnderGrant); a transaction's first fork whose wait for the pool ended at a
+// deadline - the server's wait bound or the transaction's own - before the pool gave it its grant
+// (liveWrite.coverFork, errWriteBusy wrapping context.DeadlineExceeded); or a cold read's refusal
+// once its wait for its turn passed its bound (foldDocument, errGrantShort). Each is the 503 its
+// caller retries and none is the document's own failure, so no room is failed for it, and a
+// background duty that meets one logs it at Warn with what retries it, keeping Error for every
+// other error (LogDutyFailure); the unrecorded-mark sweep, which meets it again each settle delay
+// while it lasts, logs only the first of a run at Warn (sweepUnrecordedMarks). A first fork whose
+// caller went away (errWriteBusy wrapping context.Canceled) is not one: nobody waits for its retry.
 func RefusedBusy(err error) bool {
 	return errors.Is(err, errGrantShort) || errors.Is(err, errFoldSlotsBusy) || errors.Is(err, errRoomLoadUnderGrant) ||
 		errors.Is(err, errWriteBusy) && errors.Is(err, context.DeadlineExceeded)

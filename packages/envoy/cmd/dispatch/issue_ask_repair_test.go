@@ -31,34 +31,10 @@ func TestRepairIssueAsksAtBootWithdrawsAndLogsItsCounts(t *testing.T) {
 			t.Fatalf("seed the closed issue: %v", err)
 		}
 	}
-	var ask string
-	if err := database.Pool.QueryRow(ctx, `
-		insert into asks (issue_key, author, question, state) values ('TEST-1', '{"kind":"session","id":"planner"}', 'Still open?', 'open') returning id::text
-	`).Scan(&ask); err != nil {
-		t.Fatalf("seed the open ask: %v", err)
-	}
 	broker := events.NewBroker()
 	issueKey := "TEST-1"
 	closer := model.Actor{Kind: "user", ID: "alice"}
-	tx, err := database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer tx.Rollback(ctx)
-	opened := model.NewAskEventPayload(model.Ask{
-		ID: ask, IssueKey: &issueKey, Author: model.Actor{Kind: "session", ID: "planner"}, Question: "Still open?", State: "open",
-	}, model.ReferenceChanges{})
-	for _, event := range []model.Event{
-		{IssueKey: &issueKey, Type: "ask.opened", Actor: model.Actor{Kind: "session", ID: "planner"}, Payload: opened},
-		{IssueKey: &issueKey, Type: "issue.closed", Actor: closer, Payload: map[string]any{"key": issueKey, "status": "done"}},
-	} {
-		if _, err := broker.Append(ctx, tx, event); err != nil {
-			t.Fatalf("append %s: %v", event.Type, err)
-		}
-	}
-	if err := tx.Commit(ctx); err != nil {
-		t.Fatal(err)
-	}
+	ask := seedOpenAskClosedBy(t, ctx, database, broker, issueKey, closer)
 	documents := docs.New(docs.Deps{Store: database, Events: broker})
 	t.Cleanup(func() { _ = documents.Shutdown(context.Background()) })
 	var logs bytes.Buffer
@@ -95,6 +71,7 @@ func TestRepairIssueAsksAtBootLogsAPassRefusedOnlyBusyAtWarn(t *testing.T) {
 	// sweep's wait for the full pool here as that bound would.
 	const refusedBootTimeout = 2 * time.Second
 	const spec = "6b1f8e0a-6f0c-4c55-9a4e-2f1d3c4b5a60"
+	const issueKey = "TEST-1"
 	ctx := context.Background()
 	database := storetest.Open(t)
 	for _, query := range []string{
@@ -134,42 +111,17 @@ func TestRepairIssueAsksAtBootLogsAPassRefusedOnlyBusyAtWarn(t *testing.T) {
 	}
 	// The settlement loads the document's room, which stays until ygo's idle minute runs out, so
 	// the sweep's fork is a warm one, whose first wait is its cover's take of the pool.
-	if err := documents.SettleIssueDocuments(ctx, "TEST-1"); err != nil {
+	if err := documents.SettleIssueDocuments(ctx, issueKey); err != nil {
 		t.Fatalf("settle the issue's document: %v", err)
 	}
 	if !slices.Contains(documents.ResidentRooms(), spec) {
 		t.Fatal("the issue's document has no resident room, so the sweep's fork would read the store first and nothing here is tested")
 	}
 	// The issue closes as a release older than the withdrawal closed one, leaving its ask open.
-	issueKey := "TEST-1"
 	if _, err := database.Pool.Exec(ctx, `update issues set status = 'done', closed_at = now() where key = $1`, issueKey); err != nil {
 		t.Fatalf("close the issue: %v", err)
 	}
-	var ask string
-	if err := database.Pool.QueryRow(ctx, `
-		insert into asks (issue_key, author, question, state) values ($1, '{"kind":"session","id":"planner"}', 'Still open?', 'open') returning id::text
-	`, issueKey).Scan(&ask); err != nil {
-		t.Fatalf("seed the open ask: %v", err)
-	}
-	tx, err := database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer tx.Rollback(ctx)
-	opened := model.NewAskEventPayload(model.Ask{
-		ID: ask, IssueKey: &issueKey, Author: model.Actor{Kind: "session", ID: "planner"}, Question: "Still open?", State: "open",
-	}, model.ReferenceChanges{})
-	for _, event := range []model.Event{
-		{IssueKey: &issueKey, Type: "ask.opened", Actor: model.Actor{Kind: "session", ID: "planner"}, Payload: opened},
-		{IssueKey: &issueKey, Type: "issue.closed", Actor: alice, Payload: map[string]any{"key": issueKey, "status": "done"}},
-	} {
-		if _, err := broker.Append(ctx, tx, event); err != nil {
-			t.Fatalf("append %s: %v", event.Type, err)
-		}
-	}
-	if err := tx.Commit(ctx); err != nil {
-		t.Fatal(err)
-	}
+	ask := seedOpenAskClosedBy(t, ctx, database, broker, issueKey, alice)
 	pool, restore := docs.UseOneLoadSlotForTest(nil)
 	t.Cleanup(restore)
 	release, filled := pool.FillForTest()
@@ -191,4 +143,36 @@ func TestRepairIssueAsksAtBootLogsAPassRefusedOnlyBusyAtWarn(t *testing.T) {
 	if state := ""; database.Pool.QueryRow(ctx, `select state from asks where id = $1`, ask).Scan(&state) != nil || state != "open" {
 		t.Errorf("the ask reads %q once the refused repair ended, want it open: the repair committed", state)
 	}
+}
+
+// seedOpenAskClosedBy seeds an open ask of planner's on issueKey and appends, in one transaction,
+// its ask.opened event and the issue.closed event of closer's close, and answers the ask's id.
+func seedOpenAskClosedBy(t *testing.T, ctx context.Context, database *store.Store, broker *events.Broker, issueKey string, closer model.Actor) string {
+	t.Helper()
+	var ask string
+	if err := database.Pool.QueryRow(ctx, `
+		insert into asks (issue_key, author, question, state) values ($1, '{"kind":"session","id":"planner"}', 'Still open?', 'open') returning id::text
+	`, issueKey).Scan(&ask); err != nil {
+		t.Fatalf("seed the open ask: %v", err)
+	}
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	opened := model.NewAskEventPayload(model.Ask{
+		ID: ask, IssueKey: &issueKey, Author: model.Actor{Kind: "session", ID: "planner"}, Question: "Still open?", State: "open",
+	}, model.ReferenceChanges{})
+	for _, event := range []model.Event{
+		{IssueKey: &issueKey, Type: "ask.opened", Actor: model.Actor{Kind: "session", ID: "planner"}, Payload: opened},
+		{IssueKey: &issueKey, Type: "issue.closed", Actor: closer, Payload: map[string]any{"key": issueKey, "status": "done"}},
+	} {
+		if _, err := broker.Append(ctx, tx, event); err != nil {
+			t.Fatalf("append %s: %v", event.Type, err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	return ask
 }

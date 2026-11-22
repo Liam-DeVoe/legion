@@ -546,15 +546,21 @@ func TestPanickingColdLoadFailsTheRoomAndRecovers(t *testing.T) {
 	waitForDocumentText(t, service, artifactID, "before\n")
 }
 
+// useColdReadTimeout makes timeout a cold read's bound for the rest of t (coldReadTimeout).
+func useColdReadTimeout(t *testing.T, timeout time.Duration) {
+	t.Helper()
+	old := coldReadTimeout
+	coldReadTimeout = timeout
+	t.Cleanup(func() { coldReadTimeout = old })
+}
+
 func TestColdLoadTimeoutIsServiceUnavailable(t *testing.T) {
 	database := storetest.Open(t)
 	persistence := &timeoutLoadStore{VersionedStore: NewPgVersioned(database), started: make(chan struct{}, 1)}
 	artifactID := createDocument(t, database, "before")
 	service := newReadCacheService(t, database, persistence)
 	seedServiceText(t, service, artifactID, "before\n")
-	oldTimeout := coldReadTimeout
-	coldReadTimeout = 20 * time.Millisecond
-	t.Cleanup(func() { coldReadTimeout = oldTimeout })
+	useColdReadTimeout(t, 20*time.Millisecond)
 
 	ctx := context.Background()
 	_, err := service.Text(ctx, artifactID)
@@ -582,9 +588,7 @@ func TestAColdReadWhoseWaitForThePoolPassesItsBoundIsRefusedBusyAndFailsNoRoom(t
 	artifactID := createDocument(t, database, "before")
 	service := newReadCacheService(t, database, NewPgVersioned(database))
 	seedServiceText(t, service, artifactID, "before\n")
-	oldTimeout := coldReadTimeout
-	coldReadTimeout = 200 * time.Millisecond
-	t.Cleanup(func() { coldReadTimeout = oldTimeout })
+	useColdReadTimeout(t, 200*time.Millisecond)
 	pool, waited := poolOfOneSlot(t, nil)
 	filler := fillPoolBut(t, pool, 0)
 
@@ -616,9 +620,7 @@ func TestAColdReadWhoseLoadHoldsItsGrantAndWaitsPastItsBoundForARoomsConnectionI
 	service.settle = time.Hour
 	document, _ := twoRowDocument(t, service, 82, 16<<10)
 	_, rooms := streamEveryFold(t, service)
-	oldTimeout := coldReadTimeout
-	coldReadTimeout = 500 * time.Millisecond
-	t.Cleanup(func() { coldReadTimeout = oldTimeout })
+	useColdReadTimeout(t, 500*time.Millisecond)
 	pool, _ := poolOfOneSlot(t, nil)
 	// The load's whole slot is the pool's first take: its first pass learns that the rows stream
 	// and takes nothing, and the slot is the whole of this one-slot pool.

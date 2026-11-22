@@ -145,6 +145,20 @@ func (p *pause) await(t *testing.T, answered <-chan error, what string) {
 	}
 }
 
+// pauseAtFirstGrant stops the taker of the first grant pool gives (loadSlots.taken) until the
+// pause it answers goes on.
+func pauseAtFirstGrant(t *testing.T, pool *loadSlots) *pause {
+	t.Helper()
+	granted := newPause(t)
+	var once atomic.Bool
+	pool.taken = func(int64) {
+		if once.CompareAndSwap(false, true) {
+			granted.stop()
+		}
+	}
+	return granted
+}
+
 // splitCharacters and splitInserts shape splitHistory for the two folds' test: rows weighed by
 // their bytes, a state that declares an item more for each insert and so weighs more than they do,
 // and less than twice as much.
@@ -837,15 +851,14 @@ func TestAJoinedTransactionsReadOfADocumentNoRoomHoldsLoadsNoRoom(t *testing.T) 
 	}
 }
 
-// streamEveryFold makes service's store stream every log of several rows rather than read it into
-// memory (foldRead, foldBufferLimit), and answers that store and its rooms pool.
-func streamEveryFold(t *testing.T, service *Service) (*PgVersioned, *pgxpool.Pool) {
+// versionedOf answers service's store and its rooms pool, failing the test, with what it cannot
+// do, where the service reads through another store.
+func versionedOf(t *testing.T, service *Service, cannot string) (*PgVersioned, *pgxpool.Pool) {
 	t.Helper()
 	versioned, ok := service.persistence.(*PgVersioned)
 	if !ok {
-		t.Fatalf("the service reads through %T, whose folds this test cannot make stream", service.persistence)
+		t.Fatalf("the service reads through %T, whose %s", service.persistence, cannot)
 	}
-	versioned.foldBufferLimit = 1
 	rooms, err := service.store.Pool.Rooms()
 	if err != nil {
 		t.Fatalf("the rooms pool: %v", err)
@@ -853,19 +866,21 @@ func streamEveryFold(t *testing.T, service *Service) (*PgVersioned, *pgxpool.Poo
 	return versioned, rooms
 }
 
+// streamEveryFold makes service's store stream every log of several rows rather than read it into
+// memory (foldRead, foldBufferLimit), and answers that store and its rooms pool.
+func streamEveryFold(t *testing.T, service *Service) (*PgVersioned, *pgxpool.Pool) {
+	t.Helper()
+	versioned, rooms := versionedOf(t, service, "folds this test cannot make stream")
+	versioned.foldBufferLimit = 1
+	return versioned, rooms
+}
+
 // oneFoldSlot leaves service's store one slot of the buffered folds (foldSlots), so the test can
 // hold that slot or have one fold hold it, and answers that store and its rooms pool.
 func oneFoldSlot(t *testing.T, service *Service) (*PgVersioned, *pgxpool.Pool) {
 	t.Helper()
-	versioned, ok := service.persistence.(*PgVersioned)
-	if !ok {
-		t.Fatalf("the service reads through %T, whose fold slots this test cannot hold", service.persistence)
-	}
+	versioned, rooms := versionedOf(t, service, "fold slots this test cannot hold")
 	versioned.foldSlots = make(chan struct{}, 1)
-	rooms, err := service.store.Pool.Rooms()
-	if err != nil {
-		t.Fatalf("the rooms pool: %v", err)
-	}
 	return versioned, rooms
 }
 
@@ -1028,13 +1043,7 @@ func TestAStateAnswersTopUpGivesItsGrantBackRatherThanQueueForMoreWhileItHoldsIt
 	}
 	pool, waits := poolWaits(t)
 	filler := fillPoolBut(t, pool, after)
-	granted := newPause(t)
-	var first atomic.Bool
-	pool.taken = func(int64) {
-		if first.CompareAndSwap(false, true) {
-			granted.stop()
-		}
-	}
+	granted := pauseAtFirstGrant(t, pool)
 	answered := make(chan error, 1)
 	var release func()
 	go func() {
@@ -1313,14 +1322,7 @@ func TestACopyOfARoomWeighedBeforeItsWaitIsCoveredAsTheRoomStandsOnceTheWaitIsOv
 			return answered, func() int64 { return held }
 		}},
 		{"the check of a live room near its caps, an encode and decode of the room's state", func(t *testing.T, _ *loadSlots, _ string, live *crdt.Doc) (<-chan error, func() int64) {
-			slot := newLoadSlot()
-			t.Cleanup(slot.release)
-			answered := make(chan error, 1)
-			go func() {
-				_, _, err := service.nearACapOfRoom(slot.carriedBy(context.Background()), live, service.roomWeighingOf(live).roomStateBytes())
-				answered <- err
-			}()
-			return answered, func() int64 { return slot.bytes }
+			return startNearACapCheck(t, service, live)
 		}},
 	} {
 		t.Run(site.name, func(t *testing.T) {
@@ -1333,21 +1335,7 @@ func TestACopyOfARoomWeighedBeforeItsWaitIsCoveredAsTheRoomStandsOnceTheWaitIsOv
 			pool, waits := poolWaits(t)
 			filler := fillPoolBut(t, pool, before-1)
 			answered, held := site.copy(t, pool, document, live)
-			select {
-			case <-waits:
-			case err := <-answered:
-				t.Fatalf("%s finished (%v) while the pool lacked the room's weight, want it waiting for that", site.name, err)
-			case <-time.After(holdAndWaitBound):
-				t.Fatalf("%s never came to wait for the pool within %s", site.name, holdAndWaitBound)
-			}
-			// A browser's commit lands in the room while the copy's take waits.
-			if _, applied := newRoomCommitter(t, live).commitKeys(200); <-applied != nil {
-				t.Fatal("the commit to the room was refused")
-			}
-			after := service.copyOfRoom(live)
-			if after <= before {
-				t.Fatalf("the room weighs %d after the commit and %d before it, want more after, or nothing here is tested", after, before)
-			}
+			after := commitWhileTheCopyWaits(t, service, live, waits, answered, site.name, before)
 			filler.release()
 			if err := answeredWithin(t, answered, site.name); err != nil {
 				t.Fatalf("%s: %v", site.name, err)
@@ -1397,14 +1385,7 @@ func TestACopyOfARoomThatGrewWhileItWaitedIsRefusedBusyWhereThePoolLacksTheGrowt
 			return answered, func() int64 { return write.slot.slot.bytes }
 		}, errWriteBusy},
 		{"the rebuild route's check of a live room near its caps", func(t *testing.T, _ string, live *crdt.Doc) (<-chan error, func() int64) {
-			slot := newLoadSlot()
-			t.Cleanup(slot.release)
-			answered := make(chan error, 1)
-			go func() {
-				_, _, err := service.nearACapOfRoom(slot.carriedBy(context.Background()), live, service.roomWeighingOf(live).roomStateBytes())
-				answered <- err
-			}()
-			return answered, func() int64 { return slot.bytes }
+			return startNearACapCheck(t, service, live)
 		}, nil},
 	} {
 		t.Run(site.name, func(t *testing.T) {
@@ -1431,21 +1412,7 @@ func TestACopyOfARoomThatGrewWhileItWaitedIsRefusedBusyWhereThePoolLacksTheGrowt
 				}
 			}
 			answered, held := site.copy(t, document, live)
-			select {
-			case <-waits:
-			case err := <-answered:
-				t.Fatalf("%s finished (%v) while the pool lacked the room's weight, want it waiting for that", site.name, err)
-			case <-time.After(holdAndWaitBound):
-				t.Fatalf("%s never came to wait for the pool within %s", site.name, holdAndWaitBound)
-			}
-			// A browser's commit lands in the room while the copy's take waits.
-			if _, applied := newRoomCommitter(t, live).commitKeys(200); <-applied != nil {
-				t.Fatal("the commit to the room was refused")
-			}
-			after := service.copyOfRoom(live)
-			if after <= before {
-				t.Fatalf("the room weighs %d after the commit and %d before it, want more after, or nothing here is tested", after, before)
-			}
+			commitWhileTheCopyWaits(t, service, live, waits, answered, site.name, before)
 			armed.Store(true)
 			filler.release()
 			err := answeredWithin(t, answered, site.name)
@@ -1468,6 +1435,45 @@ func TestACopyOfARoomThatGrewWhileItWaitedIsRefusedBusyWhereThePoolLacksTheGrowt
 			}
 		})
 	}
+}
+
+// startNearACapCheck starts service's check of live near its caps (nearACapOfRoom) on a goroutine
+// of its own, under a grant of its own, and answers what the check answers, with a read of the
+// bytes its grant holds, made once the check has answered.
+func startNearACapCheck(t *testing.T, service *Service, live *crdt.Doc) (<-chan error, func() int64) {
+	t.Helper()
+	slot := newLoadSlot()
+	t.Cleanup(slot.release)
+	answered := make(chan error, 1)
+	go func() {
+		_, _, err := service.nearACapOfRoom(slot.carriedBy(context.Background()), live, service.roomWeighingOf(live).roomStateBytes())
+		answered <- err
+	}()
+	return answered, func() int64 { return slot.bytes }
+}
+
+// commitWhileTheCopyWaits waits for name, the copy that answers on answered, to wait for the pool
+// (poolWaits' waits), failing the test where it finishes first or does not wait within
+// holdAndWaitBound; then lands a browser's commit in live, and answers what the room weighs once
+// the commit is in (copyOfRoom), failing the test where that is no more than before.
+func commitWhileTheCopyWaits(t *testing.T, service *Service, live *crdt.Doc, waits <-chan struct{}, answered <-chan error, name string, before int64) (after int64) {
+	t.Helper()
+	select {
+	case <-waits:
+	case err := <-answered:
+		t.Fatalf("%s finished (%v) while the pool lacked the room's weight, want it waiting for that", name, err)
+	case <-time.After(holdAndWaitBound):
+		t.Fatalf("%s never came to wait for the pool within %s", name, holdAndWaitBound)
+	}
+	// A browser's commit lands in the room while the copy's take waits.
+	if _, applied := newRoomCommitter(t, live).commitKeys(200); <-applied != nil {
+		t.Fatal("the commit to the room was refused")
+	}
+	after = service.copyOfRoom(live)
+	if after <= before {
+		t.Fatalf("the room weighs %d after the commit and %d before it, want more after, or nothing here is tested", after, before)
+	}
+	return after
 }
 
 // A server write's decode-cap count (leavesPastDecodeCap) whose top-up waits a second time weighs
@@ -1500,13 +1506,7 @@ func TestAServerWritesDecodeCapCountWeighsTheRoomAgainAfterEachWait(t *testing.T
 	first := service.copyOfRoom(live)
 	pool, waits := poolWaits(t)
 	filler := fillPoolBut(t, pool, first)
-	granted := newPause(t)
-	var once atomic.Bool
-	pool.taken = func(int64) {
-		if once.CompareAndSwap(false, true) {
-			granted.stop()
-		}
-	}
+	granted := pauseAtFirstGrant(t, pool)
 	var held int64
 	count := serverWrite{apply: func(*crdt.Doc) { held = pool.held.Load() }}
 	answered := make(chan error, 1)
@@ -1568,13 +1568,7 @@ func TestAStateAnswerWeighsTheRoomAgainAfterEachWait(t *testing.T) {
 	first := weight()
 	pool, waits := poolWaits(t)
 	filler := fillPoolBut(t, pool, first)
-	granted := newPause(t)
-	var once atomic.Bool
-	pool.taken = func(int64) {
-		if once.CompareAndSwap(false, true) {
-			granted.stop()
-		}
-	}
+	granted := pauseAtFirstGrant(t, pool)
 	answered := make(chan error, 1)
 	var release func()
 	go func() {

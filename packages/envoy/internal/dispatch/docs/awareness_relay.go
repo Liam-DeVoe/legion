@@ -78,15 +78,13 @@ const (
 	// on its home process too; the y-protocols client then sees its own state removed and
 	// announces itself again, which is how it comes back everywhere.
 	awarenessExpiry = 30 * time.Second
-	// awarenessInjectBound bounds the relay's Inject of another process's awareness update into
-	// this process's room (received), which runs on room sync's awareness lane, the one goroutine
-	// every room's relayed awareness waits behind. That Inject loads no room (withNoRoomLoad), but
-	// where a close took the room out after the relay's look at it and another caller's load of it
-	// began in that moment, ygo has the Inject wait on that load (its getOrCreateRoom), and a
-	// load can wait for the pod's load concurrency with no deadline. A frame dropped at the bound
-	// costs one reader's cursor until that browser's next heartbeat, 15 s in y-protocols, which
-	// sends the same state again; a wait of more than a few seconds holds every other room's
-	// relayed awareness for longer than that cursor is worth.
+	// awarenessInjectBound bounds the relay's Inject (received) on the awareness lane, which every
+	// room's relayed awareness waits behind: the wait ygo has it make on another caller's load of a
+	// room that went between the relay's look and the Inject, a load whose wait for the pod's load
+	// concurrency has no deadline. The comment at the Inject's call in received explains it whole.
+	// A frame dropped at the bound costs one reader's cursor until that browser's next
+	// heartbeat, 15 s in y-protocols, which sends the same state again; a wait of more than a few
+	// seconds holds every other room's relayed awareness for longer than that cursor is worth.
 	awarenessInjectBound = 3 * time.Second
 	// maxAwarenessClientsPerRoom is the last-resort cap on the client entries a room of this
 	// process holds - the ones present and the tombstones of the ones that left - which ygo
