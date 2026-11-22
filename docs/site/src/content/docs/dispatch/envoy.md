@@ -802,9 +802,9 @@ from its first try. Meanwhile `/healthz` answers `503` `unhealthy`, naming the l
 180 seconds may still succeed, and no try begins after it: when the last try begun by then fails,
 the listener exits `1`, its last line naming its credential (an nkey user by its public key) and the
 last refusal. Any other failure of the connect ends the start after ten tries a second apart. An
-edge listener (`ENVOY_EDGE_PROJECTS`) waits out a refused credential at the connect the same way.
-It only reads the stream, and a grant that refuses that read ends its start after the read, within
-10 seconds.
+edge listener (`ENVOY_EDGE_PROJECTS`) only reads the stream, and its start waits out a refused
+credential at the connect, and a grant that refuses that read, the same way. A stream the server
+does not hold, a read that times out, or any other failure of the read ends its start at once.
 
 After a NATS reconnect the listener rebuilds the key-value watches its caches read through. A
 rebuild that fails is tried again within seconds, so one that fails and then succeeds inside that

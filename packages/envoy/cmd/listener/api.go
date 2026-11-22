@@ -2501,11 +2501,12 @@ func unwiredRepositoryWarning(ctx context.Context, d *listenerDeps, topic string
 	return ""
 }
 
-// splitUncapturedTopics splits a registration's requested topics into the ones it plans and
-// stores and the set it leaves out: a notification topic that neither the deployed stream nor
-// this build captures and that is no role lane (bus.ReachesNoSession). A session receives what
-// its own consumer delivers, which is what the stream stored, so an interest in such a topic would
-// be stored and deliver nothing. A topic this build stores is planned also while the deployed
+// splitUncapturedTopics splits a registration's requested topics into the ones it plans and the
+// set it leaves out: a notification topic that neither the deployed stream nor this build
+// captures and that is no role lane (bus.ReachesNoSession). The plan made of the rest keeps out
+// what the session's consumer filter leaves out in turn (planWithoutLeftOut). A session receives
+// what its own consumer delivers, which is what the stream stored, so an interest in such a topic
+// would be stored and deliver nothing. A topic this build stores is planned also while the deployed
 // stream does not capture it, as during a hub move's quiesce: the stream stores it again once the
 // narrowing ends, and the session's consumer, whose filter holds every topic of the row whatever
 // the deployed stream captures (sessionConsumerFilter), then delivers it.
@@ -2542,6 +2543,34 @@ func (m *sessionDelivery) splitUncapturedTopics(requested []string) ([]string, m
 	return planned, uncaptured
 }
 
+// planWithoutLeftOut takes out of plan's topics each one the session's consumer filter leaves out
+// by its fourth or fifth kind (sessionFilter): a topic that does not begin with the literal
+// notifications., and a wildcard topic that fed a merge of the filter's reduction reaching another
+// session's private subjects. It lists them in plan.LeftOut, which the planned write takes out of
+// the row too (store.InterestPlan.LeftOut), and returns them with what made each go, which the
+// handler names in its answer and in a WARN line of its own (subscribeHandler). So the row holds
+// what the filter carries, no publish counts the session as a recipient for a topic its consumer
+// never delivers, and the session is told.
+//
+// It weighs the plan's whole merge, the row it read and the topics requested together: the fifth
+// kind is a property of the set, and a topic an earlier build's row holds is left out and named
+// as surely as one the body names. No subject this build compiles captures a wildcard topic that
+// can feed such a merge, so splitUncapturedTopics takes a requested one off first, and what is
+// left of the fifth kind here is a row an earlier build stored, or a topic only a newer build's
+// deployed subjects capture.
+func planWithoutLeftOut(sessionID string, plan store.InterestPlan) (store.InterestPlan, []filterLeftOut) {
+	_, leftOut := sessionFilter(sessionID, plan.Topics)
+	if len(leftOut) == 0 {
+		return plan, nil
+	}
+	plan.LeftOut = make([]string, 0, len(leftOut))
+	for _, left := range leftOut {
+		plan.LeftOut = append(plan.LeftOut, left.topic)
+	}
+	plan.Topics = slices.DeleteFunc(slices.Clone(plan.Topics), func(topic string) bool { return slices.Contains(plan.LeftOut, topic) })
+	return plan, leftOut
+}
+
 // registrationPlanAttempts bounds the plans one registration makes. Each conflict or no-op write
 // means another writer stored the session's row between a plan and its write, which only an
 // unsubscribe, a role claim or another registration of the same session does; three attempts
@@ -2573,6 +2602,10 @@ type registeredSession struct {
 	// cache with no bucket call, whatever the delivery mode (listenerDeps.registerPass), and is
 	// false on every heartbeat of a session that was live already.
 	returning bool
+	// leftOut is each topic the answering pass's plan kept out of the row and the consumer's
+	// filter (planWithoutLeftOut), with what made it go, which the handler names in a warning and
+	// a WARN line each.
+	leftOut []filterLeftOut
 }
 
 // sessionEntryWriteError is the session entry's write failing (listenerDeps.registerPass). That
@@ -2709,6 +2742,10 @@ func (d *listenerDeps) registerSession(
 		if err != nil {
 			return registeredSession{}, nil, err
 		}
+		// The topics the session's consumer filter leaves out as no topic it can follow are kept
+		// out of the row this pass filters on and writes, an earlier build's row's own included.
+		var leftOut []filterLeftOut
+		plan, leftOut = planWithoutLeftOut(body.SessionID, plan)
 		registered, answeredPass, refusal, err := d.registerPass(ctx, registerCtx, machineID, body, plan)
 		if refusal != nil {
 			filtered = filtered || refusal.filtered
@@ -2729,6 +2766,7 @@ func (d *listenerDeps) registerSession(
 			if registered.delivery.answer != nil {
 				registered.delivery.answer.Gap = &gap
 			}
+			registered.leftOut = leftOut
 			answered = true
 			return registered, nil, nil
 		}
@@ -2955,7 +2993,9 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 		// The topics that would deliver to no session are split off once, here
 		// (splitUncapturedTopics): they are neither planned, stored nor filtered on, and the
 		// loop below names each in its warning, after the private rule has had its say. The
-		// merge itself drops a private-subject topic from the plan (store.MergedTopics).
+		// merge itself drops a private-subject topic from the plan (store.MergedTopics), and each
+		// pass keeps out of its plan the topics the session's consumer filter leaves out as no
+		// topic it can follow (planWithoutLeftOut), which the answer names below.
 		planned, uncaptured := d.consumers.splitUncapturedTopics(requested)
 		registered, refusal, err := d.registerSession(ctx, r.Context(), machineID, body, planned, logger)
 		if refusal != nil {
@@ -3024,12 +3064,23 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 		// sentence tells such a caller to follow a notifications.team.<name> topic instead,
 		// which is no answer to a wildcard over every session's inbox.
 		//
+		// A topic the session's consumer filter leaves out as no topic it can follow, one that
+		// does not begin with the literal notifications. and a wildcard that fed a merge of the
+		// filter reaching another session's private subjects, is out of the plan and the row
+		// (planWithoutLeftOut), the row's own included, so no publish counts the session as a
+		// recipient for it. Each is named once, in a warning that says why, after the loop below,
+		// which leaves it to that warning, and in a WARN line of its own (filterLeftOutLine): a
+		// topic that leaves the filter is never left silently.
+		//
 		// The roles are the last plan's, which decided the row that was stored.
 		warnings := make([]string, 0)
 		for _, topic := range requested {
 			if bus.ReachesPrivateStreamSubject(body.SessionID, topic, plan.Roles) {
 				warnings = append(warnings, fmt.Sprintf("%s was not registered: it reaches a private stream subject (another session's inbox, a failed-delivery lane, or a Legion controller notice lane), and of those a session registers only its own agent subject, %s, and the notice lane of a project whose controller role it holds",
 					topic, contracts.LegacyAgentSubject(body.SessionID)))
+				continue
+			}
+			if slices.Contains(plan.LeftOut, topic) {
 				continue
 			}
 			if _, dropped := uncaptured[topic]; dropped {
@@ -3040,6 +3091,12 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 			logger.Warn("listener subscribe left topics out of the registration",
 				slog.String("session_id", body.SessionID), slog.Any("dropped", warnings))
 		}
+		for _, left := range registered.leftOut {
+			warnings = append(warnings, left.warning(body.SessionID))
+		}
+		// The line is logged once per session and topic an hour (registrationLeftOutLogs): a
+		// followed topic comes back on every heartbeat, and the answer names it each time.
+		logFilterLeftOutLimited(logger, &registrationLeftOutLogs, body.SessionID, registered.leftOut, leftOutByRegistration)
 		// A topic the registration stored in the old form of its name, an issue's without its
 		// project or a role's or an agent's without one, is stored as the caller wrote it and
 		// every reader takes both forms; the answer names its new form, and the registry counts
@@ -3047,7 +3104,7 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 		// the agent subject this route adds itself is never counted for a caller that has moved.
 		var stored []string
 		for _, topic := range body.Topics {
-			if _, dropped := uncaptured[topic]; !dropped && !bus.ReachesPrivateStreamSubject(body.SessionID, topic, plan.Roles) {
+			if _, dropped := uncaptured[topic]; !dropped && !bus.ReachesPrivateStreamSubject(body.SessionID, topic, plan.Roles) && !slices.Contains(plan.LeftOut, topic) {
 				stored = append(stored, topic)
 			}
 		}

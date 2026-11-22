@@ -1055,7 +1055,10 @@ func fanoutRefusalOutcome(sessionID string, item contracts.Envelope, verdict fol
 
 // fanoutDelivery delivers a general-topic envelope to every session that
 // registered interest in it (registry.Match), aggregating per-recipient
-// failures into a single NAK/ACK decision for the underlying message.
+// failures into a single NAK/ACK decision for the underlying message. A session whose row matches
+// the topic only through a topic its consumer filter leaves out, an earlier build's row, is no
+// recipient and is skipped with its WARN line (skipLeftOutInterest), where it would otherwise be
+// read as a session whose own consumer relays the message.
 func fanoutDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMessage, item contracts.Envelope) {
 	items := cfg.registry.Match(cfg.machineID, item.Topic)
 	if len(items) == 0 {
@@ -1071,6 +1074,9 @@ func fanoutDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMessage, 
 	var failed bool
 	var deadDeliveries int
 	for _, interest := range items {
+		if skipLeftOutInterest(cfg.logger, interest, item.Topic) {
+			continue
+		}
 		verdict, target, _ := judgeFollowedTopic(cfg.followedTopicRules(), interest.SessionID, item, mode, modeErr)
 		// The caches, the echo rule and an unreadable delivery mode judge the message before the
 		// session's own state does, as they always have; what is left is a message this path

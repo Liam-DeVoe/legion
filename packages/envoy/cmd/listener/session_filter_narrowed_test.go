@@ -24,10 +24,14 @@ import (
 // narrowed the stream, so that a message stored on such a topic once the narrowing ends is
 // delivered: every build of the filter (a registration, each rebuild from the stored row, both
 // passes of a fenced write) holds the row's topics whatever the deployed stream captures, and none
-// is refused for a topic the stream does not capture now. The filter leaves out only three fixed
-// kinds: a topic the server refuses as a filter subject, a role lane or its exception lane, and a
-// topic with a wildcard token reaching another session's private subjects; a literal topic is
-// never of the third kind, so a controller notice lane the session holds stays.
+// is refused for a topic the stream does not capture now. The filter leaves out only five fixed
+// kinds: a topic the server refuses as a filter subject, a role lane or its exception lane, a
+// topic with a wildcard token reaching another session's private subjects (a literal topic is
+// never of this kind, so a controller notice lane the session holds stays), a topic that does not
+// begin with the literal notifications., and a wildcard topic that fed a merge of the filter's
+// reduction reaching another session's private subjects. The last two are named, logged and kept
+// out of the row (TestATopicTheFilterLeavesOutIsNamedLoggedAndKeptOutOfTheRow), and the
+// reduction's cases are TestAFilterWhoseTopicsReduceToAnotherSessionsSubjectsLeavesThemOut.
 //
 // Before, the filter carried only the topics the deployed stream captured as the listener last
 // read it: a rebuild while narrowed dropped the session's stored topics, and once the stream

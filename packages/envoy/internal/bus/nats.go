@@ -53,9 +53,13 @@ type connectOpts struct {
 	promptReconnect             bool
 	inboxPrefix                 string
 	streamMessageReads          bool
-	// credentialWait and credentialRefused are WithCredentialWait's bound and report.
+	// credentialWait and credentialRefused are WithCredentialWait's bound and report, and
+	// startCheck WithStartCheck's check.
 	credentialWait    time.Duration
 	credentialRefused func(error)
+	startCheck        func(*Client) error
+	closedHook        func()
+	closeSettleBound  time.Duration
 }
 
 // connectionSettings is what every connection of a client applies after envoy's own options
@@ -256,15 +260,16 @@ func WithStreamMessageReads() ConnectOption {
 // WithCredentialWait has the constructor's start (Connect's or ConnectOwningStream's) wait out a
 // refusal of the client's NATS credential for up to bound, counted from its first try, rather than
 // fail at it: the server refusing the connect (authorizationRefusal), or refusing a request of an
-// owning client's ensure of the stream under the credential's grant (ErrPublishDenied). Each try
-// dials once, and an owning client's ensures the stream, on a client of its own, so a failed try
-// leaves nothing running. After a refusal the start waits a second before its next try and
-// doubles each wait up to ten seconds, the last cut to end at bound; a try in progress at the bound
-// may finish, and its success counts, and no try begins after the bound (startTryLateness says
-// what a late wake from the last wait may still begin). Any other error of a try counts toward the
-// ten tries in a row, a second apart, that a start without the option makes, and a refusal ends
-// such a row. The start ends with an error at the first of the two limits, naming the last refusal
-// (waitOutCredentialRefusals).
+// owning client's ensure of the stream, or of the start check (WithStartCheck), under the
+// credential's grant (ErrPublishDenied). Each try dials once, and an owning client's ensures the
+// stream, and the check runs, on a client of its own, so a failed try leaves nothing running. A
+// start check's error that is no refusal ends the start at once. After a refusal the start waits a
+// second before its next try and doubles each wait up to ten seconds, the last cut to end at
+// bound; a try in progress at the bound may finish, and its success counts, and no try begins
+// after the bound (startTryLateness says what a late wake from the last wait may still begin). Any
+// other error of a try counts toward the ten tries in a row, a second apart, that a start without
+// the option makes, and a refusal ends such a row. The start ends with an error at the first of the
+// two limits, naming the last refusal (waitOutCredentialRefusals).
 //
 // refused, when not nil, is handed each refusal as it comes, on the constructor's goroutine, so the
 // caller can report that its start is waiting (cmd/listener's /healthz answers 503 naming it). Each
@@ -277,6 +282,22 @@ func WithStreamMessageReads() ConnectOption {
 // servers have reloaded its new nkey connects once they have, where it would exit and be restarted.
 func WithCredentialWait(bound time.Duration, refused func(error)) ConnectOption {
 	return clientOption(func(o *connectOpts) { o.credentialWait, o.credentialRefused = bound, refused })
+}
+
+// WithStartCheck has the constructor's start in the foreground (Connect's or ConnectOwningStream's)
+// run check on the client each of its tries made, once that client has connected (and an owning
+// client has ensured the stream), before the constructor returns it. An error from check closes the
+// client, which stops everything it runs, and fails the try: with WithCredentialWait, an error that
+// is a refusal of the credential (credentialRefusal: an authorization refusal, or a request the
+// grant refuses, ErrPublishDenied) is waited out as a refusal of the connect is, and any other ends
+// the start at once (endsStart); without it, the constructor returns the error. A start in the
+// background (WithConnectInBackground) returns before it has connected, so it runs no check.
+//
+// cmd/listener's edge listener passes it, with its read of the stream (edgeStreamPresent): its grant
+// may only read the stream, so that read is its start's step on the stream, as the ensure is an
+// owning client's.
+func WithStartCheck(check func(*Client) error) ConnectOption {
+	return clientOption(func(o *connectOpts) { o.startCheck = check })
 }
 
 type subscriptionTransport uint8
@@ -368,7 +389,25 @@ type Client struct {
 	// of the request's timeout and its flush it settles first, so the order of the two is the
 	// test's and not the scheduler's.
 	requestExpiry func(deadline time.Time) (expired <-chan time.Time, flushSettled func())
-	mu            sync.Mutex
+	// closedHook, when not nil, runs at the start of onClosed, before the recovery a close starts.
+	// It is nil outside tests: a test sets it (WithClosedHook, export_test.go) to hold the work a
+	// close sets off, so a caller that returned before that work ran is caught reading too early.
+	// closeSettleBound, when above zero, replaces failedStartCloseBound in closeSettled; it is zero
+	// outside tests (WithCloseSettleBound, export_test.go), so a test that holds a close can hold it
+	// longer than the production bound without the bound ending the wait first.
+	closedHook       func()
+	closeSettleBound time.Duration
+	mu               sync.Mutex
+
+	// eventWork counts the goroutines the client's connection events start, each recovery
+	// (recover, from onClosed) and each run after a reconnect (afterReconnect), so the close of a
+	// failed start can wait for them and for every line they log (closeSettled).
+	eventWork sync.WaitGroup
+	// lastClosed is the last connection whose close onClosed has handled, and closeWatch the close
+	// closeSettled waits for, both under mu (closeHandled). lastClosed keeps that one closed
+	// connection from the collector until the next close replaces it.
+	lastClosed *nats.Conn
+	closeWatch *closeWatch
 
 	// deniedPublishes holds, under mu, the server's refusals of publishes per subject it refused a
 	// publish to, as the connection reported them (recordPublishDenial), queued in arrival order
@@ -566,9 +605,10 @@ func ConnectOwningStream(urls []string, options ...ConnectOption) (*Client, erro
 // start shares: the servers it may reach (refuseRemoteNATS), and the credential and the proxy the
 // environment names, each refused before any dial. A start in the foreground with
 // WithCredentialWait waits out a refusal of the credential (waitOutCredentialRefusals), each of
-// its tries a client of its own whose start dials once (startClient), and logs each refusal at
-// WARN with the wait that follows it; every other start is one startClient that dials up to
-// connectTries times, connectRetryWait after each dial that fails.
+// its tries a client of its own whose start dials once (startClient) and whose check then runs
+// (WithStartCheck, checkedStart), and logs each refusal at WARN with the wait that follows it;
+// every other start is one startClient that dials up to connectTries times, connectRetryWait after
+// each dial that fails, and whose check then runs.
 func newClient(urls []string, ownsStream bool, opts connectOpts) (*Client, error) {
 	if err := refuseRemoteNATS(urls, opts.environment); err != nil {
 		return nil, err
@@ -582,8 +622,12 @@ func newClient(urls []string, ownsStream bool, opts connectOpts) (*Client, error
 		return nil, err
 	}
 	settings := opts.connectionSettings(credential)
-	if opts.background || opts.credentialWait <= 0 {
+	if opts.background {
 		return startClient(urls, ownsStream, opts, settings, dialer, connectTries, connectRetryWait)
+	}
+	if opts.credentialWait <= 0 {
+		client, _, err := checkedStart(urls, ownsStream, opts, settings, dialer, connectTries, connectRetryWait)
+		return client, err
 	}
 	refused := func(err error, next time.Duration) {
 		if next > 0 {
@@ -598,8 +642,29 @@ func newClient(urls []string, ownsStream bool, opts connectOpts) (*Client, error
 		}
 	}
 	return waitOutCredentialRefusals(opts.credentialWait, refused, wallStartClock, func() (*Client, error) {
-		return startClient(urls, ownsStream, opts, settings, dialer, 1, 0)
+		client, checkFailed, err := checkedStart(urls, ownsStream, opts, settings, dialer, 1, 0)
+		if checkFailed && !credentialRefusal(err) {
+			return nil, endsStart{err}
+		}
+		return client, err
 	})
+}
+
+// checkedStart is startClient in the foreground followed by the start check (WithStartCheck), when
+// the start made a client and the options name a check. It answers the client, or the error of the
+// start or of the check, and whether the check failed; a client whose check failed is closed first,
+// and checkedStart returns once its close's callbacks and recovery have run, or, when one hangs,
+// once closeSettled's bound has passed and it has logged a WARN (closeFailedStart).
+func checkedStart(urls []string, ownsStream bool, opts connectOpts, settings nats.Option, dialer *socks5Dialer, tries int, wait time.Duration) (_ *Client, checkFailed bool, _ error) {
+	client, err := startClient(urls, ownsStream, opts, settings, dialer, tries, wait)
+	if err != nil || opts.startCheck == nil {
+		return client, false, err
+	}
+	if err := opts.startCheck(client); err != nil {
+		client.closeFailedStart()
+		return nil, true, err
+	}
+	return client, false, nil
 }
 
 // startClient is one start of the client newClient returns, over the connection settings and the
@@ -622,6 +687,8 @@ func startClient(urls []string, ownsStream bool, opts connectOpts, settings nats
 		beforeRequestFlush:          opts.beforeRequestFlush,
 		streamMessageReads:          opts.streamMessageReads,
 		requestExpiry:               opts.requestExpiry,
+		closedHook:                  opts.closedHook,
+		closeSettleBound:            opts.closeSettleBound,
 		stopCh:                      make(chan struct{}),
 	}
 	stream := opts.streamConfig()
@@ -669,9 +736,13 @@ func startClient(urls []string, ownsStream bool, opts connectOpts, settings nats
 		// The constructor returns no client, so no caller can Close it: the client is stopped
 		// before nc closes, so the recovery nc's close begins (onClosed) finds it stopped and dials
 		// nothing. Running, that recovery would dial and install a connection held by no one, which
-		// with MaxReconnect -1 reconnects for the rest of the process once its server is gone.
+		// with MaxReconnect -1 reconnects for the rest of the process once its server is gone. The
+		// constructor returns once that recovery, and nats.go's callbacks for the close, have run
+		// (closeSettled), so none of their lines follows what its caller writes next, unless one of
+		// them hangs past closeSettled's bound (connectTimeout), when it logs a WARN and returns, and
+		// a line of that close can then follow.
 		c.stop()
-		nc.Close()
+		c.closeSettled(nc, nc.Close)
 		return nil, err
 	}
 	readable := true

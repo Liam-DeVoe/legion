@@ -156,6 +156,17 @@ func TestACredentialWaitWaitsOutRefusalsUpToItsBound(t *testing.T) {
 			wantErr:     nats.ErrAuthorization,
 			wantRefused: 2,
 		},
+		{
+			name:  "an error that ends the start ends it at once, as a failed start check's does",
+			bound: 30 * time.Second,
+			tries: []scriptedTry{{err: refusal}, {err: endsStart{other}}, {}},
+			// After one wait, the second try fails in a way no wait repairs (a start check's error
+			// that is no refusal, such as a stream the server does not hold): no third try.
+			wantSlept:   []time.Duration{second},
+			wantTries:   2,
+			wantErr:     other,
+			wantRefused: 1,
+		},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			clock := &fakeStartClock{at: time.Date(2026, 11, 22, 0, 3, 50, 0, time.UTC), late: row.late}

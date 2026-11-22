@@ -1255,8 +1255,9 @@ func runListener(credentialWait time.Duration) {
 	// higher generation (bus.ConnectOwningStream). The start waits out a refusal of its credential,
 	// at the connect or at the stream's reconcile, for up to credentialWait (start), as a hub that
 	// has yet to reload a new nkey refuses it: /livez answers 204 meanwhile and /healthz 503 naming
-	// the refusal. An edge listener owns no stream: its start waits out a refusal of the connect
-	// alike, then reads the stream, and ends here when the server has none (connectListenerBus).
+	// the refusal. An edge listener owns no stream: its start reads it in place of the reconcile and
+	// waits out a refusal of the connect or of that read alike, and ends here at once when the server
+	// has no stream (connectListenerBus).
 	client, err := connectListenerBus(cfg, edge, start)
 	if err != nil {
 		// Named, because this step and the two below it are the whole of the start-up between the

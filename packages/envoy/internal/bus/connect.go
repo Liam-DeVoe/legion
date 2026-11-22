@@ -274,13 +274,15 @@ func serverList(urls []string) string {
 // watcher never ends on its own and only this callback says its cache stopped following the
 // bucket. ClosedCB fires on Close or Drain, and also when nats.go gives up
 // on the connection itself: the same authorization error twice in a row, or a server -ERR it does
-// not classify. Those two are why onClosed still starts a recovery that dials a replacement. The
+// not classify. Those two are why onClosed still starts a recovery that dials a replacement. It
+// logs the close and then hands closedCB the connection that closed, so the client can tell which
+// of its connections' closes it has handled (closeHandled). The
 // reconnect buffer is off, so nothing is held and sent after its caller saw an error: a publish
 // while reconnecting waits for the reconnect instead (ensureConnWithContext), and a publish that
 // fails was not sent. AsyncErrorCB logs each error the connection reports on its own and then
 // hands it to asyncErrCB, where the client reads the server's refusal of its core subscription
 // (onAsyncError).
-func options(name string, urls []string, reconnectCB func(*nats.Conn), disconnectedCB func(), closedCB func(), asyncErrCB func(*nats.Conn, error), now func() time.Time) nats.Options {
+func options(name string, urls []string, reconnectCB func(*nats.Conn), disconnectedCB func(), closedCB func(*nats.Conn), asyncErrCB func(*nats.Conn, error), now func() time.Time) nats.Options {
 	// The throttle is built here, one per call, so it is per connection and has its own mutex:
 	// options is rebuilt for every dial attempt in connectTrying's loop and only the attempt
 	// that connects leaves its closures on the *nats.Conn, so one live connection has exactly one
@@ -346,10 +348,10 @@ func options(name string, urls []string, reconnectCB func(*nats.Conn), disconnec
 	// A connection that connects only after failing to (connectInBackground) reports its first
 	// connection here rather than as a reconnect, and that ends its outage as a reconnect does.
 	opts.ConnectedCB = func(*nats.Conn) { throttle.reset() }
-	opts.ClosedCB = func(_ *nats.Conn) {
+	opts.ClosedCB = func(nc *nats.Conn) {
 		slog.Info("envoy nats connection closed", slog.String("name", name))
 		if closedCB != nil {
-			closedCB()
+			closedCB(nc)
 		}
 	}
 	opts.AsyncErrorCB = func(nc *nats.Conn, sub *nats.Subscription, err error) {
@@ -406,7 +408,7 @@ const (
 	connectRetryWait = time.Second
 )
 
-func connect(name string, urls []string, settings nats.Option, dialer *socks5Dialer, reconnectCB func(*nats.Conn), disconnectedCB func(), closedCB func(), asyncErrCB func(*nats.Conn, error), now func() time.Time) (*nats.Conn, error) {
+func connect(name string, urls []string, settings nats.Option, dialer *socks5Dialer, reconnectCB func(*nats.Conn), disconnectedCB func(), closedCB func(*nats.Conn), asyncErrCB func(*nats.Conn, error), now func() time.Time) (*nats.Conn, error) {
 	return connectWithContext(context.Background(), name, urls, settings, dialer, reconnectCB, disconnectedCB, closedCB, asyncErrCB, now)
 }
 
@@ -425,7 +427,7 @@ func connect(name string, urls []string, settings nats.Option, dialer *socks5Dia
 // nats.go's ErrNoServers alone, which names neither, so the proxy's own dial error stands in for
 // it. The address carries no credentials: CheckSOCKS5Proxy admits only an IP address with no zone
 // or a DNS name.
-func connectWithContext(ctx context.Context, name string, urls []string, settings nats.Option, dialer *socks5Dialer, reconnectCB func(*nats.Conn), disconnectedCB func(), closedCB func(), asyncErrCB func(*nats.Conn, error), now func() time.Time) (*nats.Conn, error) {
+func connectWithContext(ctx context.Context, name string, urls []string, settings nats.Option, dialer *socks5Dialer, reconnectCB func(*nats.Conn), disconnectedCB func(), closedCB func(*nats.Conn), asyncErrCB func(*nats.Conn, error), now func() time.Time) (*nats.Conn, error) {
 	return connectTrying(ctx, connectTries, connectRetryWait, name, urls, settings, dialer, reconnectCB, disconnectedCB, closedCB, asyncErrCB, now)
 }
 
@@ -435,7 +437,7 @@ func connectWithContext(ctx context.Context, name string, urls []string, setting
 // its last failed dial, as it always has. The one is a try of a start that waits out refusals of
 // its credential, which dials once with no wait (tries 1, wait 0) and waits between its tries
 // itself (waitOutCredentialRefusals).
-func connectTrying(ctx context.Context, tries int, wait time.Duration, name string, urls []string, settings nats.Option, dialer *socks5Dialer, reconnectCB func(*nats.Conn), disconnectedCB func(), closedCB func(), asyncErrCB func(*nats.Conn, error), now func() time.Time) (_ *nats.Conn, err error) {
+func connectTrying(ctx context.Context, tries int, wait time.Duration, name string, urls []string, settings nats.Option, dialer *socks5Dialer, reconnectCB func(*nats.Conn), disconnectedCB func(), closedCB func(*nats.Conn), asyncErrCB func(*nats.Conn, error), now func() time.Time) (_ *nats.Conn, err error) {
 	if dialer != nil {
 		defer func() {
 			if err != nil {

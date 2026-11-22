@@ -1,0 +1,178 @@
+package main
+
+import (
+	"context"
+	"slices"
+	"testing"
+	"time"
+
+	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
+	"github.com/sjawhar/envoy/internal/testnats"
+)
+
+// A change of a session consumer's filter that drops a subject the consumer holds undelivered
+// messages on passes those messages over: nats-server goes on from the consumer's position with
+// the new filters, and a restart at the ack floor creates the consumer again without the subject.
+// Those messages were counted for the session at their publish and never reach it. The listener
+// names the loss in one WARN line, filterLeftOutLine from narrowing, naming the session and the
+// filter subjects dropped, with the messages the stream holds on each dropped subject from the
+// consumer's position on (pending_by_topic), counted on the subject itself before the change, and
+// their sum (pending_passed_over). The count is the dropped subject's own, whatever the change adds.
+//
+// The topic dropped is notifications.envoy.exceptions.foo.*, which a newer build's deployed
+// subject, notifications.envoy.exceptions.*.*, captures, so a registration plans it and the
+// consumer filters on it. Two messages are stored on it. A later change of the row adds
+// notifications.envoy.exceptions.*.bar, which merges with it into notifications.envoy.exceptions.>,
+// so the filter leaves both out and drops the first. A widening, which drops a subject for one
+// that contains it (notifications.team.widened-foo for notifications.team.>), passes nothing over
+// and logs no line.
+func TestANarrowingFilterNamesTheMessagesItPassesOver(t *testing.T) {
+	const (
+		newer    = "notifications.envoy.exceptions.*.*"
+		pairFoo  = "notifications.envoy.exceptions.foo.*"
+		pairBar  = "notifications.envoy.exceptions.*.bar"
+		stored   = "notifications.envoy.exceptions.foo.waiting"
+		leftLine = "listener left a topic out of the session's consumer filter"
+	)
+	url := testnats.URL(t)
+	deployNewerBuildsStream(t, url, newer)
+	client, err := bus.ConnectOwningStream([]string{url}, bus.WithReplicas(1), bus.WithStreamSubjectsRefresh(100*time.Millisecond))
+	if err != nil {
+		t.Fatalf("connect the listener: %v", err)
+	}
+	t.Cleanup(client.Close)
+	for _, topic := range []string{pairFoo, pairBar, stored} {
+		bustest.AwaitDeployedCapture(t, client, topic, true, 15*time.Second)
+	}
+	rig := newSessionConsumerRigOn(t, client, url)
+	raw := testnats.Connect(t, url)
+	t.Cleanup(raw.Close)
+	js, err := raw.JetStream()
+	if err != nil {
+		t.Fatalf("open JetStream: %v", err)
+	}
+	store := func(t *testing.T, subject string, keys ...string) {
+		t.Helper()
+		for _, key := range keys {
+			if _, err := js.Publish(subject, marshalListenerEnvelope(t, listenerTestEnvelope(subject, key))); err != nil {
+				t.Fatalf("store a message on %s: %v", subject, err)
+			}
+		}
+	}
+	// filteringOn registers sessionID on topics and fails unless its consumer filters on pairFoo.
+	filteringOn := func(t *testing.T, sessionID string, topics ...string) {
+		t.Helper()
+		rig.post(t, "/v1/interests/subscribe", consumerRegistration(sessionID, "e", topics...))
+		if filters := rig.filters(t, sessionID); !slices.Contains(filters, pairFoo) {
+			t.Fatalf("the consumer of %s filters on %v, without %s: there is nothing to narrow", sessionID, filters, pairFoo)
+		}
+	}
+	// narrowed checks that logs holds one narrowing line for sessionID naming pairFoo among the
+	// dropped subjects with want messages on it, and that sum in pending_passed_over.
+	narrowed := func(t *testing.T, logs, sessionID string, want float64) {
+		t.Helper()
+		lines := linesIn(logs, leftLine, map[string]any{"session_id": sessionID, "from": "narrowing"})
+		if len(lines) != 1 {
+			t.Fatalf("the log holds %d narrowing lines for %s, want one:\n%s", len(lines), sessionID, logs)
+		}
+		line := lines[0]
+		dropped, _ := line["topics"].([]any)
+		byTopic, _ := line["pending_by_topic"].(map[string]any)
+		if line["level"] != "WARN" || !slices.Contains(dropped, any(pairFoo)) || byTopic[pairFoo] != want || line["pending_passed_over"] != want {
+			t.Errorf("the narrowing line is %v, want a WARN naming %s among the dropped subjects with %v messages on it, and %v in all", line, pairFoo, want, want)
+		}
+	}
+
+	t.Run("a registration that drops a topic", func(t *testing.T) {
+		const (
+			session = "ses_narrowing"
+			kept    = "notifications.team.narrowing-kept"
+		)
+		filteringOn(t, session, pairFoo, kept)
+		store(t, stored, "narrowing-1", "narrowing-2")
+		before := rig.harness.logs.Len()
+		rig.post(t, "/v1/interests/subscribe", consumerRegistration(session, "e", pairFoo, pairBar, kept))
+		if filters := rig.filters(t, session); slices.Contains(filters, pairFoo) {
+			t.Fatalf("the consumer of %s still filters on %v: the registration narrowed nothing", session, filters)
+		}
+		narrowed(t, rig.harness.logs.String()[before:], session, 2)
+	})
+
+	t.Run("a registration that drops a topic and adds one with as many messages waiting", func(t *testing.T) {
+		const (
+			session = "ses_narrowing_added"
+			kept    = "notifications.team.narrowing-kept-added"
+			added   = "notifications.team.narrowing-added"
+		)
+		filteringOn(t, session, pairFoo, kept)
+		store(t, stored, "narrowing-added-1", "narrowing-added-2")
+		store(t, added, "narrowing-added-3", "narrowing-added-4")
+		before := rig.harness.logs.Len()
+		rig.post(t, "/v1/interests/subscribe", consumerRegistration(session, "e", pairFoo, pairBar, kept, added))
+		if filters := rig.filters(t, session); slices.Contains(filters, pairFoo) || !slices.Contains(filters, added) {
+			t.Fatalf("the consumer of %s filters on %v, want %s and not %s", session, filters, added, pairFoo)
+		}
+		// The two messages on pairFoo stored since the consumer's start, which the two the update
+		// adds on another subject leave the consumer's pending count unchanged by: the count is the
+		// dropped subject's own, so the loss is named all the same.
+		narrowed(t, rig.harness.logs.String()[before:], session, 2)
+	})
+
+	t.Run("a restart at the ack floor of a consumer whose messages await an ack", func(t *testing.T) {
+		const (
+			session = "ses_narrowing_restart"
+			kept    = "notifications.team.narrowing-kept-restart"
+		)
+		filteringOn(t, session, pairFoo, kept)
+		store(t, stored, "narrowing-restart-1", "narrowing-restart-2")
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		// One message is pulled and left unacked, so the restart deletes the consumer and creates
+		// it again rather than keeping it (RestartAtFloor).
+		pull, err := rig.consumers.Pull(ctx, session)
+		if err != nil {
+			t.Fatalf("pull the consumer of %s: %v", session, err)
+		}
+		held, err := pull.Next(ctx)
+		if err != nil {
+			t.Fatalf("pull a message of %s: %v", session, err)
+		}
+		pull.Stop()
+		if info, err := rig.consumers.Info(ctx, session); err != nil || info.NumAckPending == 0 {
+			t.Fatalf("the consumer of %s awaits %v acks (%v) after %s, want one: the restart would keep it", session, info, err, held.Subject)
+		}
+		before := rig.harness.logs.Len()
+		if _, err := rig.deps.consumers.consumers.RestartAtFloor(ctx, session, sessionConsumerFilter(session, []string{pairFoo, pairBar, kept})); err != nil {
+			t.Fatalf("restart the consumer of %s: %v", session, err)
+		}
+		if filters := rig.filters(t, session); slices.Contains(filters, pairFoo) {
+			t.Fatalf("the consumer of %s still filters on %v: the restart narrowed nothing", session, filters)
+		}
+		// Both messages on pairFoo above the ack floor: the one held unacked and the one after it.
+		narrowed(t, rig.harness.logs.String()[before:], session, 2)
+	})
+
+	t.Run("a widening that replaces a subject with one that contains it", func(t *testing.T) {
+		const (
+			session = "ses_narrowing_widened"
+			narrow  = "notifications.team.widened-foo"
+			wide    = "notifications.team.>"
+		)
+		rig.post(t, "/v1/interests/subscribe", consumerRegistration(session, "e", narrow))
+		if filters := rig.filters(t, session); !slices.Contains(filters, narrow) {
+			t.Fatalf("the consumer of %s filters on %v, without %s", session, filters, narrow)
+		}
+		store(t, narrow, "widened-1", "widened-2")
+		before := rig.harness.logs.Len()
+		rig.post(t, "/v1/interests/subscribe", consumerRegistration(session, "e", narrow, wide))
+		if filters := rig.filters(t, session); slices.Contains(filters, narrow) || !slices.Contains(filters, wide) {
+			t.Fatalf("the consumer of %s filters on %v, want %s in place of %s", session, filters, wide, narrow)
+		}
+		// The two messages on narrow are still the consumer's to deliver, through wide.
+		logs := rig.harness.logs.String()[before:]
+		if lines := linesIn(logs, leftLine, map[string]any{"session_id": session, "from": "narrowing"}); len(lines) != 0 {
+			t.Errorf("a widening logged %v, want no narrowing line: it passes nothing over", lines)
+		}
+	})
+}

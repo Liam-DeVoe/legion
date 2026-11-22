@@ -9,6 +9,8 @@ import (
 	"go/token"
 	"io"
 	"io/fs"
+	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -24,11 +26,14 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/config"
+	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testport"
+	"github.com/sjawhar/envoy/natsgrant"
 )
 
 // The listener's start on NATS (Phase 5: connectListenerBus, which dials and reconciles the stream)
@@ -232,6 +237,43 @@ func (r *listenerStartRun) awaitRefusedHealthz(t *testing.T, base string, offset
 	}
 }
 
+// untilLogged waits until records holds a record matching holds, and answers it, failing the test,
+// naming what it waited for, when the start returns first or watchdog after the run began passes.
+func (r *listenerStartRun) untilLogged(t *testing.T, records *logtest.Recorder, watchdog time.Duration, what string, holds func(slog.Record) bool) slog.Record {
+	t.Helper()
+	tick := time.NewTicker(50 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		for _, record := range records.Records() {
+			if holds(record) {
+				return record
+			}
+		}
+		if !time.Now().Before(r.began.Add(watchdog)) {
+			t.Fatalf("watchdog: no log line showed %s within %s of the start's first try", what, watchdog)
+		}
+		select {
+		case got := <-r.outcome:
+			r.settle(t, got)
+			t.Fatalf("the listener's start returned %s after its first try, before a log line showed %s: error %v", got.at.Sub(r.began), what, got.err)
+		case <-tick.C:
+		}
+	}
+}
+
+// recordAttr is the value of record's attribute key as text, "" when it has none.
+func recordAttr(record slog.Record, key string) string {
+	var value string
+	record.Attrs(func(attr slog.Attr) bool {
+		if attr.Key == key {
+			value = attr.Value.String()
+			return false
+		}
+		return true
+	})
+	return value
+}
+
 // listenerTry is one connection of the listener's start as the server lists it (/connz): when the
 // server took it, and when it closed, nil while it is open.
 type listenerTry struct {
@@ -370,42 +412,69 @@ func TestTheListenerStartWaitsOutACredentialRefusal(t *testing.T) {
 	}
 }
 
+// edgeStartMachine is the machine id of the edge listener these tests start, one subject token as an
+// edge listener's must be.
+const edgeStartMachine = "edge-start-wait"
+
+// edgeStartServer is a server for an edge listener's start: its authorization is what the test's
+// function made of a fresh nkey user, public, whose seed it holds, and of the server's no_auth_user,
+// fallback; and it holds the stream, which fallback created, as a shared listener or Dispatch
+// creates it for an edge listener that only reads it.
+type edgeStartServer struct {
+	server                      *testnats.Server
+	uri, seed, public, fallback string
+}
+
+// startEdgeStartServer starts an edgeStartServer whose authorization is authorization(public,
+// fallback). The stream's creator is named, so the server's record of the start's tries
+// (listenerTries) leaves its connection out, and closed before the server stops.
+func startEdgeStartServer(t *testing.T, authorization func(public, fallback string) string) edgeStartServer {
+	t.Helper()
+	var rig edgeStartServer
+	rig.seed, rig.public = testnats.User(t)
+	_, rig.fallback = testnats.User(t)
+	rig.server, rig.uri = testnats.StartConfig(t, authorization(rig.public, rig.fallback), []string{"-js"}, true)
+	owner, err := bus.ConnectOwningStream([]string{rig.uri}, bus.WithName("stream-owner"))
+	if err != nil {
+		t.Fatalf("create the %s stream as the server's no_auth_user: %v", bus.Stream, err)
+	}
+	t.Cleanup(owner.Close)
+	return rig
+}
+
+// edgeStartRun is the configuration and the grant of the edge listener of edgeStartMachine, serving
+// edgeProject, on the server at uri, as its start runs them (connectListenerBus).
+func edgeStartRun(t *testing.T, uri string) (config.Service, *edgeGrant) {
+	t.Helper()
+	edge, err := newEdgeGrant(edgeStartMachine, []string{edgeProject}, metrics.New())
+	if err != nil {
+		t.Fatalf("the edge listener's grant: %v", err)
+	}
+	return config.Service{MachineID: edgeStartMachine, NATSURLs: []string{uri}, NATSReplicas: 1, EdgeProjects: []string{edgeProject}}, edge
+}
+
 // TestAnEdgeListenerStartWaitsOutACredentialRefusal: an edge listener (ENVOY_EDGE_PROJECTS) is
 // cmd/listener too, so its start waits out a refusal of its nkey as every listener's does
 // (connectListenerBus). While the server refuses the nkey, /healthz answers 503 naming the refusal
 // and /livez 204, and the server records waits of 1, 2, 4 and 8 s between the start's first five
 // tries. The server reloads an authorization that admits the nkey 20 s after the first try, past
 // the ten tries a start without the wait makes; the start then connects and finds the stream
-// (edgeStreamPresent), and /healthz answers as on main. The stream is created beforehand by the
-// server's no_auth_user, as a shared listener or Dispatch creates it, since an edge listener only
-// reads it. Without the wait the start ends with the refusal after those ten tries, about ten
-// seconds, and /healthz answers 200 "starting" throughout.
+// (edgeStreamPresent), and /healthz answers as on main. Without the wait the start ends with the
+// refusal after those ten tries, about ten seconds, and /healthz answers 200 "starting" throughout.
 func TestAnEdgeListenerStartWaitsOutACredentialRefusal(t *testing.T) {
 	const (
-		reloadAt  = 20 * time.Second
-		watchdog  = 60 * time.Second
-		machineID = "edge-start-wait"
+		reloadAt = 20 * time.Second
+		watchdog = 60 * time.Second
 	)
 	wantWaits := []time.Duration{time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second}
 	run := newListenerStartRun(t)
-	seed, public := testnats.User(t)
-	_, fallback := testnats.User(t)
-	server, uri := testnats.StartConfig(t, nkeyAuthorization(fallback), []string{"-js"}, true)
-	// Named, so the server's record of the start's tries (listenerTries) leaves its connection out.
-	owner, err := bus.ConnectOwningStream([]string{uri}, bus.WithName("stream-owner"))
-	if err != nil {
-		t.Fatalf("create the %s stream as the server's no_auth_user: %v", bus.Stream, err)
-	}
-	t.Cleanup(owner.Close)
-	edge, err := newEdgeGrant(machineID, []string{edgeProject}, metrics.New())
-	if err != nil {
-		t.Fatalf("the edge listener's grant: %v", err)
-	}
-	t.Setenv(bus.NkeySeedEnvVar, seed)
+	rig := startEdgeStartServer(t, func(_, fallback string) string { return nkeyAuthorization(fallback) })
+	cfg, edge := edgeStartRun(t, rig.uri)
+	t.Setenv(bus.NkeySeedEnvVar, rig.seed)
 	start := newNATSStart(listenerCredentialWait)
 	base := serveStartRoutes(t, start)
 
-	run.begin(config.Service{MachineID: machineID, NATSURLs: []string{uri}, NATSReplicas: 1, EdgeProjects: []string{edgeProject}}, edge, start)
+	run.begin(cfg, edge, start)
 	refused := run.awaitRefusedHealthz(t, base, reloadAt)
 	if text, _ := refused["error"].(string); !strings.Contains(text, authorizationViolation) {
 		t.Fatalf("/healthz answered 503 %v while the server refused the edge listener's nkey, want an error naming %q", refused, authorizationViolation)
@@ -414,7 +483,7 @@ func TestAnEdgeListenerStartWaitsOutACredentialRefusal(t *testing.T) {
 		t.Fatalf("/livez answered %d while the server refused the edge listener's nkey, want 204", status)
 	}
 	run.refusedUntil(t, reloadAt)
-	if err := server.Reload(t, nkeyAuthorization(fallback, nkeyUser(public))); err != nil {
+	if err := rig.server.Reload(t, nkeyAuthorization(rig.fallback, nkeyUser(rig.public))); err != nil {
 		t.Fatalf("reload the server with an authorization that admits the edge listener: %v", err)
 	}
 
@@ -425,7 +494,7 @@ func TestAnEdgeListenerStartWaitsOutACredentialRefusal(t *testing.T) {
 	if status, fields := probe(t, base, "/healthz"); status != http.StatusOK || fields["status"] != "starting" {
 		t.Fatalf("/healthz after the edge listener's start = %d %v, want main's 200 starting", status, fields)
 	}
-	tries := listenerTries(t, server.MonitorURL())
+	tries := listenerTries(t, rig.server.MonitorURL())
 	waits := triesWaits(t, tries, len(wantWaits)+1)
 	t.Logf("the server recorded %d tries; waits between the first five: %v", len(tries), waits)
 	for i, want := range wantWaits {
@@ -433,6 +502,153 @@ func TestAnEdgeListenerStartWaitsOutACredentialRefusal(t *testing.T) {
 			t.Fatalf("the server recorded waits %v between the edge listener's first five tries, want %v, each within %s", waits, wantWaits, credentialWaitTolerance)
 		}
 	}
+}
+
+// TestAnEdgeListenerStartWaitsOutARefusedReadOfTheStream: an edge listener's start reads the stream
+// (edgeStreamPresent) inside its credential wait (bus.WithStartCheck), so a grant that refuses the
+// read, as a server that has yet to reload the edge's grant refuses it, is waited out under the same
+// bound as a refusal of the connect. The server admits the edge's nkey throughout and refuses its
+// publish to the stream's info request until it reloads a grant that holds it. The first case
+// reloads that grant 20 s after the start's first try: meanwhile /healthz answers 503 naming the
+// read's refusal, and then the start completes. The second, its control, never grants the read: the
+// listener, run as a process with a credential wait of startChildWait, exits 1 at the bound, its
+// last line naming its nkey's public key and the read's refusal. Without the wait over the read,
+// the start ends at the first refusal, milliseconds after its first try, and the child exits as
+// soon. The third case holds the wait to refusals: a stream the server does not hold ends the
+// start at its first try. The fourth has the refusal reach the read as the connection's last error,
+// an authorization violation, rather than as the read's own error, and waits it out too.
+func TestAnEdgeListenerStartWaitsOutARefusedReadOfTheStream(t *testing.T) {
+	const watchdog = 60 * time.Second
+	readRefusal := `Permissions Violation for Publish to "` + streamInfoSubject + `"`
+	refusingRead := func(public, fallback string) string {
+		return nkeyAuthorization(fallback, nkeyUserDenied(public, streamInfoSubject))
+	}
+
+	t.Run("a read the grant refuses and then holds is waited out", func(t *testing.T) {
+		const reloadAt = 20 * time.Second
+		run := newListenerStartRun(t)
+		rig := startEdgeStartServer(t, refusingRead)
+		cfg, edge := edgeStartRun(t, rig.uri)
+		t.Setenv(bus.NkeySeedEnvVar, rig.seed)
+		start := newNATSStart(listenerCredentialWait)
+		base := serveStartRoutes(t, start)
+
+		run.begin(cfg, edge, start)
+		refused := run.awaitRefusedHealthz(t, base, reloadAt)
+		if text, _ := refused["error"].(string); !strings.Contains(text, readRefusal) {
+			t.Fatalf("/healthz answered 503 %v while the grant refused the edge listener's read of the stream, want an error naming %q", refused, readRefusal)
+		}
+		run.refusedUntil(t, reloadAt)
+		if err := rig.server.Reload(t, nkeyAuthorization(rig.fallback, nkeyUser(rig.public))); err != nil {
+			t.Fatalf("reload the server with a grant that holds the edge listener's read: %v", err)
+		}
+
+		got := run.await(t, watchdog)
+		if got.err != nil {
+			t.Fatalf("the edge listener's start returned %v %s after its first try, want it to complete once the grant holds its read", got.err, got.at.Sub(run.began))
+		}
+		if status, fields := probe(t, base, "/healthz"); status != http.StatusOK || fields["status"] != "starting" {
+			t.Fatalf("/healthz after the edge listener's start = %d %v, want main's 200 starting", status, fields)
+		}
+		t.Logf("the start completed %s after its first try, having tried %d times", got.at.Sub(run.began), len(listenerTries(t, rig.server.MonitorURL())))
+	})
+
+	t.Run("control: a read the grant refuses for good ends the listener at the bound", func(t *testing.T) {
+		rig := startEdgeStartServer(t, refusingRead)
+		broker := ciphertokentest.NewStubBroker(t)
+		account := filepath.Join(t.TempDir(), "account-token")
+		if err := os.WriteFile(account, []byte("edge-listener-account-token"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		listener := startListenerChild(t, rig.uri, rig.seed, edgeStartMachine, func(port int) []string {
+			return []string{
+				config.EdgeProjectsEnvVar + "=" + edgeProject,
+				EnvBrokerURL + "=" + broker.Server.URL,
+				EnvBrokerAccountTokenFile + "=" + account,
+				EnvPublicURL + "=http://127.0.0.1:" + strconv.Itoa(port),
+			}
+		})
+		// The bound, plus the try at the bound: its dial (connectTimeout, 5 s), the connect's read of
+		// the deployed subjects, which the grant refuses too (at most firstStreamSubjectsRead, 2 s),
+		// and a second of scheduling margin; the refused read of the stream ends at the server's
+		// refusal.
+		awaitChildExitAtBound(t, listener, rig, watchdog, startChildWait+5*time.Second+2*time.Second+time.Second, readRefusal)
+	})
+
+	// Only a refusal of the read is waited out: a stream the server does not hold ends the start at
+	// its first try, as it did before the read joined the wait, rather than after the ten tries a
+	// second apart that the wait gives any other error of the connect.
+	t.Run("a stream the server does not hold ends the start at once", func(t *testing.T) {
+		run := newListenerStartRun(t)
+		seed, public := testnats.User(t)
+		_, fallback := testnats.User(t)
+		_, uri := testnats.StartConfig(t, nkeyAuthorization(fallback, nkeyUser(public)), []string{"-js"}, true)
+		cfg, edge := edgeStartRun(t, uri)
+		t.Setenv(bus.NkeySeedEnvVar, seed)
+		run.begin(cfg, edge, newNATSStart(listenerCredentialWait))
+		got := run.await(t, watchdog)
+		took := got.at.Sub(run.began)
+		const want = "the server holds no " + bus.Stream + " stream"
+		if got.err == nil || !strings.Contains(got.err.Error(), want) {
+			t.Fatalf("the edge listener's start on a server with no stream returned %v after %s, want an error naming %q", got.err, took, want)
+		}
+		// The connect's read of the deployed subjects can wait out its two seconds
+		// (firstStreamSubjectsRead) before the read of the stream; one more second tells that from a
+		// start that tried a second time.
+		if took > 3*time.Second {
+			t.Fatalf("the edge listener's start on a server with no stream ended %s after its first try, want at its first try: %v", took, got.err)
+		}
+	})
+
+	// A refusal can reach the read as the connection's last error rather than as the read's own:
+	// the server takes the edge's user away while the read waits for an answer it will never get
+	// (the user may not subscribe to the edge's inboxes, so the server drops the reply), so the read
+	// ends on a connection the server refused, whose last error is the authorization violation.
+	// edgeStreamPresent wraps that error, so the start waits it out as it waits out a refusal of the
+	// connect, and completes once the server admits the user again. With the last error formatted
+	// rather than wrapped, the start ended at that read.
+	t.Run("an authorization refusal the read meets as the connection's last error is waited out", func(t *testing.T) {
+		var records logtest.Recorder
+		logtest.SetDefault(t, &records)
+		run := newListenerStartRun(t)
+		inboxes := natsgrant.EdgeInboxPrefix(edgeStartMachine) + ".>"
+		rig := startEdgeStartServer(t, func(public, fallback string) string {
+			return nkeyAuthorization(fallback, fmt.Sprintf("{nkey: %q, permissions: {subscribe: {deny: [%q]}}}", public, inboxes))
+		})
+		cfg, edge := edgeStartRun(t, rig.uri)
+		t.Setenv(bus.NkeySeedEnvVar, rig.seed)
+		start := newNATSStart(listenerCredentialWait)
+		base := serveStartRoutes(t, start)
+
+		run.begin(cfg, edge, start)
+		// The connect's read of the deployed subjects has waited out the answer the server dropped,
+		// so the start's read of the stream is next, and meets the same silence.
+		run.untilLogged(t, &records, watchdog, "the connect's read of the deployed subjects to end", func(record slog.Record) bool {
+			return record.Message == "envoy nats could not read the stream's subjects" && recordAttr(record, "name") == listenerTryName
+		})
+		if err := rig.server.Reload(t, nkeyAuthorization(rig.fallback)); err != nil {
+			t.Fatalf("reload the server without the edge listener's user: %v", err)
+		}
+		const lastError = "the connection's last error: nats: authorization violation"
+		refusal := run.untilLogged(t, &records, watchdog, "the start to wait out the read's refusal through the connection's last error", func(record slog.Record) bool {
+			return record.Message == "envoy nats credential refused at start; trying again" && strings.Contains(strings.ToLower(recordAttr(record, "error")), lastError)
+		})
+		t.Logf("the start waits out: %s", recordAttr(refusal, "error"))
+		if status, fields := probe(t, base, "/healthz"); status != http.StatusServiceUnavailable {
+			t.Fatalf("/healthz answered %d %v while the start waited out a refusal, want 503", status, fields)
+		}
+		if err := rig.server.Reload(t, nkeyAuthorization(rig.fallback, nkeyUser(rig.public))); err != nil {
+			t.Fatalf("reload the server with the edge listener's user: %v", err)
+		}
+
+		got := run.await(t, watchdog)
+		if got.err != nil {
+			t.Fatalf("the edge listener's start returned %v %s after its first try, want it to complete once the server admits it again", got.err, got.at.Sub(run.began))
+		}
+		if status, fields := probe(t, base, "/healthz"); status != http.StatusOK || fields["status"] != "starting" {
+			t.Fatalf("/healthz after the edge listener's start = %d %v, want main's 200 starting", status, fields)
+		}
+	})
 }
 
 // rotatingForwarder is the one address the listener is given in
@@ -636,24 +852,102 @@ func TestTheListenerStartConnectsOnceTheServersHaveReloaded(t *testing.T) {
 	}
 }
 
-// startChildSeedFile names, in the environment of this test binary run again as the listener (the
-// first case of TestTheListenerStartEndsAtTheCredentialBound), the file that holds its nkey seed.
-// testnats's init unsets NATS_NKEY_SEED_FILE in every binary that imports it, so the child names
-// it again from here before it runs the listener.
+// startChildSeedFile names, in the environment of this test binary run again as the listener
+// (startListenerChild), the file that holds its nkey seed. testnats's init unsets
+// NATS_NKEY_SEED_FILE in every binary that imports it, so the child names it again from here before
+// it runs the listener.
 const startChildSeedFile = "ENVOY_TEST_LISTENER_START_SEED_FILE"
 
 // startChildWait is that child's credential wait, the bound its exit is timed against.
 const startChildWait = 5 * time.Second
 
 // runStartChild is this test binary run as the listener: the listener's main with a credential
-// wait of startChildWait, as NATS_NKEY_SEED_FILE seedFile's user. runListener ends the process.
+// wait of startChildWait, as NATS_NKEY_SEED_FILE seedFile's user. runListener ends the process. The
+// log package's lines carry microseconds here (childLineStamp), so the parent reads the instant of
+// the child's last line, which it writes as it exits, from the line itself.
 func runStartChild(seedFile string) {
 	if err := os.Setenv("NATS_NKEY_SEED_FILE", seedFile); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}
+	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 	runListener(startChildWait)
 	os.Exit(2)
+}
+
+// childLineStamp is the layout of the date and time a startListenerChild's log package lines begin
+// with (runStartChild), in the machine's own zone.
+const childLineStamp = "2006/01/02 15:04:05.000000"
+
+// startListenerChild runs this test binary again as the listener of machineID (runStartChild),
+// against the NATS at uri as the nkey user whose seed is seed, on a loopback port the test holds
+// (startListenerProcess says why), with env(port) added to its environment. The child runs
+// TestTheListenerStartEndsAtTheCredentialBound, whose first statement turns it into the listener.
+func startListenerChild(t *testing.T, uri, seed, machineID string, env func(port int) []string) *cmdtest.Process {
+	t.Helper()
+	seedFile := filepath.Join(t.TempDir(), "seed")
+	if err := os.WriteFile(seedFile, []byte(seed), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	held := cmdtest.HoldPort(t)
+	cmd := exec.Command(os.Args[0], "-test.run=^TestTheListenerStartEndsAtTheCredentialBound$", "-test.timeout=2m")
+	cmd.Env = append([]string{
+		"PORT=" + strconv.Itoa(held.Port),
+		"ENVOY_LISTEN_HOST=127.0.0.1",
+		"ENVOY_MACHINE_ID=" + machineID,
+		"NATS_URLS=" + uri,
+		startChildSeedFile + "=" + seedFile,
+	}, env(held.Port)...)
+	held.Pass(cmd, "ENVOY_LISTEN_FD")
+	return cmdtest.Start(t, "the listener", cmd)
+}
+
+// awaitChildExitAtBound waits, until watchdog, for listener, a startListenerChild whose server
+// never admits its start, to exit, and fails the test unless it exited 1, its last line naming its
+// nkey's public key and refusal, at an instant between the bound and most after the server took its
+// first try. It answers the server's record of the child's tries.
+//
+// The instant is the child's own: the time its last line, the start's last line written just before
+// it exits, carries (childLineStamp), not the moment this test saw it exit, which waits on this
+// test's own scheduling and on the reaping of the process. The child counts its bound from the
+// moment it began its first try, and the server records that try when it took the connection, up to
+// a dial's latency later, so the lower bound is startChildWait less credentialWaitTolerance.
+func awaitChildExitAtBound(t *testing.T, listener *cmdtest.Process, rig edgeStartServer, watchdog, most time.Duration, refusal string) []listenerTry {
+	t.Helper()
+	select {
+	case <-listener.Exited:
+	case <-time.After(watchdog):
+		t.Fatalf("watchdog: the listener still ran %s after it started, against a server that never admits its start:\n%s", watchdog, listener.Output.String())
+	}
+	seen := time.Now()
+	output := listener.Output.String()
+	if code := listener.Cmd.ProcessState.ExitCode(); code != 1 {
+		t.Fatalf("the listener exited %d, want 1:\n%s", code, output)
+	}
+	tries := listenerTries(t, rig.server.MonitorURL())
+	if len(tries) == 0 {
+		t.Fatalf("the server recorded no try of the listener's start:\n%s", output)
+	}
+	lines := strings.Split(strings.TrimRight(output, "\n"), "\n")
+	last := lines[len(lines)-1]
+	if len(last) < len(childLineStamp) {
+		t.Fatalf("the listener's last line %q carries no time:\n%s", last, output)
+	}
+	exited, err := time.ParseInLocation(childLineStamp, last[:len(childLineStamp)], time.Local)
+	if err != nil {
+		t.Fatalf("read the time of the listener's last line %q: %v\n%s", last, err, output)
+	}
+	took, least := exited.Sub(tries[0].Start), startChildWait-credentialWaitTolerance
+	t.Logf("the listener wrote its last line %s after its first try, having tried %d times; the test saw it exit %s after that line", took, len(tries), seen.Sub(exited))
+	if took < least || took > most {
+		t.Fatalf("the listener wrote its last line %s after its first try, want between %s and %s:\n%s", took, least, most, output)
+	}
+	for _, want := range []string{rig.public, refusal} {
+		if !strings.Contains(last, want) {
+			t.Fatalf("the listener's last line %q does not name %q:\n%s", last, want, output)
+		}
+	}
+	return tries
 }
 
 // TestTheListenerStartEndsAtTheCredentialBound (c-start-never): the start's wait has a bound. A
@@ -670,46 +964,16 @@ func TestTheListenerStartEndsAtTheCredentialBound(t *testing.T) {
 	const watchdog = 60 * time.Second
 
 	t.Run("a credential the server never admits ends the listener at the bound", func(t *testing.T) {
-		seed, public := testnats.User(t)
+		var rig edgeStartServer
+		rig.seed, rig.public = testnats.User(t)
 		_, fallback := testnats.User(t)
-		server, uri := testnats.StartConfig(t, nkeyAuthorization(fallback), []string{"-js"}, true)
-		seedFile := filepath.Join(t.TempDir(), "seed")
-		if err := os.WriteFile(seedFile, []byte(seed), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		held := cmdtest.HoldPort(t)
-		cmd := exec.Command(os.Args[0], "-test.run=^TestTheListenerStartEndsAtTheCredentialBound$", "-test.timeout=2m")
-		cmd.Env = []string{
-			"PORT=" + strconv.Itoa(held.Port),
-			"ENVOY_LISTEN_HOST=127.0.0.1",
-			"ENVOY_MACHINE_ID=start-bound",
-			"NATS_URLS=" + uri,
-			"ENVOY_API_TOKEN=" + listenerTestToken,
-			startChildSeedFile + "=" + seedFile,
-		}
-		held.Pass(cmd, "ENVOY_LISTEN_FD")
-		listener := cmdtest.Start(t, "the listener", cmd)
-		select {
-		case <-listener.Exited:
-		case <-time.After(watchdog):
-			t.Fatalf("watchdog: the listener still ran %s after it started, against a server that never admits its credential:\n%s", watchdog, listener.Output.String())
-		}
-		exited := time.Now()
-		output := listener.Output.String()
-		if code := listener.Cmd.ProcessState.ExitCode(); code != 1 {
-			t.Fatalf("the listener exited %d, want 1:\n%s", code, output)
-		}
-		tries := listenerTries(t, server.MonitorURL())
-		if len(tries) == 0 {
-			t.Fatalf("the server recorded no try of the listener's start:\n%s", output)
-		}
+		rig.server, rig.uri = testnats.StartConfig(t, nkeyAuthorization(fallback), []string{"-js"}, true)
+		listener := startListenerChild(t, rig.uri, rig.seed, "start-bound", func(int) []string {
+			return []string{"ENVOY_API_TOKEN=" + listenerTestToken}
+		})
 		// The bound, plus one try's connectTimeout of 5 s that may run past it, and a second of
 		// scheduling margin.
-		took, most := exited.Sub(tries[0].Start), startChildWait+5*time.Second+time.Second
-		t.Logf("the listener exited %s after its first try, having tried %d times", took, len(tries))
-		if took < startChildWait || took > most {
-			t.Fatalf("the listener exited %s after its first try, want between %s and %s:\n%s", took, startChildWait, most, output)
-		}
+		tries := awaitChildExitAtBound(t, listener, rig, watchdog, startChildWait+5*time.Second+time.Second, authorizationViolation)
 		// Its tries came at 0, 1 and 3 s, and the wait of 4 s due after the third was cut to end at
 		// the bound, where the fourth and last came: four tries, and not the ten of a start that
 		// waits out nothing, which end about as late.
@@ -721,13 +985,6 @@ func TestTheListenerStartEndsAtTheCredentialBound(t *testing.T) {
 		for i, want := range wantWaits {
 			if gap := waits[i] - want; gap > credentialWaitTolerance || gap < -credentialWaitTolerance {
 				t.Fatalf("the server recorded waits %v between the start's tries, want %v, each within %s", waits, wantWaits, credentialWaitTolerance)
-			}
-		}
-		lines := strings.Split(strings.TrimRight(output, "\n"), "\n")
-		last := lines[len(lines)-1]
-		for _, want := range []string{public, authorizationViolation} {
-			if !strings.Contains(last, want) {
-				t.Fatalf("the listener's last line %q does not name %q:\n%s", last, want, output)
 			}
 		}
 	})

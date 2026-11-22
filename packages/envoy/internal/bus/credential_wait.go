@@ -20,13 +20,23 @@ const (
 	credentialRetryCap   = 10 * time.Second
 )
 
-// credentialRefusal reports whether err, the error of a try of a start (startClient), is a refusal
-// of the client's credential: the server refusing the connect (authorizationRefusal), or a request
-// of the stream's ensure that the credential's grant does not cover (ErrPublishDenied, the server's
-// permissions violation, recordPublishDenial).
+// credentialRefusal reports whether err, the error of a try of a start (startClient, and the start
+// check WithStartCheck sets), is a refusal of the client's credential: the server refusing the
+// connect (authorizationRefusal), or a request of the stream's ensure, or of the start check, that
+// the credential's grant does not cover (ErrPublishDenied, the server's permissions violation,
+// recordPublishDenial).
 func credentialRefusal(err error) bool {
 	return authorizationRefusal(err) || errors.Is(err, ErrPublishDenied)
 }
+
+// endsStart is the error of a try of a start that no wait repairs, so the start ends at it at once:
+// a start check's error that is no refusal of the credential (WithStartCheck), as a stream the
+// server does not hold is to an edge listener, which may not create it. It reads as the error it
+// carries.
+type endsStart struct{ err error }
+
+func (e endsStart) Error() string { return e.err.Error() }
+func (e endsStart) Unwrap() error { return e.err }
 
 // startClock is the clock a start that waits out refusals reads and waits on: wallStartClock, or a
 // test's own, which only the start and its tries move.
@@ -57,7 +67,9 @@ const startTryLateness = time.Second
 // begins, and ends the start when the bound has passed. The one try it lets begin past the bound
 // is the try at the bound, the one the wait cut to end at the bound leads to, which the clock may
 // wake it for up to startTryLateness late. The start ends with the error of its last try at the
-// first of the two limits, naming the last refusal (credentialWaitEnded, withLastRefusal).
+// first of the two limits, naming the last refusal (credentialWaitEnded, withLastRefusal), and at
+// once on an error that no wait repairs (endsStart), with the error it carries, naming the last
+// refusal too.
 //
 // refused, when not nil, is told of each refusal as it comes, with the wait before the next try is
 // due, or zero when the start ends on it at once. A wait that ends past the bound ends the start
@@ -71,6 +83,10 @@ func waitOutCredentialRefusals(bound time.Duration, refused func(err error, next
 		client, err := try()
 		if err == nil {
 			return client, nil
+		}
+		var final endsStart
+		if errors.As(err, &final) {
+			return nil, withLastRefusal(final.err, lastRefusal)
 		}
 		next, isRefusal := connectRetryWait, credentialRefusal(err)
 		if isRefusal {

@@ -176,6 +176,13 @@ type SessionConsumers struct {
 	// createFault, when not nil, runs before each consumer create is sent, and an error it returns
 	// fails the create unsent. It is nil outside tests (SetCreateFault).
 	createFault func(consumer string) error
+	// narrowed, when not nil, hears each change of a consumer's filter that drops a subject the
+	// new filter does not contain while the stream holds messages on it from the consumer's
+	// position on (SetNarrowed), with the count of them read on each such subject just before the
+	// change: an observation, which a message stored on the subject or delivered from it between
+	// the read and the change makes differ from the real loss by one. It is set before the handle
+	// is used, and read without a lock.
+	narrowed func(sessionID string, passedOver map[string]uint64)
 
 	// streamMu guards streamNext and streamReading (streamState).
 	streamMu sync.Mutex
@@ -374,7 +381,7 @@ func (s *SessionConsumers) Ensure(ctx context.Context, sessionID string, subject
 		// failed never reached the server, or its create did. Its start is the sequence it was
 		// created at, which the caller records for the durable path (SessionConsumerStart).
 		s.setPendingStart(name, 0)
-		changed, err := s.update(ctx, name, info.Config, filters)
+		changed, err := s.update(ctx, sessionID, name, info, filters)
 		return SessionConsumerStart{StartSeq: info.Config.OptStartSeq, AckFloor: ackFloor(info), Updated: changed}, err
 	}
 }
@@ -390,7 +397,7 @@ func (s *SessionConsumers) UpdateFilter(ctx context.Context, sessionID string, s
 	if err != nil {
 		return err
 	}
-	_, err = s.update(ctx, name, info.Config, filters)
+	_, err = s.update(ctx, sessionID, name, info, filters)
 	return err
 }
 
@@ -475,14 +482,19 @@ func (s *SessionConsumers) RestartAtFloor(ctx context.Context, sessionID string,
 	if err == nil && info.NumAckPending == 0 {
 		// A consumer keepAtFloor does not keep, its next sequence past the stream's end, is
 		// restarted below at that sequence, as one awaiting an ack is.
-		if start, kept, err := s.keepAtFloor(ctx, name, info, filters, stream); err != nil || kept {
+		if start, kept, err := s.keepAtFloor(ctx, sessionID, name, info, filters, stream); err != nil || kept {
 			return start, err
 		}
 	}
 	var startSeq uint64
+	var passedOver map[string]uint64
 	switch {
 	case err == nil:
 		startSeq = ackFloor(info) + 1
+		// The consumer created again at startSeq holds nothing on a subject its filter drops,
+		// so every message on it from startSeq on, delivered and awaiting an ack or not, is
+		// passed over: counted before the delete, as an update's are (passedOverBy).
+		passedOver = s.passedOverBy(ctx, name, info, filters, startSeq)
 		s.setPendingStart(name, startSeq)
 		if err := s.delete(ctx, name); err != nil {
 			return SessionConsumerStart{}, err
@@ -500,6 +512,7 @@ func (s *SessionConsumers) RestartAtFloor(ctx context.Context, sessionID string,
 	if err != nil {
 		return SessionConsumerStart{}, err
 	}
+	s.reportNarrowed(sessionID, passedOver)
 	s.setPendingStart(name, 0)
 	return start, nil
 }
@@ -526,7 +539,7 @@ func (s *SessionConsumers) RestartAtFloor(ctx context.Context, sessionID string,
 // v2.10.29, which has no such reconcile and reports an ack floor of 0 for a consumer that has acked
 // nothing, a consumer with that floor of 0 whose start is past the end reaches the check too,
 // through ackFloor's OptStartSeq - 1 term, as one an earlier build created there does.
-func (s *SessionConsumers) keepAtFloor(ctx context.Context, name string, info *jetstream.ConsumerInfo, filters []string, stream *streamRead) (SessionConsumerStart, bool, error) {
+func (s *SessionConsumers) keepAtFloor(ctx context.Context, sessionID, name string, info *jetstream.ConsumerInfo, filters []string, stream *streamRead) (SessionConsumerStart, bool, error) {
 	state, err := stream.wait(ctx)
 	if err != nil {
 		return SessionConsumerStart{}, false, err
@@ -539,7 +552,7 @@ func (s *SessionConsumers) keepAtFloor(ctx context.Context, name string, info *j
 	if past {
 		return SessionConsumerStart{}, false, nil
 	}
-	if _, err := s.update(ctx, name, info.Config, filters); err != nil {
+	if _, err := s.update(ctx, sessionID, name, info, filters); err != nil {
 		return SessionConsumerStart{}, false, err
 	}
 	s.setPendingStart(name, 0)
@@ -912,13 +925,67 @@ func sessionConsumerTarget(sessionID string, subjects []string) (string, []strin
 // its project). An issue's topic under a wildcard project (notifications.dispatch.issue.*.KEY.>)
 // would overlap its old form, so contracts.LegacyTwin gives it none and it stays one filter. It is
 // the one computation of that set, which a caller comparing a consumer with the row it was built
-// from reads too.
+// from reads too; SessionConsumerReduction is the same computation with the subjects that fed each
+// filter.
 func SessionConsumerFilters(subjects []string) []string {
-	forms := make([]string, 0, 2*len(subjects))
-	for _, subject := range subjects {
-		forms = append(forms, contracts.TopicForms(subject)...)
-	}
+	forms, _ := sessionConsumerForms(subjects, false)
 	return ReduceFilterSubjects(forms)
+}
+
+// ReducedSessionFilter is one filter of the set SessionConsumerFilters gives, with the subjects
+// whose forms fed it (SessionConsumerReduction).
+type ReducedSessionFilter struct {
+	Subject string
+	// Fed is the subjects, of those SessionConsumerReduction was handed, whose forms
+	// (contracts.TopicForms) went into Subject, each once and in the order handed: the subject a
+	// form is of, where Subject is that form as it came; and, where the reduction merged two
+	// overlapping filters into their common prefix and `>`, every subject a form of which fed that
+	// merge or a merge before it. A form another filter contains is dropped, and feeds nothing.
+	Fed []string
+}
+
+// SessionConsumerReduction is SessionConsumerFilters with the provenance of each filter: the same
+// filters in the same order, each with the subjects that fed it (ReducedSessionFilter), from the
+// one reduction (reduceFilters). A caller that weighs what each filter of the set reaches reads
+// the set the consumer carries, and which of its subjects made each filter: cmd/listener's
+// sessionConsumerFilter leaves out the wildcard topics that fed a filter reaching another session's
+// private subjects, and no others.
+func SessionConsumerReduction(subjects []string) []ReducedSessionFilter {
+	forms, fedBy := sessionConsumerForms(subjects, true)
+	if len(forms) == 0 {
+		return nil
+	}
+	reduced := reduceFilters(forms, fedBy)
+	filters := make([]ReducedSessionFilter, len(reduced))
+	for index, filter := range reduced {
+		slices.Sort(filter.fed)
+		fed := slices.Compact(filter.fed)
+		names := make([]string, len(fed))
+		for at, subject := range fed {
+			names[at] = subjects[subject]
+		}
+		filters[index] = ReducedSessionFilter{Subject: filter.subject, Fed: names}
+	}
+	return filters
+}
+
+// sessionConsumerForms is every form of each of subjects (contracts.TopicForms), in order, and,
+// when track is set, beside each form the index in subjects of the subject it is a form of.
+func sessionConsumerForms(subjects []string, track bool) ([]string, []int) {
+	forms := make([]string, 0, 2*len(subjects))
+	var fedBy []int
+	if track {
+		fedBy = make([]int, 0, 2*len(subjects))
+	}
+	for index, subject := range subjects {
+		for _, form := range contracts.TopicForms(subject) {
+			forms = append(forms, form)
+			if track {
+				fedBy = append(fedBy, index)
+			}
+		}
+	}
+	return forms, fedBy
 }
 
 // applySettings sets the session consumer settings and filters on config, leaving what an update
@@ -937,15 +1004,99 @@ func (s *SessionConsumers) applySettings(config *jetstream.ConsumerConfig, filte
 	config.FilterSubjects = filters
 }
 
-// update sends consumer name's current configuration with the session consumer settings and
-// filters applied, when that changes anything, and reports whether it sent it.
-func (s *SessionConsumers) update(ctx context.Context, name string, current jetstream.ConsumerConfig, filters []string) (bool, error) {
-	next, changed := s.updated(current, filters)
+// update sends consumer name's configuration, as info read it, with the session consumer settings
+// and filters applied, when that changes anything, and reports whether it sent it. An update that
+// drops a subject with messages waiting on it is reported to the narrowed hook (passedOverBy).
+func (s *SessionConsumers) update(ctx context.Context, sessionID, name string, info *jetstream.ConsumerInfo, filters []string) (bool, error) {
+	next, changed := s.updated(info.Config, filters)
 	if !changed {
 		return false, nil
 	}
-	_, err := s.upsert(ctx, name, next, "update")
-	return err == nil, err
+	// nats-server goes on from the consumer's position with the new filters, so a message the
+	// consumer has not delivered on a subject they drop is never delivered.
+	passedOver := s.passedOverBy(ctx, name, info, filters, max(info.Delivered.Stream, ackFloor(info))+1)
+	if _, err := s.upsert(ctx, name, next, "update"); err != nil {
+		return false, err
+	}
+	s.reportNarrowed(sessionID, passedOver)
+	return true, nil
+}
+
+// SetNarrowed sets the hook a change of a consumer's filter calls when it passes messages over: an
+// update, or a restart at the ack floor that deletes the consumer and creates it again, whose new
+// filter drops a subject no subject of it contains while the stream holds messages on that subject
+// from the consumer's position on. Those messages were counted for the session at their publish
+// and are never delivered to it. passedOver holds, for each such subject, how many messages the
+// stream held on it from that position on (passedOverBy): an observation read just before the
+// change, so a message stored on the subject, or delivered from it, between that read and the
+// change makes the real loss differ from it by one each. Call it before the handle is used.
+func (s *SessionConsumers) SetNarrowed(narrowed func(sessionID string, passedOver map[string]uint64)) {
+	s.narrowed = narrowed
+}
+
+// reportNarrowed calls the narrowed hook with passedOver, when it holds any subject.
+func (s *SessionConsumers) reportNarrowed(sessionID string, passedOver map[string]uint64) {
+	if s.narrowed != nil && len(passedOver) > 0 {
+		s.narrowed(sessionID, passedOver)
+	}
+}
+
+// passedOverBy is, for each subject of consumer name's filter, as info read it, that filters drop
+// and no subject of filters contains (SubjectContains), how many messages the stream holds on it
+// from stream sequence from on, read on the subject itself (pendingOn), so the count is that
+// subject's own whatever the new filter adds or keeps. A subject a new one contains, as
+// notifications.team.foo replaced by notifications.team.>, passes nothing over, and a subject
+// with no message waiting on it is left out. It reads nothing when no narrowed hook is set.
+func (s *SessionConsumers) passedOverBy(ctx context.Context, name string, info *jetstream.ConsumerInfo, filters []string, from uint64) map[string]uint64 {
+	if s.narrowed == nil {
+		return nil
+	}
+	var dropped []string
+	for _, subject := range append(slices.Clone(info.Config.FilterSubjects), info.Config.FilterSubject) {
+		if subject != "" && !slices.ContainsFunc(filters, func(kept string) bool { return SubjectContains(kept, subject) }) {
+			dropped = append(dropped, subject)
+		}
+	}
+	passedOver := map[string]uint64{}
+	for _, subject := range dropped {
+		if pending := s.pendingOn(ctx, name, subject, from); pending > 0 {
+			passedOver[subject] = pending
+		}
+	}
+	return passedOver
+}
+
+// passedOverConsumerPrefix begins the name of the consumer pendingOn counts through, in place of
+// sessionConsumerPrefix, so no list of session consumers (ListSessionConsumers) reads it as one: a
+// name of one token, as the session-consumer grant takes (natsgrant, CONSUMER.CREATE.<stream>.*).
+const passedOverConsumerPrefix = "p-"
+
+// pendingOn is how many messages the stream holds on subject from stream sequence from on: it
+// creates a consumer of its own on the stream, filtering on subject alone and starting at from,
+// reads the count the server answers it has to deliver (NumPending), and deletes it. A count that
+// cannot be read is logged and answered as 0, so the change of the filter it was read for goes on.
+func (s *SessionConsumers) pendingOn(ctx context.Context, name, subject string, from uint64) uint64 {
+	counter := passedOverConsumerPrefix + strings.TrimPrefix(name, sessionConsumerPrefix)
+	info, err := s.upsert(ctx, counter, jetstream.ConsumerConfig{
+		Name:              counter,
+		FilterSubject:     subject,
+		DeliverPolicy:     jetstream.DeliverByStartSequencePolicy,
+		OptStartSeq:       max(from, 1),
+		AckPolicy:         jetstream.AckNonePolicy,
+		InactiveThreshold: time.Minute,
+		MemoryStorage:     true,
+		Replicas:          1,
+	}, "create")
+	if err != nil {
+		s.logger.Warn("bus: the messages a session consumer's filter change passes over on a subject could not be counted",
+			slog.String("consumer", name), slog.String("subject", subject), slog.String("error", err.Error()))
+		return 0
+	}
+	if err := s.delete(ctx, counter); err != nil {
+		s.logger.Warn("bus: the consumer that counted a subject's messages was not deleted; the server removes it once it is idle",
+			slog.String("consumer", counter), slog.String("error", err.Error()))
+	}
+	return info.NumPending
 }
 
 // updated is current with the session consumer settings and filters applied, and whether that
