@@ -67,6 +67,12 @@ const (
 	// can clear, GitHub's transient trouble and the cluster's within retries of their own
 	// (storeOpenRetry, appMintRetry, imageProbeRetry); the work after each has a budget anew.
 	bootTimeout = 30 * time.Second
+	// stalePluginReadBound bounds each read of a claim's plan the stale-plugin pass makes, at boot
+	// and at each sweep (refreshStalePlugins): a store that takes the read and never answers ends
+	// that one read, which the next sweep makes again, and holds neither the pass nor the boot. It
+	// bounds a read rather than the pass, as the replay's budget is one fact's (replayTerminal), so
+	// a fleet of any size is read whole.
+	stalePluginReadBound = bootTimeout
 	// storeOpenAttempt bounds one attempt to open the store (storeOpenRetry). With no
 	// connect_timeout in the DSN, pgxpool bounds a connection it opens at two minutes, so without
 	// this bound a connection the database takes and never answers would hold the attempt that long.
@@ -2066,8 +2072,9 @@ func (s sessionStop) send(session string, goneAt time.Time) {
 // round 9 of #4220). Then every claim recording a name it does not hold is suspended
 // (suspendSessionConflicts); a restored timer that fires between restore and that suspension
 // relaunches its claim into the hold's refusal, which holdRecorded refuses before anything starts
-// and charges one launch failure. The steps before the relaunches run on boot, settle on budgets
-// of its own, and the relaunches on the machines' context; the daemon's stop ends all three (run).
+// and charges one launch failure. The steps before the relaunches run on boot; settle and the
+// stale-plugin pass run on budgets of their own, since the boot's can be spent by then; and the
+// relaunches run on the machines' context. The daemon's stop ends every one of them (run).
 //
 // The project's pause is read before any claim is restored (decision 18 of
 // dispatch://INFRA-3759): the flag holds the open pause before any machine exists, so every launch
@@ -2143,7 +2150,13 @@ func (s *supervision) start(boot context.Context, settle func() error) error {
 		s.reconcileOrphans(store.ForConcurrentWorker(s.supervisor.ctx))
 	}()
 	s.endPluginRounds(s.claims)
-	s.refreshStalePlugins(boot, s.claims, "boot")
+	// The pass reads the plan of a claim's issue, and the boot's budget can be spent by now: the
+	// replay above runs on a budget of its own, since the boot's would end it (run). A read on the
+	// spent budget fails, and the pass decides nothing for that claim, so a daemon that cannot
+	// relaunch would never write the boot's line for it. So the pass runs on the machines' context,
+	// which the daemon's stop ends as it ends boot, with a hold mark of its own, and bounds each read
+	// itself (stalePluginReadBound).
+	s.refreshStalePlugins(store.ForConcurrentWorker(s.supervisor.ctx), s.claims, "boot")
 	if len(unfinished) > 0 {
 		s.relaunchUnfinished(unfinished, reconciled)
 	}
@@ -2293,7 +2306,8 @@ func (s *supervision) endPluginRounds(claims []supervise.Claim) {
 //
 // A claim whose read of whether its launch installs a plugin fails is decided nothing by this
 // pass: no relaunch is posted and no line says it is stale, since nothing established either.
-// One Warn line names the claim and the read's error, and the next sweep reads it again.
+// One Warn line names the claim and the read's error, and the next sweep reads it again. Each
+// read is bounded on its own (stalePluginReadBound), whatever the pass's context allows.
 //
 // The project controller's claim is posted whatever the gate holds, and takes no credit: its
 // relaunch is exempt from the pacing altogether (supervise's reserveWake, claim.IsController), so
@@ -2302,7 +2316,9 @@ func (s *supervision) endPluginRounds(claims []supervise.Claim) {
 // (refreshPlugin).
 func (s *supervision) refreshStalePlugins(ctx context.Context, claims []supervise.Claim, trigger string) {
 	noInstall := func(ctx context.Context, c supervise.Claim) (bool, error) {
-		return noPluginInstall(ctx, s.cfg, s.backends, c)
+		read, end := context.WithTimeout(ctx, stalePluginReadBound)
+		defer end()
+		return noPluginInstall(read, s.cfg, s.backends, c)
 	}
 	parked, refreshes := s.parkedWakes()
 	s.refreshGate.Correct(refreshes)
