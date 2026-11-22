@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
 
 // Member is a document of an issue's Links, one its own content links to, with that row's via.
@@ -129,12 +130,33 @@ func oneRowPerNode(own string) string {
 // (VisibilityArg), which every predicate they render names; $1 is the issue's key.
 const closureSeen = "$2"
 
+// closureLinkKinds is the parameter both statements of the read bind the pointer kinds of the
+// installed block schema at (pmdoc.LinkKinds), the kinds blockRefLinked admits beside a mention.
+const closureLinkKinds = "$3"
+
+// blockRefLinked is whether the block_refs row alias is a link of the references read: a
+// mention, or a typed block's `block[]` pointer of a kind the installed block schema declares
+// (closureLinkKinds) while the graph read lists it (blockRefListed), whether or not the row names
+// its node. block_refs also holds a decision's ties that are neither: its decided_by, the
+// `actor` attribute the server writes, to the person or the session who decided, and its
+// from_ask, an `ask` attribute, to the ask it settles. block_ref_listed holds of both, since
+// neither attribute declares targets, and graph_edges and the graph read list both (the census
+// reads graph_edges' decided_by), so blockRefListed stays the view's rule and this read adds the
+// test of the kind: the person who decided is no reference of the issue. The kinds are bound at
+// each read and not spelled into the statement, which is rendered once, because the installed
+// schema is the store's and is installed again whenever the store's changes
+// (schemanodes.Installer).
+func blockRefLinked(alias string) string {
+	return `(` + alias + `.kind = 'mentions' or ` + alias + `.kind = any(` + closureLinkKinds + `::text[])) and ` +
+		blockRefListed(alias, alias+`.to_id`)
+}
+
 // linksOutQuery is the out statement of the references read of the issue whose key is $1: every
 // node the issue's own content links to, read from the links of that content by their source.
 // The issue's own content is its documents and its items, those of each item kind (itemKinds:
 // its comments, its messages and its asks), each read by the issue's key. Its links are each
 // one's own refs rows, read by refs' primary key (from_kind, from_id); every link of its
-// documents' blocks, mentions and the pointers block_ref_listed lists, read from block_refs by
+// documents' blocks, mentions and declared pointers (blockRefLinked), read from block_refs by
 // its primary key's document; and the links of the current blocks of each item whose own refs
 // rows do not hold every mention its blocks hold (ItemKind.refsHoldBlockLinks), an ask's parts,
 // read from the kind's block mentions table by its primary key's item (itemBlockLinks). A
@@ -145,8 +167,8 @@ const closureSeen = "$2"
 // for one source, which `offset 0` keeps a nested loop keyed by that source: pulled up into a
 // join, it could be planned as a hash or a merge join over a whole read of its table. Each item
 // kind's items are read once by the issue's key (own_<its items table>), for its sources and for
-// the read of its block links alike. A row of block_refs is listed as a read of the rows
-// themselves lists it (blockRefListed), whether or not it names its node.
+// the read of its block links alike. A row of block_refs is listed as blockRefLinked lists it,
+// whether or not it names its node.
 //
 // heldByABlock probes block_refs by the mention's target and its document's id as text
 // (`artifact_id::text = from_id`), which block_refs_to_source keys by its three columns, to_kind,
@@ -189,7 +211,7 @@ var linksOutQuery = sync.OnceValue(func() string {
 			from own_documents o
 			cross join lateral (
 				select r.kind, r.to_kind, r.to_id from block_refs r
-				where r.artifact_id = o.id and ` + blockRefListed("r", "r.to_id") + `
+				where r.artifact_id = o.id and ` + blockRefLinked("r") + `
 				  and ` + VisibleKind(BlockNodeKind, `r.from_node`, closureSeen) + `
 				offset 0
 			) r
@@ -268,8 +290,8 @@ var linksOutQuery = sync.OnceValue(func() string {
 // (refs_to, block_refs_to_source, ask_block_refs_to, comment_block_refs_to,
 // message_block_refs_to), in a lateral that `offset 0` keeps a nested loop keyed by the kind, as
 // the out statement keeps its reads: a source block of an item while it is current
-// (itemBlockLinks, itemBlockCurrent), a block's pointer while block_ref_listed lists it, read as a
-// read of the rows themselves lists it (blockRefListed), and an item's own mention of a target
+// (itemBlockLinks, itemBlockCurrent), a block's mention and its declared pointer while
+// block_ref_listed lists it (blockRefLinked), and an item's own mention of a target
 // that a block of that item holds as that block's link alone (heldByABlock).
 //
 // Each link's source is reduced to its node: a document's block to its document and a block of
@@ -328,7 +350,7 @@ var linksInQuery = sync.OnceValue(func() string {
 		byTarget(`'artifact', src.ref_key, r.kind, r.to_kind, r.to_id`,
 			`block_refs r
 				cross join lateral (select a.ref_key from artifacts a where a.id = r.artifact_id limit 1) src`,
-			blockRefListed("r", "r.to_id")+` and `+VisibleKind(BlockNodeKind, `r.from_node`, closureSeen)),
+			blockRefLinked("r")+` and `+VisibleKind(BlockNodeKind, `r.from_node`, closureSeen)),
 	}
 	for _, item := range itemKinds {
 		tables, _ := item.tables()
@@ -398,7 +420,9 @@ type linkRow struct {
 // tuples reach (graphstore.MovedTo), or, where a move ends at an ask, the document the ask's row
 // names, the document it was decided in. A retired document's address names its issue
 // (loadArtifactNodes), which Links lists in its place, so it is no member. Every statement it
-// sends, through q, starts with ClosureTag.
+// sends, through q, starts with ClosureTag. A link is a mention, or a typed block's pointer of a
+// kind the installed schema declares while the graph read lists it (blockRefLinked): a decision's
+// decided_by and from_ask, which block_refs holds beside them, are neither and are no link.
 //
 // It answers for who: a link whose source, or the block it is read at, who may not see is no
 // link of the read, and a node who may not see is neither listed nor named as a via, so a node
@@ -406,12 +430,12 @@ type linkRow struct {
 // VisibleEnd, resolveNodes).
 func Closure(ctx context.Context, q Queryer, who model.Actor, issueKey string) (References, error) {
 	tagged := taggedQueryer{q}
-	seen := VisibilityArg(who)
-	out, err := readLinkRows(ctx, tagged, linksOutQuery(), issueKey, seen)
+	args := closureArgs(issueKey, who)
+	out, err := readLinkRows(ctx, tagged, linksOutQuery(), args)
 	if err != nil {
 		return References{}, fmt.Errorf("read the links out of %s's own content: %w", issueKey, err)
 	}
-	in, err := readLinkRows(ctx, tagged, linksInQuery(), issueKey, seen)
+	in, err := readLinkRows(ctx, tagged, linksInQuery(), args)
 	if err != nil {
 		return References{}, fmt.Errorf("read the links into %s and its own content: %w", issueKey, err)
 	}
@@ -435,10 +459,17 @@ func Closure(ctx context.Context, q Queryer, who model.Actor, issueKey string) (
 	return References{Members: members, Links: related(out, nodes), LinkedFrom: related(in, nodes)}, nil
 }
 
-// readLinkRows runs statement, the out or the in statement, for issueKey as the acting credential
-// seen reads it (closureSeen), and answers its rows.
-func readLinkRows(ctx context.Context, q Queryer, statement, issueKey string, seen any) ([]linkRow, error) {
-	rows, err := q.Query(ctx, statement, issueKey, seen)
+// closureArgs is what both statements of the read bind: issueKey at $1, the acting credential
+// who proves at closureSeen (VisibilityArg), and the pointer kinds of the installed block schema
+// at closureLinkKinds (pmdoc.LinkKinds), read as the read starts.
+func closureArgs(issueKey string, who model.Actor) []any {
+	return []any{issueKey, VisibilityArg(who), pmdoc.LinkKinds()}
+}
+
+// readLinkRows runs statement, the out or the in statement, with args (closureArgs), and answers
+// its rows.
+func readLinkRows(ctx context.Context, q Queryer, statement string, args []any) ([]linkRow, error) {
+	rows, err := q.Query(ctx, statement, args...)
 	if err != nil {
 		return nil, err
 	}

@@ -219,7 +219,7 @@ func TestTheClosureProbesDocumentBlocksThroughItsNodeIndex(t *testing.T) {
 		t.Fatalf("set local enable_seqscan = off: %v", err)
 	}
 	var raw []byte
-	if err := tx.QueryRow(ctx, "explain (format json) "+linksOutQuery(), "CORE-1", VisibilityArg(model.Actor{})).Scan(&raw); err != nil {
+	if err := tx.QueryRow(ctx, "explain (format json) "+linksOutQuery(), closureArgs("CORE-1", model.Actor{})...).Scan(&raw); err != nil {
 		t.Fatalf("explain the out statement: %v", err)
 	}
 	plan := explaintest.OnePlan(t, raw)
