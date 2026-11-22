@@ -51,6 +51,8 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/envoy/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
           cache: false
       # The image the test runs the server in, read from the Go constant that declares it, and
       # pulled first for the reason the action gives.
