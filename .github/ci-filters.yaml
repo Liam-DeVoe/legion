@@ -354,6 +354,9 @@ daemon_go_tests:
   - 'packages/pi-legion/agents/*.md'
   - 'skills/legion-worker/references/tools.md'
   - 'skills/legion-worker/references/merge-gate.md'
+  # why: .github/ci-notes/ci.md#daemon_go_tests-the-skill-scenario-rigs-program-internaldaemonrig_prompt_testgo-builds-it
+  - 'packages/pi-legion/scripts/skill-scenarios/daemon-pane.go'
+  - 'packages/pi-legion/scripts/skill-scenarios/daemon-pane-architect.go'
   - 'scripts/e2e/lib/github-apps.sh'
   - 'scripts/e2e/stage1-skeleton.sh'
   - 'scripts/e2e/lib/rig.sh'

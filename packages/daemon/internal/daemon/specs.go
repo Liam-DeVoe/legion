@@ -237,16 +237,8 @@ func (s specs) workerSpawnSpec(ctx context.Context, c supervise.Claim) (runtime.
 	if err != nil {
 		return runtime.SpawnSpec{}, fmt.Errorf("the addressing of %s: %w", c.Token, err)
 	}
-	addressing := addressingFragment(s.project, c, architect, spec.Repository, spec.DefaultBranch, s.ownersOf(ctx, c.Issue, c.Role))
-	// Every architect owns a plan, whose steps name the roles this sentence lists and whose roles
-	// name the models the next one lists; both stand before the tree architect's design-gate line,
-	// which ends that addressing.
-	if c.Role == claim.RoleArchitect {
-		addressing += " " + DeploymentRolesFragment(s.roles) + " " + ModelsFragment(s.models)
-	}
-	if claim.IsTreeArchitect(c.Role, c.Issue, c.Tree) {
-		addressing += " " + DesignGateFragment(s.designSteps)
-	}
+	addressing := addressingFragment(s.project, c, architect, spec.Repository, spec.DefaultBranch, s.ownersOf(ctx, c.Issue, c.Role)) +
+		ArchitectAddressing(c, s.roles, s.models, s.designSteps)
 	spec.Prompt = runtime.PromptParts{
 		RolePromptPaths:            promptPaths,
 		Addressing:                 addressing,
@@ -663,6 +655,27 @@ func RepositoriesSentence(owners []string) string {
 	return strings.ToUpper(clause[:1]) + clause[1:]
 }
 
+// ArchitectAddressing is what an architect's addressing says after the sentence every launch's
+// says (addressingFragment). Every architect owns a plan, whose steps name the roles of the
+// deployment and whose roles name its listed models, so it is told both (DeploymentRolesFragment
+// over roles, then ModelsFragment over models); the architect of its tree's root is then told the
+// design-gate steps the deployment gates (DesignGateFragment over designSteps), which end its
+// addressing. Each sentence follows a space, so the answer is appended to that first sentence as
+// it stands; a claim of any other role is told none of them, "". It is workerSpawnSpec's own
+// composition of that part, exported for the skill-scenario rig
+// (packages/pi-legion/scripts/skill-scenarios/daemon-pane-architect.go), which composes an
+// architect's prompt by calling it rather than restating it.
+func ArchitectAddressing(c supervise.Claim, roles []config.Role, models []string, designSteps []record.DesignStep) string {
+	if c.Role != claim.RoleArchitect {
+		return ""
+	}
+	addressing := " " + DeploymentRolesFragment(roles) + " " + ModelsFragment(models)
+	if claim.IsTreeArchitect(c.Role, c.Issue, c.Tree) {
+		addressing += " " + DesignGateFragment(designSteps)
+	}
+	return addressing
+}
+
 // DesignGateFragment is the sentence a tree's root architect is told after its addressing, and
 // the controller as its launch addressing: the design-gate steps this deployment gates, in the
 // order it gates them, each in backticks, which is the "Design gate steps" line the shared role
@@ -685,8 +698,8 @@ func DesignGateFragment(steps []record.DesignStep) string {
 // a step of its plan may name, each with the type of its step — Legion's five (BuiltinRoles,
 // whose types it reads), then each role the deployment defines (roles, config.Config.Roles) in the
 // file's order, `<name> (<type>)`, with ` with the model <model>` where the role's settings give
-// one, the model its agent starts with. It is exported for the rigs under packages/pi-legion,
-// which restate it, as AddressingFragment is.
+// one, the model its agent starts with. workerSpawnSpec and the skill-scenario rig both reach it
+// through ArchitectAddressing.
 func DeploymentRolesFragment(roles []config.Role) string {
 	builtin := stepplan.BuiltinRoles()
 	entries := make([]string, 0, len(stepRoleOrder)+len(roles))

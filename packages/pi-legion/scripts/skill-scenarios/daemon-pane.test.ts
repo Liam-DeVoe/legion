@@ -4,10 +4,16 @@ import path from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
-import { composeRolePrompt, DAEMON_MODULE, RIG_GH_TOKEN, workerPane } from "./daemon-pane";
+import {
+  composeRolePrompt,
+  DAEMON_MODULE,
+  daemonPaneOverlay,
+  RIG_GH_TOKEN,
+  workerPane,
+} from "./daemon-pane";
 
-// Every row below asks the daemon's own functions for a pane environment or a role's prompt, which
-// `go run` compiles and runs, so a host with no go runs none of them.
+// Every row below but the last asks the daemon's own functions for a pane environment or a role's
+// prompt, which `go run` compiles and runs, so a host with no go runs none of them.
 const skip = skipWithout("go");
 
 // The run directory: the daemon's pane environment makes the pane's home and the claim's gh
@@ -271,3 +277,32 @@ test.skipIf(skip)(
   },
   600_000
 );
+
+// daemon-pane-architect.go calls daemon.ArchitectAddressing, which a checkout of the daemon module
+// older than that function does not declare, and a build with a call it cannot resolve fails in
+// every mode. So the rig builds that file in only where the checkout's daemon declares the function
+// in a file of the package itself, not where it is named in a comment or declared by a test; in an
+// older checkout the program builds as before and refuses an architect's prompt alone.
+test("builds the architect's part in only where the checkout's daemon declares ArchitectAddressing", () => {
+  const older = path.join(rig, "older", "packages", "daemon");
+  mkdirSync(path.join(older, "internal", "daemon"), { recursive: true });
+  writeFileSync(
+    path.join(older, "internal", "daemon", "specs.go"),
+    "package daemon\n\n// ArchitectAddressing comes later; func ArchitectAddressing(\nfunc AddressingFragment() {}\n"
+  );
+  writeFileSync(
+    path.join(older, "internal", "daemon", "specs_test.go"),
+    "package daemon\n\nfunc ArchitectAddressing() {}\n"
+  );
+  const program = path.join(import.meta.dir, "daemon-pane.go");
+  expect(daemonPaneOverlay(older)).toEqual({
+    [path.join(older, "cmd", "daemon-pane", "main.go")]: program,
+  });
+  expect(daemonPaneOverlay(DAEMON_MODULE)).toEqual({
+    [path.join(DAEMON_MODULE, "cmd", "daemon-pane", "main.go")]: program,
+    [path.join(DAEMON_MODULE, "cmd", "daemon-pane", "architect.go")]: path.join(
+      import.meta.dir,
+      "daemon-pane-architect.go"
+    ),
+  });
+});
