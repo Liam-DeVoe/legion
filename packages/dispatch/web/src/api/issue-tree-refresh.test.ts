@@ -289,3 +289,34 @@ test("a child's title change marks stale a tree that holds the child's node", ()
   refreshQueries(client, eventRefreshTargets(retitled, "alice"));
   expect(client.getQueryState(outline)?.isInvalidated, "the parent's outline").toBe(true);
 });
+
+// A write of a child or a grandchild that moves nothing the parent's answers hold of it - its
+// status, assignee, priority, labels, or nothing at all - leaves the parent's tree and views
+// alone: the tree's issue node carries none of those fields, and the child row draws its status
+// and holder from the parent's issue detail, which the write refreshes by its `ancestors`. The
+// event names each ancestor, as the server writes it; only a create or a parent move can put the
+// issue under a tree whose answer does not hold it yet.
+test("a write of a child that moves nothing its parent's answers hold of it marks no tree or view of the parent stale", () => {
+  const cases: readonly (readonly [string, Record<string, unknown>, string])[] = [
+    ["status", { ancestors: ["CORE-1"], changed: ["status"] }, "CORE-2"],
+    ["assignee", { ancestors: ["CORE-1"], changed: ["assignee"] }, "CORE-2"],
+    ["priority", { ancestors: ["CORE-1"], changed: ["priority"] }, "CORE-2"],
+    ["labels", { ancestors: ["CORE-1"], changed: ["labels"] }, "CORE-2"],
+    ["nothing", { ancestors: ["CORE-1"], changed: [] }, "CORE-2"],
+    ["a grandchild's status", { ancestors: ["CORE-2", "CORE-1"], changed: ["status"] }, "CORE-3"],
+  ];
+  for (const [moved, payload, key] of cases) {
+    const client = new QueryClient();
+    const { outline, verification } = holdingChild(client);
+    client.setQueryData(["issue", "CORE-1"], { key: "CORE-1" });
+    refreshQueries(client, eventRefreshTargets(eventOf("issue.updated", payload, key), "alice"));
+    expect(
+      {
+        detail: client.getQueryState(["issue", "CORE-1"])?.isInvalidated,
+        outline: client.getQueryState(outline)?.isInvalidated,
+        verification: client.getQueryState(verification)?.isInvalidated,
+      },
+      `a write of ${key} that moves ${moved}`
+    ).toEqual({ detail: true, outline: false, verification: false });
+  }
+});
