@@ -12,13 +12,16 @@ import { rowLimit } from "./bounded-subprocess";
 import {
   appInstallation,
   at,
+  type FeedShape,
   failures,
   fullCookie,
   fullToken,
+  issueMode,
   type Leak,
   literally,
   memberCookie,
   memberLogin,
+  ownIssue,
   passed,
   routesFileOf,
   stopFakes,
@@ -80,7 +83,8 @@ describe.skipIf(withoutTools)("the split into fills, a runner and a writer", () 
   /** A runner's run with FILE and no full member's credential, over `rows` (`someRows` unless
    *  given), its document socket served, and its live feed served unless `live` is false: a run
    *  that a leak decides, or that stops before its feed, need not wait out a live window.
-   *  `createdAt` is when its fake's OWN was created. */
+   *  `createdAt` is when its fake's OWN was created; `env` changes its inputs, and `feed` its
+   *  fake's sockets. */
   function runner(
     file: string,
     leaks: readonly Leak[] = [],
@@ -88,7 +92,15 @@ describe.skipIf(withoutTools)("the split into fills, a runner and a writer", () 
       live = true,
       rows = someRows,
       createdAt,
-    }: { live?: boolean; rows?: readonly string[]; createdAt?: string | null } = {}
+      env = {},
+      feed = {},
+    }: {
+      live?: boolean;
+      rows?: readonly string[];
+      createdAt?: string | null;
+      env?: Readonly<Record<string, string | undefined>>;
+      feed?: FeedShape;
+    } = {}
   ) {
     return sweep(leaks, {
       env: {
@@ -97,9 +109,10 @@ describe.skipIf(withoutTools)("the split into fills, a runner and a writer", () 
         SWEEP_CONVERSATION_FILE: undefined,
         SWEEP_WRITE_ISSUE: undefined,
         SWEEP_LIVE_SECONDS: String(runnerLiveSeconds),
+        ...env,
       },
       ...(createdAt === undefined ? {} : { createdAt }),
-      feed: { doc: true, live },
+      feed: { doc: true, live, ...feed },
       rows,
     });
   }
@@ -479,6 +492,60 @@ describe.skipIf(withoutTools)("the split into fills, a runner and a writer", () 
       expect(stdout).toContain("\n  handoff: no issue of the first 1 holds a handoff\n");
       expect(code).toBe(2);
       expect(await Bun.file(file).exists()).toBe(false);
+    },
+    rowLimit("short", "short")
+  );
+
+  // The browser leg's runner: its person holds no session, so the member's own control is their
+  // comment and message on an issue of their own project, in place of a direct message to a
+  // session, and the runner makes those two writes alone.
+  test(
+    "a runner whose member's control is their own issue passes, writes on that issue alone, and prints a live window",
+    async () => {
+      const { file } = await fills();
+      const { code, fullRequests, memberWrites, stdout } = await runner(file, [], {
+        env: issueMode,
+      });
+      expect(fullRequests).toBe(0);
+      expect(memberWrites).toEqual([
+        `POST /api/v1/issues/${ownIssue}/comments`,
+        `POST /api/v1/issues/${ownIssue}/messages`,
+      ]);
+      expect(stdout).toMatch(
+        new RegExp(
+          `^ok {6}/ws/live: the member is sent 2 events in ${runnerLiveSeconds} s, none of TGT, and their own comment and message on ${ownIssue}; its control is a writer's write delivered inside the live window$`,
+          "m"
+        )
+      );
+      expect(stdout).toContain(
+        `\nok      GET /api/v1/messages/{id} (the member's own message on ${ownIssue}): 200 (control)\n`
+      );
+      expect(stdout).toMatch(/^live window \S+ \S+$/m);
+      expect(verdictOf(stdout)).toMatch(
+        new RegExp(
+          `^${literally(passed)}; the live check holds once a writer's delivered write falls inside the live window \\S+ \\S+, which the tailnet leg joins$`
+        )
+      );
+      expect(code, stdout).toBe(0);
+    },
+    rowLimit("short", "short")
+  );
+
+  // The control of the row above: the same runner, its member's own writes cut from their feed.
+  test(
+    "the same runner, its member's feed sent neither of their own writes on the issue, is UNKNOWN",
+    async () => {
+      const { file } = await fills();
+      const { code, stdout } = await runner(file, [], {
+        env: issueMode,
+        feed: { ownIssueLost: ["comment", "message"] },
+      });
+      expect(stdout).toContain(
+        `\nUNKNOWN /ws/live: the control did not hold: the member was not sent their own comment and message on ${ownIssue}\n`
+      );
+      expect(stdout).not.toMatch(/^live window /m);
+      expect(verdictOf(stdout)).toStartWith("UNKNOWN: ");
+      expect(code).toBe(2);
     },
     rowLimit("short", "short")
   );
