@@ -172,6 +172,19 @@ test("a role of the deployment reports the commit the workspace stands on, and r
   }
 });
 
+// The fresh agent of the role `acceptance` completes `accepting` with a verdict and writes no
+// handoff record, so it reports the commit its workspace stands on and asks Dispatch for none: the
+// daemon would refuse a record it does not read for that phase.
+test("the fresh agent of acceptance completes accepting with no handoff record", async () => {
+  const { jj, calls } = fakeJj();
+  const { latestHandoff, reads } = recordingDispatch();
+  await expect(
+    findHandoffReport({ phase: "accepting", role: "acceptance", env, jj, latestHandoff })
+  ).resolves.toEqual({ commit: STANDING });
+  expect(calls).toEqual([["log", "-r", "@-", "--no-graph", "-T", "commit_id"]]);
+  expect(reads).toEqual([]);
+});
+
 test("a reviewer whose review moved its issue on reports its own newest review record and the head it names", async () => {
   // A request for changes moves the issue to implementing at once, an approval to accepting once
   // the pull request is mergeable, and the reviewer completes after it: the daemon records that
