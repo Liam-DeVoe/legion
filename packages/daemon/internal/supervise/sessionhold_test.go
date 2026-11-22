@@ -958,12 +958,12 @@ func TestAHoldsLinesNameTheClaimOnce(t *testing.T) {
 
 // An operator's resume of a claim recording a session it does not hold is refused before
 // anything of the claim changes (resumeRefusal): a RefusedError, which the operator's route answers
-// 409 with its sentence, naming the operator's forget-session and the controller's or an
-// architect's fresh_session, either of which starts the agent in a new session, and the claim
-// stays suspended with nothing launched and nothing charged. Relaunched, its every launch would be
-// refused by the hold at start and the claim would fail within its launch budget
-// (acceptance of #4220). A rule's resume leaves it suspended the same way. A claim holding its
-// session resumes as before (R9).
+// 409 with its sentence, naming the operator's forget-session, after which the agent's next start
+// is in a new session, or the controller's or an architect's fresh_session, which starts the agent
+// in a new session, and the claim stays suspended with nothing launched and nothing charged.
+// Relaunched, its every launch would be refused by the hold at start and the claim would fail
+// within its launch budget (acceptance of #4220). A rule's resume leaves it suspended the same way.
+// A claim holding its session resumes as before (R9).
 //
 // The control (the pull request records the run): resume with no resumeRefusal: the operator's
 // resume answers no refusal and the claim is launched into the hold's refusal.
@@ -1007,8 +1007,9 @@ func TestAResumeOfASessionTheClaimDoesNotHoldIsRefused(t *testing.T) {
 // The controller's resume of an agent it suspended, whose claim records a session another claim holds, is
 // refused by the same check as the operator's (resumeRefusal), which runs after the controller's
 // own checks (askedBy, Claim.ResumeRefusal) admit it: a RefusedError naming the operator's
-// forget-session and the controller's own fresh_session, either of which starts the agent in a
-// new session, the claim still suspended by the controller, nothing launched and nothing charged.
+// forget-session, after which the agent's next start is in a new session, or the controller's own
+// fresh_session, which starts the agent in a new session, the claim still suspended by the
+// controller, nothing launched and nothing charged.
 // Once the claim holds its session, the controller's resume starts the agent again on it.
 //
 // The control: resume with no resumeRefusal: the controller's resume answers no refusal and the

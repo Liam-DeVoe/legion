@@ -1124,8 +1124,8 @@ func TestClaimsForgetSessionRequiresTheRecordedSession(t *testing.T) {
 // INFRA-945 R6: the one line a claim prints as says when the claim's idle pod was released, so an
 // operator reading `legion claims list` does not read it as a suspension someone must lift. A
 // claim of an agent the project's controller suspended says so too (#4065), so the operator
-// tells it from its own suspension: the controller's resume_agent lifts it, where the operator's
-// own is the operator's alone to lift. So does the claim of an agent an architect suspended, whose suspension an
+// tells that suspension from its own: the controller's resume_agent lifts the controller's
+// suspension, where the operator's own is the operator's alone to lift. So does the claim of an agent an architect suspended, whose suspension an
 // architect's resume_agent lifts as well as the controller's and the operator's resume. Every other claim prints the state
 // it is in, suspended by an operator among them. None of the five is in an update round, in a tool
 // call or refused by the leak check, so each line ends in the round, head, call and leak-check
