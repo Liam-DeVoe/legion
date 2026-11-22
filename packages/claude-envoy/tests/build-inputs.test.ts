@@ -29,13 +29,20 @@ const REPORT_MS = 10_000
 /** `command` run in `cwd`; its stdout, or an error naming the command and its stderr when it fails,
  *  or naming it, killed, when it has not exited by `deadline` (epoch ms), the row's own. It runs in
  *  a process group of its own, and the kill takes the whole group: a child of the command that
- *  holds its output pipes open would otherwise keep the read waiting past the kill, to Bun's timer. */
+ *  holds its output pipes open would otherwise keep the read waiting past the kill, to Bun's timer.
+ *  A command due to start once the deadline has passed is not started: the error says the row's
+ *  time was spent before it, so it names no command that did not spend it. */
 async function run(
   command: string[],
   cwd: string,
   deadline: number,
   env?: Record<string, string>,
 ): Promise<string> {
+  if (Date.now() >= deadline) {
+    throw new Error(
+      `the row's ${ROW_LIMIT_MS / 1000} s were spent before ${command.join(" ")} started, so it did not start`,
+    )
+  }
   const child = Bun.spawn(command, {
     cwd,
     ...(env === undefined ? {} : { env }),
