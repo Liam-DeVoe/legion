@@ -461,7 +461,9 @@ func sameDisks(step, what string, want, read map[string]string) error {
 // more after the move, as abort does: a restore that lands between its check and its move is a
 // restore outside any hold (the model's assumption A1), which it names, exiting 1 with the hold
 // released. Run again on a row already released under its hold id, it sends no PUT, and writes the
-// done entry a release killed between its PUT and its done left unwritten.
+// done entry a release killed between its PUT and its done left unwritten. On a released row whose
+// hold has not ended and has no release intent, a row restored released from prepare, it is
+// refused, naming `hold abort`, which ends that hold.
 func release(ctx context.Context, records *holdrecord.Client, op *Operator, o options, stdout io.Writer) error {
 	row, err := records.Row(ctx)
 	if err != nil {
@@ -471,15 +473,29 @@ func release(ctx context.Context, records *holdrecord.Client, op *Operator, o op
 		return refusef(StepPreflight, "the hold row is %s under hold %s, not %s", row.Phase, row.HoldID, o.holdID)
 	}
 	if row.Phase == natsgrant.OperatorPhaseReleased {
+		// A row released under this hold's id: release's own rerun writes the done entry its
+		// killed run left; an ended hold is already released; anything else is a row restored
+		// released from prepare, whose journal (if any) only `hold abort` ends.
+		const fromPrepare = "a row restored released from prepare is ended by `hold abort --hold %s`, not by release"
+		journaled, err := hasJournal(ctx, records, o.holdID)
+		if err != nil {
+			return err
+		}
+		if !journaled {
+			return refusef(StepPreflight, "hold %s's row reads released (gen %d) and the hold has no journal: "+fromPrepare, o.holdID, row.Gen, o.holdID)
+		}
 		d, _, err := records.Journal(ctx, o.holdID)
 		if err != nil {
 			return err
 		}
-		if latestIs(d, holdrecord.CommandRelease, holdrecord.StateIntent) {
+		switch {
+		case latestIs(d, holdrecord.CommandRelease, holdrecord.StateIntent):
 			if err := records.AppendDone(ctx, o.holdID, holdrecord.CommandRelease, nil); err != nil {
 				return err
 			}
 			fmt.Fprintf(stdout, "hold %s was released (row gen %d) and its release's done entry is now written\n", o.holdID, row.Gen)
+		case !holdEnded(d):
+			return refusef(StepPreflight, "hold %s's row reads released (gen %d) and its journal has not ended (no done %s or %s): "+fromPrepare, o.holdID, row.Gen, holdrecord.CommandRelease, holdrecord.CommandAbort, o.holdID)
 		}
 		fmt.Fprintf(stdout, "hold %s is already released (row gen %d); its record's hold_gen is %d\n", o.holdID, row.Gen, d.HoldGen)
 		return nil
