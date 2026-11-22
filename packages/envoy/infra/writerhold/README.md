@@ -153,9 +153,11 @@ The residuals of this check:
 - It proves the same probe identity signed by its issuer, not that the hub would admit it now. A
   probe entry dropped from the services the auth service lists between the admission and a later
   dial keeps the identity, so its refusal reads as the hold's.
-- The issuer's keys must be readable at each command that dials with a rewritten token: with its
-  discovery document or key set unreachable, the dial is UNKNOWN and the command stops, as with
-  any other UNKNOWN.
+- The issuer's discovery document and key set must be readable at every `hold set`'s first run,
+  which verifies the probe's token against them before it dials, and at each later command that
+  dials with a rewritten token. With either unreachable (or silent past its 10 s bound), the first
+  run stops `hold set` UNKNOWN before the hold is set, which is safe, and a later dial is UNKNOWN
+  and the command stops, as with any other UNKNOWN.
 - A token of another issuer, subject or audience, or with a signature the issuer's keys do not
   verify, is refused, whatever its other claims say.
 
