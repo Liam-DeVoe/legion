@@ -138,6 +138,7 @@ var settingRoles = map[string]settingRole{
 	"BROKER_NATS_HOLD_SIGNING_KEYS": givesNone("public keys"),
 	// Load's int.
 	"BROKER_NATS_HOLD_POOL_SIZE": givesNone("a number of connections"),
+	"BROKER_NATS_ACCOUNT":        givesNone("the hub account admitted clients are placed in"),
 
 	"BROKER_POD_REGISTRARS":            givesARole("a BROKER_POD_REGISTRARS entry names it as its registrar"),
 	"BROKER_POD_REGISTRATION_AUDIENCE": givesNone("an audience"),

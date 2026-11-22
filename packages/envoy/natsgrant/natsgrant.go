@@ -549,7 +549,7 @@ func Host(machineID string) Permissions {
 // Measure is the grant of Envoy's measurement job, which the deployment repository deploys as a
 // static user of both hubs (envoy-cluster/hub.go, hubMeasurePublish and hubMeasureSubscribe). It
 // reads the account's JetStream state and the listener's lease keys in KV_envoy_listener, and
-// publishes on its own cutover inbox, _INBOX_envoy_measure.cutover.>, under which a probe sends a
+// publishes on its own cutover inbox, <inbox prefix>.cutover.>, under which a probe sends a
 // numbered sequence and reads it back to count what a restart of the hub's servers loses. It makes,
 // changes and removes no stream. The grant before this change held stream creates and updates, and
 // a create or an update carries a configuration of the caller's choosing: a source or a republish
@@ -561,9 +561,11 @@ func Host(machineID string) Permissions {
 // The streams change (#4687) removes those calls from every callout answer but the held
 // operator's, and narrows every static user on a callout hub, so after the cutover the held
 // operator is their only holder; ENVOY_MEASURE is the operator's to make (envoy-infra streams
-// update). It subscribes only its own inbox prefix, _INBOX_envoy_measure., never _INBOX.>, where
-// the listener's and Dispatch's push consumer deliveries and request replies arrive, so it reads
-// no message of another client.
+// update). It subscribes only its own inbox prefixes, never _INBOX.>, where the listener's and
+// Dispatch's push consumer deliveries and request replies arrive, so it reads no message of another
+// client. Its inbox prefixes are two while the job moves under ReplyRoot: legacyMeasureInbox, which
+// the deployed job sets today, and MeasureInbox, which it sets once it moves; the cutover inbox is
+// under each. The legacy one goes when no measurement job sets it.
 func Measure() Permissions {
 	return Permissions{
 		Publish: []string{
@@ -575,14 +577,36 @@ func Measure() Permissions {
 			jsAPI + "CONSUMER.LIST.*",
 			jsAPI + "CONSUMER.INFO.*.*",
 			jsAPI + "DIRECT.GET." + kvStream + "envoy_listener." + kvSubjects + "envoy_listener.lease.>",
-			measureInbox + ".cutover.>",
+			legacyMeasureInbox + ".cutover.>",
+			MeasureInbox + ".cutover.>",
 		},
-		Subscribe: []string{measureInbox + ".>"},
+		Subscribe: []string{legacyMeasureInbox + ".>", MeasureInbox + ".>"},
 	}
 }
 
-// measureInbox is the measurement job's own inbox prefix.
-const measureInbox = "_INBOX_envoy_measure"
+// ReplyRoot is the subject token Envoy's reply prefixes move under, so that a render that moves
+// JetStream into an account of its own exports one reply root to the clients' account rather than
+// a prefix for each client: a push or ordered consumer's deliveries and a stream's republish are
+// published inside JetStream's account and reach a client only through a subject that account
+// exports. A request's reply needs no export, since it comes back through the service import's
+// response mapping. The operator's prefix (OperatorInbox) and the measurement job's moved one
+// (MeasureInbox) are under it. The listener, Dispatch and the Legion daemon still use nats.go's
+// _INBOX. (Listener, ListenerHost, Host, Dispatch and Daemon subscribe _INBOX.>), and the edge
+// listener its own machine's prefix, _INBOX_envoy_edge_<machine id> (EdgeInboxPrefix, #4807); until
+// each moves under the root, such a render exports those prefixes as well: _INBOX.> once, and
+// _INBOX_envoy_edge_<machine id>.> once per edge machine, since that prefix shares the root's
+// characters but not its token, so the root's export does not reach it, and a wildcard matches
+// whole tokens, so no one export reaches every edge machine's prefix. The measurement job's prefix
+// before its move (legacyMeasureInbox) is outside the root too, and goes once no job sets it.
+const ReplyRoot = "_INBOX_envoy"
+
+// MeasureInbox is the measurement job's inbox prefix (nats.js's inboxPrefix) under ReplyRoot.
+const MeasureInbox = ReplyRoot + "._measure"
+
+// legacyMeasureInbox is the measurement job's inbox prefix before it moved under ReplyRoot, which
+// the deployed job still sets. It shares the root's characters but not its token, so ReplyRoot's
+// export does not reach it.
+const legacyMeasureInbox = "_INBOX_envoy_measure"
 
 // OperatorPhase is the phase of the hold row in the broker's Postgres (public.nats_hold), which
 // decides the operator's grant (Operator). The row holds one of the three phases below, and the
@@ -598,14 +622,6 @@ const (
 	OperatorPhasePrepare  OperatorPhase = "prepare"
 	OperatorPhaseHeld     OperatorPhase = "held"
 )
-
-// ReplyRoot is the subject token Envoy's reply prefixes move under, so that a render that moves
-// JetStream into an account of its own exports one reply root to the clients' account rather than
-// a prefix for each client. The operator's prefix (OperatorInbox) is the first under it. Measure's
-// _INBOX_envoy_measure, which shares the root's characters but not its token, moves under it in a
-// later change, and the listener and Dispatch still use nats.go's _INBOX.; until each moves, such
-// a render exports that prefix as well.
-const ReplyRoot = "_INBOX_envoy"
 
 // OperatorInbox is the inbox prefix of every operator connection (nats.CustomInboxPrefix), the
 // one subscribe of every phase's grant, so the operator reads no other client's replies. It sits
