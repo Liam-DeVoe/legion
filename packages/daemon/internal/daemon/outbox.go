@@ -4530,9 +4530,10 @@ func (r *outbox) branchClient(ctx context.Context, issue record.Issue) (githubre
 // refusal: the branch stands on the needs that joined, and the id of each need that conflicted is
 // written on the task's row (record.Store.SetJoinConflicts), in place of what an earlier row wrote,
 // for the first step to repair, once the task is judged again as the row read it
-// (writeJoinConflicts). A row of a task its plan no longer holds, of a generation the issue has
-// left, or of a tree that lingers finishes without acting, as issueBranch's does: the starts it
-// held back meet their own fences.
+// (writeJoinConflicts). Where they are written, the end of the join is applied as a fact
+// (intake.TaskJoined, joined), which starts the step that waits for it. A row of a task its plan no
+// longer holds, of a generation the issue has left, or of a tree that lingers finishes without
+// acting, as issueBranch's does: the starts it held back meet their own fences.
 func (r *outbox) taskBranch(ctx context.Context, row record.OutboxRow, payload record.TaskBranch) error {
 	issue, err := r.issue(ctx, row.Issue)
 	if err != nil {
@@ -4578,7 +4579,23 @@ func (r *outbox) taskBranch(ctx context.Context, row record.OutboxRow, payload r
 	if err != nil {
 		return fmt.Errorf("make the branch %s of task %s of %s, which its first step waits for: %w", branch, task.Task, issue.Key, err)
 	}
-	return r.writeJoinConflicts(ctx, row, task, conflicts)
+	generation, written, err := r.writeJoinConflicts(ctx, row, task, conflicts)
+	if err != nil || !written {
+		return err
+	}
+	return r.joined(ctx, row, intake.TaskJoined{Issue: issue.Key, Generation: generation, Task: task.Task, Branch: branch, Needs: task.Needs, Conflicts: conflicts})
+}
+
+// joined applies fact, the end of the join row made (intake.TaskJoined), through the outbox's
+// handlers, which start the step that waits for it, under an id of the issue, the generation, the
+// task and the row, so a row that runs again applies one fact. A fact that fails fails the row,
+// which joins again on its backoff and finds each need joined.
+func (r *outbox) joined(ctx context.Context, row record.OutboxRow, fact intake.TaskJoined) error {
+	id := fmt.Sprintf("task-joined:%s:%d:%s:%d", fact.Issue, fact.Generation, fact.Task, row.ID)
+	if _, err := intake.ApplyFact(ctx, r.pool, "outbox", id, fact, r.handlers...); err != nil {
+		return fmt.Errorf("apply the end of the join of task %s of %s: %w", fact.Task, fact.Issue, err)
+	}
+	return nil
 }
 
 // writeJoinConflicts writes conflicts, what the join of the needs of joined found, onto the task as
@@ -4599,7 +4616,9 @@ func (r *outbox) taskBranch(ctx context.Context, row record.OutboxRow, payload r
 //     later generation holds a task that is not the one joined: a plan carried from its start, whose
 //     first start there joins its task's needs itself (startTaskCopy), or a task a later version
 //     changed there, which this join no longer describes.
-func (r *outbox) writeJoinConflicts(ctx context.Context, row record.OutboxRow, joined record.PlanTask, conflicts []string) error {
+//
+// It answers the generation it judged the task at and whether it wrote the conflicts there.
+func (r *outbox) writeJoinConflicts(ctx context.Context, row record.OutboxRow, joined record.PlanTask, conflicts []string) (uint64, bool, error) {
 	var generation uint64
 	var written bool
 	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
@@ -4629,16 +4648,16 @@ func (r *outbox) writeJoinConflicts(ctx context.Context, row record.OutboxRow, j
 		}
 		return nil
 	}); err != nil {
-		return fmt.Errorf("write the join's conflicts of task %s of %s: %w", joined.Task, joined.Issue, err)
+		return 0, false, fmt.Errorf("write the join's conflicts of task %s of %s: %w", joined.Task, joined.Issue, err)
 	}
 	if !written {
 		r.log.Info("outbox task branch joined the needs of a task its run no longer holds as joined; finished without writing its conflicts", "row", row.ID,
 			"issue", joined.Issue, "task", joined.Task, "joined_at", joined.Generation, "generation", generation)
-		return nil
+		return generation, false, nil
 	}
 	r.log.Info("outbox task branch joined its needs", "row", row.ID, "issue", joined.Issue, "task", joined.Task, "branch", joined.BranchOf(joined.Issue),
 		"needs", joined.Needs, "conflicts", conflicts, "generation", generation, "joined_at", joined.Generation)
-	return nil
+	return generation, true, nil
 }
 
 // sameJoin says whether task now is the task joined as the join read it: the same branch, at the

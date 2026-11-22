@@ -1250,6 +1250,26 @@ type TaskStopped struct {
 
 func (f TaskStopped) namedIssue() (string, bool) { return f.Issue, true }
 
+// TaskJoined is the end of the join of one task's needs (record.TaskBranch): the outbox made the
+// task's branch, Branch, on GitHub at the work of Needs, the task's needs in their order as its row
+// read them, at Generation, and GitHub refused the merge of each need in Conflicts as a conflict.
+// The workflow ends the wait of the task's step for its join and starts that step, where the step
+// waits for this join: the task, running at Generation, on Branch with Needs. Any other end of a
+// join changes nothing, so a row that a stop and a later version of the task left behind, whose
+// start again queued a join of its own, starts nothing. The outbox names it by the issue, the
+// generation, the task and the row (internal/daemon's taskBranch), so a row that runs again
+// applies one fact.
+type TaskJoined struct {
+	Issue      string
+	Generation uint64
+	Task       string
+	Branch     string
+	Needs      []string
+	Conflicts  []string
+}
+
+func (f TaskJoined) namedIssue() (string, bool) { return f.Issue, true }
+
 // ArchitectRequest is a fact an architect's request applies to one issue (Request). Its route
 // judged the requester and read the issue before the fact lock (api's architectForIssue,
 // architectOwns and planOwner), and an adoption, a new run or a re-parent can commit between that
