@@ -434,6 +434,24 @@ func endWhenHung(dir string) func(context.Context) (context.Context, context.Can
 	}
 }
 
+// Each probe attempt runs under the gate's own budget, slow_command_timeout_seconds: the context
+// budget gives an attempt ends timeout after the call. The gates over a fake cut a hung attempt
+// off where it hangs instead (endWhenHung), so this, with TestTheImageProbeGivesUpAfterItsAttempts'
+// row that hangs under the budget itself, is what holds a gate to its budget.
+func TestAProbeAttemptRunsUnderTheGatesTimeout(t *testing.T) {
+	const timeout = 7 * time.Second
+	before := time.Now()
+	attempt, cancel := pluginGate{timeout: timeout}.budget(context.Background())
+	defer cancel()
+	after := time.Now()
+
+	deadline, ok := attempt.Deadline()
+	if !ok || deadline.Before(before.Add(timeout)) || deadline.After(after.Add(timeout)) {
+		t.Fatalf("the attempt's deadline is %s (one set: %t), want %s after the call, between %s and %s",
+			deadline.Format(time.RFC3339Nano), ok, timeout, before.Add(timeout).Format(time.RFC3339Nano), after.Add(timeout).Format(time.RFC3339Nano))
+	}
+}
+
 const (
 	contractPrevious = `{"daemonApiVersion":2}`
 	contractCurrent  = `{"daemonApiVersion":3}`

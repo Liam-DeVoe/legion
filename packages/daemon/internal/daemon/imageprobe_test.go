@@ -462,34 +462,60 @@ func TestTheSessionStorageProbeClassifiesWhatOhMyPiSaid(t *testing.T) {
 }
 
 // The image probe's retry is bounded: an image build has no supervisor, so a probe that never
-// answers ends the build naming the budget and what the last attempt said.
+// answers ends the build naming the budget and what the last attempt said. The first row's fake
+// hangs and is cut off where it hangs (endWhenHung), three times; the second's hangs under the
+// gate's own budget, slow_command_timeout_seconds (expire nil), which alone can end its one
+// attempt, so the words the refusal says of the budget come from a budget that fired. Its fake
+// sleeps past that budget, and the run is bounded by fakeBudget, so a budget that never fires
+// fails the row with the context's error rather than hanging the test. It counts no attempt of
+// the fake: a budget can end an attempt before the fake has counted it, which is why the other
+// rows run under fakeBudget, and a budget of seconds keeps that from failing it.
 func TestTheImageProbeGivesUpAfterItsAttempts(t *testing.T) {
+	const hangBudget = 3 * time.Second
 	for _, testCase := range []struct {
 		name                  string
 		agents, session, want []string
 		kind                  string
+		// attempts bounds the retry; budget, when set, is the gate's own budget, with no cut.
+		attempts int
+		budget   time.Duration
 	}{
-		{"pi.agents cut off every time", []string{"hang"}, []string{"refuses"},
-			[]string{"the OMP pi.agents probe never completed within its retry budget (3 attempts)", "timed out after " + fakeBudget.String()}, "agents"},
-		{"Oh My Pi dying before the resolver every time", []string{"available"}, []string{"dies"},
-			[]string{"the OMP session storage setting probe never completed within its retry budget (3 attempts)", "exited 1 without naming OMP_SESSION_STORAGE", "database is locked"}, "session"},
+		{name: "pi.agents cut off every time", agents: []string{"hang"}, session: []string{"refuses"},
+			want: []string{"the OMP pi.agents probe never completed within its retry budget (3 attempts)"}, kind: "agents", attempts: 3},
+		{name: "pi.agents ended by its budget", agents: []string{"hang"}, session: []string{"refuses"},
+			want: []string{"the OMP pi.agents probe never completed within its retry budget (1 attempts)", "timed out after " + hangBudget.String()}, kind: "agents", attempts: 1, budget: hangBudget},
+		{name: "Oh My Pi dying before the resolver every time", agents: []string{"available"}, session: []string{"dies"},
+			want: []string{"the OMP session storage setting probe never completed within its retry budget (3 attempts)", "exited 1 without naming OMP_SESSION_STORAGE", "database is locked"}, kind: "session", attempts: 3},
 		// A signal's death has no status: read as one, it was `exited -1 without naming …`.
-		{"Oh My Pi killed before the resolver every time", []string{"available"}, []string{"killed"},
-			[]string{"the OMP session storage setting probe never completed within its retry budget (3 attempts)", "was ended by signal: killed without naming OMP_SESSION_STORAGE", "database is locked"}, "session"},
+		{name: "Oh My Pi killed before the resolver every time", agents: []string{"available"}, session: []string{"killed"},
+			want: []string{"the OMP session storage setting probe never completed within its retry budget (3 attempts)", "was ended by signal: killed without naming OMP_SESSION_STORAGE", "database is locked"}, kind: "session", attempts: 3},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			f := newImageOmp(t, testCase.agents, []string{"yes"}, testCase.session)
-			gate, _ := imageGateUnder(t, f, contractCurrent, 3)
+			gate, _ := imageGateUnder(t, f, contractCurrent, testCase.attempts)
+			if testCase.budget != 0 {
+				gate.timeout, gate.expire = testCase.budget, nil
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), fakeBudget)
+			defer cancel()
 
-			err := gate.verifyImage(context.Background())
+			started := time.Now()
+			err := gate.verifyImage(ctx)
+			elapsed := time.Since(started)
 
 			for _, want := range append(testCase.want, f.path) {
 				if err == nil || !strings.Contains(err.Error(), want) {
 					t.Errorf("verifyImage = %v, want an error saying %q", err, want)
 				}
 			}
-			if n := f.attempts(t, testCase.kind); n != 3 {
-				t.Errorf("the %s probe ran %d times, want the bound, 3", testCase.kind, n)
+			if testCase.budget != 0 {
+				if elapsed < testCase.budget {
+					t.Errorf("verifyImage returned after %s, inside the %s budget: something other than the budget ended the attempt", elapsed, testCase.budget)
+				}
+				return
+			}
+			if n := f.attempts(t, testCase.kind); n != testCase.attempts {
+				t.Errorf("the %s probe ran %d times, want the bound, %d", testCase.kind, n, testCase.attempts)
 			}
 		})
 	}
