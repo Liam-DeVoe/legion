@@ -178,6 +178,12 @@ export interface CIResultsStack {
   /** The variables a job of `run` holds: Dispatch, the broker, and its runner's token endpoint.
    *  Its check run is added at the stand-in, so Dispatch reads the job's name there. */
   jobEnv(run: JobRun): Record<string, string>;
+  /** The argv that runs `argv` as a CI job's step runs its command: as the child of this stack's
+   *  real `agent-secrets result-grant --` (agentSecrets). Run with `jobEnv(run)`, the producer
+   *  trades the run's token at the broker for the airlock's placeholder of the run, and starts
+   *  `argv` with that placeholder alone in DISPATCH_RESULTS_TOKEN and the broker's airlock proxy
+   *  as its proxy, so the placeholder a row's command presents is one the broker minted. */
+  jobCommand(argv: readonly string[]): string[];
   /** The spec files of the commit `sha`: every `.md` file directly in `dir`. */
   setFiles(sha: string, dir: string): void;
   /** The head of `branch` of the repository is `sha` from now on, as a push moves it. */
@@ -429,8 +435,9 @@ export async function startCIResultsStack(options: {
     // One workflow run for each push of a ref at a commit, as GitHub numbers them: the attempts
     // and the legs of one push share its run.
     const runIds = new Map<string, number>();
+    const agentSecrets = path.join(bin, "cipher");
     return {
-      agentSecrets: path.join(bin, "cipher"),
+      agentSecrets,
       dispatch,
       brokerUrl,
       github,
@@ -463,6 +470,9 @@ export async function startCIResultsStack(options: {
           ACTIONS_ID_TOKEN_REQUEST_URL: request.requestUrl,
           ACTIONS_ID_TOKEN_REQUEST_TOKEN: request.requestToken,
         };
+      },
+      jobCommand(argv: readonly string[]): string[] {
+        return [agentSecrets, "result-grant", "--", ...argv];
       },
       setFiles(sha: string, dir: string): void {
         const files: Record<string, string> = {};

@@ -140,6 +140,13 @@ jobs:
       - name: A CI job's result of a check its ci_check names, through the real broker and a real Dispatch
         run: bun test src/__tests__/ci-check-results.live.test.ts
         working-directory: packages/envoy-client
+      # The same path for what a CI job's `dispatch result --issue` prints when the real Dispatch
+      # refuses the result: each refusal, a check id or a check run name holding a line break and
+      # a workflow command among them, prints on one line, so no line of the job's log is a
+      # workflow command to its runner. Each row runs under the real `agent-secrets result-grant`.
+      - name: A CI job's refused result of a check its ci_check names prints no workflow command
+        run: bun test src/__tests__/ci-job-results-one-line.test.ts
+        working-directory: packages/envoy-client
       # A comment's role: mention over the same real CLI and real Dispatch (#4426): the comment the CLI posts with --mention carries one delivery attempt for that
       # target, which is what lets an agent write to the owner of a subject and leave the retry
       # to Dispatch.

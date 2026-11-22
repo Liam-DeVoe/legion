@@ -1,6 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { join } from "node:path";
-import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import {
   CI_CHECK,
@@ -32,8 +31,6 @@ const ENTRY = join(import.meta.dir, "..", "..", "bin", "dispatch.ts");
 const JOB = "go-checks";
 /** The session that reads the results back, as an agent's command reads them. */
 const SESSION = "session-ci-check-results-live";
-/** The address of no server: a command that sent any request to it would fail to connect. */
-const NOWHERE = "http://127.0.0.1:1";
 
 /** A commit of its own for each row, so what a row reads back is that row's alone. */
 function commit(digit: string): string {
@@ -111,17 +108,19 @@ describe.skipIf(!dispatchStackEnabled)(
 
     /** The real CLI entry run with `env` and nothing of this process's own but PATH. A job's
      *  environment (the runner's variables, AGENT_SECRETS_MACHINE_IDENTITY=github-actions) runs it
-     *  under `agent-secrets result-grant`, as a CI job's step does: the producer trades the run's
-     *  token at the broker and gives the command the airlock's placeholder alone. */
+     *  through the stack's `jobCommand`, as a CI job's step does: the real `agent-secrets
+     *  result-grant` trades the run's token at the broker and gives the command the airlock's
+     *  placeholder alone. */
     async function cli(
       args: readonly string[],
       env: Readonly<Record<string, string>>
     ): Promise<Ran> {
-      const producer =
-        env["AGENT_SECRETS_MACHINE_IDENTITY"] === "github-actions"
-          ? [running().agentSecrets, "result-grant", "--"]
-          : [];
-      const child = Bun.spawn([...producer, process.execPath, ENTRY, ...args], {
+      const entry = [process.execPath, ENTRY, ...args];
+      // Destructured: claude-envoy compiles this file under noPropertyAccessFromIndexSignature,
+      // and Biome asks for no `env["..."]`.
+      const { AGENT_SECRETS_MACHINE_IDENTITY: identity } = env;
+      const command = identity === "github-actions" ? running().jobCommand(entry) : entry;
+      const child = Bun.spawn(command, {
         env: { PATH: SHELL_PATH, HOME: cliState, DISPATCH_STATE_DIR: cliState, ...env },
         stdout: "pipe",
         stderr: "pipe",
@@ -156,13 +155,12 @@ describe.skipIf(!dispatchStackEnabled)(
       };
     }
 
-    /** `dispatch result --issue` for `check` at `at`, as the job `run` describes. */
+    /** `dispatch result --issue` for `check` at `at`, as the job `run` runs it. */
     function recordOnIssue(
       run: JobRun,
       at: string,
       check: string = CI_CHECK,
-      extra: readonly string[] = [],
-      env: Readonly<Record<string, string>> = running().jobEnv(run)
+      extra: readonly string[] = []
     ): Promise<Ran> {
       return cli(
         [
@@ -179,7 +177,7 @@ describe.skipIf(!dispatchStackEnabled)(
           "ok",
           ...extra,
         ],
-        env
+        running().jobEnv(run)
       );
     }
 
@@ -333,15 +331,10 @@ describe.skipIf(!dispatchStackEnabled)(
 
     test("a role's argument under the job's placeholder is refused before any request, naming its flag", async () => {
       const at = commit("8");
-      // The command as `agent-secrets result-grant` starts it, with the placeholder's variable set
-      // (the command reads only that it is set, `isJobResult`; the value is a random fixture, as a
-      // held secret must be) and Dispatch at no server: a command that sent anything would fail to
-      // connect, and exit 1 saying so.
-      const env = {
-        DISPATCH_URL: NOWHERE,
-        DISPATCH_RESULTS_TOKEN: fixtureSecret("result"),
-      };
-      const ran = await recordOnIssue(pushAt(at, 207), at, CI_CHECK, ["--role", "tester"], env);
+      // The command as `agent-secrets result-grant` starts it, with the placeholder the broker
+      // minted for the run. It refuses the argument itself and exits 2, a usage error: a request
+      // that reached Dispatch would end in Dispatch's refusal, which exits 1 (`refused`).
+      const ran = await recordOnIssue(pushAt(at, 207), at, CI_CHECK, ["--role", "tester"]);
 
       expect({ code: ran.code, named: ran.stdout.includes("--role") }, ran.stdout).toEqual({
         code: 2,
