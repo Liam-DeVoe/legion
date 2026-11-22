@@ -863,8 +863,8 @@ func TestAPrivateUpstreamSettingIsRefusedUnlessItIsOne(t *testing.T) {
 	}
 	e := validEnv()
 	e[setting] = "dispatch.test=http://10.0.0.5:8766"
-	if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), setting) || !strings.Contains(err.Error(), "needs BROKER_AIRLOCK_RULES_FILE") {
-		t.Errorf("Load(%s with no rules file) = %v; want a refusal naming the setting and BROKER_AIRLOCK_RULES_FILE", setting, err)
+	if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), setting) || !strings.Contains(err.Error(), "needs BROKER_PROFILES_FILE") {
+		t.Errorf("Load(%s with no profiles file) = %v; want a refusal naming the setting and BROKER_PROFILES_FILE", setting, err)
 	}
 }
 

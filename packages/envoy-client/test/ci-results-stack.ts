@@ -521,22 +521,25 @@ export async function startCIResultsStack(options: CIResultsStackOptions): Promi
 
     const fakeSecrets = path.join(work, "fake-secrets.json");
     writeFileSync(fakeSecrets, JSON.stringify({ secrets: [] }), { mode: 0o600 });
-    // C8's entry: Dispatch's public host alone, kind dpop, the placeholder in Authorization alone,
-    // and a POST under the projects' and the issues' routes alone.
-    const rulesFile = path.join(work, "airlock.json");
+    // C8's profile: a name and a proxy block alone, Dispatch's public host alone, kind dpop, the
+    // placeholder in Authorization alone, and a POST under the projects' and the issues' routes
+    // alone.
+    const profilesFile = path.join(work, "profiles.json");
     writeFileSync(
-      rulesFile,
+      profilesFile,
       JSON.stringify({
-        secrets: [
+        profiles: [
           {
             name: "DISPATCH_RESULTS_TOKEN",
-            kind: "dpop",
-            hosts: [DISPATCH_HOST],
-            headers: ["Authorization"],
-            allow: [
-              { method: "POST", pathPrefix: "/api/v1/projects/" },
-              { method: "POST", pathPrefix: "/api/v1/issues/" },
-            ],
+            proxy: {
+              kind: "dpop",
+              hosts: [DISPATCH_HOST],
+              headers: ["Authorization"],
+              allow: [
+                { method: "POST", pathPrefix: "/api/v1/projects/" },
+                { method: "POST", pathPrefix: "/api/v1/issues/" },
+              ],
+            },
           },
         ],
       })
@@ -552,7 +555,7 @@ export async function startCIResultsStack(options: CIResultsStackOptions): Promi
       BROKER_SECRETS_PREFIX: SECRETS_PREFIX,
       BROKER_SECRETS_KMS_KEY_ARN: SECRETS_KMS_KEY_ARN,
       BROKER_FAKE_SECRETS_FILE: fakeSecrets,
-      BROKER_AIRLOCK_RULES_FILE: rulesFile,
+      BROKER_PROFILES_FILE: profilesFile,
       BROKER_AIRLOCK_LISTEN_ADDR: "127.0.0.1:0",
       BROKER_AIRLOCK_PROXY_URL: `http://${proxyFront.address}`,
       BROKER_AIRLOCK_CA_CERT_FILE: authority.ca_cert_file,

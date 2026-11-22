@@ -2877,12 +2877,12 @@ func Load(getenv func(string) string) (Config, error) {
 	if len(cfg.ExchangeResultWorkflows) > 0 && cfg.ExchangeGitHubIssuer == "" {
 		return Config{}, fmt.Errorf("BROKER_EXCHANGE_RESULT_WORKFLOWS needs BROKER_EXCHANGE_GITHUB_ISSUER and BROKER_EXCHANGE_GITHUB_AUDIENCE, whose tokens its runs present")
 	}
-	// A result entry's run is granted a placeholder that only the airlock's rules entry
-	// DISPATCH_RESULTS_TOKEN makes worth anything, so a broker with result workflows and no rules
-	// file would grant placeholders no proxy honours. The entry itself is checked where the file is
-	// read (AirlockResultRules), since Load reads no file.
-	if len(cfg.ExchangeResultWorkflows) > 0 && cfg.AirlockRulesFile == "" {
-		return Config{}, fmt.Errorf("BROKER_EXCHANGE_RESULT_WORKFLOWS needs BROKER_AIRLOCK_RULES_FILE: a result entry's run is granted an airlock placeholder, which the rules entry %s of kind %s makes a write to Dispatch", oauthwire.AirlockResultsName, proxyrules.KindDPoP)
+	// A result entry's run is granted a placeholder that only the proxy block of the profile
+	// DISPATCH_RESULTS_TOKEN makes worth anything, so a broker with result workflows and no
+	// profiles file would grant placeholders no proxy honours. The profile itself is checked where
+	// the file is read (AirlockResultRules), since Load reads no file.
+	if len(cfg.ExchangeResultWorkflows) > 0 && cfg.ProfilesFile == "" {
+		return Config{}, fmt.Errorf("BROKER_EXCHANGE_RESULT_WORKFLOWS needs BROKER_PROFILES_FILE: a result entry's run is granted an airlock placeholder, which the proxy block of the profile %s, of kind %s, makes a write to Dispatch", oauthwire.AirlockResultsName, proxyrules.KindDPoP)
 	}
 	if cfg.PrivateProjects, err = exchange.ParsePrivateProjects(getenv("BROKER_PRIVATE_PROJECTS")); err != nil {
 		return Config{}, fmt.Errorf("BROKER_PRIVATE_PROJECTS: %w", err)

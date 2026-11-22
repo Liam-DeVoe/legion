@@ -77,7 +77,7 @@ func TestAStoredSecretUnderADPoPEntryIsNeverReleased(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			m, enr, key, _ := newPlaceholderFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{entry}})
 			_, grantID := grantOf(t, m, enr, key, "read it", "AUTO_TOKEN")
-			release, err := m.Values(t.Context(), grantID, enr, nil, ReleaseCall{})
+			release, err := m.Values(t.Context(), grantID, enr, ReleaseCall{})
 			if !errors.Is(err, ErrAirlockMintedOnly) || !IsRefusal(err) {
 				t.Fatalf("the session's release of a stored secret under a dpop entry = %v; want ErrAirlockMintedOnly, a refusal", err)
 			}
@@ -101,7 +101,7 @@ func TestAnEndedResultPlaceholderIsNeverReadAsASecretPlaceholder(t *testing.T) {
 	m, enr, key, _ := newPlaceholderFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("AUTO_TOKEN", "")}})
 	withResultGrants(m, &mintedTokens{})
 	_, grantID := grantOf(t, m, enr, key, "read it", "AUTO_TOKEN")
-	if _, err := m.Values(t.Context(), grantID, enr, nil, ReleaseCall{}); err != nil {
+	if _, err := m.Values(t.Context(), grantID, enr, ReleaseCall{}); err != nil {
 		t.Fatal(err)
 	}
 	held, _ := resultGrant(t, m, "97", time.Now().Add(-time.Second))

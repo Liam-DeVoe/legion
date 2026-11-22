@@ -33,12 +33,12 @@ func withoutSettings(env []string, names ...string) []string {
 	return out
 }
 
-// resultsRulesBinding is resultsRules with DISPATCH_RESULTS_TOKEN binding hosts (a JSON list's
-// inside) and the extra entries after it.
-func resultsRulesBinding(hosts string, extra ...string) string {
-	entries := append([]string{`{"name": "DISPATCH_RESULTS_TOKEN", "hosts": [` + hosts + `], "headers": ["Authorization"],
-	"allow": [{"method": "POST", "pathPrefix": "/api/v1/projects/"}], "kind": "dpop"}`}, extra...)
-	return `{"secrets": [` + strings.Join(entries, ", ") + `]}`
+// resultsProfilesBinding is resultsProfiles with DISPATCH_RESULTS_TOKEN's proxy block binding hosts
+// (a JSON list's inside) and the extra profiles after it.
+func resultsProfilesBinding(hosts string, extra ...string) string {
+	profiles := append([]string{`{"name": "DISPATCH_RESULTS_TOKEN", "proxy": {"hosts": [` + hosts + `], "headers": ["Authorization"],
+	"allow": [{"method": "POST", "pathPrefix": "/api/v1/projects/"}], "kind": "dpop"}}`}, extra...)
+	return `{"profiles": [` + strings.Join(profiles, ", ") + `]}`
 }
 
 // TestABrokerWithNoResultEntriesHoldsTheResultsEntryToTheDestinationsOneHost: broker B, on the
@@ -71,22 +71,22 @@ func TestABrokerWithNoResultEntriesHoldsTheResultsEntryToTheDestinationsOneHost(
 	a := e.start(t)
 	g := e.grant(t, a, "7")
 	binary := buildBroker(t)
-	base := append(withoutSettings(e.env, "BROKER_AIRLOCK_RULES_FILE", "BROKER_AIRLOCK_TEST_RESOLVE", "BROKER_AIRLOCK_TEST_DIAL_ALLOW",
+	base := append(withoutSettings(e.env, "BROKER_PROFILES_FILE", "BROKER_AIRLOCK_TEST_RESOLVE", "BROKER_AIRLOCK_TEST_DIAL_ALLOW",
 		"BROKER_EXCHANGE_RESULT_WORKFLOWS", "BROKER_AIRLOCK_PRIVATE_UPSTREAM"), routing...)
 	otherUpstream := "BROKER_AIRLOCK_PRIVATE_UPSTREAM=" + otherResultsHost + "=https://" + otherResultsHost
-	secondDPoP := `{"name": "OTHER_TOKEN", "hosts": ["` + otherResultsHost + `"], "headers": ["Authorization"], "allow": [{"method": "POST", "pathPrefix": "/"}], "kind": "dpop"}`
+	secondDPoP := `{"name": "OTHER_TOKEN", "proxy": {"hosts": ["` + otherResultsHost + `"], "headers": ["Authorization"], "allow": [{"method": "POST", "pathPrefix": "/"}], "kind": "dpop"}}`
 	for _, c := range []struct {
-		name, rules, says string
-		upstream          []string
+		name, profiles, says string
+		upstream             []string
 	}{
-		{"a wildcard entry", resultsRulesBinding(`"*.ci-results.test"`), "one exact host", []string{resultsUpstream}},
-		{"a two-host entry", resultsRulesBinding(`"` + resultsBoundHost + `", "` + otherResultsHost + `"`), "one exact host", []string{resultsUpstream}},
-		{"no private destination", resultsRulesBinding(`"` + resultsBoundHost + `"`), "BROKER_AIRLOCK_PRIVATE_UPSTREAM is unset", nil},
-		{"a destination of another host", resultsRulesBinding(`"` + resultsBoundHost + `"`), "names the host " + otherResultsHost, []string{otherUpstream}},
-		{"a second dpop entry", resultsRulesBinding(`"`+resultsBoundHost+`"`, secondDPoP), "OTHER_TOKEN of kind dpop", []string{resultsUpstream}},
+		{"a wildcard entry", resultsProfilesBinding(`"*.ci-results.test"`), "one exact host", []string{resultsUpstream}},
+		{"a two-host entry", resultsProfilesBinding(`"` + resultsBoundHost + `", "` + otherResultsHost + `"`), "one exact host", []string{resultsUpstream}},
+		{"no private destination", resultsProfilesBinding(`"` + resultsBoundHost + `"`), "BROKER_AIRLOCK_PRIVATE_UPSTREAM is unset", nil},
+		{"a destination of another host", resultsProfilesBinding(`"` + resultsBoundHost + `"`), "names the host " + otherResultsHost, []string{otherUpstream}},
+		{"a second dpop entry", resultsProfilesBinding(`"`+resultsBoundHost+`"`, secondDPoP), "OTHER_TOKEN of kind dpop", []string{resultsUpstream}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			env := append(append(append([]string{}, base...), "BROKER_AIRLOCK_RULES_FILE="+airlockRulesFile(t, c.rules)), c.upstream...)
+			env := append(append(append([]string{}, base...), "BROKER_PROFILES_FILE="+profilesFile(t, c.profiles)), c.upstream...)
 			out := refusedWithin(t, binary, append([]string{metricsListenEnv}, env...))
 			if !strings.Contains(out, "DISPATCH_RESULTS_TOKEN") || !strings.Contains(out, c.says) {
 				t.Fatalf("B with %s was refused, but its output does not name DISPATCH_RESULTS_TOKEN and %q: %s", c.name, c.says, out)
@@ -101,7 +101,7 @@ func TestABrokerWithNoResultEntriesHoldsTheResultsEntryToTheDestinationsOneHost(
 	}
 
 	// Control: the entry of the destination's one host starts, and B serves A's grant to Dispatch.
-	env := append(append([]string{}, base...), "BROKER_AIRLOCK_RULES_FILE="+airlockRulesFile(t, resultsRulesBinding(`"`+resultsBoundHost+`"`)), resultsUpstream)
+	env := append(append([]string{}, base...), "BROKER_PROFILES_FILE="+profilesFile(t, resultsProfilesBinding(`"`+resultsBoundHost+`"`)), resultsUpstream)
 	process := startBroker(t, brokerOptions{Binary: binary, Env: env})
 	thumbprint, _ := process.AwaitRecord(t, dpopKeyLine, nil)["thumbprint"].(string)
 	b := &resultsBroker{brokerProcess: process, proxyAddr: airlockProxyAddr(t, process), thumbprint: thumbprint}
