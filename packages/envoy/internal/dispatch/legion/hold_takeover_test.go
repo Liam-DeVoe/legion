@@ -207,3 +207,88 @@ func TestASettingWrittenDuringAHeldReadThatTimesOutKeepsTheFloorAboutElevenMinut
 		})
 	}
 }
+
+// TestASettingNamingAnotherDaemonFinishesTheOldDaemonsMessagesWithNoRead: R3 applies no message
+// of the daemon a setting named before once it names another, and a failed starting read is one
+// "which no message holds". So, after a write that names another daemon, the old daemon's held
+// message is finished unapplied at its next redelivery, at once: it waits on no read, and makes
+// no read of its own or of the new daemon. A later message of the old daemon's store is
+// acknowledged unapplied the same way and calls for no read, even once the new daemon's failed
+// starting read is due again.
+//
+// The rig's client window is readWindow, long enough to tell a message that waits behind a read,
+// or makes one, from one that does neither. INFRA's daemon stops answering after its good starting
+// read, and a gap's message holds the owed read. After two hand-backs a person writes INFRA's
+// setting naming another daemon, which does not answer either. The old message's next delivery
+// comes holdAtLeast after its last hand-back, so it is finished within finishedWithin of the
+// write, and the new daemon has served the write's own starting read alone.
+//
+// At 3e6a6784 the old message's redelivery waits on the project's runner behind the write's
+// starting read of the new daemon, then makes the new daemon's read owed for retry
+// (outcomeForgotten calls readFor as a call no message makes), and is finished only after it: on
+// the real programs 2m0s after the write. A later message of the old store makes that read too
+// once it is due.
+func TestASettingNamingAnotherDaemonFinishesTheOldDaemonsMessagesWithNoRead(t *testing.T) {
+	const readWindow = 5 * time.Second
+	const finishedWithin = 3 * time.Second
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.ResponseHeaderTimeout = readWindow
+	shared := http.DefaultTransport
+	http.DefaultTransport = transport
+	t.Cleanup(func() {
+		http.DefaultTransport = shared
+		transport.CloseIdleConnections()
+	})
+	rig := newIntakeRig(t)
+	daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
+	seedLegionProject(t, rig.database, "INFRA", daemon.URL)
+	rig.start()
+	rig.awaitStartingRead("INFRA")
+
+	stall := func() { rig.clock.advance(RequestTimeout) }
+	daemon.stalls(stall)
+	rig.publish("INFRA", change(12, "INFRA-1", moved("phase", "merging")))
+	holder := rig.lastStreamSeq()
+	rig.waitFor(2*time.Minute, func() bool { return len(rig.logRecords(heldLine)) >= 2 }, func() string {
+		return fmt.Sprintf("the message went back %d times, want 2 before the write", len(rig.logRecords(heldLine)))
+	})
+	named := newFakeDaemon(t, "")
+	named.stalls(stall)
+	wroteAt := time.Now()
+	if _, err := PutSettings(context.Background(), rig.database.Pool, "INFRA", named.URL, model.Actor{Kind: "user", ID: "alice@example.com"}); err != nil {
+		t.Fatalf("point INFRA at another daemon: %v", err)
+	}
+	rig.wake <- struct{}{}
+	finishedThrough := func(seq uint64) func() bool {
+		return func() bool {
+			info := rig.consumerInfo()
+			return info.AckFloor.Stream >= seq && info.NumAckPending == 0 && info.NumPending == 0
+		}
+	}
+	rig.waitFor(time.Minute, finishedThrough(holder), func() string {
+		return fmt.Sprintf("the old daemon's held message is not finished a minute after the write: %+v", rig.consumerInfo())
+	})
+	if took := time.Since(wroteAt); took >= finishedWithin {
+		t.Errorf("the old daemon's held message was finished %s after the write naming another daemon, want less than %s: it waited behind a read, or made one, of %s each",
+			took.Round(time.Millisecond), finishedWithin, readWindow)
+	}
+	if served := named.served(); served != 1 {
+		t.Errorf("the daemon the setting names served %d reads by the time the old daemon's message was finished, want 1, the write's own starting read: the old daemon's message made a read", served)
+	}
+
+	// The new daemon's failed starting read is due again a minute on; a later message of the old
+	// daemon's store is acknowledged unapplied and makes no read.
+	rig.clock.advance(ReadRetryAfter + time.Second)
+	before := named.served()
+	rig.publish("INFRA", change(13, "INFRA-1", moved("phase", "testing")))
+	later := rig.lastStreamSeq()
+	rig.waitFor(time.Minute, finishedThrough(later), func() string {
+		return fmt.Sprintf("the later message of the old daemon's store is not finished: %+v", rig.consumerInfo())
+	})
+	if served := named.served(); served != before {
+		t.Errorf("the daemon the setting names served %d reads after the later message of the old daemon's store, want %d: that message made a read", served, before)
+	}
+	if got := history(t, rig.database, "INFRA", "INFRA-1", FieldPhase); slices.Contains(got, `"merging"`) || slices.Contains(got, `"testing"`) {
+		t.Errorf("the phase's history is %v: a message of the daemon the setting named before was applied", got)
+	}
+}
