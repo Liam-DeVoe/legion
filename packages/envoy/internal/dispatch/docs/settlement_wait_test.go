@@ -34,8 +34,8 @@ import (
 // wake of the drain's wait (settlementWoke) and the settlement's start (beforeSettleStart), each
 // numbered from one counter as it happens, with exactly one wake between the commit and the
 // start: the landing's. A wait the service took off its clock, on the wall clock, which neither
-// would show, is refused by name where it is written
-// (TestTheDocumentServiceWaitsOffItsClockOnlyWhereItSaysWhy).
+// would show, is caught by `c-clock`'s listing at INFRA-3149's final head, which lists every
+// wall-clock wait of the product's source that its allow-list gives no reason for.
 func TestShutdownsDrainWakesOnceWhenARoomsHeldAppendLands(t *testing.T) {
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
