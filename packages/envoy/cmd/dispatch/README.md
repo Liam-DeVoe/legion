@@ -5082,20 +5082,22 @@ Each item below names a path with its method and identity, then its purpose.
   and a repository the App is not installed on, or no App key, `503 GITHUB_TOKEN_UNAVAILABLE`.
   A GitHub rate limit is `503 GITHUB_RATE_LIMITED` with `Retry-After` the whole seconds GitHub asked for (at least one), never `502 GITHUB_UPSTREAM` or GitHub's own `403`:
   GitHub's answer to the token mint or to the read, or a limit any process already met under the App or the installation, when GitHub is not asked at all (Running more than one process, above).
-  The caller is the request's own credential, resolved as every row of the API's table resolves one (`api.githubGate`): a person's cookie or trusted header, a personal token, or a token the secrets broker issued.
-  It must hold the OAuth scope `person`, so the proxy reads only for a person, at their browser or through a token acting as them; the browser holds every scope.
-  A credential that holds no scope is `403 OAUTH_SCOPE_REQUIRED` naming `person`, with the scope gate's `WWW-Authenticate` challenge: the deployment's shared agent token, a service account's token, a broker token an operator's entry scoped to one project, a broker token that names no person, and a restricted member's broker token (`api.brokerTokenActor`).
-  A read-only token is `403 READ_ONLY_TOKEN`, and a request with no credential `401 NO_IDENTITY`.
-  Each refusal comes before the method and the path are read, and GitHub is asked nothing.
-  The gate is the one the App-installation route applies to any credential (`GET /api/v1/github/app-installation/{owner}/{repo}`, `api.repositoriesHidden`), read with the caller's own credential, so a token's project list decides which private projects it reads, as everywhere (above): a full member's token that lists no private project reads no repository only a private project's issues resolve to.
-  A caller reads a repository when an issue of a project the caller sees resolves to it (its own repository, its nearest parent's, else its project's default, whether open or done); an open viewer also reads one that no private project the caller does not see owns (`refs.ProjectRepositoriesSQL`, `refs.RepositoryClause`).
-  A repository mapping and a recorded rename give no project a repository.
-  An issue whose parent chain loops or runs deeper than 32 links resolves to no repository: it neither gives a repository to the people who see its project nor hides one from those who do not.
-  A repository is held by its name alone: once GitHub renames a private project's repository or moves it to another owner, an open viewer reads it under the new name until an issue of that project resolves to the new name.
-  A caller who is not an open viewer reads only a repository an issue of a project the caller sees resolves to.
-  Every other repository answers, step for step, what one the App is not installed on answers, and GitHub is asked nothing for it: no App key still answers that, and a rate limit already held still answers the rate limit.
-  While a project is private, a read GitHub redirects to any repository but the one its path names, as GitHub answers a renamed or transferred repository's old name, is not followed and answers `503 GITHUB_TOKEN_UNAVAILABLE`, as a repository the App is not installed on; a redirect to the same repository in another case is followed.
-  With no private project the proxy follows GitHub's redirects as it always did.
+
+  - The caller is the request's own credential, resolved as every row of the API's table resolves one (`api.githubGate`): a person's cookie or trusted header, a personal token, or a token the secrets broker issued.
+    It must hold the OAuth scope `person`, so the proxy reads only for a person, at their browser or through a token acting as them; the browser holds every scope.
+    A credential that holds no scope is `403 OAUTH_SCOPE_REQUIRED` naming `person`, with the scope gate's `WWW-Authenticate` challenge: the deployment's shared agent token, a service account's token, a broker token an operator's entry scoped to one project, a broker token that names no person, and a restricted member's broker token (`api.brokerTokenActor`).
+    A read-only token is `403 READ_ONLY_TOKEN`, and a request with no credential `401 NO_IDENTITY`.
+    Each refusal comes before the method and the path are read, and GitHub is asked nothing.
+
+  - The gate is the one the App-installation route applies to any credential (`GET /api/v1/github/app-installation/{owner}/{repo}`, `api.repositoriesHidden`), read with the caller's own credential, so a token's project list decides which private projects it reads, as everywhere (above): a full member's token that lists no private project reads no repository only a private project's issues resolve to.
+    A caller reads a repository when an issue of a project the caller sees resolves to it (its own repository, its nearest parent's, else its project's default, whether open or done); an open viewer also reads one that no private project the caller does not see owns (`refs.ProjectRepositoriesSQL`, `refs.RepositoryClause`).
+    A repository mapping and a recorded rename give no project a repository.
+    An issue whose parent chain loops or runs deeper than 32 links resolves to no repository: it neither gives a repository to the people who see its project nor hides one from those who do not.
+    A repository is held by its name alone: once GitHub renames a private project's repository or moves it to another owner, an open viewer reads it under the new name until an issue of that project resolves to the new name.
+    A caller who is not an open viewer reads only a repository an issue of a project the caller sees resolves to.
+    Every other repository answers, step for step, what one the App is not installed on answers, and GitHub is asked nothing for it: no App key still answers that, and a rate limit already held still answers the rate limit.
+    While a project is private, a read GitHub redirects to any repository but the one its path names, as GitHub answers a renamed or transferred repository's old name, is not followed and answers `503 GITHUB_TOKEN_UNAVAILABLE`, as a repository the App is not installed on; a redirect to the same repository in another case is followed.
+    With no private project the proxy follows GitHub's redirects as it always did.
 
 - `/healthz` (GET; none)
 
