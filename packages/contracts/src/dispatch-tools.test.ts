@@ -6,6 +6,7 @@ import { ISSUE_TITLE_MAX, MAX_ISSUE_ADVANCES, PROJECT_NAME_MAX } from "./dispatc
 import { dispatchRouteToolSpecs } from "./dispatch-route-tools";
 import {
   ARTIFACT_STORED_TEXT_RULE,
+  DISPATCH_EVENT_BODY_MAX,
   DISPATCH_HANDOFF_BODY_MAX,
   type DispatchToolRoute,
   type DispatchToolSpec,
@@ -374,6 +375,36 @@ describe("dispatchToolSpecs", () => {
     const commands = new Set<string>(dispatchToolSpecs.map((spec) => spec.name));
     expect(personToolSpecs.length).toBeGreaterThan(0);
     for (const spec of personToolSpecs) expect(commands.has(spec.name), spec.name).toBe(false);
+  });
+
+  // dispatch-route-tools.ts cannot read a value of this module at run time, so it spells these
+  // two caps again; each is held here to the cap it stands for.
+  test("a bound tool's cap spelled again in its own module is the cap the server holds", () => {
+    const related = dispatchToolSchema(specFor("dispatch_find_related"), schemaApi);
+    const long = (length: number) => "x".repeat(length);
+    expect(related.safeParse({ project: "DSP", title: long(SEARCH_QUERY_MAX) }).success).toBe(true);
+    expect(related.safeParse({ project: "DSP", title: long(SEARCH_QUERY_MAX + 1) }).success).toBe(
+      false
+    );
+    // The title and the text are checked joined by a line break, as the route joins them.
+    const half = SEARCH_QUERY_MAX / 2;
+    expect(
+      related.safeParse({ project: "DSP", title: long(half), text: long(half - 1) }).success
+    ).toBe(true);
+    expect(related.safeParse({ project: "DSP", title: long(half), text: long(half) }).success).toBe(
+      false
+    );
+    const review = dispatchToolSchema(specFor("dispatch_review_document"), schemaApi);
+    const requested = {
+      document: "0190c7d2-1111-7222-8333-444444444444",
+      state: "changes_requested",
+    };
+    expect(review.safeParse({ ...requested, reason: long(DISPATCH_EVENT_BODY_MAX) }).success).toBe(
+      true
+    );
+    expect(
+      review.safeParse({ ...requested, reason: long(DISPATCH_EVENT_BODY_MAX + 1) }).success
+    ).toBe(false);
   });
 
   test("explains that quote anchors stay pinned to their block", () => {

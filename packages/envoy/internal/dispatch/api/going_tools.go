@@ -620,6 +620,18 @@ var goingWriteTools = map[string]goingWriteTool{
 		}},
 		Undo: goingUndoNotUndone, Class: goingClassResult, Event: "handoff.recorded", Proposed: true,
 	},
+	// The person's own state of one issue. Its route replaces the stored list of the issue's
+	// pinned and dismissed items whole, so the translation reads that state first and sends the
+	// list with the call's items added, under the next seq of the row it read
+	// (goingTranslateIssueState). The state before is not kept, so a change is not undone.
+	"dispatch_set_issue_state": {
+		Routes: []goingToolRoute{{
+			Method: http.MethodPut, Pattern: "/api/v1/me/issues/{key}/state",
+			Path:      map[string]string{"key": "issue"},
+			Translate: goingTranslateIssueState,
+		}},
+		Undo: goingUndoNotUndone, Class: goingClassSetting, Event: "user_state.updated",
+	},
 
 	// The tools whose spec binds their routes. A setting's value before is not read, so a
 	// setting's change is not undone: the person changes it again to put it back.
@@ -660,7 +672,6 @@ var goingWriteTools = map[string]goingWriteTool{
 	"dispatch_mark_inbox_read":    {Undo: goingUndoNotUndone, Class: goingClassSetting, Event: "user_thread_state.updated"},
 	"dispatch_dismiss_inbox":      {Undo: goingUndoNotUndone, Class: goingClassSetting, Event: "user_thread_state.updated"},
 	"dispatch_mark_document_read": {Undo: goingUndoNotUndone, Class: goingClassSetting, Event: goingNoEvent},
-	"dispatch_set_issue_state":    {Undo: goingUndoNotUndone, Class: goingClassSetting, Event: "user_state.updated"},
 	"dispatch_set_agent_state":    {Undo: goingUndoNotUndone, Class: goingClassSetting, Event: "user_agent_state.updated"},
 	// A broadcast reaches every session it names when it is sent.
 	"dispatch_broadcast": {Undo: goingUndoNotUndone, Class: goingClassBroadcast, Event: "message.created"},
@@ -839,7 +850,6 @@ var goingReadTools = map[string]goingReadTool{
 	"dispatch_read_near_copy_check":              {},
 	"dispatch_list_agent_messages":               {},
 	"dispatch_read_agent_document":               {},
-	"dispatch_read_agent_document_version":       {},
 	"dispatch_list_broadcasts":                   {},
 	"dispatch_read_broadcast":                    {},
 	"dispatch_list_decisions":                    {},

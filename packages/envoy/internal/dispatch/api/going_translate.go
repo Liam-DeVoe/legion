@@ -948,6 +948,40 @@ func goingReasonWhat(key string) string {
 	return "the reason posted on " + key
 }
 
+// goingTranslateIssueState is dispatch_set_issue_state's translation. PUT
+// /api/v1/me/issues/{key}/state replaces the person's whole stored list of the issue's items
+// (putUserState), which holds the marker of each item pinned on the issue's page beside the items
+// dismissed, so a call that sent its own items alone would delete every earlier one. The
+// translation reads the person's state as GET /api/v1/me/state answers it and sends the stored
+// list with the call's items added after it, each once, and the next seq of the row it read: the
+// route writes only a seq larger than the row's, so a write another tab made between the read and
+// this one is refused 409 STATE_STALE rather than written over. An issue the person holds no state
+// of reads as the row the route would create, nothing in the list and seq 0. pinned and
+// last_read_seq are sent as the call names them.
+func goingTranslateIssueState(ctx context.Context, read goingReader, call goingCallInput) (goingCall, error) {
+	var state userState
+	if err := read.get(ctx, "/api/v1/me/state", &state); err != nil {
+		return goingCall{}, err
+	}
+	stored := state[call.path["key"]]
+	body := goingPick(call.arguments, "pinned", "last_read_seq")
+	if items, named := call.arguments["dismissed"].([]any); named && len(items) > 0 {
+		dismissed := append([]string{}, stored.Dismissed...)
+		for _, item := range items {
+			text, isText := item.(string)
+			if !isText {
+				return goingCall{}, goingUntranslatable(fmt.Sprintf("dismissed holds %T, and takes texts alone", item))
+			}
+			if !slices.Contains(dismissed, text) {
+				dismissed = append(dismissed, text)
+			}
+		}
+		body["dismissed"] = dismissed
+	}
+	body["seq"] = stored.Seq + 1
+	return goingCall{path: call.path, body: body}, nil
+}
+
 // goingAskBody is what both ask rows take of a call: the question, with a `ref` the question
 // does not already hold written under it as `dispatch ask` writes it, its options, multiple and
 // urgency.

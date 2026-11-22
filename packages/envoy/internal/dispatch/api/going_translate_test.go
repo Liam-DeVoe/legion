@@ -344,3 +344,72 @@ func TestGoingArchitectureSyncRoutesOneSourceByRepo(t *testing.T) {
 		t.Errorf("a sync with no repo built %q, want the every-source route %q", got, want)
 	}
 }
+
+// goingStateDoer answers GET /api/v1/me/state with state and every other request with {},
+// keeping each request it was sent and that request's body.
+type goingStateDoer struct {
+	state    string
+	requests []*http.Request
+	bodies   []string
+}
+
+func (d *goingStateDoer) Do(request *http.Request) (*http.Response, error) {
+	body := ""
+	if request.Body != nil {
+		read, err := io.ReadAll(request.Body)
+		if err != nil {
+			return nil, err
+		}
+		body = string(read)
+	}
+	d.requests = append(d.requests, request)
+	d.bodies = append(d.bodies, body)
+	answer := "{}"
+	if request.Method == http.MethodGet && request.URL.Path == "/api/v1/me/state" {
+		answer = d.state
+	}
+	return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}},
+		Body: io.NopCloser(strings.NewReader(answer)), Request: request}, nil
+}
+
+// TestSetIssueStateAddsItsItemsToTheStoredList: PUT /api/v1/me/issues/{key}/state replaces the
+// person's whole list of an issue's items, which holds the markers of the items pinned on the
+// issue's page beside the items dismissed. So dispatch_set_issue_state reads the person's state
+// first and sends the stored list with the call's item added, under the seq the route takes: the
+// next one of the row it read. Before, the tool sent the call's items alone, so a call naming one
+// new item deleted the issue's pins and earlier dismissals; and it took the seq from the agent.
+func TestSetIssueStateAddsItsItemsToTheStoredList(t *testing.T) {
+	catalogue, err := BuildGoingCatalogue()
+	if err != nil {
+		t.Fatal(err)
+	}
+	const pin = "pinned_items:ask:0190c7d2-1111-7222-8333-444444444444"
+	doer := &goingStateDoer{state: `{
+		"DSP-1": {"pinned": true, "last_read_seq": 4, "dismissed": ["` + pin + `", "event:12"], "seq": 7},
+		"DSP-2": {"pinned": false, "last_read_seq": 0, "dismissed": ["event:99"], "seq": 30}
+	}`}
+	caller := GoingCaller{Catalogue: catalogue, BaseURL: "https://dispatch.invalid", Doer: doer}
+	if _, err := caller.Do(context.Background(), "dispatch_set_issue_state",
+		map[string]any{"issue": "DSP-1", "dismissed": []any{"event:15"}}); err != nil {
+		t.Fatalf("dismiss an item of DSP-1: %v", err)
+	}
+	var sent map[string]any
+	for index, request := range doer.requests {
+		if request.Method != http.MethodPut {
+			continue
+		}
+		if request.URL.Path != "/api/v1/me/issues/DSP-1/state" {
+			t.Fatalf("the write went to %s", request.URL.Path)
+		}
+		if err := json.Unmarshal([]byte(doer.bodies[index]), &sent); err != nil {
+			t.Fatalf("the write's body %q: %v", doer.bodies[index], err)
+		}
+	}
+	if sent == nil {
+		t.Fatalf("no write was sent: %d requests", len(doer.requests))
+	}
+	want := map[string]any{"dismissed": []any{pin, "event:12", "event:15"}, "seq": float64(8)}
+	if !reflect.DeepEqual(sent, want) {
+		t.Errorf("the write sent %v, want the stored pin and dismissal with the new item, under seq 8: %v", sent, want)
+	}
+}

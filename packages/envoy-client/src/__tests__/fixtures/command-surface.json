@@ -1,5 +1,5 @@
 {
-  "commands": 137,
+  "commands": 135,
   "refusals": 29,
   "runs": [
     {
@@ -816,12 +816,12 @@
       "tool": "dispatch_delete_session_group",
       "call": "valid",
       "args": {
-        "group": "7"
+        "group": "<id>"
       },
       "requests": [
         {
           "method": "DELETE",
-          "path": "/api/v1/delivery/session-groups/7",
+          "path": "/api/v1/delivery/session-groups/0190c7d2-1111-7222-8333-444444444444",
           "headers": {
             "Accept": "application/json",
             "Authorization": "Bearer secret",
@@ -1255,12 +1255,12 @@
         "add": [
           "session-0123456789abcdef"
         ],
-        "group": "7"
+        "group": "<id>"
       },
       "requests": [
         {
           "method": "PATCH",
-          "path": "/api/v1/delivery/session-groups/7",
+          "path": "/api/v1/delivery/session-groups/0190c7d2-1111-7222-8333-444444444444",
           "headers": {
             "Accept": "application/json",
             "Authorization": "Bearer secret",
@@ -2742,30 +2742,6 @@
       ]
     },
     {
-      "tool": "dispatch_read_agent_document_version",
-      "call": "valid",
-      "args": {
-        "document": "screenshot-png",
-        "session": "session-0123456789abcdef",
-        "version": 1
-      },
-      "requests": [
-        {
-          "method": "GET",
-          "path": "/api/v1/agents/session-0123456789abcdef/artifacts/screenshot-png/versions/1",
-          "headers": {
-            "Accept": "application/json",
-            "Authorization": "Bearer secret"
-          },
-          "body": null
-        }
-      ],
-      "outcome": "result",
-      "text": [
-        "{\"route\":\"GET /api/v1/agents/{session_id}/artifacts/{slug}/versions/{number}\"}"
-      ]
-    },
-    {
       "tool": "dispatch_read_ask",
       "call": "valid",
       "args": {
@@ -3477,7 +3453,8 @@
       "call": "valid",
       "args": {
         "comment": "<id>",
-        "delivery": "aside"
+        "delivery": "aside",
+        "target": "session:session-0123456789abcdef"
       },
       "requests": [
         {
@@ -3499,7 +3476,8 @@
                 "session_title": "Record the command surface"
               }
             },
-            "delivery": "aside"
+            "delivery": "aside",
+            "target": "session:session-0123456789abcdef"
           }
         }
       ],
@@ -3750,7 +3728,8 @@
       "args": {
         "attempt": 1,
         "body": "Done.",
-        "comment": "<id>"
+        "comment": "<id>",
+        "target": "session:session-0123456789abcdef"
       },
       "requests": [
         {
@@ -3773,7 +3752,8 @@
               }
             },
             "attempt": 1,
-            "body": "Done."
+            "body": "Done.",
+            "target": "session:session-0123456789abcdef"
           }
         }
       ],
@@ -4321,42 +4301,6 @@
       "outcome": "result",
       "text": [
         "{\"route\":\"PUT /api/v1/settings/delivery\"}"
-      ]
-    },
-    {
-      "tool": "dispatch_set_issue_state",
-      "call": "valid",
-      "args": {
-        "issue": "DSP-1",
-        "pinned": true
-      },
-      "requests": [
-        {
-          "method": "PUT",
-          "path": "/api/v1/me/issues/DSP-1/state",
-          "headers": {
-            "Accept": "application/json",
-            "Authorization": "Bearer secret",
-            "Content-Type": "application/json"
-          },
-          "body": {
-            "actor": {
-              "id": "session-1",
-              "kind": "session",
-              "origin": {
-                "cwd": "/workspace",
-                "host": "omp",
-                "machine": "test-machine",
-                "session_title": "Record the command surface"
-              }
-            },
-            "pinned": true
-          }
-        }
-      ],
-      "outcome": "result",
-      "text": [
-        "{\"route\":\"PUT /api/v1/me/issues/{key}/state\"}"
       ]
     },
     {

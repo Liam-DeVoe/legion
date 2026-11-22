@@ -1,3 +1,9 @@
+import {
+  DELIVERY_CAPABILITIES,
+  ISSUE_TITLE_MAX,
+  MAX_BROADCAST_RECIPIENTS,
+  REFERENCE_TARGETS_MAX,
+} from "./dispatch-api-limits";
 import type { DispatchToolRoute, DispatchToolSpec } from "./dispatch-tools";
 import type { SchemaApi, SchemaNode } from "./tool-schema";
 
@@ -11,7 +17,13 @@ import type { SchemaApi, SchemaNode } from "./tool-schema";
  * needs a hand-written command or translator. `scripts/gen-go-tools.ts` emits each binding into
  * Go as `contracts.DispatchTool.Routes`. They cover each route a person can call that no
  * hand-written spec in `dispatch-tools.ts` calls, which the server's
- * `TestEveryPersonRouteHasATool` holds the table to.
+ * `TestEveryPersonRouteHasATool` holds the table to, and four routes a hand-written spec also
+ * reads: `dispatch_read_ask` and `dispatch_read_comment` read the rows `dispatch_read` reads for
+ * an ask's or a comment's reference, `dispatch_read_handoff` the row `dispatch_handoff_read` reads
+ * for a handoff's version, and `dispatch_read_agent_document` the row `dispatch_doc_read` reads for
+ * a file of an agent's conversation named with no version. A route that answers a file's bytes
+ * rather than JSON has no tool here, since the generic command prints a JSON answer alone:
+ * `dispatch_doc_read` reads each of those.
  *
  * This module imports nothing from `dispatch-tools.ts` at run time: that module spreads this
  * list into `dispatchToolSpecs`, so a value read from it here would be read before it is set.
@@ -24,14 +36,45 @@ const AS_DATA =
 const ISSUE_KEY = "Issue key, such as DSP-1.";
 const PROJECT_KEY = "Project key, such as DSP.";
 const DOCUMENT_ID = "The document's id, or a unique prefix of it of 8 characters or more.";
+const PROJECT_DOCUMENT_ID =
+  "The id of a project's document, or a unique prefix of it of 8 characters or more.";
 const ASK_ID = "The ask's id, or a unique prefix of it of 8 characters or more.";
 const COMMENT_ID = "The comment's id, or a unique prefix of it of 8 characters or more.";
 const MESSAGE_ID = "The message's id, or a unique prefix of it of 8 characters or more.";
 const SESSION_ID = "The agent session's id.";
+const SESSION_GROUP_ID =
+  "The session group's id, a UUID, as its create answered it or the Delivery timeline's session_groups list it.";
 const REPOSITORY_OWNER = "The GitHub owner of the repository, such as acme.";
 const REPOSITORY_NAME = "The repository's name without its owner, such as infra.";
 const RFC3339 = "An RFC 3339 time, such as 2026-11-19T00:00:00Z.";
 const NOT_UNDONE_SETTING = "Undo does not change it back: change the setting again to put it back.";
+const DELIVERY_MODE = "The delivery mode: aside, btw or steer.";
+const COMMENT_MENTION =
+  "exactly as the comment stores it and dispatch read-comment's deliveries name it: session:<session id> or role:<role name>";
+
+/**
+ * The longest title and text of the related-item check's GET route, together: the server's
+ * `contracts.SearchQueryMax` (`SEARCH_QUERY_MAX` in `dispatch-tools.ts`, which this module cannot
+ * read at run time; `dispatch-tools.test.ts` holds the two equal).
+ */
+const RELATED_QUERY_MAX = 1000;
+
+/**
+ * The longest reason of a review, after the trim: the server's `contracts.DispatchEventBodyMax`
+ * (`DISPATCH_EVENT_BODY_MAX` in `dispatch-tools.ts`, held equal as `RELATED_QUERY_MAX` is).
+ */
+const REVIEW_REASON_MAX = 32000;
+
+/** The longest priority id the priority routes take (`priorityIDMax`, priorities.go). */
+const PRIORITY_ID_MAX = 200;
+
+/** The most issues the related-item check leaves out (`relatedExcludeLimit`, related_routes.go). */
+const RELATED_EXCLUDE_MAX = 50;
+
+/** The narrowing values the Inbox's write routes take (`parseInboxReadScope`, inbox_read.go). */
+const INBOX_KINDS = ["reply", "agent"] as const;
+const INBOX_PRIORITIES = ["P0", "P1", "P2", "P3", "none"] as const;
+const INBOX_URGENCIES = ["low", "med", "high", "blocking", "none"] as const;
 
 function get(path: string, binding: Omit<DispatchToolRoute, "method" | "path"> = {}) {
   return [{ method: "GET", path, ...binding }] as const satisfies readonly DispatchToolRoute[];
@@ -102,6 +145,96 @@ export function resultRecordArguments<E extends SchemaNode<E>>(
   };
 }
 
+type ToolValidation = NonNullable<DispatchToolSpec["validation"]>;
+
+/** Whether a call names `name` with a value: absent, null, a text of spaces alone and an empty
+ *  list name nothing, as the routes below read them. */
+function names(input: Record<string, unknown>, name: string): boolean {
+  const value = input[name];
+  if (value === undefined || value === null) return false;
+  if (typeof value === "string") return value.trim() !== "";
+  if (Array.isArray(value)) return value.length > 0;
+  return true;
+}
+
+/** A cross-field rule whose whole wording is its refusal. */
+function crossFieldRule(
+  message: string,
+  check: (input: Record<string, unknown>) => boolean
+): ToolValidation {
+  return { check: (value) => check(value as Record<string, unknown>), message };
+}
+
+/** A cross-field rule of several parts: `problem` answers the part a call breaks, or undefined. */
+function crossFieldRules(
+  message: string,
+  problem: (input: Record<string, unknown>) => string | undefined
+): ToolValidation {
+  return {
+    check: (value) => problem(value as Record<string, unknown>) === undefined,
+    message,
+    refusal: (value) => problem(value as Record<string, unknown>) ?? message,
+  };
+}
+
+/** The narrowing of an Inbox write, as the Inbox's filter writes it (`inboxThreadFilters`,
+ *  inbox_read.go): every list is optional, and an absent one means every value. */
+function inboxNarrowing<E extends SchemaNode<E>>(z: SchemaApi<E>) {
+  return {
+    kind: z
+      .array(z.enum(INBOX_KINDS))
+      .describe("The kinds of row, reply and agent; both when absent.")
+      .optional(),
+    priority: z
+      .array(z.enum(INBOX_PRIORITIES))
+      .describe("The priorities of the threads' issues, and none for a thread with none.")
+      .optional(),
+    urgency: z
+      .array(z.enum(INBOX_URGENCIES))
+      .describe("The threads' urgencies, and none for a thread with none.")
+      .optional(),
+    project: z
+      .array(z.string({ min: 1 }))
+      .describe("Project keys, and none for a thread of no project.")
+      .optional(),
+    issue: z.string().describe("One issue's threads alone; not with artifact.").optional(),
+    artifact: z
+      .string()
+      .describe("One document's threads alone, by its whole id; not with issue.")
+      .optional(),
+  };
+}
+
+const INBOX_OWNER_RULE = "Name issue or artifact, not both.";
+
+/** dispatch_dismiss_inbox's rules, as `dismissInbox` (inbox_dismiss.go) refuses each with 400:
+ *  the rows named by id, or the narrowing up to dismiss_through, never both; seen_replies beside
+ *  rows named by id when they are taken out, and never on a restore. */
+const DISMISS_INBOX_RULE =
+  "Name rows in threads, or the narrowing with dismiss_through, never both. Taking named rows out carries seen_replies; a restore carries none. " +
+  INBOX_OWNER_RULE;
+
+function dismissInboxProblem(input: Record<string, unknown>): string | undefined {
+  const narrowing = ["kind", "priority", "urgency", "project", "issue", "artifact"];
+  const restore = input.restore === true;
+  const seen = input.seen_replies !== undefined && input.seen_replies !== null;
+  if (names(input, "threads")) {
+    if (names(input, "dismiss_through") || narrowing.some((name) => names(input, name))) {
+      return "threads names the rows itself, so it takes neither dismiss_through nor the narrowing.";
+    }
+    if (restore && seen) return "a restore takes no seen_replies.";
+    if (!restore && !seen) {
+      return "taking rows named by threads out carries seen_replies, what was seen of each.";
+    }
+    return undefined;
+  }
+  if (seen) return "seen_replies goes with threads alone.";
+  if (!names(input, "dismiss_through")) {
+    return "dismiss_through is required when threads names no row.";
+  }
+  return names(input, "issue") && names(input, "artifact") ? INBOX_OWNER_RULE : undefined;
+}
+
 export const dispatchRouteToolSpecs = [
   {
     name: "dispatch_list_routes",
@@ -135,21 +268,39 @@ export const dispatchRouteToolSpecs = [
   {
     name: "dispatch_find_related",
     example: { project: "DSP", title: "Search misses renamed issues" },
-    description:
-      "Run the related-item check an issue create runs over a title and a text, without writing anything, and list the related issues, documents and asks it finds. Use it before filing work to find what already covers it; dispatch related runs the same check with a text as long as a spec.",
+    description: `Run the related-item check an issue create runs over a title and a text, without writing anything, and list the related issues, documents and asks it finds. Use it before filing work to find what already covers it. The title and the text together are at most ${RELATED_QUERY_MAX} characters (400 CAP_EXCEEDED otherwise); dispatch related runs the same check with a text as long as a spec.`,
     arguments: (z) => ({
       project: z.string().describe(PROJECT_KEY),
-      title: z.string().describe("The title to check.").optional(),
-      text: z.string().describe("The text to check beside the title.").optional(),
+      title: z
+        .string({ max: RELATED_QUERY_MAX })
+        .describe(`The title to check; with text, at most ${RELATED_QUERY_MAX} characters.`)
+        .optional(),
+      text: z
+        .string({ max: RELATED_QUERY_MAX })
+        .describe(
+          `The text to check beside the title; with the title, at most ${RELATED_QUERY_MAX} characters.`
+        )
+        .optional(),
       exclude_issues: z
-        .array(z.string({ min: 1 }))
-        .describe("Issues of the project the check leaves out of its results.")
+        .array(z.string({ min: 1 }), { max: RELATED_EXCLUDE_MAX })
+        .describe(
+          `Issues of the project the check leaves out of its results, by key: at most ${RELATED_EXCLUDE_MAX}.`
+        )
         .optional(),
       keywords_only: z
         .boolean()
         .describe("Search by keywords alone, without the meaning search.")
         .optional(),
     }),
+    validation: crossFieldRule(
+      `title and text together are at most ${RELATED_QUERY_MAX} characters, each trimmed, with a line break between them; dispatch related checks a longer text.`,
+      (input) => {
+        const title = typeof input.title === "string" ? input.title.trim() : "";
+        const text = typeof input.text === "string" ? input.text.trim() : "";
+        const checked = title === "" || text === "" ? title + text : `${title}\n${text}`;
+        return checked.length <= RELATED_QUERY_MAX;
+      }
+    ),
     strict: true,
     routes: get("/api/v1/projects/{key}/related", {
       params: { key: "project" },
@@ -376,14 +527,16 @@ export const dispatchRouteToolSpecs = [
       deploy_repo: z.string({ min: 1 }).describe("The deploy repository, owner/name."),
       deploy_workflow_path: z.string({ min: 1 }).describe("The deploy workflow's path."),
       production_job_names: z
-        .array(z.string({ min: 1 }))
-        .describe("The jobs of the deploy workflow that deploy to production."),
+        .array(z.string({ min: 1 }), { min: 1 })
+        .describe(
+          "The jobs of the deploy workflow that deploy to production: at least one, each named once."
+        ),
       pr_checks_workflow_path: z
         .string({ min: 1 })
         .describe("The pull-request checks workflow's path."),
       population_authors: z
-        .array(z.string({ min: 1 }))
-        .describe("The GitHub logins whose pull requests the measures count."),
+        .array(z.string({ min: 1 }), { min: 1 })
+        .describe("The GitHub logins whose pull requests the measures count: at least one."),
       excluded_repos: z
         .array(z.string({ min: 1 }))
         .describe("Repositories the timeline leaves out, owner/name.")
@@ -425,7 +578,7 @@ export const dispatchRouteToolSpecs = [
     name: "dispatch_read_legion_daemon",
     example: { project: "DSP" },
     description:
-      "Read the Legion daemon a project's Legion state is read from, with who named it and when, or null when the project names none.",
+      "Read the Legion daemon a project's Legion state is read from: its address, who first named a daemon for the project, and when the setting was last written; or null when the project names none.",
     arguments: (z) => ({ project: z.string().describe(PROJECT_KEY) }),
     strict: true,
     routes: get("/api/v1/projects/{key}/legion/daemon", { params: { key: "project" } }),
@@ -433,7 +586,7 @@ export const dispatchRouteToolSpecs = [
   {
     name: "dispatch_set_legion_daemon",
     example: { project: "DSP", state_url: "https://legion.example.com" },
-    description: `Name the Legion daemon a project's Legion state is read from, by its address: an absolute http or https URL with a host and no path. ${NOT_UNDONE_SETTING}`,
+    description: `Name the Legion daemon a project's Legion state is read from, by its address: an absolute http or https URL with a host and no path, user, password, query or fragment (400 LEGION_SETTING_INPUT otherwise). ${NOT_UNDONE_SETTING}`,
     arguments: (z) => ({
       project: z.string().describe(PROJECT_KEY),
       state_url: z
@@ -483,17 +636,19 @@ export const dispatchRouteToolSpecs = [
       "Create a Delivery session group: a name that stands as the parent agent of every pull request whose first session the group holds. Use it when a person asks to see several sessions' pull requests as one on the Delivery page. Undo does not delete the group: delete it to take it back.",
     arguments: (z) => ({
       name: z.string({ min: 1 }).describe("The group's name."),
-      sessions: z.array(z.string({ min: 1 })).describe("The session ids the group holds."),
+      sessions: z
+        .array(z.string({ min: 1 }), { min: 1 })
+        .describe("The session ids the group holds: at least one."),
     }),
     strict: true,
     routes: send("POST", "/api/v1/delivery/session-groups", { body: ["name", "sessions"] }),
   },
   {
     name: "dispatch_edit_session_group",
-    example: { group: "7", add: ["session-0123456789abcdef"] },
+    example: { group: "0190c7d2-1111-7222-8333-444444444444", add: ["session-0123456789abcdef"] },
     description: `Rename a Delivery session group, add sessions to it or remove sessions from it. An edit that would leave it empty is refused. ${NOT_UNDONE_SETTING}`,
     arguments: (z) => ({
-      group: z.string().describe("The session group's id."),
+      group: z.string().describe(SESSION_GROUP_ID),
       name: z.string({ min: 1 }).describe("The group's new name.").optional(),
       add: z
         .array(z.string({ min: 1 }))
@@ -512,10 +667,10 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_delete_session_group",
-    example: { group: "7" },
+    example: { group: "0190c7d2-1111-7222-8333-444444444444" },
     description:
       "Delete a Delivery session group; its sessions show as themselves again. Undo does not bring the group back.",
-    arguments: (z) => ({ group: z.string().describe("The session group's id.") }),
+    arguments: (z) => ({ group: z.string().describe(SESSION_GROUP_ID) }),
     strict: true,
     routes: send("DELETE", "/api/v1/delivery/session-groups/{id}", {
       params: { id: "group" },
@@ -553,12 +708,16 @@ export const dispatchRouteToolSpecs = [
     name: "dispatch_create_priority",
     example: { title: "Ship the command bar" },
     description:
-      "Write a new priority the deployment works towards, last in the order: a title, an optional description in markdown, an optional owner and an optional id (the title as a slug by default). Issues state the priorities they advance. Undo does not delete the priority: delete it to take it back.",
+      "Write a new priority the deployment works towards, last in the order: a title, an optional description in markdown, an optional owner and an optional id (the title as a slug by default; a title whose slug is no id is refused, and then the call names one). Issues state the priorities they advance. Undo does not delete the priority: delete it to take it back.",
     arguments: (z) => ({
-      title: z.string({ min: 1 }).describe("The priority's title."),
+      title: z
+        .string({ min: 1, max: ISSUE_TITLE_MAX })
+        .describe(`The priority's title, at most ${ISSUE_TITLE_MAX} characters.`),
       id: z
-        .string()
-        .describe("The priority's id, a slug of lowercase letters, digits and hyphens.")
+        .string({ max: PRIORITY_ID_MAX })
+        .describe(
+          `The priority's id: at most ${PRIORITY_ID_MAX} characters of lowercase letters and digits in groups joined by single hyphens, and neither none nor any.`
+        )
         .optional(),
       description: z.string().describe("What the priority is, in markdown.").optional(),
       owner: z.string().describe("The person who owns the priority.").optional(),
@@ -570,10 +729,13 @@ export const dispatchRouteToolSpecs = [
     name: "dispatch_edit_priority",
     example: { priority: "ship-the-command-bar", title: "Ship the command bar to everyone" },
     description:
-      "Change a priority's title, description or owner, or move it in the order: rank names the priority it lands above (before) and the one it lands below (after). Each field named is written and each left out is left alone. Undo does not change it back.",
+      "Change a priority's title, description or owner, or move it in the order: rank names the priority it lands above (before), the one it lands below (after), or both. Each field named is written and each left out is left alone; a call names at least one of title, description, owner and rank. Undo does not change it back.",
     arguments: (z) => ({
       priority: z.string().describe("The priority's id."),
-      title: z.string({ min: 1 }).describe("The new title.").optional(),
+      title: z
+        .string({ min: 1, max: ISSUE_TITLE_MAX })
+        .describe(`The new title, at most ${ISSUE_TITLE_MAX} characters.`)
+        .optional(),
       description: z.string().describe("The new description, in markdown.").optional(),
       owner: z.string().describe("The new owner.").optional(),
       rank: z
@@ -581,9 +743,23 @@ export const dispatchRouteToolSpecs = [
           before: z.string().describe("The priority this one lands above.").optional(),
           after: z.string().describe("The priority this one lands below.").optional(),
         })
-        .describe("Where the priority moves in the order.")
+        .describe("Where the priority moves in the order: before, after, or both.")
         .optional(),
     }),
+    validation: crossFieldRules(
+      "A call names at least one of title, description, owner and rank, and rank names before, after, or both.",
+      (input) => {
+        const fields = ["title", "description", "owner", "rank"];
+        if (fields.every((field) => input[field] === undefined)) {
+          return "name at least one of title, description, owner and rank.";
+        }
+        const rank = input.rank as Record<string, unknown> | undefined;
+        if (rank !== undefined && !names(rank, "before") && !names(rank, "after")) {
+          return "rank names before, after, or both.";
+        }
+        return undefined;
+      }
+    ),
     strict: true,
     routes: send("PATCH", "/api/v1/priorities/{id}", {
       params: { id: "priority" },
@@ -676,7 +852,9 @@ export const dispatchRouteToolSpecs = [
     description:
       "Read what many dispatch:// references point at in one read: for each, the kind of node, the words shown for it (an issue's title, a document's name, an ask's question) and whether it is gone.",
     arguments: (z) => ({
-      ref: z.array(z.string({ min: 1 })).describe("The dispatch:// references to read, in order."),
+      ref: z
+        .array(z.string({ min: 1 }), { min: 1, max: REFERENCE_TARGETS_MAX })
+        .describe(`The dispatch:// references to read, in order: 1 to ${REFERENCE_TARGETS_MAX}.`),
     }),
     strict: true,
     routes: get("/api/v1/reference-targets", { query: ["ref"] }),
@@ -707,7 +885,7 @@ export const dispatchRouteToolSpecs = [
     name: "dispatch_unsubscribe_issue",
     example: { issue: "DSP-1", session: "session-0123456789abcdef" },
     description:
-      "Unsubscribe an agent session from an issue's events. Use it when a person asks to stop a session hearing about an issue. Undo does not subscribe it again: a session subscribes itself.",
+      "Unsubscribe an agent session from an issue's events. Use it when a person asks to stop a session hearing about an issue. A session that hears the issue only through a broader topic, one that covers other issues too, is refused (409 NOT_REMOVABLE). Undo does not subscribe it again: a session subscribes itself.",
     arguments: (z) => ({
       issue: z.string().describe(ISSUE_KEY),
       session: z.string().describe(SESSION_ID),
@@ -756,10 +934,18 @@ export const dispatchRouteToolSpecs = [
     name: "dispatch_read_message_blocks",
     example: { message: "0190c7d2-1111-7222-8333-444444444444" },
     description:
-      "Read the blocks of one message's body, each with its stable block id, which a reply names to answer one block.",
-    arguments: (z) => ({ message: z.string().describe(MESSAGE_ID) }),
+      "Read the blocks of one message's body, each with its stable block id, which a reply names to answer one block. A direct message, one on no issue, is read as a session in its conversation unless the credential acts as its person: name that session in session.",
+    arguments: (z) => ({
+      message: z.string().describe(MESSAGE_ID),
+      session: z
+        .string({ min: 1 })
+        .describe(
+          "Your own session's id, for a direct message read with a credential that does not act as its person: the session the message was sent to or that replied in its conversation (400 SESSION_REQUIRED without it, 403 THREAD_FORBIDDEN for another)."
+        )
+        .optional(),
+    }),
     strict: true,
-    routes: get("/api/v1/messages/{id}/blocks", { params: { id: "message" } }),
+    routes: get("/api/v1/messages/{id}/blocks", { params: { id: "message" }, query: ["session"] }),
   },
   {
     name: "dispatch_redeliver_message",
@@ -768,7 +954,7 @@ export const dispatchRouteToolSpecs = [
       "Deliver a targeted message to its session again, in a delivery mode the session takes (aside, btw or steer). Use it when a person asks to resend a message whose delivery failed. A delivery sent is not undone.",
     arguments: (z) => ({
       message: z.string().describe(MESSAGE_ID),
-      delivery: z.string({ min: 1 }).describe("The delivery mode: aside, btw or steer."),
+      delivery: z.enum(DELIVERY_CAPABILITIES).describe(DELIVERY_MODE),
     }),
     strict: true,
     routes: send("POST", "/api/v1/messages/{id}/deliveries", {
@@ -780,7 +966,7 @@ export const dispatchRouteToolSpecs = [
     name: "dispatch_accept_message_delivery",
     example: { message: "0190c7d2-1111-7222-8333-444444444444", attempt: "1" },
     description:
-      "Record that this session accepted one delivery attempt of a message sent to it. Only the session the attempt reached may accept it. It is not undone.",
+      "Record that this session took one delivery attempt of a message as its person's own turn. Dispatch accepts only the latest attempt, never accepted and not failed, of a direct message to this session (on no issue and from no broadcast) that a person wrote themselves and sent as an aside or a steer, where that person asked for the attempt within the last minute; any other attempt is refused (409). Only the session the attempt reached may accept it. It is not undone.",
     arguments: (z) => ({
       message: z.string().describe(MESSAGE_ID),
       attempt: z.string({ min: 1 }).describe("The delivery attempt's number, such as 1."),
@@ -826,29 +1012,15 @@ export const dispatchRouteToolSpecs = [
   {
     name: "dispatch_mark_inbox_read",
     example: { read_through: "2026-11-19T00:00:00Z" },
-    description:
-      "Mark every unread thread of the Inbox of the person you act for read up to a time, narrowed as the Inbox narrows (kind, priority, urgency, project, and issue or artifact). It takes no thread out of the Inbox. Undo does not mark them unread.",
+    description: `Mark every unread thread of the Inbox of the person you act for read up to a time, narrowed as the Inbox narrows (kind, priority, urgency, project, and issue or artifact). It takes no thread out of the Inbox. ${INBOX_OWNER_RULE} Undo does not mark them unread.`,
     arguments: (z) => ({
       read_through: z.string({ min: 1 }).describe(`The time read up to. ${RFC3339}`),
-      kind: z
-        .array(z.string({ min: 1 }))
-        .describe("reply, agent, or both.")
-        .optional(),
-      priority: z
-        .array(z.string({ min: 1 }))
-        .describe("P0, P1, P2, P3 and none.")
-        .optional(),
-      urgency: z
-        .array(z.string({ min: 1 }))
-        .describe("low, med, high, blocking and none.")
-        .optional(),
-      project: z
-        .array(z.string({ min: 1 }))
-        .describe("Project keys, and none.")
-        .optional(),
-      issue: z.string().describe("One issue's threads alone.").optional(),
-      artifact: z.string().describe("One document's threads alone.").optional(),
+      ...inboxNarrowing(z),
     }),
+    validation: crossFieldRule(
+      INBOX_OWNER_RULE,
+      (input) => !(names(input, "issue") && names(input, "artifact"))
+    ),
     strict: true,
     routes: send("POST", "/api/v1/me/inbox/read", {
       body: ["read_through", "kind", "priority", "urgency", "project", "issue", "artifact"],
@@ -860,8 +1032,7 @@ export const dispatchRouteToolSpecs = [
       threads: ["reply:0190c7d2-1111-7222-8333-444444444444"],
       seen_replies: { "reply:0190c7d2-1111-7222-8333-444444444444": { version: 3 } },
     },
-    description:
-      "Take threads out of the Inbox of the person you act for, or put them back with restore: by row ids (reply:<thread id>, agent:<message id>) with what was seen of each, or by the Inbox's narrowing up to dismiss_through, never both. A dismissed thread comes back when somebody writes in it.",
+    description: `Take threads out of the Inbox of the person you act for, or put them back with restore. Name the rows by id in threads (reply:<thread id>, agent:<root message id>), or name none and give the Inbox's narrowing with dismiss_through, never both. Taking rows named by id out carries seen_replies, what was seen of each; a restore carries none. ${INBOX_OWNER_RULE} A dismissed thread comes back when somebody writes in it.`,
     arguments: (z) => ({
       threads: z
         .array(z.string({ min: 1 }))
@@ -870,33 +1041,19 @@ export const dispatchRouteToolSpecs = [
       seen_replies: z
         .unknown()
         .describe(
-          "What was seen of each row threads names, keyed by row id, as the Inbox read answered it."
+          "What was seen of each row threads names, keyed by row id, as the Inbox read answered it: {version} for a reply: row, {newest_reply, unread_replies} for an agent: row. Taking rows out needs one for every row; a restore takes none."
         )
         .optional(),
       dismiss_through: z
         .string()
-        .describe(`With the narrowing: dismiss up to this time. ${RFC3339}`)
+        .describe(
+          `With the narrowing, and required when threads names no row: dismiss up to this time. ${RFC3339}`
+        )
         .optional(),
-      kind: z
-        .array(z.string({ min: 1 }))
-        .describe("reply, agent, or both.")
-        .optional(),
-      priority: z
-        .array(z.string({ min: 1 }))
-        .describe("P0, P1, P2, P3 and none.")
-        .optional(),
-      urgency: z
-        .array(z.string({ min: 1 }))
-        .describe("low, med, high, blocking and none.")
-        .optional(),
-      project: z
-        .array(z.string({ min: 1 }))
-        .describe("Project keys, and none.")
-        .optional(),
-      issue: z.string().describe("One issue's threads alone.").optional(),
-      artifact: z.string().describe("One document's threads alone.").optional(),
+      ...inboxNarrowing(z),
       restore: z.boolean().describe("Put the threads back instead of taking them out.").optional(),
     }),
+    validation: crossFieldRules(DISMISS_INBOX_RULE, dismissInboxProblem),
     strict: true,
     routes: send("POST", "/api/v1/me/inbox/dismiss", {
       body: [
@@ -977,7 +1134,7 @@ export const dispatchRouteToolSpecs = [
     name: "dispatch_read_agent_document",
     example: { session: "session-0123456789abcdef", document: "screenshot-png" },
     description:
-      "Read one file or document a person or the session uploaded to an agent session's conversation, by its slug: its name, kind and versions.",
+      "Read the record of one file or picture a person or the session uploaded to an agent session's conversation, by its slug: its name, kind and versions. dispatch doc-read reads a version's content, by the reference dispatch://agent/<session id>/artifact/<slug>@v<N>.",
     arguments: (z) => ({
       session: z.string().describe(SESSION_ID),
       document: z.string().describe("The upload's slug."),
@@ -985,21 +1142,6 @@ export const dispatchRouteToolSpecs = [
     strict: true,
     routes: get("/api/v1/agents/{session_id}/artifacts/{slug}", {
       params: { session_id: "session", slug: "document" },
-    }),
-  },
-  {
-    name: "dispatch_read_agent_document_version",
-    example: { session: "session-0123456789abcdef", document: "screenshot-png", version: 1 },
-    description:
-      "Read one version of a file or document uploaded to an agent session's conversation, with its content.",
-    arguments: (z) => ({
-      session: z.string().describe(SESSION_ID),
-      document: z.string().describe("The upload's slug."),
-      version: z.number({ int: true, min: 1 }).describe("The version to read."),
-    }),
-    strict: true,
-    routes: get("/api/v1/agents/{session_id}/artifacts/{slug}/versions/{number}", {
-      params: { session_id: "session", slug: "document", number: "version" },
     }),
   },
   {
@@ -1012,9 +1154,11 @@ export const dispatchRouteToolSpecs = [
     description:
       "Send one message to several agent sessions at once, each in the delivery mode named (aside, btw or steer). Use it when a person asks to tell many sessions the same thing. A broadcast sent is not undone.",
     arguments: (z) => ({
-      session_ids: z.array(z.string({ min: 1 })).describe("The sessions to send it to."),
+      session_ids: z
+        .array(z.string({ min: 1 }), { min: 1, max: MAX_BROADCAST_RECIPIENTS })
+        .describe(`The sessions to send it to: 1 to ${MAX_BROADCAST_RECIPIENTS}.`),
       body: z.string({ min: 1 }).describe("The message, in markdown."),
-      delivery: z.string({ min: 1 }).describe("The delivery mode: aside, btw or steer."),
+      delivery: z.enum(DELIVERY_CAPABILITIES).describe(DELIVERY_MODE),
     }),
     strict: true,
     routes: send("POST", "/api/v1/broadcasts", { body: ["session_ids", "body", "delivery"] }),
@@ -1067,7 +1211,7 @@ export const dispatchRouteToolSpecs = [
       selected: ["Hold to Monday"],
     },
     description:
-      "Answer an ask as the person you act for: pick its options by label, write a text, or both. expected_edited_at is the ask's edited_at as you read it (null for an ask never edited), so an answer to a question that changed since is refused. An answer reaches whoever asked at once, so it is not undone.",
+      "Answer an ask as the person you act for: pick its options by label, write a text, or both; an answer with neither is refused. expected_edited_at is the ask's edited_at as you read it (null for an ask never edited), so an answer to a question that changed since is refused. An answer reaches whoever asked at once, so it is not undone.",
     arguments: (z) => ({
       ask: z.string().describe(ASK_ID),
       expected_edited_at: z
@@ -1084,6 +1228,10 @@ export const dispatchRouteToolSpecs = [
         .describe("The time of the answer this one replaces, when the ask holds one.")
         .optional(),
     }),
+    validation: crossFieldRule(
+      "An answer names selected, text, or both.",
+      (input) => names(input, "selected") || names(input, "text")
+    ),
     strict: true,
     routes: send("POST", "/api/v1/asks/{id}/answer", {
       params: { id: "ask" },
@@ -1123,20 +1271,28 @@ export const dispatchRouteToolSpecs = [
     name: "dispatch_reopen_comment",
     example: { comment: "0190c7d2-1111-7222-8333-444444444444" },
     description:
-      "Reopen a resolved comment thread, so it shows as open again. Undo resolves it again.",
+      "Reopen a resolved comment thread, named by its root comment (a reply, or a comment under an ask, is refused), so it shows as open again. Undo resolves it again.",
     arguments: (z) => ({ comment: z.string().describe(COMMENT_ID) }),
     strict: true,
     routes: send("POST", "/api/v1/comments/{id}/reopen", { params: { id: "comment" }, body: [] }),
   },
   {
     name: "dispatch_redeliver_comment",
-    example: { comment: "0190c7d2-1111-7222-8333-444444444444", delivery: "aside" },
-    description:
-      "Deliver a comment's mention to its session again, in a delivery mode the session takes; target names the session when the comment mentions several. A delivery sent is not undone.",
+    example: {
+      comment: "0190c7d2-1111-7222-8333-444444444444",
+      delivery: "aside",
+      target: "session:session-0123456789abcdef",
+    },
+    description: `Deliver a comment's mention to the mentioned session again, in a delivery mode the session takes. target names the mention ${COMMENT_MENTION}; it is required when the comment mentions more than one (400 MENTION_INPUT). A delivery sent is not undone.`,
     arguments: (z) => ({
       comment: z.string().describe(COMMENT_ID),
-      delivery: z.string({ min: 1 }).describe("The delivery mode: aside, btw or steer."),
-      target: z.string().describe("The mentioned session to deliver to.").optional(),
+      delivery: z.enum(DELIVERY_CAPABILITIES).describe(DELIVERY_MODE),
+      target: z
+        .string({ min: 1 })
+        .describe(
+          `The mention to deliver, ${COMMENT_MENTION}; required when the comment has several.`
+        )
+        .optional(),
     }),
     strict: true,
     routes: send("POST", "/api/v1/comments/{id}/deliveries", {
@@ -1146,17 +1302,42 @@ export const dispatchRouteToolSpecs = [
   },
   {
     name: "dispatch_reply_comment_delivery",
-    example: { comment: "0190c7d2-1111-7222-8333-444444444444", attempt: 1, body: "Done." },
-    description:
-      "Answer a comment that mentioned this session, as the reply to the delivery attempt that reached it, or report why it could not answer with error. A reply sent is not undone.",
+    example: {
+      comment: "0190c7d2-1111-7222-8333-444444444444",
+      attempt: 1,
+      body: "Done.",
+      target: "session:session-0123456789abcdef",
+    },
+    description: `Answer, as this session, a comment that mentioned it: the reply to the delivery attempt that reached it, with body, or why the session could not answer, with error; exactly one of the two. target names the mention it answers ${COMMENT_MENTION}; it is required when the comment mentions more than one. Only an agent session's own token may reply. A reply sent is not undone.`,
     arguments: (z) => ({
       comment: z.string().describe(COMMENT_ID),
       attempt: z.number({ int: true, min: 1 }).describe("The delivery attempt the reply answers."),
-      body: z.string().describe("The reply, in markdown.").optional(),
-      error: z.string().describe("Why the session could not answer.").optional(),
-      reply_to_block: z.string().describe("The block of the comment the reply answers.").optional(),
-      target: z.string().describe("The session the delivery reached.").optional(),
+      body: z.string({ min: 1 }).describe("The reply, in markdown; not with error.").optional(),
+      error: z.string().describe("Why the session could not answer; not with body.").optional(),
+      reply_to_block: z
+        .string()
+        .describe("The block of the comment the reply's body answers; only with body.")
+        .optional(),
+      target: z
+        .string({ min: 1 })
+        .describe(
+          `The mention the reply answers, ${COMMENT_MENTION}; required when the comment has several.`
+        )
+        .optional(),
     }),
+    validation: crossFieldRules(
+      "A reply carries exactly one of body and error, and reply_to_block goes with a body alone.",
+      (input) => {
+        if ((input.body === undefined) === (input.error === undefined)) {
+          return "name exactly one of body and error.";
+        }
+        if (input.body !== undefined && !names(input, "body")) return "body is blank.";
+        if (input.reply_to_block !== undefined && input.body === undefined) {
+          return "reply_to_block names the block a body answers, and an error has none.";
+        }
+        return undefined;
+      }
+    ),
     strict: true,
     routes: send("POST", "/api/v1/comments/{id}/reply", {
       params: { id: "comment" },
@@ -1185,38 +1366,44 @@ export const dispatchRouteToolSpecs = [
     name: "dispatch_edit_comment",
     example: { comment: "0190c7d2-1111-7222-8333-444444444444", body: "Corrected wording." },
     description:
-      "Replace a comment's body with new words. base_revision is the revision you read, so an edit over a newer one is refused. Undo does not put the old words back.",
+      "Replace the words of a comment the person you act for wrote; another's comment is refused (403 NOT_AUTHOR). The new words replace whatever the comment holds when the edit lands. Undo does not put the old words back.",
     arguments: (z) => ({
       comment: z.string().describe(COMMENT_ID),
       body: z.string({ min: 1 }).describe("The comment's new body, in markdown."),
-      base_revision: z
-        .number({ int: true, min: 0 })
-        .describe("The comment's revision as you read it.")
-        .optional(),
     }),
     strict: true,
     routes: send("PATCH", "/api/v1/comments/{id}", {
       params: { id: "comment" },
-      body: ["body", "base_revision"],
+      body: ["body"],
     }),
   },
   {
     name: "dispatch_list_document_events",
     example: { document: "0190c7d2-1111-7222-8333-444444444444" },
-    description: `Page a document's event log: its versions, its comments and asks, its reviews and its renames, each with who and when. ${AS_DATA}`,
+    description: `Page the event log of a project's document: its versions, its comments and asks, its reviews and its renames, each with who and when. An issue's document is refused (400 ARTIFACT_LINKED), since its events are its issue's, which dispatch read lists with the issue's events; so is a file of an agent's conversation (400 ARTIFACT_AGENT_OWNED). after pages oldest first and takes neither before nor order desc (400 INVALID_QUERY); before pages newest first, whatever order says. ${AS_DATA}`,
     arguments: (z) => ({
-      document: z.string().describe(DOCUMENT_ID),
-      after: z.number({ int: true, min: 0 }).describe("Events after this sequence.").optional(),
-      before: z.number({ int: true, min: 1 }).describe("Events before this sequence.").optional(),
+      document: z.string().describe(PROJECT_DOCUMENT_ID),
+      after: z
+        .number({ int: true, min: 0 })
+        .describe("Events after this sequence, oldest first; not with before or order desc.")
+        .optional(),
+      before: z
+        .number({ int: true, min: 1 })
+        .describe("Events before this sequence, newest first; not with after.")
+        .optional(),
       order: z
         .enum(["asc", "desc"])
-        .describe("Oldest first (asc) or newest first (desc).")
+        .describe("Oldest first (asc, the default) or newest first (desc); desc takes no after.")
         .optional(),
       limit: z
         .number({ int: true, min: 1, max: 200 })
         .describe("How many events a page holds, 1 to 200; 200 by default.")
         .optional(),
     }),
+    validation: crossFieldRule(
+      "after takes neither before nor order desc.",
+      (input) => input.after === undefined || (input.before === undefined && input.order !== "desc")
+    ),
     strict: true,
     routes: get("/api/v1/artifacts/{id}/events", {
       params: { id: "document" },
@@ -1235,8 +1422,9 @@ export const dispatchRouteToolSpecs = [
   {
     name: "dispatch_list_document_subscribers",
     example: { document: "0190c7d2-1111-7222-8333-444444444444" },
-    description: "List the agent sessions subscribed to a document's events.",
-    arguments: (z) => ({ document: z.string().describe(DOCUMENT_ID) }),
+    description:
+      "List the agent sessions subscribed to a project document's events. An issue's document is refused (400 ARTIFACT_LINKED), since its subscribers are its issue's, which dispatch list-issue-subscribers lists; so is a file of an agent's conversation (400 ARTIFACT_AGENT_OWNED).",
+    arguments: (z) => ({ document: z.string().describe(PROJECT_DOCUMENT_ID) }),
     strict: true,
     routes: get("/api/v1/artifacts/{id}/subscribers", { params: { id: "document" } }),
   },
@@ -1247,9 +1435,9 @@ export const dispatchRouteToolSpecs = [
       session: "session-0123456789abcdef",
     },
     description:
-      "Unsubscribe an agent session from a document's events. Undo does not subscribe it again: a session subscribes itself.",
+      "Unsubscribe an agent session from a project document's events. An issue's document is refused (400 ARTIFACT_LINKED): unsubscribe the session from the issue with dispatch unsubscribe-issue. So is a file of an agent's conversation (400 ARTIFACT_AGENT_OWNED), and a session that hears the document only through a broader topic, one that covers other issues and documents too (409 NOT_REMOVABLE). Undo does not subscribe it again: a session subscribes itself.",
     arguments: (z) => ({
-      document: z.string().describe(DOCUMENT_ID),
+      document: z.string().describe(PROJECT_DOCUMENT_ID),
       session: z.string().describe(SESSION_ID),
     }),
     strict: true,
@@ -1262,7 +1450,7 @@ export const dispatchRouteToolSpecs = [
     name: "dispatch_read_document",
     example: { document: "0190c7d2-1111-7222-8333-444444444444" },
     description:
-      "Read one document's record by its id: its name, slug, kind, owner, versions and approvals, without its text. dispatch doc-read reads its text.",
+      "Read one document's record by its id: its name, slug, kind, owner, versions and approval state, without its text. dispatch doc-read reads its text.",
     arguments: (z) => ({ document: z.string().describe(DOCUMENT_ID) }),
     strict: true,
     routes: get("/api/v1/artifacts/{id}", { params: { id: "document" } }),
@@ -1271,7 +1459,7 @@ export const dispatchRouteToolSpecs = [
     name: "dispatch_rename_document",
     example: { document: "0190c7d2-1111-7222-8333-444444444444", name: "design.md" },
     description:
-      "Rename a document. Its id and its versions stay. Undo does not rename it back: rename it again.",
+      "Rename a document. Its id and its versions stay. Dispatch refuses to rename an issue's spec or an uploaded file or picture, and refuses a name another document of the same owner holds or one that would make the document a role document such as plan.md. Undo does not rename it back: rename it again.",
     arguments: (z) => ({
       document: z.string().describe(DOCUMENT_ID),
       name: z.string({ min: 1 }).describe("The document's new name."),
@@ -1292,12 +1480,14 @@ export const dispatchRouteToolSpecs = [
     name: "dispatch_rebuild_document",
     example: { document: "0190c7d2-1111-7222-8333-444444444444" },
     description:
-      "Rebuild a document whose live copy no longer opens, from its latest stored markdown or from the markdown given, as its next version. Undo does not take the version back.",
+      "Rebuild, as the person you act for, a document whose stored edit history no longer loads: the history is replaced by one built from the latest version's markdown, which writes no version, or from the markdown given, which is written as the document's next version where it differs from the latest. A document whose history loads is refused (409 DOCUMENT_LOADS), and so is one open in an editor now (409 DOCUMENT_LIVE). Undo does not bring the old history or the version back.",
     arguments: (z) => ({
       document: z.string().describe(DOCUMENT_ID),
       markdown: z
         .string()
-        .describe("The markdown to rebuild from; the latest version's by default.")
+        .describe(
+          "The markdown to rebuild from, written as the next version where it differs from the latest; the latest version's, which writes no version, by default."
+        )
         .optional(),
     }),
     strict: true,
@@ -1324,8 +1514,17 @@ export const dispatchRouteToolSpecs = [
       state: z
         .enum(["approved", "changes_requested"])
         .describe("approved, or changes_requested with a reason."),
-      reason: z.string().describe("What must change; changes_requested requires it.").optional(),
+      reason: z
+        .string({ max: REVIEW_REASON_MAX })
+        .describe(
+          `What must change, at most ${REVIEW_REASON_MAX} characters; changes_requested requires it.`
+        )
+        .optional(),
     }),
+    validation: crossFieldRule(
+      "state changes_requested requires reason, a non-empty note saying what must change.",
+      (input) => input.state !== "changes_requested" || names(input, "reason")
+    ),
     strict: true,
     routes: send("POST", "/api/v1/artifacts/{id}/reviews", {
       params: { id: "document" },
@@ -1336,7 +1535,7 @@ export const dispatchRouteToolSpecs = [
     name: "dispatch_read_block",
     example: { document: "0190c7d2-1111-7222-8333-444444444444", block: "b1" },
     description:
-      "Read where one block stands in a document, by its block id: its type, its path from the top-level block down (each node's type, id and index) and, for a table block, row or cell, its place in the table. It answers no text: dispatch doc-read reads the text.",
+      "Read where one block stands in a document, by its block id: its type, its path from the top-level block down (each node's type, id and index) and, for a table block, row or cell, its place in the table: a row's or a cell's row index and the opening words of each cell of that row, and a cell's column and the text of the header cell over it. It answers no other text: dispatch doc-read reads the block's own.",
     arguments: (z) => ({
       document: z.string().describe(DOCUMENT_ID),
       block: z.string({ min: 1 }).describe("The block's id."),
@@ -1407,34 +1606,10 @@ export const dispatchRouteToolSpecs = [
     name: "dispatch_read_my_state",
     example: {},
     description:
-      "Read the dashboard state of the person you act for on each issue: what they pinned, what they read up to and what they dismissed.",
+      "Read the dashboard state of the person you act for on each issue: whether they pinned it, the event they read up to, the issue's list of the items pinned on its page (pinned_items:<kind>:<id>) and dismissed, and the state's seq, its version.",
     arguments: () => ({}),
     strict: true,
     routes: get("/api/v1/me/state"),
-  },
-  {
-    name: "dispatch_set_issue_state",
-    example: { issue: "DSP-1", pinned: true },
-    description:
-      "Change the dashboard state of the person you act for on one issue: pin or unpin it, move what they read up to, or dismiss items. Undo does not change it back.",
-    arguments: (z) => ({
-      issue: z.string().describe(ISSUE_KEY),
-      pinned: z.boolean().describe("Pin or unpin the issue.").optional(),
-      last_read_seq: z
-        .number({ int: true, min: 0 })
-        .describe("The event sequence read up to.")
-        .optional(),
-      seq: z.number({ int: true, min: 0 }).describe("The issue's sequence as read.").optional(),
-      dismissed: z
-        .array(z.string({ min: 1 }))
-        .describe("The items dismissed.")
-        .optional(),
-    }),
-    strict: true,
-    routes: send("PUT", "/api/v1/me/issues/{key}/state", {
-      params: { key: "issue" },
-      body: ["pinned", "last_read_seq", "seq", "dismissed"],
-    }),
   },
   {
     name: "dispatch_read_my_agent_state",
@@ -1449,7 +1624,7 @@ export const dispatchRouteToolSpecs = [
     name: "dispatch_set_agent_state",
     example: { session: "session-0123456789abcdef", pinned: true },
     description:
-      "Change the dashboard state of the person you act for on one agent session: pin or unpin it, clear its conversation before a time, or mark it read. Undo does not change it back.",
+      "Change the dashboard state of the person you act for on one agent session: pin or unpin it, clear its conversation before a time, or mark it read; a call names at least one of the four. Undo does not change it back.",
     arguments: (z) => ({
       session: z.string().describe(SESSION_ID),
       pinned: z.boolean().describe("Pin or unpin the session.").optional(),
@@ -1460,9 +1635,17 @@ export const dispatchRouteToolSpecs = [
       read_through: z.string().describe(`Mark it read up to this time. ${RFC3339}`).optional(),
       read_replies: z
         .array(z.string({ min: 1 }))
-        .describe("The replies read, by id.")
+        .describe("The session's replies read, by message id.")
         .optional(),
     }),
+    validation: crossFieldRule(
+      "Name at least one of pinned, cleared_before, read_through and read_replies (one reply or more).",
+      (input) =>
+        input.pinned !== undefined ||
+        input.cleared_before !== undefined ||
+        input.read_through !== undefined ||
+        names(input, "read_replies")
+    ),
     strict: true,
     routes: send("PUT", "/api/v1/me/agents/{session_id}/state", {
       params: { session_id: "session" },
@@ -1522,7 +1705,7 @@ export const dispatchRouteToolSpecs = [
   {
     name: "dispatch_read_event_log",
     example: { limit: 50 },
-    description: `Page Dispatch's event log across every issue and document, oldest first after a sequence. ${AS_DATA}`,
+    description: `Page Dispatch's event log across every issue and document, oldest first, after an event id. ${AS_DATA}`,
     arguments: (z) => ({
       after: z.number({ int: true, min: 0 }).describe("Events after this id.").optional(),
       limit: z
@@ -1537,11 +1720,15 @@ export const dispatchRouteToolSpecs = [
 
 /**
  * The tools the command bar calls as the person it acts for, which no command of the `dispatch`
- * command line offers: each one's route is a person's own move, and Dispatch refuses an agent's
- * token at it. They bind their routes as `dispatchRouteToolSpecs` do, and `scripts/gen-go-tools.ts`
- * emits them into the Dispatch server's tool table, `contracts.DispatchTools`, after the others,
- * where the command bar reads them; but they are no member of `dispatchToolSpecs`, which is the
- * command line's. Each description is written for the bar's model.
+ * command line offers: each one's route is a person's own move, and Dispatch refuses a credential
+ * that does not act as its person at it. `scripts/gen-go-tools.ts` emits them into the Dispatch
+ * server's tool table, `contracts.DispatchTools`, after the others, where the command bar reads
+ * them; but they are no member of `dispatchToolSpecs`, which is the command line's. Each
+ * description is written for the bar's model. `dispatch_hand_ask` binds its route as
+ * `dispatchRouteToolSpecs` do. `dispatch_set_issue_state` binds none: its route replaces the
+ * person's whole list of an issue's pinned and dismissed items, so the server's own translation
+ * (`goingTranslateIssueState`, `internal/dispatch/api/going_translate.go`) reads that state first
+ * and sends the list with the call's items added, and its row is `goingWriteTools`' own.
  */
 export const personToolSpecs = [
   {
@@ -1558,5 +1745,29 @@ export const personToolSpecs = [
       params: { id: "ask" },
       body: ["asked_of"],
     }),
+  },
+  {
+    name: "dispatch_set_issue_state",
+    example: {
+      issue: "DSP-1",
+      dismissed: ["pinned_items:ask:0190c7d2-1111-7222-8333-444444444444"],
+    },
+    description:
+      "Change the dashboard state of the person you act for on one issue: pin or unpin the issue, move the event they read up to, or add items to the issue's list of the items pinned on its page and dismissed. That list holds a marker for each item pinned on the issue's page, pinned_items:<kind>:<id> with kind event, ask, comment, message or handoff. The items named are added and every item already in the list stays, so this tool takes no item out. Dispatch reads the person's state of the issue and writes it back with the change, and refuses the write (409 STATE_STALE) where another write changed that state in between. Undo does not change it back.",
+    arguments: (z) => ({
+      issue: z.string().describe(ISSUE_KEY),
+      pinned: z.boolean().describe("Pin or unpin the issue.").optional(),
+      last_read_seq: z
+        .number({ int: true, min: 0 })
+        .describe("The issue's event sequence read up to; it replaces the stored mark.")
+        .optional(),
+      dismissed: z
+        .array(z.string({ min: 1 }))
+        .describe(
+          "Items to add to the issue's list, such as pinned_items:ask:<ask id> to pin an ask on the issue's page; every item already in the list stays."
+        )
+        .optional(),
+    }),
+    strict: true,
   },
 ] as const satisfies readonly DispatchToolSpec[];
