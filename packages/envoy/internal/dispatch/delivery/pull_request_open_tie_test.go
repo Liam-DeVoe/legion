@@ -28,7 +28,9 @@ import (
 // finds a row whose event came 6 minutes before. A pass takes PullRequestHeadBatch rows, the due
 // open rows read longest ago first (ListStalePullRequestHeads), so where 200 open rows due since
 // 10 minutes stand before it, the next pass does not read it. The issue lists it after the first
-// pass all the same: the statement needs no read of the row.
+// pass all the same: the statement needs no read of the row. The body cites #780, a number no pull
+// request of the fixture holds (the due rows are #1 to #200): a cited number that is a pull
+// request Dispatch holds names no GitHub issue (citedPullRequest), so it would tie nothing.
 func TestATieMadeAfterAnOpenRowsLastEventIsFollowedByThePassThatReachesIt(t *testing.T) {
 	const repo = "acme/widgets"
 	const number = 9431
@@ -44,19 +46,19 @@ func TestATieMadeAfterAnOpenRowsLastEventIsFollowedByThePassThatReachesIt(t *tes
 		tie         func(t *testing.T, ctx context.Context, pool *store.Pool) string
 	}{
 		{
-			name: "a_link_to_a_github_issue_its_body_cites", title: "A change", body: "Fixes #78.",
+			name: "a_link_to_a_github_issue_its_body_cites", title: "A change", body: "Fixes #780.",
 			tie: func(t *testing.T, ctx context.Context, pool *store.Pool) string {
 				issue := seedHeadIssue(t, ctx, pool, number)
-				mustExec(t, ctx, pool, `insert into issue_external_links (issue_key, url, kind) values ($1, 'https://github.com/acme/widgets/issues/78', 'github_issue')`, issue)
+				mustExec(t, ctx, pool, `insert into issue_external_links (issue_key, url, kind) values ($1, 'https://github.com/acme/widgets/issues/780', 'github_issue')`, issue)
 				return issue
 			},
 		},
 		{
-			name: "a_link_to_a_github_issue_its_body_cites_behind_200_due_open_rows", title: "A change", body: "Fixes #78.",
+			name: "a_link_to_a_github_issue_its_body_cites_behind_200_due_open_rows", title: "A change", body: "Fixes #780.",
 			due: PullRequestHeadBatch,
 			tie: func(t *testing.T, ctx context.Context, pool *store.Pool) string {
 				issue := seedHeadIssue(t, ctx, pool, number)
-				mustExec(t, ctx, pool, `insert into issue_external_links (issue_key, url, kind) values ($1, 'https://github.com/acme/widgets/issues/78', 'github_issue')`, issue)
+				mustExec(t, ctx, pool, `insert into issue_external_links (issue_key, url, kind) values ($1, 'https://github.com/acme/widgets/issues/780', 'github_issue')`, issue)
 				return issue
 			},
 		},
