@@ -60,6 +60,14 @@ func secondProcessHandler(t *testing.T, database *store.Store) (http.Handler, *s
 	return mux, served
 }
 
+// secondProcess is secondProcessHandler and the second process's event stream relay, for a test
+// that orders its writes against that relay's start (awaitRelayStart).
+func secondProcess(t *testing.T, database *store.Store) (http.Handler, *eventStreamRelay) {
+	t.Helper()
+	handler, served := secondProcessHandler(t, database)
+	return handler, served.eventRelay
+}
+
 // TestEventCommittedOnAnotherProcessReachesAnOpenEventFeed is what the live feed is for with two
 // envoy-dispatch processes on one Postgres: a page whose socket landed on process B sees an event
 // process A committed, on the subscription it already has. Nothing of A's reaches B but the row
@@ -639,7 +647,7 @@ func TestEventLogResetClearsTheRelaysHorizon(t *testing.T) {
 	// and a that commits in that window is one the subscription is owed but would start above.
 	waiting := dial()
 	sendEventsSubscribe(t, waiting, "events", nil)
-	awaitRelayStart(t, waiting, started)
+	testwait.Receive(t, "B's relay's next start to read the event log", started)
 	commitLow()
 	renameIssue(t, first, issue.Key, "Renamed after the reset")
 
