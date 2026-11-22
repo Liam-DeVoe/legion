@@ -823,6 +823,65 @@ describe("a PARENT_STATUS_CONFLICT", () => {
       "",
     ]);
   });
+
+  // A reparent that also writes a status is refused for a child against that status. The flags
+  // that move the children go with --status alone, so the caller is told to run the status change
+  // first, in a call of its own, and the reparent after it, without --status.
+  test("a reparent beside --status refused for a child says to run the status change first, then the reparent", async () => {
+    const childRefusal: Answer = {
+      status: 409,
+      body: {
+        code: "PARENT_STATUS_CONFLICT",
+        error:
+          "this change would leave a parent's status out of line with its children's. ACME-5 (todo) is a child of ACME-4 and is in work. A parent is done only when each child is done, and while a child is in work, its parent is in work.",
+        issues: [{ key: "ACME-5", title: "Child in work", status: "todo", relation: "child" }],
+      },
+    };
+    patchAnswer = childRefusal;
+    const reparent = await run([
+      "issue-update",
+      "--issue",
+      "ACME-4",
+      "--parent",
+      "ACME-7",
+      "--status",
+      "backlog",
+    ]);
+    expect(reparent.code).toBe(1);
+    expect(reparent.stdout.split("\n")).toEqual([
+      `PARENT_STATUS_CONFLICT: ${errorOf(childRefusal)}`,
+      "ACME-5 [todo] Child in work",
+      expect.stringMatching(
+        /--unlink-children\b.*--include-children\b.*--status alone\b.*\bfirst\b.*\bdispatch issue-update --issue ACME-4 --parent ACME-7\b(?! --status)/
+      ),
+      "",
+    ]);
+  });
+
+  // A status change beside another field is refused for its parent. --include-parent goes with
+  // --status alone, so the caller is told to send the other change in a call of its own.
+  test("a status change beside --title refused for its parent says --include-parent goes with --status alone", async () => {
+    const parentRefusal = doneParentRefusal("ACME-5");
+    patchAnswer = parentRefusal;
+    const retitle = await run([
+      "issue-update",
+      "--issue",
+      "ACME-5",
+      "--status",
+      "in_progress",
+      "--title",
+      "Child back in work",
+    ]);
+    expect(retitle.code).toBe(1);
+    expect(retitle.stdout.split("\n")).toEqual([
+      `PARENT_STATUS_CONFLICT: ${errorOf(parentRefusal)}`,
+      "ACME-4 [done] Parent closed with its tree",
+      expect.stringMatching(
+        /dispatch issue-update --status\b.*--include-parent\b.*--status alone\b/
+      ),
+      "",
+    ]);
+  });
 });
 
 describe("dispatch issues --json", () => {
