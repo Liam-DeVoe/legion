@@ -107,8 +107,12 @@ func readBlockRows(ctx context.Context, database *store.Store, after string) ([]
 // them reads it (refs.BlockIndexMarkingRule).
 //
 // The event is resolved once per (document, changed version) of the batch and joined back to
-// the rows, not once per row: every block of one version of one document shares that pair and
-// would otherwise run the same unindexed lookup over events up to backfillBatch times.
+// the rows, not once per row: every block of one version of one document shares that pair. Each
+// such lookup probes events_artifact_version_number (migration 20261119020700) by the document
+// and the version, whose expressions it compares as that index writes them, and whose predicate
+// its own type clause proves: with no index to serve it, each one read the whole of events, so a
+// run took time growing with the square of the data
+// (TestTheBackfillsEventReadsProbeTheirIndexes).
 var BlockRowsStatement = `
 		with batch as (
 			select d.artifact_id, d.block_id, d.node_id, d.created_at, d.changed_version,

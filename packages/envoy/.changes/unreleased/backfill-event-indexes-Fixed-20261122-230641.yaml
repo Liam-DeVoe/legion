@@ -1,0 +1,14 @@
+kind: Fixed
+body: |-
+  `envoy-dispatch backfill-graph-store` no longer reads the whole event log once for each document
+  version and each comment it backfills, so its run time grows with the data rather than with the
+  square of it. For each document version of a block batch it reads the `artifact.version` event
+  that recorded the version, and for each comment of a comment batch the `comment.created` event
+  that stored it; no index served either read, so each one read every event. Two indexes now serve
+  them: `events_artifact_version_number` (migration `20261119020700`) and
+  `events_comment_created_id` (migration `20261119020800`). Both are built concurrently at boot,
+  which holds off no write, and no migration pending before them runs a DO block, so the deploy
+  census admits them whatever the size of `events`.
+time: 2026-11-22T23:06:41Z
+custom:
+    Issue: backfill-event-indexes
