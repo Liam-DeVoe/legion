@@ -160,11 +160,13 @@ type DecisionMark struct {
 	Issue    string       `json:"issue,omitempty"`
 	Decision DecisionKind `json:"decision,omitempty"`
 	Actor    string       `json:"actor,omitempty"`
-	// Seq is Dispatch's sequence of the spec decision's review (ParkedDecision.Seq), and Artifact
-	// the document reviewed (ParkedDecision.Artifact), which a send asks the gate with
-	// (workflow.SupersedingApproval); neither is part of the row's identity.
+	// Seq is Dispatch's sequence of the spec decision's review (ParkedDecision.Seq), Artifact the
+	// document reviewed (ParkedDecision.Artifact) and Version its version reviewed
+	// (ParkedDecision.Version), which a send asks the gate with (workflow.SupersedingApproval);
+	// none is part of the row's identity.
 	Seq      int64  `json:"seq,omitempty"`
 	Artifact string `json:"artifact,omitempty"`
+	Version  int    `json:"version,omitempty"`
 }
 
 // KeptForget deletes in tx what a clear of a generation would otherwise leave to be asked of no

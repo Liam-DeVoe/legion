@@ -835,13 +835,14 @@ func resumeTask(key string, waiting record.Awaiting, step record.DesignStep, gat
 // answeredReview is the changes request that answered waiting as the resume asks SupersedingApproval
 // about it: of step's document, at the version the answer recorded beside its detail
 // (record.Awaiting.AnsweredVersion; 0 for an answer a daemon of an earlier release wrote, which is
-// then asked at the version the gate holds approved, as a kept decision is), and at a mark of its
-// own. The wait records no mark of the review itself, and the gate's told record of it goes once
-// an approval follows, so it is asked at the wait's start: the review answered the wait, so
-// Dispatch recorded it after that start, and an approval of its version the gate still holds
-// after that start came after the review, since the review applied to the gate clears the
-// approval it held then (classify.ApplyDesignGateEvent). A wait whose start has no mark — one
-// recorded before waits were placed — is asked at the gate's approval itself, for the same reason.
+// then asked at the version the gate holds approved, as a kept decision that records no version
+// is), and at a mark of its own. The wait records no mark of the review itself, and the gate's
+// told record of it goes once an approval follows, so it is asked at the wait's start: the review
+// answered the wait, so Dispatch recorded it after that start, and an approval of its version the
+// gate still holds after that start came after the review, since the review applied to the gate
+// clears the approval it held then (classify.ApplyDesignGateEvent). A wait whose start has no mark
+// — one recorded before waits were placed — is asked at the gate's approval itself, for the same
+// reason.
 func answeredReview(step record.DesignStep, waiting record.Awaiting, gate *record.DesignGate) Decision {
 	review := Decision{Kind: record.DecisionDesignChangesRequested, Step: step, Version: waiting.AnsweredVersion,
 		Mark: waiting.Since}

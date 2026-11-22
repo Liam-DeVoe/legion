@@ -176,9 +176,9 @@ func ForgetSuperseded(ctx context.Context, tx pgx.Tx, store record.Store, steps 
 //
 // Each decision is asked in the loop that writes it whether it is still the person's word
 // (SupersedingApproval), so no task can name a kept decision that nobody asked about. A kept
-// decision records no version, so it is asked at the version its gate holds approved, at its own
-// place in Dispatch's log and of the document reviewed (record.DecisionMark.Seq, At and Artifact,
-// which the outbox's parkDecision keeps from the notice's Review and Artifact). The approval is
+// decision is asked as its relay is: at the version reviewed, at its own place in Dispatch's log
+// and of the document reviewed (record.DecisionMark.Version, Seq, At and Artifact, which the
+// outbox's parkDecision keeps from the notice's Version, Review and Artifact). The approval is
 // the root's own, and it is named only while steps gates its step (gates.design off asks no
 // person, and a step the deployment stopped gating asks no person either), on the document of
 // that step (record.DesignStep.Document), which is the document the person reviewed and the one
@@ -218,15 +218,17 @@ func KeptDecisionsTask(gates KeptGates, steps []record.DesignStep, tree string, 
 // keptSuperseded is the approval that superseded the kept decision mark (SupersedingApproval), nil
 // when it stands, asked of gates, the gates of the issue it was made on, under steps, the steps
 // the deployment gates. It is asked of the step whose document its reference names
-// (RefSuperseded), at no version, since a kept row records none, at the review's place in
-// Dispatch's log and of the document reviewed, as the relay of the same decision is asked
-// (NoticeSuperseded): the approval of a document the step's gate has moved to answers no review
-// of the one it left. A row kept with no document (an earlier release's, or a notice's that
-// carried none) is asked at its place in the log alone. A reference that names no step's document
-// is asked of no gate, and stands.
+// (RefSuperseded), at the version reviewed, at the review's place in Dispatch's log and of the
+// document reviewed, as the relay of the same decision is asked (NoticeSuperseded): an approval
+// of a later version is the person's word in the review's place whichever of the two Dispatch
+// marked first, and the approval of a document the step's gate has moved to answers no review of
+// the one it left. A row kept with no version (an earlier release's, or a notice's that carried
+// none) is asked at the version its gate holds approved, and one kept with no document is asked of
+// whichever document the gate holds. A reference that names no step's document is asked of no
+// gate, and stands.
 func keptSuperseded(gates map[record.DesignStep]record.DesignGate, steps []record.DesignStep, mark record.DecisionMark) *Approval {
 	return RefSuperseded(gates, steps, mark.Issue, mark.Ref, Decision{Kind: mark.Decision, Artifact: mark.Artifact,
-		Mark: record.EventMark{Seq: mark.Seq, At: mark.At}})
+		Version: mark.Version, Mark: record.EventMark{Seq: mark.Seq, At: mark.At}})
 }
 
 // ParkedDecisionTask is ParkedDecisionTask over the engine's store and gated steps.

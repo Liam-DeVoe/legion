@@ -463,8 +463,8 @@ const HoldEscalated HoldReason = "escalated"
 //
 // AnsweredVersion is 0 for every other answer, and for a changes request a daemon of an earlier
 // release answered after this release's migration gave every older answer its version
-// (20261112215432_delivery_resume): such a review is asked as a kept decision is, at the version
-// the gate holds approved (workflow.SupersedingApproval).
+// (20261112215432_delivery_resume): such a review is asked as a kept decision that records no
+// version is, at the version the gate holds approved (workflow.SupersedingApproval).
 type Awaiting struct {
 	Ask             string
 	GateVersion     int
@@ -555,6 +555,13 @@ type ParkedDecision struct {
 	// notice that carried none, and for a row kept before the column was added, and such a
 	// decision is asked at its place in Dispatch's log alone.
 	Artifact string
+	// Version is the version of that document the review is of (the notice's Version, which its
+	// relay carries too), so the kept decision is asked at the version the person reviewed as its
+	// relay is (workflow.SupersedingApproval): an approval of a later version is the person's word
+	// in the review's place, whichever of the two Dispatch marked first. It is 0 for an answer,
+	// resolution or reply on an ask, for a notice that carried none, and for a row kept before the
+	// column was added, and such a decision is asked at the version its gate holds approved.
+	Version int
 	// ClaimedBy is the outbox row claiming it, 0 when no row does; HeldBy is the claim and the
 	// delivery id of the queued start task holding it, the zero value when none does.
 	ClaimedBy int64
@@ -562,11 +569,11 @@ type ParkedDecision struct {
 }
 
 // Mark is the mark a task names d by (DecisionMark): the row's identity, what the task says of
-// it, and Dispatch's sequence of its review and the document reviewed, which a send asks the gate
-// with.
+// it, and Dispatch's sequence of its review, the document reviewed and its version, which a send
+// asks the gate with.
 func (d ParkedDecision) Mark() DecisionMark {
 	return DecisionMark{Ref: d.Ref, At: d.At, Issue: d.Issue, Decision: d.Decision, Actor: d.Actor, Seq: d.Seq,
-		Artifact: d.Artifact}
+		Artifact: d.Artifact, Version: d.Version}
 }
 
 // DeliveryHold is the claim token and delivery id of a start's task queued on an architect's

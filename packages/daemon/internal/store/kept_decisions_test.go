@@ -142,19 +142,20 @@ func TestADeliveryWrittenBackUnconfirmedHoldsWhatItsConfirmationTold(t *testing.
 }
 
 // A decision a taken-back confirmation puts back is put back as the delivery named it, with its
-// review's sequence and the document reviewed (record.DecisionMark.Seq and Artifact), so the
-// resend asks it whether a later approval superseded it as the row was asked before the
-// confirmation told it (workflow.SupersedingApproval), of the document the person reviewed.
-func TestADecisionPutBackKeepsItsReviewsSequenceAndDocument(t *testing.T) {
+// review's sequence, the document reviewed and its version (record.DecisionMark.Seq, Artifact
+// and Version), so the resend asks it whether a later approval superseded it as the row was asked
+// before the confirmation told it (workflow.SupersedingApproval), of the document and the version
+// the person reviewed.
+func TestADecisionPutBackKeepsItsReviewsSequenceDocumentAndVersion(t *testing.T) {
 	r := newKeptRig(t)
 	const tree, ref = "LEGION-320", "dispatch://LEGION-320/spec"
 	r.issue(tree, tree)
 	start := r.startRow(tree)
-	r.exec(`insert into parked_decisions (issue, ref, decision, actor, at, seq, artifact, claimed_by)
-		values ($1, $2, 'design-changes-requested', 'user:alice', $3, 8, 'artifact-1', $4)`, tree, ref, r.at, start)
+	r.exec(`insert into parked_decisions (issue, ref, decision, actor, at, seq, artifact, version, claimed_by)
+		values ($1, $2, 'design-changes-requested', 'user:alice', $3, 8, 'artifact-1', 2, $4)`, tree, ref, r.at, start)
 	architect := r.architect(tree, start)
 	kept, err := json.Marshal(record.KeptDecisions{Decisions: []record.DecisionMark{{Ref: ref, At: r.at, Issue: tree,
-		Decision: record.DecisionDesignChangesRequested, Actor: "user:alice", Seq: 8, Artifact: "artifact-1"}}})
+		Decision: record.DecisionDesignChangesRequested, Actor: "user:alice", Seq: 8, Artifact: "artifact-1", Version: 2}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,13 +176,14 @@ func TestADecisionPutBackKeepsItsReviewsSequenceAndDocument(t *testing.T) {
 	}
 	var seq int64
 	var artifact string
-	if err := r.store.Pool().QueryRow(r.ctx, `select coalesce(seq, 0), artifact from parked_decisions where ref = $1`,
-		ref).Scan(&seq, &artifact); err != nil {
+	var version int
+	if err := r.store.Pool().QueryRow(r.ctx, `select coalesce(seq, 0), artifact, coalesce(version, 0) from parked_decisions
+		where ref = $1`, ref).Scan(&seq, &artifact, &version); err != nil {
 		t.Fatalf("read the decision put back: %v", err)
 	}
-	if seq != 8 || artifact != "artifact-1" {
-		t.Fatalf("%s was put back at sequence %d of document %q, want sequence 8 of artifact-1, as the delivery named it",
-			ref, seq, artifact)
+	if seq != 8 || artifact != "artifact-1" || version != 2 {
+		t.Fatalf("%s was put back at sequence %d of document %q at version %d, want sequence 8 of artifact-1 at version 2, "+
+			"as the delivery named it", ref, seq, artifact, version)
 	}
 }
 

@@ -10,10 +10,10 @@ import (
 // Decision is a person's review of a design document as a sender holds it when it asks whether
 // the review is still the person's word (SupersedingApproval): what the person did (Kind), on which
 // step's document (Step), the document itself when the sender knows it (Artifact, "" when it does
-// not), the version reviewed when the sender knows it (Version, 0 when it does not: a kept
-// decision's row records none), and where Dispatch recorded the review (Mark, empty where the
-// sender holds no mark of it). A sender that holds only the review's Dispatch reference asks
-// through RefSuperseded, which resolves the step from the reference once.
+// not), the version reviewed when the sender knows it (Version, 0 when it does not: a decision an
+// earlier release kept, or a wait it answered), and where Dispatch recorded the review (Mark,
+// empty where the sender holds no mark of it). A sender that holds only the review's Dispatch
+// reference asks through RefSuperseded, which resolves the step from the reference once.
 type Decision struct {
 	Kind     record.DecisionKind
 	Step     record.DesignStep

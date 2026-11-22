@@ -82,15 +82,16 @@ func (r *outbox) parkDecision(ctx context.Context, issue, root string, notice re
 		// so a later approval is weighed against it by Dispatch's order and not by this clock;
 		// this clock places it only where the notice carries no time of the review (one an
 		// earlier release queued, or a Dispatch event that gave none). It is kept with the
-		// document reviewed (record.Notice.Artifact), as its relay carries it, so the kept
-		// decision and the relay are asked the same question of the same review.
+		// document reviewed and its version (record.Notice.Artifact and Version), as its relay
+		// carries them, so the kept decision and the relay are asked the same question of the
+		// same review.
 		at := notice.Review.At
 		if at.IsZero() {
 			at = now
 		}
 		outcome, err = record.RelayParkedDecision(scoped, tx, r.records, issue, *stored, true,
 			record.ParkedDecision{Ref: notice.Ref, Decision: decision, Actor: notice.Actor, At: at, Seq: notice.Review.Seq,
-				Artifact: notice.Artifact},
+				Artifact: notice.Artifact, Version: notice.Version},
 			notice, r.gatedSteps)
 		return err
 	}); err != nil {

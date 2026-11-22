@@ -38,11 +38,19 @@
 -- ask, for a notice that carried no document, and for every row kept before this migration, and
 -- such a row is asked at its place in Dispatch's log alone.
 --
--- A daemon of an earlier release names neither seq nor artifact. A row it inserts carries a null
--- seq and the empty artifact. A decision it keeps over a row this release kept (its upsert on
--- issue and ref) is written beside that row's seq and artifact, the earlier review's, so a
--- rollback clears both columns before that release is pinned (docs/kubernetes.md, the update of
--- parked_decisions under daemon API contract 206).
+-- parked_decisions.version is the version of the document a kept spec decision's review is of
+-- (record.ParkedDecision.Version, from the notice's Version), which the parked-decision
+-- controller notice that relays the decision carries too, so the kept decision is asked at the
+-- version the person reviewed as its relay is (workflow.SupersedingApproval): an approval of a
+-- later version is the person's word in the review's place, whichever of the two Dispatch marked
+-- first. It is null for an answer on an ask, for a notice that carried no version, and for every
+-- row kept before this migration, and such a row is asked at the version its gate holds approved.
+--
+-- A daemon of an earlier release names none of seq, artifact and version. A row it inserts
+-- carries a null seq, the empty artifact and a null version. A decision it keeps over a row this
+-- release kept (its upsert on issue and ref) is written beside that row's seq, artifact and
+-- version, the earlier review's, so a rollback clears the three columns before that release is
+-- pinned (docs/kubernetes.md, the update of parked_decisions under daemon API contract 206).
 --
 -- issues.awaiting_answered_version is the version of the changes request that answered a root's
 -- wait (record.Awaiting.AnsweredVersion), written beside the detail by the same answer, so the
@@ -62,7 +70,8 @@
 -- There is no down file: migrations here are forward-only.
 alter table pending_task_deliveries add column resume jsonb;
 alter table parked_decisions add column seq bigint,
-  add column artifact text not null default '';
+  add column artifact text not null default '',
+  add column version integer;
 alter table issues add column awaiting_answered_version integer,
   add column awaiting_answered_version_at timestamptz;
 update issues

@@ -1481,9 +1481,9 @@ func RecordChangesTold(gate record.DesignGate, version int, reason string, mark 
 // document at that version's own place in the log (ask.edited), so a request whose newest event
 // the approval does not follow asked for no version above the approved one, and is asked at the
 // approved version and that event's mark. So when two requests are made for one version and the
-// approval lands on the second, the first, still open on the mirror, is answered by it. A kept
-// decision records no version either, and is asked the same way, at the approved version and its
-// own place in Dispatch's log, which the daemon keeps from its notice (workflow's SupersedingApproval).
+// approval lands on the second, the first, still open on the mirror, is answered by it. A decision
+// a daemon of an earlier release kept records no version either, and is asked the same way, at
+// the approved version and its own mark (workflow's SupersedingApproval).
 func ReviewSuperseded(gate record.DesignGate, version int, mark record.EventMark) bool {
 	if gate.ApprovedVersion == nil {
 		return false
