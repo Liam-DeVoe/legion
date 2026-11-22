@@ -135,9 +135,10 @@ func (s *server) createGoingRequestFrom(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	// The project comes from the body, not from the address, so this row is classed
-	// scopeProjectInBody and withinProjectScope leaves the check here, as it leaves createIssue's
-	// (issue_create.go). It runs before the row is written: a credential that may write one
-	// project asks only of that project, and asking of every project is asking outside it.
+	// scopeProjectInBody and withinProjectScope leaves the check here, as it leaves
+	// createIssueFrom's (issue_create.go). It runs before the row is written: a credential that
+	// may write one project asks only of that project, and asking of every project is asking
+	// outside it.
 	if covers, scoped := s.callerProject(r); scoped && covers != project {
 		refuseWriteOutsideProjectScope(w, r, covers, project)
 		return

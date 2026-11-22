@@ -672,8 +672,8 @@ func (s *server) getIssueReferences(w http.ResponseWriter, r *http.Request) {
 // issueReferenceMembers is the issue key names and its references read as GET
 // /api/v1/issues/{key}/references answers it: the read one hop in each direction (issueClosure),
 // and the documents of its links, each read whole by its ref_key at depth 1 with its row's via,
-// every version of each or with latestOnly its latest alone (/api/v2 reads its own,
-// issueReferenceMembersV2). A key no issue carries answers loadIssue's refusal.
+// every version of each or with latestOnly its latest alone (/api/v2 pages its own lists,
+// issueReferenceRowsV2). A key no issue carries answers loadIssue's refusal.
 func (s *server) issueReferenceMembers(
 	ctx context.Context, key string, latestOnly bool,
 ) (model.Issue, []model.ReferenceMember, refs.References, error) {
@@ -815,7 +815,7 @@ func closureBoundHit(err error) bool {
 }
 
 // issueClosure is the issue's references read, one hop in each direction, that both versions'
-// reads of it answer (issueReferenceMembers, issueReferenceMembersV2), run under
+// reads of it answer (issueReferenceMembers, issueReferenceRowsV2), run under
 // referencesClosureBound (boundedClosure): a read that reaches the bound reads nothing and is
 // refused 503 REFERENCES_TIMEOUT, to be asked again later.
 func (s *server) issueClosure(ctx context.Context, issueKey string) (refs.References, error) {
@@ -857,9 +857,11 @@ const referencesAnswerForm = "form=members,truncated,links,linked_from"
 
 // referencesETag hashes what an issue's references answer depends on: the issue's last_seq,
 // referencesAnswerForm, each member's document at its latest version, and every row of links and
-// of linked_from whole (writeReferenceLinks). The trimmed answer (latestOnly) hashes one more line
-// naming its variant, so the full and trimmed answers of one issue never share an ETag; the full
-// answer hashes no such line.
+// of linked_from whole, as its JSON encoding. A row carries its node's name, last change and
+// parent, and another node's new link to the issue adds a row: none of that moves the issue's own
+// last_seq, so the rows are hashed whole for such a change to give a new ETag. The trimmed answer
+// (latestOnly) hashes one more line naming its variant, so the full and trimmed answers of one
+// issue never share an ETag; the full answer hashes no such line.
 func referencesETag(lastSeq int, members []model.ReferenceMember, links, linkedFrom []model.ReferenceLink, latestOnly bool) (string, error) {
 	hash := sha256.New()
 	_, _ = fmt.Fprintf(hash, "%d\n%s\n", lastSeq, referencesAnswerForm)
@@ -869,18 +871,6 @@ func referencesETag(lastSeq int, members []model.ReferenceMember, links, linkedF
 	for _, member := range members {
 		_, _ = fmt.Fprintf(hash, "%s@%d\n", member.Artifact.ID, member.Artifact.Versions[len(member.Artifact.Versions)-1].Number)
 	}
-	if err := writeReferenceLinks(hash, links, linkedFrom); err != nil {
-		return "", err
-	}
-	return `"` + hex.EncodeToString(hash.Sum(nil)) + `"`, nil
-}
-
-// writeReferenceLinks writes every row of links and of linked_from whole, as its JSON encoding,
-// to the hash of an issue's references answer, in both versions (referencesETag,
-// issueReferencesV2ETag). A row carries its node's name, last change and parent, and another
-// node's new link to the issue adds a row: none of that moves the issue's own last_seq, so the
-// rows are hashed whole for such a change to give a new ETag.
-func writeReferenceLinks(hash io.Writer, links, linkedFrom []model.ReferenceLink) error {
 	// Each list is named with its count of rows, so a row that moves from one list to the other
 	// moves the hash too; the encoder ends each row with a newline.
 	encoder := json.NewEncoder(hash)
@@ -891,11 +881,11 @@ func writeReferenceLinks(hash io.Writer, links, linkedFrom []model.ReferenceLink
 		_, _ = fmt.Fprintf(hash, "%s %d\n", list.name, len(list.rows))
 		for _, row := range list.rows {
 			if err := encoder.Encode(row); err != nil {
-				return fmt.Errorf("hash the %s row of %s %s: %w", list.name, row.Node.Kind, row.Node.ID, err)
+				return "", fmt.Errorf("hash the %s row of %s %s: %w", list.name, row.Node.Kind, row.Node.ID, err)
 			}
 		}
 	}
-	return nil
+	return `"` + hex.EncodeToString(hash.Sum(nil)) + `"`, nil
 }
 
 // loadArtifactsByRefKey reads the documents refKeys name, each with every version in number

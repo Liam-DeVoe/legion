@@ -10576,7 +10576,7 @@
     },
     "/api/v2/issues/{key}/references": {
       "get": {
-        "description": "An issue's references, one hop in each direction. The issue's own content is its documents and their blocks, its asks and their parts, and its comments and messages and their blocks; a link is a mention, or a typed pointer while GET /api/v2/references lists it. links is every node the issue's own content links to, and linked_from every node that links to the issue or to its own content, one row for each node, a block or a part counted as its document or item; the issue and its own content are in neither, nor is a node that only a structural edge joins to the issue, such as its parent or a child. Each row is {node, name, kinds, via}: the node as GET /api/v2/references names it, the words shown for it, the distinct kinds of its links in order, and the lowest of the issue's nodes at the near end; each list is whole, in the order of the node's kind, then its id, and [] when it has no row. The members are the documents of links, each {artifact, depth, via}: artifact the document's row (its own fields, latest_version, latest_version_at, latest_version_size and version_count, and no approval; its versions are GET /api/v2/artifacts/{id}/versions), depth always 1, and its row's via. limit 1 to 200 (default 50) and offset page the members; {items, total, limit, offset, truncated, links, linked_from}, truncated always false, since the read reads one hop. The answer carries an ETag, which moves with the issue's events, each member's newest version, every row of links and linked_from, and the page; If-None-Match answers 304. Every statement of the read shares one 2 s budget, and a read that reaches it reads nothing and answers 503 REFERENCES_TIMEOUT, to be asked again later. 404 ISSUE_NOT_FOUND.",
+        "description": "An issue's references, one hop in each direction, one list at a time. The issue's own content is its documents and their blocks, its asks and their parts, and its comments and messages and their blocks; a link is a mention, or a typed pointer while GET /api/v2/references lists it. relation names the list: links, every node the issue's own content links to; linked_from, every node that links to the issue or to its own content; or members (the default), the rows of links whose node is a document, the documents /api/v1 answers as members. Each list has one row for each node, a block or a part counted as its document or item; the issue and its own content are in no list, nor is a node that only a structural edge joins to the issue, such as its parent or a child. Each row is {node, name, kinds, via, artifact}: the node as GET /api/v2/references names it, the words shown for it, the distinct kinds of its links in order, the lowest of the issue's nodes at the near end, and on a row of members or a row of links whose node is a document, the document's row (its own fields, latest_version, latest_version_at, latest_version_size and version_count, and no approval; its versions are GET /api/v2/artifacts/{id}/versions), null on every other row. Each list is in the order of the node's kind, then its id. limit 1 to 200 (default 50) and offset; {items, total, limit, offset}, total the rows of the list. The answer carries an ETag over the page it answers, its relation and its rows whole; If-None-Match answers 304. Every statement of the read shares one 2 s budget, and a read that reaches it reads nothing and answers 503 REFERENCES_TIMEOUT, to be asked again later. 404 ISSUE_NOT_FOUND.",
         "operationId": "getApiV2IssuesByKeyReferences",
         "parameters": [
           {
@@ -10607,6 +10607,19 @@
             }
           },
           {
+            "name": "relation",
+            "in": "query",
+            "schema": {
+              "default": "members",
+              "enum": [
+                "members",
+                "links",
+                "linked_from"
+              ],
+              "type": "string"
+            }
+          },
+          {
             "name": "session",
             "in": "query",
             "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
@@ -10631,7 +10644,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/IssueReferencesV2"
+                  "$ref": "#/components/schemas/PageOfReferenceRowV2"
                 }
               }
             }
@@ -28992,60 +29005,6 @@
         ],
         "type": "object"
       },
-      "IssueReferencesV2": {
-        "additionalProperties": false,
-        "properties": {
-          "items": {
-            "items": {
-              "$ref": "#/components/schemas/ReferenceMemberV2"
-            },
-            "type": [
-              "array",
-              "null"
-            ]
-          },
-          "limit": {
-            "type": "integer"
-          },
-          "linked_from": {
-            "items": {
-              "$ref": "#/components/schemas/ReferenceLink"
-            },
-            "type": [
-              "array",
-              "null"
-            ]
-          },
-          "links": {
-            "items": {
-              "$ref": "#/components/schemas/ReferenceLink"
-            },
-            "type": [
-              "array",
-              "null"
-            ]
-          },
-          "offset": {
-            "type": "integer"
-          },
-          "total": {
-            "type": "integer"
-          },
-          "truncated": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "items",
-          "total",
-          "limit",
-          "offset",
-          "truncated",
-          "links",
-          "linked_from"
-        ],
-        "type": "object"
-      },
       "IssueRoleHolder": {
         "properties": {
           "role": {
@@ -32573,6 +32532,36 @@
         ],
         "type": "object"
       },
+      "PageOfReferenceRowV2": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ReferenceRowV2"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "offset": {
+            "type": "integer"
+          },
+          "total": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "limit",
+          "offset"
+        ],
+        "type": "object"
+      },
       "PageOfReferenceTarget": {
         "additionalProperties": false,
         "properties": {
@@ -34036,9 +34025,19 @@
         ],
         "type": "object"
       },
-      "ReferenceLink": {
+      "ReferenceRowV2": {
         "additionalProperties": false,
         "properties": {
+          "artifact": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ArtifactV2"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "kinds": {
             "items": {
               "type": "string"
@@ -34062,27 +34061,8 @@
           "node",
           "name",
           "kinds",
-          "via"
-        ],
-        "type": "object"
-      },
-      "ReferenceMemberV2": {
-        "additionalProperties": false,
-        "properties": {
-          "artifact": {
-            "$ref": "#/components/schemas/ArtifactV2"
-          },
-          "depth": {
-            "type": "integer"
-          },
-          "via": {
-            "$ref": "#/components/schemas/ReferenceVia"
-          }
-        },
-        "required": [
-          "artifact",
-          "depth",
-          "via"
+          "via",
+          "artifact"
         ],
         "type": "object"
       },

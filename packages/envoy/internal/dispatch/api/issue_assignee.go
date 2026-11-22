@@ -61,8 +61,8 @@ func (s *server) allowedLogin(ctx context.Context, login string) (string, error)
 // The login is returned as model.CanonicalLogin leaves it, blank included: an actor that names
 // the person it acts for with a blank login still named one, and the two callers decide what to
 // do with that themselves. defaultAssignee (below) takes it as the new issue's assignee, and
-// createProject (api/projects.go) falls through to its refusal, each as it did when both
-// spelled these two steps out.
+// createProjectFrom (api/projects.go), the create both versions make, falls through to its
+// refusal, each as it did when both spelled these two steps out.
 func actorPerson(actor model.Actor) (string, bool) {
 	if actor.Kind == "user" {
 		return model.CanonicalLogin(actor.ID), true

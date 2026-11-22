@@ -177,7 +177,7 @@ var writeClasses = map[string]writeScope{
 
 	// The question an answer run is recorded for belongs to the project its body names, as an
 	// issue create's does, so a credential scoped to one project asks only of that project
-	// (createGoingRequest makes the check itself).
+	// (createGoingRequestFrom, which both versions' asks run, makes the check itself).
 	"POST /api/v1/going/requests": scopeProjectInBody,
 
 	// The rows that write what belongs to the calling session: its own conversation, its answer

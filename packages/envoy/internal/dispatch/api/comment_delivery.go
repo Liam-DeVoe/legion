@@ -321,14 +321,14 @@ func openCommentDeliveryAttempt(
 // is never sent in that attempt's place.
 //
 // A later attempt of the same mention - a Retry from the card opened while this one waited on its
-// lane (createCommentDelivery) - decides the bound attempt only once it is delivered: a Retry
-// recorded failed is an outcome unknown, since a receipt timeout and a reply callback's error
-// both leave an attempt failed whose frame the session may hold, so the bound attempt stands
-// (model.MentionAttemptStandsSQL) and this call sends it, under its own number and the mention's
-// one idempotency key (model.CommentMentionIdempotencyKey) - the key that Retry's own send went
-// under, so a Retry that did land leaves this send a repeat the recipient's host drops. One that
-// was sent handed the recipient the comment (model.MentionAttemptDeliveredLaterSQL), so this call
-// reports the bound attempt superseded and its caller settles it failed
+// lane (retryCommentMention, the retry of both versions) - decides the bound attempt only once it
+// is delivered: a Retry recorded failed is an outcome unknown, since a receipt timeout and a reply
+// callback's error both leave an attempt failed whose frame the session may hold, so the bound
+// attempt stands (model.MentionAttemptStandsSQL) and this call sends it, under its own number and
+// the mention's one idempotency key (model.CommentMentionIdempotencyKey) - the key that Retry's own
+// send went under, so a Retry that did land leaves this send a repeat the recipient's host drops.
+// One that was sent handed the recipient the comment (model.MentionAttemptDeliveredLaterSQL), so
+// this call reports the bound attempt superseded and its caller settles it failed
 // (supersedeCommentDelivery), leaving the recipient one copy. While that later attempt is still
 // pending neither holds, so this call stands down: it sends nothing, gives its claim back and
 // leaves the attempt pending, for the delivery sweep to send once the later attempt failed

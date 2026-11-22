@@ -4,11 +4,14 @@ package api
 // the credential requests waiting on the caller and the state route their
 // approve and deny become, the machine-login lookup, the grants and the machine logins the caller
 // may revoke, and the caller's own sign-ins, each a relay to the secrets broker as its /api/v1
-// route is (credential_requests.go). Three things change. A broker list, which the broker does
+// route is (credential_requests.go). Four things change. A broker list, which the broker does
 // not page, is sliced by Dispatch into the envelope. A revoke is a DELETE (the route map's J5),
-// answering 204, or 200 {tokens_ended} for a sign-in. And an id the broker holds no record of
-// answers the broker's own 404 under one code of its object (R7): every other answer of
-// the broker, a refusal among them, is relayed verbatim, as /api/v1 relays it.
+// answering 204, or 200 {tokens_ended} for a sign-in. An id the broker holds no record of
+// answers the broker's own 404 under one code of its object (R7). And a deny of a service's
+// machine login that the code's lookup read already denied answers the broker's 409
+// RECORD_TERMINAL as the no-op of R8, 200 with the login as the lookup read it
+// (putCredentialRequestStateV2). Every other answer of the broker, a refusal among them, is
+// relayed verbatim, as /api/v1 relays it.
 
 import (
 	"context"
@@ -334,7 +337,8 @@ func (s *server) listCredentialGrantsV2(w http.ResponseWriter, r *http.Request) 
 // /api/v1/credential-grants/{id}/revoke relays (Client.RevokeByApprover), the caller the approver.
 // The broker answers a grant of a private project the caller may not see 404 NOT_FOUND, as an id
 // it holds no grant of, so that too is CREDENTIAL_GRANT_NOT_FOUND; 503 PROJECT_ACCESS_UNAVAILABLE,
-// 403 NOT_APPROVER and 409 GRANT_MOVING are relayed as /api/v1 relays them.
+// 503 MEMBER_KIND_UNCHECKABLE (#4848), 403 NOT_APPROVER and 409 GRANT_MOVING are relayed as
+// /api/v1 relays them.
 func (s *server) revokeCredentialGrantV2(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {
@@ -464,8 +468,8 @@ func (s *server) putCredentialRequestStateV2(w http.ResponseWriter, r *http.Requ
 // request already dismissed is answered 200 as it stands. The broker's 404 of an id it holds no
 // request of, or of a private project's request the caller may not see, is the route's
 // CREDENTIAL_REQUEST_NOT_FOUND, and every other refusal - 403 NOT_APPROVER, 503
-// PROJECT_ACCESS_UNAVAILABLE, 409 RECORD_PENDING, 409 RECORD_TERMINAL - is relayed as /api/v1
-// relays it.
+// PROJECT_ACCESS_UNAVAILABLE, 503 MEMBER_KIND_UNCHECKABLE (#4848), 409 RECORD_PENDING, 409
+// RECORD_TERMINAL - is relayed as /api/v1 relays it.
 func dismissCredentialRequestV2(w http.ResponseWriter, r *http.Request, client *cipher.Client, login string) {
 	dismissed, err := client.Dismiss(r.Context(), r.PathValue("id"), login)
 	if err != nil {
@@ -522,16 +526,19 @@ func lookupMachineRecord(ctx context.Context, client *cipher.Client, code string
 // recordSetter is who set a credential request's state as the no-op rule of
 // dispatch://INFRA-4071/spec R8 compares the caller with, login its canonical login: the caller
 // where the broker would let it decide stored, and otherwise a setter nobody matches. The broker's
-// one rule decides it (record.MayDecide, over the record's kind, approver and service), so the
-// no-op admits exactly the callers the decision it stands in for admits, a deny of a service's
-// login aside, which putCredentialRequestStateV2 leaves to the broker: anyone signed in for a
-// service's machine login, whatever approver it stored, and for a request for a shared human-tier
-// secret (the approver `anyone`); otherwise the one person the approver names, so a person's
+// rule over the record's kind, approver and service decides it (record.MayDecide), so for a
+// machine login, the one record this route reads, the no-op admits exactly the callers the
+// decision it stands in for admits, a deny of a service's login aside, which
+// putCredentialRequestStateV2 leaves to the broker: anyone signed in for a service's machine
+// login, whatever approver it stored; otherwise the one person the approver names, so a person's
 // machine login whose approver is `anyone`, which only an older broker opened, admits nobody, and
-// its decision is relayed for the broker to refuse. Dispatch holds no group's membership, so it
-// hands the rule no groups: a group approver (group:<address>) admits nobody here, and its
-// decision is relayed for the broker, which looks the group up, to decide. That costs nothing for
-// a machine login, the one record this route reads, since the rule admits no group there at all.
+// its decision is relayed for the broker to refuse. MayDecide also admits anyone for a request
+// for a shared human-tier secret (the approver `anyone`), where since #4848 the broker refuses a
+// person Dispatch calls a restricted member; no such record reaches this rule, since the code's
+// lookup reads machine logins alone. Dispatch holds no group's membership, so it hands the rule
+// no groups: a group approver (group:<address>) admits nobody here, and its decision is relayed
+// for the broker, which looks the group up, to decide. That costs nothing for a machine login,
+// since the rule admits no group there at all.
 func recordSetter(stored wire.RecordResponse, login string) putSetter {
 	service := ""
 	if stored.Service != nil {

@@ -1305,7 +1305,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description An issue's references, one hop in each direction. The issue's own content is its documents and their blocks, its asks and their parts, and its comments and messages and their blocks; a link is a mention, or a typed pointer while GET /api/v2/references lists it. links is every node the issue's own content links to, and linked_from every node that links to the issue or to its own content, one row for each node, a block or a part counted as its document or item; the issue and its own content are in neither, nor is a node that only a structural edge joins to the issue, such as its parent or a child. Each row is {node, name, kinds, via}: the node as GET /api/v2/references names it, the words shown for it, the distinct kinds of its links in order, and the lowest of the issue's nodes at the near end; each list is whole, in the order of the node's kind, then its id, and [] when it has no row. The members are the documents of links, each {artifact, depth, via}: artifact the document's row (its own fields, latest_version, latest_version_at, latest_version_size and version_count, and no approval; its versions are GET /api/v2/artifacts/{id}/versions), depth always 1, and its row's via. limit 1 to 200 (default 50) and offset page the members; {items, total, limit, offset, truncated, links, linked_from}, truncated always false, since the read reads one hop. The answer carries an ETag, which moves with the issue's events, each member's newest version, every row of links and linked_from, and the page; If-None-Match answers 304. Every statement of the read shares one 2 s budget, and a read that reaches it reads nothing and answers 503 REFERENCES_TIMEOUT, to be asked again later. 404 ISSUE_NOT_FOUND. */
+    /** @description An issue's references, one hop in each direction, one list at a time. The issue's own content is its documents and their blocks, its asks and their parts, and its comments and messages and their blocks; a link is a mention, or a typed pointer while GET /api/v2/references lists it. relation names the list: links, every node the issue's own content links to; linked_from, every node that links to the issue or to its own content; or members (the default), the rows of links whose node is a document, the documents /api/v1 answers as members. Each list has one row for each node, a block or a part counted as its document or item; the issue and its own content are in no list, nor is a node that only a structural edge joins to the issue, such as its parent or a child. Each row is {node, name, kinds, via, artifact}: the node as GET /api/v2/references names it, the words shown for it, the distinct kinds of its links in order, the lowest of the issue's nodes at the near end, and on a row of members or a row of links whose node is a document, the document's row (its own fields, latest_version, latest_version_at, latest_version_size and version_count, and no approval; its versions are GET /api/v2/artifacts/{id}/versions), null on every other row. Each list is in the order of the node's kind, then its id. limit 1 to 200 (default 50) and offset; {items, total, limit, offset}, total the rows of the list. The answer carries an ETag over the page it answers, its relation and its rows whole; If-None-Match answers 304. Every statement of the read shares one 2 s budget, and a read that reaches it reads nothing and answers 503 REFERENCES_TIMEOUT, to be asked again later. 404 ISSUE_NOT_FOUND. */
     get: operations["getApiV2IssuesByKeyReferences"];
     put?: never;
     post?: never;
@@ -4618,15 +4618,6 @@ export interface components {
       updated_at: string;
       verification_artifact_id: string;
     };
-    IssueReferencesV2: {
-      items: components["schemas"]["ReferenceMemberV2"][] | null;
-      limit: number;
-      linked_from: components["schemas"]["ReferenceLink"][] | null;
-      links: components["schemas"]["ReferenceLink"][] | null;
-      offset: number;
-      total: number;
-      truncated: boolean;
-    };
     IssueRoleHolder: {
       /** @enum {string} */
       role: "architect" | "planner" | "implementer" | "tester" | "reviewer" | "merger";
@@ -5396,6 +5387,12 @@ export interface components {
       offset: number;
       total: number;
     };
+    PageOfReferenceRowV2: {
+      items: components["schemas"]["ReferenceRowV2"][] | null;
+      limit: number;
+      offset: number;
+      total: number;
+    };
     PageOfReferenceTarget: {
       items: components["schemas"]["ReferenceTarget"][] | null;
       limit: number;
@@ -5716,15 +5713,11 @@ export interface components {
       session: components["schemas"]["CredentialSession"];
       state: string;
     };
-    ReferenceLink: {
+    ReferenceRowV2: {
+      artifact: components["schemas"]["ArtifactV2"] | null;
       kinds: string[] | null;
       name: string;
       node: components["schemas"]["GraphNode"];
-      via: components["schemas"]["ReferenceVia"];
-    };
-    ReferenceMemberV2: {
-      artifact: components["schemas"]["ArtifactV2"];
-      depth: number;
       via: components["schemas"]["ReferenceVia"];
     };
     ReferenceTarget: {
@@ -10875,6 +10868,7 @@ export interface operations {
       query?: {
         limit?: number;
         offset?: number;
+        relation?: "members" | "links" | "linked_from";
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
         session?: string;
       };
@@ -10892,7 +10886,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["IssueReferencesV2"];
+          "application/json": components["schemas"]["PageOfReferenceRowV2"];
         };
       };
       /** @description Not Modified */
@@ -14657,7 +14651,6 @@ export type IssueProgress = components["schemas"]["IssueProgress"];
 export type IssueRankInput = components["schemas"]["IssueRankInput"];
 export type IssueReachV2 = components["schemas"]["IssueReachV2"];
 export type IssueReadV2 = components["schemas"]["IssueReadV2"];
-export type IssueReferencesV2 = components["schemas"]["IssueReferencesV2"];
 export type IssueRoleHolder = components["schemas"]["IssueRoleHolder"];
 export type IssueRoleHolderRecord = components["schemas"]["IssueRoleHolderRecord"];
 export type IssueRoleHolders = components["schemas"]["IssueRoleHolders"];
@@ -14741,6 +14734,7 @@ export type PageOfPendingEntry = components["schemas"]["PageOfPendingEntry"];
 export type PageOfPersonSignInResp = components["schemas"]["PageOfPersonSignInResp"];
 export type PageOfPriorityAct = components["schemas"]["PageOfPriorityAct"];
 export type PageOfProjectV2 = components["schemas"]["PageOfProjectV2"];
+export type PageOfReferenceRowV2 = components["schemas"]["PageOfReferenceRowV2"];
 export type PageOfReferenceTarget = components["schemas"]["PageOfReferenceTarget"];
 export type PageOfRepoProject = components["schemas"]["PageOfRepoProject"];
 export type PageOfShapedComment = components["schemas"]["PageOfShapedComment"];
@@ -14779,8 +14773,7 @@ export type RecordCheckResultInput = components["schemas"]["RecordCheckResultInp
 export type RecordDecisionResp = components["schemas"]["RecordDecisionResp"];
 export type RecordEnrollmentResp = components["schemas"]["RecordEnrollmentResp"];
 export type RecordResponse = components["schemas"]["RecordResponse"];
-export type ReferenceLink = components["schemas"]["ReferenceLink"];
-export type ReferenceMemberV2 = components["schemas"]["ReferenceMemberV2"];
+export type ReferenceRowV2 = components["schemas"]["ReferenceRowV2"];
 export type ReferenceTarget = components["schemas"]["ReferenceTarget"];
 export type ReferenceVia = components["schemas"]["ReferenceVia"];
 export type ReferencesV2 = components["schemas"]["ReferencesV2"];

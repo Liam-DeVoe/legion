@@ -177,10 +177,10 @@ func (s *server) writeNearCopyCheck(ctx context.Context, q queryer, row nearCopy
 }
 
 // recordNearCopyRefusal writes the row of a refusal, check, on a bounded context of its own, and
-// reports whether it is known to have landed. createIssue answers a refusal only when it has, so
-// every refusal has its row; otherwise it lets the create in as unrecorded and writes that
-// create's row in its own transaction (writeNearCopyCheck), which replaces the refused row if the
-// refusal's insert landed after all.
+// reports whether it is known to have landed. createIssueFrom, the create both versions make,
+// answers a refusal only when it has, so every refusal has its row; otherwise it lets the create in
+// as unrecorded and writes that create's row in its own transaction (writeNearCopyCheck), which
+// replaces the refused row if the refusal's insert landed after all.
 func (s *server) recordNearCopyRefusal(ctx context.Context, row nearCopyCheckRow, check *nearCopyCheck) bool {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), nearCopyRecordTimeout)
 	defer cancel()

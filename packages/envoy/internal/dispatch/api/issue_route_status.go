@@ -175,12 +175,13 @@ type rosterFetch struct {
 // wraps the request's context error); the fetch runs on for the other reads, and stores its
 // answer for every process. The fetch runs on the process's lifetime, so once a shutdown begins
 // it ends or fails at once. What an unanswered roster means is the caller's: an issue read reads
-// every route unknown, with the roster's reason, and still succeeds, while listAgents, which has
-// nothing to list without the listener, answers 503 with the roster's err, or, during a shutdown
-// drain, asks the listener on its own request. A read whose own read of the row fails answers
-// that error: the failure is the database's, and a caller that filters by a judged state or
-// lists the sessions answers it as one rather than as the listener's silence, while a caller
-// that only shows a route may read it unknown (routeRosterOrUnknown).
+// every route unknown, with the roster's reason, and still succeeds, while agentRows, the agents
+// list of both versions, which has nothing to list without the listener, answers 503 with the
+// roster's err, or, during a shutdown drain, asks the listener on its own request. A read whose
+// own read of the row fails answers that error: the failure is the database's, and a caller that
+// filters by a judged state or lists the sessions answers it as one rather than as the
+// listener's silence, while a caller that only shows a route may read it unknown
+// (routeRosterOrUnknown).
 //
 // A read that found the row stale may reach the lock only after the fetch that was in flight
 // while it read has stored its answer and gone. It then takes the answer this process built

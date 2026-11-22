@@ -542,12 +542,13 @@ func isSessionSwitchCommand(body string) bool {
 // with no act, the agent an author records when it wrote for its person) on no issue, no
 // broadcast's copy, sent as Send (steer) or Aside, whose body is one switch line
 // (isSessionSwitchCommand). It mirrors isUserTurnCandidate in
-// packages/pi-shared/src/accept-user-turn.ts and the accept route's own checks (acceptDelivery,
-// which refuses a message an agent wrote for its person as ACCEPT_WRITTEN_BY_AGENT), which admit
-// only that shape to run as the session's own turn. Every other message reaches the session as a
-// card and changes no model - an issue message, a mention, a broadcast copy, a BTW, a session's
-// message and a message an agent wrote for its person among them, whatever its body - so a stopped
-// session's listener stores it like any other message (spec R6).
+// packages/pi-shared/src/accept-user-turn.ts and the accept route's own checks (acceptDeliveryAs,
+// the accept of both versions, which refuses a message an agent wrote for its person as
+// ACCEPT_WRITTEN_BY_AGENT), which admit only that shape to run as the session's own turn. Every
+// other message reaches the session as a card and changes no model - an issue message, a mention, a
+// broadcast copy, a BTW, a session's message and a message an agent wrote for its person among
+// them, whatever its body - so a stopped session's listener stores it like any other message (spec
+// R6).
 //
 // A send that is one asks the listener for a session that is running now whatever its request
 // said, at every attempt and every send, each judged in the mode that attempt is sent in and never
