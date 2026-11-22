@@ -27,6 +27,9 @@ func (c *fakeConnStatus) IsConnected() bool {
 	return c.connected
 }
 
+// IsClosed is false: a test ends the watchdog with its context.
+func (c *fakeConnStatus) IsClosed() bool { return false }
+
 func (c *fakeConnStatus) LastError() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -53,7 +56,7 @@ func TestReconnectWatchdogWarnsWhileDisconnectedNotWhileConnected(t *testing.T) 
 	w := &workflowRuntime{log: log, reconnectPollInterval: 5 * time.Millisecond, reconnectWarnEvery: 20 * time.Millisecond}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
-	go func() { w.reconnectWatchdogWith(ctx, conn); close(done) }()
+	go func() { w.reconnectWatchdogWith(ctx, conn, "legion-daemon CAPTURE"); close(done) }()
 
 	time.Sleep(40 * time.Millisecond)
 	if strings.Contains(logBuf.String(), "NATS has not reconnected") {
@@ -90,7 +93,7 @@ func TestReconnectWatchdogResetsAfterReconnecting(t *testing.T) {
 	w := &workflowRuntime{log: log, reconnectPollInterval: 5 * time.Millisecond, reconnectWarnEvery: warnEvery}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
-	go func() { w.reconnectWatchdogWith(ctx, conn); close(done) }()
+	go func() { w.reconnectWatchdogWith(ctx, conn, "legion-daemon CAPTURE"); close(done) }()
 
 	testwait.Eventually(t, "the watchdog warns about the first outage", func() bool {
 		return strings.Contains(logBuf.String(), "first outage")
@@ -145,7 +148,7 @@ func TestReconnectWatchdogWarnsOnlyOnceDowntimeReachesWarnEvery(t *testing.T) {
 	w := &workflowRuntime{log: log, reconnectPollInterval: 50 * time.Millisecond, reconnectWarnEvery: warnEvery}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
-	go func() { w.reconnectWatchdogWith(ctx, conn); close(done) }()
+	go func() { w.reconnectWatchdogWith(ctx, conn, "legion-daemon CAPTURE"); close(done) }()
 
 	conn.set(false, errors.New("handshake failure"))
 	time.Sleep(warnEvery / 2)
