@@ -991,12 +991,19 @@ func startOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string
 //
 // A phase worker's raise writes the claim of the step's agent on the row (record.PhaseRow.Claim,
 // Engine.stepToken), which record.WorkerClaim reads back, and the entry rises across the rows of
-// that claim: it is the higher of the row's own entry plus one and one above the highest entry of
-// every row of the issue that names the claim. The steps of one key are one claim, whose given
-// entry is the last its agent was handed, so an entry numbered on the row alone would fall at or
-// below it and the queue would refuse the task of the agent's next step; and no entry falls below
-// its own row's, which a row the release before raised and no completion named a claim on keeps.
-// An issue with no plan rows has one row for each claim, so its entry is the row's own plus one.
+// that claim and of that role: it is the higher of the row's own entry plus one and one above the
+// highest entry of every row of the issue that names the claim or is of the role. The steps of one
+// key are one claim, whose given entry is the last its agent was handed, so an entry numbered on
+// the row alone would fall at or below it and the queue would refuse the task of the agent's next
+// step. Two agents of one role keep a row of it each, as `implementer:a tester:b implementer:b`'s
+// steps 1 and 3 do, so an entry numbered across the claim's rows alone could stand level with the
+// other agent's: the return of a failed review to step 1 would raise key a's row to the entry key b
+// still serves for step 3, and key b's completion would pass the entry fence as step 1's
+// (intake.EntryFence). Above every row of its role, the row where the task stands holds the
+// highest entry of the role, and every other run of the role is behind it, which the fence, the
+// fold of a new generation and the key's way back read. No entry falls below its own row's, which
+// a row the release before raised and no completion named a claim on keeps. An issue with no plan
+// rows has one row for each role, so its entry is the row's own plus one.
 func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, w *Walk, role claim.Role, task string, movedBack, verbatim bool) (int64, string, error) {
 	rows, err := e.store.Phases(ctx, tx, issue.Key)
 	if err != nil {
@@ -1029,7 +1036,7 @@ func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, w *Wa
 			return 0, "", err
 		}
 		for _, other := range rows {
-			if other.Claim == agent && other.Entry >= entry {
+			if (other.Claim == agent || other.Role == role) && other.Entry >= entry {
 				entry = other.Entry + 1
 			}
 		}

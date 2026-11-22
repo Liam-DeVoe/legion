@@ -337,6 +337,39 @@ func TestWorkerClaimPicksTheRowThatPhaseRowAtGives(t *testing.T) {
 	worker(stepPlace(1), keyA)
 }
 
+// Two agents of one role keep a row of it each, and the entry a step's start raises is above every
+// row of its role: in `implementer:a tester:b implementer:b reviewer`, the failed review returns
+// the task to step 1, whose row rises above step 3's, so key b's completion at the entry it was
+// handed for step 3 is behind step 1's and refused HANDOFF_STALE_ENTRY, and step 1's row keeps key
+// a and no report. Before, the entry rose only above the rows of its own agent, so step 1's row and
+// step 3's stood on one entry, and key b's completion passed the fence and was recorded as step 1's,
+// its claim and its record on that row.
+func TestAStepsEntryRisesAboveEveryRowOfItsRole(t *testing.T) {
+	pool := migratedPool(t)
+	engine := textEngine()
+	tickingClock(engine)
+	root := stepRoot(t, pool, phase.Admitted)
+	seedStepsPlan(t, pool, root.Key, root.Generation, "implementer:a", "tester:b", "implementer:b", "reviewer")
+	keyA, keyB := agentToken(t, "implementer"), agentToken(t, "tester")
+	move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
+	completesAs(t, pool, engine, claim.RoleImplementer, keyA, "implement", 1)
+	completesAs(t, pool, engine, claim.RoleTester, keyB, "test", 1)
+	completesAs(t, pool, engine, claim.RoleImplementer, keyB, "implement", 2)
+	served := rolesRows(t, pool, engine, root.Key, claim.RoleImplementer)[3].Entry
+	move(t, pool, engine, root.Key, TriggerReviewRejected, stepPlace(1), record.PhaseRow{})
+	result := applyFacts(t, pool, engine)("implementer-late-key-b", intake.HandoffComplete{Generation: 1, Issue: root.Key, Role: claim.RoleImplementer,
+		Claim: keyB, Entry: served, Summary: "done", Commit: "head", HandoffRecord: "implement-3", HandoffVersion: 3})
+	rows := rolesRows(t, pool, engine, root.Key, claim.RoleImplementer)
+	if result.Refusal == nil || result.Refusal.Code != intake.StaleEntryCode {
+		t.Fatalf("key b's completion at entry %d after the return to step 1 = %+v, want %s; step 1's row names %q with the record %q at entry %d",
+			served, result.Refusal, intake.StaleEntryCode, rows[1].Claim, rows[1].HandoffRecord, rows[1].Entry)
+	}
+	if first, third := rows[1], rows[3]; first.Claim != keyA || first.HandoffRecord != "" || first.Entry <= third.Entry {
+		t.Fatalf("step 1's row after the refusal names %q with the record %q at entry %d, want %q with none, above step 3's entry %d",
+			first.Claim, first.HandoffRecord, first.Entry, keyA, third.Entry)
+	}
+}
+
 // completesAs is completes under the claim token, the agent's own, as the route names the claim
 // whose grant reported, which the completion writes on the role's row.
 func completesAs(t *testing.T, pool *pgxpool.Pool, engine *Engine, role claim.Role, token claim.Token, word string, n int) {
