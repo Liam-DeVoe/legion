@@ -1224,12 +1224,7 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
    *  (`named`), so an act of theirs that names no other row records it (`rememberHeld`). Null
    *  otherwise. Layout reads. */
   private listReadAt(): (AnchorRow & { row: HTMLElement }) | null {
-    const root = this.root;
-    const box = this.scrollerElement();
-    if (!this.ownsBox || root === null || box === null || box.scrollTop <= 0) return null;
-    if (!this.focusHoldsList()) return null;
-    const row = rowAtCenter(root, `[${this.props.item}]`, box);
-    return row === null ? null : { id: this.idOf(row), row, via: "center" };
+    return this.ownsBox && this.focusHoldsList() ? this.centerRow() : null;
   }
 
   /** True where the focus is on an element of the box the host named that holds this whole list,
@@ -1257,6 +1252,13 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
     if (interacted !== null) return interacted;
     const kept = this.hostKept() ?? this.readerKept();
     if (kept !== null) return { id: this.idOf(kept), row: kept, via: "kept" };
+    return this.centerRow();
+  }
+
+  /** The row nearest the list's visible centre, once the box that scrolls - the one the host
+   *  named while it holds one, else the window - is scrolled off its top; null before then, and
+   *  where no row is at the centre (a hit-test probe: layout reads). */
+  private centerRow(): (AnchorRow & { row: HTMLElement }) | null {
     const root = this.root;
     if (root === null) return null;
     const scroller = this.scrollerElement();

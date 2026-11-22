@@ -381,7 +381,7 @@ export function IssueHistory({
   // it to the heading. None of them is disabled while it reads, since Chromium drops the focus
   // of a focused button that turns disabled to the page, so the focus stays on the control
   // pressed while its read is out, and a press of it then joins that read rather than ending it
-  // and sending another (`readOlderPage` for a page, `cancelRefetch: false` for the log). Each
+  // and sending another (`readOlderPage` for a page, `retryRead` for the log). Each
   // press, made with the focus on its control, is held until the reads settle, and a press of
   // the control already held keeps the first press's hold, the controls drawn before it with it,
   // so the press that joins changes nothing of the hand-on; then a focus left on the page moves,

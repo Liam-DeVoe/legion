@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, setSystemTime, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, expect, type Mock, setSystemTime, spyOn, test } from "bun:test";
 import type { LegionRole } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
@@ -111,6 +111,28 @@ function sessionsIn(container: HTMLElement): string[] {
   return [...container.querySelectorAll("[data-collaborator] [data-agent-name]")].map(
     (node) => node.getAttribute("data-agent-name") ?? ""
   );
+}
+
+/** Fails a refresh of `list`'s read over the one collaborator it holds, `writer`, and asserts that
+ *  the refresh failed, said no failure and offered no Retry over the list, and left `writer`
+ *  drawn; then takes the list back to holding none, as before its first read, and fails that read
+ *  too, which draws its line and its Retry. */
+async function failRefreshThenFirstRead(list: {
+  readonly client: QueryClient;
+  readonly read: Mock<typeof api.getIssueCollaborators>;
+}): Promise<void> {
+  const key = ["issue", "CORE-1", "collaborators"];
+  list.read.mockRejectedValueOnce(new Error("the collaborators' read failed"));
+  await act(() => list.client.invalidateQueries({ queryKey: key }));
+  expect(list.client.getQueryState(key)?.status, "the refresh did not fail").toBe("error");
+  expect(screen.queryByRole("alert"), "a failed refresh said a failure over the list").toBeNull();
+  expect(screen.queryByRole("button", { name: CONTROL_LABELS.retry })).toBeNull();
+  expect(
+    sessionsIn(screen.getByRole("region", { name: CONTROL_LABELS.collaborators_others }))
+  ).toEqual(["writer"]);
+  // The list taken back to holding none, as before its first read, which then fails.
+  list.read.mockRejectedValueOnce(new Error("the collaborators' read failed"));
+  await act(() => list.client.resetQueries({ queryKey: key }));
 }
 
 // What the page makes of one answer in the order the server sends it (the contract's: the
@@ -263,17 +285,7 @@ test("a refresh that fails over the collaborators held draws no line, and their 
   const key = ["issue", "CORE-1", "collaborators"];
   try {
     await screen.findByRole("region", { name: CONTROL_LABELS.collaborators_others });
-    list.read.mockRejectedValueOnce(new Error("the collaborators' read failed"));
-    await act(() => list.client.invalidateQueries({ queryKey: key }));
-    expect(list.client.getQueryState(key)?.status, "the refresh did not fail").toBe("error");
-    expect(screen.queryByRole("alert"), "a failed refresh said a failure over the list").toBeNull();
-    expect(screen.queryByRole("button", { name: CONTROL_LABELS.retry })).toBeNull();
-    expect(
-      sessionsIn(screen.getByRole("region", { name: CONTROL_LABELS.collaborators_others }))
-    ).toEqual(["writer"]);
-    // The list taken back to holding none, as before its first read, which then fails.
-    list.read.mockRejectedValueOnce(new Error("the collaborators' read failed"));
-    await act(() => list.client.resetQueries({ queryKey: key }));
+    await failRefreshThenFirstRead(list);
     const retry = await screen.findByRole("button", { name: CONTROL_LABELS.retry });
     // The read the Retry sends is held out until the case fails it.
     const again = Promise.withResolvers<IssueCollaborators>();
@@ -315,20 +327,9 @@ test("the collaborators' Retry reads busy while its read is out, and a read that
     people: [],
   });
   const restoreFocus = emulateChromiumFocusFixup();
-  const key = ["issue", "CORE-1", "collaborators"];
   try {
     await screen.findByRole("region", { name: CONTROL_LABELS.collaborators_others });
-    list.read.mockRejectedValueOnce(new Error("the collaborators' read failed"));
-    await act(() => list.client.invalidateQueries({ queryKey: key }));
-    expect(list.client.getQueryState(key)?.status, "the refresh did not fail").toBe("error");
-    expect(screen.queryByRole("alert"), "a failed refresh said a failure over the list").toBeNull();
-    expect(screen.queryByRole("button", { name: CONTROL_LABELS.retry })).toBeNull();
-    expect(
-      sessionsIn(screen.getByRole("region", { name: CONTROL_LABELS.collaborators_others }))
-    ).toEqual(["writer"]);
-    // The list taken back to holding none, as before its first read, which then fails.
-    list.read.mockRejectedValueOnce(new Error("the collaborators' read failed"));
-    await act(() => list.client.resetQueries({ queryKey: key }));
+    await failRefreshThenFirstRead(list);
     const failed = await screen.findByRole("alert");
     const retry = screen.getByRole("button", { name: CONTROL_LABELS.retry });
     // The read the Retry sends is held out until the case fails it.
@@ -382,20 +383,9 @@ test("two presses of the collaborators' Retry before a render send one read", as
     people: [],
   };
   const list = renderCollaborators(collaborators);
-  const key = ["issue", "CORE-1", "collaborators"];
   try {
     await screen.findByRole("region", { name: CONTROL_LABELS.collaborators_others });
-    list.read.mockRejectedValueOnce(new Error("the collaborators' read failed"));
-    await act(() => list.client.invalidateQueries({ queryKey: key }));
-    expect(list.client.getQueryState(key)?.status, "the refresh did not fail").toBe("error");
-    expect(screen.queryByRole("alert"), "a failed refresh said a failure over the list").toBeNull();
-    expect(screen.queryByRole("button", { name: CONTROL_LABELS.retry })).toBeNull();
-    expect(
-      sessionsIn(screen.getByRole("region", { name: CONTROL_LABELS.collaborators_others }))
-    ).toEqual(["writer"]);
-    // The list taken back to holding none, as before its first read, which then fails.
-    list.read.mockRejectedValueOnce(new Error("the collaborators' read failed"));
-    await act(() => list.client.resetQueries({ queryKey: key }));
+    await failRefreshThenFirstRead(list);
     const retry = await screen.findByRole("button", { name: CONTROL_LABELS.retry });
     // Every read sent from here is held out until the case lets it land.
     const again = Promise.withResolvers<IssueCollaborators>();

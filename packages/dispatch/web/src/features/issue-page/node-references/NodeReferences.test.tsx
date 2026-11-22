@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, setSystemTime, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, expect, type Mock, setSystemTime, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -164,6 +164,29 @@ function draw(detailsOpen: boolean, drawn: Drawn = STATEMENT_ROW, answer = ANSWE
   return { client, getReferences, itemReads, view };
 }
 
+/** Fails a refresh of the references over the list `draw` drew and the reader opened, and asserts
+ *  that the refresh failed, said no failure and offered no Retry over the list, and left its
+ *  mention drawn; then takes the list back to holding none, as before its first read, and fails
+ *  that read too, which draws its line and its Retry. */
+async function failRefreshThenFirstRead({
+  client,
+  getReferences,
+}: {
+  readonly client: QueryClient;
+  readonly getReferences: Mock<typeof api.getReferences>;
+}): Promise<void> {
+  const key = ["references", "to", STATEMENT];
+  getReferences.mockRejectedValueOnce(new Error("the references' read failed"));
+  await act(() => client.invalidateQueries({ queryKey: key }));
+  expect(client.getQueryState(key)?.status, "the refresh did not fail").toBe("error");
+  expect(screen.queryByRole("alert"), "a failed refresh said a failure over the list").toBeNull();
+  expect(screen.queryByRole("button", { name: CONTROL_LABELS.retry })).toBeNull();
+  expect(screen.queryByRole("link", { name: "Thread 1 opens here." })).not.toBeNull();
+  // The list taken back to holding none, as before its first read, which then fails.
+  getReferences.mockRejectedValueOnce(new Error("the references' read failed"));
+  await act(() => client.resetQueries({ queryKey: key }));
+}
+
 test("the first drawing of a focused row reads nothing", async () => {
   const { getReferences } = draw(true);
   expect(
@@ -280,15 +303,7 @@ test("a refresh that fails over the references held draws no line, and their Ret
       await screen.findByRole("button", { name: NODE_REFERENCES_WORDS.what_references })
     );
     await screen.findByRole("link", { name: "Thread 1 opens here." });
-    getReferences.mockRejectedValueOnce(new Error("the references' read failed"));
-    await act(() => client.invalidateQueries({ queryKey: key }));
-    expect(client.getQueryState(key)?.status, "the refresh did not fail").toBe("error");
-    expect(screen.queryByRole("alert"), "a failed refresh said a failure over the list").toBeNull();
-    expect(screen.queryByRole("button", { name: CONTROL_LABELS.retry })).toBeNull();
-    expect(screen.queryByRole("link", { name: "Thread 1 opens here." })).not.toBeNull();
-    // The list taken back to holding none, as before its first read, which then fails.
-    getReferences.mockRejectedValueOnce(new Error("the references' read failed"));
-    await act(() => client.resetQueries({ queryKey: key }));
+    await failRefreshThenFirstRead({ client, getReferences });
     const retry = await screen.findByRole("button", { name: CONTROL_LABELS.retry });
     // The read the Retry sends is held out until the case fails it.
     const again = Promise.withResolvers<GraphReferences>();
@@ -321,20 +336,11 @@ test("a refresh that fails over the references held draws no line, and their Ret
 // failed.
 test("two presses of the references' Retry before a render send one read", async () => {
   const { client, getReferences } = draw(true);
-  const key = ["references", "to", STATEMENT];
   await userEvent.click(
     await screen.findByRole("button", { name: NODE_REFERENCES_WORDS.what_references })
   );
   await screen.findByRole("link", { name: "Thread 1 opens here." });
-  getReferences.mockRejectedValueOnce(new Error("the references' read failed"));
-  await act(() => client.invalidateQueries({ queryKey: key }));
-  expect(client.getQueryState(key)?.status, "the refresh did not fail").toBe("error");
-  expect(screen.queryByRole("alert"), "a failed refresh said a failure over the list").toBeNull();
-  expect(screen.queryByRole("button", { name: CONTROL_LABELS.retry })).toBeNull();
-  expect(screen.queryByRole("link", { name: "Thread 1 opens here." })).not.toBeNull();
-  // The list taken back to holding none, as before its first read, which then fails.
-  getReferences.mockRejectedValueOnce(new Error("the references' read failed"));
-  await act(() => client.resetQueries({ queryKey: key }));
+  await failRefreshThenFirstRead({ client, getReferences });
   const retry = await screen.findByRole("button", { name: CONTROL_LABELS.retry });
   // Every read sent from here is held out until the case lets it land.
   const again = Promise.withResolvers<GraphReferences>();

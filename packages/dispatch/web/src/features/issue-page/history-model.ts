@@ -534,14 +534,14 @@ function withPart(
   token: string | undefined,
   ...parts: AgentPart[]
 ): AgentPart[] {
-  return placed(line, token, parts).line;
+  return withPartAt(line, token, parts).line;
 }
 
 /** `line` with each reading of `token` in its text, the last of each part, drawn as `parts`
  *  (`withPart`), and the place in that new line where the parts drawn for the first reading
  *  begin, or -1 where `token` reads nowhere. An empty text, of `parts` or either side of a
  *  reading, is drawn as no part. */
-function placed(
+function withPartAt(
   line: AgentPart[],
   token: string | undefined,
   parts: readonly AgentPart[]
@@ -592,7 +592,7 @@ function withBlock(
   if (block === undefined) {
     return { description: withPart(line, mention, CONTROL_LABELS.history_gone_block) };
   }
-  const named = placed(line, mention, [`${noun} “`, block.words, "”"]);
+  const named = withPartAt(line, mention, [`${noun} “`, block.words, "”"]);
   // The words are the part after the word for the block and its opening quote.
   return named.at < 0
     ? { description: named.line }

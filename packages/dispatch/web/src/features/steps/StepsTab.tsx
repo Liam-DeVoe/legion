@@ -75,7 +75,7 @@ const CLINGS = /^(?:[\d.]+|.)$/u;
 /** One `/`-free piece of an id: its hyphen-joined parts in groups, a group being a part and every
  *  clinging part after it. The hyphen between two groups is where a line may break; inside a
  *  group it may not. Each group is keyed by its first part's place in the piece. */
-export function HyphenGroups({ piece }: { piece: string }): ReactNode {
+function HyphenGroups({ piece }: { piece: string }): ReactNode {
   const groups: { at: number; parts: string[] }[] = [];
   for (const [at, part] of piece.split("-").entries()) {
     const last = groups.at(-1);

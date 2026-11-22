@@ -132,7 +132,6 @@ export function IssueCollaboratorList({
     (collaborators.agents ?? []).length === 0 && (collaborators.people ?? []).length === 0;
   return (
     <section aria-label={PROPERTY_LABELS.collaborators} className="min-w-0 space-y-6">
-      {failure}
       {unavailable ? (
         <p className={`text-sm ${pageMutedText}`} role="status" {...pageChrome}>
           {STATE_LINES.legion_record_unreadable}

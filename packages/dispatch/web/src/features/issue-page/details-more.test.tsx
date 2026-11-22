@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, setSystemTime, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, expect, type Mock, setSystemTime, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -261,6 +261,30 @@ function renderPeople() {
 /** The Subscribers row's control, which carries the count once the read answers. */
 const SUBSCRIBERS = new RegExp(`^${PROPERTY_LABELS.subscribers}`, "u");
 
+/** Fails a refresh of the subscribers over the answer the People rows hold, and asserts that the
+ *  refresh failed, said no failure over `held` and offered no Retry, and that `stillDrawn` passes
+ *  on what the rows draw; then takes the read back to holding none, as before its first read, and
+ *  fails that read too, which draws its line and its Retry. */
+async function failRefreshThenFirstRead(
+  client: QueryClient,
+  getIssueSubscribers: Mock<typeof api.getIssueSubscribers>,
+  held: string,
+  stillDrawn: () => void
+): Promise<void> {
+  const refusal = () =>
+    new ApiError(503, { code: "ENVOY_UNAVAILABLE", error: "envoy listener unreachable" });
+  const key = ["subscribers", KEY];
+  getIssueSubscribers.mockRejectedValueOnce(refusal());
+  await act(() => client.invalidateQueries({ queryKey: key }));
+  expect(client.getQueryState(key)?.status, "the refresh did not fail").toBe("error");
+  expect(screen.queryByRole("alert"), `a failed refresh said a failure over ${held}`).toBeNull();
+  expect(screen.queryByRole("button", { name: CONTROL_LABELS.retry })).toBeNull();
+  stillDrawn();
+  // The agents taken back to holding none, as before their first read, which then fails.
+  getIssueSubscribers.mockRejectedValueOnce(refusal());
+  await act(() => client.resetQueries({ queryKey: key }));
+}
+
 // The subscribers' read, which counts them on every load, says so
 // where it failed, with no count it cannot make, and its Retry reads them again.
 test("a failed read of the subscribed agents says so, with Retry", async () => {
@@ -454,18 +478,9 @@ test("a refresh that fails over the subscribed agents held draws no line, and th
     await waitFor(() => expect(subscribers.textContent).toBe(`${PROPERTY_LABELS.subscribers}:1`));
     await userEvent.click(subscribers);
     await screen.findByRole("button", { name: "Unsubscribe" });
-    getIssueSubscribers.mockRejectedValueOnce(refusal());
-    await act(() => view.client.invalidateQueries({ queryKey: key }));
-    expect(view.client.getQueryState(key)?.status, "the refresh did not fail").toBe("error");
-    expect(
-      screen.queryByRole("alert"),
-      "a failed refresh said a failure over the agents"
-    ).toBeNull();
-    expect(screen.queryByRole("button", { name: CONTROL_LABELS.retry })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Unsubscribe" })).not.toBeNull();
-    // The agents taken back to holding none, as before their first read, which then fails.
-    getIssueSubscribers.mockRejectedValueOnce(refusal());
-    await act(() => view.client.resetQueries({ queryKey: key }));
+    await failRefreshThenFirstRead(view.client, getIssueSubscribers, "the agents", () =>
+      expect(screen.queryByRole("button", { name: "Unsubscribe" })).not.toBeNull()
+    );
     const retry = await screen.findByRole("button", { name: CONTROL_LABELS.retry });
     // The read the Retry sends is held out until the case fails it.
     const again = Promise.withResolvers<Subscriber[]>();
@@ -499,26 +514,14 @@ test("a refresh that fails over the subscribed agents held draws no line, and th
 // no other read. A refresh that fails over the agents held draws no line, so the Retry is a first
 // read's that failed.
 test("two presses of the subscribers' Retry before a render send one read", async () => {
-  const refusal = () =>
-    new ApiError(503, { code: "ENVOY_UNAVAILABLE", error: "envoy listener unreachable" });
   const getIssueSubscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([SUBSCRIBER]);
   const view = renderPeople();
-  const key = ["subscribers", KEY];
   try {
     const subscribers = await screen.findByRole("button", { name: SUBSCRIBERS });
     await waitFor(() => expect(subscribers.textContent).toBe(`${PROPERTY_LABELS.subscribers}:1`));
-    getIssueSubscribers.mockRejectedValueOnce(refusal());
-    await act(() => view.client.invalidateQueries({ queryKey: key }));
-    expect(view.client.getQueryState(key)?.status, "the refresh did not fail").toBe("error");
-    expect(
-      screen.queryByRole("alert"),
-      "a failed refresh said a failure over the count"
-    ).toBeNull();
-    expect(screen.queryByRole("button", { name: CONTROL_LABELS.retry })).toBeNull();
-    expect(subscribers.textContent).toBe(`${PROPERTY_LABELS.subscribers}:1`);
-    // The agents taken back to holding none, as before their first read, which then fails.
-    getIssueSubscribers.mockRejectedValueOnce(refusal());
-    await act(() => view.client.resetQueries({ queryKey: key }));
+    await failRefreshThenFirstRead(view.client, getIssueSubscribers, "the count", () =>
+      expect(subscribers.textContent).toBe(`${PROPERTY_LABELS.subscribers}:1`)
+    );
     const retry = await screen.findByRole("button", { name: CONTROL_LABELS.retry });
     // Every read sent from here is held out until the case lets it land.
     const again = Promise.withResolvers<Subscriber[]>();
@@ -2037,6 +2040,31 @@ function readerScrolls(box: HTMLElement, by: number): void {
   });
 }
 
+/** The pointer coming to rest on `entry` at `point` of the page: the `pointerover` and the
+ *  `pointermove` the browser raises there. */
+function restPointerOn(
+  entry: HTMLElement,
+  point: { readonly x: number; readonly y: number }
+): void {
+  act(() => {
+    const at = { bubbles: true, clientX: point.x, clientY: point.y };
+    entry.dispatchEvent(new PointerEvent("pointerover", at));
+    entry.dispatchEvent(new PointerEvent("pointermove", at));
+  });
+}
+
+/** The entry of the history above `entry` growing by `GROWTH` on `page`, and the observers of its
+ *  height called back, as the browser calls them once a height has changed. */
+function growEntryAbove(
+  page: { grow(row: string, by: number): void; heightsChanged(): void },
+  entry: HTMLElement
+): void {
+  const over = entry.previousElementSibling?.getAttribute("data-history-entry");
+  if (typeof over !== "string") throw new Error("no entry above the reader's");
+  page.grow(over, GROWTH);
+  page.heightsChanged();
+}
+
 // A scroll of Details the hold did not make is the reader's view of the control from then on:
 // the control is kept where that scroll left it, not put back where it landed.
 test("a scroll the reader makes moves the place the hold keeps to where the control then stands", async () => {
@@ -2260,11 +2288,7 @@ async function readerLeftAPlace(place: EarlierPlace) {
       await userEvent.keyboard("{Enter}");
       await waitFor(() => expect(loadOlder).toHaveAttribute("aria-busy", "true"));
     } else if (place === "pointer") {
-      act(() => {
-        const at = { bubbles: true, clientX: point.x, clientY: point.y };
-        entry.dispatchEvent(new PointerEvent("pointerover", at));
-        entry.dispatchEvent(new PointerEvent("pointermove", at));
-      });
+      restPointerOn(entry, point);
     }
     return { entry, page, point, restore };
   } catch (error) {
@@ -2475,11 +2499,7 @@ for (const [reader, readerName] of READER_ON_ENTRY) {
           .item(ENTRY_UNDER_HEADING);
         if (reader === "pointer") {
           const seen = entry.getBoundingClientRect();
-          act(() => {
-            const at = { bubbles: true, clientX: 50, clientY: seen.top + seen.height / 2 };
-            entry.dispatchEvent(new PointerEvent("pointerover", at));
-            entry.dispatchEvent(new PointerEvent("pointermove", at));
-          });
+          restPointerOn(entry, { x: 50, y: seen.top + seen.height / 2 });
         } else {
           // The arrow key scrolls Details down by a line of the browser's, the focus left on the
           // history.
@@ -2496,10 +2516,7 @@ for (const [reader, readerName] of READER_ON_ENTRY) {
             expect(page.box.querySelectorAll("[data-history-entry]")).toHaveLength(log.length + 1)
           );
         } else {
-          const over = entry.previousElementSibling?.getAttribute("data-history-entry");
-          if (typeof over !== "string") throw new Error("no entry above the reader's");
-          page.grow(over, GROWTH);
-          page.heightsChanged();
+          growEntryAbove(page, entry);
         }
         page.frame();
 
@@ -2535,17 +2552,10 @@ test("after t o and the pointer resting on an entry of the history, the reader's
       whollyInBox(seen),
       "t o left the entry out of the view, so the case proves nothing"
     ).toBe(true);
-    act(() => {
-      const at = { bubbles: true, clientX: 50, clientY: seen.top + seen.height / 2 };
-      entry.dispatchEvent(new PointerEvent("pointerover", at));
-      entry.dispatchEvent(new PointerEvent("pointermove", at));
-    });
+    restPointerOn(entry, { x: 50, y: seen.top + seen.height / 2 });
     page.frame();
 
-    const over = entry.previousElementSibling?.getAttribute("data-history-entry");
-    if (typeof over !== "string") throw new Error("no entry above the reader's");
-    page.grow(over, GROWTH);
-    page.heightsChanged();
+    growEntryAbove(page, entry);
     page.frame();
 
     expect(entry.getBoundingClientRect().top, "the reader's entry moved").toBe(seen.top);

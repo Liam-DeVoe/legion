@@ -33,12 +33,36 @@ function None(): ReactNode {
   );
 }
 
+/** An agent token or a model id in the type every id of a run is drawn in, broken as the Steps
+ *  tab breaks it (`Identifier`), or None for one the record does not hold. */
+function IdentifierValue({ value }: { value: string }): ReactNode {
+  return value === "" ? (
+    <None />
+  ) : (
+    <span className="font-mono" {...authorText}>
+      <Identifier value={value} />
+    </span>
+  );
+}
+
+/** When a run started or ended, as the Steps tab writes it (`Time`), or None for a time the
+ *  record does not hold. */
+function TimeValue({ at }: { at: string | null }): ReactNode {
+  return at === null ? (
+    <None />
+  ) : (
+    <span {...authorText}>
+      <Time at={at} />
+    </span>
+  );
+}
+
 /** The colour each result Details has a word for is drawn in, as Details' other states are
  *  drawn: a run that runs in the in-progress blue, one that passed in the passed green, one that
  *  failed in the failed red, and one that stopped in the ink every value of a run is drawn in
  *  (`Field`). Each is a state of `StepEnd` but `other`, so a state `StepEnd` adds fails to
  *  compile until it has a colour here. */
-const RESULT_COLOURS: Record<"running" | "passed" | "failed" | "stopped", string> = {
+const RESULT_COLOURS: Record<Exclude<StepRow["state"], "other">, string> = {
   failed: pageStateText.failed,
   passed: pageStateText.passed,
   running: pageStatusProgressText,
@@ -102,22 +126,10 @@ function Run({ row }: { row: StepRow }): ReactNode {
           {row.type === "" ? <None /> : <span {...authorText}>{row.type}</span>}
         </Field>
         <Field field="agent" label={FIELDS.agent}>
-          {row.agent === "" ? (
-            <None />
-          ) : (
-            <span className="font-mono" {...authorText}>
-              <Identifier value={row.agent} />
-            </span>
-          )}
+          <IdentifierValue value={row.agent} />
         </Field>
         <Field field="model" label={FIELDS.model}>
-          {row.model === "" ? (
-            <None />
-          ) : (
-            <span className="font-mono" {...authorText}>
-              <Identifier value={row.model} />
-            </span>
-          )}
+          <IdentifierValue value={row.model} />
         </Field>
         <Field field="attempt" label={FIELDS.attempt}>
           <span className="tabular-nums" {...authorText}>
@@ -125,22 +137,10 @@ function Run({ row }: { row: StepRow }): ReactNode {
           </span>
         </Field>
         <Field field="started" label={FIELDS.started}>
-          {row.started === null ? (
-            <None />
-          ) : (
-            <span {...authorText}>
-              <Time at={row.started} />
-            </span>
-          )}
+          <TimeValue at={row.started} />
         </Field>
         <Field field="ended" label={FIELDS.ended}>
-          {row.ended === null ? (
-            <None />
-          ) : (
-            <span {...authorText}>
-              <Time at={row.ended} />
-            </span>
-          )}
+          <TimeValue at={row.ended} />
         </Field>
         <Field field="result" label={FIELDS.result}>
           <Result row={row} />

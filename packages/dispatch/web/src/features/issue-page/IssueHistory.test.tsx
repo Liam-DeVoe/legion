@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, setSystemTime, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, expect, type Mock, setSystemTime, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -619,6 +619,27 @@ function drawHistory(
   return { queryClient, unmount };
 }
 
+/** Refetches the log, whose reads the case has made fail, over the `entries` entries the history
+ *  draws, and asserts that the refetch said no failure and offered no Retry over them and left
+ *  them drawn (`message` saying what went wrong where it did not); then takes the log back to
+ *  holding no page, as before its first read, which fails too and draws its line and its Retry. */
+async function failLogRefetchThenFirstRead(
+  queryClient: QueryClient,
+  entries: number,
+  message?: string
+): Promise<void> {
+  await act(async () => {
+    await queryClient.refetchQueries({ queryKey: ["events", KEY] });
+  });
+  expect(screen.queryByRole("alert"), "a failed refetch said a failure over the log").toBeNull();
+  expect(screen.queryByRole("button", { name: CONTROL_LABELS.retry })).toBeNull();
+  expect(document.querySelectorAll("[data-event-seq]"), message).toHaveLength(entries);
+  // The log taken back to holding no page, as before its first read, which then fails.
+  await act(async () => {
+    await queryClient.resetQueries({ queryKey: ["events", KEY] });
+  });
+}
+
 /** A claim of the issue at sequence `seq`, made `ago` seconds ago. */
 function claimAgo(seq: number, ago: number): DispatchEvent {
   return { ...claim(seq), created_at: new Date(Date.now() - ago * 1000).toISOString(), id: seq };
@@ -920,16 +941,7 @@ test("a control of the history that goes away under the focus leaves the focus i
 
     down = true;
     const entries = document.querySelectorAll("[data-event-seq]").length;
-    await act(async () => {
-      await drawn.queryClient.refetchQueries({ queryKey: ["events", KEY] });
-    });
-    expect(screen.queryByRole("alert"), "a failed refetch said a failure over the log").toBeNull();
-    expect(screen.queryByRole("button", { name: CONTROL_LABELS.retry })).toBeNull();
-    expect(document.querySelectorAll("[data-event-seq]")).toHaveLength(entries);
-    // The log taken back to holding no page, as before its first read, which then fails.
-    await act(async () => {
-      await drawn.queryClient.resetQueries({ queryKey: ["events", KEY] });
-    });
+    await failLogRefetchThenFirstRead(drawn.queryClient, entries);
     (await screen.findByRole("button", { name: CONTROL_LABELS.retry })).focus();
     down = false;
     await userEvent.keyboard("{Enter}");
@@ -1051,16 +1063,7 @@ test("a history Retry pressed by keyboard keeps the focus while it reads and whe
       throw new Error("the log is down");
     };
     const entries = document.querySelectorAll("[data-event-seq]").length;
-    await act(async () => {
-      await drawn.queryClient.refetchQueries({ queryKey: ["events", KEY] });
-    });
-    expect(screen.queryByRole("alert"), "a failed refetch said a failure over the log").toBeNull();
-    expect(screen.queryByRole("button", { name: CONTROL_LABELS.retry })).toBeNull();
-    expect(document.querySelectorAll("[data-event-seq]")).toHaveLength(entries);
-    // The log taken back to holding no page, as before its first read, which then fails.
-    await act(async () => {
-      await drawn.queryClient.resetQueries({ queryKey: ["events", KEY] });
-    });
+    await failLogRefetchThenFirstRead(drawn.queryClient, entries);
     const log = await screen.findByRole("button", { name: CONTROL_LABELS.retry });
     const logAgain = Promise.withResolvers<DispatchEvent[]>();
     readLog = () => logAgain.promise;
@@ -1108,19 +1111,11 @@ test("the log's Retry reads busy while its read is out, and a read that fails ag
     readLog = async () => {
       throw new Error("the log is down");
     };
-    await act(async () => {
-      await drawn.queryClient.refetchQueries({ queryKey: ["events", KEY] });
-    });
-    expect(screen.queryByRole("alert"), "a failed refetch said a failure over the log").toBeNull();
-    expect(screen.queryByRole("button", { name: CONTROL_LABELS.retry })).toBeNull();
-    expect(
-      document.querySelectorAll("[data-event-seq]"),
+    await failLogRefetchThenFirstRead(
+      drawn.queryClient,
+      3,
       "a failed read of the log erased the history it held"
-    ).toHaveLength(3);
-    // The log taken back to holding no page, as before its first read, which then fails.
-    await act(async () => {
-      await drawn.queryClient.resetQueries({ queryKey: ["events", KEY] });
-    });
+    );
     const failed = await screen.findByRole("alert");
     const retry = screen.getByRole("button", { name: CONTROL_LABELS.retry });
     restoreFocus = emulateChromiumFocusFixup();
@@ -1326,16 +1321,7 @@ test("two presses of the log's Retry before a render send one read, and the focu
     readLog = async () => {
       throw new Error("the log is down");
     };
-    await act(async () => {
-      await drawn.queryClient.refetchQueries({ queryKey: ["events", KEY] });
-    });
-    expect(screen.queryByRole("alert"), "a failed refetch said a failure over the log").toBeNull();
-    expect(screen.queryByRole("button", { name: CONTROL_LABELS.retry })).toBeNull();
-    expect(document.querySelectorAll("[data-event-seq]")).toHaveLength(3);
-    // The log taken back to holding no page, as before its first read, which then fails.
-    await act(async () => {
-      await drawn.queryClient.resetQueries({ queryKey: ["events", KEY] });
-    });
+    await failLogRefetchThenFirstRead(drawn.queryClient, 3);
     const retry = await screen.findByRole("button", { name: CONTROL_LABELS.retry });
     // Every read sent from here is held out until the case lets it land.
     const again = Promise.withResolvers<DispatchEvent[]>();
@@ -1876,6 +1862,31 @@ function drawHandoff(): { queryClient: QueryClient; unmount: () => void } {
   return { queryClient, unmount };
 }
 
+/** Fails a refresh of the handoff over the body its opened fields draw (`Second pass`), and
+ *  asserts that the refresh said no failure and offered no Retry over the fields and left them
+ *  drawn; then takes the body back to held by none, as before its first read, and fails that read
+ *  too, which draws its line and its Retry. Where `refreshed` is given, it asserts as well that
+ *  the handoff has been read that many times once the refresh has failed. */
+async function failHandoffRefreshThenFirstRead(
+  queryClient: QueryClient,
+  getHandoff: Mock<typeof api.getHandoff>,
+  refreshed?: number
+): Promise<void> {
+  getHandoff.mockRejectedValueOnce(new Error("the handoff is down"));
+  await act(async () => {
+    await queryClient.invalidateQueries();
+  });
+  if (refreshed !== undefined) expect(getHandoff).toHaveBeenCalledTimes(refreshed);
+  expect(screen.queryByRole("alert"), "a failed refresh said a failure over the fields").toBeNull();
+  expect(screen.queryByRole("button", { name: CONTROL_LABELS.retry })).toBeNull();
+  expect(screen.queryByText("Second pass")).not.toBeNull();
+  // The body taken back to held by none, as before its first read, which then fails.
+  getHandoff.mockRejectedValueOnce(new Error("the handoff is down"));
+  await act(async () => {
+    await queryClient.resetQueries({ queryKey: ["handoff", "handoff-1"] });
+  });
+}
+
 // A handoff's opened fields hold its body whatever a later read's outcome, as the history holds
 // its log: an invalidation of every read after a write reads the body again, and a read that
 // fails then says no failure over the fields it held.
@@ -1993,22 +2004,7 @@ test("a handoff's busy Retry sends no read while the one it sent is out, and kee
     unmount = drawn.unmount;
     await userEvent.click(screen.getByRole("button", { name: CONTROL_LABELS.show_fields }));
     await screen.findByText("Second pass");
-    getHandoff.mockRejectedValueOnce(new Error("the handoff is down"));
-    await act(async () => {
-      await drawn.queryClient.invalidateQueries();
-    });
-    expect(getHandoff).toHaveBeenCalledTimes(2);
-    expect(
-      screen.queryByRole("alert"),
-      "a failed refresh said a failure over the fields"
-    ).toBeNull();
-    expect(screen.queryByRole("button", { name: CONTROL_LABELS.retry })).toBeNull();
-    expect(screen.queryByText("Second pass")).not.toBeNull();
-    // The body taken back to held by none, as before its first read, which then fails.
-    getHandoff.mockRejectedValueOnce(new Error("the handoff is down"));
-    await act(async () => {
-      await drawn.queryClient.resetQueries({ queryKey: ["handoff", "handoff-1"] });
-    });
+    await failHandoffRefreshThenFirstRead(drawn.queryClient, getHandoff, 2);
     expect(getHandoff).toHaveBeenCalledTimes(3);
     const retry = await screen.findByRole("button", { name: CONTROL_LABELS.retry });
     getHandoff.mockImplementation(() => again.promise);
@@ -2054,22 +2050,7 @@ test("two presses of a handoff's Retry before a render send one read", async () 
     const toggle = screen.getByRole("button", { name: CONTROL_LABELS.show_fields });
     await userEvent.click(toggle);
     await screen.findByText("Second pass");
-    getHandoff.mockRejectedValueOnce(new Error("the handoff is down"));
-    await act(async () => {
-      await drawn.queryClient.invalidateQueries();
-    });
-    expect(getHandoff).toHaveBeenCalledTimes(2);
-    expect(
-      screen.queryByRole("alert"),
-      "a failed refresh said a failure over the fields"
-    ).toBeNull();
-    expect(screen.queryByRole("button", { name: CONTROL_LABELS.retry })).toBeNull();
-    expect(screen.queryByText("Second pass")).not.toBeNull();
-    // The body taken back to held by none, as before its first read, which then fails.
-    getHandoff.mockRejectedValueOnce(new Error("the handoff is down"));
-    await act(async () => {
-      await drawn.queryClient.resetQueries({ queryKey: ["handoff", "handoff-1"] });
-    });
+    await failHandoffRefreshThenFirstRead(drawn.queryClient, getHandoff, 2);
     expect(getHandoff).toHaveBeenCalledTimes(3);
     const retry = await screen.findByRole("button", { name: CONTROL_LABELS.retry });
     getHandoff.mockImplementation(() => again.promise);
@@ -2234,21 +2215,7 @@ test("a refresh that fails over a handoff's body held draws no line, and its Ret
     const toggle = screen.getByRole("button", { name: CONTROL_LABELS.show_fields });
     await userEvent.click(toggle);
     await screen.findByText("Second pass");
-    getHandoff.mockRejectedValueOnce(new Error("the handoff is down"));
-    await act(async () => {
-      await drawn.queryClient.invalidateQueries();
-    });
-    expect(
-      screen.queryByRole("alert"),
-      "a failed refresh said a failure over the fields"
-    ).toBeNull();
-    expect(screen.queryByRole("button", { name: CONTROL_LABELS.retry })).toBeNull();
-    expect(screen.queryByText("Second pass")).not.toBeNull();
-    // The body taken back to held by none, as before its first read, which then fails.
-    getHandoff.mockRejectedValueOnce(new Error("the handoff is down"));
-    await act(async () => {
-      await drawn.queryClient.resetQueries({ queryKey: ["handoff", "handoff-1"] });
-    });
+    await failHandoffRefreshThenFirstRead(drawn.queryClient, getHandoff);
     const retry = await screen.findByRole("button", { name: CONTROL_LABELS.retry });
     getHandoff.mockImplementation(() => again.promise);
     retry.focus();

@@ -49,6 +49,7 @@ import { runDispatch } from "./dispatch-cli";
 import { documentEditor, indexedBlockAsk, needsYouCards } from "./editor";
 import { nextFrames } from "./frames";
 import {
+  historyScrollRange,
   historyScrollTop,
   historyViewport,
   scrollHistoryBy,
@@ -1453,24 +1454,13 @@ test("a control of Details that another session takes away under the focus leave
   const context = await reader(browser, "alice");
   try {
     const page = await context.newPage();
-    // Details' scrolling body, the nearest box around the history that scrolls its content: where
-    // the reader is in it, and the furthest it can be scrolled.
-    const detailsScroll = () =>
-      page.evaluate(() => {
-        let box = document.querySelector('[data-testid="issue-history"]')?.parentElement ?? null;
-        while (box !== null && !/(auto|scroll)/.test(getComputedStyle(box).overflowY)) {
-          box = box.parentElement;
-        }
-        if (box === null) throw new Error("no box of Details scrolls the history");
-        return { end: box.scrollHeight - box.clientHeight, top: box.scrollTop };
-      });
     await gotoIssue(page, `/issues/${issue.key}`);
     await openDetails(page);
     const thread = await seededHistoryEntry(page, historyItem(page, root.id), root.created_at);
     // The turn's time link holds the focus as a keyboard reader leaves it there, with no press.
     await thread.locator("[data-history-time]").focus();
     await nextFrames(page);
-    const before = await detailsScroll();
+    const before = await historyScrollRange(page);
     await createComment(
       issue.key,
       { body: "A person joins the agents' thread.", reply_to: root.id },
@@ -1492,7 +1482,7 @@ test("a control of Details that another session takes away under the focus leave
       focus.onBody,
       `another session's write took the focused control away, and the focus went to ${focus.name} rather than staying on the page's body`
     ).toBe(true);
-    const after = await detailsScroll();
+    const after = await historyScrollRange(page);
     expect(
       after.top,
       `Details scrolled from ${before.top} px to ${after.top} px as another session's write took the focused control away, though the write took its end only to ${after.end} px`

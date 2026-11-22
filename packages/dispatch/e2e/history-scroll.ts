@@ -25,6 +25,18 @@ const FIND_SCROLLPORT = `(() => {
   return null;
 })()`;
 
+/** Where the reader is in the history's box (`top`, its scroll offset), and the furthest that box
+ *  can be scrolled (`end`, its content's height less its own). It reads the box `FIND_SCROLLPORT`
+ *  finds and never the window, so it needs that box's content taller than the box: where the
+ *  content fits in it, no box is found, and it throws. */
+export function historyScrollRange(page: Page): Promise<{ end: number; top: number }> {
+  return page.evaluate(`(() => {
+    const port = ${FIND_SCROLLPORT};
+    if (port === null) throw new Error("no box of Details scrolls the history");
+    return { end: port.scrollHeight - port.clientHeight, top: port.scrollTop };
+  })()`) as Promise<{ end: number; top: number }>;
+}
+
 /** The history's own scroll offset, which is the window's where the page is that box. */
 export function historyScrollTop(page: Page): Promise<number> {
   return page.evaluate(`(() => {
