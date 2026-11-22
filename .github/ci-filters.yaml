@@ -103,6 +103,7 @@ daemon_envoy_deps: &daemon_envoy_deps
   - 'packages/envoy/natsversion/*'
   - 'packages/envoy/natsurl/*'
   - 'packages/envoy/fileerr/*'
+  - 'packages/envoy/pgdsn/*'
   - 'packages/envoy/testnatsimages/*'
   - 'packages/envoy/steprecord/*'
 dispatch_server: &dispatch_server
@@ -194,6 +195,7 @@ dispatch_server: &dispatch_server
   - 'packages/envoy/natsversion/*'
   - 'packages/envoy/natsurl/*'
   - 'packages/envoy/fileerr/*'
+  - 'packages/envoy/pgdsn/*'
 legion_command: &legion_command
   - 'packages/daemon/cmd/legion/*'
   - 'packages/daemon/internal/admit/*'
@@ -292,6 +294,7 @@ legion_command: &legion_command
   - 'packages/envoy/natsversion/*'
   - 'packages/envoy/natsurl/*'
   - 'packages/envoy/fileerr/*'
+  - 'packages/envoy/pgdsn/*'
   - 'packages/envoy/internal/oidc/*'
   - 'packages/envoy/steprecord/*'
 listener_command: &listener_command
@@ -441,6 +444,7 @@ plugin_pack:
   - 'packages/envoy/natsversion/*'
   - 'packages/envoy/natsurl/*'
   - 'packages/envoy/fileerr/*'
+  - 'packages/envoy/pgdsn/*'
   - 'packages/envoy/steprecord/*'
   - 'packages/envoy/testnatsimages/*'
   - 'packages/contracts/**'
@@ -1263,6 +1267,7 @@ dispatch_command_tests: &dispatch_command_tests
   - 'packages/envoy/natsversion/*'
   - 'packages/envoy/natsurl/*'
   - 'packages/envoy/fileerr/*'
+  - 'packages/envoy/pgdsn/*'
   - 'packages/envoy/internal/cipher/wire/*'
   - 'packages/envoy/infra/gcp/testdata/dispatch-pod.golden'
 test_fixtures:
@@ -1397,6 +1402,7 @@ pi_legion:
   - 'packages/envoy/natsversion/*'
   - 'packages/envoy/natsurl/*'
   - 'packages/envoy/fileerr/*'
+  - 'packages/envoy/pgdsn/*'
   - 'packages/envoy/steprecord/*'
   - *go_workspace
   - 'AGENTS.md'
@@ -1663,6 +1669,7 @@ envoy_infra_go:
   - '!packages/envoy/natsgrant/**/*_test.go'
   - '!packages/envoy/natsurl/**/*_test.go'
   - '!packages/envoy/natsversion/**/*_test.go'
+  - '!packages/envoy/pgdsn/**/*_test.go'
   - '!packages/envoy/roleholder/**/*_test.go'
   # END generated
 envoy_go:
@@ -1825,6 +1832,7 @@ dispatch_memory:
   - '!packages/envoy/natscred/**/*_test.go'
   - '!packages/envoy/natsurl/**/*_test.go'
   - '!packages/envoy/natsversion/**/*_test.go'
+  - '!packages/envoy/pgdsn/**/*_test.go'
   - '!packages/envoy/roleholder/**/*_test.go'
   # END generated
 dispatch_multiprocess:
@@ -1865,6 +1873,7 @@ dispatch_multiprocess:
   - '!packages/envoy/natscred/**/*_test.go'
   - '!packages/envoy/natsurl/**/*_test.go'
   - '!packages/envoy/natsversion/**/*_test.go'
+  - '!packages/envoy/pgdsn/**/*_test.go'
   - '!packages/envoy/roleholder/**/*_test.go'
   # END generated
 # why: .github/ci-notes/ci.md#dispatch_two_builds_go-the-two-build-jobs-go-step-alone-behind-a-gate-of
@@ -1959,6 +1968,7 @@ dispatch_two_builds_go:
   - '!packages/envoy/natscred/**/*_test.go'
   - '!packages/envoy/natsurl/**/*_test.go'
   - '!packages/envoy/natsversion/**/*_test.go'
+  - '!packages/envoy/pgdsn/**/*_test.go'
   - '!packages/envoy/roleholder/**/*_test.go'
   # END generated
 # why: .github/ci-notes/ci.md#dispatch_two_builds-the-two-build-job-its-go-steps-reads-named-again
@@ -2056,6 +2066,7 @@ dispatch_two_builds:
   - '!packages/envoy/natscred/**/*_test.go'
   - '!packages/envoy/natsurl/**/*_test.go'
   - '!packages/envoy/natsversion/**/*_test.go'
+  - '!packages/envoy/pgdsn/**/*_test.go'
   - '!packages/envoy/roleholder/**/*_test.go'
   # END generated
 # why: .github/ci-notes/ci.md#listener_server_change-the-server-change-soak-listener-server-change-go
@@ -2075,6 +2086,7 @@ listener_server_change:
   - 'packages/envoy/infra/gcp/clusteredhub_listener.go'
   - 'packages/envoy/cipheraddr/*'
   - 'packages/envoy/fileerr/*'
+  - 'packages/envoy/pgdsn/*'
   - 'packages/envoy/internal/cipher/proof/*'
   - 'packages/envoy/internal/cipherclient/**'
   - 'packages/envoy/internal/ciphertoken/ciphertokentest/*'
@@ -2156,6 +2168,7 @@ listener_server_change:
   - '!packages/envoy/natsgrant/**/*_test.go'
   - '!packages/envoy/natsurl/**/*_test.go'
   - '!packages/envoy/natsversion/**/*_test.go'
+  - '!packages/envoy/pgdsn/**/*_test.go'
   - '!packages/envoy/roleholder/**/*_test.go'
   # END generated
 broker_multiprocess:
@@ -2206,6 +2219,7 @@ broker_multiprocess:
   - 'packages/envoy/natsversion/*'
   - 'packages/envoy/natsurl/*'
   - 'packages/envoy/fileerr/*'
+  - 'packages/envoy/pgdsn/*'
   - 'packages/envoy/internal/cipher/wire/*'
   - 'packages/envoy/internal/cipherclient/**'
   - 'packages/envoy/internal/ciphertoken/*'
@@ -2251,6 +2265,7 @@ broker_multiprocess:
   - '!packages/envoy/natsgrant/**/*_test.go'
   - '!packages/envoy/natsurl/**/*_test.go'
   - '!packages/envoy/natsversion/**/*_test.go'
+  - '!packages/envoy/pgdsn/**/*_test.go'
   # END generated
 # why: .github/ci-notes/ci.md#airlock_lean-the-lean-model-of-the-airlock-and-the-go-code-it-covers
 airlock_lean:
@@ -2383,6 +2398,7 @@ envoy_smoke:
   - '!packages/envoy/natsgrant/**/*_test.go'
   - '!packages/envoy/natsurl/**/*_test.go'
   - '!packages/envoy/natsversion/**/*_test.go'
+  - '!packages/envoy/pgdsn/**/*_test.go'
   - '!packages/envoy/roleholder/**/*_test.go'
   - '!packages/envoy/steprecord/**/*_test.go'
   # END generated
@@ -2479,6 +2495,7 @@ worker_image:
   - 'packages/envoy/natsversion/**'
   - 'packages/envoy/natsurl/**'
   - 'packages/envoy/fileerr/**'
+  - 'packages/envoy/pgdsn/**'
   - 'packages/envoy/steprecord/**'
   - 'packages/envoy/testnatsimages/**'
   - '.omp-pin'
@@ -2781,6 +2798,7 @@ envoy_go_race:
   - '!packages/envoy/natsgrant/**/*_test.go'
   - '!packages/envoy/natsurl/**/*_test.go'
   - '!packages/envoy/natsversion/**/*_test.go'
+  - '!packages/envoy/pgdsn/**/*_test.go'
   - '!packages/envoy/roleholder/**/*_test.go'
   - '!packages/envoy/steprecord/**/*_test.go'
   # END generated
@@ -2793,6 +2811,7 @@ envoy_go_race_api:
   - 'packages/envoy/scripts/database-skips.sh'
   - 'packages/envoy/cipheraddr/*'
   - 'packages/envoy/fileerr/*'
+  - 'packages/envoy/pgdsn/*'
   - 'packages/envoy/going/*'
   - 'packages/envoy/going/goingtest/*'
   - 'packages/envoy/internal/cipher/proxyrules/*'
@@ -3020,6 +3039,7 @@ envoy_go_race_api:
   - '!packages/envoy/natscred/**/*_test.go'
   - '!packages/envoy/natsurl/**/*_test.go'
   - '!packages/envoy/natsversion/**/*_test.go'
+  - '!packages/envoy/pgdsn/**/*_test.go'
   - '!packages/envoy/roleholder/**/*_test.go'
   # END generated
 # why: .github/ci-notes/ci.md#envoy_go_claim_model-the-mention-senders-claim-models-own-job
@@ -3142,6 +3162,7 @@ envoy_go_claim_model:
   - '!packages/envoy/natsgrant/**/*_test.go'
   - '!packages/envoy/natsurl/**/*_test.go'
   - '!packages/envoy/natsversion/**/*_test.go'
+  - '!packages/envoy/pgdsn/**/*_test.go'
   - '!packages/envoy/roleholder/**/*_test.go'
   - '!packages/envoy/steprecord/**/*_test.go'
   # END generated
@@ -3194,6 +3215,7 @@ envoy_go_race_docs:
   - 'packages/envoy/internal/redact/*'
   - 'packages/envoy/internal/tlsalert/*'
   - 'packages/envoy/natsurl/*'
+  - 'packages/envoy/pgdsn/*'
   - 'packages/envoy/internal/pglisten/*'
   - 'packages/envoy/internal/pgmigrate/*'
   - 'packages/envoy/internal/stacktest/*'
@@ -3234,6 +3256,7 @@ envoy_go_race_docs:
   - '!packages/envoy/listenerwire/**/*_test.go'
   - '!packages/envoy/migrationid/**/*_test.go'
   - '!packages/envoy/natsurl/**/*_test.go'
+  - '!packages/envoy/pgdsn/**/*_test.go'
   # END generated
 # why: .github/ci-notes/ci.md#private_names_port-the-private-name-port-harness-in-a-job-of-its-own-it
 private_names_port:

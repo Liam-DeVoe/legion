@@ -36,13 +36,13 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/sjawhar/envoy/natsurl"
+	"github.com/sjawhar/envoy/pgdsn"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shim"
-	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/yamlerr"
 )
 
@@ -1212,9 +1212,10 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 	if strings.TrimSpace(cfg.PostgresDSN) == "" {
 		return Config{}, errors.New("postgres_dsn is required (or set LEGION_POSTGRES_DSN)")
 	}
-	// By the key alone (store.DSNRefusal): a password holding an unencoded "@" or "/" stands where
-	// pgx reads the host or the database, which every connect error prints.
-	if err := store.DSNRefusal(postgresKey, cfg.PostgresDSN); err != nil {
+	// By the key alone (pgdsn.Refusal): an unencoded "@" after the user part is where a password
+	// holding an "@" or a "/" leaves part of itself, read as the host, the database or the query,
+	// which every connect error prints.
+	if err := pgdsn.Refusal(postgresKey, cfg.PostgresDSN); err != nil {
 		return Config{}, err
 	}
 

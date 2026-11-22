@@ -150,6 +150,7 @@ on:
       - 'packages/envoy/natsversion/*'
       - 'packages/envoy/natsurl/*'
       - 'packages/envoy/fileerr/*'
+      - 'packages/envoy/pgdsn/*'
       - 'packages/envoy/steprecord/*'
       # ci-filters.yaml's *dispatch_server:
       - 'packages/envoy/cmd/dispatch/*'

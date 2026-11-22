@@ -34,12 +34,13 @@ func TestReadDSNNamesNoPath(t *testing.T) {
 	}
 }
 
-// A session database URL part of whose made-up password stands where Postgres reads the host or
-// the database (a password holding an unencoded "@", or a "/" after digits) is refused by the file
-// alone, before any connection names that part.
+// A session database URL whose made-up password leaves part of itself after pgx's user part (a
+// password holding an unencoded "@", one holding an "@" and then a "?", or a "/" after digits) is
+// refused by the file alone, before any connection names that part.
 func TestReadDSNRefusesAURLWhosePasswordSpills(t *testing.T) {
 	for name, tc := range map[string]struct{ dsn, spilled string }{
 		"a password holding an @":             {"postgres://sessions:madeuphead0123" + "@madeuptail0123@db.invalid/sessions", "madeuptail"},
+		"a password holding an @ and then ?":  {"postgres://sessions:madeuphead0123" + "@madeuptail0123?zqtwo@db.invalid/sessions", "madeuptail"},
 		"a password holding a / after digits": {"postgres://sessions:48213579/madeuptail0123" + "@db.invalid/sessions", "48213579"},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -48,7 +49,7 @@ func TestReadDSNRefusesAURLWhosePasswordSpills(t *testing.T) {
 				t.Fatal(err)
 			}
 			_, err := ReadDSN(file)
-			if err == nil || !strings.HasPrefix(err.Error(), "the database URL file cannot be read: part of its password stands where Postgres reads") {
+			if err == nil || !strings.HasPrefix(err.Error(), `the database URL file cannot be read: it holds an "@" after its user name and password`) {
 				t.Fatalf("ReadDSN = %v, want the file refused by its name", err)
 			}
 			for _, part := range []string{tc.spilled, "madeuphead", "madeuptail"} {

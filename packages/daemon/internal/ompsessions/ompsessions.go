@@ -29,8 +29,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/fileerr"
-
-	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/envoy/pgdsn"
 )
 
 // Oh My Pi's two session-storage variables (session-storage-config.ts): StorageVariable set to
@@ -78,9 +77,9 @@ const undefinedTable = "42P01"
 // (launcher.sessionWritten), which reads the file afresh before each attempt so a URL rewritten
 // under it is picked up. Its refusals name neither what the file holds nor its path, where a URL
 // pasted in place of the path would be: a file that cannot be read is named by why (fileerr.Err),
-// which still unwraps to the read's error, and a URL part of whose password stands where Postgres
-// reads the host, the port or the database (store.DSNRefusal) is named by the file alone, since
-// every connect error would print that part.
+// which still unwraps to the read's error, and a URL holding an unencoded "@" after its user part,
+// where a password holding an "@" or a "/" leaves part of itself (pgdsn.Refusal), is named by the
+// file alone, since every connect error would print that part.
 func ReadDSN(file string) (string, error) {
 	body, err := os.ReadFile(file)
 	if err != nil {
@@ -90,14 +89,14 @@ func ReadDSN(file string) (string, error) {
 	if dsn == "" {
 		return "", errors.New("the database URL file is empty")
 	}
-	if err := store.DSNRefusal("the database URL file", dsn); err != nil {
+	if err := pgdsn.Refusal(dsnFileSetting, dsn); err != nil {
 		return "", err
 	}
 	return dsn, nil
 }
 
 // Connect opens the session database whose URL dsnFile holds. A refusal names the database's
-// address, never the URL's password (store.ConnectError).
+// address, never the URL's password (pgdsn.ConnectError).
 func Connect(ctx context.Context, dsnFile string) (*pgx.Conn, error) {
 	dsn, err := ReadDSN(dsnFile)
 	if err != nil {
@@ -107,14 +106,18 @@ func Connect(ctx context.Context, dsnFile string) (*pgx.Conn, error) {
 }
 
 // ConnectURL opens the session database at dsn, a URL ReadDSN read. A refusal names the
-// database's address, never the URL's password (store.ConnectError).
+// database's address, never the URL's password (pgdsn.ConnectError).
 func ConnectURL(ctx context.Context, dsn string) (*pgx.Conn, error) {
 	conn, err := pgx.Connect(ctx, dsn)
 	if err != nil {
-		return nil, store.ConnectError(dsn, err)
+		return nil, pgdsn.ConnectError(dsnFileSetting, dsn, err)
 	}
 	return conn, nil
 }
+
+// dsnFileSetting is how a refusal names where the session database's URL comes from: the file
+// DSNFileVariable points at, by no path (ReadDSN).
+const dsnFileSetting = "the database URL file"
 
 // Written is when the session the table holds at path was last written: the row's mtime_ms, which
 // Oh My Pi sets on every write, an append included, and Import sets to the copied file's. ok is false

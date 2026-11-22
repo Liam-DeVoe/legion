@@ -451,10 +451,9 @@ func start(ctx context.Context, configPath string, stderr io.Writer) int {
 // controller start`, `legion stop`'s loader refusal, and the commands podLogs names write their
 // refusals through here or through the same rule, so each passes the rule the daemon's log handler
 // applies to every record: an error can wrap a *url.Error, which keeps the URL's query and its user
-// name (Go's client masks only a password), pgx's ParseConfigError of a postgres_dsn it cannot
-// parse quotes the DSN with its user name and its query (pgx masks only the password), and the
-// loader names an unknown key as it is written. The operator's own commands (state, status) print
-// theirs on the operator's terminal without it.
+// name (Go's client masks only a password), and the loader names an unknown key as it is written.
+// A postgres_dsn pgx cannot parse is named by its key with none of pgx's text (pgdsn.ConnectError).
+// The operator's own commands (state, status) print theirs on the operator's terminal without it.
 func printRefusal(stderr io.Writer, prefix string, err error) {
 	fmt.Fprintf(stderr, "%s: %s\n", prefix, redact.URLCredentials(err.Error()))
 }
