@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/pgdsn"
@@ -54,7 +55,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if flags.NArg() > 0 {
-		fmt.Fprintf(stderr, "dispatch-seed: unexpected argument %q; the command takes flags alone\n", flags.Arg(0))
+		// Never quoted: a DSN given without its flag is the likeliest argument, password and all.
+		fmt.Fprintf(stderr, "dispatch-seed: %d unexpected argument(s), not printed, since one can be a database URL and its password; the command takes flags alone: give the database as --database-url\n", flags.NArg())
 		return 2
 	}
 	if strings.TrimSpace(*databaseURL) == "" {
@@ -62,13 +64,13 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	// Before the store reads it: the store's refusal and its parse error name DATABASE_URL, the
-	// server's setting, so a value given here is refused, or named as one pgx cannot parse, by the
-	// flag that holds it.
+	// server's setting, so a value given here is refused, or named as one the pool cannot parse
+	// (pgx's own settings and the pool_* ones the store's pool reads), by the flag that holds it.
 	if err := pgdsn.Refusal("--database-url", *databaseURL); err != nil {
 		fmt.Fprintf(stderr, "dispatch-seed: %v\n", err)
 		return 2
 	}
-	if _, err := pgx.ParseConfig(*databaseURL); err != nil {
+	if _, err := pgxpool.ParseConfig(*databaseURL); err != nil {
 		fmt.Fprintf(stderr, "dispatch-seed: %v\n", pgdsn.ConnectError("--database-url", *databaseURL, err))
 		return 2
 	}

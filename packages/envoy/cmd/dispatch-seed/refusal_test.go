@@ -27,19 +27,47 @@ func TestRunRefusesASpillingDatabaseURLByTheFlagsName(t *testing.T) {
 	}
 }
 
-// A --database-url pgx cannot parse (a keyword DSN with spaces around password's "=") is named by
-// the flag, the one the operator set, and not by DATABASE_URL, which the store names, and with
-// none of pgx's text, which quotes the password.
+// A --database-url the store's pool cannot parse is named by the flag, the one the operator set,
+// and not by DATABASE_URL, which the store names, and with none of pgx's text, which quotes the
+// password: one pgx itself cannot parse (a keyword DSN with spaces around password's "="), and one
+// whose pool_min_conns or pool_max_conns the pool refuses, which pgx alone reads as a runtime
+// parameter.
 func TestRunNamesADatabaseURLPgxCannotParseByTheFlag(t *testing.T) {
+	at := "@"
+	for name, dsn := range map[string]string{
+		"spaces around password's =": "host=db.invalid user=seed password = zqsecret0123 dbname=dispatch sslmode=requir",
+		"a pool_min_conns of -x":     "host=127.0.0.1 port=1 user=seed password=zqsecret0123 pool_min_conns=-x",
+		"a pool_max_conns of abc":    "postgres://seed:zqsecret0123" + at + "127.0.0.1:1/dispatch?pool_max_conns=abc",
+	} {
+		t.Run(name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			code := run(t.Context(), []string{"--database-url", dsn}, &stdout, &stderr)
+			if code != 2 {
+				t.Fatalf("run = %d, want 2; stderr %q", code, stderr.String())
+			}
+			if want := "dispatch-seed: connect to Postgres: --database-url cannot be parsed as a Postgres DSN"; !strings.HasPrefix(stderr.String(), want) {
+				t.Errorf("stderr = %q, want %q", stderr.String(), want)
+			}
+			if strings.Contains(stderr.String(), "DATABASE_URL") || strings.Contains(stderr.String(), "zqsecret") {
+				t.Errorf("stderr = %q, which names DATABASE_URL or holds part of the password", stderr.String())
+			}
+		})
+	}
+}
+
+// A database URL given as an argument, not as --database-url, is refused as an unexpected argument
+// without being quoted, since it holds the password, and the refusal points to --database-url.
+func TestRunRefusesAnArgumentWithoutQuotingIt(t *testing.T) {
+	at := "@"
 	var stdout, stderr bytes.Buffer
-	code := run(t.Context(), []string{"--database-url", "host=db.invalid user=seed password = zqsecret0123 dbname=dispatch sslmode=requir"}, &stdout, &stderr)
+	code := run(t.Context(), []string{"postgres://dispatch:zqsecret0123" + at + "db.example/dispatch"}, &stdout, &stderr)
 	if code != 2 {
 		t.Fatalf("run = %d, want 2; stderr %q", code, stderr.String())
 	}
-	if want := "dispatch-seed: connect to Postgres: --database-url cannot be parsed as a Postgres DSN"; !strings.HasPrefix(stderr.String(), want) {
-		t.Errorf("stderr = %q, want %q", stderr.String(), want)
+	if want := "dispatch-seed: 1 unexpected argument(s), not printed"; !strings.HasPrefix(stderr.String(), want) || !strings.Contains(stderr.String(), "--database-url") {
+		t.Errorf("stderr = %q, want %q and a pointer to --database-url", stderr.String(), want)
 	}
-	if strings.Contains(stderr.String(), "DATABASE_URL") || strings.Contains(stderr.String(), "zqsecret") {
-		t.Errorf("stderr = %q, which names DATABASE_URL or holds part of the password", stderr.String())
+	if strings.Contains(stderr.String(), "zqsecret") || strings.Contains(stderr.String(), "db.example") {
+		t.Errorf("stderr = %q, which quotes the argument", stderr.String())
 	}
 }
