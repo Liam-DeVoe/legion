@@ -45,7 +45,7 @@ type Service struct {
 	// serves, sorted, each once. Non-empty is edge mode, in which the listener runs under the edge
 	// listener's NATS grant for these projects (natsgrant.Edge; cmd/listener's edge_nats.go) and
 	// /v1 admits only a broker token whose projects are all among these (cmd/listener's
-	// EdgeAdmits). Empty, the variable unset or blank, is every other listener, which reads
+	// EdgeAdmits). Empty, the variable unset or empty, is every other listener, which reads
 	// nothing of it.
 	EdgeProjects []string
 }
