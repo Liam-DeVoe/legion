@@ -13,7 +13,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/store"
-	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -127,14 +126,9 @@ func TestIdleReleaseReleasesASessionWithNothingRunning(t *testing.T) {
 // awaitStartTask waits until the issue's role has been given its start task, the phase task the
 // daemon's boot sends the implementer of an issue at `implementing`. The role process takes its
 // turn and reports as soon as it has recorded the task (idleRigRoleProcess.prompted).
-//
-// This wait and the three below wait at the rig's pace (idleRigEventually) and set no span of
-// their own: each gives up 30 s before the test binary's deadline (testwait.Remaining), so a
-// record the daemon writes late on a loaded machine is waited for, and one it never writes fails
-// by name.
 func (r *idleWakeRig) awaitStartTask(issue idleRigIssue) {
 	r.t.Helper()
-	idleRigEventually(r.t, testwait.Remaining(r.t), "the start task of "+issue.key+"'s role", func() bool {
+	idleRigEventually(r.t, "the start task of "+issue.key+"'s role", func() bool {
 		return len(r.agents.prompts(issue.key, string(issue.role))) > 0
 	})
 }
@@ -150,7 +144,7 @@ func (r *idleWakeRig) awaitHeld(issue idleRigIssue, passes int64) api.HoldRecord
 	token := r.token(issue)
 	var held api.HoldRecord
 	var quieted time.Time
-	idleRigEventually(r.t, testwait.Remaining(r.t), "the pod of "+issue.key+" held for background work over passes of the idle tick", func() bool {
+	idleRigEventually(r.t, "the pod of "+issue.key+" held for background work over passes of the idle tick", func() bool {
 		if time.Since(quieted) > 2*time.Second {
 			quieted = time.Now()
 			r.quiet()
@@ -177,7 +171,7 @@ func (r *idleWakeRig) awaitHeld(issue idleRigIssue, passes int64) api.HoldRecord
 // wait on that report.
 func (r *idleWakeRig) awaitReported(token claim.Token, kinds string) {
 	r.t.Helper()
-	idleRigEventually(r.t, testwait.Remaining(r.t), fmt.Sprintf("the report of %s naming background work %q", token, kinds), func() bool {
+	idleRigEventually(r.t, fmt.Sprintf("the report of %s naming background work %q", token, kinds), func() bool {
 		var background bool
 		var held string
 		err := r.pool.QueryRow(context.Background(),
@@ -211,7 +205,7 @@ func (r *idleWakeRig) awaitReleaseRecords(issue idleRigIssue) store.PodReleaseRe
 	}
 	defer st.Close()
 	var records store.PodReleaseRecords
-	idleRigEventually(r.t, testwait.Remaining(r.t), "the record of the release of "+issue.key+"'s pod", func() bool {
+	idleRigEventually(r.t, "the record of the release of "+issue.key+"'s pod", func() bool {
 		read, err := st.PodReleaseRecords(ctx, r.project, time.Time{})
 		if err != nil {
 			r.t.Fatalf("read the release records: %v", err)
