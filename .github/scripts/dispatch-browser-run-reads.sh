@@ -186,7 +186,7 @@ case "$mode" in
 
     pages=$(mktemp)
     # One stderr file and one exit status per attempt, and a count of the attempts the ladder
-    # made. gh_read runs its three attempts itself and sends every attempt's stderr straight
+    # made. gh_read runs its attempts itself and sends every attempt's stderr straight
     # to this script's, with nothing between them, so one capture file cannot be taken apart
     # again afterwards: this wrapper is what keeps the attempts apart. It counts the attempt,
     # gives gh that attempt's own stderr file, writes that attempt's exit status beside it and
@@ -414,7 +414,10 @@ case "$mode" in
     # before that step existed, plus 1 s allotted to the step; pull request #3513's own merge jobs
     # went past it. That job's timeout-minutes is 4, so a merge job above the whole figure and
     # not cancelled is one whose seconds this figure then understates, and this budget is the
-    # looser for it by exactly the difference.
+    # looser for it by exactly the difference. The same holds for a wait out of a GitHub rate
+    # limit: since main's #4893 a read of the jobs API waits for the limit's reset within the
+    # job's 4 minutes (gh-read.sh's gh_wait_reset, with JOB_TIMEOUT_MINUTES on the merge job),
+    # and none of the runs the 44 s was read from waited, so that wait is outside the figure.
     # Subtracting the maximum rather than the median is what keeps this reading stricter than
     # the ceiling itself and never looser: a lane that passes here at 3,156 s and then spends a
     # worst-case 44 s in this job lands on 3,200 exactly.
