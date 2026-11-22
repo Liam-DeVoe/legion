@@ -96,17 +96,23 @@ export function IssueQueryTable({
 
   // The read is the query's projects and labels and the filters' picks: a value the server
   // cannot be asked for (a priority outside 0 to 3) is left to the table's own filter, which
-  // matches no row by it.
-  const statuses = picksOf(filters, "status").sort();
-  const priorities = picksOf(filters, "priority")
-    .filter((value) => PRIORITY_VALUES.includes(value))
-    .map((value) => (value === "" ? "none" : `P${value}`))
-    .sort();
-  const statusKey = statuses.join(" ");
-  const priorityKey = priorities.join(" ");
-  // biome-ignore lint/correctness/useExhaustiveDependencies: the two keys stand for the arrays they join.
+  // matches no row by it. Each pick is held as its JSON, so the memo below changes only when a
+  // pick does, whatever an address wrote into it.
+  const statusKey = JSON.stringify(picksOf(filters, "status").sort());
+  const priorityKey = JSON.stringify(
+    picksOf(filters, "priority")
+      .filter((value) => PRIORITY_VALUES.includes(value))
+      .map((value) => (value === "" ? "none" : `P${value}`))
+      .sort()
+  );
   const listing: QueryListing = useMemo(
-    () => ({ query: { ...query, priorities, statuses } }),
+    () => ({
+      query: {
+        ...query,
+        priorities: JSON.parse(priorityKey) as string[],
+        statuses: JSON.parse(statusKey) as string[],
+      },
+    }),
     [query, statusKey, priorityKey]
   );
   const { allItems, issues, listingError } = useIssueTableItems(listing, {
@@ -190,22 +196,20 @@ export function IssueQueryTable({
     [allItems, openFilter, filters]
   );
   // The statuses and priorities the read left out stand in their filters with no count.
-  const unloaded = useMemo(
-    () =>
-      new Map([
-        ["status", statusKey === "" ? [] : issueStatuses.filter((s) => !statuses.includes(s))],
-        [
-          "priority",
-          priorityKey === ""
-            ? []
-            : PRIORITY_VALUES.filter(
-                (value) => !priorities.includes(value === "" ? "none" : `P${value}`)
-              ),
-        ],
-      ]),
-    // biome-ignore lint/correctness/useExhaustiveDependencies: the two keys stand for the arrays they join.
-    [statusKey, priorityKey]
-  );
+  const unloaded = useMemo(() => {
+    const { priorities, statuses } = listing.query;
+    return new Map([
+      ["status", statuses.length === 0 ? [] : issueStatuses.filter((s) => !statuses.includes(s))],
+      [
+        "priority",
+        priorities.length === 0
+          ? []
+          : PRIORITY_VALUES.filter(
+              (value) => !priorities.includes(value === "" ? "none" : `P${value}`)
+            ),
+      ],
+    ]);
+  }, [listing]);
 
   const fields = [
     ["Project", query.projects],
