@@ -76,6 +76,14 @@ var connectionCloses = []error{
 // nats.ErrConnectionClosed, which no retry answers, and not ErrConnectionLost, which its caller
 // would retry for ever; a handle opened on the client's connection reads the bucket.
 //
+// The row ends its hold with Release, which leaves the client's new connection as it is, and not
+// with Drop, which closes every connection the hold relays, the new one too when the client has
+// dialled it already. That second loss is real: a read on the old handle made while the client is
+// still reconnecting, or after it has reconnected, is lost to it as much as the first read was, so
+// the client answers ErrConnectionLost (closedUnder), correctly, and the row would be measuring its
+// own drop, which the scheduler times, rather than the old handle's answer on a connection that has
+// not moved since.
+//
 // The control is this row with closedUnder left out of bindRequest's finish: the read answers
 // nats.ErrConnectionClosed, which Reconnected does not match.
 func TestAReadAnsweredForItsConnectionsCloseBeforeTheLifeEndsIsLost(t *testing.T) {
@@ -104,7 +112,7 @@ func TestAReadAnsweredForItsConnectionsCloseBeforeTheLifeEndsIsLost(t *testing.T
 	if !errors.Is(err, ErrConnectionLost) {
 		t.Fatalf("the read a running client's connection close cut off answered %v, before its life ended, want ErrConnectionLost", err)
 	}
-	relay.Drop()
+	relay.Release()
 	ctx, cancel := context.WithTimeout(context.Background(), ownWait(t))
 	defer cancel()
 	if !Reconnected(ctx, err) {

@@ -23,8 +23,8 @@ import (
 // disconnected, however long the box takes. It can hold a flush's PONG the same way (HoldFlush), so
 // a flush waits on a PONG that never comes, which is what it sees of a flush whose PONG the drop
 // lost. A new connection's replies and flushes are not held unless Hold or HoldFlush names them
-// again. Every other protocol line is relayed as it is, so the connection is a real one on a real
-// server.
+// again; Release ends every hold and leaves the connections as they are. Every other protocol line
+// is relayed as it is, so the connection is a real one on a real server.
 type ReplyHold struct {
 	listener net.Listener
 	target   string
@@ -106,8 +106,8 @@ func StartReplyHold(t testing.TB, target string) *ReplyHold {
 func (h *ReplyHold) URL() string { return h.url }
 
 // Hold holds the reply to every request the client sends from now on whose subject starts with
-// prefix, until Drop, and reports when it has withheld the first of them and when the first PONG
-// after it reached the client (HeldReplies).
+// prefix, until Release or Drop, and reports when it has withheld the first of them and when the
+// first PONG after it reached the client (HeldReplies).
 func (h *ReplyHold) Hold(prefix string) *HeldReplies {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -127,6 +127,15 @@ func (h *ReplyHold) HoldFlush(prefix string) *HeldFlush {
 	h.flushPrefix = prefix
 	h.flush = &HeldFlush{withheld: make(chan struct{})}
 	return h.flush
+}
+
+// Release holds nothing more, and leaves every connection the hold is relaying as it is: a client
+// whose held request its own connection's close already answered goes on through the hold on the
+// connection it has made since, which a Drop would end as well.
+func (h *ReplyHold) Release() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.releaseLocked()
 }
 
 // Drop holds nothing more and closes every connection the hold is relaying: each client through it
@@ -155,11 +164,16 @@ func (h *ReplyHold) Restore() {
 	h.cut = false
 }
 
+// releaseLocked holds nothing more; the caller holds h.mu.
+func (h *ReplyHold) releaseLocked() {
+	h.prefix, h.replies, h.held = "", nil, nil
+	h.flushPrefix, h.flush = "", nil
+}
+
 // dropLocked holds nothing more and closes every connection the hold is relaying; the caller holds
 // h.mu.
 func (h *ReplyHold) dropLocked() {
-	h.prefix, h.replies, h.held = "", nil, nil
-	h.flushPrefix, h.flush = "", nil
+	h.releaseLocked()
 	for conn := range h.conns {
 		_ = conn.Close()
 		delete(h.conns, conn)
