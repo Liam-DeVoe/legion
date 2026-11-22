@@ -35,6 +35,12 @@ import (
 // ends, so a margin those steps outlast loses the text that names the wait.
 const waitMargin = 30 * time.Second
 
+// cleanupShare is how long a cleanup that runs after a wait gave up may wait for what it has just
+// ended (a call it released, a helper it interrupted) before it kills or reports it: a third of
+// waitMargin, so two such steps and the test's report still fit before go test's alarm. It bounds
+// no verdict of a row that has not failed already.
+const cleanupShare = waitMargin / 3
+
 // untilGiveUp is how long is left before the moment every wait for a fact in these tests gives up:
 // the test binary's deadline less waitMargin, the clamp testwait.Bounded gives. The day passed to
 // it stands for no bound of the wait's own: Bounded answers what is left before that moment when

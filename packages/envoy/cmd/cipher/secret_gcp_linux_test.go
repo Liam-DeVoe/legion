@@ -86,7 +86,9 @@ type gcloudChild struct {
 // useGcloudWhoseChildHoldsItsOutput is a stub gcloud that never answers, whatever it is asked: it
 // starts a child that holds its standard output open, as gcloud's Python does under a shell
 // script that does not exec it, and waits on it. The child writes its own pid to a file before it
-// sleeps, so it names itself even where the stub is killed first. A child still running when t
+// waits, so it names itself even where the stub is killed first. It waits for as long as the
+// process that wrote the stub runs, which is no bound of the test's: it only keeps a child the
+// kill missed from outliving a test binary that was killed itself. A child still running when t
 // ends is killed (cleanUp), and t fails where /proc cannot say whether it still runs.
 func useGcloudWhoseChildHoldsItsOutput(t *testing.T) (gcloudCommand, gcloudChild) {
 	t.Helper()
@@ -102,7 +104,7 @@ func gcloudStubIn(t *testing.T, dir, last string) (gcloudCommand, gcloudChild) {
 	child := gcloudChild{pidFile: filepath.Join(dir, "child.pid")}
 	t.Setenv(gcloudChildFile, child.pidFile)
 	script := "#!/bin/sh\n" +
-		`/bin/sh -c 'echo $$ >"$` + gcloudChildFile + `"; exec sleep 3600' &` + "\n" +
+		`/bin/sh -c 'echo $$ >"$` + gcloudChildFile + `"; while kill -0 ` + strconv.Itoa(os.Getpid()) + ` 2>/dev/null; do sleep 1; done' &` + "\n" +
 		last + "\n"
 	gcloud := gcloudCommand{path: filepath.Join(dir, "gcloud")}
 	if err := os.WriteFile(gcloud.path, []byte(script), 0o755); err != nil {
@@ -230,8 +232,12 @@ func (c gcloudChild) callEnds(t *testing.T, what string, after time.Duration, re
 		}
 		release()
 		c.cleanUp(t)
-		if _, ok := received(t, finished); !ok {
-			t.Errorf("%s was still waiting on gcloud after its test ended, %s before the test binary's deadline", what, waitMargin)
+		// Past the give-up moment received would wait no time at all, so the released call is
+		// given a share of the margin kept for this cleanup to end, and kill its stub, instead.
+		select {
+		case <-finished:
+		case <-time.After(cleanupShare):
+			t.Errorf("%s was still waiting on gcloud %s after its release, in its test's cleanup", what, cleanupShare)
 		}
 	})
 	giveUp := time.NewTimer(untilGiveUp(t))
@@ -394,7 +400,7 @@ type signInHelper struct {
 // child's pid file, with env added to its environment. It runs under `env --default-signal`, so
 // it does not inherit a SIGINT this test process ignores (as a job run in the background of a
 // script does), at which agent-secrets rightly goes on running. A helper still running when t
-// ends is killed.
+// ends is stopped (stop).
 func startSignInHelper(t *testing.T, child gcloudChild, env ...string) *signInHelper {
 	t.Helper()
 	cmd := exec.Command("env", "--default-signal=INT", os.Args[0], "-test.run=^TestGcloudSignInSignalHelper$", "-test.count=1")
@@ -408,10 +414,7 @@ func startSignInHelper(t *testing.T, child gcloudChild, env ...string) *signInHe
 		_ = cmd.Wait()
 		close(h.waited)
 	}()
-	t.Cleanup(func() {
-		_ = cmd.Process.Kill()
-		h.ended(10 * time.Second)
-	})
+	t.Cleanup(h.stop)
 	return h
 }
 
@@ -422,6 +425,23 @@ func (h *signInHelper) ended(within time.Duration) bool {
 		return true
 	case <-time.After(within):
 		return false
+	}
+}
+
+// stop ends a helper still running as an interrupt ends it, so that on its way out it kills
+// gcloud's group (exitBySignal, killRunningGcloud), which a SIGKILL would leave running in a group
+// of its own, its call held for up to an hour; it is killed only where it has not ended within
+// cleanupShare.
+func (h *signInHelper) stop() {
+	select {
+	case <-h.waited:
+		return
+	default:
+	}
+	_ = h.cmd.Process.Signal(syscall.SIGINT)
+	if !h.ended(cleanupShare) {
+		_ = h.cmd.Process.Kill()
+		<-h.waited
 	}
 }
 
@@ -456,8 +476,7 @@ func TestGcloudSignInEndedByASignalKillsGcloudsChild(t *testing.T) {
 		return err == nil && running
 	})
 	if !seen {
-		_ = helper.cmd.Process.Kill()
-		helper.ended(10 * time.Second)
+		helper.stop()
 		t.Fatalf("the stub gcloud's child was never seen running, %s before the test binary's deadline; the helper said %q", waitMargin, helper.out.String())
 	}
 	meter := startStallMeter(t)
@@ -466,8 +485,7 @@ func TestGcloudSignInEndedByASignalKillsGcloudsChild(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, ok := received(t, helper.waited); !ok {
-		_ = helper.cmd.Process.Kill()
-		helper.ended(10 * time.Second)
+		helper.stop()
 		t.Fatalf("agent-secrets was still running after its interrupt, %s before the test binary's deadline; it said %q", waitMargin, helper.out.String())
 	}
 	requireCommandOnTime(t, meter, "agent-secrets after its interrupt, which ends it at once", sent, 0)
