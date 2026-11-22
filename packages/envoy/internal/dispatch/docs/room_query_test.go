@@ -284,6 +284,64 @@ func TestAHoldsQueryBehindAShareWaitingForItsMergesGrantIsAnsweredWithinItsWait(
 	t.Logf("task A's holds query was answered %v after it was sent, while task B's share waited for its merge's grant", waited.Round(time.Millisecond))
 }
 
+// A share or a flush takes its snapshot of the room's updates on the query lane only where the
+// room replica's lock is free at once, and otherwise on a goroutine of its own, so the lane goes on
+// to the queries behind it: here the test holds task B's room replica's lock, as a long walk or
+// render of a large document holds it, so task B's snapshot for task A's share waits for it, and
+// task A's holds query for another document, sent while it waits, is answered within task A's
+// wait all the same. Before, the snapshot waited for the lock on the lane itself, and every query
+// behind it, for this room or any other, waited with it past its asker's window.
+func TestAHoldsQueryBehindAShareWhoseRoomsReplicaLockIsHeldIsAnsweredWithinItsWait(t *testing.T) {
+	const window = 5 * time.Second
+	pair := newSeededProcessPair(t, lostEditDocument)
+	pair.taskA.roomQueries.wait, pair.taskB.roomQueries.wait = window, window
+	pair.runRoomSync(t)
+	if err := pair.taskB.warmLiveDocument(context.Background(), pair.artifactID); err != nil {
+		t.Fatalf("load task B's room: %v", err)
+	}
+	live := pair.taskB.srv.GetDoc(pair.artifactID)
+	if live == nil {
+		t.Fatal("task B's room is not resident")
+	}
+	replica := pair.taskB.replicaOf(live)
+	if replica == nil {
+		t.Fatal("task B's room lists no replica, so no snapshot of it waits for a lock")
+	}
+	other := createIssueDocument(t, pair.database, 2, "Another document.")
+	replica.mu.Lock()
+	held := true
+	release := func() {
+		if held {
+			held = false
+			replica.mu.Unlock()
+		}
+	}
+	t.Cleanup(release)
+	shared := make(chan error, 1)
+	go func() {
+		_, _, err := pair.taskA.roomQueries.ask(context.Background(), pair.database.Pool, pair.artifactID, roomQueryShare)
+		shared <- err
+	}()
+	waitFor(t, window, "task B's snapshot of its room for task A's share to wait for the room replica's lock", func() bool {
+		return replica.waiting.Load() > 0
+	})
+	started := time.Now()
+	answers, asked, err := pair.taskA.roomQueries.ask(context.Background(), pair.database.Pool, other, roomQueryHolds)
+	waited := time.Since(started)
+	if err != nil || !asked {
+		t.Fatalf("task A's holds query = asked %t, %v; want task B asked", asked, err)
+	}
+	if len(answers) != 1 || answers[0].process != pair.taskB.ProcessID() || answers[0].holds {
+		t.Fatalf("task A's holds query for another document, sent while task B's snapshot for a share waited for its room replica's lock, was answered %+v within its %s wait (%v): want task B's answer that it holds no room of that document, which task B's query lane held behind the share",
+			answers, window, waited.Round(time.Millisecond))
+	}
+	release()
+	if err := <-shared; err != nil {
+		t.Fatalf("task A's share: %v", err)
+	}
+	t.Logf("task A's holds query was answered %v after it was sent, while task B's snapshot for a share waited for its room replica's lock", waited.Round(time.Millisecond))
+}
+
 // A member that never answers - an older build, or a process that has just died - costs a query
 // the wait and no more, and a WARN naming it. The silent member here holds the listener
 // connection's name, which is all membership reads, and listens to nothing.

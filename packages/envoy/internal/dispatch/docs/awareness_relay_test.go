@@ -16,6 +16,7 @@ import (
 	"github.com/reearth/ygo/encoding"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
 // Awareness - readers' cursors and presence - crosses processes through the awareness relay
@@ -294,6 +295,81 @@ func TestRelayedAwarenessNeitherLoadsNorKeepsARoomWithNoReaderOfItsOwn(t *testin
 	waitForAwarenessState(t, handledB, pair.artifactID, "alice's next state reaching task B, which holds a room with no reader")
 	if roomHoldsClient(pair.taskB, pair.artifactID, aliceClient) {
 		t.Fatal("alice's awareness reached task B's room, which no reader of task B is in: relayed heartbeats would keep it resident")
+	}
+}
+
+// daveClient is the awareness client of a reader of a second document in the test below.
+const daveClient uint64 = 4004
+
+// Another process's awareness for a room still loading here is not relayed into it: ygo has not
+// published the room, and an Inject into it would wait on its load on the awareness lane, which
+// serves every room's relayed awareness (holdsRoomForReaders). Here task B loads a second document
+// for a reader opening it cold, and the load waits for the pod's load concurrency, which the test
+// holds whole; dave, reading that document on task A, moves, and then alice moves in the first
+// document, and bob sees her move on task B within relayWait. Before, task B's awareness lane
+// injected dave's move into the loading room and waited on its load, whose wait for the pool has
+// no deadline, and alice's move waited behind it for as long as the load did.
+func TestAColdOpenWhoseLoadWaitsDoesNotStallAnotherRoomsRelayedAwareness(t *testing.T) {
+	const relayWait = 10 * time.Second
+	pair := newProcessPair(t)
+	other := createIssueDocument(t, pair.database, 2, "Other.")
+	seedServiceText(t, pair.taskA, other, "Other document.\n")
+	pool, waits := poolWaits(t)
+	runAwareness(t, pair.taskA)
+	handledB := runAwareness(t, pair.taskB)
+	alice := pair.openReader(t, pair.serverA, "alice")
+	bob := pair.openReader(t, pair.serverB, "bob")
+	dave := connectPeer(t, pair.serverA.URL, other, "dave")
+	if err := dave.WaitForText(peerMarkdown, storedMarkdown(t, pair.database, other), roomWait(t)); err != nil {
+		t.Fatalf("dave's reader never received the other document: %v", err)
+	}
+	setAwareness(t, alice, aliceClient, cursorOf("alice", 1))
+	requireAwareness(t, bob, holdsAwareness(aliceClient, cursorOf("alice", 1)), "alice's cursor on task A reaching bob on task B")
+
+	// Task B's load of the other document, for a reader opening it cold, waits for the full pool,
+	// its room a placeholder ygo has not published.
+	filler := fillPoolBut(t, pool, 0)
+	for len(waits) > 0 {
+		<-waits
+	}
+	pair.taskB.addConnection(other, 9001, model.Actor{Kind: "user", ID: "carol"})
+	loaded := make(chan error, 1)
+	go func() { loaded <- pair.taskB.warmLiveDocument(context.Background(), other) }()
+	select {
+	case <-waits:
+	case err := <-loaded:
+		t.Fatalf("task B's load of the other document finished (%v) while the pool was full, want it waiting for its grant", err)
+	case <-time.After(relayWait):
+		t.Fatalf("task B's load of the other document never came to wait for the pool within %s", relayWait)
+	}
+	if pair.taskB.srv.GetDoc(other) != nil {
+		t.Fatal("ygo published task B's room of the other document while its load waits, so nothing here is tested")
+	}
+	setAwareness(t, dave, daveClient, cursorOf("dave", 1))
+	waitFor(t, relayWait, "task B's awareness lane to take dave's state, dropping it or waiting on the load", func() bool {
+		for {
+			select {
+			case message := <-handledB:
+				if message.Room == other && !message.Query {
+					return true
+				}
+			default:
+				return roomLoadWaiters() > 0
+			}
+		}
+	})
+	setAwareness(t, alice, aliceClient, cursorOf("alice", 2))
+	if err := bob.WaitForAwareness(relayWait, holdsAwareness(aliceClient, cursorOf("alice", 2))); err != nil {
+		t.Fatalf("alice's move on task A did not reach bob on task B within %s while task B loaded another document a reader opened cold: %v", relayWait, err)
+	}
+	filler.release()
+	select {
+	case err := <-loaded:
+		if err != nil {
+			t.Fatalf("task B's load of the other document, once the pool had room: %v", err)
+		}
+	case <-time.After(roomWait(t)):
+		t.Fatal("task B's load of the other document did not finish once the pool had room")
 	}
 }
 

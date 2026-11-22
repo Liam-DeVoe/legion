@@ -327,7 +327,9 @@ require (
 // whose context carries a transaction whose grant holds bytes: such a transaction applies only to
 // a room it found resident (allowApply), and where ygo's idle sweep or a close the service makes
 // took that room out before ygo looked it up, its Apply is answered the 503 its caller retries
-// rather than loading the room on its goroutine under a grant of the load's own. It is cut with
-// knives on cybermonklabs/ygo as the member rel/v1.55.1-load-context; the tag is on 4004ab70, the
-// head of release/v1.55.1/2026-11-22.
+// rather than loading the room on its goroutine under a grant of the load's own - unless another
+// caller's load of that room is already under way by then, which the Apply waits on holding its
+// grant, a stated risk allowApply's doc describes (internal/dispatch/docs/websocket.go). It is
+// cut with knives on cybermonklabs/ygo as the member rel/v1.55.1-load-context; the tag is on
+// 4004ab70, the head of release/v1.55.1/2026-11-22.
 replace github.com/reearth/ygo => github.com/cybermonklabs/ygo v1.55.1-legion.2

@@ -165,13 +165,16 @@ func (p *PgVersioned) Load(ctx context.Context, room string) (persistence.LoadRe
 // It takes what it holds in the order loadSlots sets - a slot of the buffered folds, then its
 // grant of the pod's load concurrency, then its rooms connection - and waits for none of them
 // while it holds one that comes later. It takes its fold slot before its rooms connection, before
-// it knows whether its rows stream (loadStoredOnce): waiting within ctx, holding nothing else, for
-// a read whose grant holds nothing; only where one is free at once for a read joined to a
-// transaction whose grant holds bytes, refused busy otherwise (takeFoldSlot); and only where one is
-// free at once for a read whose grant holds one whole slot, which streams its rows where none is
-// (tryFoldSlot). A rooms connection held while it waited for a slot would let a holder of the pool
-// that needs one - a transaction's cold read of a later document - wait, through every rooms
-// connection held so, on folds whose slots wait for the bytes that holder holds.
+// it knows whether its rows stream (loadStoredOnce): waiting within ctx, holding nothing else, only
+// for a read whose grant holds nothing. A read whose grant holds bytes - a transaction's, a read's
+// later pass under the total its first pass was refused (storedWithUpdates, redoWhole), or one
+// whole slot - takes one only where one is free at once (takeFoldSlot, heldGrant), and where none
+// is streams its rows on one whole slot, which its grant takes past what it holds only where the
+// pool gives it at once, and is refused busy otherwise (errFoldSlotsBusy). A rooms connection held
+// while it waited for a slot would let a holder of the pool that needs one - a transaction's cold
+// read of a later document - wait, through every rooms connection held so, on folds whose slots
+// wait for the bytes that holder holds; and a grant held while it waited for a slot would let
+// folds whose slots wait for the pool wait for the bytes it holds.
 //
 // The fold's grant is the grant ctx carries, or one of this read's own given back as it returns
 // (withLoadSlot), and it is never taken while the read holds its rooms connection (loadSlots): a
@@ -212,27 +215,27 @@ func (p *PgVersioned) loadStored(ctx context.Context, room string, use func(ctx 
 }
 
 // loadStoredOnce is one attempt of loadStored's read in a transaction of its own on rooms. It
-// first takes a slot of the buffered folds, and gives it back as it returns: where slot holds less
-// than one whole slot, as takeFoldSlot takes one, and on a whole slot only where one is free at
-// once (tryFoldSlot), since a holder of the pool waits for no slot. It answers streams, having ended
-// its transaction and read nothing more, where the rows would stream (past foldBufferBytes) and
-// slot holds less than one whole slot, for loadStored to take that slot holding no rooms
-// connection and no fold slot and read again. A read on a whole slot streams its rows where they
-// pass foldBufferBytes or it has no fold slot.
+// first takes a slot of the buffered folds as takeFoldSlot takes one, and gives it back as it
+// returns. A read whose grant holds bytes waits for no slot (loadSlots): where none is free at
+// once, it raises its grant to one whole slot, where the pool gives what that is past the grant at
+// once (loadSlot.take, nothing on a grant already holding one), and streams its rows; where the
+// pool does not, it is refused busy (errFoldSlotsBusy). It answers streams, having ended its
+// transaction and read nothing more, where the rows would stream (past foldBufferBytes) and slot
+// holds less than one whole slot, for loadStored to take that slot holding no rooms connection and
+// no fold slot and read again. A read on a whole slot streams its rows where they pass
+// foldBufferBytes or it has no fold slot.
 func (p *PgVersioned) loadStoredOnce(ctx context.Context, rooms *pgxpool.Pool, room string, slot *loadSlot, use func(ctx context.Context, head persistence.Version, updates updateSource) error) (DocumentStamp, bool, error) {
-	whole := slot.bytes >= loadSlotBytes
-	var giveBack func()
-	if whole {
-		giveBack = p.tryFoldSlot()
-	} else {
-		var err error
-		if giveBack, err = p.takeFoldSlot(ctx); err != nil {
-			return DocumentStamp{}, false, err
-		}
+	giveBack, err := p.takeFoldSlot(ctx)
+	if errors.Is(err, errFoldSlotsBusy) && slot.take(ctx, loadSlotBytes) == nil {
+		err = nil
+	}
+	if err != nil {
+		return DocumentStamp{}, false, err
 	}
 	if giveBack != nil {
 		defer giveBack()
 	}
+	whole := slot.bytes >= loadSlotBytes
 	tx, err := rooms.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
 		return DocumentStamp{}, false, fmt.Errorf("begin document load: %w", err)

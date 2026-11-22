@@ -890,10 +890,15 @@ func (r *awarenessRelay) localRemoval(room string, aw *awareness.Awareness) []by
 
 // received is documentAwarenessChannel's handler, on room sync's awareness lane. This process's own
 // notifications are dropped. A query is answered (answer). A state update is applied to this
-// process's room of the document only while that room is resident or loading and a reader of
-// this process is connected to it (Service.holdsRoomForReaders): ygo's Inject loads an absent room
-// and restamps the idle clock of a room no peer is in, so applying every relayed heartbeat would
-// load the document on every process and keep a room nobody here reads resident for good.
+// process's room of the document only while ygo has published that room - its load has finished -
+// and a reader of this process is connected to it (Service.holdsRoomForReaders): ygo's Inject
+// loads an absent room and restamps the idle clock of a room no peer is in, so applying every
+// relayed heartbeat would load the document on every process and keep a room nobody here reads
+// resident for good; and Inject into a room still loading waits on that load, whose wait for the
+// pod's load concurrency has no deadline, holding this lane, which serves every room's relayed
+// awareness. An update dropped while the room loads is not lost: the load's end queries the other
+// processes for their readers' states (RoomActivated), and their browsers send their states again
+// on the provider's heartbeat in any case.
 //
 // What a notification carries is injected as it stands: the inbound side counts no clients of
 // its own. What the other processes together cost a room here is their own sockets' bound, since
@@ -1176,13 +1181,14 @@ func (s *Service) hasLocalConnection(room string) bool {
 	return len(state.connected) > 0
 }
 
-// holdsRoomForReaders reports whether room is resident here, or loading, with a reader of this
-// process connected to it or being admitted: the rooms another process's awareness is applied to
-// (awarenessRelay.received). A loading room counts, because a reader opening a document cold is
-// what loads it, and that load's query (RoomActivated) is answered while the load can still be
-// finishing.
+// holdsRoomForReaders reports whether ygo has published room here - its load has finished, so a
+// lookup of it waits on nothing (GetDoc) - with a reader of this process connected to it or being
+// admitted: the rooms another process's awareness is applied to (awarenessRelay.received). A room
+// still loading does not count, though a reader opening a document cold is what loads it: Inject
+// into it would wait on its load on the awareness lane, and that load's own query, sent once ygo
+// publishes the room (RoomActivated), fetches the other processes' readers' states then.
 func (s *Service) holdsRoomForReaders(room string) bool {
-	return s.hasLocalConnection(room) && s.roomHeld(room)
+	return s.hasLocalConnection(room) && s.srv.GetDoc(room) != nil
 }
 
 // The service is the relay's host in production (awarenessHost): the rooms the relay watches are

@@ -2429,6 +2429,10 @@ func (s *Service) storedTree(ctx context.Context, artifactID string) (*pmdoc.Nod
 // to that total takes nothing. The totals are counted from what the first load left the grant
 // holding, so a history that grew past it before a later pass is refused rather than counted
 // short: its load's own take on the held grant answers errGrantShort, the 503 the caller retries.
+// A later pass's load holds that total as it begins, so it waits for no slot of the buffered folds:
+// it takes one only where one is free at once, and where none is streams its rows on one whole
+// slot the pool gives it at once or is refused busy (loadStoredOnce, errFoldSlotsBusy), since a
+// holder of a fold slot can be waiting for the bytes this read holds.
 // A grant that already held bytes as this began - a transaction's, whose fork stands under it -
 // is never given back here, and a take past it is refused the same way: a read under a
 // transaction holding a fork takes what it weighs past the fork's grant only where the pool gives

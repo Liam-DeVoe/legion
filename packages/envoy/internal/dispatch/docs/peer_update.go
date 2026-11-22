@@ -1355,8 +1355,9 @@ func (a *roomApplies) splitsUnderPressure(structs uint64, full bool) int {
 // bytes and heavy in structs decodes inside the pool too; typing never waits on it. The grant is
 // given back as the room's update observer for the apply's commit ends, once that observer has
 // decoded the commit into the room's replica and before ygo's persistence observer runs
-// (roomApplies.releaseGrant), and as the hook returns where the apply was refused, was rolled
-// back or changed nothing.
+// (roomApplies.releaseGrant); where the apply was refused or rolled back, before the hook judges
+// the refusal, since that judgement of a used-up room's scan total waits for a grant of its own
+// (rebuildTakes); and as the hook returns where the apply changed nothing.
 //
 // A room with no measurement at all is a document that left the Proof schema while it was live,
 // which the socket path refuses to open in the first place (refuseOutsideSchema), or one no load
@@ -1790,7 +1791,7 @@ func (s *Service) refusedByApply(info websocket.PeerUpdateInfo, weighing *roomWe
 // that re-scan, which is what DOC_TOO_TANGLED leaves to happen.
 //
 // The re-scan is a whole-document encode and decode, under a grant of the pod's copy heap
-// weighed as the route weighs it (copyOfRoom) and waited for within WriteWaitBound, and it is
+// weighed as the route weighs it (nearACapOfRoom) and waited for within WriteWaitBound, and it is
 // made only here: once a browser's update has been refused for its scans in a room whose total
 // is used up, which closes that browser. A reading that cannot be made answers far, so no close
 // offers a rebuild nothing has read the room near for.
@@ -1801,7 +1802,7 @@ func (s *Service) rebuildTakes(live *crdt.Doc, weighing *roomWeighing) bool {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), WriteWaitBound)
 	defer cancel()
-	_, near, err := nearACap(ctx, live, s.copyOfRoom(live), tracked)
+	_, near, err := s.nearACapOfRoom(ctx, live, tracked)
 	return err == nil && near
 }
 

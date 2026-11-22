@@ -470,6 +470,18 @@ func (r *renderedReplica) observe(room string) (settles, changed, local bool) {
 	return r.drainLocked(room)
 }
 
+// tryObserve is observe for a caller that may not wait for mu - the room-query lane, which serves
+// every room's queries (roomQueries.query): it drains the room's update log only where mu is free
+// at once and no update observer waits for it, as a read takes mu, and reports whether it did.
+func (r *renderedReplica) tryObserve(room string) (settles, changed, local, drained bool) {
+	if r.waiting.Load() > 0 || !r.mu.TryLock() {
+		return false, false, false, false
+	}
+	defer r.mu.Unlock()
+	settles, changed, local = r.drainLocked(room)
+	return settles, changed, local, true
+}
+
 // drainLocked drains the room's update log and moves the replica through what it hands over
 // (takeLocked). The caller holds mu.
 func (r *renderedReplica) drainLocked(room string) (settles, changed, local bool) {

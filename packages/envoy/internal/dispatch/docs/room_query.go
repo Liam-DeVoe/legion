@@ -326,8 +326,20 @@ func (p *roomAnswerParts) assemble() (roomAnswer, error) {
 // (mergeWeight). Every other answer waits on a goroutine of its own, bounded by answerWait, so a
 // slow one never holds up the next query, for this room or any other: a flush waits for the
 // room's appends, and a share whose merge takes a grant waits for that grant (roomQueries.share).
-// Each takes what it answers with on the lane, as the query arrives - the updates a flush waits
-// for and those a share merges - so the answer is of the room as the query found it.
+//
+// A flush and a share each take what they answer with - the updates a flush waits for and those a
+// share merges - from a drain of the room's update log (unstoredSnapshot), which takes the room
+// replica's lock. The lane takes it only where that lock is free at once (unstoredSnapshotAtOnce),
+// so the answer is of the room as the query found it. Where it is not - the replica's holder is
+// walking or rendering it, or cloning it for a fork, CPU work that grows with the document - the
+// snapshot waits for the lock on the query's own goroutine, as its merge and its flush already
+// wait, and the lane goes on to the next query, whose asker has its own window. Such an answer is
+// of the room a moment after the query arrived, which the asker cannot tell from one of the room
+// as the query found it: it cannot order its own query against the room's commits, which this
+// process's browsers make while the query is in flight, since the query names no point of the
+// room and reaches the lane after a delivery delay of its own. The same answer is what a query
+// that arrived that moment later would have had. A flush that snapshots later waits for the later
+// updates too, and a share hands them over, each as true for the asker as the earlier snapshot.
 func (r *roomQueries) query(ctx context.Context, payload string) {
 	var query roomQuery
 	if err := json.Unmarshal([]byte(payload), &query); err != nil || query.ID == "" || query.Room == "" {
@@ -346,15 +358,26 @@ func (r *roomQueries) query(ctx context.Context, payload string) {
 	answer := roomAnswerPart{Holds: true}
 	switch query.Kind {
 	case roomQueryShare:
-		parts := s.unstoredParts(query.Room, live)
+		classes, taken := s.unstoredSnapshotAtOnce(query.Room, live)
+		if !taken {
+			go func() {
+				parts := s.unstoredParts(query.Room, live)
+				r.share(ctx, query, answer, parts, mergeWeight(parts))
+			}()
+			return
+		}
+		parts := updatesOf(classes)
 		if weight := mergeWeight(parts); weight > 0 {
 			go r.share(ctx, query, answer, parts, weight)
 			return
 		}
 		r.share(ctx, query, answer, parts, 0)
 	case roomQueryFlush:
-		classes := s.unstoredSnapshot(query.Room, live)
+		classes, taken := s.unstoredSnapshotAtOnce(query.Room, live)
 		go func() {
+			if !taken {
+				classes = s.unstoredSnapshot(query.Room, live)
+			}
 			flushed, cancel := context.WithTimeout(ctx, r.answerWait())
 			defer cancel()
 			if err := awaitStored(flushed, s.instanceOf(live), classes); err != nil {
@@ -506,9 +529,26 @@ func (s *Service) connectedActors(room string) []model.Actor {
 
 // unstoredSnapshot is every update live, room's resident instance, applied that has not left its
 // unstored updates yet (roomInstance.unstored), after draining the room's update log
-// (observeRoomDoc) so every update committed to the room by now is classified, and listed.
+// (observeRoomDoc) so every update committed to the room by now is classified, and listed. The
+// drain waits for the room replica's lock.
 func (s *Service) unstoredSnapshot(room string, live *crdt.Doc) []*queuedClass {
 	s.observeRoomDoc(room, live)
+	return s.unstoredListed(live)
+}
+
+// unstoredSnapshotAtOnce is unstoredSnapshot where the room replica's lock is free at once, and
+// reports whether it was, having waited for nothing and listed nothing where it was not
+// (tryObserveRoomDoc): what the room-query lane takes (roomQueries.query).
+func (s *Service) unstoredSnapshotAtOnce(room string, live *crdt.Doc) ([]*queuedClass, bool) {
+	if !s.tryObserveRoomDoc(room, live) {
+		return nil, false
+	}
+	return s.unstoredListed(live), true
+}
+
+// unstoredListed is every update live's resident instance lists as not yet stored, as a drain of
+// its update log left them (unstoredSnapshot), nil where live has no instance.
+func (s *Service) unstoredListed(live *crdt.Doc) []*queuedClass {
 	instance := s.instanceOf(live)
 	if instance == nil {
 		return nil
@@ -519,11 +559,15 @@ func (s *Service) unstoredSnapshot(room string, live *crdt.Doc) []*queuedClass {
 // unstoredParts is every update live, room's resident instance, holds that the store may not
 // (unstoredSnapshot), each as the room committed it and in that order, nil for none. It decodes
 // nothing, so it is taken inside the room's Apply where a caller reads the room there (docTree),
-// and on the query lane where a share's query arrives (roomQueries.query): what merges the updates
-// - a share (unstoredShare) or a read of a room behind the stored head (storedWithUpdates) - does
-// so once it holds nothing of the room, under a grant of what the merge decodes (mergeWeight).
+// and as a share's query arrives (roomQueries.query): what merges the updates - a share
+// (unstoredShare) or a read of a room behind the stored head (storedWithUpdates) - does so once it
+// holds nothing of the room, under a grant of what the merge decodes (mergeWeight).
 func (s *Service) unstoredParts(room string, live *crdt.Doc) [][]byte {
-	classes := s.unstoredSnapshot(room, live)
+	return updatesOf(s.unstoredSnapshot(room, live))
+}
+
+// updatesOf is the update of each of classes, in their order, nil for none.
+func updatesOf(classes []*queuedClass) [][]byte {
 	if len(classes) == 0 {
 		return nil
 	}

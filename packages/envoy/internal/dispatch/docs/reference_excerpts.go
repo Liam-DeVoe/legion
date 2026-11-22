@@ -556,6 +556,11 @@ func (s *Service) reconcileReferenceExcerpts(ctx context.Context, retryBase time
 		case errors.Is(err, ErrDocumentUnloadable), errors.Is(err, ErrDocOutsideSchema):
 			slog.Warn("dispatch: reference excerpt reconciliation cannot read the document; its mentions keep the document's name",
 				"artifact", document.FromID, "error", err)
+		case RefusedBusy(err):
+			slog.Warn("dispatch: reference excerpt reconciliation deferred a document it could not read",
+				"artifact", document.FromID, "retry", "a later batch reads it again", "error", err)
+			deferDocument(document)
+			continue
 		case err != nil:
 			slog.Error("dispatch: reference excerpt reconciliation deferred a document it could not read",
 				"artifact", document.FromID, "error", err)

@@ -252,10 +252,8 @@ func (s *Service) roomBlocks(live *crdt.Doc) (uint64, bool) {
 // read and written afresh only for a document within wholeTextWriteCeiling of the cap. The scan
 // test encodes doc's state and decodes it afresh, a whole-document decode like any other, so the
 // check holds bytes of the pod's load concurrency (holdLoad) from before that encode until it
-// answers: its own where ctx carries none, as the check of a live room makes it
-// (RebuildDocument, which weighs it at a whole copy of that room, copyOfRoom), and the caller's
-// where ctx carries one, which covers it already (rebuildSource). A wait ctx ends is its error,
-// and no answer.
+// answers: its own where ctx carries none, and the caller's where ctx carries one, which covers it
+// already (rebuildSource, nearACapOfRoom). A wait ctx ends is its error, and no answer.
 func nearACap(ctx context.Context, doc *crdt.Doc, bytes int64, tracked int64) (why string, near bool, err error) {
 	release, err := holdLoad(ctx, bytes)
 	if err != nil {
@@ -287,6 +285,27 @@ func nearACap(ctx context.Context, doc *crdt.Doc, bytes int64, tracked int64) (w
 			scans, honestHandoffScans, roomScanTotal), true, nil
 	}
 	return "", false, nil
+}
+
+// nearACapOfRoom is nearACap of live, a room resident in this server, on tracked, the bytes of
+// state the room is tracked at: the rebuild route's reading of the room (RebuildDocument) and a
+// refused apply's (rebuildTakes). Its check holds a grant of a whole copy of the room (copyOfRoom)
+// from before it reads the room until it answers, waited for within ctx and weighed twice: as the
+// wait begins, and again once the grant is in hand, since what browsers commit to the room while
+// the check waits is in the state it encodes and decodes. The grant takes what the second
+// weighing is past the first only where the pool gives it at once (loadSlot.take), and the check
+// is refused busy otherwise, errGrantShort, as a fork's clone takes what its room grew past the
+// write's cover (forkPoint) and its decode what it weighs past it (buildForkHeld).
+func (s *Service) nearACapOfRoom(ctx context.Context, live *crdt.Doc, tracked int64) (why string, near bool, err error) {
+	ctx, slot, done := withLoadSlot(ctx)
+	defer done()
+	if err := slot.take(ctx, s.copyOfRoom(live)); err != nil {
+		return "", false, err
+	}
+	if err := slot.take(ctx, s.copyOfRoom(live)); err != nil {
+		return "", false, err
+	}
+	return nearACap(ctx, live, slot.bytes, tracked)
 }
 
 // nearACapUnencoded reports whether doc, a room resident in this server, stands near a cap by the
@@ -455,9 +474,9 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 	var decided string
 	if live := s.srv.GetDoc(artifactID); live != nil {
 		// The check decodes the room's whole state, so it waits for its grant of the copy-heap
-		// bound within this request (nearACap): a wait this request ends leaves the rebuild to
-		// the caller's retry, as a close the server could not make does below.
-		why, near, err := nearACap(ctx, live, s.copyOfRoom(live), int64(s.roomStateBytes(live)))
+		// bound within this request (nearACapOfRoom): a wait this request ends leaves the rebuild
+		// to the caller's retry, as a close the server could not make does below.
+		why, near, err := s.nearACapOfRoom(ctx, live, int64(s.roomStateBytes(live)))
 		if err != nil {
 			return RebuildReport{}, VersionResult{}, fmt.Errorf("%w: weigh document %s before its rebuild: %v", ErrServiceUnavailable, artifactID, err)
 		}

@@ -677,12 +677,26 @@ type serverWrite struct {
 // each of settlement's repairs lands on the one block its id names (repairLive).
 //
 // A write of the server's own carries no grant in ctx, and takes the copy's bytes of its own,
-// waiting without a deadline (holdServerLoad).
+// waiting without a deadline, as holdServerLoad does. The copy is weighed (copyOfRoom) as that
+// wait begins and again once the grant is in hand, before the copy is encoded: what browsers
+// commit to the room while the count waits is in the state it copies. Nothing of the copy is
+// built by then, so the grant takes what the second weighing is past the first where the pool
+// gives it at once and otherwise gives itself back and takes the new weight whole, as a state
+// answer's grant is topped up (weighStateAnswer, unbuiltTake). A grant ctx carries already
+// holding bytes takes the difference only at once, and where the pool does not give it the copy
+// runs beside the pool's holders, as holdServerLoad's refused take does.
 func (s *Service) leavesPastDecodeCap(ctx context.Context, doc *crdt.Doc, write serverWrite) bool {
 	if past, decided := decodeCapWithoutCopy(doc, write); decided {
 		return past
 	}
-	return structsAfter(ctx, doc, write, s.copyOfRoom(doc)) > maxUpdateItems
+	ctx, slot, done := withLoadSlot(context.WithoutCancel(ctx))
+	defer done()
+	ctx = slot.ownedBy(ctx)
+	take := unbuiltTake(ctx, slot)
+	if err := take(ctx, s.copyOfRoom(doc)); err == nil {
+		_ = take(ctx, s.copyOfRoom(doc))
+	}
+	return structsAfter(ctx, doc, write, slot.bytes) > maxUpdateItems
 }
 
 // decodeCapWithoutCopy is leavesPastDecodeCap's first step: whether doc's own struct total
@@ -707,9 +721,10 @@ func decodeCapWithoutCopy(doc *crdt.Doc, write serverWrite) (past, decided bool)
 // counted, and is dropped when this returns.
 //
 // It takes bytes of the pod's load concurrency for that copy - what a whole copy of the room
-// costs (copyOfRoom) - or the grant ctx carries where it carries one: a live write's, which
-// already holds the copy's bytes by then (leavesRoomPastDecodeCap), so this decode waits for
-// nothing (liveWrite.carriedBy, holdServerLoad).
+// costs (copyOfRoom) - or the grant ctx carries where it carries one, which already holds the
+// copy's bytes by then, so this decode waits for nothing (holdServerLoad): a live write's
+// (leavesRoomPastDecodeCap, liveWrite.carriedBy), or a server write's own, which weighed the room
+// again once it held its grant (leavesPastDecodeCap).
 func structsAfter(ctx context.Context, doc *crdt.Doc, write serverWrite, bytes int64) uint64 {
 	defer holdServerLoad(ctx, bytes)()
 	live := structCeiling(doc)

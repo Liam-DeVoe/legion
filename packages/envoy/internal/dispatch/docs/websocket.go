@@ -234,10 +234,12 @@ func (a *servicePersistenceAdapter) LoadDoc(room string) ([]byte, error) {
 // before it records or reads anything (errRoomLoadUnderGrant), the 503 that write's caller
 // retries: it would take a grant of its own on the transaction's goroutine, waiting for the pool
 // while the transaction held its own (loadSlots). Such a transaction applies only to a room it
-// found resident (allowApply), so its Apply reaches a load only where that room went before ygo
-// looked it up: ygo's idle sweep retired it, or a close the service makes took it out. That
-// refusal is not the room's failure: it begins no record and takes no grant, so it has neither to
-// give back, and it fails no room. ygo removes its placeholder and hands the refusal to every
+// found resident (allowApply), so its Apply makes a load of its own only where that room went
+// before ygo looked it up and no other caller's load of it was under way by then: ygo's idle sweep
+// retired it, or a close the service makes took it out. Where another caller's load was under way,
+// the Apply waits on that load instead, a stated risk allowApply describes. The refusal is not the
+// room's failure: it begins no record and takes no grant, so it has neither to give back, and it
+// fails no room. ygo removes its placeholder and hands the refusal to every
 // caller waiting on this load (provider/websocket/server.go, failRoomLoad), and the next access
 // loads the room afresh. A caller that waited on it meets the same refusal as no fault of the
 // room's: a settlement's warm-up is armed again and counted no failure (settleNoRoom), and a
@@ -691,10 +693,24 @@ func (s *Service) refuseIfRebuilding(room string) error {
 //
 // ygo looks the room up only once this has returned (getOrCreateRoom), and loads it there where it
 // is gone by then: ygo's idle sweep can retire it in between, a room no peer and no caller has
-// held for roomIdleTimeout, and so can a close the service makes. ygo hands that load the Apply's
-// context, and the load refuses it busy before it reads anything where the transaction's grant
-// still holds bytes (servicePersistenceAdapter.LoadDocContext): the Apply is answered the same 503
-// as one this refuses (errRoomLoadUnderGrant), nothing loads on its goroutine, and no room fails.
+// held for roomIdleTimeout, and so can a close the service makes. Where the Apply's own lookup
+// makes the room's placeholder, ygo hands that load the Apply's context, and the load refuses it
+// busy before it reads anything where the transaction's grant still holds bytes
+// (servicePersistenceAdapter.LoadDocContext): the Apply is answered the same 503 as one this
+// refuses (errRoomLoadUnderGrant), nothing loads on its goroutine, and no room fails.
+//
+// Where another caller's load of the room is already under way when ygo looks it up - a browser's
+// socket, a settlement's warm-up or a published write began it after the room went - the Apply
+// loads nothing and is refused nothing: it waits on that load's ready barrier (ygo's
+// getOrCreateRoom, provider/websocket/server.go), holding the transaction's grant, and that load
+// takes a grant of its own and can wait for the pool. The wait ends when that load does, and
+// nothing else here ends it but the transaction's own deadline - Join's 45 s write bound
+// (WriteRequestBound), which the server's own two such transactions, the close's sweep and each
+// issue's of the ask repair, keep from their begin - and the load may be waiting for the very
+// bytes the transaction holds, so the bound can be what ends it; while it lasts the pool is short
+// by the transaction's own bytes. It is a stated risk rather than a wait the order of loadSlots
+// ends: it needs the room to go in the moment between this look and ygo's lookup, and another
+// caller to begin its load inside that moment too.
 func (s *Service) allowApply(ctx context.Context, info websocket.InjectInfo) error {
 	if transactionHolds(ctx) && s.srv.GetDoc(info.Room) == nil {
 		return errRoomLoadUnderGrant
@@ -1146,7 +1162,7 @@ func leaveParkedOut(doc *crdt.Doc) {
 // answer to a browser holding nothing held 24,071,008 to 25,428,848 bytes above the document,
 // having allocated about 25.7 MB in under 900 objects
 // (TestAStateAnswerHoldsNoMoreHeapThanItsGrantParkedOrNot). Before the fork's v1.55.1-sami.14,
-// which the pinned cybermonklabs/ygo v1.55.1-legion.1 carries, a room that parked anything was
+// which the pinned cybermonklabs/ygo v1.55.1-legion.2 carries, a room that parked anything was
 // cut from its encoded state instead, decoding the whole document twice - 371,149,976 to
 // 429,891,496 bytes held and about 840 MB
 // allocated for the same room - and is no longer. Nothing in ygo bounds how many answers run
@@ -1406,6 +1422,22 @@ func (s *Service) observeRoomDoc(room string, live *crdt.Doc) {
 	}
 	settles, changed, local := replica.observe(room)
 	s.armDrainedSettle(room, settles, changed, local)
+}
+
+// tryObserveRoomDoc is observeRoomDoc for a caller that may not wait for the room replica's lock
+// (renderedReplica.tryObserve): it drains live's update log where that lock is free at once, and
+// reports whether it did, having waited for nothing. A document this process lists no replica for
+// has nothing to drain, which it reports as drained.
+func (s *Service) tryObserveRoomDoc(room string, live *crdt.Doc) bool {
+	replica := s.replicaOf(live)
+	if replica == nil {
+		return true
+	}
+	settles, changed, local, drained := replica.tryObserve(room)
+	if drained {
+		s.armDrainedSettle(room, settles, changed, local)
+	}
+	return drained
 }
 
 // armDrainedSettle arms room's settlement for what one drain of its update log classified

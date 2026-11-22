@@ -116,7 +116,15 @@ func (s *Service) readPoint(room string, live *crdt.Doc) ([]byte, roomPoint, rep
 // holds above the copy it leaves - no encoded state, no decoder - and it runs under the
 // replica's mu, which the room's update observer waits for before ygo broadcasts each keystroke
 // (renderedReplica.lockForUpdate), so a wait for the pod's bound there would stall every browser
-// in the room behind it. What the clone leaves is the write's fork, as the decode's product is.
+// in the room behind it. What the clone leaves is the write's fork, as the decode's product is,
+// covered by the grant the write's cover took (liveWrite.coverFork), which weighed the room
+// (copyOfRoom) before it waited for the pool: what the room committed during that wait is in the
+// replica the clone copies. So where ctx carries a grant holding bytes (heldGrant), the room is
+// weighed again at the clone, under the replica's mu, and the grant takes what that weight is
+// past it only where the pool gives it at once (loadSlot.take), which waits for nothing; where the
+// pool does not, the write clones nothing and is refused busy, errWriteBusy wrapping
+// errGrantShort, the 503 its caller retries, as a decode weighing past its cover is
+// (buildForkHeld).
 //
 // at, when it is not nil, is the point the room must still stand at (rebuildFork): a read that
 // drains the room to another point clones nothing and answers errForkReleased, so the replica's
@@ -124,10 +132,18 @@ func (s *Service) readPoint(room string, live *crdt.Doc) ([]byte, roomPoint, rep
 // inside a Yjs transaction on live.
 func (s *Service) forkPoint(ctx context.Context, room string, live *crdt.Doc, client crdt.ClientID, at *roomPoint) (*crdt.Doc, roomPoint, replicaRead, error) {
 	var fork *crdt.Doc
+	var short error
+	grant := heldGrant(ctx)
 	copied, point, read, settles, err := s.atPoint(room, live, func(point roomPoint, doc *crdt.Doc) {
-		if at == nil || *at == point {
-			fork = doc.Clone(forkOptions(client)...)
+		if at != nil && *at != point {
+			return
 		}
+		if grant != nil {
+			if short = grant.take(ctx, s.copyOfRoom(live)); short != nil {
+				return
+			}
+		}
+		fork = doc.Clone(forkOptions(client)...)
 	})
 	if settles {
 		s.scheduleSettle(room)
@@ -137,6 +153,8 @@ func (s *Service) forkPoint(ctx context.Context, room string, live *crdt.Doc, cl
 		return nil, roomPoint{}, replicaRead{}, err
 	case at != nil && *at != point:
 		return nil, roomPoint{}, replicaRead{}, errForkReleased
+	case short != nil:
+		return nil, roomPoint{}, replicaRead{}, fmt.Errorf("%w: %w", errWriteBusy, short)
 	case fork != nil:
 		return fork, point, read, nil
 	}

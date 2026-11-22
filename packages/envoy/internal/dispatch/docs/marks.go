@@ -736,6 +736,11 @@ func (s *Service) sweepUnrecordedMarks(room string, tree *pmdoc.Node) {
 		// The marks stay, and stay expired: every later settlement's pass finds them again and is
 		// refused again, which is why the refusal is logged once rather than on each.
 		s.logPastDecodeCap(room, "unrecorded-mark sweep")
+	case RefusedBusy(err):
+		// A busy refusal - a load of the room another holder's transaction began, refused under
+		// that transaction's grant - leaves the marks expired, and the next settlement's pass
+		// sweeps them.
+		slog.Warn("dispatch: sweep unrecorded marks", "room", room, "retry", "the next settlement's pass sweeps them", "error", err)
 	case err != nil:
 		slog.Error("dispatch: sweep unrecorded marks", "room", room, "error", err)
 	}

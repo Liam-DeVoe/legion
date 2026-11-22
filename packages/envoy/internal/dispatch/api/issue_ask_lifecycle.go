@@ -264,13 +264,19 @@ func (s *server) recordRestoredAsksTx(ctx context.Context, ledger *docs.Ledger, 
 // docs.WriteWaitBound, and a later document's fork, or the cold read that builds it, at once
 // where the pool lacks what it weighs past that grant, as the pool refuses every take of a
 // transaction holding a fork that it cannot give at once (docs' loadSlots) - is logged with that
-// refusal, also naming the issue. Either way, the ask repair's pass sweeps the issue while one of
-// its documents owes a settlement, as each document a browser wrote after the close's fork does
-// (above).
+// refusal, also naming the issue: at Warn where it is a busy refusal of a take the transaction
+// would otherwise have waited for holding its grant (docs.RefusedBusy), which the ask repair's
+// next pass retries, and at Error otherwise. Either way, the ask repair's pass sweeps the issue
+// while one of its documents owes a settlement, as each document a browser wrote after the
+// close's fork does (above).
 func (s *server) sweepClosedIssueAsks(ctx context.Context, issueKey string, withdrawn []model.Ask, actor model.Actor) {
 	if err := s.sweepClosedIssueAsksTx(ctx, issueKey, withdrawn, actor); err != nil {
 		if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
 			err = fmt.Errorf("a write bound ended the sweep's transaction, which rolled back, and the ask repair sweeps the issue: %w", err)
+		}
+		if docs.RefusedBusy(err) {
+			slog.Warn("dispatch: sweep the ask blocks of a closed issue", "issue", issueKey, "retry", "the ask repair's next pass sweeps the issue", "error", err)
+			return
 		}
 		slog.Error("dispatch: sweep the ask blocks of a closed issue", "issue", issueKey, "error", err)
 	}

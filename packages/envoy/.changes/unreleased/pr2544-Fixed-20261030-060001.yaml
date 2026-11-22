@@ -167,13 +167,21 @@ body: |-
     its transaction's next document, or a read it makes beside the fork - takes it only where the
     pool has it free at once and is otherwise answered `503 DOC_SERVICE_UNAVAILABLE` for its caller
     to retry, since waiting for more while it holds could wait on a waiter that needs what it holds.
-    The same write takes a slot to fold a stored history in only where one is free at once, and
-    loads no room: it reads a document no room holds from the store, on what it already holds, and
-    where a room it found resident retires or closes before the write reaches it, the load that
-    would replace that room is refused and the write is answered the same `503`. An issue's close,
-    reopen, sweep and ask repair weigh all of the issue's documents before their first fork and
-    take that whole sum there, so they meet that refusal only where a document grew in between, a
-    stored history folds into more than its rows weigh, or the pool's fold slots are all taken.
+    Nothing that holds bytes of the pool waits for a slot to fold a stored history in: it takes one
+    only where one is free at once, and otherwise streams the history on one whole slot where the
+    pool has that free at once, or is answered the same `503`. The same write loads no room: it
+    reads a document no room holds from the store, on what it already holds, and where a room it
+    found resident retires or closes before the write reaches it, the load that would replace that
+    room is refused and the write is answered the same `503` - unless another caller's load of that
+    room is already under way when the write reaches it, which the write then waits on, for at
+    most its 45-second write bound, with the pool short by what the write holds while it waits. An
+    issue's close, reopen, sweep and ask repair weigh all of the issue's documents before their
+    first fork and take that whole sum there, so they meet that refusal only where a document grew
+    in between, a document weighed as its resident room is read from the store instead because
+    that room retired or fell behind the stored head and its stored history weighs more, a stored
+    history folds into more than its rows weigh, or the pool's fold slots are all taken and the
+    pool has no whole slot free at once. A document read that waits a minute for its turn in the
+    pool is answered `503` for its caller to retry and fails nothing.
 
     What the server holds for one browser's socket is bounded as well, at 70 MiB of frames queued
     for it and not yet written. ygo bounded that queue in frames alone, 512 of them whatever their

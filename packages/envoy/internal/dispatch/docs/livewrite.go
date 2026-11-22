@@ -505,9 +505,11 @@ type forkSlot struct {
 	// ahead is what the forks of every document the transaction is about to write weigh
 	// together, capped at one slot, where it weighed them before its first fork
 	// (Service.forksAhead), and 0 otherwise: its first fork's cover takes that sum rather than its
-	// own weight alone, so its later forks take nothing more unless their document grew meanwhile
-	// or their stored history folds into more than its rows weigh, as a split-dense history does,
-	// which no weighing ahead of the fold can know (coverFork).
+	// own weight alone, so its later forks take nothing more unless their document grew meanwhile;
+	// or it was weighed at its resident room's copy and forks cold, its room retired or behind the
+	// stored head by then, from a stored history that weighs more; or their stored history folds
+	// into more than its rows weigh, as a split-dense history does, which no weighing ahead of the
+	// fold can know (coverFork).
 	ahead int64
 }
 
@@ -551,20 +553,23 @@ func (w *liveWrite) carriedBy(ctx context.Context) context.Context {
 // grant.
 //
 // bytes is what this fork costs: a whole copy of the room for the clone or the decode a warm
-// fork makes of it (copyOfRoom), and the stored history the cold path has just read for the
-// decode of that (copyWeight). The transaction's first fork sets the grant and the rest share it
-// (forkSlot): a later fork, of another document, takes only what it weighs past the grant, and
-// only where the pool gives that at once (loadSlot.take); otherwise it is refused busy,
-// errWriteBusy wrapping errGrantShort, since a wait for more while holding the first fork's grant
-// could wait on a waiter that needs those very bytes (loadSlots). A transaction that weighed every
-// document it is about to write before its first fork has that first fork take their sum
-// (forkSlot.ahead, Service.forksAhead), so its later forks take nothing more unless a document
-// grew meanwhile or folds into more than its rows weigh. The first fork's grant holds, as its
-// cover is taken, at most what the fork's own read took on it - a cold read's fold (foldRead) -
-// and nothing that read built, so where the pool does not give the difference at once the cover
-// gives that back and takes bytes whole, waiting holding nothing of the pool (loadSlot.retake). A
-// grant the transaction borrowed is its holder's, so a cover on it takes the difference only at
-// once (forkSlot.carried, loadSlot.take).
+// fork makes of it (copyOfRoom), weighed again at the clone once this wait is over, whose grant
+// takes what the room grew meanwhile at once or refuses the write (Service.forkPoint), and the
+// stored history the cold path has just read for the decode of that (copyWeight). The
+// transaction's first fork sets the grant and the rest share it (forkSlot): a later fork, of
+// another document, takes only what it weighs past the grant, and only where the pool gives that
+// at once (loadSlot.take); otherwise it is refused busy, errWriteBusy wrapping errGrantShort,
+// since a wait for more while holding the first fork's grant could wait on a waiter that needs
+// those very bytes (loadSlots). A transaction that weighed every document it is about to write
+// before its first fork has that first fork take their sum (forkSlot.ahead, Service.forksAhead),
+// so its later forks take nothing more unless a document grew meanwhile, was weighed at its
+// resident room's copy and forks cold from a stored history that weighs more, or folds into more
+// than its rows weigh. The first fork's grant holds, as its cover is taken, at most what the
+// fork's own read took on it - a cold read's fold (foldRead) - and nothing that read built, so
+// where the pool does not give the difference at once the cover gives that back and takes bytes
+// whole, waiting holding nothing of the pool (loadSlot.retake). A grant the transaction borrowed
+// is its holder's, so a cover on it takes the difference only at once (forkSlot.carried,
+// loadSlot.take).
 //
 // It is taken before any database connection the fork's build needs, as every taker takes its
 // bytes first (loadSlots), and the first fork's wait is the request's. An API write waits for them
@@ -604,12 +609,15 @@ func (w *liveWrite) coverFork(ctx context.Context, bytes int64) error {
 // the sum reaches the cap, past which no document can raise it. A document whose fork takes more
 // than it was weighed at takes the difference at its fork, at once or refused busy, as any later
 // fork does: one that grows between the weighing and its fork - a browser typing into its room,
-// another process appending to it - and a stored history that folds into more than its rows
-// weigh, as a split-dense history does: a later row's inserts split an item an earlier row
-// declared as one, so the folded state declares more structs than the rows do, and the fork's
-// cover takes that state's weight (coldFork, storedCopyWeight). No weighing ahead of the fold can
-// know that count. A transaction already holding a fork, or writing one document, weighs nothing:
-// its first fork is taken already, or is its only one.
+// another process appending to it; one weighed at its resident room's copy that forks cold, its
+// room retired, closed or behind the stored head by its fork (readFork), whose stored history - its
+// rows' bytes and declared structs, or one whole slot for a log its load streams - can weigh more
+// than the room's copy; and a stored history that folds into more than its rows weigh, as a
+// split-dense history does: a later row's inserts split an item an earlier row declared as one, so
+// the folded state declares more structs than the rows do, and the fork's cover takes that state's
+// weight (coldFork, storedCopyWeight). No weighing ahead of the fold can know that count. A
+// transaction already holding a fork, or writing one document, weighs nothing: its first fork is
+// taken already, or is its only one.
 func (s *Service) forksAhead(ctx context.Context, q Queryer, documents []string) error {
 	grant := transactionGrant(ctx)
 	if grant == nil || grant.forks > 0 || len(documents) < 2 {
@@ -631,9 +639,11 @@ func (s *Service) forksAhead(ctx context.Context, q Queryer, documents []string)
 
 // forkWeight is what a fork of artifactID would take of the pod's load concurrency were it read
 // now: a whole copy of the room where one is resident here, as a warm fork's cover takes
-// (copyOfRoom), and otherwise what its cold read takes of the stored history. The store sums the
-// history's bytes first, sending no row: a log past the store's fold buffer (foldBufferBytes) is
-// streamed by its cold read's load, which takes one whole slot for it before it streams a row
+// (copyOfRoom) - a room that retires or falls behind the stored head before the fork is read
+// leaves the fork to read the store instead, which can take more (forksAhead) - and otherwise
+// what its cold read takes of the stored history. The store sums the history's bytes first,
+// sending no row: a log past the store's fold buffer (foldBufferBytes) is streamed by its cold
+// read's load, which takes one whole slot for it before it streams a row
 // (loadStored), and a log whose bytes alone weigh a slot weighs one whatever its structs
 // (copyWeight), so either is weighed at one slot with no row read. Any other log's rows are
 // weighed on their bytes and the structs their headers declare (weighUpdates), as a cold read's
@@ -1014,7 +1024,9 @@ func (s *Service) roomBehindHead(ctx context.Context, room string, live *crdt.Do
 // (copyOfRoom), and the write keeps it through its tree build and its render
 // (liveWrite.coverFork). It waits holding no lock and no grant, so a wait here never stalls the
 // room's update observer, which waits for the replica's lock (renderedReplica.lockForUpdate) and
-// which no holder of a grant waits for.
+// which no holder of a grant waits for. What the room commits while it waits is in the replica the
+// clone copies, so the clone weighs the room again and takes the difference at once or refuses
+// the write busy (forkPoint).
 func (s *Service) warmFork(ctx context.Context, write *liveWrite, live *crdt.Doc) (*crdt.Doc, error) {
 	seq := write.state.creditSeq.Load()
 	if err := write.coverFork(ctx, s.copyOfRoom(live)); err != nil {
@@ -1069,7 +1081,7 @@ func (s *Service) warmFork(ctx context.Context, write *liveWrite, live *crdt.Doc
 func (s *Service) coldFork(ctx context.Context, write *liveWrite, head int64) (*crdt.Doc, error) {
 	loaded, err := s.persistence.Load(ctx, write.artifactID)
 	if err != nil {
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || refusedBusy(err) {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || RefusedBusy(err) {
 			return nil, err
 		}
 		s.failRoom(write.artifactID, err)
@@ -1095,7 +1107,7 @@ func (s *Service) coldFork(ctx context.Context, write *liveWrite, head int64) (*
 	fork, err := buildForkHeld(ctx, write.clientID, loaded.Update, weight)
 	loaded.Update = nil
 	if err != nil {
-		if refusedBusy(err) {
+		if RefusedBusy(err) {
 			return nil, err
 		}
 		// A room's load of the same history would fail it, as loadTree does.

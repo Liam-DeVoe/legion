@@ -334,15 +334,17 @@ func (p *PgVersioned) foldRead(ctx context.Context, tx pgx.Tx, room string, vers
 }
 
 // takeFoldSlot takes one of the process's foldSlots for a read about to fold rows in memory
-// (foldRead), before that read takes its connection, and returns what gives it back. A read joined
-// to a transaction whose grant holds bytes takes one only where one is free at once, and is
-// refused busy otherwise (transactionHolds, errFoldSlotsBusy), the 503 its caller retries; any
-// other read waits for one within ctx, holding nothing of the pool. A holder of a slot can wait
-// for the pool - a buffered fold takes its grant once it holds its rows (foldRead) - so a holder of
-// the pool that waited for a slot could wait on a holder that waits for the bytes it holds, until
-// its deadline (loadSlots).
+// (foldRead), before that read takes its connection, and returns what gives it back. A read whose
+// grant of the pod's load concurrency holds bytes - a transaction's, which its fork holds, or a
+// read's later pass under the total its first pass was refused (redoWhole) - takes one only where
+// one is free at once, and is refused busy otherwise (heldGrant, errFoldSlotsBusy); a document
+// load so refused streams its rows on one whole slot instead, where the pool gives that slot at
+// once (loadStoredOnce). Only a read whose grant holds nothing waits for one, within ctx. A holder
+// of a slot can wait for the pool - a buffered fold takes its grant once it holds its rows
+// (foldRead) - so a holder of the pool that waited for a slot could wait on a holder that waits
+// for the bytes it holds, until its deadline (loadSlots).
 func (p *PgVersioned) takeFoldSlot(ctx context.Context) (func(), error) {
-	if transactionHolds(ctx) {
+	if heldGrant(ctx) != nil {
 		if giveBack := p.tryFoldSlot(); giveBack != nil {
 			return giveBack, nil
 		}
@@ -357,9 +359,7 @@ func (p *PgVersioned) takeFoldSlot(ctx context.Context) (func(), error) {
 }
 
 // tryFoldSlot takes one of the process's foldSlots where one is free at once, and returns what
-// gives it back, or nil where none is: what a read joined to a transaction whose grant holds bytes
-// takes (takeFoldSlot), and what a document load on a whole slot takes, which streams its rows
-// where it gets none (loadStoredOnce).
+// gives it back, or nil where none is: what a read whose grant holds bytes takes (takeFoldSlot).
 func (p *PgVersioned) tryFoldSlot() func() {
 	select {
 	case p.foldSlots <- struct{}{}:
@@ -369,11 +369,12 @@ func (p *PgVersioned) tryFoldSlot() func() {
 	}
 }
 
-// errFoldSlotsBusy refuses a read joined to a transaction whose grant holds bytes where every slot
-// of the buffered folds is taken (takeFoldSlot): such a transaction waits for no slot, since a
-// holder of one can be waiting for the bytes it holds (loadSlots). It is ErrServiceUnavailable, the
-// API's 503 DOC_SERVICE_UNAVAILABLE, which its caller retries.
-var errFoldSlotsBusy = fmt.Errorf("%w: every slot of the buffered folds is taken, and a transaction holding its grant of the pod's load concurrency waits for none", ErrServiceUnavailable)
+// errFoldSlotsBusy refuses a read whose grant of the pod's load concurrency holds bytes where every
+// slot of the buffered folds is taken (takeFoldSlot), and, for a document load, the pool does not
+// give it one whole slot at once to stream its rows on instead (loadStoredOnce): such a read waits
+// for no slot, since a holder of one can be waiting for the bytes it holds (loadSlots). It is
+// ErrServiceUnavailable, the API's 503 DOC_SERVICE_UNAVAILABLE, which its caller retries.
+var errFoldSlotsBusy = fmt.Errorf("%w: every slot of the buffered folds is taken, and a holder of the pod's load concurrency waits for none", ErrServiceUnavailable)
 
 // foldBuffer is the most stored update bytes foldRead reads into memory: foldBufferBytes, or the
 // lower bound a test set (foldBufferLimit).

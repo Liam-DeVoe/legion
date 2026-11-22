@@ -1094,6 +1094,125 @@ func TestAStoredReadBehindTheHeadReadsAgainUnderTheWholeGrantRatherThanQueueForM
 	t.Logf("the read's load held %d bytes, its merge and apply %d more, and it read again under the whole grant", load, extra)
 }
 
+// loadDocumentAgain is the service's store, stopping at first as its first LoadDocument read of
+// room returns, with the document that read decoded still held under the read's grant, and at
+// again as its second read of room begins, holding the grant that read is made under and nothing
+// that read takes.
+type loadDocumentAgain struct {
+	VersionedStore
+	room         string
+	reads        atomic.Int32
+	first, again func()
+}
+
+func (s *loadDocumentAgain) LoadDocument(ctx context.Context, room string) (LoadedDocument, error) {
+	var read int32
+	if room == s.room {
+		read = s.reads.Add(1)
+	}
+	if read == 2 {
+		s.again()
+	}
+	loaded, err := s.VersionedStore.LoadDocument(ctx, room)
+	if read == 1 {
+		s.first()
+	}
+	return loaded, err
+}
+
+// A read of a room behind the stored head that is joined to no transaction, whose first pass's
+// take was refused and whose later pass holds the total its first pass was refused
+// (storedWithUpdates, redoWhole), waits for no slot of the buffered folds while it holds that
+// grant: with the one slot held by another document's fold that waits for the bytes the read
+// holds, the later pass's load takes no slot, the pool gives it no whole slot at once to stream
+// on, and it is refused busy (loadStoredOnce, errFoldSlotsBusy); the fold goes on once the read
+// has given its grant back. Before, the later pass waited for the slot holding its grant, with no
+// deadline, while the fold waited for the grant's bytes, until this test's bound.
+func TestAStoredReadsLaterPassWaitsForNoFoldSlotWhileItHoldsItsGrant(t *testing.T) {
+	ctx := context.Background()
+	service, artifactID := newTestService(t)
+	service.settle = time.Hour
+	state := proseState(t, 16<<10)
+	storeHistory(t, service, artifactID, state)
+	room := copyOf(t, state)
+	commit := func(edit func()) []byte {
+		t.Helper()
+		before := room.StateVector()
+		edit()
+		return crdt.EncodeStateAsUpdateV1(room, before)
+	}
+	light := commit(func() { chainedRun(t, room, lastCharacter(t, room), 0x5000, 1) })
+	heavy := commit(func() { chainedRun(t, room, lastCharacter(t, room), 0x7e57, unslottedApplyStructs+100) })
+	unstored := [][]byte{light, heavy}
+	merge := mergeWeight(unstored)
+	if merge == 0 {
+		t.Fatal("the room's updates merge on no grant, so nothing here is tested")
+	}
+	merged, err := mergeUpdates(unstored)
+	if err != nil {
+		t.Fatal(err)
+	}
+	extra := merge
+	if apply, heavy := heavyUpdateWeight(merged); heavy && apply > merge {
+		extra = apply
+	}
+	folding, foldingWeight := twoRowDocument(t, service, 58, 64<<10)
+	versioned, ok := service.persistence.(*PgVersioned)
+	if !ok {
+		t.Fatalf("the service reads through %T, whose fold slots this test cannot hold", service.persistence)
+	}
+	versioned.foldSlots = make(chan struct{}, 1)
+
+	pool, waits := poolWaits(t)
+	first, again := newPause(t), newPause(t)
+	service.persistence = &loadDocumentAgain{VersionedStore: versioned, room: artifactID, first: first.stop, again: again.stop}
+	read := make(chan error, 1)
+	go func() {
+		_, err := service.storedWithUpdates(ctx, artifactID, unstored)
+		read <- err
+	}()
+	first.await(t, read, "the stored read's first pass")
+	filler := fillPoolBut(t, pool, extra)
+	served := queueTaker(t, waits, extra+1)
+	first.goOn()
+	again.await(t, read, "the stored read's later pass")
+	requireServed(t, served)
+	// The later pass holds the total its first pass was refused. The other fold takes the one
+	// slot and then waits for its rows' weight, which the pool has free only once the read gives
+	// its grant back. The signals of the waits before it - the later pass's own wait for its total
+	// - are drained first, so the one awaited below is the fold's, sent once it holds the slot.
+	if free := pool.poolBytes() - pool.held.Load(); free >= foldingWeight {
+		t.Fatalf("the pool has %d bytes free beside the read's later pass, enough for the other fold's %d, so nothing here is tested", free, foldingWeight)
+	}
+	for len(waits) > 0 {
+		<-waits
+	}
+	folded := make(chan error, 1)
+	go func() {
+		_, err := versioned.Load(ctx, folding)
+		folded <- err
+	}()
+	select {
+	case <-waits:
+	case err := <-folded:
+		t.Fatalf("the other fold finished (%v) while the pool lacked its rows' weight, want it waiting for that holding the fold slot", err)
+	case <-time.After(holdAndWaitBound):
+		t.Fatalf("the other fold never came to wait for the pool within %s", holdAndWaitBound)
+	}
+	again.goOn()
+	err = answeredWithin(t, read, "the stored read's later pass, beside a fold slot held by a fold waiting for the bytes it holds")
+	if !errors.Is(err, errFoldSlotsBusy) || !errors.Is(err, ErrServiceUnavailable) {
+		t.Fatalf("the stored read's later pass beside a held fold slot was answered %v, want it refused busy: %v", err, errFoldSlotsBusy)
+	}
+	filler.release()
+	if err := answeredWithin(t, folded, "the other fold, once the read gave its grant back"); err != nil {
+		t.Fatalf("the other fold: %v", err)
+	}
+	if held := pool.held.Load(); held != 0 {
+		t.Fatalf("the pool holds %d bytes once the read was refused and the fold finished, want none", held)
+	}
+}
+
 // The append gate's check of a history replaced under a room weighs the history's rows before its
 // fold decodes any of them and takes their weight whole (storedHistoryHolds), so the fold takes
 // nothing more row by row; and it holds the document that history makes as it takes what the run
@@ -1143,6 +1262,94 @@ func TestTheGatesCheckOfAReplacedHistoryDecodesAgainUnderTheWholeGrantRatherThan
 	requireServed(t, served)
 	if held := pool.held.Load(); held != filler.bytes {
 		t.Fatalf("the pool holds %d bytes once the check returned, want the test's %d alone", held, filler.bytes)
+	}
+}
+
+// A whole copy of a resident room weighed (copyOfRoom) as its take begins to wait for the pool, and
+// made once that wait is over, is covered by a grant weighed again once the wait is over: what the
+// room committed meanwhile is in the copy, so the grant takes it, at once here since the pool has
+// room by then. Each site below waits for the full pool while a browser's commit lands in the
+// room, and the grant held as the copy is made covers the room as the copy found it: a write's warm
+// fork, whose clone weighs the room again (forkPoint); a server write's decode-cap count
+// (leavesPastDecodeCap); and the check of a live room near its caps the rebuild route and a refused
+// apply's offer of a rebuild make (nearACapOfRoom). Before, each copied the room under the weight
+// it had before the wait, short by what the commit added.
+func TestACopyOfARoomWeighedBeforeItsWaitIsCoveredAsTheRoomStandsOnceTheWaitIsOver(t *testing.T) {
+	service, _ := newTestService(t)
+	service.settle = time.Hour
+	documents, _ := residentGrantDocuments(t, service, []int{71, 72, 73}, []int{16 << 10, 16 << 10, 16 << 10})
+	for index, site := range []struct {
+		name string
+		// copy starts the copy of live on a goroutine of its own and answers what the copy
+		// answers, with held, the bytes of the pool its grant held as the copy was made, read
+		// once the copy has answered; pool is the test's pool, its fill given back by then.
+		copy func(t *testing.T, pool *loadSlots, document string, live *crdt.Doc) (answered <-chan error, held func() int64)
+	}{
+		{"a write's warm fork, a clone of the room's replica", func(t *testing.T, _ *loadSlots, document string, live *crdt.Doc) (<-chan error, func() int64) {
+			write := &liveWrite{artifactID: document, clientID: crdt.NewClientID(), state: newRoomState(), slot: &forkSlot{slot: newLoadSlot()}}
+			t.Cleanup(write.slot.slot.release)
+			answered := make(chan error, 1)
+			go func() {
+				_, err := service.warmFork(write.carriedBy(context.Background()), write, live)
+				answered <- err
+			}()
+			return answered, func() int64 { return write.slot.slot.bytes }
+		}},
+		{"a server write's decode-cap count, a decode of the room's state", func(t *testing.T, pool *loadSlots, _ string, live *crdt.Doc) (<-chan error, func() int64) {
+			var held int64
+			count := serverWrite{apply: func(*crdt.Doc) { held = pool.held.Load() }}
+			answered := make(chan error, 1)
+			go func() {
+				service.leavesPastDecodeCap(context.Background(), live, count)
+				answered <- nil
+			}()
+			return answered, func() int64 { return held }
+		}},
+		{"the check of a live room near its caps, an encode and decode of the room's state", func(t *testing.T, _ *loadSlots, _ string, live *crdt.Doc) (<-chan error, func() int64) {
+			slot := newLoadSlot()
+			t.Cleanup(slot.release)
+			answered := make(chan error, 1)
+			go func() {
+				_, _, err := service.nearACapOfRoom(slot.carriedBy(context.Background()), live, service.roomWeighingOf(live).roomStateBytes())
+				answered <- err
+			}()
+			return answered, func() int64 { return slot.bytes }
+		}},
+	} {
+		t.Run(site.name, func(t *testing.T) {
+			document := documents[index]
+			live := service.srv.GetDoc(document)
+			if live == nil {
+				t.Fatalf("no room of %s is resident", document)
+			}
+			before := service.copyOfRoom(live)
+			pool, waits := poolWaits(t)
+			filler := fillPoolBut(t, pool, before-1)
+			answered, held := site.copy(t, pool, document, live)
+			select {
+			case <-waits:
+			case err := <-answered:
+				t.Fatalf("%s finished (%v) while the pool lacked the room's weight, want it waiting for that", site.name, err)
+			case <-time.After(holdAndWaitBound):
+				t.Fatalf("%s never came to wait for the pool within %s", site.name, holdAndWaitBound)
+			}
+			// A browser's commit lands in the room while the copy's take waits.
+			if _, applied := newRoomCommitter(t, live).commitKeys(200); <-applied != nil {
+				t.Fatal("the commit to the room was refused")
+			}
+			after := service.copyOfRoom(live)
+			if after <= before {
+				t.Fatalf("the room weighs %d after the commit and %d before it, want more after, or nothing here is tested", after, before)
+			}
+			filler.release()
+			if err := answeredWithin(t, answered, site.name); err != nil {
+				t.Fatalf("%s: %v", site.name, err)
+			}
+			if got := held(); got < after {
+				t.Fatalf("%s held %d bytes of the pool as it copied the room, want the %d the room weighs once its wait was over: it was weighed at %d before the wait, short of the commit it copied",
+					site.name, got, after, before)
+			}
+		})
 	}
 }
 

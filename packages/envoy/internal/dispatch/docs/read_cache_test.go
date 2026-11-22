@@ -570,6 +570,37 @@ func TestColdLoadTimeoutIsServiceUnavailable(t *testing.T) {
 	}
 }
 
+// A cold read whose load waits for the pod's load concurrency past the cold read's bound is no
+// fault of the document: the pool is full, here held whole by the test. The read is refused busy
+// (errGrantShort, ErrServiceUnavailable, the 503 its caller retries), the room is not failed, and
+// the read finds the document once the pool has room. Before, the fold's timeout failed the room
+// (failRoom), which counts a failure and drops its settlement, as a history that does not load
+// does.
+func TestAColdReadWhoseWaitForThePoolPassesItsBoundIsRefusedBusyAndFailsNoRoom(t *testing.T) {
+	database := storetest.Open(t)
+	artifactID := createDocument(t, database, "before")
+	service := newReadCacheService(t, database, NewPgVersioned(database))
+	seedServiceText(t, service, artifactID, "before\n")
+	oldTimeout := coldReadTimeout
+	coldReadTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { coldReadTimeout = oldTimeout })
+	pool, waited := poolOfOneSlot(t, nil)
+	filler := fillPoolBut(t, pool, 0)
+
+	_, err := service.Text(context.Background(), artifactID)
+	if !waited.Load() {
+		t.Fatalf("the cold read answered %v without waiting for the full pool, so nothing here is tested", err)
+	}
+	if !errors.Is(err, errGrantShort) || !errors.Is(err, ErrServiceUnavailable) || !RefusedBusy(err) {
+		t.Fatalf("the cold read whose wait for the full pool passed its bound was answered %v, want it refused busy: %v", err, errGrantShort)
+	}
+	if service.roomFailed(artifactID) {
+		t.Fatal("the cold read's wait for the full pool failed the room, whose document is sound")
+	}
+	filler.release()
+	waitForDocumentText(t, service, artifactID, "before\n")
+}
+
 func TestColdReadSeesTheNewContentAfterPruneAndReappend(t *testing.T) {
 	database := storetest.Open(t)
 	versioned := NewPgVersioned(database)
