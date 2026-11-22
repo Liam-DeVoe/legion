@@ -48,7 +48,10 @@ var idleWaitingKinds = []string{"supervise", "notice", "hook_prompt", "update_as
 // the role comes back with its news. And such a start can wait a long time. A merger's waits for
 // its tree's design gate for the whole time the gate stays closed (the daemon's
 // mergerWaitsForTheDesignGate), and any one waits behind a task its claim has not finished
-// (supervise's queue). A pod held for it would stand idle for all that time.
+// (supervise's queue). A pod held for it would stand idle for all that time. The teardown passes
+// over one start of this predicate: a wake's own start of a role the release recorded, with a
+// wake since the mark (wakeStartRow, IssueRelease). That start waits for the teardown and starts
+// the role in the pod that comes back.
 const idleWaitingRow = `kind = any($2) and not (kind = 'supervise' and coalesce(payload->>'news', '') = 'true')`
 
 // IdleReleaseRow is one outbox row a release writes, encoded by its caller (record.NewOutboxRow),

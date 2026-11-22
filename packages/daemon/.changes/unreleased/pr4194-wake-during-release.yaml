@@ -10,10 +10,11 @@ body: |-
   second start while one of three starts of that role is queued for the issue's current
   generation: a cancelled release's resume, the start of an earlier wake, or a root architect's
   entry start. A production check's look queued for the role is no such start, since the look can
-  end without starting the role. A CI settlement that does not wake the role is sent to it as a
-  message. The task of a role woken by a message says what reaches it when Envoy stored
-  or kept the message, and that a message Envoy did not store or keep must be sent again. A role
-  wake report of another project decodes to no
+  end without starting the role. An architect's start queued for news of the approved design alone
+  is no such start either, for the same reason. A CI settlement that does not wake the role is
+  sent to it as a message. The task of a role woken by a message says what reaches it when Envoy
+  stored or kept the message, and that a message Envoy did not store or keep must be sent again.
+  A role wake report of another project decodes to no
   fact and writes no `processed_events` row. The role is read in either form of its name, the
   token alone or `<PROJECT>.<token>`, and a token named under another project is no fact either.
   A wake taken after the release recorded the claim released no longer cancels the release: the

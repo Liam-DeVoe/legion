@@ -101,9 +101,10 @@ func namedRequest(request string, err error) error {
 // itself (raiseStream), and a refused create names the setting behind it after the step:
 // `KV_envoy_interests create: ENVOY_NATS_REPLICAS=3: ...`. Every request goes through js with its
 // errors named (namedJetStream), so one nats.go refuses while it reconnects the connection names
-// the reconnect: `KV_envoy_interests STREAM.INFO: bus: NATS is reconnecting`. Such a send is an
-// answer and not a silence (unanswered), so the step ends on it at once, as it would on any
-// answer, and sends it no more.
+// the reconnect: `KV_envoy_interests STREAM.INFO: bus: NATS is reconnecting`. The create's own
+// check of the server's version, which refuses before anything is sent, is named the same way
+// (createBucket). Such a send is an answer and not a silence (unanswered), so the step ends on it
+// at once, as it would on any answer, and sends it no more.
 //
 // The handle open this function ends with is sent again too when the server leaves it unanswered
 // (wrapKeyValue, sentAgain), on both of its paths: a bucket this start created and one it found
@@ -171,7 +172,7 @@ func ensureKeyValue(ctx context.Context, guard time.Duration, conn *nats.Conn, j
 		// guards is a write another one can race. A request of the step the server refuses under
 		// the connection's grant ends the step at that send instead (refusedBy): it would be
 		// refused again.
-		_, err = sentAgain(ctx, create, func() (struct{}, error) { return struct{}{}, createBucketStream(conn, js, config) })
+		_, err = sentAgain(ctx, create, func() (struct{}, error) { return struct{}{}, createBucket(ctx, conn, js, config) })
 		switch {
 		case err == nil || errors.Is(err, nats.ErrStreamNameAlreadyInUse):
 			// The stream is there, and the member answering may not have applied its create:
@@ -262,6 +263,22 @@ func ensureKeyValue(ctx context.Context, guard time.Duration, conn *nats.Conn, j
 		return KeyValue{}, err
 	}
 	return handle, nil
+}
+
+// createBucket is the create step of ensureKeyValue: the create of the bucket's stream
+// (createBucketStream) through js, whose requests name their errors (namedJetStream), with the
+// create's own check of the server's version named by conn's state as well (namedOn). That check
+// refuses before anything is sent, as nats.go's create does, and a connection that nats.go is
+// reconnecting reports no version. So the refusal, "nats: key-value requires at least server
+// version 2.6.2", says nothing true then, and the step answers the ErrReconnecting it is. The check
+// is no request of js, so no method of namedRequests names it. The state is read within ctx, the
+// step's context (readWithin).
+func createBucket(ctx context.Context, conn *nats.Conn, js nats.JetStreamContext, config *nats.KeyValueConfig) error {
+	err := createBucketStream(conn, js, config)
+	if errors.Is(err, errKeyValueServerTooOld) {
+		return namedOn(ctx, conn, err)
+	}
+	return err
 }
 
 // awaitBucketApplied is read, a read of the bucket a start has just created, taken again every

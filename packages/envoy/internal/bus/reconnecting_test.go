@@ -22,7 +22,10 @@ import (
 // buffer limit exceeded", since the client keeps no reconnect buffer. A KV bucket's lookup it
 // refuses before it sends, with "nats: key-value requires at least server version 2.6.2", since a
 // reconnecting connection reports no server version; the context names that from the
-// connection's state.
+// connection's state. EnsureKeyValue's create of a bucket's stream (createBucket, since the merge
+// of main 51d1a21f brought in #4789's createBucketStream) makes nats.go's requests one at a time:
+// its account read is a request of the context, and its own check of the server's version refuses
+// as nats.go's does, which the step names from the connection's state too.
 func TestAJetStreamSendWhileNATSReconnectsFailsByName(t *testing.T) {
 	const (
 		named   = "bus: NATS is reconnecting"
@@ -104,6 +107,14 @@ func TestAJetStreamSendWhileNATSReconnectsFailsByName(t *testing.T) {
 			_, err := SetKeyValueMaxAge(ctx, owner.Conn, handed, bucket, time.Hour)
 			return err
 		}, want: "set KV_" + bucket + " max age: KV_" + bucket + " STREAM.INFO: " + named, refused: true},
+		{what: "an account read through the client's context", send: func() error {
+			_, err := owner.JS().AccountInfo()
+			return err
+		}, want: named, refused: true},
+		{what: "a bucket's create step through a context its caller handed it", send: func() error {
+			return createBucket(ctx, owner.Conn, readsRefusals(owner.Conn, namedJetStream(owner.Conn, handed)),
+				&nats.KeyValueConfig{Bucket: bucket + "-created"})
+		}, want: named},
 	} {
 		t.Run(row.what, func(t *testing.T) {
 			err := row.send()

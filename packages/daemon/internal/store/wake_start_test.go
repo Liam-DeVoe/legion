@@ -237,6 +237,39 @@ func TestAStartQueuedIsNoProductionChecksLook(t *testing.T) {
 	}
 }
 
+// The forward merge of main 51d1a21f (#3995) into dispatch://INFRA-3589. An architect's start
+// queued for news of the approved design alone (record.SuperviseRequest.News) names no phase and
+// waits for no slot, so it has the shape of a start that brings its role back (resumeStartRow).
+// It finishes without acting at a claim it may not reach, and wherever the record owes nothing
+// when it runs (the daemon's startNewsOf). A listener's wake that read it as the role coming back
+// would take nothing (workflow's wakeReleased), and the role would stay released when that start
+// acts on nothing. So StartQueued counts no start of news alone, as it counts no look. The
+// architect's entry start of the same generation brings the role back, and it counts.
+func TestAStartQueuedIsNoArchitectsStartOfNewsAlone(t *testing.T) {
+	st := migratedStore(t)
+	openRunningTree(t, st)
+	records := podRecords(t, st)
+	queued := func() bool {
+		t.Helper()
+		var queued bool
+		inTx(t, st, func(tx pgx.Tx) error {
+			var err error
+			queued, err = records.StartQueued(context.Background(), tx, rootIssue, claim.RoleArchitect, 1)
+			return err
+		})
+		return queued
+	}
+	queueSupervise(t, st, record.SuperviseRequest{Op: "start", Tree: rootIssue, Role: claim.RoleArchitect, Generation: 1, News: true})
+	if queued() {
+		t.Error("StartQueued = true with only the architect's start of news alone queued, want false: that start can finish without acting, and the role would stay released")
+	}
+	queueSupervise(t, st, record.SuperviseRequest{Op: "start", Tree: rootIssue, Role: claim.RoleArchitect,
+		Generation: 1, Task: entryTask, Entry: 2})
+	if !queued() {
+		t.Error("StartQueued = false with the architect's entry start queued, want true: that start brings the role back")
+	}
+}
+
 // The class search of dispatch://INFRA-3589 at 45fc14a3, entry 41. A wake of a role of the mark's
 // set was taken under the mark, and then an operator suspended that role's claim, which cancels
 // the release (releaseOvertaken). The cancel resumes only the claims still suspended as

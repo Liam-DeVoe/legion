@@ -159,11 +159,13 @@ func requestContext[O any](opts []O) context.Context {
 // read because nats.go answers some requests then with words of its own that say nothing true. It
 // refuses a KV bucket's lookup and create before it sends anything: both first check the server's
 // version, which a connection that is reconnecting does not report, and answer "nats: key-value
-// requires at least server version 2.6.2". And a request sent just before the connection dropped
-// waits for a reply that never comes, and answers its caller's deadline. The error nats.go gave
-// stays in the chain (reconnectingSend), so a caller that reads it still finds it. An error that
-// is ErrReconnecting already is returned as it is, such as a wait for the connection that ended
-// first (reconnectWaitEnded).
+// requires at least server version 2.6.2". The create EnsureKeyValue makes in nats.go's place
+// checks the version first too (createBucketStream), and its step names that refusal here
+// (createBucket). And a request sent just before the connection dropped waits for a reply that
+// never comes, and answers its caller's deadline. The error nats.go gave stays in the chain
+// (reconnectingSend), so a caller that reads it still finds it. An error that is ErrReconnecting
+// already is returned as it is, such as a wait for the connection that ended first
+// (reconnectWaitEnded).
 //
 // A nil conn names nats.go's refusal alone and reads no state: connecting would panic on it. The
 // one caller that can pass one is streamRead.wait, which passes its client's connection
@@ -176,13 +178,15 @@ func requestContext[O any](opts []O) context.Context {
 // (readWithin). A read that has not answered by then was made while nats.go holds the lock through
 // a reconnect's handshake, and err is named the ErrReconnecting it is, as for a read that answers
 // that nats.go reconnects conn. Each caller passes the context its request was made under:
-// requestConfirmed its own, streamRead.wait the one whose end it names, and a legacy JetStream
-// context's request the one its nats.Context option gives (namedWith). A request made with none
-// passes context.Background(), and the read is then made at once on the caller's goroutine.
+// requestConfirmed its own, streamRead.wait the one whose end it names, a legacy JetStream
+// context's request the one its nats.Context option gives (namedWith), and createBucket its step's.
+// A request made with none passes context.Background(), and the read is then made at once on the
+// caller's goroutine.
 //
 // It is the one rule every place that names a request's error follows: a legacy JetStream context
-// (namedRequests), a request this package builds itself (Client.requestConfirmed), and a call
-// that waits for such a request another call made (streamRead.wait).
+// (namedRequests), a request this package builds itself (Client.requestConfirmed), a call that
+// waits for such a request another call made (streamRead.wait), and the create of a bucket's
+// stream, whose check of the server's version is no request of a context (createBucket).
 func namedOn(ctx context.Context, conn *nats.Conn, err error) error {
 	if err == nil || errors.Is(err, ErrReconnecting) || conn == nil {
 		return Reconnecting(err)
@@ -205,6 +209,13 @@ func (j namedRequests) UpdateStream(cfg *nats.StreamConfig, opts ...nats.JSOpt) 
 
 func (j namedRequests) StreamInfo(stream string, opts ...nats.JSOpt) (*nats.StreamInfo, error) {
 	info, err := j.JetStreamContext.StreamInfo(stream, opts...)
+	return info, namedWith(j, err, opts)
+}
+
+// AccountInfo reads the account's JetStream info: the first request of the create of a bucket's
+// stream (createBucketStream).
+func (j namedRequests) AccountInfo(opts ...nats.JSOpt) (*nats.AccountInfo, error) {
+	info, err := j.JetStreamContext.AccountInfo(opts...)
 	return info, namedWith(j, err, opts)
 }
 

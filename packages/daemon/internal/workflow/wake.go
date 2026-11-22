@@ -606,11 +606,12 @@ func (e *Engine) podBackstopDue(ctx context.Context, tx pgx.Tx, fact intake.PodB
 // reads `released` until that start runs (store.CancelIssueRelease). The pod never went away, so a
 // wake taken then would record a resume of a pod no release took and queue a second start for a
 // role that needs neither. A start a wake already queued is such a start too, and so is an
-// architect's start. Such a wake takes nothing and answers false, and what each kind owes the role
-// still reaches it. A listener's report is of a message Envoy keeps or stores for the role, which
-// reaches the session the start brings back. A CI settlement that woke no role is told to the
-// phase's worker by a role message, as it is told to any live role (tellChecks, which tells every
-// role a settlement did not wake). A backstop owes the role only its return, which the start
+// architect's start, but not an architect's start queued for news alone, which can finish without
+// acting (Pods.StartQueued). Such a wake takes nothing and answers false, and what each kind owes
+// the role still reaches it. A listener's report is of a message Envoy keeps or stores for the
+// role, which reaches the session the start brings back. A CI settlement that woke no role is told
+// to the phase's worker by a role message, as it is told to any live role (tellChecks, which tells
+// every role a settlement did not wake). A backstop owes the role only its return, which the start
 // brings. The start is read after the release mark's lock (PauseOfWake), as the delivery wake
 // reads it (store.Store.TakeDeliveryWake): a cancel that held the mark has committed its start
 // before this read begins.

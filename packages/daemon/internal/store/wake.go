@@ -753,10 +753,12 @@ func claimInRelease(ctx context.Context, tx pgx.Tx, where, project, value, what 
 }
 
 // resumeStartRow is the shape of an outbox `start` that names no phase and waits for no admission
-// slot, over the outer table `outbox`, unaliased. Four rows have that shape: the row a wake queues
+// slot, over the outer table `outbox`, unaliased. Five rows have that shape: the row a wake queues
 // (workflow's wakeRow), the row a cancelled release queues for each claim it suspended
-// (CancelIssueRelease), a root architect's entry start, and a production check's look.
-// StartQueued reads each of them but the look.
+// (CancelIssueRelease), a root architect's entry start, a production check's look, and an
+// architect's start queued for news of the approved design alone (record.SuperviseRequest.News),
+// which names no phase for an architect (the daemon's settleNews). StartQueued reads each of them
+// but the look and the start of news alone.
 const resumeStartRow = `outbox.kind = 'supervise' and outbox.payload->>'op' = 'start'
 	and coalesce(outbox.payload->>'phase', '') = '' and coalesce(outbox.payload->>'needsSlot', '') <> 'true'`
 
@@ -772,16 +774,20 @@ const wakeStartRow = resumeStartRow + ` and coalesce(outbox.payload->>'wakeKind'
 
 // StartQueued is whether the outbox holds a `start` that brings issue's role back at generation:
 // a start of that role and generation that names no phase, waits for no admission slot
-// (resumeStartRow) and looks at no production check. Rows of that shape come from a cancelled
-// release (its resume of each claim it suspended: CancelIssueRelease, the daemon outbox's
-// releaseResume), a wake (workflow's wakeRow) and an architect start (admission, and the resume
-// of an awaited root). Such a row meets no phase fence and waits for no slot. When it runs, the
-// outbox's start executor resumes a suspended claim of that role (supervise.RequestRuleResume),
-// so a role with one queued is coming back. A production check's look has the same shape, but it
-// is fenced on its check and look, and it finishes without acting when its look ended before it
-// ran. So a look is not counted: a wake that read it as the role coming back would take nothing,
-// and the role would stay released when the look starts nothing. A row the outbox has finished is
-// deleted, so every row this reads is still to run.
+// (resumeStartRow), looks at no production check and is not queued for news alone. Rows of that
+// shape come from a cancelled release (its resume of each claim it suspended: CancelIssueRelease,
+// the daemon outbox's releaseResume), a wake (workflow's wakeRow) and an architect start
+// (admission, and the resume of an awaited root). Such a row meets no phase fence and waits for no
+// slot. When it runs, the outbox's start executor resumes a suspended claim of that role
+// (supervise.RequestRuleResume), so a role with one queued is coming back. A production check's
+// look has the same shape, but it is fenced on its check and look, and it finishes without acting
+// when its look ended before it ran. So a look is not counted: a wake that read it as the role
+// coming back would take nothing, and the role would stay released when the look starts nothing.
+// An architect's start queued for news of the approved design alone (record.SuperviseRequest.News)
+// has the same shape too, and it is not counted for the same reason: it finishes without acting at
+// a claim it may not reach, and wherever the record owes nothing when it runs (the daemon's
+// startNewsOf). workflow's startsWork reads such a start as no start for the same reason. A row the
+// outbox has finished is deleted, so every row this reads is still to run.
 func (p *PodRecords) StartQueued(ctx context.Context, tx pgx.Tx, issue string, role claim.Role, generation uint64) (bool, error) {
 	return startQueued(ctx, tx, issue, role, generation)
 }
@@ -791,7 +797,7 @@ func (p *PodRecords) StartQueued(ctx context.Context, tx pgx.Tx, issue string, r
 func startQueued(ctx context.Context, tx pgx.Tx, issue string, role claim.Role, generation uint64) (bool, error) {
 	var queued bool
 	if err := tx.QueryRow(ctx, `select exists (select 1 from outbox where issue = $1 and `+resumeStartRow+`
-		and coalesce(outbox.payload->>'checkLook', '') = ''
+		and coalesce(outbox.payload->>'checkLook', '') = '' and coalesce(outbox.payload->>'news', '') <> 'true'
 		and payload @> jsonb_build_object('role', $2::text, 'generation', $3::bigint))`,
 		issue, string(role), int64(generation)).Scan(&queued); err != nil {
 		return false, fmt.Errorf("read whether a start of %s's %s is queued: %w", issue, role, err)
