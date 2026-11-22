@@ -658,11 +658,24 @@ func (s *Service) refuseIfRebuilding(room string) error {
 // VerifyMark); this refusal is what an Apply meets where the room went between their look and the
 // Apply, the 503 the caller retries (errRoomLoadUnderGrant). A resident room is no load, and is
 // applied as before.
+//
+// ygo looks the room up only once this has returned (getOrCreateRoom), and loads it there where it
+// is gone by then. Such a transaction's Apply holds the room against every close the service
+// makes from before this look until its Apply has returned (roomServer.Apply), so a room this
+// finds resident is the room ygo finds; a close already under way or waiting refuses the Apply
+// before this runs. ygo's idle sweep takes no hold of the service's, and is the one close that can
+// still retire the room in between, a room no peer has held for roomIdleTimeout.
 func (s *Service) allowApply(ctx context.Context, info websocket.InjectInfo) error {
 	if transactionHolds(ctx) && s.srv.GetDoc(info.Room) == nil {
 		return errRoomLoadUnderGrant
 	}
-	return s.allowInject(ctx, info)
+	if err := s.allowInject(ctx, info); err != nil {
+		return err
+	}
+	if s.afterApplyAllowed != nil {
+		s.afterApplyAllowed(info.Room)
+	}
+	return nil
 }
 
 // errRoomLoadUnderGrant refuses the load of a room a transaction holding its grant would have

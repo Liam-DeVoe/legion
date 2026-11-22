@@ -1461,8 +1461,9 @@ func (s *Service) weighPeerUpdate(info websocket.PeerUpdateInfo, apply func() er
 	// A heavy apply's grant goes back at the end of the room's update observer for this apply's
 	// commit, after that observer's decode of the commit into the room's replica, which it covers
 	// (roomApplies.releaseGrant); an apply that is refused, rolled back or changes nothing fires no
-	// update observer (reearth/ygo#350) and gives it back through the defer above. loadSlots says
-	// why it goes back there.
+	// update observer (reearth/ygo#350): one refused or rolled back gives it back below, before its
+	// refusal is judged, and one that changes nothing through the defer above. loadSlots says why
+	// it goes back there.
 	err := applies.applying(info.Origin, allowance.budget, grant, apply)
 	scans.settle(scanning, err)
 	// A drain the room took back leaves the update that released it standing and committed
@@ -1475,6 +1476,13 @@ func (s *Service) weighPeerUpdate(info websocket.PeerUpdateInfo, apply func() er
 		s.closeDiscardedSenders(info.Room, info.Update, discarded)
 	}
 	if !stood {
+		// The room took the refused update back out whole, so nothing the grant covered stays, and
+		// the grant goes back before the refusal is judged: the judgement of a used-up room's
+		// refusal waits for a grant of its own of a whole copy of the room (rebuildTakes), and a
+		// holder that queued for it holding this one would wait behind every waiter ahead of it,
+		// one of which may need these very bytes (loadSlots). The deferred release then gives
+		// back nothing (loadSlot.release).
+		grant.release()
 		return s.refusedByApply(info, weighing, allowance, scanning, err)
 	}
 	// What the apply left in the room's pending queue is the room's from here, in memory beside

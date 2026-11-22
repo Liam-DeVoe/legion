@@ -320,6 +320,10 @@ func (s *server) endedWithACancelledContext(w http.ResponseWriter, err error) bo
 		return true
 	}
 	call := callOf(w)
+	// A call past WriteRequestBound has every DeadlineExceeded answered 503, a bound a handler put
+	// on one of its own waits included, since the error names no deadline. That edge stays: by
+	// then the call's own bound has passed too, and the answer turns what would be a 500 into the
+	// retryable 503 the call would be owed for that bound.
 	return call != nil && (call.Err() != nil || (deadline && docs.WriteRequestBoundPassed(call)))
 }
 

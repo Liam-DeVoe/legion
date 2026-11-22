@@ -136,10 +136,11 @@ func NewPgVersioned(database *store.Store) *PgVersioned {
 // Load returns the room's state at its head (stateThrough), constrained by a pending prune
 // checkpoint when one exists, read as every document load reads (loadStored): in one
 // repeatable-read transaction on the rooms pool, folded once that transaction has committed when
-// the rows total at most foldBufferBytes, so a fold holds no connection a room load waits for, and
-// inside it while it streams them when they total more, under a grant taken before that
-// transaction began; and noted once it has read more than one row. A room's load decodes the state
-// it returns once more, in the room's load hook (onLoadDocument).
+// the rows total at most foldBufferBytes, under a slot of the buffered folds taken before that
+// transaction began, so a fold holds no connection a room load waits for, and inside it while it
+// streams them when they total more, under a grant taken before that transaction began; and noted
+// once it has read more than one row. A room's load decodes the state it returns once more, in the
+// room's load hook (onLoadDocument).
 func (p *PgVersioned) Load(ctx context.Context, room string) (persistence.LoadResult, error) {
 	var update []byte
 	stamp, err := p.loadStored(ctx, room, func(ctx context.Context, head persistence.Version, updates updateSource) (err error) {
@@ -161,22 +162,33 @@ func (p *PgVersioned) Load(ctx context.Context, room string) (persistence.LoadRe
 // once its transaction has ended it notes the room (noted) when it read more than one row: one row
 // has nothing to fold, and any later append notes the room itself.
 //
-// The fold's grant of the pod's load concurrency is the grant ctx carries, or one of this read's
-// own given back as it returns (withLoadSlot), and it is never taken while the read holds its
-// rooms connection (loadSlots): a fold of rows in memory takes it once its transaction has
-// committed (foldRead), and a read that streams its rows takes it before the transaction that
-// streams them begins. Such a read's every take - its rows' weight, its read-back's, the decode
-// of its runs or of its one row (documentThrough) - is past what the rows' bytes alone tell the
-// read ahead of the rows themselves, and none is past one slot (copyWeight), so the read gives its
-// connection back, takes one slot whole - a first take, waiting holding nothing of the pool, or,
-// on a grant that already holds bytes, what one slot is past them only where the pool gives it at
-// once (loadSlot.take) - and reads the stored log again in a transaction of its own, whose fold
-// then takes nothing more. The rows' bytes past foldBufferBytes already weigh within 5% of that
-// slot (copyWeight), so the whole slot costs the read little past its rows' own weight. A take
-// inside the transaction would wait for the pool holding its rooms connection, so a holder of the
-// pool that needs a rooms connection - a transaction's cold read of a later document - would wait
-// for it while the fold waited for the bytes that holder holds. A transaction that weighs its
-// documents before its first fork weighs such a log at that whole slot (forkWeight).
+// It takes what it holds in the order loadSlots sets - a slot of the buffered folds, then its
+// grant of the pod's load concurrency, then its rooms connection - and waits for none of them
+// while it holds one that comes later. It takes its fold slot before its rooms connection, before
+// it knows whether its rows stream (loadStoredOnce): waiting within ctx, holding nothing else, for
+// a read whose grant holds nothing; only where one is free at once for a read joined to a
+// transaction whose grant holds bytes, refused busy otherwise (takeFoldSlot); and only where one is
+// free at once for a read whose grant holds one whole slot, which streams its rows where none is
+// (tryFoldSlot). A rooms connection held while it waited for a slot would let a holder of the pool
+// that needs one - a transaction's cold read of a later document - wait, through every rooms
+// connection held so, on folds whose slots wait for the bytes that holder holds.
+//
+// The fold's grant is the grant ctx carries, or one of this read's own given back as it returns
+// (withLoadSlot), and it is never taken while the read holds its rooms connection (loadSlots): a
+// fold of rows in memory takes it once its transaction has committed (foldRead), and a read that
+// streams its rows takes it before the transaction that streams them begins. Such a read's every
+// take - its rows' weight, its read-back's, the decode of its runs or of its one row
+// (documentThrough) - is past what the rows' bytes alone tell the read ahead of the rows
+// themselves, and none is past one slot (copyWeight), so the read gives its connection and its
+// fold slot back, takes one slot whole - a first take, waiting holding nothing of the pool, or, on
+// a grant that already holds bytes, what one slot is past them only where the pool gives it at once
+// (loadSlot.take) - and reads the stored log again in a transaction of its own, whose fold takes
+// nothing more. The rows' bytes past foldBufferBytes already weigh within 5% of that slot
+// (copyWeight), so the whole slot costs the read little past its rows' own weight. A take inside
+// the transaction would wait for the pool holding its rooms connection, so a holder of the pool
+// that needs a rooms connection - a transaction's cold read of a later document - would wait for it
+// while the fold waited for the bytes that holder holds. A transaction that weighs its documents
+// before its first fork weighs such a log at that whole slot (forkWeight).
 func (p *PgVersioned) loadStored(ctx context.Context, room string, use func(ctx context.Context, head persistence.Version, updates updateSource) error) (DocumentStamp, error) {
 	if err := ctx.Err(); err != nil {
 		return DocumentStamp{}, err
@@ -200,10 +212,27 @@ func (p *PgVersioned) loadStored(ctx context.Context, room string, use func(ctx 
 }
 
 // loadStoredOnce is one attempt of loadStored's read in a transaction of its own on rooms. It
-// answers streams, having ended its transaction and read nothing more, where the rows would stream
-// (past foldBufferBytes) and slot does not hold one whole slot yet, for loadStored to take that
-// slot holding no rooms connection and read again.
+// first takes a slot of the buffered folds, and gives it back as it returns: where slot holds less
+// than one whole slot, as takeFoldSlot takes one, and on a whole slot only where one is free at
+// once (tryFoldSlot), since a holder of the pool waits for no slot. It answers streams, having ended
+// its transaction and read nothing more, where the rows would stream (past foldBufferBytes) and
+// slot holds less than one whole slot, for loadStored to take that slot holding no rooms
+// connection and no fold slot and read again. A read on a whole slot streams its rows where they
+// pass foldBufferBytes or it has no fold slot.
 func (p *PgVersioned) loadStoredOnce(ctx context.Context, rooms *pgxpool.Pool, room string, slot *loadSlot, use func(ctx context.Context, head persistence.Version, updates updateSource) error) (DocumentStamp, bool, error) {
+	whole := slot.bytes >= loadSlotBytes
+	var giveBack func()
+	if whole {
+		giveBack = p.tryFoldSlot()
+	} else {
+		var err error
+		if giveBack, err = p.takeFoldSlot(ctx); err != nil {
+			return DocumentStamp{}, false, err
+		}
+	}
+	if giveBack != nil {
+		defer giveBack()
+	}
 	tx, err := rooms.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
 		return DocumentStamp{}, false, fmt.Errorf("begin document load: %w", err)
@@ -220,10 +249,11 @@ func (p *PgVersioned) loadStoredOnce(ctx context.Context, rooms *pgxpool.Pool, r
 		}
 		return stored.stamp, false, nil
 	}
-	if stored.bytes > p.foldBuffer() && slot.bytes < loadSlotBytes {
+	buffered := giveBack != nil && stored.bytes <= p.foldBuffer()
+	if !buffered && !whole {
 		return DocumentStamp{}, true, nil
 	}
-	if err := p.foldRead(ctx, tx, room, head, stored.rows, stored.bytes, "document load", func(ctx context.Context, updates updateSource) error {
+	if err := p.foldRead(ctx, tx, room, head, stored.rows, stored.bytes, "document load", buffered, func(ctx context.Context, updates updateSource) error {
 		return use(ctx, head, updates)
 	}); err != nil {
 		return DocumentStamp{}, false, err

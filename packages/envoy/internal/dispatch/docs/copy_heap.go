@@ -79,16 +79,13 @@ import (
 // room's answer is cut from its own structs, decodes nothing of the document and carries nothing
 // the room parks, so each answer takes the cut's weight (answerWeight).
 //
-// Every taker takes its bytes before it takes a database connection, so no grant is held behind
-// a connection pool a holder of another grant could fill, and a wait a request's context ends is
-// answered errWriteBusy, the API's 503 DOC_SERVICE_UNAVAILABLE. Of the rooms pool, which a
-// holder of the pool can need while it holds - a transaction's cold read of a later document -
-// the order is the rule's other half: a holder takes its pool grant before any rooms connection,
-// and takes no pool grant while it holds one. A document load's fold of rows in memory takes its
-// grant once its rooms transaction has committed, and a load whose rows stream takes it, one slot
-// whole, before that transaction begins (loadStored, foldRead). The copy a read of a resident
-// room takes while the room's replica is busy (holdLive, snapshotDocument) takes nothing: its
-// callers hand it no request context to bound a wait by.
+// Every taker takes its bytes before any connection it would wait for while it holds them, but a
+// connection of the rooms pool, which a holder of the pool can need while it holds - a
+// transaction's cold read of a later document - and whose holders wait for nothing of the pool
+// (loadSlots sets the order), and a wait a request's context ends is answered errWriteBusy, the
+// API's 503 DOC_SERVICE_UNAVAILABLE. The copy a read of a resident room takes while the room's
+// replica is busy (holdLive, snapshotDocument) takes nothing: its callers hand it no request
+// context to bound a wait by.
 
 // unslottedApplyBytes is the update's own bytes at or under which an apply of a browser's update
 // takes no slot, where it declares no more than unslottedApplyStructs structs: 2 MiB, the figure
@@ -187,13 +184,14 @@ const loadSlotsName = "load"
 //
 // It cannot deadlock, because every holder finishes and gives its bytes back: it waits for
 // nothing another holder or a waiter can hold for good, and it waits for no more of the pool while
-// it holds some. The order of the queue is what makes that last rule bind: a holder queued for
-// more waits behind every waiter ahead of it, whatever is free, so a holder that queued for more
-// behind a waiter needing the bytes it holds would wait on that waiter, and the waiter on it, with
-// most of the pool free. That is what a rewritten document's drive met in CI: a settlement's room
-// load held about 377 MB, a write's cold fork queued for 377 MB with 223 MB free, and the load's
-// read-back queued behind the write for 39 MB more, until the write's 45-second bound answered it
-// 503 (dispatch://INFRA-179, job 136940412632).
+// it holds some, but in the one window ygo's idle sweep leaves (below). The order of the queue is
+// what makes that last rule bind: a holder queued for more waits behind every waiter ahead of it,
+// whatever is free, so a holder that queued for more behind a waiter needing the bytes it holds
+// would wait on that waiter, and the waiter on it, with most of the pool free. That is what a
+// rewritten document's drive met in CI: a settlement's room load held about 377 MB, a write's cold
+// fork queued for 377 MB with 223 MB free, and the load's read-back queued behind the write for 39
+// MB more, until the write's 45-second bound answered it 503 (dispatch://INFRA-179, job
+// 136940412632).
 //
 // The rule is take's, not each caller's: a take on a grant that already holds bytes takes the
 // difference only where the pool gives it at once, and is refused otherwise (errGrantShort). A
@@ -227,11 +225,12 @@ const loadSlotsName = "load"
 //
 // A decode's grant, held between its take and its release, decodes, renders or reads the rows of
 // the transaction it already holds, takes no lock held across a wait, takes no pooled connection
-// - a fold of a document load covers the grant holding no connection, its rows read and its rooms
-// transaction committed or not yet begun (loadStored, foldRead), a compaction's fold its own
-// compaction connection alone, and a room's load gives its grant back before
-// onLoadDocument reads the store - and runs no update observer, since ygo decodes nothing of a
-// loading room's state and no holder commits on a resident room.
+// but one of the rooms pool, whose holders wait for nothing of the pool (below) - a fold of a
+// document load covers the grant holding no connection, its rows read and its rooms transaction
+// committed or not yet begun (loadStored, foldRead), a compaction's fold its own compaction
+// connection alone, and a room's load gives its grant back before onLoadDocument reads the store -
+// and runs no update observer, since ygo decodes nothing of a loading room's state and no holder
+// commits on a resident room.
 //
 // A live write's grant is held far longer - from before its fork is built until its fork is
 // dropped - so the things it holds it across are named here too, each with what keeps that wait
@@ -255,11 +254,17 @@ const loadSlotsName = "load"
 //     what it left (api's sweepClosedIssueAsks, repairIssueAsksOf).
 //   - a slot of the buffered folds (foldSlots) and a room's load, neither of which it waits for
 //     while its grant holds bytes. A holder of a fold slot, and a room's load, can wait for the
-//     pool, so the transaction takes a fold slot only where one is free at once (foldRead,
+//     pool, so the transaction takes a fold slot only where one is free at once (takeFoldSlot,
 //     errFoldSlotsBusy), and loads no room: a read under it of a document no room holds here reads
 //     the stored document on the transaction's own grant (docTree, captureLiveTextAndAuthors,
 //     storedTree), and an Apply that would load one is refused (allowApply,
-//     errRoomLoadUnderGrant), each the 503 its caller retries (transactionHolds).
+//     errRoomLoadUnderGrant), each the 503 its caller retries (transactionHolds). An Apply to a
+//     room it found resident holds that room against every close the service makes until ygo has
+//     looked it up (roomServer.Apply); ygo's idle sweep is the one close that takes no such hold
+//     (below).
+//   - a connection of the rooms pool, for the cold read of a later document or a read beside its
+//     fork (coldFork, coldRead, storedTree). No holder of one waits for the pool or a fold slot
+//     (the order below), so that wait ends.
 //   - the room replica's lock, waited for to clone the replica (warmFork). Nothing under that
 //     lock waits for the pool: the one decode there takes what it needs where the pool has room
 //     at once and otherwise runs beside its holders (renderedReplica.start, holdFreeLoad).
@@ -269,7 +274,9 @@ const loadSlotsName = "load"
 //
 // An apply's grant is given back at the end of the room's own update observer for the commit the
 // apply makes, once that observer has decoded the commit into the room's replica, a decode the
-// grant covers (Service.weighPeerUpdate, roomApplies.releaseGrant). ygo runs that observer before
+// grant covers (Service.weighPeerUpdate, roomApplies.releaseGrant), and an apply refused or rolled
+// back gives it back before its refusal is judged, whose judgement of a used-up room's scan total
+// waits for a grant of its own (rebuildTakes). ygo runs that observer before
 // its persistence observer, on the goroutine that commits: the room registers it in its load hook,
 // ygo registers the persistence observer once that hook has returned
 // (provider/websocket/server.go, loadRoom), and ygo calls a document's update observers in the
@@ -297,21 +304,49 @@ const loadSlotsName = "load"
 // No holder takes a second grant: a decode under a context carrying one covers itself on that one
 // (withLoadSlot), so a room load's fold, its copy's decode and the load hook's decode into the
 // room share the load's, and a write's fork decode and its decode-cap copy share the write's;
-// and one transaction's forks and reads share one grant (forkSlot), which Join's context carries,
+// one transaction's forks and reads share one grant (forkSlot), which Join's context carries,
 // so a transaction writing two documents, or reading one beside its fork of another, never waits
-// for the bytes its own fork holds, nor for a grant of its own beside them.
+// for the bytes its own fork holds, nor for a grant of its own beside them; and a refused apply
+// gives its grant back before its refusal's re-scan takes one (weighPeerUpdate, rebuildTakes). The
+// one window left is ygo's: a transaction holding its grant that applies to a room it found
+// resident (allowApply) holds that room against every close the service makes until ygo has
+// looked it up (roomServer.Apply), but ygo's idle sweep, which retires a room no peer and no
+// caller has held for roomIdleTimeout, takes no hold of the service's, and a room it retires in
+// that window is loaded again on the transaction's goroutine, under a grant of the load's own
+// taken while the transaction holds its own. ygo hands its load no context the transaction could
+// mark, and nothing the service holds keeps the sweep off a room it has not entered.
 //
-// A waiter may hold anything - a write's transaction, its owner row and advisory lock, a
-// compaction's advisory lock and connection, a connection of the rooms pool or of the shared
-// pool, a slot of a buffered fold (foldSlots), a replica's lock, a loading room's ready barrier, a
-// room's persistence worker's session lock on its document, its connection of the room-appends
-// pool and its place as its room's one reader of updates to store - since no holder waits for any
-// of them, and so every holder finishes and gives its bytes back. The one exception is a
-// transaction's later document, whose owner row, writer slot and advisory lock it waits for
-// holding the grant its first document's fork took (above), and which Join's WriteRequestBound
-// bounds, or the transaction's own deadline for the server's two such transactions (above); a fold
-// slot and a room's load it takes only at once or not at all (above). A waiter whose request ends
-// returns its context's error holding nothing.
+// Beside the pool, a holder takes four things in one order, and waits for none of them while it
+// holds one that comes later: a slot of the buffered folds (foldSlots), then its grant of the
+// pool, then a connection of the rooms pool, then a room's document locks - ygo's lock on the
+// room's document, which an Apply and each apply of a browser's update take, and the room
+// replica's lock. A fold slot's holder waits for its grant once it holds its rows (foldRead). A
+// holder of a grant takes a fold slot only where one is free at once - a transaction is refused
+// busy otherwise (takeFoldSlot), and a document load on a whole slot streams its rows instead
+// (tryFoldSlot) - and of the other two waits for a rooms connection (a transaction's cold read of
+// a later document, coldRead's DocumentStamp) and for a room's document locks (warmFork,
+// residentTree, an Apply to a resident room, the room's update observer holding a heavy apply's
+// grant). No holder of a rooms connection waits for any of the four: a document load takes its
+// fold slot before its rooms connection, and the whole slot its streamed rows take before it too,
+// and its buffered fold takes its grant once that connection's transaction has committed
+// (loadStored); every other holder of one runs single statements on it. No holder of a room's
+// document locks waits for any of them: the replica's one decode under its lock takes only bytes
+// free at once (renderedReplica.start, holdFreeLoad), a heavy apply takes its grant before ygo
+// takes the document's lock (weighPeerUpdate), and an Apply's callback decodes nothing that waits
+// for the pool, merging and decoding once its Apply has returned (docTree, VerifyMark). So each
+// wait is on a holder whose own waits come later in the order, and each ends.
+//
+// A write's database locks for its first document - its transaction's connection, its owner row,
+// its writer slot and the document's advisory lock (openLiveWrite, readFork) - come before all
+// four, and so do the append gate's (the document's advisory lock and a connection of the
+// room-appends pool, AppendRoomFlush, storedHistoryHolds) and a compaction's (its compaction
+// connection, and the document's advisory lock for its write): a holder of the pool waits for
+// none of them, nor for a connection of the room-appends pool or the compaction pool. The one
+// exception is a transaction's later document, whose owner row, writer slot and advisory lock it
+// waits for holding the grant its first document's fork took (above), and which Join's
+// WriteRequestBound bounds (TestAJoinedTransactionsWaitForItsSecondDocumentsLockEndsAtTheWriteBound),
+// or the transaction's own deadline for the server's two such transactions (above). A waiter
+// whose request ends returns its context's error holding nothing.
 type loadSlots struct {
 	// size is how many slots the pool is sized from, always set by whoever built it
 	// (newLoadSlots): the process's MemoryBounds.LoadSlots, or a test's.

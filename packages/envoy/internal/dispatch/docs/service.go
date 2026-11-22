@@ -209,6 +209,10 @@ type Service struct {
 	// before the version takes its document lock and reads it. Nil outside tests; tests use it to
 	// evict the warmed room or edit it in that window.
 	afterReadWarm func(room string)
+	// afterApplyAllowed runs at the end of ygo's OnInject for an Apply (allowApply), once its
+	// look at whether the room is resident has passed and before ygo looks the room up, on the
+	// Apply's own goroutine. Nil outside tests; tests use it to close the room in that window.
+	afterApplyAllowed func(room string)
 	// afterReadCopy runs once a read of a room has copied the room's document (holdLive) and
 	// before that copy is offered to the room's replica (startFromRead). Nil outside tests;
 	// tests use it to commit into the room, and to leave the room's replica recovered, in the

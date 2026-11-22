@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // This file tests the pod's load concurrency's rule that no holder of a grant waits for more of
@@ -1335,5 +1336,282 @@ func TestAnIssuesAskStateWriteWeighsAColdLogItsLoadStreamsAtAWholeSlot(t *testin
 	requireServed(t, served)
 	if held := pool.held.Load(); held != 0 {
 		t.Fatalf("the pool holds %d bytes once the transaction ended and the taker was served, want none", held)
+	}
+}
+
+// A heavy browser update refused for its scans, in a room whose scan total is used up, gives its
+// grant of the pod's load concurrency back before the hook judges whether the rebuild route takes
+// the room (refusedByApply, rebuildTakes), whose re-scan waits for a grant of its own of a whole
+// copy of the room. The one slot here has free beside the apply's grant one byte less than that
+// copy, and a taker holding nothing queues for a whole copy while the apply holds its grant: the
+// refusal is answered at once, offering the rebuild the route takes (the room's state re-scans
+// near the total), and the taker is served. Before, the re-scan queued for its copy behind the
+// taker, which waited for the apply's grant, and the hook gave that grant back only as it
+// returned: the refusal waited out rebuildTakes's WriteWaitBound, answered DOC_TOO_TANGLED, and
+// held the taker as long.
+func TestARefusedHeavyApplyGivesItsGrantBackBeforeItsRefusalReadsTheRoom(t *testing.T) {
+	state := tangledHistory(t, 2_000, roomScanTotal)
+	room := newDocumentCopy()
+	if err := crdt.ApplyUpdateV1(room, state, nil); err != nil {
+		t.Fatal(err)
+	}
+	rendering, err := renderDocument(room)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := calibratedService()
+	replica := service.keepReplica(room, nil, loadRendering(rendering), nil)
+	defer runtime.KeepAlive(replica)
+	loaded, err := rescan(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replica.scans.rescanned(loaded)
+	if _, left := replica.scans.figures(); left > usedUpScanBudget {
+		t.Fatalf("the tangled history re-scans %d items, leaving %d of the %d total: tangle it further", loaded, left, roomScanTotal)
+	}
+	const typist crdt.ClientID = 5
+	typeOnto(t, service, room, typist, 30)
+	// More items at the typed place than an apply takes no slot for, each scanning past the typing:
+	// a frame heavy in its structs, which the used-up room refuses for its scans.
+	frame := scanningFrame(10, crdt.ID{Client: typist}, unslottedApplyStructs+1)
+	grant, heavy := heavyUpdateWeight(frame)
+	if !heavy {
+		t.Fatalf("a frame of %d items is not heavy, so its apply takes no grant and nothing here is tested", unslottedApplyStructs+1)
+	}
+	copied := service.copyOfRoom(room)
+	pool, waits := poolWaits(t)
+	// The pool has free beside the apply's grant one byte less than the copy the re-scan takes. A
+	// copy weighed at a whole slot needs no filling: the grant and it cannot both fit.
+	if leave := grant + copied - 1; leave < pool.poolBytes() {
+		fillPoolBut(t, pool, leave)
+	}
+	before := crdt.EncodeStateAsUpdateV1(room, nil)
+	served := make(chan struct{})
+	answered := make(chan error, 1)
+	started := time.Now()
+	go func() {
+		answered <- service.weighPeerUpdate(websocket.PeerUpdateInfo{Room: "room", Doc: room, Update: frame}, func() error {
+			// While the apply holds its grant, a taker holding nothing queues for a whole copy of
+			// the room, which the pool has free only once that grant is back.
+			go func() {
+				taker := newLoadSlot()
+				if err := taker.take(context.Background(), copied); err == nil {
+					taker.release()
+				}
+				close(served)
+			}()
+			select {
+			case <-waits:
+			case <-time.After(holdAndWaitBound):
+				return errors.New("the taker never queued for the pool beside the apply's grant")
+			}
+			return crdt.ApplyUpdateV1(room, frame, nil)
+		})
+	}()
+	err = answeredWithin(t, answered, "the refusal of a heavy update in a used-up room")
+	if took := time.Since(started); took >= WriteWaitBound {
+		t.Fatalf("the refusal was answered after %s, past rebuildTakes's %s: its re-scan waited for a grant of its own while the apply held its grant", took, WriteWaitBound)
+	}
+	requireRefusedNeedsRebuild(t, err, room, before)
+	requireServed(t, served)
+}
+
+// A document load whose rows fold in memory waits for its slot of the buffered folds holding no
+// connection of the rooms pool: it takes the slot before the transaction that reads the rows
+// (loadStored, takeFoldSlot), and folds once the slot is free. Before, it began that transaction
+// and waited for the slot inside it, holding its rooms connection.
+func TestADocumentLoadsBufferedFoldWaitsForItsFoldSlotHoldingNoRoomsConnection(t *testing.T) {
+	ctx := context.Background()
+	service, _ := newTestService(t)
+	service.settle = time.Hour
+	document, _ := twoRowDocument(t, service, 57, 16<<10)
+	versioned, ok := service.persistence.(*PgVersioned)
+	if !ok {
+		t.Fatalf("the service reads through %T, whose fold slots this test cannot hold", service.persistence)
+	}
+	rooms, err := service.store.Pool.Rooms()
+	if err != nil {
+		t.Fatalf("the rooms pool: %v", err)
+	}
+	versioned.foldSlots = make(chan struct{}, 1)
+	versioned.foldSlots <- struct{}{}
+	loaded := make(chan error, 1)
+	go func() {
+		_, err := versioned.Load(ctx, document)
+		loaded <- err
+	}()
+	if testwait.Holds(time.Second, testwait.Poll, func() bool { return rooms.Stat().AcquiredConns() != 0 || len(loaded) != 0 }) {
+		select {
+		case err := <-loaded:
+			t.Fatalf("the load finished (%v) while the only fold slot was held, want it waiting for that slot", err)
+		default:
+		}
+		// The load is let go before the test fails, so it gives its rooms connection back and the
+		// database's teardown waits on no open transaction.
+		held := rooms.Stat().AcquiredConns()
+		<-versioned.foldSlots
+		<-loaded
+		t.Fatalf("the buffered load waits for its fold slot holding %d connections of the rooms pool, want none", held)
+	}
+	<-versioned.foldSlots
+	if err := answeredWithin(t, loaded, "the load, once its fold slot was free"); err != nil {
+		t.Fatalf("the load: %v", err)
+	}
+}
+
+// A transaction holding its first document's fork, beside a buffered load waiting for the one slot
+// of the buffered folds, whose holder - another load's fold - waits for the bytes the transaction
+// holds, finishes: its cold read of a later document is refused busy at once for that slot
+// (takeFoldSlot, errFoldSlotsBusy), and once it gives its grant back the fold and the waiting load
+// go on. The waiting load holds no rooms connection while it waits (loadStored). Before, it held
+// one: with the rest of the rooms pool held, the transaction's cold read waited for that
+// connection, held by a load that waited for the slot, whose holder waited for the transaction's
+// bytes, until this test's bound.
+func TestAJoinedTransactionsColdReadBesideALoadWaitingForAFoldSlotFinishes(t *testing.T) {
+	ctx := context.Background()
+	service, _ := newTestService(t)
+	service.settle = time.Hour
+	written, weights := residentGrantDocuments(t, service, []int{58}, []int{16 << 10})
+	later, _ := twoRowDocument(t, service, 59, 16<<10)
+	folding, foldingWeight := twoRowDocument(t, service, 60, 64<<10)
+	waiting, _ := twoRowDocument(t, service, 61, 16<<10)
+	versioned, ok := service.persistence.(*PgVersioned)
+	if !ok {
+		t.Fatalf("the service reads through %T, whose fold slots this test cannot hold", service.persistence)
+	}
+	versioned.foldSlots = make(chan struct{}, 1)
+	rooms, err := service.store.Pool.Rooms()
+	if err != nil {
+		t.Fatalf("the rooms pool: %v", err)
+	}
+	pool, waits := poolWaits(t)
+	joined, _, end := joinedTransaction(t, ctx, service)
+	if err := <-applyGrantEdit(service, joined, written[0]); err != nil {
+		t.Fatalf("the transaction's write of its first document: %v", err)
+	}
+	// The other fold takes the one slot and then waits for its rows' weight, which the pool has
+	// free only once the transaction gives its grant back.
+	filler := fillPoolBut(t, pool, foldingWeight-1)
+	if foldingWeight-1+weights[0] < foldingWeight {
+		t.Fatal("the transaction's grant would not free what the other fold waits for, so nothing here is tested")
+	}
+	folded := make(chan error, 1)
+	go func() {
+		_, err := versioned.Load(ctx, folding)
+		folded <- err
+	}()
+	select {
+	case <-waits:
+	case err := <-folded:
+		t.Fatalf("the other fold finished (%v) while the pool lacked its rows' weight, want it waiting for that holding the fold slot", err)
+	case <-time.After(holdAndWaitBound):
+		t.Fatalf("the other fold never came to wait for the pool within %s", holdAndWaitBound)
+	}
+	// Every connection of the rooms pool but one is held, so the waiting load and the
+	// transaction's cold read need the same one.
+	for range store.RoomsPoolSize - 1 {
+		conn, err := rooms.Acquire(ctx)
+		if err != nil {
+			t.Fatalf("hold a connection of the rooms pool: %v", err)
+		}
+		t.Cleanup(conn.Release)
+	}
+	loadedWaiting := make(chan error, 1)
+	go func() {
+		_, err := versioned.Load(ctx, waiting)
+		loadedWaiting <- err
+	}()
+	// The waiting load reaches its wait for the slot before the transaction reads: a load that took
+	// the rooms pool's last connection before that wait holds it by then.
+	waitFor(t, holdAndWaitBound, "the waiting load to wait for the fold slot", func() bool { return foldSlotWaiters() == 1 })
+	err = answeredWithin(t, applyGrantEdit(service, joined, later), "the transaction's write of its later document, beside a load waiting for the fold slot")
+	if !errors.Is(err, errFoldSlotsBusy) || !errors.Is(err, ErrServiceUnavailable) {
+		t.Fatalf("the transaction's cold read beside a load waiting for the held fold slot was answered %v, want it refused busy: %v", err, errFoldSlotsBusy)
+	}
+	end()
+	if err := answeredWithin(t, folded, "the other fold, once the transaction gave its grant back"); err != nil {
+		t.Fatalf("the other fold: %v", err)
+	}
+	if err := answeredWithin(t, loadedWaiting, "the waiting load, once the fold slot was free"); err != nil {
+		t.Fatalf("the waiting load: %v", err)
+	}
+	requireHeading(t, service, written[0], true)
+	filler.release()
+	if held := pool.held.Load(); held != 0 {
+		t.Fatalf("the pool holds %d bytes once the transaction ended and both loads finished, want none", held)
+	}
+}
+
+// A transaction holding its first document's fork that applies to another document's resident
+// room - a version's capture of it, or a mark's watch (captureLiveTextAndAuthors, VerifyMark) -
+// holds that room against every close the service makes from ygo's look at whether it is resident
+// (allowApply) until its Apply returns (roomServer.Apply): an eviction begun between that look and
+// ygo's lookup of the room waits for the Apply, which applies to the room it found, and nothing
+// loads on the transaction's goroutine. Before, the eviction closed the room in between, and ygo's
+// lookup loaded it again on that goroutine, under a grant of the load's own taken while the
+// transaction held its own.
+func TestATransactionsApplyHoldsTheRoomItFoundResidentUntilYgoLooksItUp(t *testing.T) {
+	ctx := context.Background()
+	service, _ := newTestService(t)
+	service.settle = time.Hour
+	documents, _ := residentGrantDocuments(t, service, []int{62, 63}, []int{16 << 10, 8 << 10})
+	written, other := documents[0], documents[1]
+	pool := useLoadSlots(t, newLoadSlots(1))
+	joined, _, end := joinedTransaction(t, ctx, service)
+	if err := <-applyGrantEdit(service, joined, written); err != nil {
+		t.Fatalf("the transaction's write of its first document: %v", err)
+	}
+	if !transactionHolds(joined) {
+		t.Fatal("the transaction's grant holds nothing once its fork stands, so nothing here is tested")
+	}
+	found := service.srv.GetDoc(other)
+	if found == nil {
+		t.Fatalf("no room of %s is resident, so the transaction's Apply would be refused before ygo looks it up", other)
+	}
+	var taken slotsHeld
+	pool.taken = taken.record
+	var reached atomic.Bool
+	evicted := make(chan struct{})
+	var evictErr error
+	service.afterApplyAllowed = func(room string) {
+		if room != other || !reached.CompareAndSwap(false, true) {
+			return
+		}
+		go func() {
+			evictErr = service.Evict(context.Background(), room)
+			close(evicted)
+		}()
+		// An eviction the Apply does not hold the room against closes it well within this.
+		select {
+		case <-evicted:
+		case <-time.After(2 * time.Second):
+		}
+	}
+	var handed *crdt.Doc
+	err := service.srv.Apply(joined, other, func(doc *crdt.Doc, _ func(func(*crdt.Transaction))) { handed = doc })
+	if err != nil && !errors.Is(err, websocket.ErrNoChanges) {
+		t.Fatalf("the transaction's Apply to the room it found resident: %v", err)
+	}
+	if !reached.Load() {
+		t.Fatal("the transaction's Apply never passed allowApply, so nothing here is tested")
+	}
+	if handed != found {
+		t.Fatal("the transaction's Apply was handed a room loaded on its own goroutine, not the room it found resident: an eviction took the room out between ygo's look and its lookup")
+	}
+	if takes := taken.all(); len(takes) != 0 {
+		t.Fatalf("the pool recorded takes leaving it holding %v during the transaction's Apply: a room's load took a grant of its own on the transaction's goroutine", takes)
+	}
+	select {
+	case <-evicted:
+	case <-time.After(holdAndWaitBound):
+		t.Fatalf("the eviction did not finish within %s once the transaction's Apply returned", holdAndWaitBound)
+	}
+	if evictErr != nil {
+		t.Fatalf("the eviction: %v", evictErr)
+	}
+	end()
+	if held := pool.held.Load(); held != 0 {
+		t.Fatalf("the pool holds %d bytes once the transaction ended, want none", held)
 	}
 }

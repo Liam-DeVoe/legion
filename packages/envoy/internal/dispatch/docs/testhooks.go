@@ -72,6 +72,16 @@ func (s *Service) AfterForkReadForTest(hook func(room string)) {
 	s.afterForkRead = hook
 }
 
+// FailRoomForTest fails artifactID's room with cause, as a room's failed append or a commit whose
+// outcome is unknown fails it (failRoom), and waits within ctx for the failure's eviction to end
+// (awaitRoomRecovery), so the document's next access loads a room of its own from the store.
+// Tests in package api write to a document whose room has just failed with it, as the failed-room
+// probe does (packages/dispatch/e2e/failed-room.e2e.ts).
+func (s *Service) FailRoomForTest(ctx context.Context, artifactID string, cause error) error {
+	s.failRoom(artifactID, cause)
+	return s.awaitRoomRecovery(ctx, artifactID)
+}
+
 // ResumeOwedSettlementsForTest runs one pass of the settlement resumption
 // (resumeOwedSettlements): it arms the settlement of at most settlementResumeBatch documents whose
 // pending-settlement row is at least age old, those no pass has tried first, as

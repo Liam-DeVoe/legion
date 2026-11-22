@@ -276,7 +276,17 @@ func (p *PgVersioned) readCompaction(ctx context.Context, pool *pgxpool.Pool, ro
 		return compactFold{}, compactDisagreeing, nil
 	}
 	through := persistence.Version(*point)
-	if err := p.foldRead(ctx, tx, room, through, len(folded.rows), folded.bytes, "compaction read", func(ctx context.Context, updates updateSource) error {
+	// Rows within the fold buffer fold in memory under a slot of the buffered folds, taken holding
+	// this read's compaction connection and no grant (takeFoldSlot); rows past it stream.
+	buffered := folded.bytes <= p.foldBuffer()
+	if buffered {
+		giveBack, err := p.takeFoldSlot(ctx)
+		if err != nil {
+			return compactFold{}, compactNothing, err
+		}
+		defer giveBack()
+	}
+	if err := p.foldRead(ctx, tx, room, through, len(folded.rows), folded.bytes, "compaction read", buffered, func(ctx context.Context, updates updateSource) error {
 		var err error
 		if folded.state, _, folded.parked, folded.misread, err = fold(ctx, updates, p.maxPendingItems); err != nil {
 			return fmt.Errorf("fold compacted document updates: %w", err)

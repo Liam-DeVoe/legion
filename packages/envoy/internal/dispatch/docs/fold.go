@@ -239,28 +239,26 @@ const foldBufferBytes = 32 << 20
 // bufferedFolds × foldBufferBytes of buffered rows. It is the rooms pool's size
 // (store.RoomsPoolSize): a load used to fold inside its transaction on that pool, whose connections
 // bounded how many folds ran at once, and a buffered fold that has ended its transaction holds no
-// connection to bound it.
+// connection to bound it. A document load takes its slot before it knows whether its rows stream,
+// and gives it back before it waits for the whole slot a streamed fold takes (loadStored).
 const bufferedFolds = store.RoomsPoolSize
 
 // foldRead hands use the room's stored updates through version, the rows of them tx reads, which
-// number rows and total bytes, and ends tx, committing it as what names. Rows within foldBuffer
-// are read into memory and tx commits before use runs, so a fold of them holds no connection while
-// it works; past it use streams them inside tx (storedUpdates), which commits once use returns, so
-// a fold of a log however large holds one row at once beside its document. Either source replays
-// the rows as often as use asks (updateSource), from one snapshot.
+// number rows and total bytes, and ends tx, committing it as what names. A buffered read, which
+// its caller makes of rows within foldBuffer while it holds one of the process's foldSlots
+// (takeFoldSlot), reads them into memory and commits tx before use runs, so a fold of them holds
+// no connection while it works; any other read has use stream them inside tx (storedUpdates),
+// which commits once use returns, so a fold of a log however large holds one row at once beside
+// its document. Either source replays the rows as often as use asks (updateSource), from one
+// snapshot.
 //
-// A buffered fold first takes one of the process's foldSlots, waiting within ctx, and gives it back
-// once use returns, so at most bufferedFolds hold their rows at once. A holder of a slot holds only
-// its own transaction's connection while it reads the rows and no connection at all while it
-// waits for its load grant and folds them, and every holder of a load grant gives it back, so a
-// holder of a slot gives it back unless its grant's wait is on a holder of the pool that waits for
-// a slot. None does: a transaction whose grant holds bytes - the cold read of its later document,
-// made while its first document's fork stands (coldFork), or a read beside that fork - takes a
-// slot only where one is free at once and is refused busy otherwise (transactionHolds,
-// errFoldSlotsBusy), the 503 its caller retries, as it takes more of its grant only at once
-// (loadSlot.take): a wait here holding its grant, with every slot held by a fold whose first take
-// waits for the bytes it holds, would have the two wait on each other until the transaction's
-// bound.
+// The fold slot is the caller's, taken before tx began and given back once use has returned: a
+// document load takes it before its rooms connection (loadStored), a compaction's read holding
+// its compaction connection (readCompaction). So at most bufferedFolds hold their rows at once, and
+// a holder of a slot holds only its own transaction's connection while it reads the rows and no
+// connection at all while it waits for its load grant and folds them. Every holder of a load grant
+// gives it back, so a holder of a slot gives it back unless its grant's wait is on a holder of the
+// pool that waits for a slot, and none does (takeFoldSlot).
 //
 // A log of more than one update is folded under one grant of the pod's load concurrency
 // (loadSlots), the grant ctx carries - a room load's, whose fold is its first decode, or a
@@ -269,16 +267,14 @@ const bufferedFolds = store.RoomsPoolSize
 // into memory are weighed once they are in hand, before the fold decodes any of them: their bytes,
 // which is what the state they fold into is built from, and the structs their headers declare
 // (declaredStructs), which the fold's document is built of. What they hold is bounded by foldSlots
-// outside the pool. Rows streamed past foldBuffer are not in hand at once, so the grant is taken
-// before they are read, on their bytes alone, which at foldBufferBytes already weigh within 5% of
-// a whole slot, past which copyWeight weighs nothing more. A document load takes it before it holds
-// its rooms connection at all, one slot whole, for every take the fold makes (loadStored), so the
-// take here takes nothing more and no fold of a document load takes a grant holding a rooms
-// connection (loadSlots); a compaction's fold takes it here, holding its compaction connection.
-// A log of one update takes nothing of its own: it is returned as stored, and whoever decodes it
-// takes the grant (documentThrough). The buffered fold's slot is taken before the load grant's
-// first take, never the other way about but for a transaction whose grant holds bytes, which takes
-// its slot only where one is free at once (above).
+// outside the pool. Rows streamed are not in hand at once, so the grant is taken before they are
+// read, on their bytes alone, which past foldBufferBytes already weigh within 5% of a whole slot,
+// past which copyWeight weighs nothing more. A document load streams only on a grant holding one
+// whole slot, taken before it holds its rooms connection at all, for every take the fold makes
+// (loadStored), so the take here takes nothing more and no fold of a document load takes a grant
+// holding a rooms connection (loadSlots); a compaction's fold takes it here, holding its
+// compaction connection. A log of one update takes nothing of its own: it is returned as stored,
+// and whoever decodes it takes the grant (documentThrough).
 //
 // A grant that held nothing as the read began is the read's alone, and ctx marks it so for use
 // (ownedBy): the fold's read-back and the decode of its runs, which hold nothing they built as
@@ -286,7 +282,7 @@ const bufferedFolds = store.RoomsPoolSize
 // the difference at once (holdUnbuiltLoad). A grant held as the read begins - a transaction's,
 // which its fork holds - takes more only where the pool gives it at once, and is refused busy
 // otherwise (loadSlot.take, errGrantShort).
-func (p *PgVersioned) foldRead(ctx context.Context, tx pgx.Tx, room string, version persistence.Version, rows int, bytes int64, what string, use func(context.Context, updateSource) error) error {
+func (p *PgVersioned) foldRead(ctx context.Context, tx pgx.Tx, room string, version persistence.Version, rows int, bytes int64, what string, buffered bool, use func(context.Context, updateSource) error) error {
 	ctx, slot, release := withLoadSlot(ctx)
 	defer release()
 	ctx = slot.ownedBy(ctx)
@@ -306,7 +302,7 @@ func (p *PgVersioned) foldRead(ctx context.Context, tx pgx.Tx, room string, vers
 		}
 		return slot.take(ctx, copyWeight(bytes, structs))
 	}
-	if bytes > p.foldBuffer() {
+	if !buffered {
 		if err := cover(nil); err != nil {
 			return err
 		}
@@ -318,20 +314,6 @@ func (p *PgVersioned) foldRead(ctx context.Context, tx pgx.Tx, room string, vers
 		}
 		return commit()
 	}
-	if transactionHolds(ctx) {
-		select {
-		case p.foldSlots <- struct{}{}:
-		default:
-			return errFoldSlotsBusy
-		}
-	} else {
-		select {
-		case p.foldSlots <- struct{}{}:
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-	}
-	defer func() { <-p.foldSlots }()
 	updates := make([][]byte, 0, rows)
 	if err := eachUpdateThrough(ctx, tx, room, version, func(update []byte) error {
 		updates = append(updates, update)
@@ -351,10 +333,46 @@ func (p *PgVersioned) foldRead(ctx context.Context, tx pgx.Tx, room string, vers
 	return use(ctx, memoryUpdates(ctx, updates))
 }
 
-// errFoldSlotsBusy refuses a fold of a transaction whose grant holds bytes where every slot of the
-// buffered folds is taken (foldRead): such a transaction waits for no slot, since a holder of one
-// can be waiting for the bytes it holds (loadSlots). It is ErrServiceUnavailable, the API's 503
-// DOC_SERVICE_UNAVAILABLE, which its caller retries.
+// takeFoldSlot takes one of the process's foldSlots for a read about to fold rows in memory
+// (foldRead), before that read takes its connection, and returns what gives it back. A read joined
+// to a transaction whose grant holds bytes takes one only where one is free at once, and is
+// refused busy otherwise (transactionHolds, errFoldSlotsBusy), the 503 its caller retries; any
+// other read waits for one within ctx, holding nothing of the pool. A holder of a slot can wait
+// for the pool - a buffered fold takes its grant once it holds its rows (foldRead) - so a holder of
+// the pool that waited for a slot could wait on a holder that waits for the bytes it holds, until
+// its deadline (loadSlots).
+func (p *PgVersioned) takeFoldSlot(ctx context.Context) (func(), error) {
+	if transactionHolds(ctx) {
+		if giveBack := p.tryFoldSlot(); giveBack != nil {
+			return giveBack, nil
+		}
+		return nil, errFoldSlotsBusy
+	}
+	select {
+	case p.foldSlots <- struct{}{}:
+		return func() { <-p.foldSlots }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// tryFoldSlot takes one of the process's foldSlots where one is free at once, and returns what
+// gives it back, or nil where none is: what a read joined to a transaction whose grant holds bytes
+// takes (takeFoldSlot), and what a document load on a whole slot takes, which streams its rows
+// where it gets none (loadStoredOnce).
+func (p *PgVersioned) tryFoldSlot() func() {
+	select {
+	case p.foldSlots <- struct{}{}:
+		return func() { <-p.foldSlots }
+	default:
+		return nil
+	}
+}
+
+// errFoldSlotsBusy refuses a read joined to a transaction whose grant holds bytes where every slot
+// of the buffered folds is taken (takeFoldSlot): such a transaction waits for no slot, since a
+// holder of one can be waiting for the bytes it holds (loadSlots). It is ErrServiceUnavailable, the
+// API's 503 DOC_SERVICE_UNAVAILABLE, which its caller retries.
 var errFoldSlotsBusy = fmt.Errorf("%w: every slot of the buffered folds is taken, and a transaction holding its grant of the pod's load concurrency waits for none", ErrServiceUnavailable)
 
 // foldBuffer is the most stored update bytes foldRead reads into memory: foldBufferBytes, or the
