@@ -33,6 +33,8 @@ jobs:
     # (run 44915911419): with that one guard, 250 s, 969 s, or 17 minutes. 18 leaves the test step
     # room to grow.
     timeout-minutes: 18
+    env:
+      JOB_TIMEOUT_MINUTES: 18 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     # The NATS server extensions/card-delivery-omp.test.ts delivers Envoy cards and a person's Send
     # through (LEGION_TEST_NATS_URL on the test step): the 2.10 image the envoy-client job pulls,
     # pinned by digest as this file's other service images are.
