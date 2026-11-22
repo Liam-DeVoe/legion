@@ -135,11 +135,12 @@ func requireInteractionDeclared(t *testing.T, database *store.Store) {
 	if err != nil {
 		t.Errorf("a count of an interaction is refused: %v", err)
 	}
-	// The refusal a kind with no arms meets, so the answer above is read as the count's own.
+	// The refusal a kind with no arms meets, so the answer above is read as the count's own. It
+	// carries no sentinel, so it is read by the kind it names.
 	const undeclared = "no_such_node_kind"
 	if _, err := refs.BacklinkCounts(ctx, database.Pool, model.Actor{}, undeclared, []string{"x"}, nil); err == nil ||
-		!strings.Contains(err.Error(), "no arms declared") {
-		t.Errorf("a count of %s, which declares no arms, answers %v, want the refusal backlinkTargetArms makes", undeclared, err)
+		!namesAsAWord(err.Error(), undeclared) {
+		t.Errorf("a count of %s, which declares no arms, answers %v, want the refusal backlinkTargetArms makes, naming %s", undeclared, err, undeclared)
 	}
 	for _, kind := range []string{graphstore.TupleChangedByRun, graphstore.TupleAuthoredBy} {
 		if !slices.Contains(refs.TupleKinds(), kind) {

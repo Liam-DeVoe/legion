@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -114,5 +113,5 @@ func TestAPreventedByAppendedWhileItsCheckIsMarkedGoneIsNotLeftStanding(t *testi
 	// (pointerEnd, nodeNotFound), so the append that waited on the pass and then found its check
 	// gone is the 404 such a far end gets, naming the check by the address the append gave.
 	requireRefused(t, "the append to "+rig.otherIssueCheck+", a check the index pass marked gone", appended,
-		http.StatusNotFound, "NOT_FOUND", fmt.Sprintf("no node %q under %s", rig.otherIssueCheck, rig.issue))
+		http.StatusNotFound, "NOT_FOUND", rig.otherIssueCheck, rig.issue)
 }

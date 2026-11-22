@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode"
 
 	"github.com/jackc/pgx/v5"
 
@@ -199,53 +200,56 @@ func TestTheStoreHoldsEachPointerToItsTypeRule(t *testing.T) {
 
 	t.Run("each refusal, through every append path", func(t *testing.T) {
 		hasKindAtAConstraint := pointerTuple(KindLens, lensTradeOff, TupleHasKind, KindConstraint, constraintHeld)
-		const (
-			hasKindRule     = "has_kind points from a lens at a lens_kind"
-			constrainedRule = "constrained_by points from a requirement block or a lens_kind at a constraint"
+		// What a refusal names besides its tuple's kind: the kinds of the tuple's two ends and the
+		// kinds its rule allows, a lens and a lens_kind for has_kind, a requirement, a lens_kind and a
+		// constraint for constrained_by. These are the has_kind from a lens at a constraint's, and
+		// the constrained_by from a paragraph's.
+		var (
+			hasKindNames     = []string{KindLens, KindConstraint, KindLensKind}
+			constrainedNames = []string{"paragraph", KindConstraint, blockTypeRequirement, KindLensKind}
 		)
 		for _, refused := range []struct {
-			name    string
-			write   func(context.Context, pgx.Tx) error
-			message string
+			name  string
+			write func(context.Context, pgx.Tx) error
+			// kind is the refused tuple's kind, and names what the refusal's words name besides it.
+			kind  string
+			names []string
+			// retracted marks the retraction of a lens's has_kind with none asserted in its place.
+			retracted bool
 			// sentinel is the refusal the write answers when it is not an InvalidPointerError.
 			sentinel error
 		}{
 			{name: "Write, has_kind at a node that is no lens_kind",
-				write:   tuplesOnly(hasKindAtAConstraint),
-				message: "the has_kind tuple from a lens at a constraint breaks its type rule: " + hasKindRule},
+				write: tuplesOnly(hasKindAtAConstraint), kind: TupleHasKind, names: hasKindNames},
 			{name: "Write, has_kind out of a node that is no lens",
-				write:   tuplesOnly(pointerTuple(KindRisk, riskPlaced, TupleHasKind, KindLensKind, kindInversion)),
-				message: "the has_kind tuple from a risk at a lens_kind breaks its type rule: " + hasKindRule},
+				write: tuplesOnly(pointerTuple(KindRisk, riskPlaced, TupleHasKind, KindLensKind, kindInversion)),
+				kind:  TupleHasKind, names: []string{KindRisk, KindLensKind, KindLens}},
 			{name: "Write, a second has_kind",
 				write:    tuplesOnly(pointerTuple(KindLens, lensInversion, TupleHasKind, KindLensKind, kindTradeOff)),
-				sentinel: ErrLensKindAsserted, message: ErrLensKindAsserted.Reason},
+				sentinel: ErrLensKindAsserted},
 			{name: "Write, a has_kind retracted with none asserted in its place",
 				write: tuplesOnly(retracted(pointerTuple(KindLens, lensTradeOff, TupleHasKind, KindLensKind, kindTradeOff))),
-				message: "the has_kind tuple from a lens is retracted with none asserted in its place, which breaks its " +
-					"type rule: a lens holds exactly one kind, so its has_kind tuple is retargeted, never retracted alone"},
+				kind:  TupleHasKind, names: []string{KindLens}, retracted: true},
 			{name: "Write, a lens triggered by itself",
 				write: tuplesOnly(pointerTuple(KindLens, lensInversion, TupleTriggeredBy, KindLens, lensInversion)),
-				message: "the triggered_by tuple from the lens " + lensInversion + " at that same lens " + lensInversion +
-					" breaks its type rule: triggered_by points from a lens at a lens invoked before it"},
+				kind:  TupleTriggeredBy, names: []string{KindLens, lensInversion}},
 			{name: "Write, constrained_by out of a paragraph",
-				write:   tuplesOnly(pointerTuple(blockKind, fixture.paragraph, TupleConstrainedBy, KindConstraint, constraintHeld)),
-				message: "the constrained_by tuple from a paragraph block at a constraint breaks its type rule: " + constrainedRule},
+				write: tuplesOnly(pointerTuple(blockKind, fixture.paragraph, TupleConstrainedBy, KindConstraint, constraintHeld)),
+				kind:  TupleConstrainedBy, names: constrainedNames},
 			{name: "Write, constrained_by at a node that is no constraint",
-				write:   tuplesOnly(pointerTuple(blockKind, fixture.requirement, TupleConstrainedBy, KindLens, lensInversion)),
-				message: "the constrained_by tuple from a requirement block at a lens breaks its type rule: " + constrainedRule},
+				write: tuplesOnly(pointerTuple(blockKind, fixture.requirement, TupleConstrainedBy, KindLens, lensInversion)),
+				kind:  TupleConstrainedBy, names: []string{blockTypeRequirement, KindLens, KindConstraint}},
 			{name: "Write, prevented_by at a block that is no check",
 				write: tuplesOnly(pointerTuple(KindRisk, riskPlaced, TuplePreventedBy, blockKind, fixture.paragraph)),
-				message: "the prevented_by tuple from a risk at a paragraph block breaks its type rule: " +
-					"prevented_by points from a risk at a check block"},
+				kind:  TuplePreventedBy, names: []string{KindRisk, "paragraph", BlockTypeCheck}},
 			{name: "Write, a risk under an inversion",
 				write: tuplesOnly(pointerTuple(KindRisk, riskAstray, TuplePartOf, KindLens, lensInversion)),
-				message: "the part_of tuple from a risk at a lens of kind inversion breaks its type rule: " +
-					"a risk belongs under a lens of kind pre-mortem"},
+				kind:  TuplePartOf, names: []string{KindRisk, KindLens, kindInversion, LensKindPreMortem}},
 			{name: "Caused, has_kind held for the cause at a node that is no lens_kind",
 				write: func(ctx context.Context, tx pgx.Tx) error {
 					return Caused(ctx, tx, Uncaused{Tuples: []UncausedTuple{{Tuple: hasKindAtAConstraint}}}, NoEvent)
 				},
-				message: "the has_kind tuple from a lens at a constraint breaks its type rule: " + hasKindRule},
+				kind: TupleHasKind, names: hasKindNames},
 			{name: "PlanUncaused and QueueNodes then Caused, constrained_by out of a paragraph",
 				write: func(ctx context.Context, tx pgx.Tx) error {
 					write := PlanUncaused(nil, []Tuple{
@@ -259,7 +263,7 @@ func TestTheStoreHoldsEachPointerToItsTypeRule(t *testing.T) {
 					}
 					return Caused(ctx, tx, write, NoEvent)
 				},
-				message: "the constrained_by tuple from a paragraph block at a constraint breaks its type rule: " + constrainedRule},
+				kind: TupleConstrainedBy, names: constrainedNames},
 		} {
 			t.Run(refused.name, func(t *testing.T) {
 				before := countTuples(t, ctx, database)
@@ -271,11 +275,8 @@ func TestTheStoreHoldsEachPointerToItsTypeRule(t *testing.T) {
 				err = refused.write(ctx, tx)
 				if refused.sentinel != nil {
 					requireAlreadyAsserted(t, err, refused.sentinel)
-					if err.Error() != refused.message {
-						t.Errorf("the refusal reads %q, want %q", err.Error(), refused.message)
-					}
-				} else {
-					requirePointerRefused(t, err, refused.message)
+				} else if refusal := requirePointerRefused(t, err, refused.kind, refused.names...); refusal.Retracted != refused.retracted {
+					t.Errorf("the refusal %q is a retraction's %t, want %t", refusal.Error(), refusal.Retracted, refused.retracted)
 				}
 				// The refused write's transaction is abandoned, as its caller abandons it, and
 				// holds no tuple the refused write stated (abandonRefusedWrite).
@@ -296,8 +297,7 @@ func TestTheStoreHoldsEachPointerToItsTypeRule(t *testing.T) {
 				pointerTuple(KindLens, lens, TupleHasKind, KindLensKind, kindInversion),
 				pointerTuple(KindRisk, risk, TuplePartOf, KindLens, lens),
 			})
-			requirePointerRefused(t, err, "the part_of tuple from a risk at a lens of kind inversion breaks its type rule: "+
-				"a risk belongs under a lens of kind pre-mortem")
+			requirePointerRefused(t, err, TuplePartOf, KindRisk, KindLens, kindInversion, LensKindPreMortem)
 			if err := tx.Rollback(ctx); err != nil {
 				t.Fatalf("roll the refused write back: %v", err)
 			}
@@ -441,9 +441,9 @@ func TestTheStoreHoldsEachPointerToItsTypeRule(t *testing.T) {
 // (queueLensArtifactIDs), so the arms of a spliced write refuse it (refusePointersInArms): WriteArms
 // of a part_of tuple out of a lens at a document, WriteArms of one at a document block, and
 // WriteArmsUncaused of a part_of claim out of a lens at a document each answer errPointerInArms,
-// naming `part_of out of lens`, and build no arm. WriteArms of a page's part_of claim at a role is
-// still taken. Each that does not hold fails naming the call, what it was given and the kind of the
-// far end.
+// naming the tuple's kind, part_of, and the kind it goes out of, lens, and build no arm. WriteArms
+// of a page's part_of claim at a role is still taken. Each that does not hold fails naming the
+// call, what it was given and the kind of the far end.
 func TestTheArmsRefuseEveryPartOfOutOfALens(t *testing.T) {
 	const lens = "lens-placed-in-arms"
 	document, block := "PTR-1/notes-md", "PTR-1/notes-md#paragraph"
@@ -474,8 +474,8 @@ func TestTheArmsRefuseEveryPartOfOutOfALens(t *testing.T) {
 			return arms, err
 		}},
 	} {
-		if arms, err := call.write(); !errors.Is(err, errPointerInArms) || !strings.Contains(err.Error(), "part_of out of lens") || arms != "" {
-			t.Errorf("%s of a lens's part_of %s at %s = %v, want errPointerInArms", call.name, call.form, call.kind, err)
+		if arms, err := call.write(); !errors.Is(err, errPointerInArms) || !namesAsAWord(err.Error(), TuplePartOf, KindLens) || arms != "" {
+			t.Errorf("%s of a lens's part_of %s at %s = %v, want errPointerInArms naming %s and %s", call.name, call.form, call.kind, err, TuplePartOf, KindLens)
 		}
 	}
 	page := Claim{
@@ -500,11 +500,7 @@ func TestTheStoreHoldsARisksCheckToTheRisksProject(t *testing.T) {
 	ctx := context.Background()
 	_, ownProjects := checkOf(t, ctx, database, pointerProject, 2)
 	_, foreign := checkOf(t, ctx, database, "FAR", 1)
-	const (
-		refused = "the prevented_by tuple from a risk of project " + pointerProject + " at the check block %s of project FAR " +
-			"breaks its type rule: prevented_by points from a risk at a check block of the same project"
-		address = "dispatch://FAR-1/spec#b-chk"
-	)
+	const address = "dispatch://FAR-1/spec#b-chk"
 
 	held := pointerTuple(KindRisk, riskPlaced, TuplePreventedBy, blockKind, ownProjects)
 	writeInOneTransaction(t, ctx, database.Pool, nil, []Tuple{held}, "a risk prevented by a check of another issue of its project")
@@ -528,7 +524,9 @@ func TestTheStoreHoldsARisksCheckToTheRisksProject(t *testing.T) {
 		}},
 	} {
 		t.Run(write.name, func(t *testing.T) {
-			requireCheckRefused(t, ctx, database, write.write, refused, foreign, address, ownProjects, before)
+			// The refusal names both projects, which tell it from the refusal of a retired
+			// document's check.
+			requireCheckRefused(t, ctx, database, write.write, foreign, address, ownProjects, before, pointerProject, "FAR")
 		})
 	}
 	requireNoNode(t, ctx, database, KindRisk, "risk-astray-project")
@@ -564,12 +562,6 @@ func TestTheStoreHoldsATriggerToALensInvokedBefore(t *testing.T) {
 	fixture := newPointerFixture(t)
 	database := fixture.database
 	ctx := context.Background()
-	const (
-		later = "the triggered_by tuple from the lens %s at the lens %s, which was not invoked before it, " +
-			"breaks its type rule: triggered_by points from a lens at a lens invoked before it"
-		itself = "the triggered_by tuple from the lens %s at that same lens %s " +
-			"breaks its type rule: triggered_by points from a lens at a lens invoked before it"
-	)
 	addressOf := func(lens string) string { return "dispatch://lens/" + lens }
 	spec := strings.TrimSuffix(fixture.requirement, "#req")
 
@@ -599,31 +591,29 @@ func TestTheStoreHoldsATriggerToALensInvokedBefore(t *testing.T) {
 	for _, refused := range []struct {
 		name     string
 		write    func(context.Context, pgx.Tx) error
-		message  string
 		near, to string
 	}{
 		{"Write, a trigger of a lens invoked later, by a lens moved since",
-			tuplesOnly(pointerTuple(KindLens, lensInversion, TupleTriggeredBy, KindLens, lensTradeOff)),
-			fmt.Sprintf(later, lensInversion, lensTradeOff), lensInversion, lensTradeOff},
+			tuplesOnly(pointerTuple(KindLens, lensInversion, TupleTriggeredBy, KindLens, lensTradeOff)), lensInversion, lensTradeOff},
 		{"Write, a trigger of the lens a write invokes after it", func(ctx context.Context, tx pgx.Tx) error {
 			return Write(ctx, tx, []Node{pointerNode(KindLens, "lens-astray-first"), pointerNode(KindLens, "lens-astray-second")}, []Tuple{
 				pointerTuple(KindLens, "lens-astray-first", TuplePartOf, KindArtifact, spec),
 				pointerTuple(KindLens, "lens-astray-second", TuplePartOf, KindArtifact, spec),
 				pointerTuple(KindLens, "lens-astray-first", TupleTriggeredBy, KindLens, "lens-astray-second"),
 			})
-		}, fmt.Sprintf(later, "lens-astray-first", "lens-astray-second"), "lens-astray-first", "lens-astray-second"},
+		}, "lens-astray-first", "lens-astray-second"},
 		{"Write, a trigger of a stored lens by a lens the write makes and places nowhere",
 			func(ctx context.Context, tx pgx.Tx) error {
 				return Write(ctx, tx, []Node{pointerNode(KindLens, "lens-astray-unplaced")}, []Tuple{
 					pointerTuple(KindLens, lensPreMortem, TupleTriggeredBy, KindLens, "lens-astray-unplaced"),
 				})
-			}, fmt.Sprintf(later, lensPreMortem, "lens-astray-unplaced"), lensPreMortem, "lens-astray-unplaced"},
+			}, lensPreMortem, "lens-astray-unplaced"},
 		{"Retarget, from a lens invoked before to a lens invoked later", func(ctx context.Context, tx pgx.Tx) error {
 			return Retarget(ctx, tx, held, KindLens, lensKindless)
-		}, fmt.Sprintf(later, lensTradeOff, lensKindless), lensTradeOff, lensKindless},
+		}, lensTradeOff, lensKindless},
 		{"Retarget, from a lens invoked before to the lens itself", func(ctx context.Context, tx pgx.Tx) error {
 			return Retarget(ctx, tx, held, KindLens, lensTradeOff)
-		}, fmt.Sprintf(itself, lensTradeOff, lensTradeOff), lensTradeOff, lensTradeOff},
+		}, lensTradeOff, lensTradeOff},
 	} {
 		t.Run(refused.name, func(t *testing.T) {
 			tx, err := database.Pool.Begin(ctx)
@@ -632,19 +622,17 @@ func TestTheStoreHoldsATriggerToALensInvokedBefore(t *testing.T) {
 			}
 			defer tx.Rollback(ctx)
 			err = refused.write(ctx, tx)
-			requirePointerRefused(t, err, refused.message)
-			var refusal *InvalidPointerError
-			errors.As(err, &refusal)
+			refusal := requirePointerRefused(t, err, TupleTriggeredBy, KindLens, refused.near, refused.to)
 			named, ok := refusal.NamedAt(KindLens, refused.near, addressOf(refused.near))
 			if ok && refused.to != refused.near {
 				named, ok = named.NamedAt(KindLens, refused.to, addressOf(refused.to))
 			}
-			want := strings.Replace(strings.Replace(refused.message, refused.near, addressOf(refused.near), 1), refused.to, addressOf(refused.to), 1)
-			if refused.to == refused.near {
-				want = strings.ReplaceAll(refused.message, refused.near, addressOf(refused.near))
-			}
-			if !ok || named.Error() != want {
-				t.Errorf("the refusal named at both lenses' addresses reads %v (named %t), want %q", named, ok, want)
+			// Named at both lenses' addresses, the refusal names each lens by its address and
+			// neither by its id.
+			if !ok || !namesAsAWord(named.Error(), addressOf(refused.near), addressOf(refused.to)) ||
+				namesAsAWord(named.Error(), refused.near) || namesAsAWord(named.Error(), refused.to) {
+				t.Errorf("the refusal named at both lenses' addresses reads %v (named %t), want it to name %s and %s, and neither lens by its id",
+					named, ok, addressOf(refused.near), addressOf(refused.to))
 			}
 			if other, ok := refusal.NamedAt(KindLens, lensPreMortemBare, addressOf(lensPreMortemBare)); ok {
 				t.Errorf("the refusal named at a lens it does not name reads %q, want it not named", other.Error())
@@ -669,10 +657,10 @@ func TestTheStoreHoldsATriggerToALensInvokedBefore(t *testing.T) {
 // TestTheStoreHoldsARisksCheckToADocumentThatIsNotRetired holds a risk's prevented_by to a check
 // of a document that is not retired (spec requirement r-constraint-risk, pointerRules'
 // unretired): a check of a retired document, whose checks nobody runs, is refused before anything
-// is appended, with an InvalidPointerError naming the check, through Write, through a write that
-// makes its risk, and through Retarget, which leaves the pointer where it was. The document_blocks
-// row of the retired document's check stays, so its type is read all the same. NamedAt names the
-// check by the address a route read it at, and names no other far end.
+// is appended, with an InvalidPointerError naming the check and its document as retired, through
+// Write, through a write that makes its risk, and through Retarget, which leaves the pointer where
+// it was. The document_blocks row of the retired document's check stays, so its type is read all
+// the same. NamedAt names the check by the address a route read it at, and names no other far end.
 func TestTheStoreHoldsARisksCheckToADocumentThatIsNotRetired(t *testing.T) {
 	fixture := newPointerFixture(t)
 	database := fixture.database
@@ -686,11 +674,7 @@ func TestTheStoreHoldsARisksCheckToADocumentThatIsNotRetired(t *testing.T) {
 	if _, err := database.Pool.Exec(ctx, `update artifacts set retired_at = now(), role = null where id = $1::uuid`, artifact); err != nil {
 		t.Fatalf("retire the document: %v", err)
 	}
-	const (
-		refused = "the prevented_by tuple from a risk at the check block %s of a retired document breaks its type rule: " +
-			"prevented_by points from a risk at a check block of a document that is not retired, since nobody runs a retired document's checks"
-		address = "dispatch://PTR-3/spec#b-chk"
-	)
+	const address = "dispatch://PTR-3/spec#b-chk"
 	held := pointerTuple(KindRisk, riskPlaced, TuplePreventedBy, blockKind, fixture.check)
 	writeInOneTransaction(t, ctx, database.Pool, nil, []Tuple{held}, "a risk prevented by a check of a document that stands")
 	requireHolds(t, ctx, database, held)
@@ -713,7 +697,9 @@ func TestTheStoreHoldsARisksCheckToADocumentThatIsNotRetired(t *testing.T) {
 		}},
 	} {
 		t.Run(write.name, func(t *testing.T) {
-			requireCheckRefused(t, ctx, database, write.write, refused, check, address, fixture.check, before)
+			// The refusal names its check's document as retired, which tells it from the refusal of
+			// a check of another project.
+			requireCheckRefused(t, ctx, database, write.write, check, address, fixture.check, before, "retired")
 		})
 	}
 	requireNoNode(t, ctx, database, KindRisk, "risk-astray-retired")
@@ -746,11 +732,12 @@ func checkOf(t *testing.T, ctx context.Context, database *store.Store, project s
 }
 
 // requireCheckRefused runs write in a transaction of its own and fails unless the store refuses
-// it before anything is appended: an InvalidPointerError reading refused (a format of one %s) at
-// the check block check, which NamedAt names at address, naming no other far end, other, there,
-// and the log holding before tuples once the write is rolled back.
+// it before anything is appended: an InvalidPointerError of a prevented_by tuple naming the check
+// block check and each of names, which NamedAt names at address, naming the check there by that
+// address and by its id no more, and naming no other far end, other, there; and the log holding
+// before tuples once the write is rolled back.
 func requireCheckRefused(t *testing.T, ctx context.Context, database *store.Store, write func(context.Context, pgx.Tx) error,
-	refused, check, address, other string, before int) {
+	check, address, other string, before int, names ...string) {
 	t.Helper()
 	tx, err := database.Pool.Begin(ctx)
 	if err != nil {
@@ -758,11 +745,10 @@ func requireCheckRefused(t *testing.T, ctx context.Context, database *store.Stor
 	}
 	defer tx.Rollback(ctx)
 	err = write(ctx, tx)
-	requirePointerRefused(t, err, fmt.Sprintf(refused, check))
-	var refusal *InvalidPointerError
-	errors.As(err, &refusal)
-	if named, ok := refusal.NamedAt(blockKind, check, address); !ok || named.Error() != fmt.Sprintf(refused, address) {
-		t.Errorf("the refusal named at %s reads %v (named %t), want %q", address, named, ok, fmt.Sprintf(refused, address))
+	refusal := requirePointerRefused(t, err, TuplePreventedBy, append([]string{check}, names...)...)
+	if named, ok := refusal.NamedAt(blockKind, check, address); !ok || !namesAsAWord(named.Error(), append([]string{address}, names...)...) ||
+		namesAsAWord(named.Error(), check) {
+		t.Errorf("the refusal named at %s reads %v (named %t), want it to name %s and %q, and %s no more", address, named, ok, address, names, check)
 	}
 	if named, ok := refusal.NamedAt(blockKind, other, address); ok {
 		t.Errorf("the refusal named at another far end reads %q, want it not named", named.Error())
@@ -797,9 +783,9 @@ func retracted(tuple Tuple) Tuple {
 }
 
 // requirePointerRefused fails unless err is the store's refusal of a pointer at a node its rule
-// does not allow: the sentinel a route answers 400 INVALID_POINTER for, as the typed refusal
-// reading message.
-func requirePointerRefused(t *testing.T, err error, message string) {
+// does not allow: the sentinel a route answers 400 INVALID_POINTER for, as the typed refusal of a
+// tuple of kind whose words name each of names (namesAsAWord). It answers that refusal.
+func requirePointerRefused(t *testing.T, err error, kind string, names ...string) *InvalidPointerError {
 	t.Helper()
 	if !errors.Is(err, ErrInvalidPointer) {
 		t.Fatalf("the write answered %v, want ErrInvalidPointer", err)
@@ -808,9 +794,29 @@ func requirePointerRefused(t *testing.T, err error, message string) {
 	if !errors.As(err, &refusal) {
 		t.Fatalf("the write answered %v, which is no InvalidPointerError", err)
 	}
-	if refusal.Error() != message {
-		t.Errorf("the refusal reads %q, want %q", refusal.Error(), message)
+	if refusal.Kind != kind || !namesAsAWord(refusal.Error(), names...) {
+		t.Errorf("the refusal of a %s tuple reads %q, want a %s tuple's naming %q", refusal.Kind, refusal.Error(), kind, names)
 	}
+	return refusal
+}
+
+// namesAsAWord is whether text names each of names as words of its own, as the api package's
+// tests hold a refusal to what it names: text split on spaces and commas, each word shorn of the
+// quotes, brackets, colons, semicolons and full stops at its ends, holds each name as one of its
+// words, and a name of several words as that run of words. A test of this package cannot import
+// a test helper of that one, so this is the same rule, word for word.
+func namesAsAWord(text string, names ...string) bool {
+	var words []string
+	for word := range strings.FieldsFuncSeq(text, func(r rune) bool { return unicode.IsSpace(r) || r == ',' }) {
+		words = append(words, strings.Trim(word, "\"'`()[]:;."))
+	}
+	spaced := " " + strings.Join(words, " ") + " "
+	for _, name := range names {
+		if !strings.Contains(spaced, " "+name+" ") {
+			return false
+		}
+	}
+	return true
 }
 
 // requireAlreadyAsserted fails unless err is want, which a route answers 409

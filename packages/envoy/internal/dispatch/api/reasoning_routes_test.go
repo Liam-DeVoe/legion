@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"errors"
-	"fmt"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"unicode"
 
 	"github.com/google/uuid"
 
@@ -114,18 +114,39 @@ func (r reasoningRig) current(fromKind, fromID, kind string) []string {
 	return ends
 }
 
-// requireRefused fails unless response is status with code, its words holding says.
-func requireRefused(t *testing.T, name string, response *httptest.ResponseRecorder, status int, code, says string) refusalAnswer {
+// requireRefused fails unless response is status with code, its message naming each of names as
+// words of its own (namesAsAWord): what the route's refusal names - an address, an id, a kind, a
+// state, a field - and never its sentence, which a rewording changes with no change in behaviour.
+func requireRefused(t *testing.T, name string, response *httptest.ResponseRecorder, status int, code string, names ...string) refusalAnswer {
 	t.Helper()
 	t.Logf("%s: status=%d body=%s", name, response.Code, response.Body.String())
 	if response.Code != status {
 		t.Fatalf("%s: status=%d body=%s, want %d %s", name, response.Code, response.Body.String(), status, code)
 	}
 	refusal := decodeBody[refusalAnswer](t, response)
-	if refusal.Code != code || !strings.Contains(refusal.Error, says) {
-		t.Fatalf("%s is refused %+v, want %s saying %q", name, refusal, code, says)
+	if refusal.Code != code || !namesAsAWord(refusal.Error, names...) {
+		t.Fatalf("%s is refused %+v, want %s naming %q", name, refusal, code, names)
 	}
 	return refusal
+}
+
+// namesAsAWord is whether text names each of names as words of its own: text split on spaces and
+// commas, each word shorn of the quotes, brackets, colons, semicolons and full stops at its ends,
+// holds each name as one of its words, and a name of several words as that run of words. An
+// address a comma or a colon follows is a word, and one that only begins a longer word, as a
+// lens's address begins its finding's `<lens address>#b-<id>`, is none.
+func namesAsAWord(text string, names ...string) bool {
+	var words []string
+	for word := range strings.FieldsFuncSeq(text, func(r rune) bool { return unicode.IsSpace(r) || r == ',' }) {
+		words = append(words, strings.Trim(word, "\"'`()[]:;."))
+	}
+	spaced := " " + strings.Join(words, " ") + " "
+	for _, name := range names {
+		if !strings.Contains(spaced, " "+name+" ") {
+			return false
+		}
+	}
+	return true
 }
 
 // TestTheReasoningRoutesWriteEachNodeAndAnswerItsShape drives each route of the reasoning kinds
@@ -261,18 +282,18 @@ func TestTheReasoningRoutesWriteEachNodeAndAnswerItsShape(t *testing.T) {
 }
 
 // TestTheReasoningRoutesRefuseAndStoreNothing holds each refusal of the reasoning routes to its
-// status and code, and to a store that holds after it what it held before.
+// status and code and to what it names, and to a store that holds after it what it held before.
 func TestTheReasoningRoutesRefuseAndStoreNothing(t *testing.T) {
 	rig := newReasoningRig(t)
 
 	before, _ := rig.counts(graphstore.KindLens, graphstore.TupleHasKind)
 	requireRefused(t, "a lens with no kind", rig.post("/lenses", map[string]any{"on": rig.spec}, "alice"),
-		http.StatusBadRequest, "LENS_KIND_REQUIRED", "exactly one kind")
+		http.StatusBadRequest, "LENS_KIND_REQUIRED", "kind")
 	requireRefused(t, "a lens of a kind nobody holds", rig.post("/lenses", map[string]any{"on": rig.spec, "kind": "astrology"}, "alice"),
-		http.StatusBadRequest, "INVALID_POINTER", `"astrology"`)
+		http.StatusBadRequest, "INVALID_POINTER", "astrology")
 	requireRefused(t, "author on the shared bearer", sessionRequest(t, rig.handler, http.MethodPost, "/api/v1/issues/"+rig.issue+"/lenses",
 		map[string]any{"on": rig.spec, "kind": "trade-off", "visibility": graphstore.VisibilityAuthor, "actor": sessionActor()}),
-		http.StatusForbidden, "AUTHOR_NAMES_NOBODY", "names nobody")
+		http.StatusForbidden, "AUTHOR_NAMES_NOBODY")
 	if after, _ := rig.counts(graphstore.KindLens, graphstore.TupleHasKind); after != before {
 		t.Fatalf("the store holds %d lenses after the refusals, and held %d before", after, before)
 	}
@@ -290,11 +311,15 @@ func TestTheReasoningRoutesRefuseAndStoreNothing(t *testing.T) {
 		t.Fatalf("the shared bearer's lens answers author %+v and visibility %q, want the session its body names and project", inversion.Author, inversion.Visibility)
 	}
 
-	// A second has_kind is the store's 409, and the lens holds the kind it held.
+	// A second has_kind is the store's 409, and the lens holds the kind it held. The refusal names
+	// the has_kind tuple and no lens kind, where the 409 of a pre-mortem's kind kept, which shares
+	// its code (graphstore.ErrLensKindKept), names pre-mortem.
 	_, hasKinds := rig.counts(graphstore.KindLens, graphstore.TupleHasKind)
-	requireRefused(t, "a second has_kind", rig.post(nodePath("lens/"+inversion.ID, "pointers"),
+	if refusal := requireRefused(t, "a second has_kind", rig.post(nodePath("lens/"+inversion.ID, "pointers"),
 		map[string]any{"kind": graphstore.TupleHasKind, "action": pointerAppend, "to": "botec"}, "alice"),
-		http.StatusConflict, "POINTER_ALREADY_ASSERTED", "exactly one kind")
+		http.StatusConflict, "POINTER_ALREADY_ASSERTED", graphstore.TupleHasKind); namesAsAWord(refusal.Error, graphstore.LensKindPreMortem) {
+		t.Errorf("a second has_kind is refused %q, which names %s as a pre-mortem's kept kind does", refusal.Error, graphstore.LensKindPreMortem)
+	}
 	if _, after := rig.counts(graphstore.KindLens, graphstore.TupleHasKind); after != hasKinds {
 		t.Errorf("the store holds %d has_kind tuples after the refusal, and held %d before", after, hasKinds)
 	}
@@ -306,7 +331,7 @@ func TestTheReasoningRoutesRefuseAndStoreNothing(t *testing.T) {
 	risks, _ := rig.counts(graphstore.KindRisk, graphstore.TuplePreventedBy)
 	requireRefused(t, "a risk under an inversion", rig.post("/risks", map[string]any{
 		"lens": inversion.Address, "heading": "A failure.", "early_warning": "A sign.", "prevention": "A guard.",
-	}, "alice"), http.StatusBadRequest, "INVALID_POINTER", "a risk belongs under a lens of kind pre-mortem")
+	}, "alice"), http.StatusBadRequest, "INVALID_POINTER", graphstore.TuplePartOf, graphstore.KindRisk, "inversion", graphstore.LensKindPreMortem)
 	if after, _ := rig.counts(graphstore.KindRisk, graphstore.TuplePreventedBy); after != risks {
 		t.Errorf("the store holds %d risks after the refusal, and held %d before", after, risks)
 	}
@@ -327,7 +352,7 @@ func TestTheReasoningRoutesRefuseAndStoreNothing(t *testing.T) {
 		map[string]any{"kind": graphstore.TuplePartOf, "action": pointerRetarget, "from": rig.spec, "to": rig.requirement}, "alice"),
 		http.StatusBadRequest, "POINTER_INPUT", "part_of")
 	requireRefused(t, "a finding under a block", rig.post(nodePath(rig.requirementNode, "findings"), map[string]any{"text": "Misplaced."}, "alice"),
-		http.StatusBadRequest, "INVALID_POINTER", "a finding stands under a lens")
+		http.StatusBadRequest, "INVALID_POINTER", graphstore.KindLens, rig.requirement, refs.BlockNodeKind)
 }
 
 // TestThePointerRouteKindEnumIsTheStoresPointerKinds holds the enum pointerInput's Kind spells,
@@ -421,29 +446,35 @@ func TestAFarEndTheCallerMayNotSeeAnswersAsNoNode(t *testing.T) {
 		t.Fatalf("write bob's constraint: status=%d body=%s", public.Code, public.Body.String())
 	}
 	nobodys := "dispatch://lens/" + uuid.NewString()
-	notFound := func(address string) string { return fmt.Sprintf("no node %q under %s", address, rig.issue) }
+	// refused requires the 404 of what to the address named under the issue, naming that address
+	// as the request named it and the issue, and keeps its words with the address set aside, so
+	// the refusal of alice's node reads below as the refusal of the node nobody holds.
+	answered := map[string][]string{}
+	refused := func(what, named string, response *httptest.ResponseRecorder) {
+		t.Helper()
+		refusal := requireRefused(t, what+" "+named, response, http.StatusNotFound, "NOT_FOUND", named, rig.issue)
+		answered[what] = append(answered[what], strings.ReplaceAll(refusal.Error, named, "<address>"))
+	}
 
 	lenses, _ := rig.counts(graphstore.KindLens, graphstore.TupleHasKind)
 	for _, address := range []string{hidden.Address, nobodys} {
-		refused := requireRefused(t, "bob's lens on "+address, rig.post("/lenses", map[string]any{"on": address, "kind": "botec"}, "bob"),
-			http.StatusNotFound, "NOT_FOUND", notFound(address))
-		if refused.Error != notFound(address) {
-			t.Errorf("bob's lens on %s is refused %q, want %q", address, refused.Error, notFound(address))
-		}
 		segment := strings.TrimPrefix(address, "dispatch://")
-		requireRefused(t, "bob's finding under "+address, rig.post(nodePath(segment, "findings"), map[string]any{"text": "Mine."}, "bob"),
-			http.StatusNotFound, "NOT_FOUND", notFound(segment))
-		requireRefused(t, "bob's trigger by "+address, rig.post("/lenses", map[string]any{"on": rig.spec, "kind": "botec", "triggered_by": address}, "bob"),
-			http.StatusNotFound, "NOT_FOUND", notFound(address))
+		refused("bob's lens on", address, rig.post("/lenses", map[string]any{"on": address, "kind": "botec"}, "bob"))
+		refused("bob's finding under", segment, rig.post(nodePath(segment, "findings"), map[string]any{"text": "Mine."}, "bob"))
+		refused("bob's trigger by", address, rig.post("/lenses", map[string]any{"on": rig.spec, "kind": "botec", "triggered_by": address}, "bob"))
 	}
 	if after, _ := rig.counts(graphstore.KindLens, graphstore.TupleHasKind); after != lenses {
 		t.Fatalf("the store holds %d lenses after bob's refusals, and held %d before", after, lenses)
 	}
 	nobodysConstraint := "dispatch://constraint/" + uuid.NewString()
 	for _, address := range []string{constraint.Address, nobodysConstraint} {
-		requireRefused(t, "bob's pointer at "+address, rig.post(nodePath(rig.requirementNode, "pointers"),
-			map[string]any{"kind": graphstore.TupleConstrainedBy, "action": pointerAppend, "to": address}, "bob"),
-			http.StatusNotFound, "NOT_FOUND", notFound(address))
+		refused("bob's pointer at", address, rig.post(nodePath(rig.requirementNode, "pointers"),
+			map[string]any{"kind": graphstore.TupleConstrainedBy, "action": pointerAppend, "to": address}, "bob"))
+	}
+	for what, words := range answered {
+		if words[0] != words[1] {
+			t.Errorf("%s alice's node is refused %q, and %s a node nobody holds %q: want the same words but the address", what, words[0], what, words[1])
+		}
 	}
 	if got := rig.current(refs.BlockNodeKind, rig.requirementNode, graphstore.TupleConstrainedBy); len(got) != 0 {
 		t.Errorf("the requirement holds constrained_by %v after bob's refusals", got)
@@ -473,10 +504,10 @@ func TestAFarEndTheCallerMayNotSeeAnswersAsNoNode(t *testing.T) {
 // TestARisksPreventedByIsACheckOfAnyIssueOfItsProject: the risk route takes a prevented_by at a
 // check of another issue of the risk's project, as the pre-mortem conversion writes one, and the
 // risk route and the pointer route's append and retarget each refuse one at a check of another
-// project with the store's 400 INVALID_POINTER, naming the check by its address, and store nothing
-// (spec requirement r-constraint-risk). Visibility comes first: a check of another
-// project that the caller may not see, and an address there nobody holds, each answer the one 404
-// an address nobody holds answers, through either route.
+// project with the store's 400 INVALID_POINTER, naming the check by its address and both projects,
+// and store nothing (spec requirement r-constraint-risk). Visibility comes first: a check of
+// another project that the caller may not see, and an address there nobody holds, each answer the
+// one 404 an address nobody holds answers, through either route.
 func TestARisksPreventedByIsACheckOfAnyIssueOfItsProject(t *testing.T) {
 	rig := newPremortemRig(t)
 	foreign, foreignNode := rig.otherProjectCheck()
@@ -508,8 +539,8 @@ func TestARisksPreventedByIsACheckOfAnyIssueOfItsProject(t *testing.T) {
 		t.Errorf("the risk is prevented by %v, want %v", got, held)
 	}
 
-	says := "the prevented_by tuple from a risk of project RSN at the check block " + foreign +
-		" of project FAR breaks its type rule: prevented_by points from a risk at a check block of the same project"
+	// Each refusal names the tuple, the check by its address and both projects, the risk's and the
+	// check's, which tell it from the refusal of a retired document's check.
 	risks, preventions := rig.counts(graphstore.KindRisk, graphstore.TuplePreventedBy)
 	riskPointers := nodePath("risk/"+risk.ID, "pointers")
 	for _, refused := range []struct {
@@ -520,9 +551,7 @@ func TestARisksPreventedByIsACheckOfAnyIssueOfItsProject(t *testing.T) {
 		{"an append at a check of another project", rig.post(riskPointers, pointer(pointerAppend, foreign, nil), "alice")},
 		{"a retarget to a check of another project", rig.post(riskPointers, pointer(pointerRetarget, foreign, &rig.otherIssueCheck), "alice")},
 	} {
-		if answer := requireRefused(t, refused.name, refused.response, http.StatusBadRequest, "INVALID_POINTER", foreign); answer.Error != says {
-			t.Errorf("%s is refused %q, want %q", refused.name, answer.Error, says)
-		}
+		requireRefused(t, refused.name, refused.response, http.StatusBadRequest, "INVALID_POINTER", graphstore.TuplePreventedBy, foreign, "RSN", "FAR")
 	}
 	if afterRisks, afterPreventions := rig.counts(graphstore.KindRisk, graphstore.TuplePreventedBy); afterRisks != risks || afterPreventions != preventions {
 		t.Errorf("the store holds %d risks and %d prevented_by tuples after the refusals, and held %d and %d before",
@@ -537,18 +566,25 @@ func TestARisksPreventedByIsACheckOfAnyIssueOfItsProject(t *testing.T) {
 		t.Fatalf("keep the other project's check to its author: %v", err)
 	}
 	nobodys := strings.TrimSuffix(foreign, "k7") + "k404"
-	notFound := func(address string) string { return fmt.Sprintf("no node %q under %s", address, rig.issue) }
+	// Each route refuses the hidden check as it refuses the address nobody holds, naming the
+	// address and the issue, in the same words once the address is set aside.
+	answered := map[string][]string{}
 	for _, address := range []string{foreign, nobodys} {
 		for _, refused := range []struct {
-			name     string
+			what     string
 			response *httptest.ResponseRecorder
 		}{
-			{"bob's append at " + address, rig.post(riskPointers, pointer(pointerAppend, address, nil), "bob")},
-			{"bob's risk prevented by " + address, rig.post("/risks", riskBody(address), "bob")},
+			{"bob's append at", rig.post(riskPointers, pointer(pointerAppend, address, nil), "bob")},
+			{"bob's risk prevented by", rig.post("/risks", riskBody(address), "bob")},
 		} {
-			if answer := requireRefused(t, refused.name, refused.response, http.StatusNotFound, "NOT_FOUND", notFound(address)); answer.Error != notFound(address) {
-				t.Errorf("%s is refused %q, want %q", refused.name, answer.Error, notFound(address))
-			}
+			answer := requireRefused(t, refused.what+" "+address, refused.response, http.StatusNotFound, "NOT_FOUND", address, rig.issue)
+			answered[refused.what] = append(answered[refused.what], strings.ReplaceAll(answer.Error, address, "<address>"))
+		}
+	}
+	for what, words := range answered {
+		if words[0] != words[1] {
+			t.Errorf("%s the hidden check %s is refused %q, and %s an address nobody holds %q: want the same words but the address",
+				what, foreign, words[0], what, words[1])
 		}
 	}
 	if afterRisks, afterPreventions := rig.counts(graphstore.KindRisk, graphstore.TuplePreventedBy); afterRisks != risks || afterPreventions != preventions {
@@ -565,9 +601,9 @@ func TestARisksPreventedByIsACheckOfAnyIssueOfItsProject(t *testing.T) {
 // through the store and through the lens read, the check reads preventing no risk, and the tuple's
 // history ends in its retraction, signed by the retirement's writer under its document.retired
 // event; the second risk keeps its check. A prevented_by to the retired document's check is then
-// refused with 400 INVALID_POINTER naming the check by its address, through the risk route, the
-// pointer route's append and retarget, and the conversion's map, in a dry run as in a real one,
-// which names the entry and its risk too; nothing is stored.
+// refused with 400 INVALID_POINTER naming the check by its address and its document as retired,
+// through the risk route, the pointer route's append and retarget, and the conversion's map, in a
+// dry run as in a real one, which names the entry and its risk too; nothing is stored.
 func TestARetiredDocumentsChecksPreventNoRisk(t *testing.T) {
 	rig := newPremortemRig(t)
 	ctx := context.Background()
@@ -647,8 +683,11 @@ func TestARetiredDocumentsChecksPreventNoRisk(t *testing.T) {
 		t.Errorf("after the retirement the backlinks of %s hold the risks %v, want none", rig.otherIssueCheck, got)
 	}
 
-	says := "the prevented_by tuple from a risk at the check block " + rig.otherIssueCheck + " of a retired document breaks its type rule: " +
-		"prevented_by points from a risk at a check block of a document that is not retired, since nobody runs a retired document's checks"
+	// Each refusal names the tuple, the check by its address and its document as retired, which
+	// tells it from the refusal of a check of another project; the conversion's names the map's
+	// entry, 9, and that entry's risk, 8, too.
+	names := []string{graphstore.TuplePreventedBy, rig.otherIssueCheck, "retired"}
+	entryNames := append(slices.Clone(names), "9", "8")
 	risks, preventions := rig.counts(graphstore.KindRisk, graphstore.TuplePreventedBy)
 	stored := rig.storeCounts()
 	pointers := nodePath("risk/"+kept.ID, "pointers")
@@ -656,22 +695,20 @@ func TestARetiredDocumentsChecksPreventNoRisk(t *testing.T) {
 	for _, refused := range []struct {
 		name     string
 		response *httptest.ResponseRecorder
-		says     string
+		names    []string
 	}{
-		{"a risk prevented by the retired document's check", rig.post("/risks", riskBody("Its check is retired.", rig.otherIssueCheck), "alice"), says},
+		{"a risk prevented by the retired document's check", rig.post("/risks", riskBody("Its check is retired.", rig.otherIssueCheck), "alice"), names},
 		{"an append at the retired document's check", rig.post(pointers,
-			map[string]any{"kind": graphstore.TuplePreventedBy, "action": pointerAppend, "to": rig.otherIssueCheck}, "alice"), says},
+			map[string]any{"kind": graphstore.TuplePreventedBy, "action": pointerAppend, "to": rig.otherIssueCheck}, "alice"), names},
 		{"a retarget to the retired document's check", rig.post(pointers, map[string]any{
 			"kind": graphstore.TuplePreventedBy, "action": pointerRetarget, "from": rig.secondCheck, "to": rig.otherIssueCheck,
-		}, "alice"), says},
+		}, "alice"), names},
 		{"a conversion whose map names the retired document's check, in a dry run", dispatchRequest(t, rig.handler, http.MethodPost, path,
-			map[string]any{"prevented_by": rig.premortemMap(), "dry_run": true}, "alice"), "prevented_by entry 9 (risk 8): " + says},
+			map[string]any{"prevented_by": rig.premortemMap(), "dry_run": true}, "alice"), entryNames},
 		{"a conversion whose map names the retired document's check", dispatchRequest(t, rig.handler, http.MethodPost, path,
-			map[string]any{"prevented_by": rig.premortemMap()}, "alice"), "prevented_by entry 9 (risk 8): " + says},
+			map[string]any{"prevented_by": rig.premortemMap()}, "alice"), entryNames},
 	} {
-		if answer := requireRefused(t, refused.name, refused.response, http.StatusBadRequest, "INVALID_POINTER", rig.otherIssueCheck); answer.Error != refused.says {
-			t.Errorf("%s is refused %q, want %q", refused.name, answer.Error, refused.says)
-		}
+		requireRefused(t, refused.name, refused.response, http.StatusBadRequest, "INVALID_POINTER", refused.names...)
 	}
 	if afterRisks, afterPreventions := rig.counts(graphstore.KindRisk, graphstore.TuplePreventedBy); afterRisks != risks || afterPreventions != preventions {
 		t.Errorf("the store holds %d risks and %d prevented_by tuples after the refusals, and held %d and %d before",
@@ -826,7 +863,7 @@ func TestAChildIsNeverWiderThanItsParent(t *testing.T) {
 		risks, places := rig.counts(graphstore.KindRisk, graphstore.TuplePartOf)
 		lenses, _ := rig.counts(graphstore.KindLens, graphstore.TuplePartOf)
 		answer := requireRefused(t, refused.name, rig.post(refused.path, refused.body, "alice"),
-			http.StatusBadRequest, codeVisibilityWiderThanParent, "")
+			http.StatusBadRequest, codeVisibilityWiderThanParent)
 		if !namesAsAWord(answer.Error, refused.parent) {
 			t.Errorf("%s is refused %q, want it to name the node it would stand under or on, %s", refused.name, answer.Error, refused.parent)
 		}

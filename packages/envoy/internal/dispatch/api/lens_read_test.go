@@ -408,14 +408,14 @@ func TestALensOnAFindingGoesGoneWithTheFinding(t *testing.T) {
 		return fmt.Sprintf("%s's %s once the finding's lens is gone answers %s, want 404 NOT_FOUND as for a lens nobody wrote", login, read, status)
 	}, lensReader{"alice", rig.as("alice"), onFinding})
 	requireGoneRefused(t, "overtaken on the lens on the gone finding",
-		writeStateAs(t, rig.handler, rig.issue, onFinding.Address, graphstore.StateOvertaken, "alice"), onFinding.ID)
+		writeStateAs(t, rig.handler, rig.issue, onFinding.Address, graphstore.StateOvertaken, "alice"), onFinding.Address)
 }
 
 // TestATriggerPointsOnlyAtALensInvokedBefore: a lens is triggered only by a lens invoked before it
 // (R8, spec requirement r-lens-trigger), in the order the lens read answers, the seq
 // of each lens's first part_of. A, then B triggered by A, then C, on the spec. Through the pointer
 // route, a triggered_by from A to B, a retarget of B's trigger from A to C and a trigger of B by
-// itself are each 400 INVALID_POINTER naming both lenses by address, the one lens twice, and store
+// itself are each 400 INVALID_POINTER naming the tuple and both lenses by address, and store
 // nothing. A then moves to the requirement and back to the spec through the store, so its newest
 // part_of is later than B's and C's: the read still answers A first and the same three writes are
 // refused the same way, so a move changes neither the order nor the rule. C triggered by B is
@@ -426,10 +426,6 @@ func TestATriggerPointsOnlyAtALensInvokedBefore(t *testing.T) {
 	a := rig.invoke(rig.spec, "trade-off", "alice", nil)
 	b := rig.invoke(rig.spec, graphstore.LensKindPreMortem, "alice", map[string]any{"triggered_by": a.Address})
 	c := rig.invoke(rig.spec, "botec", "alice", nil)
-	const rule = " breaks its type rule: triggered_by points from a lens at a lens invoked before it"
-	later := func(near, far string) string {
-		return "the triggered_by tuple from the lens " + near + " at the lens " + far + ", which was not invoked before it," + rule
-	}
 	pointer := func(lens lensInvoked, body map[string]any) *httptest.ResponseRecorder {
 		body["kind"] = graphstore.TupleTriggeredBy
 		return rig.post(nodePath("lens/"+lens.ID, "pointers"), body, "alice")
@@ -438,20 +434,17 @@ func TestATriggerPointsOnlyAtALensInvokedBefore(t *testing.T) {
 	refusals := func(when string) {
 		t.Helper()
 		for _, refused := range []struct {
-			name     string
-			response *httptest.ResponseRecorder
-			says     string
+			name      string
+			response  *httptest.ResponseRecorder
+			near, far string
 		}{
-			{"a trigger of B by A", pointer(a, map[string]any{"action": pointerAppend, "to": b.Address}), later(a.Address, b.Address)},
+			{"a trigger of B by A", pointer(a, map[string]any{"action": pointerAppend, "to": b.Address}), a.Address, b.Address},
 			{"a retarget of B's trigger from A to C", pointer(b, map[string]any{"action": pointerRetarget, "from": a.Address, "to": c.Address}),
-				later(b.Address, c.Address)},
-			{"a trigger of B by itself", pointer(b, map[string]any{"action": pointerAppend, "to": b.Address}),
-				"the triggered_by tuple from the lens " + b.Address + " at that same lens " + b.Address + rule},
+				b.Address, c.Address},
+			{"a trigger of B by itself", pointer(b, map[string]any{"action": pointerAppend, "to": b.Address}), b.Address, b.Address},
 		} {
-			name := refused.name + " " + when
-			if answer := requireRefused(t, name, refused.response, http.StatusBadRequest, "INVALID_POINTER", refused.says); answer.Error != refused.says {
-				t.Errorf("%s is refused %q, want %q", name, answer.Error, refused.says)
-			}
+			requireRefused(t, refused.name+" "+when, refused.response, http.StatusBadRequest, "INVALID_POINTER",
+				graphstore.TupleTriggeredBy, refused.near, refused.far)
 		}
 		if _, after := rig.counts(graphstore.KindLens, graphstore.TupleTriggeredBy); after != triggers {
 			t.Errorf("the store holds %d triggered_by tuples %s, and held %d before", after, when, triggers)
@@ -656,20 +649,21 @@ func TestALensReadOfANodeNobodyMaySeeAnswersNotFound(t *testing.T) {
 	constraint := decodeBody[constraintRead](t, written)
 	nobodys := "dispatch://lens/" + uuid.NewString()
 
+	// Each refusal names the address on named, and reads, once that address is set aside, as the
+	// refusal of the lens nobody holds.
 	bodies := map[string]string{}
 	for _, address := range []string{
 		hidden.Address, nobodys, constraint.Address, "dispatch://constraint/" + uuid.NewString(),
 		"dispatch://NOPE-404/spec", "no address at all",
 	} {
-		says := fmt.Sprintf("no node %q", address)
 		response := rig.lensesResponse(address, "bob")
-		if refused := requireRefused(t, "bob's read on "+address, response, http.StatusNotFound, "NOT_FOUND", says); refused.Error != says {
-			t.Errorf("bob's read on %s is refused %q, want %q", address, refused.Error, says)
-		}
+		requireRefused(t, "bob's read on "+address, response, http.StatusNotFound, "NOT_FOUND", address)
 		bodies[address] = strings.ReplaceAll(response.Body.String(), address, "<on>")
 	}
-	if bodies[hidden.Address] != bodies[nobodys] || bodies[constraint.Address] != bodies[nobodys] {
-		t.Errorf("a node bob may not see answers %s and %s, and one nobody holds %s", bodies[hidden.Address], bodies[constraint.Address], bodies[nobodys])
+	for address, body := range bodies {
+		if body != bodies[nobodys] {
+			t.Errorf("bob's read on %s answers %s, and one on a lens nobody holds %s: want the same words but the address", address, body, bodies[nobodys])
+		}
 	}
 
 	own := rig.lenses(hidden.Address, "alice")
@@ -680,5 +674,5 @@ func TestALensReadOfANodeNobodyMaySeeAnswersNotFound(t *testing.T) {
 	if bobs := rig.lenses(rig.spec, "bob"); len(bobs.Lenses) != 0 || len(bobs.Chains) != 0 || bobs.Lenses == nil || bobs.Chains == nil {
 		t.Errorf("bob reads the spec's lenses %v and chains %v, want two empty lists", readAddresses(bobs.Lenses), bobs.Chains)
 	}
-	requireRefused(t, "a read on nothing", rig.lensesResponse("", "bob"), http.StatusBadRequest, "INVALID_QUERY", "on is required")
+	requireRefused(t, "a read on nothing", rig.lensesResponse("", "bob"), http.StatusBadRequest, "INVALID_QUERY", "on")
 }

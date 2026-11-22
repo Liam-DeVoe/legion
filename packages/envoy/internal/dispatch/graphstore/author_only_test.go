@@ -3,7 +3,6 @@ package graphstore
 import (
 	"context"
 	"errors"
-	"strings"
 	"testing"
 	"time"
 
@@ -190,7 +189,7 @@ func requireVisibilityNotAdmitted(t *testing.T, err error, kind string) {
 	if refusal.Kind != kind {
 		t.Errorf("the refusal names the kind %q, want %q", refusal.Kind, kind)
 	}
-	if !strings.Contains(refusal.Error(), "the node kind "+kind+" takes no node reserved for its author") {
+	if !namesAsAWord(refusal.Error(), kind) {
 		t.Errorf("the refusal reads %q, which does not name the kind %s", refusal.Error(), kind)
 	}
 }

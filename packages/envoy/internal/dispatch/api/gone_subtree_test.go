@@ -5,10 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"slices"
 	"strings"
 	"testing"
-	"unicode"
 
 	"github.com/google/uuid"
 
@@ -441,13 +439,6 @@ func TestAWriteOnALensOnARemovedDocumentIsRefusedAsGone(t *testing.T) {
 	}
 }
 
-// namesAsAWord is whether text names address as one of its words, split on spaces and commas: an
-// address a comma follows is a word, and one that only begins a longer word, as a lens's address
-// begins its finding's `<lens address>#b-<id>`, is none.
-func namesAsAWord(text, address string) bool {
-	return slices.Contains(strings.FieldsFunc(text, func(r rune) bool { return unicode.IsSpace(r) || r == ',' }), address)
-}
-
 // A lens on a block that a version removes, or on a document that is retired, or on a block of
 // that document, stays live, and neither read answers it a null `on` or parent (spec v59 R5): GET
 // /api/v1/lenses answers its `on` as the block's address at the last version that held it,
@@ -539,7 +530,7 @@ func TestAFindingAskedForProjectUnderAnAuthorOnlyLensIsRefused(t *testing.T) {
 	asked := "a finding asked for project under alice's author-only lens " + lens.Address
 	answer := requireRefused(t, asked, rig.post(nodePath(lens.Address, "findings"), map[string]any{
 		"text": "Every reader would see this.", "visibility": graphstore.VisibilityProject}, "alice"),
-		http.StatusBadRequest, codeVisibilityWiderThanParent, "")
+		http.StatusBadRequest, codeVisibilityWiderThanParent)
 	if !namesAsAWord(answer.Error, lens.Address) {
 		t.Errorf("%s is refused %q, want it to name the lens %s, the node it cannot stand under", asked, answer.Error, lens.Address)
 	}
