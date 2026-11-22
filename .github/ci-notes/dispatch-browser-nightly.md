@@ -58,6 +58,8 @@ limit at 02:14Z on 2026-11-22 (job 137061949842 of run 44974726732), refused `AP
 exceeded for installation`. The tool waits out a refusal that names the time GitHub may be
 asked again: `retry-after`, or `x-ratelimit-reset` where `x-ratelimit-remaining` is 0, for REST
 and for GraphQL alike. It waits for no more than GH_READ_WAIT_CAP_SECONDS, which the step sets.
+A reset that has already passed names no time to wait for, so that refusal takes the tool's three
+attempts, 10 s and then 20 s apart, instead.
 Since a refusal of the step's first read leaves all of the step's work after the wait, the cap
 is the step's limit less all of it: 300 - 120 = 180 s. The step's time grows with the merge
 queue's runs, which the listing reads a day at a time and the GraphQL reads 100 to a call, so a

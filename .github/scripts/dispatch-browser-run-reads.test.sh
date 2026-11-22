@@ -10,7 +10,7 @@
 # `retry_seconds` seconds for the first and twice that for the second, which `fixture` resets to
 # 0. A stand-in `sleep` records each wait the ladder asks for through the `sleep` on PATH, and
 # the cases read those records, not how long the drive took: the cases that set the knob to 1
-# read the waits 1 s and 2 s, or 1 s. The control runs the drive of a gh answering at once under
+# read 1 s and 2 s, 1 s, or no wait. The control runs the drive of a gh answering at once under
 # strace and holds it to none of the calls TIMED_WAITS lists, the census of the kernel's calls
 # that wait out a time their caller gives them, arm a clock their caller sets, or wait for a
 # signal or a lock (a futex, an fcntl or an ioctl counted only where it waits, leases or sets a

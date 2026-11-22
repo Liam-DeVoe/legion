@@ -463,11 +463,10 @@ const failedRead =
  *  ladder takes its own attempts for it rather than ask again once a second until the cap.
  *  `undefined` where the answer says neither. */
 function rateLimitWait(headers: Headers): { at: number; header: string } | undefined {
-  const soonest = Date.now() + 1000;
   const retryAfter = headers.get("retry-after");
   if (retryAfter !== null && /^\d+$/.test(retryAfter)) {
     return {
-      at: Math.max(soonest, Date.now() + Number(retryAfter) * 1000),
+      at: Date.now() + Math.max(1, Number(retryAfter)) * 1000,
       header: `retry-after: ${retryAfter}`,
     };
   }

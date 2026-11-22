@@ -249,12 +249,24 @@ function is(expression: ts.Expression, kind: Kind, names: WaitNames): boolean {
   if (ts.isCallExpression(bare)) {
     const from = loaded(bare);
     if (from !== undefined) return moduleIs(from)(kind);
-    const bound = member(unwrapped(bare.expression));
-    return kind === "wait" && bound?.name === "bind" && is(bound.object, "wait", names);
+    return kind === "wait" && methodOfWait(bare.expression, ["bind"], names);
   }
   const reached = member(bare);
   return (
     reached !== undefined && memberIs((each) => is(reached.object, each, names), reached.name)(kind)
+  );
+}
+
+/** Whether `expression` is one of the methods `methods` names of a wait (`setTimeout.bind`,
+ *  `window["setTimeout"]["call"]`). */
+function methodOfWait(
+  expression: ts.Expression,
+  methods: readonly string[],
+  names: WaitNames
+): boolean {
+  const reached = member(unwrapped(expression));
+  return (
+    reached !== undefined && methods.includes(reached.name) && is(reached.object, "wait", names)
   );
 }
 
@@ -395,13 +407,7 @@ function waitNames(file: ts.SourceFile): WaitNames {
 /** Whether a call of `callee` starts a wait of real time: a wait, or the `call` or `apply` of one
  *  (`window.setTimeout.call(window, run, 50)`). */
 function startsWait(callee: ts.Expression, names: WaitNames): boolean {
-  if (is(callee, "wait", names)) return true;
-  const reached = member(unwrapped(callee));
-  return (
-    reached !== undefined &&
-    (reached.name === "call" || reached.name === "apply") &&
-    is(reached.object, "wait", names)
-  );
+  return is(callee, "wait", names) || methodOfWait(callee, ["call", "apply"], names);
 }
 
 /** Whether `call` only reads its arguments: a call of one of `readers`, or of `spyOn`. */
@@ -416,8 +422,9 @@ function readsArguments(call: ts.CallExpression): boolean {
   );
 }
 
-/** Whether `node` is written to: the left side of an assignment, or a name or a nested pattern
- *  inside a destructure that is one (`nap` of `({ sleep: nap } = Bun)`). */
+/** Whether `node` is written to: the left side of an assignment, or of a `for … of` or a
+ *  `for … in`, or a name or a nested pattern inside a destructure that is one (`nap` of
+ *  `({ sleep: nap } = Bun)`). */
 function isWritten(node: ts.Node): boolean {
   const parent = node.parent;
   if (ts.isBinaryExpression(parent)) {
@@ -489,15 +496,15 @@ function passesOn(parent: ts.Node, at: ts.Node): boolean {
     const operator = parent.operatorToken.kind;
     return choices.has(operator) || (operator === ts.SyntaxKind.CommaToken && parent.right === at);
   }
-  return ts.isExpression(parent) && ts.isExpression(at) && unwrapped(parent) !== parent;
+  return ts.isExpression(parent) && unwrapped(parent) !== parent;
 }
 
 /** Where the value `reference` reads goes, past what hands it on unchanged (`passesOn`). It is
  *  kept where it is called, a member of it is read, it is read or compared (`reads`, a comparison,
- *  one of `readers`), an assignment writes to it, or a declaration, a parameter's default or a
- *  destructure binds it to a name the scan follows (`waitNames`) - unless that declaration is
- *  exported. It is handed on anywhere else: passed to a call or a `new`, stored in an object, an
- *  array, a member, a class's field or a JSX prop, returned, thrown or yielded. */
+ *  one of `readers`), an assignment writes to it, or a declaration, an assignment, a parameter's
+ *  default or a destructure binds it to a name the scan follows (`waitNames`) - unless that
+ *  declaration is exported. It is handed on anywhere else: passed to a call or a `new`, stored in
+ *  an object, an array, a member, a class's field or a JSX prop, returned, thrown or yielded. */
 function placeOf(reference: ts.Node): Place {
   let at = reference;
   while (passesOn(at.parent, at)) at = at.parent;

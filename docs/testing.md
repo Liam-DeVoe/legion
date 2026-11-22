@@ -306,7 +306,8 @@ What a stubbed row may assert, and what only a real-stack row may:
 The clock of a unit test:
 
 - A unit test never waits on the real clock, unless a comment above the wait says why it stays
-  there, as each kept one does: `grep -rn 'stays on the real clock' web/src` lists them.
+  there, as each kept one does: `grep -rn 'stays on the real clock' web/src` lists them, beside
+  the scan's own samples in `web/src/__tests__/real-clock-waits.test.ts`.
   Among them are `web/src/features/margin/Margin.landing.test.tsx`'s `quiet` and its 500 ms long
   task, `web/src/features/refs/MarkdownBody.test.tsx`'s `nextTask`, the parse worker stand-in's
   `tick` and its `ready` in `web/src/features/refs/parse-worker-fixture.ts`, and the frame waits
@@ -339,7 +340,8 @@ The clock of a unit test:
   loaded the machine is, so a row waits for the condition its step stands for, with `waitFor` or an
   `expect` of what it reads next, or runs the product's own zero-delay timer on the fake clock with
   `tick(0)`.
-  Bun's fake clock (Bun 1.4.4) holds neither happy-dom's frame nor `setImmediate`: with it
+  Bun's fake clock (Bun 1.4.4) holds neither happy-dom's frame nor `setImmediate`, as a throwaway
+  row in this repository's pod measured on 2026-11-22: with it
   installed, `jest.advanceTimersByTime(16)` and then `jest.advanceTimersByTime(100)` run no
   `requestAnimationFrame` and no `setImmediate`, global, of `window` or of `node:timers`, and each
   runs on the real loop's next turns, since happy-dom runs a frame as a `setImmediate`.
@@ -416,8 +418,8 @@ How a unit test acts on the page and reads it:
   and a read whose message is a fixed sentence goes to the matcher, which keeps the sentence as the claim it states.
   A read that keeps the hand-written form has a `// jest-dom: <why this read keeps its own form>` line directly above its `expect(`,
   as a browser row's `// @pr: ` line stands above its test.
-  That marker is the only exemption: it is the nearest non-blank line above the `expect(`, and its reason holds at least four words.
-  An ordinary comment, a block comment, a marker with code between it and the read, and a marker on the read's own line do not count.
+  That marker is the only exemption: it is the line directly above the `expect(`, with no blank line between, and its reason holds at least four words, each with a letter in it.
+  An ordinary comment, a block comment, a marker with code or a blank line between it and the read, and a marker on the read's own line do not count.
   A read whose `expect(` Biome puts on the line after `waitFor(() =>` takes its marker inside a block body, `waitFor(() => {`.
   `.github/scripts/check-fireevent-reasons.sh`, which CI's lint job runs,
   refuses a `fireEvent` call without its reason and a hand-written read without its marker.
