@@ -58,7 +58,7 @@ func (c *Client) Deliveries(ctx context.Context, since time.Time, before func() 
 		if err != nil {
 			return nil, err
 		}
-		if limited := c.rateLimit(status, header, body); limited != nil {
+		if limited := rateLimitAt(status, header, body, c.limitNow()); limited != nil {
 			return nil, limited
 		}
 		if status != http.StatusOK {
@@ -104,7 +104,7 @@ func (c *Client) Redeliver(ctx context.Context, deliveryID int64) error {
 	if err != nil {
 		return err
 	}
-	if limited := c.rateLimit(status, header, body); limited != nil {
+	if limited := rateLimitAt(status, header, body, c.limitNow()); limited != nil {
 		return limited
 	}
 	if status == http.StatusNotFound {
@@ -449,22 +449,9 @@ func rateLimitWait(header http.Header, now time.Time) time.Duration {
 	return time.Minute
 }
 
-// rateLimit is RateLimit with the wait read against the client's limitClock.
-func (c *Client) rateLimit(status int, header http.Header, body []byte) *RateLimitError {
-	return rateLimitAt(status, header, body, c.limitNow())
-}
-
-// graphQLRateLimit is GraphQLRateLimit with the wait read against the client's limitClock.
-func (c *Client) graphQLRateLimit(status int, header http.Header, body []byte) (*RateLimitError, bool) {
-	return graphQLRateLimitAt(status, header, body, c.limitNow())
-}
-
 // limitNow is the moment the client reads a rate-limited answer's wait against: limitClock's
-// reading, or time.Now where it is nil.
+// reading.
 func (c *Client) limitNow() time.Time {
-	if c.limitClock == nil {
-		return time.Now()
-	}
 	return c.limitClock.Now()
 }
 
@@ -519,15 +506,10 @@ func withBody[Body string | []byte](head string, body Body) string {
 // carrying the status and the raw body. Factors the identical "check rate limit, then check
 // status" three lines delivery's GitHub fetchers (github_prs.go, github_runs.go, client.go's own
 // ListInstallationRepositoriesByID) all repeated at every call site. A rate limit's wait is read
-// against time.Now; the client's own reads take it against its clock (checkResponse,
-// WithRateLimitClock).
+// against time.Now; the client's own reads take it against its clock (checkResponseAt,
+// limitNow).
 func CheckResponse(status int, header http.Header, body []byte) error {
 	return checkResponseAt(status, header, body, time.Now())
-}
-
-// checkResponse is CheckResponse with a rate limit's wait read against the client's limitClock.
-func (c *Client) checkResponse(status int, header http.Header, body []byte) error {
-	return checkResponseAt(status, header, body, c.limitNow())
 }
 
 // checkResponseAt is CheckResponse with a rate limit's wait read against now.

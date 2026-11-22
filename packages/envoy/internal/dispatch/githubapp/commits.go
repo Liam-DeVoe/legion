@@ -33,7 +33,7 @@ func (c *Client) readRepositoryJSON(ctx context.Context, token, path, repoFull s
 	if err != nil {
 		return nil, status, err
 	}
-	if err := c.checkRepositoryResponse(status, header, body, repoFull, c.base+path, handled...); err != nil {
+	if err := checkRepositoryResponseAt(status, header, body, repoFull, c.base+path, c.limitNow(), handled...); err != nil {
 		return nil, status, err
 	}
 	return body, status, nil
@@ -64,7 +64,7 @@ func (c *Client) readConditionalRepositoryJSON(ctx context.Context, token, path,
 	if err != nil {
 		return nil, status, "", err
 	}
-	if err := c.checkRepositoryResponse(status, header, body, repoFull, c.base+path, http.StatusNotModified); err != nil {
+	if err := checkRepositoryResponseAt(status, header, body, repoFull, c.base+path, c.limitNow(), http.StatusNotModified); err != nil {
 		return nil, status, "", err
 	}
 	// GitHub repeats the ETag on a 304; when it does not, the empty value travels to the caller,
@@ -79,15 +79,9 @@ func (c *Client) readConditionalRepositoryJSON(ctx context.Context, token, path,
 // either status is the *RateLimitError instead. Any other status is the error CheckResponse
 // makes, named by the target. repoFull is the `owner/repo` the error names. A rate limit's wait is
 // read against time.Now; the client's own reads take it against its clock
-// (checkRepositoryResponse, WithRateLimitClock).
+// (checkRepositoryResponseAt, limitNow).
 func CheckRepositoryResponse(status int, header http.Header, body []byte, repoFull, target string, handled ...int) error {
 	return checkRepositoryResponseAt(status, header, body, repoFull, target, time.Now(), handled...)
-}
-
-// checkRepositoryResponse is CheckRepositoryResponse with a rate limit's wait read against the
-// client's limitClock.
-func (c *Client) checkRepositoryResponse(status int, header http.Header, body []byte, repoFull, target string, handled ...int) error {
-	return checkRepositoryResponseAt(status, header, body, repoFull, target, c.limitNow(), handled...)
 }
 
 // checkRepositoryResponseAt is CheckRepositoryResponse with a rate limit's wait read against now.
@@ -176,7 +170,7 @@ func (c *Client) HasCommit(ctx context.Context, token, owner, repo, sha string) 
 	if status == http.StatusUnprocessableEntity && noCommitForSHA(body) {
 		return false, nil
 	}
-	if err := c.checkRepositoryResponse(status, header, body, owner+"/"+repo, target); err != nil {
+	if err := checkRepositoryResponseAt(status, header, body, owner+"/"+repo, target, c.limitNow()); err != nil {
 		return false, err
 	}
 	return true, nil

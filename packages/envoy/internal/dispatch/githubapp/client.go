@@ -317,8 +317,8 @@ func WithHTTPClient(httpClient *http.Client) Option {
 
 // WithRateLimitClock sets the clock the client reads a rate-limited answer's wait against
 // (rateLimitAt): the moment GitHub names, a Retry-After date or x-ratelimit-reset, less the
-// clock's reading. Without it the client reads time.Now, which is what a deployment does; a test
-// passes the fake its stand-in for GitHub stamps those moments from, so the wait is exact.
+// clock's reading. Without it the client reads clock.Real(), which is what a deployment does; a
+// test passes the fake its stand-in for GitHub stamps those moments from, so the wait is exact.
 func WithRateLimitClock(c clock.Clock) Option {
 	return func(client *Client) { client.limitClock = c }
 }
@@ -333,8 +333,13 @@ type Client struct {
 	now  func() time.Time
 	// limits is the shared rate limits request obeys and records; nil is no shared limit.
 	limits Limits
-	// limitClock is the clock a rate-limited answer's wait is read against (rateLimit); nil is
-	// time.Now (WithRateLimitClock).
+	// limitClock is the clock a rate-limited answer's wait is read against (limitNow):
+	// clock.Real() unless WithRateLimitClock replaces it. It is apart from now, which signs the
+	// App's JWT (appJWT) and ages the token and installation caches (token, ttlCache), so that a
+	// test's fake moves the wait and nothing else: the token cache compares now with the expiry
+	// GitHub answered, which cireconcile's stand-in for GitHub stamps on the wall clock and not on
+	// its fake, and an installation cache entry lapses installationsCacheTTL after its fetch, a
+	// span cireconcile's recheck row moves its fake past when it moves it by AbsentAppRecheck.
 	limitClock clock.Clock
 
 	mu sync.Mutex
@@ -396,6 +401,7 @@ func New(app *auth.AppConfig, base string, options ...Option) (*Client, error) {
 		// so a caller that needs a shorter one sets it on the context it passes.
 		http:           &http.Client{},
 		now:            time.Now,
+		limitClock:     clock.Real(),
 		tokens:         map[int64]cachedToken{},
 		installationOf: map[string]mintedToken{},
 	}
@@ -487,7 +493,7 @@ func (c *Client) installation(ctx context.Context, owner, repo string) (Installa
 	if status == http.StatusNotFound {
 		return Installation{}, fmt.Errorf("%w on %s/%s", ErrNoInstallation, owner, repo)
 	}
-	if limited := c.rateLimit(status, header, body); limited != nil {
+	if limited := rateLimitAt(status, header, body, c.limitNow()); limited != nil {
 		return Installation{}, limited
 	}
 	if status != http.StatusOK {
@@ -543,7 +549,7 @@ func (c *Client) ListInstallations(ctx context.Context) ([]Installation, error) 
 			if err != nil {
 				return nil, fmt.Errorf("list installations (page %d): %w", page, err)
 			}
-			if err := c.checkResponse(status, header, body); err != nil {
+			if err := checkResponseAt(status, header, body, c.limitNow()); err != nil {
 				return nil, fmt.Errorf("list installations (page %d): %w", page, err)
 			}
 			var payload []installationPayload
@@ -654,7 +660,7 @@ func listInstallationRepositories(ctx context.Context, c *Client, token string) 
 		if err != nil {
 			return nil, fmt.Errorf("list installation repositories (page %d): %w", page, err)
 		}
-		if err := c.checkResponse(status, header, body); err != nil {
+		if err := checkResponseAt(status, header, body, c.limitNow()); err != nil {
 			return nil, fmt.Errorf("list installation repositories (page %d): %w", page, err)
 		}
 		var payload struct {
@@ -763,12 +769,12 @@ func (c *Client) GraphQL(ctx context.Context, token string, query string, variab
 		return body, status, header, err
 	}
 	if c.limits == nil {
-		if limited := c.rateLimit(status, header, body); limited != nil {
+		if limited := rateLimitAt(status, header, body, c.limitNow()); limited != nil {
 			noteFailure(ctx, limitNoted(http.MethodPost, target, limited))
 		}
 		return body, status, header, nil
 	}
-	limited, secondary := c.graphQLRateLimit(status, header, body)
+	limited, secondary := graphQLRateLimitAt(status, header, body, c.limitNow())
 	if limited == nil {
 		return body, status, header, nil
 	}
@@ -846,7 +852,7 @@ func (c *Client) token(ctx context.Context, installationID int64) (cachedToken, 
 	if err != nil {
 		return cachedToken{}, err
 	}
-	if limited := c.rateLimit(status, header, body); limited != nil {
+	if limited := rateLimitAt(status, header, body, c.limitNow()); limited != nil {
 		return cachedToken{}, limited
 	}
 	if status != http.StatusCreated {
@@ -941,7 +947,7 @@ func (c *Client) request(ctx context.Context, scope, method, target, authorizati
 	if err != nil {
 		return responseBody, status, header, err
 	}
-	limited := c.rateLimit(status, header, responseBody)
+	limited := rateLimitAt(status, header, responseBody, c.limitNow())
 	if limited == nil {
 		return responseBody, status, header, nil
 	}

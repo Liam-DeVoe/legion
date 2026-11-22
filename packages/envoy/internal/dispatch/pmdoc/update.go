@@ -312,13 +312,9 @@ var emptyChildren = crdt.NewYXmlElement("paragraph").Children()
 // createTypeFromElementNode's). A call still walks to index, so its cost grows with index as well
 // as with children.
 //
-// Its steps are counted where they are taken (UpdateWork): the children its loop visits, counted
-// once before it in one add, and index once for ygo's walk to index, which ygo takes and does not
-// count itself. The add of index is made where this one call is: an insert that went back to one
-// call per child would walk ygo n times past it unless the revert moved the add into its loop too,
-// so UpdateWork is judged beside the counted work, never in its place. Go's coverage counters
-// count ygo's walks wherever pmdoc makes them (TestUpdateIsLinearInTheBlockCount), and fail a
-// revert to one insert per child however it counts itself.
+// Its steps are counted in UpdateWork: the children its loop visits, counted once before the loop
+// in one add, and index once for ygo's walk to index, which ygo takes and does not count itself.
+// work.go says why UpdateWork is judged beside the counted work.
 func insertPChildren(txn *crdt.Transaction, frag *crdt.YXmlFragment, index int, children []normalizedChild) error {
 	if len(children) == 0 {
 		return nil

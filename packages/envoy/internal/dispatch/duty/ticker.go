@@ -84,38 +84,30 @@ const (
 // served the tick's period, which is always interval. first says whether the first tick is at
 // start or one interval after.
 //
-// The ticks are a clock.Ticker's: TickAfterInterval starts at the first tick, one interval after
-// the loop starts, and TickAtStart makes one tick at the moment the loop starts before it. Each
-// tick is due on a grid one interval apart from the start, and the moment it hands Exclusive is
-// the moment it fired, the value its timer sent, as a time.Ticker hands the value it sent each
-// tick: Go sends the moment a tick fell due, read on the wall clock as it sends (time.sendTime),
-// however late its receiver takes it. So every process buckets a tick by the wall clock at its
-// fire (periodBoundary): two processes agree on its period however late either one takes it, and
-// after a step of the wall clock too. The grid compares the clock's own readings, which a Go time
-// does by its monotonic reading, so a step does not move it: a lone loop's ticks fall in
-// consecutive periods and no period is lost, but for a step forward, which leaves the periods it
-// jumped over with no tick, as a ticker's would, and a step back, whose next tick falls in a
-// period already served and is refused. A timer armed one interval after the pass before it
-// returned would be due one interval plus that pass's time after it, and as those delays add up
-// its due times would drift across the period boundaries and jump over a period no pass serves. A
-// pass that overruns the interval gets what a ticker gives a slow receiver (Go's runtime,
-// time.go): the first tick it overran comes at once, with the moment it fell due, so it serves the
-// period it fell in, and only the ticks after it are dropped, so the grid stays whole intervals
-// apart and overrun ticks are not run late one after another. The next tick is armed once the
-// tick's Exclusive call has returned, so a test that sees it armed on a clocktest.Fake knows that
-// call has given the lease back.
+// The ticks are a clock.Ticker's, whose doc gives the grid, the moment each tick hands, and what
+// a pass that overruns the interval gets. TickAtStart makes one tick at the moment the loop
+// starts, with that moment, and TickAfterInterval makes the first one interval after it; the
+// ticks after either fall on the grid one interval apart from the start. Each tick hands
+// Exclusive the moment it fired, and Exclusive puts the tick in the period that moment falls in
+// on the wall clock (periodBoundary), so two processes agree on a tick's period however late
+// either one takes it, and after a step of the wall clock too. A step does not move the grid on
+// clock.Real: a step forward leaves the periods it jumped over with no tick, and the next tick
+// after a step back falls in a period already served and is refused. The grid does not drift: a
+// timer armed one interval after the pass before it returned would be due one interval plus that
+// pass's time after it, and as those delays add up its due times would cross the period
+// boundaries and jump over a period no pass serves, where the grid's ticks stay whole intervals
+// apart, so a lone loop's ticks fall in consecutive periods and no period is lost. Each next tick
+// is armed once the tick's Exclusive call has returned, so a test that sees it armed on a
+// clocktest.Fake knows that call has given the lease back.
 //
 // ctx ending returns at once from a wait, and from a tick once its pass returns.
 func RunLeased(ctx context.Context, leases Leases, name string, interval time.Duration, first FirstTick, pass func(context.Context)) {
 	RunLeasedOn(ctx, clock.Real(), leases, name, interval, first, pass)
 }
 
-// RunLeasedOn is RunLeased with its ticks on c: clock.Real from RunLeased (a nil c is clock.Real
-// too), and a test's clocktest.Fake, which brings each tick only when the test moves it there.
+// RunLeasedOn is RunLeased with its ticks on c: clock.Real from RunLeased, and a test's
+// clocktest.Fake, which brings each tick only when the test moves it there.
 func RunLeasedOn(ctx context.Context, c clock.Clock, leases Leases, name string, interval time.Duration, first FirstTick, pass func(context.Context)) {
-	if c == nil {
-		c = clock.Real()
-	}
 	ticks := clock.NewTicker(c, interval, first == TickAtStart)
 	defer ticks.Stop()
 	for {

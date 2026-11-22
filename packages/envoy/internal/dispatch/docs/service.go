@@ -75,11 +75,16 @@ const (
 // connection caps (cmd/dispatch's DISPATCH_MAX_LIVE_ROOMS and DISPATCH_MAX_DOC_CONNECTIONS); zero
 // is the default, 1,000 each.
 type Deps struct {
-	Store             *store.Store
-	Persistence       VersionedStore
-	Events            *events.Broker
-	Identity          identity.Identity
-	ServerURL         string
+	Store       *store.Store
+	Persistence VersionedStore
+	Events      *events.Broker
+	Identity    identity.Identity
+	ServerURL   string
+	// Settle is the settle delay: how long a room's settlement waits each time it is armed
+	// (scheduleSettle), by a flushed edit, a failed settlement's retry (retrySettle) or any other
+	// caller. Each arming replaces the one before, so a burst of edits settles once, Settle after
+	// the last. Zero or less means 2 s. The timer runs on Clock, so with a fake Clock a settlement
+	// runs only once the test moves the fake past it.
 	Settle            time.Duration
 	MarkWait          time.Duration
 	UnrecordedMarkTTL time.Duration
@@ -94,12 +99,13 @@ type Deps struct {
 	// Clock is the clock a room query's wait and its flush answer's timeout run on (roomQueries),
 	// VerifyMark's wait for a mark (MarkWait), the compaction queue's waits (compactionQueue), the
 	// edit notice sweep's gaps and due times (RunEditNotices), the settlement resumption's ticks
-	// (RunSettlementResumption) and Shutdown's drain budget (ShutdownDrainBudget); nil means the
-	// real clock. A test hands a clocktest fake and moves it past the wait. It is also, when set,
-	// the clock the reference excerpt reconciliation reads the moment it stamps and judges a
-	// document's retry at (excerptMoment): nil, as production leaves it, hands those statements no
-	// moment, so the database's own now() does both; a Clock that is set, clock.Real() included,
-	// puts them on that clock.
+	// (RunSettlementResumption), Shutdown's drain budget (ShutdownDrainBudget) and each room's
+	// settlement timer (scheduleSettleAfterLocked); nil means the real clock. A test hands a
+	// clocktest fake and moves it past the wait; with a fake, every settlement waits until the test
+	// moves the fake past its delay (Settle). It is also, when set, the clock the reference excerpt
+	// reconciliation reads the moment it stamps and judges a document's retry at (excerptMoment):
+	// nil, as production leaves it, hands those statements no moment, so the database's own now()
+	// does both; a Clock that is set, clock.Real() included, puts them on that clock.
 	Clock clock.Clock
 	// RoomIdleTimeout is how long an idle room stays resident before ygo's idle sweeper evicts it
 	// (Server.RoomIdleTimeout); zero means roomIdleTimeout, a minute. The sweeper runs on the real
@@ -168,8 +174,9 @@ type Service struct {
 	editNoticeQuiet time.Duration
 	// clock is Deps.Clock, the real clock when that is nil: what a room query's wait and its flush
 	// answer's timeout run on (roomQueries), VerifyMark's wait for a mark (markWait), the compaction
-	// queue's waits (compactionQueue) and the edit notice sweep's gaps and due times
-	// (RunEditNotices).
+	// queue's waits (compactionQueue), the edit notice sweep's gaps and due times
+	// (RunEditNotices) and each room's settlement timer (scheduleSettleAfterLocked), so on a fake
+	// every settlement waits until the test moves the fake past its delay.
 	clock clock.Clock
 	// excerptClock is Deps.Clock as the caller set it, nil in production: the clock the reference
 	// excerpt reconciliation reads the moment it hands its statements off (excerptMoment), where

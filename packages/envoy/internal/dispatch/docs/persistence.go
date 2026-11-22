@@ -403,11 +403,11 @@ func ceilingOf(ceiling int64, recovering bool) *int64 {
 // updates, armed while the first was committing: the resumption picks the row and arms one of its
 // own once the first has made its last check of the room's generation and before its write phase
 // takes the row (resumeOwedSettlements). It credits SettlementActor, having no row to read an
-// edit source from, and on a closed issue it deleted the editor the first one kept, so the reopen
-// named the settlement rather than the editor whose text the closed issue's versions hold. It
-// goes through write, so it runs in the settlement's write phase, in its place among the
-// settlement's other writes: after any update the settlement itself appends, which writes the row
-// it deletes here (updateOwedStatement).
+// edit source from, so without the gate on the deleted row it would delete, on a closed issue, the
+// editor the first one kept, and the reopen would name the settlement rather than the editor whose
+// text the closed issue's versions hold. The statement goes through write, so it runs in the
+// settlement's write phase, in its place among the settlement's other writes: after any update the
+// settlement itself appends, which writes the row it deletes here (updateOwedStatement).
 func clearSettlementPending(ctx context.Context, tx pgx.Tx, room string, kept *model.Actor) error {
 	encoded, err := encodeActor(kept)
 	if err != nil {
