@@ -42,7 +42,7 @@ jobs:
         timeout-minutes: 18
         run: |
           . .github/scripts/ci-retry.sh
-          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile
+          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile >&2
       - name: Typecheck contracts
         run: bun run typecheck
         working-directory: packages/contracts

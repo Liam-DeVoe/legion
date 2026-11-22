@@ -239,6 +239,10 @@ for answer in 'HTTP 504 with a 404 line' 'HTTP 504 with a fake 404 line'; do
   check "$answer: is read again, never once as a 404" "$(is "$(release_calls | grep -c -E '^legion-v9\.0\.0( |$)')" 5)"
   check "$answer: is UNKNOWN for that release" \
     "$(contains "$out" '^::error::UNKNOWN: GitHub did not answer for the release of legion-v9\.0\.0 ')"
+  # gh's last line on standard error, each control character a space: the line that ends with
+  # the 504, never the first line of the message, which `head -n 1` would name.
+  check "$answer: the UNKNOWN names gh's last line, the 504's" \
+    "$(contains "$out" '^::error::UNKNOWN: GitHub did not answer for the release of legion-v9\.0\.0 (retry later (HTTP 504)), so ')"
   check "$answer: takes no later release as the cutoff" "$(is "$(contains "$out" 'active since legion-v9\.1\.0')" false)"
 done
 # A read gh answers with exit 0 and a status that is no 200: gh 2.98.0 exited 0 for a local

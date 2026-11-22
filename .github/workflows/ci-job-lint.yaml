@@ -168,7 +168,7 @@ jobs:
         timeout-minutes: 18
         run: |
           . .github/scripts/ci-retry.sh
-          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile
+          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile >&2
 
       # The frozen install above does not refuse a workspace `version` the lockfile does not hold.
       # --lockfile-only writes the lockfile the manifests imply and installs nothing, so a
@@ -181,9 +181,9 @@ jobs:
           # Retried as the frozen install above is, and bounded by the same measurement: this
           # resolve-only run reads the same manifests and installs nothing, so it cannot cost
           # more than that install's 20.70 s cold reading.
-          retry_fetch "the lockfile the manifests imply" 180 -- bun install --lockfile-only
+          retry_fetch "the lockfile the manifests imply" 180 -- bun install --lockfile-only >&2
           if ! git diff --exit-code bun.lock; then
-            echo "::error file=bun.lock::bun.lock disagrees with the workspace manifests; run bun install and commit bun.lock, and after a forward merge of main take one side's bun.lock whole before installing"
+            echo "::error file=bun.lock::bun.lock disagrees with the workspace manifests; run bun install and commit bun.lock, and after a forward merge of main take one side's bun.lock whole before installing" >&2
             exit 1
           fi
 

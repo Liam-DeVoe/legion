@@ -207,7 +207,7 @@ done <<<"$rows"
 
 if [ "${#errors[@]}" -gt 0 ]; then
   for error in "${errors[@]}"; do
-    echo "::error::$error"
+    echo "::error::$error" >&2
   done
   exit 1
 fi

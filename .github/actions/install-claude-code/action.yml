@@ -28,7 +28,7 @@ runs:
         # shellcheck source=.github/scripts/ci-retry.sh
         . "$GITHUB_ACTION_PATH/../../scripts/ci-retry.sh"
         retry_fetch "the pinned Claude Code" 180 -- \
-          bun add --cwd "$directory" --exact --no-save "@anthropic-ai/claude-code@$pin"
+          bun add --cwd "$directory" --exact --no-save "@anthropic-ai/claude-code@$pin" >&2
         claude="$directory/node_modules/.bin/claude"
         "$directory/node_modules/.bin/claude" --version
         echo "installed @anthropic-ai/claude-code@$pin in $(( $(date +%s) - started ))s"

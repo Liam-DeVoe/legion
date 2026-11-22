@@ -166,7 +166,7 @@ jobs:
         timeout-minutes: 18
         run: |
           . .github/scripts/ci-retry.sh
-          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile
+          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile >&2
       - name: Typecheck the docs site
         run: bun run typecheck
         working-directory: docs/site
@@ -205,7 +205,7 @@ jobs:
         timeout-minutes: 28
         run: |
           . "$GITHUB_WORKSPACE/.github/scripts/ci-retry.sh"
-          retry_fetch "Playwright's Chromium" 300 -- bunx playwright install chromium
+          retry_fetch "Playwright's Chromium" 300 -- bunx playwright install chromium >&2
         working-directory: docs/site
       # The service with crash safety off (fsync, full_page_writes, synchronous_commit), as the
       # e2e harness's own Postgres runs (packages/dispatch/e2e/harness-postgres.ts), so no commit

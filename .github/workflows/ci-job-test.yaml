@@ -315,7 +315,7 @@ jobs:
         timeout-minutes: 18
         run: |
           . .github/scripts/ci-retry.sh
-          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile
+          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile >&2
 
       # The very command release.yaml's claude_envoy_build runs, so a pull request whose source
       # that job would refuse fails this job, and with it the required ci-ok, instead of merging

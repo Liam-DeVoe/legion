@@ -338,7 +338,7 @@ jobs:
         timeout-minutes: 18
         run: |
           . .github/scripts/ci-retry.sh
-          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile
+          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile >&2
 
       - name: Set release version
         if: steps.version.outputs.skip != 'true'
@@ -475,7 +475,7 @@ jobs:
         timeout-minutes: 18
         run: |
           . .github/scripts/ci-retry.sh
-          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile
+          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile >&2
 
       - name: Set release version
         if: steps.version.outputs.skip != 'true'
@@ -611,7 +611,7 @@ jobs:
         timeout-minutes: 18
         run: |
           . .github/scripts/ci-retry.sh
-          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile
+          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile >&2
 
       - name: Set release version
         if: steps.version.outputs.skip != 'true'
@@ -819,8 +819,8 @@ jobs:
         run: |
           "$GITHUB_WORKSPACE/.github/scripts/release-push.sh" release "$TAG" "Pi Envoy v$VERSION" "$RUNNER_TEMP/pi-envoy-tarball/$STEM.tgz"
 
-      # The entries pi_envoy_build rendered from this release's fragments, under the runner's
-      # temporary directory as the tarball is, outside the checkout.
+      # The entries pi_envoy_build rendered from this release's fragments, under $RUNNER_TEMP as the
+      # tarball is, outside the checkout.
       - name: "pi-envoy: Download the changelog entries"
         id: pi_envoy_notes
         if: ${{ !cancelled() && steps.pi_envoy_release.outcome == 'success' && needs.pi_envoy_build.outputs.notes == 'true' }}
@@ -1053,8 +1053,8 @@ jobs:
           NAME: ${{ steps.codex_envoy_handed.outputs.name }}
           STEM: ${{ steps.codex_envoy_handed.outputs.stem }}
         run: |
-          if ! json=$(npm view "$NAME" name --json); then
-            code=$(jq -r '.error.code?' <<<"$json" 2>/dev/null)
+          if ! json=$(npm view "$NAME" name --json 2>/dev/null); then
+            code=$(jq -r '.error.code?' <<<"$json" 2>/dev/null) || code=
             [ "$code" = E404 ] && { echo "::warning::npm has no package $NAME yet, and trusted publishing cannot create one: an owner of its scope publishes it once by hand and names this workflow its trusted publisher. Not publishing $VERSION."; exit 0; }
             echo "::error::reading $NAME from npm failed: ${code:-no code}: $(jq -j '.error.summary//empty' <<<"$json"|tr '[:cntrl:]' ' ')"
             exit 1
@@ -1277,8 +1277,7 @@ jobs:
   # why: .github/ci-notes/release.md#what-names-the-worker-image-on-the-legion-release
   worker_image_release:
     needs: [worker_image, publish]
-    # On `always()`, so a job skipped upstream does not skip this one; it tests the result of both
-    # jobs it reads.
+    # On `always()`, so a job skipped upstream does not skip this one; it tests both jobs' results.
     if: >-
       always() &&
       needs.worker_image.result == 'success' &&

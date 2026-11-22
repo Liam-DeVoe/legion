@@ -170,7 +170,7 @@ always_run=$(yq -r '.env.CI_OK_ALWAYS_RUN // ""' "$workflow")
 if ! jq -e 'type == "object"' <<<"$selected_by" >/dev/null 2>&1 \
   || ! jq -e 'type == "array"' <<<"$pull_request_only" >/dev/null 2>&1 \
   || ! jq -e 'type == "array"' <<<"$always_run" >/dev/null 2>&1; then
-  echo "::error::$workflow's env holds no JSON CI_OK_SELECTED_BY object and CI_OK_PULL_REQUEST_ONLY and CI_OK_ALWAYS_RUN arrays"
+  echo "::error::$workflow's env holds no JSON CI_OK_SELECTED_BY object and CI_OK_PULL_REQUEST_ONLY and CI_OK_ALWAYS_RUN arrays" >&2
   exit 1
 fi
 
@@ -213,7 +213,7 @@ if retry_fetch "the run's job list" 30 -- gh api --paginate \
   needs=$(jq -n --argjson jobs "$(jq -s . "$work/jobs")" --argjson changes "$CHANGES" \
     --argjson map "$selected_by" --argjson always "$always_run" "$program")
 else
-  echo "::warning::GitHub refused this run's job list five times, and this merge-group run is already decided: every other job is read as unread, because this run's verdict is failing whatever those jobs go on to do and a group with no ci-ok at all holds the queue for 180 minutes"
+  echo "::warning::GitHub refused this run's job list five times, and this merge-group run is already decided: every other job is read as unread, because this run's verdict is failing whatever those jobs go on to do and a group with no ci-ok at all holds the queue for 180 minutes" >&2
   needs=$(jq -n --argjson changes "$CHANGES" --argjson map "$selected_by" --argjson always "$always_run" \
     '{changes: $changes}
      + ([$always[] | select(. != "changes") | {key: ., value: {result: "unread"}}] | from_entries)
@@ -228,7 +228,7 @@ summary="$work/summary"
 status=0
 verdict=$(NEEDS=$needs EVENT=$EVENT SELECTED_BY=$selected_by ALWAYS_RUN=$always_run \
   PULL_REQUEST_ONLY=$pull_request_only "$script_dir/ci-ok.sh" 2>&1) || status=$?
-echo "$verdict"
+echo "$verdict" >&2
 if [ "$status" -eq 0 ]; then
   conclusion=success
   title="Every job changes selected succeeded"

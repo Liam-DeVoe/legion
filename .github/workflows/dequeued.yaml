@@ -139,16 +139,16 @@ jobs:
             else
               removal=
               refused=$((refused + 1))
-              echo "::warning::GitHub refused read $attempt of 7 of pull request #$PR_NUMBER's timeline, so that read says nothing about a removal"
+              echo "::warning::GitHub refused read $attempt of 7 of pull request #$PR_NUMBER's timeline, so that read says nothing about a removal" >&2
             fi
             [ "$attempt" = 7 ] || sleep 10
           done
           if [ "$refused" = 7 ]; then
-            echo "::error::GitHub refused all 7 reads of pull request #$PR_NUMBER's timeline, so this run read no timeline at all: it cannot name the group the queue removed, and that group's ci.yaml run keeps its runners until the queue's next group ends it"
+            echo "::error::GitHub refused all 7 reads of pull request #$PR_NUMBER's timeline, so this run read no timeline at all: it cannot name the group the queue removed, and that group's ci.yaml run keeps its runners until the queue's next group ends it" >&2
             exit 1
           fi
           if [ -z "$removal" ]; then
-            echo "::notice::no removal of pull request #$PR_NUMBER reached its timeline in the minute this run waited, so no run is named and none is cancelled; the group the queue builds next ends this one"
+            echo "::notice::no removal of pull request #$PR_NUMBER reached its timeline in the minute this run waited, so no run is named and none is cancelled; the group the queue builds next ends this one" >&2
             exit 0
           fi
           reason=$(jq -r '.reason // "no reason"' <<<"$removal")
@@ -159,7 +159,7 @@ jobs:
             exit 0
           fi
           if [ -z "$before" ]; then
-            echo "::warning::the removal names no beforeCommit, so there is no group head to look for and nothing is cancelled"
+            echo "::warning::the removal names no beforeCommit, so there is no group head to look for and nothing is cancelled" >&2
             exit 0
           fi
           # The same 30 s an attempt as the reads above: a refused list would leave the removed
@@ -179,5 +179,5 @@ jobs:
             echo "run $id is the ci.yaml merge-group run of the group whose head is $before, and it has not completed: force-cancel it"
             retry_fetch "the force-cancel of run $id" 30 -- \
               gh api --silent --method POST "repos/$GITHUB_REPOSITORY/actions/runs/$id/force-cancel" ||
-              echo "::warning::force-cancel of run $id failed; it may have completed already"
+              echo "::warning::force-cancel of run $id failed; it may have completed already" >&2
           done <<<"$doomed"

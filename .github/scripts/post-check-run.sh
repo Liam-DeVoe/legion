@@ -55,14 +55,14 @@ script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 for input in GH_TOKEN GITHUB_REPOSITORY HEAD_SHA CHECK_NAME CONCLUSION TITLE SUMMARY_FILE DETAILS_URL EXTERNAL_ID; do
   if [ -z "${!input:-}" ]; then
-    echo "::error::post-check-run.sh needs $input in its environment"
+    echo "::error::post-check-run.sh needs $input in its environment" >&2
     exit 1
   fi
 done
 case $CONCLUSION in
   success | failure) ;;
   *)
-    echo "::error::post-check-run.sh posts success or failure, not '$CONCLUSION'"
+    echo "::error::post-check-run.sh posts success or failure, not '$CONCLUSION'" >&2
     exit 1
     ;;
 esac
@@ -100,5 +100,5 @@ if retry_fetch "the $CHECK_NAME check run" 30 -- \
   echo "posted $CHECK_NAME ($CONCLUSION) on $HEAD_SHA: $(<"$work/posted")"
   exit 0
 fi
-echo "::error::GitHub refused the $CHECK_NAME check run on $HEAD_SHA five times"
+echo "::error::GitHub refused the $CHECK_NAME check run on $HEAD_SHA five times" >&2
 exit 1

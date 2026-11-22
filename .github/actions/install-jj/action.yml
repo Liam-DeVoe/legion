@@ -100,7 +100,7 @@ runs:
         # path of what the install put on disk — a local lookup, not a fetch, which is why it is
         # bare — and it stays a lookup rather than a `mise where` because whether the binary
         # sits at the install's root or under its `bin/` differs by backend.
-        if retry_fetch "the worker image's jj" 60 -- "$HOME/.local/bin/mise" install "$jj_tool"; then
+        if retry_fetch "the worker image's jj" 60 -- "$HOME/.local/bin/mise" install "$jj_tool" >&2; then
           # mise fetched the bytes from the GitHub release asset, so that is the source named.
           source=$(ci_tools_source_name "$jj_row" primary)
           # The binary is held to the row where mise put it, and copied to ~/.local/bin/jj only

@@ -81,9 +81,9 @@ jobs:
         run: |
           . .github/scripts/ci-retry.sh
           retry_fetch "apt's package lists" 95 -- \
-            sudo timeout 90 apt-get update -o APT::Update::Error-Mode=any
+            sudo timeout 90 apt-get update -o APT::Update::Error-Mode=any >&2
           retry_fetch "tmux" 125 -- \
-            sudo timeout 120 apt-get install -y --no-install-recommends -d tmux
+            sudo timeout 120 apt-get install -y --no-install-recommends -d tmux >&2
           sudo apt-get install -y --no-install-recommends tmux
       # Retried at 180 s per attempt like every Bun install here (ci-budgets.md's Retries note).
       - name: bun install --frozen-lockfile
@@ -91,7 +91,7 @@ jobs:
         timeout-minutes: 18
         run: |
           . .github/scripts/ci-retry.sh
-          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile
+          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile >&2
       - name: Build contracts for pi-envoy
         run: bun run build
         working-directory: packages/contracts

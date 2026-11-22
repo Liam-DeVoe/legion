@@ -721,7 +721,7 @@
 # nothing from the network. It is false for a corepack shim: `pnpm`, `yarn` and `yarnpkg
 # --version` and `pnpx --help` download the package manager on their first run, and this check
 # reads each of them as no fetch all the same. A STATED LIMIT: the tree's four such calls are the
-# worker image's toolchain step, packages/daemon/docker/worker.Dockerfile:1549-1550, each retried
+# worker image's toolchain step, packages/daemon/docker/worker.Dockerfile:1600-1601, each retried
 # by its author with that Dockerfile's `retry` at 120 s, and no rule holds a new one to the floor.
 #
 # Two verbs are deliberately outside the subject, because R1's subject is a tool, a toolchain or a
@@ -1686,7 +1686,7 @@ APT_DOWNLOAD_ONLY = {"-d", "--download-only"}
 APT_ERROR_MODE = re.compile(r"apt::update::error-mode\s*=\s*any", re.IGNORECASE)
 # A command that answers about itself is read as no fetch, whatever its verb: true of a binary
 # installed whole, false of a corepack shim, which the header's paragraph on the wrappers names as
-# a stated limit (worker.Dockerfile:1549-1550).
+# a stated limit (worker.Dockerfile:1600-1601).
 INFORMATIONAL = {"--version", "--help", "--usage"}
 # The mise subcommands that fetch and say so: both exit 1 when the fetch fails.
 MISE_SUBCOMMANDS = {"install", "use"}

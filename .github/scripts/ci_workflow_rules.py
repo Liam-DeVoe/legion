@@ -231,10 +231,8 @@ def resolved_key(key: str, *envs) -> str:
 
 
 def job_cache_steps(job: dict, action: str) -> list:
-    """Every actions/cache/<action> step of one job, as (its family, its with:, its own env:)."""
-    return [(cache_family(str((step.get("with") or {}).get("key", ""))), step.get("with") or {},
-             step.get("env"))
-            for step in ((job or {}).get("steps") or [])
+    """Every actions/cache/<action> step of one job."""
+    return [step for step in ((job or {}).get("steps") or [])
             if str((step or {}).get("uses", "")).split("@")[0] == f"actions/cache/{action}"]
 
 
@@ -242,10 +240,14 @@ def cache_steps(document: dict, action: str) -> list:
     """Every actions/cache/<action> step of a workflow, as (its job, its family, its with:, its
     key with each env reference resolved against the step's own env, else the job's, else the
     workflow's)."""
-    return [(job_id, family, given, resolved_key(str(given.get("key", "")).rstrip(), step_env,
-                                                 (job or {}).get("env"), document.get("env")))
-            for job_id, job in (document.get("jobs") or {}).items()
-            for family, given, step_env in job_cache_steps(job or {}, action)]
+    found = []
+    for job_id, job in (document.get("jobs") or {}).items():
+        for step in job_cache_steps(job or {}, action):
+            given = step.get("with") or {}
+            found.append((job_id, cache_family(str(given.get("key", ""))), given,
+                          resolved_key(str(given.get("key", "")).rstrip(), step.get("env"),
+                                       (job or {}).get("env"), document.get("env"))))
+    return found
 
 
 def restores_of(documents: dict) -> dict:

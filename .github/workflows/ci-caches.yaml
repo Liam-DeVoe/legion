@@ -678,7 +678,7 @@ jobs:
           entries=$(retry_fetch "this ref's go-envoy-infra entries" 30 -- \
             gh cache list --ref "$REF" --key go-envoy-infra- --limit 100 --json id,key,ref)
           if ! jq -e --arg keep "$KEEP" --arg ref "$REF" 'any(.[]; .key == $keep and .ref == $ref)' <<<"$entries" >/dev/null; then
-            echo "::warning::the new go-envoy-infra entry is not among this ref's entries, so none is deleted"
+            echo "::warning::the new go-envoy-infra entry is not among this ref's entries, so none is deleted" >&2
             exit 0
           fi
           jq -r --arg keep "$KEEP" --arg ref "$REF" \
@@ -687,7 +687,7 @@ jobs:
                           and (.key | base) == ($keep | base)) | .id' <<<"$entries" |
             while read -r id; do
               if ! [[ $id =~ ^[0-9]+$ ]]; then
-                echo "::error::the cache list gave an id that is not a number, so nothing more is deleted"
+                echo "::error::the cache list gave an id that is not a number, so nothing more is deleted" >&2
                 exit 1
               fi
               echo "Deleting go-envoy-infra entry $id, which the new entry supersedes"
@@ -735,7 +735,7 @@ jobs:
         run: |
           . .github/scripts/ci-retry.sh
           toolchain=$(cat packages/envoy/internal/cipher/proxyrules/lean/lean-toolchain)
-          retry_fetch "the Lean toolchain $toolchain" 120 -- elan toolchain install "$toolchain"
+          retry_fetch "the Lean toolchain $toolchain" 120 -- elan toolchain install "$toolchain" >&2
 
       # What airlock-lean builds, after the toolchain step, as airlock-lean builds it: the build
       # reads the toolchain from $RUNNER_TEMP/elan and downloads nothing, so the entry holds the

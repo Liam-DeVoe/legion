@@ -56,7 +56,7 @@ jobs:
         timeout-minutes: 18
         run: |
           . .github/scripts/ci-retry.sh
-          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile
+          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile >&2
       - name: Lint Claude Envoy plugin
         run: bun run lint
         working-directory: packages/claude-envoy
@@ -87,9 +87,9 @@ jobs:
         run: |
           . .github/scripts/ci-retry.sh
           retry_fetch "apt's package lists" 95 -- \
-            sudo timeout 90 apt-get update -o APT::Update::Error-Mode=any
+            sudo timeout 90 apt-get update -o APT::Update::Error-Mode=any >&2
           retry_fetch "zsh" 125 -- \
-            sudo timeout 120 apt-get install -y --no-install-recommends -d zsh
+            sudo timeout 120 apt-get install -y --no-install-recommends -d zsh >&2
           sudo apt-get install -y --no-install-recommends zsh
       - name: Test Claude Envoy plugin
         run: bun run test

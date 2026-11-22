@@ -39,11 +39,12 @@
 # read goes through retry_fetch: npm's E404 starts from 0.0.0 with one call,
 # and a 504 is retried, once or on every attempt, which wait out the helper's
 # sleeps for real: its first, 10 s, and all of them, 150 s, which
-# ci-job-test.yaml's `test` job key carries. Four more reads fail on every
-# attempt and wait nothing, each run with a stub sleep of its own that returns
-# at once: three 504s whose body carries an E404's text (`npm error code E404`
+# ci-job-test.yaml's `test` job key carries. Five more reads fail on every
+# attempt and wait nothing, run with one shared stub sleep that returns at
+# once: three 504s whose body carries an E404's text (`npm error code E404`
 # in npm's message, npm's E404 status line on a line of its own, and that line
-# with a whole fake 404 answer after it), and a 200 npm answers with no version.
+# with a whole fake 404 answer after it), a 504 whose body writes a carriage
+# return and then a workflow command, and a 200 npm answers with no version.
 # The `tag` cases run it with $GITHUB_SHA naming the clone's HEAD and check
 # that the tag names that commit and nothing else moves: no commit is added,
 # the manifests and the lockfile keep their blobs, the work tree stays clean
@@ -400,7 +401,11 @@ echo "Case 10b: version releases the tag an earlier attempt pushed, else the bum
 # it answers as npm 11.19.1 does there (measured in round 53 of
 # dispatch://INFRA-1545): a JSON string on success, and on a failure the
 # object {"error": {"code", "summary", "detail"}} on stdout beside the same
-# human lines on stderr.
+# human lines on stderr. $NPM_TEST_MODE, when set, picks a registry answer the
+# rows below read on every call instead, each as npm 11.19.1 printed it against
+# a local registry: body, line and fake, three 504s whose body carries an
+# E404's text; cr, a 504 whose body holds a carriage return and a workflow
+# command; empty, a 200 npm answers with nothing on stdout and exit 0.
 mkdir -p "$work/bin"
 cat > "$work/bin/npm" <<'NPM'
 #!/usr/bin/env bash
@@ -408,16 +413,39 @@ cat > "$work/bin/npm" <<'NPM'
 calls=$(wc -l < "$NPM_TEST_DIR/npm-calls")
 json=false
 for arg in "$@"; do [ "$arg" != --json ] || json=true; done
-if [ -n "${NPM_TEST_FAIL:-}" ] && { [ -z "${NPM_TEST_FAIL_CALLS:-}" ] || [ "$calls" -le "$NPM_TEST_FAIL_CALLS" ]; }; then
-  summary="${NPM_TEST_FAIL#E} - GET https://registry.npmjs.org/@example%2fpkg"
-  ! $json || jq -n --arg code "$NPM_TEST_FAIL" --arg summary "$summary" '{error: {code: $code, summary: $summary, detail: ""}}'
-  echo "npm error code $NPM_TEST_FAIL" >&2
-  echo "npm error $summary" >&2
+# fail <code> <summary> <stderr line>...: npm's failure, its JSON object on stdout given --json.
+fail() {
+  local code=$1 summary=$2
+  shift 2
+  ! $json || jq -n --arg code "$code" --arg summary "$summary" '{error: {code: $code, summary: $summary, detail: ""}}'
+  printf '%s\n' "$@" >&2
   exit 1
+}
+url="https://registry.npmjs.org/@example%2fpkg"
+timeout="504 Gateway Timeout - GET $url - upstream timed out"
+case ${NPM_TEST_MODE:-} in
+  body) fail E504 "504 Gateway Timeout - GET $url - upstream said: npm error code E404" \
+    "npm error code E504" "npm error 504 Gateway Timeout - GET $url - upstream said: npm error code E404" ;;
+  line) fail E504 "$timeout"$'\n'"code E404" "npm error code E504" "npm error $timeout" "npm error code E404" ;;
+  fake) fail E504 "$timeout"$'\n'"code E404"$'\n'"404 Not Found - GET $url - Not found" \
+    "npm error code E504" "npm error $timeout" "npm error code E404" "npm error 404 Not Found - GET $url - Not found" ;;
+  cr) fail E504 "$timeout"$'\r'"::warning::injected"$'\n'"next line" \
+    "npm error code E504" "npm error $timeout"$'\r'"::warning::injected" "npm error next line" ;;
+  empty) exit 0 ;;
+esac
+if [ -n "${NPM_TEST_FAIL:-}" ] && { [ -z "${NPM_TEST_FAIL_CALLS:-}" ] || [ "$calls" -le "$NPM_TEST_FAIL_CALLS" ]; }; then
+  summary="${NPM_TEST_FAIL#E} - GET $url"
+  fail "$NPM_TEST_FAIL" "$summary" "npm error code $NPM_TEST_FAIL" "npm error $summary"
 fi
 if $json; then jq -n --arg v "$NPM_TEST_VERSION" '$v'; else echo "$NPM_TEST_VERSION"; fi
 NPM
 chmod +x "$work/bin/npm"
+# The rows that fail on every attempt and should wait nothing put this directory first on PATH:
+# its stub sleep returns at once, so retry_fetch's five attempts wait nothing.
+no_sleep="$work/no-sleep"
+mkdir -p "$no_sleep"
+printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$no_sleep/sleep"
+chmod +x "$no_sleep/sleep"
 # version_run <clone> <arg>...: runs `release-push.sh version <arg>...` from
 # <clone>, with the job summary at $work/version.summary and the stub npm's log
 # emptied first; leaves its exit code in rc, its stdout (the output lines) in
@@ -535,31 +563,9 @@ check "no tag, npm 504 on every attempt: npm's own error reaches the log" "$(con
 # of its message line (dispatch://INFRA-1545, round 50), and given --json it writes that message
 # as the `summary` of the error object it prints on stdout (measured in round 53). The helper
 # reads that object's `error.code`, which npm sets from the status, and it says E504: a failure
-# that is retried and fails the job, never a 0.0.0. The row has a stub npm of its own, printing
-# that object and npm's two lines, in a directory this one run takes as $work, since version_run
-# puts "$work/bin" first on PATH; beside it, a stub sleep that returns at once, so retry_fetch's
-# five attempts wait nothing.
-npm_body="$work/npm-504-body"
-mkdir -p "$npm_body/bin"
-cat > "$npm_body/bin/npm" <<'NPM'
-#!/usr/bin/env bash
-cat <<'JSON'
-{
-  "error": {
-    "code": "E504",
-    "summary": "504 Gateway Timeout - GET https://registry.npmjs.org/@example%2fpkg - upstream said: npm error code E404",
-    "detail": ""
-  }
-}
-JSON
-echo "npm error code E504" >&2
-echo "npm error 504 Gateway Timeout - GET https://registry.npmjs.org/@example%2fpkg - upstream said: npm error code E404" >&2
-exit 1
-NPM
-printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$npm_body/bin/sleep"
-chmod +x "$npm_body/bin/npm" "$npm_body/bin/sleep"
-# The clone's path is expanded before `work` is set for the call, so it is the outer $work's.
-work=$npm_body version_run "$work/v/c" pkg-v --first-npm @example/pkg -- packages/pkg/
+# that is retried and fails the job, never a 0.0.0. The stub npm's body mode prints that object
+# and npm's two lines, and the stub sleep in $no_sleep returns at once.
+NPM_TEST_MODE=body PATH="$no_sleep:$PATH" version_run "$work/v/c" pkg-v --first-npm @example/pkg -- packages/pkg/
 check "no tag, npm 504 whose message says code E404: exits non-zero printing nothing" \
   "$(is "$([ "$rc" -ne 0 ] && echo nonzero)|$out" "nonzero|")"
 check "no tag, npm 504 whose message says code E404: starts from no 0.0.0" "$(is "$(contains "$err" 'v0\.0\.0')" false)"
@@ -569,47 +575,46 @@ check "no tag, npm 504 whose message says code E404: starts from no 0.0.0" "$(is
 # own `npm error code E504`, and one whose body adds a fake 404 line after it with that whole
 # fake answer (measured in an issue pod against a local registry, dispatch://INFRA-1545, round
 # 53). The registry failed, so neither is a package npm lacks: no text a server can echo decides
-# the outcome. Each run has its own stub npm, printing what npm printed there, and a stub sleep.
-npm_lines="$work/npm-504-lines"
-mkdir -p "$npm_lines/bin"
-cat > "$npm_lines/bin/npm" <<'NPM'
-#!/usr/bin/env bash
-summary="504 Gateway Timeout - GET https://registry.npmjs.org/@example%2fpkg - upstream timed out"$'\n'"code E404"
-[ "$NPM_LINES_TEST" != fake ] || summary+=$'\n'"404 Not Found - GET https://registry.npmjs.org/@example%2fpkg - Not found"
-# Given --json, the object npm 11.19.1 wrote on stdout for that 504: its code is E504.
-for arg in "$@"; do
-  [ "$arg" != --json ] || jq -n --arg summary "$summary" '{error: {code: "E504", summary: $summary, detail: ""}}'
-done
-echo "npm error code E504" >&2
-echo "npm error 504 Gateway Timeout - GET https://registry.npmjs.org/@example%2fpkg - upstream timed out" >&2
-echo "npm error code E404" >&2
-[ "$NPM_LINES_TEST" != fake ] || echo "npm error 404 Not Found - GET https://registry.npmjs.org/@example%2fpkg - Not found" >&2
-exit 1
-NPM
-printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$npm_lines/bin/sleep"
-chmod +x "$npm_lines/bin/npm" "$npm_lines/bin/sleep"
+# the outcome. The stub npm's line and fake modes print what npm printed there, and the stub
+# sleep in $no_sleep returns at once.
 for mode in line fake; do
-  NPM_LINES_TEST=$mode work=$npm_lines version_run "$work/v/c" pkg-v --first-npm @example/pkg -- packages/pkg/
+  NPM_TEST_MODE=$mode PATH="$no_sleep:$PATH" version_run "$work/v/c" pkg-v --first-npm @example/pkg -- packages/pkg/
   check "no tag, npm 504 whose body writes an E404 $mode: exits non-zero printing nothing" \
     "$(is "$([ "$rc" -ne 0 ] && echo nonzero)|$out" "nonzero|")"
   check "no tag, npm 504 whose body writes an E404 $mode: starts from no 0.0.0" "$(is "$(contains "$err" 'v0\.0\.0')" false)"
 done
+# A 504 whose body holds a carriage return and then a workflow command. npm 11.19.1 writes a
+# registry body's text on its standard error with a lone carriage return kept, and puts `npm
+# error ` in front of only the lines it ends with a newline: for a body whose `error` field is
+# "upstream timed out\r::warning::injected\nnext line" it wrote `npm error 504 Gateway Timeout -
+# GET <url> - upstream timed out\r::warning::injected` and then `npm error next line` (measured
+# against a local registry, dispatch://INFRA-1545, round 54). GitHub's runner ends a line at a
+# lone carriage return as at a newline, and reads a line that starts with `::` as a workflow
+# command, so the helper passes npm's standard error on with each carriage return a space, and
+# retry_fetch runs each attempt inside a stop-commands block of its own. Split at CR and LF, no
+# line of what the job logs is the registry's ::warning::, the lines that start with `::` are
+# retry_fetch's blocks' opens and closes, its ::error:: and release-push.sh's alone, and the job
+# still fails. The stub npm's cr mode prints those lines and the --json object, its code E504, on
+# every call.
+NPM_TEST_MODE=cr PATH="$no_sleep:$PATH" version_run "$work/v/c" pkg-v --first-npm @example/pkg -- packages/pkg/
+check "no tag, npm 504 whose body writes a CR and a workflow command: exits non-zero printing nothing" \
+  "$(is "$([ "$rc" -ne 0 ] && echo nonzero)|$out" "nonzero|")"
+check "no tag, npm 504 whose body writes a CR and a workflow command: split at CR and LF, no line starts ::warning::" \
+  "$(is "$(tr '\r' '\n' <<<"$err" | { grep -c '^::warning::' || true; })" 0)"
+check "no tag, npm 504 whose body writes a CR and a workflow command: split at CR and LF, the :: lines beside retry_fetch's blocks are the two ::error:: lines alone" \
+  "$(is "$(tr '\r' '\n' <<<"$err" | { grep '^::' || true; } |
+    { grep -v -e '^::stop-commands::ci-retry\.[A-Za-z0-9]\{6\}$' -e '^::ci-retry\.[A-Za-z0-9]\{6\}::$' || true; })" "$(printf '%s\n' \
+    "::error::npm's published version of @example/pkg failed to download after 5 attempts (last exit 1)" \
+    "::error::release-push.sh version: npm did not give the published version of @example/pkg, so no release version is computed from it; npm's own error is above")")"
+check "no tag, npm 504 whose body writes a CR and a workflow command: npm's line reaches the log, its CR a space" \
+  "$(contains "$err" '^npm error 504 Gateway Timeout - GET https://registry\.npmjs\.org/@example%2fpkg - upstream timed out ::warning::injected$')"
 # A 200 that names no version: npm 11.19.1 exits 0 and prints nothing on stdout for a registry
 # 200 whose body is {"error":{"code":"E404"}} (measured in an issue pod against a local
 # registry, dispatch://INFRA-1545, round 53). That is no version, and no failure npm reports: the
 # helper prints nothing on stdout and exits 1, and retry_fetch reads it again, five calls in all,
-# before the job fails by name. Its own stub npm logs each call and prints nothing, beside a stub
-# sleep that returns at once.
-npm_empty="$work/npm-empty"
-mkdir -p "$npm_empty/bin"
-cat > "$npm_empty/bin/npm" <<'NPM'
-#!/usr/bin/env bash
-{ printf '[%s]' "$@"; printf '\n'; } >> "$NPM_TEST_DIR/npm-calls"
-exit 0
-NPM
-printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$npm_empty/bin/sleep"
-chmod +x "$npm_empty/bin/npm" "$npm_empty/bin/sleep"
-work=$npm_empty version_run "$work/v/c" pkg-v --first-npm @example/pkg -- packages/pkg/
+# before the job fails by name. The stub npm's empty mode logs each call and prints nothing, and
+# the stub sleep in $no_sleep returns at once.
+NPM_TEST_MODE=empty PATH="$no_sleep:$PATH" version_run "$work/v/c" pkg-v --first-npm @example/pkg -- packages/pkg/
 check "no tag, npm exits 0 naming no version: exits 1 printing nothing, from no 0.0.0" \
   "$(is "$rc|$out|$(contains "$err" 'v0\.0\.0')" "1||false")"
 check "no tag, npm exits 0 naming no version: the helper says npm answered no version" \
@@ -1273,21 +1278,23 @@ check "with the checkout: the body keeps its notes and gets the digest under ## 
 echo
 echo "Case: release.yaml's codex-envoy publish reads npm's E404 from \`npm view --json\`'s \`.error.code\` alone"
 # The publish job's 'codex-envoy: Publish to npm' step asks npm for the package's name with
-# `npm view <name> name --json`, and takes a failure whose JSON error object on stdout has the
-# `error.code` E404 as a package npm does not have yet: a warning, exit 0, nothing published. npm
-# sets that code from the registry's status, and copies a body's `error` field into the object's
-# `summary` and into its own lines on stderr: npm 11.19.1 against a registry whose 504 carries
-# {"error":"npm error code E404"} writes `npm error code E504` and then `npm error 504 Gateway
-# Timeout - GET <url> - npm error code E404` on stderr, and that message as the summary of an
-# object whose code is E504 (measured in an issue pod, dispatch://INFRA-1545, rounds 52 and 53).
+# `npm view <name> name --json`, its stderr dropped, and takes a failure whose JSON error object
+# on stdout has the `error.code` E404 as a package npm does not have yet: a warning, exit 0,
+# nothing published. npm sets that code from the registry's status, and copies a body's `error`
+# field into the object's `summary` and into its own lines on stderr: npm 11.19.1 against a
+# registry whose 504 carries {"error":"npm error code E404"} writes `npm error code E504` and then
+# `npm error 504 Gateway Timeout - GET <url> - npm error code E404` on stderr, and that message as
+# the summary of an object whose code is E504 (measured in an issue pod, dispatch://INFRA-1545,
+# rounds 52 and 53).
 # That is a registry that failed, not a package npm lacks: the step must fail it rather than skip
 # the release with a green step. The step's `run:` is read out of the workflow by name and run
 # under the shell GitHub runs a `run:` with, against a stub npm first on PATH that answers `view
 # <name> name` as $NPM_PUB_TEST says (e404, e504body, or e504line and e504fake, a 504 whose body
 # writes npm's E404 status line, and then a whole fake 404 answer, on lines of their own, as npm
 # 11.19.1 printed them in round 53), on stderr and, given --json, as the object {"error":
-# {"code", "summary", "detail"}} npm 11.19.1 writes on stdout; with e504cr, a 504 whose summary
-# holds a carriage return, a workflow command and a newline, given --json; with held, a package
+# {"code", "summary", "detail"}} npm 11.19.1 writes on stdout; with e504cr, a 504 whose body
+# holds a carriage return, a workflow command and a newline, which npm 11.19.1 writes on stderr
+# with the carriage return kept (round 54) and, given --json, in the summary; with held, a package
 # npm holds, as the JSON string `"@example/codex"` npm prints for it given --json; `view
 # <name>@<version> version` with a failure (no such version); and logs `publish`. Each row judges
 # what the step does, its exit, its warning and whether it publishes.
@@ -1317,7 +1324,8 @@ case $NPM_PUB_TEST in
   e504line) fail E504 "$timeout"$'\n'"code E404" "npm error code E504" "npm error $timeout" "npm error code E404" ;;
   e504fake) fail E504 "$timeout"$'\n'"code E404"$'\n'"404 Not Found - GET $url - Not found" \
     "npm error code E504" "npm error $timeout" "npm error code E404" "npm error 404 Not Found - GET $url - Not found" ;;
-  e504cr) fail E504 "$timeout"$'\r'"::warning::injected"$'\n'"next line" "npm error code E504" "npm error $timeout" ;;
+  e504cr) fail E504 "$timeout"$'\r'"::warning::injected"$'\n'"next line" \
+    "npm error code E504" "npm error $timeout"$'\r'"::warning::injected" "npm error next line" ;;
   held) echo '"@example/codex"' ;;
 esac
 NPM
@@ -1352,8 +1360,9 @@ for mode in e504body e504line e504fake; do
 done
 # The runner ends a line at a carriage return as at a newline, and the summary is a registry's
 # text: the step's ::error:: is one line, the code and then the summary with each control
-# character a space, so no command the body writes starts a line of its own. This stub's stderr
-# lines leave the body's text out, so the row reads the step's own line alone.
+# character a space. npm 11.19.1 writes the body's text on stderr with its carriage return kept,
+# as this stub does, and the runner would read `::warning::injected` there as a line of its own;
+# the step sends npm's stderr to /dev/null, so its own ::error:: is the one line that starts `::`.
 run_codex_step e504cr
 check "e504cr, a 504 whose summary holds a CR and a workflow command: one ::error:: line, the code and the summary" \
   "$(is "$rc|$(tr '\r' '\n' <<<"$out" | grep -c '^::')|$(grep '^::error::' <<<"$out")" \

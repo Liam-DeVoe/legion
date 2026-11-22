@@ -140,7 +140,7 @@ jobs:
         timeout-minutes: 18
         run: |
           . .github/scripts/ci-retry.sh
-          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile
+          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile >&2
       # why: .github/ci-notes/dispatch-browser.md#why-every-job-that-runs-the-suite-builds-contracts-first
       - name: Build contracts for dispatch e2e
         run: bun run build:dispatch
@@ -258,7 +258,7 @@ jobs:
         timeout-minutes: 18
         run: |
           . .github/scripts/ci-retry.sh
-          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile
+          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile >&2
       # why: .github/ci-notes/dispatch-browser.md#why-the-alone-job-builds-contracts
       - name: Build contracts for dispatch e2e
         run: bun run build:dispatch
@@ -346,7 +346,7 @@ jobs:
         timeout-minutes: 18
         run: |
           . .github/scripts/ci-retry.sh
-          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile
+          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile >&2
       # why: .github/ci-notes/dispatch-browser.md#why-the-two-process-job-builds-contracts
       - name: Build contracts for dispatch e2e
         run: bun run build:dispatch
@@ -361,7 +361,7 @@ jobs:
         timeout-minutes: 28
         run: |
           . "$GITHUB_WORKSPACE/.github/scripts/ci-retry.sh"
-          retry_fetch "Playwright's Chromium" 300 -- bunx playwright install chromium
+          retry_fetch "Playwright's Chromium" 300 -- bunx playwright install chromium >&2
         working-directory: packages/dispatch
       - name: Pull the multiprocess stack's Postgres image
         # why: .github/ci-notes/dispatch-browser.md#why-the-two-process-job-pulls-its-stacks-postgres-image
@@ -437,7 +437,7 @@ jobs:
         timeout-minutes: 18
         run: |
           . .github/scripts/ci-retry.sh
-          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile
+          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile >&2
       - name: Build contracts for dispatch e2e
         # why: .github/ci-notes/dispatch-browser.md#why-the-embedder-job-builds-contracts
         run: bun run build:dispatch
@@ -461,7 +461,7 @@ jobs:
         timeout-minutes: 28
         run: |
           . "$GITHUB_WORKSPACE/.github/scripts/ci-retry.sh"
-          retry_fetch "Playwright's Chromium" 300 -- bunx playwright install chromium
+          retry_fetch "Playwright's Chromium" 300 -- bunx playwright install chromium >&2
         working-directory: packages/dispatch
       - name: Pull the embedder stack's Postgres image
         # why: .github/ci-notes/dispatch-browser.md#why-the-two-process-job-pulls-its-stacks-postgres-image
@@ -533,7 +533,7 @@ jobs:
         timeout-minutes: 18
         run: |
           . .github/scripts/ci-retry.sh
-          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile
+          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile >&2
       - name: Build contracts for dispatch e2e
         # why: .github/ci-notes/dispatch-browser.md#why-the-visual-job-builds-contracts
         run: bun run build:dispatch
@@ -629,7 +629,7 @@ jobs:
         timeout-minutes: 18
         run: |
           . .github/scripts/ci-retry.sh
-          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile
+          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile >&2
       # why: .github/ci-notes/dispatch-browser.md#why-every-legs-blob-report-is-downloaded-without-merge-multiple-and-the-two-layouts-it-lands-in
       - name: Download every leg's blob report
         id: download-blobs

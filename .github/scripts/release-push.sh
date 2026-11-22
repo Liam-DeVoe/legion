@@ -1087,19 +1087,19 @@ case "$command" in
       true)
         leak_guard 'the asset upload to the draft release' "$@" --
         gh release upload "$tag" "$@" --repo "$repo" --clobber || {
-          echo "::error::Uploading this run's assets to the draft release $tag failed; the draft is left unpublished."
+          echo "::error::Uploading this run's assets to the draft release $tag failed; the draft is left unpublished." >&2
           exit 1
         }
         # The draft as GitHub holds it now, which publishing it makes public: an
         # earlier attempt wrote that title and body, and this run has not read
         # them before.
         draft=$(gh release view "$tag" --repo "$repo" --json name,body -q '.name, .body') || {
-          echo "::error::Reading the draft release $tag back before publishing it failed; it is left unpublished."
+          echo "::error::Reading the draft release $tag back before publishing it failed; it is left unpublished." >&2
           exit 1
         }
         leak_guard 'the draft release publish' -- "$draft"
         gh release edit "$tag" --repo "$repo" --draft=false || {
-          echo "::error::Publishing the draft release $tag failed; it holds this run's assets and is still a draft."
+          echo "::error::Publishing the draft release $tag failed; it holds this run's assets and is still a draft." >&2
           exit 1
         }
         echo "Published the draft release $tag with this run's assets"
@@ -1108,7 +1108,7 @@ case "$command" in
         if [ "$upload_to_published" = true ]; then
           leak_guard 'the asset upload to the published release' "$@" --
           gh release upload "$tag" "$@" --repo "$repo" --clobber || {
-            echo "::error::Uploading this run's assets to the published release $tag failed."
+            echo "::error::Uploading this run's assets to the published release $tag failed." >&2
             exit 1
           }
           echo "Release $tag already exists; uploaded this run's assets over its own"

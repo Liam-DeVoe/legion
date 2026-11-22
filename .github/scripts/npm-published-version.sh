@@ -19,6 +19,16 @@
 #                     standard output, exit 1.
 # retry_fetch retries the last two, as it retries every failure.
 #
+# npm's standard error is passed through with each carriage return made a space. npm 11.19.1
+# writes a registry error body's text there with a lone carriage return kept (its
+# lib/utils/format.js leaves \r out of the control characters it escapes), and it puts
+# `npm error ` in front of every line it ends with a newline, so a carriage return is the one way
+# a body's text can start a line of its own. GitHub's runner reads a step's output a line at a
+# time, ends a line at a lone carriage return as at a newline, and reads a line that starts with
+# `::` as a workflow command: npm's line for a 504 whose body's `error` field is "upstream timed
+# out\r::warning::x" would give the log a `::warning::x` line, a warning the registry wrote
+# (dispatch://INFRA-1545, round 54).
+#
 # The code is read from the JSON error object npm prints on standard output with --json, its
 # `error.code`, and it counts only when npm fails. npm sets it from the registry's HTTP status
 # (E404 for a 404, E504 for a 504) or from its own failure (FETCH_ERROR for a timeout): measured
@@ -42,8 +52,8 @@
 set -euo pipefail
 
 package=${1:?usage: npm-published-version.sh <package>}
-# npm's standard error is kept, then passed on. An interrupt, such as retry_fetch's `timeout` at
-# its bound, still runs the trap: bash runs EXIT on SIGTERM.
+# npm's standard error is kept, then passed on, each carriage return a space. An interrupt, such
+# as retry_fetch's `timeout` at its bound, still runs the trap: bash runs EXIT on SIGTERM.
 err=$(mktemp)
 trap 'rm -f "$err"' EXIT
 status=0
@@ -54,7 +64,7 @@ if [ "$status" -ne 0 ] && [ "$code" = E404 ]; then
   echo 0.0.0
   exit 0
 fi
-cat "$err" >&2
+tr '\r' ' ' < "$err" >&2
 [ "$status" -eq 0 ] || exit "$status"
 version=$(jq -r 'strings' <<< "$answer" 2> /dev/null) || version=''
 if [ -z "$version" ]; then

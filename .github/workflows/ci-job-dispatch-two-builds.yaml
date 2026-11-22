@@ -141,7 +141,7 @@ jobs:
         timeout-minutes: 18
         run: |
           . .github/scripts/ci-retry.sh
-          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile
+          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile >&2
       - name: Resolve the previous build's commit
         id: previous
         run: |
@@ -250,7 +250,7 @@ jobs:
         timeout-minutes: 28
         run: |
           . "$GITHUB_WORKSPACE/.github/scripts/ci-retry.sh"
-          retry_fetch "Playwright's Chromium" 300 -- bunx playwright install chromium
+          retry_fetch "Playwright's Chromium" 300 -- bunx playwright install chromium >&2
         working-directory: packages/dispatch
       # The stack's connection limit, read outside the browser steps, where
       # e2e/harness-postgres.ts would otherwise compile it (DISPATCH_E2E_PG_CONNECTIONS), as
@@ -409,7 +409,7 @@ jobs:
         timeout-minutes: 18
         run: |
           . .github/scripts/ci-retry.sh
-          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile
+          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile >&2
       # No cache: the head is a new commit in every run. The script's two downloads retry at 180 s
       # each, so the budget is the job above's previous-build step's, derived the same way by hand:
       # 1050 + 1050 + 116 = 2216 s, the whole minute above which is 37.

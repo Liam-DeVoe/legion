@@ -101,7 +101,7 @@ jq -r '.body // ""' "$live" | tr -d '\000' > "$text/body"
 jq -r '.head.ref' "$live" | tr -d '\000' > "$text/branch"
 title_status=0
 if ! grep -qE '^[a-z]+(\([^)]+\))?!?: .+' "$text/title"; then
-  echo "::error::PR title must be a conventional commit subject (type(scope): summary). Squash merges use the PR title as the commit subject, and the release workflows version from conventional subjects — this repository's squash merges write an empty body, so the title is the only text they read."
+  echo "::error::PR title must be a conventional commit subject (type(scope): summary). Squash merges use the PR title as the commit subject, and the release workflows version from conventional subjects — this repository's squash merges write an empty body, so the title is the only text they read." >&2
   title_status=1
 fi
 
@@ -191,7 +191,7 @@ status=0
 PRIVATE_NAME_BARE_HOSTS=yes "$script_dir/check-private-names.sh" "$text/title" "$text/body" "$text/branch" "$text/commits" \
   "${kinds[@]/#/$text/}" 2>&1 | sed -E -e "s|$text/||g" -e "s#(^|[:=])$kind_pattern/([0-9]+)#\\1\\2:\\3#g" \
   > "$work/report" || status=$?
-cat "$work/report"
+cat "$work/report" >&2
 if [ "$status" -ne 0 ] && grep -q -E "(^|[:=])$kind_pattern:[0-9]+:" "$work/report"; then
   echo "  - a comment, review or review comment reported above is public on the pull request's page"
   echo "    now: delete each comment and review comment, since an edit keeps the old text in its"
@@ -295,17 +295,26 @@ else
       # (`HTTP/2.0 404 Not Found`), which no body can write; gh's standard error is not read for
       # it, since gh puts the API's message in front of its `(HTTP <code>)` there, and a message
       # holding a newline after `(HTTP 404)` ends a line with it (dispatch://INFRA-1545, round
-      # 52). The body follows the headers' blank line. A read that got no response prints nothing,
-      # which the status-line read below takes as no status line.
+      # 52). The body follows the headers' blank line. `[ -z "$response" ] ||` keeps retry_fetch's
+      # notice about an attempt's empty output out of the log: a read that got no response exits
+      # non-zero, and retry_fetch never puts a failed attempt's output on standard output, so the
+      # empty line printf would write for it reaches nothing but that notice. `|| true` on the
+      # status-line read below lets an answer with no status line at all reach the `no 200 status
+      # line` UNKNOWN rather than end the script.
       # Each attempt rewrites gh-error, so the last one's message is what UNKNOWN names, by its
-      # last line, which gh ends with its own `(HTTP <code>)` on an HTTP error.
+      # last line, each control character a space. On an HTTP error gh 2.98.0 ends its standard
+      # error with `gh: <message> (HTTP <code>)`, which spans lines when the message holds a
+      # newline, its last line then the message's last line and the `(HTTP <code>)`; or with
+      # `gh: HTTP <code>` when the body holds no JSON message. A string `errors` field gives
+      # `gh: <error> (<message>)`, and gh may add a line after it hinting at a token's scopes or an
+      # SSO authorization.
       # shellcheck disable=SC2016 # the shell retry_fetch runs expands $1, $2, $response and the rest
       if ! retry_fetch "the release of $tag" 30 -- bash -c \
         'response=$(gh api "$1" -i 2> "$2"); status=$?; [ -z "$response" ] || printf "%s\n" "$response"
          read -r proto code _ <<< "$response"
          [ "$status" -eq 0 ] || { [[ $proto == HTTP/* ]] && [ "$code" = 404 ]; } || exit "$status"' \
         release-read "repos/$repository/releases/tags/$tag" "$work/gh-error" > "$work/response"; then
-        unknown "GitHub did not answer for the release of $tag ($(tail -n 1 "$work/gh-error"))"
+        unknown "GitHub did not answer for the release of $tag ($(tail -n 1 "$work/gh-error" | tr -d '\n' | tr '[:cntrl:]' ' '))"
         break
       fi
       read -r release_proto release_code _ < "$work/response" || true
@@ -712,7 +721,7 @@ AWK
     PRIVATE_NAME_RULES=keys PRIVATE_NAME_CHECK_PATHS=$paths_flag "$script_dir/check-private-names.sh" "$dir" 2>&1 |
       sed -E -e "s|$dir/||g" -e "s#(^|[:=])$kind_pattern/([0-9]+)#\\1\\2:\\3#g" \
         -e "s#(^|[:=])commit/([0-9A-Za-z_-]+)#\\1commit:\\2#g" -e "s#(^|[:=])added/([0-9A-Za-z_-]+)/#\\1commit:\\2:#g" \
-        -e "s#(^|[:=])net/#\\1files:#g" \
+        -e "s#(^|[:=])net/#\\1files:#g" >&2 \
       || run_status=$?
     if [ "$run_status" -gt "$key_status" ]; then key_status=$run_status; fi
   done

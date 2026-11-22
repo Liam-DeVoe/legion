@@ -149,7 +149,7 @@ jobs:
         timeout-minutes: 18
         run: |
           . .github/scripts/ci-retry.sh
-          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile
+          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile >&2
       # The step of this name in .github/workflows/dispatch-browser.yaml's shard job, for the reason
       # .github/ci-notes/dispatch-browser.md#why-every-job-that-runs-the-suite-builds-contracts-first
       # gives: Playwright's Node runner reads `@legion/contracts` out of a build this
@@ -184,7 +184,7 @@ jobs:
         timeout-minutes: 28
         run: |
           . "$GITHUB_WORKSPACE/.github/scripts/ci-retry.sh"
-          retry_fetch "Playwright's Chromium" 300 -- bunx playwright install chromium
+          retry_fetch "Playwright's Chromium" 300 -- bunx playwright install chromium >&2
         working-directory: packages/dispatch
       - name: Re-record every stubbed row against the real harness
         timeout-minutes: 18

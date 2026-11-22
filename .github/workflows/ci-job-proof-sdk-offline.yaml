@@ -168,7 +168,7 @@ jobs:
           https_proxy: http://127.0.0.1:${{ steps.proxy.outputs.port }}
         run: |
           . .github/scripts/ci-retry.sh
-          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile
+          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile >&2
 
       # The same install again, over the cache and the node_modules the step above left: the
       # requirement is that no install reaches those hosts, warm or cold. Retried at the same
@@ -182,7 +182,7 @@ jobs:
           https_proxy: http://127.0.0.1:${{ steps.proxy.outputs.port }}
         run: |
           . .github/scripts/ci-retry.sh
-          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile
+          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile >&2
 
       # The verdict, read off the proxy's log: every refusal it wrote while the two installs
       # ran. In `--mode fail` the proxy refuses a faulted host and every subdomain of one and

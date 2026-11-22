@@ -199,7 +199,7 @@ jobs:
           https_proxy: ${{ steps.recover-install-proxy.outputs.proxy }}
         run: |
           . .github/scripts/ci-retry.sh
-          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile
+          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile >&2
       - name: What the workspace install did under the recovering fault
         run: >-
           .github/scripts/download-retry-proof.sh report recover-install
@@ -254,7 +254,7 @@ jobs:
           https_proxy: ${{ steps.recover-playwright-proxy.outputs.proxy }}
         run: |
           . "$GITHUB_WORKSPACE/.github/scripts/ci-retry.sh"
-          retry_fetch "Playwright's Chromium" 300 -- bunx playwright install chromium
+          retry_fetch "Playwright's Chromium" 300 -- bunx playwright install chromium >&2
       - name: What the Playwright download did under the recovering fault
         run: >-
           .github/scripts/download-retry-proof.sh report recover-playwright
@@ -389,7 +389,7 @@ jobs:
           https_proxy: ${{ steps.stall-install-proxy.outputs.proxy }}
         run: |
           . .github/scripts/ci-retry.sh
-          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile
+          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile >&2
       - name: What the workspace install did under the stalling fault
         run: >-
           .github/scripts/download-retry-proof.sh report stall-install
@@ -426,7 +426,7 @@ jobs:
         timeout-minutes: 18
         run: |
           . .github/scripts/ci-retry.sh
-          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile
+          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile >&2
       - name: Start the stalling fault for Playwright's Chromium
         id: stall-playwright-proxy
         run: |
@@ -444,7 +444,7 @@ jobs:
           https_proxy: ${{ steps.stall-playwright-proxy.outputs.proxy }}
         run: |
           . "$GITHUB_WORKSPACE/.github/scripts/ci-retry.sh"
-          retry_fetch "Playwright's Chromium" 300 -- bunx playwright install chromium
+          retry_fetch "Playwright's Chromium" 300 -- bunx playwright install chromium >&2
       - name: What the Playwright download did under the stalling fault
         run: >-
           .github/scripts/download-retry-proof.sh report stall-playwright
@@ -506,7 +506,7 @@ jobs:
           https_proxy: ${{ steps.carried-proxy.outputs.proxy }}
         run: |
           . .github/scripts/ci-retry.sh
-          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile
+          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile >&2
       - name: What the workspace install did with those hosts down
         run: >-
           .github/scripts/download-retry-proof.sh report carried
@@ -628,12 +628,9 @@ jobs:
       - name: Build the worker image under the recovering fault
         id: worker-build
         continue-on-error: true
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
         run: >-
           .github/scripts/download-retry-proof.sh build worker
           --build-arg LEGION_REVISION=${{ github.sha }}
-          --secret id=github_token,env=GITHUB_TOKEN
           --tag legion-worker:download-retry
           --file packages/daemon/docker/worker.Dockerfile
       - name: What the worker image build did under the recovering fault

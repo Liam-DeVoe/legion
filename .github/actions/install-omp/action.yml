@@ -22,7 +22,7 @@ runs:
         # ci.yaml push runs on main, so the bound is over eight times its measured maximum.
         # shellcheck source=.github/scripts/ci-retry.sh
         . "$GITHUB_ACTION_PATH/../../scripts/ci-retry.sh"
-        retry_fetch "the pinned Oh My Pi" 60 -- "$HOME/.local/bin/mise" install "$pin"
+        retry_fetch "the pinned Oh My Pi" 60 -- "$HOME/.local/bin/mise" install "$pin" >&2
         omp_root=$("$HOME/.local/bin/mise" where "$pin")
         "$omp_root/bin/omp" --version
         echo "installed $pin in $(( $(date +%s) - started ))s"

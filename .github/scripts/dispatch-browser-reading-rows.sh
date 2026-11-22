@@ -111,7 +111,7 @@ legs=$(jq -r '.[] | select(.leg != null and .conclusion != "skipped") | .leg' "$
   sort) || true
 if [ -z "$legs" ]; then
   echo "::error::this run's jobs hold no shard or alone leg, so there is nothing to" \
-    "hold the merged report against"
+    "hold the merged report against" >&2
   exit 1
 fi
 missing=""
@@ -152,7 +152,7 @@ fi
   echo "The merged report holds $merged rows; the legs' logs printed $printed_total."
 } >> "$GITHUB_STEP_SUMMARY"
 echo "::notice title=dispatch-browser rows::the merged report holds $merged rows," \
-  "against $printed_total printed by the legs (${line%, })"
+  "against $printed_total printed by the legs (${line%, })" >&2
 if [ -n "$missing" ]; then
   # Where the download was refused, this step runs anyway - its `if:` is `always()` -
   # and finds no blob for any leg, so the step "Report a refused blob download as a
@@ -170,10 +170,10 @@ if [ -n "$missing" ]; then
       "could be read and the merged report is short of the rows of:$missing; the" \
       "step \"Download every leg's blob report\" carries that download's own error" \
       "line. This is a failed read of the run's artifacts and not a failed browser" \
-      "row: no row of the suite failed here."
+      "row: no row of the suite failed here." >&2
   else
     echo "::error::no blob report arrived from:$missing;" \
-      "the merged report is short of those legs' rows"
+      "the merged report is short of those legs' rows" >&2
   fi
   exit 1
 fi
@@ -186,6 +186,6 @@ fi
 if [ "$merged" != unknown ] && [ "$merged" -ne "$printed_total" ]; then
   echo "::error::the merged report holds $merged rows and the legs printed" \
     "$printed_total, with every leg's blob report present:" \
-    "the merge dropped rows the legs ran"
+    "the merge dropped rows the legs ran" >&2
   exit 1
 fi

@@ -278,7 +278,7 @@ case "$mode" in
         "unknown: of GET $route, attempt $attempts, which decided the failure," \
         "$deciding$earlier; the ladder made $attempts attempts, all on run attempt" \
         "$GITHUB_RUN_ATTEMPT. This error is a failed read of the jobs API, not a failed browser" \
-        "row. Re-running this job reads the list again."
+        "row. Re-running this job reads the list again." >&2
       exit 1
     fi
 

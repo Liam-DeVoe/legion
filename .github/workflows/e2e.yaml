@@ -172,14 +172,14 @@ jobs:
           # it retry_fetch has nothing to retry
           # (.github/scripts/check-download-retry.sh's rule 5 is the whole reason).
           retry_fetch "apt's package lists" 95 -- \
-            sudo timeout 90 apt-get update -o APT::Update::Error-Mode=any
+            sudo timeout 90 apt-get update -o APT::Update::Error-Mode=any >&2
           # Each word is one package name of .github/e2e-scripts.json.
           # The download is the half that retries; the unpack after it takes no network, so an
           # attempt the bound kills never stops a dpkg run part way, which is why `-d` is here
           # and the install without it follows.
           # shellcheck disable=SC2086
           retry_fetch "the proof's apt packages" 125 -- \
-            sudo timeout 120 apt-get install -y --no-install-recommends -d $PACKAGES
+            sudo timeout 120 apt-get install -y --no-install-recommends -d $PACKAGES >&2
           # shellcheck disable=SC2086
           sudo apt-get install -y --no-install-recommends $PACKAGES
 
@@ -201,7 +201,7 @@ jobs:
         timeout-minutes: 18
         run: |
           . .github/scripts/ci-retry.sh
-          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile
+          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile >&2
 
       # The three proofs that start the Go daemon: it refuses to boot without jj, and names it
       # (`missing required daemon tools: jj`), as run 40957651922 showed. This installs the jj the

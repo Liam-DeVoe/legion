@@ -79,7 +79,7 @@ jobs:
         run: |
           . .github/scripts/ci-retry.sh
           toolchain=$(cat packages/envoy/internal/cipher/proxyrules/lean/lean-toolchain)
-          retry_fetch "the Lean toolchain $toolchain" 120 -- elan toolchain install "$toolchain"
+          retry_fetch "the Lean toolchain $toolchain" 120 -- elan toolchain install "$toolchain" >&2
       - name: Build the Lean model
         run: |
           lake build

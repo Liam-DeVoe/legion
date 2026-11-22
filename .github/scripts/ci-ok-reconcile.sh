@@ -103,7 +103,7 @@ if ! retry_fetch "this head's ci-ok check runs" 30 -- gh api --paginate \
   "repos/$GITHUB_REPOSITORY/commits/$HEAD_SHA/check-runs?check_name=ci-ok&filter=all&per_page=100" \
   --jq '.check_runs[] | "\(.id) \(.status) \(.conclusion) \(.external_id // "" | if . == "" then "-" else . end)"' \
   > "$work/runs"; then
-  echo "::warning::GitHub refused this head's ci-ok check runs five times, so any ci-ok beside this job's own stands as it was; this job's own conclusion ($CONCLUSION) is this attempt's verdict"
+  echo "::warning::GitHub refused this head's ci-ok check runs five times, so any ci-ok beside this job's own stands as it was; this job's own conclusion ($CONCLUSION) is this attempt's verdict" >&2
   exit 0
 fi
 runs=$(<"$work/runs")
@@ -149,7 +149,7 @@ while read -r id status was marker; do
     echo "set ci-ok check run $id from $was to $CONCLUSION"
     reconciled=$((reconciled + 1))
   else
-    echo "::warning::GitHub refused the PATCH of ci-ok check run $id five times, so it stands at $was while this attempt's verdict is $CONCLUSION"
+    echo "::warning::GitHub refused the PATCH of ci-ok check run $id five times, so it stands at $was while this attempt's verdict is $CONCLUSION" >&2
   fi
 done <<<"$runs"
 echo "ci-ok on $HEAD_SHA is $CONCLUSION; $reconciled other check run(s) of that name were set to it"

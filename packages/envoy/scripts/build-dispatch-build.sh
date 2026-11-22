@@ -147,7 +147,7 @@ readonly src=$out/src
 # The JavaScript parts: the install, the Go contracts the server compiles (regenerated, never the
 # copy in the tree) and the contracts bundle, then the web app and the command. The install, the
 # codegen and the web app are in the order the commit's image build makes them.
-(cd -- "$src" && retry_fetch "the workspace's dependencies of $sha" 180 -- bun install --frozen-lockfile) ||
+(cd -- "$src" && retry_fetch "the workspace's dependencies of $sha" 180 -- bun install --frozen-lockfile >&2) ||
   fail "bun install --frozen-lockfile failed in the archive of $sha."
 (cd -- "$src/packages/contracts" && bun run gen:go && bun run build) ||
   fail "the contracts build (gen:go, build) of $sha failed."

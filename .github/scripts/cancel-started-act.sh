@@ -39,5 +39,5 @@ while read -r act id; do
   [ "$act" = cancel ] || continue
   retry_fetch "the force-cancel of run $id" 30 -- \
     gh api --silent --method POST "repos/$GITHUB_REPOSITORY/actions/runs/$id/force-cancel" ||
-    echo "::warning::force-cancel of run $id failed; it may have completed already"
+    echo "::warning::force-cancel of run $id failed; it may have completed already" >&2
 done <<<"$acts"
