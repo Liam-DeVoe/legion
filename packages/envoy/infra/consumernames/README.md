@@ -110,18 +110,26 @@ read of the ConfigMap that Kubernetes refuses. The deployment renders the Config
 data when no project is retired; a retired private project has no entry. A ConfigMap that does not
 exist holds no retired project either.
 
-`envoy-infra streams census`, `cleanup`, `cleanup --gone` and `enroll` read a daemon's store only
-at the address its one source names, and `status` calls a store gone only at that address: the
-address rule. The store is unreconciled, and none of them reads it, unless exactly one source names
-the project, a Deployment or a retired project's entry and never both, that source names both the
-database and the instance, no other source names the same database on the same instance, the
-`--daemon-database` file's URL names that database, and the file's second line is that instance.
-Each refusal names the project and the source: `Deployment legion/<name>` or `ConfigMap
-envoy-operator/envoy-operator-retired-stores`. At that address, a server that answers SQLSTATE
-3D000 (the database does not exist) makes the store gone. Every other answer leaves it
-unreconciled: a server that does not answer, any other SQLSTATE (57P01 and 57P03, which a dying
-server answers in the seconds after its instance is deleted, among them), and a database with no
-`intake_consumers` table.
+`envoy-infra streams census`, `cleanup`, `cleanup --gone`, `enroll`, `convert`, `replay` and
+`restore` read a daemon's store only at the address its one source names, and `status` calls a
+store gone only at that address: the address rule. The store is unreconciled, and none of them
+reads it, unless exactly one source names the project, a Deployment or a retired project's entry
+and never both, that source names both the database and the instance, no other source names the
+same database on the same instance, the `--daemon-database` file's URL names that database, and
+the file's second line is that instance. Each refusal names the project and the source:
+`Deployment legion/<name>` or `ConfigMap envoy-operator/envoy-operator-retired-stores`. At that
+address, a server that answers SQLSTATE 3D000 (the database does not exist) makes the store gone.
+Every other answer leaves it unreconciled: a server that does not answer, any other SQLSTATE (57P01
+and 57P03, which a dying server answers in the seconds after its instance is deleted, among them),
+and a database with no `intake_consumers` table.
+
+The rule trusts the instance the operator's file states on its second line: it cannot see which
+server the file's URL reaches. So a file whose URL reaches another server, with the store's
+database name in its URL and the store's instance on its second line, reads a live store as gone
+when that server answers SQLSTATE 3D000. Then `cleanup` skips the store, `cleanup --gone` removes
+that live daemon's consumers, and `restore` leaves its family out; `convert`, `replay` and
+`enroll` stop on a gone store. Before such a run, check that each file's URL reaches the instance
+its second line states.
 
 ### Output and exit codes
 
