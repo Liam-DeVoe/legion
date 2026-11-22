@@ -3,6 +3,7 @@ package intake
 import (
 	"context"
 	"errors"
+	"maps"
 	"slices"
 	"strings"
 	"sync"
@@ -401,6 +402,42 @@ func TestAFreshDaemonAtTheConsumerCapDialsNoRetiredName(t *testing.T) {
 	}
 	if heldInfo(t, stream, retired) == nil {
 		t.Fatalf("%s is gone: the daemon deleted a retired name", retired)
+	}
+}
+
+// A create refused at the stream's consumer cap leaves no connection open. Each try reserves a
+// fresh candidate and dials its connection (consumernames.Config.Reserved), the refusal leaves
+// that candidate open for Step 0, and the next try retires it and reserves another. A
+// repositories change retries the open of the durable it serves (SetRepositories), so a daemon
+// at the cap would otherwise hold one connection more per try. After each refused try the daemon
+// holds no connection of the logical name. The control is the code before this row, which closed
+// none on a failed Ensure: one connection more per try.
+func TestACreateRefusedAtTheCapLeavesNoConnectionOpen(t *testing.T) {
+	pool := migratedPool(t)
+	cutover(t, pool, consumernames.CutoverDone)
+	js := testnats.JetStream(t)
+	stream := testnats.CreateStream(t, js, jetstream.StreamConfig{Name: notificationStream, Subjects: []string{"notifications.>"}, MaxConsumers: 1})
+	if _, err := stream.CreateConsumer(context.Background(), jetstream.ConsumerConfig{Durable: "a-consumer-of-someone-else", AckPolicy: jetstream.AckExplicitPolicy}); err != nil {
+		t.Fatalf("create a consumer to fill the cap: %v", err)
+	}
+	spec := freshSpec(t, &lockedBuffer{}, js)
+	d, err := newDurableNames(pool, spec)
+	if err != nil {
+		t.Fatalf("the daemon's creator: %v", err)
+	}
+	defer d.close()
+	github := githubConsumerConfig(spec, spec.Repositories)
+	const tries = 4
+	for try := 1; try <= tries; try++ {
+		if _, err := d.open(context.Background(), github); !errors.Is(err, consumernames.ErrConsumerLimit) {
+			t.Fatalf("try %d: open %s at the cap = %v, want the cap's refusal", try, github.Durable, err)
+		}
+		d.mu.Lock()
+		held := slices.Collect(maps.Keys(d.generations))
+		d.mu.Unlock()
+		if len(held) != 0 {
+			t.Fatalf("after %d refused tries the daemon holds %d connections, of %v; want none", try, len(held), held)
+		}
 	}
 }
 

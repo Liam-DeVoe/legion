@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"maps"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 
@@ -237,6 +238,26 @@ func (d *durableNames) keep(logical, current string) {
 	}
 }
 
+// drop closes the connections of the names record retired and of its open operation's candidate,
+// which a failed Ensure leaves: a create the server refused, at the stream's max_consumers, leaves
+// its candidate open for Step 0, and each try reserves and dials another. None of them is a consumer
+// Run reads. The record's current keeps its connection, and so does every name the record does not
+// name, since what a failed read of the record selects is not known.
+func (d *durableNames) drop(record consumernames.Record) {
+	names := slices.Clone(record.Retired)
+	if record.Op != nil {
+		names = append(names, record.Op.Candidate)
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for _, physical := range names {
+		if open, ok := d.generations[physical]; ok && physical != record.Current {
+			open.Conn().Close()
+			delete(d.generations, physical)
+		}
+	}
+}
+
 // watch has nothing to watch beside Run: the fresh names read no cutover marker once open, since
 // a store converted to them is the one they run on.
 func (d *durableNames) watch(context.Context) error { return nil }
@@ -257,13 +278,15 @@ func (d *durableNames) close() {
 // selected is gone (consumernames.Names.Ensure), and updates the one selected otherwise, keeping
 // the start it was created with, as openConsumer does for a fixed name. It then writes the
 // consumer's floor as the record's last floor, and closes the connections of the logical name's
-// other generations. A failed Ensure closes none: what the record selects is not known then, and
-// the consumer Run reads from stays bound to its own connection, so a failed repositories change
-// stops nothing and its caller retries it.
+// other generations. A failed Ensure closes only the connections of the names the record retired
+// and of its open candidate (drop): what the record selects is not known then, and the consumer Run
+// reads from stays bound to its own connection, so a failed repositories change stops nothing and
+// its caller retries it.
 func (d *durableNames) open(ctx context.Context, config jetstream.ConsumerConfig) (jetstream.Consumer, error) {
 	logical := config.Durable
 	sel, _, err := d.names.Ensure(ctx, logical, consumernames.CreateRequest{Create: d.create(config), First: d.first})
 	if err != nil {
+		d.drop(sel.Record)
 		return nil, d.failed(logical, sel, consumernames.OperationCreate, err)
 	}
 	defer d.keep(logical, sel.Record.Current)
