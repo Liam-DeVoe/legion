@@ -397,3 +397,105 @@ func TestAResultAfterTheInstallAtAHeadLeftBeforeItIsACandidate(t *testing.T) {
 		t.Fatalf("the results marked %v owed, want CORE-1", owed)
 	}
 }
+
+// TestTheFormerHeadsInstallWaitsOutABusyWriterAndGivesWayInACycle: the install locks
+// pull_request_heads, check_results and ci_check_results, and holds them to its commit.
+//
+// A writer that holds one of them in an open transaction for longer than the half second the
+// install waits at one time is waited out as any migration waits one out: the install gives back
+// what its try took each half second and asks again, for as long as the runner's LockTimeout, and
+// the runner then applies it again. A writer that holds check_results for eight seconds, longer
+// than the three attempts of half a second the runner makes in all, is waited out, and the install
+// applies once it commits.
+//
+// The delete of an issue cascades into the result tables and pull_request_heads in an order of its
+// own: here a transaction holds check_results, as that cascade does, while the install holds
+// pull_request_heads and waits for check_results, and then it asks for pull_request_heads. The
+// install gives up its try within half a second, before Postgres's deadlock check runs on either
+// side, so that transaction gets its lock and commits with no error, and the install applies.
+func TestTheFormerHeadsInstallWaitsOutABusyWriterAndGivesWayInACycle(t *testing.T) {
+	ctx := context.Background()
+	begin := func(t *testing.T, store *Store, what string) pgx.Tx {
+		t.Helper()
+		conn, err := pgx.ConnectConfig(ctx, store.Pool.Config().ConnConfig)
+		if err != nil {
+			t.Fatalf("connect %s: %v", what, err)
+		}
+		t.Cleanup(func() { conn.Close(context.Background()) })
+		tx, err := conn.Begin(ctx)
+		if err != nil {
+			t.Fatalf("begin %s: %v", what, err)
+		}
+		t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
+		return tx
+	}
+	installed := func(t *testing.T, store *Store) {
+		t.Helper()
+		var made bool
+		if err := store.Pool.QueryRow(ctx, `select to_regclass('pull_request_former_heads') is not null`).Scan(&made); err != nil || !made {
+			t.Fatalf("the install made pull_request_former_heads: %v (%v)", made, err)
+		}
+	}
+
+	t.Run("a writer busy for eight seconds", func(t *testing.T) {
+		store := openEmptyTestStore(t)
+		installFixture(t, store)
+		writer := begin(t, store, "the writer")
+		if _, err := writer.Exec(ctx, `lock table check_results in row exclusive mode`); err != nil {
+			t.Fatalf("hold check_results as a writer does: %v", err)
+		}
+		started := time.Now()
+		migrated := make(chan error, 1)
+		go func() { migrated <- store.Migrate(ctx) }()
+		select {
+		case err := <-migrated:
+			t.Fatalf("the install ended %s after it started, while a writer still held check_results: %v; want it to wait the writer out", time.Since(started).Round(time.Millisecond), err)
+		case <-time.After(8 * time.Second):
+		}
+		if err := writer.Commit(ctx); err != nil {
+			t.Fatalf("commit the writer: %v", err)
+		}
+		if err := <-migrated; err != nil {
+			t.Fatalf("the install after the writer committed: %v", err)
+		}
+		installed(t, store)
+		t.Logf("the install applied %s after it started", time.Since(started).Round(time.Millisecond))
+	})
+
+	t.Run("a delete's cascade that closes a cycle", func(t *testing.T) {
+		store := openEmptyTestStore(t)
+		installFixture(t, store)
+		cascade := begin(t, store, "the cascade")
+		if _, err := cascade.Exec(ctx, `lock table check_results in row exclusive mode`); err != nil {
+			t.Fatalf("hold check_results as the cascade does: %v", err)
+		}
+		migrated := make(chan error, 1)
+		go func() { migrated <- store.Migrate(ctx) }()
+		for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+			var waits bool
+			if err := store.Pool.QueryRow(ctx, `
+				select exists (select 1 from pg_locks l join pg_class c on c.oid = l.relation
+					where c.relname = 'check_results' and l.mode = 'ShareRowExclusiveLock' and not l.granted)`).Scan(&waits); err != nil {
+				t.Fatalf("read the lock waits: %v", err)
+			}
+			if waits {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("the install never waited for check_results")
+			}
+		}
+		asked := time.Now()
+		if _, err := cascade.Exec(ctx, `lock table pull_request_heads in row exclusive mode`); err != nil {
+			t.Fatalf("the cascade's lock of pull_request_heads, which the install held while it waited for check_results: %v; want the install to give way first", err)
+		}
+		t.Logf("the cascade had its lock of pull_request_heads %s after it asked", time.Since(asked).Round(time.Millisecond))
+		if err := cascade.Commit(ctx); err != nil {
+			t.Fatalf("commit the cascade: %v", err)
+		}
+		if err := <-migrated; err != nil {
+			t.Fatalf("the install after the cascade committed: %v", err)
+		}
+		installed(t, store)
+	})
+}

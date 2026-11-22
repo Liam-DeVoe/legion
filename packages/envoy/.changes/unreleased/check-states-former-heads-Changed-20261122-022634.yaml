@@ -31,8 +31,10 @@ body: |-
     issue's lock so a result and a row written at once are not both missed; the install takes
     `SHARE ROW EXCLUSIVE` on those two and `pull_request_heads` before its seed and triggers, so a
     result or a head write either committed before the seed read it or fires the triggers after the
-    commit (its lock waits are bounded at half a second, so a cycle with an issue's delete retries
-    the migration rather than failing it);
+    commit (it asks for them in tries of half a second each, shorter than `deadlock_timeout`,
+    giving back what a try took when it runs out, for as long as the runner lets any migration
+    wait for a lock, so a cycle with an issue's delete fails neither side and a busy writer is
+    waited out as any migration waits one out);
     a close or a merge of a pull request under any of its names drops the former heads it holds
     under every name and records the head each other open row stands at as ended
     (`pull_request_heads_ended`), so no history of a closed lifecycle reaches a later one through a

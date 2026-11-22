@@ -135,14 +135,20 @@
 -- only, under ACCESS SHARE, which the lock leaves free, and a head's write
 -- (delivery.UpsertPullRequestHead and the re-key's delete) writes no result. The one write that
 -- holds two of them is the delete of an issue or a document, whose foreign keys cascade into both
--- result tables and set pull_request_heads.issue_key to null, in an order of their own; the install
--- holds each lock while it waits for the next, so such a delete can close a cycle with it. Half a
--- second of lock_timeout, shorter than deadlock_timeout (1 s by default), makes the install give
--- up first, before either deadlock check runs: it fails with 55P03 having applied nothing, the
--- delete finishes, and the runner applies it again (store/store.go, RetryLockTimeouts), as
--- 20261101182522 does for its five tables. The seed reads the open rows and the result tables, and
--- writes only the new tables and check_states_owed. The census answers 0: nothing existing is
--- refused or rewritten.
+-- result tables and set pull_request_heads.issue_key to null, in an order of their own; an install
+-- that held one lock while it waited for the next could close a cycle with such a delete, and
+-- Postgres's deadlock check, which runs deadlock_timeout (1 s by default) into a wait, would then
+-- refuse one of them: the delete, answered 500, or the install, whose 40P01 the runner does not
+-- try again, failing the boot. So the install asks for the three in one statement, in one order,
+-- waiting at most half a second (lock_timeout, shorter than deadlock_timeout), inside a block of
+-- its own: a try that runs out gives back what it took, so a delete that waits for it goes on, and
+-- the install asks again at once. It asks for as long as the runner lets any migration wait for a
+-- lock (pgmigrate.LockTimeout, 5 s), and past that fails with 55P03, having applied nothing, and
+-- the runner applies it again after a pause, up to its attempts (store/store.go applyMigration,
+-- pgmigrate.RetryLockTimeouts). So a writer that holds one of the three for a while is waited out
+-- as any migration waits one out, and a cycle with a delete costs the install half a second and
+-- fails neither side. The seed reads the open rows and the result tables, and writes only the new
+-- tables and check_states_owed. The census answers 0: nothing existing is refused or rewritten.
 set local lock_timeout = '500ms';
 
 create table pull_request_former_heads (
@@ -341,7 +347,23 @@ begin
   return null;
 end $$;
 
-lock table pull_request_heads, check_results, ci_check_results in share row exclusive mode;
+-- The three tables' locks, by tries of half a second each for at most five seconds (above): the
+-- block's exception handler rolls a try that ran out back, which gives back the locks it took.
+do $$
+declare
+  started timestamptz := clock_timestamp();
+begin
+  loop
+    begin
+      lock table pull_request_heads, check_results, ci_check_results in share row exclusive mode;
+      exit;
+    exception when lock_not_available then
+      if clock_timestamp() - started >= interval '5 seconds' then
+        raise;
+      end if;
+    end;
+  end loop;
+end $$;
 
 -- The begin triggers fire before the keep triggers of the same write, as Postgres fires a table's
 -- triggers of one event in the order of their names, so a write takes the issue's lock before the
