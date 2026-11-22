@@ -2667,6 +2667,24 @@ func ArchitectOfTree(ctx context.Context, store Store, tx pgx.Tx, architect clai
 	return slices.ContainsFunc(members, func(member Issue) bool { return architectOf(member.Key) }), nil
 }
 
+// OwnerClaim is the claim of the owner of issue's task by rule: the architect of issue itself,
+// whatever architect runs now. It decides who owns the task's steps of the key owner and who may
+// act on them: the notice owner-step reaches it, and the owner's report of its own step is taken
+// from it alone. Which claim runs such a step, and is named on its record, is the workflow's to
+// decide (its owner's agent): the issue's own architect while it can hold its role, else an
+// architect above it.
+func OwnerClaim(issue Issue) (claim.Token, error) {
+	project, err := claim.ProjectToken(issue.Project)
+	if err != nil {
+		return "", fmt.Errorf("the owner of %s: %w", issue.Key, err)
+	}
+	token, err := claim.NewToken(project, issue.Key, claim.RoleArchitect)
+	if err != nil {
+		return "", fmt.Errorf("the owner of %s: %w", issue.Key, err)
+	}
+	return token, nil
+}
+
 // OwnerRule is which architects own an issue for an architect's request on it, the rule the
 // request's route judges and its fact judges again under the fact lock (workflow's Engine.Apply):
 // OwnerOfTree, every architect of the issue's tree (ArchitectOfTree), for register_plan and

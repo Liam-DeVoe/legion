@@ -2670,6 +2670,11 @@ var validNoticeKinds = []NoticeKind{
 // architect is who can stop or redirect it.
 const VolumeNearFullNotice NoticeKind = "volume-near-full"
 
+// OwnerStepNotice is the notice of a step of the owner of an issue's task: a step whose key is
+// owner, or the retro of a task whose retro is the owner's. It goes to the owner by rule
+// (OwnerClaim), the issue's own architect, and to no architect above it.
+const OwnerStepNotice NoticeKind = "owner-step"
+
 // validNoticeKind says whether kind is a notice an architect is told.
 func validNoticeKind(kind NoticeKind) bool {
 	return slices.Contains(validNoticeKinds, kind)

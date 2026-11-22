@@ -1010,7 +1010,7 @@ func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, w *Wa
 		}
 		if recordsSteps(issue) {
 			if place, ok := w.PlaceOf(at); ok {
-				agent, err = e.stepToken(issue, *w, place, role)
+				agent, err = e.stepToken(ctx, tx, issue, *w, place, at, role)
 			} else {
 				agent, err = stepClaim(issue, issue.Key, role)
 			}

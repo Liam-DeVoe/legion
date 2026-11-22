@@ -319,7 +319,7 @@ func recordsSteps(issue record.Issue) bool { return claim.IsIssueKey(issue.Key) 
 
 // upgradedStart is the agent and the moment of the start of a step at that no start of this
 // release counted, which ran under the release before: the agent its start would have named
-// (startAgent, so accepting's is the architect that owns the issue now, acceptingAgent), and the
+// (startAgent, so a step of the owner's is the architect that runs it now, ownerAgent), and the
 // moment its phase worker's entry was raised. Accepting's architect raises no entry, and so the
 // moment is unknown there. A merge whose merger's entry this visit to merging did not raise is one
 // GitHub had already made when the issue reached merging, which started no merger: an entry never
@@ -350,12 +350,13 @@ func (e *Engine) upgradedStart(ctx context.Context, tx pgx.Tx, issue record.Issu
 }
 
 // startAgent is the agent a start of the step issue stands in at names: for accepting, the
-// architect that owns issue now (acceptingAgent), nobody for a merge GitHub has already made,
-// where no merger starts, and the agent of the step's place otherwise (placeToken).
+// architect that runs the owner's step now (ownerAgent), nobody for a merge GitHub has already
+// made, where no merger starts, and the agent of the step's place otherwise (placeToken), which is
+// ownerAgent's answer too for a step of the key owner.
 func (e *Engine) startAgent(ctx context.Context, tx pgx.Tx, issue record.Issue, at phase.Phase) (claim.Token, error) {
 	switch at {
 	case phase.Accepting:
-		return e.acceptingAgent(ctx, tx, issue)
+		return e.ownerAgent(ctx, tx, issue, at)
 	case phase.Merging:
 		standing := issue
 		standing.Phase = at
@@ -378,21 +379,22 @@ func (e *Engine) placeToken(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	if !ok {
 		return stepClaim(issue, issue.Key, role)
 	}
-	return e.stepToken(issue, w, place, role)
+	return e.stepToken(ctx, tx, issue, w, place, at, role)
 }
 
 // stepToken is the claim token of the agent that does the work of place on w, issue's walk, whose
-// role is role: the one function that makes the token of a step's agent, which each entry takes
-// (enter) and writes to the step's phases row (record.PhaseRow.Claim) and to its step record
-// (startStep). A step of the key owner is the tree's architect's, as the accepting step's is
-// (startAgent). Where AgentAt names an agent, it is that agent's token (claim.AgentToken), so the
-// steps of one key are one claim; where it names none — the merge, and every place of a run with no
-// plan rows — it is the role's own token (R20).
-func (e *Engine) stepToken(issue record.Issue, w Walk, place record.TaskPlace, role claim.Role) (claim.Token, error) {
+// role is role and which runs as at: the one function that makes the token of a step's agent,
+// which each entry takes (enter) and writes to the step's phases row (record.PhaseRow.Claim) and
+// to its step record (startStep). A step of the key owner is the architect that runs the owner's
+// step now (ownerAgent), as the accepting step's is (startAgent). Where AgentAt names an agent, it
+// is that agent's token (claim.AgentToken), so the steps of one key are one claim; where it names
+// none — the merge, and every place of a run with no plan rows — it is the role's own token
+// (R20).
+func (e *Engine) stepToken(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, place record.TaskPlace, at phase.Phase, role claim.Role) (claim.Token, error) {
 	if w.Stored && place.Kind == record.PlaceStep && place.Position >= 1 && place.Position <= len(w.Steps) {
 		step := w.Steps[place.Position-1]
 		if plan.AgentOf(w.Task, place.Position, plan.Step{Role: step.Role, Key: step.AgentKey}).Owner() {
-			return stepClaim(issue, issue.Tree, claim.RoleArchitect)
+			return e.ownerAgent(ctx, tx, issue, at)
 		}
 	}
 	name := w.AgentAt(place)
@@ -406,16 +408,18 @@ func (e *Engine) stepToken(issue record.Issue, w Walk, place record.TaskPlace, r
 	return claim.AgentToken(project, issue.Key, name)
 }
 
-// acceptingAgent is the agent of issue's accepting step: the claim of the architect that owns
-// issue now, the one that signs it off or moves it back. That is a child's own architect while its
-// claim holds its role (owningArchitect, the owner walk over the claims this transaction reads), or
-// while a start of it that will run waits in the outbox (ownArchitectStarting), else the nearest
-// architect above it whose claim holds its role, else the tree's. It is the one place both a start
-// of accepting (startAgent) and the boot's open of a run of accepting no start counted (upgradedStart)
-// read, so the record names the architect whose request ends the step, and that request waits for
-// that architect's stream (api's apply, record.RunsAStepOn).
-func (e *Engine) acceptingAgent(ctx context.Context, tx pgx.Tx, issue record.Issue) (claim.Token, error) {
-	starting, err := e.ownArchitectStarting(ctx, tx, issue)
+// ownerAgent is the claim that runs a step of the owner of issue's task at at, a step of the key
+// owner or accepting, and that the step's record names: the architect that owns issue now, the one
+// that does the step. The owner by rule is the issue's own architect (record.OwnerClaim), and it
+// runs the step while its claim holds its role (owningArchitect, the owner walk over the claims
+// this transaction reads), or while a start of it that will run waits in the outbox
+// (ownArchitectStarting); else the nearest architect above it whose claim holds its role does the
+// step, else the tree's, so a record never names an architect that did not act. It is the one
+// place every start of an owner's step (startAgent, stepToken) and the boot's open of a run of one
+// no start counted (upgradedStart) read, so the record names the architect whose request ends the
+// step, and that request waits for that architect's stream (api's apply, record.RunsAStepOn).
+func (e *Engine) ownerAgent(ctx context.Context, tx pgx.Tx, issue record.Issue, at phase.Phase) (claim.Token, error) {
+	starting, err := e.ownArchitectStarting(ctx, tx, issue, at)
 	if err != nil {
 		return "", err
 	}
@@ -428,23 +432,23 @@ func (e *Engine) acceptingAgent(ctx context.Context, tx pgx.Tx, issue record.Iss
 	return stepClaim(issue, owner, claim.RoleArchitect)
 }
 
-// ownArchitectStarting is whether issue's own architect, a child's, owns its accepting step by a
-// start the outbox will act on, which the owner walk does not see: the walk reads a claim as the
+// ownArchitectStarting is whether issue's own architect, a child's, runs its owner's step at at by
+// a start the outbox will act on, which the owner walk does not see: the walk reads a claim as the
 // store records it, and a claim whose start is only queued does not hold its role yet
-// (record.HoldsRole). Two moves queue such a start in the transaction that starts accepting: the
-// move into accepting, which starts a failed child architect again (reviveArchitect), and a
+// (record.HoldsRole). Two moves queue such a start in the transaction that starts the step: the
+// move into it, which starts a failed child architect again (reviveArchitect), and a
 // re-admission's promotion, which brings back a member's suspended architect (admit's
 // startMidPhaseMembers). Once that start runs, the child's own architect owns the child, and it
-// signs it off. The start is one of no phase or of accepting (architectStartQueued).
+// does the step. The start is one of no phase or of at (architectStartQueued).
 //
 // Two such starts do not count. One queued for a claim the operator suspended: that suspension is
 // woken by no start, queued or not, since each waits for the operator's resume
-// (supervise.Claim.RuleHolds). And one queued once the issue has left accepting, which the store's
+// (supervise.Claim.RuleHolds). And one queued once the issue has left at, which the store's
 // record of the issue says: the start is then the next phase's (reviveArchitect at that phase's
 // start).
-func (e *Engine) ownArchitectStarting(ctx context.Context, tx pgx.Tx, issue record.Issue) (bool, error) {
+func (e *Engine) ownArchitectStarting(ctx context.Context, tx pgx.Tx, issue record.Issue, at phase.Phase) (bool, error) {
 	run, child, err := e.ownArchitectRun(ctx, tx, issue)
-	if err != nil || !child || !architectStartQueued(run, phase.Accepting) {
+	if err != nil || !child || !architectStartQueued(run, at) {
 		return false, err
 	}
 	if run.Claim != nil && (supervise.Claim{State: run.Claim.State, SuspendedBy: run.Claim.SuspendedBy}).RuleHolds() {
@@ -454,7 +458,7 @@ func (e *Engine) ownArchitectStarting(ctx context.Context, tx pgx.Tx, issue reco
 	if err != nil || stands == nil {
 		return false, err
 	}
-	return record.StandsAt(*stands) == phase.Accepting && stands.Generation == issue.Generation, nil
+	return record.StandsAt(*stands) == at && stands.Generation == issue.Generation, nil
 }
 
 // startNamedStep writes the start of step, the step issue stands in (standingStep), under the agent
