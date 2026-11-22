@@ -100,7 +100,7 @@ import { SendStoppedError, stoppedWriteNote } from "./features/writes/keyed-writ
 import { PendingWritesIndicator } from "./features/writes/PendingWritesIndicator";
 import { useKeyedWrite, useRefusalOfSubject } from "./features/writes/useKeyedWrite";
 import { type Write, writesOf } from "./features/writes/write-store";
-import { useFootInset } from "./hooks/useFootInset";
+import { DOCUMENT_SCROLL_ATTRIBUTE, useFootInset } from "./hooks/useFootInset";
 import {
   backdrop50,
   badgeBlocking,
@@ -1060,11 +1060,10 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
         {/* In the frame `<main>` has no padding of its own: the page's header, its view row, its
             Contents pane and its column each keep the inset the prototype gives them, the pane
             against the rail, which `md:pl-14` makes room for. Its references open no card on
-            hover (R6). `data-document-scroll` is the shell's statement that the document scrolls
-            main's content, which the foot's scrollers read (`hooks/useFootInset.ts`): on a page
-            the document scrolls, outside the new issue page's frame. On a page that fills the
-            screen `<main>` is bounded and the document scrolls nothing; the frame is left out as
-            the foot's earlier rule left it. */}
+            hover (R6). `data-document-scroll` states that the document scrolls main's content:
+            on a page that does not fill the screen, outside the new issue page's frame. The
+            foot's hook reads it as it finds the scroller under a float (`scrollerUnder` in
+            `hooks/useFootInset.ts`). */}
         <main
           className={
             issueFrame
@@ -1073,7 +1072,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
           }
           data-shell-layout={issueFrame || fullWidth ? "full-width" : "standard"}
           {...(issueFrame ? { [NO_HOVER_PREVIEW_ATTRIBUTE]: "" } : {})}
-          {...(!issueFrame && !fillsViewport ? { "data-document-scroll": "" } : {})}
+          {...(!issueFrame && !fillsViewport ? { [DOCUMENT_SCROLL_ATTRIBUTE]: "" } : {})}
           data-testid="main-content"
           id="main-content"
           ref={mainRef}

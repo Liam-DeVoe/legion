@@ -69,8 +69,8 @@ import { type RefObject, useLayoutEffect } from "react";
  * A scroller under a float is the box that scrolls content a float lies over, so that its last
  * content would end under the float. No element registers as one: while a float has a box, the
  * hook finds every scroller under a float itself (`clearScrollers`), so no scroller can be left
- * off a list, as the issues table's box once was. A scroller is not a foot element: it has no
- * band and no float, and nothing keeps clear of it.
+ * off a list. A scroller is not a foot element: it has no band and no float, and nothing keeps
+ * clear of it.
  *
  * - Why a hit test. Only the screen knows what lies under a float: a list of names misses the next
  *   scroller, and no rule on style alone can tell which of the page's scroll containers sits under
@@ -104,9 +104,8 @@ import { type RefObject, useLayoutEffect } from "react";
  *   `main` from one the document scrolls, since a page that fits the window exactly - the issues
  *   table sizes its box to it - reads the same. So `data-document-scroll` on `<main>` (`app.tsx`)
  *   is the shell's statement that the document scrolls main's content: on a page the document
- *   scrolls, outside the new issue page's frame, which the earlier rule left out too. Only while
- *   `main` carries it is there a document's scroller; a walk that reaches `body` otherwise finds
- *   none.
+ *   scrolls, outside the new issue page's frame. Only while `main` carries it is there a
+ *   document's scroller; a walk that reaches `body` otherwise finds none.
  *
  * The one case left: a box of bounded height whose content does not overflow it yet, with its
  * last content under a float. It does not count, so that content stays under the float until the
@@ -170,8 +169,10 @@ import { type RefObject, useLayoutEffect } from "react";
  *   listens to nothing, and when the last float loses its box it unmarks every scroller before it
  *   stops listening. While one has a box, a pass runs at most once per animation frame: after
  *   each `publish`, on any scroll, on a window resize, and when elements join or leave the page (a
- *   `MutationObserver` over `body`, for `childList` and `subtree` only). The hook's own writes
- *   are attributes and styles, so they wake none of these.
+ *   `MutationObserver` over `body`, for `childList` and `subtree` only). The observer does not
+ *   watch attributes or styles, so the hook's marks and end room do not wake it. Only taking end
+ *   room away from a scroller scrolled to its end can clamp its scroll and wake one more pass,
+ *   which then finds the same marks.
  *
  * `--foot-clearance` is registered as not inherited (`styles.css`), so a scroller inside a marked
  * one, while it holds no room of its own, reads 0, never the room of the scroller around it. The
@@ -244,7 +245,7 @@ const CLEARANCE_PROPERTY = "--foot-clearance";
 
 /** The attribute by which the shell states, on `<main>`, that the document scrolls main's content
  *  (`FOOT_LAYERS` says why the hook cannot tell). */
-const DOCUMENT_SCROLL_ATTRIBUTE = "data-document-scroll";
+export const DOCUMENT_SCROLL_ATTRIBUTE = "data-document-scroll";
 
 /** The kind of box each computed `display` makes, of those where a spacer can land below the
  *  content: a block container, or a flexbox, where it lands there only in a column. */
@@ -262,9 +263,6 @@ let clearFrame = 0;
 
 /** Whether the window has resized since the last pass, which reads every mark afresh. */
 let resized = false;
-
-/** Whether the passes are listening: while a float has a box. */
-let following = false;
 
 /** What wakes a pass when elements join or leave the page, made at the first float. */
 let mutations: MutationObserver | undefined;
@@ -404,11 +402,11 @@ function scrollerUnder(hit: Element, hi: number, screen: number): FoundScroller 
 /** Takes away the mark of `scroller` and the end room it gave: its attribute, its property and
  *  any inline bottom padding. */
 function unmark(scroller: HTMLElement): void {
-  const mark = marks.get(scroller);
+  const held = marks.get(scroller);
   marks.delete(scroller);
   scroller.removeAttribute(MARK_ATTRIBUTE);
   scroller.style.removeProperty(CLEARANCE_PROPERTY);
-  if (mark?.way === "padding") scroller.style.removeProperty("padding-bottom");
+  if (held?.way === "padding") scroller.style.removeProperty("padding-bottom");
 }
 
 /**
@@ -419,31 +417,29 @@ function unmark(scroller: HTMLElement): void {
  * pixel, which the inline style keeps as written, and only a value that changes is written.
  */
 function mark(scroller: HTMLElement, clearance: number, byDocument: boolean): void {
-  let mark = marks.get(scroller);
-  if (mark === undefined) {
-    const { display, flexDirection, paddingBottom } = getComputedStyle(scroller);
+  const computed = getComputedStyle(scroller);
+  const own = Number.parseFloat(computed.paddingBottom) || 0;
+  let held = marks.get(scroller);
+  if (held === undefined) {
     const after = getComputedStyle(scroller, "::after").content;
+    const box = SPACER_BOXES[computed.display];
     const spacer =
       !byDocument &&
       (after === "none" || after === "normal") &&
-      (SPACER_BOXES[display] === "block" ||
-        (SPACER_BOXES[display] === "flexbox" && flexDirection === "column"));
-    mark = spacer
-      ? { room: 0, way: "after" }
-      : { own: Number.parseFloat(paddingBottom) || 0, room: 0, way: "padding" };
+      (box === "block" || (box === "flexbox" && computed.flexDirection === "column"));
+    held = spacer ? { room: 0, way: "after" } : { own, room: 0, way: "padding" };
   }
-  if (scroller.getAttribute(MARK_ATTRIBUTE) !== mark.way) {
-    scroller.setAttribute(MARK_ATTRIBUTE, mark.way);
+  if (scroller.getAttribute(MARK_ATTRIBUTE) !== held.way) {
+    scroller.setAttribute(MARK_ATTRIBUTE, held.way);
   }
-  if (mark.way === "after") {
-    const own = Number.parseFloat(getComputedStyle(scroller).paddingBottom) || 0;
+  if (held.way === "after") {
     const room = Math.max(0, Math.ceil(clearance - own));
     writePixels(scroller.style, CLEARANCE_PROPERTY, room);
     marks.set(scroller, { room, way: "after" });
   } else {
-    const padding = Math.max(mark.own, Math.ceil(clearance));
+    const padding = Math.max(held.own, Math.ceil(clearance));
     writePixels(scroller.style, "padding-bottom", padding);
-    marks.set(scroller, { own: mark.own, room: padding - mark.own, way: "padding" });
+    marks.set(scroller, { own: held.own, room: padding - held.own, way: "padding" });
   }
 }
 
@@ -460,10 +456,7 @@ function clearScrollers(): void {
   clearFrame = 0;
   const screen = window.innerHeight;
   const gap = remPixels();
-  const found = new Map<
-    HTMLElement,
-    { readonly byDocument: boolean; readonly floats: Band[]; readonly lo: number }
-  >();
+  const found = new Map<HTMLElement, FoundScroller & { readonly floats: Band[] }>();
   for (const { band, left, right } of placedFloats) {
     const walked = new Set<Element>();
     for (const offset of [band.hi - 2, (band.hi + band.lo) / 2, band.lo + 2]) {
@@ -475,11 +468,7 @@ function clearScrollers(): void {
         walked.add(hit);
         const under = scrollerUnder(hit, band.hi, screen);
         if (under === undefined) continue;
-        const over = found.get(under.scroller) ?? {
-          byDocument: under.byDocument,
-          floats: [],
-          lo: under.lo,
-        };
+        const over = found.get(under.scroller) ?? { ...under, floats: [] };
         found.set(under.scroller, over);
         if (!over.floats.includes(band)) over.floats.push(band);
       }
@@ -495,11 +484,8 @@ function clearScrollers(): void {
     const clearance = footClearance(lo, footCeiling(lo, held), floats, gap);
     if (clearance > 0) clearances.set(scroller, { byDocument, clearance });
   }
-  if (resized) {
-    resized = false;
-    for (const scroller of marks.keys()) unmark(scroller);
-  }
-  for (const scroller of marks.keys()) if (!clearances.has(scroller)) unmark(scroller);
+  for (const scroller of marks.keys()) if (resized || !clearances.has(scroller)) unmark(scroller);
+  resized = false;
   for (const [scroller, { byDocument, clearance }] of clearances) {
     mark(scroller, clearance, byDocument);
   }
@@ -517,13 +503,15 @@ function clearAfterResize(): void {
 }
 
 /**
- * While a float has a box, listens for what moves content under the floats and asks for a pass;
- * once none has, unmarks every scroller and then stops listening (`FOOT_LAYERS` says why).
+ * Holds `placed`, every float that has a box, for the passes (`placedFloats`). While a float has a
+ * box, listens for what moves content under the floats and asks for a pass; once none has,
+ * unmarks every scroller and then stops listening (`FOOT_LAYERS` says why).
  */
-function followFloats(): void {
-  if (placedFloats.length > 0) {
-    if (!following) {
-      following = true;
+function followFloats(placed: readonly PlacedFloat[]): void {
+  const wasFollowing = placedFloats.length > 0;
+  placedFloats = placed;
+  if (placed.length > 0) {
+    if (!wasFollowing) {
       window.addEventListener("scroll", clearNextFrame, { capture: true, passive: true });
       window.addEventListener("resize", clearAfterResize);
       mutations ??= new MutationObserver(clearNextFrame);
@@ -532,8 +520,7 @@ function followFloats(): void {
     clearNextFrame();
     return;
   }
-  if (!following) return;
-  following = false;
+  if (!wasFollowing) return;
   cancelAnimationFrame(clearFrame);
   clearFrame = 0;
   resized = false;
@@ -573,8 +560,7 @@ function publish(): void {
       placed.push({ band, element, left: float.left, right: float.right });
     }
   }
-  placedFloats = placed;
-  followFloats();
+  followFloats(placed);
 }
 
 /**
