@@ -32,6 +32,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // The private destination of every row here: Dispatch's public host, which the rules bind, and
@@ -397,41 +398,46 @@ func TestAnUpstreamAtACloudMetadataServerIsRefused(t *testing.T) {
 
 // TestAnUnreachableUpstreamIsNotNamedToTheCommand: a destination at an address the proxy may dial,
 // where nothing answers, fails the write 502 UPSTREAM_UNREACHABLE, whose words name the rule and
-// neither the destination's in-cluster name nor its address, while the broker's line of the call
-// it could not carry names the address. Control: the same rig with the stand-in answering stores
-// the write.
+// nothing of the dial: neither the destination's in-cluster name nor its address, nor the address
+// and port the dial opened, nor the transport's error ("dial tcp", "connection refused"). The rig
+// sends the dial of the destination's address to a loopback port nothing listens on, so the
+// transport's error names that loopback address and port, never 10.0.0.5: the answer is read for
+// both, so an answer that carried the transport's error fails here as it would carry the
+// destination's in-cluster address in production. The broker's line of the call it could not
+// carry holds the error, with the address dialled. Control: the same rig with the stand-in
+// answering stores the write.
 func TestAnUnreachableUpstreamIsNotNamedToTheCommand(t *testing.T) {
 	r, standIn := newPrivateRig(t, privateAddress, []netip.Prefix{serviceRange})
 	if answer, body, err := r.writeResult(); err != nil || answer.StatusCode != http.StatusCreated || len(standIn.writes()) != 1 {
 		t.Fatalf("control: the write to an answering destination = %v %v %q; want 201", answer, err, body)
 	}
 	r, _ = newPrivateRig(t, privateAddress, []netip.Prefix{serviceRange})
-	// The destination's address now dials a port nothing listens on.
-	r.dialTo[net.JoinHostPort(privateAddress.String(), privatePort)] = closedAddress(t)
+	// The destination's address now dials a loopback port the test holds bound and never
+	// listening (testport.Refused), which the transport's error names.
+	destination := net.JoinHostPort(privateAddress.String(), privatePort)
+	dialled := testport.Refused(t)
+	_, dialledPort, err := net.SplitHostPort(dialled)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.dialTo[destination] = dialled
 	answer, body, err := r.writeResult()
 	if err != nil || answer.StatusCode != http.StatusBadGateway || answer.Header.Get("Airlock-Code") != codeUpstream {
 		t.Fatalf("the write to a destination where nothing answers = %v %v %q; want 502 %s", answer, err, body, codeUpstream)
 	}
-	if strings.Contains(body, privateName) || strings.Contains(body, privateAddress.String()) || !strings.Contains(body, "BROKER_AIRLOCK_PRIVATE_UPSTREAM") {
-		t.Fatalf("the command reads %q; want the rule (BROKER_AIRLOCK_PRIVATE_UPSTREAM) and neither %s nor %s", body, privateName, privateAddress)
+	if !strings.Contains(body, "BROKER_AIRLOCK_PRIVATE_UPSTREAM") {
+		t.Fatalf("the command reads %q; want the rule BROKER_AIRLOCK_PRIVATE_UPSTREAM", body)
+	}
+	for _, leak := range []string{privateName, privateAddress.String(), dialled, ":" + dialledPort, "dial tcp", "connection refused"} {
+		if strings.Contains(body, leak) {
+			t.Errorf("the command reads %q, which holds %q; want the rule alone and nothing of the dial of %s, which the rig sent to %s", body, leak, destination, dialled)
+		}
 	}
 	lines := r.logs.lines(upstreamMessage)
 	if len(lines) == 0 {
 		t.Fatal("the proxy logged no call it could not carry")
 	}
-	if detail, _ := lines[len(lines)-1].fields["error"].(string); detail == "" {
-		t.Fatalf("the broker's line of the call it could not carry holds no error: %v", lines[len(lines)-1].fields)
+	if detail, _ := lines[len(lines)-1].fields["error"].(string); !strings.Contains(detail, dialled) {
+		t.Fatalf("the broker's line of the call it could not carry reads %v; want the transport's error, naming the address dialled %s", lines[len(lines)-1].fields, dialled)
 	}
-}
-
-// closedAddress is a loopback address and port nothing listens on: a listener's, closed.
-func closedAddress(t *testing.T) string {
-	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	addr := listener.Addr().String()
-	listener.Close()
-	return addr
 }
