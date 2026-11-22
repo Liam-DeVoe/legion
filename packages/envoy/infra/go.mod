@@ -265,3 +265,9 @@ require (
 )
 
 replace github.com/sjawhar/envoy => ../
+
+// nats-server pins the Antithesis SDK's no-op build, v0.8.0-default-no-op, which compiles the SDK
+// in only under the build tag enable_antithesis_sdk. jsm.go v0.5.0 requires v0.8.0, which compiles
+// it in unless no_antithesis_sdk is set, and would win the version selection; this module keeps
+// nats-server's pin, so the nats-server code envoy-infra links builds as it does in the envoy module.
+replace github.com/antithesishq/antithesis-sdk-go => github.com/antithesishq/antithesis-sdk-go v0.8.0-default-no-op
