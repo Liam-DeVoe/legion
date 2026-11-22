@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -231,6 +232,115 @@ func TestAGapWriteDoesNotLaunderARepublishedRecordForTheEdge(t *testing.T) {
 			}
 			if _, own, err := r.StoredByWriter(ctx, victim); err != nil || own {
 				t.Errorf("StoredByWriter after the set = own=%t, %v; want false, the record not laundered", own, err)
+			}
+		})
+	}
+}
+
+// faultyDeleteKeyValue injects a chosen error on the nth Delete call through this handle, counting
+// from 1, so a test drives the fenced delete's refusal (bus.KeyValue.DeleteAt) without a real race:
+// the real delete runs where fault answers nil. NewestFromLeader reads the stream, not this
+// handle's Delete, so DeleteServerWritten still classifies the key's record while its own delete is
+// faulted.
+type faultyDeleteKeyValue struct {
+	nats.KeyValue
+	mu      sync.Mutex
+	deletes int
+	fault   func(n int) error
+}
+
+// armFault sets the fault and resets the call count to 0, so a test arms the fault only for the
+// deletes it drives next (DeleteIf's), past any delete useKV's rebuild made.
+func (kv *faultyDeleteKeyValue) armFault(fault func(n int) error) {
+	kv.mu.Lock()
+	kv.deletes = 0
+	kv.fault = fault
+	kv.mu.Unlock()
+}
+
+func (kv *faultyDeleteKeyValue) Delete(key string, opts ...nats.DeleteOpt) error {
+	kv.mu.Lock()
+	fault := kv.fault
+	kv.deletes++
+	n := kv.deletes
+	kv.mu.Unlock()
+	if fault != nil {
+		if err := fault(n); err != nil {
+			return err
+		}
+	}
+	return kv.KeyValue.Delete(key, opts...)
+}
+
+// Q6 folds DeleteIf's fenced-delete fallback into bus.DeleteAt, which triggers on one
+// compare-and-swap predicate (bus.IsCASConflict - a wrong last sequence, reported as nats.ErrKeyExists
+// for a key holding a value and as a raw "wrong last sequence" otherwise), where the old DeleteIf
+// triggered on errors.Is(nats.ErrKeyExists) alone. Two outcomes change, and each row is red with
+// the old ErrKeyExists check put back (delete.go):
+//   - a raw wrong last sequence over a record the server wrote now re-reads from the leader and
+//     deletes it (EntryDeleted); the old check misses the raw refusal and answers EntryUnanswered.
+//   - a non-CAS failure of that server-written delete now answers EntryUnanswered; the old code
+//     retried it and answered EntryKeptAfterLostRace.
+func TestSessionRegistryDeleteIf_Q6ChangedOutcomes(t *testing.T) {
+	// A "wrong last sequence" refusal that errors.Is(nats.ErrKeyExists) does not match, only the
+	// string check in bus.IsCASConflict does: the case Q6's predicate catches and the old one missed.
+	rawWrongLastSeq := errors.New("nats: wrong last sequence: 5")
+	for _, tc := range []struct {
+		name      string
+		key       string
+		fault     func(n int) error
+		want      DeleteOutcome
+		wantError bool
+	}{
+		{
+			name: "a raw wrong last sequence over a server-written record re-reads and deletes it",
+			key:  "ses_q6_raw_wls",
+			fault: func(n int) error { // the first fenced delete refuses with a raw wrong last sequence
+				if n == 1 {
+					return rawWrongLastSeq
+				}
+				return nil // the server-written delete at the true sequence runs
+			},
+			want: EntryDeleted,
+		},
+		{
+			name: "a non-CAS failure of the server-written delete answers unanswered",
+			key:  "ses_q6_server_write_fails",
+			fault: func(n int) error { // the fenced delete refuses (ErrKeyExists), the server-written delete fails
+				if n%2 == 0 {
+					return errors.New("the bucket did not answer the server-written delete")
+				}
+				return nil
+			},
+			want:      EntryUnanswered,
+			wantError: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := setupNATS(t)
+			r := openBindingRegistry(t, client)
+			ctx := context.Background()
+			if err := r.Put(tc.key, SessionEntry{MachineID: "edge-a", ClientInstanceID: "instance-victim", Projects: []string{"PRIV"}}); err != nil {
+				t.Fatalf("register %s: %v", tc.key, err)
+			}
+			body, err := json.Marshal(map[string]any{"session_id": tc.key, "machine_id": "edge-a", "updated_at": time.Now().UnixMilli(),
+				"projects": []string{"PRIV"}, "client_instance_id": "instance-victim"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			testnats.RepublishesKey(t, client.Conn, bus.SessionBucket, tc.key, body)
+			if _, own, err := r.StoredByWriter(ctx, tc.key); err != nil || own {
+				t.Fatalf("StoredByWriter(%s) over the republished record = %t, %v; want false", tc.key, own, err)
+			}
+			faulty := &faultyDeleteKeyValue{KeyValue: r.watcher.KV().Legacy()}
+			useKV(t, r, faulty)
+			faulty.armFault(tc.fault)
+			outcome, err := r.DeleteIf(ctx, tc.key, DeleteConditions{ClientInstanceID: "instance-victim"})
+			if tc.wantError != (err != nil) {
+				t.Fatalf("DeleteIf(%s) error = %v, want an error: %t", tc.key, err, tc.wantError)
+			}
+			if outcome != tc.want {
+				t.Errorf("DeleteIf(%s) = %s, want %s", tc.key, outcome, tc.want)
 			}
 		})
 	}
